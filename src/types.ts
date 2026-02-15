@@ -128,6 +128,8 @@ export interface User {
   must_change_password: boolean;
   disable_reason: string | null;
   notes: string | null;
+  avatar_emoji: string | null;
+  avatar_color: string | null;
   created_at: string;
   updated_at: string;
   last_login_at: string | null;
@@ -144,6 +146,8 @@ export interface UserPublic {
   must_change_password: boolean;
   disable_reason: string | null;
   notes: string | null;
+  avatar_emoji: string | null;
+  avatar_color: string | null;
   created_at: string;
   last_login_at: string | null;
   last_active_at: string | null;

@@ -17,8 +17,6 @@ export function SkillsPage() {
     error,
     installing,
     loadSkills,
-    toggleSkill,
-    deleteSkill,
     installSkill,
   } = useSkillsStore();
 
@@ -44,17 +42,6 @@ export function SkillsPage() {
   const projectSkills = filtered.filter((s) => s.source === 'project');
 
   const enabledCount = skills.filter((s) => s.enabled).length;
-
-  const handleToggle = async (id: string, enabled: boolean) => {
-    await toggleSkill(id, enabled);
-  };
-
-  const handleDelete = async (id: string) => {
-    await deleteSkill(id);
-    if (selectedId === id) {
-      setSelectedId(null);
-    }
-  };
 
   const handleInstall = async (pkg: string) => {
     await installSkill(pkg);
@@ -121,7 +108,6 @@ export function SkillsPage() {
                             skill={skill}
                             selected={selectedId === skill.id}
                             onSelect={() => setSelectedId(skill.id)}
-                            onToggle={(enabled) => handleToggle(skill.id, enabled)}
                           />
                         ))}
                       </div>
@@ -140,7 +126,6 @@ export function SkillsPage() {
                             skill={skill}
                             selected={selectedId === skill.id}
                             onSelect={() => setSelectedId(skill.id)}
-                            onToggle={(enabled) => handleToggle(skill.id, enabled)}
                           />
                         ))}
                       </div>
@@ -153,22 +138,14 @@ export function SkillsPage() {
 
           {/* 右侧详情（桌面端） */}
           <div className="hidden lg:block lg:w-1/2 xl:w-3/5">
-            <SkillDetail
-              skillId={selectedId}
-              onToggle={handleToggle}
-              onDelete={handleDelete}
-            />
+            <SkillDetail skillId={selectedId} />
           </div>
         </div>
 
         {/* 移动端详情 */}
         {selectedId && (
           <div className="lg:hidden p-4">
-            <SkillDetail
-              skillId={selectedId}
-              onToggle={handleToggle}
-              onDelete={handleDelete}
-            />
+            <SkillDetail skillId={selectedId} />
           </div>
         )}
       </div>

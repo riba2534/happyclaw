@@ -4,7 +4,6 @@ import { RegisterPage } from './pages/RegisterPage';
 import { SetupPage } from './pages/SetupPage';
 import { SetupProvidersPage } from './pages/SetupProvidersPage';
 import { ChatPage } from './pages/ChatPage';
-import { GroupsPage } from './pages/GroupsPage';
 import { TasksPage } from './pages/TasksPage';
 import { MonitorPage } from './pages/MonitorPage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -43,7 +42,7 @@ export function App() {
           }
         >
           <Route path="/chat/:groupFolder?" element={<ChatPage />} />
-          <Route path="/groups" element={<GroupsPage />} />
+          <Route path="/groups" element={<Navigate to="/settings?tab=groups" replace />} />
           <Route path="/tasks" element={<TasksPage />} />
           <Route path="/monitor" element={<MonitorPage />} />
           <Route

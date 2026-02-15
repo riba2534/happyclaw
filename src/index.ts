@@ -106,6 +106,7 @@ import {
   broadcastTyping,
   broadcastStreamEvent,
   shutdownTerminals,
+  shutdownWebServer,
 } from './web.js';
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -119,6 +120,7 @@ let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, MessageCursor> = {};
 let messageLoopRunning = false;
 let ipcWatcherRunning = false;
+let shuttingDown = false;
 
 const queue = new GroupQueue();
 const EMPTY_CURSOR: MessageCursor = { timestamp: '', id: '' };
@@ -836,6 +838,7 @@ function startIpcWatcher(): void {
   fs.mkdirSync(ipcBaseDir, { recursive: true });
 
   const processIpcFiles = async () => {
+    if (shuttingDown) return;
     // Scan all group IPC directories (identity determined by directory)
     let groupFolders: string[];
     try {
@@ -845,7 +848,7 @@ function startIpcWatcher(): void {
       });
     } catch (err) {
       logger.error({ err }, 'Error reading IPC base directory');
-      setTimeout(processIpcFiles, IPC_POLL_INTERVAL);
+      if (!shuttingDown) setTimeout(processIpcFiles, IPC_POLL_INTERVAL);
       return;
     }
 
@@ -961,7 +964,7 @@ function startIpcWatcher(): void {
       }
     }
 
-    setTimeout(processIpcFiles, IPC_POLL_INTERVAL);
+    if (!shuttingDown) setTimeout(processIpcFiles, IPC_POLL_INTERVAL);
   };
 
   processIpcFiles();
@@ -1197,7 +1200,7 @@ async function startMessageLoop(): Promise<void> {
 
   logger.info('happyclaw running');
 
-  while (true) {
+  while (!shuttingDown) {
     try {
       const jids = Object.keys(registeredGroups);
       const { messages, newCursor } = getNewMessages(jids, globalMessageCursor);
@@ -1375,22 +1378,50 @@ async function main(): Promise<void> {
   logger.info('Database initialized');
   loadState();
 
+  // --- Channel reload helpers (hot-reload on config save) ---
+
+  let feishuSyncInterval: ReturnType<typeof setInterval> | null = null;
+
   // Graceful shutdown handlers
+  let shutdownInProgress = false;
   const shutdown = async (signal: string) => {
-    logger.info({ signal }, 'Shutdown signal received');
-    shutdownTerminals();
-    await stopFeishu();
-    await disconnectTelegram();
-    await queue.shutdown(10000);
-    closeDatabase();
+    if (shutdownInProgress) {
+      logger.warn('Force exit (second signal)');
+      process.exit(1);
+    }
+    shutdownInProgress = true;
+    shuttingDown = true;
+    logger.info({ signal }, 'Shutdown signal received, cleaning up...');
+
+    if (feishuSyncInterval) {
+      clearInterval(feishuSyncInterval);
+      feishuSyncInterval = null;
+    }
+
+    try { shutdownTerminals(); } catch (err) {
+      logger.warn({ err }, 'Error shutting down terminals');
+    }
+    try { await stopFeishu(); } catch (err) {
+      logger.warn({ err }, 'Error stopping Feishu');
+    }
+    try { await disconnectTelegram(); } catch (err) {
+      logger.warn({ err }, 'Error disconnecting Telegram');
+    }
+    try { await shutdownWebServer(); } catch (err) {
+      logger.warn({ err }, 'Error shutting down web server');
+    }
+    try { await queue.shutdown(10000); } catch (err) {
+      logger.warn({ err }, 'Error shutting down queue');
+    }
+    try { closeDatabase(); } catch (err) {
+      logger.warn({ err }, 'Error closing database');
+    }
+
+    logger.info('Shutdown complete');
     process.exit(0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
-
-  // --- Channel reload helpers (hot-reload on config save) ---
-
-  let feishuSyncInterval: ReturnType<typeof setInterval> | null = null;
 
   const doConnectFeishu = async (ignoreMessagesBefore?: number): Promise<boolean> => {
     return connectFeishu({

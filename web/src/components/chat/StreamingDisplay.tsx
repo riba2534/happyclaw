@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import { useChatStore } from '../../stores/chat';
+import { useAuthStore } from '../../stores/auth';
+import { EmojiAvatar } from '../common/EmojiAvatar';
 import { MarkdownRenderer } from './MarkdownRenderer';
 
 interface StreamingDisplayProps {
@@ -9,8 +11,10 @@ interface StreamingDisplayProps {
   senderName?: string;
 }
 
-export function StreamingDisplay({ groupJid, isWaiting, senderName = 'AI' }: StreamingDisplayProps) {
+export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNameProp = 'AI' }: StreamingDisplayProps) {
   const streaming = useChatStore(s => s.streaming[groupJid]);
+  const appearance = useAuthStore(s => s.appearance);
+  const senderName = appearance?.aiName || senderNameProp;
   const [thinkingExpanded, setThinkingExpanded] = useState(true);
   const thinkingRef = useRef<HTMLDivElement>(null);
   const userScrolledRef = useRef(false);
@@ -80,11 +84,12 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName = 'AI' }: Str
       <div className="max-w-3xl mx-auto w-full px-4 py-3">
         <div className="flex gap-3">
           {/* Avatar */}
-          <div className="flex-shrink-0 w-8 h-8 rounded-full bg-brand-100 dark:bg-brand-700/30 flex items-center justify-center">
-            <span className="text-xs font-medium text-brand-600 dark:text-brand-400">
-              {senderName[0]}
-            </span>
-          </div>
+          <EmojiAvatar
+            emoji={appearance?.aiAvatarEmoji}
+            color={appearance?.aiAvatarColor}
+            fallbackChar={senderName[0]}
+            size="md"
+          />
           <div className="flex-1 min-w-0">
             {/* Name row */}
             <div className="flex items-center gap-2 mb-1">
@@ -110,11 +115,12 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName = 'AI' }: Str
     <div className="max-w-3xl mx-auto w-full px-4 py-3">
       <div className="flex gap-3">
         {/* Avatar */}
-        <div className="flex-shrink-0 w-8 h-8 rounded-full bg-brand-100 dark:bg-brand-700/30 flex items-center justify-center">
-          <span className="text-xs font-medium text-brand-600 dark:text-brand-400">
-            {senderName[0]}
-          </span>
-        </div>
+        <EmojiAvatar
+          emoji={appearance?.aiAvatarEmoji}
+          color={appearance?.aiAvatarColor}
+          fallbackChar={senderName[0]}
+          size="md"
+        />
         <div className="flex-1 min-w-0">
           {/* Name row */}
           <div className="flex items-center gap-2 mb-1">

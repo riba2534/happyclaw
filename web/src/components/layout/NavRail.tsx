@@ -1,11 +1,11 @@
 import { NavLink, useNavigate } from 'react-router-dom';
-import { MessageSquare, Layers, Clock, Activity, Settings, LogOut } from 'lucide-react';
+import { MessageSquare, Clock, Activity, Settings, LogOut } from 'lucide-react';
 import { useAuthStore } from '../../stores/auth';
+import { EmojiAvatar } from '../common/EmojiAvatar';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
 const navItems = [
   { path: '/chat', icon: MessageSquare, label: '聊天' },
-  { path: '/groups', icon: Layers, label: '会话' },
   { path: '/tasks', icon: Clock, label: '任务' },
   { path: '/monitor', icon: Activity, label: '监控' },
   { path: '/settings', icon: Settings, label: '设置' },
@@ -61,9 +61,18 @@ export function NavRail() {
         <div className="flex flex-col items-center gap-1.5 mb-1">
           <Tooltip>
             <TooltipTrigger asChild>
-              <div className="w-9 h-9 rounded-full bg-primary/10 text-primary flex items-center justify-center text-sm font-medium cursor-default">
-                {userInitial}
-              </div>
+              <button
+                onClick={() => navigate('/settings?tab=profile')}
+                className="rounded-lg hover:ring-2 hover:ring-brand-200 transition-all cursor-pointer"
+              >
+                <EmojiAvatar
+                  emoji={user?.avatar_emoji}
+                  color={user?.avatar_color}
+                  fallbackChar={userInitial}
+                  size="md"
+                  className="w-9 h-9"
+                />
+              </button>
             </TooltipTrigger>
             <TooltipContent side="right">
               {user?.display_name || user?.username}

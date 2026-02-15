@@ -269,7 +269,7 @@ app.use(
 
 // --- WebSocket ---
 
-function setupWebSocket(server: any): void {
+function setupWebSocket(server: any): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true });
 
   server.on('upgrade', (request: any, socket: any, head: any) => {
@@ -576,6 +576,8 @@ function setupWebSocket(server: any): void {
       cleanupTerminalForWs();
     });
   });
+
+  return wss;
 }
 
 // --- Broadcast Functions ---
@@ -710,13 +712,15 @@ function broadcastStatus(): void {
 // --- Server Startup ---
 
 let statusInterval: ReturnType<typeof setInterval> | null = null;
+let httpServer: ReturnType<typeof serve> | null = null;
+let wss: WebSocketServer | null = null;
 
 export function startWebServer(webDeps: WebDeps): void {
   deps = webDeps;
   setWebDeps(webDeps);
   injectConfigDeps(webDeps);
 
-  const server = serve(
+  httpServer = serve(
     {
       fetch: app.fetch,
       port: WEB_PORT,
@@ -726,7 +730,7 @@ export function startWebServer(webDeps: WebDeps): void {
     },
   );
 
-  setupWebSocket(server);
+  wss = setupWebSocket(httpServer);
 
   // Register container exit callback for terminal cleanup
   webDeps.queue.setOnContainerExit((groupJid: string) => {
@@ -753,6 +757,30 @@ export function startWebServer(webDeps: WebDeps): void {
 
 export function shutdownTerminals(): void {
   terminalManager.shutdown();
+}
+
+export async function shutdownWebServer(): Promise<void> {
+  if (statusInterval) {
+    clearInterval(statusInterval);
+    statusInterval = null;
+  }
+  // Close all WebSocket connections
+  for (const client of wsClients.keys()) {
+    try {
+      client.close(1001, 'Server shutting down');
+    } catch { /* ignore */ }
+  }
+  wsClients.clear();
+  // Close WebSocket server
+  if (wss) {
+    wss.close();
+    wss = null;
+  }
+  // Close HTTP server
+  if (httpServer) {
+    httpServer.close();
+    httpServer = null;
+  }
 }
 
 export type { WebDeps } from './web-context.js';

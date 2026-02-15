@@ -157,6 +157,8 @@ export function initDatabase(): void {
       must_change_password INTEGER NOT NULL DEFAULT 0,
       disable_reason TEXT,
       notes TEXT,
+      avatar_emoji TEXT,
+      avatar_color TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       last_login_at TEXT,
@@ -213,6 +215,8 @@ export function initDatabase(): void {
   ensureColumn('users', 'deleted_at', 'TEXT');
   ensureColumn('invite_codes', 'permission_template', 'TEXT');
   ensureColumn('invite_codes', 'permissions', "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn('users', 'avatar_emoji', 'TEXT');
+  ensureColumn('users', 'avatar_color', 'TEXT');
   ensureColumn('registered_groups', 'execution_mode', "TEXT DEFAULT 'container'");
   ensureColumn('registered_groups', 'custom_cwd', 'TEXT');
   ensureColumn('registered_groups', 'init_source_path', 'TEXT');
@@ -304,6 +308,8 @@ export function initDatabase(): void {
     'must_change_password',
     'disable_reason',
     'notes',
+    'avatar_emoji',
+    'avatar_color',
     'created_at',
     'updated_at',
     'last_login_at',
@@ -341,7 +347,7 @@ export function initDatabase(): void {
   ]);
 
   // Store schema version after all migrations complete
-  const SCHEMA_VERSION = '10';
+  const SCHEMA_VERSION = '11';
   db.prepare(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', SCHEMA_VERSION);
@@ -1043,6 +1049,10 @@ function mapUserRow(row: Record<string, unknown>): User {
     disable_reason:
       typeof row.disable_reason === 'string' ? row.disable_reason : null,
     notes: typeof row.notes === 'string' ? row.notes : null,
+    avatar_emoji:
+      typeof row.avatar_emoji === 'string' ? row.avatar_emoji : null,
+    avatar_color:
+      typeof row.avatar_color === 'string' ? row.avatar_color : null,
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
     last_login_at:
@@ -1062,6 +1072,8 @@ function toUserPublic(user: User, lastActiveAt: string | null): UserPublic {
     must_change_password: user.must_change_password,
     disable_reason: user.disable_reason,
     notes: user.notes,
+    avatar_emoji: user.avatar_emoji,
+    avatar_color: user.avatar_color,
     created_at: user.created_at,
     last_login_at: user.last_login_at,
     last_active_at: lastActiveAt,
@@ -1285,6 +1297,8 @@ export function updateUserFields(
       | 'must_change_password'
       | 'disable_reason'
       | 'notes'
+      | 'avatar_emoji'
+      | 'avatar_color'
       | 'deleted_at'
     >
   >,
@@ -1331,6 +1345,14 @@ export function updateUserFields(
   if (updates.notes !== undefined) {
     fields.push('notes = ?');
     values.push(updates.notes);
+  }
+  if (updates.avatar_emoji !== undefined) {
+    fields.push('avatar_emoji = ?');
+    values.push(updates.avatar_emoji);
+  }
+  if (updates.avatar_color !== undefined) {
+    fields.push('avatar_color = ?');
+    values.push(updates.avatar_color);
   }
   if (updates.deleted_at !== undefined) {
     fields.push('deleted_at = ?');

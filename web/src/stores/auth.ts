@@ -22,6 +22,14 @@ export interface UserPublic {
   last_login_at: string | null;
   last_active_at: string | null;
   deleted_at: string | null;
+  avatar_emoji: string | null;
+  avatar_color: string | null;
+}
+
+export interface AppearanceConfig {
+  aiName: string;
+  aiAvatarEmoji: string;
+  aiAvatarColor: string;
 }
 
 export interface SetupStatus {
@@ -34,6 +42,7 @@ interface AuthState {
   authenticated: boolean;
   user: UserPublic | null;
   setupStatus: SetupStatus | null;
+  appearance: AppearanceConfig | null;
   initialized: boolean | null; // null = not checked yet
   checking: boolean;
   login: (username: string, password: string) => Promise<void>;
@@ -43,7 +52,8 @@ interface AuthState {
   checkStatus: () => Promise<void>;
   setupAdmin: (username: string, password: string) => Promise<void>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
-  updateProfile: (payload: { username?: string; display_name?: string }) => Promise<void>;
+  updateProfile: (payload: { username?: string; display_name?: string; avatar_emoji?: string | null; avatar_color?: string | null }) => Promise<void>;
+  fetchAppearance: () => Promise<void>;
   hasPermission: (permission: Permission) => boolean;
 }
 
@@ -53,15 +63,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   authenticated: false,
   user: null,
   setupStatus: null,
+  appearance: null,
   initialized: null,
   checking: true,
 
   login: async (username: string, password: string) => {
-    const data = await api.post<{ success: boolean; user: UserPublic; setupStatus?: SetupStatus }>(
+    const data = await api.post<{ success: boolean; user: UserPublic; setupStatus?: SetupStatus; appearance?: AppearanceConfig }>(
       '/api/auth/login',
       { username, password },
     );
-    set({ authenticated: true, user: data.user, setupStatus: data.setupStatus ?? null, initialized: true });
+    set({ authenticated: true, user: data.user, setupStatus: data.setupStatus ?? null, appearance: data.appearance ?? null, initialized: true });
   },
 
   register: async (payload) => {
@@ -71,7 +82,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   logout: async () => {
     await api.post('/api/auth/logout');
-    set({ authenticated: false, user: null, setupStatus: null, initialized: true });
+    set({ authenticated: false, user: null, setupStatus: null, appearance: null, initialized: true });
   },
 
   checkStatus: async () => {
@@ -85,7 +96,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   setupAdmin: async (username: string, password: string) => {
-    const data = await api.post<{ success: boolean; user: UserPublic; setupStatus?: SetupStatus }>(
+    const data = await api.post<{ success: boolean; user: UserPublic; setupStatus?: SetupStatus; appearance?: AppearanceConfig }>(
       '/api/auth/setup',
       { username, password },
     );
@@ -93,6 +104,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       authenticated: true,
       user: data.user,
       setupStatus: data.setupStatus ?? null,
+      appearance: data.appearance ?? null,
       initialized: true,
     });
   },
@@ -104,8 +116,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({ checking: true });
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const data = await api.get<{ user: UserPublic; setupStatus?: SetupStatus }>('/api/auth/me');
-          set({ authenticated: true, user: data.user, setupStatus: data.setupStatus ?? null, initialized: true, checking: false });
+          const data = await api.get<{ user: UserPublic; setupStatus?: SetupStatus; appearance?: AppearanceConfig }>('/api/auth/me');
+          set({ authenticated: true, user: data.user, setupStatus: data.setupStatus ?? null, appearance: data.appearance ?? null, initialized: true, checking: false });
           return;
         } catch (err) {
           const status =
@@ -140,6 +152,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   updateProfile: async (payload) => {
     const data = await api.put<{ success: boolean; user: UserPublic }>('/api/auth/profile', payload);
     set({ user: data.user });
+  },
+
+  fetchAppearance: async () => {
+    try {
+      const data = await api.get<AppearanceConfig>('/api/config/appearance/public');
+      set({ appearance: data });
+    } catch {
+      // API not yet available, keep current state
+    }
   },
 
   hasPermission: (permission: Permission): boolean => {

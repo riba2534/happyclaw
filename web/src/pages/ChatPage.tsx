@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useChatStore } from '../stores/chat';
+import { useAuthStore } from '../stores/auth';
 import { ChatSidebar } from '../components/chat/ChatSidebar';
 import { ChatView } from '../components/chat/ChatView';
 
@@ -12,6 +13,7 @@ export function ChatPage() {
     ? Object.entries(groups).find(([_, info]) => info.folder === groupFolder)
     : null;
   const routeGroupJid = routeGroupEntry?.[0] || null;
+  const appearance = useAuthStore((s) => s.appearance);
   const hasGroups = Object.keys(groups).length > 0;
 
   // Sync URL param to store
@@ -52,7 +54,7 @@ export function ChatPage() {
               <img src={`${import.meta.env.BASE_URL}icons/icon-192.png`} alt="HappyClaw" className="w-full h-full object-cover" />
             </div>
             <h2 className="text-xl font-semibold text-slate-900 mb-2">
-              欢迎使用 HappyClaw
+              欢迎使用 {appearance?.aiName || 'HappyClaw'}
             </h2>
             <p className="text-slate-500 text-sm">
               从左侧选择一个容器开始对话

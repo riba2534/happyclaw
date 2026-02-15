@@ -4,10 +4,12 @@ import {
   UserPlus,
   User,
   Shield,
+  Layers,
   BookOpen,
   Puzzle,
   UserCog,
   Info,
+  Palette,
 } from 'lucide-react';
 import type { SettingsTab } from './types';
 
@@ -22,6 +24,7 @@ const systemItems: NavItem[] = [
   { key: 'channels', label: '渠道配置', icon: <Radio className="w-4 h-4" />, group: 'system' },
   { key: 'claude', label: 'Claude 提供商', icon: <ShieldCheck className="w-4 h-4" />, group: 'system' },
   { key: 'registration', label: '注册管理', icon: <UserPlus className="w-4 h-4" />, group: 'system' },
+  { key: 'appearance', label: '外观设置', icon: <Palette className="w-4 h-4" />, group: 'system' },
 ];
 
 const accountItems: NavItem[] = [
@@ -30,6 +33,7 @@ const accountItems: NavItem[] = [
 ];
 
 const featureItems: NavItem[] = [
+  { key: 'groups', label: '会话管理', icon: <Layers className="w-4 h-4" />, group: 'features' },
   { key: 'memory', label: '记忆管理', icon: <BookOpen className="w-4 h-4" />, group: 'features' },
   { key: 'skills', label: '技能管理', icon: <Puzzle className="w-4 h-4" />, group: 'features' },
   { key: 'users', label: '用户管理', icon: <UserCog className="w-4 h-4" />, group: 'features' },

@@ -5,10 +5,9 @@ interface SkillCardProps {
   skill: Skill;
   selected: boolean;
   onSelect: () => void;
-  onToggle: (enabled: boolean) => void;
 }
 
-export function SkillCard({ skill, selected, onSelect, onToggle }: SkillCardProps) {
+export function SkillCard({ skill, selected, onSelect }: SkillCardProps) {
   return (
     <button
       onClick={onSelect}
@@ -41,22 +40,12 @@ export function SkillCard({ skill, selected, onSelect, onToggle }: SkillCardProp
         </div>
 
         <div className="flex items-center gap-2">
-          {skill.source === 'project' && (
-            <Lock size={16} className="text-slate-400" />
-          )}
+          <Lock size={16} className="text-slate-400" />
           <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggle(!skill.enabled);
-            }}
-            disabled={skill.source === 'project'}
+            disabled
             className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
               skill.enabled ? 'bg-primary' : 'bg-slate-300'
-            } ${
-              skill.source === 'project'
-                ? 'opacity-50 cursor-not-allowed'
-                : 'cursor-pointer'
-            }`}
+            } opacity-50 cursor-not-allowed`}
           >
             <span
               className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${

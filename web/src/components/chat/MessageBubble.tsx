@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Copy, Check, ChevronDown, ChevronUp } from 'lucide-react';
 import { Message } from '../../stores/chat';
+import { useAuthStore } from '../../stores/auth';
+import { EmojiAvatar } from '../common/EmojiAvatar';
 import { MarkdownRenderer } from './MarkdownRenderer';
 
 interface MessageBubbleProps {
@@ -179,16 +181,18 @@ export function MessageBubble({ message, showTime, thinkingContent }: MessageBub
   }
 
   // AI message: avatar + card layout
-  const senderName = message.sender_name || 'AI';
+  const appearance = useAuthStore((s) => s.appearance);
+  const senderName = appearance?.aiName || message.sender_name || 'AI';
 
   return (
     <div className="group flex gap-3 mb-4">
       {/* Avatar */}
-      <div className="flex-shrink-0 w-8 h-8 rounded-full bg-brand-100 dark:bg-brand-700/30 flex items-center justify-center">
-        <span className="text-xs font-medium text-brand-600 dark:text-brand-400">
-          {senderName[0]}
-        </span>
-      </div>
+      <EmojiAvatar
+        emoji={appearance?.aiAvatarEmoji}
+        color={appearance?.aiAvatarColor}
+        fallbackChar={senderName[0]}
+        size="md"
+      />
 
       {/* Right content */}
       <div className="flex-1 min-w-0">

@@ -542,11 +542,13 @@ export async function runContainerAgent(
           code === null ? `signal ${signal || 'unknown'}` : `code ${code}`;
 
         // Graceful shutdown: agent already produced a successful result and was
-        // killed by SIGTERM (e.g. session reset / workspace deletion).
+        // killed by SIGTERM/SIGKILL (e.g. session reset / clear-history).
         // Treat as normal completion instead of an error.
-        if (signal === 'SIGTERM' && hasSuccessOutput && onOutput) {
+        // docker kill sends SIGKILL → exit code 137, signal=null.
+        const isForceKilled = signal === 'SIGTERM' || signal === 'SIGKILL' || code === 137;
+        if (isForceKilled && hasSuccessOutput && onOutput) {
           logger.info(
-            { group: group.name, signal, duration, newSessionId },
+            { group: group.name, signal, code, duration, newSessionId },
             'Container terminated after successful output (graceful shutdown)',
           );
           const OUTPUT_CHAIN_TIMEOUT = 30_000;
@@ -1254,11 +1256,12 @@ export async function runHostAgent(
           code === null ? `signal ${signal || 'unknown'}` : `code ${code}`;
 
         // Graceful shutdown: agent already produced a successful result and was
-        // killed by SIGTERM (e.g. session reset / workspace deletion).
+        // killed by SIGTERM/SIGKILL (e.g. session reset / clear-history).
         // Treat as normal completion instead of an error.
-        if (signal === 'SIGTERM' && hasSuccessOutput && onOutput) {
+        const isForceKilled = signal === 'SIGTERM' || signal === 'SIGKILL' || code === 137;
+        if (isForceKilled && hasSuccessOutput && onOutput) {
           logger.info(
-            { group: group.name, signal, duration, newSessionId },
+            { group: group.name, signal, code, duration, newSessionId },
             'Host agent terminated after successful output (graceful shutdown)',
           );
           const OUTPUT_CHAIN_TIMEOUT = 30_000;

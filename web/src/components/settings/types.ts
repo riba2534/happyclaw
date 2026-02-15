@@ -66,7 +66,7 @@ export interface SettingsNotification {
   setError: (msg: string | null) => void;
 }
 
-export type SettingsTab = 'channels' | 'claude' | 'registration' | 'profile' | 'security' | 'memory' | 'skills' | 'users' | 'about';
+export type SettingsTab = 'channels' | 'claude' | 'registration' | 'appearance' | 'profile' | 'security' | 'groups' | 'memory' | 'skills' | 'users' | 'about';
 
 export function getErrorMessage(err: unknown, fallback: string): string {
   if (typeof err === 'object' && err !== null && 'message' in err) {

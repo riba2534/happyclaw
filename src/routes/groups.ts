@@ -664,7 +664,7 @@ groupRoutes.post('/:jid/reset-session', authMiddleware, async (c) => {
   // 1. Stop ALL running processes for this folder FIRST and WAIT for them to finish
   //    to prevent any process from writing session files during cleanup
   try {
-    await Promise.all(siblingJids.map((j) => deps.queue.stopGroup(j)));
+    await Promise.all(siblingJids.map((j) => deps.queue.stopGroup(j, { force: true })));
   } catch (err) {
     logger.error(
       { jid, siblingJids, err },
@@ -766,7 +766,7 @@ groupRoutes.post('/:jid/clear-history', authMiddleware, async (c) => {
 
   // 1. Stop ALL active processes for this folder first to avoid writes during cleanup.
   try {
-    await Promise.all(siblingJids.map((j) => deps.queue.stopGroup(j)));
+    await Promise.all(siblingJids.map((j) => deps.queue.stopGroup(j, { force: true })));
   } catch (err) {
     logger.error(
       { jid, siblingJids, err },

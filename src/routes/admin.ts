@@ -72,6 +72,8 @@ function toUserPublic(u: User): UserPublic {
     must_change_password: u.must_change_password,
     disable_reason: u.disable_reason,
     notes: u.notes,
+    avatar_emoji: u.avatar_emoji,
+    avatar_color: u.avatar_color,
     created_at: u.created_at,
     last_login_at: u.last_login_at,
     last_active_at: null,

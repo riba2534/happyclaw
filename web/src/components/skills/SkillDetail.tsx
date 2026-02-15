@@ -2,15 +2,12 @@ import { useState, useEffect } from 'react';
 import { File, Folder, Loader2, Lock } from 'lucide-react';
 import { useSkillsStore, type SkillDetail as SkillDetailType } from '../../stores/skills';
 import { MarkdownRenderer } from '../chat/MarkdownRenderer';
-import { Button } from '@/components/ui/button';
 
 interface SkillDetailProps {
   skillId: string | null;
-  onToggle: (id: string, enabled: boolean) => void;
-  onDelete: (id: string) => void;
 }
 
-export function SkillDetail({ skillId, onToggle, onDelete }: SkillDetailProps) {
+export function SkillDetail({ skillId }: SkillDetailProps) {
   const [detail, setDetail] = useState<SkillDetailType | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -64,8 +61,6 @@ export function SkillDetail({ skillId, onToggle, onDelete }: SkillDetailProps) {
     );
   }
 
-  const isProjectSkill = detail.source === 'project';
-
   return (
     <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
       <div className="p-6 border-b border-slate-200">
@@ -92,13 +87,12 @@ export function SkillDetail({ skillId, onToggle, onDelete }: SkillDetailProps) {
           </div>
 
           <div className="flex items-center gap-2">
-            {isProjectSkill && <Lock size={16} className="text-slate-400" />}
+            <Lock size={16} className="text-slate-400" />
             <button
-              onClick={() => onToggle(detail.id, !detail.enabled)}
-              disabled={isProjectSkill}
+              disabled
               className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
                 detail.enabled ? 'bg-primary' : 'bg-slate-300'
-              } ${isProjectSkill ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+              } opacity-50 cursor-not-allowed`}
             >
               <span
                 className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${
@@ -170,21 +164,11 @@ export function SkillDetail({ skillId, onToggle, onDelete }: SkillDetailProps) {
 
       {/* 底部操作区 */}
       <div className="p-6 bg-slate-50">
-        {isProjectSkill ? (
-          <p className="text-sm text-slate-500">项目级技能不可修改</p>
-        ) : (
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={() => {
-              if (confirm(`确定要删除技能 "${detail.name}" 吗？此操作不可撤销。`)) {
-                onDelete(detail.id);
-              }
-            }}
-          >
-            删除技能
-          </Button>
-        )}
+        <p className="text-sm text-slate-500">
+          {detail.source === 'user'
+            ? '宿主机技能为只读，如需修改请直接编辑 ~/.claude/skills/ 目录'
+            : '项目级技能不可修改'}
+        </p>
       </div>
     </div>
   );

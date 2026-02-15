@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useChatStore } from '../../stores/chat';
+import { useAuthStore } from '../../stores/auth';
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
 import { StreamingDisplay } from './StreamingDisplay';
@@ -58,6 +59,7 @@ export function ChatView({ groupJid, onBack }: ChatViewProps) {
     clearStreaming,
   } = useChatStore();
 
+  const appearance = useAuthStore(s => s.appearance);
   const group = groups[groupJid];
   const canUseTerminal = group?.execution_mode !== 'host';
   const groupMessages = messages[groupJid] || [];
@@ -298,7 +300,7 @@ export function ChatView({ groupJid, onBack }: ChatViewProps) {
             hasMore={hasMoreMessages}
             onLoadMore={handleLoadMore}
           />
-          <StreamingDisplay groupJid={groupJid} isWaiting={isWaiting} senderName={group?.name || 'AI'} />
+          <StreamingDisplay groupJid={groupJid} isWaiting={isWaiting} senderName={appearance?.aiName || group?.name || 'AI'} />
           <MessageInput
             onSend={handleSend}
             groupJid={groupJid}

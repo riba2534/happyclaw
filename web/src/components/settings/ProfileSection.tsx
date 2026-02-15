@@ -4,6 +4,9 @@ import { Loader2 } from 'lucide-react';
 import { useAuthStore } from '../../stores/auth';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { EmojiAvatar } from '@/components/common/EmojiAvatar';
+import { EmojiPicker } from '@/components/common/EmojiPicker';
+import { ColorPicker } from '@/components/common/ColorPicker';
 import type { SettingsNotification } from './types';
 import { getErrorMessage } from './types';
 
@@ -15,6 +18,8 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
   // Profile
   const [username, setUsername] = useState('');
   const [displayName, setDisplayName] = useState('');
+  const [avatarEmoji, setAvatarEmoji] = useState<string | null>(null);
+  const [avatarColor, setAvatarColor] = useState<string | null>(null);
   const [profileSaving, setProfileSaving] = useState(false);
 
   // Password
@@ -25,7 +30,9 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
   useEffect(() => {
     setUsername(currentUser?.username || '');
     setDisplayName(currentUser?.display_name || '');
-  }, [currentUser?.username, currentUser?.display_name]);
+    setAvatarEmoji(currentUser?.avatar_emoji ?? null);
+    setAvatarColor(currentUser?.avatar_color ?? null);
+  }, [currentUser?.username, currentUser?.display_name, currentUser?.avatar_emoji, currentUser?.avatar_color]);
 
   const handleUpdateProfile = async () => {
     setProfileSaving(true);
@@ -35,6 +42,8 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
       await updateProfile({
         username: username.trim(),
         display_name: displayName.trim(),
+        avatar_emoji: avatarEmoji,
+        avatar_color: avatarColor,
       });
       setNotice('基础信息已更新');
     } catch (err) {
@@ -62,6 +71,35 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
 
   return (
     <div className="space-y-6">
+      {/* Avatar */}
+      <div>
+        <h3 className="text-base font-semibold text-slate-900 mb-4">头像设置</h3>
+        <div className="flex items-center gap-4 mb-4">
+          <EmojiAvatar
+            emoji={avatarEmoji}
+            color={avatarColor}
+            fallbackChar={displayName || username}
+            size="lg"
+          />
+          <div className="text-sm text-slate-500">
+            选择一个 Emoji 和背景色作为你的头像
+          </div>
+        </div>
+        <div className="space-y-4">
+          <div>
+            <label className="block text-xs text-slate-500 mb-2">Emoji</label>
+            <EmojiPicker value={avatarEmoji ?? undefined} onChange={setAvatarEmoji} />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-2">背景色</label>
+            <ColorPicker value={avatarColor ?? undefined} onChange={setAvatarColor} />
+          </div>
+        </div>
+      </div>
+
+      {/* Divider */}
+      <div className="border-t border-slate-200" />
+
       {/* Account Info */}
       <div>
         <h3 className="text-base font-semibold text-slate-900 mb-4">账户信息</h3>

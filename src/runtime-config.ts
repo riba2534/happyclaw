@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
-import { DATA_DIR } from './config.js';
+import { ASSISTANT_NAME, DATA_DIR } from './config.js';
 import { logger } from './logger.js';
 
 const MAX_FIELD_LENGTH = 2000;
@@ -1063,4 +1063,74 @@ export function buildContainerEnvLines(
   }
 
   return lines;
+}
+
+// ─── Appearance config (plain JSON, no encryption) ────────────────
+
+const APPEARANCE_CONFIG_FILE = path.join(
+  CLAUDE_CONFIG_DIR,
+  'appearance.json',
+);
+
+export interface AppearanceConfig {
+  aiName: string;
+  aiAvatarEmoji: string;
+  aiAvatarColor: string;
+}
+
+const DEFAULT_APPEARANCE_CONFIG: AppearanceConfig = {
+  aiName: ASSISTANT_NAME,
+  aiAvatarEmoji: '\u{1F431}',
+  aiAvatarColor: '#0d9488',
+};
+
+export function getAppearanceConfig(): AppearanceConfig {
+  try {
+    if (!fs.existsSync(APPEARANCE_CONFIG_FILE)) {
+      return { ...DEFAULT_APPEARANCE_CONFIG };
+    }
+    const raw = JSON.parse(
+      fs.readFileSync(APPEARANCE_CONFIG_FILE, 'utf-8'),
+    ) as Record<string, unknown>;
+    return {
+      aiName:
+        typeof raw.aiName === 'string' && raw.aiName
+          ? raw.aiName
+          : DEFAULT_APPEARANCE_CONFIG.aiName,
+      aiAvatarEmoji:
+        typeof raw.aiAvatarEmoji === 'string' && raw.aiAvatarEmoji
+          ? raw.aiAvatarEmoji
+          : DEFAULT_APPEARANCE_CONFIG.aiAvatarEmoji,
+      aiAvatarColor:
+        typeof raw.aiAvatarColor === 'string' && raw.aiAvatarColor
+          ? raw.aiAvatarColor
+          : DEFAULT_APPEARANCE_CONFIG.aiAvatarColor,
+    };
+  } catch (err) {
+    logger.warn(
+      { err },
+      'Failed to read appearance config, returning defaults',
+    );
+    return { ...DEFAULT_APPEARANCE_CONFIG };
+  }
+}
+
+export function saveAppearanceConfig(
+  next: AppearanceConfig,
+): AppearanceConfig {
+  const config = {
+    aiName: next.aiName,
+    aiAvatarEmoji: next.aiAvatarEmoji,
+    aiAvatarColor: next.aiAvatarColor,
+    updatedAt: new Date().toISOString(),
+  };
+  fs.mkdirSync(CLAUDE_CONFIG_DIR, { recursive: true });
+  const tmp = `${APPEARANCE_CONFIG_FILE}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n', 'utf-8');
+  fs.renameSync(tmp, APPEARANCE_CONFIG_FILE);
+  return {
+    aiName: config.aiName,
+    aiAvatarEmoji: config.aiAvatarEmoji,
+    aiAvatarColor: config.aiAvatarColor,
+  };
 }

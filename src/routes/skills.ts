@@ -284,98 +284,15 @@ skillsRoutes.get('/:id', authMiddleware, (c) => {
   return c.json({ skill });
 });
 
-skillsRoutes.patch(
-  '/:id',
-  authMiddleware,
-  systemConfigMiddleware,
-  async (c) => {
-    const id = c.req.param('id');
-    if (!validateSkillId(id)) {
-      return c.json({ error: 'Invalid skill ID' }, 400);
-    }
+// Skills are read-only: host-level (~/.claude/skills/) and project-level skills
+// cannot be modified through the Web UI.
+skillsRoutes.patch('/:id', authMiddleware, systemConfigMiddleware, (c) => {
+  return c.json({ error: 'Skills are read-only and cannot be toggled from the Web UI' }, 403);
+});
 
-    const body = await c.req.json().catch(() => ({}));
-    if (typeof body.enabled !== 'boolean') {
-      return c.json({ error: 'enabled field must be boolean' }, 400);
-    }
-
-    const userDir = getUserSkillsDir();
-    const skillDir = path.join(userDir, id);
-
-    if (!fs.existsSync(skillDir)) {
-      return c.json({ error: 'Skill not found' }, 404);
-    }
-
-    if (!validateSkillPath(userDir, skillDir)) {
-      return c.json({ error: 'Invalid skill path' }, 400);
-    }
-
-    const skillMdPath = path.join(skillDir, 'SKILL.md');
-    const skillMdDisabledPath = path.join(skillDir, 'SKILL.md.disabled');
-
-    try {
-      if (body.enabled) {
-        if (fs.existsSync(skillMdDisabledPath)) {
-          fs.renameSync(skillMdDisabledPath, skillMdPath);
-        } else if (!fs.existsSync(skillMdPath)) {
-          return c.json({ error: 'SKILL.md file not found' }, 404);
-        }
-      } else {
-        if (fs.existsSync(skillMdPath)) {
-          fs.renameSync(skillMdPath, skillMdDisabledPath);
-        } else if (!fs.existsSync(skillMdDisabledPath)) {
-          return c.json({ error: 'SKILL.md file not found' }, 404);
-        }
-      }
-
-      return c.json({ success: true });
-    } catch (error) {
-      return c.json(
-        {
-          error: 'Failed to update skill',
-          details: error instanceof Error ? error.message : 'Unknown error',
-        },
-        500,
-      );
-    }
-  },
-);
-
-skillsRoutes.delete(
-  '/:id',
-  authMiddleware,
-  systemConfigMiddleware,
-  (c) => {
-    const id = c.req.param('id');
-    if (!validateSkillId(id)) {
-      return c.json({ error: 'Invalid skill ID' }, 400);
-    }
-
-    const userDir = getUserSkillsDir();
-    const skillDir = path.join(userDir, id);
-
-    if (!fs.existsSync(skillDir)) {
-      return c.json({ error: 'Skill not found' }, 404);
-    }
-
-    if (!validateSkillPath(userDir, skillDir)) {
-      return c.json({ error: 'Invalid skill path' }, 400);
-    }
-
-    try {
-      fs.rmSync(skillDir, { recursive: true, force: true });
-      return c.json({ success: true });
-    } catch (error) {
-      return c.json(
-        {
-          error: 'Failed to delete skill',
-          details: error instanceof Error ? error.message : 'Unknown error',
-        },
-        500,
-      );
-    }
-  },
-);
+skillsRoutes.delete('/:id', authMiddleware, systemConfigMiddleware, (c) => {
+  return c.json({ error: 'Skills are read-only and cannot be deleted from the Web UI' }, 403);
+});
 
 skillsRoutes.post(
   '/install',

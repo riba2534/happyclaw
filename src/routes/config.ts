@@ -10,6 +10,7 @@ import {
   FeishuConfigSchema,
   TelegramConfigSchema,
   RegistrationConfigSchema,
+  AppearanceConfigSchema,
 } from '../schemas.js';
 import {
   getClaudeProviderConfig,
@@ -28,6 +29,8 @@ import {
   saveTelegramProviderConfig,
   getRegistrationConfig,
   saveRegistrationConfig,
+  getAppearanceConfig,
+  saveAppearanceConfig,
 } from '../runtime-config.js';
 import type { AuthUser } from '../types.js';
 import { hasPermission } from '../permissions.js';
@@ -440,5 +443,64 @@ configRoutes.put(
     }
   },
 );
+
+// ─── Appearance config ────────────────────────────────────────────
+
+configRoutes.get(
+  '/appearance',
+  authMiddleware,
+  systemConfigMiddleware,
+  (c) => {
+    try {
+      return c.json(getAppearanceConfig());
+    } catch (err) {
+      logger.error({ err }, 'Failed to load appearance config');
+      return c.json({ error: 'Failed to load appearance config' }, 500);
+    }
+  },
+);
+
+configRoutes.put(
+  '/appearance',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const validation = AppearanceConfigSchema.safeParse(body);
+    if (!validation.success) {
+      return c.json(
+        { error: 'Invalid request body', details: validation.error.format() },
+        400,
+      );
+    }
+
+    try {
+      const saved = saveAppearanceConfig(validation.data);
+      return c.json(saved);
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : 'Invalid appearance config payload';
+      logger.warn({ err }, 'Invalid appearance config payload');
+      return c.json({ error: message }, 400);
+    }
+  },
+);
+
+// Public endpoint — no auth required (like /api/auth/status)
+configRoutes.get('/appearance/public', (c) => {
+  try {
+    const config = getAppearanceConfig();
+    return c.json({
+      aiName: config.aiName,
+      aiAvatarEmoji: config.aiAvatarEmoji,
+      aiAvatarColor: config.aiAvatarColor,
+    });
+  } catch (err) {
+    logger.error({ err }, 'Failed to load public appearance config');
+    return c.json({ error: 'Failed to load appearance config' }, 500);
+  }
+});
 
 export default configRoutes;

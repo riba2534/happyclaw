@@ -278,7 +278,8 @@ export class GroupQueue {
    * Returns a promise that resolves when the container has fully exited
    * (state.active becomes false), not just when docker stop completes.
    */
-  async stopGroup(groupJid: string): Promise<void> {
+  async stopGroup(groupJid: string, options?: { force?: boolean }): Promise<void> {
+    const force = options?.force ?? false;
     const requestedState = this.getGroup(groupJid);
     requestedState.pendingMessages = false;
     requestedState.pendingTasks = [];
@@ -297,53 +298,77 @@ export class GroupQueue {
       this.closeStdin(targetJid);
     }
 
-    if (state.containerName) {
-      const name = state.containerName;
-      await new Promise<void>((resolve) => {
-        execFile('docker', ['stop', name], { timeout: 10000 }, () => resolve());
-      });
-    } else if (state.process && !state.process.killed) {
-      try {
-        state.process.kill('SIGTERM');
-      } catch {
-        // ignore
+    if (force) {
+      // Force mode: skip graceful stop, go straight to kill
+      if (state.containerName) {
+        const name = state.containerName;
+        await new Promise<void>((resolve) => {
+          execFile('docker', ['kill', name], { timeout: 5000 }, () => resolve());
+        });
+      } else if (state.process && !state.process.killed) {
+        try {
+          state.process.kill('SIGKILL');
+        } catch {
+          // ignore
+        }
       }
-    }
 
-    // Wait for state.active to become false (runForGroup/runTask finally block)
-    if (state.active) {
-      const maxWait = 10000;
-      const start = Date.now();
-      while (state.active && Date.now() - start < maxWait) {
-        await new Promise((r) => setTimeout(r, 100));
+      if (state.active) {
+        const start = Date.now();
+        while (state.active && Date.now() - start < 5000) {
+          await new Promise((r) => setTimeout(r, 100));
+        }
       }
-    }
+    } else {
+      // Graceful mode: try SIGTERM/docker stop first
+      if (state.containerName) {
+        const name = state.containerName;
+        await new Promise<void>((resolve) => {
+          execFile('docker', ['stop', name], { timeout: 10000 }, () => resolve());
+        });
+      } else if (state.process && !state.process.killed) {
+        try {
+          state.process.kill('SIGTERM');
+        } catch {
+          // ignore
+        }
+      }
 
-    // Graceful stop timed out — force-kill the container
-    if (state.active && state.containerName) {
-      const killName = state.containerName;
-      logger.warn(
-        { groupJid: targetJid, containerName: killName },
-        'Graceful stop timed out, force-killing container',
-      );
-      await new Promise<void>((resolve) => {
-        execFile('docker', ['kill', killName], { timeout: 5000 }, () =>
-          resolve(),
+      // Wait for state.active to become false (runForGroup/runTask finally block)
+      if (state.active) {
+        const maxWait = 10000;
+        const start = Date.now();
+        while (state.active && Date.now() - start < maxWait) {
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      }
+
+      // Graceful stop timed out — force-kill the container
+      if (state.active && state.containerName) {
+        const killName = state.containerName;
+        logger.warn(
+          { groupJid: targetJid, containerName: killName },
+          'Graceful stop timed out, force-killing container',
         );
-      });
-      const killStart = Date.now();
-      while (state.active && Date.now() - killStart < 5000) {
-        await new Promise((r) => setTimeout(r, 100));
-      }
-    } else if (state.active && state.process) {
-      try {
-        state.process.kill('SIGKILL');
-      } catch {
-        // ignore
-      }
-      const killStart = Date.now();
-      while (state.active && Date.now() - killStart < 5000) {
-        await new Promise((r) => setTimeout(r, 100));
+        await new Promise<void>((resolve) => {
+          execFile('docker', ['kill', killName], { timeout: 5000 }, () =>
+            resolve(),
+          );
+        });
+        const killStart = Date.now();
+        while (state.active && Date.now() - killStart < 5000) {
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      } else if (state.active && state.process) {
+        try {
+          state.process.kill('SIGKILL');
+        } catch {
+          // ignore
+        }
+        const killStart = Date.now();
+        while (state.active && Date.now() - killStart < 5000) {
+          await new Promise((r) => setTimeout(r, 100));
+        }
       }
     }
 

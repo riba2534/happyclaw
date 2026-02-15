@@ -28,6 +28,7 @@ import {
   getRegistrationConfig,
   getClaudeProviderConfig,
   getFeishuProviderConfigWithSource,
+  getAppearanceConfig,
 } from '../runtime-config.js';
 import {
   verifyPassword,
@@ -77,6 +78,8 @@ function toUserPublic(u: any): UserPublic {
     must_change_password: u.must_change_password,
     disable_reason: u.disable_reason,
     notes: u.notes,
+    avatar_emoji: u.avatar_emoji ?? null,
+    avatar_color: u.avatar_color ?? null,
     created_at: u.created_at,
     last_login_at: u.last_login_at,
     last_active_at: null,
@@ -466,16 +469,18 @@ authRoutes.get('/me', authMiddleware, (c) => {
   if (!fullUser) return c.json({ error: 'User not found' }, 404);
 
   const userPublic = toUserPublic(fullUser);
+  const appearance = getAppearanceConfig();
 
   // Admin users get setup status for the onboarding wizard
   if (fullUser.role === 'admin') {
     return c.json({
       user: userPublic,
+      appearance,
       setupStatus: buildSetupStatus(),
     });
   }
 
-  return c.json({ user: userPublic });
+  return c.json({ user: userPublic, appearance });
 });
 
 authRoutes.put('/profile', authMiddleware, async (c) => {
@@ -506,6 +511,12 @@ authRoutes.put('/profile', authMiddleware, async (c) => {
   }
   if (validation.data.display_name !== undefined) {
     updates.display_name = validation.data.display_name;
+  }
+  if (validation.data.avatar_emoji !== undefined) {
+    updates.avatar_emoji = validation.data.avatar_emoji;
+  }
+  if (validation.data.avatar_color !== undefined) {
+    updates.avatar_color = validation.data.avatar_color;
   }
   if (Object.keys(updates).length === 0) {
     return c.json({ error: 'No fields to update' }, 400);

@@ -130,6 +130,12 @@ export const RegistrationConfigSchema = z.object({
   requireInviteCode: z.boolean(),
 });
 
+export const AppearanceConfigSchema = z.object({
+  aiName: z.string().min(1).max(32),
+  aiAvatarEmoji: z.string().min(1).max(8),
+  aiAvatarColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+});
+
 export const ChangePasswordSchema = z.object({
   current_password: z.string().min(1),
   new_password: z.string().min(8).max(128),
@@ -138,6 +144,8 @@ export const ChangePasswordSchema = z.object({
 export const ProfileUpdateSchema = z.object({
   username: z.string().min(3).max(32).optional(),
   display_name: z.string().max(64).optional(),
+  avatar_emoji: z.string().max(8).nullable().optional(),
+  avatar_color: z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional(),
 });
 
 export const PermissionValueSchema = z
