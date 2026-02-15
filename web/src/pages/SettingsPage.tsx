@@ -8,9 +8,10 @@ import { ClaudeProviderSection } from '../components/settings/ClaudeProviderSect
 import { RegistrationSection } from '../components/settings/RegistrationSection';
 import { ProfileSection } from '../components/settings/ProfileSection';
 import { SecuritySection } from '../components/settings/SecuritySection';
+import { AboutSection } from '../components/settings/AboutSection';
 import type { SettingsTab } from '../components/settings/types';
 
-const VALID_TABS: SettingsTab[] = ['channels', 'claude', 'registration', 'profile', 'security', 'memory', 'skills', 'users'];
+const VALID_TABS: SettingsTab[] = ['channels', 'claude', 'registration', 'profile', 'security', 'memory', 'skills', 'users', 'about'];
 const SYSTEM_TABS: SettingsTab[] = ['channels', 'claude', 'registration'];
 const REDIRECT_TABS: Record<string, string> = {
   memory: '/memory',
@@ -67,6 +68,7 @@ export function SettingsPage() {
     memory: '记忆管理',
     skills: '技能管理',
     users: '用户管理',
+    about: '关于',
   };
 
   return (
@@ -104,6 +106,7 @@ export function SettingsPage() {
             {activeTab === 'registration' && <RegistrationSection setNotice={setNotice} setError={setError} />}
             {activeTab === 'profile' && <ProfileSection setNotice={setNotice} setError={setError} />}
             {activeTab === 'security' && <SecuritySection setNotice={setNotice} setError={setError} />}
+            {activeTab === 'about' && <AboutSection />}
           </div>
         </div>
       </div>

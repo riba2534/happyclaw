@@ -7,6 +7,7 @@ import {
   BookOpen,
   Puzzle,
   UserCog,
+  Info,
 } from 'lucide-react';
 import type { SettingsTab } from './types';
 
@@ -32,6 +33,7 @@ const featureItems: NavItem[] = [
   { key: 'memory', label: '记忆管理', icon: <BookOpen className="w-4 h-4" />, group: 'features' },
   { key: 'skills', label: '技能管理', icon: <Puzzle className="w-4 h-4" />, group: 'features' },
   { key: 'users', label: '用户管理', icon: <UserCog className="w-4 h-4" />, group: 'features' },
+  { key: 'about', label: '关于', icon: <Info className="w-4 h-4" />, group: 'features' },
 ];
 
 interface SettingsNavProps {

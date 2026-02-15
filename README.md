@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="web/public/icons/logo-1024.png" alt="HappyClaw Logo" width="120" />
+  <img src="https://raw.githubusercontent.com/riba2534/happyclaw/main/web/public/icons/logo-1024.png" alt="HappyClaw Logo" width="120" />
 </p>
 
 <h1 align="center">HappyClaw</h1>
