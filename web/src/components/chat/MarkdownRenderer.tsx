@@ -2,12 +2,23 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
-import { useState } from 'react';
+import { useState, memo } from 'react';
 import { Copy, Check } from 'lucide-react';
+import { toBase64Url } from '../../stores/files';
+import { withBasePath } from '../../utils/url';
 import 'highlight.js/styles/github.css';
 
 interface MarkdownRendererProps {
   content: string;
+  groupJid?: string;
+}
+
+/** Resolve relative image paths to the file download API */
+function resolveImageSrc(src: string, groupJid?: string): string {
+  if (!groupJid || !src) return src;
+  if (/^(https?:\/\/|data:|\/\/)/.test(src) || src.startsWith('/')) return src;
+  const encoded = toBase64Url(src);
+  return withBasePath(`/api/groups/${encodeURIComponent(groupJid)}/files/download/${encoded}`);
 }
 
 /** Image lightbox for markdown images */
@@ -68,6 +79,10 @@ const sanitizeSchema = {
     code: [...(defaultSchema.attributes?.code || []), 'className'],
     span: [...(defaultSchema.attributes?.span || []), 'className'],
   },
+  protocols: {
+    ...defaultSchema.protocols,
+    src: [...(defaultSchema.protocols?.src || []), 'data'],
+  },
 };
 
 /** Code block / inline code renderer extracted from MarkdownRenderer */
@@ -85,7 +100,7 @@ function CodeBlock({ className, children, ...props }: React.ComponentPropsWithou
 
   if (isBlock) {
     return (
-      <div className="relative group my-4">
+      <div className="relative group my-4 overflow-hidden">
         <div className="absolute right-2 top-2 opacity-70 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
           <button
             onClick={handleCopy}
@@ -115,7 +130,7 @@ function CodeBlock({ className, children, ...props }: React.ComponentPropsWithou
 
   return (
     <code
-      className="bg-brand-50 text-primary px-1.5 py-0.5 rounded text-sm font-mono"
+      className="bg-brand-50 text-primary px-1.5 py-0.5 rounded text-sm font-mono break-all"
       {...props}
     >
       {children}
@@ -123,20 +138,20 @@ function CodeBlock({ className, children, ...props }: React.ComponentPropsWithou
   );
 }
 
-export function MarkdownRenderer({ content }: MarkdownRendererProps) {
+export const MarkdownRenderer = memo(function MarkdownRenderer({ content, groupJid }: MarkdownRendererProps) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       rehypePlugins={[rehypeHighlight, [rehypeSanitize, sanitizeSchema]]}
       components={{
         code: CodeBlock,
-        img: ({ src, alt }) => <MarkdownImage src={src} alt={alt} />,
+        img: ({ src, alt }) => <MarkdownImage src={src ? resolveImageSrc(src, groupJid) : undefined} alt={alt} />,
         a: ({ href, children }) => (
           <a
             href={href}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-primary hover:text-primary underline"
+            className="text-primary hover:text-primary underline break-all"
           >
             {children}
           </a>
@@ -193,4 +208,4 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
       {content}
     </ReactMarkdown>
   );
-}
+});

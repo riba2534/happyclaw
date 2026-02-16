@@ -46,28 +46,23 @@ export function ChatView({ groupJid, onBack }: ChatViewProps) {
   const dragStartYRef = useRef(0);
   const dragStartHeightRef = useRef(0);
 
-  const {
-    groups,
-    messages,
-    waiting,
-    hasMore,
-    loading,
-    loadMessages,
-    refreshMessages,
-    sendMessage,
-    resetSession,
-    handleStreamEvent,
-    handleWsNewMessage,
-    clearStreaming,
-  } = useChatStore();
+  // Individual selectors: avoid re-renders from unrelated store changes (e.g. streaming)
+  const group = useChatStore(s => s.groups[groupJid]);
+  const groupMessages = useChatStore(s => s.messages[groupJid]);
+  const isWaiting = useChatStore(s => !!s.waiting[groupJid]);
+  const hasMoreMessages = useChatStore(s => !!s.hasMore[groupJid]);
+  const loading = useChatStore(s => s.loading);
+  const loadMessages = useChatStore(s => s.loadMessages);
+  const refreshMessages = useChatStore(s => s.refreshMessages);
+  const sendMessage = useChatStore(s => s.sendMessage);
+  const resetSession = useChatStore(s => s.resetSession);
+  const handleStreamEvent = useChatStore(s => s.handleStreamEvent);
+  const handleWsNewMessage = useChatStore(s => s.handleWsNewMessage);
+  const clearStreaming = useChatStore(s => s.clearStreaming);
 
   const currentUser = useAuthStore(s => s.user);
   const appearance = useAuthStore(s => s.appearance);
-  const group = groups[groupJid];
   const canUseTerminal = group?.execution_mode !== 'host';
-  const groupMessages = messages[groupJid] || [];
-  const isWaiting = waiting[groupJid] || false;
-  const hasMoreMessages = hasMore[groupJid] || false;
   const pollRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // Fetch IM connection status for home groups
@@ -92,7 +87,7 @@ export function ChatView({ groupJid, onBack }: ChatViewProps) {
   }, [isOwnHome]);
 
   // Load messages on group select
-  const hasMessages = !!messages[groupJid];
+  const hasMessages = !!groupMessages;
   useEffect(() => {
     if (groupJid && !hasMessages) {
       loadMessages(groupJid);
@@ -336,7 +331,7 @@ export function ChatView({ groupJid, onBack }: ChatViewProps) {
         {/* Messages Area */}
         <div className="flex-1 flex flex-col min-w-0">
           <MessageList
-            messages={groupMessages}
+            messages={groupMessages || []}
             loading={loading}
             hasMore={hasMoreMessages}
             onLoadMore={handleLoadMore}

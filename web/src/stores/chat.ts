@@ -73,8 +73,13 @@ function mergeMessagesChronologically(
 ): Message[] {
   const byId = new Map<string, Message>();
   for (const m of existing) byId.set(m.id, m);
-  // Incoming messages come from server polling/load and should be authoritative.
-  for (const m of incoming) byId.set(m.id, m);
+  // Incoming messages are authoritative, but preserve reference if content unchanged
+  for (const m of incoming) {
+    const old = byId.get(m.id);
+    if (!old || old.content !== m.content || old.timestamp !== m.timestamp) {
+      byId.set(m.id, m);
+    }
+  }
   return Array.from(byId.values()).sort((a, b) => {
     if (a.timestamp === b.timestamp) return a.id.localeCompare(b.id);
     return a.timestamp.localeCompare(b.timestamp);

@@ -60,6 +60,16 @@ export function MessageList({ messages, loading, hasMore, onLoadMore }: MessageL
   const virtualizer = useVirtualizer({
     count: flatMessages.length,
     getScrollElement: () => parentRef.current,
+    getItemKey: (index) => {
+      const item = flatMessages[index];
+      if (!item) return index;
+      switch (item.type) {
+        case 'date': return `date-${item.content}`;
+        case 'divider': return `div-${index}`;
+        case 'error': return `err-${index}`;
+        case 'message': return item.content.id;
+      }
+    },
     estimateSize: (index) => {
       const item = flatMessages[index];
       if (!item) return 100;

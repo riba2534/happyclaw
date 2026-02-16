@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, memo } from 'react';
 import { Copy, Check, ChevronDown, ChevronUp } from 'lucide-react';
 import { Message } from '../../stores/chat';
 import { useAuthStore } from '../../stores/auth';
@@ -65,7 +65,7 @@ function ReasoningBlock({ content }: { content: string }) {
   );
 }
 
-export function MessageBubble({ message, showTime, thinkingContent }: MessageBubbleProps) {
+export const MessageBubble = memo(function MessageBubble({ message, showTime, thinkingContent }: MessageBubbleProps) {
   const [copied, setCopied] = useState(false);
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
   const currentUser = useAuthStore((s) => s.user);
@@ -161,7 +161,7 @@ export function MessageBubble({ message, showTime, thinkingContent }: MessageBub
               </div>
             )}
             <div className="bg-white border border-slate-200 text-foreground px-4 py-2.5 rounded-2xl rounded-tr-sm shadow-sm">
-              <p className="text-[15px] leading-relaxed whitespace-pre-wrap">{message.content}</p>
+              <p className="text-[15px] leading-relaxed whitespace-pre-wrap break-words">{message.content}</p>
             </div>
             <button
               onClick={handleCopy}
@@ -188,56 +188,60 @@ export function MessageBubble({ message, showTime, thinkingContent }: MessageBub
   const aiColor = currentUser?.ai_avatar_color || appearance?.aiAvatarColor;
 
   return (
-    <div className="group flex gap-3 mb-4">
-      {/* Avatar */}
-      <EmojiAvatar
-        emoji={aiEmoji}
-        color={aiColor}
-        fallbackChar={senderName[0]}
-        size="md"
-      />
+    <div className="group mb-4">
+      {/* Mobile: compact avatar + name row */}
+      <div className="flex items-center gap-2 mb-1.5 lg:hidden">
+        <EmojiAvatar emoji={aiEmoji} color={aiColor} fallbackChar={senderName[0]} size="sm" />
+        <span className="text-xs text-muted-foreground font-medium">{senderName}</span>
+        {showTime && <span className="text-xs text-muted-foreground">{time}</span>}
+      </div>
 
-      {/* Right content */}
-      <div className="flex-1 min-w-0">
-        {/* Name + time row */}
-        <div className="flex items-center gap-2 mb-1">
-          <span className="text-xs text-muted-foreground font-medium">{senderName}</span>
-          {showTime && <span className="text-xs text-muted-foreground">{time}</span>}
+      {/* Desktop: horizontal avatar + content layout */}
+      <div className="lg:flex lg:gap-3">
+        <div className="hidden lg:block flex-shrink-0">
+          <EmojiAvatar emoji={aiEmoji} color={aiColor} fallbackChar={senderName[0]} size="md" />
         </div>
+        <div className="flex-1 min-w-0">
+          {/* Desktop: name + time row */}
+          <div className="hidden lg:flex items-center gap-2 mb-1">
+            <span className="text-xs text-muted-foreground font-medium">{senderName}</span>
+            {showTime && <span className="text-xs text-muted-foreground">{time}</span>}
+          </div>
 
-        {/* Card */}
-        <div className="relative bg-white rounded-xl border border-slate-100 border-l-[3px] border-l-brand-400 px-5 py-4 max-lg:bg-white/90 max-lg:backdrop-blur-sm">
-          {/* Copy button */}
-          <button
-            onClick={handleCopy}
-            className="absolute top-2 right-2 w-7 h-7 rounded-md flex items-center justify-center text-slate-300 hover:text-slate-600 hover:bg-slate-100 opacity-60 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity cursor-pointer"
-            title="复制"
-            aria-label="复制消息"
-          >
-            {copied ? <Check className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}
-          </button>
+          {/* Card */}
+          <div className="relative bg-white rounded-xl border border-slate-100 border-l-[3px] border-l-brand-400 px-5 py-4 max-lg:bg-white/90 max-lg:backdrop-blur-sm overflow-hidden">
+            {/* Copy button */}
+            <button
+              onClick={handleCopy}
+              className="absolute top-2 right-2 w-7 h-7 rounded-md flex items-center justify-center text-slate-300 hover:text-slate-600 hover:bg-slate-100 opacity-60 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity cursor-pointer"
+              title="复制"
+              aria-label="复制消息"
+            >
+              {copied ? <Check className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}
+            </button>
 
-          {/* Reasoning block */}
-          {thinkingContent && <ReasoningBlock content={thinkingContent} />}
+            {/* Reasoning block */}
+            {thinkingContent && <ReasoningBlock content={thinkingContent} />}
 
-          {/* Image attachments */}
-          {images.length > 0 && (
-            <div className="flex flex-wrap gap-2 mb-3">
-              {images.map((img, i) => (
-                <img
-                  key={i}
-                  src={`data:${img.mimeType || 'image/png'};base64,${img.data}`}
-                  alt={img.name || `图片 ${i + 1}`}
-                  className="max-w-48 max-h-48 rounded-lg object-cover cursor-pointer border border-slate-200 hover:border-primary transition-colors"
-                  onClick={() => setExpandedImage(`data:${img.mimeType || 'image/png'};base64,${img.data}`)}
-                />
-              ))}
+            {/* Image attachments */}
+            {images.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-3">
+                {images.map((img, i) => (
+                  <img
+                    key={i}
+                    src={`data:${img.mimeType || 'image/png'};base64,${img.data}`}
+                    alt={img.name || `图片 ${i + 1}`}
+                    className="max-w-48 max-h-48 rounded-lg object-cover cursor-pointer border border-slate-200 hover:border-primary transition-colors"
+                    onClick={() => setExpandedImage(`data:${img.mimeType || 'image/png'};base64,${img.data}`)}
+                  />
+                ))}
+              </div>
+            )}
+
+            {/* Content */}
+            <div className="prose prose-sm max-w-none prose-headings:text-slate-900 prose-p:text-slate-800 prose-p:leading-relaxed overflow-hidden">
+              <MarkdownRenderer content={message.content} groupJid={message.chat_jid} />
             </div>
-          )}
-
-          {/* Content */}
-          <div className="prose prose-sm max-w-none prose-headings:text-slate-900 prose-p:text-slate-800 prose-p:leading-relaxed">
-            <MarkdownRenderer content={message.content} />
           </div>
         </div>
       </div>
@@ -245,4 +249,9 @@ export function MessageBubble({ message, showTime, thinkingContent }: MessageBub
       {expandedImage && <ImageLightbox src={expandedImage} onClose={() => setExpandedImage(null)} />}
     </div>
   );
-}
+}, (prev, next) =>
+  prev.message.id === next.message.id &&
+  prev.message.content === next.message.content &&
+  prev.showTime === next.showTime &&
+  prev.thinkingContent === next.thinkingContent
+);

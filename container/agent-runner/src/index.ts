@@ -685,9 +685,22 @@ async function runQuery(
   if (fs.existsSync(globalClaudeMdPath)) {
     globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
   }
-  const systemPromptAppend = globalClaudeMd
-    ? `${globalClaudeMd}\n${memoryRecall}`
-    : memoryRecall;
+  const outputGuidelines = [
+    '',
+    '## 输出格式',
+    '',
+    '### 图片引用',
+    '当你生成了图片文件并需要在回复中展示时，使用 Markdown 图片语法引用**相对路径**（相对于当前工作目录）：',
+    '`![描述](filename.png)`',
+    '',
+    '**禁止使用绝对路径**（如 `/workspace/group/filename.png`）。Web 界面会自动将相对路径解析为正确的文件下载地址。',
+  ].join('\n');
+
+  const systemPromptAppend = [
+    globalClaudeMd,
+    memoryRecall,
+    outputGuidelines,
+  ].filter(Boolean).join('\n');
 
   // 追踪顶层工具执行状态（用于精确发送 tool_use_end）
   let activeTopLevelToolUseId: string | null = null;

@@ -157,7 +157,14 @@
   border-color: var(--border, #e2e8f0);
 }
 
+html {
+  height: 100%;
+  overflow: hidden;
+}
+
 body {
+  height: 100%;
+  overflow: hidden;
   margin: 0;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background: var(--background);
@@ -166,6 +173,8 @@ body {
   overscroll-behavior: none;
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 /* Code highlighting theme override — GitHub light */

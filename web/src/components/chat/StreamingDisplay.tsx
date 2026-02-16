@@ -13,8 +13,11 @@ interface StreamingDisplayProps {
 
 export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNameProp = 'AI' }: StreamingDisplayProps) {
   const streaming = useChatStore(s => s.streaming[groupJid]);
+  const currentUser = useAuthStore(s => s.user);
   const appearance = useAuthStore(s => s.appearance);
-  const senderName = appearance?.aiName || senderNameProp;
+  const senderName = currentUser?.ai_name || appearance?.aiName || senderNameProp;
+  const aiEmoji = currentUser?.ai_avatar_emoji || appearance?.aiAvatarEmoji;
+  const aiColor = currentUser?.ai_avatar_color || appearance?.aiAvatarColor;
   const [thinkingExpanded, setThinkingExpanded] = useState(true);
   const thinkingRef = useRef<HTMLDivElement>(null);
   const userScrolledRef = useRef(false);
@@ -82,17 +85,18 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNamePr
   if (!hasStreamData) {
     return (
       <div className="max-w-3xl mx-auto w-full px-4 py-3">
-        <div className="flex gap-3">
-          {/* Avatar */}
-          <EmojiAvatar
-            emoji={appearance?.aiAvatarEmoji}
-            color={appearance?.aiAvatarColor}
-            fallbackChar={senderName[0]}
-            size="md"
-          />
+        {/* Mobile: compact avatar + name row */}
+        <div className="flex items-center gap-2 mb-1.5 lg:hidden">
+          <EmojiAvatar emoji={aiEmoji} color={aiColor} fallbackChar={senderName[0]} size="sm" />
+          <span className="text-xs text-muted-foreground font-medium">{senderName}</span>
+        </div>
+
+        <div className="lg:flex lg:gap-3">
+          <div className="hidden lg:block flex-shrink-0">
+            <EmojiAvatar emoji={aiEmoji} color={aiColor} fallbackChar={senderName[0]} size="md" />
+          </div>
           <div className="flex-1 min-w-0">
-            {/* Name row */}
-            <div className="flex items-center gap-2 mb-1">
+            <div className="hidden lg:flex items-center gap-2 mb-1">
               <span className="text-xs text-muted-foreground font-medium">{senderName}</span>
             </div>
             <div className="bg-white rounded-xl border border-slate-100 border-l-[3px] border-l-brand-400 px-5 py-4">
@@ -113,17 +117,26 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNamePr
 
   return (
     <div className="max-w-3xl mx-auto w-full px-4 py-3">
-      <div className="flex gap-3">
-        {/* Avatar */}
-        <EmojiAvatar
-          emoji={appearance?.aiAvatarEmoji}
-          color={appearance?.aiAvatarColor}
-          fallbackChar={senderName[0]}
-          size="md"
-        />
+      {/* Mobile: compact avatar + name row */}
+      <div className="flex items-center gap-2 mb-1.5 lg:hidden">
+        <EmojiAvatar emoji={aiEmoji} color={aiColor} fallbackChar={senderName[0]} size="sm" />
+        <span className="text-xs text-muted-foreground font-medium">{senderName}</span>
+        {streaming.isThinking && (
+          <span className="flex gap-0.5 ml-1">
+            <span className="w-1 h-1 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
+            <span className="w-1 h-1 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
+            <span className="w-1 h-1 bg-brand-400 rounded-full animate-bounce" />
+          </span>
+        )}
+      </div>
+
+      <div className="lg:flex lg:gap-3">
+        <div className="hidden lg:block flex-shrink-0">
+          <EmojiAvatar emoji={aiEmoji} color={aiColor} fallbackChar={senderName[0]} size="md" />
+        </div>
         <div className="flex-1 min-w-0">
-          {/* Name row */}
-          <div className="flex items-center gap-2 mb-1">
+          {/* Desktop: name row */}
+          <div className="hidden lg:flex items-center gap-2 mb-1">
             <span className="text-xs text-muted-foreground font-medium">{senderName}</span>
             {streaming.isThinking && (
               <span className="flex gap-0.5 ml-1">
@@ -135,7 +148,7 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNamePr
           </div>
 
           {/* Card */}
-          <div className="bg-white rounded-xl border border-slate-100 border-l-[3px] border-l-brand-400 px-5 py-4">
+          <div className="bg-white rounded-xl border border-slate-100 border-l-[3px] border-l-brand-400 px-5 py-4 overflow-hidden">
             {/* System status */}
             {streaming.systemStatus && (
               <div className="flex items-center gap-2 text-xs text-slate-500 mb-2">
@@ -212,7 +225,7 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNamePr
                         )}
                       </span>
                       {tool.toolInputSummary && (
-                        <div className="text-[11px] text-slate-500 px-2">
+                        <div className="text-[11px] text-slate-500 px-2 break-words line-clamp-2">
                           {tool.toolInputSummary}
                         </div>
                       )}
@@ -249,11 +262,12 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNamePr
 
             {/* Partial text with Markdown rendering */}
             {streaming.partialText && (
-              <div className="prose prose-sm max-w-none prose-headings:text-slate-900 prose-p:text-slate-800 prose-p:leading-relaxed">
+              <div className="prose prose-sm max-w-none prose-headings:text-slate-900 prose-p:text-slate-800 prose-p:leading-relaxed overflow-hidden">
                 <MarkdownRenderer
                   content={streaming.partialText.length > 5000
                     ? '...' + streaming.partialText.slice(-4000)
                     : streaming.partialText}
+                  groupJid={groupJid}
                 />
               </div>
             )}
