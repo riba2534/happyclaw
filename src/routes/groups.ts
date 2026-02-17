@@ -133,6 +133,7 @@ function buildGroupsPayload(user: AuthUser): Record<
     custom_cwd?: string;
     is_home?: boolean;
     is_my_home?: boolean;
+    selected_skills?: string[] | null;
   }
 > {
   const groups = getAllRegisteredGroups();
@@ -159,6 +160,7 @@ function buildGroupsPayload(user: AuthUser): Record<
       custom_cwd?: string;
       is_home?: boolean;
       is_my_home?: boolean;
+      selected_skills?: string[] | null;
     }
   > = {};
 
@@ -221,6 +223,7 @@ function buildGroupsPayload(user: AuthUser): Record<
       custom_cwd: isAdmin ? group.customCwd : undefined,
       is_home: isHome || undefined,
       is_my_home: (isHome && group.created_by === user.id) || undefined,
+      selected_skills: group.selected_skills ?? null,
     };
   }
 
@@ -603,11 +606,17 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
       400,
     );
   }
-  const name = normalizeGroupName(validation.data.name);
-  if (!name) return c.json({ error: 'Group name is required' }, 400);
+
+  const { name: rawName, selected_skills } = validation.data;
+  const name = rawName ? normalizeGroupName(rawName) : undefined;
+
+  // 至少需要提供一个字段
+  if (!name && selected_skills === undefined) {
+    return c.json({ error: 'No fields to update' }, 400);
+  }
 
   const updated: RegisteredGroup = {
-    name,
+    name: name || existing.name,
     folder: existing.folder,
     added_at: existing.added_at,
     containerConfig: existing.containerConfig,
@@ -615,10 +624,11 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
     customCwd: existing.customCwd,
     created_by: existing.created_by,
     is_home: existing.is_home,
+    selected_skills: selected_skills !== undefined ? (selected_skills ?? null) : existing.selected_skills,
   };
 
   setRegisteredGroup(jid, updated);
-  updateChatName(jid, name);
+  if (name) updateChatName(jid, name);
   deps.getRegisteredGroups()[jid] = updated;
 
   return c.json({ success: true });

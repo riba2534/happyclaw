@@ -110,7 +110,8 @@ export const ClaudeConfigSchema = z.object({
 });
 
 export const GroupPatchSchema = z.object({
-  name: z.string().min(1).max(MAX_GROUP_NAME_LEN),
+  name: z.string().min(1).max(MAX_GROUP_NAME_LEN).optional(),
+  selected_skills: z.array(z.string().max(128)).max(200).nullable().optional(),
 });
 
 export const LoginSchema = z.object({

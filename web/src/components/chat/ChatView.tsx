@@ -14,13 +14,14 @@ import { cn } from '@/lib/utils';
 import { wsManager } from '../../api/ws';
 import { api } from '../../api/client';
 import { TerminalPanel } from './TerminalPanel';
+import { GroupSkillsPanel } from './GroupSkillsPanel';
 
 const POLL_INTERVAL_MS = 2000;
 const TERMINAL_MIN_HEIGHT = 150;
 const TERMINAL_DEFAULT_HEIGHT = 300;
 const TERMINAL_MAX_RATIO = 0.7;
 
-type SidebarTab = 'files' | 'env';
+type SidebarTab = 'files' | 'env' | 'skills';
 
 interface ChatViewProps {
   groupJid: string;
@@ -136,9 +137,20 @@ export function ChatView({ groupJid, onBack }: ChatViewProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupJid]);
 
-  // 监听 WebSocket 流式事件
+  // 首次挂载 + WS 重连时恢复正在运行的 agent 状态（独立于 groupJid，避免切换会话时重复调用）
+  const restoreActiveState = useChatStore(s => s.restoreActiveState);
   useEffect(() => {
     wsManager.connect();
+    restoreActiveState();
+    const unsub = wsManager.on('connected', () => {
+      restoreActiveState();
+    });
+    return () => { unsub(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 监听 WebSocket 流式事件
+  useEffect(() => {
     const unsub1 = wsManager.on('stream_event', (data: any) => {
       if (data.chatJid === groupJid) handleStreamEvent(groupJid, data.event);
     });
@@ -409,14 +421,26 @@ export function ChatView({ groupJid, onBack }: ChatViewProps) {
             >
               环境变量
             </button>
+            <button
+              onClick={() => setSidebarTab('skills')}
+              className={`flex-1 px-3 py-2 text-xs font-medium transition-colors cursor-pointer ${
+                sidebarTab === 'skills'
+                  ? 'text-primary border-b-2 border-primary'
+                  : 'text-slate-400 hover:text-slate-600'
+              }`}
+            >
+              Skills
+            </button>
           </div>
 
           {/* Tab content */}
           <div className="flex-1 overflow-hidden">
             {sidebarTab === 'files' ? (
               <FilePanel groupJid={groupJid} />
-            ) : (
+            ) : sidebarTab === 'env' ? (
               <ContainerEnvPanel groupJid={groupJid} />
+            ) : (
+              <GroupSkillsPanel groupJid={groupJid} />
             )}
           </div>
         </div>
@@ -485,6 +509,20 @@ export function ChatView({ groupJid, onBack }: ChatViewProps) {
         </SheetContent>
       </Sheet>
 
+      {/* Mobile: skills sheet */}
+      <Sheet open={mobilePanel === 'skills'} onOpenChange={(v) => !v && setMobilePanel(null)}>
+        <SheetContent side="bottom" className="h-[80dvh] p-0">
+          <SheetHeader className="px-4 pt-4 pb-2">
+            <SheetTitle>Skills 管理</SheetTitle>
+          </SheetHeader>
+          <div className="flex-1 overflow-hidden h-[calc(80dvh-56px)]">
+            <GroupSkillsPanel
+              groupJid={groupJid}
+            />
+          </div>
+        </SheetContent>
+      </Sheet>
+
       {/* Mobile: Terminal sheet */}
       <Sheet open={mobileTerminal} onOpenChange={(v) => !v && setMobileTerminal(false)}>
         <SheetContent side="bottom" className="h-[85dvh] p-0">
@@ -520,6 +558,12 @@ export function ChatView({ groupJid, onBack }: ChatViewProps) {
               className="w-full text-left px-4 py-3 rounded-lg border border-border hover:bg-accent transition-colors cursor-pointer text-foreground text-sm"
             >
               环境变量
+            </button>
+            <button
+              onClick={() => { setMobileActionsOpen(false); setMobilePanel('skills'); }}
+              className="w-full text-left px-4 py-3 rounded-lg border border-border hover:bg-accent transition-colors cursor-pointer text-foreground text-sm"
+            >
+              技能
             </button>
             {canUseTerminal && (
               <button

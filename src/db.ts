@@ -234,6 +234,7 @@ export function initDatabase(): void {
   ensureColumn('users', 'ai_avatar_emoji', 'TEXT');
   ensureColumn('users', 'ai_avatar_color', 'TEXT');
   ensureColumn('scheduled_tasks', 'created_by', 'TEXT');
+  ensureColumn('registered_groups', 'selected_skills', 'TEXT');
 
   // Migration: remove UNIQUE constraint from registered_groups.folder
   // Multiple groups (web:main + feishu chats) share folder='main' by design.
@@ -310,6 +311,7 @@ export function initDatabase(): void {
       'init_git_url',
       'created_by',
       'is_home',
+      'selected_skills',
     ],
     ['trigger_pattern', 'requires_trigger'],
   );
@@ -408,7 +410,7 @@ export function initDatabase(): void {
     WHERE jid = 'web:main' AND folder = 'main' AND is_home = 0
   `);
 
-  const SCHEMA_VERSION = '13';
+  const SCHEMA_VERSION = '14';
   db.prepare(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', SCHEMA_VERSION);
@@ -813,6 +815,7 @@ export function getRegisteredGroup(
         init_git_url: string | null;
         created_by: string | null;
         is_home: number;
+        selected_skills: string | null;
       }
     | undefined;
   if (!row) return undefined;
@@ -831,13 +834,14 @@ export function getRegisteredGroup(
     initGitUrl: row.init_git_url ?? undefined,
     created_by: row.created_by ?? undefined,
     is_home: row.is_home === 1,
+    selected_skills: row.selected_skills ? JSON.parse(row.selected_skills) : null,
   };
 }
 
 export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
   db.prepare(
-    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, added_at, container_config, execution_mode, custom_cwd, init_source_path, init_git_url, created_by, is_home)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, added_at, container_config, execution_mode, custom_cwd, init_source_path, init_git_url, created_by, is_home, selected_skills)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     jid,
     group.name,
@@ -850,6 +854,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.initGitUrl ?? null,
     group.created_by ?? null,
     group.is_home ? 1 : 0,
+    group.selected_skills ? JSON.stringify(group.selected_skills) : null,
   );
 }
 

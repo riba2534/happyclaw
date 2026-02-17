@@ -12,4 +12,5 @@ export interface GroupInfo {
   execution_mode?: 'container' | 'host';
   custom_cwd?: string;
   created_by?: string;
+  selected_skills?: string[] | null;
 }
