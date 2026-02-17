@@ -44,6 +44,7 @@ export interface RegisteredGroup {
   initGitUrl?: string; // 容器模式下 clone 来源的 Git URL
   created_by?: string;
   is_home?: boolean; // 用户主容器标记
+  selected_skills?: string[] | null; // null = 全部启用
 }
 
 export interface NewMessage {

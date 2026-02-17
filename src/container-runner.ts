@@ -4,7 +4,6 @@
  */
 import { ChildProcess, exec, execFile, execFileSync, spawn } from 'child_process';
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 
 import {
@@ -22,21 +21,11 @@ import {
   getContainerEnvConfig,
 } from './runtime-config.js';
 import { RegisteredGroup, StreamEvent } from './types.js';
-import { getUserById } from './db.js';
+
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---HAPPYCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---HAPPYCLAW_OUTPUT_END---';
-
-function getHomeDir(): string {
-  const home = process.env.HOME || os.homedir();
-  if (!home) {
-    throw new Error(
-      'Unable to determine home directory: HOME environment variable is not set and os.homedir() returned empty',
-    );
-  }
-  return home;
-}
 
 export interface ContainerInput {
   prompt: string;
@@ -69,9 +58,9 @@ function buildVolumeMounts(
   group: RegisteredGroup,
   isAdminHome: boolean,
   mountUserSkills = true,
+  selectedSkills: string[] | null = null,
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
-  const homeDir = getHomeDir();
   const projectRoot = process.cwd();
 
   // Per-user global memory directory:
@@ -167,25 +156,57 @@ function buildVolumeMounts(
     readonly: false,
   });
 
-  // Skills: mount host directories as read-only volumes (symlinked in entrypoint)
-  // Project-level skills
+  // Skills：以只读卷挂载宿主机目录（由 entrypoint 创建符号链接）
+  // selectedSkills 为 null 时挂载整个目录（全部 skills）
+  // selectedSkills 为数组时仅挂载选中的 skill 子目录
   const projectSkillsDir = path.join(projectRoot, 'container', 'skills');
-  if (fs.existsSync(projectSkillsDir)) {
-    mounts.push({
-      hostPath: projectSkillsDir,
-      containerPath: '/workspace/project-skills',
-      readonly: true,
-    });
-  }
-  // User-level skills (admin only — ~/.claude/skills/ contains admin's personal skills)
-  // Non-admin groups should not have access to admin's skills
-  const userSkillsDir = path.join(homeDir, '.claude', 'skills');
-  if (mountUserSkills && fs.existsSync(userSkillsDir)) {
-    mounts.push({
-      hostPath: userSkillsDir,
-      containerPath: '/workspace/user-skills',
-      readonly: true,
-    });
+  const userSkillsDir = (mountUserSkills && ownerId) ? path.join(DATA_DIR, 'skills', ownerId) : null;
+
+  if (selectedSkills === null) {
+    // 全量挂载（默认行为）
+    if (fs.existsSync(projectSkillsDir)) {
+      mounts.push({
+        hostPath: projectSkillsDir,
+        containerPath: '/workspace/project-skills',
+        readonly: true,
+      });
+    }
+    if (userSkillsDir && fs.existsSync(userSkillsDir)) {
+      mounts.push({
+        hostPath: userSkillsDir,
+        containerPath: '/workspace/user-skills',
+        readonly: true,
+      });
+    }
+  } else {
+    // 按需挂载：仅挂载选中的 skill 子目录
+    const selectedSet = new Set(selectedSkills);
+    // 项目级 skills
+    if (fs.existsSync(projectSkillsDir)) {
+      for (const name of selectedSet) {
+        const skillPath = path.join(projectSkillsDir, name);
+        if (fs.existsSync(skillPath) && fs.statSync(skillPath).isDirectory()) {
+          mounts.push({
+            hostPath: skillPath,
+            containerPath: `/workspace/project-skills/${name}`,
+            readonly: true,
+          });
+        }
+      }
+    }
+    // 用户级 skills
+    if (userSkillsDir && fs.existsSync(userSkillsDir)) {
+      for (const name of selectedSet) {
+        const skillPath = path.join(userSkillsDir, name);
+        if (fs.existsSync(skillPath) && fs.statSync(skillPath).isDirectory()) {
+          mounts.push({
+            hostPath: skillPath,
+            containerPath: `/workspace/user-skills/${name}`,
+            readonly: true,
+          });
+        }
+      }
+    }
   }
 
   // Per-group IPC namespace: each group gets its own IPC directory
@@ -285,14 +306,9 @@ export async function runContainerAgent(
 
   // Determine if this is an admin home container (full privileges)
   const isAdminHome = !!group.is_home && group.folder === 'main';
-  // User-level skills (~/.claude/skills/) are admin-only:
-  // admin home always gets skills; for other groups, check creator's role
-  let shouldMountUserSkills = isAdminHome;
-  if (!shouldMountUserSkills && group.created_by) {
-    const creator = getUserById(group.created_by);
-    shouldMountUserSkills = creator?.role === 'admin';
-  }
-  const mounts = buildVolumeMounts(group, isAdminHome, shouldMountUserSkills);
+  // Per-user skills: always mount if the group has an owner
+  const shouldMountUserSkills = !!group.created_by;
+  const mounts = buildVolumeMounts(group, isAdminHome, shouldMountUserSkills, group.selected_skills ?? null);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `happyclaw-${safeName}-${Date.now()}`;
   const containerArgs = buildContainerArgs(mounts, containerName);
@@ -937,7 +953,59 @@ export async function runHostAgent(
     );
   }
 
-  // 4. 构建环境变量
+  // 4. Skills 自动链接到 session 目录
+  try {
+    const skillsDir = path.join(groupSessionsDir, 'skills');
+    fs.mkdirSync(skillsDir, { recursive: true });
+    // 清空已有符号链接
+    for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
+      const entryPath = path.join(skillsDir, entry.name);
+      try {
+        if (entry.isSymbolicLink() || entry.isDirectory()) {
+          fs.rmSync(entryPath, { recursive: true, force: true });
+        }
+      } catch { /* ignore */ }
+    }
+    // 项目级 skills
+    const projectRoot = process.cwd();
+    const projectSkillsDir = path.join(projectRoot, 'container', 'skills');
+    if (fs.existsSync(projectSkillsDir)) {
+      for (const entry of fs.readdirSync(projectSkillsDir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        try {
+          fs.symlinkSync(
+            path.join(projectSkillsDir, entry.name),
+            path.join(skillsDir, entry.name),
+          );
+        } catch { /* ignore */ }
+      }
+    }
+    // 用户级 skills（同名覆盖项目级）
+    const ownerId = group.created_by;
+    if (ownerId) {
+      const userSkillsDir = path.join(DATA_DIR, 'skills', ownerId);
+      if (fs.existsSync(userSkillsDir)) {
+        for (const entry of fs.readdirSync(userSkillsDir, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          const linkPath = path.join(skillsDir, entry.name);
+          try {
+            // 移除已有的项目级符号链接（用户级覆盖）
+            if (fs.existsSync(linkPath)) {
+              fs.rmSync(linkPath, { recursive: true, force: true });
+            }
+            fs.symlinkSync(
+              path.join(userSkillsDir, entry.name),
+              linkPath,
+            );
+          } catch { /* ignore */ }
+        }
+      }
+    }
+  } catch (err) {
+    logger.warn({ folder: group.folder, err }, '宿主机模式 skills 符号链接失败');
+  }
+
+  // 5. 构建环境变量
   const hostEnv: Record<string, string> = {
     ...(process.env as Record<string, string>),
   };
@@ -970,7 +1038,7 @@ export async function runHostAgent(
   hostEnv['HAPPYCLAW_WORKSPACE_IPC'] = groupIpcDir;
   hostEnv['CLAUDE_CONFIG_DIR'] = groupSessionsDir;
 
-  // 5. 编译检查
+  // 6. 编译检查
   const projectRoot = process.cwd();
   const agentRunnerRoot = path.join(projectRoot, 'container', 'agent-runner');
   const agentRunnerNodeModules = path.join(agentRunnerRoot, 'node_modules');
@@ -1048,7 +1116,7 @@ export async function runHostAgent(
       resolve(output);
     };
 
-    // 6. 启动进程
+    // 7. 启动进程
     const proc = spawn('node', [agentRunnerDist], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: hostEnv,
@@ -1063,7 +1131,7 @@ export async function runHostAgent(
     let stdoutTruncated = false;
     let stderrTruncated = false;
 
-    // 7. stdin 输入
+    // 8. stdin 输入
     proc.stdin.on('error', (err) => {
       logger.error({ group: group.name, err }, 'Host agent stdin write failed');
       proc.kill();
@@ -1071,7 +1139,7 @@ export async function runHostAgent(
     proc.stdin.write(JSON.stringify(input));
     proc.stdin.end();
 
-    // 8. stdout/stderr 解析
+    // 9. stdout/stderr 解析
     let parseBuffer = '';
     let newSessionId: string | undefined;
     let outputChain = Promise.resolve();
@@ -1172,7 +1240,7 @@ export async function runHostAgent(
       }
     });
 
-    // 9. 超时管理
+    // 10. 超时管理
     let timedOut = false;
     const timeoutMs = group.containerConfig?.timeout || CONTAINER_TIMEOUT;
 
@@ -1208,7 +1276,7 @@ export async function runHostAgent(
       timeout = setTimeout(killOnTimeout, timeoutMs);
     };
 
-    // 10. close 事件处理
+    // 11. close 事件处理
     proc.on('close', (code, signal) => {
       clearTimeout(timeout);
       if (killTimer) clearTimeout(killTimer);

@@ -144,6 +144,7 @@ interface ChatState {
     chatJid: string,
     options?: { preserveThinking?: boolean },
   ) => void;
+  restoreActiveState: () => Promise<void>;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -591,7 +592,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
           const isSkill = tool.toolName === 'Skill';
           const label = isSkill
-            ? `技能 /${tool.skillName || 'unknown'}`
+            ? `技能 ${tool.skillName || 'unknown'}`
             : `工具 ${tool.toolName}`;
           const detail = tool.toolInputSummary ? ` (${tool.toolInputSummary})` : '';
           next.recentEvents = pushEvent(prev.recentEvents, isSkill ? 'skill' : 'tool', `${label}${detail}`);
@@ -602,10 +603,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
             const ended = prev.activeTools.find(t => t.toolUseId === event.toolUseId);
             next.activeTools = prev.activeTools.filter(t => t.toolUseId !== event.toolUseId);
             if (ended) {
-              const elapsedSec = ((Date.now() - ended.startTime) / 1000).toFixed(1);
+              const rawSec = (Date.now() - ended.startTime) / 1000;
+              const elapsedSec = rawSec % 1 === 0 ? rawSec.toFixed(0) : rawSec.toFixed(1);
               const isSkill = ended.toolName === 'Skill';
               const label = isSkill
-                ? `技能 /${ended.skillName || 'unknown'}`
+                ? `技能 ${ended.skillName || 'unknown'}`
                 : `工具 ${ended.toolName}`;
               next.recentEvents = pushEvent(prev.recentEvents, isSkill ? 'skill' : 'tool', `✓ ${label} (${elapsedSec}s)`);
             }
@@ -618,11 +620,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
           // 如果工具已存在则更新，否则添加
           const existing = prev.activeTools.find(t => t.toolUseId === event.toolUseId);
           if (existing) {
+            const skillNameResolved = event.skillName && !existing.skillName;
             next.activeTools = prev.activeTools.map(t =>
               t.toolUseId === event.toolUseId
-                ? { ...t, elapsedSeconds: event.elapsedSeconds }
+                ? {
+                    ...t,
+                    elapsedSeconds: event.elapsedSeconds,
+                    // skillName 通过 input_json_delta 后续到达，合并更新
+                    ...(event.skillName ? { skillName: event.skillName } : {}),
+                  }
                 : t
             );
+            // skillName 首次解析成功时，回溯更新 recentEvents 中的 /unknown 条目
+            if (skillNameResolved) {
+              const oldLabel = `技能 unknown`;
+              const newLabel = `技能 ${event.skillName}`;
+              next.recentEvents = prev.recentEvents.map(e =>
+                e.kind === 'skill' && e.text.includes(oldLabel)
+                  ? { ...e, text: e.text.replace(oldLabel, newLabel) }
+                  : e
+              );
+            }
           } else {
             next.activeTools = [...prev.activeTools, {
               toolName: event.toolName || 'unknown',
@@ -723,6 +741,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
         messages: { ...s.messages, [chatJid]: updated },
       };
     });
+  },
+
+  // 刷新/重连时恢复正在运行的 agent 状态
+  restoreActiveState: async () => {
+    try {
+      const data = await api.get<{ groups: Array<{ jid: string; active: boolean }> }>('/api/status');
+      const activeSet = new Set(data.groups.filter(g => g.active).map(g => g.jid));
+      const allJids = data.groups.map(g => g.jid);
+      set((s) => {
+        const nextWaiting = { ...s.waiting };
+        for (const jid of allJids) {
+          if (activeSet.has(jid)) {
+            nextWaiting[jid] = true;
+          } else {
+            delete nextWaiting[jid];
+          }
+        }
+        return { waiting: nextWaiting };
+      });
+    } catch {
+      // 静默失败
+    }
   },
 
   // 清除流式状态

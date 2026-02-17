@@ -18,17 +18,35 @@ export interface SkillDetail extends Skill {
   content: string;
 }
 
+export interface SearchResult {
+  package: string;
+  url: string;
+}
+
+export interface SearchResultDetail {
+  description: string;
+  installs: string;
+  age: string;
+  features: string[];
+}
+
 interface SkillsState {
   skills: Skill[];
   loading: boolean;
   error: string | null;
   installing: boolean;
+  searching: boolean;
+  searchResults: SearchResult[];
+  searchDetails: Record<string, SearchResultDetail | null>;
+  searchDetailLoading: Record<string, boolean>;
 
   loadSkills: () => Promise<void>;
   toggleSkill: (id: string, enabled: boolean) => Promise<void>;
   deleteSkill: (id: string) => Promise<void>;
   installSkill: (pkg: string) => Promise<void>;
   getSkillDetail: (id: string) => Promise<SkillDetail>;
+  searchSkills: (query: string) => Promise<void>;
+  fetchSearchDetail: (url: string) => Promise<void>;
 }
 
 export const useSkillsStore = create<SkillsState>((set, get) => ({
@@ -36,6 +54,10 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
   loading: false,
   error: null,
   installing: false,
+  searching: false,
+  searchResults: [],
+  searchDetails: {},
+  searchDetailLoading: {},
 
   loadSkills: async () => {
     set({ loading: true });
@@ -83,5 +105,39 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
   getSkillDetail: async (id: string) => {
     const data = await api.get<{ skill: SkillDetail }>(`/api/skills/${id}`);
     return data.skill;
+  },
+
+  searchSkills: async (query: string) => {
+    set({ searching: true, searchResults: [], searchDetails: {}, searchDetailLoading: {} });
+    try {
+      const data = await api.get<{ results: SearchResult[] }>(
+        `/api/skills/search?q=${encodeURIComponent(query)}`,
+      );
+      set({ searching: false, searchResults: data.results });
+    } catch (err) {
+      set({ searching: false, searchResults: [] });
+    }
+  },
+
+  fetchSearchDetail: async (url: string) => {
+    const { searchDetails, searchDetailLoading } = get();
+    // Already fetched or in-flight
+    if (url in searchDetails || searchDetailLoading[url]) return;
+
+    set({ searchDetailLoading: { ...get().searchDetailLoading, [url]: true } });
+    try {
+      const data = await api.get<{ detail: SearchResultDetail | null }>(
+        `/api/skills/search/detail?url=${encodeURIComponent(url)}`,
+      );
+      set({
+        searchDetails: { ...get().searchDetails, [url]: data.detail },
+        searchDetailLoading: { ...get().searchDetailLoading, [url]: false },
+      });
+    } catch {
+      set({
+        searchDetails: { ...get().searchDetails, [url]: null },
+        searchDetailLoading: { ...get().searchDetailLoading, [url]: false },
+      });
+    }
   },
 }));
