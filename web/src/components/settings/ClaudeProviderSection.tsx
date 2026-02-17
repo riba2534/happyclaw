@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Loader2, Plus, RefreshCw, Rocket, X } from 'lucide-react';
+import { ExternalLink, Loader2, Plus, RefreshCw, Rocket, X } from 'lucide-react';
 
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -23,6 +23,12 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
   const [providerMode, setProviderMode] = useState<ProviderMode>('third_party');
 
   const [officialCode, setOfficialCode] = useState('');
+
+  // OAuth flow state
+  const [oauthLoading, setOauthLoading] = useState(false);
+  const [oauthState, setOauthState] = useState<string | null>(null);
+  const [oauthCode, setOauthCode] = useState('');
+  const [oauthExchanging, setOauthExchanging] = useState(false);
 
   const [baseUrl, setBaseUrl] = useState('');
   const [authToken, setAuthToken] = useState('');
@@ -100,6 +106,46 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
       setError(getErrorMessage(err, '保存官方提供商配置失败'));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleOAuthStart = async () => {
+    setOauthLoading(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const data = await api.post<{ authorizeUrl: string; state: string }>('/api/config/claude/oauth/start');
+      setOauthState(data.state);
+      setOauthCode('');
+      window.open(data.authorizeUrl, '_blank', 'noopener,noreferrer');
+    } catch (err) {
+      setError(getErrorMessage(err, 'OAuth 授权启动失败'));
+    } finally {
+      setOauthLoading(false);
+    }
+  };
+
+  const handleOAuthCallback = async () => {
+    if (!oauthState || !oauthCode.trim()) {
+      setError('请粘贴授权码');
+      return;
+    }
+    setOauthExchanging(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await api.post<ClaudeConfigPublic>('/api/config/claude/oauth/callback', {
+        state: oauthState,
+        code: oauthCode.trim(),
+      });
+      setOauthState(null);
+      setOauthCode('');
+      setNotice('Claude OAuth 登录成功，token 已保存。');
+      await loadConfig();
+    } catch (err) {
+      setError(getErrorMessage(err, 'OAuth 授权码换取失败'));
+    } finally {
+      setOauthExchanging(false);
     }
   };
 
@@ -195,16 +241,48 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
 
       {providerMode === 'official' ? (
         <div className="space-y-4">
-          <div className="text-sm text-slate-600">
-            Claude Code 官方链路不是固定网页授权，请先在已登录 Claude Code CLI 的终端执行：
+          {/* OAuth one-click login */}
+          <div className="rounded-lg border border-teal-200 bg-teal-50/50 p-4 space-y-3">
+            <div className="text-sm font-medium text-slate-800">一键登录 Claude（推荐）</div>
+            <div className="text-xs text-slate-600">
+              点击按钮后会打开 claude.ai 授权页面，完成授权后将页面上显示的授权码粘贴回来。
+            </div>
+
+            {!oauthState ? (
+              <Button onClick={handleOAuthStart} disabled={loading || oauthLoading}>
+                {oauthLoading ? <Loader2 className="size-4 animate-spin" /> : <ExternalLink className="size-4" />}
+                一键登录 Claude
+              </Button>
+            ) : (
+              <div className="space-y-2">
+                <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                  授权窗口已打开，请在 claude.ai 完成授权后，将页面上显示的授权码粘贴到下方。
+                </div>
+                <div className="flex gap-2">
+                  <Input
+                    type="text"
+                    value={oauthCode}
+                    onChange={(e) => setOauthCode(e.target.value)}
+                    disabled={oauthExchanging}
+                    placeholder="粘贴授权码"
+                    className="flex-1"
+                  />
+                  <Button onClick={handleOAuthCallback} disabled={oauthExchanging || !oauthCode.trim()}>
+                    {oauthExchanging && <Loader2 className="size-4 animate-spin" />}
+                    确认
+                  </Button>
+                  <Button variant="outline" onClick={() => { setOauthState(null); setOauthCode(''); }}>
+                    取消
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
 
-          <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-mono text-slate-800">
-            claude setup-token
-          </div>
-
-          <div className="text-xs text-slate-500">
-            将命令输出的 setup-token 粘贴到下方即可。若 token 在其他机器生成，也可以直接粘贴使用。
+          <div className="relative flex items-center gap-3 text-xs text-slate-400">
+            <div className="flex-1 border-t border-slate-200" />
+            或手动粘贴 setup-token
+            <div className="flex-1 border-t border-slate-200" />
           </div>
 
           <div>

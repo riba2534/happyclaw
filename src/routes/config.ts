@@ -1,5 +1,6 @@
 // Configuration management routes
 
+import { randomBytes, createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import type { Variables } from '../web-context.js';
 import { authMiddleware, systemConfigMiddleware } from '../middleware/auth.js';
@@ -235,6 +236,136 @@ configRoutes.post(
       );
     }
     return c.json({ success: true, stoppedCount: groupJids.length });
+  },
+);
+
+// ─── Claude OAuth (PKCE) ─────────────────────────────────────────
+
+const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
+const OAUTH_REDIRECT_URI = 'https://console.anthropic.com/oauth/code/callback';
+const OAUTH_SCOPES = 'org:create_api_key user:profile user:inference';
+const OAUTH_AUTHORIZE_URL = 'https://claude.ai/oauth/authorize';
+const OAUTH_TOKEN_URL = 'https://console.anthropic.com/v1/oauth/token';
+const OAUTH_FLOW_TTL = 10 * 60 * 1000; // 10 minutes
+
+interface OAuthFlow {
+  codeVerifier: string;
+  expiresAt: number;
+}
+const oauthFlows = new Map<string, OAuthFlow>();
+
+// Periodic cleanup of expired flows
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, flow] of oauthFlows) {
+    if (flow.expiresAt < now) oauthFlows.delete(key);
+  }
+}, 60_000);
+
+configRoutes.post(
+  '/claude/oauth/start',
+  authMiddleware,
+  systemConfigMiddleware,
+  (c) => {
+    const state = randomBytes(32).toString('hex');
+    const codeVerifier = randomBytes(32).toString('base64url');
+    const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url');
+
+    oauthFlows.set(state, {
+      codeVerifier,
+      expiresAt: Date.now() + OAUTH_FLOW_TTL,
+    });
+
+    const params = new URLSearchParams({
+      response_type: 'code',
+      client_id: OAUTH_CLIENT_ID,
+      redirect_uri: OAUTH_REDIRECT_URI,
+      scope: OAUTH_SCOPES,
+      state,
+      code_challenge: codeChallenge,
+      code_challenge_method: 'S256',
+    });
+
+    return c.json({ authorizeUrl: `${OAUTH_AUTHORIZE_URL}?${params.toString()}`, state });
+  },
+);
+
+configRoutes.post(
+  '/claude/oauth/callback',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const { state, code } = body as { state?: string; code?: string };
+
+    if (!state || !code) {
+      return c.json({ error: 'Missing state or code' }, 400);
+    }
+
+    // Clean up code: strip URL fragments and query params that users may accidentally copy
+    const cleanedCode = code.trim().split('#')[0]?.split('&')[0] ?? code.trim();
+
+    const flow = oauthFlows.get(state);
+    if (!flow) {
+      return c.json({ error: 'Invalid or expired OAuth state' }, 400);
+    }
+    if (flow.expiresAt < Date.now()) {
+      oauthFlows.delete(state);
+      return c.json({ error: 'OAuth flow expired' }, 400);
+    }
+    oauthFlows.delete(state);
+
+    try {
+      const tokenResp = await fetch(OAUTH_TOKEN_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          'Accept': 'application/json, text/plain, */*',
+          'Referer': 'https://claude.ai/',
+          'Origin': 'https://claude.ai',
+        },
+        body: JSON.stringify({
+          grant_type: 'authorization_code',
+          client_id: OAUTH_CLIENT_ID,
+          code: cleanedCode,
+          redirect_uri: OAUTH_REDIRECT_URI,
+          code_verifier: flow.codeVerifier,
+          state,
+        }),
+      });
+
+      if (!tokenResp.ok) {
+        const errText = await tokenResp.text().catch(() => '');
+        logger.warn({ status: tokenResp.status, body: errText }, 'OAuth token exchange failed');
+        return c.json({ error: `Token exchange failed: ${tokenResp.status}` }, 400);
+      }
+
+      const tokenData = (await tokenResp.json()) as { access_token?: string; [key: string]: unknown };
+      if (!tokenData.access_token) {
+        return c.json({ error: 'No access_token in response' }, 400);
+      }
+
+      const actor = (c.get('user') as AuthUser).username;
+      const current = getClaudeProviderConfig();
+      const saved = saveClaudeProviderConfig({
+        anthropicBaseUrl: current.anthropicBaseUrl,
+        anthropicAuthToken: '',
+        anthropicApiKey: '',
+        claudeCodeOauthToken: tokenData.access_token,
+      });
+      appendClaudeConfigAudit(actor, 'oauth_login', [
+        'claudeCodeOauthToken:set',
+        'anthropicAuthToken:clear',
+        'anthropicApiKey:clear',
+      ]);
+
+      return c.json(toPublicClaudeProviderConfig(saved));
+    } catch (err) {
+      logger.error({ err }, 'OAuth token exchange error');
+      const message = err instanceof Error ? err.message : 'OAuth token exchange failed';
+      return c.json({ error: message }, 500);
+    }
   },
 );
 

@@ -77,8 +77,8 @@ export function SetupChannelsPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-      <div className="w-full max-w-2xl space-y-5">
+    <div className="h-screen bg-slate-50 overflow-y-auto p-4">
+      <div className="w-full max-w-2xl mx-auto space-y-5">
         <div className="text-center">
           <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center mx-auto mb-4">
             <MessageSquare className="w-6 h-6 text-primary" />

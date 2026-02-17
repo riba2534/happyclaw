@@ -101,7 +101,7 @@ export function RegisterPage() {
 
   if (initialized !== true || statusLoading) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+      <div className="h-screen bg-slate-50 overflow-y-auto flex items-center justify-center p-4">
         <div className="text-slate-500 text-sm">加载中...</div>
       </div>
     );
@@ -110,7 +110,7 @@ export function RegisterPage() {
   // Registration disabled
   if (!status.allowRegistration) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+      <div className="h-screen bg-slate-50 overflow-y-auto flex items-center justify-center p-4">
         <div className="w-full max-w-md">
           <div className="bg-white rounded-lg border border-slate-200 p-8">
             <div className="flex justify-center mb-6">
@@ -137,7 +137,7 @@ export function RegisterPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+    <div className="h-screen bg-slate-50 overflow-y-auto flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="bg-white rounded-lg border border-slate-200 p-8">
           {/* Logo */}

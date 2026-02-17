@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowRight, KeyRound, Loader2, Link2, Plus, Server, ShieldCheck, X } from 'lucide-react';
+import { ArrowRight, ExternalLink, KeyRound, Loader2, Link2, Plus, Server, ShieldCheck, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 import { Input } from '@/components/ui/input';
@@ -68,6 +68,13 @@ export function SetupProvidersPage() {
   // Official mode
   const [officialToken, setOfficialToken] = useState('');
 
+  // OAuth flow state
+  const [oauthLoading, setOauthLoading] = useState(false);
+  const [oauthState, setOauthState] = useState<string | null>(null);
+  const [oauthCode, setOauthCode] = useState('');
+  const [oauthExchanging, setOauthExchanging] = useState(false);
+  const [oauthDone, setOauthDone] = useState(false);
+
   // Third-party mode
   const [baseUrl, setBaseUrl] = useState('');
   const [authToken, setAuthToken] = useState('');
@@ -95,6 +102,44 @@ export function SetupProvidersPage() {
       rows.map((row, i) => (i === idx ? { ...row, [field]: value } : row)),
     );
 
+  const handleOAuthStart = async () => {
+    setOauthLoading(true);
+    setError(null);
+    try {
+      const data = await api.post<{ authorizeUrl: string; state: string }>('/api/config/claude/oauth/start');
+      setOauthState(data.state);
+      setOauthCode('');
+      window.open(data.authorizeUrl, '_blank', 'noopener,noreferrer');
+    } catch (err) {
+      setError(getErrorMessage(err, 'OAuth 授权启动失败'));
+    } finally {
+      setOauthLoading(false);
+    }
+  };
+
+  const handleOAuthCallback = async () => {
+    if (!oauthState || !oauthCode.trim()) {
+      setError('请粘贴授权码');
+      return;
+    }
+    setOauthExchanging(true);
+    setError(null);
+    try {
+      await api.post('/api/config/claude/oauth/callback', {
+        state: oauthState,
+        code: oauthCode.trim(),
+      });
+      setOauthState(null);
+      setOauthCode('');
+      setOauthDone(true);
+      setNotice('Claude OAuth 登录成功，token 已保存。');
+    } catch (err) {
+      setError(getErrorMessage(err, 'OAuth 授权码换取失败'));
+    } finally {
+      setOauthExchanging(false);
+    }
+  };
+
   const handleFinish = async () => {
     setError(null);
     setNotice(null);
@@ -120,8 +165,8 @@ export function SetupProvidersPage() {
         return;
       }
       customEnv = envResult.customEnv;
-    } else if (!officialToken.trim()) {
-      setError('官方渠道必须填写 setup-token');
+    } else if (!officialToken.trim() && !oauthDone) {
+      setError('官方渠道请通过一键登录或手动填写 setup-token');
       return;
     }
 
@@ -135,13 +180,19 @@ export function SetupProvidersPage() {
       }
 
       if (providerMode === 'official') {
-        await api.put('/api/config/claude', { anthropicBaseUrl: '' });
-        await api.put('/api/config/claude/secrets', {
-          claudeCodeOauthToken: officialToken.trim(),
-          clearAnthropicAuthToken: true,
-          clearAnthropicApiKey: true,
-        });
-        await api.put('/api/config/claude/custom-env', { customEnv: {} });
+        if (oauthDone) {
+          // OAuth already saved the token via /oauth/callback — just clear base URL and custom env
+          await api.put('/api/config/claude', { anthropicBaseUrl: '' });
+          await api.put('/api/config/claude/custom-env', { customEnv: {} });
+        } else {
+          await api.put('/api/config/claude', { anthropicBaseUrl: '' });
+          await api.put('/api/config/claude/secrets', {
+            claudeCodeOauthToken: officialToken.trim(),
+            clearAnthropicAuthToken: true,
+            clearAnthropicApiKey: true,
+          });
+          await api.put('/api/config/claude/custom-env', { customEnv: {} });
+        }
       } else {
         await api.put('/api/config/claude', { anthropicBaseUrl: baseUrl.trim() });
         await api.put('/api/config/claude/secrets', {
@@ -168,8 +219,8 @@ export function SetupProvidersPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-      <div className="w-full max-w-4xl space-y-5">
+    <div className="h-screen bg-slate-50 overflow-y-auto p-4">
+      <div className="w-full max-w-4xl mx-auto space-y-5">
         <div className="text-center">
           <p className="text-xs font-semibold text-primary tracking-wider mb-2">STEP 2 / 2</p>
           <h1 className="text-2xl font-bold text-slate-900 mb-2">系统接入初始化</h1>
@@ -240,22 +291,61 @@ export function SetupProvidersPage() {
 
           {providerMode === 'official' ? (
             <div className="space-y-4">
+              {/* OAuth one-click login */}
+              <div className="rounded-lg border border-teal-200 bg-teal-50/50 p-4 space-y-3">
+                <div className="text-sm font-medium text-slate-800">一键登录 Claude（推荐）</div>
+                <div className="text-xs text-slate-600">
+                  点击按钮后会打开 claude.ai 授权页面，完成授权后将页面上显示的授权码粘贴回来。
+                </div>
+
+                {oauthDone ? (
+                  <div className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-md px-3 py-2">
+                    OAuth 登录成功，点击下方按钮完成配置。
+                  </div>
+                ) : !oauthState ? (
+                  <Button onClick={handleOAuthStart} disabled={oauthLoading || saving}>
+                    {oauthLoading ? <Loader2 className="size-4 animate-spin" /> : <ExternalLink className="size-4" />}
+                    一键登录 Claude
+                  </Button>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                      授权窗口已打开，请在 claude.ai 完成授权后，将页面上显示的授权码粘贴到下方。
+                    </div>
+                    <div className="flex gap-2">
+                      <Input
+                        type="text"
+                        value={oauthCode}
+                        onChange={(e) => setOauthCode(e.target.value)}
+                        disabled={oauthExchanging}
+                        placeholder="粘贴授权码"
+                        className="flex-1"
+                      />
+                      <Button onClick={handleOAuthCallback} disabled={oauthExchanging || !oauthCode.trim()}>
+                        {oauthExchanging && <Loader2 className="size-4 animate-spin" />}
+                        确认
+                      </Button>
+                      <Button variant="outline" onClick={() => { setOauthState(null); setOauthCode(''); }}>
+                        取消
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="relative flex items-center gap-3 text-xs text-slate-400">
+                <div className="flex-1 border-t border-slate-200" />
+                或手动粘贴 setup-token
+                <div className="flex-1 border-t border-slate-200" />
+              </div>
+
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
                 <div className="font-medium mb-2">setup-token 获取方式</div>
                 <ol className="list-decimal ml-5 space-y-1 text-xs">
                   <li>在目标机器安装 Claude Code CLI（若未安装）。</li>
-                  <li>在终端执行 `claude login` 完成账号登录。</li>
-                  <li>执行 `claude setup-token`，复制输出 token 到下方输入框。</li>
+                  <li>在终端执行 <code>claude login</code> 完成账号登录。</li>
+                  <li>执行 <code>claude setup-token</code>，复制输出 token 到下方输入框。</li>
                 </ol>
-              </div>
-
-              <div className="grid sm:grid-cols-2 gap-2">
-                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-mono text-slate-800">
-                  claude login
-                </div>
-                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-mono text-slate-800">
-                  claude setup-token
-                </div>
               </div>
 
               <div>

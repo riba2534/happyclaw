@@ -51,7 +51,7 @@ export function SetupPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
+    <div className="h-screen bg-slate-50 overflow-y-auto p-4 flex flex-col items-center justify-center">
       <div className="w-full max-w-lg">
         {/* Header */}
         <div className="text-center mb-8">
