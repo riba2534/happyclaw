@@ -9,7 +9,7 @@ import { FilePanel } from './FilePanel';
 import { ContainerEnvPanel } from './ContainerEnvPanel';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
-import { ArrowLeft, Link, MoreHorizontal, PanelRightClose, PanelRightOpen, Square, X } from 'lucide-react';
+import { ArrowLeft, Link, MoreHorizontal, PanelRightClose, PanelRightOpen, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { wsManager } from '../../api/ws';
 import { api } from '../../api/client';
@@ -60,7 +60,6 @@ export function ChatView({ groupJid, onBack }: ChatViewProps) {
   const loadMessages = useChatStore(s => s.loadMessages);
   const refreshMessages = useChatStore(s => s.refreshMessages);
   const sendMessage = useChatStore(s => s.sendMessage);
-  const stopGroup = useChatStore(s => s.stopGroup);
   const resetSession = useChatStore(s => s.resetSession);
   const handleStreamEvent = useChatStore(s => s.handleStreamEvent);
   const handleWsNewMessage = useChatStore(s => s.handleWsNewMessage);
@@ -156,11 +155,8 @@ export function ChatView({ groupJid, onBack }: ChatViewProps) {
     return () => { unsub1(); unsub2(); unsub3(); };
   }, [groupJid, handleStreamEvent, handleWsNewMessage, clearStreaming]);
 
-  const [scrollTrigger, setScrollTrigger] = useState(0);
-
   const handleSend = async (content: string, attachments?: Array<{ data: string; mimeType: string }>) => {
     await sendMessage(groupJid, content, attachments);
-    setScrollTrigger(n => n + 1);
   };
 
   const handleLoadMore = () => {
@@ -376,21 +372,8 @@ export function ChatView({ groupJid, onBack }: ChatViewProps) {
             loading={loading}
             hasMore={hasMoreMessages}
             onLoadMore={handleLoadMore}
-            scrollTrigger={scrollTrigger}
           />
           <StreamingDisplay groupJid={groupJid} isWaiting={isWaiting} senderName={currentUser?.ai_name || appearance?.aiName || group?.name || 'AI'} />
-          {isWaiting && (
-            <div className="flex justify-center py-1">
-              <button
-                type="button"
-                onClick={() => stopGroup(groupJid)}
-                className="inline-flex items-center gap-1.5 px-3 py-1 text-xs text-slate-500 hover:text-red-600 bg-slate-100 hover:bg-red-50 rounded-full transition-colors cursor-pointer"
-              >
-                <Square className="w-3 h-3" />
-                中断
-              </button>
-            </div>
-          )}
           <MessageInput
             onSend={handleSend}
             groupJid={groupJid}

@@ -68,11 +68,7 @@ export function MessageInput({
     textarea.style.height = `${Math.min(scrollHeight, maxHeight)}px`;
   }, [content]);
 
-  // IME composition state — prevent Enter from sending while composing (e.g. Chinese input)
-  const composingRef = useRef(false);
-
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (composingRef.current) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -424,8 +420,6 @@ export function MessageInput({
               value={content}
               onChange={(e) => setContent(e.target.value)}
               onKeyDown={handleKeyDown}
-              onCompositionStart={() => { composingRef.current = true; }}
-              onCompositionEnd={() => { composingRef.current = false; }}
               onPaste={handlePaste}
               placeholder="输入消息..."
               disabled={disabled}

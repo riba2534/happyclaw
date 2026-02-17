@@ -132,7 +132,6 @@ interface ChatState {
   loadMessages: (jid: string, loadMore?: boolean) => Promise<void>;
   refreshMessages: (jid: string) => Promise<void>;
   sendMessage: (jid: string, content: string, attachments?: Array<{ data: string; mimeType: string }>) => Promise<void>;
-  stopGroup: (jid: string) => Promise<boolean>;
   resetSession: (jid: string) => Promise<boolean>;
   clearHistory: (jid: string) => Promise<boolean>;
   createFlow: (name: string, options?: { execution_mode?: 'container' | 'host'; custom_cwd?: string; init_source_path?: string; init_git_url?: string }) => Promise<{ jid: string; folder: string } | null>;
@@ -342,24 +341,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
     } catch (err) {
       set({ error: err instanceof Error ? err.message : String(err) });
-    }
-  },
-
-  stopGroup: async (jid: string) => {
-    try {
-      await api.post<{ success: boolean }>(
-        `/api/groups/${encodeURIComponent(jid)}/stop`,
-      );
-      get().clearStreaming(jid, { preserveThinking: false });
-      set((s) => {
-        const next = { ...s.waiting };
-        delete next[jid];
-        return { waiting: next };
-      });
-      return true;
-    } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err) });
-      return false;
     }
   },
 

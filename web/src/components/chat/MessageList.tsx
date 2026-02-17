@@ -9,8 +9,6 @@ interface MessageListProps {
   loading: boolean;
   hasMore: boolean;
   onLoadMore: () => void;
-  /** Increment to force scroll to bottom (e.g. after sending a message) */
-  scrollTrigger?: number;
 }
 
 type FlatItem =
@@ -19,7 +17,7 @@ type FlatItem =
   | { type: 'error'; content: string }
   | { type: 'message'; content: Message };
 
-export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrigger }: MessageListProps) {
+export function MessageList({ messages, loading, hasMore, onLoadMore }: MessageListProps) {
   const thinkingCache = useChatStore(s => s.thinkingCache ?? {});
   const parentRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
@@ -122,16 +120,6 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
     }
     prevMessageCount.current = messages.length;
   }, [messages, autoScroll]);
-
-  // 外部触发滚到底部（发送消息后）
-  useEffect(() => {
-    if (scrollTrigger && scrollTrigger > 0) {
-      setAutoScroll(true);
-      requestAnimationFrame(() => {
-        parentRef.current?.scrollTo({ top: parentRef.current.scrollHeight, behavior: 'smooth' });
-      });
-    }
-  }, [scrollTrigger]);
 
   // 初始滚到底部（首次加载完消息后触发）
   const initialScrollDone = useRef(false);
