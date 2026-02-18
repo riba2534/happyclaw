@@ -22,6 +22,12 @@ import { logger } from '../logger.js';
 
 const execFileAsync = promisify(execFile);
 
+let buildState: {
+  building: boolean;
+  startedAt: number | null;
+  startedBy: string | null;
+} = { building: false, startedAt: null, startedBy: null };
+
 const monitorRoutes = new Hono<{ Variables: Variables }>();
 
 // GET /api/health - 健康检查（无认证）
@@ -127,14 +133,25 @@ monitorRoutes.get('/status', authMiddleware, async (c) => {
     uptime: Math.floor(process.uptime()),
     groups: filteredGroups,
     dockerImageExists,
+    dockerBuildInProgress: buildState.building,
   });
 });
 
 // POST /api/docker/build - 构建 Docker 镜像（仅 admin）
 monitorRoutes.post('/docker/build', authMiddleware, systemConfigMiddleware, async (c) => {
+  if (buildState.building) {
+    return c.json({
+      error: 'Docker image build already in progress',
+      startedAt: buildState.startedAt,
+      startedBy: buildState.startedBy,
+    }, 409);
+  }
+
+  const authUser = c.get('user') as AuthUser;
   const buildScript = path.resolve(process.cwd(), 'container', 'build.sh');
 
-  logger.info('Docker image build requested via API');
+  buildState = { building: true, startedAt: Date.now(), startedBy: authUser.username };
+  logger.info({ startedBy: authUser.username }, 'Docker image build requested via API');
 
   try {
     const { stdout, stderr } = await execFileAsync('bash', [buildScript], {
@@ -157,6 +174,8 @@ monitorRoutes.post('/docker/build', authMiddleware, systemConfigMiddleware, asyn
       stdout: err.stdout ? String(err.stdout) : '',
       stderr: err.stderr ? String(err.stderr) : '',
     }, 500);
+  } finally {
+    buildState = { building: false, startedAt: null, startedBy: null };
   }
 });
 
