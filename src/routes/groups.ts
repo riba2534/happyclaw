@@ -718,6 +718,35 @@ groupRoutes.post('/:jid/interrupt', authMiddleware, async (c) => {
   }
 
   const interrupted = deps.queue.interruptQuery(jid);
+  if (interrupted) {
+    // Persist interrupt as a system marker so refresh/state-restore can
+    // deterministically clear waiting even when no assistant reply exists.
+    const messageId = crypto.randomUUID();
+    const timestamp = new Date().toISOString();
+    try {
+      ensureChatExists(jid);
+      storeMessageDirect(
+        messageId,
+        jid,
+        '__system__',
+        'system',
+        'query_interrupted',
+        timestamp,
+        true,
+      );
+      broadcastNewMessage(jid, {
+        id: messageId,
+        chat_jid: jid,
+        sender: '__system__',
+        sender_name: 'system',
+        content: 'query_interrupted',
+        timestamp,
+        is_from_me: true,
+      });
+    } catch (err) {
+      logger.warn({ jid, err }, 'Interrupt succeeded but failed to append system marker');
+    }
+  }
   return c.json({ success: true, interrupted });
 });
 

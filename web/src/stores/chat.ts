@@ -279,7 +279,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
               (
                 m.content.startsWith('agent_error:') ||
                 m.content.startsWith('agent_max_retries:') ||
-                m.content.startsWith('context_overflow:')
+                m.content.startsWith('context_overflow:') ||
+                m.content === 'query_interrupted'
               )
           );
 
@@ -775,7 +776,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         msg.sender === '__system__' &&
         (msg.content.startsWith('agent_error:') ||
           msg.content.startsWith('agent_max_retries:') ||
-          msg.content.startsWith('context_overflow:'));
+          msg.content.startsWith('context_overflow:') ||
+          msg.content === 'query_interrupted');
 
       if (isAgentReply || isSystemError) {
         // Agent 回复或系统错误：立即清除流式状态和等待标志，转移 thinking 缓存

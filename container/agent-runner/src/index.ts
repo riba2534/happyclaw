@@ -596,6 +596,7 @@ async function runQuery(
   // 文本聚合缓冲区 - 流式事件批量发送
   let textBuf = '', thinkBuf = '';
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  let seenTextualResult = false;
   const FLUSH_MS = 100, FLUSH_CHARS = 200;
 
   function flushBuffers() {
@@ -1050,6 +1051,13 @@ async function runQuery(
       resultCount++;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
       log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
+      // Emit pending deltas before final textual result, then mark to avoid
+      // emitting duplicated tail deltas in the post-loop cleanup flush.
+      if (textResult) {
+        if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+        flushBuffers();
+        seenTextualResult = true;
+      }
       emit({
         status: 'success',
         result: textResult || null,
@@ -1060,7 +1068,14 @@ async function runQuery(
 
   // 清理：先取消 pending timer，再 flush 剩余缓冲区，最后清除残留工具状态
   if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
-  flushBuffers();
+  if (seenTextualResult) {
+    // Textual result already emitted. Drop any buffered tail to avoid
+    // stale stream residue in UI after message persistence.
+    textBuf = '';
+    thinkBuf = '';
+  } else {
+    flushBuffers();
+  }
   if (activeTopLevelToolUseId) {
     emit({
       status: 'stream',
