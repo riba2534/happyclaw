@@ -124,6 +124,7 @@ let lastAgentTimestamp: Record<string, MessageCursor> = {};
 let messageLoopRunning = false;
 let ipcWatcherRunning = false;
 let shuttingDown = false;
+let dockerAvailable = false;
 
 const queue = new GroupQueue();
 const EMPTY_CURSOR: MessageCursor = { timestamp: '', id: '' };
@@ -824,6 +825,12 @@ async function runAgent(
         },
         onProcessCb,
         wrappedOnOutput,
+      );
+    } else if (!dockerAvailable) {
+      throw new Error(
+        'Docker 未安装或未运行，无法启动容器模式的 Agent。请安装并启动 Docker 后重启服务。\n'
+        + '  macOS: 安装 Docker Desktop\n'
+        + '  Linux: sudo apt install docker.io && sudo systemctl start docker',
       );
     } else {
       output = await runContainerAgent(
@@ -1574,50 +1581,15 @@ function recoverPendingMessages(): void {
 async function ensureDockerRunning(): Promise<void> {
   try {
     await execFileAsync('docker', ['info'], { timeout: 10000 });
+    dockerAvailable = true;
     logger.debug('Docker daemon is running');
   } catch {
-    // 如果有容器模式的 group，Docker 必须运行
-    const hasContainerGroups = Object.values(registeredGroups).some(
-      (g) => (g.executionMode || 'container') === 'container',
-    );
-    if (hasContainerGroups) {
-      logger.error('Docker daemon is not running');
-      console.error(
-        '\n╔════════════════════════════════════════════════════════════════╗',
-      );
-      console.error(
-        '║  FATAL: Docker is not running                                  ║',
-      );
-      console.error(
-        '║                                                                ║',
-      );
-      console.error(
-        '║  Agents cannot run without Docker. To fix:                     ║',
-      );
-      console.error(
-        '║  macOS: Start Docker Desktop                                   ║',
-      );
-      console.error(
-        '║  Linux: sudo systemctl start docker                            ║',
-      );
-      console.error(
-        '║                                                                ║',
-      );
-      console.error(
-        '║  Install from: https://docker.com/products/docker-desktop      ║',
-      );
-      console.error(
-        '╚════════════════════════════════════════════════════════════════╝\n',
-      );
-      throw new Error('Docker is required but not running');
-    } else {
-      logger.warn(
-        'Docker is not running, but all groups use host execution mode',
-      );
-    }
+    dockerAvailable = false;
+    logger.warn('Docker is not available — container mode groups will not be able to run agents. Install Docker and restart to enable container execution.');
   }
 
   // Kill and clean up orphaned happyclaw containers from previous runs
+  if (!dockerAvailable) return;
   try {
     const { stdout } = await execFileAsync(
       'docker',
@@ -2028,6 +2000,7 @@ async function main(): Promise<void> {
     isTelegramConnected: () => imManager.isAnyTelegramConnected(),
     isUserFeishuConnected: (userId: string) => imManager.isFeishuConnected(userId),
     isUserTelegramConnected: (userId: string) => imManager.isTelegramConnected(userId),
+    isDockerAvailable: () => dockerAvailable,
   });
 
   // Clean expired sessions every hour

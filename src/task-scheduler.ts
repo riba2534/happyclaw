@@ -26,6 +26,7 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { logger } from './logger.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
+import { isDockerAvailable } from './web-context.js';
 
 export interface SchedulerDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
@@ -118,6 +119,9 @@ async function runTask(
 
   try {
     const executionMode = group.executionMode || 'container';
+    if (executionMode === 'container' && !isDockerAvailable()) {
+      throw new Error('Docker 未安装或未运行，无法执行容器模式的定时任务');
+    }
     const runAgent =
       executionMode === 'host' ? runHostAgent : runContainerAgent;
 

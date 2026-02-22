@@ -29,6 +29,7 @@ export interface WebDeps {
   isTelegramConnected?: () => boolean;
   isUserFeishuConnected?: (userId: string) => boolean;
   isUserTelegramConnected?: (userId: string) => boolean;
+  isDockerAvailable?: () => boolean;
 }
 
 export type Variables = {
@@ -77,6 +78,10 @@ export function parseCookie(
 }
 
 // Host execution helpers
+export function isDockerAvailable(): boolean {
+  return deps?.isDockerAvailable?.() ?? false;
+}
+
 export function isHostExecutionGroup(group: RegisteredGroup): boolean {
   return (group.executionMode || 'container') === 'host';
 }

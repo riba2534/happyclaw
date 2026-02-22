@@ -8,6 +8,7 @@ import { authMiddleware, systemConfigMiddleware } from '../middleware/auth.js';
 import type { AuthUser } from '../types.js';
 import {
   isHostExecutionGroup,
+  isDockerAvailable,
   hasHostExecutionPermission,
   canAccessGroup,
   getWebDeps,
@@ -132,6 +133,7 @@ monitorRoutes.get('/status', authMiddleware, async (c) => {
     queueLength,
     uptime: Math.floor(process.uptime()),
     groups: filteredGroups,
+    dockerAvailable: isDockerAvailable(),
     dockerImageExists,
     dockerBuildInProgress: buildState.building,
   });
