@@ -750,16 +750,18 @@ configRoutes.put('/user-im/feishu', authMiddleware, async (c) => {
 configRoutes.get('/user-im/telegram', authMiddleware, (c) => {
   const user = c.get('user') as AuthUser;
   try {
+    const connected = deps?.isUserTelegramConnected?.(user.id) ?? false;
     const config = getUserTelegramConfig(user.id);
     if (!config) {
       return c.json({
         hasBotToken: false,
         botTokenMasked: null,
         enabled: false,
+        connected,
         updatedAt: null,
       });
     }
-    return c.json(toPublicTelegramProviderConfig(config, 'runtime'));
+    return c.json({ ...toPublicTelegramProviderConfig(config, 'runtime'), connected });
   } catch (err) {
     logger.error({ err }, 'Failed to load user Telegram config');
     return c.json({ error: 'Failed to load user Telegram config' }, 500);
