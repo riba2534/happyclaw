@@ -79,6 +79,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     redis-tools \
     # --- Locale ---
     locales \
+    # --- Process user switching ---
+    gosu \
     && rm -rf /var/lib/apt/lists/* \
     # Set up UTF-8 locale
     && sed -i '/en_US.UTF-8/s/^# //' /etc/locale.gen && locale-gen \
@@ -122,7 +124,7 @@ RUN mkdir -p /workspace/group /workspace/global /workspace/memory /workspace/ext
 # Sources env from mounted /workspace/env-dir/env if it exists (keeps credentials out of process listings)
 # Stdin is buffered to /tmp then piped (container requires EOF to flush stdin pipe)
 # Follow-up messages arrive via IPC files in /workspace/ipc/input/
-RUN printf '#!/bin/bash\nset -e\nif [ -f /workspace/env-dir/env ]; then\n  set -a\n  source /workspace/env-dir/env\n  set +a\nfi\nmkdir -p /home/node/.claude/skills\n[ -d /workspace/project-skills ] && ln -sf /workspace/project-skills/* /home/node/.claude/skills/ 2>/dev/null || true\n[ -d /workspace/user-skills ] && ln -sf /workspace/user-skills/* /home/node/.claude/skills/ 2>/dev/null || true\ncd /app && npx tsc --outDir /tmp/dist 2>&1 >&2\nln -s /app/node_modules /tmp/dist/node_modules\nchmod -R a-w /tmp/dist\ncat > /tmp/input.json\nnode /tmp/dist/index.js < /tmp/input.json\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+RUN printf '#!/bin/bash\nset -e\n# Fix ownership of mounted .claude dir (may be owned by host user)\nchown -R node:node /home/node/.claude 2>/dev/null || true\nif [ -f /workspace/env-dir/env ]; then\n  set -a\n  source /workspace/env-dir/env\n  set +a\nfi\n# Switch to node user for all subsequent operations\nexec gosu node bash -c '\''\nset -e\nmkdir -p /home/node/.claude/skills\n[ -d /workspace/project-skills ] && ln -sf /workspace/project-skills/* /home/node/.claude/skills/ 2>/dev/null || true\n[ -d /workspace/user-skills ] && ln -sf /workspace/user-skills/* /home/node/.claude/skills/ 2>/dev/null || true\ncd /app && npx tsc --outDir /tmp/dist 2>&1 >&2\nln -s /app/node_modules /tmp/dist/node_modules\nchmod -R a-w /tmp/dist\ncat > /tmp/input.json\nnode /tmp/dist/index.js < /tmp/input.json\n'\''\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 # Set ownership to node user (non-root) for writable directories
 RUN chown -R node:node /workspace
@@ -132,8 +134,8 @@ RUN su - node -c 'sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/
     && sed -i 's/ZSH_THEME="robbyrussell"/ZSH_THEME="ys"/' /home/node/.zshrc \
     && chsh -s /bin/zsh node
 
-# Switch to non-root user (required for --dangerously-skip-permissions)
-USER node
+# Entrypoint runs as root to fix mounted volume permissions, then switches to node via gosu
+USER root
 
 # Set working directory to group workspace
 WORKDIR /workspace/group
