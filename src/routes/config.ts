@@ -277,6 +277,7 @@ configRoutes.post(
     });
 
     const params = new URLSearchParams({
+      code: 'true',
       response_type: 'code',
       client_id: OAUTH_CLIENT_ID,
       redirect_uri: OAUTH_REDIRECT_URI,
