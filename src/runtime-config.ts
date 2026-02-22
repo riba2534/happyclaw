@@ -76,11 +76,21 @@ const DANGEROUS_ENV_VARS = new Set([
 ]);
 const MAX_CUSTOM_ENV_ENTRIES = 50;
 
+export interface ClaudeOAuthCredentials {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  scopes: string[];
+  subscriptionType?: string;
+  rateLimitTier?: string;
+}
+
 export interface ClaudeProviderConfig {
   anthropicBaseUrl: string;
   anthropicAuthToken: string;
   anthropicApiKey: string;
   claudeCodeOauthToken: string;
+  claudeCodeOauthCredentials: ClaudeOAuthCredentials | null;
   updatedAt: string | null;
 }
 
@@ -90,6 +100,10 @@ export interface ClaudeProviderPublicConfig {
   hasAnthropicAuthToken: boolean;
   hasAnthropicApiKey: boolean;
   hasClaudeCodeOauthToken: boolean;
+  hasClaudeCodeOauthCredentials: boolean;
+  claudeCodeOauthCredentialsExpiresAt: number | null;
+  claudeCodeOauthCredentialsAccessTokenMasked: string | null;
+  claudeCodeOauthCredentialsRefreshTokenMasked: string | null;
   anthropicAuthTokenMasked: string | null;
   anthropicApiKeyMasked: string | null;
   claudeCodeOauthTokenMasked: string | null;
@@ -133,6 +147,7 @@ interface SecretPayload {
   anthropicAuthToken: string;
   anthropicApiKey: string;
   claudeCodeOauthToken: string;
+  claudeCodeOauthCredentials?: ClaudeOAuthCredentials | null;
 }
 
 interface EncryptedSecrets {
@@ -273,6 +288,7 @@ function normalizeConfig(
       input.claudeCodeOauthToken,
       'claudeCodeOauthToken',
     ),
+    claudeCodeOauthCredentials: input.claudeCodeOauthCredentials || null,
   };
 }
 
@@ -335,7 +351,7 @@ function decryptSecrets(secrets: EncryptedSecrets): SecretPayload {
   ]).toString('utf-8');
 
   const parsed = JSON.parse(decrypted) as Record<string, unknown>;
-  return {
+  const result: SecretPayload = {
     anthropicAuthToken: normalizeSecret(
       parsed.anthropicAuthToken ?? '',
       'anthropicAuthToken',
@@ -349,6 +365,20 @@ function decryptSecrets(secrets: EncryptedSecrets): SecretPayload {
       'claudeCodeOauthToken',
     ),
   };
+  if (parsed.claudeCodeOauthCredentials && typeof parsed.claudeCodeOauthCredentials === 'object') {
+    const creds = parsed.claudeCodeOauthCredentials as Record<string, unknown>;
+    if (typeof creds.accessToken === 'string' && typeof creds.refreshToken === 'string' && typeof creds.expiresAt === 'number') {
+      result.claudeCodeOauthCredentials = {
+        accessToken: creds.accessToken,
+        refreshToken: creds.refreshToken,
+        expiresAt: creds.expiresAt,
+        scopes: Array.isArray(creds.scopes) ? (creds.scopes as string[]) : [],
+        subscriptionType: typeof creds.subscriptionType === 'string' ? creds.subscriptionType : undefined,
+        rateLimitTier: typeof creds.rateLimitTier === 'string' ? creds.rateLimitTier : undefined,
+      };
+    }
+  }
+  return result;
 }
 
 function encryptFeishuSecret(payload: FeishuSecretPayload): EncryptedSecrets {
@@ -395,6 +425,7 @@ function readLegacyConfig(
       anthropicAuthToken: raw.anthropicAuthToken ?? '',
       anthropicApiKey: raw.anthropicApiKey ?? '',
       claudeCodeOauthToken: raw.claudeCodeOauthToken ?? '',
+      claudeCodeOauthCredentials: null,
     },
     typeof raw.updatedAt === 'string' ? raw.updatedAt : null,
   );
@@ -414,6 +445,7 @@ function readStoredConfig(): ClaudeProviderConfig | null {
         anthropicAuthToken: secrets.anthropicAuthToken,
         anthropicApiKey: secrets.anthropicApiKey,
         claudeCodeOauthToken: secrets.claudeCodeOauthToken,
+        claudeCodeOauthCredentials: secrets.claudeCodeOauthCredentials || null,
       },
       v2.updatedAt || null,
     );
@@ -428,6 +460,7 @@ function defaultsFromEnv(): ClaudeProviderConfig {
     anthropicAuthToken: process.env.ANTHROPIC_AUTH_TOKEN || '',
     anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
     claudeCodeOauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN || '',
+    claudeCodeOauthCredentials: null as ClaudeOAuthCredentials | null,
   };
 
   try {
@@ -438,6 +471,7 @@ function defaultsFromEnv(): ClaudeProviderConfig {
       anthropicAuthToken: raw.anthropicAuthToken.trim(),
       anthropicApiKey: raw.anthropicApiKey.trim(),
       claudeCodeOauthToken: raw.claudeCodeOauthToken.trim(),
+      claudeCodeOauthCredentials: null,
       updatedAt: null,
     };
   }
@@ -713,6 +747,10 @@ export function toPublicClaudeProviderConfig(
     hasAnthropicAuthToken: !!config.anthropicAuthToken,
     hasAnthropicApiKey: !!config.anthropicApiKey,
     hasClaudeCodeOauthToken: !!config.claudeCodeOauthToken,
+    hasClaudeCodeOauthCredentials: !!config.claudeCodeOauthCredentials,
+    claudeCodeOauthCredentialsExpiresAt: config.claudeCodeOauthCredentials?.expiresAt ?? null,
+    claudeCodeOauthCredentialsAccessTokenMasked: config.claudeCodeOauthCredentials ? maskSecret(config.claudeCodeOauthCredentials.accessToken) : null,
+    claudeCodeOauthCredentialsRefreshTokenMasked: config.claudeCodeOauthCredentials ? maskSecret(config.claudeCodeOauthCredentials.refreshToken) : null,
     anthropicAuthTokenMasked: maskSecret(config.anthropicAuthToken),
     anthropicApiKeyMasked: maskSecret(config.anthropicApiKey),
     claudeCodeOauthTokenMasked: maskSecret(config.claudeCodeOauthToken),
@@ -761,15 +799,19 @@ export function saveClaudeProviderConfig(
     throw new Error(errors.join('；'));
   }
 
+  const secretPayload: SecretPayload = {
+    anthropicAuthToken: normalized.anthropicAuthToken,
+    anthropicApiKey: normalized.anthropicApiKey,
+    claudeCodeOauthToken: normalized.claudeCodeOauthToken,
+  };
+  if (normalized.claudeCodeOauthCredentials) {
+    secretPayload.claudeCodeOauthCredentials = normalized.claudeCodeOauthCredentials;
+  }
   const payload: StoredClaudeProviderConfigV2 = {
     version: CURRENT_CONFIG_VERSION,
     anthropicBaseUrl: normalized.anthropicBaseUrl,
     updatedAt: normalized.updatedAt || new Date().toISOString(),
-    secrets: encryptSecrets({
-      anthropicAuthToken: normalized.anthropicAuthToken,
-      anthropicApiKey: normalized.anthropicApiKey,
-      claudeCodeOauthToken: normalized.claudeCodeOauthToken,
-    }),
+    secrets: encryptSecrets(secretPayload),
   };
 
   fs.mkdirSync(CLAUDE_CONFIG_DIR, { recursive: true });
@@ -788,7 +830,11 @@ function sanitizeEnvValue(value: string): string {
 export function buildClaudeEnvLines(config: ClaudeProviderConfig): string[] {
   const lines: string[] = [];
 
-  if (config.claudeCodeOauthToken) {
+  // When full OAuth credentials exist, auth is handled via .credentials.json file
+  // (written by writeOAuthCredentialsFile), so skip the env var.
+  if (config.claudeCodeOauthCredentials) {
+    // Don't set CLAUDE_CODE_OAUTH_TOKEN — credentials file is used instead
+  } else if (config.claudeCodeOauthToken) {
     lines.push(
       `CLAUDE_CODE_OAUTH_TOKEN=${sanitizeEnvValue(config.claudeCodeOauthToken)}`,
     );
@@ -814,6 +860,95 @@ export function buildClaudeEnvLines(config: ClaudeProviderConfig): string[] {
   }
 
   return lines;
+}
+
+/**
+ * Write OAuth credentials as ~/.claude/.credentials.json for the Claude Code CLI.
+ * The CLI reads this file to authenticate using OAuth (subscription billing).
+ */
+export function writeOAuthCredentialsFile(
+  sessionDir: string,
+  config: ClaudeProviderConfig,
+): void {
+  const creds = config.claudeCodeOauthCredentials;
+  if (!creds) return;
+
+  const credentialsContent = {
+    claudeAiOauth: {
+      accessToken: creds.accessToken,
+      refreshToken: creds.refreshToken,
+      expiresAt: creds.expiresAt,
+      scopes: creds.scopes,
+      ...(creds.subscriptionType ? { subscriptionType: creds.subscriptionType } : {}),
+      ...(creds.rateLimitTier ? { rateLimitTier: creds.rateLimitTier } : {}),
+    },
+  };
+
+  const filePath = path.join(sessionDir, '.credentials.json');
+  const tmp = `${filePath}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(credentialsContent, null, 2) + '\n', { mode: 0o600 });
+  fs.renameSync(tmp, filePath);
+}
+
+const OAUTH_TOKEN_URL = 'https://console.anthropic.com/v1/oauth/token';
+const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
+
+/**
+ * Refresh the OAuth access token using the refresh token.
+ * Returns updated credentials on success, null on failure.
+ */
+export async function refreshOAuthToken(
+  creds: ClaudeOAuthCredentials,
+): Promise<ClaudeOAuthCredentials | null> {
+  try {
+    const resp = await fetch(OAUTH_TOKEN_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+        'Referer': 'https://claude.ai/',
+        'Origin': 'https://claude.ai',
+      },
+      body: JSON.stringify({
+        grant_type: 'refresh_token',
+        client_id: OAUTH_CLIENT_ID,
+        refresh_token: creds.refreshToken,
+      }),
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => '');
+      logger.warn({ status: resp.status, body: errText }, 'OAuth token refresh failed');
+      return null;
+    }
+
+    const data = (await resp.json()) as Record<string, unknown>;
+    if (typeof data.access_token !== 'string') {
+      logger.warn('OAuth refresh response missing access_token');
+      return null;
+    }
+
+    return {
+      accessToken: data.access_token as string,
+      refreshToken: typeof data.refresh_token === 'string' ? data.refresh_token : creds.refreshToken,
+      expiresAt: typeof data.expires_in === 'number'
+        ? Date.now() + (data.expires_in as number) * 1000
+        : typeof data.expires_at === 'number'
+          ? data.expires_at as number
+          : Date.now() + 3600 * 1000,
+      scopes: Array.isArray(data.scope)
+        ? data.scope as string[]
+        : typeof data.scope === 'string'
+          ? (data.scope as string).split(' ')
+          : creds.scopes,
+      subscriptionType: creds.subscriptionType,
+      rateLimitTier: creds.rateLimitTier,
+    };
+  } catch (err) {
+    logger.error({ err }, 'OAuth token refresh error');
+    return null;
+  }
 }
 
 export function appendClaudeConfigAudit(
@@ -961,6 +1096,7 @@ export function mergeClaudeEnvConfig(
     anthropicApiKey: override.anthropicApiKey || global.anthropicApiKey,
     claudeCodeOauthToken:
       override.claudeCodeOauthToken || global.claudeCodeOauthToken,
+    claudeCodeOauthCredentials: global.claudeCodeOauthCredentials,
     updatedAt: global.updatedAt,
   };
 }

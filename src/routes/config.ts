@@ -102,6 +102,7 @@ configRoutes.put(
         anthropicAuthToken: current.anthropicAuthToken,
         anthropicApiKey: current.anthropicApiKey,
         claudeCodeOauthToken: current.claudeCodeOauthToken,
+        claudeCodeOauthCredentials: current.claudeCodeOauthCredentials,
       });
       appendClaudeConfigAudit(actor, 'update_base_url', ['anthropicBaseUrl']);
       return c.json(toPublicClaudeProviderConfig(saved));
@@ -185,6 +186,18 @@ configRoutes.put(
       changedFields.push('claudeCodeOauthToken:clear');
     }
 
+    if (validation.data.claudeCodeOauthCredentials) {
+      next.claudeCodeOauthCredentials = validation.data.claudeCodeOauthCredentials;
+      // Clear the plain token when using full credentials
+      next.claudeCodeOauthToken = '';
+      next.anthropicAuthToken = '';
+      next.anthropicApiKey = '';
+      changedFields.push('claudeCodeOauthCredentials:set', 'claudeCodeOauthToken:clear', 'anthropicAuthToken:clear', 'anthropicApiKey:clear');
+    } else if (validation.data.clearClaudeCodeOauthCredentials === true) {
+      next.claudeCodeOauthCredentials = null;
+      changedFields.push('claudeCodeOauthCredentials:clear');
+    }
+
     if (changedFields.length === 0) {
       return c.json({ error: 'No secret changes provided' }, 400);
     }
@@ -195,6 +208,7 @@ configRoutes.put(
         anthropicAuthToken: next.anthropicAuthToken,
         anthropicApiKey: next.anthropicApiKey,
         claudeCodeOauthToken: next.claudeCodeOauthToken,
+        claudeCodeOauthCredentials: next.claudeCodeOauthCredentials,
       });
       appendClaudeConfigAudit(actor, 'update_secrets', changedFields);
       return c.json(toPublicClaudeProviderConfig(saved));
@@ -277,6 +291,7 @@ configRoutes.post(
     });
 
     const params = new URLSearchParams({
+      code: 'true',
       response_type: 'code',
       client_id: OAUTH_CLIENT_ID,
       redirect_uri: OAUTH_REDIRECT_URI,
@@ -353,6 +368,7 @@ configRoutes.post(
         anthropicAuthToken: '',
         anthropicApiKey: '',
         claudeCodeOauthToken: tokenData.access_token,
+        claudeCodeOauthCredentials: current.claudeCodeOauthCredentials,
       });
       appendClaudeConfigAudit(actor, 'oauth_login', [
         'claudeCodeOauthToken:set',

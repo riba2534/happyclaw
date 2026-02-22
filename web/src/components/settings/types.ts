@@ -4,6 +4,10 @@ export interface ClaudeConfigPublic {
   hasAnthropicAuthToken: boolean;
   hasAnthropicApiKey: boolean;
   hasClaudeCodeOauthToken: boolean;
+  hasClaudeCodeOauthCredentials: boolean;
+  claudeCodeOauthCredentialsExpiresAt: number | null;
+  claudeCodeOauthCredentialsAccessTokenMasked: string | null;
+  claudeCodeOauthCredentialsRefreshTokenMasked: string | null;
   anthropicAuthTokenMasked: string | null;
   anthropicApiKeyMasked: string | null;
   claudeCodeOauthTokenMasked: string | null;

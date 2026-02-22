@@ -202,6 +202,15 @@ export const InviteCreateSchema = z.object({
   expires_in_hours: z.number().int().min(1).max(8760).optional(),
 });
 
+export const ClaudeOAuthCredentialsSchema = z.object({
+  accessToken: z.string().min(1),
+  refreshToken: z.string().min(1),
+  expiresAt: z.number(),
+  scopes: z.array(z.string()).default([]),
+  subscriptionType: z.string().optional(),
+  rateLimitTier: z.string().optional(),
+});
+
 export const ClaudeSecretsSchema = z
   .object({
     anthropicAuthToken: z.string().optional(),
@@ -210,6 +219,8 @@ export const ClaudeSecretsSchema = z
     clearAnthropicApiKey: z.boolean().optional(),
     claudeCodeOauthToken: z.string().optional(),
     clearClaudeCodeOauthToken: z.boolean().optional(),
+    claudeCodeOauthCredentials: ClaudeOAuthCredentialsSchema.optional(),
+    clearClaudeCodeOauthCredentials: z.boolean().optional(),
   })
   .refine(
     (data) => {
@@ -222,8 +233,11 @@ export const ClaudeSecretsSchema = z
       const hasClaudeCodeOauthToken =
         typeof data.claudeCodeOauthToken === 'string' ||
         data.clearClaudeCodeOauthToken === true;
+      const hasClaudeCodeOauthCredentials =
+        data.claudeCodeOauthCredentials !== undefined ||
+        data.clearClaudeCodeOauthCredentials === true;
       return (
-        hasAnthropicAuthToken || hasAnthropicApiKey || hasClaudeCodeOauthToken
+        hasAnthropicAuthToken || hasAnthropicApiKey || hasClaudeCodeOauthToken || hasClaudeCodeOauthCredentials
       );
     },
     { message: 'At least one secret field must be provided' },

@@ -1,11 +1,25 @@
-import { useEffect, useState } from 'react';
-import { ArrowRight, ExternalLink, KeyRound, Loader2, Link2, Plus, Server, ShieldCheck, X } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { ArrowRight, Eye, EyeOff, ExternalLink, KeyRound, Loader2, Link2, Plus, Server, ShieldCheck, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { api } from '../api/client';
 import { useAuthStore } from '../stores/auth';
+
+interface ClaudeConfigSnapshot {
+  anthropicBaseUrl: string;
+  hasAnthropicAuthToken: boolean;
+  hasAnthropicApiKey: boolean;
+  hasClaudeCodeOauthToken: boolean;
+  hasClaudeCodeOauthCredentials: boolean;
+  claudeCodeOauthCredentialsExpiresAt: number | null;
+  claudeCodeOauthCredentialsAccessTokenMasked: string | null;
+  claudeCodeOauthCredentialsRefreshTokenMasked: string | null;
+  anthropicAuthTokenMasked: string | null;
+  anthropicApiKeyMasked: string | null;
+  claudeCodeOauthTokenMasked: string | null;
+}
 
 type ProviderMode = 'official' | 'third_party';
 
@@ -79,6 +93,19 @@ export function SetupProvidersPage() {
   const [baseUrl, setBaseUrl] = useState('');
   const [authToken, setAuthToken] = useState('');
   const [customEnvRows, setCustomEnvRows] = useState<EnvRow[]>([]);
+
+  // Current credential status
+  const [currentConfig, setCurrentConfig] = useState<ClaudeConfigSnapshot | null>(null);
+  const [showCredentials, setShowCredentials] = useState(false);
+
+  const loadCurrentConfig = useCallback(async () => {
+    try {
+      const data = await api.get<ClaudeConfigSnapshot>('/api/config/claude');
+      setCurrentConfig(data);
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => { loadCurrentConfig(); }, [loadCurrentConfig]);
 
   useEffect(() => {
     if (user === null && initialized === true) {
@@ -186,11 +213,38 @@ export function SetupProvidersPage() {
           await api.put('/api/config/claude/custom-env', { customEnv: {} });
         } else {
           await api.put('/api/config/claude', { anthropicBaseUrl: '' });
-          await api.put('/api/config/claude/secrets', {
-            claudeCodeOauthToken: officialToken.trim(),
-            clearAnthropicAuthToken: true,
-            clearAnthropicApiKey: true,
-          });
+          // Detect if input is full credentials JSON
+          const trimmed = officialToken.trim();
+          let secretPayload: Record<string, unknown>;
+          try {
+            const parsed = JSON.parse(trimmed);
+            if (parsed?.claudeAiOauth?.accessToken && parsed?.claudeAiOauth?.refreshToken) {
+              const oauth = parsed.claudeAiOauth;
+              secretPayload = {
+                claudeCodeOauthCredentials: {
+                  accessToken: oauth.accessToken,
+                  refreshToken: oauth.refreshToken,
+                  expiresAt: oauth.expiresAt || Date.now() + 3600000,
+                  scopes: oauth.scopes || [],
+                  subscriptionType: oauth.subscriptionType,
+                  rateLimitTier: oauth.rateLimitTier,
+                },
+              };
+            } else {
+              secretPayload = {
+                claudeCodeOauthToken: trimmed,
+                clearAnthropicAuthToken: true,
+                clearAnthropicApiKey: true,
+              };
+            }
+          } catch {
+            secretPayload = {
+              claudeCodeOauthToken: trimmed,
+              clearAnthropicAuthToken: true,
+              clearAnthropicApiKey: true,
+            };
+          }
+          await api.put('/api/config/claude/secrets', secretPayload);
           await api.put('/api/config/claude/custom-env', { customEnv: {} });
         }
       } else {
@@ -203,7 +257,7 @@ export function SetupProvidersPage() {
         await api.put('/api/config/claude/custom-env', { customEnv });
       }
 
-      await checkAuth();
+      await Promise.all([checkAuth(), loadCurrentConfig()]);
       // 确认 setupStatus 已更新后再跳转，避免 AuthGuard 检测到 needsSetup 仍为 true 导致重定向循环
       const { setupStatus: latestStatus } = useAuthStore.getState();
       if (latestStatus?.needsSetup) {
@@ -340,21 +394,101 @@ export function SetupProvidersPage() {
               </div>
 
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
-                <div className="font-medium mb-2">setup-token 获取方式</div>
+                <div className="font-medium mb-2">凭据获取方式（推荐）</div>
                 <ol className="list-decimal ml-5 space-y-1 text-xs">
-                  <li>在目标机器安装 Claude Code CLI（若未安装）。</li>
+                  <li>在本地电脑安装 Claude Code CLI（若未安装）。</li>
                   <li>在终端执行 <code>claude login</code> 完成账号登录。</li>
-                  <li>执行 <code>claude setup-token</code>，复制输出 token 到下方输入框。</li>
+                  <li>执行 <code>cat ~/.claude/.credentials.json</code>，复制完整 JSON 内容到下方输入框。</li>
                 </ol>
+                <p className="text-xs text-slate-500 mt-2">粘贴完整 JSON 可支持自动续期，避免 token 过期。</p>
+              </div>
+
+              {/* Current credential status — always visible */}
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-slate-700">当前已配置的凭据</span>
+                  {currentConfig && (currentConfig.hasClaudeCodeOauthCredentials || currentConfig.hasClaudeCodeOauthToken || currentConfig.hasAnthropicApiKey || currentConfig.hasAnthropicAuthToken) && (
+                    <button
+                      type="button"
+                      onClick={() => setShowCredentials(!showCredentials)}
+                      className="inline-flex items-center gap-1 text-xs text-primary hover:text-primary/80 cursor-pointer"
+                    >
+                      {showCredentials ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      {showCredentials ? '隐藏' : '查看'}
+                    </button>
+                  )}
+                </div>
+                {!currentConfig ? (
+                  <div className="text-xs text-slate-400">加载中...</div>
+                ) : !(currentConfig.hasClaudeCodeOauthCredentials || currentConfig.hasClaudeCodeOauthToken || currentConfig.hasAnthropicApiKey || currentConfig.hasAnthropicAuthToken) ? (
+                  <div className="text-xs text-slate-400">未配置任何凭据</div>
+                ) : showCredentials ? (
+                  <div className="text-xs text-slate-600 space-y-1">
+                    {currentConfig.hasClaudeCodeOauthCredentials && (
+                      <>
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-500 w-24 shrink-0">类型：</span>
+                          <span className="font-medium text-emerald-700">OAuth 完整凭据（自动续期）</span>
+                        </div>
+                        {currentConfig.claudeCodeOauthCredentialsAccessTokenMasked && (
+                          <div className="flex items-center gap-2">
+                            <span className="text-slate-500 w-24 shrink-0">Access Token：</span>
+                            <span className="font-mono">{currentConfig.claudeCodeOauthCredentialsAccessTokenMasked}</span>
+                          </div>
+                        )}
+                        {currentConfig.claudeCodeOauthCredentialsRefreshTokenMasked && (
+                          <div className="flex items-center gap-2">
+                            <span className="text-slate-500 w-24 shrink-0">Refresh Token：</span>
+                            <span className="font-mono">{currentConfig.claudeCodeOauthCredentialsRefreshTokenMasked}</span>
+                          </div>
+                        )}
+                        {currentConfig.claudeCodeOauthCredentialsExpiresAt && (
+                          <div className="flex items-center gap-2">
+                            <span className="text-slate-500 w-24 shrink-0">过期时间：</span>
+                            <span>
+                              {new Date(currentConfig.claudeCodeOauthCredentialsExpiresAt).toLocaleString('zh-CN')}
+                              {currentConfig.claudeCodeOauthCredentialsExpiresAt > Date.now()
+                                ? ` (${Math.round((currentConfig.claudeCodeOauthCredentialsExpiresAt - Date.now()) / 60000)} 分钟后)`
+                                : ' (已过期，等待自动续期)'}
+                            </span>
+                          </div>
+                        )}
+                      </>
+                    )}
+                    {currentConfig.hasClaudeCodeOauthToken && !currentConfig.hasClaudeCodeOauthCredentials && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-slate-500 w-20 shrink-0">OAuth Token：</span>
+                        <span className="font-mono">{currentConfig.claudeCodeOauthTokenMasked}</span>
+                      </div>
+                    )}
+                    {currentConfig.hasAnthropicApiKey && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-slate-500 w-20 shrink-0">API Key：</span>
+                        <span className="font-mono">{currentConfig.anthropicApiKeyMasked}</span>
+                      </div>
+                    )}
+                    {currentConfig.hasAnthropicAuthToken && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-slate-500 w-20 shrink-0">Auth Token：</span>
+                        <span className="font-mono">{currentConfig.anthropicAuthTokenMasked}</span>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-xs text-emerald-600">
+                    {currentConfig.hasClaudeCodeOauthCredentials ? 'OAuth 完整凭据已配置' : currentConfig.hasClaudeCodeOauthToken ? 'OAuth Token 已配置' : currentConfig.hasAnthropicApiKey ? 'API Key 已配置' : 'Auth Token 已配置'}
+                    ，点击「查看」展开详情
+                  </div>
+                )}
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">官方 setup-token</label>
+                <label className="block text-sm font-medium text-slate-700 mb-1">凭据</label>
                 <Input
                   type="password"
                   value={officialToken}
                   onChange={(e) => setOfficialToken(e.target.value)}
-                  placeholder="粘贴 claude setup-token 输出"
+                  placeholder="粘贴 ~/.claude/.credentials.json 内容或 setup-token"
                 />
               </div>
             </div>

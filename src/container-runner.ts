@@ -19,6 +19,7 @@ import {
   buildContainerEnvLines,
   getClaudeProviderConfig,
   getContainerEnvConfig,
+  writeOAuthCredentialsFile,
 } from './runtime-config.js';
 import { RegisteredGroup, StreamEvent } from './types.js';
 
@@ -245,6 +246,9 @@ function buildVolumeMounts(
       readonly: true,
     });
   }
+
+  // Write OAuth credentials file for Claude Code CLI (subscription auth)
+  writeOAuthCredentialsFile(groupSessionsDir, globalConfig);
 
   // Mount agent-runner source from host — recompiled on container startup.
   // Bypasses Docker 镜像构建缓存，确保代码变更生效。
@@ -1014,6 +1018,9 @@ export async function runHostAgent(
   const globalConfig = getClaudeProviderConfig();
   const containerOverride = getContainerEnvConfig(group.folder);
   const envLines = buildContainerEnvLines(globalConfig, containerOverride);
+
+  // Write OAuth credentials file for Claude Code CLI (subscription auth)
+  writeOAuthCredentialsFile(groupSessionsDir, globalConfig);
   for (const line of envLines) {
     const eqIdx = line.indexOf('=');
     if (eqIdx > 0) {

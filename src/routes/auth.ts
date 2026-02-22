@@ -94,7 +94,7 @@ export function toUserPublic(u: User): UserPublic {
 
 function buildSetupStatus() {
   const claudeConfig = getClaudeProviderConfig();
-  const officialConfigured = !!claudeConfig.claudeCodeOauthToken?.trim();
+  const officialConfigured = !!claudeConfig.claudeCodeOauthToken?.trim() || !!claudeConfig.claudeCodeOauthCredentials;
   const thirdPartyConfigured = !!(
     claudeConfig.anthropicBaseUrl?.trim() && claudeConfig.anthropicAuthToken?.trim()
   );

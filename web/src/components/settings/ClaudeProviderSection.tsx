@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ExternalLink, Loader2, Plus, RefreshCw, Rocket, X } from 'lucide-react';
+import { Eye, EyeOff, ExternalLink, Loader2, Plus, RefreshCw, Rocket, X } from 'lucide-react';
 
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -38,6 +38,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [applying, setApplying] = useState(false);
+  const [showCredentials, setShowCredentials] = useState(false);
 
   const loadConfig = useCallback(async () => {
     setLoading(true);
@@ -57,7 +58,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
       setCustomEnvRows(envRows);
 
       const inferredMode: ProviderMode =
-        configData.hasClaudeCodeOauthToken &&
+        (configData.hasClaudeCodeOauthToken || configData.hasClaudeCodeOauthCredentials) &&
         !configData.hasAnthropicAuthToken &&
         !configData.anthropicBaseUrl
           ? 'official'
@@ -79,7 +80,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
 
   const handleSaveOfficial = async () => {
     if (!officialCode.trim()) {
-      setError('请填写官方 setup-token');
+      setError('请填写官方凭据');
       return;
     }
 
@@ -91,16 +92,49 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
         anthropicBaseUrl: '',
       });
 
-      const saved = await api.put<ClaudeConfigPublic>('/api/config/claude/secrets', {
-        claudeCodeOauthToken: officialCode.trim(),
-        clearAnthropicAuthToken: true,
-        clearAnthropicApiKey: true,
-      });
+      // Detect if input is full credentials JSON from ~/.claude/.credentials.json
+      const trimmed = officialCode.trim();
+      let secretPayload: Record<string, unknown>;
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed?.claudeAiOauth?.accessToken && parsed?.claudeAiOauth?.refreshToken) {
+          // Full credentials JSON — extract and send as claudeCodeOauthCredentials
+          const oauth = parsed.claudeAiOauth;
+          secretPayload = {
+            claudeCodeOauthCredentials: {
+              accessToken: oauth.accessToken,
+              refreshToken: oauth.refreshToken,
+              expiresAt: oauth.expiresAt || Date.now() + 3600000,
+              scopes: oauth.scopes || [],
+              subscriptionType: oauth.subscriptionType,
+              rateLimitTier: oauth.rateLimitTier,
+            },
+          };
+        } else {
+          // Plain token string wrapped in JSON? Treat as token
+          secretPayload = {
+            claudeCodeOauthToken: trimmed,
+            clearAnthropicAuthToken: true,
+            clearAnthropicApiKey: true,
+          };
+        }
+      } catch {
+        // Not JSON — treat as plain setup-token
+        secretPayload = {
+          claudeCodeOauthToken: trimmed,
+          clearAnthropicAuthToken: true,
+          clearAnthropicApiKey: true,
+        };
+      }
+
+      const saved = await api.put<ClaudeConfigPublic>('/api/config/claude/secrets', secretPayload);
 
       setConfig(saved);
       setOfficialCode('');
       setProviderMode('official');
-      setNotice('官方提供商 setup-token 已保存。');
+      setNotice(saved.hasClaudeCodeOauthCredentials
+        ? 'Claude OAuth 凭据已保存（支持自动续期）。'
+        : '官方提供商 setup-token 已保存。');
       await loadConfig();
     } catch (err) {
       setError(getErrorMessage(err, '保存官方提供商配置失败'));
@@ -279,28 +313,108 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
             )}
           </div>
 
+          {/* Current credential status */}
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-slate-700">当前已配置的凭据</span>
+              {config && (config.hasClaudeCodeOauthCredentials || config.hasClaudeCodeOauthToken || config.hasAnthropicApiKey || config.hasAnthropicAuthToken) && (
+                <button
+                  type="button"
+                  onClick={() => setShowCredentials(!showCredentials)}
+                  className="inline-flex items-center gap-1 text-xs text-primary hover:text-primary/80 cursor-pointer"
+                >
+                  {showCredentials ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  {showCredentials ? '隐藏' : '查看'}
+                </button>
+              )}
+            </div>
+            {!config ? (
+              <div className="text-xs text-slate-400">加载中...</div>
+            ) : !(config.hasClaudeCodeOauthCredentials || config.hasClaudeCodeOauthToken || config.hasAnthropicApiKey || config.hasAnthropicAuthToken) ? (
+              <div className="text-xs text-slate-400">未配置任何凭据</div>
+            ) : showCredentials ? (
+              <div className="text-xs text-slate-600 space-y-1">
+                {config.hasClaudeCodeOauthCredentials && (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <span className="text-slate-500 w-24 shrink-0">类型：</span>
+                      <span className="font-medium text-emerald-700">OAuth 完整凭据（自动续期）</span>
+                    </div>
+                    {config.claudeCodeOauthCredentialsAccessTokenMasked && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-slate-500 w-24 shrink-0">Access Token：</span>
+                        <span className="font-mono">{config.claudeCodeOauthCredentialsAccessTokenMasked}</span>
+                      </div>
+                    )}
+                    {config.claudeCodeOauthCredentialsRefreshTokenMasked && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-slate-500 w-24 shrink-0">Refresh Token：</span>
+                        <span className="font-mono">{config.claudeCodeOauthCredentialsRefreshTokenMasked}</span>
+                      </div>
+                    )}
+                    {config.claudeCodeOauthCredentialsExpiresAt && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-slate-500 w-24 shrink-0">过期时间：</span>
+                        <span>
+                          {new Date(config.claudeCodeOauthCredentialsExpiresAt).toLocaleString('zh-CN')}
+                          {config.claudeCodeOauthCredentialsExpiresAt > Date.now()
+                            ? ` (${Math.round((config.claudeCodeOauthCredentialsExpiresAt - Date.now()) / 60000)} 分钟后)`
+                            : ' (已过期，等待自动续期)'}
+                        </span>
+                      </div>
+                    )}
+                  </>
+                )}
+                {config.hasClaudeCodeOauthToken && !config.hasClaudeCodeOauthCredentials && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-500 w-20 shrink-0">OAuth Token：</span>
+                    <span className="font-mono">{config.claudeCodeOauthTokenMasked}</span>
+                  </div>
+                )}
+                {config.hasAnthropicApiKey && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-500 w-20 shrink-0">API Key：</span>
+                    <span className="font-mono">{config.anthropicApiKeyMasked}</span>
+                  </div>
+                )}
+                {config.hasAnthropicAuthToken && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-500 w-20 shrink-0">Auth Token：</span>
+                    <span className="font-mono">{config.anthropicAuthTokenMasked}</span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="text-xs text-emerald-600">
+                {config.hasClaudeCodeOauthCredentials ? 'OAuth 完整凭据已配置' : config.hasClaudeCodeOauthToken ? 'OAuth Token 已配置' : config.hasAnthropicApiKey ? 'API Key 已配置' : 'Auth Token 已配置'}
+                ，点击「查看」展开详情
+              </div>
+            )}
+          </div>
+
           <div className="relative flex items-center gap-3 text-xs text-slate-400">
             <div className="flex-1 border-t border-slate-200" />
-            或手动粘贴 setup-token
+            或手动粘贴凭据
             <div className="flex-1 border-t border-slate-200" />
           </div>
 
           <div>
-            <label className="block text-xs text-slate-600 mb-1">
-              官方 setup-token {config?.hasClaudeCodeOauthToken ? `(${config.claudeCodeOauthTokenMasked})` : ''}
-            </label>
+            <label className="block text-xs text-slate-600 mb-1">凭据</label>
             <Input
               type="password"
               value={officialCode}
               onChange={(e) => setOfficialCode(e.target.value)}
               disabled={loading || saving}
-              placeholder={config?.hasClaudeCodeOauthToken ? '输入新值覆盖' : '粘贴 claude setup-token 输出'}
+              placeholder={config?.hasClaudeCodeOauthCredentials || config?.hasClaudeCodeOauthToken ? '输入新值覆盖' : '粘贴 ~/.claude/.credentials.json 内容或 setup-token'}
             />
+            <p className="text-xs text-slate-400 mt-1">
+              支持粘贴 <code className="bg-slate-100 px-1 rounded">~/.claude/.credentials.json</code> 的完整 JSON 内容（推荐，支持自动续期）
+            </p>
           </div>
 
           <Button onClick={handleSaveOfficial} disabled={loading || saving}>
             {saving && <Loader2 className="size-4 animate-spin" />}
-            保存官方 setup-token
+            保存凭据
           </Button>
         </div>
       ) : (
