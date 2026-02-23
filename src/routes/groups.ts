@@ -777,7 +777,7 @@ groupRoutes.post('/:jid/reset-session', authMiddleware, async (c) => {
   const group = getRegisteredGroup(jid);
   if (!group) return c.json({ error: 'Group not found' }, 404);
   const authUser = c.get('user') as AuthUser;
-  if (!canAccessGroup({ id: authUser.id, role: authUser.role }, group)) {
+  if (!canModifyGroup({ id: authUser.id, role: authUser.role }, { ...group, jid })) {
     return c.json({ error: 'Group not found' }, 404);
   }
   if (isHostExecutionGroup(group) && !hasHostExecutionPermission(authUser)) {
@@ -883,7 +883,7 @@ groupRoutes.post('/:jid/clear-history', authMiddleware, async (c) => {
   const group = getRegisteredGroup(jid);
   if (!group) return c.json({ error: 'Group not found' }, 404);
   const authUser = c.get('user') as AuthUser;
-  if (!canAccessGroup({ id: authUser.id, role: authUser.role }, group)) {
+  if (!canModifyGroup({ id: authUser.id, role: authUser.role }, { ...group, jid })) {
     return c.json({ error: 'Group not found' }, 404);
   }
   if (isHostExecutionGroup(group) && !hasHostExecutionPermission(authUser)) {

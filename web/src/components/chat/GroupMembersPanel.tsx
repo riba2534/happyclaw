@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Crown, LogOut, Trash2, UserPlus } from 'lucide-react';
 import { useGroupsStore } from '../../stores/groups';
 import { useChatStore } from '../../stores/chat';
@@ -16,6 +17,7 @@ interface UserOption {
 }
 
 export function GroupMembersPanel({ groupJid }: GroupMembersPanelProps) {
+  const navigate = useNavigate();
   const group = useChatStore(s => s.groups[groupJid]);
   const currentUser = useAuthStore(s => s.user);
   const members = useGroupsStore(s => s.members[groupJid]);
@@ -99,6 +101,7 @@ export function GroupMembersPanel({ groupJid }: GroupMembersPanelProps) {
     setError(null);
     try {
       await useGroupsStore.getState().removeMember(groupJid, currentUser.id);
+      navigate('/chat');
     } catch (err) {
       setError(err instanceof Error ? err.message : '退出失败');
     } finally {

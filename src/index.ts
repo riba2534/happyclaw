@@ -2195,7 +2195,8 @@ async function startMessageLoop(): Promise<void> {
             continue;
           }
 
-          const formatted = formatMessages(messagesToSend);
+          const shared = !group.is_home && isGroupShared(group.folder);
+          const formatted = formatMessages(messagesToSend, shared);
 
           const images = collectMessageImages(chatJid, messagesToSend);
           const imagesForAgent = images.length > 0 ? images : undefined;
