@@ -1240,24 +1240,12 @@ export async function refreshOAuthCredentials(
       scope?: string;
     };
 
-    logger.info(
-      {
-        hasAccessToken: !!data.access_token,
-        hasRefreshToken: !!data.refresh_token,
-        expires_in: data.expires_in,
-        expires_in_type: typeof data.expires_in,
-        scope: data.scope,
-      },
-      'OAuth refresh response',
-    );
-
     if (!data.access_token) {
       logger.warn('OAuth refresh response missing access_token');
       return null;
     }
 
     // expiresAt 计算与 SDK 保持一致：Date.now() + expires_in * 1000
-    // SDK 内部 sF() 已有 5 分钟提前量，此处不再额外扣减
     return {
       accessToken: data.access_token,
       refreshToken: data.refresh_token || credentials.refreshToken,

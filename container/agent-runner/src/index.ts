@@ -1323,21 +1323,8 @@ async function main(): Promise<void> {
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     log(`Agent error: ${errorMessage}`);
-    // 打印完整错误对象的所有属性，帮助排查 SDK 内部错误
-    if (err instanceof Error) {
-      if (err.stack) log(`Agent error stack: ${err.stack}`);
-      const errAny = err as unknown as Record<string, unknown>;
-      if ('stderr' in err) log(`Agent error stderr: ${errAny.stderr}`);
-      if ('stdout' in err) log(`Agent error stdout: ${errAny.stdout}`);
-      if ('code' in err) log(`Agent error code: ${errAny.code}`);
-      if ('cause' in err) log(`Agent error cause: ${JSON.stringify(errAny.cause)}`);
-      // 打印所有非标准属性
-      const extraKeys = Object.keys(err).filter(k => !['message', 'stack', 'name'].includes(k));
-      if (extraKeys.length > 0) {
-        const extra: Record<string, unknown> = {};
-        for (const k of extraKeys) extra[k] = errAny[k];
-        log(`Agent error extra props: ${JSON.stringify(extra)}`);
-      }
+    if (err instanceof Error && err.stack) {
+      log(`Agent error stack: ${err.stack}`);
     }
     // 不在 error output 中携带 sessionId：
     // 流式输出已通过 onOutput 回调传递了有效的 session 更新。
