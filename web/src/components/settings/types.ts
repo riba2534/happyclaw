@@ -7,6 +7,9 @@ export interface ClaudeConfigPublic {
   anthropicAuthTokenMasked: string | null;
   anthropicApiKeyMasked: string | null;
   claudeCodeOauthTokenMasked: string | null;
+  hasClaudeOAuthCredentials: boolean;
+  claudeOAuthCredentialsExpiresAt: number | null;
+  claudeOAuthCredentialsAccessTokenMasked: string | null;
 }
 
 export interface FeishuConfigPublic {

@@ -97,10 +97,14 @@ import {
 // feishu.js deprecated exports are no longer needed; imManager handles all connections
 import { imManager } from './im-manager.js';
 import {
+  getClaudeProviderConfig as getClaudeProviderConfigForRefresh,
   getFeishuProviderConfigWithSource,
   getTelegramProviderConfigWithSource,
   getUserFeishuConfig,
   getUserTelegramConfig,
+  refreshOAuthCredentials,
+  saveClaudeProviderConfig as saveClaudeProviderConfigForRefresh,
+  updateAllSessionCredentials,
 } from './runtime-config.js';
 import type { FeishuConnectConfig, TelegramConnectConfig } from './im-manager.js';
 import { GroupQueue } from './group-queue.js';
@@ -2757,6 +2761,37 @@ async function main(): Promise<void> {
     },
     60 * 60 * 1000,
   );
+
+  // OAuth token auto-refresh (every 5 minutes)
+  setInterval(async () => {
+    try {
+      const config = getClaudeProviderConfigForRefresh();
+      const creds = config.claudeOAuthCredentials;
+      if (!creds) return;
+
+      const timeToExpiry = creds.expiresAt - Date.now();
+      if (timeToExpiry > 30 * 60 * 1000) return; // >30min to expiry, skip
+
+      logger.info(
+        { expiresIn: Math.round(timeToExpiry / 1000) },
+        'OAuth token expiring soon, refreshing...',
+      );
+      const refreshed = await refreshOAuthCredentials(creds);
+      if (refreshed) {
+        const current = getClaudeProviderConfigForRefresh();
+        const saved = saveClaudeProviderConfigForRefresh({
+          ...current,
+          claudeOAuthCredentials: refreshed,
+        });
+        updateAllSessionCredentials(saved);
+        logger.info('OAuth token refreshed successfully');
+      } else {
+        logger.warn('OAuth token refresh failed');
+      }
+    } catch (err) {
+      logger.error({ err }, 'OAuth auto-refresh error');
+    }
+  }, 5 * 60 * 1000);
 
   await ensureDockerRunning();
 

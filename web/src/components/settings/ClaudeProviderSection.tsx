@@ -57,7 +57,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
       setCustomEnvRows(envRows);
 
       const inferredMode: ProviderMode =
-        configData.hasClaudeCodeOauthToken &&
+        (configData.hasClaudeCodeOauthToken || configData.hasClaudeOAuthCredentials) &&
         !configData.hasAnthropicAuthToken &&
         !configData.anthropicBaseUrl
           ? 'official'
@@ -79,7 +79,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
 
   const handleSaveOfficial = async () => {
     if (!officialCode.trim()) {
-      setError('请填写官方 setup-token');
+      setError('请填写官方 setup-token 或粘贴 .credentials.json 内容');
       return;
     }
 
@@ -91,17 +91,52 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
         anthropicBaseUrl: '',
       });
 
-      const saved = await api.put<ClaudeConfigPublic>('/api/config/claude/secrets', {
-        claudeCodeOauthToken: officialCode.trim(),
-        clearAnthropicAuthToken: true,
-        clearAnthropicApiKey: true,
-      });
+      // Detect if user pasted .credentials.json content
+      const trimmed = officialCode.trim();
+      let isCredentialsJson = false;
+      if (trimmed.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+          const oauth = parsed.claudeAiOauth as Record<string, unknown> | undefined;
+          if (oauth?.accessToken && oauth?.refreshToken) {
+            isCredentialsJson = true;
+            const saved = await api.put<ClaudeConfigPublic>('/api/config/claude/secrets', {
+              claudeOAuthCredentials: {
+                accessToken: oauth.accessToken,
+                refreshToken: oauth.refreshToken,
+                expiresAt: oauth.expiresAt
+                  ? new Date(oauth.expiresAt as string).getTime()
+                  : Date.now() + 8 * 60 * 60 * 1000,
+                scopes: Array.isArray(oauth.scopes) ? oauth.scopes : [],
+              },
+              clearAnthropicAuthToken: true,
+              clearAnthropicApiKey: true,
+              clearClaudeCodeOauthToken: true,
+            });
+            setConfig(saved);
+            setOfficialCode('');
+            setProviderMode('official');
+            setNotice('OAuth 凭据已保存（含自动续期）。');
+            await loadConfig();
+            return;
+          }
+        } catch {
+          // Not valid JSON, treat as setup-token
+        }
+      }
 
-      setConfig(saved);
-      setOfficialCode('');
-      setProviderMode('official');
-      setNotice('官方提供商 setup-token 已保存。');
-      await loadConfig();
+      if (!isCredentialsJson) {
+        const saved = await api.put<ClaudeConfigPublic>('/api/config/claude/secrets', {
+          claudeCodeOauthToken: trimmed,
+          clearAnthropicAuthToken: true,
+          clearAnthropicApiKey: true,
+        });
+        setConfig(saved);
+        setOfficialCode('');
+        setProviderMode('official');
+        setNotice('官方提供商 setup-token 已保存。');
+        await loadConfig();
+      }
     } catch (err) {
       setError(getErrorMessage(err, '保存官方提供商配置失败'));
     } finally {
@@ -241,6 +276,25 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
 
       {providerMode === 'official' ? (
         <div className="space-y-4">
+          {/* OAuth credentials status */}
+          {config?.hasClaudeOAuthCredentials && (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50/50 p-4 space-y-1">
+              <div className="text-sm font-medium text-emerald-800">OAuth 凭据（自动续期）</div>
+              <div className="text-xs text-emerald-700">
+                Access Token: {config.claudeOAuthCredentialsAccessTokenMasked || '***'}
+              </div>
+              {config.claudeOAuthCredentialsExpiresAt && (
+                <div className="text-xs text-emerald-700">
+                  过期时间: {new Date(config.claudeOAuthCredentialsExpiresAt).toLocaleString('zh-CN')}
+                  {config.claudeOAuthCredentialsExpiresAt > Date.now()
+                    ? ` (${Math.round((config.claudeOAuthCredentialsExpiresAt - Date.now()) / 60000)} 分钟后)`
+                    : ' (已过期，等待自动刷新)'}
+                </div>
+              )}
+              <div className="text-xs text-emerald-600">系统每 5 分钟检查一次，过期前 30 分钟内自动刷新。</div>
+            </div>
+          )}
+
           {/* OAuth one-click login */}
           <div className="rounded-lg border border-teal-200 bg-teal-50/50 p-4 space-y-3">
             <div className="text-sm font-medium text-slate-800">一键登录 Claude（推荐）</div>
@@ -281,26 +335,32 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
 
           <div className="relative flex items-center gap-3 text-xs text-slate-400">
             <div className="flex-1 border-t border-slate-200" />
-            或手动粘贴 setup-token
+            或手动粘贴 setup-token / .credentials.json
             <div className="flex-1 border-t border-slate-200" />
           </div>
 
           <div>
             <label className="block text-xs text-slate-600 mb-1">
-              官方 setup-token {config?.hasClaudeCodeOauthToken ? `(${config.claudeCodeOauthTokenMasked})` : ''}
+              setup-token 或 .credentials.json{' '}
+              {config?.hasClaudeCodeOauthToken ? `(${config.claudeCodeOauthTokenMasked})` : ''}
             </label>
             <Input
               type="password"
               value={officialCode}
               onChange={(e) => setOfficialCode(e.target.value)}
               disabled={loading || saving}
-              placeholder={config?.hasClaudeCodeOauthToken ? '输入新值覆盖' : '粘贴 claude setup-token 输出'}
+              placeholder={config?.hasClaudeCodeOauthToken || config?.hasClaudeOAuthCredentials
+                ? '输入新值覆盖'
+                : '粘贴 setup-token 或 cat ~/.claude/.credentials.json 输出'}
             />
+            <p className="text-xs text-slate-400 mt-1">
+              支持粘贴 <code className="bg-slate-100 px-1 rounded">cat ~/.claude/.credentials.json</code> 的 JSON 内容（含自动续期）
+            </p>
           </div>
 
           <Button onClick={handleSaveOfficial} disabled={loading || saving}>
             {saving && <Loader2 className="size-4 animate-spin" />}
-            保存官方 setup-token
+            保存凭据
           </Button>
         </div>
       ) : (

@@ -166,7 +166,7 @@ export function SetupProvidersPage() {
       }
       customEnv = envResult.customEnv;
     } else if (!officialToken.trim() && !oauthDone) {
-      setError('官方渠道请通过一键登录或手动填写 setup-token');
+      setError('官方渠道请通过一键登录或手动填写 setup-token / .credentials.json');
       return;
     }
 
@@ -186,11 +186,42 @@ export function SetupProvidersPage() {
           await api.put('/api/config/claude/custom-env', { customEnv: {} });
         } else {
           await api.put('/api/config/claude', { anthropicBaseUrl: '' });
-          await api.put('/api/config/claude/secrets', {
-            claudeCodeOauthToken: officialToken.trim(),
-            clearAnthropicAuthToken: true,
-            clearAnthropicApiKey: true,
-          });
+
+          // Detect if user pasted .credentials.json content
+          const trimmed = officialToken.trim();
+          let isCredentialsJson = false;
+          if (trimmed.startsWith('{')) {
+            try {
+              const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+              const oauth = parsed.claudeAiOauth as Record<string, unknown> | undefined;
+              if (oauth?.accessToken && oauth?.refreshToken) {
+                isCredentialsJson = true;
+                await api.put('/api/config/claude/secrets', {
+                  claudeOAuthCredentials: {
+                    accessToken: oauth.accessToken,
+                    refreshToken: oauth.refreshToken,
+                    expiresAt: oauth.expiresAt
+                      ? new Date(oauth.expiresAt as string).getTime()
+                      : Date.now() + 8 * 60 * 60 * 1000,
+                    scopes: Array.isArray(oauth.scopes) ? oauth.scopes : [],
+                  },
+                  clearAnthropicAuthToken: true,
+                  clearAnthropicApiKey: true,
+                  clearClaudeCodeOauthToken: true,
+                });
+              }
+            } catch {
+              // Not valid JSON, treat as setup-token
+            }
+          }
+
+          if (!isCredentialsJson) {
+            await api.put('/api/config/claude/secrets', {
+              claudeCodeOauthToken: trimmed,
+              clearAnthropicAuthToken: true,
+              clearAnthropicApiKey: true,
+            });
+          }
           await api.put('/api/config/claude/custom-env', { customEnv: {} });
         }
       } else {
@@ -340,22 +371,32 @@ export function SetupProvidersPage() {
               </div>
 
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
-                <div className="font-medium mb-2">setup-token 获取方式</div>
+                <div className="font-medium mb-2">获取凭据</div>
                 <ol className="list-decimal ml-5 space-y-1 text-xs">
                   <li>在目标机器安装 Claude Code CLI（若未安装）。</li>
                   <li>在终端执行 <code>claude login</code> 完成账号登录。</li>
-                  <li>执行 <code>claude setup-token</code>，复制输出 token 到下方输入框。</li>
+                  <li>
+                    方式 A：执行 <code>cat ~/.claude/.credentials.json</code>，复制完整 JSON 内容到下方（推荐，支持自动续期）。
+                  </li>
+                  <li>
+                    方式 B：执行 <code>claude setup-token</code>，复制输出 token 到下方。
+                  </li>
                 </ol>
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">官方 setup-token</label>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  setup-token 或 .credentials.json
+                </label>
                 <Input
                   type="password"
                   value={officialToken}
                   onChange={(e) => setOfficialToken(e.target.value)}
-                  placeholder="粘贴 claude setup-token 输出"
+                  placeholder="粘贴 setup-token 或 cat ~/.claude/.credentials.json 输出"
                 />
+                <p className="text-xs text-slate-400 mt-1">
+                  支持粘贴 <code className="bg-slate-100 px-1 rounded">cat ~/.claude/.credentials.json</code> 的 JSON 内容（含自动续期）
+                </p>
               </div>
             </div>
           ) : (

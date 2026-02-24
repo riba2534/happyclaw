@@ -19,7 +19,9 @@ import {
   buildContainerEnvLines,
   getClaudeProviderConfig,
   getContainerEnvConfig,
+  mergeClaudeEnvConfig,
   shellQuoteEnvLines,
+  writeCredentialsFile,
 } from './runtime-config.js';
 import { RegisteredGroup, StreamEvent } from './types.js';
 
@@ -250,6 +252,16 @@ function buildVolumeMounts(
       containerPath: '/workspace/env-dir',
       readonly: true,
     });
+  }
+
+  // Write .credentials.json for OAuth credentials (session dir is already mounted)
+  const mergedConfig = mergeClaudeEnvConfig(globalConfig, containerOverride);
+  if (mergedConfig.claudeOAuthCredentials) {
+    try {
+      writeCredentialsFile(groupSessionsDir, mergedConfig);
+    } catch (err) {
+      logger.warn({ group: group.name, err }, 'Failed to write .credentials.json');
+    }
   }
 
   // Mount agent-runner source from host — recompiled on container startup.
@@ -1029,6 +1041,16 @@ export async function runHostAgent(
     const eqIdx = line.indexOf('=');
     if (eqIdx > 0) {
       hostEnv[line.slice(0, eqIdx)] = line.slice(eqIdx + 1);
+    }
+  }
+
+  // Write .credentials.json for OAuth credentials
+  const mergedConfig = mergeClaudeEnvConfig(globalConfig, containerOverride);
+  if (mergedConfig.claudeOAuthCredentials) {
+    try {
+      writeCredentialsFile(groupSessionsDir, mergedConfig);
+    } catch (err) {
+      logger.warn({ folder: group.folder, err }, 'Failed to write .credentials.json for host agent');
     }
   }
 

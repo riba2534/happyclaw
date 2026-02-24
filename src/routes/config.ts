@@ -36,7 +36,9 @@ import {
   saveUserFeishuConfig,
   getUserTelegramConfig,
   saveUserTelegramConfig,
+  updateAllSessionCredentials,
 } from '../runtime-config.js';
+import type { ClaudeOAuthCredentials } from '../runtime-config.js';
 import type { AuthUser } from '../types.js';
 import { hasPermission } from '../permissions.js';
 import { logger } from '../logger.js';
@@ -102,6 +104,7 @@ configRoutes.put(
         anthropicAuthToken: current.anthropicAuthToken,
         anthropicApiKey: current.anthropicApiKey,
         claudeCodeOauthToken: current.claudeCodeOauthToken,
+        claudeOAuthCredentials: current.claudeOAuthCredentials,
       });
       appendClaudeConfigAudit(actor, 'update_base_url', ['anthropicBaseUrl']);
       return c.json(toPublicClaudeProviderConfig(saved));
@@ -185,6 +188,16 @@ configRoutes.put(
       changedFields.push('claudeCodeOauthToken:clear');
     }
 
+    if (validation.data.claudeOAuthCredentials) {
+      next.claudeOAuthCredentials = validation.data.claudeOAuthCredentials;
+      // When setting full credentials, clear the legacy single-token field
+      next.claudeCodeOauthToken = '';
+      changedFields.push('claudeOAuthCredentials:set');
+    } else if (validation.data.clearClaudeOAuthCredentials === true) {
+      next.claudeOAuthCredentials = null;
+      changedFields.push('claudeOAuthCredentials:clear');
+    }
+
     if (changedFields.length === 0) {
       return c.json({ error: 'No secret changes provided' }, 400);
     }
@@ -195,7 +208,14 @@ configRoutes.put(
         anthropicAuthToken: next.anthropicAuthToken,
         anthropicApiKey: next.anthropicApiKey,
         claudeCodeOauthToken: next.claudeCodeOauthToken,
+        claudeOAuthCredentials: next.claudeOAuthCredentials,
       });
+
+      // Update .credentials.json in all session directories when credentials change
+      if (validation.data.claudeOAuthCredentials) {
+        updateAllSessionCredentials(saved);
+      }
+
       appendClaudeConfigAudit(actor, 'update_secrets', changedFields);
       return c.json(toPublicClaudeProviderConfig(saved));
     } catch (err) {
@@ -285,6 +305,7 @@ configRoutes.post(
       state,
       code_challenge: codeChallenge,
       code_challenge_method: 'S256',
+      code: 'true',
     });
 
     return c.json({ authorizeUrl: `${OAUTH_AUTHORIZE_URL}?${params.toString()}`, state });
@@ -342,21 +363,49 @@ configRoutes.post(
         return c.json({ error: `Token exchange failed: ${tokenResp.status}` }, 400);
       }
 
-      const tokenData = (await tokenResp.json()) as { access_token?: string; [key: string]: unknown };
+      const tokenData = (await tokenResp.json()) as {
+        access_token?: string;
+        refresh_token?: string;
+        expires_in?: number;
+        scope?: string;
+        [key: string]: unknown;
+      };
       if (!tokenData.access_token) {
         return c.json({ error: 'No access_token in response' }, 400);
       }
 
       const actor = (c.get('user') as AuthUser).username;
       const current = getClaudeProviderConfig();
+
+      // Build full OAuth credentials when refresh_token is available
+      let oauthCredentials: ClaudeOAuthCredentials | null = null;
+      if (tokenData.refresh_token) {
+        oauthCredentials = {
+          accessToken: tokenData.access_token,
+          refreshToken: tokenData.refresh_token,
+          expiresAt: tokenData.expires_in
+            ? Date.now() + tokenData.expires_in * 1000 - 5 * 60 * 1000
+            : Date.now() + 8 * 60 * 60 * 1000, // default 8h
+          scopes: tokenData.scope ? tokenData.scope.split(' ') : [],
+        };
+      }
+
       const saved = saveClaudeProviderConfig({
         anthropicBaseUrl: current.anthropicBaseUrl,
         anthropicAuthToken: '',
         anthropicApiKey: '',
-        claudeCodeOauthToken: tokenData.access_token,
+        // When we have full credentials, clear the legacy token field
+        claudeCodeOauthToken: oauthCredentials ? '' : tokenData.access_token,
+        claudeOAuthCredentials: oauthCredentials,
       });
+
+      // Write .credentials.json to all session directories
+      if (oauthCredentials) {
+        updateAllSessionCredentials(saved);
+      }
+
       appendClaudeConfigAudit(actor, 'oauth_login', [
-        'claudeCodeOauthToken:set',
+        oauthCredentials ? 'claudeOAuthCredentials:set' : 'claudeCodeOauthToken:set',
         'anthropicAuthToken:clear',
         'anthropicApiKey:clear',
       ]);

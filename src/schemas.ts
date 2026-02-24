@@ -206,6 +206,13 @@ export const InviteCreateSchema = z.object({
   expires_in_hours: z.number().int().min(1).max(8760).optional(),
 });
 
+export const ClaudeOAuthCredentialsSchema = z.object({
+  accessToken: z.string().min(1),
+  refreshToken: z.string().min(1),
+  expiresAt: z.number(),
+  scopes: z.array(z.string()).default([]),
+});
+
 export const ClaudeSecretsSchema = z
   .object({
     anthropicAuthToken: z.string().optional(),
@@ -214,6 +221,8 @@ export const ClaudeSecretsSchema = z
     clearAnthropicApiKey: z.boolean().optional(),
     claudeCodeOauthToken: z.string().optional(),
     clearClaudeCodeOauthToken: z.boolean().optional(),
+    claudeOAuthCredentials: ClaudeOAuthCredentialsSchema.optional(),
+    clearClaudeOAuthCredentials: z.boolean().optional(),
   })
   .refine(
     (data) => {
@@ -226,8 +235,11 @@ export const ClaudeSecretsSchema = z
       const hasClaudeCodeOauthToken =
         typeof data.claudeCodeOauthToken === 'string' ||
         data.clearClaudeCodeOauthToken === true;
+      const hasClaudeOAuthCredentials =
+        data.claudeOAuthCredentials !== undefined ||
+        data.clearClaudeOAuthCredentials === true;
       return (
-        hasAnthropicAuthToken || hasAnthropicApiKey || hasClaudeCodeOauthToken
+        hasAnthropicAuthToken || hasAnthropicApiKey || hasClaudeCodeOauthToken || hasClaudeOAuthCredentials
       );
     },
     { message: 'At least one secret field must be provided' },
