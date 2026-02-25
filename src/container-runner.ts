@@ -179,6 +179,13 @@ function buildVolumeMounts(
   const projectSkillsDir = path.join(projectRoot, 'container', 'skills');
   const userSkillsDir = (mountUserSkills && ownerId) ? path.join(DATA_DIR, 'skills', ownerId) : null;
 
+  // Ensure user skills directory exists so it can always be mounted.
+  // Skills may be installed after the group is created; without pre-creating,
+  // the existsSync check would skip mounting and the container would never see them.
+  if (userSkillsDir) {
+    fs.mkdirSync(userSkillsDir, { recursive: true });
+  }
+
   if (selectedSkills === null) {
     // 全量挂载（默认行为）
     if (fs.existsSync(projectSkillsDir)) {
@@ -188,7 +195,7 @@ function buildVolumeMounts(
         readonly: true,
       });
     }
-    if (userSkillsDir && fs.existsSync(userSkillsDir)) {
+    if (userSkillsDir) {
       mounts.push({
         hostPath: userSkillsDir,
         containerPath: '/workspace/user-skills',
@@ -212,7 +219,7 @@ function buildVolumeMounts(
       }
     }
     // 用户级 skills
-    if (userSkillsDir && fs.existsSync(userSkillsDir)) {
+    if (userSkillsDir) {
       for (const name of selectedSet) {
         const skillPath = path.join(userSkillsDir, name);
         if (fs.existsSync(skillPath) && fs.statSync(skillPath).isDirectory()) {
