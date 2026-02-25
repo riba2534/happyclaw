@@ -122,7 +122,7 @@ RUN mkdir -p /workspace/group /workspace/global /workspace/memory /workspace/ext
 # Sources env from mounted /workspace/env-dir/env if it exists (keeps credentials out of process listings)
 # Stdin is buffered to /tmp then piped (container requires EOF to flush stdin pipe)
 # Follow-up messages arrive via IPC files in /workspace/ipc/input/
-RUN printf '#!/bin/bash\nset -e\nif [ -f /workspace/env-dir/env ]; then\n  set -a\n  source /workspace/env-dir/env\n  set +a\nfi\nmkdir -p /home/node/.claude/skills\n[ -d /workspace/project-skills ] && ln -sf /workspace/project-skills/* /home/node/.claude/skills/ 2>/dev/null || true\n[ -d /workspace/user-skills ] && ln -sf /workspace/user-skills/* /home/node/.claude/skills/ 2>/dev/null || true\ncd /app && npx tsc --outDir /tmp/dist 2>&1 >&2\nln -s /app/node_modules /tmp/dist/node_modules\nchmod -R a-w /tmp/dist\ncat > /tmp/input.json\nnode /tmp/dist/index.js < /tmp/input.json\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+RUN printf '#!/bin/bash\nset -e\nif [ -f /workspace/env-dir/env ]; then\n  set -a\n  source /workspace/env-dir/env\n  set +a\nfi\nmkdir -p /home/node/.claude/skills 2>/dev/null || true\n[ -d /workspace/project-skills ] && ln -sf /workspace/project-skills/* /home/node/.claude/skills/ 2>/dev/null || true\n[ -d /workspace/user-skills ] && ln -sf /workspace/user-skills/* /home/node/.claude/skills/ 2>/dev/null || true\ncd /app && npx tsc --outDir /tmp/dist 2>&1 >&2\nln -s /app/node_modules /tmp/dist/node_modules\nchmod -R a-w /tmp/dist\ncat > /tmp/input.json\nnode /tmp/dist/index.js < /tmp/input.json\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 # Set ownership to node user (non-root) for writable directories
 RUN chown -R node:node /workspace
