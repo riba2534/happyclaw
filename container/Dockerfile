@@ -118,11 +118,9 @@ RUN npm run build
 # Create workspace directories
 RUN mkdir -p /workspace/group /workspace/global /workspace/memory /workspace/extra /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input
 
-# Create entrypoint script
-# Sources env from mounted /workspace/env-dir/env if it exists (keeps credentials out of process listings)
-# Stdin is buffered to /tmp then piped (container requires EOF to flush stdin pipe)
-# Follow-up messages arrive via IPC files in /workspace/ipc/input/
-RUN printf '#!/bin/bash\nset -e\nif [ -f /workspace/env-dir/env ]; then\n  set -a\n  source /workspace/env-dir/env\n  set +a\nfi\nmkdir -p /home/node/.claude/skills 2>/dev/null || true\n[ -d /workspace/project-skills ] && ln -sf /workspace/project-skills/* /home/node/.claude/skills/ 2>/dev/null || true\n[ -d /workspace/user-skills ] && ln -sf /workspace/user-skills/* /home/node/.claude/skills/ 2>/dev/null || true\ncd /app && npx tsc --outDir /tmp/dist 2>&1 >&2\nln -s /app/node_modules /tmp/dist/node_modules\nchmod -R a-w /tmp/dist\ncat > /tmp/input.json\nnode /tmp/dist/index.js < /tmp/input.json\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+# Copy entrypoint script (runs as root, drops to node user via runuser)
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 # Set ownership to node user (non-root) for writable directories
 RUN chown -R node:node /workspace
@@ -132,10 +130,8 @@ RUN su - node -c 'sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/
     && sed -i 's/ZSH_THEME="robbyrussell"/ZSH_THEME="ys"/' /home/node/.zshrc \
     && chsh -s /bin/zsh node
 
-# Switch to non-root user (required for --dangerously-skip-permissions)
-USER node
-
-# Set working directory to group workspace
+# Entrypoint runs as root to fix volume permissions, then drops to node user.
+# Do NOT add USER node here — entrypoint handles the privilege drop.
 WORKDIR /workspace/group
 
 # Entry point reads JSON from stdin, outputs JSON to stdout
