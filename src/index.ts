@@ -35,6 +35,7 @@ import { CronExpressionParser } from 'cron-parser';
 
 import {
   ASSISTANT_NAME,
+  CONTAINER_IMAGE,
   DATA_DIR,
   GROUPS_DIR,
   STORE_DIR,
@@ -81,6 +82,7 @@ import {
   setRegisteredGroup,
   setRouterState,
   setSession,
+  deleteAllSessionsForFolder,
   deleteSession,
   storeMessageDirect,
   updateChatName,
@@ -634,6 +636,54 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   await setTyping(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
+
+  // 不可恢复的转录错误（如超大图片被固化在会话历史中）：无论是否已有回复，都必须重置会话
+  const errorForReset = [lastError, output.error].filter(Boolean).join(' ');
+  if ((output.status === 'error' || hadError) && errorForReset.includes('unrecoverable_transcript:')) {
+    const detail = (lastError || output.error || '').replace(/.*unrecoverable_transcript:\s*/, '');
+    logger.warn(
+      { group: group.name, folder: group.folder, error: detail },
+      'Unrecoverable transcript error, auto-resetting session',
+    );
+
+    // 清除会话文件（保留 settings.json）
+    // 容器创建的文件可能归属 node(1000)，先尝试直接删除，失败则用 Docker 清理
+    const claudeDir = path.join(DATA_DIR, 'sessions', group.folder, '.claude');
+    if (fs.existsSync(claudeDir)) {
+      let cleared = false;
+      try {
+        for (const entry of fs.readdirSync(claudeDir)) {
+          if (entry === 'settings.json') continue;
+          fs.rmSync(path.join(claudeDir, entry), { recursive: true, force: true });
+        }
+        cleared = true;
+      } catch {
+        logger.info({ folder: group.folder }, 'Direct cleanup failed, using Docker fallback');
+      }
+      if (!cleared) {
+        try {
+          await execFileAsync('docker', [
+            'run', '--rm', '-v', `${claudeDir}:/target`, CONTAINER_IMAGE,
+            'sh', '-c', 'find /target -mindepth 1 -not -name settings.json -exec rm -rf {} + 2>/dev/null; exit 0',
+          ], { timeout: 15_000 });
+        } catch (err) {
+          logger.error({ folder: group.folder, err }, 'Docker fallback cleanup also failed');
+        }
+      }
+    }
+
+    // 清除 DB 和内存中的 session 记录
+    try {
+      deleteAllSessionsForFolder(group.folder);
+      delete sessions[group.folder];
+    } catch (err) {
+      logger.error({ folder: group.folder, err }, 'Failed to clear session state during auto-reset');
+    }
+
+    sendSystemMessage(chatJid, 'context_reset', `会话已自动重置：${detail}`);
+    commitCursor();
+    return true;
+  }
 
   if ((output.status === 'error' || hadError) && !sentReply) {
     // Only roll back cursor if no reply was sent — if the agent already

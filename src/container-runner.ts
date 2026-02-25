@@ -805,6 +805,8 @@ export function writeTasksSnapshot(
     : tasks.filter((t) => t.groupFolder === groupFolder);
 
   const tasksFile = path.join(groupIpcDir, 'current_tasks.json');
+  // 删除后重建：容器创建的文件归属 node(1000) 用户，宿主机进程无法覆写
+  try { fs.unlinkSync(tasksFile); } catch { /* ignore */ }
   fs.writeFileSync(tasksFile, JSON.stringify(filteredTasks, null, 2));
 }
 
@@ -833,6 +835,7 @@ export function writeGroupsSnapshot(
   const visibleGroups = isAdminHome ? groups : [];
 
   const groupsFile = path.join(groupIpcDir, 'available_groups.json');
+  try { fs.unlinkSync(groupsFile); } catch { /* ignore */ }
   fs.writeFileSync(
     groupsFile,
     JSON.stringify(

@@ -156,6 +156,82 @@ const MEMORY_FLUSH_DISALLOWED_TOOLS = [
   'mcp__happyclaw__register_group',
 ];
 
+const IMAGE_MAX_DIMENSION = 8000; // Anthropic API 限制
+
+/**
+ * 从 base64 编码的图片数据中提取宽高（支持 PNG / JPEG / GIF / WebP / BMP）。
+ * 仅解析头部字节，不需要完整解码图片。
+ * 返回 null 表示无法识别格式。
+ */
+function getImageDimensions(base64Data: string): { width: number; height: number } | null {
+  try {
+    const headerB64 = base64Data.slice(0, 400);
+    const buf = Buffer.from(headerB64, 'base64');
+
+    // PNG: 固定位置 (bytes 16-23)
+    if (buf.length >= 24 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) {
+      return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+    }
+
+    // JPEG: 扫描 SOF marker（SOF 可能在大 EXIF/ICC 之后，需要 ~30KB）
+    if (buf.length >= 4 && buf[0] === 0xFF && buf[1] === 0xD8) {
+      const JPEG_SCAN_B64_LEN = 40000; // ~30KB binary，覆盖大多数 EXIF/ICC 场景
+      const fullHeader = Buffer.from(base64Data.slice(0, JPEG_SCAN_B64_LEN), 'base64');
+      for (let i = 2; i < fullHeader.length - 9; i++) {
+        if (fullHeader[i] !== 0xFF) continue;
+        const marker = fullHeader[i + 1];
+        if (marker >= 0xC0 && marker <= 0xC3) {
+          return { width: fullHeader.readUInt16BE(i + 7), height: fullHeader.readUInt16BE(i + 5) };
+        }
+        if (marker !== 0xD8 && marker !== 0xD9 && marker !== 0x00) {
+          i += 1 + fullHeader.readUInt16BE(i + 2);
+        }
+      }
+    }
+
+    // GIF: bytes 6-9 (little-endian)
+    if (buf.length >= 10 && buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) {
+      return { width: buf.readUInt16LE(6), height: buf.readUInt16LE(8) };
+    }
+
+    // BMP: bytes 18-25
+    if (buf.length >= 26 && buf[0] === 0x42 && buf[1] === 0x4D) {
+      return { width: buf.readInt32LE(18), height: Math.abs(buf.readInt32LE(22)) };
+    }
+
+    // WebP
+    if (buf.length >= 30 && buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46) {
+      const fourCC = buf.toString('ascii', 12, 16);
+      if (fourCC === 'VP8 ' && buf.length >= 30) return { width: buf.readUInt16LE(26) & 0x3FFF, height: buf.readUInt16LE(28) & 0x3FFF };
+      if (fourCC === 'VP8L' && buf.length >= 25) { const b = buf.readUInt32LE(21); return { width: (b & 0x3FFF) + 1, height: ((b >> 14) & 0x3FFF) + 1 }; }
+      if (fourCC === 'VP8X' && buf.length >= 30) return { width: (buf[24] | (buf[25] << 8) | (buf[26] << 16)) + 1, height: (buf[27] | (buf[28] << 8) | (buf[29] << 16)) + 1 };
+    }
+
+    return null;
+  } catch { return null; }
+}
+
+/**
+ * 过滤超过 API 尺寸限制的图片。
+ */
+function filterOversizedImages(
+  images: Array<{ data: string; mimeType?: string }>,
+): { valid: Array<{ data: string; mimeType?: string }>; rejected: string[] } {
+  const valid: Array<{ data: string; mimeType?: string }> = [];
+  const rejected: string[] = [];
+  for (const img of images) {
+    const dims = getImageDimensions(img.data);
+    if (dims && (dims.width > IMAGE_MAX_DIMENSION || dims.height > IMAGE_MAX_DIMENSION)) {
+      const reason = `图片尺寸 ${dims.width}×${dims.height} 超过 API 限制（最大 ${IMAGE_MAX_DIMENSION}px），已跳过`;
+      log(reason);
+      rejected.push(reason);
+    } else {
+      valid.push(img);
+    }
+  }
+  return { valid, rejected };
+}
+
 /**
  * Push-based async iterable for streaming user messages to the SDK.
  * Keeps the iterable alive until end() is called, preventing isSingleUserTurn.
@@ -165,16 +241,26 @@ class MessageStream {
   private waiting: (() => void) | null = null;
   private done = false;
 
-  push(text: string, images?: Array<{ data: string; mimeType?: string }>): void {
+  push(text: string, images?: Array<{ data: string; mimeType?: string }>): string[] {
+    const rejectedReasons: string[] = [];
+    let filteredImages = images;
+
+    // 过滤超限图片，在发送给 SDK 之前拦截
+    if (filteredImages && filteredImages.length > 0) {
+      const { valid, rejected } = filterOversizedImages(filteredImages);
+      rejectedReasons.push(...rejected);
+      filteredImages = valid.length > 0 ? valid : undefined;
+    }
+
     let content:
       | string
       | Array<{ type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }>;
 
-    if (images && images.length > 0) {
+    if (filteredImages && filteredImages.length > 0) {
       // 多模态消息：text + images
       content = [
         { type: 'text', text },
-        ...images.map((img) => ({
+        ...filteredImages.map((img) => ({
           type: 'image' as const,
           source: {
             type: 'base64' as const,
@@ -195,6 +281,7 @@ class MessageStream {
       session_id: '',
     });
     this.waiting?.();
+    return rejectedReasons;
   }
 
   end(): void {
@@ -241,7 +328,7 @@ function log(message: string): void {
  * 检测是否为上下文溢出错误
  */
 function isContextOverflowError(msg: string): boolean {
-  const patterns = [
+  const patterns: RegExp[] = [
     /prompt is too long/i,
     /maximum context length/i,
     /context.*too large/i,
@@ -249,6 +336,21 @@ function isContextOverflowError(msg: string): boolean {
     /context window.*exceeded/i,
   ];
   return patterns.some(pattern => pattern.test(msg));
+}
+
+/**
+ * 检测会话转录中不可恢复的请求错误（400 invalid_request_error）。
+ * 这类错误被固化在会话历史中，每次 resume 都会重放导致永久失败。
+ * 例如：图片尺寸超过 8000px 限制、消息格式非法等。
+ *
+ * 判定条件：必须同时满足「图片特征」+「API 拒绝」，避免对通用 400 错误误判导致会话丢失。
+ */
+function isUnrecoverableTranscriptError(msg: string): boolean {
+  const isImageSizeError =
+    /image.*dimensions?\s+exceed/i.test(msg) ||
+    /max\s+allowed\s+size.*pixels/i.test(msg);
+  const isApiReject = /invalid_request_error/i.test(msg);
+  return isImageSizeError && isApiReject;
 }
 
 function getSessionSummary(sessionId: string, transcriptPath: string): string | null {
@@ -576,12 +678,17 @@ async function runQuery(
   allowedTools: string[] = DEFAULT_ALLOWED_TOOLS,
   disallowedTools?: string[],
   images?: Array<{ data: string; mimeType?: string }>,
-): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean; contextOverflow?: boolean; interruptedDuringQuery: boolean }> {
+): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean; contextOverflow?: boolean; unrecoverableTranscriptError?: boolean; interruptedDuringQuery: boolean }> {
   const stream = new MessageStream();
-  stream.push(prompt, images);
+  const initialRejected = stream.push(prompt, images);
   const emit = (output: ContainerOutput): void => {
     if (emitOutput) writeOutput(output);
   };
+
+  // 如果有图片被拒绝，立即通知用户
+  for (const reason of initialRejected) {
+    emit({ status: 'success', result: `⚠️ ${reason}`, newSessionId: undefined });
+  }
 
   // Poll IPC for follow-up messages and _close/_interrupt sentinel during the query
   let ipcPolling = true;
@@ -609,7 +716,10 @@ async function runQuery(
     const messages = drainIpcInput();
     for (const msg of messages) {
       log(`Piping IPC message into active query (${msg.text.length} chars, ${msg.images?.length || 0} images)`);
-      stream.push(msg.text, msg.images);
+      const rejected = stream.push(msg.text, msg.images);
+      for (const reason of rejected) {
+        emit({ status: 'success', result: `⚠️ ${reason}`, newSessionId: undefined });
+      }
     }
     setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
   };
@@ -1079,6 +1189,19 @@ async function runQuery(
       resultCount++;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
       log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
+
+      // SDK 将某些 API 错误包装为 subtype=success 的 result（不抛异常）
+      if (textResult && isContextOverflowError(textResult)) {
+        log(`Context overflow detected in result: ${textResult.slice(0, 100)}`);
+        fullTextAccumulator = '';
+        return { newSessionId, lastAssistantUuid, closedDuringQuery, contextOverflow: true, interruptedDuringQuery };
+      }
+      if (textResult && isUnrecoverableTranscriptError(textResult)) {
+        log(`Unrecoverable transcript error in result: ${textResult.slice(0, 200)}`);
+        fullTextAccumulator = '';
+        return { newSessionId, lastAssistantUuid, closedDuringQuery, unrecoverableTranscriptError: true, interruptedDuringQuery };
+      }
+
       // Emit pending deltas before final textual result, then mark to avoid
       // emitting duplicated tail deltas in the post-loop cleanup flush.
       if (textResult) {
@@ -1132,6 +1255,12 @@ async function runQuery(
     if (isContextOverflowError(errorMessage)) {
       log(`Context overflow detected: ${errorMessage}`);
       return { newSessionId, lastAssistantUuid, closedDuringQuery, contextOverflow: true, interruptedDuringQuery };
+    }
+
+    // 检测不可恢复的转录错误
+    if (isUnrecoverableTranscriptError(errorMessage)) {
+      log(`Unrecoverable transcript error: ${errorMessage}`);
+      return { newSessionId, lastAssistantUuid, closedDuringQuery, unrecoverableTranscriptError: true, interruptedDuringQuery };
     }
 
     // 其他错误继续抛出
@@ -1211,6 +1340,19 @@ async function main(): Promise<void> {
       }
       if (queryResult.lastAssistantUuid) {
         resumeAt = queryResult.lastAssistantUuid;
+      }
+
+      // 不可恢复的转录错误（如超大图片绕过预检后被固化在会话历史中）
+      if (queryResult.unrecoverableTranscriptError) {
+        const errorMsg = '会话历史中包含无法处理的数据（如超大图片），会话需要重置。';
+        log(`Unrecoverable transcript error, signaling session reset`);
+        writeOutput({
+          status: 'error',
+          result: null,
+          error: `unrecoverable_transcript: ${errorMsg}`,
+          newSessionId: sessionId,
+        });
+        process.exit(1);
       }
 
       // 检查上下文溢出
