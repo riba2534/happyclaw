@@ -21,6 +21,7 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNamePr
   const senderName = currentUser?.ai_name || appearance?.aiName || senderNameProp;
   const aiEmoji = currentUser?.ai_avatar_emoji || appearance?.aiAvatarEmoji;
   const aiColor = currentUser?.ai_avatar_color || appearance?.aiAvatarColor;
+  const aiImageUrl = currentUser?.ai_avatar_url;
   const [thinkingExpanded, setThinkingExpanded] = useState(true);
   const thinkingRef = useRef<HTMLDivElement>(null);
   const userScrolledRef = useRef(false);
@@ -90,13 +91,13 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNamePr
       <div className="max-w-3xl mx-auto w-full px-4 py-3">
         {/* Mobile: compact avatar + name row */}
         <div className="flex items-center gap-2 mb-1.5 lg:hidden">
-          <EmojiAvatar emoji={aiEmoji} color={aiColor} fallbackChar={senderName[0]} size="sm" />
+          <EmojiAvatar imageUrl={aiImageUrl} emoji={aiEmoji} color={aiColor} fallbackChar={senderName[0]} size="sm" />
           <span className="text-xs text-muted-foreground font-medium">{senderName}</span>
         </div>
 
         <div className="lg:flex lg:gap-3">
           <div className="hidden lg:block flex-shrink-0">
-            <EmojiAvatar emoji={aiEmoji} color={aiColor} fallbackChar={senderName[0]} size="md" />
+            <EmojiAvatar imageUrl={aiImageUrl} emoji={aiEmoji} color={aiColor} fallbackChar={senderName[0]} size="md" />
           </div>
           <div className="flex-1 min-w-0">
             <div className="hidden lg:flex items-center gap-2 mb-1">
@@ -122,7 +123,7 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNamePr
     <div className="max-w-3xl mx-auto w-full px-4 py-3">
       {/* Mobile: compact avatar + name row */}
       <div className="flex items-center gap-2 mb-1.5 lg:hidden">
-        <EmojiAvatar emoji={aiEmoji} color={aiColor} fallbackChar={senderName[0]} size="sm" />
+        <EmojiAvatar imageUrl={aiImageUrl} emoji={aiEmoji} color={aiColor} fallbackChar={senderName[0]} size="sm" />
         <span className="text-xs text-muted-foreground font-medium">{senderName}</span>
         {streaming.isThinking && (
           <span className="flex gap-0.5 ml-1">
@@ -135,7 +136,7 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNamePr
 
       <div className="lg:flex lg:gap-3">
         <div className="hidden lg:block flex-shrink-0">
-          <EmojiAvatar emoji={aiEmoji} color={aiColor} fallbackChar={senderName[0]} size="md" />
+          <EmojiAvatar imageUrl={aiImageUrl} emoji={aiEmoji} color={aiColor} fallbackChar={senderName[0]} size="md" />
         </div>
         <div className="flex-1 min-w-0">
           {/* Desktop: name row */}

@@ -26,6 +26,7 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
   const [aiName, setAiName] = useState('');
   const [aiAvatarEmoji, setAiAvatarEmoji] = useState<string | null>(null);
   const [aiAvatarColor, setAiAvatarColor] = useState<string | null>(null);
+  const [aiAvatarUrl, setAiAvatarUrl] = useState<string | null>(null);
   const [aiAppearanceSaving, setAiAppearanceSaving] = useState(false);
 
   // Password
@@ -41,7 +42,8 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
     setAiName(currentUser?.ai_name || '');
     setAiAvatarEmoji(currentUser?.ai_avatar_emoji ?? null);
     setAiAvatarColor(currentUser?.ai_avatar_color ?? null);
-  }, [currentUser?.username, currentUser?.display_name, currentUser?.avatar_emoji, currentUser?.avatar_color, currentUser?.ai_name, currentUser?.ai_avatar_emoji, currentUser?.ai_avatar_color]);
+    setAiAvatarUrl(currentUser?.ai_avatar_url ?? null);
+  }, [currentUser?.username, currentUser?.display_name, currentUser?.avatar_emoji, currentUser?.avatar_color, currentUser?.ai_name, currentUser?.ai_avatar_emoji, currentUser?.ai_avatar_color, currentUser?.ai_avatar_url]);
 
   const handleUpdateProfile = async () => {
     setProfileSaving(true);
@@ -87,6 +89,7 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
         ai_name: aiName.trim() || null,
         ai_avatar_emoji: aiAvatarEmoji,
         ai_avatar_color: aiAvatarColor,
+        ai_avatar_url: aiAvatarUrl?.trim() || null,
       });
       setNotice('机器人外观已更新');
     } catch (err) {
@@ -181,13 +184,14 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
         <div className="space-y-4">
           <div className="flex items-center gap-4 mb-4">
             <EmojiAvatar
+              imageUrl={aiAvatarUrl}
               emoji={aiAvatarEmoji}
               color={aiAvatarColor}
               fallbackChar={aiName || 'AI'}
               size="lg"
             />
             <div className="text-sm text-slate-500">
-              设置机器人的 Emoji 和背景色
+              设置机器人的头像图片、Emoji 和背景色
             </div>
           </div>
           <div>
@@ -206,6 +210,18 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
           <div>
             <label className="block text-xs text-slate-500 mb-2">背景色</label>
             <ColorPicker value={aiAvatarColor ?? undefined} onChange={setAiAvatarColor} />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">自定义头像图片 URL</label>
+            <Input
+              type="url"
+              value={aiAvatarUrl || ''}
+              onChange={(e) => setAiAvatarUrl(e.target.value || null)}
+              placeholder="https://example.com/avatar.png"
+            />
+            <p className="text-xs text-slate-400 mt-1">
+              设置图片 URL 后将优先于 Emoji 头像显示
+            </p>
           </div>
         </div>
         <div className="mt-4">

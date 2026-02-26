@@ -85,6 +85,7 @@ export function toUserPublic(u: User): UserPublic {
     ai_name: u.ai_name ?? null,
     ai_avatar_emoji: u.ai_avatar_emoji ?? null,
     ai_avatar_color: u.ai_avatar_color ?? null,
+    ai_avatar_url: u.ai_avatar_url ?? null,
     created_at: u.created_at,
     last_login_at: u.last_login_at,
     last_active_at: null,
@@ -555,6 +556,9 @@ authRoutes.put('/profile', authMiddleware, async (c) => {
   }
   if (validation.data.ai_avatar_color !== undefined) {
     updates.ai_avatar_color = validation.data.ai_avatar_color;
+  }
+  if (validation.data.ai_avatar_url !== undefined) {
+    updates.ai_avatar_url = validation.data.ai_avatar_url;
   }
   if (Object.keys(updates).length === 0) {
     return c.json({ error: 'No fields to update' }, 400);
