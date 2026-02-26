@@ -95,6 +95,8 @@ class IMConnectionManager {
     userId: string,
     config: TelegramConnectConfig,
     onNewChat: (chatJid: string, chatName: string) => void,
+    isChatAuthorized?: (jid: string) => boolean,
+    onPairAttempt?: (jid: string, chatName: string, code: string) => Promise<boolean>,
   ): Promise<boolean> {
     if (!config.botToken) {
       logger.info({ userId }, 'Telegram config empty, skipping connection');
@@ -115,6 +117,8 @@ class IMConnectionManager {
           logger.info({ userId }, 'User Telegram bot connected');
         },
         onNewChat,
+        isChatAuthorized: isChatAuthorized ?? (() => true),
+        onPairAttempt,
       });
 
       if (telegram.isConnected()) {
