@@ -1124,7 +1124,7 @@ export function buildContainerEnvLines(
 // ─── OAuth credentials file management ────────────────────────────
 
 const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
-const OAUTH_TOKEN_URL = 'https://console.anthropic.com/v1/oauth/token';
+const OAUTH_TOKEN_URL = 'https://api.anthropic.com/v1/oauth/token';
 
 /**
  * Write .credentials.json to a Claude session directory.
