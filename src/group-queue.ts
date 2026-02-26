@@ -296,17 +296,20 @@ export class GroupQueue {
    * query.interrupt(). The container stays alive and accepts new messages.
    */
   interruptQuery(groupJid: string): boolean {
-    const own = this.groups.get(groupJid);
-    if (!own || !own.active || !own.groupFolder) return false;
+    // Use resolveActiveState so sibling JIDs (feishu/telegram sharing the
+    // same folder as a web group) are correctly resolved to the active runner.
+    const state = this.resolveActiveState(groupJid);
+    if (!state) return false;
 
-    const inputDir = own.agentId
-      ? path.join(DATA_DIR, 'ipc', own.groupFolder, 'agents', own.agentId, 'input')
-      : path.join(DATA_DIR, 'ipc', own.groupFolder, 'input');
+    const inputDir = this.resolveIpcInputDir(state);
     try {
       fs.mkdirSync(inputDir, { recursive: true });
+      try { fs.chmodSync(inputDir, 0o777); } catch { /* ignore */ }
       fs.writeFileSync(path.join(inputDir, '_interrupt'), '');
+      logger.info({ groupJid, inputDir }, 'Interrupt sentinel written');
       return true;
-    } catch {
+    } catch (err) {
+      logger.warn({ groupJid, inputDir, err }, 'Failed to write interrupt sentinel');
       return false;
     }
   }
