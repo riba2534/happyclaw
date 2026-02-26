@@ -1,6 +1,11 @@
 #!/bin/bash
 set -e
 
+# Set permissive umask so files created by the container (node user, uid 1000)
+# are writable by the host backend (agent user, uid 1002).
+# Without this, the host cannot delete/modify files created by the container.
+umask 0000
+
 # Fix ownership on mounted volumes.
 # Host uid may differ from container node user (uid 1000), especially in
 # rootless podman where uid remapping causes EACCES on bind mounts.
