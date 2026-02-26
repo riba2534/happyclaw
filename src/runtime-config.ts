@@ -1141,7 +1141,7 @@ export function writeCredentialsFile(
     claudeAiOauth: {
       accessToken: creds.accessToken,
       refreshToken: creds.refreshToken,
-      expiresAt: new Date(creds.expiresAt).toISOString(),
+      expiresAt: creds.expiresAt,
       scopes: creds.scopes,
     },
   };
