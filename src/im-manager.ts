@@ -30,6 +30,8 @@ export interface TelegramConnectConfig {
 class IMConnectionManager {
   private connections = new Map<string, UserIMConnection>();
   private adminUserIds = new Set<string>();
+  // Telegram typing indicator timers keyed by chatJid
+  private telegramTypingTimers = new Map<string, NodeJS.Timeout>();
 
   /** Register a user ID as admin (for fallback routing) */
   registerAdminUser(userId: string): void {
@@ -250,6 +252,45 @@ class IMConnectionManager {
   }
 
   /**
+   * Set Telegram typing chat action for a chat.
+   * Telegram's typing indicator expires after ~5s, so we resend every 4s while active.
+   */
+  async setTelegramTyping(chatJid: string, isTyping: boolean): Promise<void> {
+    // Clear any existing timer regardless of direction
+    const existing = this.telegramTypingTimers.get(chatJid);
+    if (existing) {
+      clearInterval(existing);
+      this.telegramTypingTimers.delete(chatJid);
+    }
+
+    if (!isTyping) return;
+
+    const chatId = chatJid.replace(/^telegram:/, '');
+
+    // Helper: find the right TelegramConnection for this chatJid
+    const findConn = (): TelegramConnection | undefined => {
+      const group = getRegisteredGroup(chatJid);
+      if (group?.created_by) {
+        const conn = this.connections.get(group.created_by);
+        if (conn?.telegram?.isConnected()) return conn.telegram;
+      }
+      return undefined;
+    };
+
+    const sendAction = async (): Promise<void> => {
+      const conn = findConn();
+      if (!conn) return;
+      await conn.sendChatAction(chatId, 'typing');
+    };
+
+    // Send immediately, then repeat every 4s to keep indicator alive
+    void sendAction();
+    const timer = setInterval(() => { void sendAction(); }, 4000);
+    this.telegramTypingTimers.set(chatJid, timer);
+    logger.debug({ chatJid }, 'Telegram typing indicator started');
+  }
+
+  /**
    * Sync Feishu groups via a specific user's connection.
    */
   async syncFeishuGroups(userId: string): Promise<void> {
@@ -331,6 +372,9 @@ class IMConnectionManager {
     }
 
     await Promise.allSettled(promises);
+    // Clear all Telegram typing timers
+    for (const timer of this.telegramTypingTimers.values()) clearInterval(timer);
+    this.telegramTypingTimers.clear();
     this.connections.clear();
     logger.info('All IM connections disconnected');
   }

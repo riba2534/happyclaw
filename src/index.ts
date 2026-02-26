@@ -189,6 +189,9 @@ async function setTyping(jid: string, isTyping: boolean): Promise<void> {
   if (jid.startsWith('feishu:')) {
     await imManager.setFeishuTyping(jid, isTyping);
   }
+  if (jid.startsWith('telegram:')) {
+    await imManager.setTelegramTyping(jid, isTyping);
+  }
   broadcastTyping(jid, isTyping);
 }
 
@@ -712,6 +715,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             `Agent output: ${raw.slice(0, 200)}`,
           );
           if (text) {
+            // Stop typing indicator before sending — clears the 4s refresh timer
+            // so it doesn't keep firing while the agent stays alive in idle state.
+            await setTyping(chatJid, false);
             await sendMessage(chatJid, text, {
               sendToFeishu: shouldReplyToFeishu,
             });

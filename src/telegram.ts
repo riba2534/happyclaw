@@ -30,6 +30,7 @@ export interface TelegramConnection {
   connect(opts: TelegramConnectOpts): Promise<void>;
   disconnect(): Promise<void>;
   sendMessage(chatId: string, text: string): Promise<void>;
+  sendChatAction(chatId: string, action: 'typing'): Promise<void>;
   isConnected(): boolean;
 }
 
@@ -392,6 +393,17 @@ export function createTelegramConnection(config: TelegramConnectionConfig): Tele
       } catch (err) {
         logger.error({ err, chatId }, 'Failed to send Telegram message');
         throw err;
+      }
+    },
+
+    async sendChatAction(chatId: string, action: 'typing'): Promise<void> {
+      if (!bot) return;
+      const chatIdNum = Number(chatId);
+      if (isNaN(chatIdNum)) return;
+      try {
+        await bot.api.sendChatAction(chatIdNum, action);
+      } catch (err) {
+        logger.debug({ err, chatId }, 'Failed to send Telegram chat action');
       }
     },
 
