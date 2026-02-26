@@ -3,6 +3,7 @@
 import { randomBytes, createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import type { Variables } from '../web-context.js';
+import { deleteRegisteredGroup, deleteChatHistory } from '../db.js';
 import { authMiddleware, systemConfigMiddleware } from '../middleware/auth.js';
 import {
   ClaudeConfigSchema,
@@ -878,6 +879,62 @@ configRoutes.post('/user-im/telegram/test', authMiddleware, async (c) => {
     logger.warn({ err }, 'Failed to test user Telegram connection');
     return c.json({ error: message }, 400);
   }
+});
+
+configRoutes.post('/user-im/telegram/pairing-code', authMiddleware, async (c) => {
+  const user = c.get('user') as AuthUser;
+  const config = getUserTelegramConfig(user.id);
+  if (!config?.botToken) {
+    return c.json({ error: 'Telegram bot token not configured' }, 400);
+  }
+
+  try {
+    const { generatePairingCode } = await import('../telegram-pairing.js');
+    const result = generatePairingCode(user.id);
+    return c.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to generate pairing code';
+    logger.warn({ err }, 'Failed to generate pairing code');
+    return c.json({ error: message }, 500);
+  }
+});
+
+// List Telegram paired chats for the current user
+configRoutes.get('/user-im/telegram/paired-chats', authMiddleware, (c) => {
+  const user = c.get('user') as AuthUser;
+  const groups = (deps?.getRegisteredGroups() ?? {}) as Record<string, { name: string; added_at: string; created_by?: string }>;
+  const chats: Array<{ jid: string; name: string; addedAt: string }> = [];
+  for (const [jid, group] of Object.entries(groups)) {
+    if (jid.startsWith('telegram:') && group.created_by === user.id) {
+      chats.push({ jid, name: group.name, addedAt: group.added_at });
+    }
+  }
+  return c.json({ chats });
+});
+
+// Remove (unpair) a Telegram chat
+configRoutes.delete('/user-im/telegram/paired-chats/:jid', authMiddleware, (c) => {
+  const user = c.get('user') as AuthUser;
+  const jid = decodeURIComponent(c.req.param('jid'));
+
+  if (!jid.startsWith('telegram:')) {
+    return c.json({ error: 'Invalid Telegram chat JID' }, 400);
+  }
+
+  const groups = deps?.getRegisteredGroups() ?? {};
+  const group = groups[jid];
+  if (!group) {
+    return c.json({ error: 'Chat not found' }, 404);
+  }
+  if (group.created_by !== user.id) {
+    return c.json({ error: 'Not authorized to remove this chat' }, 403);
+  }
+
+  deleteRegisteredGroup(jid);
+  deleteChatHistory(jid);
+  delete groups[jid];
+  logger.info({ jid, userId: user.id }, 'Telegram chat unpaired');
+  return c.json({ success: true });
 });
 
 export default configRoutes;

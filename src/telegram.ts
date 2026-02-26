@@ -19,6 +19,10 @@ export interface TelegramConnectOpts {
   onReady?: () => void;
   /** 收到消息后调用，让调用方自动注册未知的 Telegram 聊天 */
   onNewChat: (jid: string, name: string) => void;
+  /** 检查聊天是否已注册（已在 registered_groups 中） */
+  isChatAuthorized: (jid: string) => boolean;
+  /** 配对尝试回调：验证码并注册聊天，返回是否成功 */
+  onPairAttempt?: (jid: string, chatName: string, code: string) => Promise<boolean>;
 }
 
 export interface TelegramConnection {
@@ -149,6 +153,10 @@ export function createTelegramConnection(config: TelegramConnectionConfig): Tele
     msgCache.set(msgId, Date.now());
   }
 
+  // Rate-limit rejection messages: one per chat per 5 minutes
+  const rejectTimestamps = new Map<string, number>();
+  const REJECT_COOLDOWN_MS = 5 * 60 * 1000;
+
   const connection: TelegramConnection = {
     async connect(opts: TelegramConnectOpts): Promise<void> {
       if (!config.botToken) {
@@ -179,7 +187,56 @@ export function createTelegramConnection(config: TelegramConnectionConfig): Tele
             'Unknown';
           const text = ctx.message.text;
 
-          // 自动注册
+          // ── /pair <code> command ──
+          const pairMatch = text.match(/^\/pair\s+(\S+)/i);
+          if (pairMatch && opts.onPairAttempt) {
+            const code = pairMatch[1];
+            try {
+              const success = await opts.onPairAttempt(jid, chatName, code);
+              if (success) {
+                await ctx.reply('Pairing successful! This chat is now connected.');
+              } else {
+                await ctx.reply('Invalid or expired pairing code. Please generate a new code from the web settings page.');
+              }
+            } catch (err) {
+              logger.error({ err, jid }, 'Error during pair attempt');
+              await ctx.reply('Pairing failed due to an internal error. Please try again.');
+            }
+            return;
+          }
+
+          // ── /start command ──
+          if (text.trim() === '/start') {
+            if (opts.isChatAuthorized(jid)) {
+              await ctx.reply('This chat is already connected. You can send messages normally.');
+            } else {
+              await ctx.reply(
+                'Welcome! To connect this chat, please:\n' +
+                '1. Go to the web settings page\n' +
+                '2. Generate a pairing code\n' +
+                '3. Send /pair <code> here',
+              );
+            }
+            return;
+          }
+
+          // ── Authorization check ──
+          if (!opts.isChatAuthorized(jid)) {
+            const now = Date.now();
+            const lastReject = rejectTimestamps.get(jid) ?? 0;
+            if (now - lastReject >= REJECT_COOLDOWN_MS) {
+              rejectTimestamps.set(jid, now);
+              await ctx.reply(
+                'This chat is not yet paired. Please send /pair <code> to connect.\n' +
+                'You can generate a pairing code from the web settings page.',
+              );
+            }
+            logger.debug({ jid, chatName }, 'Unauthorized Telegram chat, message ignored');
+            return;
+          }
+
+          // ── Authorized chat: normal flow ──
+          // 自动注册（确保 metadata 和名称同步）
           storeChatMetadata(jid, new Date().toISOString());
           updateChatName(jid, chatName);
           opts.onNewChat(jid, chatName);
