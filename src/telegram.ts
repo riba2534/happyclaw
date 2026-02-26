@@ -139,6 +139,7 @@ export function createTelegramConnection(config: TelegramConnectionConfig): Tele
   let pollingPromise: Promise<void> | null = null;
   let reconnectTimer: NodeJS.Timeout | null = null;
   let stopping = false;
+  let readyFired = false;
   const telegramApiAgent = new HttpsAgent({ keepAlive: true, family: 4 });
 
   function isDuplicate(msgId: string): boolean {
@@ -184,6 +185,7 @@ export function createTelegramConnection(config: TelegramConnectionConfig): Tele
         },
       });
       stopping = false;
+      readyFired = false;
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
@@ -303,7 +305,10 @@ export function createTelegramConnection(config: TelegramConnectionConfig): Tele
           .start({
             onStart: () => {
               logger.info('Telegram bot started');
-              opts.onReady?.();
+              if (!readyFired) {
+                readyFired = true;
+                opts.onReady?.();
+              }
             },
           })
           .catch((err) => {
@@ -348,6 +353,7 @@ export function createTelegramConnection(config: TelegramConnectionConfig): Tele
           }
           pollingPromise = null;
           bot = null;
+          telegramApiAgent.destroy();
         }
       }
     },

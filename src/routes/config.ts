@@ -570,7 +570,7 @@ configRoutes.post(
         client: {
           timeoutSeconds: 15,
           baseFetchConfig: {
-            agent: new HttpsAgent({ keepAlive: true, family: 4 }),
+            agent: new HttpsAgent({ keepAlive: false, family: 4 }),
           },
         },
       });
