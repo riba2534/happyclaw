@@ -19,6 +19,21 @@ import { GroupSkillsPanel } from './GroupSkillsPanel';
 import { GroupMembersPanel } from './GroupMembersPanel';
 import { AgentTabBar } from './AgentTabBar';
 
+/** Inline elapsed-time counter for running tasks */
+function ElapsedTimer({ startTime }: { startTime: number }) {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const tick = () => setElapsed(Math.floor((Date.now() - startTime) / 1000));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [startTime]);
+
+  const mins = Math.floor(elapsed / 60);
+  const secs = elapsed % 60;
+  return <span>{mins > 0 ? `${mins}m ${secs}s` : `${secs}s`}</span>;
+}
+
 const POLL_INTERVAL_MS = 2000;
 const TERMINAL_MIN_HEIGHT = 150;
 const TERMINAL_DEFAULT_HEIGHT = 300;
@@ -530,19 +545,36 @@ export function ChatView({ groupJid, onBack }: ChatViewProps) {
                       );
                     }
 
-                    // running 状态：显示描述 + spinner
+                    // running 状态：显示描述 + 实时计时 + 后台任务说明
                     return (
-                      <div className="text-center py-8 space-y-3">
-                        <div className="flex items-center justify-center gap-2 text-sm text-slate-500">
-                          <svg className="animate-spin h-4 w-4 text-teal-500" viewBox="0 0 24 24" fill="none">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                          </svg>
-                          子 Agent 正在执行中...
+                      <div className="flex flex-col items-center justify-center py-12 px-4 space-y-4">
+                        {/* 动画 spinner */}
+                        <div className="relative">
+                          <div className="w-12 h-12 rounded-full border-2 border-teal-100" />
+                          <div className="absolute inset-0 w-12 h-12 rounded-full border-2 border-transparent border-t-teal-500 animate-spin" />
                         </div>
-                        {task?.description && (
-                          <div className="text-xs text-slate-400 max-w-md mx-auto">{task.description}</div>
+
+                        <div className="text-center space-y-2 max-w-md">
+                          <div className="text-sm font-medium text-slate-700">
+                            Teammate 正在后台执行中
+                          </div>
+                          {task?.description && (
+                            <div className="text-xs text-slate-500 leading-relaxed">
+                              {task.description}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* 实时计时器 */}
+                        {task?.startedAt && (
+                          <div className="text-xs text-slate-400 tabular-nums">
+                            已运行 <ElapsedTimer startTime={task.startedAt} />
+                          </div>
                         )}
+
+                        <div className="text-[11px] text-slate-400 text-center max-w-sm leading-relaxed">
+                          后台任务不传播中间过程，完成后将显示结果摘要
+                        </div>
                       </div>
                     );
                   })()}
@@ -564,13 +596,37 @@ export function ChatView({ groupJid, onBack }: ChatViewProps) {
                   agentId={activeAgentTab}
                 />
               )}
-              <div className="px-4 py-2 text-center text-xs text-slate-400 border-t">
-                {isSdkTask
-                  ? (sdkTasks[activeAgentTab]?.status === 'running'
-                    ? '子 Agent 独立运行中 — 仅主对话可发送消息'
-                    : '子 Agent 已结束 — 仅主对话可发送消息')
-                  : '子 Agent 独立运行中 — 仅主对话可发送消息'}
-              </div>
+              {(() => {
+                const activeSdkTask = activeAgentTab ? sdkTasks[activeAgentTab] : null;
+                if (isSdkTask && activeSdkTask?.isTeammate && activeSdkTask?.status === 'running') {
+                  return (
+                    /* Teammate 标签页：通过主对话中转发送消息给 Team Lead */
+                    <div className="border-t">
+                      <div className="px-4 pt-1.5 pb-0.5 text-[10px] text-amber-600 bg-amber-50/50 text-center">
+                        消息将发送到主对话，由 Team Lead 转发
+                      </div>
+                      <MessageInput
+                        onSend={async (content) => {
+                          const taskDesc = (activeSdkTask?.description || 'Teammate').replace(/"/g, '\\"');
+                          const wrappedContent = `[发送给 Teammate "${taskDesc}"]: ${content}`;
+                          await sendMessage(groupJid, wrappedContent);
+                          setScrollTrigger(n => n + 1);
+                        }}
+                        groupJid={groupJid}
+                      />
+                    </div>
+                  );
+                }
+                return (
+                  <div className="px-4 py-2 text-center text-xs text-slate-400 border-t">
+                    {isSdkTask
+                      ? (activeSdkTask?.status === 'running'
+                        ? '子 Agent 独立运行中 — 仅主对话可发送消息'
+                        : '子 Agent 已结束 — 仅主对话可发送消息')
+                      : '子 Agent 独立运行中 — 仅主对话可发送消息'}
+                  </div>
+                );
+              })()}
             </>
           ) : (
             /* Main conversation tab */

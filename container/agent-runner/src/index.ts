@@ -86,6 +86,7 @@ export interface StreamEvent {
   taskId?: string;            // task_notification 的 task_id
   taskStatus?: string;        // task_notification 的 status
   taskSummary?: string;       // task_notification 的 summary
+  isTeammate?: boolean;       // Task 是否为 Agent Teams Teammate（检测 team_name）
 }
 
 interface ContainerOutput {
@@ -890,8 +891,10 @@ async function runQuery(
   // 以 content block 索引（event.index）为 key，确保 delta 正确匹配到对应的 block
   const pendingSkillInput: Map<number, { toolUseId: string; inputJson: string; resolved: boolean; parentToolUseId: string | null; isNested: boolean }> = new Map();
 
-  // 累积 Task 工具的 input_json_delta 以提取 description
-  const pendingTaskInput: Map<number, { toolUseId: string; inputJson: string; resolved: boolean }> = new Map();
+  // 累积 Task 工具的 input_json_delta 以提取 description 和 team_name
+  const pendingTaskInput: Map<number, { toolUseId: string; inputJson: string; resolved: boolean; isTeammate?: boolean }> = new Map();
+  // 追踪已确认的 teammate Task（通过 team_name 检测）
+  const teammateTaskToolUseIds = new Set<string>();
 
   // 追踪 Task 工具的 tool_use_id — 这些工具的 tool_use_end 只通过 tool_use_summary 发射，
   // 而不是在下一个 content block 开始时过早发射（Task 工具创建子 Agent，执行周期远长于 content block）
@@ -905,6 +908,31 @@ async function runQuery(
   // 前台 Task 完成时 SDK 只发射 tool_use_summary（不发射 task_notification），
   // 需在 tool_use_summary 中为前台 Task 合成 task_notification
   const backgroundTaskToolUseIds = new Set<string>();
+
+  // 追踪子 Agent 内部活跃的工具调用（按 parent task ID 分组）
+  // SDK 只传播子 Agent 的完整 assistant/user 消息（不传播 stream_event），
+  // 需要在收到 user 消息（tool_result）时正确发射 tool_use_end
+  const activeSubAgentToolsByTask = new Map<string, Set<string>>();
+
+  // 辅助函数：清理指定 Task 下的嵌套工具和子 Agent 活跃工具
+  function cleanupTaskTools(taskId: string): void {
+    const nested = activeNestedToolByParent.get(taskId);
+    if (nested) {
+      emit({ status: 'stream', result: null,
+        streamEvent: { eventType: 'tool_use_end', toolUseId: nested.toolUseId, parentToolUseId: taskId },
+      });
+      activeNestedToolByParent.delete(taskId);
+    }
+    const subTools = activeSubAgentToolsByTask.get(taskId);
+    if (subTools) {
+      for (const toolId of subTools) {
+        emit({ status: 'stream', result: null,
+          streamEvent: { eventType: 'tool_use_end', toolUseId: toolId, parentToolUseId: taskId },
+        });
+      }
+      activeSubAgentToolsByTask.delete(taskId);
+    }
+  }
 
   // Home containers (admin & member) can access global and memory directories
   // Non-home containers only access memory (global CLAUDE.md injected via systemPromptAppend)
@@ -961,6 +989,13 @@ async function runQuery(
       const isNested = parentToolUseId !== null;
 
       const event = partial.event;
+      // 诊断日志：打印子 Agent 非 delta 事件（delta 事件频率太高，仅记录结构性事件）
+      if (isNested && event.type !== 'content_block_delta') {
+        const evtType = event.type === 'content_block_start'
+          ? `block_start/${event.content_block?.type}${event.content_block?.name ? `:${event.content_block.name}` : ''}`
+          : event.type;
+        log(`[stream-nested] parent=${parentToolUseId} evt=${evtType} tasks=[${[...taskToolUseIds].map(id => id.slice(0, 12)).join(',')}]`);
+      }
       if (event.type === 'content_block_start') {
         // Debug: 记录 content_block_start 关键字段，帮助排查嵌套事件流
         const _b = event.content_block;
@@ -1119,14 +1154,24 @@ async function runQuery(
               }
             }
 
-            // 累积 Task 工具的 input JSON，提取 description
+            // 累积 Task 工具的 input JSON，提取 description 和 team_name
             const pendingTask = pendingTaskInput.get(blockIndex);
             if (pendingTask && !pendingTask.resolved) {
               pendingTask.inputJson += delta.partial_json;
+              // 检测 team_name（可能出现在 description 之前或之后）
+              if (!pendingTask.isTeammate) {
+                const teamMatch = pendingTask.inputJson.match(/"team_name"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+                if (teamMatch) {
+                  pendingTask.isTeammate = true;
+                  teammateTaskToolUseIds.add(pendingTask.toolUseId);
+                }
+              }
               const descMatch = pendingTask.inputJson.match(/"description"\s*:\s*"((?:[^"\\]|\\.)*)"/);
               if (descMatch) {
                 pendingTask.resolved = true;
                 pendingTaskInput.delete(blockIndex);
+                const isTeammate = pendingTask.isTeammate || false;
+                if (isTeammate) teammateTaskToolUseIds.add(pendingTask.toolUseId);
                 emit({
                   status: 'stream', result: null,
                   streamEvent: {
@@ -1134,6 +1179,7 @@ async function runQuery(
                     toolUseId: pendingTask.toolUseId,
                     toolName: 'Task',
                     taskDescription: descMatch[1].replace(/\\"/g, '"').slice(0, 200),
+                    ...(isTeammate ? { isTeammate: true } : {}),
                   },
                 });
               }
@@ -1174,15 +1220,7 @@ async function runQuery(
         // 此处为前台 Task 合成 task_notification 以驱动前端标签页自动关闭
         if (taskToolUseIds.has(id) && !backgroundTaskToolUseIds.has(id)) {
           log(`Synthesizing task_notification for foreground Task ${id.slice(0, 12)}`);
-          // 清理该 Task 下活跃的嵌套工具
-          const nestedForTask = activeNestedToolByParent.get(id);
-          if (nestedForTask) {
-            emit({
-              status: 'stream', result: null,
-              streamEvent: { eventType: 'tool_use_end', toolUseId: nestedForTask.toolUseId, parentToolUseId: id },
-            });
-            activeNestedToolByParent.delete(id);
-          }
+          cleanupTaskTools(id);
           emit({
             status: 'stream', result: null,
             streamEvent: {
@@ -1256,7 +1294,101 @@ async function runQuery(
 
     messageCount++;
     const msgType = message.type === 'system' ? `system/${(message as { subtype?: string }).subtype}` : message.type;
-    log(`[msg #${messageCount}] type=${msgType}`);
+    const msgParentToolUseId = (message as any).parent_tool_use_id ?? null;
+    // 诊断：对所有 assistant/user 消息打印 parent_tool_use_id 和内容块类型
+    if (message.type === 'assistant' || message.type === 'user') {
+      const rawParent = (message as any).parent_tool_use_id;
+      const contentTypes = (Array.isArray((message as any).message?.content)
+        ? ((message as any).message.content as Array<{ type: string }>).map(b => b.type).join(',')
+        : typeof (message as any).message?.content === 'string' ? 'string' : 'none');
+      log(`[msg #${messageCount}] type=${msgType} parent_tool_use_id=${rawParent === undefined ? 'UNDEFINED' : rawParent === null ? 'NULL' : rawParent} content_types=[${contentTypes}] keys=[${Object.keys(message).join(',')}]`);
+    } else {
+      log(`[msg #${messageCount}] type=${msgType}${msgParentToolUseId ? ` parent=${msgParentToolUseId.slice(0, 12)}` : ''}`);
+    }
+
+    // ── 子 Agent 消息转 StreamEvent ──
+    // SDK 不传播子 Agent 的 stream_event（raw API streaming），只传播完整的 assistant/user 消息
+    // 携带 parent_tool_use_id = Task 工具的 tool_use_id。
+    // 将这些完整消息的内容块转换为对应的 StreamEvent，驱动前端 SDK Task 标签页显示执行过程。
+    if (msgParentToolUseId && taskToolUseIds.has(msgParentToolUseId)) {
+      if (message.type === 'assistant') {
+        const subContent = (message as any).message?.content as Array<{
+          type: string; text?: string; thinking?: string;
+          name?: string; id?: string; input?: Record<string, unknown>;
+        }> | undefined;
+        if (Array.isArray(subContent)) {
+          // 结束上一轮子 Agent 遗留的活跃工具（sub-agent 发出新 assistant 表示上轮工具已完成）
+          const prevTools = activeSubAgentToolsByTask.get(msgParentToolUseId);
+          if (prevTools && prevTools.size > 0) {
+            for (const toolId of prevTools) {
+              emit({ status: 'stream', result: null,
+                streamEvent: { eventType: 'tool_use_end', toolUseId: toolId, parentToolUseId: msgParentToolUseId },
+              });
+            }
+            prevTools.clear();
+          }
+          for (const block of subContent) {
+            if (block.type === 'thinking' && block.thinking) {
+              emit({ status: 'stream', result: null,
+                streamEvent: { eventType: 'thinking_delta', text: block.thinking, parentToolUseId: msgParentToolUseId },
+              });
+            }
+            if (block.type === 'text' && block.text) {
+              emit({ status: 'stream', result: null,
+                streamEvent: { eventType: 'text_delta', text: block.text, parentToolUseId: msgParentToolUseId },
+              });
+            }
+            if (block.type === 'tool_use' && block.id) {
+              emit({ status: 'stream', result: null,
+                streamEvent: {
+                  eventType: 'tool_use_start',
+                  toolName: block.name || 'unknown',
+                  toolUseId: block.id,
+                  parentToolUseId: msgParentToolUseId,
+                  isNested: true,
+                  toolInputSummary: summarizeToolInput(block.input),
+                },
+              });
+              if (!activeSubAgentToolsByTask.has(msgParentToolUseId)) {
+                activeSubAgentToolsByTask.set(msgParentToolUseId, new Set());
+              }
+              activeSubAgentToolsByTask.get(msgParentToolUseId)!.add(block.id);
+            }
+          }
+          log(`[sub-agent] parent=${msgParentToolUseId.slice(0, 12)} blocks=${subContent.length} types=[${subContent.map(b => b.type).join(',')}]`);
+        }
+      }
+      if (message.type === 'user') {
+        const rawContent = (message as any).message?.content;
+        // SDK user 消息的 content 可以是 string 或 Array<ContentBlock>
+        if (typeof rawContent === 'string' && rawContent) {
+          emit({ status: 'stream', result: null,
+            streamEvent: { eventType: 'text_delta', text: rawContent, parentToolUseId: msgParentToolUseId },
+          });
+        } else if (Array.isArray(rawContent)) {
+          const activeSub = activeSubAgentToolsByTask.get(msgParentToolUseId);
+          for (const block of rawContent as Array<{ type: string; text?: string; thinking?: string; tool_use_id?: string }>) {
+            // 子 Agent 的结果通常以 text 块返回（SDK 将子 Agent 最终输出包装为 user 消息）
+            if (block.type === 'text' && block.text) {
+              emit({ status: 'stream', result: null,
+                streamEvent: { eventType: 'text_delta', text: block.text, parentToolUseId: msgParentToolUseId },
+              });
+            }
+            if (block.type === 'thinking' && block.thinking) {
+              emit({ status: 'stream', result: null,
+                streamEvent: { eventType: 'thinking_delta', text: block.thinking, parentToolUseId: msgParentToolUseId },
+              });
+            }
+            if (block.type === 'tool_result' && block.tool_use_id) {
+              emit({ status: 'stream', result: null,
+                streamEvent: { eventType: 'tool_use_end', toolUseId: block.tool_use_id, parentToolUseId: msgParentToolUseId },
+              });
+              activeSub?.delete(block.tool_use_id);
+            }
+          }
+        }
+      }
+    }
 
     if (message.type === 'assistant' && 'uuid' in message) {
       lastAssistantUuid = (message as { uuid: string }).uuid;
@@ -1293,8 +1425,8 @@ async function runQuery(
           }
         }
       }
-      // 从完整的 assistant 消息中识别后台 Task 工具
-      // （input_json_delta 阶段可能遗漏 run_in_background，此处从完整 input 兜底）
+      // 从完整的 assistant 消息中识别后台 Task 工具和 Teammate Task
+      // （input_json_delta 阶段可能遗漏 run_in_background/team_name，此处从完整 input 兜底）
       if (Array.isArray(content)) {
         for (const block of content) {
           if (block.type === 'tool_use' && block.name === 'Task' && block.id && block.input) {
@@ -1302,6 +1434,20 @@ async function runQuery(
             if (taskInput.run_in_background === true) {
               backgroundTaskToolUseIds.add(block.id);
               log(`Task ${block.id.slice(0, 12)} marked as background`);
+            }
+            // 兜底检测 team_name（input_json_delta 阶段可能因 JSON 顺序遗漏）
+            if (taskInput.team_name && !teammateTaskToolUseIds.has(block.id)) {
+              teammateTaskToolUseIds.add(block.id);
+              log(`Task ${block.id.slice(0, 12)} marked as teammate (team=${taskInput.team_name})`);
+              emit({
+                status: 'stream', result: null,
+                streamEvent: {
+                  eventType: 'task_start',
+                  toolUseId: block.id,
+                  toolName: 'Task',
+                  isTeammate: true,
+                },
+              });
             }
           }
         }
@@ -1328,15 +1474,7 @@ async function runQuery(
           taskSummary: tn.summary,
         },
       });
-      // 清理该 Task 下活跃的嵌套工具
-      const nestedForTask = activeNestedToolByParent.get(tn.task_id);
-      if (nestedForTask) {
-        emit({
-          status: 'stream', result: null,
-          streamEvent: { eventType: 'tool_use_end', toolUseId: nestedForTask.toolUseId, parentToolUseId: tn.task_id },
-        });
-        activeNestedToolByParent.delete(tn.task_id);
-      }
+      cleanupTaskTools(tn.task_id);
       // task_notification 携带个别 Task 完成状态 — 立即发射 tool_use_end
       // （task_id 即 tool_use_id，SDK 使用相同标识符）
       backgroundTaskToolUseIds.delete(tn.task_id);
@@ -1421,15 +1559,7 @@ async function runQuery(
     // 前台 Task 残留：合成 task_notification 以驱动前端标签页关闭
     if (!backgroundTaskToolUseIds.has(id)) {
       log(`[safety-net] Synthesizing task_notification for Task ${id.slice(0, 12)}`);
-      // 清理嵌套工具
-      const nestedForTask = activeNestedToolByParent.get(id);
-      if (nestedForTask) {
-        emit({
-          status: 'stream', result: null,
-          streamEvent: { eventType: 'tool_use_end', toolUseId: nestedForTask.toolUseId, parentToolUseId: id },
-        });
-        activeNestedToolByParent.delete(id);
-      }
+      cleanupTaskTools(id);
       emit({
         status: 'stream', result: null,
         streamEvent: {
@@ -1455,6 +1585,15 @@ async function runQuery(
     });
   }
   activeNestedToolByParent.clear();
+  // 清理残留的子 Agent 活跃工具追踪
+  for (const [taskId, subTools] of activeSubAgentToolsByTask) {
+    for (const toolId of subTools) {
+      emit({ status: 'stream', result: null,
+        streamEvent: { eventType: 'tool_use_end', toolUseId: toolId, parentToolUseId: taskId },
+      });
+    }
+  }
+  activeSubAgentToolsByTask.clear();
 
   ipcPolling = false;
   log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}, interruptedDuringQuery: ${interruptedDuringQuery}`);

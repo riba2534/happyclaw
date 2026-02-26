@@ -4,6 +4,7 @@ import { useChatStore } from '../../stores/chat';
 import { useAuthStore } from '../../stores/auth';
 import { EmojiAvatar } from '../common/EmojiAvatar';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { TaskInlineCard } from './TaskInlineCard';
 
 interface StreamingDisplayProps {
   groupJid: string;
@@ -16,6 +17,7 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNamePr
   const mainStreaming = useChatStore(s => s.streaming[groupJid]);
   const agentStreamingState = useChatStore(s => agentId ? s.agentStreaming[agentId] : undefined);
   const streaming = agentId ? agentStreamingState : mainStreaming;
+  const sdkTasks = useChatStore(s => s.sdkTasks);
   const currentUser = useAuthStore(s => s.user);
   const appearance = useAuthStore(s => s.appearance);
   const senderName = currentUser?.ai_name || appearance?.aiName || senderNameProp;
@@ -207,36 +209,62 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNamePr
             )}
 
             {/* Active tools */}
-            {streaming.activeTools.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 mb-2">
-                {streaming.activeTools.map((tool, i) => {
-                  const elapsed = tool.elapsedSeconds ?? localElapsed[tool.toolUseId];
-                  const isNested = tool.isNested === true;
+            {streaming.activeTools.length > 0 && (() => {
+              // 分离非 teammate Task（渲染为内联卡片）和其他工具（渲染为 pill）
+              const inlineTaskTools = streaming.activeTools.filter(
+                t => t.toolName === 'Task' && t.toolUseId && !sdkTasks[t.toolUseId]?.isTeammate
+              );
+              const pillTools = streaming.activeTools.filter(
+                t => !(t.toolName === 'Task' && t.toolUseId && !sdkTasks[t.toolUseId]?.isTeammate)
+              );
 
-                  return (
-                    <div key={tool.toolUseId || i} className={`flex flex-col gap-1 ${isNested ? 'pl-4 border-l-2 border-brand-200' : ''}`}>
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-primary border border-brand-200">
-                        <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                        </svg>
-                        {tool.toolName === 'Skill'
-                          ? (tool.skillName || 'unknown')
-                          : tool.toolName}
-                        {elapsed != null && (
-                          <span className="text-primary">{Math.round(elapsed)}s</span>
-                        )}
-                      </span>
-                      {tool.toolInputSummary && (
-                        <div className="text-[11px] text-slate-500 px-2 break-words line-clamp-2">
-                          {tool.toolInputSummary}
-                        </div>
-                      )}
+              return (
+                <div className="mb-2 space-y-1">
+                  {/* Inline Task cards */}
+                  {inlineTaskTools.map((tool) => (
+                    <TaskInlineCard
+                      key={tool.toolUseId}
+                      toolUseId={tool.toolUseId}
+                      description={tool.toolInputSummary || sdkTasks[tool.toolUseId]?.description || 'Task'}
+                      startTime={tool.startTime}
+                      groupJid={groupJid}
+                    />
+                  ))}
+
+                  {/* Regular tool pills */}
+                  {pillTools.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {pillTools.map((tool, i) => {
+                        const elapsed = tool.elapsedSeconds ?? localElapsed[tool.toolUseId];
+                        const isNested = tool.isNested === true;
+
+                        return (
+                          <div key={tool.toolUseId || i} className={`flex flex-col gap-1 ${isNested ? 'pl-4 border-l-2 border-brand-200' : ''}`}>
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-primary border border-brand-200">
+                              <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                              </svg>
+                              {tool.toolName === 'Skill'
+                                ? (tool.skillName || 'unknown')
+                                : tool.toolName}
+                              {elapsed != null && (
+                                <span className="text-primary">{Math.round(elapsed)}s</span>
+                              )}
+                            </span>
+                            {tool.toolInputSummary && (
+                              <div className="text-[11px] text-slate-500 px-2 break-words line-clamp-2">
+                                {tool.toolInputSummary}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
-                  );
-                })}
-              </div>
-            )}
+                  )}
+                </div>
+              );
+            })()}
 
             {/* Recent events timeline */}
             {streaming.recentEvents.length > 0 && (
