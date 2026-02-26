@@ -59,6 +59,20 @@ interface VolumeMount {
   readonly: boolean;
 }
 
+/**
+ * Create directory with 0o777 permissions for container volume mounts.
+ * Fixes uid mismatch between host user and container node user (uid 1000),
+ * especially in rootless podman where uid remapping causes permission denied.
+ */
+function mkdirForContainer(dirPath: string): void {
+  fs.mkdirSync(dirPath, { recursive: true });
+  try {
+    fs.chmodSync(dirPath, 0o777);
+  } catch {
+    // Ignore — may fail on read-only filesystem or special mounts
+  }
+}
+
 function buildVolumeMounts(
   group: RegisteredGroup,
   isAdminHome: boolean,
@@ -74,7 +88,7 @@ function buildVolumeMounts(
   const ownerId = group.created_by;
   if (ownerId) {
     const userGlobalDir = path.join(GROUPS_DIR, 'user-global', ownerId);
-    fs.mkdirSync(userGlobalDir, { recursive: true });
+    mkdirForContainer(userGlobalDir);
     mounts.push({
       hostPath: userGlobalDir,
       containerPath: '/workspace/global',
@@ -83,7 +97,7 @@ function buildVolumeMounts(
   } else {
     // Legacy fallback for rows without created_by.
     const legacyGlobalDir = path.join(GROUPS_DIR, 'global');
-    fs.mkdirSync(legacyGlobalDir, { recursive: true });
+    mkdirForContainer(legacyGlobalDir);
     mounts.push({
       hostPath: legacyGlobalDir,
       containerPath: '/workspace/global',
@@ -116,7 +130,7 @@ function buildVolumeMounts(
 
   // Per-group memory directory (isolated from workspace to avoid polluting user files)
   const memoryDir = path.join(DATA_DIR, 'memory', group.folder);
-  fs.mkdirSync(memoryDir, { recursive: true });
+  mkdirForContainer(memoryDir);
   mounts.push({
     hostPath: memoryDir,
     containerPath: '/workspace/memory',
@@ -128,7 +142,7 @@ function buildVolumeMounts(
   const groupSessionsDir = agentId
     ? path.join(DATA_DIR, 'sessions', group.folder, 'agents', agentId, '.claude')
     : path.join(DATA_DIR, 'sessions', group.folder, '.claude');
-  fs.mkdirSync(groupSessionsDir, { recursive: true });
+  mkdirForContainer(groupSessionsDir);
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
   if (!fs.existsSync(settingsFile)) {
     fs.writeFileSync(
@@ -165,6 +179,13 @@ function buildVolumeMounts(
   const projectSkillsDir = path.join(projectRoot, 'container', 'skills');
   const userSkillsDir = (mountUserSkills && ownerId) ? path.join(DATA_DIR, 'skills', ownerId) : null;
 
+  // Ensure user skills directory exists so it can always be mounted.
+  // Skills may be installed after the group is created; without pre-creating,
+  // the existsSync check would skip mounting and the container would never see them.
+  if (userSkillsDir) {
+    fs.mkdirSync(userSkillsDir, { recursive: true });
+  }
+
   if (selectedSkills === null) {
     // 全量挂载（默认行为）
     if (fs.existsSync(projectSkillsDir)) {
@@ -174,7 +195,7 @@ function buildVolumeMounts(
         readonly: true,
       });
     }
-    if (userSkillsDir && fs.existsSync(userSkillsDir)) {
+    if (userSkillsDir) {
       mounts.push({
         hostPath: userSkillsDir,
         containerPath: '/workspace/user-skills',
@@ -198,7 +219,7 @@ function buildVolumeMounts(
       }
     }
     // 用户级 skills
-    if (userSkillsDir && fs.existsSync(userSkillsDir)) {
+    if (userSkillsDir) {
       for (const name of selectedSet) {
         const skillPath = path.join(userSkillsDir, name);
         if (fs.existsSync(skillPath) && fs.statSync(skillPath).isDirectory()) {
@@ -214,14 +235,18 @@ function buildVolumeMounts(
 
   // Per-group IPC namespace: each group gets its own IPC directory
   // Sub-agents get their own IPC subdirectory under agents/{agentId}/
+  // Use 0o777 so container (node/1000) and host (agent/1002) can both read/write.
   const groupIpcDir = agentId
     ? path.join(DATA_DIR, 'ipc', group.folder, 'agents', agentId)
     : path.join(DATA_DIR, 'ipc', group.folder);
-  fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
-  fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
-  fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
+  mkdirForContainer(groupIpcDir);
   // All agents (main + sub/conversation) get agents/ subdir for spawn/message IPC
-  fs.mkdirSync(path.join(groupIpcDir, 'agents'), { recursive: true });
+  // Use chmod 777 so both host (agent/1002) and container (node/1000) can write
+  for (const sub of ['messages', 'tasks', 'input', 'agents'] as const) {
+    const subDir = path.join(groupIpcDir, sub);
+    fs.mkdirSync(subDir, { recursive: true });
+    try { fs.chmodSync(subDir, 0o777); } catch { /* ignore if already correct */ }
+  }
   mounts.push({
     hostPath: groupIpcDir,
     containerPath: '/workspace/ipc',
@@ -320,7 +345,7 @@ export async function runContainerAgent(
   const startTime = Date.now();
 
   const groupDir = path.join(GROUPS_DIR, group.folder);
-  fs.mkdirSync(groupDir, { recursive: true });
+  mkdirForContainer(groupDir);
 
   // Determine if this is an admin home container (full privileges)
   const isAdminHome = !!group.is_home && group.folder === 'main';
