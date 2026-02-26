@@ -1,6 +1,7 @@
 // Configuration management routes
 
 import { randomBytes, createHash } from 'node:crypto';
+import { Agent as HttpsAgent } from 'node:https';
 import { Hono } from 'hono';
 import type { Variables } from '../web-context.js';
 import { deleteRegisteredGroup, deleteChatHistory } from '../db.js';
@@ -565,8 +566,31 @@ configRoutes.post(
 
     try {
       const { Bot } = await import('grammy');
-      const testBot = new Bot(config.botToken);
-      const me = await testBot.api.getMe();
+      const testBot = new Bot(config.botToken, {
+        client: {
+          timeoutSeconds: 15,
+          baseFetchConfig: {
+            agent: new HttpsAgent({ keepAlive: false, family: 4 }),
+          },
+        },
+      });
+
+      let me: { username?: string; id: number; first_name: string } | null = null;
+      let lastErr: unknown = null;
+      for (let i = 0; i < 3; i++) {
+        try {
+          me = await testBot.api.getMe();
+          break;
+        } catch (err) {
+          lastErr = err;
+          // Small retry window for intermittent network timeouts.
+          if (i < 2) await new Promise((resolve) => setTimeout(resolve, 300));
+        }
+      }
+      if (!me) {
+        throw lastErr instanceof Error ? lastErr : new Error('Telegram API request failed');
+      }
+
       return c.json({
         success: true,
         bot_username: me.username,
