@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useMonitorStore } from '../stores/monitor';
 import { useAuthStore } from '../stores/auth';
 import { ContainerStatus } from '../components/monitor/ContainerStatus';
@@ -9,10 +9,12 @@ import { RefreshCw, AlertTriangle, CheckCircle, Hammer, Loader2 } from 'lucide-r
 import { PageHeader } from '@/components/common/PageHeader';
 import { SkeletonStatCards } from '@/components/common/Skeletons';
 import { Button } from '@/components/ui/button';
+import { wsManager } from '../api/ws';
 
 export function MonitorPage() {
-  const { status, loading, loadStatus, building, buildResult, buildDockerImage, clearBuildResult } = useMonitorStore();
+  const { status, loading, loadStatus, building, buildLogs, buildResult, buildDockerImage, clearBuildResult } = useMonitorStore();
   const isAdmin = useAuthStore((s) => s.user?.role === 'admin');
+  const logEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     loadStatus();
@@ -24,10 +26,35 @@ export function MonitorPage() {
     return () => clearInterval(interval);
   }, [loadStatus]);
 
+  // WebSocket listeners for docker build progress
+  useEffect(() => {
+    const unsubLog = wsManager.on('docker_build_log', (data: { line: string }) => {
+      useMonitorStore.setState((s) => ({
+        buildLogs: [...s.buildLogs.slice(-199), data.line],
+      }));
+    });
+    const unsubComplete = wsManager.on('docker_build_complete', (data: { success: boolean; error?: string }) => {
+      useMonitorStore.setState({
+        building: false,
+        buildResult: { success: data.success, error: data.error },
+      });
+      loadStatus();
+    });
+
+    return () => {
+      unsubLog();
+      unsubComplete();
+    };
+  }, [loadStatus]);
+
+  // Auto-scroll build logs to bottom
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [buildLogs]);
+
   const handleBuild = async () => {
     clearBuildResult();
     await buildDockerImage();
-    loadStatus();
   };
 
   return (
@@ -89,6 +116,18 @@ export function MonitorPage() {
                 </Button>
               </div>
 
+              {/* Build logs */}
+              {building && buildLogs.length > 0 && (
+                <div className="mt-4">
+                  <div className="bg-slate-900 rounded-lg p-3 max-h-64 overflow-y-auto font-mono text-xs text-green-400">
+                    {buildLogs.map((line, i) => (
+                      <div key={i} className="whitespace-pre-wrap break-all">{line}</div>
+                    ))}
+                    <div ref={logEndRef} />
+                  </div>
+                </div>
+              )}
+
               {buildResult && (
                 <div className={`mt-4 p-4 rounded-lg border ${buildResult.success ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
                   <div className="flex items-center gap-2 mb-2">
@@ -104,11 +143,6 @@ export function MonitorPage() {
                   {buildResult.error && (
                     <pre className="text-xs text-red-700 bg-red-100 rounded p-3 mt-2 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap">
                       {buildResult.error}
-                    </pre>
-                  )}
-                  {buildResult.stderr && !buildResult.success && (
-                    <pre className="text-xs text-red-700 bg-red-100 rounded p-3 mt-2 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap">
-                      {buildResult.stderr}
                     </pre>
                   )}
                 </div>

@@ -11,6 +11,9 @@ export interface SystemStatus {
   uptime: number;
   dockerImageExists: boolean;
   dockerBuildInProgress?: boolean;
+  claudeCodeVersion?: string | null;
+  dockerBuildLogs?: string[];
+  dockerBuildResult?: { success: boolean; error?: string } | null;
   groups: Array<{
     jid: string;
     active: boolean;
@@ -26,8 +29,7 @@ interface MonitorState {
   loading: boolean;
   error: string | null;
   building: boolean;
-  /** 本地是否有正在飞行的构建请求（区分从后端恢复的状态） */
-  _localBuildInFlight: boolean;
+  buildLogs: string[];
   buildResult: { success: boolean; error?: string; stdout?: string; stderr?: string } | null;
   loadStatus: () => Promise<void>;
   buildDockerImage: () => Promise<void>;
@@ -39,7 +41,7 @@ export const useMonitorStore = create<MonitorState>((set) => ({
   loading: false,
   error: null,
   building: false,
-  _localBuildInFlight: false,
+  buildLogs: [],
   buildResult: null,
 
   loadStatus: async () => {
@@ -51,9 +53,17 @@ export const useMonitorStore = create<MonitorState>((set) => ({
       if (status.dockerBuildInProgress && !state.building) {
         // 后端正在构建，但前端不知道（页面刷新后恢复）
         update.building = true;
-      } else if (!status.dockerBuildInProgress && state.building && !state._localBuildInFlight) {
-        // 后端构建已结束，且本地没有飞行中的请求（是从后端恢复的状态），同步重置
+        // 恢复日志（仅当本地无日志时）
+        if (state.buildLogs.length === 0 && status.dockerBuildLogs && status.dockerBuildLogs.length > 0) {
+          update.buildLogs = status.dockerBuildLogs;
+        }
+      } else if (!status.dockerBuildInProgress && state.building) {
+        // 后端构建已结束，同步重置
         update.building = false;
+        // 恢复结果
+        if (status.dockerBuildResult) {
+          update.buildResult = status.dockerBuildResult;
+        }
       }
       set(update);
     } catch (err) {
@@ -62,18 +72,13 @@ export const useMonitorStore = create<MonitorState>((set) => ({
   },
 
   buildDockerImage: async () => {
-    set({ building: true, _localBuildInFlight: true, buildResult: null });
+    set({ building: true, buildLogs: [], buildResult: null });
     try {
-      const result = await api.post<{ success: boolean; error?: string; stdout?: string; stderr?: string }>(
-        '/api/docker/build',
-        {},
-        10 * 60 * 1000, // 10 分钟超时
-      );
-      set({ building: false, _localBuildInFlight: false, buildResult: result });
+      await api.post('/api/docker/build', {});
+      // POST returns 202 immediately; progress comes via WebSocket
     } catch (err) {
       set({
         building: false,
-        _localBuildInFlight: false,
         buildResult: {
           success: false,
           error: err instanceof Error ? err.message : String(err),
@@ -82,5 +87,5 @@ export const useMonitorStore = create<MonitorState>((set) => ({
     }
   },
 
-  clearBuildResult: () => set({ buildResult: null }),
+  clearBuildResult: () => set({ buildResult: null, buildLogs: [] }),
 }));

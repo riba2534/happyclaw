@@ -1,5 +1,6 @@
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import path from 'path';
+import readline from 'readline';
 import { promisify } from 'util';
 
 import { Hono } from 'hono';
@@ -19,11 +20,62 @@ import { logger } from '../logger.js';
 
 const execFileAsync = promisify(execFile);
 
+// --- Claude Code version cache (1h TTL) ---
+
+let cachedClaudeVersion: { version: string | null; fetchedAt: number } | null =
+  null;
+const VERSION_CACHE_TTL = 60 * 60 * 1000;
+
+async function getClaudeCodeVersion(): Promise<string | null> {
+  const now = Date.now();
+  if (
+    cachedClaudeVersion &&
+    now - cachedClaudeVersion.fetchedAt < VERSION_CACHE_TTL
+  ) {
+    return cachedClaudeVersion.version;
+  }
+  try {
+    const { stdout } = await execFileAsync('claude', ['--version'], {
+      timeout: 5000,
+    });
+    const version = stdout.trim() || null;
+    cachedClaudeVersion = { version, fetchedAt: now };
+    return version;
+  } catch {
+    cachedClaudeVersion = { version: null, fetchedAt: now };
+    return null;
+  }
+}
+
+// --- Docker build state ---
+
 let buildState: {
   building: boolean;
   startedAt: number | null;
   startedBy: string | null;
-} = { building: false, startedAt: null, startedBy: null };
+  logs: string[];
+  result: { success: boolean; error?: string } | null;
+} = {
+  building: false,
+  startedAt: null,
+  startedBy: null,
+  logs: [],
+  result: null,
+};
+
+// --- Dependency injection (avoid circular imports) ---
+
+let broadcastLog: ((line: string) => void) | null = null;
+let broadcastComplete: ((success: boolean, error?: string) => void) | null =
+  null;
+
+export function injectMonitorDeps(deps: {
+  broadcastDockerBuildLog: (line: string) => void;
+  broadcastDockerBuildComplete: (success: boolean, error?: string) => void;
+}) {
+  broadcastLog = deps.broadcastDockerBuildLog;
+  broadcastComplete = deps.broadcastDockerBuildComplete;
+}
 
 const monitorRoutes = new Hono<{ Variables: Variables }>();
 
@@ -122,58 +174,132 @@ monitorRoutes.get('/status', authMiddleware, async (c) => {
 
   return c.json({
     activeContainers,
-    activeHostProcesses: isAdmin ? queueStatus.activeHostProcessCount : undefined,
+    activeHostProcesses: isAdmin
+      ? queueStatus.activeHostProcessCount
+      : undefined,
     activeTotal: isAdmin ? queueStatus.activeCount : activeContainers,
     maxConcurrentContainers: getSystemSettings().maxConcurrentContainers,
-    maxConcurrentHostProcesses: isAdmin ? getSystemSettings().maxConcurrentHostProcesses : undefined,
+    maxConcurrentHostProcesses: isAdmin
+      ? getSystemSettings().maxConcurrentHostProcesses
+      : undefined,
     queueLength,
     uptime: Math.floor(process.uptime()),
     groups: filteredGroups,
     dockerImageExists,
     dockerBuildInProgress: buildState.building,
+    claudeCodeVersion: isAdmin ? await getClaudeCodeVersion() : undefined,
+    dockerBuildLogs:
+      isAdmin && buildState.building ? buildState.logs.slice(-50) : undefined,
+    dockerBuildResult: isAdmin ? buildState.result : undefined,
   });
 });
 
-// POST /api/docker/build - 构建 Docker 镜像（仅 admin）
-monitorRoutes.post('/docker/build', authMiddleware, systemConfigMiddleware, async (c) => {
-  if (buildState.building) {
-    return c.json({
-      error: 'Docker image build already in progress',
-      startedAt: buildState.startedAt,
-      startedBy: buildState.startedBy,
-    }, 409);
-  }
+// POST /api/docker/build - 构建 Docker 镜像（仅 admin，异步启动 + WS 推送进度）
+monitorRoutes.post(
+  '/docker/build',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    if (buildState.building) {
+      return c.json(
+        {
+          error: 'Docker image build already in progress',
+          startedAt: buildState.startedAt,
+          startedBy: buildState.startedBy,
+        },
+        409,
+      );
+    }
 
-  const authUser = c.get('user') as AuthUser;
-  const buildScript = path.resolve(process.cwd(), 'container', 'build.sh');
+    const authUser = c.get('user') as AuthUser;
+    const buildScript = path.resolve(process.cwd(), 'container', 'build.sh');
 
-  buildState = { building: true, startedAt: Date.now(), startedBy: authUser.username };
-  logger.info({ startedBy: authUser.username }, 'Docker image build requested via API');
+    buildState = {
+      building: true,
+      startedAt: Date.now(),
+      startedBy: authUser.username,
+      logs: [],
+      result: null,
+    };
+    logger.info(
+      { startedBy: authUser.username },
+      'Docker image build requested via API',
+    );
 
-  try {
-    const { stdout, stderr } = await execFileAsync('bash', [buildScript], {
-      timeout: 10 * 60 * 1000, // 10 分钟超时
+    // Spawn build process asynchronously
+    const proc = spawn('bash', [buildScript], {
       cwd: path.resolve(process.cwd(), 'container'),
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
 
-    logger.info('Docker image build completed');
-    return c.json({
-      success: true,
-      stdout: typeof stdout === 'string' ? stdout : String(stdout),
-      stderr: typeof stderr === 'string' ? stderr : String(stderr),
+    // 10-minute timeout
+    const timeout = setTimeout(
+      () => {
+        proc.kill('SIGKILL');
+        const errMsg = 'Docker build timed out after 10 minutes';
+        logger.error(errMsg);
+        buildState.building = false;
+        buildState.result = { success: false, error: errMsg };
+        broadcastLog?.(errMsg);
+        broadcastComplete?.(false, errMsg);
+      },
+      10 * 60 * 1000,
+    );
+
+    const pushLine = (line: string) => {
+      buildState.logs.push(line);
+      // Keep last 200 lines in memory
+      if (buildState.logs.length > 200) {
+        buildState.logs = buildState.logs.slice(-200);
+      }
+      broadcastLog?.(line);
+    };
+
+    // Read stdout and stderr line by line
+    if (proc.stdout) {
+      const rl = readline.createInterface({ input: proc.stdout });
+      rl.on('line', pushLine);
+    }
+    if (proc.stderr) {
+      const rl = readline.createInterface({ input: proc.stderr });
+      rl.on('line', pushLine);
+    }
+
+    proc.on('close', (code) => {
+      clearTimeout(timeout);
+      const success = code === 0;
+      const error = success
+        ? undefined
+        : `Build process exited with code ${code}`;
+      if (success) {
+        logger.info('Docker image build completed');
+      } else {
+        logger.error({ code }, 'Docker image build failed');
+      }
+      buildState.building = false;
+      buildState.result = { success, error };
+      broadcastComplete?.(success, error);
     });
-  } catch (err: any) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    logger.error({ err }, 'Docker image build failed');
-    return c.json({
-      success: false,
-      error: errorMsg,
-      stdout: err.stdout ? String(err.stdout) : '',
-      stderr: err.stderr ? String(err.stderr) : '',
-    }, 500);
-  } finally {
-    buildState = { building: false, startedAt: null, startedBy: null };
-  }
-});
+
+    proc.on('error', (err) => {
+      clearTimeout(timeout);
+      const errorMsg = err.message;
+      logger.error({ err }, 'Docker image build process error');
+      buildState.building = false;
+      buildState.result = { success: false, error: errorMsg };
+      broadcastComplete?.(false, errorMsg);
+    });
+
+    // Return immediately with 202 Accepted
+    return c.json(
+      {
+        accepted: true,
+        message:
+          'Docker image build started. Progress will be streamed via WebSocket.',
+      },
+      202,
+    );
+  },
+);
 
 export default monitorRoutes;

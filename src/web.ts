@@ -42,7 +42,7 @@ import configRoutes, { injectConfigDeps } from './routes/config.js';
 import tasksRoutes from './routes/tasks.js';
 import adminRoutes from './routes/admin.js';
 import fileRoutes from './routes/files.js';
-import monitorRoutes from './routes/monitor.js';
+import monitorRoutes, { injectMonitorDeps } from './routes/monitor.js';
 import skillsRoutes from './routes/skills.js';
 import browseRoutes from './routes/browse.js';
 import agentRoutes from './routes/agents.js';
@@ -62,7 +62,14 @@ import {
   isGroupShared,
 } from './db.js';
 import { isSessionExpired } from './auth.js';
-import type { NewMessage, WsMessageOut, WsMessageIn, AuthUser, StreamEvent, UserRole } from './types.js';
+import type {
+  NewMessage,
+  WsMessageOut,
+  WsMessageIn,
+  AuthUser,
+  StreamEvent,
+  UserRole,
+} from './types.js';
 import { WEB_PORT, SESSION_COOKIE_NAME } from './config.js';
 import { logger } from './logger.js';
 import { analyzeIntent } from './intent-analyzer.js';
@@ -75,7 +82,12 @@ const terminalManager = new TerminalManager();
 const wsTerminals = new Map<WebSocket, string>(); // ws → groupJid
 const terminalOwners = new Map<string, WebSocket>(); // groupJid → ws
 
-function normalizeTerminalSize(value: unknown, fallback: number, min: number, max: number): number {
+function normalizeTerminalSize(
+  value: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
   const intValue = Math.floor(value);
   if (intValue < min) return min;
@@ -104,8 +116,11 @@ function isAllowedOrigin(origin: string | undefined): string | null {
   if (CORS_ALLOW_LOCALHOST) {
     try {
       const url = new URL(origin);
-      if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') return origin;
-    } catch { /* invalid origin */ }
+      if (url.hostname === 'localhost' || url.hostname === '127.0.0.1')
+        return origin;
+    } catch {
+      /* invalid origin */
+    }
   }
   // 自定义白名单（逗号分隔）
   if (CORS_ALLOWED_ORIGINS) {
@@ -169,7 +184,13 @@ app.post('/api/messages', authMiddleware, async (c) => {
     );
   }
 
-  const result = await handleWebUserMessage(chatJid, content.trim(), attachments, authUser.id, authUser.display_name || authUser.username);
+  const result = await handleWebUserMessage(
+    chatJid,
+    content.trim(),
+    attachments,
+    authUser.id,
+    authUser.display_name || authUser.username,
+  );
   if (!result.ok) return c.json({ error: result.error }, result.status);
   return c.json({
     success: true,
@@ -212,7 +233,10 @@ async function handleWebUserMessage(
 
   const messageId = crypto.randomUUID();
   const timestamp = new Date().toISOString();
-  const attachmentsStr = attachments && attachments.length > 0 ? JSON.stringify(attachments) : undefined;
+  const attachmentsStr =
+    attachments && attachments.length > 0
+      ? JSON.stringify(attachments)
+      : undefined;
   storeMessageDirect(
     messageId,
     chatJid,
@@ -236,16 +260,19 @@ async function handleWebUserMessage(
   });
 
   const shared = !group.is_home && isGroupShared(group.folder);
-  const formatted = deps.formatMessages([
-    {
-      id: messageId,
-      chat_jid: chatJid,
-      sender: userId,
-      sender_name: displayName,
-      content,
-      timestamp,
-    },
-  ], shared);
+  const formatted = deps.formatMessages(
+    [
+      {
+        id: messageId,
+        chat_jid: chatJid,
+        sender: userId,
+        sender_name: displayName,
+        content,
+        timestamp,
+      },
+    ],
+    shared,
+  );
 
   // For home chat, avoid piping into an active Feishu-driven run.
   // Force a new processing pass so reply channel can be decided correctly.
@@ -259,7 +286,12 @@ async function handleWebUserMessage(
       mimeType: attachment.mimeType,
     }));
     const intent = analyzeIntent(content);
-    const sendResult = deps.queue.sendMessage(chatJid, formatted, images, intent);
+    const sendResult = deps.queue.sendMessage(
+      chatJid,
+      formatted,
+      images,
+      intent,
+    );
     if (sendResult === 'sent') {
       pipedToActive = true;
     } else if (sendResult === 'interrupted_stop') {
@@ -296,7 +328,10 @@ async function handleAgentConversationMessage(
 
   const agent = getAgent(agentId);
   if (!agent || agent.kind !== 'conversation' || agent.chat_jid !== chatJid) {
-    logger.warn({ chatJid, agentId }, 'Agent conversation message rejected: agent not found or not a conversation');
+    logger.warn(
+      { chatJid, agentId },
+      'Agent conversation message rejected: agent not found or not a conversation',
+    );
     return;
   }
 
@@ -305,39 +340,63 @@ async function handleAgentConversationMessage(
   // Store message with virtual chat_jid
   const messageId = crypto.randomUUID();
   const timestamp = new Date().toISOString();
-  const attachmentsStr = attachments && attachments.length > 0 ? JSON.stringify(attachments) : undefined;
+  const attachmentsStr =
+    attachments && attachments.length > 0
+      ? JSON.stringify(attachments)
+      : undefined;
 
   ensureChatExists(virtualChatJid);
   storeMessageDirect(
-    messageId, virtualChatJid, userId, displayName, content, timestamp, false, attachmentsStr,
+    messageId,
+    virtualChatJid,
+    userId,
+    displayName,
+    content,
+    timestamp,
+    false,
+    attachmentsStr,
   );
 
   // Broadcast new_message with agentId so frontend routes to agent tab
-  broadcastNewMessage(virtualChatJid, {
-    id: messageId,
-    chat_jid: virtualChatJid,
-    sender: userId,
-    sender_name: displayName,
-    content,
-    timestamp,
-    is_from_me: false,
-    attachments: attachmentsStr,
-  }, agentId);
+  broadcastNewMessage(
+    virtualChatJid,
+    {
+      id: messageId,
+      chat_jid: virtualChatJid,
+      sender: userId,
+      sender_name: displayName,
+      content,
+      timestamp,
+      is_from_me: false,
+      attachments: attachmentsStr,
+    },
+    agentId,
+  );
 
   // Format for agent
   const shared = false; // agent conversations are not shared
-  const formatted = deps.formatMessages([{
-    id: messageId,
-    chat_jid: virtualChatJid,
-    sender: userId,
-    sender_name: displayName,
-    content,
-    timestamp,
-  }], shared);
+  const formatted = deps.formatMessages(
+    [
+      {
+        id: messageId,
+        chat_jid: virtualChatJid,
+        sender: userId,
+        sender_name: displayName,
+        content,
+        timestamp,
+      },
+    ],
+    shared,
+  );
 
   // Try to pipe into running agent process
   const agentIntent = analyzeIntent(content);
-  const agentSendResult = deps.queue.sendMessage(virtualChatJid, formatted, undefined, agentIntent);
+  const agentSendResult = deps.queue.sendMessage(
+    virtualChatJid,
+    formatted,
+    undefined,
+    agentIntent,
+  );
   if (agentSendResult === 'no_active') {
     // No running process — start one via processAgentConversation
     if (deps.processAgentConversation) {
@@ -490,7 +549,12 @@ function setupWebSocket(server: any): WebSocketServer {
           // 群组访问权限检查
           const targetGroup = getRegisteredGroup(chatJid);
           if (targetGroup) {
-            if (!canAccessGroup({ id: session.user_id, role: session.role }, targetGroup)) {
+            if (
+              !canAccessGroup(
+                { id: session.user_id, role: session.role },
+                targetGroup,
+              )
+            ) {
               logger.warn(
                 { chatJid, userId: session.user_id },
                 'WebSocket send_message blocked: access denied',
@@ -511,8 +575,11 @@ function setupWebSocket(server: any): WebSocketServer {
           // Route to agent conversation handler if agentId is present
           if (agentId && deps) {
             await handleAgentConversationMessage(
-              chatJid, agentId, content.trim(),
-              session.user_id, session.display_name || session.username,
+              chatJid,
+              agentId,
+              content.trim(),
+              session.user_id,
+              session.display_name || session.username,
               attachments,
             );
             return;
@@ -533,48 +600,103 @@ function setupWebSocket(server: any): WebSocketServer {
                 const errId = crypto.randomUUID();
                 const errTs = new Date().toISOString();
                 ensureChatExists(chatJid);
-                storeMessageDirect(errId, chatJid, '__system__', 'system', 'system_error:清除上下文失败，请稍后重试', errTs, true);
-                broadcastNewMessage(chatJid, { id: errId, chat_jid: chatJid, sender: '__system__', sender_name: 'system', content: 'system_error:清除上下文失败，请稍后重试', timestamp: errTs, is_from_me: true });
+                storeMessageDirect(
+                  errId,
+                  chatJid,
+                  '__system__',
+                  'system',
+                  'system_error:清除上下文失败，请稍后重试',
+                  errTs,
+                  true,
+                );
+                broadcastNewMessage(chatJid, {
+                  id: errId,
+                  chat_jid: chatJid,
+                  sender: '__system__',
+                  sender_name: 'system',
+                  content: 'system_error:清除上下文失败，请稍后重试',
+                  timestamp: errTs,
+                  is_from_me: true,
+                });
               }
             }
             return;
           }
 
-          const result = await handleWebUserMessage(chatJid, content.trim(), attachments, session.user_id, session.display_name || session.username);
+          const result = await handleWebUserMessage(
+            chatJid,
+            content.trim(),
+            attachments,
+            session.user_id,
+            session.display_name || session.username,
+          );
           if (!result.ok) {
             logger.warn(
               { chatJid, status: result.status, error: result.error },
               'WebSocket message rejected',
             );
           }
-        }
-
-        else if (msg.type === 'terminal_start') {
+        } else if (msg.type === 'terminal_start') {
           try {
             // Schema 验证
             const startValidation = TerminalStartSchema.safeParse(msg);
             if (!startValidation.success) {
-              ws.send(JSON.stringify({ type: 'terminal_error', chatJid: msg.chatJid || '', error: '终端启动参数无效' }));
+              ws.send(
+                JSON.stringify({
+                  type: 'terminal_error',
+                  chatJid: msg.chatJid || '',
+                  error: '终端启动参数无效',
+                }),
+              );
               return;
             }
             const chatJid = startValidation.data.chatJid.trim();
             if (!chatJid) {
-              ws.send(JSON.stringify({ type: 'terminal_error', chatJid: '', error: 'chatJid 无效' }));
+              ws.send(
+                JSON.stringify({
+                  type: 'terminal_error',
+                  chatJid: '',
+                  error: 'chatJid 无效',
+                }),
+              );
               return;
             }
             const group = deps.getRegisteredGroups()[chatJid];
             if (!group) {
-              ws.send(JSON.stringify({ type: 'terminal_error', chatJid, error: '群组不存在' }));
+              ws.send(
+                JSON.stringify({
+                  type: 'terminal_error',
+                  chatJid,
+                  error: '群组不存在',
+                }),
+              );
               return;
             }
             // Permission: user must be able to access the group
             const groupWithJid = { ...group, jid: chatJid };
-            if (!canAccessGroup({ id: session.user_id, role: session.role }, groupWithJid)) {
-              ws.send(JSON.stringify({ type: 'terminal_error', chatJid, error: '无权访问该群组终端' }));
+            if (
+              !canAccessGroup(
+                { id: session.user_id, role: session.role },
+                groupWithJid,
+              )
+            ) {
+              ws.send(
+                JSON.stringify({
+                  type: 'terminal_error',
+                  chatJid,
+                  error: '无权访问该群组终端',
+                }),
+              );
               return;
             }
             if ((group.executionMode || 'container') === 'host') {
-              ws.send(JSON.stringify({ type: 'terminal_error', chatJid, error: '宿主机模式不支持终端' }));
+              ws.send(
+                JSON.stringify({
+                  type: 'terminal_error',
+                  chatJid,
+                  error: '宿主机模式不支持终端',
+                }),
+              );
               return;
             }
             // 查找活跃的容器
@@ -633,7 +755,9 @@ function setupWebSocket(server: any): WebSocketServer {
               rows,
               (data) => {
                 if (ws.readyState === WebSocket.OPEN) {
-                  ws.send(JSON.stringify({ type: 'terminal_output', chatJid, data }));
+                  ws.send(
+                    JSON.stringify({ type: 'terminal_output', chatJid, data }),
+                  );
                 }
               },
               (_exitCode, _signal) => {
@@ -641,7 +765,13 @@ function setupWebSocket(server: any): WebSocketServer {
                   releaseTerminalOwnership(ws, chatJid);
                 }
                 if (ws.readyState === WebSocket.OPEN) {
-                  ws.send(JSON.stringify({ type: 'terminal_stopped', chatJid, reason: '终端进程已退出' }));
+                  ws.send(
+                    JSON.stringify({
+                      type: 'terminal_stopped',
+                      chatJid,
+                      reason: '终端进程已退出',
+                    }),
+                  );
                 }
               },
             );
@@ -649,7 +779,10 @@ function setupWebSocket(server: any): WebSocketServer {
             terminalOwners.set(chatJid, ws);
             ws.send(JSON.stringify({ type: 'terminal_started', chatJid }));
           } catch (err) {
-            logger.error({ err, chatJid: msg.chatJid }, 'Error starting terminal');
+            logger.error(
+              { err, chatJid: msg.chatJid },
+              'Error starting terminal',
+            );
             const detail =
               err instanceof Error && err.message
                 ? err.message.slice(0, 160)
@@ -662,50 +795,96 @@ function setupWebSocket(server: any): WebSocketServer {
               }),
             );
           }
-        }
-
-        else if (msg.type === 'terminal_input') {
+        } else if (msg.type === 'terminal_input') {
           const inputValidation = TerminalInputSchema.safeParse(msg);
           if (!inputValidation.success) {
-            ws.send(JSON.stringify({ type: 'terminal_error', chatJid: msg.chatJid || '', error: '终端输入参数无效' }));
+            ws.send(
+              JSON.stringify({
+                type: 'terminal_error',
+                chatJid: msg.chatJid || '',
+                error: '终端输入参数无效',
+              }),
+            );
             return;
           }
           const ownerJid = wsTerminals.get(ws);
-          if (ownerJid !== inputValidation.data.chatJid || terminalOwners.get(inputValidation.data.chatJid) !== ws) {
-            ws.send(JSON.stringify({ type: 'terminal_error', chatJid: inputValidation.data.chatJid, error: '终端会话已失效' }));
+          if (
+            ownerJid !== inputValidation.data.chatJid ||
+            terminalOwners.get(inputValidation.data.chatJid) !== ws
+          ) {
+            ws.send(
+              JSON.stringify({
+                type: 'terminal_error',
+                chatJid: inputValidation.data.chatJid,
+                error: '终端会话已失效',
+              }),
+            );
             return;
           }
-          terminalManager.write(inputValidation.data.chatJid, inputValidation.data.data);
-        }
-
-        else if (msg.type === 'terminal_resize') {
+          terminalManager.write(
+            inputValidation.data.chatJid,
+            inputValidation.data.data,
+          );
+        } else if (msg.type === 'terminal_resize') {
           const resizeValidation = TerminalResizeSchema.safeParse(msg);
           if (!resizeValidation.success) {
-            ws.send(JSON.stringify({ type: 'terminal_error', chatJid: msg.chatJid || '', error: '终端调整参数无效' }));
+            ws.send(
+              JSON.stringify({
+                type: 'terminal_error',
+                chatJid: msg.chatJid || '',
+                error: '终端调整参数无效',
+              }),
+            );
             return;
           }
           const ownerJid = wsTerminals.get(ws);
-          if (ownerJid !== resizeValidation.data.chatJid || terminalOwners.get(resizeValidation.data.chatJid) !== ws) {
-            ws.send(JSON.stringify({ type: 'terminal_error', chatJid: resizeValidation.data.chatJid, error: '终端会话已失效' }));
+          if (
+            ownerJid !== resizeValidation.data.chatJid ||
+            terminalOwners.get(resizeValidation.data.chatJid) !== ws
+          ) {
+            ws.send(
+              JSON.stringify({
+                type: 'terminal_error',
+                chatJid: resizeValidation.data.chatJid,
+                error: '终端会话已失效',
+              }),
+            );
             return;
           }
-          const cols = normalizeTerminalSize(resizeValidation.data.cols, 80, 20, 300);
-          const rows = normalizeTerminalSize(resizeValidation.data.rows, 24, 8, 120);
+          const cols = normalizeTerminalSize(
+            resizeValidation.data.cols,
+            80,
+            20,
+            300,
+          );
+          const rows = normalizeTerminalSize(
+            resizeValidation.data.rows,
+            24,
+            8,
+            120,
+          );
           terminalManager.resize(resizeValidation.data.chatJid, cols, rows);
-        }
-
-        else if (msg.type === 'terminal_stop') {
+        } else if (msg.type === 'terminal_stop') {
           const stopValidation = TerminalStopSchema.safeParse(msg);
           if (!stopValidation.success) {
             return;
           }
           const ownerJid = wsTerminals.get(ws);
-          if (ownerJid !== stopValidation.data.chatJid || terminalOwners.get(stopValidation.data.chatJid) !== ws) {
+          if (
+            ownerJid !== stopValidation.data.chatJid ||
+            terminalOwners.get(stopValidation.data.chatJid) !== ws
+          ) {
             return;
           }
           terminalManager.stop(stopValidation.data.chatJid);
           releaseTerminalOwnership(ws, stopValidation.data.chatJid);
-          ws.send(JSON.stringify({ type: 'terminal_stopped', chatJid: stopValidation.data.chatJid, reason: '用户关闭终端' }));
+          ws.send(
+            JSON.stringify({
+              type: 'terminal_stopped',
+              chatJid: stopValidation.data.chatJid,
+              reason: '用户关闭终端',
+            }),
+          );
         }
       } catch (err) {
         logger.error({ err }, 'Error handling WebSocket message');
@@ -745,7 +924,11 @@ function setupWebSocket(server: any): WebSocketServer {
  *   - null: ownership unresolvable → default-deny, only admin can see
  *   - Set<string>: only these users + admin can see
  */
-function safeBroadcast(msg: WsMessageOut, adminOnly = false, allowedUserIds?: Set<string> | null): void {
+function safeBroadcast(
+  msg: WsMessageOut,
+  adminOnly = false,
+  allowedUserIds?: Set<string> | null,
+): void {
   const data = JSON.stringify(msg);
   for (const [client, clientInfo] of wsClients) {
     if (client.readyState !== WebSocket.OPEN) {
@@ -812,7 +995,10 @@ function safeBroadcast(msg: WsMessageOut, adminOnly = false, allowedUserIds?: Se
  * - Set<string>: allowed user IDs (owner + shared members)
  * - null: ownership unresolvable → default-deny (admin-only)
  */
-const allowedUserIdsCache = new Map<string, { ids: Set<string> | null; expiry: number }>();
+const allowedUserIdsCache = new Map<
+  string,
+  { ids: Set<string> | null; expiry: number }
+>();
 const ALLOWED_CACHE_TTL = 10_000; // 10 seconds
 
 function getGroupAllowedUserIds(chatJid: string): Set<string> | null {
@@ -821,7 +1007,10 @@ function getGroupAllowedUserIds(chatJid: string): Set<string> | null {
   if (cached && cached.expiry > now) return cached.ids;
 
   const result = computeGroupAllowedUserIds(chatJid);
-  allowedUserIdsCache.set(chatJid, { ids: result, expiry: now + ALLOWED_CACHE_TTL });
+  allowedUserIdsCache.set(chatJid, {
+    ids: result,
+    expiry: now + ALLOWED_CACHE_TTL,
+  });
   return result;
 }
 
@@ -923,7 +1112,9 @@ export function broadcastNewMessage(
   agentId?: string,
 ): void {
   // For virtual JIDs like "web:xxx#agent:yyy", extract base JID for broadcast
-  const baseChatJid = chatJid.includes('#agent:') ? chatJid.split('#agent:')[0] : chatJid;
+  const baseChatJid = chatJid.includes('#agent:')
+    ? chatJid.split('#agent:')[0]
+    : chatJid;
   const jid = normalizeHomeJid(baseChatJid);
   const allowedUserIds = getGroupAllowedUserIds(baseChatJid);
   const wsMsg: WsMessageOut = {
@@ -945,7 +1136,11 @@ export function broadcastTyping(chatJid: string, isTyping: boolean): void {
   );
 }
 
-export function broadcastStreamEvent(chatJid: string, event: StreamEvent, agentId?: string): void {
+export function broadcastStreamEvent(
+  chatJid: string,
+  event: StreamEvent,
+  agentId?: string,
+): void {
   const jid = normalizeHomeJid(chatJid);
   const allowedUserIds = getGroupAllowedUserIds(chatJid);
   const msg: WsMessageOut = agentId
@@ -967,8 +1162,28 @@ export function broadcastAgentStatus(
   const allowedUserIds = getGroupAllowedUserIds(chatJid);
   // Resolve kind from DB if not provided
   const resolvedKind = kind || getAgent(agentId)?.kind;
-  const msg: WsMessageOut = { type: 'agent_status', chatJid: jid, agentId, status, kind: resolvedKind, name, prompt, resultSummary };
+  const msg: WsMessageOut = {
+    type: 'agent_status',
+    chatJid: jid,
+    agentId,
+    status,
+    kind: resolvedKind,
+    name,
+    prompt,
+    resultSummary,
+  };
   safeBroadcast(msg, isHostGroupJid(chatJid), allowedUserIds);
+}
+
+export function broadcastDockerBuildLog(line: string): void {
+  safeBroadcast({ type: 'docker_build_log', line }, true);
+}
+
+export function broadcastDockerBuildComplete(
+  success: boolean,
+  error?: string,
+): void {
+  safeBroadcast({ type: 'docker_build_complete', success, error }, true);
 }
 
 function broadcastStatus(): void {
@@ -977,13 +1192,16 @@ function broadcastStatus(): void {
   const queueStatus = deps.queue.getStatus();
   // Broadcast aggregate system metrics only to admin users.
   // Non-admin users get per-user filtered metrics via REST /api/status.
-  safeBroadcast({
-    type: 'status_update',
-    activeContainers: queueStatus.activeContainerCount,
-    activeHostProcesses: queueStatus.activeHostProcessCount,
-    activeTotal: queueStatus.activeCount,
-    queueLength: queueStatus.waitingCount,
-  }, /* adminOnly */ true);
+  safeBroadcast(
+    {
+      type: 'status_update',
+      activeContainers: queueStatus.activeContainerCount,
+      activeHostProcesses: queueStatus.activeHostProcessCount,
+      activeTotal: queueStatus.activeCount,
+      queueLength: queueStatus.waitingCount,
+    },
+    /* adminOnly */ true,
+  );
 }
 
 // --- Server Startup ---
@@ -996,6 +1214,10 @@ export function startWebServer(webDeps: WebDeps): void {
   deps = webDeps;
   setWebDeps(webDeps);
   injectConfigDeps(webDeps);
+  injectMonitorDeps({
+    broadcastDockerBuildLog,
+    broadcastDockerBuildComplete,
+  });
 
   httpServer = serve(
     {
@@ -1018,7 +1240,11 @@ export function startWebServer(webDeps: WebDeps): void {
         releaseTerminalOwnership(ownerWs, groupJid);
         if (ownerWs.readyState === WebSocket.OPEN) {
           ownerWs.send(
-            JSON.stringify({ type: 'terminal_stopped', chatJid: groupJid, reason: '工作区已停止' }),
+            JSON.stringify({
+              type: 'terminal_stopped',
+              chatJid: groupJid,
+              reason: '工作区已停止',
+            }),
           );
         }
       }
@@ -1045,7 +1271,9 @@ export async function shutdownWebServer(): Promise<void> {
   for (const client of wsClients.keys()) {
     try {
       client.close(1001, 'Server shutting down');
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
   wsClients.clear();
   // Close WebSocket server

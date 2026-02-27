@@ -270,7 +270,13 @@ export type WsMessageOut =
       message: NewMessage & { is_from_me: boolean };
       agentId?: string;
     }
-  | { type: 'agent_reply'; chatJid: string; text: string; timestamp: string; agentId?: string }
+  | {
+      type: 'agent_reply';
+      chatJid: string;
+      text: string;
+      timestamp: string;
+      agentId?: string;
+    }
   | { type: 'typing'; chatJid: string; isTyping: boolean; agentId?: string }
   | {
       type: 'status_update';
@@ -279,7 +285,12 @@ export type WsMessageOut =
       activeTotal: number;
       queueLength: number;
     }
-  | { type: 'stream_event'; chatJid: string; event: StreamEvent; agentId?: string }
+  | {
+      type: 'stream_event';
+      chatJid: string;
+      event: StreamEvent;
+      agentId?: string;
+    }
   | {
       type: 'agent_status';
       chatJid: string;
@@ -293,10 +304,18 @@ export type WsMessageOut =
   | { type: 'terminal_output'; chatJid: string; data: string }
   | { type: 'terminal_started'; chatJid: string }
   | { type: 'terminal_stopped'; chatJid: string; reason?: string }
-  | { type: 'terminal_error'; chatJid: string; error: string };
+  | { type: 'terminal_error'; chatJid: string; error: string }
+  | { type: 'docker_build_log'; line: string }
+  | { type: 'docker_build_complete'; success: boolean; error?: string };
 
 export type WsMessageIn =
-  | { type: 'send_message'; chatJid: string; content: string; attachments?: MessageAttachment[]; agentId?: string }
+  | {
+      type: 'send_message';
+      chatJid: string;
+      content: string;
+      attachments?: MessageAttachment[];
+      agentId?: string;
+    }
   | { type: 'terminal_start'; chatJid: string; cols: number; rows: number }
   | { type: 'terminal_input'; chatJid: string; data: string }
   | { type: 'terminal_resize'; chatJid: string; cols: number; rows: number }
