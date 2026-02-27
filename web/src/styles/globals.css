@@ -272,7 +272,7 @@ pre code.hljs {
 .floating-nav {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
   padding: 8px;
   background: rgba(255, 255, 255, 0.6);
   backdrop-filter: blur(24px) saturate(1.8);
@@ -290,7 +290,7 @@ pre code.hljs {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 44px;
+  width: 52px;
   height: 44px;
   border-radius: 9999px;
   color: rgba(100, 116, 139, 0.7);

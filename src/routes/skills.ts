@@ -24,6 +24,7 @@ interface Skill {
   description: string;
   source: 'user' | 'project';
   enabled: boolean;
+  syncedFromHost?: boolean;
   userInvocable: boolean;
   allowedTools: string[];
   argumentHint: string | null;
@@ -33,6 +34,11 @@ interface Skill {
 
 interface SkillDetail extends Skill {
   content: string;
+}
+
+interface HostSyncManifest {
+  syncedSkills: string[];
+  lastSyncAt: string;
 }
 
 interface SearchResult {
@@ -52,6 +58,25 @@ function getGlobalSkillsDir(): string {
 
 function getProjectSkillsDir(): string {
   return path.resolve(process.cwd(), 'container', 'skills');
+}
+
+function getHostSyncManifestPath(userId: string): string {
+  return path.join(DATA_DIR, 'skills', userId, '.host-sync.json');
+}
+
+function readHostSyncManifest(userId: string): HostSyncManifest {
+  try {
+    const data = fs.readFileSync(getHostSyncManifestPath(userId), 'utf-8');
+    return JSON.parse(data);
+  } catch {
+    return { syncedSkills: [], lastSyncAt: '' };
+  }
+}
+
+function writeHostSyncManifest(userId: string, manifest: HostSyncManifest): void {
+  const manifestPath = getHostSyncManifestPath(userId);
+  fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 }
 
 function validateSkillId(id: string): boolean {
@@ -209,11 +234,17 @@ function scanDirectory(
 }
 
 function discoverSkills(userId: string): Skill[] {
-  const userDir = getUserSkillsDir(userId);
-  const projectDir = getProjectSkillsDir();
+  const userSkills = scanDirectory(getUserSkillsDir(userId), 'user');
+  const projectSkills = scanDirectory(getProjectSkillsDir(), 'project');
 
-  const userSkills = scanDirectory(userDir, 'user');
-  const projectSkills = scanDirectory(projectDir, 'project');
+  // 读取 manifest 标记同步来源
+  const manifest = readHostSyncManifest(userId);
+  const syncedSet = new Set(manifest.syncedSkills);
+  for (const skill of userSkills) {
+    if (syncedSet.has(skill.id)) {
+      skill.syncedFromHost = true;
+    }
+  }
 
   return [...userSkills, ...projectSkills];
 }
@@ -221,13 +252,15 @@ function discoverSkills(userId: string): Skill[] {
 function getSkillDetail(skillId: string, userId: string): SkillDetail | null {
   if (!validateSkillId(skillId)) return null;
 
-  const userDir = getUserSkillsDir(userId);
-  const projectDir = getProjectSkillsDir();
+  const searchDirs: Array<{ rootDir: string; source: 'user' | 'project' }> = [
+    { rootDir: getUserSkillsDir(userId), source: 'user' },
+    { rootDir: getProjectSkillsDir(), source: 'project' },
+  ];
 
-  for (const { rootDir, source } of [
-    { rootDir: userDir, source: 'user' as const },
-    { rootDir: projectDir, source: 'project' as const },
-  ]) {
+  const manifest = readHostSyncManifest(userId);
+  const syncedSet = new Set(manifest.syncedSkills);
+
+  for (const { rootDir, source } of searchDirs) {
     const skillDir = path.join(rootDir, skillId);
     if (!fs.existsSync(skillDir)) continue;
 
@@ -254,7 +287,7 @@ function getSkillDetail(skillId: string, userId: string): SkillDetail | null {
       const frontmatter = parseFrontmatter(content);
       const stats = fs.statSync(skillDir);
 
-      return {
+      const detail: SkillDetail = {
         id: skillId,
         name: frontmatter.name || skillId,
         description: frontmatter.description || '',
@@ -272,6 +305,12 @@ function getSkillDetail(skillId: string, userId: string): SkillDetail | null {
         files: listFiles(skillDir),
         content,
       };
+
+      if (source === 'user' && syncedSet.has(skillId)) {
+        detail.syncedFromHost = true;
+      }
+
+      return detail;
     } catch {
       // Skip malformed skill
     }
@@ -479,10 +518,34 @@ skillsRoutes.get('/:id', authMiddleware, (c) => {
   return c.json({ skill });
 });
 
-// Skills are read-only: host-level and project-level skills
-// cannot be modified through the Web UI.
-skillsRoutes.patch('/:id', authMiddleware, (c) => {
-  return c.json({ error: 'Skills are read-only and cannot be toggled from the Web UI' }, 403);
+// Toggle enable/disable for user-level skills via SKILL.md ↔ SKILL.md.disabled rename.
+// Project-level skills are read-only.
+skillsRoutes.patch('/:id', authMiddleware, async (c) => {
+  const id = c.req.param('id');
+  const authUser = c.get('user') as AuthUser;
+  const { enabled } = await c.req.json<{ enabled: boolean }>();
+
+  if (!validateSkillId(id)) return c.json({ error: 'Invalid skill ID' }, 400);
+
+  const userDir = getUserSkillsDir(authUser.id);
+  const skillDir = path.join(userDir, id);
+
+  if (!fs.existsSync(skillDir)) {
+    return c.json({ error: 'Skill not found or is not a user-level skill' }, 404);
+  }
+  if (!validateSkillPath(userDir, skillDir)) {
+    return c.json({ error: 'Invalid skill path' }, 400);
+  }
+
+  const srcPath = path.join(skillDir, enabled ? 'SKILL.md.disabled' : 'SKILL.md');
+  const dstPath = path.join(skillDir, enabled ? 'SKILL.md' : 'SKILL.md.disabled');
+
+  if (!fs.existsSync(srcPath)) {
+    return c.json({ error: 'Skill not found or already in desired state' }, 404);
+  }
+
+  fs.renameSync(srcPath, dstPath);
+  return c.json({ success: true });
 });
 
 /**
@@ -595,6 +658,101 @@ async function installSkillForUser(
     }
   });
 }
+
+// Sync host-level skills (~/.claude/skills/) to admin's user-level directory.
+// Only admin can use this endpoint.
+skillsRoutes.post('/sync-host', authMiddleware, async (c) => {
+  const authUser = c.get('user') as AuthUser;
+  if (authUser.role !== 'admin') {
+    return c.json({ error: 'Only admin can sync host skills' }, 403);
+  }
+
+  return withSkillInstallLock(async () => {
+    const hostDir = getGlobalSkillsDir();
+    const userDir = getUserSkillsDir(authUser.id);
+    fs.mkdirSync(userDir, { recursive: true });
+
+    // 1. 扫描宿主机 skills
+    const hostSkillNames: string[] = [];
+    if (fs.existsSync(hostDir)) {
+      for (const entry of fs.readdirSync(hostDir, { withFileTypes: true })) {
+        if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+        const skillDir = path.join(hostDir, entry.name);
+        // 验证包含 SKILL.md 或 SKILL.md.disabled
+        try {
+          const realPath = fs.realpathSync(skillDir);
+          if (
+            fs.existsSync(path.join(realPath, 'SKILL.md')) ||
+            fs.existsSync(path.join(realPath, 'SKILL.md.disabled'))
+          ) {
+            hostSkillNames.push(entry.name);
+          }
+        } catch {
+          // 跳过 broken symlinks
+        }
+      }
+    }
+
+    // 2. 读取 manifest
+    const manifest = readHostSyncManifest(authUser.id);
+    const previouslySynced = new Set(manifest.syncedSkills);
+
+    // 3. 检测用户目录中手动安装的 skills
+    const existingUserSkills = new Set<string>();
+    if (fs.existsSync(userDir)) {
+      for (const entry of fs.readdirSync(userDir, { withFileTypes: true })) {
+        if (entry.isDirectory()) existingUserSkills.add(entry.name);
+      }
+    }
+
+    const stats = { added: 0, updated: 0, deleted: 0, skipped: 0 };
+    const newSyncedList: string[] = [];
+
+    // 4. 同步：新增/更新
+    for (const name of hostSkillNames) {
+      const isManuallyInstalled = existingUserSkills.has(name) && !previouslySynced.has(name);
+      if (isManuallyInstalled) {
+        // 手动安装的 skill，跳过不覆盖
+        stats.skipped++;
+        continue;
+      }
+
+      const src = path.join(hostDir, name);
+      const dest = path.join(userDir, name);
+
+      if (existingUserSkills.has(name)) {
+        // 已存在且之前是同步来的 → 更新
+        fs.rmSync(dest, { recursive: true, force: true });
+        copySkillToUser(src, dest);
+        stats.updated++;
+      } else {
+        // 全新的 → 新增
+        copySkillToUser(src, dest);
+        stats.added++;
+      }
+      newSyncedList.push(name);
+    }
+
+    // 5. 删除宿主机已移除的（仅清理之前同步来的）
+    const hostSkillSet = new Set(hostSkillNames);
+    for (const name of previouslySynced) {
+      if (!hostSkillSet.has(name) && existingUserSkills.has(name)) {
+        const dest = path.join(userDir, name);
+        fs.rmSync(dest, { recursive: true, force: true });
+        stats.deleted++;
+      }
+    }
+
+    // 6. 更新 manifest
+    writeHostSyncManifest(authUser.id, {
+      syncedSkills: newSyncedList,
+      lastSyncAt: new Date().toISOString(),
+    });
+
+    const total = hostSkillNames.length;
+    return c.json({ stats, total });
+  });
+});
 
 skillsRoutes.post(
   '/install',

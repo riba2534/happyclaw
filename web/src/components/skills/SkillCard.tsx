@@ -1,5 +1,6 @@
 import { Lock } from 'lucide-react';
 import type { Skill } from '../../stores/skills';
+import { useSkillsStore } from '../../stores/skills';
 
 interface SkillCardProps {
   skill: Skill;
@@ -7,7 +8,15 @@ interface SkillCardProps {
   onSelect: () => void;
 }
 
+const SOURCE_LABELS: Record<Skill['source'], string> = {
+  user: '用户级',
+  project: '项目级',
+};
+
 export function SkillCard({ skill, selected, onSelect }: SkillCardProps) {
+  const toggleSkill = useSkillsStore((s) => s.toggleSkill);
+  const isReadonly = skill.source === 'project';
+
   return (
     <button
       onClick={onSelect}
@@ -28,8 +37,13 @@ export function SkillCard({ skill, selected, onSelect }: SkillCardProps) {
                   : 'bg-slate-100 text-slate-600'
               }`}
             >
-              {skill.source === 'user' ? '用户级' : '项目级'}
+              {SOURCE_LABELS[skill.source]}
             </span>
+            {skill.syncedFromHost && (
+              <span className="px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700">
+                已同步
+              </span>
+            )}
             {skill.userInvocable && (
               <span className="px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700">
                 可调用
@@ -39,7 +53,7 @@ export function SkillCard({ skill, selected, onSelect }: SkillCardProps) {
           <p className="text-sm text-slate-500 line-clamp-2">{skill.description}</p>
         </div>
 
-        {skill.source === 'project' && (
+        {isReadonly && (
           <div className="flex items-center gap-2">
             <Lock size={16} className="text-slate-400" />
             <div
@@ -57,14 +71,24 @@ export function SkillCard({ skill, selected, onSelect }: SkillCardProps) {
         )}
 
         {skill.source === 'user' && (
-          <div className="flex items-center">
-            <span
-              className={`inline-flex h-5 px-2 items-center rounded text-xs font-medium ${
-                skill.enabled ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500'
+          <div
+            className="flex items-center"
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleSkill(skill.id, !skill.enabled);
+            }}
+          >
+            <div
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer ${
+                skill.enabled ? 'bg-primary' : 'bg-slate-300'
               }`}
             >
-              {skill.enabled ? '已启用' : '已禁用'}
-            </span>
+              <span
+                className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${
+                  skill.enabled ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </div>
           </div>
         )}
       </div>

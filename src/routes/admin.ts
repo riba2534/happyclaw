@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { Hono } from 'hono';
 import type { Variables } from '../web-context.js';
 import {
@@ -51,6 +53,8 @@ import {
   hasPermission,
 } from '../permissions.js';
 import { getClientIp } from '../utils.js';
+import { DATA_DIR } from '../config.js';
+import { logger } from '../logger.js';
 
 const adminRoutes = new Hono<{ Variables: Variables }>();
 
@@ -431,6 +435,21 @@ adminRoutes.delete(
     }
 
     deleteUser(id);
+
+    // Cleanup avatar files for deleted user
+    try {
+      const avatarsDir = path.join(DATA_DIR, 'avatars');
+      if (fs.existsSync(avatarsDir)) {
+        const files = fs.readdirSync(avatarsDir).filter(f => f.startsWith(`${id}-`));
+        for (const file of files) {
+          fs.unlinkSync(path.join(avatarsDir, file));
+        }
+      }
+    } catch (e) {
+      // Avatar cleanup failure should not block user deletion
+      logger.warn({ error: e, userId: id }, 'Failed to cleanup avatar files');
+    }
+
     logAuthEvent({
       event_type: 'user_deleted',
       username: target.username,

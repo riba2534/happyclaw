@@ -20,10 +20,13 @@ if [ -f /workspace/env-dir/env ]; then
   set +a
 fi
 
-# Discover and link skills
+# Discover and link skills (project → user, higher priority overwrites)
 mkdir -p /home/node/.claude/skills
-[ -d /workspace/project-skills ] && ln -sf /workspace/project-skills/* /home/node/.claude/skills/ 2>/dev/null || true
-[ -d /workspace/user-skills ] && ln -sf /workspace/user-skills/* /home/node/.claude/skills/ 2>/dev/null || true
+for dir in /workspace/project-skills /workspace/user-skills; do
+  [ -d "$dir" ] && for skill in "$dir"/*/; do
+    [ -d "$skill" ] && ln -sf "$skill" /home/node/.claude/skills/ 2>/dev/null
+  done
+done
 chown -R node:node /home/node/.claude/skills 2>/dev/null || true
 
 # Compile TypeScript (agent-runner source may be hot-mounted from host)

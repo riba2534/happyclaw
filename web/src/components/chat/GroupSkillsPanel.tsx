@@ -10,6 +10,7 @@ interface Skill {
   description: string;
   source: 'user' | 'project';
   enabled: boolean;
+  syncedFromHost?: boolean;
 }
 
 interface GroupSkillsPanelProps {
@@ -167,7 +168,7 @@ export function GroupSkillsPanel({ groupJid }: GroupSkillsPanelProps) {
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium truncate">{skill.name}</span>
                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground shrink-0">
-                      {skill.source === 'user' ? '用户' : '项目'}
+                      {skill.source === 'user' ? (skill.syncedFromHost ? '同步' : '用户') : '项目'}
                     </span>
                   </div>
                   {skill.description && (

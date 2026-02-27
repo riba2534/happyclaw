@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Menu } from 'lucide-react';
 
@@ -58,6 +58,37 @@ export function SettingsPage() {
     setSearchParams({ tab }, { replace: true });
   }, [setSearchParams]);
 
+  // Mobile horizontal tab bar
+  const mobileTabs = useMemo(() => {
+    const tabs: { key: SettingsTab; label: string }[] = [];
+    tabs.push({ key: 'profile', label: '个人资料' });
+    tabs.push({ key: 'my-channels', label: '消息通道' });
+    tabs.push({ key: 'security', label: '安全' });
+    if (canManageSystemConfig) {
+      tabs.push({ key: 'channels', label: '渠道' });
+      tabs.push({ key: 'claude', label: 'Claude' });
+      tabs.push({ key: 'appearance', label: '外观' });
+    }
+    tabs.push({ key: 'groups', label: '会话' });
+    tabs.push({ key: 'memory', label: '记忆' });
+    tabs.push({ key: 'skills', label: '技能' });
+    if (canManageUsers) {
+      tabs.push({ key: 'users', label: '用户' });
+    }
+    return tabs;
+  }, [canManageSystemConfig, canManageUsers]);
+
+  const tabBarRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const container = tabBarRef.current;
+    if (!container) return;
+    const activeEl = container.querySelector('[data-active="true"]');
+    if (activeEl) {
+      activeEl.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
+    }
+  }, [activeTab]);
+
   const sectionTitle: Record<SettingsTab, string> = {
     channels: '渠道配置',
     claude: 'Claude 提供商',
@@ -85,6 +116,41 @@ export function SettingsPage() {
           <Menu className="w-5 h-5 text-slate-600" />
         </button>
         <span className="ml-3 text-sm font-semibold text-slate-900 truncate">{sectionTitle[activeTab]}</span>
+      </div>
+
+      {/* Mobile horizontal tab bar */}
+      <div
+        ref={tabBarRef}
+        className="lg:hidden flex items-center gap-1 px-3 py-2 overflow-x-auto bg-white border-b border-slate-200 [&::-webkit-scrollbar]:hidden"
+        style={{ scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}
+      >
+        {mobileTabs.map((tab) => {
+          const isActive = activeTab === tab.key;
+          const disabled = mustChangePassword && tab.key !== 'profile';
+          return (
+            <button
+              key={tab.key}
+              data-active={isActive}
+              onClick={() => !disabled && handleTabChange(tab.key)}
+              disabled={disabled}
+              className={`flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                isActive
+                  ? 'bg-primary text-white'
+                  : disabled
+                    ? 'text-slate-300'
+                    : 'text-slate-500 hover:bg-slate-100 hover:text-slate-700'
+              }`}
+            >
+              {tab.label}
+            </button>
+          );
+        })}
+        <button
+          onClick={() => setNavOpen(true)}
+          className="flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-medium text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors whitespace-nowrap cursor-pointer"
+        >
+          更多...
+        </button>
       </div>
 
       <SettingsNav

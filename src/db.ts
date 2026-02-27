@@ -183,6 +183,7 @@ export function initDatabase(): void {
       ai_name TEXT,
       ai_avatar_emoji TEXT,
       ai_avatar_color TEXT,
+      ai_avatar_url TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       last_login_at TEXT,
@@ -283,6 +284,7 @@ export function initDatabase(): void {
   ensureColumn('users', 'ai_name', 'TEXT');
   ensureColumn('users', 'ai_avatar_emoji', 'TEXT');
   ensureColumn('users', 'ai_avatar_color', 'TEXT');
+  ensureColumn('users', 'ai_avatar_url', 'TEXT');
   ensureColumn('scheduled_tasks', 'created_by', 'TEXT');
   ensureColumn('registered_groups', 'selected_skills', 'TEXT');
   ensureColumn('sessions', 'agent_id', "TEXT NOT NULL DEFAULT ''");
@@ -384,6 +386,7 @@ export function initDatabase(): void {
     'ai_name',
     'ai_avatar_emoji',
     'ai_avatar_color',
+    'ai_avatar_url',
     'created_at',
     'updated_at',
     'last_login_at',
@@ -836,6 +839,14 @@ export function logTaskRun(log: TaskRunLog): void {
     log.result,
     log.error,
   );
+}
+
+export function cleanupOldTaskRunLogs(retentionDays = 30): number {
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+  const result = db.prepare(
+    `DELETE FROM task_run_logs WHERE run_at < ?`,
+  ).run(cutoff);
+  return result.changes;
 }
 
 // --- Router state accessors ---
@@ -1390,6 +1401,8 @@ function mapUserRow(row: Record<string, unknown>): User {
       typeof row.ai_avatar_emoji === 'string' ? row.ai_avatar_emoji : null,
     ai_avatar_color:
       typeof row.ai_avatar_color === 'string' ? row.ai_avatar_color : null,
+    ai_avatar_url:
+      typeof row.ai_avatar_url === 'string' ? row.ai_avatar_url : null,
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
     last_login_at:
@@ -1414,6 +1427,7 @@ function toUserPublic(user: User, lastActiveAt: string | null): UserPublic {
     ai_name: user.ai_name,
     ai_avatar_emoji: user.ai_avatar_emoji,
     ai_avatar_color: user.ai_avatar_color,
+    ai_avatar_url: user.ai_avatar_url,
     created_at: user.created_at,
     last_login_at: user.last_login_at,
     last_active_at: lastActiveAt,
@@ -1642,6 +1656,7 @@ export function updateUserFields(
       | 'ai_name'
       | 'ai_avatar_emoji'
       | 'ai_avatar_color'
+      | 'ai_avatar_url'
       | 'deleted_at'
     >
   >,
@@ -1708,6 +1723,10 @@ export function updateUserFields(
   if (updates.ai_avatar_color !== undefined) {
     fields.push('ai_avatar_color = ?');
     values.push(updates.ai_avatar_color);
+  }
+  if (updates.ai_avatar_url !== undefined) {
+    fields.push('ai_avatar_url = ?');
+    values.push(updates.ai_avatar_url);
   }
   if (updates.deleted_at !== undefined) {
     fields.push('deleted_at = ?');

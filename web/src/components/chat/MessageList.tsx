@@ -1,10 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Message, useChatStore } from '../../stores/chat';
+import { useAuthStore } from '../../stores/auth';
 import type { AgentInfo } from '../../types';
 import { MessageBubble } from './MessageBubble';
 import { StreamingDisplay } from './StreamingDisplay';
 import { AgentStatusCard } from './AgentStatusCard';
+import { EmojiAvatar } from '../common/EmojiAvatar';
 import { Loader2, ChevronUp, ChevronDown, AlertTriangle, Square } from 'lucide-react';
 
 interface MessageListProps {
@@ -26,6 +28,8 @@ interface MessageListProps {
   onAgentClick?: (agentId: string) => void;
   /** If set, this MessageList is showing a sub-agent's messages */
   agentId?: string;
+  /** Callback to send a message (used for quick prompts in empty state) */
+  onSend?: (content: string) => void;
 }
 
 type FlatItem =
@@ -34,9 +38,22 @@ type FlatItem =
   | { type: 'error'; content: string }
   | { type: 'message'; content: Message };
 
-export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrigger, groupJid, isWaiting, onInterrupt, agents, onAgentClick, agentId }: MessageListProps) {
+const quickPrompts = [
+  '帮我分析一段代码',
+  '写一个自动化脚本',
+  '解释一个技术概念',
+  '帮我调试一个问题',
+];
+
+export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrigger, groupJid, isWaiting, onInterrupt, agents, onAgentClick, agentId, onSend }: MessageListProps) {
   const thinkingCache = useChatStore(s => s.thinkingCache ?? {});
   const isShared = useChatStore(s => !!s.groups[groupJid ?? '']?.is_shared);
+  const currentUser = useAuthStore(s => s.user);
+  const appearance = useAuthStore(s => s.appearance);
+  const aiName = currentUser?.ai_name || appearance?.aiName || 'AI 助手';
+  const aiEmoji = currentUser?.ai_avatar_emoji || appearance?.aiAvatarEmoji;
+  const aiColor = currentUser?.ai_avatar_color || appearance?.aiAvatarColor;
+  const aiImageUrl = currentUser?.ai_avatar_url;
   const parentRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [atTop, setAtTop] = useState(false);
@@ -324,9 +341,41 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
         </div>
 
         {messages.length === 0 && !loading && (
-          <div className="flex flex-col items-center justify-center h-full text-slate-400">
-            <p className="text-sm">暂无消息</p>
-            <p className="text-xs mt-2">发送消息开始对话</p>
+          <div className="flex flex-col items-center justify-center h-full px-6">
+            <div className="max-w-sm w-full space-y-6">
+              {/* AI avatar + welcome */}
+              <div className="flex flex-col items-center text-center space-y-3">
+                <div className="w-16 h-16">
+                  <EmojiAvatar
+                    imageUrl={aiImageUrl}
+                    emoji={aiEmoji}
+                    color={aiColor}
+                    fallbackChar={aiName[0]}
+                    size="lg"
+                    className="!w-16 !h-16 !text-2xl"
+                  />
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-slate-900">{aiName}</h3>
+                  <p className="text-sm text-slate-500 mt-1">有什么我可以帮你的吗？</p>
+                </div>
+              </div>
+
+              {/* Quick prompts */}
+              {onSend && (
+                <div className="space-y-2">
+                  {quickPrompts.map((prompt) => (
+                    <button
+                      key={prompt}
+                      onClick={() => onSend(prompt)}
+                      className="w-full text-left px-4 py-3 rounded-xl text-sm text-slate-700 transition-all active:scale-[0.98] cursor-pointer bg-white/60 backdrop-blur-sm border border-white/40 shadow-[0_2px_8px_rgba(0,0,0,0.04),inset_0_1px_1px_rgba(255,255,255,0.6)] hover:bg-white/80 hover:shadow-[0_4px_12px_rgba(0,0,0,0.06)]"
+                    >
+                      {prompt}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
 

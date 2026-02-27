@@ -97,6 +97,15 @@ export function TaskDetail({ task }: TaskDetailProps) {
             {formatDate(task.created_at)}
           </div>
         </div>
+
+        {task.last_result && (
+          <div className="col-span-1 md:col-span-2">
+            <div className="text-xs text-slate-500 mb-1">最近结果</div>
+            <div className="text-sm text-slate-900 bg-white px-3 py-2 rounded border border-slate-200 whitespace-pre-wrap break-words">
+              {task.last_result}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Execution Logs */}

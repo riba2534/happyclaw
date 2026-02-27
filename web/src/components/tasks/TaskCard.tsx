@@ -20,7 +20,6 @@ export function TaskCard({ task, onPause, onResume, onDelete }: TaskCardProps) {
       case 'paused':
         return 'bg-amber-100 text-amber-600';
       case 'completed':
-      case 'failed':
         return 'bg-slate-100 text-slate-500';
       default:
         return 'bg-slate-100 text-slate-600';
@@ -35,8 +34,6 @@ export function TaskCard({ task, onPause, onResume, onDelete }: TaskCardProps) {
         return '已暂停';
       case 'completed':
         return '已完成';
-      case 'failed':
-        return '失败';
       default:
         return status;
     }

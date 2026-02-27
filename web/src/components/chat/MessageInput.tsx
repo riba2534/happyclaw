@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useKeyboardHeight } from '@/hooks/useKeyboardHeight';
+import { successTap } from '../../hooks/useHaptic';
 import {
   ArrowUp,
   Brush,
@@ -9,6 +10,7 @@ import {
   Paperclip,
   Image as ImageIcon,
   TerminalSquare,
+  Loader2,
 } from 'lucide-react';
 import { useFileStore } from '../../stores/files';
 
@@ -46,6 +48,8 @@ export function MessageInput({
   const [showActions, setShowActions] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
@@ -79,34 +83,45 @@ export function MessageInput({
     }
   };
 
-  const handleSend = () => {
+  const handleSend = async () => {
     const trimmed = content.trim();
     const hasPending = pendingFiles.length > 0;
     const hasImages = pendingImages.length > 0;
 
     if (!trimmed && !hasPending && !hasImages) return;
-    if (disabled) return;
+    if (disabled || sending) return;
 
-    let message = trimmed;
+    setSending(true);
+    setSendError(null);
 
-    if (hasPending) {
-      const list = pendingFiles.map((f) => `- ${f.label}`).join('\n');
-      const prefix = `[我上传了以下文件到工作区，请查看并使用]\n${list}`;
-      message = message ? `${prefix}\n\n${message}` : prefix;
-      setPendingFiles([]);
-    }
+    try {
+      let message = trimmed;
 
-    const attachments = hasImages
-      ? pendingImages.map((img) => ({ data: img.data, mimeType: img.mimeType }))
-      : undefined;
+      if (hasPending) {
+        const list = pendingFiles.map((f) => `- ${f.label}`).join('\n');
+        const prefix = `[我上传了以下文件到工作区，请查看并使用]\n${list}`;
+        message = message ? `${prefix}\n\n${message}` : prefix;
+        setPendingFiles([]);
+      }
 
-    onSend(message, attachments);
-    setContent('');
+      const attachments = hasImages
+        ? pendingImages.map((img) => ({ data: img.data, mimeType: img.mimeType }))
+        : undefined;
 
-    // Clean up image previews
-    if (hasImages) {
-      pendingImages.forEach((img) => URL.revokeObjectURL(img.preview));
-      setPendingImages([]);
+      onSend(message, attachments);
+      successTap();
+      setContent('');
+
+      // Clean up image previews
+      if (hasImages) {
+        pendingImages.forEach((img) => URL.revokeObjectURL(img.preview));
+        setPendingImages([]);
+      }
+    } catch {
+      setSendError('发送失败，请重试');
+      setTimeout(() => setSendError(null), 3000);
+    } finally {
+      setSending(false);
     }
   };
 
@@ -282,7 +297,7 @@ export function MessageInput({
   };
 
   const hasContent = content.trim().length > 0;
-  const canSend = hasContent || pendingFiles.length > 0 || pendingImages.length > 0;
+  const canSend = (hasContent || pendingFiles.length > 0 || pendingImages.length > 0) && !sending;
 
   const progressPercent =
     uploadProgress && uploadProgress.totalBytes > 0
@@ -317,6 +332,13 @@ export function MessageInput({
 
         {/* Main input card */}
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm">
+          {/* Send error banner */}
+          {sendError && (
+            <div className="px-4 py-2 bg-red-50 text-red-600 text-xs font-medium border-b border-red-100 flex items-center gap-2 rounded-t-2xl">
+              <span>{sendError}</span>
+            </div>
+          )}
+
           {/* Pending images preview */}
           {pendingImages.length > 0 && (
             <div className="px-3 pt-2.5 pb-1 border-b border-slate-100">
@@ -484,14 +506,14 @@ export function MessageInput({
             {/* Right: send button */}
             <button
               onClick={handleSend}
-              disabled={!canSend || disabled}
+              disabled={!canSend || disabled || sending}
               className={`w-9 h-9 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-90 ${
-                canSend && !disabled
+                canSend && !disabled && !sending
                   ? 'bg-primary text-white hover:bg-primary/90 max-lg:shadow-[0_2px_8px_rgba(13,148,136,0.3)]'
                   : 'bg-slate-100 text-slate-400'
               }`}
             >
-              <ArrowUp className="w-4.5 h-4.5" />
+              {sending ? <Loader2 className="w-4.5 h-4.5 animate-spin" /> : <ArrowUp className="w-4.5 h-4.5" />}
             </button>
           </div>
         </div>

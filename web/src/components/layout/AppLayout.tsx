@@ -4,6 +4,7 @@ import { NavRail } from './NavRail';
 import { BottomTabBar, navItems } from './BottomTabBar';
 import { SwipeablePages, type TabPageConfig } from './SwipeablePages';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
+import { ConnectionBanner } from '../common/ConnectionBanner';
 
 const ChatPage = lazy(() => import('../../pages/ChatPage').then(m => ({ default: m.ChatPage })));
 const TasksPage = lazy(() => import('../../pages/TasksPage').then(m => ({ default: m.TasksPage })));
@@ -52,17 +53,20 @@ export function AppLayout() {
         <NavRail />
       </div>
 
-      <main className="flex-1 overflow-hidden lg:overflow-auto lg:pb-0">
-        {showSwipeable ? (
-          <SwipeablePages
-            pages={pages}
-            currentIndex={currentTabIndex}
-            onIndexChange={handleTabChange}
-          />
-        ) : (
-          <Outlet />
-        )}
-      </main>
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <ConnectionBanner />
+        <main className="flex-1 overflow-hidden lg:overflow-auto lg:pb-0">
+          {showSwipeable ? (
+            <SwipeablePages
+              pages={pages}
+              currentIndex={currentTabIndex}
+              onIndexChange={handleTabChange}
+            />
+          ) : (
+            <Outlet />
+          )}
+        </main>
+      </div>
 
       {!hideMobileTabBar && <BottomTabBar />}
     </div>

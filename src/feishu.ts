@@ -36,6 +36,42 @@ export interface FeishuConnection {
 
 // Max characters per markdown element in Feishu cards
 const CARD_MD_LIMIT = 4000;
+const FEISHU_WS_READY_STATE_OPEN = 1;
+const WS_HEALTH_CHECK_INTERVAL_MS = 15_000;
+const WS_RECONNECT_CHECK_THRESHOLD = 4;
+const WS_RECONNECT_MIN_INTERVAL_MS = 30_000;
+const BACKFILL_LOOKBACK_MS = 5 * 60 * 1000;
+const BACKFILL_PAGE_SIZE = 50;
+const BACKFILL_MAX_PAGES_PER_CHAT = 5;
+
+interface FeishuMentionLike {
+  key?: string;
+  name?: string;
+}
+
+interface IncomingMessagePayload {
+  chatId: string;
+  messageId: string;
+  createTimeMs: number;
+  messageType: string;
+  content: string;
+  chatType?: string;
+  mentions?: FeishuMentionLike[];
+  senderOpenId?: string;
+  senderName?: string;
+}
+
+interface WsConnectionState {
+  connected: boolean;
+  isConnecting: boolean;
+  nextConnectTime: number;
+}
+
+function toEpochMs(value: string | number | undefined): number {
+  const numeric = typeof value === 'number' ? value : Number(value ?? 0);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+  return numeric < 1e12 ? Math.trunc(numeric * 1000) : Math.trunc(numeric);
+}
 
 /**
  * Extract message content from Feishu message.
@@ -204,9 +240,73 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
   const lastMessageIdByChat = new Map<string, string>();
   const ackReactionByChat = new Map<string, string>();
   const typingReactionByChat = new Map<string, string>();
+  const knownChatIds = new Set<string>();
+  const lastCreateTimeByChat = new Map<string, number>();
 
   let client: lark.Client | null = null;
   let wsClient: lark.WSClient | null = null;
+  let eventDispatcher: lark.EventDispatcher | null = null;
+  let connectOptions: ConnectOptions | null = null;
+  let reconnecting = false;
+  let backfillRunning = false;
+  let reconnectRequestedAt = 0;
+  let lastWsStateConnected = false;
+  let disconnectedChecks = 0;
+  let disconnectedSince: number | null = null;
+  let healthTimer: NodeJS.Timeout | null = null;
+
+  function rememberChatProgress(chatId: string, createTimeMs: number): void {
+    knownChatIds.add(chatId);
+    const prev = lastCreateTimeByChat.get(chatId) || 0;
+    if (createTimeMs > prev) {
+      lastCreateTimeByChat.set(chatId, createTimeMs);
+    }
+  }
+
+  /**
+   * 通过访问飞书 SDK 的私有属性（wsConfig、isConnecting）获取 WebSocket 连接状态。
+   *
+   * 注意事项：
+   * 1. 该函数依赖 @larksuiteoapi/node-sdk 内部未公开的属性结构，SDK 版本升级可能导致失效
+   * 2. 失效时函数会静默降级（捕获异常后返回 null），健康检查将跳过状态判断，不会触发误重连
+   * 3. 后续可考虑使用 SDK 公开 API getReconnectInfo() 替代私有属性访问
+   */
+  function getWsConnectionState(): WsConnectionState | null {
+    const rawClient = wsClient as unknown as {
+      wsConfig?: {
+        getWSInstance?: () => { readyState?: number } | undefined;
+      };
+      getReconnectInfo?: () => { nextConnectTime?: number };
+      isConnecting?: boolean;
+    };
+    try {
+      const wsInstance = rawClient.wsConfig?.getWSInstance?.();
+      const reconnectInfo = rawClient.getReconnectInfo?.() || {};
+      return {
+        connected: wsInstance?.readyState === FEISHU_WS_READY_STATE_OPEN,
+        isConnecting: rawClient.isConnecting === true,
+        nextConnectTime: Number(reconnectInfo.nextConnectTime || 0),
+      };
+    } catch (err) {
+      logger.debug({ err }, 'Failed to inspect Feishu WebSocket state');
+      return null;
+    }
+  }
+
+  function stopHealthMonitor(): void {
+    if (healthTimer) {
+      clearInterval(healthTimer);
+      healthTimer = null;
+    }
+  }
+
+  function startHealthMonitor(): void {
+    stopHealthMonitor();
+    healthTimer = setInterval(() => {
+      void checkConnectionHealth();
+    }, WS_HEALTH_CHECK_INTERVAL_MS);
+    healthTimer.unref?.();
+  }
 
   function isDuplicate(msgId: string): boolean {
     const now = Date.now();
@@ -295,9 +395,307 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
     }
   }
 
+  async function handleIncomingMessage(
+    payload: IncomingMessagePayload,
+    source: 'ws' | 'backfill',
+  ): Promise<void> {
+    const { onNewChat, ignoreMessagesBefore } = connectOptions || {};
+    const {
+      chatId,
+      messageId,
+      createTimeMs,
+      messageType,
+      content: rawContent,
+      mentions,
+      chatType,
+      senderOpenId = '',
+      senderName,
+    } = payload;
+    if (!chatId || !messageId) return;
+
+    if (isDuplicate(messageId)) {
+      logger.debug({ messageId }, 'Duplicate message, skipping');
+      return;
+    }
+    markSeen(messageId);
+
+    if (ignoreMessagesBefore && createTimeMs > 0 && createTimeMs < ignoreMessagesBefore) {
+      logger.info(
+        { messageId, createTime: createTimeMs, threshold: ignoreMessagesBefore },
+        'Skipping stale Feishu message from before reconnection',
+      );
+      return;
+    }
+
+    const extracted = extractMessageContent(messageType, rawContent);
+    let text = extracted.text;
+    if (!text && !extracted.imageKeys) {
+      logger.debug(
+        { messageId, messageType },
+        'No text or image content, skipping',
+      );
+      return;
+    }
+
+    if (mentions && Array.isArray(mentions)) {
+      for (const mention of mentions) {
+        if (mention.key) {
+          text = text.replace(mention.key, `@${mention.name || ''}`);
+        }
+      }
+    }
+
+    let attachmentsJson: string | undefined;
+    if (extracted.imageKeys && extracted.imageKeys.length > 0) {
+      const attachments = [];
+      for (const imageKey of extracted.imageKeys) {
+        const base64Data = await downloadFeishuImage(messageId, imageKey);
+        if (base64Data) {
+          attachments.push({
+            type: 'image',
+            data: base64Data,
+            mimeType: 'image/png',
+          });
+        }
+      }
+      if (attachments.length > 0) {
+        attachmentsJson = JSON.stringify(attachments);
+      }
+    }
+
+    if (source === 'ws') {
+      addReaction(messageId, 'OnIt')
+        .then((reactionId) => {
+          if (reactionId) {
+            ackReactionByChat.set(chatId, `${messageId}:${reactionId}`);
+          }
+        })
+        .catch(() => {});
+    }
+    lastMessageIdByChat.set(chatId, messageId);
+
+    const resolvedCreateTimeMs = createTimeMs > 0 ? createTimeMs : Date.now();
+    const timestamp = new Date(resolvedCreateTimeMs).toISOString();
+    rememberChatProgress(chatId, resolvedCreateTimeMs);
+
+    const chatJid = `feishu:${chatId}`;
+    const resolvedSenderName = senderName || getSenderName(senderOpenId);
+    const resolvedChatName = chatType === 'p2p' ? '飞书私聊' : '飞书群聊';
+    onNewChat?.(chatJid, resolvedChatName);
+
+    storeChatMetadata(chatJid, timestamp);
+    storeMessageDirect(
+      messageId,
+      chatJid,
+      senderOpenId,
+      resolvedSenderName,
+      text,
+      timestamp,
+      false,
+      attachmentsJson,
+    );
+
+    broadcastNewMessage(chatJid, {
+      id: messageId,
+      chat_jid: chatJid,
+      sender: senderOpenId,
+      sender_name: resolvedSenderName,
+      content: text,
+      timestamp,
+      attachments: attachmentsJson,
+    });
+
+    logger.info(
+      { chatJid, sender: resolvedSenderName, messageId, source },
+      'Feishu message stored',
+    );
+  }
+
+  async function backfillChatMessages(chatId: string, sinceMs: number): Promise<void> {
+    if (!client) return;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const startSec = Math.max(0, Math.floor(sinceMs / 1000));
+    const params: {
+      container_id_type: 'chat';
+      container_id: string;
+      sort_type: 'ByCreateTimeDesc';
+      start_time: string;
+      end_time: string;
+      page_size: number;
+      page_token?: string;
+    } = {
+      container_id_type: 'chat',
+      container_id: chatId,
+      sort_type: 'ByCreateTimeDesc',
+      start_time: String(startSec),
+      end_time: String(nowSec),
+      page_size: BACKFILL_PAGE_SIZE,
+    };
+
+    let pages = 0;
+    while (pages < BACKFILL_MAX_PAGES_PER_CHAT) {
+      const response = (await client.im.v1.message.list({ params })) as {
+        data?: {
+          items?: Array<{
+            message_id?: string;
+            create_time?: string | number;
+            msg_type?: string;
+            message_type?: string;
+            body?: { content?: string };
+            content?: string;
+            chat_type?: string;
+            mentions?: FeishuMentionLike[];
+            deleted?: boolean;
+            sender?: {
+              id?: string;
+              sender_id?: {
+                open_id?: string;
+              };
+            };
+          }>;
+          has_more?: boolean;
+          page_token?: string;
+        };
+      };
+
+      const list = response.data?.items || [];
+      const messages = list
+        .filter((item) => {
+          if (item.deleted === true || !item.message_id) return false;
+          // 过滤 Bot 自身发送的消息，避免 backfill 将回复当作新消息处理
+          const senderType = (item as any).sender?.sender_type;
+          if (senderType === 'app') return false;
+          return true;
+        })
+        .map((item) => {
+          const senderOpenId = item.sender?.sender_id?.open_id || item.sender?.id || '';
+          return {
+            chatId,
+            messageId: item.message_id as string,
+            createTimeMs: toEpochMs(item.create_time),
+            messageType: item.msg_type || item.message_type || '',
+            content: item.body?.content || item.content || '',
+            chatType: item.chat_type,
+            mentions: item.mentions,
+            senderOpenId,
+          };
+        })
+        .sort((a, b) => a.createTimeMs - b.createTimeMs);
+
+      for (const message of messages) {
+        await handleIncomingMessage(message, 'backfill');
+      }
+
+      pages++;
+      if (!response.data?.has_more || !response.data.page_token) {
+        break;
+      }
+      params.page_token = response.data.page_token;
+    }
+  }
+
+  async function runBackfill(reason: string): Promise<void> {
+    if (!client || backfillRunning) return;
+    const chatIds = Array.from(knownChatIds);
+    if (chatIds.length === 0) return;
+
+    backfillRunning = true;
+    try {
+      const recoveredFrom = disconnectedSince ?? Date.now();
+      for (const chatId of chatIds) {
+        const lastSeen = lastCreateTimeByChat.get(chatId) || 0;
+        const baseTs = lastSeen > 0 ? lastSeen : recoveredFrom;
+        const sinceMs = Math.max(0, baseTs - BACKFILL_LOOKBACK_MS);
+        try {
+          await backfillChatMessages(chatId, sinceMs);
+        } catch (err) {
+          logger.warn({ err, chatId, reason }, 'Feishu chat backfill failed');
+        }
+      }
+      logger.info({ reason, chatCount: chatIds.length }, 'Feishu backfill finished');
+    } finally {
+      backfillRunning = false;
+    }
+  }
+
+  async function reconnectWebSocket(reason: string): Promise<void> {
+    if (reconnecting || !connectOptions) return;
+    reconnecting = true;
+    reconnectRequestedAt = Date.now();
+    disconnectedChecks = 0;
+
+    try {
+      if (!eventDispatcher) {
+        logger.warn({ reason }, 'Skip Feishu reconnect: event dispatcher is missing');
+        return;
+      }
+      if (wsClient) {
+        try {
+          await wsClient.close();
+        } catch (err) {
+          logger.debug({ err }, 'Error closing stale Feishu WS client before reconnect');
+        }
+      }
+
+      wsClient = new lark.WSClient({
+        appId: config.appId,
+        appSecret: config.appSecret,
+        loggerLevel: lark.LoggerLevel.info,
+      });
+      await wsClient.start({ eventDispatcher });
+
+      lastWsStateConnected = true;
+      logger.info({ reason }, 'Feishu WebSocket reconnected');
+      connectOptions.onReady();
+      // 先执行 backfill（需要读取 disconnectedSince 确定回填起点），完成后再重置
+      await runBackfill('reconnect');
+      disconnectedSince = null;
+    } catch (err) {
+      logger.error({ err, reason }, 'Feishu WebSocket reconnect failed');
+    } finally {
+      reconnecting = false;
+    }
+  }
+
+  async function checkConnectionHealth(): Promise<void> {
+    if (!wsClient || reconnecting) return;
+
+    const state = getWsConnectionState();
+    if (!state) return;
+
+    if (state.connected) {
+      disconnectedChecks = 0;
+      if (!lastWsStateConnected) {
+        logger.info('Feishu WebSocket is back online');
+        await runBackfill('recovered');
+        disconnectedSince = null;
+      }
+      lastWsStateConnected = true;
+      return;
+    }
+
+    if (lastWsStateConnected) {
+      disconnectedSince = Date.now();
+      logger.warn({ isConnecting: state.isConnecting }, 'Feishu WebSocket appears offline');
+    }
+    lastWsStateConnected = false;
+
+    const now = Date.now();
+    const reconnectWindowReady = state.nextConnectTime <= 0 || state.nextConnectTime <= now;
+    if (!reconnectWindowReady) return;
+
+    disconnectedChecks++;
+    if (
+      disconnectedChecks >= WS_RECONNECT_CHECK_THRESHOLD &&
+      now - reconnectRequestedAt >= WS_RECONNECT_MIN_INTERVAL_MS
+    ) {
+      await reconnectWebSocket('health-check');
+    }
+  }
+
   const connection: FeishuConnection = {
     async connect(opts: ConnectOptions): Promise<boolean> {
-      const { onReady, onNewChat, ignoreMessagesBefore } = opts;
+      const { onReady } = opts;
 
       if (!config.appId || !config.appSecret) {
         logger.warn(
@@ -305,6 +703,12 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
         );
         return false;
       }
+      connectOptions = opts;
+      disconnectedChecks = 0;
+      disconnectedSince = null;
+      reconnectRequestedAt = Date.now();
+      reconnecting = false;
+      backfillRunning = false;
 
       // Initialize client
       client = new lark.Client({
@@ -314,121 +718,22 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
       });
 
       // Create event dispatcher
-      const eventDispatcher = new lark.EventDispatcher({}).register({
+      eventDispatcher = new lark.EventDispatcher({}).register({
         'im.message.receive_v1': async (data) => {
           try {
             const message = data.message;
-            const chatId = message.chat_id;
-            const messageId = message.message_id;
-
-            // Deduplication check
-            if (isDuplicate(messageId)) {
-              logger.debug({ messageId }, 'Duplicate message, skipping');
-              return;
-            }
-            markSeen(messageId);
-
-            // Skip stale messages from before reconnection (hot-reload scenario)
-            if (ignoreMessagesBefore) {
-              const createTimeMs = parseInt(message.create_time);
-              if (createTimeMs < ignoreMessagesBefore) {
-                logger.info(
-                  { messageId, createTime: createTimeMs, threshold: ignoreMessagesBefore },
-                  'Skipping stale Feishu message from before reconnection',
-                );
-                return;
-              }
-            }
-
-            // Extract message text and image keys
-            const extracted = extractMessageContent(message.message_type, message.content);
-            let content = extracted.text;
-            if (!content && !extracted.imageKeys) {
-              logger.debug(
-                { messageId, messageType: message.message_type },
-                'No text or image content, skipping',
-              );
-              return;
-            }
-
-            // Handle @bot mentions - replace Feishu placeholder with actual names
-            if (message.mentions && Array.isArray(message.mentions)) {
-              for (const mention of message.mentions) {
-                if (mention.key) {
-                  content = content.replace(mention.key, `@${mention.name || ''}`);
-                }
-              }
-            }
-
-            // Download images if present
-            let attachmentsJson: string | undefined;
-            if (extracted.imageKeys && extracted.imageKeys.length > 0) {
-              const attachments = [];
-              for (const imageKey of extracted.imageKeys) {
-                const base64Data = await downloadFeishuImage(messageId, imageKey);
-                if (base64Data) {
-                  attachments.push({
-                    type: 'image',
-                    data: base64Data,
-                    mimeType: 'image/png',
-                  });
-                }
-              }
-              if (attachments.length > 0) {
-                attachmentsJson = JSON.stringify(attachments);
-              }
-            }
-
-            // Acknowledge receipt with "OnIt" reaction (will be removed after reply)
-            addReaction(messageId, 'OnIt')
-              .then((reactionId) => {
-                if (reactionId) {
-                  ackReactionByChat.set(chatId, `${messageId}:${reactionId}`);
-                }
-              })
-              .catch(() => {});
-
-            // Track last message_id for this chat (used for reply-to and typing)
-            lastMessageIdByChat.set(chatId, messageId);
-
-            // Get sender name
-            const senderName = getSenderName(data.sender.sender_id?.open_id || '');
-
-            // JID format
-            const chatJid = `feishu:${chatId}`;
-            const timestamp = new Date(parseInt(message.create_time)).toISOString();
-
-            // 通知调用方：如果该飞书聊天未注册，自动注册
-            const chatName = message.chat_type === 'p2p' ? `飞书私聊` : `飞书群聊`;
-            onNewChat?.(chatJid, chatName);
-
-            // Store to database
-            storeChatMetadata(chatJid, timestamp);
-            storeMessageDirect(
-              messageId,
-              chatJid,
-              data.sender.sender_id?.open_id || '',
-              senderName,
-              content,
-              timestamp,
-              false,
-              attachmentsJson,
-            );
-
-            // Broadcast to Web clients
-            broadcastNewMessage(chatJid, {
-              id: messageId,
-              chat_jid: chatJid,
-              sender: data.sender.sender_id?.open_id || '',
-              sender_name: senderName,
-              content,
-              timestamp,
-              attachments: attachmentsJson,
-            });
-
-            logger.info(
-              { chatJid, sender: senderName, messageId },
-              'Feishu message stored',
+            await handleIncomingMessage(
+              {
+                chatId: message.chat_id,
+                messageId: message.message_id,
+                createTimeMs: toEpochMs(message.create_time),
+                messageType: message.message_type,
+                content: message.content,
+                chatType: message.chat_type,
+                mentions: message.mentions as FeishuMentionLike[] | undefined,
+                senderOpenId: data.sender.sender_id?.open_id || '',
+              },
+              'ws',
             );
           } catch (err) {
             logger.error({ err }, 'Error handling Feishu message');
@@ -446,6 +751,9 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
       try {
         await wsClient.start({ eventDispatcher });
         logger.info('Feishu WebSocket client started');
+        lastWsStateConnected = true;
+        disconnectedSince = null;
+        startHealthMonitor();
         onReady();
         return true;
       } catch (err) {
@@ -454,6 +762,9 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
           'Failed to start Feishu client, running in Web-only mode',
         );
         // Clean up partially initialized state
+        stopHealthMonitor();
+        connectOptions = null;
+        eventDispatcher = null;
         client = null;
         wsClient = null;
         return false;
@@ -461,6 +772,12 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
     },
 
     async stop(): Promise<void> {
+      stopHealthMonitor();
+      connectOptions = null;
+      eventDispatcher = null;
+      reconnecting = false;
+      disconnectedSince = null;
+      disconnectedChecks = 0;
       if (wsClient) {
         logger.info('Stopping Feishu client');
         try {
@@ -472,6 +789,7 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
         wsClient = null;
       }
       client = null;
+      lastWsStateConnected = false;
     },
 
     async sendMessage(chatId: string, text: string): Promise<void> {
@@ -594,6 +912,7 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
           for (const chat of items) {
             if (chat.chat_id && chat.name) {
               updateChatName(`feishu:${chat.chat_id}`, chat.name);
+              knownChatIds.add(chat.chat_id);
             }
           }
 

@@ -7,6 +7,7 @@ export interface Skill {
   description: string;
   source: 'user' | 'project';
   enabled: boolean;
+  syncedFromHost?: boolean;
   userInvocable: boolean;
   allowedTools: string[];
   argumentHint: string | null;
@@ -30,11 +31,17 @@ export interface SearchResultDetail {
   features: string[];
 }
 
+interface SyncHostResult {
+  stats: { added: number; updated: number; deleted: number; skipped: number };
+  total: number;
+}
+
 interface SkillsState {
   skills: Skill[];
   loading: boolean;
   error: string | null;
   installing: boolean;
+  syncing: boolean;
   searching: boolean;
   searchResults: SearchResult[];
   searchDetails: Record<string, SearchResultDetail | null>;
@@ -44,6 +51,7 @@ interface SkillsState {
   toggleSkill: (id: string, enabled: boolean) => Promise<void>;
   deleteSkill: (id: string) => Promise<void>;
   installSkill: (pkg: string) => Promise<void>;
+  syncHostSkills: () => Promise<SyncHostResult>;
   getSkillDetail: (id: string) => Promise<SkillDetail>;
   searchSkills: (query: string) => Promise<void>;
   fetchSearchDetail: (url: string) => Promise<void>;
@@ -54,6 +62,7 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
   loading: false,
   error: null,
   installing: false,
+  syncing: false,
   searching: false,
   searchResults: [],
   searchDetails: {},
@@ -100,6 +109,20 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
       throw err;
     } finally {
       set({ installing: false });
+    }
+  },
+
+  syncHostSkills: async () => {
+    set({ syncing: true, error: null });
+    try {
+      const result = await api.post<SyncHostResult>('/api/skills/sync-host', {});
+      await get().loadSkills();
+      return result;
+    } catch (err: any) {
+      set({ error: err?.message || '同步失败，请稍后重试' });
+      throw err;
+    } finally {
+      set({ syncing: false });
     }
   },
 

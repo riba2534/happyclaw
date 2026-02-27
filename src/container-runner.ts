@@ -1013,6 +1013,8 @@ export async function runHostAgent(
   ensureSettingsJson(settingsFile);
 
   // 4. Skills 自动链接到 session 目录
+  // 链接顺序：项目级 → 宿主机级(admin only, 覆盖同名项目级) → 用户级(覆盖同名)
+  // selected_skills 过滤：仅链接选中的 skills
   try {
     const skillsDir = path.join(groupSessionsDir, 'skills');
     fs.mkdirSync(skillsDir, { recursive: true });
@@ -1025,40 +1027,33 @@ export async function runHostAgent(
         }
       } catch { /* ignore */ }
     }
-    // 项目级 skills
-    const projectRoot = process.cwd();
-    const projectSkillsDir = path.join(projectRoot, 'container', 'skills');
-    if (fs.existsSync(projectSkillsDir)) {
-      for (const entry of fs.readdirSync(projectSkillsDir, { withFileTypes: true })) {
+
+    const selectedSkills = group.selected_skills ?? null;
+    const selectedSet = selectedSkills ? new Set(selectedSkills) : null;
+
+    const linkSkillEntries = (sourceDir: string) => {
+      if (!fs.existsSync(sourceDir)) return;
+      for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
+        if (selectedSet && !selectedSet.has(entry.name)) continue;
+        const linkPath = path.join(skillsDir, entry.name);
         try {
-          fs.symlinkSync(
-            path.join(projectSkillsDir, entry.name),
-            path.join(skillsDir, entry.name),
-          );
+          // 移除已有符号链接（高优先级覆盖低优先级）
+          if (fs.existsSync(linkPath)) {
+            fs.rmSync(linkPath, { recursive: true, force: true });
+          }
+          fs.symlinkSync(path.join(sourceDir, entry.name), linkPath);
         } catch { /* ignore */ }
       }
-    }
-    // 用户级 skills（同名覆盖项目级）
+    };
+
+    // 项目级 skills
+    const projectRoot = process.cwd();
+    linkSkillEntries(path.join(projectRoot, 'container', 'skills'));
+    // 用户级 skills（覆盖同名项目级）
     const ownerId = group.created_by;
     if (ownerId) {
-      const userSkillsDir = path.join(DATA_DIR, 'skills', ownerId);
-      if (fs.existsSync(userSkillsDir)) {
-        for (const entry of fs.readdirSync(userSkillsDir, { withFileTypes: true })) {
-          if (!entry.isDirectory()) continue;
-          const linkPath = path.join(skillsDir, entry.name);
-          try {
-            // 移除已有的项目级符号链接（用户级覆盖）
-            if (fs.existsSync(linkPath)) {
-              fs.rmSync(linkPath, { recursive: true, force: true });
-            }
-            fs.symlinkSync(
-              path.join(userSkillsDir, entry.name),
-              linkPath,
-            );
-          } catch { /* ignore */ }
-        }
-      }
+      linkSkillEntries(path.join(DATA_DIR, 'skills', ownerId));
     }
   } catch (err) {
     logger.warn({ folder: group.folder, err }, '宿主机模式 skills 符号链接失败');
