@@ -310,21 +310,8 @@ function listMemorySources(user: AuthUser): MemorySource[] {
     }
   }
 
-  // 1. User-global memory: each user's own, admin sees all
-  if (isAdmin) {
-    // Scan all user-global directories
-    if (fs.existsSync(USER_GLOBAL_DIR)) {
-      const userDirs = fs.readdirSync(USER_GLOBAL_DIR, { withFileTypes: true });
-      for (const d of userDirs) {
-        if (d.isDirectory()) {
-          files.add(path.join(USER_GLOBAL_DIR, d.name, 'CLAUDE.md'));
-        }
-      }
-    }
-  } else {
-    // Member sees only their own user-global
-    files.add(path.join(USER_GLOBAL_DIR, user.id, 'CLAUDE.md'));
-  }
+  // 1. User-global memory: each user only sees their own
+  files.add(path.join(USER_GLOBAL_DIR, user.id, 'CLAUDE.md'));
 
   // 2. Group memories: filter by ownership
   for (const folder of accessibleFolders) {

@@ -262,6 +262,9 @@ export function UserChannelsSection({ setNotice, setError }: UserChannelsSection
 
   return (
     <div className="space-y-6">
+      <p className="text-sm text-slate-500 bg-slate-50 rounded-lg px-4 py-3">
+        绑定你个人的飞书或 Telegram 账号，消息将发送到你的主工作区。
+      </p>
       {/* Feishu */}
       <div>
         <h3 className="text-base font-semibold text-slate-900 mb-3">飞书</h3>

@@ -568,6 +568,22 @@ function buildMemoryRecallPrompt(isHome: boolean, isAdminHome: boolean): string 
   ].join('\n');
 }
 
+/** 从 settings.json 读取用户配置的 MCP servers（stdio/http/sse 类型） */
+function loadUserMcpServers(): Record<string, unknown> {
+  const configDir = process.env.CLAUDE_CONFIG_DIR
+    || path.join(process.env.HOME || '/home/node', '.claude');
+  const settingsFile = path.join(configDir, 'settings.json');
+  try {
+    if (fs.existsSync(settingsFile)) {
+      const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
+      if (settings.mcpServers && typeof settings.mcpServers === 'object') {
+        return settings.mcpServers;
+      }
+    }
+  } catch { /* ignore parse errors */ }
+  return {};
+}
+
 /**
  * Run a single query and stream results via writeOutput.
  * Uses MessageStream (AsyncIterable) to keep isSingleUserTurn=false,
@@ -717,7 +733,8 @@ async function runQuery(
       settingSources: ['project', 'user'],
       includePartialMessages: true,
       mcpServers: {
-        happyclaw: mcpServerConfig,
+        ...loadUserMcpServers(),     // 用户配置的 MCP（stdio/http/sse），SDK 原生支持
+        happyclaw: mcpServerConfig,  // 内置 SDK MCP 放最后，确保不被同名覆盖
       },
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(isHome, isAdminHome)] }]

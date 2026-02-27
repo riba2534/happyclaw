@@ -172,10 +172,10 @@ export function ChatView({ groupJid, onBack }: ChatViewProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupJid]);
 
-  // 首次挂载 + WS 重连时恢复正在运行的 agent 状态（独立于 groupJid，避免切换会话时重复调用）
+  // WS 重连时恢复正在运行的 agent 状态（独立于 groupJid，避免切换会话时重复调用）
+  // wsManager.connect() 已提升到 AppLayout 级别
   const restoreActiveState = useChatStore(s => s.restoreActiveState);
   useEffect(() => {
-    wsManager.connect();
     restoreActiveState();
     const unsub = wsManager.on('connected', () => {
       restoreActiveState();

@@ -219,9 +219,9 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
 
       {/* AI Appearance */}
       <div>
-        <h3 className="text-base font-semibold text-slate-900 mb-4">机器人外观</h3>
+        <h3 className="text-base font-semibold text-slate-900 mb-4">我的机器人外观</h3>
         <p className="text-xs text-slate-500 mb-4">
-          自定义你的 AI 助手的名称和头像，仅影响你看到的对话界面。
+          自定义你的 AI 助手外观，覆盖系统默认值，仅影响你看到的对话界面。
         </p>
         <div className="space-y-4">
           <div className="flex items-center gap-4 mb-4">

@@ -8,6 +8,7 @@ export function useConnectionStatus(): ConnectionStatus {
   const [online, setOnline] = useState(navigator.onLine);
 
   useEffect(() => {
+    setWsConnected(wsManager.isConnected()); // 同步当前真实状态，防止错过 connected 事件
     const unsubConn = wsManager.on('connected', () => setWsConnected(true));
     const unsubDisc = wsManager.on('disconnected', () => setWsConnected(false));
     const handleOnline = () => setOnline(true);

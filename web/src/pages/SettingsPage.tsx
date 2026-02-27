@@ -64,12 +64,12 @@ export function SettingsPage() {
   const mobileTabs = useMemo(() => {
     const tabs: { key: SettingsTab; label: string }[] = [];
     tabs.push({ key: 'profile', label: '个人资料' });
-    tabs.push({ key: 'my-channels', label: '消息通道' });
+    tabs.push({ key: 'my-channels', label: '我的通道' });
     tabs.push({ key: 'security', label: '安全' });
     if (canManageSystemConfig) {
-      tabs.push({ key: 'channels', label: '渠道' });
+      tabs.push({ key: 'channels', label: '系统渠道' });
       tabs.push({ key: 'claude', label: 'Claude' });
-      tabs.push({ key: 'appearance', label: '外观' });
+      tabs.push({ key: 'appearance', label: '外观(全局)' });
       tabs.push({ key: 'system', label: '系统' });
     }
     tabs.push({ key: 'groups', label: '会话' });
@@ -94,13 +94,13 @@ export function SettingsPage() {
   }, [activeTab]);
 
   const sectionTitle: Record<SettingsTab, string> = {
-    channels: '渠道配置',
+    channels: '系统渠道配置',
     claude: 'Claude 提供商',
     registration: '注册管理',
-    appearance: '外观设置',
+    appearance: '外观设置（全局默认）',
     system: '系统参数',
     profile: '个人资料',
-    'my-channels': '消息通道',
+    'my-channels': '我的消息通道',
     security: '安全与设备',
     groups: '会话管理',
     memory: '记忆管理',

@@ -81,6 +81,9 @@ export function AppearanceSection({ setNotice, setError }: AppearanceSectionProp
 
   return (
     <div className="space-y-6">
+      <p className="text-sm text-slate-500 bg-slate-50 rounded-lg px-4 py-3">
+        以下为全局默认值，对所有用户生效。用户可在「个人资料」中覆盖自己的 AI 外观。
+      </p>
       {/* Preview */}
       <div>
         <h3 className="text-base font-semibold text-slate-900 mb-4">预览</h3>
@@ -114,7 +117,7 @@ export function AppearanceSection({ setNotice, setError }: AppearanceSectionProp
 
       {/* AI Name */}
       <div>
-        <h3 className="text-base font-semibold text-slate-900 mb-4">AI 名称</h3>
+        <h3 className="text-base font-semibold text-slate-900 mb-4">AI 默认名称</h3>
         <Input
           type="text"
           value={aiName}
@@ -123,7 +126,7 @@ export function AppearanceSection({ setNotice, setError }: AppearanceSectionProp
           placeholder="HappyClaw"
           className="max-w-xs"
         />
-        <p className="text-xs text-slate-500 mt-1">显示在聊天消息中的 AI 助手名称</p>
+        <p className="text-xs text-slate-500 mt-1">所有用户看到的默认 AI 助手名称（用户可在个人资料中单独覆盖）</p>
       </div>
 
       {/* AI Avatar Emoji */}
