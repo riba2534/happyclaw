@@ -5,6 +5,15 @@
  * 运行时由 src/load-env.ts（通过 --import 标志）在本模块初始化前完成 .env 加载。
  */
 
+const envOrDefault = (value: string | undefined, defaultValue: string): string =>
+  value === undefined || value === '' ? defaultValue : value;
+
+const parseIntEnv = (name: string, defaultValue: number): number => {
+  const raw = envOrDefault(process.env[name], String(defaultValue));
+  const parsed = parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : defaultValue;
+};
+
 // ─── 应用 ──────────────────────────────────────────────────────────────────────
 
 /** AI 助手名称，显示在界面和 IM 消息中 */
@@ -19,7 +28,7 @@ export const IS_PRODUCTION = NODE_ENV === 'production';
 // ─── Web 服务器 ────────────────────────────────────────────────────────────────
 
 /** HTTP 监听端口 */
-export const WEB_PORT = parseInt(process.env.WEB_PORT ?? '3000', 10);
+export const WEB_PORT = parseIntEnv('WEB_PORT', 3000);
 
 /**
  * Cookie 签名密钥（可选）。
@@ -41,21 +50,15 @@ export const CORS_ALLOW_LOCALHOST = process.env.CORS_ALLOW_LOCALHOST !== 'false'
 // ─── 认证限流 ──────────────────────────────────────────────────────────────────
 
 /** 登录失败多少次后锁定账户 */
-export const MAX_LOGIN_ATTEMPTS = (() => {
-  const v = parseInt(process.env.MAX_LOGIN_ATTEMPTS ?? '5', 10);
-  return Number.isFinite(v) ? v : 5;
-})();
+export const MAX_LOGIN_ATTEMPTS = parseIntEnv('MAX_LOGIN_ATTEMPTS', 5);
 
 /** 账户锁定持续分钟数 */
-export const LOGIN_LOCKOUT_MINUTES = (() => {
-  const v = parseInt(process.env.LOGIN_LOCKOUT_MINUTES ?? '15', 10);
-  return Number.isFinite(v) ? v : 15;
-})();
+export const LOGIN_LOCKOUT_MINUTES = parseIntEnv('LOGIN_LOCKOUT_MINUTES', 15);
 
 // ─── 日志 ──────────────────────────────────────────────────────────────────────
 
 /** pino 日志级别：trace / debug / info / warn / error / fatal */
-export const LOG_LEVEL = process.env.LOG_LEVEL ?? 'info';
+export const LOG_LEVEL = envOrDefault(process.env.LOG_LEVEL, 'info');
 
 // ─── 容器 ──────────────────────────────────────────────────────────────────────
 
@@ -63,22 +66,16 @@ export const LOG_LEVEL = process.env.LOG_LEVEL ?? 'info';
 export const CONTAINER_IMAGE = process.env.CONTAINER_IMAGE ?? 'happyclaw-agent:latest';
 
 /** 容器最大运行时间（毫秒），默认 30 分钟 */
-export const CONTAINER_TIMEOUT = parseInt(process.env.CONTAINER_TIMEOUT ?? '1800000', 10);
+export const CONTAINER_TIMEOUT = parseIntEnv('CONTAINER_TIMEOUT', 1800000);
 
 /** 单次容器输出最大字节数，默认 10MB */
-export const CONTAINER_MAX_OUTPUT_SIZE = parseInt(
-  process.env.CONTAINER_MAX_OUTPUT_SIZE ?? '10485760',
-  10,
-);
+export const CONTAINER_MAX_OUTPUT_SIZE = parseIntEnv('CONTAINER_MAX_OUTPUT_SIZE', 10485760);
 
 /** 容器空闲超时（毫秒）：最后一次输出后无新消息则关闭，默认 30 分钟 */
-export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT ?? '1800000', 10);
+export const IDLE_TIMEOUT = parseIntEnv('IDLE_TIMEOUT', 1800000);
 
 /** 宿主机模式最大并发进程数 */
-export const MAX_CONCURRENT_HOST_PROCESSES = parseInt(
-  process.env.MAX_CONCURRENT_HOST_PROCESSES ?? '5',
-  10,
-);
+export const MAX_CONCURRENT_HOST_PROCESSES = parseIntEnv('MAX_CONCURRENT_HOST_PROCESSES', 5);
 
 // ─── 飞书（Lark） ──────────────────────────────────────────────────────────────
 
