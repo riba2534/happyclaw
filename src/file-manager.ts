@@ -226,4 +226,7 @@ export function createDirectory(
   }
 
   fs.mkdirSync(absolutePath, { recursive: true });
+  // chmod 0o777 确保容器（node/1000）与宿主机用户均可读写
+  // 与 container-runner.ts 的 mkdirForContainer() 行为一致
+  try { fs.chmodSync(absolutePath, 0o777); } catch { /* 忽略只读文件系统 */ }
 }

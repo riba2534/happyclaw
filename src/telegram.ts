@@ -1,5 +1,6 @@
 import { Bot } from 'grammy';
 import crypto from 'crypto';
+import { Agent as HttpsAgent } from 'node:https';
 import {
   storeChatMetadata,
   storeMessageDirect,
@@ -29,6 +30,7 @@ export interface TelegramConnection {
   connect(opts: TelegramConnectOpts): Promise<void>;
   disconnect(): Promise<void>;
   sendMessage(chatId: string, text: string): Promise<void>;
+  sendChatAction(chatId: string, action: 'typing'): Promise<void>;
   isConnected(): boolean;
 }
 
@@ -131,9 +133,15 @@ export function createTelegramConnection(config: TelegramConnectionConfig): Tele
   // LRU deduplication cache
   const MSG_DEDUP_MAX = 1000;
   const MSG_DEDUP_TTL = 30 * 60 * 1000; // 30min
+  const POLLING_RESTART_DELAY_MS = 5000;
 
   const msgCache = new Map<string, number>();
   let bot: Bot | null = null;
+  let pollingPromise: Promise<void> | null = null;
+  let reconnectTimer: NodeJS.Timeout | null = null;
+  let stopping = false;
+  let readyFired = false;
+  const telegramApiAgent = new HttpsAgent({ keepAlive: true, family: 4 });
 
   function isDuplicate(msgId: string): boolean {
     const now = Date.now();
@@ -157,6 +165,11 @@ export function createTelegramConnection(config: TelegramConnectionConfig): Tele
   const rejectTimestamps = new Map<string, number>();
   const REJECT_COOLDOWN_MS = 5 * 60 * 1000;
 
+  function isExpectedStopError(err: unknown): boolean {
+    const msg = err instanceof Error ? err.message : String(err ?? '');
+    return msg.includes('Aborted delay') || msg.includes('AbortError');
+  }
+
   const connection: TelegramConnection = {
     async connect(opts: TelegramConnectOpts): Promise<void> {
       if (!config.botToken) {
@@ -164,7 +177,20 @@ export function createTelegramConnection(config: TelegramConnectionConfig): Tele
         return;
       }
 
-      bot = new Bot(config.botToken);
+      bot = new Bot(config.botToken, {
+        client: {
+          timeoutSeconds: 30,
+          baseFetchConfig: {
+            agent: telegramApiAgent,
+          },
+        },
+      });
+      stopping = false;
+      readyFired = false;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
 
       bot.on('message:text', async (ctx) => {
         try {
@@ -274,20 +300,44 @@ export function createTelegramConnection(config: TelegramConnectionConfig): Tele
         }
       });
 
-      try {
-        bot.start({
-          onStart: () => {
-            logger.info('Telegram bot started');
-            opts.onReady?.();
-          },
-        });
-      } catch (err) {
-        logger.error({ err }, 'Failed to start Telegram bot');
-        throw err;
-      }
+      const startPolling = (): void => {
+        if (!bot || stopping) return;
+        pollingPromise = bot
+          .start({
+            onStart: () => {
+              logger.info('Telegram bot started');
+              if (!readyFired) {
+                readyFired = true;
+                opts.onReady?.();
+              }
+            },
+          })
+          .catch((err) => {
+            // bot.stop() during hot-reload will abort long polling; this is expected.
+            if (stopping && isExpectedStopError(err)) return;
+
+            logger.error({ err }, 'Telegram bot polling crashed');
+            if (stopping || !bot) return;
+
+            reconnectTimer = setTimeout(() => {
+              reconnectTimer = null;
+              if (!stopping && bot) {
+                logger.info('Restarting Telegram bot polling');
+                startPolling();
+              }
+            }, POLLING_RESTART_DELAY_MS);
+          });
+      };
+
+      startPolling();
     },
 
     async disconnect(): Promise<void> {
+      stopping = true;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
       if (bot) {
         try {
           bot.stop();
@@ -295,7 +345,16 @@ export function createTelegramConnection(config: TelegramConnectionConfig): Tele
         } catch (err) {
           logger.error({ err }, 'Error stopping Telegram bot');
         } finally {
+          try {
+            await pollingPromise;
+          } catch (err) {
+            if (!isExpectedStopError(err)) {
+              logger.debug({ err }, 'Telegram polling promise rejected on disconnect');
+            }
+          }
+          pollingPromise = null;
           bot = null;
+          telegramApiAgent.destroy();
         }
       }
     },
@@ -334,6 +393,17 @@ export function createTelegramConnection(config: TelegramConnectionConfig): Tele
       } catch (err) {
         logger.error({ err, chatId }, 'Failed to send Telegram message');
         throw err;
+      }
+    },
+
+    async sendChatAction(chatId: string, action: 'typing'): Promise<void> {
+      if (!bot) return;
+      const chatIdNum = Number(chatId);
+      if (isNaN(chatIdNum)) return;
+      try {
+        await bot.api.sendChatAction(chatIdNum, action);
+      } catch (err) {
+        logger.debug({ err, chatId }, 'Failed to send Telegram chat action');
       }
     },
 

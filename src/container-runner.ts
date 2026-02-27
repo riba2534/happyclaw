@@ -30,6 +30,41 @@ import { RegisteredGroup, StreamEvent } from './types.js';
 const OUTPUT_START_MARKER = '---HAPPYCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---HAPPYCLAW_OUTPUT_END---';
 
+/**
+ * Required env flags for settings.json — 每次容器/进程启动时强制写入，不可被用户覆盖。
+ * 合并模式：仅覆盖这些 key，保留用户自定义的其他 key。
+ */
+const REQUIRED_SETTINGS_ENV: Record<string, string> = {
+  CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
+  CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
+  CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
+};
+
+/** Read existing settings.json, deep-merge required env keys, write only if changed */
+function ensureSettingsJson(settingsFile: string): void {
+  let existing: Record<string, unknown> = {};
+  try {
+    if (fs.existsSync(settingsFile)) {
+      existing = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+    }
+  } catch { /* ignore parse errors, overwrite */ }
+
+  const existingEnv = (existing.env as Record<string, string>) || {};
+  const mergedEnv = { ...existingEnv, ...REQUIRED_SETTINGS_ENV };
+  const merged = { ...existing, env: mergedEnv };
+  const newContent = JSON.stringify(merged, null, 2) + '\n';
+
+  // Only write when content actually changed
+  try {
+    if (fs.existsSync(settingsFile)) {
+      const current = fs.readFileSync(settingsFile, 'utf8');
+      if (current === newContent) return;
+    }
+  } catch { /* write anyway */ }
+
+  fs.writeFileSync(settingsFile, newContent, { mode: 0o600 });
+}
+
 export interface ContainerInput {
   prompt: string;
   sessionId?: string;
@@ -59,6 +94,20 @@ interface VolumeMount {
   readonly: boolean;
 }
 
+/**
+ * Create directory with 0o777 permissions for container volume mounts.
+ * Fixes uid mismatch between host user and container node user (uid 1000),
+ * especially in rootless podman where uid remapping causes permission denied.
+ */
+function mkdirForContainer(dirPath: string): void {
+  fs.mkdirSync(dirPath, { recursive: true });
+  try {
+    fs.chmodSync(dirPath, 0o777);
+  } catch {
+    // Ignore — may fail on read-only filesystem or special mounts
+  }
+}
+
 function buildVolumeMounts(
   group: RegisteredGroup,
   isAdminHome: boolean,
@@ -74,7 +123,7 @@ function buildVolumeMounts(
   const ownerId = group.created_by;
   if (ownerId) {
     const userGlobalDir = path.join(GROUPS_DIR, 'user-global', ownerId);
-    fs.mkdirSync(userGlobalDir, { recursive: true });
+    mkdirForContainer(userGlobalDir);
     mounts.push({
       hostPath: userGlobalDir,
       containerPath: '/workspace/global',
@@ -83,7 +132,7 @@ function buildVolumeMounts(
   } else {
     // Legacy fallback for rows without created_by.
     const legacyGlobalDir = path.join(GROUPS_DIR, 'global');
-    fs.mkdirSync(legacyGlobalDir, { recursive: true });
+    mkdirForContainer(legacyGlobalDir);
     mounts.push({
       hostPath: legacyGlobalDir,
       containerPath: '/workspace/global',
@@ -116,7 +165,7 @@ function buildVolumeMounts(
 
   // Per-group memory directory (isolated from workspace to avoid polluting user files)
   const memoryDir = path.join(DATA_DIR, 'memory', group.folder);
-  fs.mkdirSync(memoryDir, { recursive: true });
+  mkdirForContainer(memoryDir);
   mounts.push({
     hostPath: memoryDir,
     containerPath: '/workspace/memory',
@@ -128,30 +177,9 @@ function buildVolumeMounts(
   const groupSessionsDir = agentId
     ? path.join(DATA_DIR, 'sessions', group.folder, 'agents', agentId, '.claude')
     : path.join(DATA_DIR, 'sessions', group.folder, '.claude');
-  fs.mkdirSync(groupSessionsDir, { recursive: true });
+  mkdirForContainer(groupSessionsDir);
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
-  if (!fs.existsSync(settingsFile)) {
-    fs.writeFileSync(
-      settingsFile,
-      JSON.stringify(
-        {
-          env: {
-            // Enable agent swarms (subagent orchestration)
-            // https://code.claude.com/docs/en/agent-teams#orchestrate-teams-of-claude-code-sessions
-            CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
-            // Load CLAUDE.md from additional mounted directories
-            // https://code.claude.com/docs/en/memory#load-memory-from-additional-directories
-            CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
-            // Enable Claude's memory feature (persists user preferences between sessions)
-            // https://code.claude.com/docs/en/memory#manage-auto-memory
-            CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
-          },
-        },
-        null,
-        2,
-      ) + '\n',
-    );
-  }
+  ensureSettingsJson(settingsFile);
 
   mounts.push({
     hostPath: groupSessionsDir,
@@ -165,6 +193,13 @@ function buildVolumeMounts(
   const projectSkillsDir = path.join(projectRoot, 'container', 'skills');
   const userSkillsDir = (mountUserSkills && ownerId) ? path.join(DATA_DIR, 'skills', ownerId) : null;
 
+  // Ensure user skills directory exists so it can always be mounted.
+  // Skills may be installed after the group is created; without pre-creating,
+  // the existsSync check would skip mounting and the container would never see them.
+  if (userSkillsDir) {
+    fs.mkdirSync(userSkillsDir, { recursive: true });
+  }
+
   if (selectedSkills === null) {
     // 全量挂载（默认行为）
     if (fs.existsSync(projectSkillsDir)) {
@@ -174,7 +209,7 @@ function buildVolumeMounts(
         readonly: true,
       });
     }
-    if (userSkillsDir && fs.existsSync(userSkillsDir)) {
+    if (userSkillsDir) {
       mounts.push({
         hostPath: userSkillsDir,
         containerPath: '/workspace/user-skills',
@@ -198,7 +233,7 @@ function buildVolumeMounts(
       }
     }
     // 用户级 skills
-    if (userSkillsDir && fs.existsSync(userSkillsDir)) {
+    if (userSkillsDir) {
       for (const name of selectedSet) {
         const skillPath = path.join(userSkillsDir, name);
         if (fs.existsSync(skillPath) && fs.statSync(skillPath).isDirectory()) {
@@ -214,14 +249,18 @@ function buildVolumeMounts(
 
   // Per-group IPC namespace: each group gets its own IPC directory
   // Sub-agents get their own IPC subdirectory under agents/{agentId}/
+  // Use 0o777 so container (node/1000) and host (agent/1002) can both read/write.
   const groupIpcDir = agentId
     ? path.join(DATA_DIR, 'ipc', group.folder, 'agents', agentId)
     : path.join(DATA_DIR, 'ipc', group.folder);
-  fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
-  fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
-  fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
+  mkdirForContainer(groupIpcDir);
   // All agents (main + sub/conversation) get agents/ subdir for spawn/message IPC
-  fs.mkdirSync(path.join(groupIpcDir, 'agents'), { recursive: true });
+  // Use chmod 777 so both host (agent/1002) and container (node/1000) can write
+  for (const sub of ['messages', 'tasks', 'input', 'agents'] as const) {
+    const subDir = path.join(groupIpcDir, sub);
+    fs.mkdirSync(subDir, { recursive: true });
+    try { fs.chmodSync(subDir, 0o777); } catch { /* ignore if already correct */ }
+  }
   mounts.push({
     hostPath: groupIpcDir,
     containerPath: '/workspace/ipc',
@@ -320,7 +359,7 @@ export async function runContainerAgent(
   const startTime = Date.now();
 
   const groupDir = path.join(GROUPS_DIR, group.folder);
-  fs.mkdirSync(groupDir, { recursive: true });
+  mkdirForContainer(groupDir);
 
   // Determine if this is an admin home container (full privileges)
   const isAdminHome = !!group.is_home && group.folder === 'main';
@@ -560,39 +599,48 @@ export async function runContainerAgent(
 
       const isError = code !== 0;
 
+      // 始终记录基本信息和 stderr/stdout（截断到合理长度，避免日志膨胀）
+      const LOG_TAIL_LIMIT = 4000; // 非 verbose 模式下 stderr/stdout 各保留末尾 4000 字符
+      const stderrLog = (!isVerbose && !isError && stderr.length > LOG_TAIL_LIMIT)
+        ? `... (truncated ${stderr.length - LOG_TAIL_LIMIT} chars) ...\n` + stderr.slice(-LOG_TAIL_LIMIT)
+        : stderr;
+      const stdoutLog = (!isVerbose && !isError && stdout.length > LOG_TAIL_LIMIT)
+        ? `... (truncated ${stdout.length - LOG_TAIL_LIMIT} chars) ...\n` + stdout.slice(-LOG_TAIL_LIMIT)
+        : stdout;
+      logLines.push(
+        `=== Input Summary ===`,
+        `Prompt length: ${input.prompt.length} chars`,
+        `Session ID: ${input.sessionId || 'new'}`,
+        ``,
+        `=== Mounts ===`,
+        mounts
+          .map((m) => `${m.containerPath}${m.readonly ? ' (ro)' : ''}`)
+          .join('\n'),
+        ``,
+        `=== Stderr${stderrTruncated ? ' (TRUNCATED)' : ''} ===`,
+        stderrLog,
+        ``,
+        `=== Stdout${stdoutTruncated ? ' (TRUNCATED)' : ''} ===`,
+        stdoutLog,
+      );
+
+      // verbose 或 error 时额外记录完整 Input、Container Args 和详细 Mounts
       if (isVerbose || isError) {
         logLines.push(
+          ``,
           `=== Input ===`,
           JSON.stringify(input, null, 2),
           ``,
           `=== Container Args ===`,
           containerArgs.join(' '),
           ``,
-          `=== Mounts ===`,
+          `=== Mounts (detailed) ===`,
           mounts
             .map(
               (m) =>
                 `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
             )
             .join('\n'),
-          ``,
-          `=== Stderr${stderrTruncated ? ' (TRUNCATED)' : ''} ===`,
-          stderr,
-          ``,
-          `=== Stdout${stdoutTruncated ? ' (TRUNCATED)' : ''} ===`,
-          stdout,
-        );
-      } else {
-        logLines.push(
-          `=== Input Summary ===`,
-          `Prompt length: ${input.prompt.length} chars`,
-          `Session ID: ${input.sessionId || 'new'}`,
-          ``,
-          `=== Mounts ===`,
-          mounts
-            .map((m) => `${m.containerPath}${m.readonly ? ' (ro)' : ''}`)
-            .join('\n'),
-          ``,
         );
       }
 
@@ -959,25 +1007,9 @@ export async function runHostAgent(
     : path.join(DATA_DIR, 'sessions', group.folder, '.claude');
   fs.mkdirSync(groupSessionsDir, { recursive: true });
 
-  // 3. 写入 settings.json
+  // 3. 写入 settings.json（合并模式，不覆盖已有用户配置）
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
-  if (!fs.existsSync(settingsFile)) {
-    fs.writeFileSync(
-      settingsFile,
-      JSON.stringify(
-        {
-          env: {
-            CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
-            CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
-            CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
-          },
-        },
-        null,
-        2,
-      ) + '\n',
-      { mode: 0o600 },
-    );
-  }
+  ensureSettingsJson(settingsFile);
 
   // 4. Skills 自动链接到 session 目录
   try {
@@ -1374,26 +1406,33 @@ export async function runHostAgent(
 
       const isError = code !== 0;
 
+      // 始终记录基本信息和 stderr/stdout（截断到合理长度，避免日志膨胀）
+      const LOG_TAIL_LIMIT = 4000;
+      const stderrLog = (!isVerbose && !isError && stderr.length > LOG_TAIL_LIMIT)
+        ? `... (truncated ${stderr.length - LOG_TAIL_LIMIT} chars) ...\n` + stderr.slice(-LOG_TAIL_LIMIT)
+        : stderr;
+      const stdoutLog = (!isVerbose && !isError && stdout.length > LOG_TAIL_LIMIT)
+        ? `... (truncated ${stdout.length - LOG_TAIL_LIMIT} chars) ...\n` + stdout.slice(-LOG_TAIL_LIMIT)
+        : stdout;
+      logLines.push(
+        `=== Input Summary ===`,
+        `Prompt length: ${input.prompt.length} chars`,
+        `Session ID: ${input.sessionId || 'new'}`,
+        `Working Directory: ${groupDir}`,
+        ``,
+        `=== Stderr${stderrTruncated ? ' (TRUNCATED)' : ''} ===`,
+        stderrLog,
+        ``,
+        `=== Stdout${stdoutTruncated ? ' (TRUNCATED)' : ''} ===`,
+        stdoutLog,
+      );
+
+      // verbose 或 error 时额外记录完整 Input（含 prompt 全文，用于诊断）
       if (isVerbose || isError) {
         logLines.push(
+          ``,
           `=== Input ===`,
           JSON.stringify(input, null, 2),
-          ``,
-          `=== Working Directory ===`,
-          groupDir,
-          ``,
-          `=== Stderr${stderrTruncated ? ' (TRUNCATED)' : ''} ===`,
-          stderr,
-          ``,
-          `=== Stdout${stdoutTruncated ? ' (TRUNCATED)' : ''} ===`,
-          stdout,
-        );
-      } else {
-        logLines.push(
-          `=== Input Summary ===`,
-          `Prompt length: ${input.prompt.length} chars`,
-          `Session ID: ${input.sessionId || 'new'}`,
-          ``,
         );
       }
 

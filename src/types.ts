@@ -328,4 +328,5 @@ export interface StreamEvent {
   taskId?: string;
   taskStatus?: string;
   taskSummary?: string;
+  isTeammate?: boolean;
 }

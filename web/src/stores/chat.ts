@@ -45,6 +45,7 @@ export interface StreamEvent {
   taskId?: string;
   taskStatus?: string;
   taskSummary?: string;
+  isTeammate?: boolean;
 }
 
 export interface StreamingTimelineEvent {
@@ -143,6 +144,8 @@ interface ChatState {
     description: string;
     status: 'running' | 'completed' | 'error';
     summary?: string;
+    isTeammate?: boolean;
+    startedAt?: number;  // 任务创建时间戳（ms），用于 UI 计时器
   }>;
   // SDK Task alias map: runtime taskId/parentToolUseId -> canonical sdkTasks key
   sdkTaskAliases: Record<string, string>;
@@ -191,6 +194,14 @@ const SDK_TASK_AUTO_CLOSE_MS = 3000;
 const SDK_TASK_TOOL_END_FALLBACK_CLOSE_MS = 1200;
 const sdkTaskCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+// 兜底路由支持的事件类型（模块级常量，避免热路径上重复创建 Set）
+const FALLBACK_EVENT_TYPES: Set<StreamEventType> = new Set([
+  'text_delta', 'thinking_delta',
+  'tool_use_start', 'tool_use_end', 'tool_progress',
+  'hook_started', 'hook_progress', 'hook_response',
+  'status',
+]);
+
 function removeSdkTaskAliases(
   aliases: Record<string, string>,
   taskId: string,
@@ -236,31 +247,63 @@ function clearSdkTaskCleanupTimer(taskId: string): void {
   }
 }
 
+const SDK_TASK_VIEWING_CLOSE_MS = 8000; // 用户正在查看标签页时延长关闭延迟
+
+function doSdkTaskCleanup(
+  set: (fn: (s: ChatState) => Partial<ChatState>) => void,
+  taskId: string,
+  chatJid: string,
+): void {
+  sdkTaskCleanupTimers.delete(taskId);
+  set((s) => {
+    const isTeammate = s.sdkTasks[taskId]?.isTeammate || false;
+    const nextSdkTasks = { ...s.sdkTasks };
+    delete nextSdkTasks[taskId];
+    const nextStreaming = { ...s.agentStreaming };
+    delete nextStreaming[taskId];
+    const nextAliases = removeSdkTaskAliases(s.sdkTaskAliases, taskId);
+
+    // 非 teammate：不清理 agents[] 和 activeAgentTab（它们本就没被写入）
+    if (!isTeammate) {
+      return {
+        sdkTasks: nextSdkTasks,
+        sdkTaskAliases: nextAliases,
+        agentStreaming: nextStreaming,
+      };
+    }
+
+    // Teammate：完整清理
+    const nextActiveTab = { ...s.activeAgentTab };
+    if (nextActiveTab[chatJid] === taskId) nextActiveTab[chatJid] = null;
+    return {
+      sdkTasks: nextSdkTasks,
+      sdkTaskAliases: nextAliases,
+      agents: { ...s.agents, [chatJid]: (s.agents[chatJid] || []).filter(a => a.id !== taskId) },
+      agentStreaming: nextStreaming,
+      activeAgentTab: nextActiveTab,
+    };
+  });
+}
+
 function scheduleSdkTaskCleanup(
   set: (fn: (s: ChatState) => Partial<ChatState>) => void,
   taskId: string,
   chatJid: string,
   delayMs = SDK_TASK_AUTO_CLOSE_MS,
+  get?: () => ChatState,
 ): void {
   clearSdkTaskCleanupTimer(taskId);
   const timer = setTimeout(() => {
-    sdkTaskCleanupTimers.delete(taskId);
-    set((s) => {
-      const nextSdkTasks = { ...s.sdkTasks };
-      delete nextSdkTasks[taskId];
-      const nextStreaming = { ...s.agentStreaming };
-      delete nextStreaming[taskId];
-      const nextActiveTab = { ...s.activeAgentTab };
-      if (nextActiveTab[chatJid] === taskId) nextActiveTab[chatJid] = null;
-      const nextAliases = removeSdkTaskAliases(s.sdkTaskAliases, taskId);
-      return {
-        sdkTasks: nextSdkTasks,
-        sdkTaskAliases: nextAliases,
-        agents: { ...s.agents, [chatJid]: (s.agents[chatJid] || []).filter(a => a.id !== taskId) },
-        agentStreaming: nextStreaming,
-        activeAgentTab: nextActiveTab,
-      };
-    });
+    // 如果用户正在查看该标签页，每 SDK_TASK_VIEWING_CLOSE_MS 重新检查一次。
+    // 用户切走后 setActiveAgentTab 会立即清理已完成的 Task，因此不会无限挂起。
+    if (get) {
+      const state = get();
+      if (state.activeAgentTab[chatJid] === taskId) {
+        scheduleSdkTaskCleanup(set, taskId, chatJid, SDK_TASK_VIEWING_CLOSE_MS, get);
+        return;
+      }
+    }
+    doSdkTaskCleanup(set, taskId, chatJid);
   }, delayMs);
   sdkTaskCleanupTimers.set(taskId, timer);
 }
@@ -854,10 +897,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return;
     }
 
-    const ensureSdkTask = (taskId: string, description?: string) => {
+    const ensureSdkTask = (taskId: string, description?: string, isTeammate?: boolean) => {
       set((s) => {
         const existingTask = s.sdkTasks[taskId];
         const desc = description || existingTask?.description || 'Task';
+        const teammate = isTeammate || existingTask?.isTeammate || false;
+
+        const nextSdkTasks = {
+          ...s.sdkTasks,
+          [taskId]: {
+            chatJid,
+            description: desc,
+            status: 'running' as const,
+            summary: existingTask?.summary,
+            startedAt: existingTask?.startedAt || Date.now(),
+            ...(teammate ? { isTeammate: true } : {}),
+          },
+        };
+
+        // 仅 Teammate Task 创建标签页（写入 agents[]）
+        if (!teammate) {
+          return { sdkTasks: nextSdkTasks };
+        }
+
         const agents = s.agents[chatJid] || [];
         const idx = agents.findIndex(a => a.id === taskId);
         const nextAgent: AgentInfo = {
@@ -873,15 +935,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           : [...agents, nextAgent];
 
         return {
-          sdkTasks: {
-            ...s.sdkTasks,
-            [taskId]: {
-              chatJid,
-              description: desc,
-              status: 'running',
-              summary: existingTask?.summary,
-            },
-          },
+          sdkTasks: nextSdkTasks,
           agents: { ...s.agents, [chatJid]: updatedAgents },
         };
       });
@@ -909,6 +963,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set((s) => {
         const existingTask = s.sdkTasks[taskId];
         const taskChatJid = existingTask?.chatJid || chatJid;
+        const isTeammate = existingTask?.isTeammate || false;
+
+        if (!isTeammate) {
+          // 非 teammate：只更新 sdkTasks，不触碰 agents[]
+          if (!existingTask) return {};
+          targetChatJid = taskChatJid;
+          return {
+            sdkTasks: {
+              ...s.sdkTasks,
+              [taskId]: {
+                chatJid: taskChatJid,
+                description: existingTask.description,
+                status,
+                summary: summary ?? existingTask.summary,
+              },
+            },
+          };
+        }
+
+        // Teammate Task：更新 sdkTasks + agents[]
         const agents = s.agents[taskChatJid] || [];
         const idx = agents.findIndex(a => a.id === taskId && a.kind === 'task');
         if (!existingTask && idx < 0) return {};
@@ -948,13 +1022,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
               description: desc,
               status,
               summary: summary ?? existingTask?.summary,
+              isTeammate: true,
             },
           },
           agents: { ...s.agents, [taskChatJid]: nextAgents },
         };
       });
       if (targetChatJid) {
-        scheduleSdkTaskCleanup(set, taskId, targetChatJid, closeAfterMs);
+        scheduleSdkTaskCleanup(set, taskId, targetChatJid, closeAfterMs, get);
       }
     };
 
@@ -966,6 +1041,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       ensureSdkTask(
         event.toolUseId!,
         event.taskDescription || event.toolInputSummary,
+        event.isTeammate,
       );
       // 不 return — 让 task_start 同时落入主对话 streaming（显示 Task 工具卡片）
     }
@@ -999,6 +1075,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
           return { agentStreaming: { ...s.agentStreaming, [tid]: next } };
         });
         return;
+      }
+    }
+
+    // ④.5 兜底路由：无 parentToolUseId 时，如果只有 1 个运行中的 **非 Teammate** SDK Task，
+    // 将事件同时应用到该 Task 的 agentStreaming（不 return，仍落入主对话）。
+    // 限制条件：仅单 Task 运行时生效，避免多 Task 并发时误路由；
+    // 排除 Teammate Task（Teammate 的事件由 agent-runner 子 Agent 消息转换提供，无需兜底）。
+    if (!event.parentToolUseId && event.eventType !== 'task_start' && event.eventType !== 'task_notification') {
+      if (FALLBACK_EVENT_TYPES.has(event.eventType)) {
+        const state = get();
+        const runningNonTeammateTaskIds = Object.entries(state.sdkTasks)
+          .filter(([, task]) => task.chatJid === chatJid && task.status === 'running' && !task.isTeammate)
+          .map(([id]) => id);
+        if (runningNonTeammateTaskIds.length === 1) {
+          const tid = runningNonTeammateTaskIds[0];
+          set((s) => {
+            const prev = s.agentStreaming[tid] || { ...DEFAULT_STREAMING_STATE };
+            const next = { ...prev };
+            applyStreamEvent(event, prev, next, 8000);
+            return { agentStreaming: { ...s.agentStreaming, [tid]: next } };
+          });
+          // 不 return — 事件同时在主对话中显示
+        }
       }
     }
 
@@ -1313,9 +1412,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   // 切换子 Agent 标签页
   setActiveAgentTab: (jid, agentId) => {
+    const prev = get().activeAgentTab[jid];
     set((s) => ({
       activeAgentTab: { ...s.activeAgentTab, [jid]: agentId },
     }));
+    // 切走已完成的 SDK Task 时立即清理
+    if (prev && prev !== agentId) {
+      const task = get().sdkTasks[prev];
+      if (task && task.status !== 'running') {
+        clearSdkTaskCleanupTimer(prev);
+        doSdkTaskCleanup(set, prev, jid);
+      }
+    }
   },
 
   // -- Conversation agent actions --
