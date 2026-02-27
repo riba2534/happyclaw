@@ -69,30 +69,43 @@ export function ChatSidebar({ className }: ChatSidebarProps) {
     return { mainGroup: main, otherGroups: others };
   }, [groups]);
 
-  // Group non-main items by date period
-  const groupedByDate = useMemo(() => {
+  // Split non-main groups into private / collaborative, then sub-group by date
+  type DateSections = { label: string; items: typeof otherGroups }[];
+  const groupByDate = (items: typeof otherGroups): DateSections => {
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const weekAgo = new Date(today.getTime() - 7 * 86400000);
-
-    const sections: { label: string; items: typeof otherGroups }[] = [
+    const sections: DateSections = [
       { label: '今天', items: [] },
       { label: '最近 7 天', items: [] },
       { label: '更早', items: [] },
     ];
-
-    const filtered = searchQuery.trim()
-      ? otherGroups.filter((g) => g.name.toLowerCase().includes(searchQuery.toLowerCase()))
-      : otherGroups;
-
-    filtered.forEach((g) => {
+    items.forEach((g) => {
       const time = new Date(g.lastMessageTime || g.added_at);
       if (time >= today) sections[0].items.push(g);
       else if (time >= weekAgo) sections[1].items.push(g);
       else sections[2].items.push(g);
     });
-
     return sections.filter((s) => s.items.length > 0);
+  };
+
+  const { mySections, collabSections } = useMemo(() => {
+    const filtered = searchQuery.trim()
+      ? otherGroups.filter((g) => g.name.toLowerCase().includes(searchQuery.toLowerCase()))
+      : otherGroups;
+
+    const my: typeof otherGroups = [];
+    const collab: typeof otherGroups = [];
+
+    filtered.forEach((g) => {
+      if (g.is_shared && (g.member_count ?? 0) >= 2) {
+        collab.push(g);
+      } else {
+        my.push(g);
+      }
+    });
+
+    return { mySections: groupByDate(my), collabSections: groupByDate(collab) };
   }, [otherGroups, searchQuery]);
 
   const handleGroupSelect = (jid: string, folder: string) => {
@@ -195,49 +208,93 @@ export function ChatSidebar({ className }: ChatSidebarProps) {
               </div>
             )}
 
-            {/* Section: Work containers */}
-            {groupedByDate.length === 0 && !mainGroup ? (
+            {/* Section: My workspaces + Collaborative workspaces */}
+            {mySections.length === 0 && collabSections.length === 0 && !mainGroup ? (
               <div className="flex flex-col items-center justify-center h-32 px-4">
                 <p className="text-sm text-muted-foreground text-center">
                   {searchQuery ? '未找到匹配的工作区' : '暂无工作区'}
                 </p>
               </div>
-            ) : groupedByDate.length > 0 ? (
-              <div>
-                <div className="px-2 pt-3 pb-1.5">
-                  <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">
-                    工作区
-                  </span>
-                </div>
-                {groupedByDate.map((section) => (
-                  <div key={section.label} className="mb-1">
-                    <div className="px-2 pt-2 pb-1">
-                      <span className="text-[10px] text-muted-foreground/70 tracking-wide">
-                        {section.label}
+            ) : (
+              <>
+                {mySections.length > 0 && (
+                  <div>
+                    <div className="px-2 pt-3 pb-1.5">
+                      <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">
+                        我的工作区
                       </span>
                     </div>
-                    {section.items.map((g) => (
-                      <ChatGroupItem
-                        key={g.jid}
-                        jid={g.jid}
-                        name={g.name}
-                        folder={g.folder}
-                        lastMessage={g.lastMessage}
-                        executionMode={g.execution_mode}
-                        isActive={currentGroup === g.jid}
-                        isHome={false}
-                        editable={g.editable}
-                        deletable={g.deletable}
-                        onSelect={handleGroupSelect}
-                        onRename={(jid, name) => setRenameState({ open: true, jid, name })}
-                        onClearHistory={(jid, name) => setClearState({ open: true, jid, name })}
-                        onDelete={(jid, name) => setDeleteState({ open: true, jid, name })}
-                      />
+                    {mySections.map((section) => (
+                      <div key={section.label} className="mb-1">
+                        <div className="px-2 pt-2 pb-1">
+                          <span className="text-[10px] text-muted-foreground/70 tracking-wide">
+                            {section.label}
+                          </span>
+                        </div>
+                        {section.items.map((g) => (
+                          <ChatGroupItem
+                            key={g.jid}
+                            jid={g.jid}
+                            name={g.name}
+                            folder={g.folder}
+                            lastMessage={g.lastMessage}
+                            executionMode={g.execution_mode}
+                            isActive={currentGroup === g.jid}
+                            isHome={false}
+                            editable={g.editable}
+                            deletable={g.deletable}
+                            onSelect={handleGroupSelect}
+                            onRename={(jid, name) => setRenameState({ open: true, jid, name })}
+                            onClearHistory={(jid, name) => setClearState({ open: true, jid, name })}
+                            onDelete={(jid, name) => setDeleteState({ open: true, jid, name })}
+                          />
+                        ))}
+                      </div>
                     ))}
                   </div>
-                ))}
-              </div>
-            ) : null}
+                )}
+
+                {collabSections.length > 0 && (
+                  <div>
+                    <div className="px-2 pt-3 pb-1.5">
+                      <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">
+                        协作工作区
+                      </span>
+                    </div>
+                    {collabSections.map((section) => (
+                      <div key={section.label} className="mb-1">
+                        <div className="px-2 pt-2 pb-1">
+                          <span className="text-[10px] text-muted-foreground/70 tracking-wide">
+                            {section.label}
+                          </span>
+                        </div>
+                        {section.items.map((g) => (
+                          <ChatGroupItem
+                            key={g.jid}
+                            jid={g.jid}
+                            name={g.name}
+                            folder={g.folder}
+                            lastMessage={g.lastMessage}
+                            executionMode={g.execution_mode}
+                            isShared={g.is_shared}
+                            memberRole={g.member_role}
+                            memberCount={g.member_count}
+                            isActive={currentGroup === g.jid}
+                            isHome={false}
+                            editable={g.editable}
+                            deletable={g.deletable}
+                            onSelect={handleGroupSelect}
+                            onRename={(jid, name) => setRenameState({ open: true, jid, name })}
+                            onClearHistory={(jid, name) => setClearState({ open: true, jid, name })}
+                            onDelete={(jid, name) => setDeleteState({ open: true, jid, name })}
+                          />
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
           </>
         )}
       </div>

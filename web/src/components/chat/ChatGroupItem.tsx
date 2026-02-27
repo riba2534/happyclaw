@@ -14,6 +14,9 @@ export interface ChatGroupItemProps {
   folder: string;
   lastMessage?: string;
   executionMode?: 'container' | 'host';
+  isShared?: boolean;
+  memberRole?: 'owner' | 'member';
+  memberCount?: number;
   isActive: boolean;
   isHome: boolean;
   editable?: boolean;
@@ -30,6 +33,9 @@ export function ChatGroupItem({
   folder,
   lastMessage,
   executionMode,
+  isShared,
+  memberRole,
+  memberCount,
   isActive,
   isHome,
   editable,
@@ -83,6 +89,16 @@ export function ChatGroupItem({
               Docker
             </span>
           ) : null}
+          {isShared && memberRole === 'owner' && (memberCount ?? 0) >= 2 && (
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-700">
+              Owner
+            </span>
+          )}
+          {isShared && memberRole !== 'owner' && (memberCount ?? 0) >= 2 && (
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-100 text-violet-700">
+              {memberCount}人协作
+            </span>
+          )}
         </div>
         {truncatedMsg && (
           <p className={cn('text-xs text-muted-foreground/70 truncate mt-0.5', isHome && 'pl-5')}>
