@@ -3,14 +3,14 @@ import { useTasksStore } from '../stores/tasks';
 import { useChatStore } from '../stores/chat';
 import { TaskCard } from '../components/tasks/TaskCard';
 import { CreateTaskForm } from '../components/tasks/CreateTaskForm';
-import { Plus, RefreshCw, Clock } from 'lucide-react';
+import { Plus, RefreshCw, Clock, X } from 'lucide-react';
 import { PageHeader } from '@/components/common/PageHeader';
 import { SkeletonCardList } from '@/components/common/Skeletons';
 import { EmptyState } from '@/components/common/EmptyState';
 import { Button } from '@/components/ui/button';
 
 export function TasksPage() {
-  const { tasks, loading, loadTasks, createTask, updateTaskStatus, deleteTask } = useTasksStore();
+  const { tasks, loading, error, loadTasks, createTask, updateTaskStatus, deleteTask } = useTasksStore();
   const { groups, loadGroups } = useChatStore();
   const [showCreateForm, setShowCreateForm] = useState(false);
 
@@ -86,6 +86,18 @@ export function TasksPage() {
             </div>
           }
         />
+
+        {error && (
+          <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 flex items-center justify-between">
+            <span className="text-sm text-red-700">{error}</span>
+            <button
+              onClick={() => useTasksStore.setState({ error: null })}
+              className="p-1 text-red-400 hover:text-red-600 rounded transition-colors"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        )}
 
         {loading && tasks.length === 0 ? (
           <SkeletonCardList count={4} />

@@ -18,6 +18,7 @@ import {
 } from './container-runner.js';
 import {
   getAllTasks,
+  cleanupOldTaskRunLogs,
   getDueTasks,
   getTaskById,
   logTaskRun,
@@ -42,11 +43,14 @@ export interface SchedulerDependencies {
   assistantName: string;
 }
 
+const runningTaskIds = new Set<string>();
+
 async function runTask(
   task: ScheduledTask,
   deps: SchedulerDependencies,
   groupJid: string,
 ): Promise<void> {
+  runningTaskIds.add(task.id);
   const startTime = Date.now();
   const groupDir = path.join(GROUPS_DIR, task.group_folder);
   fs.mkdirSync(groupDir, { recursive: true });
@@ -72,6 +76,7 @@ async function runTask(
       result: null,
       error: `Group not found: ${task.group_folder}`,
     });
+    runningTaskIds.delete(task.id);
     return;
   }
 
@@ -180,6 +185,8 @@ async function runTask(
     if (idleTimer) clearTimeout(idleTimer);
     error = err instanceof Error ? err.message : String(err);
     logger.error({ taskId: task.id, error }, 'Task failed');
+  } finally {
+    runningTaskIds.delete(task.id);
   }
 
   const durationMs = Date.now() - startTime;
@@ -201,7 +208,12 @@ async function runTask(
     nextRun = interval.next().toISOString();
   } else if (task.schedule_type === 'interval') {
     const ms = parseInt(task.schedule_value, 10);
-    nextRun = new Date(Date.now() + ms).toISOString();
+    const anchor = task.next_run ? new Date(task.next_run).getTime() : Date.now();
+    let nextTime = anchor + ms;
+    while (nextTime <= Date.now()) {
+      nextTime += ms;
+    }
+    nextRun = new Date(nextTime).toISOString();
   }
   // 'once' tasks have no next run
 
@@ -214,6 +226,8 @@ async function runTask(
 }
 
 let schedulerRunning = false;
+const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+let lastCleanupTime = 0;
 
 export function startSchedulerLoop(deps: SchedulerDependencies): void {
   if (schedulerRunning) {
@@ -225,6 +239,20 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
 
   const loop = async () => {
     try {
+      // Periodic cleanup of old task run logs (every 24h)
+      const now = Date.now();
+      if (now - lastCleanupTime >= CLEANUP_INTERVAL_MS) {
+        lastCleanupTime = now;
+        try {
+          const deleted = cleanupOldTaskRunLogs();
+          if (deleted > 0) {
+            logger.info({ deleted }, 'Cleaned up old task run logs');
+          }
+        } catch (err) {
+          logger.error({ err }, 'Failed to cleanup old task run logs');
+        }
+      }
+
       const dueTasks = getDueTasks();
       if (dueTasks.length > 0) {
         logger.info({ count: dueTasks.length }, 'Found due tasks');
@@ -234,6 +262,10 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
         // Re-check task status in case it was paused/cancelled
         const currentTask = getTaskById(task.id);
         if (!currentTask || currentTask.status !== 'active') {
+          continue;
+        }
+
+        if (runningTaskIds.has(currentTask.id)) {
           continue;
         }
 

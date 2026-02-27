@@ -841,6 +841,14 @@ export function logTaskRun(log: TaskRunLog): void {
   );
 }
 
+export function cleanupOldTaskRunLogs(retentionDays = 30): number {
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+  const result = db.prepare(
+    `DELETE FROM task_run_logs WHERE run_at < ?`,
+  ).run(cutoff);
+  return result.changes;
+}
+
 // --- Router state accessors ---
 
 export function getRouterState(key: string): string | undefined {
