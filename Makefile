@@ -1,6 +1,6 @@
 .PHONY: dev dev-backend dev-web build build-backend build-web start \
        typecheck typecheck-backend typecheck-web typecheck-agent-runner \
-       format format-check install clean reset-init help
+       format format-check install clean reset-init update-sdk sync-types help
 
 # ─── Development ─────────────────────────────────────────────
 
@@ -18,7 +18,7 @@ dev-web: ## 仅启动前端
 
 # ─── Build ───────────────────────────────────────────────────
 
-build: ## 编译前后端及 agent-runner
+build: sync-types ## 编译前后端及 agent-runner
 	npm run build:all
 	npm --prefix container/agent-runner run build
 
@@ -38,7 +38,8 @@ start: ## 一键启动生产环境（首次自动安装依赖和构建容器镜�
 
 # ─── Quality ─────────────────────────────────────────────────
 
-typecheck: typecheck-backend typecheck-web typecheck-agent-runner ## 全量类型检查
+typecheck: sync-types typecheck-backend typecheck-web typecheck-agent-runner ## 全量类型检查
+	@./scripts/check-stream-event-sync.sh
 
 typecheck-backend:
 	npm run typecheck
@@ -54,6 +55,17 @@ format: ## 格式化代码
 
 format-check: ## 检查代码格式
 	npm run format:check
+
+# ─── Shared Types ────────────────────────────────────────────
+
+sync-types: ## 同步 shared/ 下的类型定义到各子项目
+	@./scripts/sync-stream-event.sh
+
+# ─── SDK ─────────────────────────────────────────────────────
+
+update-sdk: ## 更新 agent-runner 的 Claude Agent SDK 到最新版本
+	cd container/agent-runner && npm update @anthropic-ai/claude-agent-sdk && npm run build
+	@echo "SDK updated. Run 'make typecheck' to verify."
 
 # ─── Setup ───────────────────────────────────────────────────
 

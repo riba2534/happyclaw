@@ -8,7 +8,6 @@ import path from 'path';
 
 import {
   CONTAINER_IMAGE,
-  CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
   DATA_DIR,
   GROUPS_DIR,
@@ -24,11 +23,17 @@ import {
   writeCredentialsFile,
 } from './runtime-config.js';
 import { RegisteredGroup, StreamEvent } from './types.js';
-
-
-// Sentinel markers for robust output parsing (must match agent-runner)
-const OUTPUT_START_MARKER = '---HAPPYCLAW_OUTPUT_START---';
-const OUTPUT_END_MARKER = '---HAPPYCLAW_OUTPUT_END---';
+import {
+  attachStderrHandler,
+  attachStdoutHandler,
+  createStderrState,
+  createStdoutParserState,
+  handleNonZeroExit,
+  handleSuccessClose,
+  handleTimeoutClose,
+  writeRunLog,
+  type CloseHandlerContext,
+} from './agent-output-parser.js';
 
 /**
  * Required env flags for settings.json — 每次容器/进程启动时强制写入，不可被用户覆盖。
@@ -404,10 +409,8 @@ export async function runContainerAgent(
 
     onProcess(container, containerName);
 
-    let stdout = '';
-    let stderr = '';
-    let stdoutTruncated = false;
-    let stderrTruncated = false;
+    const stdoutState = createStdoutParserState();
+    const stderrState = createStderrState();
 
     // Write input and close stdin (容器需要 EOF 来刷新 stdin 管道)
     container.stdin.on('error', (err) => {
@@ -416,107 +419,6 @@ export async function runContainerAgent(
     });
     container.stdin.write(JSON.stringify(input));
     container.stdin.end();
-
-    // Streaming output: parse OUTPUT_START/END marker pairs as they arrive
-    let parseBuffer = '';
-    let newSessionId: string | undefined;
-    let outputChain = Promise.resolve();
-    let hasSuccessOutput = false;
-
-    container.stdout.on('data', (data) => {
-      const chunk = data.toString();
-
-      // Always accumulate for logging
-      if (!stdoutTruncated) {
-        const remaining = CONTAINER_MAX_OUTPUT_SIZE - stdout.length;
-        if (chunk.length > remaining) {
-          stdout += chunk.slice(0, remaining);
-          stdoutTruncated = true;
-          logger.warn(
-            { group: group.name, size: stdout.length },
-            'Container stdout truncated due to size limit',
-          );
-        } else {
-          stdout += chunk;
-        }
-      }
-
-      // Stream-parse for output markers
-      if (onOutput) {
-        parseBuffer += chunk;
-        const MAX_PARSE_BUFFER = 10 * 1024 * 1024; // 10MB
-        if (parseBuffer.length > MAX_PARSE_BUFFER) {
-          logger.warn(
-            { group: group.name },
-            'Parse buffer overflow, truncating',
-          );
-          const lastMarkerIdx = parseBuffer.lastIndexOf(OUTPUT_START_MARKER);
-          parseBuffer =
-            lastMarkerIdx >= 0
-              ? parseBuffer.slice(lastMarkerIdx)
-              : parseBuffer.slice(-512);
-        }
-        let startIdx: number;
-        while ((startIdx = parseBuffer.indexOf(OUTPUT_START_MARKER)) !== -1) {
-          const endIdx = parseBuffer.indexOf(OUTPUT_END_MARKER, startIdx);
-          if (endIdx === -1) break; // Incomplete pair, wait for more data
-
-          const jsonStr = parseBuffer
-            .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
-            .trim();
-          parseBuffer = parseBuffer.slice(endIdx + OUTPUT_END_MARKER.length);
-
-          try {
-            const parsed: ContainerOutput = JSON.parse(jsonStr);
-            if (parsed.newSessionId) {
-              newSessionId = parsed.newSessionId;
-            }
-            if (parsed.status === 'success') {
-              hasSuccessOutput = true;
-            }
-            // Activity detected — reset the hard timeout
-            resetTimeout();
-            // Call onOutput for all markers (including null results)
-            // so idle timers start even for "silent" query completions.
-            outputChain = outputChain
-              .then(() => onOutput(parsed))
-              .catch((err) => {
-                logger.error(
-                  { group: group.name, err },
-                  'onOutput callback error',
-                );
-              });
-          } catch (err) {
-            logger.warn(
-              { group: group.name, error: err },
-              'Failed to parse streamed output chunk',
-            );
-          }
-        }
-      }
-    });
-
-    container.stderr.on('data', (data) => {
-      const chunk = data.toString();
-      const lines = chunk.trim().split('\n');
-      for (const line of lines) {
-        if (line) logger.debug({ container: group.folder }, line);
-      }
-      // Don't reset timeout on stderr — SDK writes debug logs continuously.
-      // Timeout only resets on actual output (OUTPUT_MARKER in stdout).
-      if (stderrTruncated) return;
-      const remaining = CONTAINER_MAX_OUTPUT_SIZE - stderr.length;
-      if (chunk.length > remaining) {
-        stderr += chunk.slice(0, remaining);
-        stderrTruncated = true;
-        logger.warn(
-          { group: group.name, size: stderr.length },
-          'Container stderr truncated due to size limit',
-        );
-      } else {
-        stderr += chunk;
-      }
-    });
 
     let timedOut = false;
     const timeoutMs = group.containerConfig?.timeout || CONTAINER_TIMEOUT;
@@ -540,97 +442,45 @@ export async function runContainerAgent(
 
     let timeout = setTimeout(killOnTimeout, timeoutMs);
 
-    // Reset the timeout whenever there's activity (streaming output)
     const resetTimeout = () => {
       clearTimeout(timeout);
       timeout = setTimeout(killOnTimeout, timeoutMs);
     };
 
+    // Attach stdout/stderr handlers using shared parser
+    attachStdoutHandler(container.stdout, stdoutState, {
+      groupName: group.name,
+      label: 'Container',
+      onOutput,
+      resetTimeout,
+    });
+    attachStderrHandler(container.stderr, stderrState, group.name, { container: group.folder });
+
     container.on('close', (code, signal) => {
       clearTimeout(timeout);
       const duration = Date.now() - startTime;
 
-      if (timedOut) {
-        const ts = new Date().toISOString().replace(/[:.]/g, '-');
-        fs.mkdirSync(logsDir, { recursive: true });
-        const timeoutLog = path.join(logsDir, `container-${ts}.log`);
-        fs.writeFileSync(
-          timeoutLog,
-          [
-            `=== Container Run Log (TIMEOUT) ===`,
-            `Timestamp: ${new Date().toISOString()}`,
-            `Group: ${group.name}`,
-            `Container: ${containerName}`,
-            `Duration: ${duration}ms`,
-            `Exit Code: ${code}`,
-          ].join('\n'),
-        );
-
-        logger.error(
-          { group: group.name, containerName, duration, code },
-          'Container timed out',
-        );
-
-        resolve({
-          status: 'error',
-          result: null,
-          error: `Container timed out after ${group.containerConfig?.timeout || CONTAINER_TIMEOUT}ms`,
-        });
-        return;
-      }
-
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      fs.mkdirSync(logsDir, { recursive: true });
-      const logFile = path.join(logsDir, `container-${timestamp}.log`);
-      const isVerbose =
-        process.env.LOG_LEVEL === 'debug' || process.env.LOG_LEVEL === 'trace';
-
-      const logLines = [
-        `=== Container Run Log ===`,
-        `Timestamp: ${new Date().toISOString()}`,
-        `Group: ${group.name}`,
-        `IsMain: ${input.isMain}`,
-        `Duration: ${duration}ms`,
-        `Exit Code: ${code}`,
-        `Stdout Truncated: ${stdoutTruncated}`,
-        `Stderr Truncated: ${stderrTruncated}`,
-        ``,
-      ];
-
-      const isError = code !== 0;
-
-      // 始终记录基本信息和 stderr/stdout（截断到合理长度，避免日志膨胀）
-      const LOG_TAIL_LIMIT = 4000; // 非 verbose 模式下 stderr/stdout 各保留末尾 4000 字符
-      const stderrLog = (!isVerbose && !isError && stderr.length > LOG_TAIL_LIMIT)
-        ? `... (truncated ${stderr.length - LOG_TAIL_LIMIT} chars) ...\n` + stderr.slice(-LOG_TAIL_LIMIT)
-        : stderr;
-      const stdoutLog = (!isVerbose && !isError && stdout.length > LOG_TAIL_LIMIT)
-        ? `... (truncated ${stdout.length - LOG_TAIL_LIMIT} chars) ...\n` + stdout.slice(-LOG_TAIL_LIMIT)
-        : stdout;
-      logLines.push(
-        `=== Input Summary ===`,
-        `Prompt length: ${input.prompt.length} chars`,
-        `Session ID: ${input.sessionId || 'new'}`,
-        ``,
-        `=== Mounts ===`,
-        mounts
-          .map((m) => `${m.containerPath}${m.readonly ? ' (ro)' : ''}`)
-          .join('\n'),
-        ``,
-        `=== Stderr${stderrTruncated ? ' (TRUNCATED)' : ''} ===`,
-        stderrLog,
-        ``,
-        `=== Stdout${stdoutTruncated ? ' (TRUNCATED)' : ''} ===`,
-        stdoutLog,
-      );
-
-      // verbose 或 error 时额外记录完整 Input、Container Args 和详细 Mounts
-      if (isVerbose || isError) {
-        logLines.push(
+      const closeCtx: CloseHandlerContext = {
+        groupName: group.name,
+        label: 'Container',
+        filePrefix: 'container',
+        identifier: containerName,
+        logsDir,
+        input,
+        stdoutState,
+        stderrState,
+        onOutput,
+        resolvePromise: resolve,
+        startTime,
+        timeoutMs,
+        extraSummaryLines: [
           ``,
-          `=== Input ===`,
-          JSON.stringify(input, null, 2),
-          ``,
+          `=== Mounts ===`,
+          mounts
+            .map((m) => `${m.containerPath}${m.readonly ? ' (ro)' : ''}`)
+            .join('\n'),
+        ],
+        extraVerboseLines: [
           `=== Container Args ===`,
           containerArgs.join(' '),
           ``,
@@ -641,178 +491,13 @@ export async function runContainerAgent(
                 `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
             )
             .join('\n'),
-        );
-      }
+        ],
+      };
 
-      fs.writeFileSync(logFile, logLines.join('\n'));
-      logger.debug({ logFile, verbose: isVerbose }, 'Container log written');
-
-      if (code !== 0) {
-        const exitLabel =
-          code === null ? `signal ${signal || 'unknown'}` : `code ${code}`;
-
-        // Graceful shutdown: agent was killed by SIGTERM/SIGKILL (e.g. user
-        // clicked stop, session reset, clear-history). Treat as normal
-        // completion instead of an error — regardless of whether the agent
-        // had already produced a success output.
-        // docker kill sends SIGKILL → exit code 137, signal=null.
-        const isForceKilled = signal === 'SIGTERM' || signal === 'SIGKILL' || code === 137;
-        if (isForceKilled && onOutput) {
-          logger.info(
-            { group: group.name, signal, code, duration, newSessionId },
-            'Container terminated by signal (user stop / graceful shutdown)',
-          );
-          const OUTPUT_CHAIN_TIMEOUT = 30_000;
-          let chainTimer: ReturnType<typeof setTimeout> | null = null;
-          const chainTimeout = new Promise<void>((resolve) => {
-            chainTimer = setTimeout(resolve, OUTPUT_CHAIN_TIMEOUT);
-          });
-          Promise.race([outputChain, chainTimeout])
-            .then(() => {
-              if (chainTimer) clearTimeout(chainTimer);
-              resolve({
-                status: 'success',
-                result: null,
-                newSessionId,
-              });
-            })
-            .catch(() => {
-              if (chainTimer) clearTimeout(chainTimer);
-              resolve({
-                status: 'success',
-                result: null,
-                newSessionId,
-              });
-            });
-          return;
-        }
-
-        logger.error(
-          {
-            group: group.name,
-            code,
-            signal,
-            duration,
-            stderr,
-            stdout,
-            logFile,
-          },
-          'Container exited with error',
-        );
-
-        const finalizeError = () => {
-          resolve({
-            status: 'error',
-            result: null,
-            error: `Container exited with ${exitLabel}: ${stderr.slice(-200)}`,
-          });
-        };
-
-        // Even on error exits, wait for pending output callbacks to settle.
-        // This avoids races where async onOutput writes happen after callers
-        // already consider the run finished (e.g. clear-history cleanup).
-        if (onOutput) {
-          const OUTPUT_CHAIN_TIMEOUT = 30_000;
-          let chainTimer: ReturnType<typeof setTimeout> | null = null;
-          const chainTimeout = new Promise<void>((resolve) => {
-            chainTimer = setTimeout(() => {
-              logger.warn(
-                { group: group.name, timeoutMs: OUTPUT_CHAIN_TIMEOUT },
-                'Output chain settle timeout on container error path',
-              );
-              resolve();
-            }, OUTPUT_CHAIN_TIMEOUT);
-          });
-          Promise.race([outputChain, chainTimeout])
-            .then(() => {
-              if (chainTimer) clearTimeout(chainTimer);
-              finalizeError();
-            })
-            .catch(() => {
-              if (chainTimer) clearTimeout(chainTimer);
-              finalizeError();
-            });
-          return;
-        }
-
-        finalizeError();
-        return;
-      }
-
-      // Streaming mode: wait for output chain to settle, return completion marker
-      if (onOutput) {
-        outputChain
-          .then(() => {
-            logger.info(
-              { group: group.name, duration, newSessionId },
-              'Container completed (streaming mode)',
-            );
-            resolve({
-              status: 'success',
-              result: null,
-              newSessionId,
-            });
-          })
-          .catch((err) => {
-            const errMsg =
-              err instanceof Error ? err.message : String(err);
-            logger.error({ group: group.name, err: errMsg }, 'onOutput callback error');
-            resolve({
-              status: 'error',
-              result: null,
-              error: `Container output callback failed: ${errMsg}`,
-            });
-          });
-        return;
-      }
-
-      // Legacy mode: parse the last output marker pair from accumulated stdout
-      try {
-        // Extract JSON between sentinel markers for robust parsing
-        const startIdx = stdout.indexOf(OUTPUT_START_MARKER);
-        const endIdx = stdout.indexOf(OUTPUT_END_MARKER);
-
-        let jsonLine: string;
-        if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
-          jsonLine = stdout
-            .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
-            .trim();
-        } else {
-          // Fallback: last non-empty line (backwards compatibility)
-          const lines = stdout.trim().split('\n');
-          jsonLine = lines[lines.length - 1];
-        }
-
-        const output: ContainerOutput = JSON.parse(jsonLine);
-
-        logger.info(
-          {
-            group: group.name,
-            duration,
-            status: output.status,
-            hasResult: !!output.result,
-          },
-          'Container completed',
-        );
-
-        resolve(output);
-      } catch (err) {
-        logger.error(
-          {
-            group: group.name,
-            stdout,
-            stderr,
-            error: err,
-          },
-          'Failed to parse container output',
-        );
-
-        resolve({
-          status: 'error',
-          result: null,
-          error: `Failed to parse container output: ${err instanceof Error ? err.message : String(err)}`,
-        });
-      }
+      if (handleTimeoutClose(closeCtx, code, duration, timedOut)) return;
+      const logFile = writeRunLog(closeCtx, code, duration);
+      if (handleNonZeroExit(closeCtx, code, signal, duration, logFile)) return;
+      handleSuccessClose(closeCtx, duration);
     });
 
     container.on('error', (err) => {
@@ -1196,10 +881,8 @@ export async function runHostAgent(
     const processId = `host-${group.folder}-${Date.now()}`;
     onProcess(proc, processId);
 
-    let stdout = '';
-    let stderr = '';
-    let stdoutTruncated = false;
-    let stderrTruncated = false;
+    const stdoutState = createStdoutParserState();
+    const stderrState = createStderrState();
 
     // 8. stdin 输入
     proc.stdin.on('error', (err) => {
@@ -1209,108 +892,7 @@ export async function runHostAgent(
     proc.stdin.write(JSON.stringify(input));
     proc.stdin.end();
 
-    // 9. stdout/stderr 解析
-    let parseBuffer = '';
-    let newSessionId: string | undefined;
-    let outputChain = Promise.resolve();
-    let hasSuccessOutput = false;
-
-    proc.stdout.on('data', (data) => {
-      const chunk = data.toString();
-
-      // Always accumulate for logging
-      if (!stdoutTruncated) {
-        const remaining = CONTAINER_MAX_OUTPUT_SIZE - stdout.length;
-        if (chunk.length > remaining) {
-          stdout += chunk.slice(0, remaining);
-          stdoutTruncated = true;
-          logger.warn(
-            { group: group.name, size: stdout.length },
-            'Host agent stdout truncated due to size limit',
-          );
-        } else {
-          stdout += chunk;
-        }
-      }
-
-      // Stream-parse for output markers
-      if (onOutput) {
-        parseBuffer += chunk;
-        const MAX_PARSE_BUFFER = 10 * 1024 * 1024; // 10MB
-        if (parseBuffer.length > MAX_PARSE_BUFFER) {
-          logger.warn(
-            { group: group.name },
-            'Parse buffer overflow, truncating',
-          );
-          const lastMarkerIdx = parseBuffer.lastIndexOf(OUTPUT_START_MARKER);
-          parseBuffer =
-            lastMarkerIdx >= 0
-              ? parseBuffer.slice(lastMarkerIdx)
-              : parseBuffer.slice(-512);
-        }
-        let startIdx: number;
-        while ((startIdx = parseBuffer.indexOf(OUTPUT_START_MARKER)) !== -1) {
-          const endIdx = parseBuffer.indexOf(OUTPUT_END_MARKER, startIdx);
-          if (endIdx === -1) break; // Incomplete pair, wait for more data
-
-          const jsonStr = parseBuffer
-            .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
-            .trim();
-          parseBuffer = parseBuffer.slice(endIdx + OUTPUT_END_MARKER.length);
-
-          try {
-            const parsed: ContainerOutput = JSON.parse(jsonStr);
-            if (parsed.newSessionId) {
-              newSessionId = parsed.newSessionId;
-            }
-            if (parsed.status === 'success') {
-              hasSuccessOutput = true;
-            }
-            // Activity detected — reset the hard timeout
-            resetTimeout();
-            // Call onOutput for all markers (including null results)
-            // so idle timers start even for "silent" query completions.
-            outputChain = outputChain
-              .then(() => onOutput(parsed))
-              .catch((err) => {
-                logger.error(
-                  { group: group.name, err },
-                  'onOutput callback error',
-                );
-              });
-          } catch (err) {
-            logger.warn(
-              { group: group.name, error: err },
-              'Failed to parse streamed output chunk',
-            );
-          }
-        }
-      }
-    });
-
-    proc.stderr.on('data', (data) => {
-      const chunk = data.toString();
-      const lines = chunk.trim().split('\n');
-      for (const line of lines) {
-        if (line) logger.debug({ host: group.folder }, line);
-      }
-      // Don't reset timeout on stderr — SDK writes debug logs continuously.
-      // Timeout only resets on actual output (OUTPUT_MARKER in stdout).
-      if (stderrTruncated) return;
-      const remaining = CONTAINER_MAX_OUTPUT_SIZE - stderr.length;
-      if (chunk.length > remaining) {
-        stderr += chunk.slice(0, remaining);
-        stderrTruncated = true;
-        logger.warn(
-          { group: group.name, size: stderr.length },
-          'Host agent stderr truncated due to size limit',
-        );
-      } else {
-        stderr += chunk;
-      }
-    });
-
-    // 10. 超时管理
+    // 9. 超时管理
     let timedOut = false;
     const timeoutMs = group.containerConfig?.timeout || CONTAINER_TIMEOUT;
 
@@ -1340,11 +922,19 @@ export async function runHostAgent(
 
     let timeout = setTimeout(killOnTimeout, timeoutMs);
 
-    // Reset the timeout whenever there's activity (streaming output)
     const resetTimeout = () => {
       clearTimeout(timeout);
       timeout = setTimeout(killOnTimeout, timeoutMs);
     };
+
+    // 10. stdout/stderr 解析
+    attachStdoutHandler(proc.stdout, stdoutState, {
+      groupName: group.name,
+      label: 'Host agent',
+      onOutput,
+      resetTimeout,
+    });
+    attachStderrHandler(proc.stderr, stderrState, group.name, { host: group.folder });
 
     // 11. close 事件处理
     proc.on('close', (code, signal) => {
@@ -1352,279 +942,40 @@ export async function runHostAgent(
       if (killTimer) clearTimeout(killTimer);
       const duration = Date.now() - startTime;
 
-      if (timedOut) {
-        const ts = new Date().toISOString().replace(/[:.]/g, '-');
-        fs.mkdirSync(logsDir, { recursive: true });
-        const timeoutLog = path.join(logsDir, `host-${ts}.log`);
-        fs.writeFileSync(
-          timeoutLog,
-          [
-            `=== Host Agent Run Log (TIMEOUT) ===`,
-            `Timestamp: ${new Date().toISOString()}`,
-            `Group: ${group.name}`,
-            `Process ID: ${processId}`,
-            `Duration: ${duration}ms`,
-            `Exit Code: ${code}`,
-          ].join('\n'),
-        );
-
-        logger.error(
-          { group: group.name, processId, duration, code },
-          'Host agent timed out',
-        );
-
-        resolveOnce({
-          status: 'error',
-          result: null,
-          error: `Host agent timed out after ${group.containerConfig?.timeout || CONTAINER_TIMEOUT}ms`,
-        });
-        return;
-      }
-
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      fs.mkdirSync(logsDir, { recursive: true });
-      const logFile = path.join(logsDir, `host-${timestamp}.log`);
-      const isVerbose =
-        process.env.LOG_LEVEL === 'debug' || process.env.LOG_LEVEL === 'trace';
-
-      const logLines = [
-        `=== Host Agent Run Log ===`,
-        `Timestamp: ${new Date().toISOString()}`,
-        `Group: ${group.name}`,
-        `IsMain: ${input.isMain}`,
-        `Duration: ${duration}ms`,
-        `Exit Code: ${code}`,
-        `Stdout Truncated: ${stdoutTruncated}`,
-        `Stderr Truncated: ${stderrTruncated}`,
-        ``,
-      ];
-
-      const isError = code !== 0;
-
-      // 始终记录基本信息和 stderr/stdout（截断到合理长度，避免日志膨胀）
-      const LOG_TAIL_LIMIT = 4000;
-      const stderrLog = (!isVerbose && !isError && stderr.length > LOG_TAIL_LIMIT)
-        ? `... (truncated ${stderr.length - LOG_TAIL_LIMIT} chars) ...\n` + stderr.slice(-LOG_TAIL_LIMIT)
-        : stderr;
-      const stdoutLog = (!isVerbose && !isError && stdout.length > LOG_TAIL_LIMIT)
-        ? `... (truncated ${stdout.length - LOG_TAIL_LIMIT} chars) ...\n` + stdout.slice(-LOG_TAIL_LIMIT)
-        : stdout;
-      logLines.push(
-        `=== Input Summary ===`,
-        `Prompt length: ${input.prompt.length} chars`,
-        `Session ID: ${input.sessionId || 'new'}`,
-        `Working Directory: ${groupDir}`,
-        ``,
-        `=== Stderr${stderrTruncated ? ' (TRUNCATED)' : ''} ===`,
-        stderrLog,
-        ``,
-        `=== Stdout${stdoutTruncated ? ' (TRUNCATED)' : ''} ===`,
-        stdoutLog,
-      );
-
-      // verbose 或 error 时额外记录完整 Input（含 prompt 全文，用于诊断）
-      if (isVerbose || isError) {
-        logLines.push(
-          ``,
-          `=== Input ===`,
-          JSON.stringify(input, null, 2),
-        );
-      }
-
-      fs.writeFileSync(logFile, logLines.join('\n'));
-      logger.debug({ logFile, verbose: isVerbose }, 'Host agent log written');
-
-      if (code !== 0) {
-        const exitLabel =
-          code === null ? `signal ${signal || 'unknown'}` : `code ${code}`;
-
-        // Graceful shutdown: agent was killed by SIGTERM/SIGKILL (e.g. user
-        // clicked stop, session reset, clear-history). Treat as normal
-        // completion instead of an error — regardless of whether the agent
-        // had already produced a success output.
-        const isForceKilled = signal === 'SIGTERM' || signal === 'SIGKILL' || code === 137;
-        if (isForceKilled && onOutput) {
-          logger.info(
-            { group: group.name, signal, code, duration, newSessionId },
-            'Host agent terminated by signal (user stop / graceful shutdown)',
+      const closeCtx: CloseHandlerContext = {
+        groupName: group.name,
+        label: 'Host Agent',
+        filePrefix: 'host',
+        identifier: processId,
+        logsDir,
+        input,
+        stdoutState,
+        stderrState,
+        onOutput,
+        resolvePromise: resolveOnce,
+        startTime,
+        timeoutMs,
+        extraSummaryLines: [
+          `Working Directory: ${groupDir}`,
+        ],
+        enrichError: (stderrContent, exitLabel) => {
+          const missingPackageMatch = stderrContent.match(
+            /Cannot find package '([^']+)' imported from/u,
           );
-          const OUTPUT_CHAIN_TIMEOUT = 30_000;
-          let chainTimer: ReturnType<typeof setTimeout> | null = null;
-          const chainTimeout = new Promise<void>((resolve) => {
-            chainTimer = setTimeout(resolve, OUTPUT_CHAIN_TIMEOUT);
-          });
-          Promise.race([outputChain, chainTimeout])
-            .then(() => {
-              if (chainTimer) clearTimeout(chainTimer);
-              resolveOnce({
-                status: 'success',
-                result: null,
-                newSessionId,
-              });
-            })
-            .catch(() => {
-              if (chainTimer) clearTimeout(chainTimer);
-              resolveOnce({
-                status: 'success',
-                result: null,
-                newSessionId,
-              });
-            });
-          return;
-        }
-
-        const missingPackageMatch = stderr.match(
-          /Cannot find package '([^']+)' imported from/u,
-        );
-        const userFacingError = missingPackageMatch
-          ? `宿主机模式启动失败：缺少依赖 ${missingPackageMatch[1]}。请先执行：${setupInstallHint}`
-          : null;
-        logger.error(
-          {
-            group: group.name,
-            code,
-            signal,
-            duration,
-            stderr,
-            stdout,
-            logFile,
-          },
-          'Host agent exited with error',
-        );
-
-        const finalizeError = () => {
-          resolveOnce({
-            status: 'error',
+          const userFacingError = missingPackageMatch
+            ? `宿主机模式启动失败：缺少依赖 ${missingPackageMatch[1]}。请先执行：${setupInstallHint}`
+            : null;
+          return {
             result: userFacingError,
-            error: `Host agent exited with ${exitLabel}: ${stderr.slice(-200)}`,
-          });
-        };
+            error: `Host agent exited with ${exitLabel}: ${stderrContent.slice(-200)}`,
+          };
+        },
+      };
 
-        // Even on error exits, wait for pending output callbacks to settle.
-        // This avoids races where async onOutput writes happen after callers
-        // already consider the run finished (e.g. clear-history cleanup).
-        if (onOutput) {
-          const OUTPUT_CHAIN_TIMEOUT = 30_000;
-          let chainTimer: ReturnType<typeof setTimeout> | null = null;
-          const chainTimeout = new Promise<void>((resolve) => {
-            chainTimer = setTimeout(() => {
-              logger.warn(
-                { group: group.name, timeoutMs: OUTPUT_CHAIN_TIMEOUT },
-                'Output chain settle timeout on host error path',
-              );
-              resolve();
-            }, OUTPUT_CHAIN_TIMEOUT);
-          });
-
-          Promise.race([outputChain, chainTimeout])
-            .then(() => {
-              if (chainTimer) clearTimeout(chainTimer);
-              finalizeError();
-            })
-            .catch(() => {
-              if (chainTimer) clearTimeout(chainTimer);
-              finalizeError();
-            });
-          return;
-        }
-
-        finalizeError();
-        return;
-      }
-
-      // Streaming mode: wait for output chain to settle, return completion marker
-      // Use generous timeout — onOutput may involve network I/O (e.g. Feishu replies)
-      // Timeout is a safety net, not a performance guard; agent already exited successfully
-      if (onOutput) {
-        const OUTPUT_CHAIN_TIMEOUT = 30_000;
-        let chainTimer: ReturnType<typeof setTimeout> | null = null;
-        const chainTimeout = new Promise<void>((resolve) => {
-          chainTimer = setTimeout(() => {
-            logger.warn(
-              { group: group.name, timeoutMs: OUTPUT_CHAIN_TIMEOUT },
-              'Output chain settle timeout — agent completed but callbacks slow',
-            );
-            resolve(); // Resolve (not reject): agent itself succeeded
-          }, OUTPUT_CHAIN_TIMEOUT);
-        });
-
-        Promise.race([outputChain, chainTimeout])
-          .then(() => {
-            if (chainTimer) clearTimeout(chainTimer);
-            logger.info(
-              { group: group.name, duration, newSessionId },
-              'Host agent completed (streaming mode)',
-            );
-            resolveOnce({
-              status: 'success',
-              result: null,
-              newSessionId,
-            });
-          })
-          .catch((err) => {
-            if (chainTimer) clearTimeout(chainTimer);
-            const errMsg =
-              err instanceof Error ? err.message : String(err);
-            logger.error(
-              { group: group.name, err: errMsg },
-              'onOutput callback error',
-            );
-            resolveOnce({
-              status: 'error',
-              result: null,
-              error: `Host agent output callback failed: ${errMsg}`,
-            });
-          });
-        return;
-      }
-
-      // Legacy mode: parse the last output marker pair from accumulated stdout
-      try {
-        // Extract JSON between sentinel markers for robust parsing
-        const startIdx = stdout.indexOf(OUTPUT_START_MARKER);
-        const endIdx = stdout.indexOf(OUTPUT_END_MARKER);
-
-        let jsonLine: string;
-        if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
-          jsonLine = stdout
-            .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
-            .trim();
-        } else {
-          // Fallback: last non-empty line (backwards compatibility)
-          const lines = stdout.trim().split('\n');
-          jsonLine = lines[lines.length - 1];
-        }
-
-        const output: ContainerOutput = JSON.parse(jsonLine);
-
-        logger.info(
-          {
-            group: group.name,
-            duration,
-            status: output.status,
-            hasResult: !!output.result,
-          },
-          'Host agent completed',
-        );
-
-        resolveOnce(output);
-      } catch (err) {
-        logger.error(
-          {
-            group: group.name,
-            stdout,
-            stderr,
-            error: err,
-          },
-          'Failed to parse host agent output',
-        );
-
-        resolveOnce({
-          status: 'error',
-          result: null,
-          error: `Failed to parse host agent output: ${err instanceof Error ? err.message : String(err)}`,
-        });
-      }
+      if (handleTimeoutClose(closeCtx, code, duration, timedOut)) return;
+      const logFile = writeRunLog(closeCtx, code, duration);
+      if (handleNonZeroExit(closeCtx, code, signal, duration, logFile)) return;
+      handleSuccessClose(closeCtx, duration);
     });
 
     proc.on('error', (err) => {

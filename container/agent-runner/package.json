@@ -10,7 +10,6 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "*",
-    "@modelcontextprotocol/sdk": "^1.12.1",
     "cron-parser": "^5.0.0",
     "zod": "^4.0.0"
   },

@@ -18,35 +18,9 @@ export interface Message {
   attachments?: string;
 }
 
-// 流式事件类型定义
-// ⚠️ 与 src/types.ts (后端) 和 container/agent-runner/src/index.ts 保持同步
-export type StreamEventType =
-  | 'text_delta' | 'thinking_delta'
-  | 'tool_use_start' | 'tool_use_end' | 'tool_progress'
-  | 'hook_started' | 'hook_progress' | 'hook_response'
-  | 'task_start' | 'task_notification'
-  | 'status' | 'init';
-
-export interface StreamEvent {
-  eventType: StreamEventType;
-  text?: string;
-  toolName?: string;
-  toolUseId?: string;
-  parentToolUseId?: string | null;
-  isNested?: boolean;
-  skillName?: string;
-  toolInputSummary?: string;
-  elapsedSeconds?: number;
-  hookName?: string;
-  hookEvent?: string;
-  hookOutcome?: string;
-  statusText?: string;
-  taskDescription?: string;
-  taskId?: string;
-  taskStatus?: string;
-  taskSummary?: string;
-  isTeammate?: boolean;
-}
+// Streaming event types (canonical source: shared/stream-event.ts)
+import type { StreamEventType, StreamEvent } from '../stream-event.types';
+export type { StreamEventType, StreamEvent };
 
 export interface StreamingTimelineEvent {
   id: string;
