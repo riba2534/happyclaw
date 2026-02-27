@@ -17,7 +17,7 @@ HappyClaw 是一个自托管的多用户 AI Agent 系统：
 
 | 模块 | 职责 |
 |------|------|
-| `src/index.ts` | 入口：.env 加载器（所有 import 之前）、管理员引导、消息轮询（2s）、IPC 监听（1s）、容器生命周期 |
+| `src/index.ts` | 入口：管理员引导、消息轮询（2s）、IPC 监听（1s）、容器生命周期 |
 | `src/web.ts` | Hono 框架：路由挂载、WebSocket 升级、HMAC Cookie 认证、静态文件托管 |
 | `src/routes/auth.ts` | 认证：登录 / 登出 / 注册、`GET /api/auth/me`（含 `setupStatus`）、设置向导、RBAC、邀请码 |
 | `src/routes/groups.ts` | 群组 CRUD、消息分页、会话重置（重建工作区）、群组级容器环境变量 |
@@ -38,7 +38,9 @@ HappyClaw 是一个自托管的多用户 AI Agent 系统：
 | `src/file-manager.ts` | 文件安全：路径遍历防护、符号链接检测、系统路径保护（`logs/`、`CLAUDE.md`、`.claude/`、`conversations/`） |
 | `src/mount-security.ts` | 挂载安全：白名单校验、黑名单模式匹配（`.ssh`、`.gnupg` 等）、非主会话只读强制 |
 | `src/db.ts` | 数据层：SQLite WAL 模式、Schema 版本校验（v1→v13）、核心表定义 |
-| `src/config.ts` | 常量：路径、超时、并发限制、会话密钥（优先级：环境变量 > 文件 > 生成，0600 权限） |
+| `src/config.ts` | 常量：路径、超时、并发限制、会话密钥（优先级：环境变量 > 文件 > 生成，0600 权限）；从 `environment.ts` 导入环境变量并对外统一导出 |
+| `src/environment.ts` | 环境变量集中管理：所有 `process.env` 读取唯一入口，带类型和默认值注释，分区块（应用 / Web / CORS / 认证 / 日志 / 容器 / 飞书 / Telegram / Claude / 系统） |
+| `src/load-env.ts` | .env 预加载器：通过 `--import` 标志在主模块加载前执行，解决原生 ESM 静态导入提升导致 .env 不生效的问题 |
 | `src/logger.ts` | 日志：pino + pino-pretty |
 
 ### 2.2 前端
@@ -413,7 +415,21 @@ container/skills/             # 项目级 Skills（挂载到所有容器）
 
 ### 8.8 .env 加载器
 
-`src/index.ts` 顶部（所有 import 之前）包含手动 `.env` 加载器，支持 `export` 前缀和 `#` 注释。替代 Node.js `--env-file` 标志，确保环境变量在模块初始化之前可用。
+项目使用原生 ESM（`"type": "module"` + `module: "NodeNext"`）。ESM 中静态 `import` 声明会被提升，所有导入模块在任何模块体代码执行前就已完成初始化——因此无法在入口文件内用普通代码加载 `.env`（`config.ts` 等会在 loader 代码运行前就已读完 `process.env`）。
+
+**解决方案**：通过 `--import` 标志预加载 `src/load-env.ts`，该文件在主模块的 import 图被解析前执行，确保 `.env` 变量对所有模块可见。
+
+```bash
+# 生产
+node --import ./dist/load-env.js dist/index.js
+
+# 开发（tsx 支持 --import TypeScript 文件）
+tsx --import ./src/load-env.ts src/index.ts
+```
+
+`.env` 加载器支持 `export KEY=VALUE` 格式、`#` 注释、单双引号包裹值，不覆盖已有环境变量（显式传入的优先级更高）。`.env` 文件不存在时静默跳过。
+
+**环境变量统一入口**：所有 `process.env` 读取集中在 `src/environment.ts`，其他模块通过导入该文件的具名导出获取配置，禁止在其他文件直接读取 `process.env`（`container-runner.ts` 中将全部 env 透传给子进程的 `process.env as Record<string, string>` 除外）。
 
 ### 8.9 Per-user 主容器自动创建
 
@@ -441,21 +457,33 @@ container/skills/             # 项目级 Skills（挂载到所有容器）
 
 ## 9. 环境变量
 
+所有变量定义见 `src/environment.ts`（唯一入口），模板见 `.env.example`。
+
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `ASSISTANT_NAME` | `HappyClaw` | 助手名称 |
+| `NODE_ENV` | `development` | 运行环境；`production` 时启用 `__Host-` Cookie 前缀（需 HTTPS） |
 | `WEB_PORT` | `3000` | 后端端口 |
-| `WEB_SESSION_SECRET` | 自动生成 | 会话签名密钥 |
-| `FEISHU_APP_ID` | - | 飞书应用 ID |
-| `FEISHU_APP_SECRET` | - | 飞书应用密钥 |
-| `CONTAINER_IMAGE` | `happyclaw-agent:latest` | Docker 镜像名称 |
-| `CONTAINER_TIMEOUT` | `1800000`（30min） | 容器最大运行时间 |
-| `CONTAINER_MAX_OUTPUT_SIZE` | `10485760`（10MB） | 单次输出最大字节 |
-| `IDLE_TIMEOUT` | `1800000`（30min） | 容器空闲超时 |
-| `MAX_CONCURRENT_HOST_PROCESSES` | `5` | 宿主机模式并发上限 |
+| `WEB_SESSION_SECRET` | 自动生成 | 会话签名密钥；未设置时从文件读取或随机生成并持久化 |
+| `TRUST_PROXY` | `false` | 信任反向代理 X-Forwarded-* 头部（nginx / Cloudflare 场景设为 `true`） |
+| `CORS_ALLOWED_ORIGINS` | 空 | 跨域白名单（逗号分隔），`*` 允许全部 |
+| `CORS_ALLOW_LOCALHOST` | `true` | 允许 localhost / 127.0.0.1 跨域 |
+| `LOG_LEVEL` | `info` | pino 日志级别：trace / debug / info / warn / error / fatal |
 | `MAX_LOGIN_ATTEMPTS` | `5` | 登录失败锁定阈值 |
 | `LOGIN_LOCKOUT_MINUTES` | `15` | 锁定持续时间（分钟） |
-| `TZ` | 系统时区 | 定时任务时区 |
+| `CONTAINER_IMAGE` | `happyclaw-agent:latest` | Docker 镜像名称 |
+| `CONTAINER_TIMEOUT` | `1800000`（30min） | 容器最大运行时间（毫秒） |
+| `CONTAINER_MAX_OUTPUT_SIZE` | `10485760`（10MB） | 单次输出最大字节 |
+| `IDLE_TIMEOUT` | `1800000`（30min） | 容器空闲超时（毫秒） |
+| `MAX_CONCURRENT_HOST_PROCESSES` | `5` | 宿主机模式并发上限 |
+| `FEISHU_APP_ID` | 空 | 飞书应用 ID（也可在 Web 设置中配置） |
+| `FEISHU_APP_SECRET` | 空 | 飞书应用密钥 |
+| `TELEGRAM_BOT_TOKEN` | 空 | Telegram Bot Token（也可在 Web 设置中配置） |
+| `ANTHROPIC_API_KEY` | 空 | Anthropic API Key（也可在 Web 设置中配置） |
+| `ANTHROPIC_AUTH_TOKEN` | 空 | Anthropic Bearer Token（与 API Key 二选一） |
+| `ANTHROPIC_BASE_URL` | 空 | 自定义 Anthropic API 地址（代理 / 私有部署） |
+| `CLAUDE_CODE_OAUTH_TOKEN` | 空 | Claude  Code OAuth Token |
+| `TZ` | 系统时区 | 定时任务时区（如 `Asia/Shanghai`） |
 
 ## 10. 开发约束
 

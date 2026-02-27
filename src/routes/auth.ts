@@ -47,18 +47,19 @@ import type { AuthUser, User, UserPublic } from '../types.js';
 import { logger } from '../logger.js';
 import { lastActiveCache } from '../web-context.js';
 import { MAX_LOGIN_ATTEMPTS, LOGIN_LOCKOUT_MINUTES, SESSION_COOKIE_NAME } from '../config.js';
+import { IS_PRODUCTION } from '../environment.js';
 
 const authRoutes = new Hono<{ Variables: Variables }>();
 
 // --- Helper Functions ---
 
 export function setSessionCookie(token: string): string {
-  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  const secure = IS_PRODUCTION ? '; Secure' : '';
   return `${SESSION_COOKIE_NAME}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${30 * 24 * 60 * 60}${secure}`;
 }
 
 export function clearSessionCookie(): string {
-  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  const secure = IS_PRODUCTION ? '; Secure' : '';
   return `${SESSION_COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure}`;
 }
 

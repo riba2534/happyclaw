@@ -9,6 +9,7 @@ import {
 } from '../schemas.js';
 import type { AuthUser, RegisteredGroup, ExecutionMode } from '../types.js';
 import { DATA_DIR, GROUPS_DIR } from '../config.js';
+import { HOME_DIR } from '../environment.js';
 import {
   isHostExecutionGroup,
   hasHostExecutionPermission,
@@ -402,7 +403,7 @@ groupRoutes.post('/', authMiddleware, async (c) => {
         for (const root of allowlist.allowedRoots) {
           const expandedRoot = root.path.startsWith('~')
             ? path.join(
-                process.env.HOME || '/Users/user',
+                HOME_DIR,
                 root.path.slice(root.path.startsWith('~/') ? 2 : 1),
               )
             : path.resolve(root.path);

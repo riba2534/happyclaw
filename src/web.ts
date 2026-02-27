@@ -63,6 +63,7 @@ import {
 import { isSessionExpired } from './auth.js';
 import type { NewMessage, WsMessageOut, WsMessageIn, AuthUser, StreamEvent, UserRole } from './types.js';
 import { WEB_PORT, SESSION_COOKIE_NAME } from './config.js';
+import { CORS_ALLOWED_ORIGINS, CORS_ALLOW_LOCALHOST } from './environment.js';
 import { logger } from './logger.js';
 
 // --- App Setup ---
@@ -90,8 +91,6 @@ function releaseTerminalOwnership(ws: WebSocket, groupJid: string): void {
 }
 
 // --- CORS Middleware ---
-const CORS_ALLOWED_ORIGINS = process.env.CORS_ALLOWED_ORIGINS || '';
-const CORS_ALLOW_LOCALHOST = process.env.CORS_ALLOW_LOCALHOST !== 'false'; // default: true
 
 function isAllowedOrigin(origin: string | undefined): string | null {
   if (!origin) return null; // same-origin requests

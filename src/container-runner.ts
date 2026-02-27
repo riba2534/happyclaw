@@ -13,6 +13,7 @@ import {
   DATA_DIR,
   GROUPS_DIR,
 } from './config.js';
+import { LOG_LEVEL, HOME_DIR } from './environment.js';
 import { logger } from './logger.js';
 import { loadMountAllowlist, validateAdditionalMounts } from './mount-security.js';
 import {
@@ -583,7 +584,7 @@ export async function runContainerAgent(
       fs.mkdirSync(logsDir, { recursive: true });
       const logFile = path.join(logsDir, `container-${timestamp}.log`);
       const isVerbose =
-        process.env.LOG_LEVEL === 'debug' || process.env.LOG_LEVEL === 'trace';
+        LOG_LEVEL === 'debug' || LOG_LEVEL === 'trace';
 
       const logLines = [
         `=== Container Run Log ===`,
@@ -961,7 +962,7 @@ export async function runHostAgent(
       for (const root of allowlist.allowedRoots) {
         const expandedRoot = root.path.startsWith('~')
           ? path.join(
-              process.env.HOME || '/Users/user',
+              HOME_DIR,
               root.path.slice(root.path.startsWith('~/') ? 2 : 1),
             )
           : path.resolve(root.path);
@@ -1390,7 +1391,7 @@ export async function runHostAgent(
       fs.mkdirSync(logsDir, { recursive: true });
       const logFile = path.join(logsDir, `host-${timestamp}.log`);
       const isVerbose =
-        process.env.LOG_LEVEL === 'debug' || process.env.LOG_LEVEL === 'trace';
+        LOG_LEVEL === 'debug' || LOG_LEVEL === 'trace';
 
       const logLines = [
         `=== Host Agent Run Log ===`,

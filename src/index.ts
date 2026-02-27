@@ -1,32 +1,9 @@
-// --- Optional .env loader (no external dependency) ---
-// Must run before any import that reads process.env at module level.
+// 环境变量由 src/load-env.ts 通过 --import 标志在此模块加载前完成（见 package.json）。
+// 在原生 ESM 中，静态 import 声明会被提升，模块体内的代码无法先于其他模块初始化运行，
+// 因此旧的内联 .env 加载器已移至独立的预加载模块。
+
 import fs from 'fs';
 import path from 'path';
-
-const dotenvPath = path.resolve(process.cwd(), '.env');
-if (fs.existsSync(dotenvPath)) {
-  const lines = fs.readFileSync(dotenvPath, 'utf-8').split('\n');
-  for (const line of lines) {
-    let trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    // Strip optional 'export ' prefix (common in .env files)
-    if (trimmed.startsWith('export ')) trimmed = trimmed.slice(7);
-    const eqIdx = trimmed.indexOf('=');
-    if (eqIdx <= 0) continue;
-    const key = trimmed.slice(0, eqIdx).trim();
-    let value = trimmed.slice(eqIdx + 1).trim();
-    // Strip surrounding quotes
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-    // Do not overwrite existing env vars (explicit env takes priority)
-    if (!(key in process.env)) {
-      process.env[key] = value;
-    }
-  }
-}
-// --- End .env loader ---
-
 import { ChildProcess, execFile } from 'child_process';
 import crypto from 'crypto';
 import { promisify } from 'util';

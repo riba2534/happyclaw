@@ -3,6 +3,16 @@ import fs from 'fs';
 import path from 'path';
 
 import { ASSISTANT_NAME, DATA_DIR } from './config.js';
+import {
+  ANTHROPIC_BASE_URL,
+  ANTHROPIC_AUTH_TOKEN,
+  ANTHROPIC_API_KEY,
+  CLAUDE_CODE_OAUTH_TOKEN,
+  FEISHU_APP_ID,
+  FEISHU_APP_SECRET,
+  TELEGRAM_BOT_TOKEN,
+  HOME_DIR,
+} from './environment.js';
 import { logger } from './logger.js';
 
 const MAX_FIELD_LENGTH = 2000;
@@ -453,10 +463,10 @@ function readStoredConfig(): ClaudeProviderConfig | null {
 
 function defaultsFromEnv(): ClaudeProviderConfig {
   const raw = {
-    anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL || '',
-    anthropicAuthToken: process.env.ANTHROPIC_AUTH_TOKEN || '',
-    anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
-    claudeCodeOauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN || '',
+    anthropicBaseUrl: ANTHROPIC_BASE_URL,
+    anthropicAuthToken: ANTHROPIC_AUTH_TOKEN,
+    anthropicApiKey: ANTHROPIC_API_KEY,
+    claudeCodeOauthToken: CLAUDE_CODE_OAUTH_TOKEN,
     claudeOAuthCredentials: null,
   };
 
@@ -492,8 +502,8 @@ function readStoredFeishuConfig(): FeishuProviderConfig | null {
 
 function defaultsFeishuFromEnv(): FeishuProviderConfig {
   const raw = {
-    appId: process.env.FEISHU_APP_ID || '',
-    appSecret: process.env.FEISHU_APP_SECRET || '',
+    appId: FEISHU_APP_ID,
+    appSecret: FEISHU_APP_SECRET,
   };
   return {
     appId: raw.appId.trim(),
@@ -621,7 +631,7 @@ function readStoredTelegramConfig(): TelegramProviderConfig | null {
 
 function defaultsTelegramFromEnv(): TelegramProviderConfig {
   const raw = {
-    botToken: process.env.TELEGRAM_BOT_TOKEN || '',
+    botToken: TELEGRAM_BOT_TOKEN,
   };
   return {
     botToken: raw.botToken.trim(),
@@ -1193,7 +1203,7 @@ export function updateAllSessionCredentials(config: ClaudeProviderConfig): void 
   }
 
   // Host mode: update ~/.claude/.credentials.json
-  const homeClaudeDir = path.join(process.env.HOME || '/root', '.claude');
+  const homeClaudeDir = path.join(HOME_DIR, '.claude');
   if (fs.existsSync(homeClaudeDir) && fs.statSync(homeClaudeDir).isDirectory()) {
     try {
       writeCredentialsFile(homeClaudeDir, config);

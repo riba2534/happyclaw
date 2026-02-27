@@ -4,6 +4,7 @@ import path from 'path';
 import { createRequire } from 'module';
 import pty from 'node-pty';
 import { logger } from './logger.js';
+import { TERM_TYPE } from './environment.js';
 
 interface TerminalSessionBase {
   containerName: string;
@@ -121,7 +122,7 @@ export class TerminalManager {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
         ...process.env,
-        TERM: process.env.TERM || 'xterm-256color',
+        TERM: TERM_TYPE,
       },
     });
 

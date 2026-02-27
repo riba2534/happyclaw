@@ -6,6 +6,7 @@ import { hasHostExecutionPermission } from '../web-context.js';
 import { authMiddleware } from '../middleware/auth.js';
 import type { AuthUser } from '../types.js';
 import { logger } from '../logger.js';
+import { HOME_DIR } from '../environment.js';
 import {
   loadMountAllowlist,
   expandPath,
@@ -121,7 +122,7 @@ browseRoutes.get('/directories', authMiddleware, (c) => {
     }
 
     // No allowlist → return HOME directory
-    const homeDir = process.env.HOME || '/';
+    const homeDir = HOME_DIR;
     return c.json({
       currentPath: homeDir,
       parentPath: homeDir === '/' ? null : path.dirname(homeDir),
