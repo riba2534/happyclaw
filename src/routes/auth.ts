@@ -1,6 +1,7 @@
 // Authentication routes
 
 import fs from 'fs';
+import { readFile } from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
 import { Hono } from 'hono';
@@ -734,7 +735,7 @@ authRoutes.post('/avatar', authMiddleware, async (c) => {
 
   // Delete old avatar files for this user
   try {
-    const existing = fs.readdirSync(AVATARS_DIR).filter(f => f.startsWith(user.id));
+    const existing = fs.readdirSync(AVATARS_DIR).filter(f => f.startsWith(`${user.id}-`));
     for (const f of existing) {
       fs.unlinkSync(path.join(AVATARS_DIR, f));
     }
@@ -743,7 +744,9 @@ authRoutes.post('/avatar', authMiddleware, async (c) => {
   const filename = `${user.id}-${crypto.randomBytes(4).toString('hex')}${ext}`;
   const filePath = path.join(AVATARS_DIR, filename);
   const buffer = Buffer.from(await file.arrayBuffer());
-  fs.writeFileSync(filePath, buffer);
+  const tmpPath = filePath + '.tmp';
+  fs.writeFileSync(tmpPath, buffer);
+  fs.renameSync(tmpPath, filePath);
 
   const avatarUrl = `/api/auth/avatars/${filename}`;
 
@@ -755,7 +758,7 @@ authRoutes.post('/avatar', authMiddleware, async (c) => {
 });
 
 // Serve avatar files (public, no auth required)
-authRoutes.get('/avatars/:filename', (c) => {
+authRoutes.get('/avatars/:filename', async (c) => {
   const filename = c.req.param('filename');
 
   // Security: only allow simple filenames (no path traversal)
@@ -777,7 +780,7 @@ authRoutes.get('/avatars/:filename', (c) => {
     '.webp': 'image/webp',
   };
   const contentType = mimeTypes[ext] || 'application/octet-stream';
-  const data = fs.readFileSync(filePath);
+  const data = await readFile(filePath);
 
   return new Response(data, {
     status: 200,

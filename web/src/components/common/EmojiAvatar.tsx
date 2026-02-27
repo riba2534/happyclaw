@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { cn } from '@/lib/utils';
 
 export interface EmojiAvatarProps {
@@ -37,6 +37,7 @@ export function EmojiAvatar({
   className,
 }: EmojiAvatarProps) {
   const [imgFailed, setImgFailed] = useState(false);
+  useEffect(() => setImgFailed(false), [imageUrl]);
 
   const base = cn(
     'rounded-full flex items-center justify-center flex-shrink-0',
