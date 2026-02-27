@@ -643,6 +643,7 @@ export function ChatView({ groupJid, onBack }: ChatViewProps) {
                 onInterrupt={() => interruptQuery(groupJid)}
                 agents={agents}
                 onAgentClick={(agentId) => setActiveAgentTab(groupJid, agentId)}
+                onSend={(content) => handleSend(content)}
               />
               <MessageInput
                 onSend={handleSend}
