@@ -31,7 +31,8 @@ HappyClaw 是一个自托管的多用户 AI Agent 系统：
 | `src/feishu.ts` | 飞书连接工厂（`createFeishuConnection`）：WebSocket 长连接、消息去重（LRU 1000 条 / 30min TTL）、富文本卡片、Reaction |
 | `src/telegram.ts` | Telegram 连接工厂（`createTelegramConnection`）：Bot API Long Polling、Markdown → HTML 转换、长消息分片（3800 字符） |
 | `src/im-manager.ts` | IM 连接池管理器（`IMConnectionManager`）：per-user 飞书/Telegram 连接管理、热重连、批量断开 |
-| `src/container-runner.ts` | 容器生命周期：Docker run + 宿主机进程模式、卷挂载构建（isAdminHome 区分权限）、环境变量注入、OUTPUT_MARKER 流式输出解析 |
+| `src/container-runner.ts` | 容器生命周期：Docker run + 宿主机进程模式、卷挂载构建（isAdminHome 区分权限）、环境变量注入 |
+| `src/agent-output-parser.ts` | Agent 输出解析：OUTPUT_MARKER 流式输出解析、stdout/stderr 处理、进程生命周期回调（从 container-runner.ts 提取的共享逻辑） |
 | `src/group-queue.ts` | 并发控制：最大 20 容器 + 最大 5 宿主机进程、会话级队列、任务优先于消息、指数退避重试 |
 | `src/runtime-config.ts` | 配置存储：AES-256-GCM 加密、分层配置（容器级 > 全局 > 环境变量）、变更审计日志 |
 | `src/task-scheduler.ts` | 定时调度：60s 轮询、cron / interval / once 三种模式、group / isolated 上下文 |
@@ -78,12 +79,25 @@ Agent Runner（`container/agent-runner/`）在 Docker 容器或宿主机进程�
 
 - **输入协议**：stdin 接收初始 JSON（`ContainerInput`：prompt、sessionId、groupFolder、chatJid、isHome、isAdminHome），IPC 文件接收后续消息
 - **输出协议**：stdout 输出 `OUTPUT_START_MARKER...OUTPUT_END_MARKER` 包裹的 JSON（`ContainerOutput`：status、result、newSessionId、streamEvent）
-- **流式事件**：`text_delta`、`thinking_delta`、`tool_use_start/end`、`tool_progress`、`hook_started/progress/response`、`status`、`init` —— 通过 WebSocket `stream_event` 消息广播到 Web 端
+- **流式事件**：`text_delta`、`thinking_delta`、`tool_use_start/end`、`tool_progress`、`hook_started/progress/response`、`task_start`、`task_notification`、`status`、`init` —— 通过 WebSocket `stream_event` 消息广播到 Web 端
 - **文本缓冲**：`text_delta` 累积到 200 字符后刷新，避免高频小包
 - **会话循环**：`query()` → 等待 IPC 消息 → 再次 `query()` → 直到 `_close` sentinel
-- **MCP Server**：10 个工具（`send_message`、`schedule_task`、`list/pause/resume/cancel_task`、`register_group`、`memory_append`、`memory_search`、`memory_get`）
+- **MCP Server**：12 个工具（`send_message`、`schedule_task`、`list/pause/resume/cancel_task`、`register_group`、`install_skill`、`uninstall_skill`、`memory_append`、`memory_search`、`memory_get`），通过 SDK `createSdkMcpServer()` 以同进程模式注册
 - **Hooks**：PreCompact 钩子在上下文压缩前归档对话到 `conversations/` 目录
 - **敏感数据过滤**：StreamEvent 中的 `toolInputSummary` 会过滤 `ANTHROPIC_API_KEY` 等环境变量名
+- **预定义 SubAgent**：`agent-definitions.ts` 定义 `code-reviewer`（代码审查）和 `web-researcher`（网页研究）两个 SubAgent，通过 SDK `agents` 选项注册到 query() 会话中
+
+**Agent Runner 模块结构**（`container/agent-runner/src/`）：
+
+| 文件 | 职责 |
+|------|------|
+| `index.ts` | 主入口：stdin 读取、会话循环、query() 调用、IPC 轮询 |
+| `types.ts` | 共享类型定义（ContainerInput、ContainerOutput 等），re-export StreamEvent |
+| `utils.ts` | 纯工具函数（字符串截断、敏感数据脱敏、文件名清理等） |
+| `stream-processor.ts` | StreamEventProcessor 类：流式事件缓冲、工具状态追踪、SubAgent 消息转换 |
+| `mcp-tools.ts` | MCP 工具定义：12 个工具通过 SDK `tool()` 注册，IPC 文件通信 |
+| `agent-definitions.ts` | 预定义 SubAgent（code-reviewer、web-researcher） |
+| `stream-event.types.ts` | StreamEvent 类型（由 `shared/stream-event.ts` 构建时同步生成，勿直接编辑） |
 
 ### 2.4 执行模式
 
@@ -136,10 +150,12 @@ Agent SDK query() → 流式事件 (text_delta, tool_use_start, ...)
   → 系统错误 (agent_error, container_timeout) 通过 new_message 事件清除流式状态
 ```
 
-StreamEvent 类型在三处定义，**必须保持同步**：
-- `container/agent-runner/src/index.ts`（发射端）
-- `src/types.ts`（后端类型定义）
-- `web/src/stores/chat.ts`（前端消费端）
+StreamEvent 类型以 `shared/stream-event.ts` 为单一真相源，构建时通过 `scripts/sync-stream-event.sh` 同步到三处副本：
+- `container/agent-runner/src/stream-event.types.ts`（agent-runner 内的 `types.ts` re-export）
+- `src/stream-event.types.ts`（后端 `types.ts` re-export）
+- `web/src/stream-event.types.ts`（前端 `chat.ts` import）
+
+修改 StreamEvent 类型时，只需编辑 `shared/stream-event.ts`，然后运行 `make sync-types`（`make build` 会自动触发）。`make typecheck` 会通过 `scripts/check-stream-event-sync.sh` 校验同步状态。
 
 ### 3.3 IPC 通信
 
@@ -307,6 +323,13 @@ config/default-groups.json    # 预注册群组配置
 config/mount-allowlist.json   # 容器挂载白名单
 
 container/skills/             # 项目级 Skills（挂载到所有容器）
+
+shared/                       # 跨项目共享类型定义
+  stream-event.ts             # StreamEvent 类型单一真相源（构建时同步到三个子项目）
+
+scripts/                      # 构建辅助脚本
+  sync-stream-event.sh        # 将 shared/stream-event.ts 同步到各子项目
+  check-stream-event-sync.sh  # 校验 StreamEvent 类型副本是否一致（typecheck 时调用）
 ```
 
 ## 7. Web API
@@ -465,8 +488,8 @@ container/skills/             # 项目级 Skills（挂载到所有容器）
 - 修改容器 / 调度逻辑时，优先保证：不丢消息、不重复回复、失败可重试
 - **Git commit message 使用简体中文**，格式：`类型: 简要描述`（如 `修复: 侧边栏下拉菜单无法点击`）
 - 系统路径不可通过文件 API 操作：`logs/`、`CLAUDE.md`、`.claude/`、`conversations/`
-- StreamEvent 类型必须在三处定义保持同步（§3.2）
-- Claude SDK 和 CLI 始终使用最新版本（agent-runner `package.json` 中 `"*"` + 无 lock file）
+- StreamEvent 类型以 `shared/stream-event.ts` 为单一真相源，修改后运行 `make sync-types` 同步（`make build` 自动触发，`make typecheck` 校验一致性）
+- Claude SDK 和 CLI 始终使用最新版本（agent-runner `package.json` 中 `"*"`，通过 `make update-sdk` 更新）
 - 容器内以 `node` 非 root 用户运行，需注意文件权限
 
 ## 11. 本地开发
@@ -483,6 +506,8 @@ make typecheck     # TypeScript 全量类型检查（后端 + 前端 + agent-run
 make format        # 格式化代码（prettier）
 make install       # 安装全部依赖并编译 agent-runner
 make clean         # 清理构建产物（dist/）
+make sync-types    # 同步 shared/ 下的类型定义到各子项目
+make update-sdk    # 更新 agent-runner 的 Claude Agent SDK 到最新版本
 make reset-init    # 重置为首装状态（清空数据库和配置，用于测试设置向导）
 ```
 
@@ -499,7 +524,7 @@ make reset-init    # 重置为首装状态（清空数据库和配置，用于�
 | Web 前端 | `web/` | React SPA |
 | Agent Runner | `container/agent-runner/` | 容器/宿主机内执行引擎 |
 
-每个项目有独立的 `package.json`、`tsconfig.json`、`node_modules/`。
+每个项目有独立的 `package.json`、`tsconfig.json`、`node_modules/`。此外，`shared/` 目录存放跨三个项目的共享类型定义（如 `stream-event.ts`），构建时通过 `make sync-types` 同步到各项目。
 
 ## 12. 常见变更指引
 
@@ -517,7 +542,7 @@ make reset-init    # 重置为首装状态（清空数据库和配置，用于�
 
 ### 新增 MCP 工具
 
-1. 在 `container/agent-runner/src/ipc-mcp-stdio.ts` 添加 `server.tool()`
+1. 在 `container/agent-runner/src/mcp-tools.ts` 的 `createMcpTools()` 中添加 `tool()` 定义
 2. 主进程 `src/index.ts` 的 IPC 处理器增加对应 type 分支
 3. 重建容器镜像：`./container/build.sh`
 
@@ -529,10 +554,10 @@ make reset-init    # 重置为首装状态（清空数据库和配置，用于�
 
 ### 新增 StreamEvent 类型
 
-1. `container/agent-runner/src/index.ts` — 添加发射逻辑
-2. `src/types.ts` — 添加 `StreamEventType` 联合类型成员和 `StreamEvent` 字段
-3. `web/src/stores/chat.ts` — 添加 `handleStreamEvent()` 处理分支
-4. 三处必须同步更新
+1. `shared/stream-event.ts` — 在 `StreamEventType` 联合类型中添加新成员，在 `StreamEvent` 接口中添加对应字段
+2. 运行 `make sync-types` 同步到三个子项目
+3. `container/agent-runner/src/stream-processor.ts` — 在 `StreamEventProcessor` 中添加发射逻辑
+4. `web/src/stores/chat.ts` — 在 `handleStreamEvent()` / `applyStreamEvent()` 中添加处理分支
 
 ### 新增 IM 集成渠道
 

@@ -1,3 +1,5 @@
+import type { StreamEvent } from './stream-event.types.js';
+
 export interface AdditionalMount {
   hostPath: string; // Absolute path on host (supports ~ for home)
   containerPath?: string; // Optional — defaults to basename of hostPath. Mounted at /workspace/extra/{value}
@@ -300,33 +302,6 @@ export type WsMessageIn =
   | { type: 'terminal_resize'; chatJid: string; cols: number; rows: number }
   | { type: 'terminal_stop'; chatJid: string };
 
-// --- Streaming event types ---
-// ⚠️ 与 container/agent-runner/src/index.ts 和 web/src/stores/chat.ts 保持同步
-
-export type StreamEventType =
-  | 'text_delta' | 'thinking_delta'
-  | 'tool_use_start' | 'tool_use_end' | 'tool_progress'
-  | 'hook_started' | 'hook_progress' | 'hook_response'
-  | 'task_start' | 'task_notification'
-  | 'status' | 'init';
-
-export interface StreamEvent {
-  eventType: StreamEventType;
-  text?: string;
-  toolName?: string;
-  toolUseId?: string;
-  parentToolUseId?: string | null;
-  isNested?: boolean;
-  skillName?: string;
-  toolInputSummary?: string;
-  elapsedSeconds?: number;
-  hookName?: string;
-  hookEvent?: string;
-  hookOutcome?: string;
-  statusText?: string;
-  taskDescription?: string;
-  taskId?: string;
-  taskStatus?: string;
-  taskSummary?: string;
-  isTeammate?: boolean;
-}
+// --- Streaming event types (canonical source: shared/stream-event.ts) ---
+export type { StreamEventType } from './stream-event.types.js';
+export type { StreamEvent };
