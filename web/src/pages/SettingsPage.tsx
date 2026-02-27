@@ -16,12 +16,13 @@ import { UserChannelsSection } from '../components/settings/UserChannelsSection'
 import { GroupsPage } from './GroupsPage';
 import { MemoryPage } from './MemoryPage';
 import { SkillsPage } from './SkillsPage';
+import { McpServersPage } from './McpServersPage';
 import { UsersPage } from './UsersPage';
 import type { SettingsTab } from '../components/settings/types';
 
-const VALID_TABS: SettingsTab[] = ['channels', 'claude', 'registration', 'appearance', 'system', 'profile', 'my-channels', 'security', 'groups', 'memory', 'skills', 'users', 'about'];
+const VALID_TABS: SettingsTab[] = ['channels', 'claude', 'registration', 'appearance', 'system', 'profile', 'my-channels', 'security', 'groups', 'memory', 'skills', 'mcp-servers', 'users', 'about'];
 const SYSTEM_TABS: SettingsTab[] = ['channels', 'claude', 'registration', 'appearance', 'system'];
-const FULLPAGE_TABS: SettingsTab[] = ['groups', 'memory', 'skills', 'users'];
+const FULLPAGE_TABS: SettingsTab[] = ['groups', 'memory', 'skills', 'mcp-servers', 'users'];
 
 export function SettingsPage() {
   const { user: currentUser } = useAuthStore();
@@ -74,6 +75,7 @@ export function SettingsPage() {
     tabs.push({ key: 'groups', label: '会话' });
     tabs.push({ key: 'memory', label: '记忆' });
     tabs.push({ key: 'skills', label: '技能' });
+    tabs.push({ key: 'mcp-servers', label: 'MCP' });
     if (canManageUsers) {
       tabs.push({ key: 'users', label: '用户' });
     }
@@ -103,6 +105,7 @@ export function SettingsPage() {
     groups: '会话管理',
     memory: '记忆管理',
     skills: '技能管理',
+    'mcp-servers': 'MCP 服务器',
     users: '用户管理',
     about: '关于',
   };
@@ -172,6 +175,7 @@ export function SettingsPage() {
             {activeTab === 'groups' && <GroupsPage />}
             {activeTab === 'memory' && <MemoryPage />}
             {activeTab === 'skills' && <SkillsPage />}
+            {activeTab === 'mcp-servers' && <McpServersPage />}
             {activeTab === 'users' && <UsersPage />}
           </>
         ) : (

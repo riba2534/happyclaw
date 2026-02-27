@@ -7,6 +7,7 @@ import {
   Layers,
   BookOpen,
   Puzzle,
+  Server,
   UserCog,
   Info,
   Palette,
@@ -41,6 +42,7 @@ const featureItems: NavItem[] = [
   { key: 'groups', label: '会话管理', icon: <Layers className="w-4 h-4" />, group: 'features' },
   { key: 'memory', label: '记忆管理', icon: <BookOpen className="w-4 h-4" />, group: 'features' },
   { key: 'skills', label: '技能管理', icon: <Puzzle className="w-4 h-4" />, group: 'features' },
+  { key: 'mcp-servers', label: 'MCP 服务器', icon: <Server className="w-4 h-4" />, group: 'features' },
   { key: 'users', label: '用户管理', icon: <UserCog className="w-4 h-4" />, group: 'features' },
   { key: 'about', label: '关于', icon: <Info className="w-4 h-4" />, group: 'features' },
 ];

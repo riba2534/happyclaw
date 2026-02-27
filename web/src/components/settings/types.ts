@@ -79,7 +79,7 @@ export interface SystemSettings {
   loginLockoutMinutes: number;
 }
 
-export type SettingsTab = 'channels' | 'claude' | 'registration' | 'appearance' | 'system' | 'profile' | 'my-channels' | 'security' | 'groups' | 'memory' | 'skills' | 'users' | 'about';
+export type SettingsTab = 'channels' | 'claude' | 'registration' | 'appearance' | 'system' | 'profile' | 'my-channels' | 'security' | 'groups' | 'memory' | 'skills' | 'mcp-servers' | 'users' | 'about';
 
 export function getErrorMessage(err: unknown, fallback: string): string {
   if (typeof err === 'object' && err !== null && 'message' in err) {

@@ -45,8 +45,11 @@ const REQUIRED_SETTINGS_ENV: Record<string, string> = {
   CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
 };
 
-/** Read existing settings.json, deep-merge required env keys, write only if changed */
-function ensureSettingsJson(settingsFile: string): void {
+/** Read existing settings.json, deep-merge required env keys and mcpServers, write only if changed */
+function ensureSettingsJson(
+  settingsFile: string,
+  mcpServers?: Record<string, { command: string; args?: string[]; env?: Record<string, string> }>,
+): void {
   let existing: Record<string, unknown> = {};
   try {
     if (fs.existsSync(settingsFile)) {
@@ -56,7 +59,14 @@ function ensureSettingsJson(settingsFile: string): void {
 
   const existingEnv = (existing.env as Record<string, string>) || {};
   const mergedEnv = { ...existingEnv, ...REQUIRED_SETTINGS_ENV };
-  const merged = { ...existing, env: mergedEnv };
+  const merged: Record<string, unknown> = { ...existing, env: mergedEnv };
+
+  // Merge user-configured MCP servers into settings
+  if (mcpServers && Object.keys(mcpServers).length > 0) {
+    const existingMcp = (existing.mcpServers as Record<string, unknown>) || {};
+    merged.mcpServers = { ...existingMcp, ...mcpServers };
+  }
+
   const newContent = JSON.stringify(merged, null, 2) + '\n';
 
   // Only write when content actually changed
@@ -68,6 +78,40 @@ function ensureSettingsJson(settingsFile: string): void {
   } catch { /* write anyway */ }
 
   fs.writeFileSync(settingsFile, newContent, { mode: 0o644 });
+}
+
+/**
+ * Load enabled MCP server configs for a user.
+ * Reads data/mcp-servers/{userId}/servers.json and returns only enabled servers
+ * with just the fields needed for settings.json (command/args/env).
+ */
+function loadUserMcpServers(
+  userId: string,
+): Record<string, { command: string; args?: string[]; env?: Record<string, string> }> {
+  const serversFile = path.join(DATA_DIR, 'mcp-servers', userId, 'servers.json');
+  try {
+    if (!fs.existsSync(serversFile)) return {};
+    const file = JSON.parse(fs.readFileSync(serversFile, 'utf8')) as {
+      servers?: Record<
+        string,
+        { enabled?: boolean; command?: string; args?: string[]; env?: Record<string, string> }
+      >;
+    };
+    const raw = file.servers || {};
+    const result: Record<string, { command: string; args?: string[]; env?: Record<string, string> }> = {};
+    for (const [name, server] of Object.entries(raw)) {
+      if (!server.enabled || !server.command) continue;
+      const entry: { command: string; args?: string[]; env?: Record<string, string> } = {
+        command: server.command,
+      };
+      if (server.args) entry.args = server.args;
+      if (server.env && Object.keys(server.env).length > 0) entry.env = server.env;
+      result[name] = entry;
+    }
+    return result;
+  } catch {
+    return {};
+  }
 }
 
 export interface ContainerInput {
@@ -184,7 +228,8 @@ function buildVolumeMounts(
     : path.join(DATA_DIR, 'sessions', group.folder, '.claude');
   mkdirForContainer(groupSessionsDir);
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
-  ensureSettingsJson(settingsFile);
+  const mcpServers = ownerId ? loadUserMcpServers(ownerId) : {};
+  ensureSettingsJson(settingsFile, mcpServers);
 
   mounts.push({
     hostPath: groupSessionsDir,
@@ -696,7 +741,8 @@ export async function runHostAgent(
 
   // 3. 写入 settings.json（合并模式，不覆盖已有用户配置）
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
-  ensureSettingsJson(settingsFile);
+  const hostMcpServers = group.created_by ? loadUserMcpServers(group.created_by) : {};
+  ensureSettingsJson(settingsFile, hostMcpServers);
 
   // 4. Skills 自动链接到 session 目录
   // 链接顺序：项目级 → 宿主机级(admin only, 覆盖同名项目级) → 用户级(覆盖同名)
