@@ -639,6 +639,13 @@ async function installSkillForUser(
         copySkillToUser(src, dest);
       }
 
+      // 清理全局目录中本次新增的条目，避免污染宿主机环境
+      for (const name of modifiedEntries) {
+        try {
+          fs.rmSync(path.join(globalDir, name), { recursive: true, force: true });
+        } catch { /* ignore cleanup errors */ }
+      }
+
       return { success: true, installed: modifiedEntries };
     } catch (error) {
       // Even on error, clean up any modified entries from global

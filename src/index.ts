@@ -1222,8 +1222,27 @@ function startIpcWatcher(): void {
       // Process tasks from this group's IPC directory
       try {
         if (fs.existsSync(tasksDir)) {
-          const taskFiles = fs
-            .readdirSync(tasksDir, { withFileTypes: true })
+          const allEntries = fs.readdirSync(tasksDir, { withFileTypes: true });
+
+          // 清理孤儿结果文件（容器崩溃或超时后残留，超过 10 分钟自动删除）
+          for (const entry of allEntries) {
+            if (
+              entry.isFile() &&
+              entry.name.endsWith('.json') &&
+              (entry.name.startsWith('install_skill_result_') || entry.name.startsWith('uninstall_skill_result_'))
+            ) {
+              try {
+                const filePath = path.join(tasksDir, entry.name);
+                const stat = fs.statSync(filePath);
+                if (Date.now() - stat.mtimeMs > 10 * 60 * 1000) {
+                  fs.unlinkSync(filePath);
+                  logger.debug({ sourceGroup, file: entry.name }, 'Cleaned up stale skill result file');
+                }
+              } catch { /* ignore */ }
+            }
+          }
+
+          const taskFiles = allEntries
             .filter((entry) =>
               entry.isFile() &&
               entry.name.endsWith('.json') &&

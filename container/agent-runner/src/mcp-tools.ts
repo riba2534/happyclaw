@@ -102,7 +102,7 @@ export function createMcpTools(ctx: McpContext): SdkMcpToolDefinition<any>[] {
   const hasCrossGroupAccess = ctx.isAdminHome;
   const toRelativePath = createToRelativePath(ctx);
 
-  return [
+  const tools: SdkMcpToolDefinition<any>[] = [
     // --- send_message ---
     tool(
       'send_message',
@@ -318,6 +318,11 @@ Use available_groups.json to find the JID for a group. The folder name should be
       },
     ),
 
+  ];
+
+  // Skill 安装/卸载仅限主容器（与 memory_* 工具一致）
+  if (ctx.isHome) {
+    tools.push(
     // --- install_skill ---
     tool(
       'install_skill',
@@ -446,8 +451,11 @@ Use the skills panel in the UI to find the skill ID (directory name, e.g. "memor
         };
       },
     ),
+    );
+  }
 
-    // --- memory_append ---
+  // --- memory_append ---
+  tools.push(
     tool(
       'memory_append',
       `\u5c06**\u65f6\u6548\u6027\u8bb0\u5fc6**\u8ffd\u52a0\u5230 memory/YYYY-MM-DD.md\uff08\u72ec\u7acb\u8bb0\u5fc6\u76ee\u5f55\uff0c\u4e0d\u5728\u5de5\u4f5c\u533a\u5185\uff09\u3002
@@ -615,5 +623,7 @@ Use the skills panel in the UI to find the skill ID (directory name, e.g. "memor
         }
       },
     ),
-  ];
+  );
+
+  return tools;
 }

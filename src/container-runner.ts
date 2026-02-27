@@ -227,6 +227,7 @@ function buildVolumeMounts(
     // 项目级 skills
     if (fs.existsSync(projectSkillsDir)) {
       for (const name of selectedSet) {
+        if (!/^[\w\-]+$/.test(name)) continue;  // 防御性跳过非法名称
         const skillPath = path.join(projectSkillsDir, name);
         if (fs.existsSync(skillPath) && fs.statSync(skillPath).isDirectory()) {
           mounts.push({
@@ -240,6 +241,7 @@ function buildVolumeMounts(
     // 用户级 skills
     if (userSkillsDir) {
       for (const name of selectedSet) {
+        if (!/^[\w\-]+$/.test(name)) continue;  // 防御性跳过非法名称
         const skillPath = path.join(userSkillsDir, name);
         if (fs.existsSync(skillPath) && fs.statSync(skillPath).isDirectory()) {
           mounts.push({
@@ -718,7 +720,7 @@ export async function runHostAgent(
     const linkSkillEntries = (sourceDir: string) => {
       if (!fs.existsSync(sourceDir)) return;
       for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue;
+        if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
         if (selectedSet && !selectedSet.has(entry.name)) continue;
         const linkPath = path.join(skillsDir, entry.name);
         try {
