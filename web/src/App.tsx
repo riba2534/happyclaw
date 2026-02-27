@@ -7,6 +7,7 @@ import { SetupProvidersPage } from './pages/SetupProvidersPage';
 import { SetupChannelsPage } from './pages/SetupChannelsPage';
 import { MemoryPage } from './pages/MemoryPage';
 import { SkillsPage } from './pages/SkillsPage';
+import { McpServersPage } from './pages/McpServersPage';
 import { UsersPage } from './pages/UsersPage';
 import { AuthGuard } from './components/auth/AuthGuard';
 import { AppLayout } from './components/layout/AppLayout';
@@ -58,6 +59,7 @@ export function App() {
           <Route path="/monitor" element={<Suspense fallback={null}><MonitorPage /></Suspense>} />
           <Route path="/memory" element={<MemoryPage />} />
           <Route path="/skills" element={<SkillsPage />} />
+          <Route path="/mcp-servers" element={<McpServersPage />} />
           <Route path="/settings" element={<Suspense fallback={null}><SettingsPage /></Suspense>} />
           <Route
             path="/users"
