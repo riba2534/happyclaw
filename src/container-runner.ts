@@ -67,7 +67,7 @@ function ensureSettingsJson(settingsFile: string): void {
     }
   } catch { /* write anyway */ }
 
-  fs.writeFileSync(settingsFile, newContent, { mode: 0o600 });
+  fs.writeFileSync(settingsFile, newContent, { mode: 0o644 });
 }
 
 export interface ContainerInput {
