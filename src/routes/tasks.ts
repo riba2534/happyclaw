@@ -2,6 +2,7 @@
 
 import { Hono } from 'hono';
 import * as crypto from 'node:crypto';
+import { CronExpressionParser } from 'cron-parser';
 import type { Variables } from '../web-context.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { TaskCreateSchema, TaskPatchSchema } from '../schemas.js';
@@ -15,6 +16,7 @@ import {
   getRegisteredGroup,
 } from '../db.js';
 import type { AuthUser } from '../types.js';
+import { TIMEZONE } from '../config.js';
 import { isHostExecutionGroup, hasHostExecutionPermission, canAccessGroup } from '../web-context.js';
 
 const tasksRoutes = new Hono<{ Variables: Variables }>();
@@ -75,6 +77,16 @@ tasksRoutes.post('/', authMiddleware, async (c) => {
   const taskId = crypto.randomUUID();
   const now = new Date().toISOString();
 
+  let nextRun: string;
+  if (schedule_type === 'cron') {
+    nextRun = CronExpressionParser.parse(schedule_value, { tz: TIMEZONE }).next().toISOString() ?? new Date().toISOString();
+  } else if (schedule_type === 'interval') {
+    nextRun = new Date(Date.now() + parseInt(schedule_value, 10)).toISOString();
+  } else {
+    // once — use the target time from schedule_value
+    nextRun = new Date(schedule_value).toISOString();
+  }
+
   createTask({
     id: taskId,
     group_folder,
@@ -83,7 +95,7 @@ tasksRoutes.post('/', authMiddleware, async (c) => {
     schedule_type,
     schedule_value,
     context_mode: context_mode || 'isolated',
-    next_run: now,
+    next_run: nextRun,
     status: 'active',
     created_at: now,
     created_by: authUser.id,

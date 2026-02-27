@@ -11,7 +11,8 @@ export interface ScheduledTask {
   context_mode: 'group' | 'isolated';
   next_run: string | null;
   last_run?: string | null;
-  status: 'active' | 'paused' | 'completed' | 'failed';
+  last_result?: string | null;
+  status: 'active' | 'paused' | 'completed';
   created_at: string;
 }
 

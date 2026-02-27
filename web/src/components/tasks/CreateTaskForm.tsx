@@ -31,6 +31,13 @@ interface CreateTaskFormProps {
   onClose: () => void;
 }
 
+const INTERVAL_UNITS = [
+  { label: '秒', ms: 1000 },
+  { label: '分钟', ms: 60 * 1000 },
+  { label: '小时', ms: 60 * 60 * 1000 },
+  { label: '天', ms: 24 * 60 * 60 * 1000 },
+] as const;
+
 export function CreateTaskForm({ groups, onSubmit, onClose }: CreateTaskFormProps) {
   const [formData, setFormData] = useState({
     groupFolder: '',
@@ -40,6 +47,9 @@ export function CreateTaskForm({ groups, onSubmit, onClose }: CreateTaskFormProp
     scheduleValue: '',
     contextMode: 'isolated' as 'group' | 'isolated',
   });
+  const [intervalNumber, setIntervalNumber] = useState('');
+  const [intervalUnit, setIntervalUnit] = useState('60000'); // default: minutes
+  const [onceDateTime, setOnceDateTime] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
 
@@ -54,30 +64,31 @@ export function CreateTaskForm({ groups, onSubmit, onClose }: CreateTaskFormProp
       newErrors.prompt = '请输入 Prompt';
     }
 
-    if (!formData.scheduleValue.trim()) {
-      newErrors.scheduleValue = '请输入调度值';
-    } else {
-      // Basic validation for schedule value
-      if (formData.scheduleType === 'cron') {
+    if (formData.scheduleType === 'cron') {
+      if (!formData.scheduleValue.trim()) {
+        newErrors.scheduleValue = '请输入 Cron 表达式';
+      } else {
         const parts = formData.scheduleValue.trim().split(' ');
         if (parts.length < 5) {
           newErrors.scheduleValue = 'Cron 表达式格式错误（至少需要 5 个字段）';
         }
-      } else if (formData.scheduleType === 'interval') {
-        const num = parseInt(formData.scheduleValue);
+      }
+    } else if (formData.scheduleType === 'interval') {
+      if (!intervalNumber.trim()) {
+        newErrors.scheduleValue = '请输入间隔数值';
+      } else {
+        const num = parseInt(intervalNumber);
         if (isNaN(num) || num <= 0) {
-          newErrors.scheduleValue = '间隔必须是正整数（单位：毫秒）';
+          newErrors.scheduleValue = '间隔必须是正整数';
         }
-      } else if (formData.scheduleType === 'once') {
-        const value = formData.scheduleValue.trim();
-        let date: Date;
-        if (/^\d+$/.test(value)) {
-          date = new Date(Number.parseInt(value, 10));
-        } else {
-          date = new Date(value);
-        }
+      }
+    } else if (formData.scheduleType === 'once') {
+      if (!onceDateTime) {
+        newErrors.scheduleValue = '请选择执行时间';
+      } else {
+        const date = new Date(onceDateTime);
         if (Number.isNaN(date.getTime()) || date.getTime() <= Date.now()) {
-          newErrors.scheduleValue = '请输入未来时间（ISO 时间或毫秒时间戳）';
+          newErrors.scheduleValue = '请选择未来时间';
         }
       }
     }
@@ -91,9 +102,19 @@ export function CreateTaskForm({ groups, onSubmit, onClose }: CreateTaskFormProp
 
     if (!validateForm()) return;
 
+    // Compute final scheduleValue for interval/once before submit
+    let finalScheduleValue = formData.scheduleValue;
+    if (formData.scheduleType === 'interval') {
+      const num = parseInt(intervalNumber, 10);
+      const unitMs = parseInt(intervalUnit, 10);
+      finalScheduleValue = String(num * unitMs);
+    } else if (formData.scheduleType === 'once') {
+      finalScheduleValue = new Date(onceDateTime).toISOString();
+    }
+
     setSubmitting(true);
     try {
-      await onSubmit(formData);
+      await onSubmit({ ...formData, scheduleValue: finalScheduleValue });
     } catch (error) {
       console.error('Failed to create task:', error);
     } finally {
@@ -172,13 +193,15 @@ export function CreateTaskForm({ groups, onSubmit, onClose }: CreateTaskFormProp
             </label>
             <Select
               value={formData.scheduleType}
-              onValueChange={(value) =>
+              onValueChange={(value) => {
+                setIntervalNumber('');
+                setOnceDateTime('');
                 setFormData({
                   ...formData,
                   scheduleType: value as 'cron' | 'interval' | 'once',
                   scheduleValue: '',
-                })
-              }
+                });
+              }}
             >
               <SelectTrigger className="w-full">
                 <SelectValue />
@@ -196,30 +219,71 @@ export function CreateTaskForm({ groups, onSubmit, onClose }: CreateTaskFormProp
             <label className="block text-sm font-medium text-slate-700 mb-2">
               调度值 <span className="text-red-500">*</span>
             </label>
-            <Input
-              type="text"
-              value={formData.scheduleValue}
-              onChange={(e) =>
-                setFormData({ ...formData, scheduleValue: e.target.value })
-              }
-              className={cn(errors.scheduleValue && "border-red-500")}
-              placeholder={
-                formData.scheduleType === 'cron'
-                  ? '例如: 0 0 * * * (每天 0 点)'
-                  : formData.scheduleType === 'interval'
-                  ? '例如: 3600000 (每小时，单位：毫秒)'
-                  : '例如: 2026-02-10T21:30:00+08:00 或 1760000000000'
-              }
-            />
+
+            {formData.scheduleType === 'cron' && (
+              <>
+                <Input
+                  type="text"
+                  value={formData.scheduleValue}
+                  onChange={(e) =>
+                    setFormData({ ...formData, scheduleValue: e.target.value })
+                  }
+                  className={cn(errors.scheduleValue && "border-red-500")}
+                  placeholder="例如: 0 0 * * * (每天 0 点)"
+                />
+                <p className="mt-1 text-xs text-slate-500">
+                  格式: 分 时 日 月 星期（如 0 9 * * * = 每天 9 点）
+                </p>
+              </>
+            )}
+
+            {formData.scheduleType === 'interval' && (
+              <>
+                <div className="flex gap-2">
+                  <Input
+                    type="number"
+                    min="1"
+                    value={intervalNumber}
+                    onChange={(e) => setIntervalNumber(e.target.value)}
+                    className={cn("flex-1", errors.scheduleValue && "border-red-500")}
+                    placeholder="数值"
+                  />
+                  <Select value={intervalUnit} onValueChange={setIntervalUnit}>
+                    <SelectTrigger className="w-28">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {INTERVAL_UNITS.map((u) => (
+                        <SelectItem key={u.ms} value={String(u.ms)}>
+                          {u.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <p className="mt-1 text-xs text-slate-500">
+                  设置任务执行间隔
+                </p>
+              </>
+            )}
+
+            {formData.scheduleType === 'once' && (
+              <>
+                <Input
+                  type="datetime-local"
+                  value={onceDateTime}
+                  onChange={(e) => setOnceDateTime(e.target.value)}
+                  className={cn(errors.scheduleValue && "border-red-500")}
+                />
+                <p className="mt-1 text-xs text-slate-500">
+                  选择任务的执行时间
+                </p>
+              </>
+            )}
+
             {errors.scheduleValue && (
               <p className="mt-1 text-sm text-red-600">{errors.scheduleValue}</p>
             )}
-            <p className="mt-1 text-xs text-slate-500">
-              {formData.scheduleType === 'cron' &&
-                'Cron 表达式格式: 秒 分 时 日 月 星期'}
-              {formData.scheduleType === 'interval' && '单位：毫秒'}
-              {formData.scheduleType === 'once' && '支持 ISO 时间字符串或 Unix 毫秒时间戳'}
-            </p>
           </div>
 
           {/* Context Mode */}
