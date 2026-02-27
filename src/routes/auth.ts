@@ -1,9 +1,13 @@
 // Authentication routes
 
+import fs from 'fs';
+import path from 'path';
+import crypto from 'crypto';
 import { Hono } from 'hono';
 import type { Variables } from '../web-context.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { getClientIp } from '../utils.js';
+import { DATA_DIR } from '../config.js';
 import {
   LoginSchema,
   RegisterSchema,
@@ -690,6 +694,98 @@ authRoutes.delete('/sessions/:id', authMiddleware, (c) => {
     ip_address: getClientIp(c),
   });
   return c.json({ success: true });
+});
+
+// --- Avatar Upload ---
+
+const AVATARS_DIR = path.join(DATA_DIR, 'avatars');
+const ALLOWED_AVATAR_TYPES: Record<string, string> = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+};
+const MAX_AVATAR_SIZE = 2 * 1024 * 1024; // 2MB
+
+authRoutes.post('/avatar', authMiddleware, async (c) => {
+  const user = c.get('user') as AuthUser;
+  const contentType = c.req.header('content-type') || '';
+
+  if (!contentType.includes('multipart/form-data')) {
+    return c.json({ error: 'Expected multipart/form-data' }, 400);
+  }
+
+  const formData = await c.req.formData();
+  const file = formData.get('avatar');
+  if (!file || !(file instanceof File)) {
+    return c.json({ error: 'No avatar file provided' }, 400);
+  }
+
+  if (file.size > MAX_AVATAR_SIZE) {
+    return c.json({ error: 'File too large (max 2MB)' }, 400);
+  }
+
+  const ext = ALLOWED_AVATAR_TYPES[file.type];
+  if (!ext) {
+    return c.json({ error: 'Unsupported image type. Use jpg, png, gif or webp' }, 400);
+  }
+
+  fs.mkdirSync(AVATARS_DIR, { recursive: true });
+
+  // Delete old avatar files for this user
+  try {
+    const existing = fs.readdirSync(AVATARS_DIR).filter(f => f.startsWith(user.id));
+    for (const f of existing) {
+      fs.unlinkSync(path.join(AVATARS_DIR, f));
+    }
+  } catch { /* ignore */ }
+
+  const filename = `${user.id}-${crypto.randomBytes(4).toString('hex')}${ext}`;
+  const filePath = path.join(AVATARS_DIR, filename);
+  const buffer = Buffer.from(await file.arrayBuffer());
+  fs.writeFileSync(filePath, buffer);
+
+  const avatarUrl = `/api/auth/avatars/${filename}`;
+
+  // Update user profile with new avatar URL
+  updateUserFields(user.id, { ai_avatar_url: avatarUrl });
+
+  const updated = getUserById(user.id)!;
+  return c.json({ success: true, avatarUrl, user: toUserPublic(updated) });
+});
+
+// Serve avatar files (public, no auth required)
+authRoutes.get('/avatars/:filename', (c) => {
+  const filename = c.req.param('filename');
+
+  // Security: only allow simple filenames (no path traversal)
+  if (!filename || /[/\\]/.test(filename) || filename.includes('..')) {
+    return c.json({ error: 'Invalid filename' }, 400);
+  }
+
+  const filePath = path.join(AVATARS_DIR, filename);
+  if (!fs.existsSync(filePath)) {
+    return c.json({ error: 'Avatar not found' }, 404);
+  }
+
+  const ext = path.extname(filename).toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+  };
+  const contentType = mimeTypes[ext] || 'application/octet-stream';
+  const data = fs.readFileSync(filePath);
+
+  return new Response(data, {
+    status: 200,
+    headers: {
+      'Content-Type': contentType,
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    },
+  });
 });
 
 export default authRoutes;
