@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Loader2, Upload, Trash2 } from 'lucide-react';
 
 import { useAuthStore } from '../../stores/auth';
 import { Input } from '@/components/ui/input';
@@ -13,7 +13,7 @@ import { getErrorMessage } from './types';
 interface ProfileSectionProps extends SettingsNotification {}
 
 export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
-  const { user: currentUser, changePassword, updateProfile } = useAuthStore();
+  const { user: currentUser, changePassword, updateProfile, uploadAvatar } = useAuthStore();
 
   // Profile
   const [username, setUsername] = useState('');
@@ -26,7 +26,10 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
   const [aiName, setAiName] = useState('');
   const [aiAvatarEmoji, setAiAvatarEmoji] = useState<string | null>(null);
   const [aiAvatarColor, setAiAvatarColor] = useState<string | null>(null);
+  const [aiAvatarUrl, setAiAvatarUrl] = useState<string | null>(null);
   const [aiAppearanceSaving, setAiAppearanceSaving] = useState(false);
+  const [avatarUploading, setAvatarUploading] = useState(false);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
 
   // Password
   const [currentPwd, setCurrentPwd] = useState('');
@@ -41,7 +44,8 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
     setAiName(currentUser?.ai_name || '');
     setAiAvatarEmoji(currentUser?.ai_avatar_emoji ?? null);
     setAiAvatarColor(currentUser?.ai_avatar_color ?? null);
-  }, [currentUser?.username, currentUser?.display_name, currentUser?.avatar_emoji, currentUser?.avatar_color, currentUser?.ai_name, currentUser?.ai_avatar_emoji, currentUser?.ai_avatar_color]);
+    setAiAvatarUrl(currentUser?.ai_avatar_url ?? null);
+  }, [currentUser?.username, currentUser?.display_name, currentUser?.avatar_emoji, currentUser?.avatar_color, currentUser?.ai_name, currentUser?.ai_avatar_emoji, currentUser?.ai_avatar_color, currentUser?.ai_avatar_url]);
 
   const handleUpdateProfile = async () => {
     setProfileSaving(true);
@@ -93,6 +97,47 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
       setError(getErrorMessage(err, '更新机器人外观失败'));
     } finally {
       setAiAppearanceSaving(false);
+    }
+  };
+
+  const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    // Reset input so re-selecting same file triggers onChange
+    e.target.value = '';
+
+    if (file.size > 2 * 1024 * 1024) {
+      setError('图片文件不能超过 2MB');
+      return;
+    }
+    if (!['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.type)) {
+      setError('仅支持 jpg、png、gif、webp 格式');
+      return;
+    }
+
+    setAvatarUploading(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const url = await uploadAvatar(file);
+      setAiAvatarUrl(url);
+      setNotice('头像已上传');
+    } catch (err) {
+      setError(getErrorMessage(err, '上传头像失败'));
+    } finally {
+      setAvatarUploading(false);
+    }
+  };
+
+  const handleRemoveAvatar = async () => {
+    setError(null);
+    setNotice(null);
+    try {
+      await updateProfile({ ai_avatar_url: null });
+      setAiAvatarUrl(null);
+      setNotice('头像已移除');
+    } catch (err) {
+      setError(getErrorMessage(err, '移除头像失败'));
     }
   };
 
@@ -181,13 +226,14 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
         <div className="space-y-4">
           <div className="flex items-center gap-4 mb-4">
             <EmojiAvatar
+              imageUrl={aiAvatarUrl}
               emoji={aiAvatarEmoji}
               color={aiAvatarColor}
               fallbackChar={aiName || 'AI'}
               size="lg"
             />
             <div className="text-sm text-slate-500">
-              设置机器人的 Emoji 和背景色
+              设置机器人的头像图片、Emoji 和背景色
             </div>
           </div>
           <div>
@@ -206,6 +252,42 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
           <div>
             <label className="block text-xs text-slate-500 mb-2">背景色</label>
             <ColorPicker value={aiAvatarColor ?? undefined} onChange={setAiAvatarColor} />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">自定义头像图片</label>
+            <input
+              ref={avatarInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/gif,image/webp"
+              className="hidden"
+              onChange={handleAvatarUpload}
+            />
+            <div className="flex items-center gap-3">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={avatarUploading}
+                onClick={() => avatarInputRef.current?.click()}
+              >
+                {avatarUploading ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
+                上传图片
+              </Button>
+              {aiAvatarUrl && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleRemoveAvatar}
+                >
+                  <Trash2 className="size-4" />
+                  移除
+                </Button>
+              )}
+            </div>
+            <p className="text-xs text-slate-400 mt-1">
+              支持 jpg、png、gif、webp，最大 2MB。上传后将优先于 Emoji 头像显示
+            </p>
           </div>
         </div>
         <div className="mt-4">

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { api } from '../api/client';
+import { api, apiFetch } from '../api/client';
 
 export type Permission =
   | 'manage_system_config'
@@ -27,6 +27,7 @@ export interface UserPublic {
   ai_name: string | null;
   ai_avatar_emoji: string | null;
   ai_avatar_color: string | null;
+  ai_avatar_url: string | null;
 }
 
 export interface AppearanceConfig {
@@ -56,7 +57,8 @@ interface AuthState {
   checkStatus: () => Promise<void>;
   setupAdmin: (username: string, password: string) => Promise<void>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
-  updateProfile: (payload: { username?: string; display_name?: string; avatar_emoji?: string | null; avatar_color?: string | null; ai_name?: string | null; ai_avatar_emoji?: string | null; ai_avatar_color?: string | null }) => Promise<void>;
+  updateProfile: (payload: { username?: string; display_name?: string; avatar_emoji?: string | null; avatar_color?: string | null; ai_name?: string | null; ai_avatar_emoji?: string | null; ai_avatar_color?: string | null; ai_avatar_url?: string | null }) => Promise<void>;
+  uploadAvatar: (file: File) => Promise<string>;
   fetchAppearance: () => Promise<void>;
   hasPermission: (permission: Permission) => boolean;
 }
@@ -156,6 +158,18 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   updateProfile: async (payload) => {
     const data = await api.put<{ success: boolean; user: UserPublic }>('/api/auth/profile', payload);
     set({ user: data.user });
+  },
+
+  uploadAvatar: async (file: File) => {
+    const formData = new FormData();
+    formData.append('avatar', file);
+    const data = await apiFetch<{ success: boolean; avatarUrl: string; user: UserPublic }>('/api/auth/avatar', {
+      method: 'POST',
+      body: formData,
+      headers: {},
+    });
+    set({ user: data.user });
+    return data.avatarUrl;
   },
 
   fetchAppearance: async () => {

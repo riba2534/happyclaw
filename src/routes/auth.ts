@@ -1,9 +1,14 @@
 // Authentication routes
 
+import fs from 'fs';
+import { readFile } from 'fs/promises';
+import path from 'path';
+import crypto from 'crypto';
 import { Hono } from 'hono';
 import type { Variables } from '../web-context.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { getClientIp } from '../utils.js';
+import { DATA_DIR } from '../config.js';
 import {
   LoginSchema,
   RegisterSchema,
@@ -85,6 +90,7 @@ export function toUserPublic(u: User): UserPublic {
     ai_name: u.ai_name ?? null,
     ai_avatar_emoji: u.ai_avatar_emoji ?? null,
     ai_avatar_color: u.ai_avatar_color ?? null,
+    ai_avatar_url: u.ai_avatar_url ?? null,
     created_at: u.created_at,
     last_login_at: u.last_login_at,
     last_active_at: null,
@@ -556,6 +562,9 @@ authRoutes.put('/profile', authMiddleware, async (c) => {
   if (validation.data.ai_avatar_color !== undefined) {
     updates.ai_avatar_color = validation.data.ai_avatar_color;
   }
+  if (validation.data.ai_avatar_url !== undefined) {
+    updates.ai_avatar_url = validation.data.ai_avatar_url;
+  }
   if (Object.keys(updates).length === 0) {
     return c.json({ error: 'No fields to update' }, 400);
   }
@@ -686,6 +695,100 @@ authRoutes.delete('/sessions/:id', authMiddleware, (c) => {
     ip_address: getClientIp(c),
   });
   return c.json({ success: true });
+});
+
+// --- Avatar Upload ---
+
+const AVATARS_DIR = path.join(DATA_DIR, 'avatars');
+const ALLOWED_AVATAR_TYPES: Record<string, string> = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+};
+const MAX_AVATAR_SIZE = 2 * 1024 * 1024; // 2MB
+
+authRoutes.post('/avatar', authMiddleware, async (c) => {
+  const user = c.get('user') as AuthUser;
+  const contentType = c.req.header('content-type') || '';
+
+  if (!contentType.includes('multipart/form-data')) {
+    return c.json({ error: 'Expected multipart/form-data' }, 400);
+  }
+
+  const formData = await c.req.formData();
+  const file = formData.get('avatar');
+  if (!file || !(file instanceof File)) {
+    return c.json({ error: 'No avatar file provided' }, 400);
+  }
+
+  if (file.size > MAX_AVATAR_SIZE) {
+    return c.json({ error: 'File too large (max 2MB)' }, 400);
+  }
+
+  const ext = ALLOWED_AVATAR_TYPES[file.type];
+  if (!ext) {
+    return c.json({ error: 'Unsupported image type. Use jpg, png, gif or webp' }, 400);
+  }
+
+  fs.mkdirSync(AVATARS_DIR, { recursive: true });
+
+  // Delete old avatar files for this user
+  try {
+    const existing = fs.readdirSync(AVATARS_DIR).filter(f => f.startsWith(`${user.id}-`));
+    for (const f of existing) {
+      fs.unlinkSync(path.join(AVATARS_DIR, f));
+    }
+  } catch { /* ignore */ }
+
+  const filename = `${user.id}-${crypto.randomBytes(4).toString('hex')}${ext}`;
+  const filePath = path.join(AVATARS_DIR, filename);
+  const buffer = Buffer.from(await file.arrayBuffer());
+  const tmpPath = filePath + '.tmp';
+  fs.writeFileSync(tmpPath, buffer);
+  fs.renameSync(tmpPath, filePath);
+
+  const avatarUrl = `/api/auth/avatars/${filename}`;
+
+  // Update user profile with new avatar URL
+  updateUserFields(user.id, { ai_avatar_url: avatarUrl });
+
+  const updated = getUserById(user.id)!;
+  return c.json({ success: true, avatarUrl, user: toUserPublic(updated) });
+});
+
+// Serve avatar files (public, no auth required)
+authRoutes.get('/avatars/:filename', async (c) => {
+  const filename = c.req.param('filename');
+
+  // Security: only allow simple filenames (no path traversal)
+  if (!filename || /[/\\]/.test(filename) || filename.includes('..')) {
+    return c.json({ error: 'Invalid filename' }, 400);
+  }
+
+  const filePath = path.join(AVATARS_DIR, filename);
+  if (!fs.existsSync(filePath)) {
+    return c.json({ error: 'Avatar not found' }, 404);
+  }
+
+  const ext = path.extname(filename).toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+  };
+  const contentType = mimeTypes[ext] || 'application/octet-stream';
+  const data = await readFile(filePath);
+
+  return new Response(data, {
+    status: 200,
+    headers: {
+      'Content-Type': contentType,
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    },
+  });
 });
 
 export default authRoutes;
