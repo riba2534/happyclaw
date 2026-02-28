@@ -124,7 +124,20 @@ async function runTask(
   };
 
   try {
-    const executionMode = group.executionMode || 'container';
+    // Resolve execution mode: if this group is not is_home but shares a folder
+    // with an is_home group, inherit that group's execution mode (same logic as
+    // queue.setHostModeResolver). Fixes tasks created from Telegram/IM picking
+    // container mode even though admin home folder should run in host mode.
+    let executionMode = group.executionMode || 'container';
+    if (!group.is_home) {
+      const allGroups = deps.registeredGroups();
+      const homeSibling = Object.values(allGroups).find(
+        (g) => g.folder === group.folder && g.is_home,
+      );
+      if (homeSibling) {
+        executionMode = homeSibling.executionMode || 'container';
+      }
+    }
     const runAgent =
       executionMode === 'host' ? runHostAgent : runContainerAgent;
 
