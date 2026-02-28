@@ -23,6 +23,8 @@ export interface StdoutParserState {
   newSessionId: string | undefined;
   outputChain: Promise<void>;
   hasSuccessOutput: boolean;
+  /** True when agent emitted a { status: 'closed' } marker (exit due to _close sentinel). */
+  hasClosedOutput: boolean;
 }
 
 export interface StdoutParserOptions {
@@ -41,6 +43,7 @@ export function createStdoutParserState(): StdoutParserState {
     newSessionId: undefined,
     outputChain: Promise.resolve(),
     hasSuccessOutput: false,
+    hasClosedOutput: false,
   };
 }
 
@@ -99,6 +102,9 @@ export function attachStdoutHandler(
           }
           if (parsed.status === 'success') {
             state.hasSuccessOutput = true;
+          }
+          if (parsed.status === 'closed') {
+            state.hasClosedOutput = true;
           }
           // Activity detected — reset the hard timeout
           opts.resetTimeout();
@@ -421,13 +427,17 @@ export function handleSuccessClose(
 
   // Streaming mode: wait for output chain to settle
   if (ctx.onOutput) {
+    const { hasClosedOutput } = ctx.stdoutState;
     waitForOutputChain(outputChain, ctx.groupName, `${ctx.filePrefix} success path`, () => {
+      // Propagate 'closed' status so the host can distinguish a _close-interrupted
+      // exit from a normal completion and avoid committing the message cursor.
+      const finalStatus = hasClosedOutput ? 'closed' as const : 'success' as const;
       logger.info(
-        { group: ctx.groupName, duration, newSessionId },
+        { group: ctx.groupName, duration, newSessionId, finalStatus },
         `${ctx.label} completed (streaming mode)`,
       );
       ctx.resolvePromise({
-        status: 'success',
+        status: finalStatus,
         result: null,
         newSessionId,
       });

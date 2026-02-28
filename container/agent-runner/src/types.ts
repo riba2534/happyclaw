@@ -26,7 +26,7 @@ export interface ContainerInput {
 }
 
 export interface ContainerOutput {
-  status: 'success' | 'error' | 'stream';
+  status: 'success' | 'error' | 'stream' | 'closed';
   result: string | null;
   newSessionId?: string;
   error?: string;

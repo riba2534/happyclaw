@@ -985,6 +985,11 @@ async function main(): Promise<void> {
       // idle timer and cause a 30-min delay before the next _close).
       if (queryResult.closedDuringQuery) {
         log('Close sentinel consumed during query, exiting');
+        // Notify host that this exit was due to _close, not a normal completion.
+        // Without this marker the host treats the exit as silent success and
+        // commits the message cursor, causing the in-flight IM message to be
+        // consumed without a reply (the "swallowed message" bug).
+        writeOutput({ status: 'closed', result: null });
         break;
       }
 
@@ -1041,6 +1046,7 @@ async function main(): Promise<void> {
 
         if (flushResult.closedDuringQuery) {
           log('Close sentinel during memory flush, exiting');
+          writeOutput({ status: 'closed', result: null });
           break;
         }
       }

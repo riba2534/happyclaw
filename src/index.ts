@@ -788,6 +788,17 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     return true;
   }
 
+  // Container closed during query (e.g. home folder drain) without sending a reply:
+  // don't commit cursor so the message gets retried on the next poll cycle.
+  // If sentReply is true the cursor was already committed at line 722, no action needed.
+  if (output.status === 'closed' && !sentReply) {
+    logger.warn(
+      { group: group.name, chatJid },
+      'Container closed during query without reply, keeping cursor for retry',
+    );
+    return true;
+  }
+
   // Query 出错时，将残留 running task 标记为 error，避免长期僵尸状态。
   // 正常退出不做强制 completed，避免把未确认完成的任务误判为已完成。
   const isErrorExit = output.status === 'error' || hadError;
@@ -953,7 +964,7 @@ async function runAgent(
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
   images?: Array<{ data: string; mimeType?: string }>,
-): Promise<{ status: 'success' | 'error'; error?: string }> {
+): Promise<{ status: 'success' | 'error' | 'closed'; error?: string }> {
   const isHome = !!group.is_home;
   // For the agent-runner: isMain means this is an admin home container (full privileges)
   const isAdminHome = isHome && group.folder === MAIN_GROUP_FOLDER;
@@ -1047,6 +1058,12 @@ async function runAgent(
     if (output.newSessionId && output.status !== 'error') {
       sessions[group.folder] = output.newSessionId;
       setSession(group.folder, output.newSessionId);
+    }
+
+    // Agent was interrupted by _close sentinel (home folder drain).
+    // Propagate so processGroupMessages can skip cursor commit.
+    if (output.status === 'closed') {
+      return { status: 'closed' };
     }
 
     if (output.status === 'error') {
