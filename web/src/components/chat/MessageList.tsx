@@ -8,6 +8,7 @@ import { StreamingDisplay } from './StreamingDisplay';
 import { AgentStatusCard } from './AgentStatusCard';
 import { EmojiAvatar } from '../common/EmojiAvatar';
 import { Loader2, ChevronUp, ChevronDown, AlertTriangle, Square } from 'lucide-react';
+import { useDisplayMode } from '../../hooks/useDisplayMode';
 
 interface MessageListProps {
   messages: Message[];
@@ -46,6 +47,7 @@ const quickPrompts = [
 ];
 
 export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrigger, groupJid, isWaiting, onInterrupt, agents, onAgentClick, agentId, onSend }: MessageListProps) {
+  const { mode: displayMode } = useDisplayMode();
   const thinkingCache = useChatStore(s => s.thinkingCache ?? {});
   const isShared = useChatStore(s => !!s.groups[groupJid ?? '']?.is_shared);
   const currentUser = useAuthStore(s => s.user);
@@ -226,7 +228,7 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
         ref={parentRef}
         className="h-full overflow-y-auto overflow-x-hidden py-6 bg-background"
       >
-        <div className="max-w-3xl mx-auto px-4 min-w-0">
+        <div className={displayMode === 'compact' ? 'mx-auto px-4 min-w-0' : 'max-w-3xl mx-auto px-4 min-w-0'}>
         {loading && hasMore && (
           <div className="flex justify-center py-4">
             <Loader2 className="animate-spin text-primary" size={24} />

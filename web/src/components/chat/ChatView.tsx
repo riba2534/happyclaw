@@ -10,7 +10,8 @@ import { FilePanel } from './FilePanel';
 import { ContainerEnvPanel } from './ContainerEnvPanel';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
-import { ArrowLeft, Link, MoreHorizontal, PanelRightClose, PanelRightOpen, Users, X } from 'lucide-react';
+import { ArrowLeft, Link, MessageSquare, MoreHorizontal, PanelRightClose, PanelRightOpen, Terminal, Users, X } from 'lucide-react';
+import { useDisplayMode } from '../../hooks/useDisplayMode';
 import { cn } from '@/lib/utils';
 import { wsManager } from '../../api/ws';
 import { api } from '../../api/client';
@@ -50,6 +51,7 @@ interface ChatViewProps {
 }
 
 export function ChatView({ groupJid, onBack }: ChatViewProps) {
+  const { mode: displayMode, toggle: toggleDisplayMode } = useDisplayMode();
   const [mobilePanel, setMobilePanel] = useState<SidebarTab | null>(null);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('files');
   const [panelOpen, setPanelOpen] = useState(false);
@@ -403,6 +405,15 @@ export function ChatView({ groupJid, onBack }: ChatViewProps) {
             )}
           </div>
         </div>
+        {/* Desktop: toggle display mode */}
+        <button
+          onClick={toggleDisplayMode}
+          className="hidden lg:flex p-2 rounded-lg hover:bg-accent text-muted-foreground transition-colors cursor-pointer"
+          title={displayMode === 'chat' ? '紧凑模式' : '对话模式'}
+          aria-label={displayMode === 'chat' ? '切换到紧凑模式' : '切换到对话模式'}
+        >
+          {displayMode === 'chat' ? <Terminal className="w-5 h-5" /> : <MessageSquare className="w-5 h-5" />}
+        </button>
         {/* Desktop: toggle side panel */}
         <button
           onClick={() => setPanelOpen((v) => !v)}

@@ -7,6 +7,7 @@ import { MarkdownRenderer } from './MarkdownRenderer';
 import { MessageContextMenu } from './MessageContextMenu';
 import { ImageLightbox } from './ImageLightbox';
 import { mediumTap } from '../../hooks/useHaptic';
+import { useDisplayMode } from '../../hooks/useDisplayMode';
 
 interface MessageBubbleProps {
   message: Message;
@@ -60,6 +61,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
   const touchStartPos = useRef({ x: 0, y: 0 });
   const currentUser = useAuthStore((s) => s.user);
   const appearance = useAuthStore((s) => s.appearance);
+  const { mode: displayMode } = useDisplayMode();
   const isUser = !message.is_from_me;
   const isOtherUser = isShared && isUser && message.sender !== currentUser?.id;
   const time = new Date(message.timestamp)
@@ -154,6 +156,66 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
     );
   }
 
+  // ── Compact mode: all messages left-aligned, no bubbles, full-width ──
+  if (displayMode === 'compact') {
+    const isAI = message.is_from_me;
+    const senderName = isAI
+      ? (currentUser?.ai_name || appearance?.aiName || message.sender_name || 'AI')
+      : (isOtherUser ? (message.sender_name || '用户') : (currentUser?.display_name || currentUser?.username || '我'));
+
+    return (
+      <div className="group mb-2 border-b border-slate-100 pb-2" onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd} onTouchMove={handleTouchMove}>
+        {/* Sender line — no avatars in compact mode */}
+        <div className="flex items-center gap-1.5 mb-1">
+          <span className={`text-xs font-semibold ${isAI ? 'text-brand-600' : 'text-slate-700'}`}>{senderName}</span>
+          {showTime && <span className="text-[11px] text-slate-400">{time}</span>}
+          <button
+            onClick={handleCopy}
+            className="ml-1 w-5 h-5 rounded flex items-center justify-center text-slate-300 hover:text-slate-600 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+            title="复制"
+          >
+            {copied ? <Check className="w-3 h-3 text-primary" /> : <Copy className="w-3 h-3" />}
+          </button>
+        </div>
+
+        {/* Reasoning */}
+        {thinkingContent && <ReasoningBlock content={thinkingContent} />}
+
+        {/* Images */}
+        {images.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-2">
+            {images.map((img, i) => (
+              <img
+                key={i}
+                src={`data:${img.mimeType || 'image/png'};base64,${img.data}`}
+                alt={img.name || `图片 ${i + 1}`}
+                className="max-w-48 max-h-48 rounded-lg object-cover cursor-pointer border border-slate-200 hover:border-primary transition-colors"
+                onClick={() => setLightboxState({ images: allImageSrcs, index: i })}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Content — strip first-child top margin for consistent spacing */}
+        <div className="min-w-0 overflow-hidden [&>div>*:first-child]:!mt-0">
+          {isAI ? (
+            <MarkdownRenderer content={message.content} groupJid={message.chat_jid} variant="chat" />
+          ) : (
+            <p className="text-[15px] leading-relaxed whitespace-pre-wrap break-words text-slate-800">{message.content}</p>
+          )}
+        </div>
+
+        {lightboxState && (
+          <ImageLightbox images={lightboxState.images} initialIndex={lightboxState.index} onClose={() => setLightboxState(null)} />
+        )}
+        {contextMenu && (
+          <MessageContextMenu content={message.content} position={contextMenu} onClose={() => setContextMenu(null)} />
+        )}
+      </div>
+    );
+  }
+
+  // ── Chat mode (default): bubble-style layout ──
   if (isUser) {
     // Shared workspace — other user's message: left-aligned with avatar
     if (isOtherUser) {
@@ -175,7 +237,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
                 {initial}
               </div>
             </div>
-            <div className="flex-1 min-w-0 max-w-[85%] lg:max-w-[75%]">
+            <div className="flex-1 min-w-0">
               <div className="hidden lg:flex items-center gap-2 mb-1">
                 <span className="text-xs text-muted-foreground font-medium">{otherName}</span>
                 {showTime && <span className="text-xs text-muted-foreground">{time}</span>}
@@ -231,7 +293,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
     const showSenderLabel = isShared;
     return (
       <div className="group flex justify-end mb-4" onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd} onTouchMove={handleTouchMove}>
-        <div className="flex flex-col items-end max-w-[85%] lg:max-w-[75%] min-w-0">
+        <div className="flex flex-col items-end min-w-0 w-full">
           {showSenderLabel && (
             <span className="text-xs text-muted-foreground font-medium mb-1 mr-1">
               {message.sender_name || currentUser?.display_name || currentUser?.username || '我'}

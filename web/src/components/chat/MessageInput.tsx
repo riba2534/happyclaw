@@ -13,6 +13,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { useFileStore } from '../../stores/files';
+import { useDisplayMode } from '../../hooks/useDisplayMode';
 
 interface PendingFile {
   /** Display name: relative path for folder uploads, file name otherwise */
@@ -56,6 +57,8 @@ export function MessageInput({
   const imageInputRef = useRef<HTMLInputElement>(null);
 
   const { uploadFiles, uploading, uploadProgress } = useFileStore();
+  const { mode: displayMode } = useDisplayMode();
+  const isCompact = displayMode === 'compact';
 
   // iOS keyboard adaptation
   useKeyboardHeight();
@@ -309,10 +312,10 @@ export function MessageInput({
       className="px-4 pt-2 pb-6 bg-background ios-pwa-bottom-safe max-lg:bg-white/60 max-lg:backdrop-blur-xl max-lg:saturate-[1.8] max-lg:border-t max-lg:border-white/20"
       style={{ paddingBottom: `max(1.5rem, var(--keyboard-height, 0px))` }}
     >
-      <div className="max-w-3xl mx-auto">
+      <div className={isCompact ? 'mx-auto' : 'max-w-3xl mx-auto'}>
         {/* Upload progress bar */}
         {uploading && uploadProgress && (
-          <div className="mb-2 bg-white rounded-xl border border-slate-200 shadow-sm px-4 py-2.5">
+          <div className={`mb-2 px-4 py-2.5 ${isCompact ? 'bg-white border border-slate-200' : 'bg-white rounded-xl border border-slate-200 shadow-sm'}`}>
             <div className="flex items-center justify-between mb-1.5">
               <span className="text-xs text-slate-600 truncate max-w-[65%]">
                 {uploadProgress.currentFile || '完成'}
@@ -331,10 +334,10 @@ export function MessageInput({
         )}
 
         {/* Main input card */}
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm">
+        <div className={isCompact ? 'bg-white border border-slate-200 rounded-lg' : 'bg-white rounded-2xl border border-slate-200 shadow-sm'}>
           {/* Send error banner */}
           {sendError && (
-            <div className="px-4 py-2 bg-red-50 text-red-600 text-xs font-medium border-b border-red-100 flex items-center gap-2 rounded-t-2xl">
+            <div className={`px-4 py-2 bg-red-50 text-red-600 text-xs font-medium border-b border-red-100 flex items-center gap-2 ${isCompact ? 'rounded-t-lg' : 'rounded-t-2xl'}`}>
               <span>{sendError}</span>
             </div>
           )}
