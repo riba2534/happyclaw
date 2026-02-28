@@ -1172,8 +1172,24 @@ function startIpcWatcher(): void {
       );
       const isAdminHome = !!(sourceGroupEntry?.is_home && sourceGroup === MAIN_GROUP_FOLDER);
       const isHome = !!sourceGroupEntry?.is_home;
-      const messagesDir = path.join(ipcBaseDir, sourceGroup, 'messages');
-      const tasksDir = path.join(ipcBaseDir, sourceGroup, 'tasks');
+
+      // Collect all IPC roots: main group dir + agents/*/
+      const groupIpcRoot = path.join(ipcBaseDir, sourceGroup);
+      const ipcRoots = [groupIpcRoot];
+      try {
+        const agentsDir = path.join(groupIpcRoot, 'agents');
+        if (fs.existsSync(agentsDir)) {
+          for (const entry of fs.readdirSync(agentsDir, { withFileTypes: true })) {
+            if (entry.isDirectory()) {
+              ipcRoots.push(path.join(agentsDir, entry.name));
+            }
+          }
+        }
+      } catch { /* ignore */ }
+
+      for (const ipcRoot of ipcRoots) {
+      const messagesDir = path.join(ipcRoot, 'messages');
+      const tasksDir = path.join(ipcRoot, 'tasks');
 
       // Process messages from this group's IPC directory
       try {
@@ -1301,6 +1317,8 @@ function startIpcWatcher(): void {
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error reading IPC tasks directory');
       }
+
+      } // end for (const ipcRoot of ipcRoots)
 
     }
 
