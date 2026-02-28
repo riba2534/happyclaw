@@ -25,6 +25,8 @@ interface Skill {
   source: 'user' | 'project';
   enabled: boolean;
   syncedFromHost?: boolean;
+  packageName?: string;
+  installedAt?: string;
   userInvocable: boolean;
   allowedTools: string[];
   argumentHint: string | null;
@@ -41,9 +43,21 @@ interface HostSyncManifest {
   lastSyncAt: string;
 }
 
+interface SkillsManifest {
+  skills: Record<string, {
+    packageName: string;
+    installedAt: string;
+    source: string;
+  }>;
+}
+
 interface SearchResult {
   package: string;
   url: string;
+  description?: string;
+  installs?: number;
+  skillId?: string;
+  source?: string;
 }
 
 // --- Utility Functions ---
@@ -77,6 +91,53 @@ function writeHostSyncManifest(userId: string, manifest: HostSyncManifest): void
   const manifestPath = getHostSyncManifestPath(userId);
   fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+}
+
+function getSkillsManifestPath(userId: string): string {
+  return path.join(DATA_DIR, 'skills', userId, '.skills-manifest.json');
+}
+
+function readSkillsManifest(userId: string): SkillsManifest {
+  try {
+    const data = fs.readFileSync(getSkillsManifestPath(userId), 'utf-8');
+    return JSON.parse(data);
+  } catch {
+    return { skills: {} };
+  }
+}
+
+function writeSkillsManifest(userId: string, manifest: SkillsManifest): void {
+  const manifestPath = getSkillsManifestPath(userId);
+  fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+}
+
+/**
+ * Update the skills manifest after installing skills.
+ * Records packageName, installedAt, and source for each installed skill.
+ */
+function updateSkillsManifest(userId: string, packageName: string, installedSkillIds: string[]): void {
+  const manifest = readSkillsManifest(userId);
+  const now = new Date().toISOString();
+  for (const id of installedSkillIds) {
+    manifest.skills[id] = {
+      packageName,
+      installedAt: now,
+      source: 'skills.sh',
+    };
+  }
+  writeSkillsManifest(userId, manifest);
+}
+
+/**
+ * Remove a skill from the manifest when it is deleted.
+ */
+function removeFromSkillsManifest(userId: string, skillId: string): void {
+  const manifest = readSkillsManifest(userId);
+  if (skillId in manifest.skills) {
+    delete manifest.skills[skillId];
+    writeSkillsManifest(userId, manifest);
+  }
 }
 
 function validateSkillId(id: string): boolean {
@@ -237,12 +298,21 @@ function discoverSkills(userId: string): Skill[] {
   const userSkills = scanDirectory(getUserSkillsDir(userId), 'user');
   const projectSkills = scanDirectory(getProjectSkillsDir(), 'project');
 
-  // 读取 manifest 标记同步来源
-  const manifest = readHostSyncManifest(userId);
-  const syncedSet = new Set(manifest.syncedSkills);
+  // 读取 host sync manifest 标记同步来源
+  const hostManifest = readHostSyncManifest(userId);
+  const syncedSet = new Set(hostManifest.syncedSkills);
+
+  // 读取 skills manifest 补充安装元数据
+  const skillsManifest = readSkillsManifest(userId);
+
   for (const skill of userSkills) {
     if (syncedSet.has(skill.id)) {
       skill.syncedFromHost = true;
+    }
+    const meta = skillsManifest.skills[skill.id];
+    if (meta) {
+      skill.packageName = meta.packageName;
+      skill.installedAt = meta.installedAt;
     }
   }
 
@@ -257,8 +327,9 @@ function getSkillDetail(skillId: string, userId: string): SkillDetail | null {
     { rootDir: getProjectSkillsDir(), source: 'project' },
   ];
 
-  const manifest = readHostSyncManifest(userId);
-  const syncedSet = new Set(manifest.syncedSkills);
+  const hostManifest = readHostSyncManifest(userId);
+  const syncedSet = new Set(hostManifest.syncedSkills);
+  const skillsManifest = readSkillsManifest(userId);
 
   for (const { rootDir, source } of searchDirs) {
     const skillDir = path.join(rootDir, skillId);
@@ -306,8 +377,15 @@ function getSkillDetail(skillId: string, userId: string): SkillDetail | null {
         content,
       };
 
-      if (source === 'user' && syncedSet.has(skillId)) {
-        detail.syncedFromHost = true;
+      if (source === 'user') {
+        if (syncedSet.has(skillId)) {
+          detail.syncedFromHost = true;
+        }
+        const meta = skillsManifest.skills[skillId];
+        if (meta) {
+          detail.packageName = meta.packageName;
+          detail.installedAt = meta.installedAt;
+        }
       }
 
       return detail;
@@ -416,6 +494,142 @@ function copySkillToUser(src: string, dest: string): void {
   fs.cpSync(realSrc, dest, { recursive: true });
 }
 
+// --- Search cache (LRU, 5min TTL, max 100 entries) ---
+
+interface CacheEntry<T> {
+  value: T;
+  expiresAt: number;
+}
+
+const SEARCH_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const SEARCH_CACHE_MAX = 100;
+const searchCache = new Map<string, CacheEntry<SearchResult[]>>();
+
+function getCachedSearch(key: string): SearchResult[] | null {
+  const entry = searchCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    searchCache.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+
+function setCachedSearch(key: string, value: SearchResult[]): void {
+  // Evict oldest if at capacity
+  if (searchCache.size >= SEARCH_CACHE_MAX) {
+    const oldest = searchCache.keys().next().value;
+    if (oldest !== undefined) searchCache.delete(oldest);
+  }
+  searchCache.set(key, { value, expiresAt: Date.now() + SEARCH_CACHE_TTL });
+}
+
+/**
+ * Search skills via skills.sh API.
+ * Returns structured results with install counts.
+ */
+async function searchSkillsApi(query: string): Promise<SearchResult[]> {
+  const cached = getCachedSearch(query);
+  if (cached) return cached;
+
+  try {
+    const resp = await fetch(
+      `https://skills.sh/api/search?q=${encodeURIComponent(query)}&limit=20`,
+      { signal: AbortSignal.timeout(10_000) },
+    );
+    if (!resp.ok) throw new Error(`skills.sh returned ${resp.status}`);
+
+    const data = await resp.json() as {
+      skills?: Array<{
+        id: string;
+        skillId: string;
+        name: string;
+        installs: number;
+        source: string;
+      }>;
+    };
+
+    const results: SearchResult[] = (data.skills || []).map((s) => ({
+      package: s.source === s.skillId || !s.skillId
+        ? s.source
+        : `${s.source}@${s.skillId}`,
+      url: `https://skills.sh/s/${s.id}`,
+      description: '',
+      installs: s.installs,
+      skillId: s.skillId,
+      source: s.source,
+    }));
+
+    setCachedSearch(query, results);
+    return results;
+  } catch {
+    // Fallback to npx skills find
+    return searchSkillsFallback(query);
+  }
+}
+
+/**
+ * Fallback search using npx skills find CLI.
+ */
+async function searchSkillsFallback(query: string): Promise<SearchResult[]> {
+  try {
+    const { stdout } = await execFileAsync(
+      'npx',
+      ['-y', 'skills', 'find', query],
+      { timeout: 30_000 },
+    );
+    return parseSearchOutput(stdout);
+  } catch (error) {
+    if (error && typeof error === 'object' && 'stdout' in error) {
+      const results = parseSearchOutput((error as any).stdout || '');
+      if (results.length > 0) return results;
+    }
+    return [];
+  }
+}
+
+/**
+ * Fetch SKILL.md content from GitHub for a given source repo and skill ID.
+ * Tries multiple common directory layouts.
+ */
+async function fetchSkillMdFromGitHub(
+  source: string,
+  skillId: string,
+): Promise<{ content: string; description: string; skillName: string } | null> {
+  // Try common paths where SKILL.md might live
+  const pathCandidates = [
+    `skills/${skillId}/SKILL.md`,
+    `${skillId}/SKILL.md`,
+    `.claude/skills/${skillId}/SKILL.md`,
+    `SKILL.md`,
+  ];
+
+  for (const branch of ['main', 'master']) {
+    for (const filePath of pathCandidates) {
+      try {
+        const url = `https://raw.githubusercontent.com/${source}/${branch}/${filePath}`;
+        const resp = await fetch(url, { signal: AbortSignal.timeout(8_000) });
+        if (!resp.ok) continue;
+
+        const content = await resp.text();
+        // Verify it looks like a SKILL.md (has frontmatter)
+        if (!content.startsWith('---')) continue;
+
+        const frontmatter = parseFrontmatter(content);
+        return {
+          content,
+          description: frontmatter.description || '',
+          skillName: frontmatter.name || skillId,
+        };
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  return null;
+}
+
 async function withSkillInstallLock<T>(fn: () => Promise<T>): Promise<T> {
   const previous = skillInstallLock.catch(() => undefined);
   let release: () => void = () => undefined;
@@ -445,65 +659,67 @@ skillsRoutes.get('/search', authMiddleware, async (c) => {
     return c.json({ results: [] });
   }
 
-  try {
-    const { stdout } = await execFileAsync(
-      'npx',
-      ['-y', 'skills', 'find', query],
-      { timeout: 30_000 },
-    );
-    const results = parseSearchOutput(stdout);
-    return c.json({ results });
-  } catch (error) {
-    // npx skills find may exit non-zero when no results found
-    if (error && typeof error === 'object' && 'stdout' in error) {
-      const results = parseSearchOutput((error as any).stdout || '');
-      if (results.length > 0) {
-        return c.json({ results });
-      }
-    }
-    return c.json({ results: [] });
-  }
+  const results = await searchSkillsApi(query);
+  return c.json({ results });
 });
 
 skillsRoutes.get('/search/detail', authMiddleware, async (c) => {
-  const url = c.req.query('url')?.trim();
-  try {
-    const parsed = new URL(url || '');
-    if (parsed.hostname !== 'skills.sh' || parsed.protocol !== 'https:') {
-      return c.json({ error: 'Invalid skills.sh URL' }, 400);
-    }
-  } catch {
-    return c.json({ error: 'Invalid skills.sh URL' }, 400);
-  }
+  const source = c.req.query('source')?.trim();
+  const skillId = c.req.query('skillId')?.trim();
 
-  try {
-    const resp = await fetch(url!, {
-      headers: { 'Accept': 'text/html' },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!resp.ok) {
+  // Support legacy url-based lookup for backwards compat
+  const url = c.req.query('url')?.trim();
+
+  if (source && skillId) {
+    // New path: fetch SKILL.md from GitHub using source/skillId
+    const result = await fetchSkillMdFromGitHub(source, skillId);
+    if (!result) {
       return c.json({ detail: null });
     }
-    const html = await resp.text();
-
-    // 从页面 <h1> 提取 skill 标题作为描述
-    const h1Match = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
-    const description = h1Match?.[1]
-      ?.replace(/<[^>]+>/g, '')
-      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&#x26;/g, '&')
-      .trim() || '';
 
     return c.json({
       detail: {
-        description,
+        description: result.description,
+        skillName: result.skillName,
+        readme: result.content,
         installs: '',
         age: '',
         features: [],
       },
     });
-  } catch {
-    return c.json({ detail: null });
   }
+
+  // Legacy: extract source/skillId from skills.sh URL
+  if (url) {
+    try {
+      const parsed = new URL(url);
+      if (parsed.hostname === 'skills.sh') {
+        // URL pattern: https://skills.sh/s/{owner}/{repo}/{skillId}
+        const segments = parsed.pathname.replace(/^\/s\//, '').split('/').filter(Boolean);
+        if (segments.length >= 3) {
+          const srcFromUrl = `${segments[0]}/${segments[1]}`;
+          const skillIdFromUrl = segments[2];
+          const result = await fetchSkillMdFromGitHub(srcFromUrl, skillIdFromUrl);
+          if (result) {
+            return c.json({
+              detail: {
+                description: result.description,
+                skillName: result.skillName,
+                readme: result.content,
+                installs: '',
+                age: '',
+                features: [],
+              },
+            });
+          }
+        }
+      }
+    } catch {
+      // fall through
+    }
+  }
+
+  return c.json({ detail: null });
 });
 
 skillsRoutes.get('/:id', authMiddleware, (c) => {
@@ -573,6 +789,7 @@ function deleteSkillForUser(
 
   try {
     fs.rmSync(skillDir, { recursive: true, force: true });
+    removeFromSkillsManifest(userId, skillId);
     return { success: true };
   } catch (error) {
     return {
@@ -598,6 +815,8 @@ skillsRoutes.delete('/:id', authMiddleware, async (c) => {
 
 /**
  * Install a skill package for a specific user.
+ * Uses a temporary HOME directory to isolate `npx skills add --global` from
+ * the real ~/.claude/skills, eliminating race conditions across concurrent installs.
  * Reusable by both the HTTP route and IPC handler.
  */
 async function installSkillForUser(
@@ -608,62 +827,65 @@ async function installSkillForUser(
     return { success: false, error: 'Invalid package name format' };
   }
 
-  return withSkillInstallLock(async () => {
-    const globalDir = getGlobalSkillsDir();
-    fs.mkdirSync(globalDir, { recursive: true });
+  // Create an isolated temp directory to act as HOME so `--global` installs
+  // into tempHome/.claude/skills/ instead of the real ~/.claude/skills/.
+  // This avoids any race condition when multiple installs run concurrently.
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-install-'));
+  const tempSkillsDir = path.join(tempHome, '.claude', 'skills');
+  fs.mkdirSync(tempSkillsDir, { recursive: true });
 
-    // 记录安装前时间戳，用于检测新增/修改的目录（减 1s 避免文件系统时间精度问题）
-    const beforeTime = Date.now() - 1000;
+  try {
+    await execFileAsync(
+      'npx',
+      ['-y', 'skills', 'add', pkg, '--global', '--yes', '-a', 'claude-code'],
+      {
+        timeout: 60_000,
+        env: { ...process.env, HOME: tempHome },
+      },
+    );
 
-    try {
-      await execFileAsync(
-        'npx',
-        ['-y', 'skills', 'add', pkg, '--global', '--yes', '-a', 'claude-code'],
-        { timeout: 60_000 },
-      );
-
-      // Find entries modified during install (handles symlinks and real dirs)
-      const modifiedEntries = findModifiedEntries(globalDir, beforeTime);
-
-      // Copy resolved skill content to per-user directory
-      const userDir = getUserSkillsDir(userId);
-      fs.mkdirSync(userDir, { recursive: true });
-
-      for (const name of modifiedEntries) {
-        const src = path.join(globalDir, name);
-        const dest = path.join(userDir, name);
-        // Remove existing if present (reinstall)
-        if (fs.existsSync(dest)) {
-          fs.rmSync(dest, { recursive: true, force: true });
+    // Discover all skill directories installed into the temp location
+    const installedEntries: string[] = [];
+    if (fs.existsSync(tempSkillsDir)) {
+      for (const entry of fs.readdirSync(tempSkillsDir, { withFileTypes: true })) {
+        if (entry.isDirectory() || entry.isSymbolicLink()) {
+          installedEntries.push(entry.name);
         }
-        copySkillToUser(src, dest);
       }
-
-      // 清理全局目录中本次新增的条目，避免污染宿主机环境
-      for (const name of modifiedEntries) {
-        try {
-          fs.rmSync(path.join(globalDir, name), { recursive: true, force: true });
-        } catch { /* ignore cleanup errors */ }
-      }
-
-      return { success: true, installed: modifiedEntries };
-    } catch (error) {
-      // Even on error, clean up any modified entries from global
-      try {
-        const modifiedEntries = findModifiedEntries(globalDir, beforeTime);
-        for (const name of modifiedEntries) {
-          fs.rmSync(path.join(globalDir, name), { recursive: true, force: true });
-        }
-      } catch {
-        // ignore cleanup errors
-      }
-
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      };
     }
-  });
+
+    if (installedEntries.length === 0) {
+      return { success: false, error: 'No skills were installed — package may be invalid' };
+    }
+
+    // Copy resolved skill content to per-user directory
+    const userDir = getUserSkillsDir(userId);
+    fs.mkdirSync(userDir, { recursive: true });
+
+    for (const name of installedEntries) {
+      const src = path.join(tempSkillsDir, name);
+      const dest = path.join(userDir, name);
+      if (fs.existsSync(dest)) {
+        fs.rmSync(dest, { recursive: true, force: true });
+      }
+      copySkillToUser(src, dest);
+    }
+
+    // Write manifest metadata
+    updateSkillsManifest(userId, pkg, installedEntries);
+
+    return { success: true, installed: installedEntries };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    };
+  } finally {
+    // Always clean up the temp directory
+    try {
+      fs.rmSync(tempHome, { recursive: true, force: true });
+    } catch { /* ignore cleanup errors */ }
+  }
 }
 
 // Sync host-level skills (~/.claude/skills/) to admin's user-level directory.
@@ -785,6 +1007,38 @@ skillsRoutes.post(
     return c.json({ success: true, installed: result.installed });
   },
 );
+
+// Reinstall a skill by its ID — requires the skill to have a packageName in the manifest.
+skillsRoutes.post('/:id/reinstall', authMiddleware, async (c) => {
+  const id = c.req.param('id');
+  const authUser = c.get('user') as AuthUser;
+
+  if (!validateSkillId(id)) {
+    return c.json({ error: 'Invalid skill ID' }, 400);
+  }
+
+  const manifest = readSkillsManifest(authUser.id);
+  const meta = manifest.skills[id];
+  if (!meta?.packageName) {
+    return c.json({ error: 'Skill has no package info — cannot reinstall' }, 400);
+  }
+
+  // Delete then reinstall
+  const deleteResult = deleteSkillForUser(authUser.id, id);
+  if (!deleteResult.success) {
+    return c.json({ error: 'Failed to delete old skill', details: deleteResult.error }, 500);
+  }
+
+  const installResult = await installSkillForUser(authUser.id, meta.packageName);
+  if (!installResult.success) {
+    return c.json(
+      { error: 'Failed to reinstall skill', details: installResult.error },
+      500,
+    );
+  }
+
+  return c.json({ success: true, installed: installResult.installed });
+});
 
 export { getUserSkillsDir, installSkillForUser, deleteSkillForUser };
 export default skillsRoutes;

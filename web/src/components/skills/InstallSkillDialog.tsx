@@ -4,6 +4,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useSkillsStore, type SearchResult } from '@/stores/skills';
+import { MarkdownRenderer } from '../chat/MarkdownRenderer';
 
 interface InstallSkillDialogProps {
   open: boolean;
@@ -13,6 +14,13 @@ interface InstallSkillDialogProps {
 }
 
 type Tab = 'search' | 'manual';
+
+function formatInstalls(n?: number): string {
+  if (n === undefined || n === null) return '';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
 
 function SearchResultItem({
   result,
@@ -28,15 +36,18 @@ function SearchResultItem({
   const [expanded, setExpanded] = useState(false);
   const { searchDetails, searchDetailLoading, fetchSearchDetail } = useSkillsStore();
 
-  const detail = result.url ? searchDetails[result.url] : undefined;
-  const loading = result.url ? searchDetailLoading[result.url] : false;
+  const key = result.package;
+  const detail = searchDetails[key];
+  const loading = searchDetailLoading[key];
 
   const handleToggle = () => {
-    if (!expanded && result.url && !(result.url in searchDetails)) {
-      fetchSearchDetail(result.url);
+    if (!expanded && !(key in searchDetails)) {
+      fetchSearchDetail(result);
     }
     setExpanded(!expanded);
   };
+
+  const installCount = formatInstalls(result.installs);
 
   return (
     <div className="rounded-lg border border-border hover:bg-muted/50 transition-colors overflow-hidden">
@@ -49,9 +60,16 @@ function SearchResultItem({
           {expanded
             ? <ChevronUp className="size-3.5 shrink-0 text-muted-foreground" />
             : <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />}
-          <span className="text-sm font-medium text-foreground truncate">
-            {result.package}
-          </span>
+          <div className="min-w-0 flex-1">
+            <span className="text-sm font-medium text-foreground truncate block">
+              {result.package}
+            </span>
+            {installCount && (
+              <span className="text-xs text-muted-foreground">
+                {installCount} 次安装
+              </span>
+            )}
+          </div>
         </button>
         <Button
           size="sm"
@@ -84,14 +102,13 @@ function SearchResultItem({
                 <p className="text-xs text-foreground/80 leading-relaxed">{detail.description}</p>
               )}
 
-              {(detail.installs || detail.age) && (
-                <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                  {detail.installs && <span>每周安装: {detail.installs}</span>}
-                  {detail.age && <span>{detail.age}</span>}
+              {detail.readme && (
+                <div className="mt-2 border border-border/50 rounded-md p-3 max-h-64 overflow-y-auto bg-muted/30">
+                  <MarkdownRenderer content={detail.readme} variant="docs" />
                 </div>
               )}
 
-              {detail.features.length > 0 && (
+              {!detail.readme && detail.features && detail.features.length > 0 && (
                 <ul className="space-y-0.5">
                   {detail.features.map((f, i) => (
                     <li key={i} className="text-xs text-muted-foreground flex gap-1.5">
@@ -107,8 +124,6 @@ function SearchResultItem({
           {!loading && detail === null && (
             <p className="text-xs text-muted-foreground py-2">无法加载详情</p>
           )}
-
-          {/* detail === undefined means not yet fetched (shouldn't happen since we fetch on expand) */}
 
           {result.url && (
             <a

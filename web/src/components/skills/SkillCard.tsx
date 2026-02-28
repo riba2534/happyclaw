@@ -51,6 +51,9 @@ export function SkillCard({ skill, selected, onSelect }: SkillCardProps) {
             )}
           </div>
           <p className="text-sm text-slate-500 line-clamp-2">{skill.description}</p>
+          {skill.packageName && (
+            <p className="text-xs text-slate-400 mt-1 font-mono truncate">{skill.packageName}</p>
+          )}
         </div>
 
         {isReadonly && (
