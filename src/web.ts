@@ -47,6 +47,7 @@ import skillsRoutes from './routes/skills.js';
 import browseRoutes from './routes/browse.js';
 import agentRoutes from './routes/agents.js';
 import mcpServersRoutes from './routes/mcp-servers.js';
+import scriptsRoutes from './routes/scripts.js';
 
 // Database and types (only for handleWebUserMessage and broadcast)
 import {
@@ -151,6 +152,7 @@ app.route('/api/memory', memoryRoutes);
 app.route('/api/config', configRoutes);
 app.route('/api/tasks', tasksRoutes);
 app.route('/api/skills', skillsRoutes);
+app.route('/api/scripts', scriptsRoutes);
 app.route('/api/admin', adminRoutes);
 app.route('/api/browse', browseRoutes);
 app.route('/api/mcp-servers', mcpServersRoutes);

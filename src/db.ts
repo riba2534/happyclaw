@@ -246,6 +246,25 @@ export function initDatabase(): void {
     CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id);
   `);
 
+  // Scripts registration table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS scripts (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      description TEXT,
+      script_path TEXT,
+      process_manager TEXT NOT NULL DEFAULT 'manual',
+      pm2_name TEXT,
+      start_command TEXT,
+      stop_command TEXT,
+      check_command TEXT,
+      group_folder TEXT NOT NULL,
+      created_by TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+
   // Sub-agents table for multi-agent parallel execution
   db.exec(`
     CREATE TABLE IF NOT EXISTS agents (
@@ -512,7 +531,7 @@ export function initDatabase(): void {
     })();
   }
 
-  const SCHEMA_VERSION = '17';
+  const SCHEMA_VERSION = '18';
   db.prepare(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', SCHEMA_VERSION);
@@ -2479,6 +2498,61 @@ export function isGroupShared(groupFolder: string): boolean {
     )
     .get(groupFolder) as { cnt: number };
   return row.cnt > 1;
+}
+
+// --- Scripts CRUD ---
+
+export interface Script {
+  id: string;
+  name: string;
+  description: string | null;
+  script_path: string | null;
+  process_manager: 'pm2' | 'systemd' | 'manual';
+  pm2_name: string | null;
+  start_command: string | null;
+  stop_command: string | null;
+  check_command: string | null;
+  group_folder: string;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export function createScript(script: Script): void {
+  db.prepare(
+    `INSERT INTO scripts (id, name, description, script_path, process_manager, pm2_name, start_command, stop_command, check_command, group_folder, created_by, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    script.id,
+    script.name,
+    script.description,
+    script.script_path,
+    script.process_manager,
+    script.pm2_name,
+    script.start_command,
+    script.stop_command,
+    script.check_command,
+    script.group_folder,
+    script.created_by,
+    script.created_at,
+    script.updated_at,
+  );
+}
+
+export function deleteScript(id: string): void {
+  db.prepare('DELETE FROM scripts WHERE id = ?').run(id);
+}
+
+export function getScriptById(id: string): Script | undefined {
+  return db.prepare('SELECT * FROM scripts WHERE id = ?').get(id) as Script | undefined;
+}
+
+export function getScriptByName(name: string): Script | undefined {
+  return db.prepare('SELECT * FROM scripts WHERE name = ?').get(name) as Script | undefined;
+}
+
+export function getAllScripts(): Script[] {
+  return db.prepare('SELECT * FROM scripts ORDER BY created_at DESC').all() as Script[];
 }
 
 /**

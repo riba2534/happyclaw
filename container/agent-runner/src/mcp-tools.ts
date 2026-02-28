@@ -286,6 +286,75 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
       },
     ),
 
+    // --- register_script ---
+    tool(
+      'register_script',
+      `Register a script for monitoring on the dashboard. Call this after creating/starting a script so it appears in the monitoring panel.
+
+Process manager types:
+• "pm2": Script managed by PM2. Must provide pm2_name (the PM2 process name).
+• "systemd": Script managed by systemd. Provide start_command/stop_command.
+• "manual": Script started manually (nohup, direct process, etc.). Provide start_command/stop_command and optionally check_command.
+
+The check_command is used for non-PM2 scripts to detect running status: exit 0 = running, non-zero = stopped. Example: "pgrep -f my_script.py"`,
+      {
+        name: z.string().describe('Unique name for the script (used as identifier)'),
+        description: z.string().optional().describe('Brief description of what the script does'),
+        script_path: z.string().optional().describe('Path to the script file'),
+        process_manager: z.enum(['pm2', 'systemd', 'manual']).default('manual').describe('How the script is managed'),
+        pm2_name: z.string().optional().describe('PM2 process name (required when process_manager is pm2)'),
+        start_command: z.string().optional().describe('Command to start the script'),
+        stop_command: z.string().optional().describe('Command to stop the script'),
+        check_command: z.string().optional().describe('Command to check if running (exit 0=running, non-0=stopped). Example: "pgrep -f script.py"'),
+      },
+      async (args) => {
+        if (args.process_manager === 'pm2' && !args.pm2_name) {
+          return {
+            content: [{ type: 'text' as const, text: 'pm2_name is required when process_manager is "pm2".' }],
+            isError: true,
+          };
+        }
+        const data = {
+          type: 'register_script',
+          name: args.name,
+          description: args.description || null,
+          script_path: args.script_path || null,
+          process_manager: args.process_manager || 'manual',
+          pm2_name: args.pm2_name || null,
+          start_command: args.start_command || null,
+          stop_command: args.stop_command || null,
+          check_command: args.check_command || null,
+          groupFolder: ctx.groupFolder,
+          timestamp: new Date().toISOString(),
+        };
+        writeIpcFile(TASKS_DIR, data);
+        return {
+          content: [{ type: 'text' as const, text: `Script "${args.name}" registered for monitoring.` }],
+        };
+      },
+    ),
+
+    // --- unregister_script ---
+    tool(
+      'unregister_script',
+      'Unregister a script from the monitoring dashboard. This will also attempt to stop the process if it is running.',
+      {
+        name: z.string().describe('The name of the script to unregister'),
+      },
+      async (args) => {
+        const data = {
+          type: 'unregister_script',
+          name: args.name,
+          groupFolder: ctx.groupFolder,
+          timestamp: new Date().toISOString(),
+        };
+        writeIpcFile(TASKS_DIR, data);
+        return {
+          content: [{ type: 'text' as const, text: `Script "${args.name}" unregistration requested.` }],
+        };
+      },
+    ),
+
     // --- register_group ---
     tool(
       'register_group',

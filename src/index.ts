@@ -1,4 +1,4 @@
-import { ChildProcess, execFile } from 'child_process';
+import { ChildProcess, execFile, execSync } from 'child_process';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -67,6 +67,9 @@ import {
   markAllRunningTaskAgentsAsError,
   getSession,
   listAgentsByJid,
+  createScript,
+  deleteScript as deleteScriptFromDb,
+  getScriptByName,
 } from './db.js';
 // feishu.js deprecated exports are no longer needed; imManager handles all connections
 import { imManager } from './im-manager.js';
@@ -1366,6 +1369,14 @@ async function processTaskIpc(
     package?: string;
     requestId?: string;
     skillId?: string;
+    // For register_script / unregister_script
+    description?: string;
+    script_path?: string;
+    process_manager?: string;
+    pm2_name?: string;
+    start_command?: string;
+    stop_command?: string;
+    check_command?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isAdminHome: boolean, // Whether source is admin home container
@@ -1673,6 +1684,70 @@ async function processTaskIpc(
         );
       } else {
         logger.warn({ data }, 'Invalid uninstall_skill request - missing required fields');
+      }
+      break;
+
+    case 'register_script':
+      if (data.name) {
+        const existing = getScriptByName(data.name);
+        // If exists: non-admin can only update their own
+        if (existing && !isAdminHome && existing.created_by !== sourceGroup) {
+          logger.warn({ sourceGroup, name: data.name }, 'Unauthorized register_script update attempt');
+          break;
+        }
+        // Delete old if exists (upsert)
+        if (existing) {
+          deleteScriptFromDb(existing.id);
+        }
+        const scriptId = `script-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const now = new Date().toISOString();
+        createScript({
+          id: scriptId,
+          name: data.name,
+          description: data.description || null,
+          script_path: data.script_path || null,
+          process_manager: (data.process_manager as 'pm2' | 'systemd' | 'manual') || 'manual',
+          pm2_name: data.pm2_name || null,
+          start_command: data.start_command || null,
+          stop_command: data.stop_command || null,
+          check_command: data.check_command || null,
+          group_folder: sourceGroup,
+          created_by: sourceGroup,
+          created_at: existing?.created_at || now,
+          updated_at: now,
+        });
+        logger.info({ scriptId, name: data.name, sourceGroup }, 'Script registered via IPC');
+      } else {
+        logger.warn({ data }, 'Invalid register_script request - missing name');
+      }
+      break;
+
+    case 'unregister_script':
+      if (data.name) {
+        const script = getScriptByName(data.name);
+        if (!script) {
+          logger.warn({ name: data.name }, 'unregister_script: script not found');
+          break;
+        }
+        if (!isAdminHome && script.created_by !== sourceGroup) {
+          logger.warn({ sourceGroup, name: data.name }, 'Unauthorized unregister_script attempt');
+          break;
+        }
+        // Stop the process
+        try {
+          if (script.process_manager === 'pm2' && script.pm2_name) {
+            execSync(`pm2 stop ${JSON.stringify(script.pm2_name)}`, { timeout: 10000 });
+            execSync(`pm2 delete ${JSON.stringify(script.pm2_name)}`, { timeout: 10000 });
+          } else if (script.stop_command) {
+            execSync(script.stop_command, { timeout: 10000 });
+          }
+        } catch (err) {
+          logger.warn({ err, name: data.name }, 'Failed to stop script during unregister');
+        }
+        deleteScriptFromDb(script.id);
+        logger.info({ name: data.name, sourceGroup }, 'Script unregistered via IPC');
+      } else {
+        logger.warn({ data }, 'Invalid unregister_script request - missing name');
       }
       break;
 
