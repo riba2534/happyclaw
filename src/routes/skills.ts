@@ -56,6 +56,10 @@ function getGlobalSkillsDir(): string {
   return path.join(os.homedir(), '.claude', 'skills');
 }
 
+function getAgentsSkillsDir(): string {
+  return path.join(os.homedir(), '.agents', 'skills');
+}
+
 function getProjectSkillsDir(): string {
   return path.resolve(process.cwd(), 'container', 'skills');
 }
@@ -233,7 +237,7 @@ function scanDirectory(
   return skills;
 }
 
-function discoverSkills(userId: string): Skill[] {
+function discoverSkills(userId: string, role?: string): Skill[] {
   const userSkills = scanDirectory(getUserSkillsDir(userId), 'user');
   const projectSkills = scanDirectory(getProjectSkillsDir(), 'project');
 
@@ -243,6 +247,25 @@ function discoverSkills(userId: string): Skill[] {
   for (const skill of userSkills) {
     if (syncedSet.has(skill.id)) {
       skill.syncedFromHost = true;
+    }
+  }
+
+  // admin 用户额外扫描宿主机目录，去重（per-user 同名 skill 优先）
+  if (role === 'admin') {
+    const seenIds = new Set([
+      ...userSkills.map((s) => s.id),
+      ...projectSkills.map((s) => s.id),
+    ]);
+
+    const hostClaudeSkills = scanDirectory(getGlobalSkillsDir(), 'user');
+    const hostAgentsSkills = scanDirectory(getAgentsSkillsDir(), 'user');
+
+    for (const skill of [...hostClaudeSkills, ...hostAgentsSkills]) {
+      if (!seenIds.has(skill.id)) {
+        skill.syncedFromHost = true;
+        userSkills.push(skill);
+        seenIds.add(skill.id);
+      }
     }
   }
 
@@ -435,7 +458,7 @@ async function withSkillInstallLock<T>(fn: () => Promise<T>): Promise<T> {
 
 skillsRoutes.get('/', authMiddleware, (c) => {
   const authUser = c.get('user') as AuthUser;
-  const skills = discoverSkills(authUser.id);
+  const skills = discoverSkills(authUser.id, authUser.role);
   return c.json({ skills });
 });
 
@@ -666,7 +689,7 @@ async function installSkillForUser(
   });
 }
 
-// Sync host-level skills (~/.claude/skills/) to admin's user-level directory.
+// Sync host-level skills (~/.claude/skills/ + ~/.agents/skills/) to admin's user-level directory.
 // Only admin can use this endpoint.
 skillsRoutes.post('/sync-host', authMiddleware, async (c) => {
   const authUser = c.get('user') as AuthUser;
@@ -675,15 +698,17 @@ skillsRoutes.post('/sync-host', authMiddleware, async (c) => {
   }
 
   return withSkillInstallLock(async () => {
-    const hostDir = getGlobalSkillsDir();
+    const hostDirs = [getGlobalSkillsDir(), getAgentsSkillsDir()];
     const userDir = getUserSkillsDir(authUser.id);
     fs.mkdirSync(userDir, { recursive: true });
 
-    // 1. 扫描宿主机 skills
-    const hostSkillNames: string[] = [];
-    if (fs.existsSync(hostDir)) {
+    // 1. 扫描所有宿主机 skills 目录，去重（先扫描的优先）
+    const hostSkillMap = new Map<string, string>(); // name → source dir path
+    for (const hostDir of hostDirs) {
+      if (!fs.existsSync(hostDir)) continue;
       for (const entry of fs.readdirSync(hostDir, { withFileTypes: true })) {
         if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+        if (hostSkillMap.has(entry.name)) continue; // 已从更高优先级目录收集
         const skillDir = path.join(hostDir, entry.name);
         // 验证包含 SKILL.md 或 SKILL.md.disabled
         try {
@@ -692,13 +717,15 @@ skillsRoutes.post('/sync-host', authMiddleware, async (c) => {
             fs.existsSync(path.join(realPath, 'SKILL.md')) ||
             fs.existsSync(path.join(realPath, 'SKILL.md.disabled'))
           ) {
-            hostSkillNames.push(entry.name);
+            hostSkillMap.set(entry.name, hostDir);
           }
         } catch {
           // 跳过 broken symlinks
         }
       }
     }
+
+    const hostSkillNames = [...hostSkillMap.keys()];
 
     // 2. 读取 manifest
     const manifest = readHostSyncManifest(authUser.id);
@@ -724,7 +751,8 @@ skillsRoutes.post('/sync-host', authMiddleware, async (c) => {
         continue;
       }
 
-      const src = path.join(hostDir, name);
+      const srcDir = hostSkillMap.get(name)!;
+      const src = path.join(srcDir, name);
       const dest = path.join(userDir, name);
 
       if (existingUserSkills.has(name)) {
