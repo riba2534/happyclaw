@@ -191,6 +191,18 @@ Agent 自主维护跨会话的持久记忆：
   - Linux: `curl -fsSL https://get.docker.com | sh`
   - Windows: [Docker Desktop](https://www.docker.com/products/docker-desktop/)
 
+- **GNU Make** — 用于执行 `make start` / `make dev` 等命令
+  - macOS: 系统通常自带
+  - Linux: `sudo apt install make`（Debian/Ubuntu）
+  - Windows（PowerShell）:
+    ```powershell
+    # 1. 安装chocolatey
+    Set-ExecutionPolicy Bypass -Scope Process -Force; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+    
+    # 2. 安装make
+  choco install make
+    ```
+  
 - **Claude API 密钥** — Anthropic 官方或兼容的中转服务(各种 Coding Plan)，启动后在 Web 界面中配置
 
 **可选**
