@@ -2,7 +2,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
-import { useState, memo } from 'react';
+import React, { useState, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { Copy, Check } from 'lucide-react';
 import { MermaidDiagram } from './MermaidDiagram';
@@ -89,6 +89,13 @@ const sanitizeSchema = {
   },
 };
 
+function extractText(node: React.ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(extractText).join('');
+  if (React.isValidElement(node)) return extractText((node.props as { children?: React.ReactNode }).children);
+  return '';
+}
+
 /** Code block / inline code renderer extracted from MarkdownRenderer */
 function CodeBlock({
   className,
@@ -100,7 +107,7 @@ function CodeBlock({
   const match = /language-(\w+)/.exec(className || '');
   const lang = match?.[1];
   const isBlock = Boolean(match);
-  const codeString = String(children).replace(/\n$/, '');
+  const codeString = extractText(children).replace(/\n$/, '');
 
   if (lang === 'mermaid') {
     return <MermaidDiagram code={codeString} />;
