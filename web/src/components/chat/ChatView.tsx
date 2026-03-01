@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useChatStore } from '../../stores/chat';
 import { useAuthStore } from '../../stores/auth';
@@ -190,7 +190,6 @@ export function ChatView({ groupJid, onBack }: ChatViewProps) {
   const activeAgent = activeAgentTab ? agents.find(a => a.id === activeAgentTab) : null;
   const isConversationTab = activeAgent?.kind === 'conversation';
   const isSdkTask = !!activeAgentTab && !!sdkTasks[activeAgentTab];
-  const sdkTaskIds = useMemo(() => new Set(Object.keys(sdkTasks)), [sdkTasks]);
 
   // Load sub-agents for this group
   useEffect(() => {
@@ -466,7 +465,6 @@ export function ChatView({ groupJid, onBack }: ChatViewProps) {
         activeTab={activeAgentTab}
         onSelectTab={(id) => setActiveAgentTab(groupJid, id)}
         onDeleteAgent={(id) => deleteAgentAction(groupJid, id)}
-        sdkTaskIds={sdkTaskIds}
         onCreateConversation={() => {
           const name = prompt('对话名称：');
           if (name?.trim()) {

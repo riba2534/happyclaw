@@ -167,7 +167,9 @@ const DEFAULT_STREAMING_STATE: StreamingState = {
 const MAX_EVENT_LOG = 30;
 const SDK_TASK_AUTO_CLOSE_MS = 3000;
 const SDK_TASK_TOOL_END_FALLBACK_CLOSE_MS = 1200;
+const SDK_TASK_STALE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes stale timeout for non-teammate tasks
 const sdkTaskCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const sdkTaskStaleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 // 兜底路由支持的事件类型（模块级常量，避免热路径上重复创建 Set）
 const FALLBACK_EVENT_TYPES: Set<StreamEventType> = new Set([
@@ -222,6 +224,47 @@ function clearSdkTaskCleanupTimer(taskId: string): void {
   }
 }
 
+function clearSdkTaskStaleTimer(taskId: string): void {
+  const timer = sdkTaskStaleTimers.get(taskId);
+  if (timer) {
+    clearTimeout(timer);
+    sdkTaskStaleTimers.delete(taskId);
+  }
+}
+
+/**
+ * Reset the stale timer for a non-teammate SDK task.
+ * If no events are received within SDK_TASK_STALE_TIMEOUT_MS, auto-finalize it.
+ */
+function resetSdkTaskStaleTimer(
+  set: (fn: (s: ChatState) => Partial<ChatState>) => void,
+  get: () => ChatState,
+  taskId: string,
+  chatJid: string,
+): void {
+  clearSdkTaskStaleTimer(taskId);
+  const timer = setTimeout(() => {
+    sdkTaskStaleTimers.delete(taskId);
+    const state = get();
+    const task = state.sdkTasks[taskId];
+    if (task && task.status === 'running' && !task.isTeammate) {
+      // Auto-finalize stale task
+      set((s) => {
+        const existingTask = s.sdkTasks[taskId];
+        if (!existingTask || existingTask.status !== 'running') return {};
+        return {
+          sdkTasks: {
+            ...s.sdkTasks,
+            [taskId]: { ...existingTask, status: 'completed' as const },
+          },
+        };
+      });
+      scheduleSdkTaskCleanup(set, taskId, chatJid, SDK_TASK_AUTO_CLOSE_MS, get);
+    }
+  }, SDK_TASK_STALE_TIMEOUT_MS);
+  sdkTaskStaleTimers.set(taskId, timer);
+}
+
 const SDK_TASK_VIEWING_CLOSE_MS = 8000; // 用户正在查看标签页时延长关闭延迟
 
 function doSdkTaskCleanup(
@@ -230,6 +273,7 @@ function doSdkTaskCleanup(
   chatJid: string,
 ): void {
   sdkTaskCleanupTimers.delete(taskId);
+  clearSdkTaskStaleTimer(taskId);
   set((s) => {
     const isTeammate = s.sdkTasks[taskId]?.isTeammate || false;
     const nextSdkTasks = { ...s.sdkTasks };
@@ -928,6 +972,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
           agents: { ...s.agents, [chatJid]: updatedAgents },
         };
       });
+      // Start stale timer for non-teammate tasks
+      if (!isTeammate) {
+        resetSdkTaskStaleTimer(set, get, taskId, chatJid);
+      }
     };
 
     const resolveOrBindTaskId = (rawId: string): string => {
@@ -948,6 +996,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       summary?: string,
       closeAfterMs = SDK_TASK_AUTO_CLOSE_MS,
     ) => {
+      clearSdkTaskStaleTimer(taskId);
       let targetChatJid: string | null = null;
       set((s) => {
         const existingTask = s.sdkTasks[taskId];
@@ -1071,6 +1120,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (!state.sdkTasks[tid]) {
           ensureSdkTask(tid, taskFromDb?.prompt || taskFromDb?.name);
         }
+        // Reset stale timer — task is still active
+        const task = state.sdkTasks[tid];
+        if (task && !task.isTeammate) {
+          resetSdkTaskStaleTimer(set, get, tid, chatJid);
+        }
         set((s) => {
           const prev = s.agentStreaming[tid] || { ...DEFAULT_STREAMING_STATE };
           const next = { ...prev };
@@ -1093,6 +1147,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           .map(([id]) => id);
         if (runningNonTeammateTaskIds.length === 1) {
           const tid = runningNonTeammateTaskIds[0];
+          // Reset stale timer — task is still active (fallback-routed events)
+          resetSdkTaskStaleTimer(set, get, tid, chatJid);
           set((s) => {
             const prev = s.agentStreaming[tid] || { ...DEFAULT_STREAMING_STATE };
             const next = { ...prev };
@@ -1235,6 +1291,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // '__removed__' signal: agent has been cleaned up, remove from list
       if (resultSummary === '__removed__') {
         clearSdkTaskCleanupTimer(agentId);
+        clearSdkTaskStaleTimer(agentId);
         const filtered = existing.filter((a) => a.id !== agentId);
         const nextAgentStreaming = { ...s.agentStreaming };
         delete nextAgentStreaming[agentId];
@@ -1288,6 +1345,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (resolvedKind === 'task') {
         if (status !== 'running') {
           clearSdkTaskCleanupTimer(agentId);
+          clearSdkTaskStaleTimer(agentId);
           delete nextSdkTasks[agentId];
           nextSdkTaskAliases = removeSdkTaskAliases(nextSdkTaskAliases, agentId);
         } else if (nextSdkTasks[agentId]) {
@@ -1337,6 +1395,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             };
           } else {
             clearSdkTaskCleanupTimer(id);
+            clearSdkTaskStaleTimer(id);
           }
         }
 
@@ -1390,6 +1449,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       await api.delete(`/api/groups/${encodeURIComponent(jid)}/agents/${agentId}`);
       clearSdkTaskCleanupTimer(agentId);
+      clearSdkTaskStaleTimer(agentId);
       set((s) => {
         const updated = (s.agents[jid] || []).filter((a) => a.id !== agentId);
         const nextAgentStreaming = { ...s.agentStreaming };
