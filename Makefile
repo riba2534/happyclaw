@@ -1,6 +1,7 @@
 .PHONY: dev dev-backend dev-web build build-backend build-web start \
        typecheck typecheck-backend typecheck-web typecheck-agent-runner \
-       format format-check install clean reset-init update-sdk sync-types help
+       format format-check install clean reset-init update-sdk sync-types \
+       backup restore help
 
 # ─── Development ─────────────────────────────────────────────
 
@@ -83,6 +84,56 @@ clean: ## 清理构建产物
 reset-init: ## 完全重置为首装状态（清空所有运行时数据）
 	rm -rf data store groups
 	@echo "✅ 已完全重置为首装状态（数据库、配置、工作区、记忆、会话全部清除）"
+
+# ─── Backup / Restore ────────────────────────────────────────
+
+backup: ## 备份运行时数据到 happyclaw-backup-{date}.tar.gz
+	@DATE=$$(date +%Y%m%d-%H%M%S); \
+	FILE="happyclaw-backup-$$DATE.tar.gz"; \
+	echo "📦 正在打包备份到 $$FILE ..."; \
+	tar -czf "$$FILE" \
+	  --exclude='data/ipc' \
+	  --exclude='data/env' \
+	  --exclude='data/happyclaw.log' \
+	  --exclude='data/db/messages.db-shm' \
+	  --exclude='data/db/messages.db-wal' \
+	  --exclude='data/groups/*/logs' \
+	  data/db \
+	  data/config \
+	  data/groups \
+	  data/sessions \
+	  $$([ -d data/skills ] && echo data/skills) \
+	  2>/dev/null; \
+	echo "✅ 备份完成：$$FILE ($$(du -sh $$FILE | cut -f1))"
+
+restore: ## 从 happyclaw-backup-*.tar.gz 恢复数据（用法：make restore 或 make restore FILE=xxx.tar.gz）
+	@if [ -n "$(FILE)" ]; then \
+	  BACKUP="$(FILE)"; \
+	elif [ $$(ls happyclaw-backup-*.tar.gz 2>/dev/null | wc -l) -eq 1 ]; then \
+	  BACKUP=$$(ls happyclaw-backup-*.tar.gz); \
+	elif [ $$(ls happyclaw-backup-*.tar.gz 2>/dev/null | wc -l) -gt 1 ]; then \
+	  echo "❌ 发现多个备份文件，请用 make restore FILE=xxx.tar.gz 指定："; \
+	  ls happyclaw-backup-*.tar.gz; \
+	  exit 1; \
+	else \
+	  echo "❌ 未找到备份文件，请将 happyclaw-backup-*.tar.gz 放到当前目录"; \
+	  exit 1; \
+	fi; \
+	echo "📂 正在从 $$BACKUP 恢复..."; \
+	if [ -d data ] && [ "$$(ls -A data 2>/dev/null)" ]; then \
+	  echo "⚠️  data/ 目录已存在数据，继续将覆盖。是否继续？[y/N] "; \
+	  read CONFIRM; \
+	  [ "$$CONFIRM" = "y" ] || [ "$$CONFIRM" = "Y" ] || { echo "已取消"; exit 1; }; \
+	fi; \
+	tar -xzf "$$BACKUP"; \
+	if [ ! -f data/config/session-secret.key ]; then \
+	  echo "⚠️  警告：备份中缺少 session-secret.key，用户登录 cookie 将失效，需重新登录"; \
+	fi; \
+	echo "✅ 数据恢复完成"; \
+	echo ""; \
+	echo "后续步骤："; \
+	echo "  1. 如需 Docker 容器支持：./container/build.sh"; \
+	echo "  2. 启动服务：make start"
 
 # ─── Help ────────────────────────────────────────────────────
 
