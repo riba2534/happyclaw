@@ -429,6 +429,8 @@ make typecheck        # TypeScript 全量类型检查
 make format           # 代码格式化（Prettier）
 make clean            # 清理构建产物
 make reset-init       # 重置为首装状态（清空数据库、配置、工作区、记忆、会话）
+make backup           # 备份运行时数据到 happyclaw-backup-{date}.tar.gz
+make restore          # 从备份恢复数据（make restore 或 make restore FILE=xxx.tar.gz）
 ```
 
 | 服务 | 默认端口 | 说明 |
