@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Folder,
+  FolderOpen,
   ChevronRight,
   Download,
   Trash2,
@@ -19,6 +20,8 @@ import {
 } from 'lucide-react';
 import { useFileStore, FileEntry, toBase64Url } from '../../stores/files';
 import { useChatStore } from '../../stores/chat';
+import { useAuthStore } from '../../stores/auth';
+import { api } from '../../api/client';
 import { withBasePath } from '../../utils/url';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
@@ -275,6 +278,8 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
   const [createDirModal, setCreateDirModal] = useState(false);
   const [newDirName, setNewDirName] = useState('');
   const [createDirLoading, setCreateDirLoading] = useState(false);
+  const [openDirLoading, setOpenDirLoading] = useState(false);
+  const [openDirError, setOpenDirError] = useState<string | null>(null);
 
   const [deleteModal, setDeleteModal] = useState<{
     open: boolean;
@@ -289,6 +294,7 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
   const [editFile, setEditFile] = useState<FileEntry | null>(null);
 
   const isStreaming = useChatStore((s) => !!s.streaming[groupJid]);
+  const canOpenLocalFolder = useAuthStore((s) => s.user?.role === 'admin');
   const prevStreamingRef = useRef(false);
 
   const fileList = files[groupJid] || [];
@@ -390,6 +396,26 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
     loadFiles(groupJid, currentDir);
   };
 
+  const handleOpenLocalFolder = async () => {
+    setOpenDirLoading(true);
+    setOpenDirError(null);
+    try {
+      await api.post(`/api/groups/${encodeURIComponent(groupJid)}/files/open-directory`, {
+        path: currentDir,
+      });
+    } catch (err) {
+      if (err instanceof Error) {
+        setOpenDirError(err.message);
+      } else if (typeof err === 'object' && err !== null && 'message' in err) {
+        setOpenDirError(String((err as { message: unknown }).message));
+      } else {
+        setOpenDirError('打开本地文件夹失败');
+      }
+    } finally {
+      setOpenDirLoading(false);
+    }
+  };
+
   const handleCreateDir = () => {
     setNewDirName('');
     setCreateDirModal(true);
@@ -413,6 +439,17 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
       <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
         <h3 className="font-semibold text-slate-900 text-sm">工作区文件管理</h3>
         <div className="flex items-center gap-1">
+          {canOpenLocalFolder && (
+            <button
+              onClick={handleOpenLocalFolder}
+              disabled={openDirLoading}
+              className="hidden md:inline-flex text-slate-400 hover:text-slate-600 transition-colors p-2 rounded-md hover:bg-slate-100 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              title="打开工作区文件夹"
+              aria-label="打开工作区文件夹"
+            >
+              {openDirLoading ? <Loader2 className="size-3.5 animate-spin" /> : <FolderOpen className="size-3.5" />}
+            </button>
+          )}
           <button
             onClick={handleRefresh}
             className="text-slate-400 hover:text-slate-600 transition-colors p-2 rounded-md hover:bg-slate-100 cursor-pointer"
@@ -455,6 +492,12 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
           ))}
         </div>
       </div>
+
+      {openDirError && (
+        <div className="px-4 py-2 border-b border-red-100 bg-red-50 text-xs text-red-600">
+          {openDirError}
+        </div>
+      )}
 
       {/* File List */}
       <div className="flex-1 overflow-y-auto px-2 py-2">

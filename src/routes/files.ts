@@ -18,9 +18,13 @@ import {
   isSystemPath,
   MAX_FILE_SIZE,
 } from '../file-manager.js';
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 // MIME 类型映射（预览和编辑端点共用）
 const MIME_MAP: Record<string, string> = {
@@ -166,6 +170,45 @@ function parseSingleRange(
   return { start, end: Math.min(parsedEnd, fileSize - 1) };
 }
 
+async function openDirectoryInFileManager(targetDir: string): Promise<void> {
+  const attempts: Array<{ cmd: string; args: string[] }> = (() => {
+    if (process.platform === 'darwin') {
+      return [{ cmd: 'open', args: [targetDir] }];
+    }
+    if (process.platform === 'win32') {
+      return [{ cmd: 'explorer', args: [targetDir] }];
+    }
+    // Linux 桌面环境兼容：优先 xdg-open，失败后回退到常见 opener
+    return [
+      { cmd: 'xdg-open', args: [targetDir] },
+      { cmd: 'gio', args: ['open', targetDir] },
+      { cmd: 'kde-open5', args: [targetDir] },
+      { cmd: 'kde-open', args: [targetDir] },
+    ];
+  })();
+
+  const failureCodes: string[] = [];
+  for (const attempt of attempts) {
+    try {
+      await execFileAsync(attempt.cmd, attempt.args, { timeout: 10_000 });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      // 命令不存在：继续尝试下一个 opener
+      if (code === 'ENOENT') {
+        failureCodes.push(`${attempt.cmd}:ENOENT`);
+        continue;
+      }
+      failureCodes.push(`${attempt.cmd}:${code || 'ERROR'}`);
+    }
+  }
+
+  const err = new Error('No compatible desktop opener available');
+  (err as Error & { code?: string; detail?: string[] }).code = 'NO_FILE_OPENER';
+  (err as Error & { code?: string; detail?: string[] }).detail = failureCodes;
+  throw err;
+}
+
 const fileRoutes = new Hono<{ Variables: Variables }>();
 
 // GET /api/groups/:jid/files?path= - 列出文件
@@ -283,6 +326,61 @@ fileRoutes.post('/:jid/files', authMiddleware, async (c) => {
   } catch (error) {
     logger.error({ err: error }, `Failed to upload files for ${jid}`);
     return c.json({ error: 'Failed to upload files' }, 500);
+  }
+});
+
+// POST /api/groups/:jid/files/open-directory - 在本地文件管理器中打开目录
+fileRoutes.post('/:jid/files/open-directory', authMiddleware, async (c) => {
+  const jid = c.req.param('jid');
+
+  const group = getRegisteredGroup(jid);
+  if (!group) {
+    return c.json({ error: 'Group not found' }, 404);
+  }
+
+  const authUser = c.get('user') as AuthUser;
+  if (!canAccessGroup({ id: authUser.id, role: authUser.role }, group)) {
+    return c.json({ error: 'Group not found' }, 404);
+  }
+  // 打开本地目录属于宿主机操作，限制为有宿主机权限的用户
+  if (!hasHostExecutionPermission(authUser)) {
+    return c.json(
+      { error: 'Insufficient permissions to open local directory' },
+      403,
+    );
+  }
+
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const targetPath = typeof body.path === 'string' ? body.path : '';
+    const absolutePath = validateAndResolvePath(
+      group.folder,
+      targetPath,
+      getFileRootOverride(group),
+    );
+
+    if (!fs.existsSync(absolutePath)) {
+      return c.json({ error: 'Directory not found' }, 404);
+    }
+
+    const stats = fs.statSync(absolutePath);
+    const targetDir = stats.isDirectory() ? absolutePath : path.dirname(absolutePath);
+
+    await openDirectoryInFileManager(targetDir);
+    return c.json({ success: true });
+  } catch (error) {
+    logger.error({ err: error }, `Failed to open local directory for ${jid}`);
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'NO_FILE_OPENER') {
+      return c.json({ error: 'No desktop opener available on server' }, 503);
+    }
+    const msg = (error as Error).message;
+    const safeMessages = ['Path traversal detected', 'Symlink traversal detected'];
+    const publicMsg = safeMessages.includes(msg)
+      ? msg
+      : 'Failed to open local directory';
+    const status = safeMessages.includes(msg) ? 400 : 500;
+    return c.json({ error: publicMsg }, status);
   }
 });
 
