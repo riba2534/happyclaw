@@ -219,6 +219,7 @@ configRoutes.put(
       // Update .credentials.json in all session directories when credentials change
       if (validation.data.claudeOAuthCredentials) {
         updateAllSessionCredentials(saved);
+        deps?.queue?.closeAllActiveForCredentialRefresh();
       }
 
       appendClaudeConfigAudit(actor, 'update_secrets', changedFields);
@@ -408,6 +409,7 @@ configRoutes.post(
       // Write .credentials.json to all session directories
       if (oauthCredentials) {
         updateAllSessionCredentials(saved);
+        deps?.queue?.closeAllActiveForCredentialRefresh();
       }
 
       appendClaudeConfigAudit(actor, 'oauth_login', [
