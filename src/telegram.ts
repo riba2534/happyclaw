@@ -1,5 +1,6 @@
 import { Bot } from 'grammy';
 import crypto from 'crypto';
+import https from 'node:https';
 import { Agent as HttpsAgent } from 'node:https';
 import {
   storeChatMetadata,
@@ -8,6 +9,11 @@ import {
 } from './db.js';
 import { broadcastNewMessage } from './web.js';
 import { logger } from './logger.js';
+import {
+  saveDownloadedFile,
+  MAX_FILE_SIZE,
+  FileTooLargeError,
+} from './im-downloader.js';
 
 // ─── TelegramConnection Interface ──────────────────────────────
 
@@ -25,6 +31,8 @@ export interface TelegramConnectOpts {
   onPairAttempt?: (jid: string, chatName: string, code: string) => Promise<boolean>;
   /** 斜杠指令回调（如 /clear），返回回复文本或 null */
   onCommand?: (chatJid: string, command: string) => Promise<string | null>;
+  /** 根据 jid 解析群组 folder，用于下载文件/图片到工作区 */
+  resolveGroupFolder?: (jid: string) => string | undefined;
 }
 
 export interface TelegramConnection {
@@ -160,6 +168,116 @@ export function createTelegramConnection(config: TelegramConnectionConfig): Tele
 
   function markSeen(msgId: string): void {
     msgCache.set(msgId, Date.now());
+  }
+
+  /**
+   * 通过 Telegram Bot API 下载文件到工作区磁盘。
+   * 返回工作区相对路径，失败返回 null。
+   */
+  async function downloadTelegramFile(
+    fileId: string,
+    originalFilename: string,
+    groupFolder: string,
+    fileSizeHint?: number,
+  ): Promise<string | null> {
+    // Telegram Bot API 免费 tier 上限 20 MB，提前预检
+    if (fileSizeHint !== undefined && fileSizeHint > MAX_FILE_SIZE) {
+      logger.warn({ fileId, fileSizeHint }, 'Telegram file exceeds MAX_FILE_SIZE, skipping');
+      return null;
+    }
+
+    try {
+      if (!bot) return null;
+      const file = await bot.api.getFile(fileId);
+      const filePath = file.file_path;
+      if (!filePath) {
+        logger.warn({ fileId }, 'Telegram getFile returned no file_path');
+        return null;
+      }
+
+      const url = `https://api.telegram.org/file/bot${config.botToken}/${filePath}`;
+      const buffer = await new Promise<Buffer>((resolve, reject) => {
+        https.get(url, { agent: telegramApiAgent }, (res) => {
+          const chunks: Buffer[] = [];
+          let total = 0;
+          res.on('data', (chunk: Buffer) => {
+            total += chunk.length;
+            if (total > MAX_FILE_SIZE) {
+              res.destroy(new Error('File exceeds MAX_FILE_SIZE during download'));
+              return;
+            }
+            chunks.push(chunk);
+          });
+          res.on('end', () => resolve(Buffer.concat(chunks)));
+          res.on('error', reject);
+        }).on('error', reject);
+      });
+
+      // 使用 file_path 中的最后一段作为文件名（若无则用 originalFilename）
+      const pathBasename = filePath.split('/').pop() || '';
+      const effectiveName = originalFilename || pathBasename || `file_${fileId}`;
+
+      try {
+        return await saveDownloadedFile(groupFolder, 'telegram', effectiveName, buffer);
+      } catch (err) {
+        if (err instanceof FileTooLargeError) {
+          logger.warn({ fileId, effectiveName }, 'Telegram file too large after download');
+          return null;
+        }
+        throw err;
+      }
+    } catch (err) {
+      logger.warn({ err, fileId }, 'Failed to download Telegram file');
+      return null;
+    }
+  }
+
+  /**
+   * 下载 Telegram 图片并返回 base64 字符串，用于 Vision 通道。
+   * 失败返回 null。
+   */
+  async function downloadTelegramPhotoAsBase64(
+    fileId: string,
+    fileSizeHint?: number,
+  ): Promise<string | null> {
+    if (fileSizeHint !== undefined && fileSizeHint > MAX_FILE_SIZE) {
+      logger.warn({ fileId, fileSizeHint }, 'Telegram photo exceeds MAX_FILE_SIZE, skipping');
+      return null;
+    }
+    try {
+      if (!bot) return null;
+      const file = await bot.api.getFile(fileId);
+      const filePath = file.file_path;
+      if (!filePath) {
+        logger.warn({ fileId }, 'Telegram getFile returned no file_path (photo)');
+        return null;
+      }
+      const url = `https://api.telegram.org/file/bot${config.botToken}/${filePath}`;
+      const buffer = await new Promise<Buffer>((resolve, reject) => {
+        https.get(url, { agent: telegramApiAgent }, (res) => {
+          const chunks: Buffer[] = [];
+          let total = 0;
+          res.on('data', (chunk: Buffer) => {
+            total += chunk.length;
+            if (total > MAX_FILE_SIZE) {
+              res.destroy(new Error('Photo exceeds MAX_FILE_SIZE during download'));
+              return;
+            }
+            chunks.push(chunk);
+          });
+          res.on('end', () => resolve(Buffer.concat(chunks)));
+          res.on('error', reject);
+        }).on('error', reject);
+      });
+      if (buffer.length === 0) {
+        logger.warn({ fileId }, 'Empty response from Telegram photo download');
+        return null;
+      }
+      return buffer.toString('base64');
+    } catch (err) {
+      logger.warn({ err, fileId }, 'Failed to download Telegram photo as base64');
+      return null;
+    }
   }
 
   // Rate-limit rejection messages: one per chat per 5 minutes
@@ -310,6 +428,160 @@ export function createTelegramConnection(config: TelegramConnectionConfig): Tele
           );
         } catch (err) {
           logger.error({ err }, 'Error handling Telegram message');
+        }
+      });
+
+      // ── message:photo 处理器（Vision 通道，与飞书独立图片逻辑一致）──
+      bot.on('message:photo', async (ctx) => {
+        try {
+          const msgId = String(ctx.message.message_id) + ':' + String(ctx.chat.id);
+          if (isDuplicate(msgId)) return;
+          markSeen(msgId);
+
+          const chatId = String(ctx.chat.id);
+          const jid = `telegram:${chatId}`;
+          const chatName =
+            ctx.chat.title ||
+            [ctx.chat.first_name, ctx.chat.last_name].filter(Boolean).join(' ') ||
+            `Telegram ${chatId}`;
+          const senderName =
+            [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') || 'Unknown';
+
+          if (!opts.isChatAuthorized(jid)) {
+            logger.debug({ jid }, 'Unauthorized Telegram chat (photo), ignoring');
+            return;
+          }
+
+          storeChatMetadata(jid, new Date().toISOString());
+          updateChatName(jid, chatName);
+          opts.onNewChat(jid, chatName);
+
+          // 取最高分辨率，下载为 base64 供 Vision
+          const photo = ctx.message.photo.at(-1);
+          if (!photo) return;
+
+          const base64Data = await downloadTelegramPhotoAsBase64(photo.file_id, photo.file_size);
+
+          let attachmentsJson: string | undefined;
+          if (base64Data) {
+            attachmentsJson = JSON.stringify([{ type: 'image', data: base64Data, mimeType: 'image/jpeg' }]);
+          }
+
+          const caption = ctx.message.caption;
+          const text = caption ? `[图片]\n${caption}` : '[图片]';
+
+          try {
+            await ctx.react('👀');
+          } catch (err) {
+            logger.debug({ err, msgId }, 'Failed to add Telegram reaction');
+          }
+
+          const id = crypto.randomUUID();
+          const timestamp = new Date(ctx.message.date * 1000).toISOString();
+          const senderId = ctx.from?.id ? `tg:${ctx.from.id}` : 'tg:unknown';
+          storeMessageDirect(id, jid, senderId, senderName, text, timestamp, false, attachmentsJson);
+
+          broadcastNewMessage(jid, {
+            id,
+            chat_jid: jid,
+            sender: senderId,
+            sender_name: senderName,
+            content: text,
+            timestamp,
+            attachments: attachmentsJson,
+            is_from_me: false,
+          });
+
+          logger.info({ jid, sender: senderName, msgId }, 'Telegram photo stored');
+        } catch (err) {
+          logger.error({ err }, 'Error handling Telegram photo');
+        }
+      });
+
+      // ── message:document 处理器 ──
+      bot.on('message:document', async (ctx) => {
+        try {
+          const msgId = String(ctx.message.message_id) + ':' + String(ctx.chat.id);
+          if (isDuplicate(msgId)) return;
+          markSeen(msgId);
+
+          const chatId = String(ctx.chat.id);
+          const jid = `telegram:${chatId}`;
+          const chatName =
+            ctx.chat.title ||
+            [ctx.chat.first_name, ctx.chat.last_name].filter(Boolean).join(' ') ||
+            `Telegram ${chatId}`;
+          const senderName =
+            [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') || 'Unknown';
+
+          if (!opts.isChatAuthorized(jid)) {
+            logger.debug({ jid }, 'Unauthorized Telegram chat (document), ignoring');
+            return;
+          }
+
+          storeChatMetadata(jid, new Date().toISOString());
+          updateChatName(jid, chatName);
+          opts.onNewChat(jid, chatName);
+
+          const doc = ctx.message.document;
+          const originalFilename = doc.file_name || 'file';
+
+          // file_size 超过上限时跳过下载
+          if (doc.file_size !== undefined && doc.file_size > MAX_FILE_SIZE) {
+            const text = `[文件过大，未下载: ${originalFilename}]`;
+            const id = crypto.randomUUID();
+            const timestamp = new Date(ctx.message.date * 1000).toISOString();
+            const senderId = ctx.from?.id ? `tg:${ctx.from.id}` : 'tg:unknown';
+            storeMessageDirect(id, jid, senderId, senderName, text, timestamp, false);
+            broadcastNewMessage(jid, {
+              id, chat_jid: jid, sender: senderId, sender_name: senderName,
+              content: text, timestamp, is_from_me: false,
+            });
+            return;
+          }
+
+          const groupFolder = opts.resolveGroupFolder?.(jid);
+          let fileText: string;
+
+          if (!groupFolder) {
+            fileText = `[文件下载失败: 无法确定工作目录]`;
+          } else {
+            const relPath = await downloadTelegramFile(
+              doc.file_id,
+              originalFilename,
+              groupFolder,
+              doc.file_size,
+            );
+            fileText = relPath ? `[文件: ${relPath}]` : `[文件下载失败: ${originalFilename}]`;
+          }
+
+          const caption = ctx.message.caption;
+          const text = caption ? `${fileText}\n${caption}` : fileText;
+
+          try {
+            await ctx.react('👀');
+          } catch (err) {
+            logger.debug({ err, msgId }, 'Failed to add Telegram reaction');
+          }
+
+          const id = crypto.randomUUID();
+          const timestamp = new Date(ctx.message.date * 1000).toISOString();
+          const senderId = ctx.from?.id ? `tg:${ctx.from.id}` : 'tg:unknown';
+          storeMessageDirect(id, jid, senderId, senderName, text, timestamp, false);
+
+          broadcastNewMessage(jid, {
+            id,
+            chat_jid: jid,
+            sender: senderId,
+            sender_name: senderName,
+            content: text,
+            timestamp,
+            is_from_me: false,
+          });
+
+          logger.info({ jid, sender: senderName, msgId }, 'Telegram document stored');
+        } catch (err) {
+          logger.error({ err }, 'Error handling Telegram document');
         }
       });
 

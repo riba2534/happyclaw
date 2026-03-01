@@ -31,6 +31,7 @@ dist/
 # Local tooling metadata
 .claude/
 .mcp.json
+/.omc/
 
 # OS
 .DS_Store
@@ -43,3 +44,4 @@ Thumbs.db
 *.swo
 
 /log/
+nohup.out

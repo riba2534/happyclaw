@@ -27,6 +27,8 @@ export interface IMChannelConnectOpts {
   onPairAttempt?: (jid: string, chatName: string, code: string) => Promise<boolean>;
   /** Slash command callback (e.g. /clear). Returns reply text or null. */
   onCommand?: (chatJid: string, command: string) => Promise<string | null>;
+  /** 根据 jid 解析群组 folder，用于下载文件/图片到工作区 */
+  resolveGroupFolder?: (jid: string) => string | undefined;
 }
 
 export interface IMChannel {
@@ -82,6 +84,7 @@ export function createFeishuChannel(config: FeishuConnectionConfig): IMChannel {
         onNewChat: opts.onNewChat,
         ignoreMessagesBefore: opts.ignoreMessagesBefore,
         onCommand: opts.onCommand,
+        resolveGroupFolder: opts.resolveGroupFolder,
       });
       if (!connected) {
         inner = null;
@@ -148,6 +151,7 @@ export function createTelegramChannel(config: TelegramConnectionConfig): IMChann
           isChatAuthorized: opts.isChatAuthorized ?? (() => true),
           onPairAttempt: opts.onPairAttempt,
           onCommand: opts.onCommand,
+          resolveGroupFolder: opts.resolveGroupFolder,
         });
         return inner.isConnected();
       } catch (err) {

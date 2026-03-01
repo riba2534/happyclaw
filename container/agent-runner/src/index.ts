@@ -848,7 +848,12 @@ async function runQuery(
       return { newSessionId, lastAssistantUuid, closedDuringQuery, unrecoverableTranscriptError: true, interruptedDuringQuery };
     }
 
-    // 其他错误继续抛出
+    // 其他错误：记录完整堆栈后继续抛出
+    log(`runQuery error [${(err as NodeJS.ErrnoException).code ?? 'unknown'}]: ${errorMessage}`);
+    if (err instanceof Error && err.stack) {
+      log(`runQuery error stack:\n${err.stack}`);
+    }
+    // 继续抛出
     throw err;
   }
 }
@@ -1071,8 +1076,15 @@ async function main(): Promise<void> {
     const errorMessage = err instanceof Error ? err.message : String(err);
     log(`Agent error: ${errorMessage}`);
     if (err instanceof Error && err.stack) {
-      log(`Agent error stack: ${err.stack}`);
+      log(`Agent error stack:\n${err.stack}`);
     }
+    // Log cause chain for SDK-wrapped errors (e.g. EPIPE from internal claude CLI)
+    const cause = err instanceof Error ? (err as NodeJS.ErrnoException & { cause?: unknown }).cause : undefined;
+    if (cause) {
+      const causeMsg = cause instanceof Error ? cause.stack || cause.message : String(cause);
+      log(`Agent error cause:\n${causeMsg}`);
+    }
+    log(`Agent error errno: ${(err as NodeJS.ErrnoException).code ?? 'none'} exitCode: ${process.exitCode ?? 'none'}`);
     // 不在 error output 中携带 sessionId：
     // 流式输出已通过 onOutput 回调传递了有效的 session 更新。
     // 如果这里携带的是 throw 前的旧 sessionId，会覆盖中间成功产生的新 session。
@@ -1084,5 +1096,13 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 }
+
+// 处理管道断开（EPIPE）：父进程关闭管道后仍有写入时，静默退出避免 code 1 错误输出
+(process.stdout as NodeJS.WriteStream & NodeJS.EventEmitter).on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EPIPE') process.exit(0);
+});
+(process.stderr as NodeJS.WriteStream & NodeJS.EventEmitter).on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EPIPE') process.exit(0);
+});
 
 main();

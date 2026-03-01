@@ -6,6 +6,11 @@ import {
   updateChatName,
 } from './db.js';
 import { logger } from './logger.js';
+import {
+  saveDownloadedFile,
+  MAX_FILE_SIZE,
+  FileTooLargeError,
+} from './im-downloader.js';
 import { broadcastNewMessage } from './web.js';
 
 // ─── FeishuConnection Interface ────────────────────────────────
@@ -13,6 +18,12 @@ import { broadcastNewMessage } from './web.js';
 export interface FeishuConnectionConfig {
   appId: string;
   appSecret: string;
+}
+
+/** 飞书文件信息（用于下载到工作区） */
+interface FeishuFileInfo {
+  fileKey: string;
+  filename: string;
 }
 
 export interface ConnectOptions {
@@ -23,6 +34,8 @@ export interface ConnectOptions {
   ignoreMessagesBefore?: number;
   /** 斜杠指令回调（如 /clear），返回回复文本或 null */
   onCommand?: (chatJid: string, command: string) => Promise<string | null>;
+  /** 根据 chatJid 解析群组 folder，用于下载文件/图片到工作区 */
+  resolveGroupFolder?: (chatJid: string) => string | undefined;
 }
 
 export interface FeishuConnection {
@@ -77,12 +90,12 @@ function toEpochMs(value: string | number | undefined): number {
 
 /**
  * Extract message content from Feishu message.
- * Returns text content and optional image keys.
+ * Returns text content, optional image keys, and optional file infos for download.
  */
 function extractMessageContent(
   messageType: string,
   content: string,
-): { text: string; imageKeys?: string[] } {
+): { text: string; imageKeys?: string[]; fileInfos?: FeishuFileInfo[] } {
   try {
     const parsed = JSON.parse(content);
 
@@ -91,7 +104,7 @@ function extractMessageContent(
     }
 
     if (messageType === 'post') {
-      // Recursively extract text from post content
+      // Extract text from post content (images in post messages are not supported)
       const lines: string[] = [];
       const post = parsed.post;
       if (!post) return { text: '' };
@@ -104,6 +117,8 @@ function extractMessageContent(
         if (!Array.isArray(paragraph)) continue;
         for (const segment of paragraph) {
           if (segment.tag === 'text' && segment.text) {
+            lines.push(segment.text);
+          } else if (segment.tag === 'a' && segment.text) {
             lines.push(segment.text);
           }
         }
@@ -119,7 +134,18 @@ function extractMessageContent(
       }
     }
 
-    // Ignore other message types (file, audio, etc.)
+    if (messageType === 'file') {
+      const fileKey = parsed.file_key;
+      const filename = parsed.file_name || '';
+      if (fileKey) {
+        return {
+          text: `[文件: ${filename || fileKey}]`,
+          fileInfos: [{ fileKey, filename }],
+        };
+      }
+    }
+
+    // Ignore other message types (audio, etc.)
     return { text: '' };
   } catch (err) {
     logger.warn(
@@ -362,6 +388,62 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
     }
   }
 
+  /**
+   * 下载飞书文件（type='file'）到工作区磁盘。
+   * 返回工作区相对路径（如 downloads/feishu/2026-03-01/report.pdf），失败返回 null。
+   */
+  async function downloadFeishuFileToDisk(
+    messageId: string,
+    fileKey: string,
+    filename: string,
+    groupFolder: string,
+  ): Promise<string | null> {
+    try {
+      const res = await client!.im.messageResource.get({
+        path: {
+          message_id: messageId,
+          file_key: fileKey,
+        },
+        params: {
+          type: 'file',
+        },
+      });
+
+      const stream = res.getReadableStream();
+      const chunks: Buffer[] = [];
+      let totalSize = 0;
+      for await (const chunk of stream) {
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        totalSize += buf.length;
+        if (totalSize > MAX_FILE_SIZE) {
+          logger.warn({ messageId, fileKey, totalSize }, 'File exceeds MAX_FILE_SIZE during download');
+          return null;
+        }
+        chunks.push(buf);
+      }
+      const buffer = Buffer.concat(chunks);
+      if (buffer.length === 0) {
+        logger.warn({ messageId, fileKey }, 'Empty response from file download');
+        return null;
+      }
+
+      const effectiveName = filename || `file_${fileKey}`;
+      try {
+        const relPath = await saveDownloadedFile(groupFolder, 'feishu', effectiveName, buffer);
+        return relPath;
+      } catch (err) {
+        if (err instanceof FileTooLargeError) {
+          logger.warn({ fileKey, filename }, 'Feishu file too large, skipping');
+          return null;
+        }
+        throw err;
+      }
+    } catch (err) {
+      logger.warn({ err, messageId, fileKey }, 'Failed to download Feishu file to disk');
+      return null;
+    }
+  }
+
   function getSenderName(openId: string): string {
     return senderNameCache.get(openId) || openId;
   }
@@ -417,7 +499,7 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
     payload: IncomingMessagePayload,
     source: 'ws' | 'backfill',
   ): Promise<void> {
-    const { onNewChat, ignoreMessagesBefore, onCommand } = connectOptions || {};
+    const { onNewChat, ignoreMessagesBefore, onCommand, resolveGroupFolder } = connectOptions || {};
     const {
       chatId,
       messageId,
@@ -436,6 +518,7 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
       return;
     }
     markSeen(messageId);
+    logger.info({ messageId, messageType, chatId, source }, 'Feishu message received');
 
     if (ignoreMessagesBefore && createTimeMs > 0 && createTimeMs < ignoreMessagesBefore) {
       logger.info(
@@ -447,8 +530,8 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
 
     const extracted = extractMessageContent(messageType, rawContent);
     let text = extracted.text;
-    if (!text && !extracted.imageKeys) {
-      logger.debug(
+    if (!text && !extracted.imageKeys && !extracted.fileInfos?.length) {
+      logger.info(
         { messageId, messageType },
         'No text or image content, skipping',
       );
@@ -463,8 +546,17 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
       }
     }
 
+    const chatJid = `feishu:${chatId}`;
+    const resolvedSenderName = senderName || getSenderName(senderOpenId);
+    const resolvedChatName = chatType === 'p2p' ? '飞书私聊' : '飞书群聊';
+
+    // 先注册会话，确保 resolveGroupFolder 能正确解析 folder（含首条文件消息场景）
+    onNewChat?.(chatJid, resolvedChatName);
+
     let attachmentsJson: string | undefined;
+
     if (extracted.imageKeys && extracted.imageKeys.length > 0) {
+      // 独立图片消息（type='image'）：原有逻辑，下载为 base64 供 Vision
       const attachments = [];
       for (const imageKey of extracted.imageKeys) {
         const base64Data = await downloadFeishuImage(messageId, imageKey);
@@ -478,6 +570,26 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
       }
       if (attachments.length > 0) {
         attachmentsJson = JSON.stringify(attachments);
+      }
+    } else if (extracted.fileInfos && extracted.fileInfos.length > 0) {
+      // 文件消息：下载到磁盘，路径内联替换
+      logger.info({ chatJid, messageId, messageType, fileCount: extracted.fileInfos.length }, 'Processing Feishu file download');
+      const groupFolder = resolveGroupFolder?.(chatJid);
+      if (!groupFolder) {
+        logger.warn({ chatJid }, 'Cannot resolve group folder for file download');
+        for (const fi of extracted.fileInfos) {
+          const placeholder = `[文件: ${fi.filename || fi.fileKey}]`;
+          text = text.replace(placeholder, `[文件下载失败: ${fi.filename || fi.fileKey}]`);
+        }
+      } else {
+        for (const fi of extracted.fileInfos) {
+          const relPath = await downloadFeishuFileToDisk(messageId, fi.fileKey, fi.filename, groupFolder);
+          const placeholder = `[文件: ${fi.filename || fi.fileKey}]`;
+          text = text.replace(
+            placeholder,
+            relPath ? `[文件: ${relPath}]` : `[文件下载失败: ${fi.filename || fi.fileKey}]`,
+          );
+        }
       }
     }
 
@@ -495,11 +607,6 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
     const resolvedCreateTimeMs = createTimeMs > 0 ? createTimeMs : Date.now();
     const timestamp = new Date(resolvedCreateTimeMs).toISOString();
     rememberChatProgress(chatId, resolvedCreateTimeMs);
-
-    const chatJid = `feishu:${chatId}`;
-    const resolvedSenderName = senderName || getSenderName(senderOpenId);
-    const resolvedChatName = chatType === 'p2p' ? '飞书私聊' : '飞书群聊';
-    onNewChat?.(chatJid, resolvedChatName);
 
     // ── /clear 指令：重置上下文，不进入消息流 ──
     if (text?.trim() === '/clear' && onCommand) {

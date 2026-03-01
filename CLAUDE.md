@@ -28,8 +28,9 @@ HappyClaw 是一个自托管的多用户 AI Agent 系统：
 | `src/routes/tasks.ts` | 定时任务 CRUD + 执行日志查询 |
 | `src/routes/skills.ts` | Skills 列表与管理 |
 | `src/routes/admin.ts` | 用户管理、邀请码、审计日志、注册设置 |
-| `src/feishu.ts` | 飞书连接工厂（`createFeishuConnection`）：WebSocket 长连接、消息去重（LRU 1000 条 / 30min TTL）、富文本卡片、Reaction |
-| `src/telegram.ts` | Telegram 连接工厂（`createTelegramConnection`）：Bot API Long Polling、Markdown → HTML 转换、长消息分片（3800 字符） |
+| `src/feishu.ts` | 飞书连接工厂（`createFeishuConnection`）：WebSocket 长连接、消息去重（LRU 1000 条 / 30min TTL）、富文本卡片、Reaction；`file` 消息下载到工作区；`post` 图文消息仅提取文字 |
+| `src/telegram.ts` | Telegram 连接工厂（`createTelegramConnection`）：Bot API Long Polling、Markdown → HTML 转换、长消息分片（3800 字符）；`message:photo` 下载为 base64 供 Vision；`message:document` 下载文件到工作区 |
+| `src/im-downloader.ts` | IM 文件下载工具：`saveDownloadedFile()` 将 Buffer 写入 `downloads/{channel}/{YYYY-MM-DD}/`，处理路径安全、文件名冲突和 50MB 限制 |
 | `src/im-manager.ts` | IM 连接池管理器（`IMConnectionManager`）：per-user 飞书/Telegram 连接管理、热重连、批量断开 |
 | `src/container-runner.ts` | 容器生命周期：Docker run + 宿主机进程模式、卷挂载构建（isAdminHome 区分权限）、环境变量注入 |
 | `src/agent-output-parser.ts` | Agent 输出解析：OUTPUT_MARKER 流式输出解析、stdout/stderr 处理、进程生命周期回调（从 container-runner.ts 提取的共享逻辑） |
@@ -301,6 +302,7 @@ data/
   groups/{folder}/CLAUDE.md                # 会话私有记忆（Agent 自动维护）
   groups/{folder}/logs/                    # Agent 容器日志
   groups/{folder}/conversations/           # 对话归档（PreCompact Hook 写入）
+  groups/{folder}/downloads/{channel}/     # IM 文件/图片下载目录（feishu / telegram，按日期分子目录）
   groups/user-global/{userId}/             # 用户级全局记忆目录
   groups/user-global/{userId}/CLAUDE.md    # 用户全局记忆（Agent 自动维护，per-user 隔离）
   sessions/{folder}/.claude/               # Claude 会话持久化（隔离）

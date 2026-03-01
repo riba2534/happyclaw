@@ -2192,15 +2192,19 @@ async function connectUserIMChannels(
   ignoreMessagesBefore?: number,
 ): Promise<{ feishu: boolean; telegram: boolean }> {
   const onNewChat = buildOnNewChat(userId, homeFolder);
+  const resolveGroupFolder = (chatJid: string): string | undefined => {
+    const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
+    return group?.folder;
+  };
   let feishu = false;
   let telegram = false;
 
   if (feishuConfig && feishuConfig.enabled !== false && feishuConfig.appId && feishuConfig.appSecret) {
-    feishu = await imManager.connectUserFeishu(userId, feishuConfig, onNewChat, ignoreMessagesBefore, handleCommand);
+    feishu = await imManager.connectUserFeishu(userId, feishuConfig, onNewChat, ignoreMessagesBefore, handleCommand, resolveGroupFolder);
   }
 
   if (telegramConfig && telegramConfig.enabled !== false && telegramConfig.botToken) {
-    telegram = await imManager.connectUserTelegram(userId, telegramConfig, onNewChat, buildIsChatAuthorized(userId), buildOnPairAttempt(userId), handleCommand);
+    telegram = await imManager.connectUserTelegram(userId, telegramConfig, onNewChat, buildIsChatAuthorized(userId), buildOnPairAttempt(userId), handleCommand, resolveGroupFolder);
   }
 
   return { feishu, telegram };

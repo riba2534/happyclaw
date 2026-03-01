@@ -861,10 +861,7 @@ export async function runHostAgent(
     'dist',
     'index.js',
   );
-  const requiredDeps = [
-    '@anthropic-ai/claude-agent-sdk',
-    '@modelcontextprotocol/sdk',
-  ];
+  const requiredDeps = ['@anthropic-ai/claude-agent-sdk'];
   const missingDeps = requiredDeps.filter((dep) => {
     const depJson = path.join(
       agentRunnerNodeModules,

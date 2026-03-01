@@ -70,8 +70,8 @@ HappyClaw 是一个基于 [Claude Agent SDK](https://github.com/anthropics/claud
 
 | 渠道 | 连接方式 | 消息格式 | 特色 |
 |------|---------|---------|------|
-| **飞书** | WebSocket 长连接 | 富文本卡片 | 图片消息、Reaction 反馈、自动注册群组 |
-| **Telegram** | Bot API (Long Polling) | Markdown → HTML | 长消息自动分片（3800 字符） |
+| **飞书** | WebSocket 长连接 | 富文本卡片 | 图片消息（Vision）、文件消息自动下载到工作区、Reaction 反馈、自动注册群组 |
+| **Telegram** | Bot API (Long Polling) | Markdown → HTML | 长消息自动分片（3800 字符）、图片走 Vision（base64）、文档文件自动下载到工作区 |
 | **Web** | WebSocket 实时通信 | 流式 Markdown | 图片粘贴/拖拽上传、虚拟滚动 |
 
 每个用户可独立配置自己的 IM 通道（飞书应用凭据、Telegram Bot Token），互不干扰。消息统一路由：飞书来源回飞书，Telegram 来源回 Telegram，Web 来源回 Web。
@@ -376,6 +376,7 @@ happyclaw/
 │   ├── feishu.ts                 #   飞书连接工厂（WebSocket 长连接）
 │   ├── telegram.ts               #   Telegram 连接工厂（Bot API）
 │   ├── im-manager.ts             #   IM 连接池（per-user 飞书/Telegram 连接管理）
+│   ├── im-downloader.ts          #   IM 文件下载工具（保存到工作区 downloads/）
 │   ├── container-runner.ts       #   Docker / 宿主机进程管理
 │   ├── group-queue.ts            #   并发控制队列
 │   ├── runtime-config.ts         #   AES-256-GCM 加密配置
@@ -407,6 +408,8 @@ happyclaw/
 ├── data/                         # 运行时数据（启动时自动创建）
 │   ├── db/messages.db            #   SQLite 数据库（WAL 模式）
 │   ├── groups/{folder}/          #   会话工作目录（Agent 可读写）
+│   │   ├── downloads/{channel}/  #     IM 文件下载（feishu/telegram，按日期分子目录）
+│   │   └── CLAUDE.md             #     会话私有记忆
 │   ├── groups/user-global/{id}/  #   用户全局记忆目录
 │   ├── sessions/{folder}/.claude/#   Claude 会话持久化
 │   ├── ipc/{folder}/             #   IPC 通道（input / messages / tasks）
