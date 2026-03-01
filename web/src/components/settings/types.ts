@@ -77,6 +77,8 @@ export interface SystemSettings {
   maxConcurrentHostProcesses: number;
   maxLoginAttempts: number;
   loginLockoutMinutes: number;
+  maxConcurrentScripts: number;
+  scriptTimeout: number;
 }
 
 export type SettingsTab = 'channels' | 'claude' | 'registration' | 'appearance' | 'system' | 'profile' | 'my-channels' | 'security' | 'groups' | 'memory' | 'skills' | 'mcp-servers' | 'users' | 'about';

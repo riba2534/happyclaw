@@ -102,6 +102,28 @@ const fields: FieldConfig[] = [
     max: 1440,
     step: 1,
   },
+  {
+    key: 'maxConcurrentScripts',
+    label: '脚本任务最大并发数',
+    description: '同时运行的脚本任务数量上限',
+    unit: '个',
+    toDisplay: (v) => v,
+    toStored: (v) => v,
+    min: 1,
+    max: 50,
+    step: 1,
+  },
+  {
+    key: 'scriptTimeout',
+    label: '脚本执行超时',
+    description: '单个脚本任务的最长执行时间',
+    unit: '秒',
+    toDisplay: (v) => Math.round(v / 1000),
+    toStored: (v) => v * 1000,
+    min: 5,
+    max: 600,
+    step: 5,
+  },
 ];
 
 export function SystemSettingsSection({ setNotice, setError }: SystemSettingsSectionProps) {

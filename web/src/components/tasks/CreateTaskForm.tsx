@@ -27,8 +27,11 @@ interface CreateTaskFormProps {
     scheduleType: 'cron' | 'interval' | 'once';
     scheduleValue: string;
     contextMode: 'group' | 'isolated';
+    executionType: 'agent' | 'script';
+    scriptCommand: string;
   }) => Promise<void>;
   onClose: () => void;
+  isAdmin?: boolean;
 }
 
 const INTERVAL_UNITS = [
@@ -38,7 +41,7 @@ const INTERVAL_UNITS = [
   { label: '天', ms: 24 * 60 * 60 * 1000 },
 ] as const;
 
-export function CreateTaskForm({ groups, onSubmit, onClose }: CreateTaskFormProps) {
+export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin }: CreateTaskFormProps) {
   const [formData, setFormData] = useState({
     groupFolder: '',
     chatJid: '',
@@ -46,12 +49,16 @@ export function CreateTaskForm({ groups, onSubmit, onClose }: CreateTaskFormProp
     scheduleType: 'cron' as 'cron' | 'interval' | 'once',
     scheduleValue: '',
     contextMode: 'isolated' as 'group' | 'isolated',
+    executionType: 'agent' as 'agent' | 'script',
+    scriptCommand: '',
   });
   const [intervalNumber, setIntervalNumber] = useState('');
   const [intervalUnit, setIntervalUnit] = useState('60000'); // default: minutes
   const [onceDateTime, setOnceDateTime] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
+
+  const isScript = formData.executionType === 'script';
 
   const validateForm = () => {
     const newErrors: Record<string, string> = {};
@@ -60,8 +67,14 @@ export function CreateTaskForm({ groups, onSubmit, onClose }: CreateTaskFormProp
       newErrors.groupFolder = '请选择群组';
     }
 
-    if (!formData.prompt.trim()) {
-      newErrors.prompt = '请输入 Prompt';
+    if (isScript) {
+      if (!formData.scriptCommand.trim()) {
+        newErrors.scriptCommand = '请输入脚本命令';
+      }
+    } else {
+      if (!formData.prompt.trim()) {
+        newErrors.prompt = '请输入 Prompt';
+      }
     }
 
     if (formData.scheduleType === 'cron') {
@@ -169,17 +182,72 @@ export function CreateTaskForm({ groups, onSubmit, onClose }: CreateTaskFormProp
             )}
           </div>
 
-          {/* Prompt */}
+          {/* Execution Type */}
+          {isAdmin && (
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-2">
+                执行方式
+              </label>
+              <Select
+                value={formData.executionType}
+                onValueChange={(value) =>
+                  setFormData({
+                    ...formData,
+                    executionType: value as 'agent' | 'script',
+                  })
+                }
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="agent">Agent（AI 代理）</SelectItem>
+                  <SelectItem value="script">脚本（Shell 命令）</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="mt-1 text-xs text-slate-500">
+                {isScript
+                  ? '直接执行 Shell 命令，零 API 消耗，适合确定性任务'
+                  : '启动完整 Claude Agent，消耗 API tokens'}
+              </p>
+            </div>
+          )}
+
+          {/* Script Command (script mode only) */}
+          {isScript && (
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-2">
+                脚本命令 <span className="text-red-500">*</span>
+              </label>
+              <Textarea
+                value={formData.scriptCommand}
+                onChange={(e) => setFormData({ ...formData, scriptCommand: e.target.value })}
+                rows={3}
+                maxLength={4096}
+                className={cn("resize-none font-mono text-sm", errors.scriptCommand && "border-red-500")}
+                placeholder="例如: curl -s https://api.example.com/health | jq .status"
+              />
+              {errors.scriptCommand && (
+                <p className="mt-1 text-sm text-red-600">{errors.scriptCommand}</p>
+              )}
+              <p className="mt-1 text-xs text-slate-500">
+                命令在群组工作目录下执行，最大 4096 字符
+              </p>
+            </div>
+          )}
+
+          {/* Prompt / Task Description */}
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-2">
-              任务 Prompt <span className="text-red-500">*</span>
+              {isScript ? '任务描述' : '任务 Prompt'}{' '}
+              {!isScript && <span className="text-red-500">*</span>}
             </label>
             <Textarea
               value={formData.prompt}
               onChange={(e) => setFormData({ ...formData, prompt: e.target.value })}
-              rows={4}
+              rows={isScript ? 2 : 4}
               className={cn("resize-none", errors.prompt && "border-red-500")}
-              placeholder="输入任务的提示词..."
+              placeholder={isScript ? '可选的任务描述...' : '输入任务的提示词...'}
             />
             {errors.prompt && (
               <p className="mt-1 text-sm text-red-600">{errors.prompt}</p>
@@ -286,32 +354,34 @@ export function CreateTaskForm({ groups, onSubmit, onClose }: CreateTaskFormProp
             )}
           </div>
 
-          {/* Context Mode */}
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-2">
-              上下文模式
-            </label>
-            <Select
-              value={formData.contextMode}
-              onValueChange={(value) =>
-                setFormData({
-                  ...formData,
-                  contextMode: value as 'group' | 'isolated',
-                })
-              }
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="isolated">独立执行（推荐）</SelectItem>
-                <SelectItem value="group">共享群组上下文</SelectItem>
-              </SelectContent>
-            </Select>
-            <p className="mt-1 text-xs text-slate-500">
-              共享群组上下文会复用该群组会话，独立执行每次使用隔离会话
-            </p>
-          </div>
+          {/* Context Mode (agent mode only) */}
+          {!isScript && (
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-2">
+                上下文模式
+              </label>
+              <Select
+                value={formData.contextMode}
+                onValueChange={(value) =>
+                  setFormData({
+                    ...formData,
+                    contextMode: value as 'group' | 'isolated',
+                  })
+                }
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="isolated">独立执行（推荐）</SelectItem>
+                  <SelectItem value="group">共享群组上下文</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="mt-1 text-xs text-slate-500">
+                共享群组上下文会复用该群组会话，独立执行每次使用隔离会话
+              </p>
+            </div>
+          )}
 
           {/* Actions */}
           <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-200">

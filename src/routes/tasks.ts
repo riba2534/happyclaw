@@ -54,6 +54,8 @@ tasksRoutes.post('/', authMiddleware, async (c) => {
     schedule_type,
     schedule_value,
     context_mode,
+    execution_type,
+    script_command,
   } = validation.data;
   const group = getRegisteredGroup(chat_jid);
   if (!group) return c.json({ error: 'Group not found' }, 404);
@@ -70,6 +72,15 @@ tasksRoutes.post('/', authMiddleware, async (c) => {
   if (isHostExecutionGroup(group) && !hasHostExecutionPermission(authUser)) {
     return c.json(
       { error: 'Insufficient permissions for host execution mode' },
+      403,
+    );
+  }
+
+  // Only admin can create script tasks
+  const execType = execution_type || 'agent';
+  if (execType === 'script' && authUser.role !== 'admin') {
+    return c.json(
+      { error: '只有管理员可以创建脚本类型任务' },
       403,
     );
   }
@@ -91,10 +102,12 @@ tasksRoutes.post('/', authMiddleware, async (c) => {
     id: taskId,
     group_folder,
     chat_jid,
-    prompt,
+    prompt: prompt || '',
     schedule_type,
     schedule_value,
     context_mode: context_mode || 'isolated',
+    execution_type: execType,
+    script_command: script_command ?? null,
     next_run: nextRun,
     status: 'active',
     created_at: now,
@@ -130,6 +143,17 @@ tasksRoutes.patch('/:id', authMiddleware, async (c) => {
     return c.json(
       { error: 'Invalid request body', details: validation.error.format() },
       400,
+    );
+  }
+
+  // Only admin can create/modify script tasks
+  const isScriptTask =
+    validation.data.execution_type === 'script' ||
+    (existing.execution_type === 'script' && validation.data.script_command !== undefined);
+  if (isScriptTask && authUser.role !== 'admin') {
+    return c.json(
+      { error: '只有管理员可以创建或修改脚本类型任务' },
+      403,
     );
   }
 

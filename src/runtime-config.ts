@@ -1472,6 +1472,8 @@ export interface SystemSettings {
   maxConcurrentHostProcesses: number;
   maxLoginAttempts: number;
   loginLockoutMinutes: number;
+  maxConcurrentScripts: number;
+  scriptTimeout: number;
 }
 
 const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
@@ -1482,6 +1484,8 @@ const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
   maxConcurrentHostProcesses: 5,
   maxLoginAttempts: 5,
   loginLockoutMinutes: 15,
+  maxConcurrentScripts: 10,
+  scriptTimeout: 60000,
 };
 
 function parseIntEnv(envVar: string | undefined, fallback: number): number {
@@ -1528,6 +1532,14 @@ function readSystemSettingsFromFile(): SystemSettings | null {
       typeof raw.loginLockoutMinutes === 'number' && raw.loginLockoutMinutes > 0
         ? raw.loginLockoutMinutes
         : DEFAULT_SYSTEM_SETTINGS.loginLockoutMinutes,
+    maxConcurrentScripts:
+      typeof raw.maxConcurrentScripts === 'number' && raw.maxConcurrentScripts > 0
+        ? raw.maxConcurrentScripts
+        : DEFAULT_SYSTEM_SETTINGS.maxConcurrentScripts,
+    scriptTimeout:
+      typeof raw.scriptTimeout === 'number' && raw.scriptTimeout > 0
+        ? raw.scriptTimeout
+        : DEFAULT_SYSTEM_SETTINGS.scriptTimeout,
   };
 }
 
@@ -1540,6 +1552,8 @@ function buildEnvFallbackSettings(): SystemSettings {
     maxConcurrentHostProcesses: parseIntEnv(process.env.MAX_CONCURRENT_HOST_PROCESSES, DEFAULT_SYSTEM_SETTINGS.maxConcurrentHostProcesses),
     maxLoginAttempts: parseIntEnv(process.env.MAX_LOGIN_ATTEMPTS, DEFAULT_SYSTEM_SETTINGS.maxLoginAttempts),
     loginLockoutMinutes: parseIntEnv(process.env.LOGIN_LOCKOUT_MINUTES, DEFAULT_SYSTEM_SETTINGS.loginLockoutMinutes),
+    maxConcurrentScripts: parseIntEnv(process.env.MAX_CONCURRENT_SCRIPTS, DEFAULT_SYSTEM_SETTINGS.maxConcurrentScripts),
+    scriptTimeout: parseIntEnv(process.env.SCRIPT_TIMEOUT, DEFAULT_SYSTEM_SETTINGS.scriptTimeout),
   };
 }
 
@@ -1595,6 +1609,10 @@ export function saveSystemSettings(partial: Partial<SystemSettings>): SystemSett
   if (merged.maxLoginAttempts > 100) merged.maxLoginAttempts = 100;
   if (merged.loginLockoutMinutes < 1) merged.loginLockoutMinutes = 1;
   if (merged.loginLockoutMinutes > 1440) merged.loginLockoutMinutes = 1440;       // max 24 hours
+  if (merged.maxConcurrentScripts < 1) merged.maxConcurrentScripts = 1;
+  if (merged.maxConcurrentScripts > 50) merged.maxConcurrentScripts = 50;
+  if (merged.scriptTimeout < 5000) merged.scriptTimeout = 5000;                   // min 5s
+  if (merged.scriptTimeout > 600000) merged.scriptTimeout = 600000;               // max 10 min
 
   fs.mkdirSync(CLAUDE_CONFIG_DIR, { recursive: true });
   const tmp = `${SYSTEM_SETTINGS_FILE}.tmp`;

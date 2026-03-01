@@ -38,16 +38,37 @@ export function TaskDetail({ task }: TaskDetailProps) {
 
   return (
     <div className="p-4 bg-slate-50 space-y-4">
-      {/* Full Prompt */}
-      <div>
-        <div className="text-xs text-slate-500 mb-2">完整 Prompt</div>
-        <div className="text-sm text-slate-900 bg-white px-3 py-2 rounded border border-slate-200 whitespace-pre-wrap">
-          {task.prompt}
+      {/* Script Command (script mode) */}
+      {task.execution_type === 'script' && task.script_command && (
+        <div>
+          <div className="text-xs text-slate-500 mb-2">脚本命令</div>
+          <pre className="text-sm text-slate-900 bg-white px-3 py-2 rounded border border-slate-200 whitespace-pre-wrap font-mono">
+            {task.script_command}
+          </pre>
         </div>
-      </div>
+      )}
+
+      {/* Full Prompt / Description */}
+      {task.prompt && (
+        <div>
+          <div className="text-xs text-slate-500 mb-2">
+            {task.execution_type === 'script' ? '任务描述' : '完整 Prompt'}
+          </div>
+          <div className="text-sm text-slate-900 bg-white px-3 py-2 rounded border border-slate-200 whitespace-pre-wrap">
+            {task.prompt}
+          </div>
+        </div>
+      )}
 
       {/* Schedule Details */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <div className="text-xs text-slate-500 mb-1">执行方式</div>
+          <div className="text-sm text-slate-900">
+            {task.execution_type === 'script' ? '脚本' : 'Agent'}
+          </div>
+        </div>
+
         <div>
           <div className="text-xs text-slate-500 mb-1">调度类型</div>
           <div className="text-sm text-slate-900">
@@ -80,16 +101,18 @@ export function TaskDetail({ task }: TaskDetailProps) {
           </div>
         )}
 
-        <div>
-          <div className="text-xs text-slate-500 mb-1">上下文模式</div>
-          <div className="text-sm text-slate-900">
-            {task.context_mode === 'group'
-              ? '共享群组上下文'
-              : task.context_mode === 'isolated'
-                ? '独立执行'
-                : task.context_mode}
+        {task.execution_type !== 'script' && (
+          <div>
+            <div className="text-xs text-slate-500 mb-1">上下文模式</div>
+            <div className="text-sm text-slate-900">
+              {task.context_mode === 'group'
+                ? '共享群组上下文'
+                : task.context_mode === 'isolated'
+                  ? '独立执行'
+                  : task.context_mode}
+            </div>
           </div>
-        </div>
+        )}
 
         <div>
           <div className="text-xs text-slate-500 mb-1">创建时间</div>

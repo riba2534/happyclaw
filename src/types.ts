@@ -87,6 +87,8 @@ export interface ScheduledTask {
   schedule_type: 'cron' | 'interval' | 'once';
   schedule_value: string;
   context_mode: 'group' | 'isolated';
+  execution_type: 'agent' | 'script';
+  script_command: string | null;
   next_run: string | null;
   last_run: string | null;
   last_result: string | null;

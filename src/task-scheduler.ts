@@ -27,6 +27,7 @@ import {
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { logger } from './logger.js';
+import { hasScriptCapacity, runScript } from './script-runner.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
 export interface SchedulerDependencies {
@@ -46,6 +47,25 @@ export interface SchedulerDependencies {
 }
 
 const runningTaskIds = new Set<string>();
+
+function computeNextRun(task: ScheduledTask): string | null {
+  if (task.schedule_type === 'cron') {
+    const interval = CronExpressionParser.parse(task.schedule_value, {
+      tz: TIMEZONE,
+    });
+    return interval.next().toISOString();
+  } else if (task.schedule_type === 'interval') {
+    const ms = parseInt(task.schedule_value, 10);
+    const anchor = task.next_run ? new Date(task.next_run).getTime() : Date.now();
+    let nextTime = anchor + ms;
+    while (nextTime <= Date.now()) {
+      nextTime += ms;
+    }
+    return new Date(nextTime).toISOString();
+  }
+  // 'once' tasks have no next run
+  return null;
+}
 
 async function runTask(
   task: ScheduledTask,
@@ -215,23 +235,91 @@ async function runTask(
     error,
   });
 
-  let nextRun: string | null = null;
-  if (task.schedule_type === 'cron') {
-    const interval = CronExpressionParser.parse(task.schedule_value, {
-      tz: TIMEZONE,
-    });
-    nextRun = interval.next().toISOString();
-  } else if (task.schedule_type === 'interval') {
-    const ms = parseInt(task.schedule_value, 10);
-    const anchor = task.next_run ? new Date(task.next_run).getTime() : Date.now();
-    let nextTime = anchor + ms;
-    while (nextTime <= Date.now()) {
-      nextTime += ms;
-    }
-    nextRun = new Date(nextTime).toISOString();
-  }
-  // 'once' tasks have no next run
+  const nextRun = computeNextRun(task);
 
+  const resultSummary = error
+    ? `Error: ${error}`
+    : result
+      ? result.slice(0, 200)
+      : 'Completed';
+  updateTaskAfterRun(task.id, nextRun, resultSummary);
+}
+
+async function runScriptTask(
+  task: ScheduledTask,
+  deps: SchedulerDependencies,
+  groupJid: string,
+): Promise<void> {
+  runningTaskIds.add(task.id);
+  const startTime = Date.now();
+
+  logger.info(
+    { taskId: task.id, group: task.group_folder, executionType: 'script' },
+    'Running script task',
+  );
+
+  const groupDir = path.join(GROUPS_DIR, task.group_folder);
+  fs.mkdirSync(groupDir, { recursive: true });
+
+  if (!task.script_command) {
+    logger.error({ taskId: task.id }, 'Script task has no script_command, skipping');
+    logTaskRun({
+      task_id: task.id,
+      run_at: new Date().toISOString(),
+      duration_ms: Date.now() - startTime,
+      status: 'error',
+      result: null,
+      error: 'script_command is empty',
+    });
+    runningTaskIds.delete(task.id);
+    return;
+  }
+
+  let result: string | null = null;
+  let error: string | null = null;
+
+  try {
+    const scriptResult = await runScript(task.script_command, task.group_folder);
+
+    if (scriptResult.timedOut) {
+      error = `脚本执行超时 (${Math.round(scriptResult.durationMs / 1000)}s)`;
+    } else if (scriptResult.exitCode !== 0) {
+      error = scriptResult.stderr.trim() || `退出码: ${scriptResult.exitCode}`;
+      result = scriptResult.stdout.trim() || null;
+    } else {
+      result = scriptResult.stdout.trim() || '(无输出)';
+    }
+
+    // Send result to user
+    const text = error
+      ? `[脚本] 执行失败: ${error}${result ? `\n输出:\n${result.slice(0, 500)}` : ''}`
+      : `[脚本] ${result!.slice(0, 1000)}`;
+
+    await deps.sendMessage(groupJid, `${deps.assistantName}: ${text}`);
+
+    logger.info(
+      { taskId: task.id, durationMs: Date.now() - startTime, exitCode: scriptResult.exitCode },
+      'Script task completed',
+    );
+  } catch (err) {
+    error = err instanceof Error ? err.message : String(err);
+    logger.error({ taskId: task.id, error }, 'Script task failed');
+  } finally {
+    runningTaskIds.delete(task.id);
+  }
+
+  const durationMs = Date.now() - startTime;
+
+  logTaskRun({
+    task_id: task.id,
+    run_at: new Date().toISOString(),
+    duration_ms: durationMs,
+    status: error ? 'error' : 'success',
+    result,
+    error,
+  });
+
+  const nextRun = computeNextRun(task);
   const resultSummary = error
     ? `Error: ${error}`
     : result
@@ -314,9 +402,23 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
           continue;
         }
 
-        deps.queue.enqueueTask(targetGroupJid, currentTask.id, () =>
-          runTask(currentTask, deps, targetGroupJid),
-        );
+        if (currentTask.execution_type === 'script') {
+          if (!hasScriptCapacity()) {
+            logger.debug(
+              { taskId: currentTask.id },
+              'Script concurrency limit reached, skipping',
+            );
+            continue;
+          }
+          // Script tasks run directly, not through GroupQueue
+          runScriptTask(currentTask, deps, targetGroupJid).catch((err) => {
+            logger.error({ taskId: currentTask.id, err }, 'Unhandled error in runScriptTask');
+          });
+        } else {
+          deps.queue.enqueueTask(targetGroupJid, currentTask.id, () =>
+            runTask(currentTask, deps, targetGroupJid),
+          );
+        }
       }
     } catch (err) {
       logger.error({ err }, 'Error in scheduler loop');

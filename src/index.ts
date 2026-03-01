@@ -1354,6 +1354,8 @@ async function processTaskIpc(
     schedule_type?: string;
     schedule_value?: string;
     context_mode?: string;
+    execution_type?: string;
+    script_command?: string;
     groupFolder?: string;
     chatJid?: string;
     targetJid?: string;
@@ -1373,11 +1375,31 @@ async function processTaskIpc(
   switch (data.type) {
     case 'schedule_task':
       if (
-        data.prompt &&
         data.schedule_type &&
         data.schedule_value &&
         data.targetJid
       ) {
+        const execType = data.execution_type === 'script' ? 'script' as const : 'agent' as const;
+
+        // Script tasks require prompt OR script_command; agent tasks require prompt
+        if (execType === 'agent' && !data.prompt) {
+          logger.warn('schedule_task: agent mode requires prompt');
+          break;
+        }
+        if (execType === 'script' && !data.script_command) {
+          logger.warn('schedule_task: script mode requires script_command');
+          break;
+        }
+
+        // Only admin home can create script tasks
+        if (execType === 'script' && !isAdminHome) {
+          logger.warn(
+            { sourceGroup },
+            'Non-admin container attempted to create script task',
+          );
+          break;
+        }
+
         // Resolve the target group from JID
         const targetJid = data.targetJid as string;
         const targetGroupEntry = registeredGroups[targetJid];
@@ -1448,16 +1470,18 @@ async function processTaskIpc(
           id: taskId,
           group_folder: targetFolder,
           chat_jid: targetJid,
-          prompt: data.prompt,
+          prompt: data.prompt || '',
           schedule_type: scheduleType,
           schedule_value: data.schedule_value,
           context_mode: contextMode,
+          execution_type: execType,
+          script_command: data.script_command ?? null,
           next_run: nextRun,
           status: 'active',
           created_at: new Date().toISOString(),
         });
         logger.info(
-          { taskId, sourceGroup, targetFolder, contextMode },
+          { taskId, sourceGroup, targetFolder, contextMode, execType },
           'Task created via IPC',
         );
       }

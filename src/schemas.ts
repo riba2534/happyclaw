@@ -10,6 +10,8 @@ export const TaskPatchSchema = z.object({
   schedule_type: z.enum(['cron', 'interval', 'once']).optional(),
   schedule_value: z.string().optional(),
   context_mode: z.enum(['group', 'isolated']).optional(),
+  execution_type: z.enum(['agent', 'script']).optional(),
+  script_command: z.string().max(4096).nullable().optional(),
   status: z.enum(['active', 'paused']).optional(),
   next_run: z.string().optional(),
 });
@@ -20,11 +22,28 @@ const CRON_REGEX = /^(\S+\s+){4,5}\S+$/;
 export const TaskCreateSchema = z.object({
   group_folder: z.string().min(1),
   chat_jid: z.string().min(1),
-  prompt: z.string().min(1),
+  prompt: z.string().optional().default(''),
   schedule_type: z.enum(['cron', 'interval', 'once']),
   schedule_value: z.string().min(1),
   context_mode: z.enum(['group', 'isolated']).optional(),
+  execution_type: z.enum(['agent', 'script']).optional(),
+  script_command: z.string().max(4096).optional(),
 }).superRefine((data, ctx) => {
+  const execType = data.execution_type || 'agent';
+  if (execType === 'agent' && !data.prompt?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['prompt'],
+      message: 'Agent 模式下 prompt 为必填项',
+    });
+  }
+  if (execType === 'script' && !data.script_command?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['script_command'],
+      message: '脚本模式下 script_command 为必填项',
+    });
+  }
   if (data.schedule_type === 'cron') {
     if (!CRON_REGEX.test(data.schedule_value.trim())) {
       ctx.addIssue({
@@ -143,6 +162,8 @@ export const SystemSettingsSchema = z.object({
   maxConcurrentHostProcesses: z.number().int().min(1).max(50).optional(),
   maxLoginAttempts: z.number().int().min(1).max(100).optional(),
   loginLockoutMinutes: z.number().int().min(1).max(1440).optional(),
+  maxConcurrentScripts: z.number().int().min(1).max(50).optional(),
+  scriptTimeout: z.number().int().min(5000).max(600000).optional(),
 });
 
 export const AppearanceConfigSchema = z.object({

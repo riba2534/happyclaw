@@ -124,35 +124,56 @@ export function createMcpTools(ctx: McpContext): SdkMcpToolDefinition<any>[] {
     // --- schedule_task ---
     tool(
       'schedule_task',
-      `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools.
+      `Schedule a recurring or one-time task.
 
-CONTEXT MODE - Choose based on task type:
-\u2022 "group": Task runs in the group's conversation context, with access to chat history. Use for tasks that need context about ongoing discussions, user preferences, or recent interactions.
-\u2022 "isolated": Task runs in a fresh session with no conversation history. Use for independent tasks that don't need prior context. When using isolated mode, include all necessary context in the prompt itself.
+EXECUTION TYPE:
+\u2022 "agent" (default): Task runs as a full Claude Agent with access to all tools. Consumes API tokens.
+\u2022 "script" (admin only): Task runs a shell command directly on the host. Zero API token cost. Use for deterministic tasks like health checks, data collection, cURL calls, or cron-like scripts.
 
-If unsure which mode to use, you can ask the user. Examples:
-- "Remind me about our discussion" \u2192 group (needs conversation context)
-- "Check the weather every morning" \u2192 isolated (self-contained task)
-- "Follow up on my request" \u2192 group (needs to know what was requested)
-- "Generate a daily report" \u2192 isolated (just needs instructions in prompt)
+CONTEXT MODE (agent mode only) - Choose based on task type:
+\u2022 "group": Task runs in the group's conversation context, with access to chat history.
+\u2022 "isolated": Task runs in a fresh session with no conversation history.
 
-MESSAGING BEHAVIOR - The task agent's output is sent to the user or group. It can also use send_message for immediate delivery, or wrap output in <internal> tags to suppress it. Include guidance in the prompt about whether the agent should:
-\u2022 Always send a message (e.g., reminders, daily briefings)
-\u2022 Only send a message when there's something to report (e.g., "notify me if...")
-\u2022 Never send a message (background maintenance tasks)
+MESSAGING BEHAVIOR - The task output is sent to the user or group.
+\u2022 Agent mode: output is sent via MCP tool or stdout. Use <internal> tags to suppress.
+\u2022 Script mode: stdout is sent as the result. stderr is included on failure.
 
 SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
 \u2022 cron: Standard cron expression (e.g., "*/5 * * * *" for every 5 minutes, "0 9 * * *" for daily at 9am LOCAL time)
 \u2022 interval: Milliseconds between runs (e.g., "300000" for 5 minutes, "3600000" for 1 hour)
 \u2022 once: Local time WITHOUT "Z" suffix (e.g., "2026-02-01T15:30:00"). Do NOT use UTC/Z suffix.`,
       {
-        prompt: z.string().describe('What the agent should do when the task runs. For isolated mode, include all necessary context here.'),
+        prompt: z.string().optional().default('').describe('What the agent should do (agent mode) or task description (script mode, optional).'),
         schedule_type: z.enum(['cron', 'interval', 'once']).describe('cron=recurring at specific times, interval=recurring every N ms, once=run once at specific time'),
         schedule_value: z.string().describe('cron: "*/5 * * * *" | interval: milliseconds like "300000" | once: local timestamp like "2026-02-01T15:30:00" (no Z suffix!)'),
-        context_mode: z.enum(['group', 'isolated']).default('group').describe('group=runs with chat history and memory, isolated=fresh session (include context in prompt)'),
+        execution_type: z.enum(['agent', 'script']).default('agent').describe('agent=full Claude Agent (default), script=shell command (admin only, zero token cost)'),
+        script_command: z.string().max(4096).optional().describe('Shell command to execute (required for script mode). Runs in the group workspace directory.'),
+        context_mode: z.enum(['group', 'isolated']).default('group').describe('(agent mode only) group=runs with chat history, isolated=fresh session'),
         target_group_jid: z.string().optional().describe('(Admin home only) JID of the group to schedule the task for. Defaults to the current group.'),
       },
       async (args) => {
+        const execType = args.execution_type || 'agent';
+
+        // Validate execution_type constraints
+        if (execType === 'agent' && !args.prompt?.trim()) {
+          return {
+            content: [{ type: 'text' as const, text: 'Agent mode requires a prompt. Provide instructions for what the agent should do.' }],
+            isError: true,
+          };
+        }
+        if (execType === 'script' && !args.script_command?.trim()) {
+          return {
+            content: [{ type: 'text' as const, text: 'Script mode requires script_command. Provide the shell command to execute.' }],
+            isError: true,
+          };
+        }
+        if (execType === 'script' && !ctx.isAdminHome) {
+          return {
+            content: [{ type: 'text' as const, text: 'Only admin home container can create script tasks.' }],
+            isError: true,
+          };
+        }
+
         // Validate schedule_value before writing IPC
         if (args.schedule_type === 'cron') {
           try {
@@ -182,19 +203,24 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
         }
 
         const targetJid = hasCrossGroupAccess && args.target_group_jid ? args.target_group_jid : ctx.chatJid;
-        const data = {
+        const data: Record<string, unknown> = {
           type: 'schedule_task',
-          prompt: args.prompt,
+          prompt: args.prompt || '',
           schedule_type: args.schedule_type,
           schedule_value: args.schedule_value,
           context_mode: args.context_mode || 'group',
+          execution_type: execType,
           targetJid,
           createdBy: ctx.groupFolder,
           timestamp: new Date().toISOString(),
         };
+        if (execType === 'script') {
+          data.script_command = args.script_command;
+        }
         const filename = writeIpcFile(TASKS_DIR, data);
+        const modeLabel = execType === 'script' ? 'script' : 'agent';
         return {
-          content: [{ type: 'text' as const, text: `Task scheduled (${filename}): ${args.schedule_type} - ${args.schedule_value}` }],
+          content: [{ type: 'text' as const, text: `Task scheduled [${modeLabel}] (${filename}): ${args.schedule_type} - ${args.schedule_value}` }],
         };
       },
     ),

@@ -120,6 +120,8 @@ export function initDatabase(): void {
       schedule_type TEXT NOT NULL,
       schedule_value TEXT NOT NULL,
       context_mode TEXT DEFAULT 'isolated',
+      execution_type TEXT DEFAULT 'agent',
+      script_command TEXT,
       next_run TEXT,
       last_run TEXT,
       last_result TEXT,
@@ -287,6 +289,8 @@ export function initDatabase(): void {
   ensureColumn('users', 'ai_avatar_color', 'TEXT');
   ensureColumn('users', 'ai_avatar_url', 'TEXT');
   ensureColumn('scheduled_tasks', 'created_by', 'TEXT');
+  ensureColumn('scheduled_tasks', 'execution_type', "TEXT DEFAULT 'agent'");
+  ensureColumn('scheduled_tasks', 'script_command', 'TEXT');
   ensureColumn('registered_groups', 'selected_skills', 'TEXT');
   ensureColumn('sessions', 'agent_id', "TEXT NOT NULL DEFAULT ''");
   ensureColumn('agents', 'kind', "TEXT NOT NULL DEFAULT 'task'");
@@ -512,7 +516,7 @@ export function initDatabase(): void {
     })();
   }
 
-  const SCHEMA_VERSION = '17';
+  const SCHEMA_VERSION = '18';
   db.prepare(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', SCHEMA_VERSION);
@@ -696,8 +700,8 @@ export function createTask(
 ): void {
   db.prepare(
     `
-    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, next_run, status, created_at, created_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, execution_type, script_command, next_run, status, created_at, created_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     task.id,
@@ -707,6 +711,8 @@ export function createTask(
     task.schedule_type,
     task.schedule_value,
     task.context_mode || 'isolated',
+    task.execution_type || 'agent',
+    task.script_command ?? null,
     task.next_run,
     task.status,
     task.created_at,
@@ -739,7 +745,14 @@ export function updateTask(
   updates: Partial<
     Pick<
       ScheduledTask,
-      'prompt' | 'schedule_type' | 'schedule_value' | 'next_run' | 'status'
+      | 'prompt'
+      | 'schedule_type'
+      | 'schedule_value'
+      | 'context_mode'
+      | 'execution_type'
+      | 'script_command'
+      | 'next_run'
+      | 'status'
     >
   >,
 ): void {
@@ -757,6 +770,18 @@ export function updateTask(
   if (updates.schedule_value !== undefined) {
     fields.push('schedule_value = ?');
     values.push(updates.schedule_value);
+  }
+  if (updates.context_mode !== undefined) {
+    fields.push('context_mode = ?');
+    values.push(updates.context_mode);
+  }
+  if (updates.execution_type !== undefined) {
+    fields.push('execution_type = ?');
+    values.push(updates.execution_type);
+  }
+  if (updates.script_command !== undefined) {
+    fields.push('script_command = ?');
+    values.push(updates.script_command);
   }
   if (updates.next_run !== undefined) {
     fields.push('next_run = ?');
