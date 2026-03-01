@@ -310,11 +310,11 @@ export function InstallSkillDialog({
                 type="text"
                 value={pkg}
                 onChange={(e) => setPkg(e.target.value)}
-                placeholder="owner/repo 或 owner/repo@skill"
+                placeholder="owner/repo、owner/repo@skill 或 GitHub URL"
                 disabled={isInstalling}
               />
               <p className="mt-1 text-xs text-muted-foreground">
-                支持格式：owner/repo 或 owner/repo@skill
+                支持格式：owner/repo、owner/repo@skill 或 GitHub URL
               </p>
             </div>
 

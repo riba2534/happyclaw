@@ -333,7 +333,7 @@ Example packages: "anthropic/memory", "anthropic/think", "owner/repo", "owner/re
       },
       async (args) => {
         const pkg = args.package.trim();
-        if (!/^[\w\-]+\/[\w\-.]+(?:[@#][\w\-.\/]+)?$/.test(pkg)) {
+        if (!/^[\w\-]+\/[\w\-.]+(?:[@#][\w\-.\/]+)?$/.test(pkg) && !/^https?:\/\//.test(pkg)) {
           return {
             content: [{ type: 'text' as const, text: `Invalid package format: "${pkg}". Expected format: owner/repo or owner/repo@skill` }],
             isError: true,
