@@ -14,6 +14,7 @@ import {
   MAX_FILE_SIZE,
   FileTooLargeError,
 } from './im-downloader.js';
+import { detectImageMimeType } from './image-detector.js';
 
 // ─── TelegramConnection Interface ──────────────────────────────
 
@@ -239,7 +240,7 @@ export function createTelegramConnection(config: TelegramConnectionConfig): Tele
   async function downloadTelegramPhotoAsBase64(
     fileId: string,
     fileSizeHint?: number,
-  ): Promise<string | null> {
+  ): Promise<{ base64: string; mimeType: string } | null> {
     if (fileSizeHint !== undefined && fileSizeHint > MAX_FILE_SIZE) {
       logger.warn({ fileId, fileSizeHint }, 'Telegram photo exceeds MAX_FILE_SIZE, skipping');
       return null;
@@ -273,7 +274,11 @@ export function createTelegramConnection(config: TelegramConnectionConfig): Tele
         logger.warn({ fileId }, 'Empty response from Telegram photo download');
         return null;
       }
-      return buffer.toString('base64');
+      const mimeType = detectImageMimeType(buffer);
+      return {
+        base64: buffer.toString('base64'),
+        mimeType,
+      };
     } catch (err) {
       logger.warn({ err, fileId }, 'Failed to download Telegram photo as base64');
       return null;
@@ -460,11 +465,11 @@ export function createTelegramConnection(config: TelegramConnectionConfig): Tele
           const photo = ctx.message.photo.at(-1);
           if (!photo) return;
 
-          const base64Data = await downloadTelegramPhotoAsBase64(photo.file_id, photo.file_size);
+          const imageData = await downloadTelegramPhotoAsBase64(photo.file_id, photo.file_size);
 
           let attachmentsJson: string | undefined;
-          if (base64Data) {
-            attachmentsJson = JSON.stringify([{ type: 'image', data: base64Data, mimeType: 'image/jpeg' }]);
+          if (imageData) {
+            attachmentsJson = JSON.stringify([{ type: 'image', data: imageData.base64, mimeType: imageData.mimeType }]);
           }
 
           const caption = ctx.message.caption;

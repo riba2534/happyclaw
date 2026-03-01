@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { createPortal } from 'react-dom';
+import { X } from 'lucide-react';
 
 interface ImageLightboxProps {
   images: string[];
@@ -108,13 +109,22 @@ export function ImageLightbox({ images, initialIndex, onClose }: ImageLightboxPr
         style={overlayStyle}
       />
 
-      {/* Image */}
+      {/* Close button */}
+      <button
+        onClick={handleClose}
+        className="absolute top-4 right-4 z-30 w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-sm flex items-center justify-center text-white transition-colors"
+        aria-label="关闭"
+        style={{ opacity: isOpen && !isClosing ? 1 : 0, transition: 'opacity 300ms ease' }}
+      >
+        <X className="w-6 h-6" />
+      </button>
+
+      {/* Image container */}
       <div
         className="relative z-10 w-full h-full flex items-center justify-center p-4"
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
-        onClick={(e) => e.stopPropagation()}
       >
         <img
           src={images[currentIndex]}
@@ -122,6 +132,7 @@ export function ImageLightbox({ images, initialIndex, onClose }: ImageLightboxPr
           className="max-w-full max-h-full object-contain select-none"
           style={imageStyle}
           draggable={false}
+          onClick={(e) => e.stopPropagation()}
         />
       </div>
 

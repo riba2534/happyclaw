@@ -12,6 +12,7 @@ import {
   FileTooLargeError,
 } from './im-downloader.js';
 import { broadcastNewMessage } from './web.js';
+import { detectImageMimeType } from './image-detector.js';
 
 // ─── FeishuConnection Interface ────────────────────────────────
 
@@ -130,7 +131,7 @@ function extractMessageContent(
     if (messageType === 'image') {
       const imageKey = parsed.image_key;
       if (imageKey) {
-        return { text: '[图片]', imageKeys: [imageKey] };
+        return { text: '', imageKeys: [imageKey] };
       }
     }
 
@@ -358,7 +359,7 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
   async function downloadFeishuImage(
     messageId: string,
     fileKey: string,
-  ): Promise<string | null> {
+  ): Promise<{ base64: string; mimeType: string } | null> {
     try {
       const res = await client!.im.messageResource.get({
         path: {
@@ -381,7 +382,11 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
         return null;
       }
 
-      return buffer.toString('base64');
+      const mimeType = detectImageMimeType(buffer);
+      return {
+        base64: buffer.toString('base64'),
+        mimeType,
+      };
     } catch (err) {
       logger.warn({ err, messageId, fileKey }, 'Failed to download Feishu image');
       return null;
@@ -559,12 +564,12 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
       // 独立图片消息（type='image'）：原有逻辑，下载为 base64 供 Vision
       const attachments = [];
       for (const imageKey of extracted.imageKeys) {
-        const base64Data = await downloadFeishuImage(messageId, imageKey);
-        if (base64Data) {
+        const imageData = await downloadFeishuImage(messageId, imageKey);
+        if (imageData) {
           attachments.push({
             type: 'image',
-            data: base64Data,
-            mimeType: 'image/png',
+            data: imageData.base64,
+            mimeType: imageData.mimeType,
           });
         }
       }

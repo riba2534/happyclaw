@@ -89,6 +89,9 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
   const images = attachments.filter((att) => att.type === 'image');
   const allImageSrcs = images.map((img) => `data:${img.mimeType || 'image/png'};base64,${img.data}`);
 
+  // Check if content is empty (only whitespace) and we have images
+  const hasOnlyImages = !message.content.trim() && images.length > 0;
+
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(message.content);
@@ -197,13 +200,15 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
         )}
 
         {/* Content — strip first-child top margin for consistent spacing */}
-        <div className="min-w-0 overflow-hidden [&>div>*:first-child]:!mt-0">
-          {isAI ? (
-            <MarkdownRenderer content={message.content} groupJid={message.chat_jid} variant="chat" />
-          ) : (
-            <p className="text-[15px] leading-relaxed whitespace-pre-wrap break-words text-slate-800">{message.content}</p>
-          )}
-        </div>
+        {!hasOnlyImages && (
+          <div className="min-w-0 overflow-hidden [&>div>*:first-child]:!mt-0">
+            {isAI ? (
+              <MarkdownRenderer content={message.content} groupJid={message.chat_jid} variant="chat" />
+            ) : (
+              <p className="text-[15px] leading-relaxed whitespace-pre-wrap break-words text-slate-800">{message.content}</p>
+            )}
+          </div>
+        )}
 
         {lightboxState && (
           <ImageLightbox images={lightboxState.images} initialIndex={lightboxState.index} onClose={() => setLightboxState(null)} />
@@ -256,17 +261,21 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
                     ))}
                   </div>
                 )}
-                <div className="bg-white border border-slate-200 text-foreground px-4 py-2.5 rounded-2xl rounded-tl-sm shadow-sm">
-                  <p className="text-[15px] leading-relaxed whitespace-pre-wrap break-words">{message.content}</p>
-                </div>
-                <button
-                  onClick={handleCopy}
-                  className="absolute -right-8 top-1/2 -translate-y-1/2 w-6 h-6 rounded-md flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100 max-lg:hidden lg:opacity-0 lg:group-hover:opacity-100 transition-opacity cursor-pointer"
-                  title="复制"
-                  aria-label="复制消息"
-                >
-                  {copied ? <Check className="w-3.5 h-3.5 text-primary" /> : <Copy className="w-3.5 h-3.5" />}
-                </button>
+                {!hasOnlyImages && (
+                  <div className="bg-white border border-slate-200 text-foreground px-4 py-2.5 rounded-2xl rounded-tl-sm shadow-sm">
+                    <p className="text-[15px] leading-relaxed whitespace-pre-wrap break-words">{message.content}</p>
+                  </div>
+                )}
+                {!hasOnlyImages && (
+                  <button
+                    onClick={handleCopy}
+                    className="absolute -right-8 top-1/2 -translate-y-1/2 w-6 h-6 rounded-md flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100 max-lg:hidden lg:opacity-0 lg:group-hover:opacity-100 transition-opacity cursor-pointer"
+                    title="复制"
+                    aria-label="复制消息"
+                  >
+                    {copied ? <Check className="w-3.5 h-3.5 text-primary" /> : <Copy className="w-3.5 h-3.5" />}
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -314,17 +323,21 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
                 ))}
               </div>
             )}
-            <div className="bg-white border border-slate-200 text-foreground px-4 py-2.5 rounded-2xl rounded-tr-sm shadow-sm">
-              <p className="text-[15px] leading-relaxed whitespace-pre-wrap break-words">{message.content}</p>
-            </div>
-            <button
-              onClick={handleCopy}
-              className="absolute -left-8 top-1/2 -translate-y-1/2 w-6 h-6 rounded-md flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100 max-lg:hidden lg:opacity-0 lg:group-hover:opacity-100 transition-opacity cursor-pointer"
-              title="复制"
-              aria-label="复制消息"
-            >
-              {copied ? <Check className="w-3.5 h-3.5 text-primary" /> : <Copy className="w-3.5 h-3.5" />}
-            </button>
+            {!hasOnlyImages && (
+              <div className="bg-white border border-slate-200 text-foreground px-4 py-2.5 rounded-2xl rounded-tr-sm shadow-sm">
+                <p className="text-[15px] leading-relaxed whitespace-pre-wrap break-words">{message.content}</p>
+              </div>
+            )}
+            {!hasOnlyImages && (
+              <button
+                onClick={handleCopy}
+                className="absolute -left-8 top-1/2 -translate-y-1/2 w-6 h-6 rounded-md flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100 max-lg:hidden lg:opacity-0 lg:group-hover:opacity-100 transition-opacity cursor-pointer"
+                title="复制"
+                aria-label="复制消息"
+              >
+                {copied ? <Check className="w-3.5 h-3.5 text-primary" /> : <Copy className="w-3.5 h-3.5" />}
+              </button>
+            )}
           </div>
           {showTime && (
             <span className="text-xs text-slate-400 mt-1.5 mr-1">{time}</span>
@@ -407,9 +420,11 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
             )}
 
             {/* Content */}
-            <div className="max-w-none overflow-hidden">
-              <MarkdownRenderer content={message.content} groupJid={message.chat_jid} variant="chat" />
-            </div>
+            {!hasOnlyImages && (
+              <div className="max-w-none overflow-hidden">
+                <MarkdownRenderer content={message.content} groupJid={message.chat_jid} variant="chat" />
+              </div>
+            )}
           </div>
         </div>
       </div>
