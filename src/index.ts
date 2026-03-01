@@ -2587,7 +2587,8 @@ async function main(): Promise<void> {
           claudeOAuthCredentials: refreshed,
         });
         updateAllSessionCredentials(saved);
-        logger.info('OAuth token refreshed successfully');
+        const closed = queue.closeAllActiveForCredentialRefresh();
+        logger.info({ closedContainers: closed }, 'OAuth token refreshed successfully');
       } else {
         logger.warn('OAuth token refresh failed');
       }
