@@ -109,7 +109,7 @@ export default defineConfig(({ command }) => {
             ],
           },
           workbox: {
-            navigateFallback: `${APP_BASE}index.html`,
+            navigateFallback: null,
             manifestTransforms: [async (entries) => ({
               manifest: entries.filter((entry) => !isMermaidRuntimeChunk(entry.url)),
               warnings: [],
