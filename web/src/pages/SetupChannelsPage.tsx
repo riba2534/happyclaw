@@ -77,31 +77,31 @@ export function SetupChannelsPage() {
   };
 
   return (
-    <div className="h-screen bg-slate-50 overflow-y-auto p-4">
+    <div className="h-screen bg-background overflow-y-auto p-4">
       <div className="w-full max-w-2xl mx-auto space-y-5">
         <div className="text-center">
           <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center mx-auto mb-4">
             <MessageSquare className="w-6 h-6 text-primary" />
           </div>
           <h1 className="text-2xl font-bold text-foreground mb-2">配置消息通道（可选）</h1>
-          <p className="text-sm text-slate-600">
+          <p className="text-sm text-muted-foreground">
             绑定飞书或 Telegram，即可通过 IM 与 AI 对话。跳过后也可在设置中随时配置。
           </p>
         </div>
 
         {error && (
-          <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm">{error}</div>
+          <div className="p-3 rounded-lg bg-error-bg border border-error/30 text-error text-sm">{error}</div>
         )}
 
         {/* Feishu */}
         <section className="bg-card rounded-xl border border-border shadow-sm p-5">
           <h2 className="text-base font-semibold text-foreground mb-3">飞书</h2>
-          <p className="text-xs text-slate-500 mb-3">
+          <p className="text-xs text-muted-foreground mb-3">
             填写你的飞书应用凭证，绑定后即可在飞书中与 AI 对话。
           </p>
           <div className="grid md:grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">App ID</label>
+              <label className="block text-sm font-medium text-foreground mb-1">App ID</label>
               <Input
                 type="text"
                 value={feishuAppId}
@@ -110,7 +110,7 @@ export function SetupChannelsPage() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">App Secret</label>
+              <label className="block text-sm font-medium text-foreground mb-1">App Secret</label>
               <Input
                 type="password"
                 value={feishuAppSecret}
@@ -124,11 +124,11 @@ export function SetupChannelsPage() {
         {/* Telegram */}
         <section className="bg-card rounded-xl border border-border shadow-sm p-5">
           <h2 className="text-base font-semibold text-foreground mb-3">Telegram</h2>
-          <p className="text-xs text-slate-500 mb-3">
+          <p className="text-xs text-muted-foreground mb-3">
             填写 Telegram Bot Token，绑定后即可在 Telegram 中与 AI 对话。
           </p>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Bot Token</label>
+            <label className="block text-sm font-medium text-foreground mb-1">Bot Token</label>
             <Input
               type="password"
               value={telegramBotToken}

@@ -61,7 +61,7 @@ export function SetupPage() {
             </div>
           </div>
           <h1 className="text-2xl font-bold text-foreground mb-1">HappyClaw 初始设置</h1>
-          <p className="text-sm text-slate-500">先创建管理员账号，完成后进入后台继续配置飞书 Token 与 Claude Key</p>
+          <p className="text-sm text-muted-foreground">先创建管理员账号，完成后进入后台继续配置飞书 Token 与 Claude Key</p>
         </div>
 
         {/* Step card */}
@@ -139,10 +139,10 @@ function CreateAdminStep({
   return (
     <div>
       <h2 className="text-lg font-semibold text-foreground mb-1">创建管理员账号</h2>
-      <p className="text-sm text-slate-500 mb-4">首次使用请先创建管理员，提交后进入系统接入配置向导。</p>
+      <p className="text-sm text-muted-foreground mb-4">首次使用请先创建管理员，提交后进入系统接入配置向导。</p>
 
       {error && (
-        <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm">{error}</div>
+        <div className="mb-4 p-3 rounded-lg bg-error-bg border border-error/30 text-error text-sm">{error}</div>
       )}
 
       <div className="space-y-3">
@@ -169,7 +169,7 @@ function CreateAdminStep({
             <button
               type="button"
               onClick={() => setShowPassword(!showPassword)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
             >
               {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
@@ -188,7 +188,7 @@ function CreateAdminStep({
             <button
               type="button"
               onClick={() => setShowConfirm(!showConfirm)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
             >
               {showConfirm ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>

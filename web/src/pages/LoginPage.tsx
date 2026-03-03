@@ -70,7 +70,7 @@ export function LoginPage() {
   if (initialized !== true) {
     return (
       <div className="h-screen bg-background overflow-y-auto flex items-center justify-center p-4">
-        <div className="text-slate-500 text-sm">加载中...</div>
+        <div className="text-muted-foreground text-sm">加载中...</div>
       </div>
     );
   }
@@ -90,14 +90,14 @@ export function LoginPage() {
           <h1 className="text-2xl font-bold text-foreground text-center mb-2">
             欢迎使用 HappyClaw
           </h1>
-          <p className="text-slate-500 text-center mb-6">
+          <p className="text-muted-foreground text-center mb-6">
             请登录以继续
           </p>
 
           {/* Error Message */}
           {error && (
-            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md">
-              <p className="text-sm text-red-600">{error}</p>
+            <div className="mb-4 p-3 bg-error-bg border border-error/30 rounded-md">
+              <p className="text-sm text-error">{error}</p>
             </div>
           )}
 
@@ -138,7 +138,7 @@ export function LoginPage() {
 
           {/* Register Link — hidden when registration is disabled */}
           {regStatus.allowRegistration && (
-            <p className="text-center text-sm text-slate-500 mt-4">
+            <p className="text-center text-sm text-muted-foreground mt-4">
               {regStatus.requireInviteCode ? '有邀请码？' : '还没有账户？'}
               <Link to="/register" className="text-primary hover:text-primary/80 ml-1">
                 去注册
@@ -148,7 +148,7 @@ export function LoginPage() {
         </div>
 
         {/* Footer */}
-        <p className="text-center text-sm text-slate-500 mt-4">
+        <p className="text-center text-sm text-muted-foreground mt-4">
           HappyClaw - Powered by{' '}
           <a href="https://github.com/riba2534" target="_blank" rel="noopener noreferrer" className="text-primary hover:text-primary/80">
             riba2534

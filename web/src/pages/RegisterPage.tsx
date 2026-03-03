@@ -102,7 +102,7 @@ export function RegisterPage() {
   if (initialized !== true || statusLoading) {
     return (
       <div className="h-screen bg-background overflow-y-auto flex items-center justify-center p-4">
-        <div className="text-slate-500 text-sm">加载中...</div>
+        <div className="text-muted-foreground text-sm">加载中...</div>
       </div>
     );
   }
@@ -121,7 +121,7 @@ export function RegisterPage() {
             <h1 className="text-2xl font-bold text-foreground text-center mb-2">
               注册已关闭
             </h1>
-            <p className="text-slate-500 text-center mb-6">
+            <p className="text-muted-foreground text-center mb-6">
               管理员已关闭注册功能，如需账户请联系管理员。
             </p>
             <Link
@@ -150,13 +150,13 @@ export function RegisterPage() {
           <h1 className="text-2xl font-bold text-foreground text-center mb-2">
             注册新账户
           </h1>
-          <p className="text-slate-500 text-center mb-6">
+          <p className="text-muted-foreground text-center mb-6">
             {status.requireInviteCode ? '需要邀请码才能注册' : '创建你的账户'}
           </p>
 
           {error && (
-            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md">
-              <p className="text-sm text-red-600">{error}</p>
+            <div className="mb-4 p-3 bg-error-bg border border-error/30 rounded-md">
+              <p className="text-sm text-error">{error}</p>
             </div>
           )}
 
@@ -196,7 +196,7 @@ export function RegisterPage() {
 
             <div className="mb-4">
               <label htmlFor="reg-display-name" className="block text-sm font-medium text-foreground mb-1">
-                显示名称 <span className="text-slate-400">(可选)</span>
+                显示名称 <span className="text-muted-foreground">(可选)</span>
               </label>
               <Input
                 id="reg-display-name"
@@ -227,14 +227,14 @@ export function RegisterPage() {
             </Button>
           </form>
 
-          <p className="text-center text-sm text-slate-500 mt-4">
+          <p className="text-center text-sm text-muted-foreground mt-4">
             已有账户？
             <Link to="/login" className="text-primary hover:text-primary/80 ml-1">
               去登录
             </Link>
           </p>
 
-          <p className="text-center text-sm text-slate-500 mt-2">
+          <p className="text-center text-sm text-muted-foreground mt-2">
             HappyClaw - Powered by{' '}
             <a href="https://github.com/riba2534" target="_blank" rel="noopener noreferrer" className="text-primary hover:text-primary/80">
               riba2534
