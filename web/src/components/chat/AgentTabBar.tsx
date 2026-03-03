@@ -1,4 +1,4 @@
-import { Plus, X } from 'lucide-react';
+import { Plus, X, Link, MessageSquare } from 'lucide-react';
 import type { AgentInfo } from '../../types';
 
 interface AgentTabBarProps {
@@ -7,6 +7,7 @@ interface AgentTabBarProps {
   onSelectTab: (agentId: string | null) => void;
   onDeleteAgent: (agentId: string) => void;
   onCreateConversation?: () => void;
+  onBindIm?: (agentId: string) => void;
 }
 
 const TASK_STATUS_ICON: Record<string, string> = {
@@ -22,7 +23,7 @@ const tabClass = (active: boolean) =>
       : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
   }`;
 
-export function AgentTabBar({ agents, activeTab, onSelectTab, onDeleteAgent, onCreateConversation }: AgentTabBarProps) {
+export function AgentTabBar({ agents, activeTab, onSelectTab, onDeleteAgent, onCreateConversation, onBindIm }: AgentTabBarProps) {
   const conversations = agents.filter(a => a.kind === 'conversation');
   const tasks = agents.filter(a => a.kind === 'task');
 
@@ -37,25 +38,42 @@ export function AgentTabBar({ agents, activeTab, onSelectTab, onDeleteAgent, onC
       </button>
 
       {/* Conversation tabs — same visual level as main */}
-      {conversations.map((agent) => (
-        <div
-          key={agent.id}
-          className={`${tabClass(activeTab === agent.id)} flex items-center gap-1.5 group`}
-          onClick={() => onSelectTab(agent.id)}
-        >
-          {agent.status === 'running' && (
-            <span className="w-1.5 h-1.5 rounded-full bg-teal-500 animate-pulse flex-shrink-0" />
-          )}
-          <span className="truncate max-w-[120px]">{agent.name}</span>
-          <button
-            onClick={(e) => { e.stopPropagation(); onDeleteAgent(agent.id); }}
-            className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-accent transition-all cursor-pointer"
-            title="关闭对话"
+      {conversations.map((agent) => {
+        const hasLinked = agent.linked_im_groups && agent.linked_im_groups.length > 0;
+        return (
+          <div
+            key={agent.id}
+            className={`${tabClass(activeTab === agent.id)} flex items-center gap-1.5 group`}
+            onClick={() => onSelectTab(agent.id)}
           >
-            <X className="w-3 h-3" />
-          </button>
-        </div>
-      ))}
+            {agent.status === 'running' && (
+              <span className="w-1.5 h-1.5 rounded-full bg-teal-500 animate-pulse flex-shrink-0" />
+            )}
+            {hasLinked && (
+              <span title={`已绑定: ${agent.linked_im_groups!.map(g => g.name).join(', ')}`}>
+                <MessageSquare className="w-3 h-3 text-teal-500 flex-shrink-0" />
+              </span>
+            )}
+            <span className="truncate max-w-[120px]">{agent.name}</span>
+            {onBindIm && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onBindIm(agent.id); }}
+                className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-accent transition-all cursor-pointer"
+                title="绑定 IM 群组"
+              >
+                <Link className="w-3 h-3" />
+              </button>
+            )}
+            <button
+              onClick={(e) => { e.stopPropagation(); onDeleteAgent(agent.id); }}
+              className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-accent transition-all cursor-pointer"
+              title="关闭对话"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        );
+      })}
 
       {/* Create conversation button */}
       {onCreateConversation && (

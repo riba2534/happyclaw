@@ -47,6 +47,7 @@ export interface RegisteredGroup {
   created_by?: string;
   is_home?: boolean; // 用户主容器标记
   selected_skills?: string[] | null; // null = 全部启用
+  target_agent_id?: string; // IM 消息路由到指定 conversation agent
 }
 
 export interface GroupMember {

@@ -1173,17 +1173,21 @@ export function broadcastNewMessage(
   msg: NewMessage & { is_from_me?: boolean },
   agentId?: string,
 ): void {
-  // For virtual JIDs like "web:xxx#agent:yyy", extract base JID for broadcast
-  const baseChatJid = chatJid.includes('#agent:')
-    ? chatJid.split('#agent:')[0]
-    : chatJid;
+  // For virtual JIDs like "web:xxx#agent:yyy", extract base JID and agentId
+  let baseChatJid = chatJid;
+  let effectiveAgentId = agentId;
+  if (chatJid.includes('#agent:')) {
+    const parts = chatJid.split('#agent:');
+    baseChatJid = parts[0];
+    if (!effectiveAgentId) effectiveAgentId = parts[1];
+  }
   const jid = normalizeHomeJid(baseChatJid);
   const allowedUserIds = getGroupAllowedUserIds(baseChatJid);
   const wsMsg: WsMessageOut = {
     type: 'new_message',
     chatJid: jid,
     message: { ...msg, is_from_me: msg.is_from_me ?? false },
-    ...(agentId ? { agentId } : {}),
+    ...(effectiveAgentId ? { agentId: effectiveAgentId } : {}),
   };
   safeBroadcast(wsMsg, isHostGroupJid(baseChatJid), allowedUserIds);
 }

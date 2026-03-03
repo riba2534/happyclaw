@@ -27,6 +27,16 @@ export interface AgentInfo {
   created_at: string;
   completed_at?: string;
   result_summary?: string;
+  linked_im_groups?: Array<{ jid: string; name: string }>;
+}
+
+export interface AvailableImGroup {
+  jid: string;
+  name: string;
+  bound_agent_id: string | null;
+  avatar?: string;
+  member_count?: number;
+  channel_type: string;
 }
 
 export interface GroupMember {

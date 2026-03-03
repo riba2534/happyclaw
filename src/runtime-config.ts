@@ -206,9 +206,10 @@ function normalizeSecret(input: unknown, fieldName: string): string {
   if (typeof input !== 'string') {
     throw new Error(`Invalid field: ${fieldName}`);
   }
-  // Strip ALL whitespace — API keys/tokens never contain spaces;
-  // users often paste with accidental spaces or line breaks.
-  const value = input.replace(/\s+/g, '');
+  // Strip ALL whitespace and non-ASCII characters — API keys/tokens are always ASCII;
+  // users often paste with accidental spaces, line breaks, or smart quotes (e.g. U+2019).
+  // eslint-disable-next-line no-control-regex
+  const value = input.replace(/\s+/g, '').replace(/[^\x00-\x7F]/g, '');
   if (value.length > MAX_FIELD_LENGTH) {
     throw new Error(`Field too long: ${fieldName}`);
   }

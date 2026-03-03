@@ -30,6 +30,7 @@ export interface WebDeps {
   isUserFeishuConnected?: (userId: string) => boolean;
   isUserTelegramConnected?: (userId: string) => boolean;
   processAgentConversation?: (chatJid: string, agentId: string) => Promise<void>;
+  getFeishuChatInfo?: (userId: string, chatId: string) => Promise<{ avatar?: string; name?: string; user_count?: string; chat_type?: string; chat_mode?: string } | null>;
 }
 
 export type Variables = {

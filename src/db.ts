@@ -294,6 +294,7 @@ export function initDatabase(): void {
   ensureColumn('registered_groups', 'selected_skills', 'TEXT');
   ensureColumn('sessions', 'agent_id', "TEXT NOT NULL DEFAULT ''");
   ensureColumn('agents', 'kind', "TEXT NOT NULL DEFAULT 'task'");
+  ensureColumn('registered_groups', 'target_agent_id', 'TEXT');
 
   // Migration: remove UNIQUE constraint from registered_groups.folder
   // Multiple groups (web:main + feishu chats) share folder='main' by design.
@@ -371,6 +372,7 @@ export function initDatabase(): void {
       'created_by',
       'is_home',
       'selected_skills',
+      'target_agent_id',
     ],
     ['trigger_pattern', 'requires_trigger'],
   );
@@ -516,7 +518,7 @@ export function initDatabase(): void {
     })();
   }
 
-  const SCHEMA_VERSION = '18';
+  const SCHEMA_VERSION = '19';
   db.prepare(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', SCHEMA_VERSION);
@@ -959,6 +961,7 @@ export function getRegisteredGroup(
         created_by: string | null;
         is_home: number;
         selected_skills: string | null;
+        target_agent_id: string | null;
       }
     | undefined;
   if (!row) return undefined;
@@ -978,13 +981,14 @@ export function getRegisteredGroup(
     created_by: row.created_by ?? undefined,
     is_home: row.is_home === 1,
     selected_skills: row.selected_skills ? JSON.parse(row.selected_skills) : null,
+    target_agent_id: row.target_agent_id ?? undefined,
   };
 }
 
 export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
   db.prepare(
-    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, added_at, container_config, execution_mode, custom_cwd, init_source_path, init_git_url, created_by, is_home, selected_skills)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, added_at, container_config, execution_mode, custom_cwd, init_source_path, init_git_url, created_by, is_home, selected_skills, target_agent_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     jid,
     group.name,
@@ -998,6 +1002,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.created_by ?? null,
     group.is_home ? 1 : 0,
     group.selected_skills ? JSON.stringify(group.selected_skills) : null,
+    group.target_agent_id ?? null,
   );
 }
 
@@ -1026,6 +1031,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     init_git_url: string | null;
     created_by: string | null;
     is_home: number;
+    target_agent_id: string | null;
   }>;
   const result: Record<string, RegisteredGroup> = {};
   for (const row of rows) {
@@ -1042,9 +1048,47 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
       initGitUrl: row.init_git_url ?? undefined,
       created_by: row.created_by ?? undefined,
       is_home: row.is_home === 1,
+      target_agent_id: row.target_agent_id ?? undefined,
     };
   }
   return result;
+}
+
+/**
+ * Get all registered groups that route to a specific conversation agent.
+ * Returns array of { jid, group } for each IM group targeting the given agentId.
+ */
+export function getGroupsByTargetAgent(agentId: string): Array<{ jid: string; group: RegisteredGroup }> {
+  const rows = db.prepare(
+    'SELECT * FROM registered_groups WHERE target_agent_id = ?',
+  ).all(agentId) as Array<{
+    jid: string;
+    name: string;
+    folder: string;
+    added_at: string;
+    container_config: string | null;
+    execution_mode: string | null;
+    custom_cwd: string | null;
+    init_source_path: string | null;
+    init_git_url: string | null;
+    created_by: string | null;
+    is_home: number;
+    target_agent_id: string | null;
+  }>;
+  return rows.map((row) => ({
+    jid: row.jid,
+    group: {
+      name: row.name,
+      folder: row.folder,
+      added_at: row.added_at,
+      containerConfig: row.container_config ? JSON.parse(row.container_config) : undefined,
+      executionMode: parseExecutionMode(row.execution_mode, `group ${row.jid}`),
+      customCwd: row.custom_cwd ?? undefined,
+      created_by: row.created_by ?? undefined,
+      is_home: row.is_home === 1,
+      target_agent_id: row.target_agent_id ?? undefined,
+    },
+  }));
 }
 
 /**

@@ -20,6 +20,7 @@ import { TerminalPanel } from './TerminalPanel';
 import { GroupSkillsPanel } from './GroupSkillsPanel';
 import { GroupMembersPanel } from './GroupMembersPanel';
 import { AgentTabBar } from './AgentTabBar';
+import { ImBindingDialog } from './ImBindingDialog';
 
 /** Inline elapsed-time counter for running tasks */
 function ElapsedTimer({ startTime }: { startTime: number }) {
@@ -66,6 +67,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const [terminalHeight, setTerminalHeight] = useState(TERMINAL_DEFAULT_HEIGHT);
   const [mobileTerminal, setMobileTerminal] = useState(false);
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
+  const [bindingAgentId, setBindingAgentId] = useState<string | null>(null);
   const [imStatus, setImStatus] = useState<{ feishu: boolean; telegram: boolean } | null>(null);
   const [imBannerDismissed, setImBannerDismissed] = useState(() =>
     localStorage.getItem('im-banner-dismissed') === '1',
@@ -477,7 +479,16 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         agents={agents}
         activeTab={activeAgentTab}
         onSelectTab={(id) => setActiveAgentTab(groupJid, id)}
-        onDeleteAgent={(id) => deleteAgentAction(groupJid, id)}
+        onDeleteAgent={(id) => {
+          const agent = agents.find((a) => a.id === id);
+          if (agent?.linked_im_groups && agent.linked_im_groups.length > 0) {
+            const names = agent.linked_im_groups.map((g) => g.name).join('、');
+            alert(`该对话已绑定 IM 群组（${names}），请先解绑后再删除。`);
+            setBindingAgentId(id);
+            return;
+          }
+          deleteAgentAction(groupJid, id);
+        }}
         onCreateConversation={() => {
           const name = prompt('对话名称：');
           if (name?.trim()) {
@@ -486,6 +497,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
             });
           }
         }}
+        onBindIm={setBindingAgentId}
       />
 
       {/* Main Content: Messages + Sidebar */}
@@ -908,6 +920,17 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         confirmVariant="danger"
         loading={resetLoading}
       />
+
+      {/* IM binding dialog */}
+      {bindingAgentId && (
+        <ImBindingDialog
+          open={!!bindingAgentId}
+          groupJid={groupJid}
+          agentId={bindingAgentId}
+          agent={agents.find((a) => a.id === bindingAgentId)}
+          onClose={() => setBindingAgentId(null)}
+        />
+      )}
     </div>
   );
 }

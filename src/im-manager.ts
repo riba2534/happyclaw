@@ -174,6 +174,8 @@ class IMConnectionManager {
     ignoreMessagesBefore?: number,
     onCommand?: (chatJid: string, command: string) => Promise<string | null>,
     resolveGroupFolder?: (chatJid: string) => string | undefined,
+    resolveEffectiveChatJid?: (chatJid: string) => { effectiveJid: string; agentId: string } | null,
+    onAgentMessage?: (baseChatJid: string, agentId: string) => void,
   ): Promise<boolean> {
     if (!config.appId || !config.appSecret) {
       logger.info({ userId }, 'Feishu config empty, skipping connection');
@@ -193,6 +195,8 @@ class IMConnectionManager {
       ignoreMessagesBefore,
       onCommand,
       resolveGroupFolder,
+      resolveEffectiveChatJid,
+      onAgentMessage,
     });
   }
 
@@ -335,6 +339,13 @@ class IMConnectionManager {
   /** Get the Telegram channel for a user */
   getTelegramConnection(userId: string): IMChannel | undefined {
     return this.connections.get(userId)?.channels.get('telegram');
+  }
+
+  /** Get chat info from the Feishu API for a specific user's connection */
+  async getFeishuChatInfo(userId: string, chatId: string): Promise<{ avatar?: string; name?: string; user_count?: string; chat_type?: string; chat_mode?: string } | null> {
+    const channel = this.getFeishuConnection(userId);
+    if (!channel?.getChatInfo) return null;
+    return channel.getChatInfo(chatId);
   }
 
   /** Get all user IDs with active connections */
