@@ -69,10 +69,10 @@ export function resolveSwitch(
     };
   }
 
-  // 2. Match agent in current folder (by name or id)
+  // 2. Match agent in current folder (by name, full id, or short id prefix)
   if (currentWs) {
     const agent = currentWs.agents.find(
-      (a) => a.name.toLowerCase() === t || a.id === target,
+      (a) => a.name.toLowerCase() === t || a.id === target || a.id.startsWith(t),
     );
     if (agent) {
       return {
@@ -95,9 +95,9 @@ export function resolveSwitch(
     };
   }
 
-  // 4. Match agent across all workspaces
+  // 4. Match agent across all workspaces (by name or short id prefix)
   for (const ws of workspaces) {
-    const agent = ws.agents.find((a) => a.name.toLowerCase() === t);
+    const agent = ws.agents.find((a) => a.name.toLowerCase() === t || a.id.startsWith(t));
     if (agent) {
       return {
         folder: ws.folder,
@@ -154,6 +154,9 @@ export function formatWorkspaceList(
 
   const lines: string[] = ['📂 工作区列表：'];
 
+  // Collect a concrete example for the hint at the end
+  let exampleTarget = '';
+
   for (const ws of workspaces) {
     const isCurrent = ws.folder === currentFolder;
     const marker = isCurrent ? ' ▶' : '';
@@ -166,11 +169,25 @@ export function formatWorkspaceList(
       const agentMarker =
         isCurrent && currentAgentId === agent.id ? ' ← 当前' : '';
       const statusIcon = agent.status === 'running' ? '🔄' : '';
-      lines.push(`  · ${agent.name} ${statusIcon}${agentMarker}`);
+      const shortId = agent.id.slice(0, 4);
+      lines.push(`  · ${agent.name} [${shortId}] ${statusIcon}${agentMarker}`);
+
+      // Pick an agent that is NOT the current one as the example target
+      if (!exampleTarget && !(isCurrent && currentAgentId === agent.id)) {
+        exampleTarget = agent.name;
+      }
+    }
+
+    // Pick a workspace that is NOT the current one as the example target
+    if (!exampleTarget && !isCurrent) {
+      exampleTarget = ws.name;
     }
   }
 
   lines.push('');
-  lines.push('💡 使用 /switch <工作区名或对话名> 切换');
+  lines.push('💡 使用 /sw <名称> 切换');
+  if (exampleTarget) {
+    lines.push(`   例: /sw ${exampleTarget}`);
+  }
   return lines.join('\n');
 }

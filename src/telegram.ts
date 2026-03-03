@@ -398,16 +398,22 @@ export function createTelegramConnection(config: TelegramConnectionConfig): Tele
           updateChatName(jid, chatName);
           opts.onNewChat(jid, chatName);
 
-          // ── /clear 指令：重置上下文，不进入消息流 ──
-          // Match /clear and /clear@BotUsername (Telegram appends @bot in group chats)
-          if (/^\/clear(?:@\S+)?$/i.test(text.trim()) && opts.onCommand) {
+          // ── 斜杠指令：拦截已知 /xxx 命令，不进入消息流 ──
+          // Telegram 群聊中会追加 @BotUsername，需要去掉
+          const tgSlashMatch = text.trim().match(/^\/(\S+?)(?:@\S+)?(?:\s+(.*))?$/i);
+          if (tgSlashMatch && opts.onCommand) {
+            const cmdBody = (tgSlashMatch[1] + (tgSlashMatch[2] ? ' ' + tgSlashMatch[2] : '')).trim();
             try {
-              const reply = await opts.onCommand(jid, 'clear');
-              if (reply) await ctx.reply(reply);
+              const reply = await opts.onCommand(jid, cmdBody);
+              if (reply) {
+                await ctx.reply(reply);
+                return; // 已知命令，拦截
+              }
+              // reply 为 null 表示未知命令，继续作为普通消息处理
             } catch (err) {
-              logger.error({ jid, err }, 'Telegram /clear command failed');
+              logger.error({ jid, cmd: tgSlashMatch[1], err }, 'Telegram slash command failed');
+              return;
             }
-            return;
           }
 
           // Reaction 确认

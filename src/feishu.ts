@@ -630,15 +630,21 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
     const timestamp = new Date(resolvedCreateTimeMs).toISOString();
     rememberChatProgress(chatId, resolvedCreateTimeMs);
 
-    // ── /clear 指令：重置上下文，不进入消息流 ──
-    if (text?.trim() === '/clear' && onCommand) {
+    // ── 斜杠指令：拦截已知 /xxx 命令，不进入消息流 ──
+    const slashMatch = text?.trim().match(/^\/(\S+)(.*)$/);
+    if (slashMatch && onCommand) {
+      const cmdBody = (slashMatch[1] + slashMatch[2]).trim();
       try {
-        const reply = await onCommand(chatJid, 'clear');
-        if (reply) await sendTextToChat(chatId, reply);
+        const reply = await onCommand(chatJid, cmdBody);
+        if (reply) {
+          await sendTextToChat(chatId, reply);
+          return; // 已知命令，拦截
+        }
+        // reply 为 null 表示未知命令，继续作为普通消息处理
       } catch (err) {
-        logger.error({ chatJid, err }, 'Feishu /clear command failed');
+        logger.error({ chatJid, cmd: slashMatch[1], err }, 'Feishu slash command failed');
+        return;
       }
-      return;
     }
 
     // Store message and broadcast to WebSocket clients

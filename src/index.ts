@@ -491,7 +491,7 @@ function handleStatusCommand(chatJid: string): string {
   return lines.join('\n');
 }
 
-function handleRecallCommand(chatJid: string): string {
+async function handleRecallCommand(chatJid: string): Promise<string> {
   const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
   if (!group) return '当前 IM 未绑定工作区';
 
@@ -506,10 +506,87 @@ function handleRecallCommand(chatJid: string): string {
   }
 
   const header = `🧠 ${folderName} / ${conversationName}`;
-  const context = getConversationContext(effectiveFolder, agentId, 10, 200);
 
+  // Fetch recent messages for summarization
+  const webJid = findWebJidForFolder(effectiveFolder);
+  if (!webJid) return `${header}\n\n📭 该对话暂无消息记录`;
+
+  const chatJidForMessages = agentId ? `${webJid}#agent:${agentId}` : webJid;
+  const messages = getMessagesPage(chatJidForMessages, undefined, 20);
+  if (messages.length === 0) return `${header}\n\n📭 该对话暂无消息记录`;
+
+  // Build chronological transcript
+  const transcript = messages.reverse().map((msg) => {
+    const who = msg.is_from_me ? 'AI' : (msg.sender_name || '用户');
+    const text = (msg.content || '').slice(0, 500);
+    return `${who}: ${text}`;
+  }).join('\n');
+
+  // Try to summarize via Claude API
+  const summary = await summarizeWithClaude(transcript);
+  if (summary) return `${header}\n\n${summary}`;
+
+  // Fallback: raw context if API unavailable
+  const context = getConversationContext(effectiveFolder, agentId, 10, 200);
   if (!context) return `${header}\n\n📭 该对话暂无消息记录`;
   return header + context;
+}
+
+/**
+ * Call Claude API (Haiku) to summarize a conversation transcript.
+ * Returns null if API is not configured or call fails.
+ */
+async function summarizeWithClaude(transcript: string): Promise<string | null> {
+  const config = getClaudeProviderConfigForRefresh();
+
+  // Determine auth headers and base URL
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'anthropic-version': '2023-06-01',
+  };
+  let baseUrl = config.anthropicBaseUrl || 'https://api.anthropic.com';
+
+  if (config.anthropicApiKey) {
+    headers['x-api-key'] = config.anthropicApiKey;
+  } else if (config.claudeCodeOauthToken) {
+    headers['Authorization'] = `Bearer ${config.claudeCodeOauthToken}`;
+  } else if (config.anthropicAuthToken) {
+    headers['Authorization'] = `Bearer ${config.anthropicAuthToken}`;
+  } else {
+    return null; // No API credentials
+  }
+
+  // Trim trailing slash
+  baseUrl = baseUrl.replace(/\/+$/, '');
+
+  try {
+    const resp = await fetch(`${baseUrl}/v1/messages`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 1024,
+        messages: [
+          {
+            role: 'user',
+            content: `请用简洁的中文总结以下对话的要点和进展，重点说明讨论了什么、达成了什么结论、还有什么待办事项。不要逐条翻译，而是提炼核心信息。\n\n${transcript}`,
+          },
+        ],
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (!resp.ok) {
+      logger.warn({ status: resp.status }, 'Claude API call failed for /recall summary');
+      return null;
+    }
+
+    const data = (await resp.json()) as { content?: Array<{ text?: string }> };
+    return data.content?.[0]?.text || null;
+  } catch (err) {
+    logger.warn({ err }, 'Claude API call error for /recall summary');
+    return null;
+  }
 }
 
 /**
