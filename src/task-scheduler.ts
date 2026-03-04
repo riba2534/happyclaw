@@ -378,6 +378,7 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
         let targetGroupJid = currentTask.chat_jid;
         const directTarget = groups[targetGroupJid];
         if (!directTarget || directTarget.folder !== currentTask.group_folder) {
+          // chat_jid not found or folder mismatch, find a fallback
           const sameFolder = Object.entries(groups).filter(
             ([, group]) => group.folder === currentTask.group_folder,
           );
@@ -385,6 +386,18 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
             sameFolder.find(([jid]) => jid.startsWith('web:')) ||
             sameFolder[0];
           targetGroupJid = preferred?.[0] || '';
+        } else if (directTarget.executionMode === 'container') {
+          // Direct target wants container mode — check if there's a host-mode
+          // home group for the same folder (avoids Docker dependency errors)
+          const sameFolder = Object.entries(groups).filter(
+            ([, group]) => group.folder === currentTask.group_folder,
+          );
+          const hostHome = sameFolder.find(
+            ([, group]) => group.is_home && group.executionMode === 'host',
+          );
+          if (hostHome) {
+            targetGroupJid = hostHome[0];
+          }
         }
 
         if (!targetGroupJid) {
