@@ -130,7 +130,40 @@ export const MemoryGlobalSchema = z.object({
 
 export const ClaudeConfigSchema = z.object({
   anthropicBaseUrl: z.string(),
+  happyclawModel: z.string().max(128).optional(),
 });
+
+export const ClaudeThirdPartyProfileCreateSchema = z.object({
+  name: z.string().min(1).max(64),
+  anthropicBaseUrl: z.string().max(2000),
+  anthropicAuthToken: z.string().max(2000),
+  happyclawModel: z.string().max(128).optional(),
+});
+
+export const ClaudeThirdPartyProfilePatchSchema = z
+  .object({
+    name: z.string().min(1).max(64).optional(),
+    anthropicBaseUrl: z.string().max(2000).optional(),
+    happyclawModel: z.string().max(128).optional(),
+  })
+  .refine(
+    (data) =>
+      typeof data.name === 'string' ||
+      typeof data.anthropicBaseUrl === 'string' ||
+      typeof data.happyclawModel === 'string',
+    { message: 'At least one profile field must be provided' },
+  );
+
+export const ClaudeThirdPartyProfileSecretsSchema = z
+  .object({
+    anthropicAuthToken: z.string().max(2000).optional(),
+    clearAnthropicAuthToken: z.boolean().optional(),
+  })
+  .refine(
+    (data) =>
+      typeof data.anthropicAuthToken === 'string' || data.clearAnthropicAuthToken === true,
+    { message: 'At least one secret field must be provided' },
+  );
 
 export const GroupPatchSchema = z.object({
   name: z.string().min(1).max(MAX_GROUP_NAME_LEN).optional(),
@@ -322,6 +355,7 @@ export const ContainerEnvSchema = z.object({
   anthropicAuthToken: z.string().max(2000).optional(),
   anthropicApiKey: z.string().max(2000).optional(),
   claudeCodeOauthToken: z.string().max(2000).optional(),
+  happyclawModel: z.string().max(128).optional(),
   customEnv: z
     .record(z.string().max(256), z.string().max(4096))
     .optional()

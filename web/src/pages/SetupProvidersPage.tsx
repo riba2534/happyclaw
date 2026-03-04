@@ -14,10 +14,23 @@ interface EnvRow {
   value: string;
 }
 
+interface ClaudeThirdPartyProfileItem {
+  id: string;
+  name: string;
+  anthropicBaseUrl: string;
+  happyclawModel: string;
+}
+
+interface ClaudeThirdPartyProfilesResp {
+  activeProfileId: string;
+  profiles: ClaudeThirdPartyProfileItem[];
+}
+
 const RESERVED_ENV_KEYS = new Set([
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_AUTH_TOKEN',
   'CLAUDE_CODE_OAUTH_TOKEN',
+  'HAPPYCLAW_MODEL',
 ]);
 
 function getErrorMessage(err: unknown, fallback: string): string {
@@ -78,6 +91,7 @@ export function SetupProvidersPage() {
   // Third-party mode
   const [baseUrl, setBaseUrl] = useState('');
   const [authToken, setAuthToken] = useState('');
+  const [model, setModel] = useState('');
   const [customEnvRows, setCustomEnvRows] = useState<EnvRow[]>([]);
 
   useEffect(() => {
@@ -225,12 +239,26 @@ export function SetupProvidersPage() {
           await api.put('/api/config/claude/custom-env', { customEnv: {} });
         }
       } else {
-        await api.put('/api/config/claude', { anthropicBaseUrl: baseUrl.trim() });
-        await api.put('/api/config/claude/secrets', {
-          anthropicAuthToken: authToken.trim(),
-          clearClaudeCodeOauthToken: true,
-          clearAnthropicApiKey: true,
-        });
+        const created = await api.post<ClaudeThirdPartyProfileItem>(
+          '/api/config/claude/third-party/profiles',
+          {
+            name: '默认第三方',
+            anthropicBaseUrl: baseUrl.trim(),
+            anthropicAuthToken: authToken.trim(),
+            happyclawModel: model.trim(),
+          },
+        );
+
+        const profiles = await api.get<ClaudeThirdPartyProfilesResp>(
+          '/api/config/claude/third-party/profiles',
+        );
+        const targetProfileId = profiles.profiles.some((item) => item.id === created.id)
+          ? created.id
+          : profiles.activeProfileId;
+        if (targetProfileId) {
+          await api.post(`/api/config/claude/third-party/profiles/${targetProfileId}/activate`);
+        }
+
         await api.put('/api/config/claude/custom-env', { customEnv });
       }
 
@@ -414,6 +442,17 @@ export function SetupProvidersPage() {
                     value={baseUrl}
                     onChange={(e) => setBaseUrl(e.target.value)}
                     placeholder="https://your-relay.example.com/v1"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">HAPPYCLAW_MODEL（可选）</label>
+                  <Input
+                    type="text"
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                    placeholder="opus / sonnet / haiku 或完整模型 ID"
+                    className="font-mono"
                   />
                 </div>
 
