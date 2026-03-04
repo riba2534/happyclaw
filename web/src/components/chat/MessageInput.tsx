@@ -76,11 +76,15 @@ export function MessageInput({
   }, [content]);
 
   // IME composition state — prevent Enter from sending while composing (e.g. Chinese input)
+  // On Chrome macOS, compositionEnd fires before the Enter keyDown, so we track
+  // the timestamp and ignore Enter within 100ms after composition ends.
   const composingRef = useRef(false);
+  const compositionEndTimeRef = useRef(0);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (composingRef.current) return;
+    if (composingRef.current || e.nativeEvent.isComposing) return;
     if (e.key === 'Enter' && !e.shiftKey) {
+      if (Date.now() - compositionEndTimeRef.current < 100) return;
       e.preventDefault();
       handleSend();
     }
@@ -450,7 +454,7 @@ export function MessageInput({
               onChange={(e) => setContent(e.target.value)}
               onKeyDown={handleKeyDown}
               onCompositionStart={() => { composingRef.current = true; }}
-              onCompositionEnd={() => { composingRef.current = false; }}
+              onCompositionEnd={() => { composingRef.current = false; compositionEndTimeRef.current = Date.now(); }}
               onPaste={handlePaste}
               placeholder="输入消息..."
               disabled={disabled}
