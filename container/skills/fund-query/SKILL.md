@@ -46,9 +46,9 @@ python3 ~/.claude/skills/fund-query/scripts/query_funds.py --preset nasdaq100 --
 
 ### Presets
 
-- `nasdaq100` — All major 纳斯达克100 QDII funds (17 funds, A/C/I class)
+- `nasdaq100` — All major 纳斯达克100 QDII funds (27 funds, A/C/D/E/I class)
 - `nasdaq100_i` — I/F class shares only (直销专属, lower fees)
-- `sp500` — S&P 500 QDII funds (9 funds: 博时/易方达/摩根/天弘)
+- `sp500` — S&P 500 QDII funds (16 funds: 博时/易方达/摩根/天弘/大成/国泰/华夏)
 - `qdii` — All tracked QDII funds (nasdaq100 + sp500)
 
 ### Output fields
@@ -82,7 +82,7 @@ python3 ~/.claude/skills/fund-query/scripts/query_funds.py --preset nasdaq100 --
 ## Key learnings (2026-03)
 
 - ALL Nasdaq 100 QDII A/C class funds have ≤100元/day limits (most are 10-50元)
-- **021000 南方纳指100 I class** has up to 10万元/day on 南方基金 APP
+- **021000 南方纳指100 I class** has 2000元/day on 南方基金 APP
 - **018738 博时标普500联接E** has 1000元/day on 博时基金 APP (auto-detected)
 - Direct sales limits are often **higher** than third-party channel limits
 - Purchase limits are **per person across all channels** (多渠道共享), not per platform
@@ -94,7 +94,8 @@ python3 ~/.claude/skills/fund-query/scripts/query_funds.py --preset nasdaq100 --
 2. **Eastmoney Web Page** — Purchase status, third-party daily limit (HTML scraping)
 3. **Eastmoney Suggest API** — Fund name search
 4. **Bosera (博时基金) Website** — Direct sales limits (auto-scraped from window.fundListJson)
-5. **Manual overrides** — Direct sales limits for other companies (南方/易方达/天弘/摩根/华夏)
+5. **Auto-derived** — Most A/C class direct limits = third-party limits (易方达/摩根/天弘/华夏/南方等)
+6. **Manual overrides** — I/F/E/D class & 大成/华安 (direct limits differ from third-party)
 
 ### Cache
 

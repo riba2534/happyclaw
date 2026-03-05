@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 """
-Fund Query Tool - 基金信息查询 (v3.1)
+Fund Query Tool - 基金信息查询 (v4.0)
 Fetches fund data from Eastmoney (天天基金网) including purchase limits, NAV, fees, and scale.
 Also queries direct sales channel (直销渠道) purchase limits from fund company websites.
+
+Changes in v4.0 (2026-03-06):
+  - New: Automated direct sales limits — most A/C class: direct = third-party (no manual maintenance)
+  - New: MANUAL_DIRECT_OVERRIDES for I/F/E/D class & 大成/华安 (13 entries vs 42 in old JSON)
+  - Removed: direct_limits.json external file (replaced by automated derivation)
+  - Expanded: nasdaq100 preset (17 → 27 funds, added C/D/E class shares)
+  - Expanded: sp500 preset (9 → 16 funds, added 大成/国泰/华夏/天弘D)
+  - New: nasdaq100_i preset includes 022664 华泰柏瑞I
 
 Changes in v3.1 (2026-03-03):
   - Improved: Bosera scrape only triggers when queried codes include Bosera funds
@@ -52,10 +60,13 @@ PRESETS = {
     "nasdaq100": [
         ("539001", "建信纳指100A"),
         ("012752", "建信纳指100C"),
+        ("023422", "建信纳指100D"),
         ("019172", "摩根纳指100A"),
         ("270042", "广发纳指100联接A"),
         ("019547", "招商纳指100联接A"),
+        ("019548", "招商纳指100联接C"),
         ("000834", "大成纳指100联接A"),
+        ("008971", "大成纳指100联接C"),
         ("161130", "易方达纳指100联接"),
         ("160213", "国泰纳指100"),
         ("015299", "华夏纳指100联接A"),
@@ -63,15 +74,23 @@ PRESETS = {
         ("018043", "天弘纳指100A"),
         ("016055", "博时纳指100联接A"),
         ("019524", "华泰柏瑞纳指100联接A"),
+        ("019525", "华泰柏瑞纳指100联接C"),
         ("018966", "汇添富纳指100联接A"),
+        ("018967", "汇添富纳指100联接C"),
+        ("021773", "汇添富纳指100联接E"),
         ("016452", "南方纳指100A"),
         ("040046", "华安纳指100联接A"),
+        ("014978", "华安纳指100联接C"),
         ("021000", "南方纳指100I"),
+        ("017091", "景顺长城纳斯达克科技联接A"),
+        ("017093", "景顺长城纳斯达克科技联接C"),
+        ("019118", "景顺长城纳斯达克科技联接E"),
     ],
     "nasdaq100_i": [
         # I/F class shares with lower fees (直销专属)
         ("021000", "南方纳指100I"),
         ("021778", "广发纳指100F"),
+        ("022664", "华泰柏瑞纳指100联接I"),
     ],
     "sp500": [
         ("050025", "博时标普500联接A"),
@@ -83,47 +102,42 @@ PRESETS = {
         ("019305", "摩根标普500C"),
         ("007721", "天弘标普500A"),
         ("007722", "天弘标普500C"),
+        ("022523", "天弘标普500D"),
+        ("096001", "大成标普500等权重A"),
+        ("008401", "大成标普500等权重C"),
+        ("017028", "国泰标普500联接A"),
+        ("017030", "国泰标普500联接C"),
+        ("018064", "华夏标普500联接A"),
+        ("018065", "华夏标普500联接C"),
     ],
     "qdii": [],  # Will be populated as nasdaq100 + sp500
 }
 PRESETS["qdii"] = PRESETS["nasdaq100"] + PRESETS["sp500"]
 
 # ── Direct sales (直销) purchase limits ──────────────────────────
-# Manual overrides loaded from external JSON, with inline fallback.
-# Bosera (博时) limits are auto-scraped; manual entries override auto-scraped values.
+# For most funds: direct limit = third-party limit (from Eastmoney).
+# Exceptions: I/F/E/D class shares, 大成, 华安 have different direct-only limits.
+# 博时 is auto-scraped from bosera.com.
 
-_DEFAULT_DIRECT_LIMITS = {
-    # 南方基金
-    "021000": "10万元",      # 南方纳指100I (南方基金APP)
-    "016452": "暂停申购",    # 南方纳指100A
-    # 易方达
-    "161125": "暂停申购",    # 易方达标普500A
-    "012860": "暂停申购",    # 易方达标普500C
-    "161130": "暂停申购",    # 易方达纳指100联接
-    # 天弘
-    "018043": "100元",       # 天弘纳指100A
-    "007721": "100元",       # 天弘标普500A
-    "007722": "100元",       # 天弘标普500C
-    # 摩根
-    "019172": "50元",        # 摩根纳指100A
-    "017641": "50元",        # 摩根标普500A
-    "019305": "50元",        # 摩根标普500C
-    # 华夏
-    "015299": "100元",       # 华夏纳指100联接A
+MANUAL_DIRECT_OVERRIDES = {
+    # I/F/E/D 类份额（直销专属或直销限额与三方不同）
+    "021778": "3000元",   # 广发纳指100F
+    "021000": "2000元",   # 南方纳指100I
+    "040046": "1000元",   # 华安纳指100联接A（直销限额高于三方）
+    "014978": "1000元",   # 华安纳指100联接C（直销限额高于三方）
+    "000834": "500元",    # 大成纳指100联接A（直销限额高于三方）
+    "008971": "500元",    # 大成纳指100联接C（直销限额高于三方）
+    "096001": "500元",    # 大成标普500等权重A（直销限额高于三方）
+    "008401": "500元",    # 大成标普500等权重C（直销限额高于三方）
+    "022664": "100元",    # 华泰柏瑞纳指100联接I
+    "019118": "100元",    # 景顺长城纳斯达克科技联接E
+    "021773": "100元",    # 汇添富纳指100联接E
+    "023422": "100元",    # 建信纳指100D
+    "022523": "0元",      # 天弘标普500D
 }
 
-# Known Bosera (博时) fund code prefixes for smart scrape gating
+# Known Bosera (博时) fund codes for smart scrape gating
 _BOSERA_CODES_IN_PRESETS = {"050025", "006075", "018738", "016055"}
-
-
-def _load_manual_direct_limits():
-    """Load manual direct limits from external JSON if available, else use defaults."""
-    json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "direct_limits.json")
-    try:
-        with open(json_path, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return _DEFAULT_DIRECT_LIMITS
 
 # ── HTTP helpers ────────────────────────────────────────────────────
 
@@ -486,25 +500,26 @@ def fetch_bosera_direct_limits():
     return result
 
 
-def fetch_direct_limits(codes):
-    """Fetch direct sales channel purchase limits for given fund codes.
-    Combines: Bosera auto-scrape (only if needed) + manual overrides.
-    Uses per-fund cache entries for finer granularity.
+def fetch_direct_limits(codes, detail_limit_map):
+    """Derive direct sales channel purchase limits for given fund codes.
+    Priority: MANUAL_DIRECT_OVERRIDES > Bosera auto-scrape > third-party limit.
+    Uses per-fund cache entries for Bosera results.
     Returns dict: {code: limit_string}
     """
     now = time.time()
     cache = _load_direct_cache()
-    manual_limits = _load_manual_direct_limits()
 
-    # Check per-fund cache
     result = {}
     uncached = []
     for c in codes:
-        entry = cache.get(c)
-        if entry and now - entry.get("ts", 0) < DIRECT_CACHE_TTL:
-            result[c] = entry.get("val", "")
+        if c in MANUAL_DIRECT_OVERRIDES:
+            result[c] = MANUAL_DIRECT_OVERRIDES[c]
         else:
-            uncached.append(c)
+            entry = cache.get(c)
+            if entry and now - entry.get("ts", 0) < DIRECT_CACHE_TTL:
+                result[c] = entry.get("val", "")
+            else:
+                uncached.append(c)
 
     if not uncached:
         return result
@@ -517,9 +532,18 @@ def fetch_direct_limits(codes):
     if needs_bosera:
         bosera_limits = fetch_bosera_direct_limits()
 
-    # Merge: Bosera auto → manual overrides (higher priority)
     for c in uncached:
-        val = manual_limits.get(c) or bosera_limits.get(c, "")
+        if c in bosera_limits:
+            val = bosera_limits[c]
+        else:
+            # Default: direct limit = third-party limit
+            detail = detail_limit_map.get(c, {})
+            status = detail.get("status", "")
+            if status == "暂停申购":
+                val = "暂停申购"
+            else:
+                daily = detail.get("daily_limit", "")
+                val = daily if daily and daily != "N/A" else ""
         result[c] = val
         cache[c] = {"val": val, "ts": now}
 
@@ -595,8 +619,8 @@ def query_funds(codes):
     else:
         sys.stderr.write(f"  进度: {done_count}/{total}\n")
 
-    # Step 3: Direct sales channel limits (single batch)
-    direct_limits = fetch_direct_limits(uncached_codes)
+    # Step 3: Direct sales channel limits (derived from detail data + overrides)
+    direct_limits = fetch_direct_limits(uncached_codes, detail_limit_map)
 
     # Merge results
     new_results = {}
