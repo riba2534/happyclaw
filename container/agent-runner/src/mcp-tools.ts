@@ -347,10 +347,9 @@ Use available_groups.json to find the JID for a group. The folder name should be
     // --- send_file ---
     tool(
       'send_file',
-      `Send a file to a Feishu chat. The file path is relative to the workspace/group directory.
+      `Send a file to the current chat (the user you're talking to). The file path is relative to the workspace/group directory.
 Supports: PDF, DOC, XLS, PPT, MP4, etc. Max file size: 30MB.`,
       {
-        chatJid: z.string().describe('Target chat JID (e.g., "feishu:oc_xxxx")'),
         filePath: z.string().describe('File path relative to workspace/group (e.g., "output/report.pdf")'),
         fileName: z.string().describe('File name to display (e.g., "report.pdf")'),
       },
@@ -372,14 +371,14 @@ Supports: PDF, DOC, XLS, PPT, MP4, etc. Max file size: 30MB.`,
 
         const data = {
           type: 'send_file',
-          chatJid: args.chatJid,
+          chatJid: ctx.chatJid,
           filePath: args.filePath,
           fileName: args.fileName,
           timestamp: new Date().toISOString(),
         };
         writeIpcFile(TASKS_DIR, data);
         return {
-          content: [{ type: 'text' as const, text: `Sending file "${args.fileName}" to ${args.chatJid}...` }],
+          content: [{ type: 'text' as const, text: `Sending file "${args.fileName}"...` }],
         };
       },
     ),
@@ -387,10 +386,9 @@ Supports: PDF, DOC, XLS, PPT, MP4, etc. Max file size: 30MB.`,
     // --- send_image ---
     tool(
       'send_image',
-      `Send an image to a Feishu chat. The image data should be base64 encoded (without the data:image/xxx;base64, prefix).
+      `Send an image to the current chat (the user you're talking to). The image data should be base64 encoded (without the data:image/xxx;base64, prefix).
 Max image size: 10MB. Supports: JPEG, PNG, WEBP, GIF, TIFF, BMP, ICO.`,
       {
-        chatJid: z.string().describe('Target chat JID (e.g., "feishu:oc_xxxx")'),
         imageData: z.string().describe('Image data as base64 string (without MIME prefix)'),
       },
       async (args) => {
@@ -420,13 +418,13 @@ Max image size: 10MB. Supports: JPEG, PNG, WEBP, GIF, TIFF, BMP, ICO.`,
 
         const data = {
           type: 'send_image',
-          chatJid: args.chatJid,
+          chatJid: ctx.chatJid,
           imageData: args.imageData,
           timestamp: new Date().toISOString(),
         };
         writeIpcFile(TASKS_DIR, data);
         return {
-          content: [{ type: 'text' as const, text: `Sending image to ${args.chatJid}...` }],
+          content: [{ type: 'text' as const, text: 'Sending image...' }],
         };
       },
     ),

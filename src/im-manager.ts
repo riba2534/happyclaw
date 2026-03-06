@@ -141,6 +141,7 @@ class IMConnectionManager {
    * @throws Error if the channel doesn't support file sending
    */
   async sendFile(jid: string, filePath: string, fileName: string): Promise<void> {
+    logger.debug({ jid, filePath, fileName }, 'sendFile called');
     const channelType = getChannelType(jid);
     if (!channelType) {
       throw new Error(`无法识别 JID 的通道类型: ${jid}`);
@@ -148,10 +149,11 @@ class IMConnectionManager {
 
     const chatId = extractChatId(jid);
     const channel = this.findChannelForJid(jid, channelType);
+    logger.debug({ jid, channelType, chatId, hasChannel: !!channel, hasSendFile: !!channel?.sendFile }, 'Channel lookup result');
     if (channel?.sendFile) {
       await channel.sendFile(chatId, filePath, fileName);
     } else {
-      throw new Error(`通道 ${channelType} 不支持发送文件`);
+      throw new Error(`通道 ${channelType} 不支持发送文件 (channel=${!!channel}, sendFile=${!!channel?.sendFile})`);
     }
   }
 
@@ -181,9 +183,12 @@ class IMConnectionManager {
   private findChannelForJid(jid: string, channelType: string): IMChannel | undefined {
     // Direct lookup via group ownership
     const group = getRegisteredGroup(jid);
+    logger.debug({ jid, channelType, group: group?.folder, createdBy: group?.created_by }, 'findChannelForJid: group lookup');
     if (group?.created_by) {
       const conn = this.connections.get(group.created_by);
+      logger.debug({ userId: group.created_by, hasConn: !!conn, numChannels: conn?.channels.size }, 'findChannelForJid: connection lookup');
       const ch = conn?.channels.get(channelType);
+      logger.debug({ hasChannel: !!ch, isConnected: ch?.isConnected() }, 'findChannelForJid: channel lookup');
       if (ch?.isConnected()) return ch;
     }
 
@@ -207,6 +212,7 @@ class IMConnectionManager {
       }
     }
 
+    logger.warn({ jid, channelType, group: group?.folder }, 'findChannelForJid: no channel found');
     return undefined;
   }
 
