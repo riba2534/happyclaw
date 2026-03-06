@@ -4,9 +4,14 @@ import { Loader2, Upload, Trash2 } from 'lucide-react';
 import { useAuthStore } from '../../stores/auth';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
 import { EmojiAvatar } from '@/components/common/EmojiAvatar';
 import { EmojiPicker } from '@/components/common/EmojiPicker';
 import { ColorPicker } from '@/components/common/ColorPicker';
+import {
+  isNotificationSoundEnabled,
+  setNotificationSoundEnabled,
+} from '../../utils/sound';
 import type { SettingsNotification } from './types';
 import { getErrorMessage } from './types';
 
@@ -30,6 +35,9 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
   const [aiAppearanceSaving, setAiAppearanceSaving] = useState(false);
   const [avatarUploading, setAvatarUploading] = useState(false);
   const avatarInputRef = useRef<HTMLInputElement>(null);
+
+  // Preferences
+  const [soundEnabled, setSoundEnabled] = useState(() => isNotificationSoundEnabled());
 
   // Password
   const [currentPwd, setCurrentPwd] = useState('');
@@ -139,6 +147,11 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
     } catch (err) {
       setError(getErrorMessage(err, '移除头像失败'));
     }
+  };
+
+  const handleSoundToggle = (enabled: boolean) => {
+    setSoundEnabled(enabled);
+    setNotificationSoundEnabled(enabled);
   };
 
   return (
@@ -295,6 +308,27 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
             {aiAppearanceSaving && <Loader2 className="size-4 animate-spin" />}
             保存机器人外观
           </Button>
+        </div>
+      </div>
+
+      {/* Divider */}
+      <div className="border-t border-slate-200" />
+
+      {/* Preferences */}
+      <div>
+        <h3 className="text-base font-semibold text-slate-900 mb-4">偏好设置</h3>
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm font-medium text-slate-700">任务完成提示音</div>
+              <div className="text-xs text-slate-500">Agent 回复完成时播放提示音</div>
+            </div>
+            <Switch
+              checked={soundEnabled}
+              onCheckedChange={handleSoundToggle}
+              aria-label="任务完成提示音"
+            />
+          </div>
         </div>
       </div>
 
