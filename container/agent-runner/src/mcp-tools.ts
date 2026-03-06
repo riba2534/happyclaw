@@ -344,6 +344,92 @@ Use available_groups.json to find the JID for a group. The folder name should be
       },
     ),
 
+    // --- send_file ---
+    tool(
+      'send_file',
+      `Send a file to a Feishu chat. The file path is relative to the workspace/group directory.
+Supports: PDF, DOC, XLS, PPT, MP4, etc. Max file size: 30MB.`,
+      {
+        chatJid: z.string().describe('Target chat JID (e.g., "feishu:oc_xxxx")'),
+        filePath: z.string().describe('File path relative to workspace/group (e.g., "output/report.pdf")'),
+        fileName: z.string().describe('File name to display (e.g., "report.pdf")'),
+      },
+      async (args) => {
+        // Validate file exists and is within workspace
+        const resolvedPath = path.resolve(ctx.workspaceGroup, args.filePath);
+        if (!resolvedPath.startsWith(ctx.workspaceGroup + path.sep) && resolvedPath !== ctx.workspaceGroup) {
+          return {
+            content: [{ type: 'text' as const, text: 'File must be within the workspace/group directory.' }],
+            isError: true,
+          };
+        }
+        if (!fs.existsSync(resolvedPath)) {
+          return {
+            content: [{ type: 'text' as const, text: `File not found: ${args.filePath}` }],
+            isError: true,
+          };
+        }
+
+        const data = {
+          type: 'send_file',
+          chatJid: args.chatJid,
+          filePath: args.filePath,
+          fileName: args.fileName,
+          timestamp: new Date().toISOString(),
+        };
+        writeIpcFile(TASKS_DIR, data);
+        return {
+          content: [{ type: 'text' as const, text: `Sending file "${args.fileName}" to ${args.chatJid}...` }],
+        };
+      },
+    ),
+
+    // --- send_image ---
+    tool(
+      'send_image',
+      `Send an image to a Feishu chat. The image data should be base64 encoded (without the data:image/xxx;base64, prefix).
+Max image size: 10MB. Supports: JPEG, PNG, WEBP, GIF, TIFF, BMP, ICO.`,
+      {
+        chatJid: z.string().describe('Target chat JID (e.g., "feishu:oc_xxxx")'),
+        imageData: z.string().describe('Image data as base64 string (without MIME prefix)'),
+      },
+      async (args) => {
+        // Validate base64
+        try {
+          const buffer = Buffer.from(args.imageData, 'base64');
+          if (buffer.length === 0) {
+            return {
+              content: [{ type: 'text' as const, text: 'Invalid base64 image data.' }],
+              isError: true,
+            };
+          }
+          // Check size limit (10MB)
+          const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
+          if (buffer.length > MAX_IMAGE_SIZE) {
+            return {
+              content: [{ type: 'text' as const, text: `Image too large: ${(buffer.length / 1024 / 1024).toFixed(2)}MB (max 10MB).` }],
+              isError: true,
+            };
+          }
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: 'Invalid base64 image data.' }],
+            isError: true,
+          };
+        }
+
+        const data = {
+          type: 'send_image',
+          chatJid: args.chatJid,
+          imageData: args.imageData,
+          timestamp: new Date().toISOString(),
+        };
+        writeIpcFile(TASKS_DIR, data);
+        return {
+          content: [{ type: 'text' as const, text: `Sending image to ${args.chatJid}...` }],
+        };
+      },
+    ),
   ];
 
   // Skill 安装/卸载仅限主容器（与 memory_* 工具一致）

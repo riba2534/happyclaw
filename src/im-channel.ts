@@ -44,6 +44,10 @@ export interface IMChannel {
   connect(opts: IMChannelConnectOpts): Promise<boolean>;
   disconnect(): Promise<void>;
   sendMessage(chatId: string, text: string): Promise<void>;
+  /** Send file to chat (if supported) */
+  sendFile?(chatId: string, filePath: string, fileName: string): Promise<void>;
+  /** Send image buffer to chat (if supported) */
+  sendImage?(chatId: string, imageBuffer: Buffer, mimeType?: string): Promise<void>;
   setTyping(chatId: string, isTyping: boolean): Promise<void>;
   isConnected(): boolean;
   syncGroups?(): Promise<void>;
@@ -137,6 +141,22 @@ export function createFeishuChannel(config: FeishuConnectionConfig): IMChannel {
     async getChatInfo(chatId: string) {
       if (!inner) return null;
       return inner.getChatInfo(chatId);
+    },
+
+    async sendFile(chatId: string, filePath: string, fileName: string): Promise<void> {
+      if (!inner) {
+        logger.warn({ chatId }, 'Feishu channel not connected, skip sending file');
+        return;
+      }
+      await inner.sendFile(chatId, filePath, fileName);
+    },
+
+    async sendImage(chatId: string, imageBuffer: Buffer, mimeType?: string): Promise<void> {
+      if (!inner) {
+        logger.warn({ chatId }, 'Feishu channel not connected, skip sending image');
+        return;
+      }
+      await inner.sendImage(chatId, imageBuffer, mimeType);
     },
   };
 

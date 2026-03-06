@@ -137,6 +137,44 @@ class IMConnectionManager {
   }
 
   /**
+   * Send a file to an IM chat, auto-routing via JID prefix.
+   * @throws Error if the channel doesn't support file sending
+   */
+  async sendFile(jid: string, filePath: string, fileName: string): Promise<void> {
+    const channelType = getChannelType(jid);
+    if (!channelType) {
+      throw new Error(`无法识别 JID 的通道类型: ${jid}`);
+    }
+
+    const chatId = extractChatId(jid);
+    const channel = this.findChannelForJid(jid, channelType);
+    if (channel?.sendFile) {
+      await channel.sendFile(chatId, filePath, fileName);
+    } else {
+      throw new Error(`通道 ${channelType} 不支持发送文件`);
+    }
+  }
+
+  /**
+   * Send an image to an IM chat, auto-routing via JID prefix.
+   * @throws Error if the channel doesn't support image sending
+   */
+  async sendImage(jid: string, imageBuffer: Buffer, mimeType?: string): Promise<void> {
+    const channelType = getChannelType(jid);
+    if (!channelType) {
+      throw new Error(`无法识别 JID 的通道类型: ${jid}`);
+    }
+
+    const chatId = extractChatId(jid);
+    const channel = this.findChannelForJid(jid, channelType);
+    if (channel?.sendImage) {
+      await channel.sendImage(chatId, imageBuffer, mimeType);
+    } else {
+      throw new Error(`通道 ${channelType} 不支持发送图片`);
+    }
+  }
+
+  /**
    * Find the appropriate IMChannel for a given JID, using group ownership lookup
    * and sibling fallback.
    */

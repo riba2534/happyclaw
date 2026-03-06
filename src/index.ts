@@ -1480,6 +1480,10 @@ async function processTaskIpc(
     package?: string;
     requestId?: string;
     skillId?: string;
+    // For send_file / send_image
+    filePath?: string;
+    fileName?: string;
+    imageData?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isAdminHome: boolean, // Whether source is admin home container
@@ -1814,6 +1818,41 @@ async function processTaskIpc(
         );
       } else {
         logger.warn({ data }, 'Invalid uninstall_skill request - missing required fields');
+      }
+      break;
+
+    case 'send_file':
+      if (data.chatJid && data.filePath && data.fileName) {
+        try {
+          // Resolve to workspace path - IPC sends relative paths from workspace/group
+          const fullPath = path.join(GROUPS_DIR, sourceGroup, data.filePath);
+          await imManager.sendFile(data.chatJid, fullPath, data.fileName);
+          logger.info(
+            { sourceGroup, chatJid: data.chatJid, fileName: data.fileName },
+            'File sent via IPC',
+          );
+        } catch (err) {
+          logger.error({ err, data }, 'Failed to send file via IPC');
+        }
+      } else {
+        logger.warn({ data }, 'Invalid send_file request - missing required fields');
+      }
+      break;
+
+    case 'send_image':
+      if (data.chatJid && data.imageData) {
+        try {
+          const imageBuffer = Buffer.from(data.imageData, 'base64');
+          await imManager.sendImage(data.chatJid, imageBuffer);
+          logger.info(
+            { sourceGroup, chatJid: data.chatJid, imageSize: imageBuffer.length },
+            'Image sent via IPC',
+          );
+        } catch (err) {
+          logger.error({ err, data }, 'Failed to send image via IPC');
+        }
+      } else {
+        logger.warn({ data }, 'Invalid send_image request - missing required fields');
       }
       break;
 

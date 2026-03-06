@@ -1,4 +1,6 @@
 import * as lark from '@larksuiteoapi/node-sdk';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
 import {
   setLastGroupSync,
   storeChatMetadata,
@@ -63,6 +65,8 @@ export interface FeishuConnection {
   isConnected(): boolean;
   syncGroups(): Promise<void>;
   getChatInfo(chatId: string): Promise<FeishuChatInfo | null>;
+  sendFile(chatId: string, filePath: string, fileName: string): Promise<void>;
+  sendImage(chatId: string, imageBuffer: Buffer, mimeType?: string): Promise<void>;
 }
 
 // ─── Shared Helpers (pure functions, no instance state) ────────
@@ -267,6 +271,21 @@ function buildInteractiveCard(text: string): object {
     },
     elements,
   };
+}
+
+/**
+ * Map file extension to Feishu file type.
+ */
+function getFileType(ext: string): 'opus' | 'mp4' | 'pdf' | 'doc' | 'xls' | 'ppt' | 'stream' {
+  const map: Record<string, 'opus' | 'mp4' | 'pdf' | 'doc' | 'xls' | 'ppt' | 'stream'> = {
+    '.pdf': 'pdf',
+    '.doc': 'doc', '.docx': 'doc',
+    '.xls': 'xls', '.xlsx': 'xls',
+    '.ppt': 'ppt', '.pptx': 'ppt',
+    '.mp4': 'mp4',
+    '.opus': 'opus',
+  };
+  return map[ext.toLowerCase()] || 'stream';
 }
 
 // ─── Factory Function ──────────────────────────────────────────
@@ -1154,6 +1173,116 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
         logger.info('Feishu group sync completed');
       } catch (err) {
         logger.error({ err }, 'Failed to sync Feishu groups');
+      }
+    },
+
+    /**
+     * Send a file to Feishu chat.
+     * @param chatId - Feishu chat ID
+     * @param filePath - Absolute path to the file
+     * @param fileName - File name to display
+     */
+    async sendFile(chatId: string, filePath: string, fileName: string): Promise<void> {
+      if (!client) {
+        logger.warn({ chatId }, 'Feishu client not initialized, skip sending file');
+        return;
+      }
+
+      try {
+        const buffer = await fs.readFile(filePath);
+
+        // Check file size limit (30MB)
+        const MAX_FILE_SIZE = 30 * 1024 * 1024;
+        if (buffer.length > MAX_FILE_SIZE) {
+          throw new Error(`文件大小超过 30MB 限制 (${(buffer.length / 1024 / 1024).toFixed(2)}MB)`);
+        }
+
+        const ext = path.extname(fileName);
+        const fileType = getFileType(ext);
+
+        logger.debug({ chatId, fileName, fileSize: buffer.length }, 'Uploading file to Feishu');
+
+        // Upload file
+        const uploadResult = await client.im.file.create({
+          data: {
+            file_type: fileType,
+            file_name: fileName,
+            file: buffer,
+          },
+        });
+
+        if (!uploadResult?.file_key) {
+          throw new Error('文件上传失败：未返回 file_key');
+        }
+
+        logger.debug({ chatId, fileKey: uploadResult.file_key }, 'File uploaded, sending message');
+
+        // Send file message
+        await client.im.message.create({
+          params: { receive_id_type: 'chat_id' },
+          data: {
+            receive_id: chatId,
+            msg_type: 'file',
+            content: JSON.stringify({ file_key: uploadResult.file_key }),
+          },
+        });
+
+        logger.info({ chatId, fileName }, 'File sent to Feishu');
+      } catch (err) {
+        logger.error({ err, chatId, filePath }, 'Failed to send file to Feishu');
+        throw err;
+      }
+    },
+
+    /**
+     * Send an image to Feishu chat.
+     * @param chatId - Feishu chat ID
+     * @param imageBuffer - Image data as Buffer
+     * @param mimeType - Optional MIME type (for logging)
+     */
+    async sendImage(chatId: string, imageBuffer: Buffer, mimeType?: string): Promise<void> {
+      if (!client) {
+        logger.warn({ chatId }, 'Feishu client not initialized, skip sending image');
+        return;
+      }
+
+      try {
+        // Check image size limit (10MB)
+        const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
+        if (imageBuffer.length > MAX_IMAGE_SIZE) {
+          throw new Error(`图片大小超过 10MB 限制 (${(imageBuffer.length / 1024 / 1024).toFixed(2)}MB)`);
+        }
+
+        logger.debug({ chatId, imageSize: imageBuffer.length, mimeType }, 'Uploading image to Feishu');
+
+        // Upload image
+        const uploadResult = await client.im.image.create({
+          data: {
+            image_type: 'message',
+            image: imageBuffer,
+          },
+        });
+
+        if (!uploadResult?.image_key) {
+          throw new Error('图片上传失败：未返回 image_key');
+        }
+
+        logger.debug({ chatId, imageKey: uploadResult.image_key }, 'Image uploaded, sending message');
+
+        // Send image message
+        await client.im.message.create({
+          params: { receive_id_type: 'chat_id' },
+          data: {
+            receive_id: chatId,
+            msg_type: 'image',
+            content: JSON.stringify({ image_key: uploadResult.image_key }),
+          },
+        });
+
+        logger.info({ chatId }, 'Image sent to Feishu');
+      } catch (err) {
+        logger.error({ err, chatId }, 'Failed to send image to Feishu');
+        throw err;
       }
     },
   };
