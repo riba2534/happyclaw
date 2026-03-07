@@ -1212,6 +1212,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // ⑥ 主对话 streaming — 使用 applyStreamEvent 共享函数
     set((s) => {
       const MAX_STREAMING_TEXT = 8000;
+
+      // 防止 "幽灵思考块"：当 streaming 状态已被 handleWsNewMessage 清除后，
+      // 只有表示"Agent 正在活跃处理"的事件才应重新创建 streaming 状态。
+      // usage、tool_use_end、hook_response、task_notification 等后置事件
+      // 如果在 new_message 之后到达，不应重建 streaming 状态和 waiting 标志。
+      if (!s.streaming[chatJid]) {
+        const ACTIVE_EVENTS = new Set([
+          'text_delta', 'thinking_delta', 'tool_use_start',
+          'tool_progress', 'hook_started', 'hook_progress',
+          'status', 'todo_update',
+        ]);
+        if (!ACTIVE_EVENTS.has(event.eventType)) {
+          return s;
+        }
+      }
+
       const prev = s.streaming[chatJid] || { ...DEFAULT_STREAMING_STATE };
       const next = { ...prev };
       applyStreamEvent(event, prev, next, MAX_STREAMING_TEXT);
