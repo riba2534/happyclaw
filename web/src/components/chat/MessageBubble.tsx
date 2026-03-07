@@ -159,6 +159,34 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
     );
   }
 
+  // Model switch system message
+  if (message.sender === '__system__' && message.content.startsWith('model_switch:')) {
+    const switchMsg = message.content.replace(/^model_switch:\s*/, '');
+    return (
+      <div className="mb-6">
+        {showTime && (
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-xs text-slate-500">{time}</span>
+            <span className="text-xs font-medium text-teal-600">系统消息</span>
+          </div>
+        )}
+        <div className="relative bg-teal-50 rounded-xl border border-teal-200 border-l-[3px] border-l-teal-500 px-5 py-4">
+          <div className="flex items-start gap-3">
+            <div className="flex-shrink-0 w-6 h-6 bg-teal-500 rounded-full flex items-center justify-center text-white font-bold text-sm">
+              🔄
+            </div>
+            <div className="flex-1">
+              <h3 className="text-sm font-semibold text-teal-900 mb-1">模型端点切换</h3>
+              <div className="text-sm text-teal-800 leading-relaxed whitespace-pre-wrap">
+                {switchMsg}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // ── Compact mode: all messages left-aligned, no bubbles, full-width ──
   if (displayMode === 'compact') {
     const isAI = message.is_from_me;
