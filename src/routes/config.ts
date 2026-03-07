@@ -46,7 +46,18 @@ import {
   refreshOAuthCredentials,
   detectLocalClaudeCode,
   importLocalClaudeCredentials,
+  toPublicFailoverState,
+  type ModelEndpointPublic,
 } from '../runtime-config.js';
+import {
+  getEndpoints,
+  getSortedAvailableEndpoints,
+  getCurrentEndpoint,
+  upsertEndpoint,
+  deleteEndpoint,
+  forceSwitchEndpoint,
+  resetAllEndpointHealth,
+} from '../model-failover.js';
 import type { ClaudeOAuthCredentials } from '../runtime-config.js';
 import type { AuthUser } from '../types.js';
 import { hasPermission } from '../permissions.js';
@@ -1133,5 +1144,109 @@ configRoutes.post(
     }
   },
 );
+
+// ========== Model Failover Routes ==========
+
+configRoutes.get('/claude/failover', authMiddleware, systemConfigMiddleware, (c) => {
+  try {
+    return c.json(toPublicFailoverState());
+  } catch (err) {
+    logger.error({ err }, 'Failed to load failover state');
+    return c.json({ error: 'Failed to load failover state' }, 500);
+  }
+});
+
+configRoutes.post('/claude/failover/endpoints', authMiddleware, systemConfigMiddleware, async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const actor = (c.get('user') as AuthUser).username;
+
+    // 验证输入
+    if (!body.id || typeof body.id !== 'string') {
+      return c.json({ error: 'Invalid endpoint id' }, 400);
+    }
+    if (!body.name || typeof body.name !== 'string') {
+      return c.json({ error: 'Invalid endpoint name' }, 400);
+    }
+    if (!body.type || !['official', 'third_party'].includes(body.type)) {
+      return c.json({ error: 'Invalid endpoint type' }, 400);
+    }
+    if (typeof body.priority !== 'number' || body.priority < 0) {
+      return c.json({ error: 'Invalid priority' }, 400);
+    }
+    if (typeof body.enabled !== 'boolean') {
+      return c.json({ error: 'Invalid enabled flag' }, 400);
+    }
+
+    const endpoint = upsertEndpoint({
+      id: body.id,
+      type: body.type as 'official' | 'third_party',
+      name: body.name,
+      baseUrl: body.baseUrl || '',
+      authToken: body.authToken,
+      apiKey: body.apiKey,
+      priority: body.priority,
+      enabled: body.enabled,
+      status: 'unknown',
+    });
+
+    appendClaudeConfigAudit(actor, 'upsert_endpoint', [`endpoint:${endpoint.id}`]);
+    return c.json(toPublicFailoverState());
+  } catch (err) {
+    logger.warn({ err }, 'Failed to upsert endpoint');
+    const message = err instanceof Error ? err.message : 'Invalid endpoint payload';
+    return c.json({ error: message }, 400);
+  }
+});
+
+configRoutes.delete('/claude/failover/endpoints/:id', authMiddleware, systemConfigMiddleware, (c) => {
+  const id = c.req.param('id');
+  if (!id) {
+    return c.json({ error: 'Missing endpoint id' }, 400);
+  }
+
+  const actor = (c.get('user') as AuthUser).username;
+  const success = deleteEndpoint(id);
+
+  if (!success) {
+    return c.json({ error: 'Failed to delete endpoint' }, 400);
+  }
+
+  appendClaudeConfigAudit(actor, 'delete_endpoint', [`endpoint:${id}`]);
+  return c.json(toPublicFailoverState());
+});
+
+configRoutes.post('/claude/failover/switch/:id', authMiddleware, systemConfigMiddleware, (c) => {
+  const id = c.req.param('id');
+  if (!id) {
+    return c.json({ error: 'Missing endpoint id' }, 400);
+  }
+
+  const actor = (c.get('user') as AuthUser).username;
+  const success = forceSwitchEndpoint(id);
+
+  if (!success) {
+    return c.json({ error: 'Failed to switch endpoint' }, 400);
+  }
+
+  appendClaudeConfigAudit(actor, 'switch_endpoint', [`to:${id}`]);
+
+  // 切换后停止所有活动容器以应用新配置
+  if (deps?.queue) {
+    const groupJids = Object.keys(deps.getRegisteredGroups());
+    Promise.allSettled(
+      groupJids.map((jid) => deps!.queue.stopGroup(jid)),
+    ).catch(() => {});
+  }
+
+  return c.json(toPublicFailoverState());
+});
+
+configRoutes.post('/claude/failover/reset', authMiddleware, systemConfigMiddleware, (c) => {
+  const actor = (c.get('user') as AuthUser).username;
+  resetAllEndpointHealth();
+  appendClaudeConfigAudit(actor, 'reset_endpoint_health', []);
+  return c.json(toPublicFailoverState());
+});
 
 export default configRoutes;

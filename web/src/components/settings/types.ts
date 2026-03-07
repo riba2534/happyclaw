@@ -84,6 +84,41 @@ export interface SystemSettings {
 
 export type SettingsTab = 'channels' | 'claude' | 'registration' | 'appearance' | 'system' | 'profile' | 'my-channels' | 'security' | 'groups' | 'memory' | 'skills' | 'mcp-servers' | 'users' | 'about';
 
+// ========== 模型故障转移类型 ==========
+
+export type EndpointType = 'official' | 'third_party';
+export type EndpointStatus = 'healthy' | 'degraded' | 'unhealthy' | 'unknown';
+
+export interface ModelEndpointPublic {
+  id: string;
+  type: EndpointType;
+  name: string;
+  baseUrl: string;
+  priority: number;
+  status: EndpointStatus;
+  lastHealthCheckAt: number | null;
+  lastUsedAt: number | null;
+  failureCount: number;
+  successCount: number;
+  enabled: boolean;
+  hasAuthToken: boolean;
+  hasApiKey: boolean;
+  authToken?: string;
+  apiKey?: string;
+}
+
+export interface FailoverStatePublic {
+  currentEndpointId: string | null;
+  endpoints: ModelEndpointPublic[];
+  lastSwitchAt: number | null;
+  switchHistory: Array<{
+    from: string | null;
+    to: string;
+    reason: string;
+    timestamp: number;
+  }>;
+}
+
 export function getErrorMessage(err: unknown, fallback: string): string {
   if (typeof err === 'object' && err !== null && 'message' in err) {
     const msg = (err as { message?: unknown }).message;

@@ -91,6 +91,14 @@ import {
   saveClaudeProviderConfig as saveClaudeProviderConfigForRefresh,
   updateAllSessionCredentials,
 } from './runtime-config.js';
+import {
+  recordEndpointResult,
+  shouldFailoverForError,
+  trySwitchEndpoint,
+  getCurrentEndpoint,
+  getEndpointById,
+  getSwitchNotificationMessage,
+} from './model-failover.js';
 import type { FeishuConnectConfig, TelegramConnectConfig } from './im-manager.js';
 import { GroupQueue } from './group-queue.js';
 import { startSchedulerLoop } from './task-scheduler.js';
@@ -1319,6 +1327,10 @@ function ensureTerminalContainerStarted(chatJid: string): boolean {
   return true;
 }
 
+// 跟踪是否已发送模型切换通知（避免每个消息重复发送）
+let lastModelSwitchNotificationAt = 0;
+const MODEL_SWITCH_NOTIFICATION_COOLDOWN = 60_000; // 1分钟内不重复发送
+
 async function runAgent(
   group: RegisteredGroup,
   prompt: string,
@@ -1330,6 +1342,10 @@ async function runAgent(
   // For the agent-runner: isMain means this is an admin home container (full privileges)
   const isAdminHome = isHome && group.folder === MAIN_GROUP_FOLDER;
   const sessionId = sessions[group.folder];
+
+  // 记录调用前的端点状态
+  const originalEndpoint = getCurrentEndpoint();
+  const originalEndpointId = originalEndpoint?.id || 'official';
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
@@ -1427,11 +1443,33 @@ async function runAgent(
       return { status: 'closed' };
     }
 
+    // 记录端点调用结果并检查是否需要故障转移
+    const currentEndpointAfter = getCurrentEndpoint();
+    const currentEndpointIdAfter = currentEndpointAfter?.id || 'official';
+
     if (output.status === 'error') {
       logger.error(
         { group: group.name, error: output.error },
         'Agent error',
       );
+
+      // 记录失败
+      const errorMsg = output.error || 'unknown error';
+      recordEndpointResult(originalEndpointId, false, errorMsg);
+
+      // 检查是否需要故障转移
+      if (shouldFailoverForError(errorMsg)) {
+        const newEndpoint = trySwitchEndpoint(originalEndpointId, errorMsg);
+        if (newEndpoint) {
+          const now = Date.now();
+          if (now - lastModelSwitchNotificationAt > MODEL_SWITCH_NOTIFICATION_COOLDOWN) {
+            lastModelSwitchNotificationAt = now;
+            const switchMessage = getSwitchNotificationMessage(originalEndpoint, newEndpoint, errorMsg);
+            sendSystemMessage(chatJid, 'model_switch', switchMessage);
+          }
+        }
+      }
+
       if (output.result && wrappedOnOutput) {
         try {
           await wrappedOnOutput(output);
@@ -1445,10 +1483,30 @@ async function runAgent(
       return { status: 'error', error: output.error };
     }
 
+    // 记录成功
+    recordEndpointResult(originalEndpointId, true);
+
     return { status: 'success' };
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     logger.error({ group: group.name, err }, 'Agent error');
+
+    // 记录异常失败
+    recordEndpointResult(originalEndpointId, false, errorMsg);
+
+    // 检查是否需要故障转移
+    if (shouldFailoverForError(errorMsg)) {
+      const newEndpoint = trySwitchEndpoint(originalEndpointId, errorMsg);
+      if (newEndpoint) {
+        const now = Date.now();
+        if (now - lastModelSwitchNotificationAt > MODEL_SWITCH_NOTIFICATION_COOLDOWN) {
+          lastModelSwitchNotificationAt = now;
+          const switchMessage = getSwitchNotificationMessage(originalEndpoint, newEndpoint, errorMsg);
+          sendSystemMessage(chatJid, 'model_switch', switchMessage);
+        }
+      }
+    }
+
     return { status: 'error', error: errorMsg };
   }
 }

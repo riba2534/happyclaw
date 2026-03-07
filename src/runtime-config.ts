@@ -4,6 +4,16 @@ import path from 'path';
 
 import { ASSISTANT_NAME, DATA_DIR } from './config.js';
 import { logger } from './logger.js';
+import {
+  getFailoverState,
+  getCurrentEndpoint,
+  getSortedAvailableEndpoints,
+  migrateFromLegacyConfig,
+  getEndpoints,
+  type ModelEndpoint,
+  type EndpointType,
+  type EndpointStatus,
+} from './model-failover.js';
 
 const MAX_FIELD_LENGTH = 2000;
 const CURRENT_CONFIG_VERSION = 2;
@@ -848,6 +858,9 @@ export function saveClaudeProviderConfig(
   fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
   fs.renameSync(tmp, CLAUDE_CONFIG_FILE);
 
+  // 自动迁移到新的 failover 系统
+  migrateLegacyConfigToFailoverIfNeeded(normalized);
+
   return normalized;
 }
 
@@ -871,36 +884,7 @@ export function shellQuoteEnvLines(lines: string[]): string[] {
 }
 
 export function buildClaudeEnvLines(config: ClaudeProviderConfig): string[] {
-  const lines: string[] = [];
-
-  // When full OAuth credentials exist, authentication is handled by .credentials.json file.
-  // Only fall back to CLAUDE_CODE_OAUTH_TOKEN env var for legacy single-token mode.
-  if (!config.claudeOAuthCredentials && config.claudeCodeOauthToken) {
-    lines.push(
-      `CLAUDE_CODE_OAUTH_TOKEN=${sanitizeEnvValue(config.claudeCodeOauthToken)}`,
-    );
-  }
-  if (config.anthropicApiKey) {
-    lines.push(`ANTHROPIC_API_KEY=${sanitizeEnvValue(config.anthropicApiKey)}`);
-  }
-  if (config.anthropicBaseUrl) {
-    lines.push(
-      `ANTHROPIC_BASE_URL=${sanitizeEnvValue(config.anthropicBaseUrl)}`,
-    );
-  }
-  if (config.anthropicAuthToken) {
-    lines.push(
-      `ANTHROPIC_AUTH_TOKEN=${sanitizeEnvValue(config.anthropicAuthToken)}`,
-    );
-  }
-
-  const customEnv = getGlobalClaudeCustomEnv();
-  for (const [key, value] of Object.entries(customEnv)) {
-    if (RESERVED_CLAUDE_ENV_KEYS.has(key)) continue;
-    lines.push(`${key}=${sanitizeEnvValue(value)}`);
-  }
-
-  return lines;
+  return buildClaudeEnvLinesWithFailover(config);
 }
 
 export function appendClaudeConfigAudit(
@@ -1746,4 +1730,147 @@ export function saveSystemSettings(partial: Partial<SystemSettings>): SystemSett
   try { _settingsMtimeMs = fs.statSync(SYSTEM_SETTINGS_FILE).mtimeMs; } catch { /* ignore */ }
 
   return merged;
+}
+
+// ========== Model Failover Integration ==========
+
+/**
+ * 从当前端点获取环境变量配置
+ */
+export function getActiveModelEndpoint(): ModelEndpoint | null {
+  return getCurrentEndpoint();
+}
+
+/**
+ * 获取所有可用端点（用于前端展示）
+ */
+export function getAllModelEndpoints(): ModelEndpoint[] {
+  return getEndpoints();
+}
+
+/**
+ * 获取排序后的可用端点
+ */
+export function getSortedModelEndpoints(): ModelEndpoint[] {
+  return getSortedAvailableEndpoints();
+}
+
+/**
+ * 更新 buildClaudeEnvLines 以使用当前活动端点
+ */
+export function buildClaudeEnvLinesWithFailover(config: ClaudeProviderConfig): string[] {
+  const lines: string[] = [];
+
+  // 当存在完整 OAuth 凭据时，认证通过 .credentials.json 文件处理
+  if (!config.claudeOAuthCredentials && config.claudeCodeOauthToken) {
+    lines.push(
+      `CLAUDE_CODE_OAUTH_TOKEN=${sanitizeEnvValue(config.claudeCodeOauthToken)}`,
+    );
+  }
+
+  // 获取当前活动端点
+  const activeEndpoint = getCurrentEndpoint();
+
+  if (activeEndpoint && activeEndpoint.type === 'third_party') {
+    // 使用第三方端点
+    if (activeEndpoint.apiKey) {
+      lines.push(`ANTHROPIC_API_KEY=${sanitizeEnvValue(activeEndpoint.apiKey)}`);
+    }
+    if (activeEndpoint.baseUrl) {
+      lines.push(`ANTHROPIC_BASE_URL=${sanitizeEnvValue(activeEndpoint.baseUrl)}`);
+    }
+    if (activeEndpoint.authToken) {
+      lines.push(`ANTHROPIC_AUTH_TOKEN=${sanitizeEnvValue(activeEndpoint.authToken)}`);
+    }
+  } else {
+    // 使用官方端点（传统配置）
+    if (config.anthropicApiKey) {
+      lines.push(`ANTHROPIC_API_KEY=${sanitizeEnvValue(config.anthropicApiKey)}`);
+    }
+    if (config.anthropicBaseUrl) {
+      lines.push(`ANTHROPIC_BASE_URL=${sanitizeEnvValue(config.anthropicBaseUrl)}`);
+    }
+    if (config.anthropicAuthToken) {
+      lines.push(`ANTHROPIC_AUTH_TOKEN=${sanitizeEnvValue(config.anthropicAuthToken)}`);
+    }
+  }
+
+  const customEnv = getGlobalClaudeCustomEnv();
+  for (const [key, value] of Object.entries(customEnv)) {
+    if (RESERVED_CLAUDE_ENV_KEYS.has(key)) continue;
+    lines.push(`${key}=${sanitizeEnvValue(value)}`);
+  }
+
+  return lines;
+}
+
+/**
+ * 在保存旧配置时自动迁移到新的端点系统
+ */
+export function migrateLegacyConfigToFailoverIfNeeded(config: ClaudeProviderConfig): void {
+  if (config.anthropicBaseUrl) {
+    migrateFromLegacyConfig(
+      config.anthropicBaseUrl,
+      config.anthropicAuthToken,
+      config.anthropicApiKey,
+    );
+  }
+}
+
+// ========== Public Failover Config Types for API ==========
+
+export interface ModelEndpointPublic {
+  id: string;
+  type: EndpointType;
+  name: string;
+  baseUrl: string;
+  priority: number;
+  status: EndpointStatus;
+  lastHealthCheckAt: number | null;
+  lastUsedAt: number | null;
+  failureCount: number;
+  successCount: number;
+  enabled: boolean;
+  hasAuthToken: boolean;
+  hasApiKey: boolean;
+}
+
+export interface FailoverStatePublic {
+  currentEndpointId: string | null;
+  endpoints: ModelEndpointPublic[];
+  lastSwitchAt: number | null;
+  switchHistory: Array<{
+    from: string | null;
+    to: string;
+    reason: string;
+    timestamp: number;
+  }>;
+}
+
+export function toPublicModelEndpoint(endpoint: ModelEndpoint): ModelEndpointPublic {
+  return {
+    id: endpoint.id,
+    type: endpoint.type,
+    name: endpoint.name,
+    baseUrl: endpoint.baseUrl,
+    priority: endpoint.priority,
+    status: endpoint.status,
+    lastHealthCheckAt: endpoint.lastHealthCheckAt,
+    lastUsedAt: endpoint.lastUsedAt,
+    failureCount: endpoint.failureCount,
+    successCount: endpoint.successCount,
+    enabled: endpoint.enabled,
+    hasAuthToken: !!endpoint.authToken,
+    hasApiKey: !!endpoint.apiKey,
+  };
+}
+
+export function toPublicFailoverState(): FailoverStatePublic {
+  const state = getFailoverState();
+  return {
+    currentEndpointId: state.currentEndpointId,
+    endpoints: state.endpoints.map(toPublicModelEndpoint),
+    lastSwitchAt: state.lastSwitchAt,
+    switchHistory: state.switchHistory,
+  };
 }

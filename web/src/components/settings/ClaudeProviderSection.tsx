@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ExternalLink, HardDrive, Loader2, Plus, RefreshCw, Rocket, X } from 'lucide-react';
+import { ExternalLink, HardDrive, Loader2, Plus, RefreshCw, Rocket, X, Server } from 'lucide-react';
 
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { api } from '../../api/client';
+import { ModelFailoverSection } from './ModelFailoverSection';
 import type {
   ClaudeConfigPublic,
   ClaudeCustomEnvResp,
@@ -674,6 +675,15 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
         confirmVariant="danger"
         loading={applying}
       />
+
+      {/* 多端点故障转移配置 */}
+      <div className="pt-6 border-t border-slate-200 mt-6">
+        <div className="flex items-center gap-2 mb-4">
+          <Server className="w-5 h-5 text-slate-600" />
+          <h3 className="text-lg font-semibold text-slate-900">多端点故障转移</h3>
+        </div>
+        <ModelFailoverSection setNotice={setNotice} setError={setError} />
+      </div>
     </div>
   );
 }
