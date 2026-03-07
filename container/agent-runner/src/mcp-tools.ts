@@ -354,14 +354,28 @@ Supports: PDF, DOC, XLS, PPT, MP4, etc. Max file size: 30MB.`,
         fileName: z.string().describe('File name to display (e.g., "report.pdf")'),
       },
       async (args) => {
-        // Validate file exists and is within workspace
-        const resolvedPath = path.resolve(ctx.workspaceGroup, args.filePath);
-        if (!resolvedPath.startsWith(ctx.workspaceGroup + path.sep) && resolvedPath !== ctx.workspaceGroup) {
-          return {
-            content: [{ type: 'text' as const, text: 'File must be within the workspace/group directory.' }],
-            isError: true,
-          };
+        // Handle both absolute and relative paths
+        let resolvedPath: string;
+        let relativePath: string;
+
+        if (path.isAbsolute(args.filePath)) {
+          // Absolute path provided - validate and convert to relative
+          resolvedPath = args.filePath;
+          if (!resolvedPath.startsWith(ctx.workspaceGroup) ||
+              (resolvedPath !== ctx.workspaceGroup && !resolvedPath.startsWith(ctx.workspaceGroup + path.sep))) {
+            return {
+              content: [{ type: 'text' as const, text: 'File must be within the workspace/group directory.' }],
+              isError: true,
+            };
+          }
+          // Convert to relative path
+          relativePath = path.relative(ctx.workspaceGroup, resolvedPath);
+        } else {
+          // Relative path provided
+          relativePath = args.filePath;
+          resolvedPath = path.resolve(ctx.workspaceGroup, args.filePath);
         }
+
         if (!fs.existsSync(resolvedPath)) {
           return {
             content: [{ type: 'text' as const, text: `File not found: ${args.filePath}` }],
@@ -372,7 +386,7 @@ Supports: PDF, DOC, XLS, PPT, MP4, etc. Max file size: 30MB.`,
         const data = {
           type: 'send_file',
           chatJid: ctx.chatJid,
-          filePath: args.filePath,
+          filePath: relativePath,
           fileName: args.fileName,
           timestamp: new Date().toISOString(),
         };
