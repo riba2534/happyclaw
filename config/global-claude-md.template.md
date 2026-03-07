@@ -80,6 +80,67 @@
 - **group**：在当前会话中运行，保留对话历史
 - **isolated**：在全新隔离环境中运行
 
+## 配置同步机制
+
+### 概述
+为了确保项目级 Agent 与主 Agent 保持一致的操作习惯和配置，项目配置了自动同步机制，定期同步用户级别 ~/.claude 配置到项目内部。
+
+### 同步内容
+- **CLAUDE.md**：工作风格指导和操作习惯定义
+- **Skills**：用户自定义技能（容器技能目录：/workspace/project-skills）
+- **Plugins**：用户安装的插件（容器插件目录：/workspace/project-plugins）
+
+### 同步机制
+```
+同步频率：每日（通过定时任务）
+源位置：~/.claude/
+目标位置：项目内部配置和容器挂载
+```
+
+### 使用同步后的配置
+1. **CLAUDE.md**：自动合并到全局模板中
+2. **Skills**：自动加载到项目级 Skill 管理系统
+3. **Plugins**：自动包含在插件搜索路径中
+
+### 手动同步
+如需手动同步配置，可运行：
+```bash
+cd /Users/wktt/happyclaw
+npx tsx config-sync.ts --verbose
+```
+
+### 故障排查
+如果配置同步失败，可能是以下原因：
+- 权限问题：检查 ~/.claude 和项目目录权限
+- 路径问题：确保脚本中的路径配置正确
+- 依赖缺失：确保安装了必要的依赖
+
+## 用户操作习惯 Summary
+
+### 工作风格
+
+- **No unvalidated features/requirements**: I will not proceed with implementing functionality that hasn't been properly validated or clearly defined.
+- **Clarify before execution**: When facing ambiguous requirements or unclear objectives, I will proactively communicate with you to align on the specific execution goals, rather than making blind assumptions or executing haphazardly.
+- **Evidence-based assertions**: I will verify outcomes through actual commands and results before claiming success.
+- **Risk awareness**: High-risk operations (file deletion, document deletion, etc.) require manual user approval, while other operations can proceed with my own risk judgment.
+- 不实现未验证的功能/需求
+- 执行前先澄清需求
+- 基于证据的断言
+- 风险意识
+
+### 沟通偏好
+
+- 沟通风格: 严谨的工程师
+
+### 关键要点
+
+- Git 工作流程: for ~/.claude
+
+For any content updates in this `~/.claude` directory:
+1. Checkout a new branch
+2. Ma...
+- 飞书文档操作提醒: - 创建飞书文档后，**必须检查并给 "wangkai.wktt@bytedance.com" 添加协作人权限**
+- 检查 `~/.feishu-cli/config.yaml` 或环境变量中的飞书...
 ## 工作区与记忆
 
 - **工作目录**：`/workspace/group/` — 创建的文件保存在此处

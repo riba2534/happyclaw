@@ -10,12 +10,17 @@
     "dev": "tsx src/index.ts",
     "reset:admin": "tsx src/reset-admin.ts",
     "typecheck": "tsc --noEmit",
-    "format": "prettier --write \"src/**/*.ts\"",
-    "format:check": "prettier --check \"src/**/*.ts\"",
+    "format": "prettier --write \"src/**/*.ts\" \"*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"*.ts\"",
     "dev:all": "npx concurrently --timestamp-format \"yyyy-MM-dd HH:mm:ss.SSS\" -n backend,frontend -c blue,green \"npm run dev\" \"npm run dev:web\"",
     "dev:web": "cd web && npm run dev",
     "build:web": "cd web && npm run build",
-    "build:all": "npm run build && npm run build:web"
+    "build:all": "npm run build && npm run build:web",
+    "config:sync": "tsx config-sync-intelligent.ts",
+    "config:sync:classic": "tsx config-sync.ts",
+    "config:sync:dry": "tsx config-sync.ts --dry-run",
+    "config:sync:schedule": "tsx schedule-config-sync.ts",
+    "config:sync:run": "tsx schedule-config-sync.ts run"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.9",
@@ -25,6 +30,7 @@
     "cron-parser": "^5.5.0",
     "grammy": "^1.40.0",
     "hono": "^4.11.9",
+    "node-cron": "^3.0.3",
     "node-pty": "^1.1.0",
     "pino": "^9.6.0",
     "pino-pretty": "^13.0.0",
