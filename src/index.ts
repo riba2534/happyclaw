@@ -36,6 +36,7 @@ import {
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
+  hasContainerModeGroups,
   getAllTasks,
   getJidsByFolder,
   getLastGroupSync,
@@ -2910,49 +2911,45 @@ function recoverPendingMessages(): void {
 }
 
 async function ensureDockerRunning(): Promise<void> {
+  // Skip all Docker checks when no groups use container mode
+  if (!hasContainerModeGroups()) {
+    logger.info('All groups use host execution mode, skipping Docker checks');
+    return;
+  }
+
   try {
     await execFileAsync('docker', ['info'], { timeout: 10000 });
     logger.debug('Docker daemon is running');
   } catch {
-    // 如果有容器模式的 group，Docker 必须运行
-    const hasContainerGroups = Object.values(registeredGroups).some(
-      (g) => (g.executionMode || 'container') === 'container',
+    logger.error('Docker daemon is not running');
+    console.error(
+      '\n╔════════════════════════════════════════════════════════════════╗',
     );
-    if (hasContainerGroups) {
-      logger.error('Docker daemon is not running');
-      console.error(
-        '\n╔════════════════════════════════════════════════════════════════╗',
-      );
-      console.error(
-        '║  FATAL: Docker is not running                                  ║',
-      );
-      console.error(
-        '║                                                                ║',
-      );
-      console.error(
-        '║  Agents cannot run without Docker. To fix:                     ║',
-      );
-      console.error(
-        '║  macOS: Start Docker Desktop                                   ║',
-      );
-      console.error(
-        '║  Linux: sudo systemctl start docker                            ║',
-      );
-      console.error(
-        '║                                                                ║',
-      );
-      console.error(
-        '║  Install from: https://docker.com/products/docker-desktop      ║',
-      );
-      console.error(
-        '╚════════════════════════════════════════════════════════════════╝\n',
-      );
-      throw new Error('Docker is required but not running');
-    } else {
-      logger.warn(
-        'Docker is not running, but all groups use host execution mode',
-      );
-    }
+    console.error(
+      '║  FATAL: Docker is not running                                  ║',
+    );
+    console.error(
+      '║                                                                ║',
+    );
+    console.error(
+      '║  Agents cannot run without Docker. To fix:                     ║',
+    );
+    console.error(
+      '║  macOS: Start Docker Desktop                                   ║',
+    );
+    console.error(
+      '║  Linux: sudo systemctl start docker                            ║',
+    );
+    console.error(
+      '║                                                                ║',
+    );
+    console.error(
+      '║  Install from: https://docker.com/products/docker-desktop      ║',
+    );
+    console.error(
+      '╚════════════════════════════════════════════════════════════════╝\n',
+    );
+    throw new Error('Docker is required but not running');
   }
 
   // Kill and clean up orphaned happyclaw containers from previous runs

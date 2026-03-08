@@ -1279,6 +1279,16 @@ export function getJidsByFolder(folder: string): string[] {
   return rows.map((r) => r.jid);
 }
 
+/** Check if any registered group uses container execution mode (efficient targeted query). */
+export function hasContainerModeGroups(): boolean {
+  const row = db
+    .prepare(
+      "SELECT 1 FROM registered_groups WHERE execution_mode = 'container' OR execution_mode IS NULL LIMIT 1",
+    )
+    .get();
+  return row !== undefined;
+}
+
 export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
   const rows = db.prepare('SELECT * FROM registered_groups').all() as RegisteredGroupRow[];
   const result: Record<string, RegisteredGroup> = {};
