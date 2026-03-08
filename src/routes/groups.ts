@@ -1245,6 +1245,8 @@ groupRoutes.put('/:jid/env', authMiddleware, async (c) => {
     updated.anthropicApiKey = data.anthropicApiKey;
   if (data.claudeCodeOauthToken !== undefined)
     updated.claudeCodeOauthToken = data.claudeCodeOauthToken;
+  if (data.happyclawModel !== undefined)
+    updated.happyclawModel = data.happyclawModel;
   if (data.customEnv !== undefined) updated.customEnv = data.customEnv;
 
   try {

@@ -1,5 +1,6 @@
 export interface ClaudeConfigPublic {
   anthropicBaseUrl: string;
+  happyclawModel: string;
   updatedAt: string | null;
   hasAnthropicAuthToken: boolean;
   hasAnthropicApiKey: boolean;
@@ -10,6 +11,31 @@ export interface ClaudeConfigPublic {
   hasClaudeOAuthCredentials: boolean;
   claudeOAuthCredentialsExpiresAt: number | null;
   claudeOAuthCredentialsAccessTokenMasked: string | null;
+}
+
+export interface ClaudeThirdPartyProfileItem {
+  id: string;
+  name: string;
+  anthropicBaseUrl: string;
+  happyclawModel: string;
+  updatedAt: string | null;
+  hasAnthropicAuthToken: boolean;
+  anthropicAuthTokenMasked: string | null;
+}
+
+export interface ClaudeThirdPartyProfilesResp {
+  activeProfileId: string;
+  profiles: ClaudeThirdPartyProfileItem[];
+}
+
+export interface ClaudeThirdPartyActivateResult {
+  success: boolean;
+  alreadyActive?: boolean;
+  activeProfileId: string;
+  profile: ClaudeThirdPartyProfileItem | null;
+  stoppedCount: number;
+  failedCount: number;
+  error?: string;
 }
 
 export interface FeishuConfigPublic {
