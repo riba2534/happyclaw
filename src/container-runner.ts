@@ -336,7 +336,12 @@ function buildVolumeMounts(
   fs.mkdirSync(envDir, { recursive: true });
   const globalConfig = getClaudeProviderConfig();
   const containerOverride = getContainerEnvConfig(group.folder);
-  const envLines = buildContainerEnvLines(globalConfig, containerOverride);
+  const envLines = buildContainerEnvLines(globalConfig, containerOverride).map(
+    (line) => line.replace(
+      /^(ANTHROPIC_BASE_URL=.*)(?:localhost|127\.0\.0\.1)/,
+      '$1host.docker.internal',
+    ),
+  );
   if (envLines.length > 0) {
     const envFilePath = path.join(envDir, 'env');
     const quotedLines = shellQuoteEnvLines(envLines);
