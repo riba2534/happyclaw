@@ -733,7 +733,10 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
     rememberChatProgress(chatId, resolvedCreateTimeMs);
 
     // ── 斜杠指令：拦截已知 /xxx 命令，不进入消息流 ──
-    const slashMatch = text?.trim().match(/^\/(\S+)(.*)$/);
+    // 群聊中 @机器人 后跟斜杠命令，mention 替换后文本为 "@botname /cmd"，
+    // 需要先 strip 掉开头的 @mention 前缀再匹配
+    const textForSlash = text?.trim().replace(/^@\S+\s+/, '') ?? '';
+    const slashMatch = textForSlash.match(/^\/(\S+)(.*)$/);
     if (slashMatch && onCommand) {
       const cmdBody = (slashMatch[1] + slashMatch[2]).trim();
       logger.info({ chatJid, cmd: slashMatch[1], cmdBody }, 'Feishu slash command detected');
