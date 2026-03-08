@@ -660,7 +660,40 @@ function handleBindCommand(chatJid: string, rawSpec: string): string {
   registeredGroups[chatJid] = updated;
   imSendFailCounts.delete(chatJid);
   imHealthCheckFailCounts.delete(chatJid);
-  return `已切换到 ${resolved.display}\n🔁 回复策略: source_only`;
+
+  // Show recent messages from target for quick context
+  const preview = buildBindPreview(resolved);
+  return `已切换到 ${resolved.display}\n🔁 回复策略: source_only${preview}`;
+}
+
+/** Fetch last 5 messages from binding target and format as a compact preview. */
+function buildBindPreview(
+  resolved: { target_agent_id?: string; target_main_jid?: string },
+): string {
+  let targetJid: string | undefined;
+  if (resolved.target_agent_id) {
+    // Agent binding — need to find its parent chat_jid
+    const agent = getAgent(resolved.target_agent_id);
+    if (agent) targetJid = `${agent.chat_jid}#agent:${resolved.target_agent_id}`;
+  } else if (resolved.target_main_jid) {
+    targetJid = resolved.target_main_jid;
+  }
+  if (!targetJid) return '';
+
+  const messages = getMessagesPage(targetJid, undefined, 5);
+  if (messages.length === 0) return '\n\n📭 暂无消息记录';
+
+  const lines: string[] = [];
+  for (const msg of messages.reverse()) {
+    if (msg.sender === '__system__') continue;
+    const who = msg.is_from_me ? '🤖' : `👤${msg.sender_name || ''}`;
+    let text = msg.content || '';
+    // Collapse to single line, truncate
+    text = text.replace(/\n/g, ' ');
+    if (text.length > 80) text = text.slice(0, 80) + '…';
+    lines.push(`  ${who}: ${text}`);
+  }
+  return lines.length > 0 ? '\n\n📋 最近消息:\n' + lines.join('\n') : '';
 }
 
 function handleNewCommand(chatJid: string, rawName: string): string {
