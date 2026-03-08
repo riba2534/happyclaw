@@ -43,6 +43,7 @@ export interface ConnectFeishuOptions {
   onAgentMessage?: (baseChatJid: string, agentId: string) => void;
   onBotAddedToGroup?: (chatJid: string, chatName: string) => void;
   onBotRemovedFromGroup?: (chatJid: string) => void;
+  shouldProcessGroupMessage?: (chatJid: string) => boolean;
 }
 
 class IMConnectionManager {
@@ -250,6 +251,7 @@ class IMConnectionManager {
       onAgentMessage: options?.onAgentMessage,
       onBotAddedToGroup: options?.onBotAddedToGroup,
       onBotRemovedFromGroup: options?.onBotRemovedFromGroup,
+      shouldProcessGroupMessage: options?.shouldProcessGroupMessage,
     });
   }
 

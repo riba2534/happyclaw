@@ -48,6 +48,8 @@ export interface ConnectOptions {
   onBotAddedToGroup?: (chatJid: string, chatName: string) => void;
   /** Bot 被移出群聊或群被解散时调用（自动解绑 IM 绑定） */
   onBotRemovedFromGroup?: (chatJid: string) => void;
+  /** 群聊消息过滤：bot 未被 @mention 时调用，返回 true 则处理，false 则丢弃 */
+  shouldProcessGroupMessage?: (chatJid: string) => boolean;
 }
 
 export interface FeishuChatInfo {
@@ -85,6 +87,7 @@ const BACKFILL_MAX_PAGES_PER_CHAT = 5;
 interface FeishuMentionLike {
   key?: string;
   name?: string;
+  id?: { open_id?: string; user_id?: string };
 }
 
 interface IncomingMessagePayload {
@@ -354,6 +357,7 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
   let wsClient: lark.WSClient | null = null;
   let eventDispatcher: lark.EventDispatcher | null = null;
   let connectOptions: ConnectOptions | null = null;
+  let botOpenId: string = '';
   let reconnecting = false;
   let backfillRunning = false;
   let reconnectRequestedAt = 0;
@@ -582,7 +586,7 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
     payload: IncomingMessagePayload,
     source: 'ws' | 'backfill',
   ): Promise<void> {
-    const { onNewChat, ignoreMessagesBefore, onCommand, resolveGroupFolder, resolveEffectiveChatJid, onAgentMessage } = connectOptions || {};
+    const { onNewChat, ignoreMessagesBefore, onCommand, resolveGroupFolder, resolveEffectiveChatJid, onAgentMessage, shouldProcessGroupMessage } = connectOptions || {};
     const {
       chatId,
       messageId,
@@ -748,6 +752,17 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
         } catch (sendErr) {
           logger.error({ chatJid, sendErr }, 'Failed to send slash command error feedback');
         }
+        return;
+      }
+    }
+
+    // ── 群聊 Mention 过滤：require_mention 模式下，bot 未被 @ 则丢弃 ──
+    if (chatType === 'group' && shouldProcessGroupMessage) {
+      const isBotMentioned = botOpenId
+        ? mentions?.some(m => m.id?.open_id === botOpenId) ?? false
+        : true; // 无 bot open_id 时默认放行（安全降级）
+      if (!isBotMentioned && !shouldProcessGroupMessage(chatJid)) {
+        logger.debug({ chatJid, messageId }, 'Dropped group message: mention required but bot not mentioned');
         return;
       }
     }
@@ -1006,6 +1021,24 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
         appSecret: config.appSecret,
         appType: lark.AppType.SelfBuild,
       });
+
+      // Fetch bot open_id for mention detection (best-effort, non-blocking)
+      try {
+        const botInfoRes = await client.request({
+          method: 'GET',
+          url: '/open-apis/bot/v3/info/',
+        });
+        const info = botInfoRes as { data?: { bot?: { open_id?: string } } };
+        botOpenId = info?.data?.bot?.open_id || '';
+        if (botOpenId) {
+          logger.info({ botOpenId }, 'Fetched bot open_id for mention detection');
+        } else {
+          logger.warn('Could not fetch bot open_id, mention gating will be bypassed');
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Failed to fetch bot info, mention gating will be bypassed');
+        botOpenId = '';
+      }
 
       // Create event dispatcher
       eventDispatcher = new lark.EventDispatcher({}).register({

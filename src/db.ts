@@ -301,6 +301,7 @@ export function initDatabase(): void {
   ensureColumn('registered_groups', 'target_agent_id', 'TEXT');
   ensureColumn('registered_groups', 'target_main_jid', 'TEXT');
   ensureColumn('registered_groups', 'reply_policy', "TEXT DEFAULT 'source_only'");
+  ensureColumn('registered_groups', 'require_mention', 'INTEGER DEFAULT 1');
   ensureColumn('messages', 'token_usage', 'TEXT');
 
   // Add index on target_agent_id for fast lookup of IM bindings
@@ -1195,6 +1196,7 @@ type RegisteredGroupRow = {
   target_agent_id: string | null;
   target_main_jid: string | null;
   reply_policy: string | null;
+  require_mention: number;
 };
 
 /** Convert a raw DB row into a RegisteredGroup domain object. */
@@ -1217,6 +1219,7 @@ function parseGroupRow(row: RegisteredGroupRow): RegisteredGroup & { jid: string
     target_agent_id: row.target_agent_id ?? undefined,
     target_main_jid: row.target_main_jid ?? undefined,
     reply_policy: row.reply_policy === 'mirror' ? 'mirror' : 'source_only',
+    require_mention: row.require_mention === 1,
   };
 }
 
@@ -1232,8 +1235,8 @@ export function getRegisteredGroup(
 
 export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
   db.prepare(
-    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, added_at, container_config, execution_mode, custom_cwd, init_source_path, init_git_url, created_by, is_home, selected_skills, target_agent_id, target_main_jid, reply_policy)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, added_at, container_config, execution_mode, custom_cwd, init_source_path, init_git_url, created_by, is_home, selected_skills, target_agent_id, target_main_jid, reply_policy, require_mention)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     jid,
     group.name,
@@ -1250,6 +1253,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.target_agent_id ?? null,
     group.target_main_jid ?? null,
     group.reply_policy ?? 'source_only',
+    group.require_mention !== false ? 1 : 0,
   );
 }
 

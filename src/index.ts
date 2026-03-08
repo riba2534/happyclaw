@@ -406,6 +406,8 @@ async function handleCommand(chatJid: string, command: string): Promise<string |
     case 'bind':
     case 'switch':
       return handleBindCommand(chatJid, rawArgs);
+    case 'require_mention':
+      return handleRequireMentionCommand(chatJid, rawArgs);
     default:
       return null;
   }
@@ -634,6 +636,28 @@ function handleBindCommand(chatJid: string, rawSpec: string): string {
   imSendFailCounts.delete(chatJid);
   imHealthCheckFailCounts.delete(chatJid);
   return `已切换到 ${resolved.display}\n🔁 回复策略: source_only`;
+}
+
+function handleRequireMentionCommand(chatJid: string, rawArgs: string): string {
+  const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
+  if (!group) return '未找到当前会话';
+
+  const action = rawArgs.trim().toLowerCase();
+  if (action === 'true') {
+    const updated: RegisteredGroup = { ...group, require_mention: true };
+    setRegisteredGroup(chatJid, updated);
+    registeredGroups[chatJid] = updated;
+    return '已开启：群聊中需要 @机器人 才会响应';
+  } else if (action === 'false') {
+    const updated: RegisteredGroup = { ...group, require_mention: false };
+    setRegisteredGroup(chatJid, updated);
+    registeredGroups[chatJid] = updated;
+    return '已关闭：群聊中所有消息都会响应，无需 @机器人';
+  } else if (!action) {
+    const current = group.require_mention !== false;
+    return `当前 require_mention: ${current}\n\n用法:\n/require_mention true — 需要 @机器人\n/require_mention false — 全量响应`;
+  }
+  return '用法: /require_mention true|false';
 }
 
 const recallCooldowns = new Map<string, number>();
@@ -2998,6 +3022,16 @@ function buildOnAgentMessage(): (baseChatJid: string, agentId: string) => void {
 }
 
 /**
+ * Mention gating callback: when bot is NOT @mentioned in a group chat,
+ * return true to process the message anyway, false to drop it.
+ */
+function shouldProcessGroupMessage(chatJid: string): boolean {
+  const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
+  // require_mention defaults to true; if false → process all messages
+  return group?.require_mention === false;
+}
+
+/**
  * Connect IM channels for a specific user via imManager.
  * Reads the user's IM config and connects if enabled.
  */
@@ -3028,6 +3062,7 @@ async function connectUserIMChannels(
       onAgentMessage,
       onBotAddedToGroup,
       onBotRemovedFromGroup,
+      shouldProcessGroupMessage,
     });
   }
 
@@ -3281,6 +3316,7 @@ async function main(): Promise<void> {
         onCommand: handleCommand,
         onBotAddedToGroup: buildOnNewChat(adminUser.id, homeFolder),
         onBotRemovedFromGroup: buildOnBotRemovedFromGroup(),
+        shouldProcessGroupMessage,
       });
       if (connected) {
         syncGroupMetadata().catch((err) =>
@@ -3340,6 +3376,7 @@ async function main(): Promise<void> {
           onCommand: handleCommand,
           onBotAddedToGroup: buildOnNewChat(userId, homeFolder),
           onBotRemovedFromGroup: buildOnBotRemovedFromGroup(),
+          shouldProcessGroupMessage,
         });
         logger.info({ userId, connected }, 'User Feishu connection hot-reloaded');
         return connected;
