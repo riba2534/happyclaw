@@ -69,7 +69,8 @@ export function SettingsPage() {
     if (canManageSystemConfig) {
       tabs.push({ key: 'channels', label: '系统渠道' });
       tabs.push({ key: 'claude', label: 'Claude' });
-      tabs.push({ key: 'appearance', label: '外观(全局)' });
+      tabs.push({ key: 'registration', label: '注册' });
+      tabs.push({ key: 'appearance', label: '外观' });
       tabs.push({ key: 'system', label: '系统' });
     }
     tabs.push({ key: 'groups', label: '会话' });
@@ -79,6 +80,7 @@ export function SettingsPage() {
     if (canManageUsers) {
       tabs.push({ key: 'users', label: '用户' });
     }
+    tabs.push({ key: 'about', label: '关于' });
     return tabs;
   }, [canManageSystemConfig, canManageUsers]);
 
@@ -113,7 +115,10 @@ export function SettingsPage() {
   return (
     <div className="min-h-full bg-background flex flex-col lg:flex-row">
       {/* Mobile header */}
-      <div className="lg:hidden sticky top-0 z-10 flex items-center bg-background border-b border-border px-4 h-12">
+      <div
+        className="lg:hidden sticky top-0 z-10 flex items-center bg-background border-b border-border px-4 h-12"
+        data-settings-swipe-ignore="true"
+      >
         <button
           onClick={() => setNavOpen(true)}
           className="p-1.5 -ml-1.5 rounded-lg hover:bg-slate-100 transition-colors"
@@ -127,7 +132,7 @@ export function SettingsPage() {
       {/* Mobile horizontal tab bar */}
       <div
         ref={tabBarRef}
-        className="lg:hidden flex items-center gap-1 px-3 py-2 overflow-x-auto bg-background border-b border-border [&::-webkit-scrollbar]:hidden"
+        className="lg:hidden flex items-center gap-1 px-3 py-2 overflow-x-auto bg-background border-b border-border [touch-action:pan-x] [&::-webkit-scrollbar]:hidden"
         style={{ scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}
       >
         {mobileTabs.map((tab) => {
@@ -151,12 +156,6 @@ export function SettingsPage() {
             </button>
           );
         })}
-        <button
-          onClick={() => setNavOpen(true)}
-          className="flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-medium text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors whitespace-nowrap cursor-pointer"
-        >
-          更多...
-        </button>
       </div>
 
       <SettingsNav
@@ -169,7 +168,7 @@ export function SettingsPage() {
         onOpenChange={setNavOpen}
       />
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 min-w-0 overflow-visible lg:overflow-y-auto">
         {FULLPAGE_TABS.includes(activeTab) ? (
           <>
             {activeTab === 'groups' && <GroupsPage />}
