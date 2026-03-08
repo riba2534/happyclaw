@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" sizes="192x192" href="%BASE_URL%icons/icon-192.png" />
+    <link rel="manifest" href="%BASE_URL%manifest.webmanifest" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#0d9488" />
 
@@ -27,6 +28,12 @@
   <body>
     <script>(function(){var s=localStorage.getItem('happyclaw-theme');var dark=s==='dark'||(s!=='light'&&window.matchMedia('(prefers-color-scheme: dark)').matches);if(dark)document.documentElement.classList.add('dark');})();</script>
     <div id="root"></div>
+    <script>
+      window.addEventListener('load', function () {
+        if (!('serviceWorker' in navigator)) return;
+        navigator.serviceWorker.register('%BASE_URL%sw.js').catch(function () {});
+      });
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

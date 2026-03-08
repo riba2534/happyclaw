@@ -87,6 +87,67 @@ const terminalManager = new TerminalManager();
 const wsTerminals = new Map<WebSocket, string>(); // ws → groupJid
 const terminalOwners = new Map<string, WebSocket>(); // groupJid → ws
 
+const WEB_APP_MANIFEST = {
+  name: 'HappyClaw',
+  short_name: 'HappyClaw',
+  description: 'Personal Claude Assistant',
+  theme_color: '#0d9488',
+  background_color: '#f8fafc',
+  display: 'standalone',
+  display_override: ['standalone'],
+  id: '/',
+  scope: '/',
+  start_url: '/chat',
+  icons: [
+    { src: '/icons/icon-48.png', sizes: '48x48', type: 'image/png' },
+    { src: '/icons/icon-72.png', sizes: '72x72', type: 'image/png' },
+    { src: '/icons/icon-96.png', sizes: '96x96', type: 'image/png' },
+    { src: '/icons/icon-128.png', sizes: '128x128', type: 'image/png' },
+    { src: '/icons/icon-144.png', sizes: '144x144', type: 'image/png' },
+    { src: '/icons/icon-152.png', sizes: '152x152', type: 'image/png' },
+    { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+    { src: '/icons/icon-384.png', sizes: '384x384', type: 'image/png' },
+    { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
+    {
+      src: '/icons/icon-512-maskable.png',
+      sizes: '512x512',
+      type: 'image/png',
+      purpose: 'maskable',
+    },
+  ],
+};
+
+const PWA_RUNTIME_SW = `
+self.addEventListener('install', (event) => {
+  event.waitUntil(self.skipWaiting());
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil((async () => {
+    const cacheKeys = await caches.keys();
+    await Promise.all(cacheKeys.map((key) => caches.delete(key)));
+    await self.clients.claim();
+    const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    await Promise.all(clients.map((client) => client.navigate(client.url).catch(() => undefined)));
+  })());
+});
+
+self.addEventListener('fetch', (event) => {
+  event.respondWith(fetch(event.request));
+});
+`;
+
+const PWA_REGISTER_SCRIPT = `
+window.addEventListener('load', () => {
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker
+      .register('/sw.js')
+      .then((registration) => registration.update())
+      .catch(() => undefined);
+  }
+});
+`;
+
 function normalizeTerminalSize(
   value: unknown,
   fallback: number,
@@ -437,6 +498,22 @@ async function handleAgentConversationMessage(
 }
 
 // --- Static Files ---
+
+app.get('/manifest.webmanifest', (c) => c.body(JSON.stringify(WEB_APP_MANIFEST), 200, {
+  'Content-Type': 'application/manifest+json; charset=utf-8',
+  'Cache-Control': 'no-cache, no-store, must-revalidate',
+}));
+
+// Serve a lightweight runtime worker so mobile install stays available and stale caches are dropped.
+app.get('/sw.js', (c) => c.body(PWA_RUNTIME_SW, 200, {
+  'Content-Type': 'application/javascript; charset=utf-8',
+  'Cache-Control': 'no-cache, no-store, must-revalidate',
+}));
+
+app.get('/registerSW.js', (c) => c.body(PWA_REGISTER_SCRIPT, 200, {
+  'Content-Type': 'application/javascript; charset=utf-8',
+  'Cache-Control': 'no-cache, no-store, must-revalidate',
+}));
 
 // 带 content hash 的静态资源：长期不可变缓存
 app.use('/assets/*', async (c, next) => {
