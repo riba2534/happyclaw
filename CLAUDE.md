@@ -318,7 +318,7 @@ SQLite WAL 模式，Schema 经历 v1→v18 演进（`db.ts` 中的 `SCHEMA_VERSI
 | `messages` | `(id, chat_jid)` | 消息历史（含 `is_from_me`、`source` 标识来源、`attachments`） |
 | `scheduled_tasks` | `id` | 定时任务（调度类型、上下文模式、状态、`execution_type`、`script_command`、`created_by`） |
 | `task_run_logs` | `id` (auto) | 任务执行日志（耗时、状态、结果） |
-| `registered_groups` | `jid` | 注册的会话（folder 映射、容器配置、执行模式、`customCwd`、`is_home`、`init_source_path`、`init_git_url`、`selected_skills`） |
+| `registered_groups` | `jid` | 注册的会话（folder 映射、容器配置、执行模式、`customCwd`、`is_home`、`init_source_path`、`init_git_url`、`selected_skills`、`require_mention`） |
 | `sessions` | `(group_folder, agent_id)` | 会话 ID 映射（Claude session 持久化，支持 Sub-Agent 独立会话） |
 | `router_state` | `key` | KV 存储（`last_timestamp`、`last_agent_timestamp`） |
 | `users` | `id` | 用户账户（密码哈希、角色、权限、状态、`ai_name`、`ai_avatar_emoji`、`ai_avatar_color`、`avatar_emoji`、`avatar_color`、`ai_avatar_url`、`deleted_at`） |
@@ -528,8 +528,22 @@ scripts/                      # 构建辅助脚本
 | `/status` | - | 查看当前所在的工作区/对话状态 |
 | `/recall` | `/rc` | 调用 Claude CLI（`--print` 模式）总结最近 10 条消息，API 不可用时 fallback 到原始消息列表 |
 | `/clear` | - | 清除当前对话的会话上下文 |
+| `/activation` | - | 切换群聊响应模式：`/activation always`（全量响应）或 `/activation mention`（需要 @机器人） |
 
 `/recall` 通过 `execFile('claude', ['--print'])` + stdin 管道调用 Claude CLI，复用与 Agent Runner 相同的 OAuth 认证机制。
+
+### 8.12 群聊 Mention 控制
+
+飞书群聊支持 per-group 的 @mention 控制，类似 OpenClaw 的 `resolveGroupActivationFor()` 机制：
+
+- **默认模式**（`require_mention=true`）：群聊中只有 @机器人 的消息才会被处理
+- **全量模式**（`require_mention=false`）：群聊中所有消息都会被处理
+- 通过 `/activation always|mention` 命令切换
+- 私聊不受此控制影响，始终响应
+
+**实现原理**：连接飞书时通过 Bot Info API 获取 bot 的 `open_id`，收到群消息后检查 `mentions[].id.open_id` 是否包含 bot。如果 bot 未被 @mention 且该群 `require_mention=true`，则静默丢弃该消息。
+
+**前置条件**：飞书应用需要 `im:message:readonly` 权限（接收群里所有消息），否则平台层只推送 @消息，应用层控制无意义。
 
 ## 9. 环境变量
 

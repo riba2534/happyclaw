@@ -408,6 +408,8 @@ async function handleCommand(chatJid: string, command: string): Promise<string |
       return handleBindCommand(chatJid, rawArgs);
     case 'new':
       return handleNewCommand(chatJid, rawArgs);
+    case 'activation':
+      return handleActivationCommand(chatJid, rawArgs);
     default:
       return null;
   }
@@ -705,6 +707,28 @@ function handleNewCommand(chatJid: string, rawName: string): string {
   imHealthCheckFailCounts.delete(chatJid);
 
   return `工作区「${name}」已创建并绑定\n📁 ${folder}\n🔁 回复策略: source_only\n\n发送 /unbind 可解绑回默认工作区`;
+}
+
+function handleActivationCommand(chatJid: string, rawArgs: string): string {
+  const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
+  if (!group) return '未找到当前会话';
+
+  const action = rawArgs.trim().toLowerCase();
+  if (action === 'always') {
+    const updated: RegisteredGroup = { ...group, require_mention: false };
+    setRegisteredGroup(chatJid, updated);
+    registeredGroups[chatJid] = updated;
+    return '已切换为「全量响应」模式：群聊中所有消息都会响应，无需 @机器人';
+  } else if (action === 'mention') {
+    const updated: RegisteredGroup = { ...group, require_mention: true };
+    setRegisteredGroup(chatJid, updated);
+    registeredGroups[chatJid] = updated;
+    return '已切换为「@提及」模式：群聊中需要 @机器人 才会响应';
+  } else if (!action) {
+    const mode = group.require_mention !== false ? '@提及' : '全量响应';
+    return `当前模式: ${mode}\n\n用法:\n/activation always — 全量响应（无需 @）\n/activation mention — 需要 @机器人`;
+  }
+  return '用法: /activation always|mention';
 }
 
 const recallCooldowns = new Map<string, number>();
@@ -3113,6 +3137,16 @@ function buildOnAgentMessage(): (baseChatJid: string, agentId: string) => void {
 }
 
 /**
+ * Mention gating callback: when bot is NOT @mentioned in a group chat,
+ * return true to process the message anyway, false to drop it.
+ */
+function shouldProcessGroupMessage(chatJid: string): boolean {
+  const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
+  // require_mention defaults to true; if false → process all messages
+  return group?.require_mention === false;
+}
+
+/**
  * Connect IM channels for a specific user via imManager.
  * Reads the user's IM config and connects if enabled.
  */
@@ -3143,6 +3177,7 @@ async function connectUserIMChannels(
       onAgentMessage,
       onBotAddedToGroup,
       onBotRemovedFromGroup,
+      shouldProcessGroupMessage,
     });
   }
 
@@ -3410,6 +3445,7 @@ async function main(): Promise<void> {
         onCommand: handleCommand,
         onBotAddedToGroup: buildOnNewChat(adminUser.id, homeFolder),
         onBotRemovedFromGroup: buildOnBotRemovedFromGroup(),
+        shouldProcessGroupMessage,
       });
       if (connected) {
         syncGroupMetadata().catch((err) =>
@@ -3483,6 +3519,7 @@ async function main(): Promise<void> {
           onCommand: handleCommand,
           onBotAddedToGroup: buildOnNewChat(userId, homeFolder),
           onBotRemovedFromGroup: buildOnBotRemovedFromGroup(),
+          shouldProcessGroupMessage,
         });
         logger.info({ userId, connected }, 'User Feishu connection hot-reloaded');
         return connected;

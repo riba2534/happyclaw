@@ -37,6 +37,8 @@ export interface IMChannelConnectOpts {
   onBotAddedToGroup?: (chatJid: string, chatName: string) => void;
   /** Bot 被移出群聊或群被解散时调用 */
   onBotRemovedFromGroup?: (chatJid: string) => void;
+  /** 群聊消息过滤：bot 未被 @mention 时调用，返回 true 则处理，false 则丢弃 */
+  shouldProcessGroupMessage?: (chatJid: string) => boolean;
 }
 
 export interface IMChannel {
@@ -101,6 +103,7 @@ export function createFeishuChannel(config: FeishuConnectionConfig): IMChannel {
         onAgentMessage: opts.onAgentMessage,
         onBotAddedToGroup: opts.onBotAddedToGroup,
         onBotRemovedFromGroup: opts.onBotRemovedFromGroup,
+        shouldProcessGroupMessage: opts.shouldProcessGroupMessage,
       });
       if (!connected) {
         inner = null;
