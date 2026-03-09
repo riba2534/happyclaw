@@ -15,7 +15,9 @@
     "dev:all": "npx concurrently --timestamp-format \"yyyy-MM-dd HH:mm:ss.SSS\" -n backend,frontend -c blue,green \"npm run dev\" \"npm run dev:web\"",
     "dev:web": "cd web && npm run dev",
     "build:web": "cd web && npm run build",
-    "build:all": "npm run build && npm run build:web"
+    "build:all": "npm run build && npm run build:web",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.9",
@@ -40,7 +42,8 @@
     "concurrently": "^9.2.1",
     "prettier": "^3.8.1",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^4.0.18"
   },
   "engines": {
     "node": ">=20"

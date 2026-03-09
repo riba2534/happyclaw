@@ -121,6 +121,7 @@ import {
 import { installSkillForUser, deleteSkillForUser } from './routes/skills.js';
 import { verifyPairingCode } from './telegram-pairing.js';
 import { executeSessionReset } from './commands.js';
+import { stripImTags } from './utils/im-filters.js';
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const execFileAsync = promisify(execFile);
@@ -1606,10 +1607,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             typeof result.result === 'string'
               ? result.result
               : JSON.stringify(result.result);
-          // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
-          const text = raw
-            .replace(/<internal>[\s\S]*?<\/internal>/g, '')
-            .trim();
+          // Strip IM-only tags before sending to users
+          const text = stripImTags(raw);
           logger.info(
             { group: group.name },
             `Agent output: ${raw.slice(0, 200)}`,
@@ -1862,7 +1861,7 @@ async function runTerminalWarmup(chatJid: string): Promise<void> {
           typeof result.result === 'string'
             ? result.result
             : JSON.stringify(result.result);
-        const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+        const text = stripImTags(raw);
         if (!text || text === warmupReadyToken) return;
         await sendMessage(chatJid, text);
         resetIdleTimer();
@@ -2999,7 +2998,7 @@ async function processAgentConversation(
         typeof output.result === 'string'
           ? output.result
           : JSON.stringify(output.result);
-      const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+      const text = stripImTags(raw);
       if (text) {
         const msgId = crypto.randomUUID();
         lastAgentReplyMsgId = msgId;
