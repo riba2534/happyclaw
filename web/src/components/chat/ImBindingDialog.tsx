@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { SearchInput } from '@/components/common/SearchInput';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { useChatStore } from '../../stores/chat';
+import { showToast } from '../../utils/toast';
 import type { AgentInfo, AvailableImGroup } from '../../types';
 
 interface ImBindingDialogProps {
@@ -80,6 +81,11 @@ export function ImBindingDialog({ open, groupJid, agentId, agent, onClose }: ImB
     return !!group.bound_agent_id || !!group.bound_main_jid;
   };
 
+  const reloadGroups = async () => {
+    const groups = await loadAvailableImGroups(groupJid);
+    setImGroups(groups);
+  };
+
   const handleBind = async (imJid: string) => {
     setActionLoading(imJid);
     let ok: boolean;
@@ -89,15 +95,9 @@ export function ImBindingDialog({ open, groupJid, agentId, agent, onClose }: ImB
       ok = await bindImGroup(groupJid, agentId, imJid);
     }
     if (ok) {
-      setImGroups((prev) =>
-        prev.map((g) =>
-          g.jid === imJid
-            ? isMainMode
-              ? { ...g, bound_main_jid: groupJid }
-              : { ...g, bound_agent_id: agentId }
-            : g,
-        ),
-      );
+      await reloadGroups();
+    } else {
+      showToast('绑定失败', 'error');
     }
     setActionLoading(null);
   };
@@ -111,15 +111,9 @@ export function ImBindingDialog({ open, groupJid, agentId, agent, onClose }: ImB
       ok = await unbindImGroup(groupJid, agentId!, imJid);
     }
     if (ok) {
-      setImGroups((prev) =>
-        prev.map((g) =>
-          g.jid === imJid
-            ? isMainMode
-              ? { ...g, bound_main_jid: null }
-              : { ...g, bound_agent_id: null }
-            : g,
-        ),
-      );
+      await reloadGroups();
+    } else {
+      showToast('解绑失败', 'error');
     }
     setActionLoading(null);
   };
@@ -148,15 +142,9 @@ export function ImBindingDialog({ open, groupJid, agentId, agent, onClose }: ImB
       ok = await bindImGroup(groupJid, agentId!, imJid, true);
     }
     if (ok) {
-      setImGroups((prev) =>
-        prev.map((g) =>
-          g.jid === imJid
-            ? isMainMode
-              ? { ...g, bound_main_jid: groupJid, bound_agent_id: null, bound_target_name: null, bound_workspace_name: null }
-              : { ...g, bound_agent_id: agentId, bound_main_jid: null, bound_target_name: null, bound_workspace_name: null }
-            : g,
-        ),
-      );
+      await reloadGroups();
+    } else {
+      showToast('换绑失败', 'error');
     }
     setActionLoading(null);
   };

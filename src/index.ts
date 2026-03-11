@@ -3659,13 +3659,11 @@ function buildOnAgentMessage(): (baseChatJid: string, agentId: string) => void {
       registeredGroups[baseChatJid] ?? getRegisteredGroup(baseChatJid);
     if (!group) return;
 
-    // Look up the agent's parent group to find the correct folder (may be a sub-workspace)
+    // Use the agent's actual chat_jid (the workspace's registered JID) as the
+    // base.  Previously we used web:${folder} which doesn't match any registered
+    // group for non-main workspaces (their JID is web:{uuid}, not web:{folder}).
     const agent = getAgent(agentId);
-    const agentParent = agent
-      ? (registeredGroups[agent.chat_jid] ?? getRegisteredGroup(agent.chat_jid))
-      : null;
-    const folder = agentParent?.folder || group.folder;
-    const homeChatJid = `web:${folder}`;
+    const homeChatJid = agent?.chat_jid || `web:${group.folder}`;
     const virtualChatJid = `${homeChatJid}#agent:${agentId}`;
 
     // Fetch pending messages
@@ -3731,8 +3729,8 @@ function buildOnAgentMessage(): (baseChatJid: string, agentId: string) => void {
  */
 function shouldProcessGroupMessage(chatJid: string): boolean {
   const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
-  // require_mention defaults to true; if false → process all messages
-  return group?.require_mention === false;
+  // require_mention defaults to false; if true → only process @mentions
+  return group?.require_mention !== true;
 }
 
 /**
