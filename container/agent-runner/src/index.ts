@@ -728,8 +728,14 @@ async function runQuery(
   };
   setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
 
-  // Create the StreamEventProcessor
-  const processor = new StreamEventProcessor(emit, log);
+  // Create the StreamEventProcessor with mode change callback
+  const processor = new StreamEventProcessor(emit, log, (newMode) => {
+    currentPermissionMode = newMode as PermissionMode;
+    log(`Auto mode switch on ${newMode === 'plan' ? 'EnterPlanMode' : 'ExitPlanMode'} detection`);
+    queryRef?.setPermissionMode(newMode as PermissionMode).catch((err: unknown) =>
+      log(`setPermissionMode failed: ${err}`),
+    );
+  });
 
   let newSessionId: string | undefined;
   let lastAssistantUuid: string | undefined;
@@ -1310,6 +1316,16 @@ async function main(): Promise<void> {
  * 这类错误通常发生在结果已输出之后，属于"收尾写入失败"，
  * 不应把整个 host query 标记为启动失败（code 1）。
  */
+process.on('SIGTERM', () => {
+  log('Received SIGTERM, exiting gracefully');
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  log('Received SIGINT, exiting gracefully');
+  process.exit(0);
+});
+
 process.on('uncaughtException', (err: unknown) => {
   const errno = err as NodeJS.ErrnoException;
   if (errno?.code === 'EPIPE') {

@@ -36,6 +36,7 @@ import {
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
+  hasContainerModeGroups,
   getAllTasks,
   getJidsByFolder,
   getLastGroupSync,
@@ -63,6 +64,7 @@ import {
   updateAgentStatus,
   updateAgentInfo,
   deleteCompletedTaskAgents,
+  getRunningTaskAgentsByChat,
   markRunningTaskAgentsAsError,
   markAllRunningTaskAgentsAsError,
   getSession,
@@ -77,11 +79,12 @@ import { getChannelType } from './im-channel.js';
 import {
   formatContextMessages,
   formatWorkspaceList,
+  formatSystemStatus,
+  resolveLocationInfo,
   type WorkspaceInfo,
 } from './im-command-utils.js';
 import { analyzeIntent } from './intent-analyzer.js';
 import {
-  getClaudeProviderConfig as getClaudeProviderConfigForRefresh,
   getFeishuProviderConfigWithSource,
   getTelegramProviderConfig,
   getTelegramProviderConfigWithSource,
@@ -89,8 +92,8 @@ import {
   getUserTelegramConfig,
   getUserQQConfig,
   getSystemSettings,
-  refreshOAuthCredentials,
-  saveClaudeProviderConfig as saveClaudeProviderConfigForRefresh,
+  saveUserFeishuConfig,
+  saveUserTelegramConfig,
   updateAllSessionCredentials,
 } from './runtime-config.js';
 import type {
@@ -473,8 +476,8 @@ async function handleCommand(
       return handleBindCommand(chatJid, rawArgs);
     case 'new':
       return handleNewCommand(chatJid, rawArgs);
-    case 'activation':
-      return handleActivationCommand(chatJid, rawArgs);
+    case 'require_mention':
+      return handleRequireMentionCommand(chatJid, rawArgs);
     default:
       return null;
   }
@@ -662,68 +665,49 @@ function handleStatusCommand(chatJid: string): string {
   const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
   if (!group) return '当前 IM 未绑定工作区';
 
-  // Show binding-aware status
-  let locationLine: string;
-  let folderLine: string;
-  if (group.target_agent_id) {
-    const agent = getAgent(group.target_agent_id);
-    const parent = agent
-      ? (registeredGroups[agent.chat_jid] ?? getRegisteredGroup(agent.chat_jid))
-      : null;
-    const workspaceName = parent?.name || parent?.folder || group.folder;
-    locationLine = `📍 当前位置: ${workspaceName} / ${agent?.name || group.target_agent_id}`;
-    folderLine = `📁 工作区: ${parent?.folder || group.folder}`;
-  } else if (group.target_main_jid) {
-    const target =
-      registeredGroups[group.target_main_jid] ??
-      getRegisteredGroup(group.target_main_jid);
-    locationLine = `📍 当前位置: ${target?.name || group.target_main_jid} / 主对话`;
-    folderLine = `📁 工作区: ${target?.folder || group.folder}`;
-  } else {
-    const folderName = findGroupNameByFolder(group.folder);
-    locationLine = `📍 当前位置: ${folderName} / 主对话`;
-    folderLine = `📁 工作区: ${group.folder}`;
-  }
+  const lookupGroup = (jid: string) => registeredGroups[jid] ?? getRegisteredGroup(jid);
+  const location = resolveLocationInfo(group, lookupGroup, getAgent, findGroupNameByFolder);
 
-  const policyLine =
-    group.target_main_jid || group.target_agent_id
-      ? `🔁 回复策略: ${group.reply_policy || 'source_only'}`
-      : null;
+  const queueStatus = queue.getStatus();
+  const settings = getSystemSettings();
 
-  const lines = [
-    locationLine,
-    folderLine,
-    policyLine,
-    '',
-    '💡 /list 查看全部 · /recall 总结最近对话',
-  ].filter(Boolean);
+  // Check if the current group's folder is active or queued
+  const groupState = queueStatus.groups.find(g => {
+    const rg = lookupGroup(g.jid);
+    return rg?.folder === location.folder;
+  });
+  const isActive = !!groupState?.active;
+  const queuePosition = !isActive && queueStatus.waitingGroupJids.includes(chatJid)
+    ? queueStatus.waitingGroupJids.indexOf(chatJid) + 1
+    : null;
 
-  return lines.join('\n');
+  return formatSystemStatus(
+    location,
+    {
+      activeContainerCount: queueStatus.activeContainerCount,
+      activeHostProcessCount: queueStatus.activeHostProcessCount,
+      maxContainers: settings.maxConcurrentContainers,
+      maxHostProcesses: settings.maxConcurrentHostProcesses,
+      waitingCount: queueStatus.waitingCount,
+      waitingGroupJids: queueStatus.waitingGroupJids,
+    },
+    isActive,
+    queuePosition,
+  );
 }
 
 function handleWhereCommand(chatJid: string): string {
   const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
   if (!group) return '当前 IM 未绑定工作区';
 
-  const policySuffix = `\n🔁 回复策略: ${group.reply_policy || 'source_only'}`;
+  const lookupGroup = (jid: string) => registeredGroups[jid] ?? getRegisteredGroup(jid);
+  const location = resolveLocationInfo(group, lookupGroup, getAgent, findGroupNameByFolder);
 
-  if (group.target_agent_id) {
-    const agent = getAgent(group.target_agent_id);
-    const parent = agent
-      ? (registeredGroups[agent.chat_jid] ?? getRegisteredGroup(agent.chat_jid))
-      : null;
-    const workspaceName = parent?.name || parent?.folder || group.folder;
-    return `📍 当前绑定: ${workspaceName} / ${agent?.name || group.target_agent_id}${policySuffix}`;
+  const lines = [`📍 当前绑定: ${location.locationLine}`];
+  if (location.replyPolicy) {
+    lines.push(`🔁 回复策略: ${location.replyPolicy}`);
   }
-
-  if (group.target_main_jid) {
-    const target =
-      registeredGroups[group.target_main_jid] ??
-      getRegisteredGroup(group.target_main_jid);
-    return `📍 当前绑定: ${target?.name || group.target_main_jid} / 主对话${policySuffix}`;
-  }
-
-  return `📍 当前绑定: ${group.name} / 主对话${policySuffix}`;
+  return lines.join('\n');
 }
 
 function handleUnbindCommand(chatJid: string): string {
@@ -805,26 +789,26 @@ function handleNewCommand(chatJid: string, rawName: string): string {
   return `工作区「${name}」已创建并绑定\n📁 ${folder}\n🔁 回复策略: source_only\n\n发送 /unbind 可解绑回默认工作区`;
 }
 
-function handleActivationCommand(chatJid: string, rawArgs: string): string {
+function handleRequireMentionCommand(chatJid: string, rawArgs: string): string {
   const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
   if (!group) return '未找到当前会话';
 
   const action = rawArgs.trim().toLowerCase();
-  if (action === 'always') {
-    const updated: RegisteredGroup = { ...group, require_mention: false };
-    setRegisteredGroup(chatJid, updated);
-    registeredGroups[chatJid] = updated;
-    return '已切换为「全量响应」模式：群聊中所有消息都会响应，无需 @机器人';
-  } else if (action === 'mention') {
+  if (action === 'true') {
     const updated: RegisteredGroup = { ...group, require_mention: true };
     setRegisteredGroup(chatJid, updated);
     registeredGroups[chatJid] = updated;
-    return '已切换为「@提及」模式：群聊中需要 @机器人 才会响应';
+    return '已开启：群聊中需要 @机器人 才会响应';
+  } else if (action === 'false') {
+    const updated: RegisteredGroup = { ...group, require_mention: false };
+    setRegisteredGroup(chatJid, updated);
+    registeredGroups[chatJid] = updated;
+    return '已关闭：群聊中所有消息都会响应，无需 @机器人';
   } else if (!action) {
-    const mode = group.require_mention !== false ? '@提及' : '全量响应';
-    return `当前模式: ${mode}\n\n用法:\n/activation always — 全量响应（无需 @）\n/activation mention — 需要 @机器人`;
+    const current = group.require_mention !== false;
+    return `当前 require_mention: ${current}\n\n用法:\n/require_mention true — 需要 @机器人\n/require_mention false — 全量响应`;
   }
-  return '用法: /activation always|mention';
+  return '用法: /require_mention true|false';
 }
 
 const recallCooldowns = new Map<string, number>();
@@ -999,6 +983,83 @@ interface SendMessageOptions {
   sendToIM?: boolean;
   /** Pre-computed local image paths to attach to IM messages. Avoids redundant filesystem scans. */
   localImagePaths?: string[];
+}
+
+/**
+ * One-time migration: copy system-level IM config → admin's per-user config.
+ * Safe to call repeatedly — writes a flag file after first successful run.
+ */
+function migrateSystemIMToPerUser(): void {
+  const flagFile = path.join(DATA_DIR, 'config', '.im-config-migrated');
+  if (fs.existsSync(flagFile)) return;
+
+  try {
+    // Find first admin user
+    const adminResult = listUsers({
+      status: 'active',
+      role: 'admin',
+      page: 1,
+      pageSize: 1,
+    });
+    const admin = adminResult.users[0];
+    if (!admin) {
+      // No admin yet (fresh install) — nothing to migrate
+      return;
+    }
+
+    let migratedFeishu = false;
+    let migratedTelegram = false;
+
+    // Feishu: copy system config → admin per-user (if admin has no per-user config)
+    const existingUserFeishu = getUserFeishuConfig(admin.id);
+    if (!existingUserFeishu) {
+      const { config: sysFeishu, source: feishuSource } =
+        getFeishuProviderConfigWithSource();
+      if (feishuSource !== 'none' && sysFeishu.appId && sysFeishu.appSecret) {
+        saveUserFeishuConfig(admin.id, {
+          appId: sysFeishu.appId,
+          appSecret: sysFeishu.appSecret,
+          enabled: sysFeishu.enabled,
+        });
+        migratedFeishu = true;
+      }
+    }
+
+    // Telegram: copy system config → admin per-user (if admin has no per-user config)
+    const existingUserTelegram = getUserTelegramConfig(admin.id);
+    if (!existingUserTelegram) {
+      const { config: sysTelegram, source: telegramSource } =
+        getTelegramProviderConfigWithSource();
+      if (telegramSource !== 'none' && sysTelegram.botToken) {
+        saveUserTelegramConfig(admin.id, {
+          botToken: sysTelegram.botToken,
+          proxyUrl: sysTelegram.proxyUrl,
+          enabled: sysTelegram.enabled,
+        });
+        migratedTelegram = true;
+      }
+    }
+
+    // Write flag file (even if nothing was migrated — to avoid re-checking)
+    fs.mkdirSync(path.dirname(flagFile), { recursive: true });
+    fs.writeFileSync(flagFile, new Date().toISOString() + '\n', 'utf-8');
+
+    if (migratedFeishu || migratedTelegram) {
+      logger.info(
+        {
+          adminId: admin.id,
+          feishu: migratedFeishu,
+          telegram: migratedTelegram,
+        },
+        'Migrated system-level IM config to admin per-user config',
+      );
+    }
+  } catch (err) {
+    logger.warn(
+      { err },
+      'Failed to migrate system-level IM config (non-fatal)',
+    );
+  }
 }
 
 function loadState(): void {
@@ -1633,7 +1694,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             }
 
             // Optional mirror mode for explicitly bound IM channels
-            const webJid = `web:${effectiveGroup.folder}`;
+            const webJid = chatJid.startsWith('web:')
+              ? chatJid
+              : `web:${effectiveGroup.folder}`;
             for (const [imJid, g] of Object.entries(registeredGroups)) {
               if (
                 g.target_main_jid !== webJid ||
@@ -1721,12 +1784,25 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const isErrorExit = output.status === 'error' || hadError;
   if (isErrorExit) {
     try {
+      // 先获取 running agents（广播需要 agent 详情），再批量标记 error
+      const runningAgents = getRunningTaskAgentsByChat(chatJid);
       const marked = markRunningTaskAgentsAsError(chatJid);
       if (marked > 0) {
         logger.info(
           { chatJid, marked },
           'Marked remaining running task agents as error',
         );
+        for (const agent of runningAgents) {
+          broadcastAgentStatus(
+            chatJid,
+            agent.id,
+            'error',
+            agent.name,
+            agent.prompt,
+            '容器超时或异常退出',
+            agent.kind,
+          );
+        }
       }
     } catch (err) {
       logger.warn({ chatJid, err }, 'Failed to mark running task agents');
@@ -2920,18 +2996,17 @@ async function processAgentConversation(
   const prompt = formatMessages(missedMessages, false);
   const images = collectMessageImages(virtualChatJid, missedMessages);
   const imagesForAgent = images.length > 0 ? images : undefined;
-  // Same mixed-source logic as processGroupMessages (#99): only route to IM
-  // when ALL messages share the same IM source.
+  // For agent conversations, route reply to IM based on the most recent
+  // message's source.  Unlike the main conversation (#99), agent conversations
+  // are explicitly bound to IM groups, so the user expects replies to go back
+  // to the IM channel they last messaged from — even if older messages in
+  // the batch originated from the web (e.g. after a /clear).
   let replySourceImJid: string | null = null;
   {
-    const firstSourceJid = missedMessages[0]?.source_jid || virtualChatJid;
-    const allSameImSource =
-      getChannelType(firstSourceJid) !== null &&
-      missedMessages.every(
-        (m) => (m.source_jid || virtualChatJid) === firstSourceJid,
-      );
-    if (allSameImSource) {
-      replySourceImJid = firstSourceJid;
+    const lastSourceJid =
+      missedMessages[missedMessages.length - 1]?.source_jid;
+    if (lastSourceJid && getChannelType(lastSourceJid) !== null) {
+      replySourceImJid = lastSourceJid;
     }
   }
 
@@ -3357,49 +3432,45 @@ function recoverPendingMessages(): void {
 }
 
 async function ensureDockerRunning(): Promise<void> {
+  // Skip all Docker checks when no groups use container mode
+  if (!hasContainerModeGroups()) {
+    logger.info('All groups use host execution mode, skipping Docker checks');
+    return;
+  }
+
   try {
     await execFileAsync('docker', ['info'], { timeout: 10000 });
     logger.debug('Docker daemon is running');
   } catch {
-    // 如果有容器模式的 group，Docker 必须运行
-    const hasContainerGroups = Object.values(registeredGroups).some(
-      (g) => (g.executionMode || 'container') === 'container',
+    logger.error('Docker daemon is not running');
+    console.error(
+      '\n╔════════════════════════════════════════════════════════════════╗',
     );
-    if (hasContainerGroups) {
-      logger.error('Docker daemon is not running');
-      console.error(
-        '\n╔════════════════════════════════════════════════════════════════╗',
-      );
-      console.error(
-        '║  FATAL: Docker is not running                                  ║',
-      );
-      console.error(
-        '║                                                                ║',
-      );
-      console.error(
-        '║  Agents cannot run without Docker. To fix:                     ║',
-      );
-      console.error(
-        '║  macOS: Start Docker Desktop                                   ║',
-      );
-      console.error(
-        '║  Linux: sudo systemctl start docker                            ║',
-      );
-      console.error(
-        '║                                                                ║',
-      );
-      console.error(
-        '║  Install from: https://docker.com/products/docker-desktop      ║',
-      );
-      console.error(
-        '╚════════════════════════════════════════════════════════════════╝\n',
-      );
-      throw new Error('Docker is required but not running');
-    } else {
-      logger.warn(
-        'Docker is not running, but all groups use host execution mode',
-      );
-    }
+    console.error(
+      '║  FATAL: Docker is not running                                  ║',
+    );
+    console.error(
+      '║                                                                ║',
+    );
+    console.error(
+      '║  Agents cannot run without Docker. To fix:                     ║',
+    );
+    console.error(
+      '║  macOS: Start Docker Desktop                                   ║',
+    );
+    console.error(
+      '║  Linux: sudo systemctl start docker                            ║',
+    );
+    console.error(
+      '║                                                                ║',
+    );
+    console.error(
+      '║  Install from: https://docker.com/products/docker-desktop      ║',
+    );
+    console.error(
+      '╚════════════════════════════════════════════════════════════════╝\n',
+    );
+    throw new Error('Docker is required but not running');
   }
 
   // Kill and clean up orphaned happyclaw containers from previous runs
@@ -3578,7 +3649,24 @@ function buildResolveEffectiveChatJid(): (
 
     // Main conversation binding
     if (group.target_main_jid) {
-      return { effectiveJid: group.target_main_jid, agentId: null };
+      let effectiveJid = group.target_main_jid;
+      // Legacy fallback: old bindings stored web:${folder} instead of actual JID.
+      // Resolve to the real registered JID so messages are stored correctly.
+      if (
+        !registeredGroups[effectiveJid] &&
+        !getRegisteredGroup(effectiveJid) &&
+        effectiveJid.startsWith('web:')
+      ) {
+        const folder = effectiveJid.slice(4);
+        const jids = getJidsByFolder(folder);
+        for (const j of jids) {
+          if (j.startsWith('web:')) {
+            effectiveJid = j;
+            break;
+          }
+        }
+      }
+      return { effectiveJid, agentId: null };
     }
 
     return null;
@@ -3603,26 +3691,50 @@ function buildOnAgentMessage(): (baseChatJid: string, agentId: string) => void {
     const homeChatJid = `web:${folder}`;
     const virtualChatJid = `${homeChatJid}#agent:${agentId}`;
 
-    // Fetch pending messages and format them for IPC (same as web.ts agent handler)
+    // Fetch pending messages
     const sinceCursor = lastAgentTimestamp[virtualChatJid] || EMPTY_CURSOR;
     const missedMessages = getMessagesSince(virtualChatJid, sinceCursor);
-    const formatted =
-      missedMessages.length > 0 ? formatMessages(missedMessages, false) : '';
 
-    // Collect images from the messages
-    const images = collectMessageImages(virtualChatJid, missedMessages);
-    const imagesForAgent = images.length > 0 ? images : undefined;
+    // IM messages must force-restart the agent process so reply routing
+    // (replySourceImJid) is recalculated from the latest batch.  This mirrors
+    // the home-folder force-restart for the main conversation.
+    const lastSourceJid =
+      missedMessages[missedMessages.length - 1]?.source_jid;
+    const isImSource =
+      !!lastSourceJid && getChannelType(lastSourceJid) !== null;
 
-    // Try to pipe into running agent process first
-    const sendResult = formatted
-      ? queue.sendMessage(virtualChatJid, formatted, imagesForAgent, undefined)
-      : 'no_active';
-    if (sendResult === 'no_active') {
-      // No running process (or no messages to pipe) — start one via processAgentConversation
-      const taskId = `agent-conv:${agentId}:${Date.now()}`;
+    if (isImSource) {
+      // Force close running process then enqueue fresh start.
+      // Use a stable taskId so rapid-fire IM messages deduplicate into a
+      // single queued restart instead of N separate restarts.
+      queue.closeStdin(virtualChatJid);
+      const taskId = `agent-im-restart:${agentId}`;
       queue.enqueueTask(virtualChatJid, taskId, async () => {
         await processAgentConversation(homeChatJid, agentId);
       });
+    } else {
+      // Web-origin: try to pipe into running agent process
+      const formatted =
+        missedMessages.length > 0
+          ? formatMessages(missedMessages, false)
+          : '';
+      const images = collectMessageImages(virtualChatJid, missedMessages);
+      const imagesForAgent = images.length > 0 ? images : undefined;
+
+      const sendResult = formatted
+        ? queue.sendMessage(
+            virtualChatJid,
+            formatted,
+            imagesForAgent,
+            undefined,
+          )
+        : 'no_active';
+      if (sendResult === 'no_active') {
+        const taskId = `agent-conv:${agentId}:${Date.now()}`;
+        queue.enqueueTask(virtualChatJid, taskId, async () => {
+          await processAgentConversation(homeChatJid, agentId);
+        });
+      }
     }
     logger.info(
       {
@@ -3927,6 +4039,9 @@ async function main(): Promise<void> {
     logger.warn({ err }, 'Failed to mark stale running tasks at startup');
   }
 
+  // Migrate system-level IM config → admin's per-user config (one-time)
+  migrateSystemIMToPerUser();
+
   loadState();
 
   // --- Channel reload helpers (hot-reload on config save) ---
@@ -4140,7 +4255,10 @@ async function main(): Promise<void> {
       if (config && config.enabled !== false && config.botToken) {
         const connected = await imManager.connectUserTelegram(
           userId,
-          { ...config, proxyUrl: globalTelegramConfig.proxyUrl },
+          {
+            ...config,
+            proxyUrl: config.proxyUrl || globalTelegramConfig.proxyUrl,
+          },
           onNewChat,
           buildIsChatAuthorized(userId),
           buildOnPairAttempt(userId),
@@ -4226,6 +4344,9 @@ async function main(): Promise<void> {
     processAgentConversation,
     getFeishuChatInfo: (userId: string, chatId: string) =>
       imManager.getFeishuChatInfo(userId, chatId),
+    clearImFailCounts: (jid: string) => {
+      imHealthCheckFailCounts.delete(jid);
+    },
   });
 
   // Clean expired sessions every hour
@@ -4241,44 +4362,6 @@ async function main(): Promise<void> {
       }
     },
     60 * 60 * 1000,
-  );
-
-  // OAuth token auto-refresh (every 5 minutes)
-  setInterval(
-    async () => {
-      try {
-        const config = getClaudeProviderConfigForRefresh();
-        const creds = config.claudeOAuthCredentials;
-        if (!creds) return;
-
-        const timeToExpiry = creds.expiresAt - Date.now();
-        if (timeToExpiry > 2 * 60 * 60 * 1000) return; // >2h to expiry, skip
-
-        logger.info(
-          { expiresIn: Math.round(timeToExpiry / 1000) },
-          'OAuth token expiring soon, refreshing...',
-        );
-        const refreshed = await refreshOAuthCredentials(creds);
-        if (refreshed) {
-          const current = getClaudeProviderConfigForRefresh();
-          const saved = saveClaudeProviderConfigForRefresh({
-            ...current,
-            claudeOAuthCredentials: refreshed,
-          });
-          updateAllSessionCredentials(saved);
-          const closed = queue.closeAllActiveForCredentialRefresh();
-          logger.info(
-            { closedContainers: closed },
-            'OAuth token refreshed successfully',
-          );
-        } else {
-          logger.warn('OAuth token refresh failed');
-        }
-      } catch (err) {
-        logger.error({ err }, 'OAuth auto-refresh error');
-      }
-    },
-    5 * 60 * 1000,
   );
 
   await ensureDockerRunning();
@@ -4403,7 +4486,7 @@ async function main(): Promise<void> {
     if (userTelegram && userTelegram.botToken) {
       effectiveTelegram = {
         botToken: userTelegram.botToken,
-        proxyUrl: globalTelegramConfig.config.proxyUrl,
+        proxyUrl: userTelegram.proxyUrl || globalTelegramConfig.config.proxyUrl,
         enabled: userTelegram.enabled,
       };
     } else if (

@@ -257,7 +257,8 @@ StreamEvent 类型以 `shared/stream-event.ts` 为单一真相源，构建时通
 - 每个用户可独立配置飞书、Telegram 和 QQ 连接（存储在 `data/config/user-im/{userId}/feishu.json`、`telegram.json`、`qq.json`）
 - `feishu.ts`、`telegram.ts`、`qq.ts` 均为工厂模式（`createFeishuConnection()`、`createTelegramConnection()`、`createQQConnection()`），返回无状态的连接实例
 - 系统启动时 `loadState()` 遍历所有用户，加载已保存的 IM 配置并建立连接
-- 管理员的系统级飞书/Telegram 配置（`data/config/feishu-provider.json`）绑定到 admin 用户的连接
+- 首次启动时自动迁移系统级 IM 配置到 admin 的 per-user 配置（`migrateSystemIMToPerUser()`）
+- 系统级 API（`/api/config/feishu`、`/api/config/telegram`）已标记 deprecated，新代码应使用 `/api/config/user-im/*`
 - 收到 IM 消息时，通过 `onNewChat` 回调自动注册到该用户的主容器（`home-{userId}`）
 - 支持热重连（`ignoreMessagesBefore` 过滤渠道关闭期间的堆积消息）
 - 优雅关闭时 `disconnectAll()` 批量断开所有连接
@@ -408,14 +409,15 @@ scripts/                      # 构建辅助脚本
 - `GET|PUT /api/config/claude` · `PUT /api/config/claude/secrets`
 - `GET|PUT /api/config/claude/custom-env`
 - `POST /api/config/claude/test`（连通性测试） · `POST /api/config/claude/apply`（应用到所有容器）
-- `GET|PUT /api/config/feishu`
-- `GET|PUT /api/config/telegram` · `POST /api/config/telegram/test`（系统级 Telegram 配置）
+- `GET|PUT /api/config/feishu`（**deprecated**，使用 `/api/config/user-im/feishu` 代替）
+- `GET|PUT /api/config/telegram` · `POST /api/config/telegram/test`（**deprecated**，使用 `/api/config/user-im/telegram` 代替）
 - `GET|PUT /api/config/appearance` · `GET /api/config/appearance/public`（外观配置，public 端点无需认证）
 - `GET|PUT /api/config/system` — 系统运行参数（容器超时、并发限制等），需要 `manage_system_config` 权限
-- `GET|PUT /api/config/user-im/feishu`（用户级飞书 IM 配置，每个用户独立）
-- `GET|PUT /api/config/user-im/telegram`（用户级 Telegram IM 配置）
-- `POST /api/config/user-im/telegram/test`（Telegram Bot Token 连通性测试）
-- `GET|PUT /api/config/user-im/qq`（用户级 QQ IM 配置）
+- `GET /api/config/user-im/status`（所有渠道连接状态，含 QQ）
+- `GET|PUT /api/config/user-im/feishu`（用户级飞书 IM 配置，GET 返回 `connected` 字段）
+- `GET|PUT /api/config/user-im/telegram`（用户级 Telegram IM 配置，GET 返回 `connected`、`effectiveProxyUrl`、`proxySource`，PUT 支持 `proxyUrl`/`clearProxyUrl`）
+- `POST /api/config/user-im/telegram/test`（Telegram Bot Token 连通性测试，使用 per-user proxyUrl）
+- `GET|PUT /api/config/user-im/qq`（用户级 QQ IM 配置，GET 返回 `connected` 字段）
 - `POST /api/config/user-im/qq/test`（QQ 凭据连通性测试）
 - `POST /api/config/user-im/qq/pairing-code`（生成 QQ 配对码）
 - `GET /api/config/user-im/qq/paired-chats`（已配对的 QQ 聊天列表）
@@ -535,7 +537,7 @@ scripts/                      # 构建辅助脚本
 | `/status` | - | 查看当前所在的工作区/对话状态 |
 | `/recall` | `/rc` | 调用 Claude CLI（`--print` 模式）总结最近 10 条消息，API 不可用时 fallback 到原始消息列表 |
 | `/clear` | - | 清除当前对话的会话上下文 |
-| `/activation` | - | 切换群聊响应模式：`/activation always`（全量响应）或 `/activation mention`（需要 @机器人） |
+| `/require_mention` | - | 切换群聊响应模式：`/require_mention true`（需要 @机器人）或 `/require_mention false`（全量响应） |
 
 `/recall` 通过 `execFile('claude', ['--print'])` + stdin 管道调用 Claude CLI，复用与 Agent Runner 相同的 OAuth 认证机制。
 
@@ -545,12 +547,12 @@ scripts/                      # 构建辅助脚本
 
 - **默认模式**（`require_mention=true`）：群聊中只有 @机器人 的消息才会被处理
 - **全量模式**（`require_mention=false`）：群聊中所有消息都会被处理
-- 通过 `/activation always|mention` 命令切换
+- 通过 `/require_mention true|false` 命令切换
 - 私聊不受此控制影响，始终响应
 
 **实现原理**：连接飞书时通过 Bot Info API 获取 bot 的 `open_id`，收到群消息后检查 `mentions[].id.open_id` 是否包含 bot。如果 bot 未被 @mention 且该群 `require_mention=true`，则静默丢弃该消息。
 
-**前置条件**：飞书应用需要 `im:message:readonly` 权限（接收群里所有消息），否则平台层只推送 @消息，应用层控制无意义。
+**前置条件**：飞书应用需要 `im:message.group_msg` 敏感权限（实时接收群里所有消息）。`im:message:readonly` 仅控制 REST API 读取历史消息，不影响 WebSocket 实时推送。没有 `im:message.group_msg` 权限时，平台层只推送 @消息，`require_mention=false` 无法生效。
 
 ## 9. 环境变量
 

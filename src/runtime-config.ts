@@ -2029,9 +2029,6 @@ export function buildContainerEnvLines(
 
 // ─── OAuth credentials file management ────────────────────────────
 
-const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
-const OAUTH_TOKEN_URL = 'https://api.anthropic.com/v1/oauth/token';
-
 /**
  * Write .credentials.json to a Claude session directory.
  * Format matches what Claude Code CLI/Agent SDK natively reads.
@@ -2109,79 +2106,9 @@ export function updateAllSessionCredentials(
     logger.warn({ err }, 'Failed to update session credentials');
   }
 
-  // Host mode: update ~/.claude/.credentials.json
-  const homeClaudeDir = path.join(process.env.HOME || '/root', '.claude');
-  if (
-    fs.existsSync(homeClaudeDir) &&
-    fs.statSync(homeClaudeDir).isDirectory()
-  ) {
-    try {
-      writeCredentialsFile(homeClaudeDir, config);
-    } catch (err) {
-      logger.warn({ err }, 'Failed to write host ~/.claude/.credentials.json');
-    }
-  }
-}
-
-/**
- * Refresh OAuth credentials using the refresh token.
- * Returns new credentials on success, null on failure.
- */
-export async function refreshOAuthCredentials(
-  credentials: ClaudeOAuthCredentials,
-): Promise<ClaudeOAuthCredentials | null> {
-  try {
-    const resp = await fetch(OAUTH_TOKEN_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent':
-          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        Accept: 'application/json, text/plain, */*',
-        Referer: 'https://claude.ai/',
-        Origin: 'https://claude.ai',
-      },
-      body: JSON.stringify({
-        grant_type: 'refresh_token',
-        client_id: OAUTH_CLIENT_ID,
-        refresh_token: credentials.refreshToken,
-      }),
-    });
-
-    if (!resp.ok) {
-      const errText = await resp.text().catch(() => '');
-      logger.warn(
-        { status: resp.status, body: errText },
-        'OAuth token refresh failed',
-      );
-      return null;
-    }
-
-    const data = (await resp.json()) as {
-      access_token?: string;
-      refresh_token?: string;
-      expires_in?: number;
-      scope?: string;
-    };
-
-    if (!data.access_token) {
-      logger.warn('OAuth refresh response missing access_token');
-      return null;
-    }
-
-    // expiresAt 计算与 SDK 保持一致：Date.now() + expires_in * 1000
-    return {
-      accessToken: data.access_token,
-      refreshToken: data.refresh_token || credentials.refreshToken,
-      expiresAt: data.expires_in
-        ? Date.now() + data.expires_in * 1000
-        : credentials.expiresAt,
-      scopes: data.scope ? data.scope.split(' ') : credentials.scopes,
-    };
-  } catch (err) {
-    logger.error({ err }, 'OAuth token refresh error');
-    return null;
-  }
+  // Host mode uses CLAUDE_CONFIG_DIR=data/sessions/{folder}/.claude for isolation,
+  // so we must NOT touch ~/.claude/.credentials.json to avoid interfering with
+  // the user's local Claude Code installation.
 }
 
 // ─── Local Claude Code detection ──────────────────────────────────
@@ -2363,6 +2290,7 @@ export interface UserFeishuConfig {
 
 export interface UserTelegramConfig {
   botToken: string;
+  proxyUrl?: string;
   enabled?: boolean;
   updatedAt: string | null;
 }
@@ -2457,6 +2385,7 @@ export function getUserTelegramConfig(
     const secret = decryptTelegramSecret(stored.secret);
     return {
       botToken: secret.botToken,
+      proxyUrl: normalizeTelegramProxyUrl(stored.proxyUrl ?? ''),
       enabled: stored.enabled,
       updatedAt: stored.updatedAt || null,
     };
@@ -2470,14 +2399,19 @@ export function saveUserTelegramConfig(
   userId: string,
   next: Omit<UserTelegramConfig, 'updatedAt'>,
 ): UserTelegramConfig {
+  const normalizedProxyUrl = next.proxyUrl
+    ? normalizeTelegramProxyUrl(next.proxyUrl)
+    : '';
   const normalized: UserTelegramConfig = {
     botToken: normalizeSecret(next.botToken, 'botToken'),
+    proxyUrl: normalizedProxyUrl || undefined,
     enabled: next.enabled,
     updatedAt: new Date().toISOString(),
   };
 
   const payload: StoredTelegramProviderConfigV1 = {
     version: 1,
+    proxyUrl: normalizedProxyUrl || undefined,
     enabled: normalized.enabled,
     updatedAt: normalized.updatedAt || new Date().toISOString(),
     secret: encryptTelegramSecret({ botToken: normalized.botToken }),

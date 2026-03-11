@@ -13,7 +13,7 @@ import {
   canAccessGroup,
   getWebDeps,
 } from '../web-context.js';
-import { getRegisteredGroup, getRouterState } from '../db.js';
+import { getRegisteredGroup, getRouterState, hasContainerModeGroups } from '../db.js';
 import { CONTAINER_IMAGE } from '../config.js';
 import { getSystemSettings } from '../runtime-config.js';
 import { logger } from '../logger.js';
@@ -121,6 +121,8 @@ monitorRoutes.get('/health', async (c) => {
 });
 
 async function checkDockerImageExists(): Promise<boolean> {
+  // Skip Docker check entirely when no groups use container mode
+  if (!hasContainerModeGroups()) return false;
   try {
     const { stdout } = await execFileAsync(
       'docker',

@@ -312,7 +312,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
             setConfig(saved);
             setOfficialCode('');
             setProviderMode('official');
-            setNotice('OAuth 凭据已保存（含自动续期）。');
+            setNotice('OAuth 凭据已保存。');
             await loadConfig();
             return;
           }
@@ -596,27 +596,8 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
                     ? 'text-red-800'
                     : 'text-emerald-800'
                 }`}>
-                  OAuth 凭据（自动续期）
+                  OAuth 凭据
                 </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={async () => {
-                    try {
-                      setNotice('正在刷新凭据...');
-                      const res = await api.post<ClaudeConfigPublic>('/api/config/claude/oauth/refresh');
-                      setConfig(res);
-                      setNotice('凭据刷新成功');
-                    } catch (err) {
-                      setError(getErrorMessage(err, '刷新失败，请尝试重新登录'));
-                    }
-                  }}
-                  disabled={loading}
-                  className="h-7 text-xs gap-1"
-                >
-                  <RefreshCw className="size-3" />
-                  刷新凭据
-                </Button>
               </div>
               <div className="text-xs text-emerald-700">
                 Access Token: {config.claudeOAuthCredentialsAccessTokenMasked || '***'}
@@ -633,7 +614,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
                     : ' (已过期)'}
                 </div>
               )}
-              <div className="text-xs text-emerald-600">系统每 5 分钟检查一次，过期前 2 小时内自动刷新。</div>
+              <div className="text-xs text-emerald-600">SDK 会在 token 过期时自动刷新。</div>
               {/* Show switch button when third-party config is still active */}
               {(config.anthropicBaseUrl || config.hasAnthropicAuthToken) && (
                 <div className="pt-2 border-t border-emerald-200">
@@ -781,7 +762,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
             <p className="text-xs text-slate-400 mt-1">
               支持粘贴{' '}
               <code className="bg-slate-100 px-1 rounded">cat ~/.claude/.credentials.json</code>{' '}
-              的 JSON 内容（含自动续期）
+              的 JSON 内容
             </p>
           </div>
 

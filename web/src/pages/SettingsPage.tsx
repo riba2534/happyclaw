@@ -4,7 +4,6 @@ import { Menu } from 'lucide-react';
 
 import { useAuthStore } from '../stores/auth';
 import { SettingsNav } from '../components/settings/SettingsNav';
-import { ChannelsSection } from '../components/settings/ChannelsSection';
 import { ClaudeProviderSection } from '../components/settings/ClaudeProviderSection';
 import { RegistrationSection } from '../components/settings/RegistrationSection';
 import { ProfileSection } from '../components/settings/ProfileSection';
@@ -18,11 +17,12 @@ import { MemoryPage } from './MemoryPage';
 import { SkillsPage } from './SkillsPage';
 import { McpServersPage } from './McpServersPage';
 import { UsersPage } from './UsersPage';
+import { BindingsSection } from '../components/settings/BindingsSection';
 import type { SettingsTab } from '../components/settings/types';
 
-const VALID_TABS: SettingsTab[] = ['channels', 'claude', 'registration', 'appearance', 'system', 'profile', 'my-channels', 'security', 'groups', 'memory', 'skills', 'mcp-servers', 'users', 'about'];
-const SYSTEM_TABS: SettingsTab[] = ['channels', 'claude', 'registration', 'appearance', 'system'];
-const FULLPAGE_TABS: SettingsTab[] = ['groups', 'memory', 'skills', 'mcp-servers', 'users'];
+const VALID_TABS: SettingsTab[] = ['claude', 'registration', 'appearance', 'system', 'profile', 'my-channels', 'security', 'groups', 'memory', 'skills', 'mcp-servers', 'users', 'about', 'bindings'];
+const SYSTEM_TABS: SettingsTab[] = ['claude', 'registration', 'appearance', 'system'];
+const FULLPAGE_TABS: SettingsTab[] = ['groups', 'memory', 'skills', 'mcp-servers', 'users', 'bindings'];
 
 export function SettingsPage() {
   const { user: currentUser } = useAuthStore();
@@ -41,7 +41,7 @@ export function SettingsPage() {
     !!currentUser?.permissions.includes('manage_invites') ||
     !!currentUser?.permissions.includes('view_audit_log');
 
-  const defaultTab: SettingsTab = canManageSystemConfig ? 'channels' : 'profile';
+  const defaultTab: SettingsTab = canManageSystemConfig ? 'claude' : 'profile';
 
   const activeTab = useMemo((): SettingsTab => {
     if (mustChangePassword) return 'profile';
@@ -64,10 +64,9 @@ export function SettingsPage() {
   const mobileTabs = useMemo(() => {
     const tabs: { key: SettingsTab; label: string }[] = [];
     tabs.push({ key: 'profile', label: '个人资料' });
-    tabs.push({ key: 'my-channels', label: '我的通道' });
+    tabs.push({ key: 'my-channels', label: '消息通道' });
     tabs.push({ key: 'security', label: '安全' });
     if (canManageSystemConfig) {
-      tabs.push({ key: 'channels', label: '系统渠道' });
       tabs.push({ key: 'claude', label: 'Claude' });
       tabs.push({ key: 'registration', label: '注册' });
       tabs.push({ key: 'appearance', label: '外观' });
@@ -77,6 +76,7 @@ export function SettingsPage() {
     tabs.push({ key: 'memory', label: '记忆' });
     tabs.push({ key: 'skills', label: '技能' });
     tabs.push({ key: 'mcp-servers', label: 'MCP' });
+    tabs.push({ key: 'bindings', label: 'IM 绑定' });
     if (canManageUsers) {
       tabs.push({ key: 'users', label: '用户' });
     }
@@ -96,13 +96,12 @@ export function SettingsPage() {
   }, [activeTab]);
 
   const sectionTitle: Record<SettingsTab, string> = {
-    channels: '系统渠道配置',
     claude: 'Claude 提供商',
     registration: '注册管理',
     appearance: '外观设置（全局默认）',
     system: '系统参数',
     profile: '个人资料',
-    'my-channels': '我的消息通道',
+    'my-channels': '消息通道',
     security: '安全与设备',
     groups: '会话管理',
     memory: '记忆管理',
@@ -110,6 +109,7 @@ export function SettingsPage() {
     'mcp-servers': 'MCP 服务器',
     users: '用户管理',
     about: '关于',
+    bindings: 'IM 绑定',
   };
 
   return (
@@ -175,6 +175,7 @@ export function SettingsPage() {
             {activeTab === 'skills' && <SkillsPage />}
             {activeTab === 'mcp-servers' && <McpServersPage />}
             {activeTab === 'users' && <UsersPage />}
+            {activeTab === 'bindings' && <BindingsSection />}
           </>
         ) : (
           <div className="p-4 lg:p-8">
@@ -197,7 +198,6 @@ export function SettingsPage() {
               )}
 
               <div className="bg-card rounded-xl border border-border p-6">
-                {activeTab === 'channels' && <ChannelsSection setNotice={setNotice} setError={setError} />}
                 {activeTab === 'claude' && <ClaudeProviderSection setNotice={setNotice} setError={setError} />}
                 {activeTab === 'registration' && <RegistrationSection setNotice={setNotice} setError={setError} />}
                 {activeTab === 'appearance' && <AppearanceSection setNotice={setNotice} setError={setError} />}

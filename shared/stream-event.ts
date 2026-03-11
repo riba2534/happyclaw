@@ -15,6 +15,7 @@ export type StreamEventType =
   | 'hook_started' | 'hook_progress' | 'hook_response'
   | 'task_start' | 'task_notification'
   | 'todo_update'
+  | 'mode_change'
   | 'usage'
   | 'status' | 'init';
 
@@ -40,6 +41,8 @@ export interface StreamEvent {
   isTeammate?: boolean;
   toolInput?: Record<string, unknown>;
   todos?: Array<{ id: string; content: string; status: 'pending' | 'in_progress' | 'completed' }>;
+  /** Permission mode change (e.g. agent called ExitPlanMode/EnterPlanMode) */
+  permissionMode?: string;
   /** Token usage data emitted at query completion */
   usage?: {
     inputTokens: number;

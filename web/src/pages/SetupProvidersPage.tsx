@@ -203,7 +203,7 @@ export function SetupProvidersPage() {
       if (feishuAppId.trim() || feishuAppSecret.trim()) {
         const payload: Record<string, string> = { appId: feishuAppId.trim() };
         if (feishuAppSecret.trim()) payload.appSecret = feishuAppSecret.trim();
-        await api.put('/api/config/feishu', payload);
+        await api.put('/api/config/user-im/feishu', payload);
       }
 
       if (providerMode === 'official') {
@@ -434,7 +434,7 @@ export function SetupProvidersPage() {
                   <li>在目标机器安装 Claude Code CLI（若未安装）。</li>
                   <li>在终端执行 <code>claude login</code> 完成账号登录。</li>
                   <li>
-                    方式 A：执行 <code>cat ~/.claude/.credentials.json</code>，复制完整 JSON 内容到下方（推荐，支持自动续期）。
+                    方式 A：执行 <code>cat ~/.claude/.credentials.json</code>，复制完整 JSON 内容到下方（推荐）。
                   </li>
                   <li>
                     方式 B：执行 <code>claude setup-token</code>，复制输出 token 到下方。
@@ -453,7 +453,7 @@ export function SetupProvidersPage() {
                   placeholder="粘贴 setup-token 或 cat ~/.claude/.credentials.json 输出"
                 />
                 <p className="text-xs text-muted-foreground mt-1">
-                  支持粘贴 <code className="bg-muted px-1 rounded">cat ~/.claude/.credentials.json</code> 的 JSON 内容（含自动续期）
+                  支持粘贴 <code className="bg-muted px-1 rounded">cat ~/.claude/.credentials.json</code> 的 JSON 内容
                 </p>
               </div>
             </div>

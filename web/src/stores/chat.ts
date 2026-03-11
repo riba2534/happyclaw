@@ -182,6 +182,9 @@ const SDK_TASK_STALE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes stale timeout for 
 const sdkTaskCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const sdkTaskStaleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+/** 已完成/出错的 SDK Task ID，防止迟到事件 re-create */
+const completedSdkTaskIds = new Set<string>();
+
 // 兜底路由支持的事件类型（模块级常量，避免热路径上重复创建 Set）
 const FALLBACK_EVENT_TYPES: Set<StreamEventType> = new Set([
   'text_delta', 'thinking_delta',
@@ -286,6 +289,7 @@ function doSdkTaskCleanup(
 ): void {
   sdkTaskCleanupTimers.delete(taskId);
   clearSdkTaskStaleTimer(taskId);
+  completedSdkTaskIds.delete(taskId);
   set((s) => {
     const isTeammate = s.sdkTasks[taskId]?.isTeammate || false;
     const nextSdkTasks = { ...s.sdkTasks };
@@ -476,6 +480,9 @@ function applyStreamEvent(
       if (event.todos) {
         next.todos = event.todos;
       }
+      break;
+    case 'mode_change':
+      // Handled at ChatView level via onModeChange callback
       break;
     case 'status': {
       next.systemStatus = event.statusText || null;
@@ -1077,6 +1084,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       closeAfterMs = SDK_TASK_AUTO_CLOSE_MS,
     ) => {
       clearSdkTaskStaleTimer(taskId);
+      completedSdkTaskIds.add(taskId);
       let targetChatJid: string | null = null;
       set((s) => {
         const existingTask = s.sdkTasks[taskId];
@@ -1197,10 +1205,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const taskFromDb = (state.agents[chatJid] || []).find(a => a.id === tid && a.kind === 'task');
       const knownTask = !!state.sdkTasks[tid] || !!taskFromDb;
       if (knownTask) {
-        if (!state.sdkTasks[tid]) {
+        if (!state.sdkTasks[tid] && !completedSdkTaskIds.has(tid)) {
           ensureSdkTask(tid, taskFromDb?.prompt || taskFromDb?.name);
         }
         // Reset stale timer — task is still active
+        if (completedSdkTaskIds.has(tid)) return;
         const task = state.sdkTasks[tid];
         if (task && !task.isTeammate) {
           resetSdkTaskStaleTimer(set, get, tid, chatJid);
@@ -1429,6 +1438,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       let nextSdkTaskAliases = { ...s.sdkTaskAliases };
       if (resolvedKind === 'task') {
         if (status !== 'running') {
+          completedSdkTaskIds.add(agentId);
           clearSdkTaskCleanupTimer(agentId);
           clearSdkTaskStaleTimer(agentId);
           delete nextSdkTasks[agentId];

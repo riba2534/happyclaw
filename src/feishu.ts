@@ -387,6 +387,7 @@ export function createFeishuConnection(
   const ackReactionByChat = new Map<string, string>();
   const typingReactionByChat = new Map<string, string>();
   const knownChatIds = new Set<string>();
+  const chatTypeById = new Map<string, string>(); // chatId → 'group' | 'p2p'
   const lastCreateTimeByChat = new Map<string, number>();
 
   let client: lark.Client | null = null;
@@ -402,8 +403,9 @@ export function createFeishuConnection(
   let disconnectedSince: number | null = null;
   let healthTimer: NodeJS.Timeout | null = null;
 
-  function rememberChatProgress(chatId: string, createTimeMs: number): void {
+  function rememberChatProgress(chatId: string, createTimeMs: number, chatType?: string): void {
     knownChatIds.add(chatId);
+    if (chatType) chatTypeById.set(chatId, chatType);
     const prev = lastCreateTimeByChat.get(chatId) || 0;
     if (createTimeMs > prev) {
       lastCreateTimeByChat.set(chatId, createTimeMs);
@@ -692,7 +694,7 @@ export function createFeishuConnection(
 
     const extracted = extractMessageContent(messageType, rawContent);
     let text = extracted.text;
-    if (!text && !extracted.imageKeys && !extracted.fileInfos?.length) {
+    if (!text?.trim() && !extracted.imageKeys && !extracted.fileInfos?.length) {
       logger.info(
         { messageId, messageType },
         'No text or image content, skipping',
@@ -816,20 +818,11 @@ export function createFeishuConnection(
       }
     }
 
-    if (source === 'ws') {
-      addReaction(messageId, 'OnIt')
-        .then((reactionId) => {
-          if (reactionId) {
-            ackReactionByChat.set(chatId, `${messageId}:${reactionId}`);
-          }
-        })
-        .catch(() => {});
-    }
     lastMessageIdByChat.set(chatId, messageId);
 
     const resolvedCreateTimeMs = createTimeMs > 0 ? createTimeMs : Date.now();
     const timestamp = new Date(resolvedCreateTimeMs).toISOString();
-    rememberChatProgress(chatId, resolvedCreateTimeMs);
+    rememberChatProgress(chatId, resolvedCreateTimeMs, chatType);
 
     // ── 斜杠指令：拦截已知 /xxx 命令，不进入消息流 ──
     // 群聊中 @机器人 后跟斜杠命令，mention 替换后文本为 "@botname /cmd"，
@@ -887,6 +880,17 @@ export function createFeishuConnection(
         );
         return;
       }
+    }
+
+    // ── Ack Reaction：确认已收到消息（在 mention 过滤之后，避免对未处理的消息加表情） ──
+    if (source === 'ws') {
+      addReaction(messageId, 'OnIt')
+        .then((reactionId) => {
+          if (reactionId) {
+            ackReactionByChat.set(chatId, `${messageId}:${reactionId}`);
+          }
+        })
+        .catch(() => {});
     }
 
     // Store message and broadcast to WebSocket clients
@@ -1023,7 +1027,7 @@ export function createFeishuConnection(
             createTimeMs: toEpochMs(item.create_time),
             messageType: item.msg_type || item.message_type || '',
             content: item.body?.content || item.content || '',
-            chatType: item.chat_type,
+            chatType: item.chat_type || chatTypeById.get(chatId) || 'group',
             mentions: item.mentions,
             senderOpenId,
           };
@@ -1182,8 +1186,8 @@ export function createFeishuConnection(
           method: 'GET',
           url: '/open-apis/bot/v3/info/',
         });
-        const info = botInfoRes as { data?: { bot?: { open_id?: string } } };
-        botOpenId = info?.data?.bot?.open_id || '';
+        const info = botInfoRes as { bot?: { open_id?: string }; data?: { bot?: { open_id?: string } } };
+        botOpenId = info?.bot?.open_id || info?.data?.bot?.open_id || '';
         if (botOpenId) {
           logger.info(
             { botOpenId },

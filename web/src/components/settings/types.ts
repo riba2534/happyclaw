@@ -39,35 +39,6 @@ export interface ClaudeThirdPartyActivateResult {
   error?: string;
 }
 
-export interface FeishuConfigPublic {
-  appId: string;
-  hasAppSecret: boolean;
-  appSecretMasked: string | null;
-  enabled: boolean;
-  connected: boolean;
-  updatedAt: string | null;
-  source: 'runtime' | 'env' | 'none';
-}
-
-export interface TelegramConfigPublic {
-  hasBotToken: boolean;
-  botTokenMasked: string | null;
-  proxyUrl: string;
-  enabled: boolean;
-  connected: boolean;
-  updatedAt: string | null;
-  source: 'runtime' | 'env' | 'none';
-}
-
-export interface TelegramTestResult {
-  success: boolean;
-  bot_username?: string;
-  bot_id?: number;
-  bot_name?: string;
-  error?: string;
-}
-
-
 export interface ClaudeApplyResult {
   success: boolean;
   stoppedCount: number;
@@ -106,7 +77,7 @@ export interface SystemSettings {
   scriptTimeout: number;
 }
 
-export type SettingsTab = 'channels' | 'claude' | 'registration' | 'appearance' | 'system' | 'profile' | 'my-channels' | 'security' | 'groups' | 'memory' | 'skills' | 'mcp-servers' | 'users' | 'about';
+export type SettingsTab = 'claude' | 'registration' | 'appearance' | 'system' | 'profile' | 'my-channels' | 'security' | 'groups' | 'memory' | 'skills' | 'mcp-servers' | 'users' | 'about' | 'bindings';
 
 export function getErrorMessage(err: unknown, fallback: string): string {
   if (typeof err === 'object' && err !== null && 'message' in err) {
@@ -117,8 +88,3 @@ export function getErrorMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
-export function sourceLabel(source: FeishuConfigPublic['source']): string {
-  if (source === 'runtime') return '来自设置页';
-  if (source === 'env') return '来自环境变量';
-  return '未配置';
-}

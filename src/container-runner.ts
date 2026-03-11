@@ -713,6 +713,27 @@ export function writeGroupsSnapshot(
 }
 
 /**
+ * 杀死进程及其所有子进程。
+ * 如果进程以 detached 模式启动（独立进程组），使用负 PID 杀整个进程组。
+ */
+export function killProcessTree(proc: ChildProcess, signal: NodeJS.Signals = 'SIGTERM'): boolean {
+  try {
+    if (proc.pid) {
+      process.kill(-proc.pid, signal);
+      return true;
+    }
+  } catch {
+    try {
+      proc.kill(signal);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
  * Run agent directly on the host machine (no Docker container).
  * Used for host execution mode — the agent gets full access to the host filesystem.
  */
@@ -1050,6 +1071,7 @@ export async function runHostAgent(
       stdio: ['pipe', 'pipe', 'pipe'],
       env: hostEnv,
       cwd: groupDir,
+      detached: true,
     });
 
     const processId = `host-${group.folder}-${Date.now()}`;
@@ -1061,7 +1083,7 @@ export async function runHostAgent(
     // 8. stdin 输入
     proc.stdin.on('error', (err) => {
       logger.error({ group: group.name, err }, 'Host agent stdin write failed');
-      proc.kill();
+      killProcessTree(proc);
     });
     proc.stdin.write(JSON.stringify(input));
     proc.stdin.end();
@@ -1079,18 +1101,10 @@ export async function runHostAgent(
         { group: group.name, processId },
         'Host agent timeout, killing',
       );
-      try {
-        proc.kill('SIGTERM');
-      } catch {
-        // ignore
-      }
+      killProcessTree(proc, 'SIGTERM');
       killTimer = setTimeout(() => {
         if (proc.exitCode === null && proc.signalCode === null) {
-          try {
-            proc.kill('SIGKILL');
-          } catch {
-            // ignore
-          }
+          killProcessTree(proc, 'SIGKILL');
         }
       }, 5000);
     };

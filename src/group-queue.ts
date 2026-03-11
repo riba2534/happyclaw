@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { DATA_DIR } from './config.js';
+import { killProcessTree } from './container-runner.js';
 import { getSystemSettings } from './runtime-config.js';
 import { logger } from './logger.js';
 import { type MessageIntent } from './intent-analyzer.js';
@@ -471,11 +472,7 @@ export class GroupQueue {
           );
         });
       } else if (state.process && !state.process.killed) {
-        try {
-          state.process.kill('SIGKILL');
-        } catch {
-          // ignore
-        }
+        killProcessTree(state.process, 'SIGKILL');
       }
 
       if (state.active) {
@@ -494,11 +491,7 @@ export class GroupQueue {
           );
         });
       } else if (state.process && !state.process.killed) {
-        try {
-          state.process.kill('SIGTERM');
-        } catch {
-          // ignore
-        }
+        killProcessTree(state.process, 'SIGTERM');
       }
 
       // Wait for state.active to become false (runForGroup/runTask finally block)
@@ -527,11 +520,7 @@ export class GroupQueue {
           await new Promise((r) => setTimeout(r, 100));
         }
       } else if (state.active && state.process) {
-        try {
-          state.process.kill('SIGKILL');
-        } catch {
-          // ignore
-        }
+        killProcessTree(state.process, 'SIGKILL');
         const killStart = Date.now();
         while (state.active && Date.now() - killStart < 5000) {
           await new Promise((r) => setTimeout(r, 100));
@@ -579,11 +568,7 @@ export class GroupQueue {
           );
         });
       } else if (state.process && !state.process.killed) {
-        try {
-          state.process.kill('SIGTERM');
-        } catch {
-          // ignore
-        }
+        killProcessTree(state.process, 'SIGTERM');
       }
 
       // Wait for runForGroup to finish and reset state
@@ -612,11 +597,7 @@ export class GroupQueue {
             await new Promise((r) => setTimeout(r, 200));
           }
         } else if (state.process) {
-          try {
-            state.process.kill('SIGKILL');
-          } catch {
-            // ignore
-          }
+          killProcessTree(state.process, 'SIGKILL');
           const killStart = Date.now();
           while (state.active && Date.now() - killStart < 5000) {
             await new Promise((r) => setTimeout(r, 200));
@@ -962,19 +943,13 @@ export class GroupQueue {
         } else if (state.process && !state.process.killed) {
           const proc = state.process;
           const promise = new Promise<void>((resolve) => {
-            try {
-              proc.kill('SIGTERM');
-            } catch {
+            if (!killProcessTree(proc, 'SIGTERM')) {
               resolve();
               return;
             }
             setTimeout(() => {
               if (proc.exitCode === null && proc.signalCode === null) {
-                try {
-                  proc.kill('SIGKILL');
-                } catch {
-                  // ignore
-                }
+                killProcessTree(proc, 'SIGKILL');
               }
               resolve();
             }, 3000);
