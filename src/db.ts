@@ -320,8 +320,6 @@ export function initDatabase(): void {
     "TEXT DEFAULT 'source_only'",
   );
   ensureColumn('registered_groups', 'require_mention', 'INTEGER DEFAULT 0');
-  // Migrate: change require_mention default from 1 to 0 for existing groups
-  db.exec('UPDATE registered_groups SET require_mention = 0 WHERE require_mention = 1');
   ensureColumn('messages', 'token_usage', 'TEXT');
 
   // Add index on target_agent_id for fast lookup of IM bindings
@@ -597,7 +595,12 @@ export function initDatabase(): void {
     }
   }
 
-  const SCHEMA_VERSION = '22';
+  // v23: Change require_mention default from true to false for existing groups
+  if (!curVer || parseInt(curVer, 10) < 23) {
+    db.exec('UPDATE registered_groups SET require_mention = 0 WHERE require_mention = 1');
+  }
+
+  const SCHEMA_VERSION = '23';
   db.prepare(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', SCHEMA_VERSION);
