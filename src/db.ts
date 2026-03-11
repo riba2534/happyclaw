@@ -319,7 +319,9 @@ export function initDatabase(): void {
     'reply_policy',
     "TEXT DEFAULT 'source_only'",
   );
-  ensureColumn('registered_groups', 'require_mention', 'INTEGER DEFAULT 1');
+  ensureColumn('registered_groups', 'require_mention', 'INTEGER DEFAULT 0');
+  // Migrate: change require_mention default from 1 to 0 for existing groups
+  db.exec('UPDATE registered_groups SET require_mention = 0 WHERE require_mention = 1');
   ensureColumn('messages', 'token_usage', 'TEXT');
 
   // Add index on target_agent_id for fast lookup of IM bindings
@@ -1366,7 +1368,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.target_agent_id ?? null,
     group.target_main_jid ?? null,
     group.reply_policy ?? 'source_only',
-    group.require_mention !== false ? 1 : 0,
+    group.require_mention === true ? 1 : 0,
   );
 }
 

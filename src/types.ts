@@ -50,7 +50,7 @@ export interface RegisteredGroup {
   target_agent_id?: string; // IM 消息路由到指定 conversation agent
   target_main_jid?: string; // IM 消息路由到指定工作区的主对话（web:{folder}）
   reply_policy?: 'source_only' | 'mirror'; // IM 绑定的回复策略
-  require_mention?: boolean; // 群聊是否需要 @机器人 才响应（默认 true）
+  require_mention?: boolean; // 群聊是否需要 @机器人 才响应（默认 false）
 }
 
 export interface GroupMember {

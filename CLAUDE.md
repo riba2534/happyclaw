@@ -545,8 +545,8 @@ scripts/                      # 构建辅助脚本
 
 飞书群聊支持 per-group 的 @mention 控制，类似 OpenClaw 的 `resolveGroupActivationFor()` 机制：
 
-- **默认模式**（`require_mention=true`）：群聊中只有 @机器人 的消息才会被处理
-- **全量模式**（`require_mention=false`）：群聊中所有消息都会被处理
+- **默认模式**（`require_mention=false`）：群聊中所有消息都会被处理
+- **Mention 模式**（`require_mention=true`）：群聊中只有 @机器人 的消息才会被处理
 - 通过 `/require_mention true|false` 命令切换
 - 私聊不受此控制影响，始终响应
 

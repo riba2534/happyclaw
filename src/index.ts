@@ -789,7 +789,7 @@ function handleRequireMentionCommand(chatJid: string, rawArgs: string): string {
     registeredGroups[chatJid] = updated;
     return '已关闭：群聊中所有消息都会响应，无需 @机器人';
   } else if (!action) {
-    const current = group.require_mention !== false;
+    const current = group.require_mention === true;
     return `当前 require_mention: ${current}\n\n用法:\n/require_mention true — 需要 @机器人\n/require_mention false — 全量响应`;
   }
   return '用法: /require_mention true|false';
@@ -3617,10 +3617,10 @@ function buildResolveEffectiveChatJid(): (
     if (group.target_agent_id) {
       const agent = getAgent(group.target_agent_id);
       if (!agent) return null;
-      const agentParent =
-        registeredGroups[agent.chat_jid] ?? getRegisteredGroup(agent.chat_jid);
-      const folder = agentParent?.folder || group.folder;
-      const effectiveJid = `web:${folder}#agent:${group.target_agent_id}`;
+      // Use the agent's actual chat_jid (the workspace's registered JID) as the
+      // base for the virtual JID.  Previously we constructed web:${folder} which
+      // doesn't match any registered group for non-main workspaces (folder ≠ JID).
+      const effectiveJid = `${agent.chat_jid}#agent:${group.target_agent_id}`;
       return { effectiveJid, agentId: group.target_agent_id };
     }
 
