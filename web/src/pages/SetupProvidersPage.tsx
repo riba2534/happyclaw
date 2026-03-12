@@ -5,29 +5,21 @@ import { useNavigate } from 'react-router-dom';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { api } from '../api/client';
+import type {
+  ClaudeThirdPartyProfileItem,
+  EnvRow,
+} from '../components/settings/types';
+import { getErrorMessage } from '../components/settings/types';
 import { useAuthStore } from '../stores/auth';
 
 type ProviderMode = 'official' | 'third_party';
-
-interface EnvRow {
-  key: string;
-  value: string;
-}
 
 const RESERVED_ENV_KEYS = new Set([
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_AUTH_TOKEN',
   'CLAUDE_CODE_OAUTH_TOKEN',
+  'HAPPYCLAW_MODEL',
 ]);
-
-function getErrorMessage(err: unknown, fallback: string): string {
-  if (typeof err === 'object' && err !== null && 'message' in err) {
-    const msg = (err as { message?: unknown }).message;
-    if (typeof msg === 'string' && msg.trim()) return msg;
-  }
-  if (err instanceof Error && err.message) return err.message;
-  return fallback;
-}
 
 function buildCustomEnv(rows: EnvRow[]): { customEnv: Record<string, string>; error: string | null } {
   const customEnv: Record<string, string> = {};
@@ -88,6 +80,7 @@ export function SetupProvidersPage() {
   // Third-party mode
   const [baseUrl, setBaseUrl] = useState('');
   const [authToken, setAuthToken] = useState('');
+  const [model, setModel] = useState('');
   const [customEnvRows, setCustomEnvRows] = useState<EnvRow[]>([]);
 
   useEffect(() => {
@@ -210,14 +203,13 @@ export function SetupProvidersPage() {
       if (feishuAppId.trim() || feishuAppSecret.trim()) {
         const payload: Record<string, string> = { appId: feishuAppId.trim() };
         if (feishuAppSecret.trim()) payload.appSecret = feishuAppSecret.trim();
-        await api.put('/api/config/feishu', payload);
+        await api.put('/api/config/user-im/feishu', payload);
       }
 
       if (providerMode === 'official') {
         if (oauthDone || localCCImported) {
-          // OAuth or local import already saved the credentials — just clear base URL and custom env
+          // OAuth or local import already saved the credentials — just clear base URL
           await api.put('/api/config/claude', { anthropicBaseUrl: '' });
-          await api.put('/api/config/claude/custom-env', { customEnv: {} });
         } else {
           await api.put('/api/config/claude', { anthropicBaseUrl: '' });
 
@@ -256,16 +248,18 @@ export function SetupProvidersPage() {
               clearAnthropicApiKey: true,
             });
           }
-          await api.put('/api/config/claude/custom-env', { customEnv: {} });
         }
       } else {
-        await api.put('/api/config/claude', { anthropicBaseUrl: baseUrl.trim() });
-        await api.put('/api/config/claude/secrets', {
-          anthropicAuthToken: authToken.trim(),
-          clearClaudeCodeOauthToken: true,
-          clearAnthropicApiKey: true,
-        });
-        await api.put('/api/config/claude/custom-env', { customEnv });
+        await api.post<ClaudeThirdPartyProfileItem>(
+          '/api/config/claude/third-party/profiles',
+          {
+            name: '默认第三方',
+            anthropicBaseUrl: baseUrl.trim(),
+            anthropicAuthToken: authToken.trim(),
+            happyclawModel: model.trim(),
+            customEnv,
+          },
+        );
       }
 
       await checkAuth();
@@ -440,7 +434,7 @@ export function SetupProvidersPage() {
                   <li>在目标机器安装 Claude Code CLI（若未安装）。</li>
                   <li>在终端执行 <code>claude login</code> 完成账号登录。</li>
                   <li>
-                    方式 A：执行 <code>cat ~/.claude/.credentials.json</code>，复制完整 JSON 内容到下方（推荐，支持自动续期）。
+                    方式 A：执行 <code>cat ~/.claude/.credentials.json</code>，复制完整 JSON 内容到下方（推荐）。
                   </li>
                   <li>
                     方式 B：执行 <code>claude setup-token</code>，复制输出 token 到下方。
@@ -459,7 +453,7 @@ export function SetupProvidersPage() {
                   placeholder="粘贴 setup-token 或 cat ~/.claude/.credentials.json 输出"
                 />
                 <p className="text-xs text-muted-foreground mt-1">
-                  支持粘贴 <code className="bg-muted px-1 rounded">cat ~/.claude/.credentials.json</code> 的 JSON 内容（含自动续期）
+                  支持粘贴 <code className="bg-muted px-1 rounded">cat ~/.claude/.credentials.json</code> 的 JSON 内容
                 </p>
               </div>
             </div>
@@ -478,6 +472,17 @@ export function SetupProvidersPage() {
                     value={baseUrl}
                     onChange={(e) => setBaseUrl(e.target.value)}
                     placeholder="https://your-relay.example.com/v1"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">HAPPYCLAW_MODEL（可选）</label>
+                  <Input
+                    type="text"
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                    placeholder="opus / sonnet / haiku 或完整模型 ID"
+                    className="font-mono"
                   />
                 </div>
 
@@ -504,6 +509,9 @@ export function SetupProvidersPage() {
                     添加
                   </button>
                 </div>
+                <p className="mb-2 text-xs text-muted-foreground">
+                  这些变量属于系统全局设置，后续切换第三方配置时不会跟随切换。
+                </p>
 
                 {customEnvRows.length === 0 ? (
                   <p className="text-xs text-muted-foreground">暂无</p>

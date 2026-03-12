@@ -41,7 +41,7 @@ const WORKSPACE_IPC = process.env.HAPPYCLAW_WORKSPACE_IPC || '/workspace/ipc';
 
 // 模型配置：支持别名（opus/sonnet/haiku）或完整模型 ID
 // 别名自动解析为最新版本，如 opus → Opus 4.6
-const CLAUDE_MODEL = process.env.ANTHROPIC_MODEL || 'opus';
+const CLAUDE_MODEL = process.env.HAPPYCLAW_MODEL || process.env.ANTHROPIC_MODEL || 'opus';
 
 const IPC_INPUT_DIR = path.join(WORKSPACE_IPC, 'input');
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
@@ -350,7 +350,7 @@ function getSessionSummary(sessionId: string, transcriptPath: string): string | 
 /**
  * Archive the full transcript to conversations/ before compaction.
  */
-function createPreCompactHook(_isHome: boolean, isAdminHome: boolean): HookCallback {
+function createPreCompactHook(isHome: boolean, _isAdminHome: boolean): HookCallback {
   return async (input, _toolUseId, _context) => {
     const preCompact = input as PreCompactHookInput;
     const transcriptPath = preCompact.transcript_path;
@@ -388,10 +388,10 @@ function createPreCompactHook(_isHome: boolean, isAdminHome: boolean): HookCallb
       log(`Failed to archive transcript: ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    // Flag memory flush for admin home container (full memory write access)
-    if (isAdminHome) {
+    // Flag memory flush for home containers (full memory write access)
+    if (isHome) {
       needsMemoryFlush = true;
-      log('PreCompact: flagged memory flush for admin home container');
+      log('PreCompact: flagged memory flush for home container');
     }
 
     return {};
@@ -466,6 +466,27 @@ function shouldClose(): boolean {
 }
 
 const IPC_INPUT_INTERRUPT_SENTINEL = path.join(IPC_INPUT_DIR, '_interrupt');
+const INTERRUPT_GRACE_WINDOW_MS = 10_000;
+let lastInterruptRequestedAt = 0;
+
+function markInterruptRequested(): void {
+  lastInterruptRequestedAt = Date.now();
+}
+
+function clearInterruptRequested(): void {
+  lastInterruptRequestedAt = 0;
+}
+
+function isWithinInterruptGraceWindow(): boolean {
+  return lastInterruptRequestedAt > 0 && Date.now() - lastInterruptRequestedAt <= INTERRUPT_GRACE_WINDOW_MS;
+}
+
+function isInterruptRelatedError(err: unknown): boolean {
+  const errno = err as NodeJS.ErrnoException;
+  const message = err instanceof Error ? err.message : String(err ?? '');
+  return errno?.code === 'ABORT_ERR'
+    || /abort|aborted|interrupt|interrupted|cancelled|canceled/i.test(message);
+}
 
 /**
  * Check for _interrupt sentinel (graceful query interruption).
@@ -473,6 +494,7 @@ const IPC_INPUT_INTERRUPT_SENTINEL = path.join(IPC_INPUT_DIR, '_interrupt');
 function shouldInterrupt(): boolean {
   if (fs.existsSync(IPC_INPUT_INTERRUPT_SENTINEL)) {
     try { fs.unlinkSync(IPC_INPUT_INTERRUPT_SENTINEL); } catch { /* ignore */ }
+    markInterruptRequested();
     return true;
   }
   return false;
@@ -528,6 +550,10 @@ function waitForIpcMessage(): Promise<{ text: string; images?: Array<{ data: str
       if (shouldClose()) {
         resolve(null);
         return;
+      }
+      if (shouldInterrupt()) {
+        log('Interrupt sentinel received while idle, ignoring');
+        clearInterruptRequested();
       }
       const { messages, modeChange } = drainIpcInput();
       if (modeChange) {
@@ -597,15 +623,20 @@ function buildMemoryRecallPrompt(isHome: boolean, isAdminHome: boolean): string 
       '系统也会在上下文压缩前提示你保存记忆。',
     ].join('\n');
   }
-  // Non-home group container
+  // Non-home group container: read-only access to home memory, use Claude auto memory
   return [
     '',
     '## 记忆',
     '',
-    '可使用 `memory_search` 和 `memory_get` 工具搜索记忆文件。',
-    '获知重要信息（项目决策、待办、讨论要点等）时，**必须立即**调用 `memory_append` 保存。',
-    '不要等待——获知后立刻存储。',
-    '全局记忆（`/workspace/global/CLAUDE.md`）为只读，无法直接修改。',
+    '### 查询主工作区记忆',
+    '可使用 `memory_search` 和 `memory_get` 工具搜索主工作区的记忆（全局记忆和日期记忆）。',
+    '需要回忆过去的决策、偏好或项目上下文时使用这些工具。',
+    '',
+    '### 本地记忆',
+    '重要信息直接记录在当前工作区的 CLAUDE.md 或其他文件中。',
+    'Claude 会自动维护你的会话记忆，无需额外操作。',
+    '',
+    '全局记忆（`/workspace/global/CLAUDE.md`）为只读参考。',
   ].join('\n');
 }
 
@@ -642,7 +673,7 @@ async function runQuery(
   allowedTools: string[] = DEFAULT_ALLOWED_TOOLS,
   disallowedTools?: string[],
   images?: Array<{ data: string; mimeType?: string }>,
-): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean; contextOverflow?: boolean; unrecoverableTranscriptError?: boolean; interruptedDuringQuery: boolean }> {
+): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean; contextOverflow?: boolean; unrecoverableTranscriptError?: boolean; interruptedDuringQuery: boolean; sessionResumeFailed?: boolean }> {
   const stream = new MessageStream();
   const initialRejected = stream.push(prompt, images);
   const emit = (output: ContainerOutput): void => {
@@ -672,6 +703,7 @@ async function runQuery(
     if (shouldInterrupt()) {
       log('Interrupt sentinel detected, interrupting current query');
       interruptedDuringQuery = true;
+      lastInterruptRequestedAt = Date.now();
       queryRef?.interrupt().catch((err: unknown) => log(`Interrupt call failed: ${err}`));
       stream.end();
       ipcPolling = false;
@@ -696,8 +728,14 @@ async function runQuery(
   };
   setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
 
-  // Create the StreamEventProcessor
-  const processor = new StreamEventProcessor(emit, log);
+  // Create the StreamEventProcessor with mode change callback
+  const processor = new StreamEventProcessor(emit, log, (newMode) => {
+    currentPermissionMode = newMode as PermissionMode;
+    log(`Auto mode switch on ${newMode === 'plan' ? 'EnterPlanMode' : 'ExitPlanMode'} detection`);
+    queryRef?.setPermissionMode(newMode as PermissionMode).catch((err: unknown) =>
+      log(`setPermissionMode failed: ${err}`),
+    );
+  });
 
   let newSessionId: string | undefined;
   let lastAssistantUuid: string | undefined;
@@ -708,11 +746,12 @@ async function runQuery(
   const { isHome, isAdminHome } = normalizeHomeFlags(containerInput);
   const globalClaudeMdPath = path.join(WORKSPACE_GLOBAL, 'CLAUDE.md');
 
-  // Always inject global CLAUDE.md content into system prompt so the agent
-  // has memory context from the start. Home containers also get filesystem
-  // read/write access via additionalDirectories for editing.
+  // Home containers: inject full global CLAUDE.md for immediate context.
+  // Non-home containers: global CLAUDE.md is accessible via filesystem (mounted readonly)
+  // but NOT injected into system prompt to avoid context pollution that causes
+  // the agent to "continue" unrelated previous work.
   let globalClaudeMd = '';
-  if (fs.existsSync(globalClaudeMdPath)) {
+  if (isHome && fs.existsSync(globalClaudeMdPath)) {
     globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
   }
   const outputGuidelines = [
@@ -739,14 +778,29 @@ async function runQuery(
     '且 agent-browser 可用，立即改用 agent-browser 通过真实浏览器访问。不要反复重试 WebFetch。',
   ].join('\n');
 
-  // Read HEARTBEAT.md (recent work summary) for context injection
+  // Read HEARTBEAT.md (recent work summary) — only for home containers.
+  // Non-home containers are task-isolated and should not see unrelated work history,
+  // which can mislead the agent into "continuing" previous tasks instead of
+  // focusing on the user's current message.
   let heartbeatContent = '';
-  const heartbeatPath = path.join(WORKSPACE_GLOBAL, 'HEARTBEAT.md');
-  if (fs.existsSync(heartbeatPath)) {
-    try {
-      const raw = fs.readFileSync(heartbeatPath, 'utf-8');
-      heartbeatContent = raw.length > 4096 ? raw.slice(0, 4096) + '\n\n[...截断]' : raw;
-    } catch { /* skip */ }
+  if (isHome) {
+    const heartbeatPath = path.join(WORKSPACE_GLOBAL, 'HEARTBEAT.md');
+    if (fs.existsSync(heartbeatPath)) {
+      try {
+        const raw = fs.readFileSync(heartbeatPath, 'utf-8');
+        const truncated = raw.length > 4096 ? raw.slice(0, 4096) + '\n\n[...截断]' : raw;
+        heartbeatContent = [
+          '',
+          '## 近期工作参考（仅供背景了解）',
+          '',
+          '> 以下是系统自动生成的近期工作摘要，仅供参考。',
+          '> **不要主动继续这些工作**，除非用户明确要求「继续」或主动提到相关话题。',
+          '> 请专注于用户当前的消息。',
+          '',
+          truncated,
+        ].join('\n');
+      } catch { /* skip */ }
+    }
   }
 
   const backgroundTaskGuidelines = [
@@ -760,17 +814,33 @@ async function runQuery(
     '告知用户：「已为您在后台启动该任务，完成后我会第一时间反馈。现在有其他问题也可以随时问我。」',
   ].join('\n');
 
+  // Interaction guidelines to prevent the agent from confusing MCP tool
+  // descriptions with user input, or proactively describing available tools.
+  const interactionGuidelines = [
+    '',
+    '## 交互原则',
+    '',
+    '**始终专注于用户当前的实际消息。**',
+    '',
+    '- 你可能拥有多种 MCP 工具（如外卖点餐、优惠券查询等），这些是你的辅助能力，**不是用户发送的内容**。',
+    '- **不要主动介绍、列举或描述你的可用工具**，除非用户明确询问「你能做什么」或「你有什么功能」。',
+    '- 当用户需要某个功能时，直接使用对应工具完成任务即可，无需事先解释工具的存在。',
+    '- 如果用户的消息很简短（如打招呼），简洁回应即可，不要用工具列表填充回复。',
+  ].join('\n');
+
   const systemPromptAppend = [
     globalClaudeMd,
     heartbeatContent,
+    interactionGuidelines,
     memoryRecall,
     outputGuidelines,
     webFetchGuidelines,
     backgroundTaskGuidelines,
   ].filter(Boolean).join('\n');
 
-  // Home containers (admin & member) can access global and memory directories
-  // Non-home containers only access memory (global CLAUDE.md injected via systemPromptAppend)
+  // Home containers (admin & member) can access global and memory directories.
+  // Non-home containers only access memory directory; global CLAUDE.md is NOT
+  // injected into systemPrompt but remains accessible via filesystem (readonly mount).
   const extraDirs = isHome
     ? [WORKSPACE_GLOBAL, WORKSPACE_MEMORY]
     : [WORKSPACE_MEMORY];
@@ -871,6 +941,12 @@ async function runQuery(
       // 匹配策略：显式枚举已知的 error subtype，并用 startsWith('error') 兜底未知的未来 error subtype。
       // 参考 SDK result subtype 约定：error_during_execution、error_max_turns 等均以 'error' 开头。
       if (typeof resultSubtype === 'string' && (resultSubtype === 'error_during_execution' || resultSubtype.startsWith('error'))) {
+        // If session never initialized (no system/init), resume itself failed — report it
+        // so the caller can retry with a fresh session instead of crashing.
+        if (!newSessionId) {
+          log(`Session resume failed (no init): ${resultSubtype}`);
+          return { newSessionId, lastAssistantUuid, closedDuringQuery, interruptedDuringQuery, sessionResumeFailed: true };
+        }
         const detail = textResult?.trim()
           ? textResult.trim()
           : `Claude Code execution failed (${resultSubtype})`;
@@ -955,6 +1031,12 @@ async function runQuery(
       return { newSessionId, lastAssistantUuid, closedDuringQuery, unrecoverableTranscriptError: true, interruptedDuringQuery };
     }
 
+    // 中断导致的 SDK 错误（error_during_execution 等）：正常返回，不抛出
+    if (interruptedDuringQuery) {
+      log(`runQuery error during interrupt (non-fatal): ${errorMessage}`);
+      return { newSessionId, lastAssistantUuid, closedDuringQuery, interruptedDuringQuery };
+    }
+
     // 其他错误：记录完整堆栈后继续抛出
     log(`runQuery error [${(err as NodeJS.ErrnoException).code ?? 'unknown'}]: ${errorMessage}`);
     if (err instanceof Error && err.stack) {
@@ -985,7 +1067,7 @@ async function main(): Promise<void> {
   const { isHome, isAdminHome } = normalizeHomeFlags(containerInput);
 
   // Create in-process SDK MCP server (replaces the stdio subprocess)
-  const mcpTools = createMcpTools({
+  const mcpToolsConfig = {
     chatJid: containerInput.chatJid,
     groupFolder: containerInput.groupFolder,
     isHome,
@@ -994,12 +1076,13 @@ async function main(): Promise<void> {
     workspaceGroup: WORKSPACE_GROUP,
     workspaceGlobal: WORKSPACE_GLOBAL,
     workspaceMemory: WORKSPACE_MEMORY,
-  });
-  const mcpServerConfig = createSdkMcpServer({
+  };
+  const buildMcpServerConfig = () => createSdkMcpServer({
     name: 'happyclaw',
     version: '1.0.0',
-    tools: mcpTools,
+    tools: createMcpTools(mcpToolsConfig),
   });
+  let mcpServerConfig = buildMcpServerConfig();
   const memoryRecallPrompt = buildMemoryRecallPrompt(isHome, isAdminHome);
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
 
@@ -1035,6 +1118,7 @@ async function main(): Promise<void> {
     while (true) {
       // 清理残留的 _interrupt sentinel，防止空闲期间写入的中断信号影响下一次 query
       try { fs.unlinkSync(IPC_INPUT_INTERRUPT_SENTINEL); } catch { /* ignore */ }
+      clearInterruptRequested();
 
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
 
@@ -1055,6 +1139,16 @@ async function main(): Promise<void> {
       }
       if (queryResult.lastAssistantUuid) {
         resumeAt = queryResult.lastAssistantUuid;
+      }
+
+      // Session resume 失败（SDK 无法恢复旧会话）：清除 session，以新会话重试
+      if (queryResult.sessionResumeFailed) {
+        log(`Session resume failed, retrying with fresh session (old: ${sessionId})`);
+        sessionId = undefined;
+        resumeAt = undefined;
+        // Rebuild MCP server to avoid "Already connected to a transport" error
+        mcpServerConfig = buildMcpServerConfig();
+        continue;
       }
 
       // 不可恢复的转录错误（如超大图片或 MIME 错配被固化在会话历史中）
@@ -1125,13 +1219,14 @@ async function main(): Promise<void> {
           log('Close sentinel received after interrupt, exiting');
           break;
         }
+        clearInterruptRequested();
         prompt = nextMessage.text;
         promptImages = nextMessage.images;
         continue;
       }
 
-      // Memory Flush: run an extra query to let agent save durable memories (admin home only)
-      if (needsMemoryFlush && isAdminHome) {
+      // Memory Flush: run an extra query to let agent save durable memories (home containers only)
+      if (needsMemoryFlush && isHome) {
         needsMemoryFlush = false;
         log('Running memory flush query after compaction...');
 
@@ -1221,9 +1316,23 @@ async function main(): Promise<void> {
  * 这类错误通常发生在结果已输出之后，属于"收尾写入失败"，
  * 不应把整个 host query 标记为启动失败（code 1）。
  */
+process.on('SIGTERM', () => {
+  log('Received SIGTERM, exiting gracefully');
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  log('Received SIGINT, exiting gracefully');
+  process.exit(0);
+});
+
 process.on('uncaughtException', (err: unknown) => {
   const errno = err as NodeJS.ErrnoException;
   if (errno?.code === 'EPIPE') {
+    process.exit(0);
+  }
+  if (isWithinInterruptGraceWindow() && isInterruptRelatedError(err)) {
+    console.error('Suppressing interrupt-related uncaught exception:', err);
     process.exit(0);
   }
   console.error('Uncaught exception:', err);
@@ -1236,6 +1345,10 @@ process.on('unhandledRejection', (reason: unknown) => {
   const errno = reason as NodeJS.ErrnoException;
   if (errno?.code === 'EPIPE') {
     process.exit(0);
+  }
+  if (isWithinInterruptGraceWindow()) {
+    console.error('Unhandled rejection during interrupt (non-fatal):', reason);
+    return;
   }
   console.error('Unhandled rejection:', reason);
   process.exit(1);

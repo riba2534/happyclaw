@@ -223,10 +223,10 @@ export function ContainerEnvPanel({ groupJid, onClose }: ContainerEnvPanelProps)
         {/* Custom Env Vars */}
         <div>
           <div className="flex items-center justify-between mb-2">
-            <label className="text-xs font-medium text-slate-600">自定义环境变量（不含 ANTHROPIC_MODEL）</label>
+            <label className="text-xs font-medium text-slate-600">自定义环境变量</label>
             <button
               onClick={addCustomEnv}
-              className="flex items-center gap-1 text-[11px] text-primary hover:text-primary cursor-pointer"
+              className="flex-shrink-0 flex items-center gap-1 text-[11px] text-primary hover:text-primary cursor-pointer"
             >
               <Plus className="w-3 h-3" />
               添加

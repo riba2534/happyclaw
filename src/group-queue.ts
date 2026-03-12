@@ -3,11 +3,16 @@ import fs from 'fs';
 import path from 'path';
 
 import { DATA_DIR } from './config.js';
+import { killProcessTree } from './container-runner.js';
 import { getSystemSettings } from './runtime-config.js';
 import { logger } from './logger.js';
 import { type MessageIntent } from './intent-analyzer.js';
 
-export type SendMessageResult = 'sent' | 'no_active' | 'interrupted_stop' | 'interrupted_correction';
+export type SendMessageResult =
+  | 'sent'
+  | 'no_active'
+  | 'interrupted_stop'
+  | 'interrupted_correction';
 
 interface QueuedTask {
   id: string;
@@ -131,7 +136,8 @@ export class GroupQueue {
   private hasCapacityFor(groupJid: string): boolean {
     const isHost = this.isHostMode(groupJid);
     return isHost
-      ? this.activeHostProcessCount < getSystemSettings().maxConcurrentHostProcesses
+      ? this.activeHostProcessCount <
+          getSystemSettings().maxConcurrentHostProcesses
       : this.activeContainerCount < getSystemSettings().maxConcurrentContainers;
   }
 
@@ -254,7 +260,14 @@ export class GroupQueue {
    */
   private resolveIpcInputDir(state: ActiveGroupState): string {
     if (state.agentId) {
-      return path.join(DATA_DIR, 'ipc', state.groupFolder, 'agents', state.agentId, 'input');
+      return path.join(
+        DATA_DIR,
+        'ipc',
+        state.groupFolder,
+        'agents',
+        state.agentId,
+        'input',
+      );
     }
     return path.join(DATA_DIR, 'ipc', state.groupFolder, 'input');
   }
@@ -280,13 +293,19 @@ export class GroupQueue {
 
     if (intent === 'stop') {
       this.interruptQuery(groupJid);
-      logger.info({ groupJid, intent }, 'Stop intent detected, interrupting query without IPC message');
+      logger.info(
+        { groupJid, intent },
+        'Stop intent detected, interrupting query without IPC message',
+      );
       return 'interrupted_stop';
     }
 
     if (intent === 'correction') {
       this.interruptQuery(groupJid);
-      logger.info({ groupJid, intent }, 'Correction intent detected, interrupting query and writing IPC message');
+      logger.info(
+        { groupJid, intent },
+        'Correction intent detected, interrupting query and writing IPC message',
+      );
       // Fall through to write the IPC message so the agent sees the correction after restart
     }
 
@@ -346,7 +365,10 @@ export class GroupQueue {
       }
     }
     if (closed > 0) {
-      logger.info({ closed }, 'Closed active containers/processes for credential refresh');
+      logger.info(
+        { closed },
+        'Closed active containers/processes for credential refresh',
+      );
     }
     return closed;
   }
@@ -369,12 +391,19 @@ export class GroupQueue {
     const inputDir = this.resolveIpcInputDir(state);
     try {
       fs.mkdirSync(inputDir, { recursive: true });
-      try { fs.chmodSync(inputDir, 0o777); } catch { /* ignore */ }
+      try {
+        fs.chmodSync(inputDir, 0o777);
+      } catch {
+        /* ignore */
+      }
       fs.writeFileSync(path.join(inputDir, '_interrupt'), '');
       logger.info({ groupJid, inputDir }, 'Interrupt sentinel written');
       return true;
     } catch (err) {
-      logger.warn({ groupJid, inputDir, err }, 'Failed to write interrupt sentinel');
+      logger.warn(
+        { groupJid, inputDir, err },
+        'Failed to write interrupt sentinel',
+      );
       return false;
     }
   }
@@ -408,7 +437,10 @@ export class GroupQueue {
    * Returns a promise that resolves when the container has fully exited
    * (state.active becomes false), not just when docker stop completes.
    */
-  async stopGroup(groupJid: string, options?: { force?: boolean }): Promise<void> {
+  async stopGroup(
+    groupJid: string,
+    options?: { force?: boolean },
+  ): Promise<void> {
     const force = options?.force ?? false;
     const requestedState = this.getGroup(groupJid);
     requestedState.pendingMessages = false;
@@ -435,14 +467,12 @@ export class GroupQueue {
       if (state.containerName) {
         const name = state.containerName;
         await new Promise<void>((resolve) => {
-          execFile('docker', ['kill', name], { timeout: 5000 }, () => resolve());
+          execFile('docker', ['kill', name], { timeout: 5000 }, () =>
+            resolve(),
+          );
         });
       } else if (state.process && !state.process.killed) {
-        try {
-          state.process.kill('SIGKILL');
-        } catch {
-          // ignore
-        }
+        killProcessTree(state.process, 'SIGKILL');
       }
 
       if (state.active) {
@@ -456,14 +486,12 @@ export class GroupQueue {
       if (state.containerName) {
         const name = state.containerName;
         await new Promise<void>((resolve) => {
-          execFile('docker', ['stop', name], { timeout: 10000 }, () => resolve());
+          execFile('docker', ['stop', name], { timeout: 10000 }, () =>
+            resolve(),
+          );
         });
       } else if (state.process && !state.process.killed) {
-        try {
-          state.process.kill('SIGTERM');
-        } catch {
-          // ignore
-        }
+        killProcessTree(state.process, 'SIGTERM');
       }
 
       // Wait for state.active to become false (runForGroup/runTask finally block)
@@ -492,11 +520,7 @@ export class GroupQueue {
           await new Promise((r) => setTimeout(r, 100));
         }
       } else if (state.active && state.process) {
-        try {
-          state.process.kill('SIGKILL');
-        } catch {
-          // ignore
-        }
+        killProcessTree(state.process, 'SIGKILL');
         const killStart = Date.now();
         while (state.active && Date.now() - killStart < 5000) {
           await new Promise((r) => setTimeout(r, 100));
@@ -522,7 +546,10 @@ export class GroupQueue {
     const state = this.getGroup(targetJid);
 
     if (state.restarting) {
-      logger.warn({ groupJid: targetJid }, 'Restart already in progress, skipping');
+      logger.warn(
+        { groupJid: targetJid },
+        'Restart already in progress, skipping',
+      );
       return;
     }
     state.restarting = true;
@@ -541,11 +568,7 @@ export class GroupQueue {
           );
         });
       } else if (state.process && !state.process.killed) {
-        try {
-          state.process.kill('SIGTERM');
-        } catch {
-          // ignore
-        }
+        killProcessTree(state.process, 'SIGTERM');
       }
 
       // Wait for runForGroup to finish and reset state
@@ -574,11 +597,7 @@ export class GroupQueue {
             await new Promise((r) => setTimeout(r, 200));
           }
         } else if (state.process) {
-          try {
-            state.process.kill('SIGKILL');
-          } catch {
-            // ignore
-          }
+          killProcessTree(state.process, 'SIGKILL');
           const killStart = Date.now();
           while (state.active && Date.now() - killStart < 5000) {
             await new Promise((r) => setTimeout(r, 200));
@@ -924,19 +943,13 @@ export class GroupQueue {
         } else if (state.process && !state.process.killed) {
           const proc = state.process;
           const promise = new Promise<void>((resolve) => {
-            try {
-              proc.kill('SIGTERM');
-            } catch {
+            if (!killProcessTree(proc, 'SIGTERM')) {
               resolve();
               return;
             }
             setTimeout(() => {
               if (proc.exitCode === null && proc.signalCode === null) {
-                try {
-                  proc.kill('SIGKILL');
-                } catch {
-                  // ignore
-                }
+                killProcessTree(proc, 'SIGKILL');
               }
               resolve();
             }, 3000);

@@ -41,7 +41,10 @@ export interface SchedulerDependencies {
     groupFolder: string,
     displayName?: string,
   ) => void;
-  sendMessage: (jid: string, text: string) => Promise<string | undefined | void>;
+  sendMessage: (
+    jid: string,
+    text: string,
+  ) => Promise<string | undefined | void>;
   assistantName: string;
   dailySummaryDeps?: DailySummaryDeps;
 }
@@ -56,7 +59,9 @@ function computeNextRun(task: ScheduledTask): string | null {
     return interval.next().toISOString();
   } else if (task.schedule_type === 'interval') {
     const ms = parseInt(task.schedule_value, 10);
-    const anchor = task.next_run ? new Date(task.next_run).getTime() : Date.now();
+    const anchor = task.next_run
+      ? new Date(task.next_run).getTime()
+      : Date.now();
     let nextTime = anchor + ms;
     while (nextTime <= Date.now()) {
       nextTime += ms;
@@ -255,7 +260,10 @@ async function runScriptTask(
   fs.mkdirSync(groupDir, { recursive: true });
 
   if (!task.script_command) {
-    logger.error({ taskId: task.id }, 'Script task has no script_command, skipping');
+    logger.error(
+      { taskId: task.id },
+      'Script task has no script_command, skipping',
+    );
     logTaskRun({
       task_id: task.id,
       run_at: new Date().toISOString(),
@@ -272,7 +280,10 @@ async function runScriptTask(
   let error: string | null = null;
 
   try {
-    const scriptResult = await runScript(task.script_command, task.group_folder);
+    const scriptResult = await runScript(
+      task.script_command,
+      task.group_folder,
+    );
 
     if (scriptResult.timedOut) {
       error = `脚本执行超时 (${Math.round(scriptResult.durationMs / 1000)}s)`;
@@ -291,7 +302,11 @@ async function runScriptTask(
     await deps.sendMessage(groupJid, `${deps.assistantName}: ${text}`);
 
     logger.info(
-      { taskId: task.id, durationMs: Date.now() - startTime, exitCode: scriptResult.exitCode },
+      {
+        taskId: task.id,
+        durationMs: Date.now() - startTime,
+        exitCode: scriptResult.exitCode,
+      },
       'Script task completed',
     );
   } catch (err) {
@@ -382,8 +397,7 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
             ([, group]) => group.folder === currentTask.group_folder,
           );
           const preferred =
-            sameFolder.find(([jid]) => jid.startsWith('web:')) ||
-            sameFolder[0];
+            sameFolder.find(([jid]) => jid.startsWith('web:')) || sameFolder[0];
           targetGroupJid = preferred?.[0] || '';
         }
 
@@ -405,7 +419,10 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
           }
           // Script tasks run directly, not through GroupQueue
           runScriptTask(currentTask, deps, targetGroupJid).catch((err) => {
-            logger.error({ taskId: currentTask.id, err }, 'Unhandled error in runScriptTask');
+            logger.error(
+              { taskId: currentTask.id, err },
+              'Unhandled error in runScriptTask',
+            );
           });
         } else {
           deps.queue.enqueueTask(targetGroupJid, currentTask.id, () =>

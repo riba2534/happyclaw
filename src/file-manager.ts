@@ -106,7 +106,11 @@ export function listFiles(
   rootOverride?: string,
 ): { files: FileEntry[]; currentPath: string } {
   const relativePath = subPath || '';
-  const absolutePath = validateAndResolvePath(folder, relativePath, rootOverride);
+  const absolutePath = validateAndResolvePath(
+    folder,
+    relativePath,
+    rootOverride,
+  );
 
   // 目录不存在时返回空列表，不自动创建（避免 GET 请求产生写副作用）
   if (!fs.existsSync(absolutePath)) {
@@ -157,7 +161,11 @@ export function listFiles(
  * @param rootOverride 可选的自定义根目录（绝对路径）
  * @throws 系统路径或路径不存在时抛出异常
  */
-export function deleteFile(folder: string, relativePath: string, rootOverride?: string): void {
+export function deleteFile(
+  folder: string,
+  relativePath: string,
+  rootOverride?: string,
+): void {
   // Reject empty / root-equivalent paths explicitly
   if (!relativePath || relativePath === '.' || relativePath === '/') {
     throw new Error('Cannot delete root directory');
@@ -168,7 +176,11 @@ export function deleteFile(folder: string, relativePath: string, rootOverride?: 
     throw new Error('Cannot delete system path');
   }
 
-  const absolutePath = validateAndResolvePath(folder, relativePath, rootOverride);
+  const absolutePath = validateAndResolvePath(
+    folder,
+    relativePath,
+    rootOverride,
+  );
   const root = getFileRoot(folder, rootOverride);
 
   // Double-check: never delete the group root itself
@@ -228,5 +240,9 @@ export function createDirectory(
   fs.mkdirSync(absolutePath, { recursive: true });
   // chmod 0o777 确保容器（node/1000）与宿主机用户均可读写
   // 与 container-runner.ts 的 mkdirForContainer() 行为一致
-  try { fs.chmodSync(absolutePath, 0o777); } catch { /* 忽略只读文件系统 */ }
+  try {
+    fs.chmodSync(absolutePath, 0o777);
+  } catch {
+    /* 忽略只读文件系统 */
+  }
 }

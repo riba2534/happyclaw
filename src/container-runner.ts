@@ -2,17 +2,22 @@
  * Container Runner for happyclaw
  * Spawns agent execution in Docker container and handles IPC
  */
-import { ChildProcess, exec, execFile, execFileSync, spawn } from 'child_process';
+import {
+  ChildProcess,
+  exec,
+  execFile,
+  execFileSync,
+  spawn,
+} from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
-import {
-  CONTAINER_IMAGE,
-  DATA_DIR,
-  GROUPS_DIR,
-} from './config.js';
+import { CONTAINER_IMAGE, DATA_DIR, GROUPS_DIR } from './config.js';
 import { logger } from './logger.js';
-import { loadMountAllowlist, validateAdditionalMounts } from './mount-security.js';
+import {
+  loadMountAllowlist,
+  validateAdditionalMounts,
+} from './mount-security.js';
 import {
   buildContainerEnvLines,
   getClaudeProviderConfig,
@@ -22,6 +27,7 @@ import {
   shellQuoteEnvLines,
   writeCredentialsFile,
 } from './runtime-config.js';
+import { resolveGroupMcpServers } from './mcp-utils.js';
 import { RegisteredGroup, StreamEvent } from './types.js';
 import {
   attachStderrHandler,
@@ -55,7 +61,9 @@ function ensureSettingsJson(
     if (fs.existsSync(settingsFile)) {
       existing = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
     }
-  } catch { /* ignore parse errors, overwrite */ }
+  } catch {
+    /* ignore parse errors, overwrite */
+  }
 
   const existingEnv = (existing.env as Record<string, string>) || {};
   const mergedEnv = { ...existingEnv, ...REQUIRED_SETTINGS_ENV };
@@ -75,55 +83,13 @@ function ensureSettingsJson(
       const current = fs.readFileSync(settingsFile, 'utf8');
       if (current === newContent) return;
     }
-  } catch { /* write anyway */ }
+  } catch {
+    /* write anyway */
+  }
 
   fs.writeFileSync(settingsFile, newContent, { mode: 0o644 });
 }
 
-/**
- * Load enabled MCP server configs for a user.
- * Reads data/mcp-servers/{userId}/servers.json and returns only enabled servers
- * with fields needed for settings.json. Supports both stdio (command/args/env)
- * and http/sse (type/url/headers) server types.
- */
-function loadUserMcpServers(
-  userId: string,
-): Record<string, Record<string, unknown>> {
-  const serversFile = path.join(DATA_DIR, 'mcp-servers', userId, 'servers.json');
-  try {
-    if (!fs.existsSync(serversFile)) return {};
-    const file = JSON.parse(fs.readFileSync(serversFile, 'utf8')) as {
-      servers?: Record<string, Record<string, unknown>>;
-    };
-    const raw = file.servers || {};
-    const result: Record<string, Record<string, unknown>> = {};
-    for (const [name, server] of Object.entries(raw)) {
-      if (!server.enabled) continue;
-
-      const isHttpType = server.type === 'http' || server.type === 'sse';
-
-      if (isHttpType) {
-        if (!server.url) continue;
-        const entry: Record<string, unknown> = { type: server.type, url: server.url };
-        if (server.headers && typeof server.headers === 'object' && Object.keys(server.headers as object).length > 0) {
-          entry.headers = server.headers;
-        }
-        result[name] = entry;
-      } else {
-        if (!server.command) continue;
-        const entry: Record<string, unknown> = { command: server.command };
-        if (server.args) entry.args = server.args;
-        if (server.env && typeof server.env === 'object' && Object.keys(server.env as object).length > 0) {
-          entry.env = server.env;
-        }
-        result[name] = entry;
-      }
-    }
-    return result;
-  } catch {
-    return {};
-  }
-}
 
 export interface ContainerInput {
   prompt: string;
@@ -174,6 +140,7 @@ function buildVolumeMounts(
   mountUserSkills = true,
   selectedSkills: string[] | null = null,
   agentId?: string,
+  ownerHomeFolder?: string,
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
@@ -223,23 +190,33 @@ function buildVolumeMounts(
     });
   }
 
-  // Per-group memory directory (isolated from workspace to avoid polluting user files)
-  const memoryDir = path.join(DATA_DIR, 'memory', group.folder);
+  // Memory directory: home containers write their own; non-home containers read owner's home memory
+  const memoryFolder = group.is_home
+    ? group.folder
+    : ownerHomeFolder || group.folder;
+  const memoryDir = path.join(DATA_DIR, 'memory', memoryFolder);
   mkdirForContainer(memoryDir);
   mounts.push({
     hostPath: memoryDir,
     containerPath: '/workspace/memory',
-    readonly: false,
+    readonly: !group.is_home,
   });
 
   // Per-group Claude sessions directory (isolated from other groups)
   // Sub-agents get their own session dir under agents/{agentId}/.claude/
   const groupSessionsDir = agentId
-    ? path.join(DATA_DIR, 'sessions', group.folder, 'agents', agentId, '.claude')
+    ? path.join(
+        DATA_DIR,
+        'sessions',
+        group.folder,
+        'agents',
+        agentId,
+        '.claude',
+      )
     : path.join(DATA_DIR, 'sessions', group.folder, '.claude');
   mkdirForContainer(groupSessionsDir);
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
-  const mcpServers = ownerId ? loadUserMcpServers(ownerId) : {};
+  const mcpServers = resolveGroupMcpServers(group, ownerId);
   ensureSettingsJson(settingsFile, mcpServers);
 
   mounts.push({
@@ -252,7 +229,8 @@ function buildVolumeMounts(
   // selectedSkills 为 null 时挂载整个目录（全部 skills）
   // selectedSkills 为数组时仅挂载选中的 skill 子目录
   const projectSkillsDir = path.join(projectRoot, 'container', 'skills');
-  const userSkillsDir = (mountUserSkills && ownerId) ? path.join(DATA_DIR, 'skills', ownerId) : null;
+  const userSkillsDir =
+    mountUserSkills && ownerId ? path.join(DATA_DIR, 'skills', ownerId) : null;
 
   // Ensure user skills directory exists so it can always be mounted.
   // Skills may be installed after the group is created; without pre-creating,
@@ -283,7 +261,7 @@ function buildVolumeMounts(
     // 项目级 skills
     if (fs.existsSync(projectSkillsDir)) {
       for (const name of selectedSet) {
-        if (!/^[\w\-]+$/.test(name)) continue;  // 防御性跳过非法名称
+        if (!/^[\w\-]+$/.test(name)) continue; // 防御性跳过非法名称
         const skillPath = path.join(projectSkillsDir, name);
         if (fs.existsSync(skillPath) && fs.statSync(skillPath).isDirectory()) {
           mounts.push({
@@ -297,7 +275,7 @@ function buildVolumeMounts(
     // 用户级 skills
     if (userSkillsDir) {
       for (const name of selectedSet) {
-        if (!/^[\w\-]+$/.test(name)) continue;  // 防御性跳过非法名称
+        if (!/^[\w\-]+$/.test(name)) continue; // 防御性跳过非法名称
         const skillPath = path.join(userSkillsDir, name);
         if (fs.existsSync(skillPath) && fs.statSync(skillPath).isDirectory()) {
           mounts.push({
@@ -322,7 +300,11 @@ function buildVolumeMounts(
   for (const sub of ['messages', 'tasks', 'input', 'agents'] as const) {
     const subDir = path.join(groupIpcDir, sub);
     fs.mkdirSync(subDir, { recursive: true });
-    try { fs.chmodSync(subDir, 0o777); } catch { /* ignore if already correct */ }
+    try {
+      fs.chmodSync(subDir, 0o777);
+    } catch {
+      /* ignore if already correct */
+    }
   }
   mounts.push({
     hostPath: groupIpcDir,
@@ -340,7 +322,9 @@ function buildVolumeMounts(
   if (envLines.length > 0) {
     const envFilePath = path.join(envDir, 'env');
     const quotedLines = shellQuoteEnvLines(envLines);
-    fs.writeFileSync(envFilePath, quotedLines.join('\n') + '\n', { mode: 0o600 });
+    fs.writeFileSync(envFilePath, quotedLines.join('\n') + '\n', {
+      mode: 0o600,
+    });
     try {
       fs.chmodSync(envFilePath, 0o600);
     } catch (err) {
@@ -362,7 +346,10 @@ function buildVolumeMounts(
     try {
       writeCredentialsFile(groupSessionsDir, mergedConfig);
     } catch (err) {
-      logger.warn({ group: group.name, err }, 'Failed to write .credentials.json');
+      logger.warn(
+        { group: group.name, err },
+        'Failed to write .credentials.json',
+      );
     }
   }
 
@@ -418,6 +405,7 @@ export async function runContainerAgent(
   input: ContainerInput,
   onProcess: (proc: ChildProcess, containerName: string) => void,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  ownerHomeFolder?: string,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
 
@@ -428,9 +416,18 @@ export async function runContainerAgent(
   const isAdminHome = !!group.is_home && group.folder === 'main';
   // Per-user skills: always mount if the group has an owner
   const shouldMountUserSkills = !!group.created_by;
-  const mounts = buildVolumeMounts(group, isAdminHome, shouldMountUserSkills, group.selected_skills ?? null, input.agentId);
+  const mounts = buildVolumeMounts(
+    group,
+    isAdminHome,
+    shouldMountUserSkills,
+    group.selected_skills ?? null,
+    input.agentId,
+    ownerHomeFolder,
+  );
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
-  const agentSuffix = input.agentId ? `-${input.agentId.replace(/[^a-zA-Z0-9-]/g, '-')}` : '';
+  const agentSuffix = input.agentId
+    ? `-${input.agentId.replace(/[^a-zA-Z0-9-]/g, '-')}`
+    : '';
   const containerName = `happyclaw-${safeName}${agentSuffix}-${Date.now()}`;
   const containerArgs = buildContainerArgs(mounts, containerName);
 
@@ -479,7 +476,8 @@ export async function runContainerAgent(
     container.stdin.end();
 
     let timedOut = false;
-    const timeoutMs = group.containerConfig?.timeout || getSystemSettings().containerTimeout;
+    const timeoutMs =
+      group.containerConfig?.timeout || getSystemSettings().containerTimeout;
 
     const killOnTimeout = () => {
       timedOut = true;
@@ -512,7 +510,9 @@ export async function runContainerAgent(
       onOutput,
       resetTimeout,
     });
-    attachStderrHandler(container.stderr, stderrState, group.name, { container: group.folder });
+    attachStderrHandler(container.stderr, stderrState, group.name, {
+      container: group.folder,
+    });
 
     container.on('close', (code, signal) => {
       clearTimeout(timeout);
@@ -597,7 +597,11 @@ export function writeTasksSnapshot(
 
   const tasksFile = path.join(groupIpcDir, 'current_tasks.json');
   // 删除后重建：容器创建的文件归属 node(1000) 用户，宿主机进程无法覆写
-  try { fs.unlinkSync(tasksFile); } catch { /* ignore */ }
+  try {
+    fs.unlinkSync(tasksFile);
+  } catch {
+    /* ignore */
+  }
   fs.writeFileSync(tasksFile, JSON.stringify(filteredTasks, null, 2));
 }
 
@@ -626,7 +630,11 @@ export function writeGroupsSnapshot(
   const visibleGroups = isAdminHome ? groups : [];
 
   const groupsFile = path.join(groupIpcDir, 'available_groups.json');
-  try { fs.unlinkSync(groupsFile); } catch { /* ignore */ }
+  try {
+    fs.unlinkSync(groupsFile);
+  } catch {
+    /* ignore */
+  }
   fs.writeFileSync(
     groupsFile,
     JSON.stringify(
@@ -641,6 +649,27 @@ export function writeGroupsSnapshot(
 }
 
 /**
+ * 杀死进程及其所有子进程。
+ * 如果进程以 detached 模式启动（独立进程组），使用负 PID 杀整个进程组。
+ */
+export function killProcessTree(proc: ChildProcess, signal: NodeJS.Signals = 'SIGTERM'): boolean {
+  try {
+    if (proc.pid) {
+      process.kill(-proc.pid, signal);
+      return true;
+    }
+  } catch {
+    try {
+      proc.kill(signal);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
  * Run agent directly on the host machine (no Docker container).
  * Used for host execution mode — the agent gets full access to the host filesystem.
  */
@@ -649,6 +678,7 @@ export async function runHostAgent(
   input: ContainerInput,
   onProcess: (proc: ChildProcess, identifier: string) => void,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  ownerHomeFolder?: string,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
   const setupInstallHint = 'npm --prefix container/agent-runner install';
@@ -667,39 +697,46 @@ export async function runHostAgent(
     const gitDir = path.join(defaultGroupDir, '.git');
     if (!fs.existsSync(gitDir)) {
       try {
-        execFileSync('git', ['init'], { cwd: defaultGroupDir, stdio: 'ignore' });
-        logger.info({ folder: group.folder }, 'Initialized git repository for group');
+        execFileSync('git', ['init'], {
+          cwd: defaultGroupDir,
+          stdio: 'ignore',
+        });
+        logger.info(
+          { folder: group.folder },
+          'Initialized git repository for group',
+        );
       } catch (err) {
         // Non-fatal: agent still works, just reports wrong working directory
-        logger.warn({ folder: group.folder, err }, 'Failed to initialize git repository');
+        logger.warn(
+          { folder: group.folder, err },
+          'Failed to initialize git repository',
+        );
       }
     }
   }
   let groupDir = group.customCwd || defaultGroupDir;
   if (!path.isAbsolute(groupDir)) {
-    return hostModeSetupError(
-      `工作目录必须是绝对路径：${groupDir}`,
-    );
+    return hostModeSetupError(`工作目录必须是绝对路径：${groupDir}`);
   }
   // Resolve symlinks to prevent TOCTOU attacks
   try {
     groupDir = fs.realpathSync(groupDir);
   } catch {
-    return hostModeSetupError(
-      `工作目录不存在或无法解析：${groupDir}`,
-    );
+    return hostModeSetupError(`工作目录不存在或无法解析：${groupDir}`);
   }
   if (!fs.statSync(groupDir).isDirectory()) {
-    return hostModeSetupError(
-      `工作目录不是目录：${groupDir}`,
-    );
+    return hostModeSetupError(`工作目录不是目录：${groupDir}`);
   }
 
   // Runtime allowlist validation for custom CWD (defense-in-depth: web.ts validates at creation,
   // but re-check here in case allowlist was tightened or path was injected via DB)
   if (group.customCwd) {
     const allowlist = loadMountAllowlist();
-    if (allowlist && allowlist.allowedRoots && allowlist.allowedRoots.length > 0) {
+    if (
+      allowlist &&
+      allowlist.allowedRoots &&
+      allowlist.allowedRoots.length > 0
+    ) {
       let allowed = false;
       for (const root of allowlist.allowedRoots) {
         const expandedRoot = root.path.startsWith('~')
@@ -732,27 +769,49 @@ export async function runHostAgent(
   }
 
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
-  fs.mkdirSync(path.join(DATA_DIR, 'memory', group.folder), { recursive: true });
+  fs.mkdirSync(path.join(DATA_DIR, 'memory', group.folder), {
+    recursive: true,
+  });
 
   // 2. 确保目录结构（宿主机模式下限制目录权限）
   // Sub-agents get their own IPC and session directories
   const groupIpcDir = input.agentId
     ? path.join(DATA_DIR, 'ipc', group.folder, 'agents', input.agentId)
     : path.join(DATA_DIR, 'ipc', group.folder);
-  fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true, mode: 0o700 });
-  fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true, mode: 0o700 });
-  fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true, mode: 0o700 });
+  fs.mkdirSync(path.join(groupIpcDir, 'messages'), {
+    recursive: true,
+    mode: 0o700,
+  });
+  fs.mkdirSync(path.join(groupIpcDir, 'tasks'), {
+    recursive: true,
+    mode: 0o700,
+  });
+  fs.mkdirSync(path.join(groupIpcDir, 'input'), {
+    recursive: true,
+    mode: 0o700,
+  });
   // All agents (main + sub/conversation) get agents/ subdir for spawn/message IPC
-  fs.mkdirSync(path.join(groupIpcDir, 'agents'), { recursive: true, mode: 0o700 });
+  fs.mkdirSync(path.join(groupIpcDir, 'agents'), {
+    recursive: true,
+    mode: 0o700,
+  });
 
   const groupSessionsDir = input.agentId
-    ? path.join(DATA_DIR, 'sessions', group.folder, 'agents', input.agentId, '.claude')
+    ? path.join(
+        DATA_DIR,
+        'sessions',
+        group.folder,
+        'agents',
+        input.agentId,
+        '.claude',
+      )
     : path.join(DATA_DIR, 'sessions', group.folder, '.claude');
   fs.mkdirSync(groupSessionsDir, { recursive: true });
 
   // 3. 写入 settings.json（合并模式，不覆盖已有用户配置）
+  // Resolve MCP servers based on group's mcp_mode (same logic as Docker mode).
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
-  const hostMcpServers = group.created_by ? loadUserMcpServers(group.created_by) : {};
+  const hostMcpServers = resolveGroupMcpServers(group, group.created_by);
   ensureSettingsJson(settingsFile, hostMcpServers);
 
   // 4. Skills 自动链接到 session 目录
@@ -768,7 +827,9 @@ export async function runHostAgent(
         if (entry.isSymbolicLink() || entry.isDirectory()) {
           fs.rmSync(entryPath, { recursive: true, force: true });
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
 
     const selectedSkills = group.selected_skills ?? null;
@@ -786,7 +847,9 @@ export async function runHostAgent(
             fs.rmSync(linkPath, { recursive: true, force: true });
           }
           fs.symlinkSync(path.join(sourceDir, entry.name), linkPath);
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }
     };
 
@@ -799,7 +862,10 @@ export async function runHostAgent(
       linkSkillEntries(path.join(DATA_DIR, 'skills', ownerId));
     }
   } catch (err) {
-    logger.warn({ folder: group.folder, err }, '宿主机模式 skills 符号链接失败');
+    logger.warn(
+      { folder: group.folder, err },
+      '宿主机模式 skills 符号链接失败',
+    );
   }
 
   // 5. 构建环境变量
@@ -824,7 +890,10 @@ export async function runHostAgent(
     try {
       writeCredentialsFile(groupSessionsDir, mergedConfig);
     } catch (err) {
-      logger.warn({ folder: group.folder, err }, 'Failed to write .credentials.json for host agent');
+      logger.warn(
+        { folder: group.folder, err },
+        'Failed to write .credentials.json for host agent',
+      );
     }
   }
 
@@ -841,7 +910,14 @@ export async function runHostAgent(
     fs.mkdirSync(legacyGlobalDir, { recursive: true });
     hostEnv['HAPPYCLAW_WORKSPACE_GLOBAL'] = legacyGlobalDir;
   }
-  hostEnv['HAPPYCLAW_WORKSPACE_MEMORY'] = path.join(DATA_DIR, 'memory', group.folder);
+  const memoryFolder = group.is_home
+    ? group.folder
+    : ownerHomeFolder || group.folder;
+  hostEnv['HAPPYCLAW_WORKSPACE_MEMORY'] = path.join(
+    DATA_DIR,
+    'memory',
+    memoryFolder,
+  );
   hostEnv['HAPPYCLAW_WORKSPACE_IPC'] = groupIpcDir;
   hostEnv['CLAUDE_CONFIG_DIR'] = groupSessionsDir;
   // 让 SDK 捕获 CLI 的 stderr 输出，便于排查启动失败
@@ -856,11 +932,7 @@ export async function runHostAgent(
   const projectRoot = process.cwd();
   const agentRunnerRoot = path.join(projectRoot, 'container', 'agent-runner');
   const agentRunnerNodeModules = path.join(agentRunnerRoot, 'node_modules');
-  const agentRunnerDist = path.join(
-    agentRunnerRoot,
-    'dist',
-    'index.js',
-  );
+  const agentRunnerDist = path.join(agentRunnerRoot, 'dist', 'index.js');
   const requiredDeps = ['@anthropic-ai/claude-agent-sdk'];
   const missingDeps = requiredDeps.filter((dep) => {
     const depJson = path.join(
@@ -932,6 +1004,7 @@ export async function runHostAgent(
       stdio: ['pipe', 'pipe', 'pipe'],
       env: hostEnv,
       cwd: groupDir,
+      detached: true,
     });
 
     const processId = `host-${group.folder}-${Date.now()}`;
@@ -943,14 +1016,15 @@ export async function runHostAgent(
     // 8. stdin 输入
     proc.stdin.on('error', (err) => {
       logger.error({ group: group.name, err }, 'Host agent stdin write failed');
-      proc.kill();
+      killProcessTree(proc);
     });
     proc.stdin.write(JSON.stringify(input));
     proc.stdin.end();
 
     // 9. 超时管理
     let timedOut = false;
-    const timeoutMs = group.containerConfig?.timeout || getSystemSettings().containerTimeout;
+    const timeoutMs =
+      group.containerConfig?.timeout || getSystemSettings().containerTimeout;
 
     let killTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -960,18 +1034,10 @@ export async function runHostAgent(
         { group: group.name, processId },
         'Host agent timeout, killing',
       );
-      try {
-        proc.kill('SIGTERM');
-      } catch {
-        // ignore
-      }
+      killProcessTree(proc, 'SIGTERM');
       killTimer = setTimeout(() => {
         if (proc.exitCode === null && proc.signalCode === null) {
-          try {
-            proc.kill('SIGKILL');
-          } catch {
-            // ignore
-          }
+          killProcessTree(proc, 'SIGKILL');
         }
       }, 5000);
     };
@@ -990,7 +1056,9 @@ export async function runHostAgent(
       onOutput,
       resetTimeout,
     });
-    attachStderrHandler(proc.stderr, stderrState, group.name, { host: group.folder });
+    attachStderrHandler(proc.stderr, stderrState, group.name, {
+      host: group.folder,
+    });
 
     // 11. close 事件处理
     proc.on('close', (code, signal) => {
@@ -1011,9 +1079,7 @@ export async function runHostAgent(
         resolvePromise: resolveOnce,
         startTime,
         timeoutMs,
-        extraSummaryLines: [
-          `Working Directory: ${groupDir}`,
-        ],
+        extraSummaryLines: [`Working Directory: ${groupDir}`],
         enrichError: (stderrContent, exitLabel) => {
           const missingPackageMatch = stderrContent.match(
             /Cannot find package '([^']+)' imported from/u,

@@ -8,6 +8,7 @@ import { useTheme } from '../../hooks/useTheme';
 
 export function AppLayout() {
   const location = useLocation();
+  const isChatRoute = location.pathname.startsWith('/chat');
   const hideMobileTabBar = /^\/chat\/.+/.test(location.pathname);
   useTheme(); // 应用并同步持久化的主题偏好
 
@@ -22,9 +23,16 @@ export function AppLayout() {
         <NavRail />
       </div>
 
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
         <ConnectionBanner />
-        <main className="flex-1 overflow-hidden lg:overflow-auto lg:pb-0">
+        <main
+          data-app-scroll-root="true"
+          className={`flex-1 min-h-0 lg:overflow-auto lg:pb-0 ${
+            isChatRoute
+              ? 'overflow-hidden'
+              : `overflow-y-auto overflow-x-hidden overscroll-y-contain ${hideMobileTabBar ? 'pb-6' : 'pb-28'}`
+          }`}
+        >
           <Outlet />
         </main>
       </div>

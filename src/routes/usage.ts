@@ -2,7 +2,12 @@ import { Hono } from 'hono';
 import type { Variables } from '../web-context.js';
 import { canAccessGroup } from '../web-context.js';
 import { authMiddleware } from '../middleware/auth.js';
-import { getTokenUsageStats, getTokenUsageSummary, getAllRegisteredGroups, getAllChats } from '../db.js';
+import {
+  getTokenUsageStats,
+  getTokenUsageSummary,
+  getAllRegisteredGroups,
+  getAllChats,
+} from '../db.js';
 import type { AuthUser } from '../types.js';
 
 const usage = new Hono<{ Variables: Variables }>();
@@ -23,7 +28,13 @@ function getAccessibleChatJids(user: AuthUser): string[] | undefined {
 
   for (const chat of chats) {
     const group = groups[chat.jid];
-    if (group && canAccessGroup({ id: user.id, role: user.role }, { ...group, jid: chat.jid })) {
+    if (
+      group &&
+      canAccessGroup(
+        { id: user.id, role: user.role },
+        { ...group, jid: chat.jid },
+      )
+    ) {
       accessibleJids.push(chat.jid);
     }
   }
@@ -39,7 +50,9 @@ function getAccessibleChatJids(user: AuthUser): string[] | undefined {
 usage.get('/stats', (c) => {
   const user = c.get('user') as AuthUser;
   const daysParam = c.req.query('days');
-  const days = daysParam ? Math.min(Math.max(parseInt(daysParam, 10) || 7, 1), 365) : 7;
+  const days = daysParam
+    ? Math.min(Math.max(parseInt(daysParam, 10) || 7, 1), 365)
+    : 7;
 
   const chatJids = getAccessibleChatJids(user);
 
@@ -47,9 +60,13 @@ usage.get('/stats', (c) => {
   if (chatJids && chatJids.length === 0) {
     return c.json({
       summary: {
-        totalInputTokens: 0, totalOutputTokens: 0,
-        totalCacheReadTokens: 0, totalCacheCreationTokens: 0,
-        totalCostUSD: 0, totalMessages: 0, totalActiveDays: 0,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCacheReadTokens: 0,
+        totalCacheCreationTokens: 0,
+        totalCostUSD: 0,
+        totalMessages: 0,
+        totalActiveDays: 0,
       },
       breakdown: [],
       days,

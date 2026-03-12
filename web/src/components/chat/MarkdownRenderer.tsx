@@ -1,6 +1,8 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
 import rehypeHighlight from 'rehype-highlight';
+import rehypeKatex from 'rehype-katex';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import React, { useState, memo } from 'react';
 import { createPortal } from 'react-dom';
@@ -9,6 +11,7 @@ import { MermaidDiagram } from './MermaidDiagram';
 import { toBase64Url } from '../../stores/files';
 import { withBasePath } from '../../utils/url';
 import 'highlight.js/styles/github.css';
+import 'katex/dist/katex.min.css';
 
 interface MarkdownRendererProps {
   content: string;
@@ -75,14 +78,25 @@ function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
   );
 }
 
-/** Allow class names on code/span elements so rehype-highlight styles survive sanitization */
+/** Allow class names on code/span elements so rehype-highlight and KaTeX styles survive sanitization */
 const sanitizeSchema = {
   ...defaultSchema,
   attributes: {
     ...defaultSchema.attributes,
     code: [...(defaultSchema.attributes?.code || []), 'class', 'className'],
-    span: [...(defaultSchema.attributes?.span || []), 'class', 'className'],
+    span: [...(defaultSchema.attributes?.span || []), 'class', 'className', 'style', 'aria-hidden'],
+    div: [...(defaultSchema.attributes?.div || []), 'class', 'className', 'style'],
+    math: ['xmlns', 'display'],
+    annotation: ['encoding'],
   },
+  tagNames: [
+    ...(defaultSchema.tagNames || []),
+    // MathML tags for KaTeX accessibility layer
+    'math', 'semantics', 'mrow', 'mi', 'mn', 'mo', 'msup', 'msub',
+    'mfrac', 'mover', 'munder', 'msqrt', 'mroot', 'mtable', 'mtr', 'mtd',
+    'mtext', 'mspace', 'mstyle', 'menclose', 'annotation',
+    'msubsup', 'munderover', 'mpadded', 'mphantom',
+  ],
   protocols: {
     ...defaultSchema.protocols,
     src: [...(defaultSchema.protocols?.src || []), 'data'],
@@ -172,8 +186,12 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, groupJ
   return (
     <div className={textSizeClass}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[[rehypeHighlight, { plainText: ['mermaid'] }], [rehypeSanitize, sanitizeSchema]]}
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[
+          [rehypeHighlight, { plainText: ['mermaid'] }],
+          [rehypeKatex, { throwOnError: false, strict: false }],
+          [rehypeSanitize, sanitizeSchema],
+        ]}
         components={{
           code: (props) => <CodeBlock {...props} variant={variant} />,
           img: ({ src, alt }) => <MarkdownImage src={src ? resolveImageSrc(src, groupJid) : undefined} alt={alt} />,

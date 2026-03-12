@@ -102,9 +102,11 @@ export function toUserPublic(u: User): UserPublic {
 function buildSetupStatus() {
   const claudeConfig = getClaudeProviderConfig();
   const officialConfigured =
-    !!claudeConfig.claudeCodeOauthToken?.trim() || !!claudeConfig.claudeOAuthCredentials;
+    !!claudeConfig.claudeCodeOauthToken?.trim() ||
+    !!claudeConfig.claudeOAuthCredentials;
   const thirdPartyConfigured = !!(
-    claudeConfig.anthropicBaseUrl?.trim() && claudeConfig.anthropicAuthToken?.trim()
+    claudeConfig.anthropicBaseUrl?.trim() &&
+    claudeConfig.anthropicAuthToken?.trim()
   );
   const claudeConfigured = officialConfigured || thirdPartyConfigured;
   const { source: feishuSource } = getFeishuProviderConfigWithSource();
@@ -128,7 +130,10 @@ authRoutes.get('/status', (c) => {
 // Public: initial admin setup (only when no users exist)
 authRoutes.post('/setup', async (c) => {
   const body = await c.req.json().catch(() => ({}));
-  const { username, password } = body as { username?: string; password?: string };
+  const { username, password } = body as {
+    username?: string;
+    password?: string;
+  };
 
   if (!username || !password) {
     return c.json({ error: 'Username and password are required' }, 400);
@@ -178,7 +183,10 @@ authRoutes.post('/setup', async (c) => {
   try {
     ensureUserHomeGroup(userId, 'admin', username);
   } catch (err) {
-    logger.warn({ err, userId }, 'Failed to create admin home group during setup');
+    logger.warn(
+      { err, userId },
+      'Failed to create admin home group during setup',
+    );
   }
 
   // Auto-login
@@ -250,7 +258,8 @@ authRoutes.post('/login', async (c) => {
 
   // Constant-time: always run bcrypt compare even if user doesn't exist (prevents timing attacks)
   // 使用运行时生成的合法 bcrypt hash，确保 bcrypt.compare 不会抛异常
-  const DUMMY_HASH = '$2b$12$GBXvNon/zJbUI4jtleGnP.YX03zXP5eSXjppo7a3vyWEUK/2YwdP.';
+  const DUMMY_HASH =
+    '$2b$12$GBXvNon/zJbUI4jtleGnP.YX03zXP5eSXjppo7a3vyWEUK/2YwdP.';
   let passwordMatch: boolean;
   try {
     passwordMatch = await verifyPassword(
@@ -301,7 +310,10 @@ authRoutes.post('/login', async (c) => {
     ensureUserHomeGroup(user.id, user.role, user.username);
   } catch (err) {
     // Don't block login if home group creation fails
-    logger.warn({ err, userId: user.id }, 'Failed to ensure home group during login');
+    logger.warn(
+      { err, userId: user.id },
+      'Failed to ensure home group during login',
+    );
   }
 
   logAuthEvent({
@@ -315,7 +327,11 @@ authRoutes.post('/login', async (c) => {
     updatedUser.role === 'admin' ? buildSetupStatus() : undefined;
 
   return new Response(
-    JSON.stringify({ success: true, user: toUserPublic(updatedUser), setupStatus }),
+    JSON.stringify({
+      success: true,
+      user: toUserPublic(updatedUser),
+      setupStatus,
+    }),
     {
       status: 200,
       headers: {
@@ -373,7 +389,10 @@ authRoutes.post('/register', async (c) => {
   const ua = c.req.header('user-agent') || null;
 
   // IP-based rate limiting for register endpoint
-  const { maxLoginAttempts: regMaxAttempts, loginLockoutMinutes: regLockoutMin } = getSystemSettings();
+  const {
+    maxLoginAttempts: regMaxAttempts,
+    loginLockoutMinutes: regLockoutMin,
+  } = getSystemSettings();
   const rateCheck = checkLoginRateLimit(
     `register:${ip}`,
     ip,
@@ -453,7 +472,10 @@ authRoutes.post('/register', async (c) => {
   try {
     ensureUserHomeGroup(userId, result.role, username);
   } catch (err) {
-    logger.warn({ err, userId }, 'Failed to create home group during registration');
+    logger.warn(
+      { err, userId },
+      'Failed to create home group during registration',
+    );
   }
 
   // Auto-login
@@ -731,18 +753,25 @@ authRoutes.post('/avatar', authMiddleware, async (c) => {
 
   const ext = ALLOWED_AVATAR_TYPES[file.type];
   if (!ext) {
-    return c.json({ error: 'Unsupported image type. Use jpg, png, gif or webp' }, 400);
+    return c.json(
+      { error: 'Unsupported image type. Use jpg, png, gif or webp' },
+      400,
+    );
   }
 
   fs.mkdirSync(AVATARS_DIR, { recursive: true });
 
   // Delete old avatar files for this user
   try {
-    const existing = fs.readdirSync(AVATARS_DIR).filter(f => f.startsWith(`${user.id}-`));
+    const existing = fs
+      .readdirSync(AVATARS_DIR)
+      .filter((f) => f.startsWith(`${user.id}-`));
     for (const f of existing) {
       fs.unlinkSync(path.join(AVATARS_DIR, f));
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   const filename = `${user.id}-${crypto.randomBytes(4).toString('hex')}${ext}`;
   const filePath = path.join(AVATARS_DIR, filename);

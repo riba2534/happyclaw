@@ -1,8 +1,15 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Loader2, Save } from 'lucide-react';
+import { Loader2, Save, Shield } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { api } from '../../api/client';
 import { useChatStore } from '../../stores/chat';
+
+const ACTIVATION_MODES = [
+  { value: 'auto', label: '自动', desc: '群聊按 @mention 规则；私聊始终响应' },
+  { value: 'always', label: '始终响应', desc: '群聊无需 @bot 也响应' },
+  { value: 'when_mentioned', label: '仅 @mention', desc: '群聊必须 @bot 才响应' },
+  { value: 'disabled', label: '已禁用', desc: '忽略所有消息' },
+] as const;
 
 interface Skill {
   id: string;
@@ -26,6 +33,8 @@ export function GroupSkillsPanel({ groupJid }: GroupSkillsPanelProps) {
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [activationMode, setActivationMode] = useState(group?.activation_mode ?? 'auto');
+  const [savingMode, setSavingMode] = useState(false);
 
   // 加载可用 skills
   useEffect(() => {
@@ -37,6 +46,25 @@ export function GroupSkillsPanel({ groupJid }: GroupSkillsPanelProps) {
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
+
+  // 同步 activation_mode
+  useEffect(() => {
+    if (group?.activation_mode) setActivationMode(group.activation_mode);
+  }, [group?.activation_mode]);
+
+  const handleActivationModeChange = async (mode: string) => {
+    setActivationMode(mode as typeof activationMode);
+    setSavingMode(true);
+    try {
+      await api.patch(`/api/groups/${encodeURIComponent(groupJid)}`, { activation_mode: mode });
+      useChatStore.setState(s => {
+        const g = s.groups[groupJid];
+        if (!g) return s;
+        return { ...s, groups: { ...s.groups, [groupJid]: { ...g, activation_mode: mode as typeof activationMode } } };
+      });
+    } catch { /* ignore */ }
+    finally { setSavingMode(false); }
+  };
 
   // 从群组数据初始化选中状态
   useEffect(() => {
@@ -144,6 +172,28 @@ export function GroupSkillsPanel({ groupJid }: GroupSkillsPanelProps) {
           {saving ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Save className="w-3 h-3 mr-1" />}
           {saveSuccess ? '已保存' : '保存'}
         </Button>
+      </div>
+
+      {/* Activation Mode 设置 */}
+      <div className="px-4 py-3 border-b border-border">
+        <div className="flex items-center gap-2 mb-1.5">
+          <Shield className="w-3.5 h-3.5 text-muted-foreground" />
+          <span className="text-xs font-medium">消息响应模式</span>
+          {savingMode && <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />}
+        </div>
+        <select
+          value={activationMode}
+          onChange={(e) => handleActivationModeChange(e.target.value)}
+          disabled={savingMode}
+          className="w-full text-xs px-2 py-1.5 rounded border border-border bg-background text-foreground focus:ring-1 focus:ring-primary"
+        >
+          {ACTIVATION_MODES.map(m => (
+            <option key={m.value} value={m.value}>{m.label}</option>
+          ))}
+        </select>
+        <p className="text-[11px] text-muted-foreground mt-1">
+          {ACTIVATION_MODES.find(m => m.value === activationMode)?.desc}
+        </p>
       </div>
 
       <div className="flex-1 overflow-y-auto">

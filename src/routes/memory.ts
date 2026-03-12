@@ -146,11 +146,15 @@ function classifyMemorySource(
 ): Pick<MemorySource, 'scope' | 'kind' | 'label' | 'ownerName'> {
   const parts = relativePath.split('/');
   // data/groups/user-global/{userId}/CLAUDE.md
-  if (parts[0] === 'data' && parts[1] === 'groups' && parts[2] === 'user-global') {
+  if (
+    parts[0] === 'data' &&
+    parts[1] === 'groups' &&
+    parts[2] === 'user-global'
+  ) {
     const userId = parts[3] || 'unknown';
     const name = parts.slice(4).join('/') || 'CLAUDE.md';
     const owner = getUserById(userId);
-    const ownerLabel = owner ? (owner.display_name || owner.username) : userId;
+    const ownerLabel = owner ? owner.display_name || owner.username : userId;
     return {
       scope: 'user-global',
       kind: 'claude',
@@ -192,7 +196,10 @@ function classifyMemorySource(
   };
 }
 
-function readMemoryFile(relativePath: string, user: AuthUser): MemoryFilePayload {
+function readMemoryFile(
+  relativePath: string,
+  user: AuthUser,
+): MemoryFilePayload {
   const normalized = normalizeRelativePath(relativePath);
   const { absolutePath, writable } = resolveMemoryPath(normalized, user);
   if (!fs.existsSync(absolutePath)) {
@@ -339,7 +346,12 @@ function listMemorySources(user: AuthUser): MemorySource[] {
     for (const d of memFolders) {
       if (d.isDirectory() && (isAdmin || accessibleFolders.has(d.name))) {
         const scanned: string[] = [];
-        walkFiles(path.join(MEMORY_DATA_DIR, d.name), 4, MEMORY_LIST_LIMIT, scanned);
+        walkFiles(
+          path.join(MEMORY_DATA_DIR, d.name),
+          4,
+          MEMORY_LIST_LIMIT,
+          scanned,
+        );
         for (const f of scanned) {
           if (isMemoryCandidateFile(f)) files.add(f);
         }
@@ -354,7 +366,12 @@ function listMemorySources(user: AuthUser): MemorySource[] {
     for (const d of sessFolders) {
       if (d.isDirectory() && (isAdmin || accessibleFolders.has(d.name))) {
         const scanned: string[] = [];
-        walkFiles(path.join(sessionsDir, d.name), 7, MEMORY_LIST_LIMIT, scanned);
+        walkFiles(
+          path.join(sessionsDir, d.name),
+          7,
+          MEMORY_LIST_LIMIT,
+          scanned,
+        );
         for (const f of scanned) {
           if (isMemoryCandidateFile(f)) files.add(f);
         }
@@ -373,7 +390,9 @@ function listMemorySources(user: AuthUser): MemorySource[] {
     const relativePath = path
       .relative(process.cwd(), absolutePath)
       .replace(/\\/g, '/');
-    const writable = isWithinRoot(absolutePath, GROUPS_DIR) || isWithinRoot(absolutePath, MEMORY_DATA_DIR);
+    const writable =
+      isWithinRoot(absolutePath, GROUPS_DIR) ||
+      isWithinRoot(absolutePath, MEMORY_DATA_DIR);
     const exists = fs.existsSync(absolutePath);
     let updatedAt: string | null = null;
     let size = 0;

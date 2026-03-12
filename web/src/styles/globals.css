@@ -278,6 +278,9 @@ pre code.hljs {
 .dark .hljs-addition { color: #b4f1b4 !important; background-color: #1b4721 !important; }
 .dark .hljs-deletion { color: #ffd8d3 !important; background-color: #78191b !important; }
 
+/* KaTeX dark mode — inherit text color from theme */
+.dark .katex { color: inherit; }
+
 /* Reduced motion preference */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

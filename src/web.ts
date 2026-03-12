@@ -288,37 +288,18 @@ async function handleWebUserMessage(
     shared,
   );
 
-  // For home chat, distinguish safe reuse vs restart scenarios:
-  // - User-specific Web home with its own active runner: safe to IPC-inject
-  // - IM-started runner / shared admin home / no active runner: restart so routing and ownership are recalculated
+  // For home chat, always restart the agent so processGroupMessages can
+  // re-evaluate reply routing (replySourceImJid) from the latest message.
+  // IPC-injecting into a running home container is unsafe because:
+  // 1. web:main is shared — runtime owner must be recalculated per sender.
+  // 2. Any home group may have IM bindings — the running agent's reply
+  //    callback was bound to the *previous* message's source_jid, so a
+  //    web message injected into an IM-started runner would incorrectly
+  //    route replies back to IM instead of staying on web (#99).
   let pipedToActive = false;
   if (group.is_home) {
-    // web:main is a shared admin home. Its runtime owner is selected from the
-    // latest sender during processGroupMessages, so reusing an existing runner
-    // here can leak another admin's session/memory context.
-    const canReuseHomeRunner = chatJid !== 'web:main' && deps.queue.hasDirectActiveRunner(chatJid);
-    if (canReuseHomeRunner) {
-      // Same channel: container was started by this Web JID → IPC inject
-      const images = attachments?.map((attachment) => ({
-        data: attachment.data,
-        mimeType: attachment.mimeType,
-      }));
-      const intent = analyzeIntent(content);
-      const sendResult = deps.queue.sendMessage(chatJid, formatted, images, intent);
-      if (sendResult === 'sent' || sendResult === 'interrupted_stop' || sendResult === 'interrupted_correction') {
-        pipedToActive = true;
-      } else {
-        // Runner exited between hasDirectActiveRunner check and sendMessage (TOCTOU race).
-        // Message is already in DB — enqueueMessageCheck will pick it up.
-        logger.debug({ chatJid, sendResult }, 'Home same-channel IPC missed, falling back to enqueue');
-        deps.queue.enqueueMessageCheck(chatJid);
-      }
-    } else {
-      // Unsafe to reuse (cross-channel, shared admin home, or no active runner):
-      // keep original closeStdin + restart behavior.
-      deps.queue.closeStdin(chatJid);
-      deps.queue.enqueueMessageCheck(chatJid);
-    }
+    deps.queue.closeStdin(chatJid);
+    deps.queue.enqueueMessageCheck(chatJid);
   } else {
     const images = toAgentImages(normalizedAttachments);
     const intent = analyzeIntent(content);
@@ -458,12 +439,16 @@ async function handleAgentConversationMessage(
 // --- Static Files ---
 
 // 带 content hash 的静态资源：长期不可变缓存
-app.use('/assets/*', async (c, next) => {
-  await next();
-  if (c.res.status === 200) {
-    c.res.headers.set('Cache-Control', 'public, max-age=31536000, immutable');
-  }
-}, serveStatic({ root: './web/dist' }));
+app.use(
+  '/assets/*',
+  async (c, next) => {
+    await next();
+    if (c.res.status === 200) {
+      c.res.headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+    }
+  },
+  serveStatic({ root: './web/dist' }),
+);
 
 // SPA fallback：index.html / sw.js 等必须每次验证
 app.use(
@@ -473,8 +458,16 @@ app.use(
     if (c.res.status === 200) {
       const p = c.req.path;
       // 非文件扩展名路径（SPA fallback → index.html）、SW 脚本、manifest 禁止缓存
-      if (!p.match(/\.\w+$/) || p === '/sw.js' || p === '/registerSW.js' || p === '/manifest.webmanifest') {
-        c.res.headers.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+      if (
+        !p.match(/\.\w+$/) ||
+        p === '/sw.js' ||
+        p === '/registerSW.js' ||
+        p === '/manifest.webmanifest'
+      ) {
+        c.res.headers.set(
+          'Cache-Control',
+          'no-cache, no-store, must-revalidate',
+        );
       }
     }
   },
@@ -657,6 +650,7 @@ function setupWebSocket(server: any): WebSocketServer {
                   queue: deps.queue,
                   sessions: deps.getSessions(),
                   broadcast: broadcastNewMessage,
+                  setLastAgentTimestamp: deps.setLastAgentTimestamp,
                 });
               } catch (err) {
                 logger.error({ chatJid, err }, '/clear command failed');

@@ -32,7 +32,11 @@ function randomCode(): string {
   return result;
 }
 
-export function generatePairingCode(userId: string): { code: string; expiresAt: number; ttlSeconds: number } {
+export function generatePairingCode(userId: string): {
+  code: string;
+  expiresAt: number;
+  ttlSeconds: number;
+} {
   // Revoke any previous code for this user
   const prev = userCodes.get(userId);
   if (prev) codes.delete(prev);

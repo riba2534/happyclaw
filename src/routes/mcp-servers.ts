@@ -143,20 +143,25 @@ mcpServersRoutes.post('/', authMiddleware, async (c) => {
     if (!url || typeof url !== 'string') {
       return c.json({ error: 'url is required for http/sse type' }, 400);
     }
-    if (headers !== undefined && (typeof headers !== 'object' || headers === null || Array.isArray(headers))) {
+    if (
+      headers !== undefined &&
+      (typeof headers !== 'object' ||
+        headers === null ||
+        Array.isArray(headers))
+    ) {
       return c.json({ error: 'headers must be a plain object' }, 400);
     }
   } else {
     if (!command || typeof command !== 'string') {
-      return c.json(
-        { error: 'command is required and must be a string' },
-        400,
-      );
+      return c.json({ error: 'command is required and must be a string' }, 400);
     }
     if (args !== undefined && !Array.isArray(args)) {
       return c.json({ error: 'args must be an array of strings' }, 400);
     }
-    if (env !== undefined && (typeof env !== 'object' || env === null || Array.isArray(env))) {
+    if (
+      env !== undefined &&
+      (typeof env !== 'object' || env === null || Array.isArray(env))
+    ) {
       return c.json({ error: 'env must be a plain object' }, 400);
     }
   }
@@ -241,7 +246,11 @@ mcpServersRoutes.patch('/:id', authMiddleware, async (c) => {
     entry.url = url;
   }
   if (headers !== undefined) {
-    if (typeof headers !== 'object' || headers === null || Array.isArray(headers)) {
+    if (
+      typeof headers !== 'object' ||
+      headers === null ||
+      Array.isArray(headers)
+    ) {
       return c.json({ error: 'headers must be a plain object' }, 400);
     }
     entry.headers = headers;
@@ -254,7 +263,8 @@ mcpServersRoutes.patch('/:id', authMiddleware, async (c) => {
     entry.enabled = enabled;
   }
   if (description !== undefined) {
-    entry.description = typeof description === 'string' ? description : undefined;
+    entry.description =
+      typeof description === 'string' ? description : undefined;
   }
 
   await writeMcpServersFile(authUser.id, file);
@@ -318,7 +328,13 @@ mcpServersRoutes.post('/sync-host', authMiddleware, async (c) => {
   }
 
   if (Object.keys(hostServers).length === 0) {
-    return c.json({ added: 0, updated: 0, deleted: 0, skipped: 0, message: 'No MCP servers found in host config files' });
+    return c.json({
+      added: 0,
+      updated: 0,
+      deleted: 0,
+      skipped: 0,
+      message: 'No MCP servers found in host config files',
+    });
   }
 
   const file = await readMcpServersFile(authUser.id);
@@ -330,7 +346,10 @@ mcpServersRoutes.post('/sync-host', authMiddleware, async (c) => {
   const newSyncedList: string[] = [];
 
   // Add/update from host
-  for (const [id, hostEntry] of Object.entries(hostServers) as [string, any][]) {
+  for (const [id, hostEntry] of Object.entries(hostServers) as [
+    string,
+    any,
+  ][]) {
     if (!validateServerId(id)) {
       stats.skipped++;
       continue;
@@ -351,7 +370,7 @@ mcpServersRoutes.post('/sync-host', authMiddleware, async (c) => {
       enabled: true,
       syncedFromHost: true,
       addedAt: existsInUser
-        ? (file.servers[id].addedAt || new Date().toISOString())
+        ? file.servers[id].addedAt || new Date().toISOString()
         : new Date().toISOString(),
     };
 

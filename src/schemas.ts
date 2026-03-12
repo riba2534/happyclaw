@@ -19,84 +19,91 @@ export const TaskPatchSchema = z.object({
 // 简单 cron 表达式验证：5 或 6 段，每段允许 * 和常见 cron 语法
 const CRON_REGEX = /^(\S+\s+){4,5}\S+$/;
 
-export const TaskCreateSchema = z.object({
-  group_folder: z.string().min(1),
-  chat_jid: z.string().min(1),
-  prompt: z.string().optional().default(''),
-  schedule_type: z.enum(['cron', 'interval', 'once']),
-  schedule_value: z.string().min(1),
-  context_mode: z.enum(['group', 'isolated']).optional(),
-  execution_type: z.enum(['agent', 'script']).optional(),
-  script_command: z.string().max(4096).optional(),
-}).superRefine((data, ctx) => {
-  const execType = data.execution_type || 'agent';
-  if (execType === 'agent' && !data.prompt?.trim()) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['prompt'],
-      message: 'Agent 模式下 prompt 为必填项',
-    });
-  }
-  if (execType === 'script' && !data.script_command?.trim()) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['script_command'],
-      message: '脚本模式下 script_command 为必填项',
-    });
-  }
-  if (data.schedule_type === 'cron') {
-    if (!CRON_REGEX.test(data.schedule_value.trim())) {
+export const TaskCreateSchema = z
+  .object({
+    group_folder: z.string().min(1),
+    chat_jid: z.string().min(1),
+    prompt: z.string().optional().default(''),
+    schedule_type: z.enum(['cron', 'interval', 'once']),
+    schedule_value: z.string().min(1),
+    context_mode: z.enum(['group', 'isolated']).optional(),
+    execution_type: z.enum(['agent', 'script']).optional(),
+    script_command: z.string().max(4096).optional(),
+  })
+  .superRefine((data, ctx) => {
+    const execType = data.execution_type || 'agent';
+    if (execType === 'agent' && !data.prompt?.trim()) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['schedule_value'],
-        message: 'Invalid cron expression (expected 5 or 6 fields)',
+        path: ['prompt'],
+        message: 'Agent 模式下 prompt 为必填项',
       });
     }
-  } else if (data.schedule_type === 'interval') {
-    const num = Number(data.schedule_value);
-    if (!Number.isFinite(num) || num <= 0) {
+    if (execType === 'script' && !data.script_command?.trim()) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['schedule_value'],
-        message: 'Interval must be a positive number (milliseconds)',
+        path: ['script_command'],
+        message: '脚本模式下 script_command 为必填项',
       });
     }
-  } else if (data.schedule_type === 'once') {
-    const ts = Date.parse(data.schedule_value);
-    if (isNaN(ts)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['schedule_value'],
-        message: 'Once schedule must be a valid ISO 8601 date string',
-      });
+    if (data.schedule_type === 'cron') {
+      if (!CRON_REGEX.test(data.schedule_value.trim())) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['schedule_value'],
+          message: 'Invalid cron expression (expected 5 or 6 fields)',
+        });
+      }
+    } else if (data.schedule_type === 'interval') {
+      const num = Number(data.schedule_value);
+      if (!Number.isFinite(num) || num <= 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['schedule_value'],
+          message: 'Interval must be a positive number (milliseconds)',
+        });
+      }
+    } else if (data.schedule_type === 'once') {
+      const ts = Date.parse(data.schedule_value);
+      if (isNaN(ts)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['schedule_value'],
+          message: 'Once schedule must be a valid ISO 8601 date string',
+        });
+      }
     }
-  }
-});
+  });
 
 // 单张图片附件上限 5MB（base64 编码后约 6.67MB）
-const MAX_IMAGE_BASE64_LENGTH = 5 * 1024 * 1024 * 4 / 3; // ~6.67M chars
+const MAX_IMAGE_BASE64_LENGTH = (5 * 1024 * 1024 * 4) / 3; // ~6.67M chars
 
 export const MessageAttachmentSchema = z.object({
   type: z.literal('image'),
   data: z.string().min(1).max(MAX_IMAGE_BASE64_LENGTH),
-  mimeType: z.string().regex(/^image\//).optional(),
+  mimeType: z
+    .string()
+    .regex(/^image\//)
+    .optional(),
 });
 
-export const MessageCreateSchema = z.object({
-  chatJid: z.string().min(1),
-  content: z.string().optional().default(''),
-  attachments: z.array(MessageAttachmentSchema).max(10).optional(),
-}).superRefine((data, ctx) => {
-  const hasContent = data.content.trim().length > 0;
-  const hasAttachments = (data.attachments?.length ?? 0) > 0;
-  if (!hasContent && !hasAttachments) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['content'],
-      message: 'content or attachments is required',
-    });
-  }
-});
+export const MessageCreateSchema = z
+  .object({
+    chatJid: z.string().min(1),
+    content: z.string().optional().default(''),
+    attachments: z.array(MessageAttachmentSchema).max(10).optional(),
+  })
+  .superRefine((data, ctx) => {
+    const hasContent = data.content.trim().length > 0;
+    const hasAttachments = (data.attachments?.length ?? 0) > 0;
+    if (!hasContent && !hasAttachments) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['content'],
+        message: 'content or attachments is required',
+      });
+    }
+  });
 
 export const GroupCreateSchema = z.object({
   name: z.string().min(1).max(MAX_GROUP_NAME_LEN),
@@ -130,11 +137,64 @@ export const MemoryGlobalSchema = z.object({
 
 export const ClaudeConfigSchema = z.object({
   anthropicBaseUrl: z.string(),
+  happyclawModel: z.string().max(128).optional(),
 });
+
+export const ClaudeThirdPartyProfileCreateSchema = z.object({
+  name: z.string().min(1).max(64),
+  anthropicBaseUrl: z.string().max(2000),
+  anthropicAuthToken: z.string().max(2000),
+  happyclawModel: z.string().max(128).optional(),
+  customEnv: z.record(z.string().max(256), z.string().max(4096)).optional(),
+});
+
+export const ClaudeThirdPartyProfilePatchSchema = z
+  .object({
+    name: z.string().min(1).max(64).optional(),
+    anthropicBaseUrl: z.string().max(2000).optional(),
+    happyclawModel: z.string().max(128).optional(),
+    customEnv: z.record(z.string().max(256), z.string().max(4096)).optional(),
+  })
+  .refine(
+    (data) =>
+      typeof data.name === 'string' ||
+      typeof data.anthropicBaseUrl === 'string' ||
+      typeof data.happyclawModel === 'string' ||
+      data.customEnv !== undefined,
+    { message: 'At least one profile field must be provided' },
+  );
+
+export const ClaudeThirdPartyProfileSecretsSchema = z
+  .object({
+    anthropicAuthToken: z.string().max(2000).optional(),
+    clearAnthropicAuthToken: z.boolean().optional(),
+  })
+  .refine(
+    (data) =>
+      typeof data.anthropicAuthToken === 'string' ||
+      data.clearAnthropicAuthToken === true,
+    { message: 'At least one secret field must be provided' },
+  );
 
 export const GroupPatchSchema = z.object({
   name: z.string().min(1).max(MAX_GROUP_NAME_LEN).optional(),
-  selected_skills: z.array(z.string().max(128).regex(/^[\w\-]+$/, 'Skill ID must be alphanumeric with hyphens/underscores')).max(200).nullable().optional(),
+  selected_skills: z
+    .array(
+      z
+        .string()
+        .max(128)
+        .regex(
+          /^[\w\-]+$/,
+          'Skill ID must be alphanumeric with hyphens/underscores',
+        ),
+    )
+    .max(200)
+    .nullable()
+    .optional(),
+  is_pinned: z.boolean().optional(),
+  activation_mode: z
+    .enum(['auto', 'always', 'when_mentioned', 'disabled'])
+    .optional(),
 });
 
 export const LoginSchema = z.object({
@@ -157,7 +217,12 @@ export const RegistrationConfigSchema = z.object({
 export const SystemSettingsSchema = z.object({
   containerTimeout: z.number().int().min(60000).max(86400000).optional(),
   idleTimeout: z.number().int().min(60000).max(86400000).optional(),
-  containerMaxOutputSize: z.number().int().min(1048576).max(104857600).optional(),
+  containerMaxOutputSize: z
+    .number()
+    .int()
+    .min(1048576)
+    .max(104857600)
+    .optional(),
   maxConcurrentContainers: z.number().int().min(1).max(100).optional(),
   maxConcurrentHostProcesses: z.number().int().min(1).max(50).optional(),
   maxLoginAttempts: z.number().int().min(1).max(100).optional(),
@@ -182,13 +247,24 @@ export const ProfileUpdateSchema = z.object({
   username: z.string().min(3).max(32).optional(),
   display_name: z.string().max(64).optional(),
   avatar_emoji: z.string().max(8).nullable().optional(),
-  avatar_color: z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional(),
+  avatar_color: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .nullable()
+    .optional(),
   ai_name: z.string().min(1).max(32).nullable().optional(),
   ai_avatar_emoji: z.string().max(8).nullable().optional(),
-  ai_avatar_color: z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional(),
-  ai_avatar_url: z.string().max(2048)
-    .refine(v => v.startsWith('/api/auth/avatars/'), 'Invalid avatar URL')
-    .nullable().optional(),
+  ai_avatar_color: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .nullable()
+    .optional(),
+  ai_avatar_url: z
+    .string()
+    .max(2048)
+    .refine((v) => v.startsWith('/api/auth/avatars/'), 'Invalid avatar URL')
+    .nullable()
+    .optional(),
 });
 
 export const PermissionValueSchema = z
@@ -273,7 +349,10 @@ export const ClaudeSecretsSchema = z
         data.claudeOAuthCredentials !== undefined ||
         data.clearClaudeOAuthCredentials === true;
       return (
-        hasAnthropicAuthToken || hasAnthropicApiKey || hasClaudeCodeOauthToken || hasClaudeOAuthCredentials
+        hasAnthropicAuthToken ||
+        hasAnthropicApiKey ||
+        hasClaudeCodeOauthToken ||
+        hasClaudeOAuthCredentials
       );
     },
     { message: 'At least one secret field must be provided' },
@@ -313,6 +392,22 @@ export const TelegramConfigSchema = z
     { message: 'At least one config field must be provided' },
   );
 
+export const QQConfigSchema = z
+  .object({
+    appId: z.string().max(2000).optional(),
+    appSecret: z.string().max(2000).optional(),
+    clearAppSecret: z.boolean().optional(),
+    enabled: z.boolean().optional(),
+  })
+  .refine(
+    (data) =>
+      typeof data.appId === 'string' ||
+      typeof data.appSecret === 'string' ||
+      data.clearAppSecret === true ||
+      typeof data.enabled === 'boolean',
+    { message: 'At least one config field must be provided' },
+  );
+
 export const ClaudeCustomEnvSchema = z.object({
   customEnv: z.record(z.string().max(256), z.string().max(4096)),
 });
@@ -322,6 +417,7 @@ export const ContainerEnvSchema = z.object({
   anthropicAuthToken: z.string().max(2000).optional(),
   anthropicApiKey: z.string().max(2000).optional(),
   claudeCodeOauthToken: z.string().max(2000).optional(),
+  happyclawModel: z.string().max(128).optional(),
   customEnv: z
     .record(z.string().max(256), z.string().max(4096))
     .optional()

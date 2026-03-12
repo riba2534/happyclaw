@@ -44,11 +44,14 @@ interface HostSyncManifest {
 }
 
 interface SkillsManifest {
-  skills: Record<string, {
-    packageName: string;
-    installedAt: string;
-    source: string;
-  }>;
+  skills: Record<
+    string,
+    {
+      packageName: string;
+      installedAt: string;
+      source: string;
+    }
+  >;
 }
 
 interface SearchResult {
@@ -87,7 +90,10 @@ function readHostSyncManifest(userId: string): HostSyncManifest {
   }
 }
 
-function writeHostSyncManifest(userId: string, manifest: HostSyncManifest): void {
+function writeHostSyncManifest(
+  userId: string,
+  manifest: HostSyncManifest,
+): void {
   const manifestPath = getHostSyncManifestPath(userId);
   fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
@@ -116,7 +122,11 @@ function writeSkillsManifest(userId: string, manifest: SkillsManifest): void {
  * Update the skills manifest after installing skills.
  * Records packageName, installedAt, and source for each installed skill.
  */
-function updateSkillsManifest(userId: string, packageName: string, installedSkillIds: string[]): void {
+function updateSkillsManifest(
+  userId: string,
+  packageName: string,
+  installedSkillIds: string[],
+): void {
   const manifest = readSkillsManifest(userId);
   const now = new Date().toISOString();
   for (const id of installedSkillIds) {
@@ -232,10 +242,7 @@ function listFiles(
   }
 }
 
-function scanDirectory(
-  rootDir: string,
-  source: 'user' | 'project',
-): Skill[] {
+function scanDirectory(rootDir: string, source: 'user' | 'project'): Skill[] {
   const skills: Skill[] = [];
   if (!fs.existsSync(rootDir)) return skills;
 
@@ -408,7 +415,10 @@ function parseSearchOutput(output: string): SearchResult[] {
   const clean = output.replace(/\x1b\[[0-9;]*m/g, '');
   const results: SearchResult[] = [];
 
-  const lines = clean.split('\n').map((l) => l.trim()).filter(Boolean);
+  const lines = clean
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -539,7 +549,7 @@ async function searchSkillsApi(query: string): Promise<SearchResult[]> {
     );
     if (!resp.ok) throw new Error(`skills.sh returned ${resp.status}`);
 
-    const data = await resp.json() as {
+    const data = (await resp.json()) as {
       skills?: Array<{
         id: string;
         skillId: string;
@@ -550,9 +560,10 @@ async function searchSkillsApi(query: string): Promise<SearchResult[]> {
     };
 
     const results: SearchResult[] = (data.skills || []).map((s) => ({
-      package: s.source === s.skillId || !s.skillId
-        ? s.source
-        : `${s.source}@${s.skillId}`,
+      package:
+        s.source === s.skillId || !s.skillId
+          ? s.source
+          : `${s.source}@${s.skillId}`,
       url: `https://skills.sh/s/${s.id}`,
       description: '',
       installs: s.installs,
@@ -695,11 +706,17 @@ skillsRoutes.get('/search/detail', authMiddleware, async (c) => {
       const parsed = new URL(url);
       if (parsed.hostname === 'skills.sh') {
         // URL pattern: https://skills.sh/s/{owner}/{repo}/{skillId}
-        const segments = parsed.pathname.replace(/^\/s\//, '').split('/').filter(Boolean);
+        const segments = parsed.pathname
+          .replace(/^\/s\//, '')
+          .split('/')
+          .filter(Boolean);
         if (segments.length >= 3) {
           const srcFromUrl = `${segments[0]}/${segments[1]}`;
           const skillIdFromUrl = segments[2];
-          const result = await fetchSkillMdFromGitHub(srcFromUrl, skillIdFromUrl);
+          const result = await fetchSkillMdFromGitHub(
+            srcFromUrl,
+            skillIdFromUrl,
+          );
           if (result) {
             return c.json({
               detail: {
@@ -747,17 +764,29 @@ skillsRoutes.patch('/:id', authMiddleware, async (c) => {
   const skillDir = path.join(userDir, id);
 
   if (!fs.existsSync(skillDir)) {
-    return c.json({ error: 'Skill not found or is not a user-level skill' }, 404);
+    return c.json(
+      { error: 'Skill not found or is not a user-level skill' },
+      404,
+    );
   }
   if (!validateSkillPath(userDir, skillDir)) {
     return c.json({ error: 'Invalid skill path' }, 400);
   }
 
-  const srcPath = path.join(skillDir, enabled ? 'SKILL.md.disabled' : 'SKILL.md');
-  const dstPath = path.join(skillDir, enabled ? 'SKILL.md' : 'SKILL.md.disabled');
+  const srcPath = path.join(
+    skillDir,
+    enabled ? 'SKILL.md.disabled' : 'SKILL.md',
+  );
+  const dstPath = path.join(
+    skillDir,
+    enabled ? 'SKILL.md' : 'SKILL.md.disabled',
+  );
 
   if (!fs.existsSync(srcPath)) {
-    return c.json({ error: 'Skill not found or already in desired state' }, 404);
+    return c.json(
+      { error: 'Skill not found or already in desired state' },
+      404,
+    );
   }
 
   fs.renameSync(srcPath, dstPath);
@@ -780,7 +809,10 @@ function deleteSkillForUser(
   const skillDir = path.join(userDir, skillId);
 
   if (!fs.existsSync(skillDir)) {
-    return { success: false, error: 'Skill not found or is a project-level skill' };
+    return {
+      success: false,
+      error: 'Skill not found or is a project-level skill',
+    };
   }
 
   if (!validateSkillPath(userDir, skillDir)) {
@@ -805,8 +837,13 @@ skillsRoutes.delete('/:id', authMiddleware, async (c) => {
   const result = deleteSkillForUser(authUser.id, id);
 
   if (!result.success) {
-    const status = result.error === 'Invalid skill ID' || result.error === 'Invalid skill path' ? 400
-      : result.error?.includes('not found') ? 404 : 500;
+    const status =
+      result.error === 'Invalid skill ID' ||
+      result.error === 'Invalid skill path'
+        ? 400
+        : result.error?.includes('not found')
+          ? 404
+          : 500;
     return c.json({ error: result.error }, status);
   }
 
@@ -823,7 +860,10 @@ async function installSkillForUser(
   userId: string,
   pkg: string,
 ): Promise<{ success: boolean; installed?: string[]; error?: string }> {
-  if (!/^[\w\-]+\/[\w\-.]+(?:[@#][\w\-.\/]+)?$/.test(pkg) && !/^https?:\/\//.test(pkg)) {
+  if (
+    !/^[\w\-]+\/[\w\-.]+(?:[@#][\w\-.\/]+)?$/.test(pkg) &&
+    !/^https?:\/\//.test(pkg)
+  ) {
     return { success: false, error: 'Invalid package name format' };
   }
 
@@ -847,7 +887,9 @@ async function installSkillForUser(
     // Discover all skill directories installed into the temp location
     const installedEntries: string[] = [];
     if (fs.existsSync(tempSkillsDir)) {
-      for (const entry of fs.readdirSync(tempSkillsDir, { withFileTypes: true })) {
+      for (const entry of fs.readdirSync(tempSkillsDir, {
+        withFileTypes: true,
+      })) {
         if (entry.isDirectory() || entry.isSymbolicLink()) {
           installedEntries.push(entry.name);
         }
@@ -855,7 +897,10 @@ async function installSkillForUser(
     }
 
     if (installedEntries.length === 0) {
-      return { success: false, error: 'No skills were installed — package may be invalid' };
+      return {
+        success: false,
+        error: 'No skills were installed — package may be invalid',
+      };
     }
 
     // Copy resolved skill content to per-user directory
@@ -884,7 +929,9 @@ async function installSkillForUser(
     // Always clean up the temp directory
     try {
       fs.rmSync(tempHome, { recursive: true, force: true });
-    } catch { /* ignore cleanup errors */ }
+    } catch {
+      /* ignore cleanup errors */
+    }
   }
 }
 
@@ -939,7 +986,8 @@ skillsRoutes.post('/sync-host', authMiddleware, async (c) => {
 
     // 4. 同步：新增/更新
     for (const name of hostSkillNames) {
-      const isManuallyInstalled = existingUserSkills.has(name) && !previouslySynced.has(name);
+      const isManuallyInstalled =
+        existingUserSkills.has(name) && !previouslySynced.has(name);
       if (isManuallyInstalled) {
         // 手动安装的 skill，跳过不覆盖
         stats.skipped++;
@@ -983,30 +1031,26 @@ skillsRoutes.post('/sync-host', authMiddleware, async (c) => {
   });
 });
 
-skillsRoutes.post(
-  '/install',
-  authMiddleware,
-  async (c) => {
-    const authUser = c.get('user') as AuthUser;
-    const body = await c.req.json().catch(() => ({}));
+skillsRoutes.post('/install', authMiddleware, async (c) => {
+  const authUser = c.get('user') as AuthUser;
+  const body = await c.req.json().catch(() => ({}));
 
-    if (typeof body.package !== 'string') {
-      return c.json({ error: 'package field must be string' }, 400);
-    }
+  if (typeof body.package !== 'string') {
+    return c.json({ error: 'package field must be string' }, 400);
+  }
 
-    const pkg = body.package.trim();
-    const result = await installSkillForUser(authUser.id, pkg);
+  const pkg = body.package.trim();
+  const result = await installSkillForUser(authUser.id, pkg);
 
-    if (!result.success) {
-      return c.json(
-        { error: 'Failed to install skill', details: result.error },
-        result.error === 'Invalid package name format' ? 400 : 500,
-      );
-    }
+  if (!result.success) {
+    return c.json(
+      { error: 'Failed to install skill', details: result.error },
+      result.error === 'Invalid package name format' ? 400 : 500,
+    );
+  }
 
-    return c.json({ success: true, installed: result.installed });
-  },
-);
+  return c.json({ success: true, installed: result.installed });
+});
 
 // Reinstall a skill by its ID — requires the skill to have a packageName in the manifest.
 skillsRoutes.post('/:id/reinstall', authMiddleware, async (c) => {
@@ -1020,16 +1064,25 @@ skillsRoutes.post('/:id/reinstall', authMiddleware, async (c) => {
   const manifest = readSkillsManifest(authUser.id);
   const meta = manifest.skills[id];
   if (!meta?.packageName) {
-    return c.json({ error: 'Skill has no package info — cannot reinstall' }, 400);
+    return c.json(
+      { error: 'Skill has no package info — cannot reinstall' },
+      400,
+    );
   }
 
   // Delete then reinstall
   const deleteResult = deleteSkillForUser(authUser.id, id);
   if (!deleteResult.success) {
-    return c.json({ error: 'Failed to delete old skill', details: deleteResult.error }, 500);
+    return c.json(
+      { error: 'Failed to delete old skill', details: deleteResult.error },
+      500,
+    );
   }
 
-  const installResult = await installSkillForUser(authUser.id, meta.packageName);
+  const installResult = await installSkillForUser(
+    authUser.id,
+    meta.packageName,
+  );
   if (!installResult.success) {
     return c.json(
       { error: 'Failed to reinstall skill', details: installResult.error },

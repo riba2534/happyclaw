@@ -4,8 +4,10 @@ import { successTap } from '../../hooks/useHaptic';
 import {
   ArrowUp,
   Brush,
+  Code,
   FileUp,
   FolderUp,
+  Map,
   X,
   Paperclip,
   Image as ImageIcon,
@@ -36,6 +38,8 @@ interface MessageInputProps {
   disabled?: boolean;
   onResetSession?: () => void;
   onToggleTerminal?: () => void;
+  permissionMode?: 'bypassPermissions' | 'plan';
+  onTogglePermissionMode?: () => void;
 }
 
 export function MessageInput({
@@ -44,6 +48,8 @@ export function MessageInput({
   disabled = false,
   onResetSession,
   onToggleTerminal,
+  permissionMode,
+  onTogglePermissionMode,
 }: MessageInputProps) {
   const [content, setContent] = useState('');
   const [showActions, setShowActions] = useState(false);
@@ -503,6 +509,21 @@ export function MessageInput({
                   aria-label="终端"
                 >
                   <TerminalSquare className="w-4 h-4" />
+                </button>
+              )}
+              {onTogglePermissionMode && (
+                <button
+                  type="button"
+                  onClick={onTogglePermissionMode}
+                  className={`h-9 px-2 rounded-lg flex items-center gap-1 text-xs font-medium transition-all cursor-pointer ${
+                    permissionMode === 'plan'
+                      ? 'bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/50 dark:text-amber-400 dark:border-amber-800'
+                      : 'hover:bg-slate-100 text-slate-400 hover:text-slate-600'
+                  }`}
+                  title={permissionMode === 'plan' ? 'Plan 模式，点击切到 Code' : 'Code 模式，点击切到 Plan'}
+                >
+                  {permissionMode === 'plan' ? <Map className="w-4 h-4" /> : <Code className="w-4 h-4" />}
+                  <span className="hidden sm:inline">{permissionMode === 'plan' ? 'Plan' : 'Code'}</span>
                 </button>
               )}
             </div>

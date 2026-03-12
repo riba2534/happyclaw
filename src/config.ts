@@ -61,7 +61,10 @@ function getOrCreateSessionSecret(): string {
   const generated = crypto.randomBytes(32).toString('hex');
   try {
     fs.mkdirSync(path.dirname(SESSION_SECRET_FILE), { recursive: true });
-    fs.writeFileSync(SESSION_SECRET_FILE, generated + '\n', { encoding: 'utf-8', mode: 0o600 });
+    fs.writeFileSync(SESSION_SECRET_FILE, generated + '\n', {
+      encoding: 'utf-8',
+      mode: 0o600,
+    });
   } catch {
     // non-fatal: secret works for this process, just won't survive restart
   }
@@ -73,4 +76,3 @@ export const WEB_SESSION_SECRET = getOrCreateSessionSecret();
 // Proxy trust configuration
 // Set TRUST_PROXY=true when behind a reverse proxy (nginx, Cloudflare, etc.)
 export const TRUST_PROXY = process.env.TRUST_PROXY === 'true';
-

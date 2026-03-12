@@ -13,7 +13,10 @@ export interface NormalizedImageAttachment {
 }
 
 interface NormalizeOptions {
-  onMimeMismatch?: (ctx: { declaredMime: string; detectedMime: string }) => void;
+  onMimeMismatch?: (ctx: {
+    declaredMime: string;
+    detectedMime: string;
+  }) => void;
 }
 
 const DATA_URL_BASE64_RE = /^\s*data:([^;,]+);base64,(.*)\s*$/is;
@@ -25,7 +28,10 @@ function normalizeImageMimeType(raw: unknown): string | undefined {
   return lowered;
 }
 
-function unwrapBase64Payload(raw: string): { base64: string; hintedMime?: string } {
+function unwrapBase64Payload(raw: string): {
+  base64: string;
+  hintedMime?: string;
+} {
   const match = DATA_URL_BASE64_RE.exec(raw);
   if (!match) return { base64: raw.replace(/\s+/g, '') };
   return {

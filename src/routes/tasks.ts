@@ -17,7 +17,11 @@ import {
 } from '../db.js';
 import type { AuthUser } from '../types.js';
 import { TIMEZONE } from '../config.js';
-import { isHostExecutionGroup, hasHostExecutionPermission, canAccessGroup } from '../web-context.js';
+import {
+  isHostExecutionGroup,
+  hasHostExecutionPermission,
+  canAccessGroup,
+} from '../web-context.js';
 
 const tasksRoutes = new Hono<{ Variables: Variables }>();
 
@@ -29,8 +33,10 @@ tasksRoutes.get('/', authMiddleware, (c) => {
     const group = getRegisteredGroup(task.chat_jid);
     // Conservative: if group can't be resolved, only admin can see (may be orphaned task)
     if (!group) return authUser.role === 'admin';
-    if (!canAccessGroup({ id: authUser.id, role: authUser.role }, group)) return false;
-    if (isHostExecutionGroup(group) && !hasHostExecutionPermission(authUser)) return false;
+    if (!canAccessGroup({ id: authUser.id, role: authUser.role }, group))
+      return false;
+    if (isHostExecutionGroup(group) && !hasHostExecutionPermission(authUser))
+      return false;
     return true;
   });
   return c.json({ tasks });
@@ -79,10 +85,7 @@ tasksRoutes.post('/', authMiddleware, async (c) => {
   // Only admin can create script tasks
   const execType = execution_type || 'agent';
   if (execType === 'script' && authUser.role !== 'admin') {
-    return c.json(
-      { error: '只有管理员可以创建脚本类型任务' },
-      403,
-    );
+    return c.json({ error: '只有管理员可以创建脚本类型任务' }, 403);
   }
 
   const taskId = crypto.randomUUID();
@@ -90,7 +93,10 @@ tasksRoutes.post('/', authMiddleware, async (c) => {
 
   let nextRun: string;
   if (schedule_type === 'cron') {
-    nextRun = CronExpressionParser.parse(schedule_value, { tz: TIMEZONE }).next().toISOString() ?? new Date().toISOString();
+    nextRun =
+      CronExpressionParser.parse(schedule_value, { tz: TIMEZONE })
+        .next()
+        .toISOString() ?? new Date().toISOString();
   } else if (schedule_type === 'interval') {
     nextRun = new Date(Date.now() + parseInt(schedule_value, 10)).toISOString();
   } else {
@@ -124,7 +130,8 @@ tasksRoutes.patch('/:id', authMiddleware, async (c) => {
   const authUser = c.get('user') as AuthUser;
   const group = getRegisteredGroup(existing.chat_jid);
   if (!group) {
-    if (authUser.role !== 'admin') return c.json({ error: 'Task not found' }, 404);
+    if (authUser.role !== 'admin')
+      return c.json({ error: 'Task not found' }, 404);
   } else {
     if (!canAccessGroup({ id: authUser.id, role: authUser.role }, group)) {
       return c.json({ error: 'Task not found' }, 404);
@@ -149,12 +156,10 @@ tasksRoutes.patch('/:id', authMiddleware, async (c) => {
   // Only admin can create/modify script tasks
   const isScriptTask =
     validation.data.execution_type === 'script' ||
-    (existing.execution_type === 'script' && validation.data.script_command !== undefined);
+    (existing.execution_type === 'script' &&
+      validation.data.script_command !== undefined);
   if (isScriptTask && authUser.role !== 'admin') {
-    return c.json(
-      { error: '只有管理员可以创建或修改脚本类型任务' },
-      403,
-    );
+    return c.json({ error: '只有管理员可以创建或修改脚本类型任务' }, 403);
   }
 
   updateTask(id, validation.data);
@@ -169,7 +174,8 @@ tasksRoutes.delete('/:id', authMiddleware, (c) => {
   const authUser = c.get('user') as AuthUser;
   const group = getRegisteredGroup(existing.chat_jid);
   if (!group) {
-    if (authUser.role !== 'admin') return c.json({ error: 'Task not found' }, 404);
+    if (authUser.role !== 'admin')
+      return c.json({ error: 'Task not found' }, 404);
   } else {
     if (!canAccessGroup({ id: authUser.id, role: authUser.role }, group)) {
       return c.json({ error: 'Task not found' }, 404);
@@ -192,7 +198,8 @@ tasksRoutes.get('/:id/logs', authMiddleware, (c) => {
   const authUser = c.get('user') as AuthUser;
   const group = getRegisteredGroup(existing.chat_jid);
   if (!group) {
-    if (authUser.role !== 'admin') return c.json({ error: 'Task not found' }, 404);
+    if (authUser.role !== 'admin')
+      return c.json({ error: 'Task not found' }, 404);
   } else {
     if (!canAccessGroup({ id: authUser.id, role: authUser.role }, group)) {
       return c.json({ error: 'Task not found' }, 404);
@@ -205,7 +212,10 @@ tasksRoutes.get('/:id/logs', authMiddleware, (c) => {
     }
   }
   const limitRaw = parseInt(c.req.query('limit') || '20', 10);
-  const limit = Math.min(Number.isFinite(limitRaw) ? Math.max(1, limitRaw) : 20, 200);
+  const limit = Math.min(
+    Number.isFinite(limitRaw) ? Math.max(1, limitRaw) : 20,
+    200,
+  );
   const logs = getTaskRunLogs(id, limit);
   return c.json({ logs });
 });

@@ -10,7 +10,7 @@ import { FilePanel } from './FilePanel';
 import { ContainerEnvPanel } from './ContainerEnvPanel';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
-import { ArrowLeft, Code, Link, Map, MessageSquare, Monitor, Moon, MoreHorizontal, PanelRightClose, PanelRightOpen, Sun, Terminal, Users, X } from 'lucide-react';
+import { ArrowLeft, FolderOpen, Link, MessageSquare, Monitor, Moon, MoreHorizontal, PanelRightClose, PanelRightOpen, Server, Sun, Terminal, Users, Variable, X, Zap } from 'lucide-react';
 import { useDisplayMode } from '../../hooks/useDisplayMode';
 import { useTheme } from '../../hooks/useTheme';
 import { cn } from '@/lib/utils';
@@ -18,13 +18,23 @@ import { wsManager } from '../../api/ws';
 import { api } from '../../api/client';
 import { TerminalPanel } from './TerminalPanel';
 import { GroupSkillsPanel } from './GroupSkillsPanel';
+import { GroupMcpPanel } from './GroupMcpPanel';
 import { GroupMembersPanel } from './GroupMembersPanel';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { AgentTabBar } from './AgentTabBar';
 import { ImBindingDialog } from './ImBindingDialog';
 import { showToast } from '../../utils/toast';
 
 /** Sentinel value for binding the main conversation (vs. a specific agent) */
 const MAIN_BINDING = '__main__' as const;
+
+const SIDEBAR_TABS = [
+  { id: 'files' as const, icon: FolderOpen, label: '文件管理' },
+  { id: 'env' as const, icon: Variable, label: '环境变量' },
+  { id: 'skills' as const, icon: Zap, label: '技能' },
+  { id: 'mcp' as const, icon: Server, label: 'MCP 服务器' },
+  { id: 'members' as const, icon: Users, label: '成员' },
+];
 
 /** Inline elapsed-time counter for running tasks */
 function ElapsedTimer({ startTime }: { startTime: number }) {
@@ -49,7 +59,7 @@ const TERMINAL_MAX_RATIO = 0.7;
 // Stable empty references to avoid infinite re-render loops in Zustand selectors
 const EMPTY_AGENTS: import('../../types').AgentInfo[] = [];
 
-type SidebarTab = 'files' | 'env' | 'skills' | 'members';
+type SidebarTab = 'files' | 'env' | 'skills' | 'mcp' | 'members';
 
 interface ChatViewProps {
   groupJid: string;
@@ -65,6 +75,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const [panelOpen, setPanelOpen] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetLoading, setResetLoading] = useState(false);
+  const [resetAgentId, setResetAgentId] = useState<string | null>(null);
   // Desktop: visible controls panel height, mounted controls terminal lifecycle.
   const [terminalVisible, setTerminalVisible] = useState(false);
   const [terminalMounted, setTerminalMounted] = useState(false);
@@ -120,8 +131,17 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const canUseTerminal = group?.execution_mode !== 'host';
   const pollRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  // Fetch IM connection status for home groups
+  // Sidebar: members tab visibility
   const isHome = !!group?.is_home;
+  const showMembersTab = (!!group?.is_shared || group?.member_role === 'owner') && !isHome;
+  const visibleTabs = SIDEBAR_TABS.filter(t => t.id !== 'members' || showMembersTab);
+
+  // Fallback: if current tab is hidden, reset to files
+  useEffect(() => {
+    if (sidebarTab === 'members' && !showMembersTab) setSidebarTab('files');
+  }, [sidebarTab, showMembersTab]);
+
+  // Fetch IM connection status for home groups
   const isOwnHome =
     isHome &&
     (
@@ -221,7 +241,14 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   // 监听 WebSocket 流式事件
   useEffect(() => {
     const unsub1 = wsManager.on('stream_event', (data: any) => {
-      if (data.chatJid === groupJid) handleStreamEvent(groupJid, data.event, data.agentId);
+      if (data.chatJid === groupJid) {
+        handleStreamEvent(groupJid, data.event, data.agentId);
+        // Sync permission mode when agent calls ExitPlanMode/EnterPlanMode
+        if (data.event?.eventType === 'mode_change' && data.event?.permissionMode) {
+          const newMode = data.event.permissionMode as 'bypassPermissions' | 'plan';
+          setPermissionMode(newMode);
+        }
+      }
     });
     // agent_reply 作为 fallback：如果 new_message 已处理则为 no-op
     const unsub2 = wsManager.on('agent_reply', (data: any) => {
@@ -257,9 +284,10 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
 
   const handleResetSession = async () => {
     setResetLoading(true);
-    await resetSession(groupJid);
+    await resetSession(groupJid, resetAgentId ?? undefined);
     setResetLoading(false);
     setShowResetConfirm(false);
+    setResetAgentId(null);
   };
 
   const togglePermissionMode = async () => {
@@ -444,21 +472,6 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         >
           {theme === 'light' ? <Moon className="w-5 h-5" /> : theme === 'dark' ? <Monitor className="w-5 h-5" /> : <Sun className="w-5 h-5" />}
         </button>
-        {/* Desktop: Code / Plan mode toggle */}
-        <button
-          onClick={togglePermissionMode}
-          className={cn(
-            'hidden lg:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer border',
-            permissionMode === 'plan'
-              ? 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 dark:bg-amber-950/50 dark:text-amber-400 dark:border-amber-800 dark:hover:bg-amber-900/50'
-              : 'bg-background text-muted-foreground border-border hover:bg-accent',
-          )}
-          title={permissionMode === 'plan' ? '当前为 Plan 模式（仅规划），点击切换到 Code 模式' : '当前为 Code 模式（可执行），点击切换到 Plan 模式'}
-          aria-label={permissionMode === 'plan' ? '切换到 Code 模式' : '切换到 Plan 模式'}
-        >
-          {permissionMode === 'plan' ? <Map className="w-3.5 h-3.5" /> : <Code className="w-3.5 h-3.5" />}
-          {permissionMode === 'plan' ? 'Plan' : 'Code'}
-        </button>
         {/* Desktop: toggle display mode */}
         <button
           onClick={toggleDisplayMode}
@@ -566,6 +579,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                   setScrollTrigger(n => n + 1);
                 }}
                 groupJid={groupJid}
+                onResetSession={() => { setResetAgentId(activeAgentTab); setShowResetConfirm(true); }}
               />
             </>
           ) : activeAgentTab ? (
@@ -723,63 +737,49 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
               <MessageInput
                 onSend={handleSend}
                 groupJid={groupJid}
-                onResetSession={() => setShowResetConfirm(true)}
+                onResetSession={() => { setResetAgentId(null); setShowResetConfirm(true); }}
                 onToggleTerminal={canUseTerminal ? handleTerminalToggle : undefined}
+                permissionMode={permissionMode}
+                onTogglePermissionMode={togglePermissionMode}
               />
             </>
           )}
         </div>
 
-        {/* Desktop: sidebar with tabs (collapsible) */}
+        {/* Desktop: sidebar with icon tabs (collapsible) */}
         <div className={cn(
           "hidden lg:flex lg:flex-col flex-shrink-0 border-l border-border bg-background transition-[width] duration-200",
           panelOpen ? "w-80" : "w-0 overflow-hidden border-l-0"
         )}>
-          {/* Tab bar */}
-          <div className="flex border-b border-border">
-            <button
-              onClick={() => setSidebarTab('files')}
-              className={`flex-1 px-3 py-2 text-xs font-medium transition-colors cursor-pointer ${
-                sidebarTab === 'files'
-                  ? 'text-primary border-b-2 border-primary'
-                  : 'text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              文件管理
-            </button>
-            <button
-              onClick={() => setSidebarTab('env')}
-              className={`flex-1 px-3 py-2 text-xs font-medium transition-colors cursor-pointer ${
-                sidebarTab === 'env'
-                  ? 'text-primary border-b-2 border-primary'
-                  : 'text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              环境变量
-            </button>
-            <button
-              onClick={() => setSidebarTab('skills')}
-              className={`flex-1 px-3 py-2 text-xs font-medium transition-colors cursor-pointer ${
-                sidebarTab === 'skills'
-                  ? 'text-primary border-b-2 border-primary'
-                  : 'text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              技能
-            </button>
-            {(group.is_shared || group.member_role === 'owner') && !group.is_home && (
-              <button
-                onClick={() => setSidebarTab('members')}
-                className={`flex-1 px-3 py-2 text-xs font-medium transition-colors cursor-pointer ${
-                  sidebarTab === 'members'
-                    ? 'text-primary border-b-2 border-primary'
-                    : 'text-slate-400 hover:text-slate-600'
-                }`}
-              >
-                成员
-              </button>
-            )}
-          </div>
+          {/* Icon tab bar */}
+          <TooltipProvider delayDuration={300}>
+            <div className="flex border-b border-border">
+              {visibleTabs.map(tab => {
+                const Icon = tab.icon;
+                const active = sidebarTab === tab.id;
+                return (
+                  <Tooltip key={tab.id}>
+                    <TooltipTrigger asChild>
+                      <button
+                        onClick={() => setSidebarTab(tab.id)}
+                        className={cn(
+                          "flex-1 flex items-center justify-center py-2.5 transition-colors cursor-pointer",
+                          active
+                            ? "text-primary border-b-2 border-primary"
+                            : "text-muted-foreground hover:text-foreground"
+                        )}
+                      >
+                        <Icon className="w-4 h-4" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="text-xs">
+                      {tab.label}
+                    </TooltipContent>
+                  </Tooltip>
+                );
+              })}
+            </div>
+          </TooltipProvider>
 
           {/* Tab content */}
           <div className="flex-1 overflow-hidden min-h-0">
@@ -787,6 +787,8 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
               <FilePanel groupJid={groupJid} />
             ) : sidebarTab === 'env' ? (
               <ContainerEnvPanel groupJid={groupJid} />
+            ) : sidebarTab === 'mcp' ? (
+              <GroupMcpPanel groupJid={groupJid} />
             ) : sidebarTab === 'members' ? (
               <GroupMembersPanel groupJid={groupJid} />
             ) : (
@@ -873,6 +875,18 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         </SheetContent>
       </Sheet>
 
+      {/* Mobile: MCP sheet */}
+      <Sheet open={mobilePanel === 'mcp'} onOpenChange={(v) => !v && setMobilePanel(null)}>
+        <SheetContent side="bottom" className="h-[80dvh] p-0">
+          <SheetHeader className="px-4 pt-4 pb-2">
+            <SheetTitle>MCP 服务器</SheetTitle>
+          </SheetHeader>
+          <div className="flex-1 overflow-hidden h-[calc(80dvh-56px)]">
+            <GroupMcpPanel groupJid={groupJid} />
+          </div>
+        </SheetContent>
+      </Sheet>
+
       {/* Mobile: members sheet */}
       <Sheet open={mobilePanel === 'members'} onOpenChange={(v) => !v && setMobilePanel(null)}>
         <SheetContent side="bottom" className="h-[80dvh] p-0">
@@ -910,18 +924,6 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
           </SheetHeader>
           <div className="space-y-2 pt-2">
             <button
-              onClick={() => { setMobileActionsOpen(false); togglePermissionMode(); }}
-              className={cn(
-                'w-full text-left px-4 py-3 rounded-lg border transition-colors cursor-pointer text-sm flex items-center gap-2',
-                permissionMode === 'plan'
-                  ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-400'
-                  : 'border-border hover:bg-accent text-foreground',
-              )}
-            >
-              {permissionMode === 'plan' ? <Map className="w-4 h-4" /> : <Code className="w-4 h-4" />}
-              {permissionMode === 'plan' ? '切换到 Code 模式（当前为 Plan 模式）' : '切换到 Plan 模式（当前为 Code 模式）'}
-            </button>
-            <button
               onClick={openMobileFiles}
               className="w-full text-left px-4 py-3 rounded-lg border border-border hover:bg-accent transition-colors cursor-pointer text-foreground text-sm"
             >
@@ -939,7 +941,13 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
             >
               技能
             </button>
-            {(group.is_shared || group.member_role === 'owner') && !group.is_home && (
+            <button
+              onClick={() => { setMobileActionsOpen(false); setMobilePanel('mcp'); }}
+              className="w-full text-left px-4 py-3 rounded-lg border border-border hover:bg-accent transition-colors cursor-pointer text-foreground text-sm"
+            >
+              MCP 服务器
+            </button>
+            {showMembersTab && (
               <button
                 onClick={() => { setMobileActionsOpen(false); setMobilePanel('members'); }}
                 className="w-full text-left px-4 py-3 rounded-lg border border-border hover:bg-accent transition-colors cursor-pointer text-foreground text-sm"
@@ -968,7 +976,10 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         onClose={() => setShowResetConfirm(false)}
         onConfirm={handleResetSession}
         title="清除上下文"
-        message="将清除 Claude 会话上下文并停止运行中的工作区进程，下次发送消息时将开始全新会话。聊天记录不受影响。"
+        message={resetAgentId
+          ? '将清除该子对话的 Claude 会话上下文，下次发送消息时将开始全新会话。聊天记录不受影响。'
+          : '将清除 Claude 会话上下文并停止运行中的工作区进程，下次发送消息时将开始全新会话。聊天记录不受影响。'
+        }
         confirmText="清除"
         confirmVariant="danger"
         loading={resetLoading}

@@ -1,5 +1,5 @@
 import { useState, useRef, memo } from 'react';
-import { Copy, Check, ChevronDown, ChevronUp } from 'lucide-react';
+import { Copy, Check, ChevronDown, ChevronUp, Ellipsis } from 'lucide-react';
 import { Message } from '../../stores/chat';
 import { useAuthStore } from '../../stores/auth';
 import { EmojiAvatar } from '../common/EmojiAvatar';
@@ -111,6 +111,18 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
     }
   };
 
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY });
+  };
+
+  const handleMenuButton = (e: React.MouseEvent | React.TouchEvent) => {
+    e.stopPropagation();
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    mediumTap();
+    setContextMenu({ x: rect.left, y: rect.bottom + 4 });
+  };
+
   const handleTouchStart = (e: React.TouchEvent) => {
     const touch = e.touches[0];
     touchStartPos.current = { x: touch.clientX, y: touch.clientY };
@@ -195,7 +207,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
       : (isOtherUser ? (message.sender_name || '用户') : (currentUser?.display_name || currentUser?.username || '我'));
 
     return (
-      <div className="group mb-2 border-b border-border pb-2" onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd} onTouchMove={handleTouchMove}>
+      <div className="group mb-2 border-b border-border pb-2" onContextMenu={handleContextMenu} onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd} onTouchMove={handleTouchMove}>
         {/* Sender line — no avatars in compact mode */}
         <div className="flex items-center gap-1.5 mb-1">
           <span className={`text-xs font-semibold ${isAI ? 'text-primary' : 'text-muted-foreground'}`}>{senderName}</span>
@@ -242,7 +254,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
           <ImageLightbox images={lightboxState.images} initialIndex={lightboxState.index} onClose={() => setLightboxState(null)} />
         )}
         {contextMenu && (
-          <MessageContextMenu content={message.content} position={contextMenu} onClose={() => setContextMenu(null)} />
+          <MessageContextMenu content={message.content} position={contextMenu} onClose={() => setContextMenu(null)} chatJid={message.chat_jid} messageId={message.id} />
         )}
       </div>
     );
@@ -255,7 +267,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
       const otherName = message.sender_name || '用户';
       const initial = otherName[0]?.toUpperCase() || '?';
       return (
-        <div className="group mb-4" onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd} onTouchMove={handleTouchMove}>
+        <div className="group mb-4" onContextMenu={handleContextMenu} onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd} onTouchMove={handleTouchMove}>
           <div className="flex items-center gap-2 mb-1.5 lg:hidden">
             <div className="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center text-xs font-medium text-slate-600 flex-shrink-0">
               {initial}
@@ -296,12 +308,12 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
                 )}
                 {!hasOnlyImages && (
                   <button
-                    onClick={handleCopy}
-                    className="absolute -right-8 top-1/2 -translate-y-1/2 w-6 h-6 rounded-md flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100 max-lg:hidden lg:opacity-0 lg:group-hover:opacity-100 transition-opacity cursor-pointer"
-                    title="复制"
-                    aria-label="复制消息"
+                    onClick={handleMenuButton}
+                    className="absolute -right-8 top-1/2 -translate-y-1/2 w-6 h-6 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-foreground/10 lg:opacity-0 lg:group-hover:opacity-100 transition-all cursor-pointer"
+                    title="更多"
+                    aria-label="消息菜单"
                   >
-                    {copied ? <Check className="w-3.5 h-3.5 text-primary" /> : <Copy className="w-3.5 h-3.5" />}
+                    <Ellipsis className="w-4 h-4" />
                   </button>
                 )}
               </div>
@@ -320,6 +332,8 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
               content={message.content}
               position={contextMenu}
               onClose={() => setContextMenu(null)}
+              chatJid={message.chat_jid}
+              messageId={message.id}
             />
           )}
         </div>
@@ -329,7 +343,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
     // User message (own): right-aligned
     const showSenderLabel = isShared;
     return (
-      <div className="group flex justify-end mb-4" onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd} onTouchMove={handleTouchMove}>
+      <div className="group flex justify-end mb-4" onContextMenu={handleContextMenu} onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd} onTouchMove={handleTouchMove}>
         <div className="flex flex-col items-end min-w-0 w-full">
           {showSenderLabel && (
             <span className="text-xs text-muted-foreground font-medium mb-1 mr-1">
@@ -358,12 +372,12 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
             )}
             {!hasOnlyImages && (
               <button
-                onClick={handleCopy}
-                className="absolute -left-8 top-1/2 -translate-y-1/2 w-6 h-6 rounded-md flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100 max-lg:hidden lg:opacity-0 lg:group-hover:opacity-100 transition-opacity cursor-pointer"
-                title="复制"
-                aria-label="复制消息"
+                onClick={handleMenuButton}
+                className="absolute -left-8 top-1/2 -translate-y-1/2 w-6 h-6 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-foreground/10 lg:opacity-0 lg:group-hover:opacity-100 transition-all cursor-pointer"
+                title="更多"
+                aria-label="消息菜单"
               >
-                {copied ? <Check className="w-3.5 h-3.5 text-primary" /> : <Copy className="w-3.5 h-3.5" />}
+                <Ellipsis className="w-4 h-4" />
               </button>
             )}
           </div>
@@ -384,6 +398,8 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
             content={message.content}
             position={contextMenu}
             onClose={() => setContextMenu(null)}
+            chatJid={message.chat_jid}
+            messageId={message.id}
           />
         )}
       </div>
@@ -397,7 +413,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
   const aiImageUrl = currentUser?.ai_avatar_url;
 
   return (
-    <div className="group mb-4" onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd} onTouchMove={handleTouchMove}>
+    <div className="group mb-4" onContextMenu={handleContextMenu} onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd} onTouchMove={handleTouchMove}>
       {/* Mobile: compact avatar + name row */}
       <div className="flex items-center gap-2 mb-1.5 lg:hidden">
         <EmojiAvatar imageUrl={aiImageUrl} emoji={aiEmoji} color={aiColor} fallbackChar={senderName[0]} size="sm" />
@@ -419,15 +435,25 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
 
           {/* Card */}
           <div className="relative bg-card rounded-xl border border-border border-l-[3px] border-l-[var(--brand-400)] px-5 py-4 max-lg:bg-card/90 max-lg:backdrop-blur-sm overflow-hidden">
-            {/* Copy button — desktop only, mobile uses long-press menu */}
-            <button
-              onClick={handleCopy}
-              className="absolute top-2 right-2 w-7 h-7 rounded-md flex items-center justify-center text-slate-300 hover:text-slate-600 hover:bg-slate-100 max-lg:hidden lg:opacity-0 lg:group-hover:opacity-100 transition-opacity cursor-pointer"
-              title="复制"
-              aria-label="复制消息"
-            >
-              {copied ? <Check className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}
-            </button>
+            {/* Action buttons */}
+            <div className="absolute top-2 right-2 flex items-center gap-0.5 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
+              <button
+                onClick={handleCopy}
+                className="w-7 h-7 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-foreground/10 max-lg:hidden cursor-pointer"
+                title="复制"
+                aria-label="复制消息"
+              >
+                {copied ? <Check className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}
+              </button>
+              <button
+                onClick={handleMenuButton}
+                className="w-7 h-7 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-foreground/10 cursor-pointer"
+                title="更多"
+                aria-label="消息菜单"
+              >
+                <Ellipsis className="w-4 h-4" />
+              </button>
+            </div>
 
             {/* Reasoning block */}
             {thinkingContent && <ReasoningBlock content={thinkingContent} />}
@@ -469,6 +495,8 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
           content={message.content}
           position={contextMenu}
           onClose={() => setContextMenu(null)}
+          chatJid={message.chat_jid}
+          messageId={message.id}
         />
       )}
     </div>

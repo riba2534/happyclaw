@@ -47,7 +47,9 @@ export async function runScript(
           env: {
             PATH: process.env.PATH,
             LANG: process.env.LANG || 'en_US.UTF-8',
-            TZ: process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone,
+            TZ:
+              process.env.TZ ||
+              Intl.DateTimeFormat().resolvedOptions().timeZone,
             GROUP_FOLDER: groupFolder,
             HOME: cwd,
           },

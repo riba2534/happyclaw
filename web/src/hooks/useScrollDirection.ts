@@ -7,8 +7,9 @@ export function useScrollDirection(scrollRef?: React.RefObject<HTMLElement | nul
 
   useEffect(() => {
     // If a specific scrollRef is provided, use that element.
-    // Otherwise fall back to window scroll (works even when main has overflow-hidden).
-    const el = scrollRef?.current ?? null;
+    // Otherwise fall back to the app scroll root, then window scroll.
+    const appScrollRoot = document.querySelector<HTMLElement>('[data-app-scroll-root="true"]');
+    const el = scrollRef?.current ?? appScrollRoot ?? null;
     const threshold = 20;
 
     const updateDirection = () => {

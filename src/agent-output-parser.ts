@@ -25,6 +25,8 @@ export interface StdoutParserState {
   hasSuccessOutput: boolean;
   /** True when agent emitted a { status: 'closed' } marker (exit due to _close sentinel). */
   hasClosedOutput: boolean;
+  /** True when agent emitted a stream event with statusText='interrupted'. */
+  hasInterruptedOutput: boolean;
 }
 
 export interface StdoutParserOptions {
@@ -44,6 +46,7 @@ export function createStdoutParserState(): StdoutParserState {
     outputChain: Promise.resolve(),
     hasSuccessOutput: false,
     hasClosedOutput: false,
+    hasInterruptedOutput: false,
   };
 }
 
@@ -57,7 +60,8 @@ export function attachStdoutHandler(
 
     // Always accumulate for logging
     if (!state.stdoutTruncated) {
-      const remaining = getSystemSettings().containerMaxOutputSize - state.stdout.length;
+      const remaining =
+        getSystemSettings().containerMaxOutputSize - state.stdout.length;
       if (chunk.length > remaining) {
         state.stdout += chunk.slice(0, remaining);
         state.stdoutTruncated = true;
@@ -79,21 +83,26 @@ export function attachStdoutHandler(
           { group: opts.groupName },
           'Parse buffer overflow, truncating',
         );
-        const lastMarkerIdx = state.parseBuffer.lastIndexOf(OUTPUT_START_MARKER);
+        const lastMarkerIdx =
+          state.parseBuffer.lastIndexOf(OUTPUT_START_MARKER);
         state.parseBuffer =
           lastMarkerIdx >= 0
             ? state.parseBuffer.slice(lastMarkerIdx)
             : state.parseBuffer.slice(-512);
       }
       let startIdx: number;
-      while ((startIdx = state.parseBuffer.indexOf(OUTPUT_START_MARKER)) !== -1) {
+      while (
+        (startIdx = state.parseBuffer.indexOf(OUTPUT_START_MARKER)) !== -1
+      ) {
         const endIdx = state.parseBuffer.indexOf(OUTPUT_END_MARKER, startIdx);
         if (endIdx === -1) break; // Incomplete pair, wait for more data
 
         const jsonStr = state.parseBuffer
           .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
           .trim();
-        state.parseBuffer = state.parseBuffer.slice(endIdx + OUTPUT_END_MARKER.length);
+        state.parseBuffer = state.parseBuffer.slice(
+          endIdx + OUTPUT_END_MARKER.length,
+        );
 
         try {
           const parsed: ContainerOutput = JSON.parse(jsonStr);
@@ -105,6 +114,12 @@ export function attachStdoutHandler(
           }
           if (parsed.status === 'closed') {
             state.hasClosedOutput = true;
+          }
+          if (
+            parsed.status === 'stream' &&
+            parsed.streamEvent?.statusText === 'interrupted'
+          ) {
+            state.hasInterruptedOutput = true;
           }
           // Activity detected — reset the hard timeout
           opts.resetTimeout();
@@ -160,7 +175,8 @@ export function attachStderrHandler(
     // Don't reset timeout on stderr — SDK writes debug logs continuously.
     // Timeout only resets on actual output (OUTPUT_MARKER in stdout).
     if (state.stderrTruncated) return;
-    const remaining = getSystemSettings().containerMaxOutputSize - state.stderr.length;
+    const remaining =
+      getSystemSettings().containerMaxOutputSize - state.stderr.length;
     if (chunk.length > remaining) {
       state.stderr += chunk.slice(0, remaining);
       state.stderrTruncated = true;
@@ -197,7 +213,10 @@ export interface CloseHandlerContext {
   /** Extra log lines for verbose/error section (e.g. Container Args, detailed Mounts) */
   extraVerboseLines?: string[];
   /** Custom error enrichment: given stderr, return { result, error } overrides */
-  enrichError?: (stderr: string, exitLabel: string) => { result: string | null; error: string };
+  enrichError?: (
+    stderr: string,
+    exitLabel: string,
+  ) => { result: string | null; error: string };
 }
 
 /**
@@ -228,7 +247,13 @@ export function handleTimeoutClose(
   );
 
   logger.error(
-    { group: ctx.groupName, [ctx.filePrefix === 'container' ? 'containerName' : 'processId']: ctx.identifier, duration, code },
+    {
+      group: ctx.groupName,
+      [ctx.filePrefix === 'container' ? 'containerName' : 'processId']:
+        ctx.identifier,
+      duration,
+      code,
+    },
     `${ctx.label} timed out`,
   );
 
@@ -271,12 +296,16 @@ export function writeRunLog(
   const { stdout, stdoutTruncated } = ctx.stdoutState;
 
   const LOG_TAIL_LIMIT = 4000;
-  const stderrLog = (!isVerbose && !isError && stderr.length > LOG_TAIL_LIMIT)
-    ? `... (truncated ${stderr.length - LOG_TAIL_LIMIT} chars) ...\n` + stderr.slice(-LOG_TAIL_LIMIT)
-    : stderr;
-  const stdoutLog = (!isVerbose && !isError && stdout.length > LOG_TAIL_LIMIT)
-    ? `... (truncated ${stdout.length - LOG_TAIL_LIMIT} chars) ...\n` + stdout.slice(-LOG_TAIL_LIMIT)
-    : stdout;
+  const stderrLog =
+    !isVerbose && !isError && stderr.length > LOG_TAIL_LIMIT
+      ? `... (truncated ${stderr.length - LOG_TAIL_LIMIT} chars) ...\n` +
+        stderr.slice(-LOG_TAIL_LIMIT)
+      : stderr;
+  const stdoutLog =
+    !isVerbose && !isError && stdout.length > LOG_TAIL_LIMIT
+      ? `... (truncated ${stdout.length - LOG_TAIL_LIMIT} chars) ...\n` +
+        stdout.slice(-LOG_TAIL_LIMIT)
+      : stdout;
   logLines.push(
     `=== Input Summary ===`,
     `Prompt length: ${ctx.input.prompt.length} chars`,
@@ -295,11 +324,7 @@ export function writeRunLog(
   );
 
   if (isVerbose || isError) {
-    logLines.push(
-      ``,
-      `=== Input ===`,
-      JSON.stringify(ctx.input, null, 2),
-    );
+    logLines.push(``, `=== Input ===`, JSON.stringify(ctx.input, null, 2));
     if (ctx.extraVerboseLines) {
       logLines.push(``, ...ctx.extraVerboseLines);
     }
@@ -360,22 +385,45 @@ export function handleNonZeroExit(
     code === null ? `signal ${signal || 'unknown'}` : `code ${code}`;
   const { newSessionId, outputChain } = ctx.stdoutState;
 
+  // Graceful interrupt: agent emitted 'interrupted' status before exiting.
+  if (ctx.stdoutState.hasInterruptedOutput && ctx.onOutput) {
+    logger.info(
+      { group: ctx.groupName, code, signal, duration, newSessionId },
+      `${ctx.label} exited after interrupt (treating as success)`,
+    );
+    waitForOutputChain(
+      outputChain,
+      ctx.groupName,
+      `${ctx.filePrefix} interrupt path`,
+      () => {
+        ctx.resolvePromise({ status: 'success', result: null, newSessionId });
+      },
+    );
+    return true;
+  }
+
   // Graceful shutdown: agent was killed by SIGTERM/SIGKILL (e.g. user
   // clicked stop, session reset, clear-history). Treat as normal
   // completion instead of an error.
-  const isForceKilled = signal === 'SIGTERM' || signal === 'SIGKILL' || code === 137;
+  const isForceKilled =
+    signal === 'SIGTERM' || signal === 'SIGKILL' || code === 137;
   if (isForceKilled && ctx.onOutput) {
     logger.info(
       { group: ctx.groupName, signal, code, duration, newSessionId },
       `${ctx.label} terminated by signal (user stop / graceful shutdown)`,
     );
-    waitForOutputChain(outputChain, ctx.groupName, `${ctx.filePrefix} force-kill path`, () => {
-      ctx.resolvePromise({
-        status: 'success',
-        result: null,
-        newSessionId,
-      });
-    });
+    waitForOutputChain(
+      outputChain,
+      ctx.groupName,
+      `${ctx.filePrefix} force-kill path`,
+      () => {
+        ctx.resolvePromise({
+          status: 'success',
+          result: null,
+          newSessionId,
+        });
+      },
+    );
     return true;
   }
 
@@ -383,7 +431,10 @@ export function handleNonZeroExit(
   const { stderr } = ctx.stderrState;
   const enriched = ctx.enrichError
     ? ctx.enrichError(stderr, exitLabel)
-    : { result: null as string | null, error: `${ctx.label} exited with ${exitLabel}: ${stderr.slice(-200)}` };
+    : {
+        result: null as string | null,
+        error: `${ctx.label} exited with ${exitLabel}: ${stderr.slice(-200)}`,
+      };
 
   logger.error(
     {
@@ -408,7 +459,12 @@ export function handleNonZeroExit(
 
   // Even on error exits, wait for pending output callbacks to settle.
   if (ctx.onOutput) {
-    waitForOutputChain(outputChain, ctx.groupName, `${ctx.filePrefix} error path`, finalizeError);
+    waitForOutputChain(
+      outputChain,
+      ctx.groupName,
+      `${ctx.filePrefix} error path`,
+      finalizeError,
+    );
     return true;
   }
 
@@ -428,20 +484,27 @@ export function handleSuccessClose(
   // Streaming mode: wait for output chain to settle
   if (ctx.onOutput) {
     const { hasClosedOutput } = ctx.stdoutState;
-    waitForOutputChain(outputChain, ctx.groupName, `${ctx.filePrefix} success path`, () => {
-      // Propagate 'closed' status so the host can distinguish a _close-interrupted
-      // exit from a normal completion and avoid committing the message cursor.
-      const finalStatus = hasClosedOutput ? 'closed' as const : 'success' as const;
-      logger.info(
-        { group: ctx.groupName, duration, newSessionId, finalStatus },
-        `${ctx.label} completed (streaming mode)`,
-      );
-      ctx.resolvePromise({
-        status: finalStatus,
-        result: null,
-        newSessionId,
-      });
-    });
+    waitForOutputChain(
+      outputChain,
+      ctx.groupName,
+      `${ctx.filePrefix} success path`,
+      () => {
+        // Propagate 'closed' status so the host can distinguish a _close-interrupted
+        // exit from a normal completion and avoid committing the message cursor.
+        const finalStatus = hasClosedOutput
+          ? ('closed' as const)
+          : ('success' as const);
+        logger.info(
+          { group: ctx.groupName, duration, newSessionId, finalStatus },
+          `${ctx.label} completed (streaming mode)`,
+        );
+        ctx.resolvePromise({
+          status: finalStatus,
+          result: null,
+          newSessionId,
+        });
+      },
+    );
     return;
   }
 

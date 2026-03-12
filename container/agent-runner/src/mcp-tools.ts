@@ -49,7 +49,12 @@ const MAX_MEMORY_FILE_SIZE = 512 * 1024; // 512KB per file
 const MAX_MEMORY_APPEND_SIZE = 16 * 1024; // 16KB per append
 const MEMORY_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
-function collectMemoryFiles(baseDir: string, out: string[], maxDepth: number, depth = 0): void {
+function collectMemoryFiles(
+  baseDir: string,
+  out: string[],
+  maxDepth: number,
+  depth = 0,
+): void {
   if (depth > maxDepth || !fs.existsSync(baseDir)) return;
   try {
     const entries = fs.readdirSync(baseDir, { withFileTypes: true });
@@ -61,27 +66,41 @@ function collectMemoryFiles(baseDir: string, out: string[], maxDepth: number, de
           collectMemoryFiles(fullPath, out, maxDepth, depth + 1);
         }
       } else if (entry.isFile()) {
-        if (entry.name === 'CLAUDE.md' || MEMORY_EXTENSIONS.has(path.extname(entry.name))) {
+        if (
+          entry.name === 'CLAUDE.md' ||
+          MEMORY_EXTENSIONS.has(path.extname(entry.name))
+        ) {
           out.push(fullPath);
         }
       }
     }
-  } catch { /* skip unreadable */ }
+  } catch {
+    /* skip unreadable */
+  }
 }
 
 function createToRelativePath(ctx: McpContext) {
   return (filePath: string): string => {
-    if (filePath === ctx.workspaceGlobal || filePath.startsWith(ctx.workspaceGlobal + path.sep)) {
+    if (
+      filePath === ctx.workspaceGlobal ||
+      filePath.startsWith(ctx.workspaceGlobal + path.sep)
+    ) {
       return `[global] ${path.relative(ctx.workspaceGlobal, filePath)}`;
     }
-    if (filePath === ctx.workspaceMemory || filePath.startsWith(ctx.workspaceMemory + path.sep)) {
+    if (
+      filePath === ctx.workspaceMemory ||
+      filePath.startsWith(ctx.workspaceMemory + path.sep)
+    ) {
       return `[memory] ${path.relative(ctx.workspaceMemory, filePath)}`;
     }
     return path.relative(ctx.workspaceGroup, filePath);
   };
 }
 
-function parseMemoryFileReference(fileRef: string): { pathRef: string; lineFromRef?: number } {
+function parseMemoryFileReference(fileRef: string): {
+  pathRef: string;
+  lineFromRef?: number;
+} {
   const trimmed = fileRef.trim();
   const lineRefMatch = trimmed.match(/^(.*?):(\d+)$/);
   if (!lineRefMatch) return { pathRef: trimmed };
@@ -121,6 +140,244 @@ export function createMcpTools(ctx: McpContext): SdkMcpToolDefinition<any>[] {
       },
     ),
 
+    // --- send_image ---
+    tool(
+      'send_image',
+      "Send an image file from the workspace to the user or group via IM (Feishu/Telegram). The file must be an image (PNG, JPEG, GIF, WebP, etc.) and must exist in the workspace. Use this when you've generated or downloaded an image and want to share it with the user. Optionally include a caption.",
+      {
+        file_path: z
+          .string()
+          .describe(
+            'Path to the image file in the workspace (relative to workspace root or absolute)',
+          ),
+        caption: z
+          .string()
+          .optional()
+          .describe('Optional caption text to send with the image'),
+      },
+      async (args) => {
+        // Web channels don't support direct image sending
+        if (ctx.chatJid.startsWith('web:')) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: 'Error: send_image is not supported for Web channels. Images can only be sent to IM channels (Feishu/Telegram).',
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        // Resolve path relative to workspace
+        const absPath = path.isAbsolute(args.file_path)
+          ? args.file_path
+          : path.join(ctx.workspaceGroup, args.file_path);
+
+        // Security: ensure path is within workspace
+        // Use path.sep suffix to prevent prefix-bypass (e.g. /ws/group1 matching /ws/group10/evil.png)
+        const resolved = path.resolve(absPath);
+        const safeRoot = ctx.workspaceGroup.endsWith(path.sep)
+          ? ctx.workspaceGroup
+          : ctx.workspaceGroup + path.sep;
+        if (resolved !== ctx.workspaceGroup && !resolved.startsWith(safeRoot)) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Error: file path must be within workspace directory.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        // Check file exists
+        if (!fs.existsSync(resolved)) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Error: file not found: ${args.file_path}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        // Read file and check size (10MB limit for both Feishu and Telegram)
+        const stat = fs.statSync(resolved);
+        if (stat.size > 10 * 1024 * 1024) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Error: image file too large (${(stat.size / 1024 / 1024).toFixed(1)}MB). Maximum is 10MB.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+        if (stat.size === 0) {
+          return {
+            content: [
+              { type: 'text' as const, text: `Error: image file is empty.` },
+            ],
+            isError: true,
+          };
+        }
+
+        const buffer = fs.readFileSync(resolved);
+        const base64 = buffer.toString('base64');
+
+        // Detect MIME type from magic bytes
+        const { detectImageMimeTypeFromBase64Strict } =
+          await import('./image-detector.js');
+        const mimeType = detectImageMimeTypeFromBase64Strict(base64);
+        if (!mimeType) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Error: file does not appear to be a supported image format (PNG, JPEG, GIF, WebP, TIFF, BMP).`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const data = {
+          type: 'image',
+          chatJid: ctx.chatJid,
+          imageBase64: base64,
+          mimeType,
+          caption: args.caption || undefined,
+          fileName: path.basename(resolved),
+          groupFolder: ctx.groupFolder,
+          timestamp: new Date().toISOString(),
+        };
+        writeIpcFile(MESSAGES_DIR, data);
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Image sent: ${path.basename(resolved)} (${mimeType}, ${(stat.size / 1024).toFixed(1)}KB)`,
+            },
+          ],
+        };
+      },
+    ),
+
+    // --- send_file ---
+    tool(
+      'send_file',
+      `Send a file to the current chat (the user you're talking to) via IM (Feishu/Telegram). The file path is relative to the workspace/group directory.
+Supports: PDF, DOC, XLS, PPT, MP4, etc. Max file size: 30MB.`,
+      {
+        filePath: z
+          .string()
+          .describe(
+            'File path relative to workspace/group (e.g., "output/report.pdf")',
+          ),
+        fileName: z
+          .string()
+          .describe('File name to display (e.g., "report.pdf")'),
+      },
+      async (args) => {
+        // Web channels don't support direct file sending
+        if (ctx.chatJid.startsWith('web:')) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: 'Error: send_file is not supported for Web channels. Files can only be sent to IM channels (Feishu/Telegram).',
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        // Handle both absolute and relative paths
+        let resolvedPath: string;
+        let relativePath: string;
+
+        if (path.isAbsolute(args.filePath)) {
+          // Absolute path provided - validate and convert to relative
+          resolvedPath = path.resolve(args.filePath);
+          const safeRoot = ctx.workspaceGroup.endsWith(path.sep)
+            ? ctx.workspaceGroup
+            : ctx.workspaceGroup + path.sep;
+          if (
+            resolvedPath !== ctx.workspaceGroup &&
+            !resolvedPath.startsWith(safeRoot)
+          ) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: 'Error: file must be within the workspace/group directory.',
+                },
+              ],
+              isError: true,
+            };
+          }
+          // Convert to relative path
+          relativePath = path.relative(ctx.workspaceGroup, resolvedPath);
+        } else {
+          // Relative path provided
+          relativePath = args.filePath;
+          resolvedPath = path.resolve(ctx.workspaceGroup, args.filePath);
+          // Validate resolved path is still within workspace
+          const safeRoot = ctx.workspaceGroup.endsWith(path.sep)
+            ? ctx.workspaceGroup
+            : ctx.workspaceGroup + path.sep;
+          if (
+            resolvedPath !== ctx.workspaceGroup &&
+            !resolvedPath.startsWith(safeRoot)
+          ) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: 'Error: file must be within the workspace/group directory.',
+                },
+              ],
+              isError: true,
+            };
+          }
+        }
+
+        if (!fs.existsSync(resolvedPath)) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Error: file not found: ${args.filePath}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const data = {
+          type: 'send_file',
+          chatJid: ctx.chatJid,
+          filePath: relativePath,
+          fileName: args.fileName,
+          timestamp: new Date().toISOString(),
+        };
+        writeIpcFile(TASKS_DIR, data);
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Sending file "${args.fileName}"...`,
+            },
+          ],
+        };
+      },
+    ),
+
     // --- schedule_task ---
     tool(
       'schedule_task',
@@ -143,13 +400,48 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
 \u2022 interval: Milliseconds between runs (e.g., "300000" for 5 minutes, "3600000" for 1 hour)
 \u2022 once: Local time WITHOUT "Z" suffix (e.g., "2026-02-01T15:30:00"). Do NOT use UTC/Z suffix.`,
       {
-        prompt: z.string().optional().default('').describe('What the agent should do (agent mode) or task description (script mode, optional).'),
-        schedule_type: z.enum(['cron', 'interval', 'once']).describe('cron=recurring at specific times, interval=recurring every N ms, once=run once at specific time'),
-        schedule_value: z.string().describe('cron: "*/5 * * * *" | interval: milliseconds like "300000" | once: local timestamp like "2026-02-01T15:30:00" (no Z suffix!)'),
-        execution_type: z.enum(['agent', 'script']).default('agent').describe('agent=full Claude Agent (default), script=shell command (admin only, zero token cost)'),
-        script_command: z.string().max(4096).optional().describe('Shell command to execute (required for script mode). Runs in the group workspace directory.'),
-        context_mode: z.enum(['group', 'isolated']).default('group').describe('(agent mode only) group=runs with chat history, isolated=fresh session'),
-        target_group_jid: z.string().optional().describe('(Admin home only) JID of the group to schedule the task for. Defaults to the current group.'),
+        prompt: z
+          .string()
+          .optional()
+          .default('')
+          .describe(
+            'What the agent should do (agent mode) or task description (script mode, optional).',
+          ),
+        schedule_type: z
+          .enum(['cron', 'interval', 'once'])
+          .describe(
+            'cron=recurring at specific times, interval=recurring every N ms, once=run once at specific time',
+          ),
+        schedule_value: z
+          .string()
+          .describe(
+            'cron: "*/5 * * * *" | interval: milliseconds like "300000" | once: local timestamp like "2026-02-01T15:30:00" (no Z suffix!)',
+          ),
+        execution_type: z
+          .enum(['agent', 'script'])
+          .default('agent')
+          .describe(
+            'agent=full Claude Agent (default), script=shell command (admin only, zero token cost)',
+          ),
+        script_command: z
+          .string()
+          .max(4096)
+          .optional()
+          .describe(
+            'Shell command to execute (required for script mode). Runs in the group workspace directory.',
+          ),
+        context_mode: z
+          .enum(['group', 'isolated'])
+          .default('group')
+          .describe(
+            '(agent mode only) group=runs with chat history, isolated=fresh session',
+          ),
+        target_group_jid: z
+          .string()
+          .optional()
+          .describe(
+            '(Admin home only) JID of the group to schedule the task for. Defaults to the current group.',
+          ),
       },
       async (args) => {
         const execType = args.execution_type || 'agent';
@@ -157,19 +449,34 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
         // Validate execution_type constraints
         if (execType === 'agent' && !args.prompt?.trim()) {
           return {
-            content: [{ type: 'text' as const, text: 'Agent mode requires a prompt. Provide instructions for what the agent should do.' }],
+            content: [
+              {
+                type: 'text' as const,
+                text: 'Agent mode requires a prompt. Provide instructions for what the agent should do.',
+              },
+            ],
             isError: true,
           };
         }
         if (execType === 'script' && !args.script_command?.trim()) {
           return {
-            content: [{ type: 'text' as const, text: 'Script mode requires script_command. Provide the shell command to execute.' }],
+            content: [
+              {
+                type: 'text' as const,
+                text: 'Script mode requires script_command. Provide the shell command to execute.',
+              },
+            ],
             isError: true,
           };
         }
         if (execType === 'script' && !ctx.isAdminHome) {
           return {
-            content: [{ type: 'text' as const, text: 'Only admin home container can create script tasks.' }],
+            content: [
+              {
+                type: 'text' as const,
+                text: 'Only admin home container can create script tasks.',
+              },
+            ],
             isError: true,
           };
         }
@@ -180,7 +487,12 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
             CronExpressionParser.parse(args.schedule_value);
           } catch {
             return {
-              content: [{ type: 'text' as const, text: `Invalid cron: "${args.schedule_value}". Use format like "0 9 * * *" (daily 9am) or "*/5 * * * *" (every 5 min).` }],
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Invalid cron: "${args.schedule_value}". Use format like "0 9 * * *" (daily 9am) or "*/5 * * * *" (every 5 min).`,
+                },
+              ],
               isError: true,
             };
           }
@@ -188,7 +500,12 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
           const ms = parseInt(args.schedule_value, 10);
           if (isNaN(ms) || ms <= 0) {
             return {
-              content: [{ type: 'text' as const, text: `Invalid interval: "${args.schedule_value}". Must be positive milliseconds (e.g., "300000" for 5 min).` }],
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Invalid interval: "${args.schedule_value}". Must be positive milliseconds (e.g., "300000" for 5 min).`,
+                },
+              ],
               isError: true,
             };
           }
@@ -196,13 +513,21 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
           const date = new Date(args.schedule_value);
           if (isNaN(date.getTime())) {
             return {
-              content: [{ type: 'text' as const, text: `Invalid timestamp: "${args.schedule_value}". Use ISO 8601 format like "2026-02-01T15:30:00.000Z".` }],
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Invalid timestamp: "${args.schedule_value}". Use ISO 8601 format like "2026-02-01T15:30:00.000Z".`,
+                },
+              ],
               isError: true,
             };
           }
         }
 
-        const targetJid = hasCrossGroupAccess && args.target_group_jid ? args.target_group_jid : ctx.chatJid;
+        const targetJid =
+          hasCrossGroupAccess && args.target_group_jid
+            ? args.target_group_jid
+            : ctx.chatJid;
         const data: Record<string, unknown> = {
           type: 'schedule_task',
           prompt: args.prompt || '',
@@ -220,7 +545,12 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
         const filename = writeIpcFile(TASKS_DIR, data);
         const modeLabel = execType === 'script' ? 'script' : 'agent';
         return {
-          content: [{ type: 'text' as const, text: `Task scheduled [${modeLabel}] (${filename}): ${args.schedule_type} - ${args.schedule_value}` }],
+          content: [
+            {
+              type: 'text' as const,
+              text: `Task scheduled [${modeLabel}] (${filename}): ${args.schedule_type} - ${args.schedule_value}`,
+            },
+          ],
         };
       },
     ),
@@ -234,25 +564,52 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
         const tasksFile = path.join(ctx.workspaceIpc, 'current_tasks.json');
         try {
           if (!fs.existsSync(tasksFile)) {
-            return { content: [{ type: 'text' as const, text: 'No scheduled tasks found.' }] };
+            return {
+              content: [
+                { type: 'text' as const, text: 'No scheduled tasks found.' },
+              ],
+            };
           }
           const allTasks = JSON.parse(fs.readFileSync(tasksFile, 'utf-8'));
           const tasks = hasCrossGroupAccess
             ? allTasks
-            : allTasks.filter((t: { groupFolder: string }) => t.groupFolder === ctx.groupFolder);
+            : allTasks.filter(
+                (t: { groupFolder: string }) =>
+                  t.groupFolder === ctx.groupFolder,
+              );
           if (tasks.length === 0) {
-            return { content: [{ type: 'text' as const, text: 'No scheduled tasks found.' }] };
+            return {
+              content: [
+                { type: 'text' as const, text: 'No scheduled tasks found.' },
+              ],
+            };
           }
           const formatted = tasks
             .map(
-              (t: { id: string; prompt: string; schedule_type: string; schedule_value: string; status: string; next_run: string }) =>
+              (t: {
+                id: string;
+                prompt: string;
+                schedule_type: string;
+                schedule_value: string;
+                status: string;
+                next_run: string;
+              }) =>
                 `- [${t.id}] ${t.prompt.slice(0, 50)}... (${t.schedule_type}: ${t.schedule_value}) - ${t.status}, next: ${t.next_run || 'N/A'}`,
             )
             .join('\n');
-          return { content: [{ type: 'text' as const, text: `Scheduled tasks:\n${formatted}` }] };
+          return {
+            content: [
+              { type: 'text' as const, text: `Scheduled tasks:\n${formatted}` },
+            ],
+          };
         } catch (err) {
           return {
-            content: [{ type: 'text' as const, text: `Error reading tasks: ${err instanceof Error ? err.message : String(err)}` }],
+            content: [
+              {
+                type: 'text' as const,
+                text: `Error reading tasks: ${err instanceof Error ? err.message : String(err)}`,
+              },
+            ],
           };
         }
       },
@@ -272,7 +629,14 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
           timestamp: new Date().toISOString(),
         };
         writeIpcFile(TASKS_DIR, data);
-        return { content: [{ type: 'text' as const, text: `Task ${args.task_id} pause requested.` }] };
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Task ${args.task_id} pause requested.`,
+            },
+          ],
+        };
       },
     ),
 
@@ -290,7 +654,14 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
           timestamp: new Date().toISOString(),
         };
         writeIpcFile(TASKS_DIR, data);
-        return { content: [{ type: 'text' as const, text: `Task ${args.task_id} resume requested.` }] };
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Task ${args.task_id} resume requested.`,
+            },
+          ],
+        };
       },
     ),
 
@@ -308,7 +679,14 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
           timestamp: new Date().toISOString(),
         };
         writeIpcFile(TASKS_DIR, data);
-        return { content: [{ type: 'text' as const, text: `Task ${args.task_id} cancellation requested.` }] };
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Task ${args.task_id} cancellation requested.`,
+            },
+          ],
+        };
       },
     ),
 
@@ -321,12 +699,21 @@ Use available_groups.json to find the JID for a group. The folder name should be
       {
         jid: z.string().describe('The chat JID (e.g., "feishu:oc_xxxx")'),
         name: z.string().describe('Display name for the group'),
-        folder: z.string().describe('Folder name for group files (lowercase, hyphens, e.g., "family-chat")'),
+        folder: z
+          .string()
+          .describe(
+            'Folder name for group files (lowercase, hyphens, e.g., "family-chat")',
+          ),
       },
       async (args) => {
         if (!hasCrossGroupAccess) {
           return {
-            content: [{ type: 'text' as const, text: 'Only the admin home container can register new groups.' }],
+            content: [
+              {
+                type: 'text' as const,
+                text: 'Only the admin home container can register new groups.',
+              },
+            ],
             isError: true,
           };
         }
@@ -339,219 +726,355 @@ Use available_groups.json to find the JID for a group. The folder name should be
         };
         writeIpcFile(TASKS_DIR, data);
         return {
-          content: [{ type: 'text' as const, text: `Group "${args.name}" registered. It will start receiving messages immediately.` }],
+          content: [
+            {
+              type: 'text' as const,
+              text: `Group "${args.name}" registered. It will start receiving messages immediately.`,
+            },
+          ],
         };
       },
     ),
-
   ];
 
   // Skill 安装/卸载仅限主容器（与 memory_* 工具一致）
   if (ctx.isHome) {
     tools.push(
-    // --- install_skill ---
-    tool(
-      'install_skill',
-      `Install a skill from the skills registry (skills.sh). The skill will be available in future conversations.
+      // --- install_skill ---
+      tool(
+        'install_skill',
+        `Install a skill from the skills registry (skills.sh). The skill will be available in future conversations.
 Example packages: "anthropic/memory", "anthropic/think", "owner/repo", "owner/repo@skill-name".`,
-      {
-        package: z.string().describe('The skill package to install, format: owner/repo or owner/repo@skill'),
-      },
-      async (args) => {
-        const pkg = args.package.trim();
-        if (!/^[\w\-]+\/[\w\-.]+(?:[@#][\w\-.\/]+)?$/.test(pkg) && !/^https?:\/\//.test(pkg)) {
+        {
+          package: z
+            .string()
+            .describe(
+              'The skill package to install, format: owner/repo or owner/repo@skill',
+            ),
+        },
+        async (args) => {
+          const pkg = args.package.trim();
+          if (
+            !/^[\w\-]+\/[\w\-.]+(?:[@#][\w\-.\/]+)?$/.test(pkg) &&
+            !/^https?:\/\//.test(pkg)
+          ) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Invalid package format: "${pkg}". Expected format: owner/repo or owner/repo@skill`,
+                },
+              ],
+              isError: true,
+            };
+          }
+
+          const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          const resultFileName = `install_skill_result_${requestId}.json`;
+          const resultFilePath = path.join(TASKS_DIR, resultFileName);
+
+          const data = {
+            type: 'install_skill',
+            package: pkg,
+            requestId,
+            groupFolder: ctx.groupFolder,
+            timestamp: new Date().toISOString(),
+          };
+          writeIpcFile(TASKS_DIR, data);
+
+          // Poll for result file (timeout 120s)
+          const timeout = 120_000;
+          const pollInterval = 500;
+          const deadline = Date.now() + timeout;
+
+          while (Date.now() < deadline) {
+            try {
+              if (fs.existsSync(resultFilePath)) {
+                const raw = fs.readFileSync(resultFilePath, 'utf-8');
+                fs.unlinkSync(resultFilePath);
+                const result = JSON.parse(raw);
+                if (result.success) {
+                  const installed = (result.installed || []).join(', ') || pkg;
+                  return {
+                    content: [
+                      {
+                        type: 'text' as const,
+                        text: `Skill installed successfully: ${installed}\n\nNote: The skill will be available in the next conversation (new container/process).`,
+                      },
+                    ],
+                  };
+                } else {
+                  return {
+                    content: [
+                      {
+                        type: 'text' as const,
+                        text: `Failed to install skill "${pkg}": ${result.error || 'Unknown error'}`,
+                      },
+                    ],
+                    isError: true,
+                  };
+                }
+              }
+            } catch {
+              // ignore read errors, retry
+            }
+            await new Promise((resolve) => setTimeout(resolve, pollInterval));
+          }
           return {
-            content: [{ type: 'text' as const, text: `Invalid package format: "${pkg}". Expected format: owner/repo or owner/repo@skill` }],
+            content: [
+              {
+                type: 'text' as const,
+                text: `Timeout waiting for skill installation result (${timeout / 1000}s). The installation may still be in progress.`,
+              },
+            ],
             isError: true,
           };
-        }
+        },
+      ),
 
-        const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const resultFileName = `install_skill_result_${requestId}.json`;
-        const resultFilePath = path.join(TASKS_DIR, resultFileName);
-
-        const data = {
-          type: 'install_skill',
-          package: pkg,
-          requestId,
-          groupFolder: ctx.groupFolder,
-          timestamp: new Date().toISOString(),
-        };
-        writeIpcFile(TASKS_DIR, data);
-
-        // Poll for result file (timeout 120s)
-        const timeout = 120_000;
-        const pollInterval = 500;
-        const deadline = Date.now() + timeout;
-
-        while (Date.now() < deadline) {
-          try {
-            if (fs.existsSync(resultFilePath)) {
-              const raw = fs.readFileSync(resultFilePath, 'utf-8');
-              fs.unlinkSync(resultFilePath);
-              const result = JSON.parse(raw);
-              if (result.success) {
-                const installed = (result.installed || []).join(', ') || pkg;
-                return {
-                  content: [{ type: 'text' as const, text: `Skill installed successfully: ${installed}\n\nNote: The skill will be available in the next conversation (new container/process).` }],
-                };
-              } else {
-                return {
-                  content: [{ type: 'text' as const, text: `Failed to install skill "${pkg}": ${result.error || 'Unknown error'}` }],
-                  isError: true,
-                };
-              }
-            }
-          } catch {
-            // ignore read errors, retry
-          }
-          await new Promise((resolve) => setTimeout(resolve, pollInterval));
-        }
-        return {
-          content: [{ type: 'text' as const, text: `Timeout waiting for skill installation result (${timeout / 1000}s). The installation may still be in progress.` }],
-          isError: true,
-        };
-      },
-    ),
-
-    // --- uninstall_skill ---
-    tool(
-      'uninstall_skill',
-      `Uninstall a user-level skill by its ID. Project-level skills cannot be uninstalled.
+      // --- uninstall_skill ---
+      tool(
+        'uninstall_skill',
+        `Uninstall a user-level skill by its ID. Project-level skills cannot be uninstalled.
 Use the skills panel in the UI to find the skill ID (directory name, e.g. "memory", "think").`,
-      {
-        skill_id: z.string().describe('The skill ID to uninstall (the directory name, e.g. "memory", "think")'),
-      },
-      async (args) => {
-        const skillId = args.skill_id.trim();
-        if (!skillId || !/^[\w\-]+$/.test(skillId)) {
+        {
+          skill_id: z
+            .string()
+            .describe(
+              'The skill ID to uninstall (the directory name, e.g. "memory", "think")',
+            ),
+        },
+        async (args) => {
+          const skillId = args.skill_id.trim();
+          if (!skillId || !/^[\w\-]+$/.test(skillId)) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Invalid skill ID: "${skillId}". Must be alphanumeric with hyphens/underscores.`,
+                },
+              ],
+              isError: true,
+            };
+          }
+
+          const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          const resultFileName = `uninstall_skill_result_${requestId}.json`;
+          const resultFilePath = path.join(TASKS_DIR, resultFileName);
+
+          const data = {
+            type: 'uninstall_skill',
+            skillId,
+            requestId,
+            groupFolder: ctx.groupFolder,
+            timestamp: new Date().toISOString(),
+          };
+          writeIpcFile(TASKS_DIR, data);
+
+          // Poll for result file (timeout 30s)
+          const timeout = 30_000;
+          const pollInterval = 500;
+          const deadline = Date.now() + timeout;
+
+          while (Date.now() < deadline) {
+            try {
+              if (fs.existsSync(resultFilePath)) {
+                const raw = fs.readFileSync(resultFilePath, 'utf-8');
+                fs.unlinkSync(resultFilePath);
+                const result = JSON.parse(raw);
+                if (result.success) {
+                  return {
+                    content: [
+                      {
+                        type: 'text' as const,
+                        text: `Skill "${skillId}" uninstalled successfully.`,
+                      },
+                    ],
+                  };
+                } else {
+                  return {
+                    content: [
+                      {
+                        type: 'text' as const,
+                        text: `Failed to uninstall skill "${skillId}": ${result.error || 'Unknown error'}`,
+                      },
+                    ],
+                    isError: true,
+                  };
+                }
+              }
+            } catch {
+              // ignore read errors, retry
+            }
+            await new Promise((resolve) => setTimeout(resolve, pollInterval));
+          }
           return {
-            content: [{ type: 'text' as const, text: `Invalid skill ID: "${skillId}". Must be alphanumeric with hyphens/underscores.` }],
+            content: [
+              {
+                type: 'text' as const,
+                text: `Timeout waiting for skill uninstall result.`,
+              },
+            ],
             isError: true,
           };
-        }
-
-        const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const resultFileName = `uninstall_skill_result_${requestId}.json`;
-        const resultFilePath = path.join(TASKS_DIR, resultFileName);
-
-        const data = {
-          type: 'uninstall_skill',
-          skillId,
-          requestId,
-          groupFolder: ctx.groupFolder,
-          timestamp: new Date().toISOString(),
-        };
-        writeIpcFile(TASKS_DIR, data);
-
-        // Poll for result file (timeout 30s)
-        const timeout = 30_000;
-        const pollInterval = 500;
-        const deadline = Date.now() + timeout;
-
-        while (Date.now() < deadline) {
-          try {
-            if (fs.existsSync(resultFilePath)) {
-              const raw = fs.readFileSync(resultFilePath, 'utf-8');
-              fs.unlinkSync(resultFilePath);
-              const result = JSON.parse(raw);
-              if (result.success) {
-                return {
-                  content: [{ type: 'text' as const, text: `Skill "${skillId}" uninstalled successfully.` }],
-                };
-              } else {
-                return {
-                  content: [{ type: 'text' as const, text: `Failed to uninstall skill "${skillId}": ${result.error || 'Unknown error'}` }],
-                  isError: true,
-                };
-              }
-            }
-          } catch {
-            // ignore read errors, retry
-          }
-          await new Promise((resolve) => setTimeout(resolve, pollInterval));
-        }
-        return {
-          content: [{ type: 'text' as const, text: `Timeout waiting for skill uninstall result.` }],
-          isError: true,
-        };
-      },
-    ),
+        },
+      ),
     );
   }
 
-  // --- memory_append ---
-  tools.push(
-    tool(
-      'memory_append',
-      `\u5c06**\u65f6\u6548\u6027\u8bb0\u5fc6**\u8ffd\u52a0\u5230 memory/YYYY-MM-DD.md\uff08\u72ec\u7acb\u8bb0\u5fc6\u76ee\u5f55\uff0c\u4e0d\u5728\u5de5\u4f5c\u533a\u5185\uff09\u3002
+  // --- memory_append --- (only available for home containers)
+  if (ctx.isHome) {
+    tools.push(
+      tool(
+        'memory_append',
+        `\u5c06**\u65f6\u6548\u6027\u8bb0\u5fc6**\u8ffd\u52a0\u5230 memory/YYYY-MM-DD.md\uff08\u72ec\u7acb\u8bb0\u5fc6\u76ee\u5f55\uff0c\u4e0d\u5728\u5de5\u4f5c\u533a\u5185\uff09\u3002
 \u4ec5\u8ffd\u52a0\u5199\u5165\uff0c\u4e0d\u4f1a\u8986\u76d6\u5df2\u6709\u5185\u5bb9\u3002
 
 \u4ec5\u7528\u4e8e\u660e\u786e\u53ea\u8ddf\u5f53\u5929/\u77ed\u671f\u6709\u5173\u7684\u4fe1\u606f\uff1a\u4eca\u65e5\u9879\u76ee\u8fdb\u5c55\u3001\u4e34\u65f6\u6280\u672f\u51b3\u7b56\u3001\u5f85\u529e\u4e8b\u9879\u3001\u4f1a\u8bae\u8981\u70b9\u7b49\u3002
 
 **\u91cd\u8981**\uff1a\u4e0b\u6b21\u5bf9\u8bdd\u4ecd\u53ef\u80fd\u7528\u5230\u7684\u4fe1\u606f\uff08\u7528\u6237\u8eab\u4efd\u3001\u504f\u597d\u3001\u5e38\u7528\u9879\u76ee\u3001\u7528\u6237\u8bf4\u201c\u8bb0\u4f4f\u201d\u7684\u5185\u5bb9\uff09\u5e94\u76f4\u63a5\u7528 Edit \u5de5\u5177\u7f16\u8f91 /workspace/global/CLAUDE.md\uff0c\u4e0d\u8981\u7528\u6b64\u5de5\u5177\u3002`,
-      {
-        content: z.string().describe('\u8981\u8ffd\u52a0\u7684\u8bb0\u5fc6\u5185\u5bb9'),
-        date: z.string().optional().describe('\u76ee\u6807\u65e5\u671f\uff0c\u683c\u5f0f YYYY-MM-DD\uff08\u9ed8\u8ba4\uff1a\u4eca\u5929\uff09'),
-      },
-      async (args) => {
-        const normalizedContent = args.content.replace(/\r\n?/g, '\n').trim();
-        if (!normalizedContent) {
-          return { content: [{ type: 'text' as const, text: '\u5185\u5bb9\u4e0d\u80fd\u4e3a\u7a7a\u3002' }], isError: true };
-        }
-        const appendBytes = Buffer.byteLength(normalizedContent, 'utf-8');
-        if (appendBytes > MAX_MEMORY_APPEND_SIZE) {
-          return {
-            content: [{ type: 'text' as const, text: `\u5185\u5bb9\u8fc7\u5927\uff1a${appendBytes} \u5b57\u8282\uff08\u4e0a\u9650 ${MAX_MEMORY_APPEND_SIZE}\uff09\u3002` }],
-            isError: true,
-          };
-        }
-        const date = (args.date ?? new Date().toISOString().split('T')[0]).trim();
-        if (!MEMORY_DATE_PATTERN.test(date)) {
-          return { content: [{ type: 'text' as const, text: `\u65e5\u671f\u683c\u5f0f\u65e0\u6548\uff1a\u201c${date}\u201d\uff0c\u8bf7\u4f7f\u7528 YYYY-MM-DD\u3002` }], isError: true };
-        }
-        const resolvedPath = path.normalize(path.join(ctx.workspaceMemory, `${date}.md`));
-        const inMemory = resolvedPath === ctx.workspaceMemory || resolvedPath.startsWith(ctx.workspaceMemory + path.sep);
-        if (!inMemory) {
-          return { content: [{ type: 'text' as const, text: '\u8bbf\u95ee\u88ab\u62d2\u7edd\uff1a\u8def\u5f84\u8d85\u51fa\u5de5\u4f5c\u533a\u8303\u56f4\u3002' }], isError: true };
-        }
-        try {
-          fs.mkdirSync(ctx.workspaceMemory, { recursive: true });
-          const fileExists = fs.existsSync(resolvedPath);
-          const currentSize = fileExists ? fs.statSync(resolvedPath).size : 0;
-          const separator = currentSize > 0 ? '\n---\n\n' : '';
-          const entry = `${separator}### ${new Date().toISOString()}\n${normalizedContent}\n`;
-          const nextSize = currentSize + Buffer.byteLength(entry, 'utf-8');
-          if (nextSize > MAX_MEMORY_FILE_SIZE) {
+        {
+          content: z
+            .string()
+            .describe('\u8981\u8ffd\u52a0\u7684\u8bb0\u5fc6\u5185\u5bb9'),
+          date: z
+            .string()
+            .optional()
+            .describe(
+              '\u76ee\u6807\u65e5\u671f\uff0c\u683c\u5f0f YYYY-MM-DD\uff08\u9ed8\u8ba4\uff1a\u4eca\u5929\uff09',
+            ),
+        },
+        async (args) => {
+          const normalizedContent = args.content.replace(/\r\n?/g, '\n').trim();
+          if (!normalizedContent) {
             return {
-              content: [{ type: 'text' as const, text: `\u8bb0\u5fc6\u6587\u4ef6\u5c06\u8d85\u8fc7 ${MAX_MEMORY_FILE_SIZE} \u5b57\u8282\u4e0a\u9650\uff0c\u8bf7\u7f29\u77ed\u5185\u5bb9\u3002` }],
+              content: [
+                {
+                  type: 'text' as const,
+                  text: '\u5185\u5bb9\u4e0d\u80fd\u4e3a\u7a7a\u3002',
+                },
+              ],
               isError: true,
             };
           }
-          fs.appendFileSync(resolvedPath, entry, 'utf-8');
-          return { content: [{ type: 'text' as const, text: `\u5df2\u8ffd\u52a0\u5230 memory/${date}.md\uff08${appendBytes} \u5b57\u8282\uff09\u3002` }] };
-        } catch (err) {
-          return {
-            content: [{ type: 'text' as const, text: `\u8ffd\u52a0\u8bb0\u5fc6\u65f6\u51fa\u9519\uff1a${err instanceof Error ? err.message : String(err)}` }],
-            isError: true,
-          };
-        }
-      },
-    ),
+          const appendBytes = Buffer.byteLength(normalizedContent, 'utf-8');
+          if (appendBytes > MAX_MEMORY_APPEND_SIZE) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `\u5185\u5bb9\u8fc7\u5927\uff1a${appendBytes} \u5b57\u8282\uff08\u4e0a\u9650 ${MAX_MEMORY_APPEND_SIZE}\uff09\u3002`,
+                },
+              ],
+              isError: true,
+            };
+          }
+          const date = (
+            args.date ?? new Date().toISOString().split('T')[0]
+          ).trim();
+          if (!MEMORY_DATE_PATTERN.test(date)) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `\u65e5\u671f\u683c\u5f0f\u65e0\u6548\uff1a\u201c${date}\u201d\uff0c\u8bf7\u4f7f\u7528 YYYY-MM-DD\u3002`,
+                },
+              ],
+              isError: true,
+            };
+          }
+          const resolvedPath = path.normalize(
+            path.join(ctx.workspaceMemory, `${date}.md`),
+          );
+          const inMemory =
+            resolvedPath === ctx.workspaceMemory ||
+            resolvedPath.startsWith(ctx.workspaceMemory + path.sep);
+          if (!inMemory) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: '\u8bbf\u95ee\u88ab\u62d2\u7edd\uff1a\u8def\u5f84\u8d85\u51fa\u5de5\u4f5c\u533a\u8303\u56f4\u3002',
+                },
+              ],
+              isError: true,
+            };
+          }
+          try {
+            fs.mkdirSync(ctx.workspaceMemory, { recursive: true });
+            const fileExists = fs.existsSync(resolvedPath);
+            const currentSize = fileExists ? fs.statSync(resolvedPath).size : 0;
+            const separator = currentSize > 0 ? '\n---\n\n' : '';
+            const entry = `${separator}### ${new Date().toISOString()}\n${normalizedContent}\n`;
+            const nextSize = currentSize + Buffer.byteLength(entry, 'utf-8');
+            if (nextSize > MAX_MEMORY_FILE_SIZE) {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: `\u8bb0\u5fc6\u6587\u4ef6\u5c06\u8d85\u8fc7 ${MAX_MEMORY_FILE_SIZE} \u5b57\u8282\u4e0a\u9650\uff0c\u8bf7\u7f29\u77ed\u5185\u5bb9\u3002`,
+                  },
+                ],
+                isError: true,
+              };
+            }
+            fs.appendFileSync(resolvedPath, entry, 'utf-8');
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `\u5df2\u8ffd\u52a0\u5230 memory/${date}.md\uff08${appendBytes} \u5b57\u8282\uff09\u3002`,
+                },
+              ],
+            };
+          } catch (err) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `\u8ffd\u52a0\u8bb0\u5fc6\u65f6\u51fa\u9519\uff1a${err instanceof Error ? err.message : String(err)}`,
+                },
+              ],
+              isError: true,
+            };
+          }
+        },
+      ),
+    );
+  }
 
-    // --- memory_search ---
+  // --- memory_search --- (available for all containers)
+  tools.push(
     tool(
       'memory_search',
       `\u5728\u5de5\u4f5c\u533a\u7684\u8bb0\u5fc6\u6587\u4ef6\u4e2d\u641c\u7d22\uff08CLAUDE.md\u3001memory/\u3001conversations/ \u53ca\u5176\u4ed6 .md/.txt \u6587\u4ef6\uff09\u3002
 \u8fd4\u56de\u6587\u4ef6\u8def\u5f84\u3001\u884c\u53f7\u548c\u4e0a\u4e0b\u6587\u7247\u6bb5\u3002\u8d85\u8fc7 512KB \u7684\u6587\u4ef6\u4f1a\u88ab\u8df3\u8fc7\u3002
 \u7528\u4e8e\u56de\u5fc6\u8fc7\u53bb\u7684\u51b3\u7b56\u3001\u504f\u597d\u3001\u9879\u76ee\u4e0a\u4e0b\u6587\u6216\u5bf9\u8bdd\u5386\u53f2\u3002`,
       {
-        query: z.string().describe('\u641c\u7d22\u5173\u952e\u8bcd\u6216\u77ed\u8bed\uff08\u4e0d\u533a\u5206\u5927\u5c0f\u5199\uff09'),
-        max_results: z.number().optional().default(20).describe('\u6700\u5927\u7ed3\u679c\u6570\uff08\u9ed8\u8ba4 20\uff0c\u4e0a\u9650 50\uff09'),
+        query: z
+          .string()
+          .describe(
+            '\u641c\u7d22\u5173\u952e\u8bcd\u6216\u77ed\u8bed\uff08\u4e0d\u533a\u5206\u5927\u5c0f\u5199\uff09',
+          ),
+        max_results: z
+          .number()
+          .optional()
+          .default(20)
+          .describe(
+            '\u6700\u5927\u7ed3\u679c\u6570\uff08\u9ed8\u8ba4 20\uff0c\u4e0a\u9650 50\uff09',
+          ),
       },
       async (args) => {
         if (!args.query.trim()) {
-          return { content: [{ type: 'text' as const, text: '\u641c\u7d22\u5173\u952e\u8bcd\u4e0d\u80fd\u4e3a\u7a7a\u3002' }], isError: true };
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: '\u641c\u7d22\u5173\u952e\u8bcd\u4e0d\u80fd\u4e3a\u7a7a\u3002',
+              },
+            ],
+            isError: true,
+          };
         }
         const maxResults = Math.min(Math.max(args.max_results ?? 20, 1), 50);
         const queryLower = args.query.toLowerCase();
@@ -561,7 +1084,14 @@ Use the skills panel in the UI to find the skill ID (directory name, e.g. "memor
         collectMemoryFiles(ctx.workspaceGlobal, files, 4);
         const uniqueFiles = Array.from(new Set(files));
         if (uniqueFiles.length === 0) {
-          return { content: [{ type: 'text' as const, text: '\u672a\u627e\u5230\u8bb0\u5fc6\u6587\u4ef6\u3002' }] };
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: '\u672a\u627e\u5230\u8bb0\u5fc6\u6587\u4ef6\u3002',
+              },
+            ],
+          };
         }
         const results: string[] = [];
         let skippedLarge = 0;
@@ -569,7 +1099,10 @@ Use the skills panel in the UI to find the skill ID (directory name, e.g. "memor
           if (results.length >= maxResults) break;
           try {
             const stat = fs.statSync(filePath);
-            if (stat.size > MAX_MEMORY_FILE_SIZE) { skippedLarge++; continue; }
+            if (stat.size > MAX_MEMORY_FILE_SIZE) {
+              skippedLarge++;
+              continue;
+            }
             const content = fs.readFileSync(filePath, 'utf-8');
             const lines = content.split('\n');
             let lastEnd = -1;
@@ -581,17 +1114,36 @@ Use the skills panel in the UI to find the skill ID (directory name, e.g. "memor
                 const end = Math.min(lines.length, i + 2);
                 lastEnd = end;
                 const snippet = lines.slice(start, end).join('\n');
-                results.push(`${toRelativePath(filePath)}:${i + 1}\n${snippet}`);
+                results.push(
+                  `${toRelativePath(filePath)}:${i + 1}\n${snippet}`,
+                );
               }
             }
-          } catch { /* skip unreadable */ }
+          } catch {
+            /* skip unreadable */
+          }
         }
-        const skippedNote = skippedLarge > 0 ? `\uff08\u8df3\u8fc7 ${skippedLarge} \u4e2a\u5927\u6587\u4ef6\uff09` : '';
+        const skippedNote =
+          skippedLarge > 0
+            ? `\uff08\u8df3\u8fc7 ${skippedLarge} \u4e2a\u5927\u6587\u4ef6\uff09`
+            : '';
         if (results.length === 0) {
-          return { content: [{ type: 'text' as const, text: `\u5728 ${uniqueFiles.length} \u4e2a\u8bb0\u5fc6\u6587\u4ef6\u4e2d\u672a\u627e\u5230\u201c${args.query}\u201d\u7684\u5339\u914d\u3002${skippedNote}` }] };
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `\u5728 ${uniqueFiles.length} \u4e2a\u8bb0\u5fc6\u6587\u4ef6\u4e2d\u672a\u627e\u5230\u201c${args.query}\u201d\u7684\u5339\u914d\u3002${skippedNote}`,
+              },
+            ],
+          };
         }
         return {
-          content: [{ type: 'text' as const, text: `\u627e\u5230 ${results.length} \u6761\u5339\u914d${skippedNote}\uff1a\n\n${results.join('\n---\n')}` }],
+          content: [
+            {
+              type: 'text' as const,
+              text: `\u627e\u5230 ${results.length} \u6761\u5339\u914d${skippedNote}\uff1a\n\n${results.join('\n---\n')}`,
+            },
+          ],
         };
       },
     ),
@@ -601,49 +1153,98 @@ Use the skills panel in the UI to find the skill ID (directory name, e.g. "memor
       'memory_get',
       `\u8bfb\u53d6\u8bb0\u5fc6\u6587\u4ef6\u6216\u6307\u5b9a\u884c\u8303\u56f4\u3002\u5728 memory_search \u4e4b\u540e\u4f7f\u7528\u4ee5\u83b7\u53d6\u5b8c\u6574\u4e0a\u4e0b\u6587\u3002`,
       {
-        file: z.string().describe('\u76f8\u5bf9\u8def\u5f84\uff0c\u53ef\u5e26 :\u884c\u53f7\uff08\u5982 "CLAUDE.md:12"\u3001"[global] CLAUDE.md:8" \u6216 "[memory] 2026-01-15.md"\uff09'),
-        from_line: z.number().optional().describe('\u8d77\u59cb\u884c\u53f7\uff08\u4ece 1 \u5f00\u59cb\uff0c\u9ed8\u8ba4\uff1a1\uff09'),
-        lines: z.number().optional().describe('\u8bfb\u53d6\u884c\u6570\uff08\u9ed8\u8ba4\uff1a\u5168\u90e8\uff0c\u4e0a\u9650\uff1a200\uff09'),
+        file: z
+          .string()
+          .describe(
+            '\u76f8\u5bf9\u8def\u5f84\uff0c\u53ef\u5e26 :\u884c\u53f7\uff08\u5982 "CLAUDE.md:12"\u3001"[global] CLAUDE.md:8" \u6216 "[memory] 2026-01-15.md"\uff09',
+          ),
+        from_line: z
+          .number()
+          .optional()
+          .describe(
+            '\u8d77\u59cb\u884c\u53f7\uff08\u4ece 1 \u5f00\u59cb\uff0c\u9ed8\u8ba4\uff1a1\uff09',
+          ),
+        lines: z
+          .number()
+          .optional()
+          .describe(
+            '\u8bfb\u53d6\u884c\u6570\uff08\u9ed8\u8ba4\uff1a\u5168\u90e8\uff0c\u4e0a\u9650\uff1a200\uff09',
+          ),
       },
       async (args) => {
         const { pathRef, lineFromRef } = parseMemoryFileReference(args.file);
         let resolvedPath: string;
         if (pathRef.startsWith('[global] ')) {
-          resolvedPath = path.join(ctx.workspaceGlobal, pathRef.slice('[global] '.length));
+          resolvedPath = path.join(
+            ctx.workspaceGlobal,
+            pathRef.slice('[global] '.length),
+          );
         } else if (pathRef.startsWith('[memory] ')) {
-          resolvedPath = path.join(ctx.workspaceMemory, pathRef.slice('[memory] '.length));
+          resolvedPath = path.join(
+            ctx.workspaceMemory,
+            pathRef.slice('[memory] '.length),
+          );
         } else {
           resolvedPath = path.join(ctx.workspaceGroup, pathRef);
         }
         resolvedPath = path.normalize(resolvedPath);
-        const inGroup = resolvedPath === ctx.workspaceGroup || resolvedPath.startsWith(ctx.workspaceGroup + path.sep);
-        const inGlobal = resolvedPath === ctx.workspaceGlobal || resolvedPath.startsWith(ctx.workspaceGlobal + path.sep);
-        const inMemory = resolvedPath === ctx.workspaceMemory || resolvedPath.startsWith(ctx.workspaceMemory + path.sep);
+        const inGroup =
+          resolvedPath === ctx.workspaceGroup ||
+          resolvedPath.startsWith(ctx.workspaceGroup + path.sep);
+        const inGlobal =
+          resolvedPath === ctx.workspaceGlobal ||
+          resolvedPath.startsWith(ctx.workspaceGlobal + path.sep);
+        const inMemory =
+          resolvedPath === ctx.workspaceMemory ||
+          resolvedPath.startsWith(ctx.workspaceMemory + path.sep);
         if (!inGroup && !inGlobal && !inMemory) {
           return {
-            content: [{ type: 'text' as const, text: '\u8bbf\u95ee\u88ab\u62d2\u7edd\uff1a\u8def\u5f84\u8d85\u51fa\u5de5\u4f5c\u533a\u8303\u56f4\u3002' }],
+            content: [
+              {
+                type: 'text' as const,
+                text: '\u8bbf\u95ee\u88ab\u62d2\u7edd\uff1a\u8def\u5f84\u8d85\u51fa\u5de5\u4f5c\u533a\u8303\u56f4\u3002',
+              },
+            ],
             isError: true,
           };
         }
         if (!fs.existsSync(resolvedPath)) {
           return {
-            content: [{ type: 'text' as const, text: `\u6587\u4ef6\u672a\u627e\u5230\uff1a${pathRef}` }],
+            content: [
+              {
+                type: 'text' as const,
+                text: `\u6587\u4ef6\u672a\u627e\u5230\uff1a${pathRef}`,
+              },
+            ],
             isError: true,
           };
         }
         try {
           const content = fs.readFileSync(resolvedPath, 'utf-8');
           const allLines = content.split('\n');
-          const fromLine = Math.max((args.from_line ?? lineFromRef ?? 1) - 1, 0);
+          const fromLine = Math.max(
+            (args.from_line ?? lineFromRef ?? 1) - 1,
+            0,
+          );
           const maxLines = Math.min(args.lines ?? allLines.length, 200);
           const slice = allLines.slice(fromLine, fromLine + maxLines);
           const header = `${pathRef}\uff08\u7b2c ${fromLine + 1}-${fromLine + slice.length} \u884c\uff0c\u5171 ${allLines.length} \u884c\uff09`;
           return {
-            content: [{ type: 'text' as const, text: `${header}\n\n${slice.join('\n')}` }],
+            content: [
+              {
+                type: 'text' as const,
+                text: `${header}\n\n${slice.join('\n')}`,
+              },
+            ],
           };
         } catch (err) {
           return {
-            content: [{ type: 'text' as const, text: `\u8bfb\u53d6\u6587\u4ef6\u65f6\u51fa\u9519\uff1a${err instanceof Error ? err.message : String(err)}` }],
+            content: [
+              {
+                type: 'text' as const,
+                text: `\u8bfb\u53d6\u6587\u4ef6\u65f6\u51fa\u9519\uff1a${err instanceof Error ? err.message : String(err)}`,
+              },
+            ],
             isError: true,
           };
         }

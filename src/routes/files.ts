@@ -131,7 +131,9 @@ const SAFE_PREVIEW_MIME_TYPES = new Set([
  * 宿主机模式下设置了 customCwd 时，文件面板以 customCwd 为根。
  */
 function getFileRootOverride(group: RegisteredGroup): string | undefined {
-  return group.executionMode === 'host' && group.customCwd ? group.customCwd : undefined;
+  return group.executionMode === 'host' && group.customCwd
+    ? group.customCwd
+    : undefined;
 }
 
 function buildAttachmentContentDisposition(fileName: string): string {
@@ -289,10 +291,7 @@ fileRoutes.post('/:jid/files', authMiddleware, async (c) => {
 
       // 验证文件名，防止路径遍历攻击
       if (file.name.includes('..') || file.name.startsWith('/')) {
-        return c.json(
-          { error: `Invalid file name: ${file.name}` },
-          400,
-        );
+        return c.json({ error: `Invalid file name: ${file.name}` }, 400);
       }
 
       // 禁止写入系统路径
@@ -364,7 +363,9 @@ fileRoutes.post('/:jid/files/open-directory', authMiddleware, async (c) => {
     }
 
     const stats = fs.statSync(absolutePath);
-    const targetDir = stats.isDirectory() ? absolutePath : path.dirname(absolutePath);
+    const targetDir = stats.isDirectory()
+      ? absolutePath
+      : path.dirname(absolutePath);
 
     await openDirectoryInFileManager(targetDir);
     return c.json({ success: true });
@@ -375,7 +376,10 @@ fileRoutes.post('/:jid/files/open-directory', authMiddleware, async (c) => {
       return c.json({ error: 'No desktop opener available on server' }, 503);
     }
     const msg = (error as Error).message;
-    const safeMessages = ['Path traversal detected', 'Symlink traversal detected'];
+    const safeMessages = [
+      'Path traversal detected',
+      'Symlink traversal detected',
+    ];
     const publicMsg = safeMessages.includes(msg)
       ? msg
       : 'Failed to open local directory';
@@ -410,7 +414,11 @@ fileRoutes.get('/:jid/files/download/:path', authMiddleware, (c) => {
     const relativePath = Buffer.from(encodedPath, 'base64url').toString(
       'utf-8',
     );
-    const absolutePath = validateAndResolvePath(group.folder, relativePath, getFileRootOverride(group));
+    const absolutePath = validateAndResolvePath(
+      group.folder,
+      relativePath,
+      getFileRootOverride(group),
+    );
 
     if (!fs.existsSync(absolutePath)) {
       return c.json({ error: 'File not found' }, 404);
@@ -465,7 +473,9 @@ fileRoutes.get('/:jid/files/download/:path', authMiddleware, (c) => {
       }
     }
 
-    const stream = Readable.toWeb(fs.createReadStream(absolutePath)) as ReadableStream<Uint8Array>;
+    const stream = Readable.toWeb(
+      fs.createReadStream(absolutePath),
+    ) as ReadableStream<Uint8Array>;
     return new Response(stream, {
       status: 200,
       headers: {
@@ -505,7 +515,11 @@ fileRoutes.get('/:jid/files/preview/:path', authMiddleware, (c) => {
     const relativePath = Buffer.from(encodedPath, 'base64url').toString(
       'utf-8',
     );
-    const absolutePath = validateAndResolvePath(group.folder, relativePath, getFileRootOverride(group));
+    const absolutePath = validateAndResolvePath(
+      group.folder,
+      relativePath,
+      getFileRootOverride(group),
+    );
 
     if (!fs.existsSync(absolutePath)) {
       return c.json({ error: 'File not found' }, 404);
@@ -570,8 +584,14 @@ fileRoutes.get('/:jid/files/content/:path', authMiddleware, (c) => {
   }
 
   try {
-    const relativePath = Buffer.from(encodedPath, 'base64url').toString('utf-8');
-    const absolutePath = validateAndResolvePath(group.folder, relativePath, getFileRootOverride(group));
+    const relativePath = Buffer.from(encodedPath, 'base64url').toString(
+      'utf-8',
+    );
+    const absolutePath = validateAndResolvePath(
+      group.folder,
+      relativePath,
+      getFileRootOverride(group),
+    );
 
     if (!fs.existsSync(absolutePath)) {
       return c.json({ error: 'File not found' }, 404);
@@ -585,7 +605,10 @@ fileRoutes.get('/:jid/files/content/:path', authMiddleware, (c) => {
     // 仅允许文本文件
     const ext = path.extname(absolutePath).slice(1).toLowerCase();
     if (!TEXT_EXTENSIONS.has(ext)) {
-      return c.json({ error: 'File type not supported for content reading' }, 400);
+      return c.json(
+        { error: 'File type not supported for content reading' },
+        400,
+      );
     }
 
     // 限制文件大小（10MB）
@@ -623,14 +646,20 @@ fileRoutes.put('/:jid/files/content/:path', authMiddleware, async (c) => {
   }
 
   try {
-    const relativePath = Buffer.from(encodedPath, 'base64url').toString('utf-8');
+    const relativePath = Buffer.from(encodedPath, 'base64url').toString(
+      'utf-8',
+    );
 
     // 禁止写入系统路径
     if (isSystemPath(relativePath)) {
       return c.json({ error: 'Cannot edit system file' }, 403);
     }
 
-    const absolutePath = validateAndResolvePath(group.folder, relativePath, getFileRootOverride(group));
+    const absolutePath = validateAndResolvePath(
+      group.folder,
+      relativePath,
+      getFileRootOverride(group),
+    );
 
     if (!fs.existsSync(absolutePath)) {
       return c.json({ error: 'File not found' }, 404);
@@ -739,7 +768,12 @@ fileRoutes.post('/:jid/directories', authMiddleware, async (c) => {
       return c.json({ error: 'Directory name is required' }, 400);
     }
 
-    createDirectory(group.folder, parentPath || '', name, getFileRootOverride(group));
+    createDirectory(
+      group.folder,
+      parentPath || '',
+      name,
+      getFileRootOverride(group),
+    );
 
     return c.json({ success: true });
   } catch (error) {

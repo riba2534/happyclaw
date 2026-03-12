@@ -93,17 +93,34 @@ function generateSummaries(deps: DailySummaryDeps, nowMs: number): void {
     const result = listUsers({ status: 'active', page, pageSize: 200 });
     for (const user of result.users) {
       try {
-        const generated = generateUserSummary(deps, user.id, user.username, dateStr, startTs, endTs);
+        const generated = generateUserSummary(
+          deps,
+          user.id,
+          user.username,
+          dateStr,
+          startTs,
+          endTs,
+        );
         if (generated) processedUsers++;
       } catch (err) {
-        deps.logger.error({ err, userId: user.id }, 'Daily summary: failed for user');
+        deps.logger.error(
+          { err, userId: user.id },
+          'Daily summary: failed for user',
+        );
       }
     }
-    if (result.users.length < result.pageSize || page * result.pageSize >= result.total) break;
+    if (
+      result.users.length < result.pageSize ||
+      page * result.pageSize >= result.total
+    )
+      break;
     page++;
   }
 
-  deps.logger.info({ date: dateStr, processedUsers }, 'Daily summary: generation complete');
+  deps.logger.info(
+    { date: dateStr, processedUsers },
+    'Daily summary: generation complete',
+  );
 }
 
 function generateUserSummary(
@@ -115,12 +132,21 @@ function generateUserSummary(
   endTs: number,
 ): boolean {
   // Output path: data/groups/user-global/{userId}/daily-summary/YYYY-MM-DD.md
-  const summaryDir = path.join(deps.dataDir, 'groups', 'user-global', userId, 'daily-summary');
+  const summaryDir = path.join(
+    deps.dataDir,
+    'groups',
+    'user-global',
+    userId,
+    'daily-summary',
+  );
   const summaryPath = path.join(summaryDir, `${dateStr}.md`);
 
   // Idempotent: skip if already exists
   if (fs.existsSync(summaryPath)) {
-    deps.logger.debug({ userId, date: dateStr }, 'Daily summary: already exists, skipping');
+    deps.logger.debug(
+      { userId, date: dateStr },
+      'Daily summary: already exists, skipping',
+    );
     return false;
   }
 
@@ -145,7 +171,9 @@ function generateUserSummary(
     let prevWasAgent = false;
     for (const msg of messages) {
       const isAgent = msg.is_from_me;
-      const sender = isAgent ? 'Agent' : (msg.sender_name || msg.sender || 'User');
+      const sender = isAgent
+        ? 'Agent'
+        : msg.sender_name || msg.sender || 'User';
       const content = truncate(msg.content || '', 200);
 
       // Merge consecutive Agent replies
@@ -166,10 +194,18 @@ function generateUserSummary(
   // Write file
   fs.mkdirSync(summaryDir, { recursive: true });
   fs.writeFileSync(summaryPath, md, 'utf-8');
-  deps.logger.info({ userId, date: dateStr, messageCount: totalCount }, 'Daily summary: generated');
+  deps.logger.info(
+    { userId, date: dateStr, messageCount: totalCount },
+    'Daily summary: generated',
+  );
 
   // Update HEARTBEAT.md with latest summaries
-  const userGlobalDir = path.join(deps.dataDir, 'groups', 'user-global', userId);
+  const userGlobalDir = path.join(
+    deps.dataDir,
+    'groups',
+    'user-global',
+    userId,
+  );
   updateHeartbeat(userGlobalDir, username, deps.logger);
 
   return true;
@@ -190,15 +226,20 @@ const HEARTBEAT_DAYS = 3;
  * Update HEARTBEAT.md with the most recent daily summaries.
  * Called after a daily summary is generated for a user.
  */
-function updateHeartbeat(userGlobalDir: string, username: string, logger: Logger): void {
+function updateHeartbeat(
+  userGlobalDir: string,
+  username: string,
+  logger: Logger,
+): void {
   const summaryDir = path.join(userGlobalDir, 'daily-summary');
   if (!fs.existsSync(summaryDir)) return;
 
   // Read all .md files sorted by name (YYYY-MM-DD.md) descending, take latest 3
   let files: string[];
   try {
-    files = fs.readdirSync(summaryDir)
-      .filter(f => f.endsWith('.md'))
+    files = fs
+      .readdirSync(summaryDir)
+      .filter((f) => f.endsWith('.md'))
       .sort()
       .reverse()
       .slice(0, HEARTBEAT_DAYS);
@@ -220,7 +261,8 @@ function updateHeartbeat(userGlobalDir: string, username: string, logger: Logger
     try {
       let content = fs.readFileSync(path.join(summaryDir, file), 'utf-8');
       if (content.length > HEARTBEAT_PER_DAY_MAX_CHARS) {
-        content = content.slice(0, HEARTBEAT_PER_DAY_MAX_CHARS) + '\n\n[...截断]';
+        content =
+          content.slice(0, HEARTBEAT_PER_DAY_MAX_CHARS) + '\n\n[...截断]';
       }
       sections.push(`### ${dateLabel}\n${content}`);
     } catch {
@@ -241,6 +283,9 @@ function updateHeartbeat(userGlobalDir: string, username: string, logger: Logger
     fs.writeFileSync(heartbeatPath, md, 'utf-8');
     logger.info({ username }, 'Daily summary: updated HEARTBEAT.md');
   } catch (err) {
-    logger.error({ err, username }, 'Daily summary: failed to write HEARTBEAT.md');
+    logger.error(
+      { err, username },
+      'Daily summary: failed to write HEARTBEAT.md',
+    );
   }
 }

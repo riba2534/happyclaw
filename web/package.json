@@ -26,8 +26,10 @@
     "react-router-dom": "^7.0.0",
     "recharts": "^3.7.0",
     "rehype-highlight": "^7.0.0",
+    "rehype-katex": "^7.0.1",
     "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.0",
+    "remark-math": "^6.0.0",
     "tailwind-merge": "^3.4.0",
     "tailwindcss-animate": "^1.0.7",
     "zustand": "^5.0.0"

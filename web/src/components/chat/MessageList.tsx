@@ -120,7 +120,11 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
         case 'message': {
           const len = item.content.content.length;
           if (item.content.is_from_me) {
-            return Math.max(80, Math.min(400, Math.ceil(len / 50) * 24 + 60));
+            // AI messages often contain markdown tables, code blocks, and
+            // structured content that renders much taller than plain text.
+            // A low cap causes the virtualizer to miscalculate total height,
+            // leading to scroll position oscillation (visible flickering).
+            return Math.max(80, Math.ceil(len / 40) * 24 + 80);
           }
           return Math.max(48, Math.min(200, Math.ceil(len / 80) * 24 + 40));
         }

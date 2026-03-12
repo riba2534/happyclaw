@@ -1,4 +1,4 @@
-import { MoreHorizontal, Pencil, Trash2, RotateCcw, Star } from 'lucide-react';
+import { MoreHorizontal, Pencil, Trash2, RotateCcw, Star, Pin } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -19,12 +19,14 @@ export interface ChatGroupItemProps {
   memberCount?: number;
   isActive: boolean;
   isHome: boolean;
+  isPinned?: boolean;
   editable?: boolean;
   deletable?: boolean;
   onSelect: (jid: string, folder: string) => void;
   onRename?: (jid: string, name: string) => void;
   onClearHistory: (jid: string, name: string) => void;
   onDelete?: (jid: string, name: string) => void;
+  onTogglePin?: (jid: string) => void;
 }
 
 export function ChatGroupItem({
@@ -38,12 +40,14 @@ export function ChatGroupItem({
   memberCount,
   isActive,
   isHome,
+  isPinned,
   editable,
   deletable,
   onSelect,
   onRename,
   onClearHistory,
   onDelete,
+  onTogglePin,
 }: ChatGroupItemProps) {
   const currentUser = useAuthStore((s) => s.user);
   const defaultHomeName = '我的工作区';
@@ -71,6 +75,9 @@ export function ChatGroupItem({
         <div className="flex items-center gap-1.5">
           {isHome && (
             <Star className="w-3.5 h-3.5 text-yellow-500 fill-yellow-500 flex-shrink-0" />
+          )}
+          {isPinned && !isHome && (
+            <Pin className="w-3 h-3 text-teal-500 flex-shrink-0" />
           )}
           <span
             className={cn(
@@ -124,6 +131,12 @@ export function ChatGroupItem({
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-40">
+            {!isHome && onTogglePin && (
+              <DropdownMenuItem onClick={() => onTogglePin(jid)}>
+                <Pin className="w-4 h-4" />
+                {isPinned ? '取消固定' : '固定'}
+              </DropdownMenuItem>
+            )}
             {editable && onRename && (
               <DropdownMenuItem onClick={() => onRename(jid, name)}>
                 <Pencil className="w-4 h-4" />

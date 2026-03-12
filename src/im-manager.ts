@@ -12,9 +12,12 @@ import {
   extractChatId,
   createFeishuChannel,
   createTelegramChannel,
+  createQQChannel,
 } from './im-channel.js';
 import type { FeishuConnectionConfig } from './feishu.js';
 import type { TelegramConnectionConfig } from './telegram.js';
+import type { QQConnectionConfig } from './qq.js';
+import type { StreamingCardController } from './feishu-streaming-card.js';
 import { getRegisteredGroup, getJidsByFolder } from './db.js';
 import { logger } from './logger.js';
 
@@ -35,14 +38,27 @@ export interface TelegramConnectConfig {
   enabled?: boolean;
 }
 
+export interface QQConnectConfig {
+  appId: string;
+  appSecret: string;
+  enabled?: boolean;
+}
+
 export interface ConnectFeishuOptions {
   ignoreMessagesBefore?: number;
   onCommand?: (chatJid: string, command: string) => Promise<string | null>;
   resolveGroupFolder?: (chatJid: string) => string | undefined;
-  resolveEffectiveChatJid?: (chatJid: string) => { effectiveJid: string; agentId: string | null } | null;
+  resolveEffectiveChatJid?: (
+    chatJid: string,
+  ) => { effectiveJid: string; agentId: string | null } | null;
   onAgentMessage?: (baseChatJid: string, agentId: string) => void;
   onBotAddedToGroup?: (chatJid: string, chatName: string) => void;
   onBotRemovedFromGroup?: (chatJid: string) => void;
+  shouldProcessGroupMessage?: (chatJid: string) => boolean;
+  onInterruptRequest?: (
+    chatJid: string,
+    intent: 'stop' | 'correction',
+  ) => void;
 }
 
 class IMConnectionManager {
@@ -104,7 +120,11 @@ class IMConnectionManager {
    * Resolves the user by looking up chatJid -> registered_groups.created_by.
    * Falls back to iterating sibling groups if no created_by is set.
    */
-  async sendMessage(jid: string, text: string): Promise<void> {
+  async sendMessage(
+    jid: string,
+    text: string,
+    localImagePaths?: string[],
+  ): Promise<void> {
     const channelType = getChannelType(jid);
     if (!channelType) {
       logger.debug({ jid }, 'Unknown channel type for JID, skip sending');
@@ -114,11 +134,69 @@ class IMConnectionManager {
     const chatId = extractChatId(jid);
     const channel = this.findChannelForJid(jid, channelType);
     if (channel) {
-      await channel.sendMessage(chatId, text);
+      await channel.sendMessage(chatId, text, localImagePaths);
       return;
     }
 
-    logger.warn({ jid, channelType }, 'No IM channel available to send message');
+    logger.warn(
+      { jid, channelType },
+      'No IM channel available to send message',
+    );
+  }
+
+  /**
+   * Send an image to an IM chat, auto-routing via JID prefix.
+   */
+  async sendImage(
+    jid: string,
+    imageBuffer: Buffer,
+    mimeType: string,
+    caption?: string,
+    fileName?: string,
+  ): Promise<void> {
+    const channelType = getChannelType(jid);
+    if (!channelType) {
+      logger.debug({ jid }, 'Unknown channel type for JID, skip sending image');
+      return;
+    }
+
+    const chatId = extractChatId(jid);
+    const channel = this.findChannelForJid(jid, channelType);
+    if (channel?.sendImage) {
+      await channel.sendImage(chatId, imageBuffer, mimeType, caption, fileName);
+      return;
+    }
+
+    // Fallback: if channel doesn't support sendImage, send caption as text
+    if (caption && channel) {
+      await channel.sendMessage(chatId, `📷 ${caption}`);
+      return;
+    }
+
+    logger.warn({ jid, channelType }, 'No IM channel available to send image');
+  }
+
+  /**
+   * Send a file to an IM chat, auto-routing via JID prefix.
+   * @throws Error if the channel doesn't support file sending
+   */
+  async sendFile(
+    jid: string,
+    filePath: string,
+    fileName: string,
+  ): Promise<void> {
+    const channelType = getChannelType(jid);
+    if (!channelType) {
+      throw new Error(`无法识别 JID 的通道类型: ${jid}`);
+    }
+
+    const chatId = extractChatId(jid);
+    const channel = this.findChannelForJid(jid, channelType);
+    if (channel?.sendFile) {
+      await channel.sendFile(chatId, filePath, fileName);
+    } else {
+      throw new Error(`通道 ${channelType} 不支持发送文件`);
+    }
   }
 
   /**
@@ -137,10 +215,29 @@ class IMConnectionManager {
   }
 
   /**
+   * Create a streaming card session for an IM chat (Feishu only).
+   * Returns undefined for non-Feishu channels or if not supported.
+   */
+  createStreamingSession(jid: string): StreamingCardController | undefined {
+    const channelType = getChannelType(jid);
+    if (channelType !== 'feishu') return undefined;
+
+    const chatId = extractChatId(jid);
+    const channel = this.findChannelForJid(jid, channelType);
+    if (channel?.createStreamingSession) {
+      return channel.createStreamingSession(chatId);
+    }
+    return undefined;
+  }
+
+  /**
    * Find the appropriate IMChannel for a given JID, using group ownership lookup
    * and sibling fallback.
    */
-  private findChannelForJid(jid: string, channelType: string): IMChannel | undefined {
+  private findChannelForJid(
+    jid: string,
+    channelType: string,
+  ): IMChannel | undefined {
     // Direct lookup via group ownership
     const group = getRegisteredGroup(jid);
     if (group?.created_by) {
@@ -205,6 +302,8 @@ class IMConnectionManager {
       onAgentMessage: options?.onAgentMessage,
       onBotAddedToGroup: options?.onBotAddedToGroup,
       onBotRemovedFromGroup: options?.onBotRemovedFromGroup,
+      shouldProcessGroupMessage: options?.shouldProcessGroupMessage,
+      onInterruptRequest: options?.onInterruptRequest,
     });
   }
 
@@ -216,9 +315,25 @@ class IMConnectionManager {
     config: TelegramConnectConfig,
     onNewChat: (chatJid: string, chatName: string) => void,
     isChatAuthorized?: (jid: string) => boolean,
-    onPairAttempt?: (jid: string, chatName: string, code: string) => Promise<boolean>,
-    onCommand?: (chatJid: string, command: string) => Promise<string | null>,
-    resolveGroupFolder?: (jid: string) => string | undefined,
+    onPairAttempt?: (
+      jid: string,
+      chatName: string,
+      code: string,
+    ) => Promise<boolean>,
+    options?: {
+      onCommand?: (chatJid: string, command: string) => Promise<string | null>;
+      resolveGroupFolder?: (jid: string) => string | undefined;
+      resolveEffectiveChatJid?: (
+        chatJid: string,
+      ) => { effectiveJid: string; agentId: string | null } | null;
+      onAgentMessage?: (baseChatJid: string, agentId: string) => void;
+      onBotAddedToGroup?: (chatJid: string, chatName: string) => void;
+      onBotRemovedFromGroup?: (chatJid: string) => void;
+      onInterruptRequest?: (
+        chatJid: string,
+        intent: 'stop' | 'correction',
+      ) => void;
+    },
   ): Promise<boolean> {
     if (!config.botToken) {
       logger.info({ userId }, 'Telegram config empty, skipping connection');
@@ -237,8 +352,64 @@ class IMConnectionManager {
       onNewChat,
       isChatAuthorized,
       onPairAttempt,
-      onCommand,
-      resolveGroupFolder,
+      onCommand: options?.onCommand,
+      resolveGroupFolder: options?.resolveGroupFolder,
+      resolveEffectiveChatJid: options?.resolveEffectiveChatJid,
+      onAgentMessage: options?.onAgentMessage,
+      onBotAddedToGroup: options?.onBotAddedToGroup,
+      onBotRemovedFromGroup: options?.onBotRemovedFromGroup,
+      onInterruptRequest: options?.onInterruptRequest,
+    });
+  }
+
+  /**
+   * Connect a QQ instance for a specific user.
+   */
+  async connectUserQQ(
+    userId: string,
+    config: QQConnectConfig,
+    onNewChat: (chatJid: string, chatName: string) => void,
+    isChatAuthorized?: (jid: string) => boolean,
+    onPairAttempt?: (
+      jid: string,
+      chatName: string,
+      code: string,
+    ) => Promise<boolean>,
+    options?: {
+      onCommand?: (chatJid: string, command: string) => Promise<string | null>;
+      resolveGroupFolder?: (jid: string) => string | undefined;
+      resolveEffectiveChatJid?: (
+        chatJid: string,
+      ) => { effectiveJid: string; agentId: string | null } | null;
+      onAgentMessage?: (baseChatJid: string, agentId: string) => void;
+      onInterruptRequest?: (
+        chatJid: string,
+        intent: 'stop' | 'correction',
+      ) => void;
+    },
+  ): Promise<boolean> {
+    if (!config.appId || !config.appSecret) {
+      logger.info({ userId }, 'QQ config empty, skipping connection');
+      return false;
+    }
+
+    const channel = createQQChannel({
+      appId: config.appId,
+      appSecret: config.appSecret,
+    });
+
+    return this.connectChannel(userId, 'qq', channel, {
+      onReady: () => {
+        logger.info({ userId }, 'User QQ bot connected');
+      },
+      onNewChat,
+      isChatAuthorized,
+      onPairAttempt,
+      onCommand: options?.onCommand,
+      resolveGroupFolder: options?.resolveGroupFolder,
+      resolveEffectiveChatJid: options?.resolveEffectiveChatJid,
+      onAgentMessage: options?.onAgentMessage,
+      onInterruptRequest: options?.onInterruptRequest,
     });
   }
 
@@ -250,15 +421,23 @@ class IMConnectionManager {
     await this.disconnectChannel(userId, 'telegram');
   }
 
+  async disconnectUserQQ(userId: string): Promise<void> {
+    await this.disconnectChannel(userId, 'qq');
+  }
+
   /**
    * Send a message to a Feishu chat.
    * @deprecated Use sendMessage(jid, text) which auto-routes.
    */
-  async sendFeishuMessage(chatJid: string, text: string): Promise<void> {
+  async sendFeishuMessage(
+    chatJid: string,
+    text: string,
+    localImagePaths?: string[],
+  ): Promise<void> {
     const chatId = extractChatId(chatJid);
     const channel = this.findChannelForJid(chatJid, 'feishu');
     if (channel) {
-      await channel.sendMessage(chatId, text);
+      await channel.sendMessage(chatId, text, localImagePaths);
       return;
     }
     logger.warn({ chatJid }, 'No Feishu connection available to send message');
@@ -268,14 +447,21 @@ class IMConnectionManager {
    * Send a message to a Telegram chat.
    * @deprecated Use sendMessage(jid, text) which auto-routes.
    */
-  async sendTelegramMessage(chatJid: string, text: string): Promise<void> {
+  async sendTelegramMessage(
+    chatJid: string,
+    text: string,
+    localImagePaths?: string[],
+  ): Promise<void> {
     const chatId = extractChatId(chatJid);
     const channel = this.findChannelForJid(chatJid, 'telegram');
     if (channel) {
-      await channel.sendMessage(chatId, text);
+      await channel.sendMessage(chatId, text, localImagePaths);
       return;
     }
-    logger.warn({ chatJid }, 'No Telegram connection available to send message');
+    logger.warn(
+      { chatJid },
+      'No Telegram connection available to send message',
+    );
   }
 
   /**
@@ -323,6 +509,11 @@ class IMConnectionManager {
     return conn?.channels.get('telegram')?.isConnected() ?? false;
   }
 
+  isQQConnected(userId: string): boolean {
+    const conn = this.connections.get(userId);
+    return conn?.channels.get('qq')?.isConnected() ?? false;
+  }
+
   /** Check if any user has an active Feishu connection */
   isAnyFeishuConnected(): boolean {
     for (const conn of this.connections.values()) {
@@ -339,6 +530,14 @@ class IMConnectionManager {
     return false;
   }
 
+  /** Check if any user has an active QQ connection */
+  isAnyQQConnected(): boolean {
+    for (const conn of this.connections.values()) {
+      if (conn.channels.get('qq')?.isConnected()) return true;
+    }
+    return false;
+  }
+
   /** Get the Feishu channel for a user (for direct access like syncGroups) */
   getFeishuConnection(userId: string): IMChannel | undefined {
     return this.connections.get(userId)?.channels.get('feishu');
@@ -349,8 +548,22 @@ class IMConnectionManager {
     return this.connections.get(userId)?.channels.get('telegram');
   }
 
+  /** Get the QQ channel for a user */
+  getQQConnection(userId: string): IMChannel | undefined {
+    return this.connections.get(userId)?.channels.get('qq');
+  }
+
   /** Get chat info from the Feishu API for a specific user's connection */
-  async getFeishuChatInfo(userId: string, chatId: string): Promise<{ avatar?: string; name?: string; user_count?: string; chat_type?: string; chat_mode?: string } | null> {
+  async getFeishuChatInfo(
+    userId: string,
+    chatId: string,
+  ): Promise<{
+    avatar?: string;
+    name?: string;
+    user_count?: string;
+    chat_type?: string;
+    chat_mode?: string;
+  } | null> {
     const channel = this.getFeishuConnection(userId);
     if (!channel?.getChatInfo) return null;
     return channel.getChatInfo(chatId);
@@ -360,7 +573,13 @@ class IMConnectionManager {
    * Get chat info for an IM group by JID, auto-routing to the correct connection.
    * Used for health checks to detect disbanded groups.
    */
-  async getChatInfo(jid: string): Promise<{ avatar?: string; name?: string; user_count?: string; chat_type?: string; chat_mode?: string } | null> {
+  async getChatInfo(jid: string): Promise<{
+    avatar?: string;
+    name?: string;
+    user_count?: string;
+    chat_type?: string;
+    chat_mode?: string;
+  } | null> {
     const channelType = getChannelType(jid);
     if (!channelType) return null;
 
@@ -397,7 +616,10 @@ class IMConnectionManager {
       for (const [channelType, channel] of conn.channels.entries()) {
         promises.push(
           channel.disconnect().catch((err) => {
-            logger.warn({ userId, channelType, err }, 'Error stopping IM channel');
+            logger.warn(
+              { userId, channelType, err },
+              'Error stopping IM channel',
+            );
           }),
         );
       }

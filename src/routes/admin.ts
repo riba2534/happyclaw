@@ -59,7 +59,8 @@ import { logger } from '../logger.js';
 const adminRoutes = new Hono<{ Variables: Variables }>();
 
 // ISO 8601 日期格式验证正则（审计日志查询 from/to 参数）
-const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
+const ISO_DATE_RE =
+  /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
 
 // --- User Management ---
 
@@ -109,106 +110,101 @@ adminRoutes.get('/permission-templates', authMiddleware, (c) => {
 });
 
 // POST /api/admin/users - 创建用户
-adminRoutes.post(
-  '/users',
-  authMiddleware,
-  usersManageMiddleware,
-  async (c) => {
-    const body = await c.req.json().catch(() => ({}));
-    const validation = AdminCreateUserSchema.safeParse(body);
-    if (!validation.success) {
+adminRoutes.post('/users', authMiddleware, usersManageMiddleware, async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const validation = AdminCreateUserSchema.safeParse(body);
+  if (!validation.success) {
+    return c.json(
+      { error: 'Invalid request', details: validation.error.format() },
+      400,
+    );
+  }
+
+  const {
+    username,
+    password,
+    display_name,
+    role,
+    permissions,
+    must_change_password,
+    notes,
+  } = validation.data;
+  const actor = c.get('user') as AuthUser;
+
+  const usernameError = validateUsername(username);
+  if (usernameError) return c.json({ error: usernameError }, 400);
+
+  if (getUserByUsername(username)) {
+    return c.json({ error: 'Username already taken' }, 409);
+  }
+
+  const passwordError = validatePassword(password);
+  if (passwordError) return c.json({ error: passwordError }, 400);
+
+  const now = new Date().toISOString();
+  const userId = generateUserId();
+  const passwordHash = await hashPassword(password);
+
+  const finalRole = role || 'member';
+  const finalPermissions = normalizePermissions(
+    permissions ?? (finalRole === 'admin' ? ALL_PERMISSIONS : []),
+  );
+
+  if (actor.role !== 'admin') {
+    if (finalRole === 'admin') {
       return c.json(
-        { error: 'Invalid request', details: validation.error.format() },
-        400,
+        { error: 'Forbidden: only admin can create admin users' },
+        403,
       );
     }
+    const allowed = new Set(actor.permissions);
+    const forbidden = finalPermissions.filter((perm) => !allowed.has(perm));
+    if (forbidden.length > 0) {
+      return c.json(
+        {
+          error: `Forbidden: cannot grant permissions [${forbidden.join(', ')}]`,
+        },
+        403,
+      );
+    }
+  }
 
-    const {
+  try {
+    createUser({
+      id: userId,
       username,
-      password,
-      display_name,
-      role,
-      permissions,
-      must_change_password,
-      notes,
-    } = validation.data;
-    const actor = c.get('user') as AuthUser;
-
-    const usernameError = validateUsername(username);
-    if (usernameError) return c.json({ error: usernameError }, 400);
-
-    if (getUserByUsername(username)) {
+      password_hash: passwordHash,
+      display_name: display_name || username,
+      role: finalRole,
+      status: 'active',
+      permissions: finalPermissions,
+      must_change_password: must_change_password ?? true,
+      notes: notes ?? null,
+      created_at: now,
+      updated_at: now,
+    });
+  } catch (err) {
+    if (isUsernameConflictError(err)) {
       return c.json({ error: 'Username already taken' }, 409);
     }
+    throw err;
+  }
 
-    const passwordError = validatePassword(password);
-    if (passwordError) return c.json({ error: passwordError }, 400);
+  logAuthEvent({
+    event_type: 'user_created',
+    username,
+    actor_username: actor.username,
+    ip_address: getClientIp(c),
+    details: {
+      role: finalRole,
+      permissions: finalPermissions,
+      must_change_password: must_change_password ?? true,
+    },
+  });
 
-    const now = new Date().toISOString();
-    const userId = generateUserId();
-    const passwordHash = await hashPassword(password);
-
-    const finalRole = role || 'member';
-    const finalPermissions = normalizePermissions(
-      permissions ?? (finalRole === 'admin' ? ALL_PERMISSIONS : []),
-    );
-
-    if (actor.role !== 'admin') {
-      if (finalRole === 'admin') {
-        return c.json(
-          { error: 'Forbidden: only admin can create admin users' },
-          403,
-        );
-      }
-      const allowed = new Set(actor.permissions);
-      const forbidden = finalPermissions.filter((perm) => !allowed.has(perm));
-      if (forbidden.length > 0) {
-        return c.json(
-          {
-            error: `Forbidden: cannot grant permissions [${forbidden.join(', ')}]`,
-          },
-          403,
-        );
-      }
-    }
-
-    try {
-      createUser({
-        id: userId,
-        username,
-        password_hash: passwordHash,
-        display_name: display_name || username,
-        role: finalRole,
-        status: 'active',
-        permissions: finalPermissions,
-        must_change_password: must_change_password ?? true,
-        notes: notes ?? null,
-        created_at: now,
-        updated_at: now,
-      });
-    } catch (err) {
-      if (isUsernameConflictError(err)) {
-        return c.json({ error: 'Username already taken' }, 409);
-      }
-      throw err;
-    }
-
-    logAuthEvent({
-      event_type: 'user_created',
-      username,
-      actor_username: actor.username,
-      ip_address: getClientIp(c),
-      details: {
-        role: finalRole,
-        permissions: finalPermissions,
-        must_change_password: must_change_password ?? true,
-      },
-    });
-
-    const newUser = getUserById(userId)!;
-    return c.json({ success: true, user: toUserPublic(newUser) }, 201);
-  },
-);
+  const newUser = getUserById(userId)!;
+  return c.json({ success: true, user: toUserPublic(newUser) }, 201);
+});
 
 // PATCH /api/admin/users/:id - 更新用户
 adminRoutes.patch(
@@ -407,60 +403,57 @@ adminRoutes.patch(
 );
 
 // DELETE /api/admin/users/:id - 删除用户
-adminRoutes.delete(
-  '/users/:id',
-  authMiddleware,
-  usersManageMiddleware,
-  (c) => {
-    const id = c.req.param('id');
-    const target = getUserById(id);
-    if (!target) return c.json({ error: 'User not found' }, 404);
+adminRoutes.delete('/users/:id', authMiddleware, usersManageMiddleware, (c) => {
+  const id = c.req.param('id');
+  const target = getUserById(id);
+  if (!target) return c.json({ error: 'User not found' }, 404);
 
-    const actor = c.get('user') as AuthUser;
-    if (actor.role !== 'admin' && target.role === 'admin') {
-      return c.json(
-        { error: 'Forbidden: only admin can delete admin users' },
-        403,
-      );
-    }
-    if (target.id === actor.id) {
-      return c.json({ error: 'Cannot delete yourself' }, 400);
-    }
-    if (
-      target.role === 'admin' &&
-      target.status === 'active' &&
-      getActiveAdminCount() <= 1
-    ) {
-      return c.json({ error: 'Cannot delete the last active admin' }, 400);
-    }
+  const actor = c.get('user') as AuthUser;
+  if (actor.role !== 'admin' && target.role === 'admin') {
+    return c.json(
+      { error: 'Forbidden: only admin can delete admin users' },
+      403,
+    );
+  }
+  if (target.id === actor.id) {
+    return c.json({ error: 'Cannot delete yourself' }, 400);
+  }
+  if (
+    target.role === 'admin' &&
+    target.status === 'active' &&
+    getActiveAdminCount() <= 1
+  ) {
+    return c.json({ error: 'Cannot delete the last active admin' }, 400);
+  }
 
-    deleteUser(id);
+  deleteUser(id);
 
-    // Cleanup avatar files for deleted user
-    try {
-      const avatarsDir = path.join(DATA_DIR, 'avatars');
-      if (fs.existsSync(avatarsDir)) {
-        const files = fs.readdirSync(avatarsDir).filter(f => f.startsWith(`${id}-`));
-        for (const file of files) {
-          fs.unlinkSync(path.join(avatarsDir, file));
-        }
+  // Cleanup avatar files for deleted user
+  try {
+    const avatarsDir = path.join(DATA_DIR, 'avatars');
+    if (fs.existsSync(avatarsDir)) {
+      const files = fs
+        .readdirSync(avatarsDir)
+        .filter((f) => f.startsWith(`${id}-`));
+      for (const file of files) {
+        fs.unlinkSync(path.join(avatarsDir, file));
       }
-    } catch (e) {
-      // Avatar cleanup failure should not block user deletion
-      logger.warn({ error: e, userId: id }, 'Failed to cleanup avatar files');
     }
+  } catch (e) {
+    // Avatar cleanup failure should not block user deletion
+    logger.warn({ error: e, userId: id }, 'Failed to cleanup avatar files');
+  }
 
-    logAuthEvent({
-      event_type: 'user_deleted',
-      username: target.username,
-      actor_username: actor.username,
-      ip_address: getClientIp(c),
-      details: { action: 'deleted' },
-    });
+  logAuthEvent({
+    event_type: 'user_deleted',
+    username: target.username,
+    actor_username: actor.username,
+    ip_address: getClientIp(c),
+    details: { action: 'deleted' },
+  });
 
-    return c.json({ success: true });
-  },
-);
+  return c.json({ success: true });
+});
 
 // POST /api/admin/users/:id/restore - 恢复已删除用户
 adminRoutes.post(
@@ -533,92 +526,94 @@ adminRoutes.get('/invites', authMiddleware, inviteManageMiddleware, (c) => {
 });
 
 // POST /api/admin/invites - 创建邀请码
-adminRoutes.post('/invites', authMiddleware, inviteManageMiddleware, async (c) => {
-  const body = await c.req.json().catch(() => ({}));
-  const validation = InviteCreateSchema.safeParse(body);
-  if (!validation.success) {
-    return c.json(
-      { error: 'Invalid request', details: validation.error.format() },
-      400,
-    );
-  }
-
-  const actor = c.get('user') as AuthUser;
-  const template = resolveTemplate(validation.data.permission_template);
-  if (
-    template &&
-    validation.data.role !== undefined &&
-    validation.data.role !== template.role
-  ) {
-    return c.json(
-      { error: 'role conflicts with permission_template' },
-      400,
-    );
-  }
-
-  const role = template?.role || validation.data.role || 'member';
-  const permissions = normalizePermissions(
-    validation.data.permissions ??
-      template?.permissions ??
-      (role === 'admin' ? ALL_PERMISSIONS : []),
-  );
-
-  if (actor.role !== 'admin') {
-    if (role === 'admin') {
+adminRoutes.post(
+  '/invites',
+  authMiddleware,
+  inviteManageMiddleware,
+  async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const validation = InviteCreateSchema.safeParse(body);
+    if (!validation.success) {
       return c.json(
-        { error: 'Forbidden: only admin can create admin invites' },
-        403,
+        { error: 'Invalid request', details: validation.error.format() },
+        400,
       );
     }
-    const allowed = new Set(actor.permissions);
-    const forbidden = permissions.filter((perm) => !allowed.has(perm));
-    if (forbidden.length > 0) {
-      return c.json(
-        {
-          error: `Forbidden: cannot grant permissions [${forbidden.join(', ')}]`,
-        },
-        403,
-      );
+
+    const actor = c.get('user') as AuthUser;
+    const template = resolveTemplate(validation.data.permission_template);
+    if (
+      template &&
+      validation.data.role !== undefined &&
+      validation.data.role !== template.role
+    ) {
+      return c.json({ error: 'role conflicts with permission_template' }, 400);
     }
-  }
 
-  const code = generateInviteCode();
-  const now = new Date().toISOString();
-  const expiresAt = validation.data.expires_in_hours
-    ? new Date(
-        Date.now() + validation.data.expires_in_hours * 60 * 60 * 1000,
-      ).toISOString()
-    : null;
+    const role = template?.role || validation.data.role || 'member';
+    const permissions = normalizePermissions(
+      validation.data.permissions ??
+        template?.permissions ??
+        (role === 'admin' ? ALL_PERMISSIONS : []),
+    );
 
-  dbCreateInviteCode({
-    code,
-    created_by: actor.id,
-    role,
-    permission_template:
-      (validation.data.permission_template as
-        | PermissionTemplateKey
-        | undefined) ?? null,
-    permissions,
-    max_uses: validation.data.max_uses ?? 1,
-    used_count: 0,
-    expires_at: expiresAt,
-    created_at: now,
-  });
+    if (actor.role !== 'admin') {
+      if (role === 'admin') {
+        return c.json(
+          { error: 'Forbidden: only admin can create admin invites' },
+          403,
+        );
+      }
+      const allowed = new Set(actor.permissions);
+      const forbidden = permissions.filter((perm) => !allowed.has(perm));
+      if (forbidden.length > 0) {
+        return c.json(
+          {
+            error: `Forbidden: cannot grant permissions [${forbidden.join(', ')}]`,
+          },
+          403,
+        );
+      }
+    }
 
-  logAuthEvent({
-    event_type: 'invite_created',
-    username: actor.username,
-    ip_address: getClientIp(c),
-    details: {
-      code_prefix: code.slice(0, 8),
+    const code = generateInviteCode();
+    const now = new Date().toISOString();
+    const expiresAt = validation.data.expires_in_hours
+      ? new Date(
+          Date.now() + validation.data.expires_in_hours * 60 * 60 * 1000,
+        ).toISOString()
+      : null;
+
+    dbCreateInviteCode({
+      code,
+      created_by: actor.id,
       role,
-      permission_template: validation.data.permission_template || null,
+      permission_template:
+        (validation.data.permission_template as
+          | PermissionTemplateKey
+          | undefined) ?? null,
       permissions,
-    },
-  });
+      max_uses: validation.data.max_uses ?? 1,
+      used_count: 0,
+      expires_at: expiresAt,
+      created_at: now,
+    });
 
-  return c.json({ success: true, code }, 201);
-});
+    logAuthEvent({
+      event_type: 'invite_created',
+      username: actor.username,
+      ip_address: getClientIp(c),
+      details: {
+        code_prefix: code.slice(0, 8),
+        role,
+        permission_template: validation.data.permission_template || null,
+        permissions,
+      },
+    });
+
+    return c.json({ success: true, code }, 201);
+  },
+);
 
 // DELETE /api/admin/invites/:code - 删除邀请码
 adminRoutes.delete(
@@ -656,10 +651,16 @@ adminRoutes.get('/audit-log', authMiddleware, auditViewMiddleware, (c) => {
   const to = c.req.query('to');
 
   if (from && !ISO_DATE_RE.test(from)) {
-    return c.json({ error: 'Invalid "from" date format (expected ISO 8601)' }, 400);
+    return c.json(
+      { error: 'Invalid "from" date format (expected ISO 8601)' },
+      400,
+    );
   }
   if (to && !ISO_DATE_RE.test(to)) {
-    return c.json({ error: 'Invalid "to" date format (expected ISO 8601)' }, 400);
+    return c.json(
+      { error: 'Invalid "to" date format (expected ISO 8601)' },
+      400,
+    );
   }
 
   const result = queryAuthAuditLogs({
@@ -689,10 +690,16 @@ adminRoutes.get(
     const to = c.req.query('to');
 
     if (from && !ISO_DATE_RE.test(from)) {
-      return c.json({ error: 'Invalid "from" date format (expected ISO 8601)' }, 400);
+      return c.json(
+        { error: 'Invalid "from" date format (expected ISO 8601)' },
+        400,
+      );
     }
     if (to && !ISO_DATE_RE.test(to)) {
-      return c.json({ error: 'Invalid "to" date format (expected ISO 8601)' }, 400);
+      return c.json(
+        { error: 'Invalid "to" date format (expected ISO 8601)' },
+        400,
+      );
     }
 
     const result = queryAuthAuditLogs({

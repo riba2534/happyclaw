@@ -11,6 +11,7 @@ export type { GroupInfo, AgentInfo };
 export interface Message {
   id: string;
   chat_jid: string;
+  source_jid?: string;
   sender: string;
   sender_name: string;
   content: string;
@@ -137,10 +138,12 @@ interface ChatState {
   sendMessage: (jid: string, content: string, attachments?: Array<{ data: string; mimeType: string }>) => Promise<void>;
   stopGroup: (jid: string) => Promise<boolean>;
   interruptQuery: (jid: string) => Promise<boolean>;
-  resetSession: (jid: string) => Promise<boolean>;
+  resetSession: (jid: string, agentId?: string) => Promise<boolean>;
   clearHistory: (jid: string) => Promise<boolean>;
+  deleteMessage: (jid: string, messageId: string) => Promise<boolean>;
   createFlow: (name: string, options?: { execution_mode?: 'container' | 'host'; custom_cwd?: string; init_source_path?: string; init_git_url?: string }) => Promise<{ jid: string; folder: string } | null>;
   renameFlow: (jid: string, name: string) => Promise<void>;
+  togglePin: (jid: string) => Promise<void>;
   deleteFlow: (jid: string) => Promise<void>;
   handleStreamEvent: (chatJid: string, event: StreamEvent, agentId?: string) => void;
   handleWsNewMessage: (chatJid: string, wsMsg: any, agentId?: string) => void;
@@ -178,6 +181,9 @@ const SDK_TASK_TOOL_END_FALLBACK_CLOSE_MS = 1200;
 const SDK_TASK_STALE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes stale timeout for non-teammate tasks
 const sdkTaskCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const sdkTaskStaleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** 已完成/出错的 SDK Task ID，防止迟到事件 re-create */
+const completedSdkTaskIds = new Set<string>();
 
 // 兜底路由支持的事件类型（模块级常量，避免热路径上重复创建 Set）
 const FALLBACK_EVENT_TYPES: Set<StreamEventType> = new Set([
@@ -283,6 +289,7 @@ function doSdkTaskCleanup(
 ): void {
   sdkTaskCleanupTimers.delete(taskId);
   clearSdkTaskStaleTimer(taskId);
+  completedSdkTaskIds.delete(taskId);
   set((s) => {
     const isTeammate = s.sdkTasks[taskId]?.isTeammate || false;
     const nextSdkTasks = { ...s.sdkTasks };
@@ -473,6 +480,9 @@ function applyStreamEvent(
       if (event.todos) {
         next.todos = event.todos;
       }
+      break;
+    case 'mode_change':
+      // Handled at ChatView level via onModeChange callback
       break;
     case 'status': {
       next.systemStatus = event.statusText || null;
@@ -761,14 +771,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  resetSession: async (jid: string) => {
+  resetSession: async (jid: string, agentId?: string) => {
     try {
       await api.post<{ success: boolean; dividerMessageId: string }>(
         `/api/groups/${encodeURIComponent(jid)}/reset-session`,
+        agentId ? { agentId } : undefined,
       );
-      get().clearStreaming(jid, { preserveThinking: false });
-      // Refresh messages to pick up the divider message
-      await get().refreshMessages(jid);
+      if (agentId) {
+        // Agent-specific: clear agent streaming and refresh agent messages
+        set((s) => {
+          const nextStreaming = { ...s.agentStreaming };
+          delete nextStreaming[agentId];
+          const nextWaiting = { ...s.agentWaiting };
+          delete nextWaiting[agentId];
+          return { agentStreaming: nextStreaming, agentWaiting: nextWaiting };
+        });
+        await get().loadAgentMessages(jid, agentId);
+      } else {
+        get().clearStreaming(jid, { preserveThinking: false });
+        // Refresh messages to pick up the divider message
+        await get().refreshMessages(jid);
+      }
       return true;
     } catch (err) {
       set({ error: err instanceof Error ? err.message : String(err) });
@@ -824,6 +847,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
+  deleteMessage: async (jid: string, messageId: string) => {
+    try {
+      await api.delete(`/api/groups/${encodeURIComponent(jid)}/messages/${encodeURIComponent(messageId)}`);
+      set((s) => ({
+        messages: {
+          ...s.messages,
+          [jid]: (s.messages[jid] || []).filter((m) => m.id !== messageId),
+        },
+      }));
+      return true;
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : String(err) });
+      return false;
+    }
+  },
+
   createFlow: async (name: string, options?: { execution_mode?: 'container' | 'host'; custom_cwd?: string; init_source_path?: string; init_git_url?: string }) => {
     try {
       const body: Record<string, string> = { name };
@@ -867,6 +906,33 @@ export const useChatStore = create<ChatState>((set, get) => ({
             },
           },
           error: null,
+        };
+      });
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : String(err) });
+    }
+  },
+
+  togglePin: async (jid: string) => {
+    const group = get().groups[jid];
+    if (!group) return;
+    const willPin = !group.pinned_at;
+    try {
+      const data = await api.patch<{ success: boolean; pinned_at?: string }>(
+        `/api/groups/${encodeURIComponent(jid)}`,
+        { is_pinned: willPin },
+      );
+      set((s) => {
+        const g = s.groups[jid];
+        if (!g) return s;
+        return {
+          groups: {
+            ...s.groups,
+            [jid]: {
+              ...g,
+              pinned_at: willPin ? (data.pinned_at || new Date().toISOString()) : undefined,
+            },
+          },
         };
       });
     } catch (err) {
@@ -943,6 +1009,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return;
       }
       set((s) => {
+        // Guard: if streaming was already cleared (agent reply received),
+        // ignore late-arriving stream events to prevent "thinking" reappearing.
+        if (!s.agentStreaming[agentId] && s.agentWaiting[agentId] === false) {
+          return s;
+        }
         const prev = s.agentStreaming[agentId] || { ...DEFAULT_STREAMING_STATE };
         const next = { ...prev };
         applyStreamEvent(event, prev, next, 8000);
@@ -1018,6 +1089,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       closeAfterMs = SDK_TASK_AUTO_CLOSE_MS,
     ) => {
       clearSdkTaskStaleTimer(taskId);
+      completedSdkTaskIds.add(taskId);
       let targetChatJid: string | null = null;
       set((s) => {
         const existingTask = s.sdkTasks[taskId];
@@ -1138,10 +1210,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const taskFromDb = (state.agents[chatJid] || []).find(a => a.id === tid && a.kind === 'task');
       const knownTask = !!state.sdkTasks[tid] || !!taskFromDb;
       if (knownTask) {
-        if (!state.sdkTasks[tid]) {
+        if (!state.sdkTasks[tid] && !completedSdkTaskIds.has(tid)) {
           ensureSdkTask(tid, taskFromDb?.prompt || taskFromDb?.name);
         }
         // Reset stale timer — task is still active
+        if (completedSdkTaskIds.has(tid)) return;
         const task = state.sdkTasks[tid];
         if (task && !task.isTeammate) {
           resetSdkTaskStaleTimer(set, get, tid, chatJid);
@@ -1211,6 +1284,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     // ⑥ 主对话 streaming — 使用 applyStreamEvent 共享函数
     set((s) => {
+      // If streaming state was already cleared (final message received),
+      // ignore late-arriving stream events to prevent "thinking" from reappearing.
+      if (!s.streaming[chatJid] && s.waiting[chatJid] === false) {
+        return s;
+      }
       const MAX_STREAMING_TEXT = 8000;
       const prev = s.streaming[chatJid] || { ...DEFAULT_STREAMING_STATE };
       const next = { ...prev };
@@ -1365,6 +1443,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       let nextSdkTaskAliases = { ...s.sdkTaskAliases };
       if (resolvedKind === 'task') {
         if (status !== 'running') {
+          completedSdkTaskIds.add(agentId);
           clearSdkTaskCleanupTimer(agentId);
           clearSdkTaskStaleTimer(agentId);
           delete nextSdkTasks[agentId];

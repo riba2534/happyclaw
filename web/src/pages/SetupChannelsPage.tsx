@@ -22,6 +22,10 @@ export function SetupChannelsPage() {
   // Telegram
   const [telegramBotToken, setTelegramBotToken] = useState('');
 
+  // QQ
+  const [qqAppId, setQqAppId] = useState('');
+  const [qqAppSecret, setQqAppSecret] = useState('');
+
   useEffect(() => {
     if (user === null && initialized === true) {
       navigate('/login', { replace: true });
@@ -37,8 +41,9 @@ export function SetupChannelsPage() {
 
     const hasFeishu = feishuAppId.trim() || feishuAppSecret.trim();
     const hasTelegram = telegramBotToken.trim();
+    const hasQQ = qqAppId.trim() || qqAppSecret.trim();
 
-    if (!hasFeishu && !hasTelegram) {
+    if (!hasFeishu && !hasTelegram && !hasQQ) {
       navigate('/chat', { replace: true });
       return;
     }
@@ -49,6 +54,14 @@ export function SetupChannelsPage() {
     }
     if (feishuAppId.trim() && !feishuAppSecret.trim()) {
       setError('填写飞书 App ID 时，App Secret 也必须填写');
+      return;
+    }
+    if (qqAppSecret.trim() && !qqAppId.trim()) {
+      setError('填写 QQ Secret 时，App ID 也必须填写');
+      return;
+    }
+    if (qqAppId.trim() && !qqAppSecret.trim()) {
+      setError('填写 QQ App ID 时，App Secret 也必须填写');
       return;
     }
 
@@ -64,6 +77,14 @@ export function SetupChannelsPage() {
       if (hasTelegram) {
         await api.put('/api/config/user-im/telegram', {
           botToken: telegramBotToken.trim(),
+          enabled: true,
+        });
+      }
+
+      if (hasQQ) {
+        await api.put('/api/config/user-im/qq', {
+          appId: qqAppId.trim(),
+          appSecret: qqAppSecret.trim(),
           enabled: true,
         });
       }
@@ -135,6 +156,34 @@ export function SetupChannelsPage() {
               onChange={(e) => setTelegramBotToken(e.target.value)}
               placeholder="输入 Telegram Bot Token"
             />
+          </div>
+        </section>
+
+        {/* QQ */}
+        <section className="bg-card rounded-xl border border-border shadow-sm p-5">
+          <h2 className="text-base font-semibold text-foreground mb-3">QQ</h2>
+          <p className="text-xs text-muted-foreground mb-3">
+            填写 QQ Bot 应用凭证，绑定后即可在 QQ 中与 AI 对话。
+          </p>
+          <div className="grid md:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-foreground mb-1">App ID</label>
+              <Input
+                type="text"
+                value={qqAppId}
+                onChange={(e) => setQqAppId(e.target.value)}
+                placeholder="输入 QQ Bot App ID"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-foreground mb-1">App Secret</label>
+              <Input
+                type="password"
+                value={qqAppSecret}
+                onChange={(e) => setQqAppSecret(e.target.value)}
+                placeholder="输入 QQ Bot App Secret"
+              />
+            </div>
           </div>
         </section>
 

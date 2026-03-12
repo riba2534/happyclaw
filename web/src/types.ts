@@ -16,6 +16,8 @@ export interface GroupInfo {
   custom_cwd?: string;
   created_by?: string;
   selected_skills?: string[] | null;
+  pinned_at?: string;
+  activation_mode?: 'auto' | 'always' | 'when_mentioned' | 'disabled';
 }
 
 export interface AgentInfo {
@@ -37,6 +39,7 @@ export interface AvailableImGroup {
   bound_main_jid: string | null;
   bound_target_name: string | null;
   bound_workspace_name: string | null;
+  reply_policy?: 'source_only' | 'mirror';
   avatar?: string;
   member_count?: number;
   channel_type: string;
