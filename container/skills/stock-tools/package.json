@@ -1,0 +1,21 @@
+{
+  "name": "stock-tools",
+  "version": "1.0.0",
+  "description": "股票分析助手 - HappyClaw 自定义 Skills",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "keywords": ["stock", "finance", "analysis", "happyclaw", "skill"],
+  "author": "Stock Assistant Team",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "^5"
+  }
+}
