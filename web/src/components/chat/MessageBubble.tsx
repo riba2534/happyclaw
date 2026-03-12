@@ -1,6 +1,7 @@
 import { useState, useRef, memo } from 'react';
 import { Copy, Check, ChevronDown, ChevronUp, Ellipsis } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Message } from '../../stores/chat';
 import { useAuthStore } from '../../stores/auth';
 import { EmojiAvatar } from '../common/EmojiAvatar';
@@ -56,8 +57,6 @@ function ReasoningBlock({ content }: { content: string }) {
 
 /** Parse and display token usage for AI messages */
 function TokenUsageDisplay({ tokenUsageJson }: { tokenUsageJson: string }) {
-  const [expanded, setExpanded] = useState(false);
-
   const usage = (() => {
     try {
       return JSON.parse(tokenUsageJson) as {
@@ -78,8 +77,12 @@ function TokenUsageDisplay({ tokenUsageJson }: { tokenUsageJson: string }) {
   if (!usage) return null;
 
   const models = usage.modelUsage ? Object.entries(usage.modelUsage) : [];
-  const primaryModel = models.length > 0 ? models[0][0].replace('claude-', '') : null;
-  const totalTokens = (usage.inputTokens || 0) + (usage.outputTokens || 0);
+  // 主模型 = 费用最高的（即用户指定的模型），内部模型不向用户展示
+  models.sort((a, b) => (b[1].costUSD || 0) - (a[1].costUSD || 0));
+  const primary = models.length > 0 ? models[0] : null;
+  const primaryInput = primary ? primary[1].inputTokens : (usage.inputTokens || 0);
+  const primaryOutput = primary ? primary[1].outputTokens : (usage.outputTokens || 0);
+  const totalTokens = primaryInput + primaryOutput;
 
   const formatNum = (n: number): string => {
     if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -87,55 +90,43 @@ function TokenUsageDisplay({ tokenUsageJson }: { tokenUsageJson: string }) {
     return String(n);
   };
 
-  const formatCost = (usd: number): string => {
-    if (usd >= 1) return `$${usd.toFixed(2)}`;
-    if (usd >= 0.01) return `$${usd.toFixed(3)}`;
-    if (usd > 0) return `$${usd.toFixed(4)}`;
-    return '$0.00';
-  };
+  const summaryContent = (
+    <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-default">
+      <span>{formatNum(totalTokens)} tokens</span>
+      {usage.durationMs ? (
+        <>
+          <span className="opacity-40">·</span>
+          <span>{(usage.durationMs / 1000).toFixed(1)}s</span>
+        </>
+      ) : null}
+    </span>
+  );
+
+  const hasDetails = primary || (usage.cacheReadInputTokens || 0) > 0;
+
+  if (!hasDetails) {
+    return <div className="mt-1.5">{summaryContent}</div>;
+  }
 
   return (
     <div className="mt-1.5">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-      >
-        <span className="opacity-60">📊</span>
-        {primaryModel && <span>{primaryModel}</span>}
-        {primaryModel && <span className="opacity-40">·</span>}
-        <span>{formatNum(totalTokens)} tokens</span>
-        <span className="opacity-40">·</span>
-        <span>{formatCost(usage.costUSD || 0)}</span>
-        {usage.durationMs ? (
-          <>
-            <span className="opacity-40">·</span>
-            <span>{(usage.durationMs / 1000).toFixed(1)}s</span>
-          </>
-        ) : null}
-        {models.length > 1 && (
-          expanded
-            ? <ChevronUp className="w-3 h-3" />
-            : <ChevronDown className="w-3 h-3" />
-        )}
-      </button>
-
-      {expanded && models.length > 0 && (
-        <div className="mt-1.5 text-xs text-muted-foreground space-y-1 pl-4 border-l-2 border-border">
-          {models.map(([model, mu]) => (
-            <div key={model}>
-              <span className="font-medium">{model}</span>
-              <span className="ml-2">↓{formatNum(mu.inputTokens)} ↑{formatNum(mu.outputTokens)}</span>
-              <span className="ml-2 opacity-70">{formatCost(mu.costUSD)}</span>
+      <TooltipProvider delayDuration={200}>
+        <Tooltip>
+          <TooltipTrigger asChild>{summaryContent}</TooltipTrigger>
+          <TooltipContent side="bottom" align="start">
+            <div className="text-xs space-y-0.5">
+              {primary && <div className="opacity-70 font-medium mb-1">{primary[0]}</div>}
+              {primary && <div>In {formatNum(primaryInput)} / Out {formatNum(primaryOutput)}</div>}
+              {(usage.cacheReadInputTokens || 0) > 0 && (
+                <div className="opacity-70">
+                  Read {formatNum(usage.cacheReadInputTokens || 0)}
+                  {(usage.cacheCreationInputTokens || 0) > 0 && ` / Write ${formatNum(usage.cacheCreationInputTokens || 0)}`}
+                </div>
+              )}
             </div>
-          ))}
-          {(usage.cacheReadInputTokens || 0) > 0 && (
-            <div className="opacity-70">
-              Cache: {formatNum(usage.cacheReadInputTokens || 0)} read
-              {(usage.cacheCreationInputTokens || 0) > 0 && ` / ${formatNum(usage.cacheCreationInputTokens || 0)} created`}
-            </div>
-          )}
-        </div>
-      )}
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
     </div>
   );
 }

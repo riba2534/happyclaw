@@ -62,7 +62,7 @@ function mergeMessagesChronologically(
   // Incoming messages are authoritative, but preserve reference if content unchanged
   for (const m of incoming) {
     const old = byId.get(m.id);
-    if (!old || old.content !== m.content || old.timestamp !== m.timestamp) {
+    if (!old || old.content !== m.content || old.timestamp !== m.timestamp || old.token_usage !== m.token_usage) {
       byId.set(m.id, m);
     }
   }
@@ -1292,6 +1292,36 @@ export const useChatStore = create<ChatState>((set, get) => ({
         };
       });
       return;
+    }
+
+    // ⑤.5 usage 事件 → 实时更新最近一条 AI 消息的 token_usage
+    if (event.eventType === 'usage' && event.usage) {
+      const usage = event.usage;
+      // 构造与 DB 中 token_usage JSON 一致的格式
+      const tokenUsageJson = JSON.stringify({
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        cacheReadInputTokens: usage.cacheReadInputTokens,
+        cacheCreationInputTokens: usage.cacheCreationInputTokens,
+        costUSD: usage.costUSD,
+        durationMs: usage.durationMs,
+        numTurns: usage.numTurns,
+        modelUsage: usage.modelUsage,
+      });
+      set((s) => {
+        const msgs = s.messages[chatJid];
+        if (!msgs || msgs.length === 0) return s;
+        // 从后往前找最近一条 AI 回复
+        let targetIdx = -1;
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          if (msgs[i].is_from_me) { targetIdx = i; break; }
+        }
+        if (targetIdx < 0) return s;
+        const updated = [...msgs];
+        updated[targetIdx] = { ...updated[targetIdx], token_usage: tokenUsageJson };
+        return { messages: { ...s.messages, [chatJid]: updated } };
+      });
+      // 不 return — usage 事件同时落入主对话 streaming（如需 recentEvents 展示）
     }
 
     // ⑥ 主对话 streaming — 使用 applyStreamEvent 共享函数

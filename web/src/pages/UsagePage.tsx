@@ -131,7 +131,9 @@ export function UsagePage() {
         });
       }
     }
-    return Array.from(byModel.values()).sort((a, b) => b.cost - a.cost);
+    return Array.from(byModel.values())
+      .filter((m) => m.tokens > 0 || m.cost > 0)
+      .sort((a, b) => b.cost - a.cost);
   }, [breakdown]);
 
   // Cache hit rate
@@ -344,7 +346,12 @@ export function UsagePage() {
             {/* Model Breakdown */}
             {modelData.length > 0 && (
               <div className="bg-card rounded-xl border border-border p-4 lg:p-6">
-                <h2 className="text-lg font-semibold text-foreground mb-4">模型用量分布</h2>
+                <h2 className="text-lg font-semibold text-foreground mb-1">模型用量分布</h2>
+                {modelData.length > 1 && (
+                  <p className="text-xs text-muted-foreground mb-4">
+                    除主模型外，SDK 可能调用轻量模型处理意图分析等内部任务以优化成本
+                  </p>
+                )}
                 <div className="flex flex-col lg:flex-row gap-6">
                   {/* Pie Chart */}
                   <div className="h-64 w-full lg:w-1/2">
