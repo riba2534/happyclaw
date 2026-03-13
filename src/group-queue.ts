@@ -317,6 +317,7 @@ export class GroupQueue {
     text: string,
     images?: Array<{ data: string; mimeType?: string }>,
     intent: MessageIntent = 'continue',
+    onInjected?: () => void,
   ): SendMessageResult {
     const state = this.resolveActiveState(groupJid);
     if (!state) return 'no_active';
@@ -365,6 +366,7 @@ export class GroupQueue {
         JSON.stringify({ type: 'message', text, images }),
       );
       fs.renameSync(tempPath, filepath);
+      onInjected?.();
       return intent === 'correction' ? 'interrupted_correction' : 'sent';
     } catch {
       return 'no_active';

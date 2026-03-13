@@ -59,6 +59,7 @@ export interface WebDeps {
     chat_mode?: string;
   } | null>;
   clearImFailCounts?: (jid: string) => void;
+  updateReplyRoute?: (folder: string, sourceJid: string | null) => void;
 }
 
 export type Variables = {
