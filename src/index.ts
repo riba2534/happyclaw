@@ -3073,6 +3073,9 @@ async function processAgentConversation(
   }
 
   // ── Feishu Streaming Card (conversation agent) ──
+  // Unlike processGroupMessages which falls back to chatJid, conversation agents
+  // only stream when the message originates from an IM channel (replySourceImJid).
+  // Web-only interactions don't need a Feishu streaming card.
   const streamingSessionJid = replySourceImJid;
   const agentStreamingSession = streamingSessionJid
     ? imManager.createStreamingSession(streamingSessionJid)
@@ -3346,6 +3349,7 @@ async function processAgentConversation(
 
     commitCursor();
   } catch (err) {
+    hadError = true;
     logger.error({ agentId, chatJid, err }, 'Agent conversation error');
   } finally {
     if (idleTimer) clearTimeout(idleTimer);
