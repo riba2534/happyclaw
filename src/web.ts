@@ -355,9 +355,8 @@ async function handleWebUserMessage(
     pipedToActive = true;
   } else if (sendResult === 'queued') {
     // Message queued for next container run; don't advance cursor so
-    // processGroupMessages re-reads it from DB, don't enqueue (drain
-    // sentinel will cause the current container to exit, then drainGroup
-    // starts a new one).
+    // processGroupMessages re-reads it from DB. Drain sentinel already
+    // written — the current runner will exit and drainGroup picks it up.
   } else {
     deps.queue.enqueueMessageCheck(chatJid);
   }
