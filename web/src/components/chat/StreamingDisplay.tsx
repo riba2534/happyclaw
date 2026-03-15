@@ -361,7 +361,7 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNamePr
       );
     }
     return (
-      <div className="max-w-3xl mx-auto w-full px-4 py-3">
+      <div className="mx-auto w-full px-4 py-3">
         {/* Mobile: compact avatar + name row */}
         <div className="flex items-center gap-2 mb-1.5 lg:hidden">
           <EmojiAvatar imageUrl={aiImageUrl} emoji={aiEmoji} color={aiColor} fallbackChar={senderName[0]} size="sm" />
@@ -432,7 +432,7 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNamePr
 
   // ── Chat mode streaming (default) ──
   return (
-    <div className="max-w-3xl mx-auto w-full px-4 py-3">
+    <div className="mx-auto w-full px-4 py-3">
       {/* Mobile: compact avatar + name row */}
       <div className="flex items-center gap-2 mb-1.5 lg:hidden">
         <EmojiAvatar imageUrl={aiImageUrl} emoji={aiEmoji} color={aiColor} fallbackChar={senderName[0]} size="sm" />

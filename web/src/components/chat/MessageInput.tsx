@@ -537,7 +537,7 @@ export function MessageInput({
               disabled={!canSend || disabled || sending}
               className={`w-9 h-9 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-90 ${
                 canSend && !disabled && !sending
-                  ? 'bg-primary text-white hover:bg-primary/90 max-lg:shadow-[0_2px_8px_rgba(13,148,136,0.3)]'
+                  ? 'bg-primary text-white hover:bg-primary/90 max-lg:shadow-[0_2px_8px_rgba(59,130,246,0.3)]'
                   : 'bg-slate-100 text-slate-400'
               }`}
             >

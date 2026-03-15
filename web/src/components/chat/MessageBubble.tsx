@@ -482,7 +482,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
               </div>
             )}
             {!hasOnlyImages && (
-              <div className="bg-card border border-border text-foreground px-4 py-2.5 rounded-2xl rounded-tr-sm shadow-sm">
+              <div className="text-[var(--user-bubble-fg)] px-4 py-2.5 rounded-2xl rounded-tr-sm shadow-sm" style={{ background: 'var(--user-bubble-bg)' }}>
                 <p className="text-[15px] leading-relaxed whitespace-pre-wrap break-words">{message.content}</p>
               </div>
             )}

@@ -79,7 +79,7 @@ export function ChatGroupItem({
             <Star className="w-3.5 h-3.5 text-yellow-500 fill-yellow-500 flex-shrink-0" />
           )}
           {isPinned && !isHome && (
-            <Pin className="w-3 h-3 text-teal-500 flex-shrink-0" />
+            <Pin className="w-3 h-3 text-blue-500 flex-shrink-0" />
           )}
           <span
             className={cn(

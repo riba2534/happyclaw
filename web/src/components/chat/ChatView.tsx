@@ -634,8 +634,8 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                       <div className="flex flex-col items-center justify-center py-12 px-4 space-y-4">
                         {/* 动画 spinner */}
                         <div className="relative">
-                          <div className="w-12 h-12 rounded-full border-2 border-teal-100" />
-                          <div className="absolute inset-0 w-12 h-12 rounded-full border-2 border-transparent border-t-teal-500 animate-spin" />
+                          <div className="w-12 h-12 rounded-full border-2 border-blue-100" />
+                          <div className="absolute inset-0 w-12 h-12 rounded-full border-2 border-transparent border-t-blue-500 animate-spin" />
                         </div>
 
                         <div className="text-center space-y-2 max-w-md">
