@@ -418,7 +418,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
                   </div>
                 )}
                 {!hasOnlyImages && (
-                  <div className="bg-card border border-border text-foreground px-4 py-2.5 rounded-2xl rounded-tl-sm shadow-sm">
+                  <div className="bg-card border border-border text-foreground px-4 py-2.5 rounded-2xl rounded-tl-sm shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
                     <p className="text-[15px] leading-relaxed whitespace-pre-wrap break-words">{message.content}</p>
                   </div>
                 )}
@@ -482,7 +482,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
               </div>
             )}
             {!hasOnlyImages && (
-              <div className="text-[var(--user-bubble-fg)] px-4 py-2.5 rounded-2xl rounded-tr-sm shadow-sm" style={{ background: 'var(--user-bubble-bg)' }}>
+              <div className="bg-primary text-primary-foreground px-4 py-2.5 rounded-2xl rounded-tr-sm">
                 <p className="text-[15px] leading-relaxed whitespace-pre-wrap break-words">{message.content}</p>
               </div>
             )}
@@ -498,7 +498,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
             )}
           </div>
           {showTime && (
-            <span className="text-xs text-slate-400 mt-1.5 mr-1">{time}</span>
+            <span className="text-xs text-muted-foreground/60 mt-1.5 mr-1">{time}</span>
           )}
         </div>
 
@@ -550,7 +550,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
           </div>
 
           {/* Card */}
-          <div className="relative bg-card rounded-xl border border-border border-l-[3px] border-l-[var(--brand-400)] px-5 py-4 max-lg:bg-card/90 max-lg:backdrop-blur-sm overflow-hidden">
+          <div className="relative bg-card rounded-xl border border-border shadow-[0_1px_3px_rgba(0,0,0,0.04)] px-4 py-3.5 max-lg:bg-card/90 max-lg:backdrop-blur-sm overflow-hidden">
             {/* Action buttons */}
             <div className="absolute top-2 right-2 flex items-center gap-0.5 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
               <button

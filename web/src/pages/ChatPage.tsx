@@ -90,10 +90,10 @@ export function ChatPage() {
             <div className="w-16 h-16 rounded-2xl overflow-hidden mx-auto mb-6">
               <img src={`${import.meta.env.BASE_URL}icons/icon-192.png`} alt="HappyClaw" className="w-full h-full object-cover" />
             </div>
-            <h2 className="text-xl font-semibold text-slate-900 mb-2">
+            <h2 className="text-xl font-semibold text-foreground mb-2">
               欢迎使用 {appearance?.appName || 'HappyClaw'}
             </h2>
-            <p className="text-slate-500 text-sm">
+            <p className="text-muted-foreground text-sm">
               从左侧选择一个工作区开始对话
             </p>
           </div>

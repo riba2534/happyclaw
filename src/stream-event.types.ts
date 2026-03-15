@@ -34,6 +34,7 @@ export interface StreamEvent {
   hookOutcome?: string;
   statusText?: string;
   taskDescription?: string;
+  taskName?: string;
   taskId?: string;
   taskStatus?: string;
   taskSummary?: string;
