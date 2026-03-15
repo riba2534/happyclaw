@@ -319,7 +319,7 @@ export function MessageInput({
 
   return (
     <div
-      className="px-4 pt-2 pb-6 bg-background ios-pwa-bottom-safe max-lg:bg-background/60 max-lg:backdrop-blur-xl max-lg:saturate-[1.8] max-lg:border-t max-lg:border-border/40"
+      className="px-4 pt-2 pb-6 bg-background ios-pwa-bottom-safe shadow-[0_-1px_4px_rgba(0,0,0,0.03)] max-lg:bg-background/60 max-lg:backdrop-blur-xl max-lg:saturate-[1.8] max-lg:border-t max-lg:border-border/40"
       style={{ paddingBottom: `max(1.5rem, var(--keyboard-height, 0px))` }}
     >
       <div className={isCompact ? 'mx-auto' : 'max-w-3xl mx-auto'}>
@@ -464,7 +464,7 @@ export function MessageInput({
               onPaste={handlePaste}
               placeholder="输入消息..."
               disabled={disabled}
-              className="w-full text-[15px] leading-6 resize-none focus:outline-none placeholder:text-slate-400 disabled:opacity-50 disabled:cursor-not-allowed bg-transparent"
+              className="w-full text-[15px] leading-6 resize-none focus:outline-none placeholder:text-muted-foreground/60 disabled:opacity-50 disabled:cursor-not-allowed bg-transparent"
               rows={1}
               style={{ minHeight: '28px', maxHeight: '144px' }}
             />
@@ -481,8 +481,8 @@ export function MessageInput({
                   disabled={uploading}
                   className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all cursor-pointer ${
                     showActions
-                      ? 'bg-brand-50 text-primary'
-                      : 'hover:bg-slate-100 text-slate-400 hover:text-slate-600'
+                      ? 'bg-primary/10 text-primary'
+                      : 'hover:bg-muted text-muted-foreground hover:text-foreground'
                   } ${uploading ? 'opacity-40 pointer-events-none' : ''}`}
                   title="添加文件"
                   aria-label="添加文件"
@@ -494,7 +494,7 @@ export function MessageInput({
                 <button
                   type="button"
                   onClick={onResetSession}
-                  className="w-9 h-9 rounded-lg flex items-center justify-center hover:bg-amber-50 text-slate-400 hover:text-amber-600 transition-all cursor-pointer"
+                  className="w-9 h-9 rounded-lg flex items-center justify-center hover:bg-amber-50 text-muted-foreground hover:text-amber-600 transition-all cursor-pointer"
                   title="清除上下文"
                 >
                   <Brush className="w-4 h-4" />
@@ -504,7 +504,7 @@ export function MessageInput({
                 <button
                   type="button"
                   onClick={onToggleTerminal}
-                  className="w-9 h-9 rounded-lg flex items-center justify-center hover:bg-brand-50 text-slate-400 hover:text-primary transition-all cursor-pointer"
+                  className="w-9 h-9 rounded-lg flex items-center justify-center hover:bg-primary/10 text-muted-foreground hover:text-primary transition-all cursor-pointer"
                   title="终端"
                   aria-label="终端"
                 >
@@ -518,7 +518,7 @@ export function MessageInput({
                   className={`h-9 px-2 rounded-lg flex items-center gap-1 text-xs font-medium transition-all cursor-pointer ${
                     permissionMode === 'plan'
                       ? 'bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/50 dark:text-amber-400 dark:border-amber-800'
-                      : 'hover:bg-slate-100 text-slate-400 hover:text-slate-600'
+                      : 'hover:bg-muted text-muted-foreground hover:text-foreground'
                   }`}
                   title={permissionMode === 'plan' ? 'Plan 模式，点击切到 Code' : 'Code 模式，点击切到 Plan'}
                 >
@@ -537,8 +537,8 @@ export function MessageInput({
               disabled={!canSend || disabled || sending}
               className={`w-9 h-9 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-90 ${
                 canSend && !disabled && !sending
-                  ? 'bg-primary text-white hover:bg-primary/90 max-lg:shadow-[0_2px_8px_rgba(13,148,136,0.3)]'
-                  : 'bg-slate-100 text-slate-400'
+                  ? 'bg-primary text-primary-foreground hover:bg-primary/90 max-lg:shadow-[0_2px_8px_rgba(194,65,12,0.25)]'
+                  : 'bg-muted text-muted-foreground/50'
               }`}
             >
               {sending ? <Loader2 className="w-4.5 h-4.5 animate-spin" /> : <ArrowUp className="w-4.5 h-4.5" />}

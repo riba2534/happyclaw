@@ -223,7 +223,7 @@ export function ChatSidebar({ className, onToggleCollapse }: ChatSidebarProps) {
         <div className="flex gap-2">
           <Button
             variant="outline"
-            className="flex-1 justify-start gap-2"
+            className="flex-1 justify-start gap-2 bg-primary/5 text-primary border-primary/20 hover:bg-primary/10 hover:text-primary"
             onClick={() => setCreateOpen(true)}
           >
             <Plus className="w-4 h-4" />

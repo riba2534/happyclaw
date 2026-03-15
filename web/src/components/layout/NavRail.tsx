@@ -29,9 +29,9 @@ export function NavRail() {
 
   return (
     <TooltipProvider delayDuration={200}>
-      <nav className="w-16 h-full bg-background border-r border-border flex flex-col items-center py-4 gap-2">
+      <nav className="w-16 h-full bg-card border-r border-border flex flex-col items-center py-4 gap-1.5">
         {/* Logo */}
-        <div className="w-10 h-10 rounded-xl overflow-hidden mb-2 flex-shrink-0">
+        <div className="w-9 h-9 rounded-xl overflow-hidden mb-3 flex-shrink-0">
           <img src={`${import.meta.env.BASE_URL}icons/icon-192.png`} alt="HappyClaw" className="w-full h-full object-cover" />
         </div>
 
@@ -41,15 +41,14 @@ export function NavRail() {
               <NavLink
                 to={path}
                 className={({ isActive }) =>
-                  `w-12 h-12 rounded-lg flex flex-col items-center justify-center gap-0.5 transition-colors ${
+                  `w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${
                     isActive
-                      ? 'bg-brand-50 text-primary'
-                      : 'text-muted-foreground hover:bg-accent'
+                      ? 'bg-primary/10 text-primary'
+                      : 'text-muted-foreground hover:bg-muted hover:text-foreground'
                   }`
                 }
               >
-                <Icon className="w-5 h-5" />
-                <span className="text-xs">{label}</span>
+                <Icon className="w-[22px] h-[22px]" />
               </NavLink>
             </TooltipTrigger>
             <TooltipContent side="right">
