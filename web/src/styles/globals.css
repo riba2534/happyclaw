@@ -68,58 +68,58 @@
 }
 
 /* =====================================================
-   Design Token values — Indigo theme
-   Primary: #6366f1 (Indigo) | Logo accent: #d97706 (Amber) | Base: Slate
+   Design Token values — Cream & Amber theme
+   Primary: #c2410c (Burnt Orange) | Background: Claude-style parchment | Base: Warm neutral
    ===================================================== */
 :root {
   /* shadcn/ui semantic tokens */
-  --background: #f7f8fa;
-  --foreground: #1a1d23;
-  --card: #ffffff;
-  --card-foreground: #1a1d23;
-  --popover: #ffffff;
-  --popover-foreground: #1a1d23;
-  --primary: #6366f1;
-  --primary-foreground: #ffffff;
-  --secondary: #f1f3f9;
-  --secondary-foreground: #1a1d23;
-  --muted: #f1f3f9;
-  --muted-foreground: #8b8fa3;
-  --accent: #eef2ff;
-  --accent-foreground: #3730a3;
+  --background: #f5f5f0;
+  --foreground: #292524;
+  --card: #fafaf7;
+  --card-foreground: #292524;
+  --popover: #fafaf7;
+  --popover-foreground: #292524;
+  --primary: #c2410c;
+  --primary-foreground: #fffbf5;
+  --secondary: #f0ece4;
+  --secondary-foreground: #292524;
+  --muted: #f0ece4;
+  --muted-foreground: #8c8579;
+  --accent: #fef3e2;
+  --accent-foreground: #7c2d12;
   --destructive: #dc2626;
   --destructive-foreground: #ffffff;
-  --border: #e8eaef;
-  --input: #e8eaef;
-  --ring: #6366f1;
+  --border: #e5e0d8;
+  --input: #e5e0d8;
+  --ring: #c2410c;
   --radius: 0.75rem;
 
-  /* Brand color scale (Indigo) */
-  --brand-50: #eef2ff;
-  --brand-100: #e0e7ff;
-  --brand-200: #c7d2fe;
-  --brand-300: #a5b4fc;
-  --brand-400: #818cf8;
-  --brand-500: #6366f1;
-  --brand-600: #4f46e5;
-  --brand-700: #4338ca;
+  /* Brand color scale (Amber-Orange) */
+  --brand-50: #fff7ed;
+  --brand-100: #ffedd5;
+  --brand-200: #fed7aa;
+  --brand-300: #fdba74;
+  --brand-400: #fb923c;
+  --brand-500: #f97316;
+  --brand-600: #ea580c;
+  --brand-700: #c2410c;
 
   /* Chart colors */
-  --chart-1: #6366f1;
+  --chart-1: #c2410c;
   --chart-2: #d97706;
-  --chart-3: #06b6d4;
-  --chart-4: #9333ea;
+  --chart-3: #0891b2;
+  --chart-4: #7c3aed;
   --chart-5: #dc2626;
 
   /* Sidebar */
-  --sidebar-background: #ffffff;
-  --sidebar-foreground: #1a1d23;
-  --sidebar-primary: #6366f1;
-  --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #f1f3f9;
-  --sidebar-accent-foreground: #1a1d23;
-  --sidebar-border: #edf0f4;
-  --sidebar-ring: #6366f1;
+  --sidebar-background: #fafaf7;
+  --sidebar-foreground: #292524;
+  --sidebar-primary: #c2410c;
+  --sidebar-primary-foreground: #fffbf5;
+  --sidebar-accent: #f0ece4;
+  --sidebar-accent-foreground: #292524;
+  --sidebar-border: #e5e0d8;
+  --sidebar-ring: #c2410c;
 
   /* Feedback colors */
   --success: #16a34a;
@@ -147,34 +147,34 @@
    Dark mode token overrides
    ===================================================== */
 .dark {
-  --background: #0f1117;
-  --foreground: #e2e4ea;
-  --card: #1a1d27;
-  --card-foreground: #e2e4ea;
-  --popover: #1a1d27;
-  --popover-foreground: #e2e4ea;
-  --primary: #818cf8;
-  --primary-foreground: #0f1117;
-  --secondary: #1a1d27;
-  --secondary-foreground: #e2e4ea;
-  --muted: #1a1d27;
-  --muted-foreground: #9096a8;
-  --accent: #312e81;
-  --accent-foreground: #c7d2fe;
+  --background: #1a1816;
+  --foreground: #e7e5e0;
+  --card: #242220;
+  --card-foreground: #e7e5e0;
+  --popover: #242220;
+  --popover-foreground: #e7e5e0;
+  --primary: #fb923c;
+  --primary-foreground: #1a1816;
+  --secondary: #242220;
+  --secondary-foreground: #e7e5e0;
+  --muted: #242220;
+  --muted-foreground: #a8a29e;
+  --accent: #3b2010;
+  --accent-foreground: #fed7aa;
   --destructive: #f87171;
   --destructive-foreground: #ffffff;
-  --border: #2a2d38;
-  --input: #2a2d38;
-  --ring: #818cf8;
+  --border: #302d2a;
+  --input: #302d2a;
+  --ring: #fb923c;
 
-  --sidebar-background: #0f1117;
-  --sidebar-foreground: #c8ccd6;
-  --sidebar-primary: #818cf8;
-  --sidebar-primary-foreground: #0f1117;
-  --sidebar-accent: #1a1d27;
-  --sidebar-accent-foreground: #c8ccd6;
-  --sidebar-border: #1a1d27;
-  --sidebar-ring: #818cf8;
+  --sidebar-background: #1a1816;
+  --sidebar-foreground: #d6d3ce;
+  --sidebar-primary: #fb923c;
+  --sidebar-primary-foreground: #1a1816;
+  --sidebar-accent: #242220;
+  --sidebar-accent-foreground: #d6d3ce;
+  --sidebar-border: #242220;
+  --sidebar-ring: #fb923c;
 
   --success: #4ade80;
   --success-bg: #14532d;
@@ -398,9 +398,9 @@ pre code.hljs {
 .floating-nav-item:active { transform: scale(0.92); }
 
 .floating-nav-item.active {
-  background: rgba(99, 102, 241, 0.12);
+  background: rgba(194, 65, 12, 0.10);
   color: var(--primary);
-  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.12),
+  box-shadow: 0 2px 8px rgba(194, 65, 12, 0.10),
               var(--glass-inner-shadow);
   transition: all 350ms cubic-bezier(0.34, 1.56, 0.64, 1);
   transform: scale(1.08);
@@ -411,7 +411,7 @@ pre code.hljs {
   position: absolute;
   inset: 0;
   border-radius: 9999px;
-  background: radial-gradient(circle, rgba(99, 102, 241, 0.2) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(194, 65, 12, 0.15) 0%, transparent 70%);
   animation: glass-ripple 400ms ease-out;
 }
 
