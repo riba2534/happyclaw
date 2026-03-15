@@ -5,14 +5,14 @@ export function AboutSection() {
     <div className="space-y-6">
       {/* 项目信息 */}
       <div>
-        <h2 className="text-lg font-semibold text-slate-900 mb-1">HappyClaw</h2>
-        <p className="text-sm text-slate-500">自托管个人 AI Agent 系统</p>
+        <h2 className="text-lg font-semibold text-foreground mb-1">HappyClaw</h2>
+        <p className="text-sm text-muted-foreground">自托管个人 AI Agent 系统</p>
       </div>
 
       {/* 开源地址 & 作者 */}
       <div className="space-y-3">
         <div className="flex items-center gap-3">
-          <Github className="w-4 h-4 text-slate-400 shrink-0" />
+          <Github className="w-4 h-4 text-muted-foreground/60 shrink-0" />
           <a
             href="https://github.com/riba2534/happyclaw"
             target="_blank"
@@ -24,20 +24,20 @@ export function AboutSection() {
           </a>
         </div>
         <div className="flex items-center gap-3">
-          <Code2 className="w-4 h-4 text-slate-400 shrink-0" />
-          <span className="text-sm text-slate-700">作者：riba2534</span>
+          <Code2 className="w-4 h-4 text-muted-foreground/60 shrink-0" />
+          <span className="text-sm text-foreground/80">作者：riba2534</span>
         </div>
       </div>
 
-      <hr className="border-slate-100" />
+      <hr className="border-border" />
 
       {/* 灵感来源 */}
       <div>
         <div className="flex items-center gap-2 mb-3">
           <Lightbulb className="w-4 h-4 text-amber-500" />
-          <h3 className="text-sm font-medium text-slate-900">灵感来源</h3>
+          <h3 className="text-sm font-medium text-foreground">灵感来源</h3>
         </div>
-        <div className="space-y-4 text-sm text-slate-600">
+        <div className="space-y-4 text-sm text-muted-foreground">
           <div>
             <a
               href="https://github.com/slopus/happy"
@@ -69,15 +69,15 @@ export function AboutSection() {
         </div>
       </div>
 
-      <hr className="border-slate-100" />
+      <hr className="border-border" />
 
       {/* 设计哲学 */}
       <div>
         <div className="flex items-center gap-2 mb-3">
           <Heart className="w-4 h-4 text-rose-500" />
-          <h3 className="text-sm font-medium text-slate-900">设计哲学</h3>
+          <h3 className="text-sm font-medium text-foreground">设计哲学</h3>
         </div>
-        <p className="text-sm text-slate-600 leading-relaxed">
+        <p className="text-sm text-muted-foreground leading-relaxed">
           站在巨人的肩膀上，基于 Claude Code（全世界最好的 Agent）构建。
         </p>
       </div>

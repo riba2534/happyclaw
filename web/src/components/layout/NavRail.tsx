@@ -27,7 +27,7 @@ export function NavRail() {
 
   return (
     <TooltipProvider delayDuration={200}>
-      <nav className="w-16 h-full bg-background border-r border-border flex flex-col items-center py-4 gap-2">
+      <nav className="w-16 h-full bg-sidebar border-r border-sidebar-border flex flex-col items-center py-4 gap-2">
         {/* Logo */}
         <div className="w-10 h-10 rounded-xl overflow-hidden mb-2 flex-shrink-0">
           <img src={`${import.meta.env.BASE_URL}icons/icon-192.png`} alt="HappyClaw" className="w-full h-full object-cover" />
@@ -41,8 +41,8 @@ export function NavRail() {
                 className={({ isActive }) =>
                   `w-12 h-12 rounded-lg flex flex-col items-center justify-center gap-0.5 transition-colors ${
                     isActive
-                      ? 'bg-brand-50 text-primary'
-                      : 'text-muted-foreground hover:bg-accent'
+                      ? 'bg-sidebar-accent text-sidebar-primary'
+                      : 'text-muted-foreground hover:bg-sidebar-accent/50'
                   }`
                 }
               >
@@ -65,7 +65,7 @@ export function NavRail() {
             <TooltipTrigger asChild>
               <button
                 onClick={() => navigate('/settings?tab=profile')}
-                className="rounded-lg hover:ring-2 hover:ring-brand-200 transition-all cursor-pointer"
+                className="rounded-lg hover:ring-2 hover:ring-sidebar-border transition-all cursor-pointer"
               >
                 <EmojiAvatar
                   emoji={user?.avatar_emoji}

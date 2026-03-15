@@ -246,13 +246,13 @@ export function MemoryPage() {
             </div>
             <div>
               <h1 className="text-2xl font-bold text-foreground">记忆管理</h1>
-              <p className="text-sm text-slate-500 mt-0.5">
+              <p className="text-sm text-muted-foreground mt-0.5">
                 管理个人全局记忆、主会话记忆、各会话流记忆，以及可读取的自动记忆文件。
               </p>
             </div>
           </div>
 
-          <div className="text-xs text-slate-500">
+          <div className="text-xs text-muted-foreground">
             已加载记忆源: {sources.length}
           </div>
         </div>
@@ -267,7 +267,7 @@ export function MemoryPage() {
                 onChange={(e) => setKeyword(e.target.value)}
                 placeholder="搜索记忆源（路径 + 全文）"
               />
-              <div className="mt-1 text-[11px] text-slate-500">
+              <div className="mt-1 text-[11px] text-muted-foreground">
                 {keyword.trim()
                   ? searchingContent
                     ? '正在做全文检索...'
@@ -282,7 +282,7 @@ export function MemoryPage() {
                 if (items.length === 0) return null;
                 return (
                   <div key={scope}>
-                    <div className="text-xs font-semibold text-slate-500 mb-2">
+                    <div className="text-xs font-semibold text-muted-foreground mb-2">
                       {scopeLabel(scope)} ({items.length})
                     </div>
                     <div className="space-y-1">
@@ -302,10 +302,10 @@ export function MemoryPage() {
                             <div className="text-sm font-medium text-foreground truncate">
                               {source.label}
                             </div>
-                            <div className="text-[11px] text-slate-500 truncate mt-0.5">
+                            <div className="text-[11px] text-muted-foreground truncate mt-0.5">
                               {source.path}
                             </div>
-                            <div className="text-[11px] mt-1 text-slate-500">
+                            <div className="text-[11px] mt-1 text-muted-foreground">
                               {source.writable ? '可编辑' : '只读'} · {source.exists ? `${source.size} B` : '文件不存在'}
                             </div>
                             {hit && (
@@ -322,7 +322,7 @@ export function MemoryPage() {
               })}
 
               {!loadingSources && filteredSources.length === 0 && (
-                <div className="text-sm text-slate-500">没有匹配的记忆源</div>
+                <div className="text-sm text-muted-foreground">没有匹配的记忆源</div>
               )}
             </div>
           </div>
@@ -343,7 +343,7 @@ export function MemoryPage() {
                 )}
                 <div className="mb-3">
                   <div className="text-sm font-semibold text-foreground break-all">{selectedPath}</div>
-                  <div className="text-xs text-slate-500 mt-1">
+                  <div className="text-xs text-muted-foreground mt-1">
                     最近更新时间: {updatedText} · 字节数: {new TextEncoder().encode(content).length} · {fileMeta?.writable ? '可编辑' : '只读'}
                   </div>
                 </div>
@@ -390,7 +390,7 @@ export function MemoryPage() {
                 </div>
               </>
             ) : (
-              <div className="text-sm text-slate-500">暂无可用记忆源</div>
+              <div className="text-sm text-muted-foreground">暂无可用记忆源</div>
             )}
           </div>
           )}

@@ -561,12 +561,12 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
 
   return (
     <div className="space-y-4">
-      <div className="inline-flex rounded-lg border border-slate-200 p-1 bg-slate-50 mb-4">
+      <div className="inline-flex rounded-lg border border-border p-1 bg-muted mb-4">
         <button
           type="button"
           onClick={() => setProviderMode('official')}
           className={`px-3 py-1.5 text-sm rounded-md transition-colors cursor-pointer ${
-            providerMode === 'official' ? 'bg-background text-primary shadow-sm' : 'text-slate-500'
+            providerMode === 'official' ? 'bg-background text-primary' : 'text-muted-foreground'
           }`}
         >
           官方
@@ -575,7 +575,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
           type="button"
           onClick={() => setProviderMode('third_party')}
           className={`px-3 py-1.5 text-sm rounded-md transition-colors cursor-pointer ${
-            providerMode === 'third_party' ? 'bg-background text-primary shadow-sm' : 'text-slate-500'
+            providerMode === 'third_party' ? 'bg-background text-primary' : 'text-muted-foreground'
           }`}
         >
           第三方
@@ -618,7 +618,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
               {/* Show switch button when third-party config is still active */}
               {(config.anthropicBaseUrl || config.hasAnthropicAuthToken) && (
                 <div className="pt-2 border-t border-emerald-200">
-                  <div className="text-xs text-slate-600 mb-2">当前正在使用第三方渠道，可直接切换回官方。</div>
+                  <div className="text-xs text-muted-foreground mb-2">当前正在使用第三方渠道，可直接切换回官方。</div>
                   <Button size="sm" onClick={handleUseExistingOAuth} disabled={loading || saving}>
                     {saving && <Loader2 className="size-4 animate-spin" />}
                     使用此凭据切换回官方
@@ -646,20 +646,20 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
                         ? 'bg-amber-500'
                         : 'bg-red-500'
                   }`} />
-                  <span className="text-xs font-medium text-slate-700">Claude 服务状态</span>
+                  <span className="text-xs font-medium text-foreground/80">Claude 服务状态</span>
                 </div>
                 <a
                   href="https://status.claude.com"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-xs text-slate-500 hover:text-slate-700 underline"
+                  className="text-xs text-muted-foreground hover:text-foreground/80 underline"
                 >
                   详情
                 </a>
               </div>
               <div className="flex flex-wrap gap-x-4 gap-y-0.5">
                 {claudeStatus.components.map((comp) => (
-                  <div key={comp.name} className="flex items-center gap-1 text-xs text-slate-600">
+                  <div key={comp.name} className="flex items-center gap-1 text-xs text-muted-foreground">
                     <span className={`inline-block size-1.5 rounded-full ${
                       comp.status === 'operational'
                         ? 'bg-emerald-500'
@@ -679,12 +679,12 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
             <div className="rounded-lg border border-blue-200 bg-blue-50/50 p-4 space-y-3">
               <div className="flex items-center gap-2">
                 <HardDrive className="w-4 h-4 text-blue-600" />
-                <div className="text-sm font-medium text-slate-800">
+                <div className="text-sm font-medium text-foreground">
                   检测到本机已登录 Claude Code
                 </div>
               </div>
-              <div className="text-xs text-slate-600">
-                本机 <code className="bg-white/60 px-1 rounded">~/.claude/.credentials.json</code> 中存在有效凭据（{localCC.accessTokenMasked}），可一键导入{config?.hasClaudeOAuthCredentials ? '以更新当前凭据' : ''}。
+              <div className="text-xs text-muted-foreground">
+                本机 <code className="bg-background/60 px-1 rounded">~/.claude/.credentials.json</code> 中存在有效凭据（{localCC.accessTokenMasked}），可一键导入{config?.hasClaudeOAuthCredentials ? '以更新当前凭据' : ''}。
               </div>
               <Button onClick={handleImportLocalCC} disabled={loading || localCCImporting}>
                 {localCCImporting ? <Loader2 className="size-4 animate-spin" /> : <HardDrive className="size-4" />}
@@ -695,8 +695,8 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
 
           {/* OAuth one-click login */}
           <div className="rounded-lg border border-teal-200 bg-teal-50/50 p-4 space-y-3">
-            <div className="text-sm font-medium text-slate-800">一键登录 Claude（推荐）</div>
-            <div className="text-xs text-slate-600">
+            <div className="text-sm font-medium text-foreground">一键登录 Claude（推荐）</div>
+            <div className="text-xs text-muted-foreground">
               点击按钮后会打开 claude.ai 授权页面，完成授权后将页面上显示的授权码粘贴回来。
             </div>
 
@@ -737,14 +737,14 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
             )}
           </div>
 
-          <div className="relative flex items-center gap-3 text-xs text-slate-400">
-            <div className="flex-1 border-t border-slate-200" />
+          <div className="relative flex items-center gap-3 text-xs text-muted-foreground/60">
+            <div className="flex-1 border-t border-border" />
             或手动粘贴 setup-token / .credentials.json
-            <div className="flex-1 border-t border-slate-200" />
+            <div className="flex-1 border-t border-border" />
           </div>
 
           <div>
-            <label className="block text-xs text-slate-600 mb-1">
+            <label className="block text-xs text-muted-foreground mb-1">
               setup-token 或 .credentials.json{' '}
               {config?.hasClaudeCodeOauthToken ? `(${config.claudeCodeOauthTokenMasked})` : ''}
             </label>
@@ -759,9 +759,9 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
                   : '粘贴 setup-token 或 cat ~/.claude/.credentials.json 输出'
               }
             />
-            <p className="text-xs text-slate-400 mt-1">
+            <p className="text-xs text-muted-foreground/60 mt-1">
               支持粘贴{' '}
-              <code className="bg-slate-100 px-1 rounded">cat ~/.claude/.credentials.json</code>{' '}
+              <code className="bg-muted px-1 rounded">cat ~/.claude/.credentials.json</code>{' '}
               的 JSON 内容
             </p>
           </div>
@@ -773,15 +773,15 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
         </div>
       ) : (
         <div className="space-y-4">
-          <div className="rounded-xl border border-slate-200 overflow-hidden">
-            <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/70">
-              <div className="text-sm font-medium text-slate-800">第三方配置列表</div>
+          <div className="rounded-xl border border-border overflow-hidden">
+            <div className="px-4 py-3 border-b border-border bg-muted/70">
+              <div className="text-sm font-medium text-foreground">第三方配置列表</div>
             </div>
 
             {!profilesState || profilesState.profiles.length === 0 ? (
-              <div className="p-6 text-center text-sm text-slate-500">暂无第三方配置</div>
+              <div className="p-6 text-center text-sm text-muted-foreground">暂无第三方配置</div>
             ) : (
-              <div className="divide-y divide-slate-100">
+              <div className="divide-y divide-border">
                 {profilesState.profiles.map((profile) => {
                   const isActive = profile.id === profilesState.activeProfileId;
                   const isEditing = editorMode === 'edit' && editingProfileId === profile.id;
@@ -793,43 +793,43 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="min-w-0 flex-1 space-y-2">
                           <div className="flex items-center gap-2 flex-wrap">
-                            <span className="text-sm font-medium text-slate-900 break-all sm:break-normal">{profile.name}</span>
+                            <span className="text-sm font-medium text-foreground break-all sm:break-normal">{profile.name}</span>
                             <span
                               className={`text-xs px-1.5 py-0.5 rounded ${
                                 isActive
                                   ? 'bg-emerald-100 text-emerald-700'
-                                  : 'bg-slate-100 text-slate-600'
+                                  : 'bg-muted text-muted-foreground'
                               }`}
                             >
                               {isActive ? '已激活' : '未激活'}
                             </span>
                             {isEditing && (
-                              <span className="text-xs px-1.5 py-0.5 rounded bg-brand-100 text-primary">编辑中</span>
+                              <span className="text-xs px-1.5 py-0.5 rounded bg-primary/10 text-primary">编辑中</span>
                             )}
                           </div>
 
                           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2 text-xs">
                             <div>
-                              <div className="text-slate-400">Base URL</div>
-                              <div className="text-slate-700 font-mono break-all sm:truncate">
+                              <div className="text-muted-foreground/60">Base URL</div>
+                              <div className="text-foreground/80 font-mono break-all sm:truncate">
                                 {profile.anthropicBaseUrl || '-'}
                               </div>
                             </div>
                             <div>
-                              <div className="text-slate-400">Model</div>
-                              <div className="text-slate-700 font-mono break-all sm:truncate">
+                              <div className="text-muted-foreground/60">Model</div>
+                              <div className="text-foreground/80 font-mono break-all sm:truncate">
                                 {profile.happyclawModel || '-'}
                               </div>
                             </div>
                             <div>
-                              <div className="text-slate-400">Token</div>
-                              <div className="text-slate-700 font-mono break-all sm:truncate">
+                              <div className="text-muted-foreground/60">Token</div>
+                              <div className="text-foreground/80 font-mono break-all sm:truncate">
                                 {profile.anthropicAuthTokenMasked || '未设置'}
                               </div>
                             </div>
                             <div>
-                              <div className="text-slate-400">更新时间</div>
-                              <div className="text-slate-700">{formatDateTime(profile.updatedAt)}</div>
+                              <div className="text-muted-foreground/60">更新时间</div>
+                              <div className="text-foreground/80">{formatDateTime(profile.updatedAt)}</div>
                             </div>
                           </div>
                         </div>
@@ -903,9 +903,9 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
           </div>
 
           {isEditorOpen && (
-            <div className="rounded-xl border border-slate-200 p-4 space-y-4">
+            <div className="rounded-xl border border-border p-4 space-y-4">
               <div className="flex items-center justify-between gap-2">
-                <div className="text-sm font-medium text-slate-800">
+                <div className="text-sm font-medium text-foreground">
                   {editorMode === 'create'
                     ? '新增第三方配置'
                     : `编辑第三方配置${editingProfile ? `：${editingProfile.name}` : ''}`}
@@ -929,7 +929,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
 
               <div className="grid grid-cols-1 gap-4">
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">配置名称</label>
+                  <label className="block text-xs text-muted-foreground mb-1">配置名称</label>
                   <Input
                     type="text"
                     value={profileName}
@@ -940,7 +940,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
                 </div>
 
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">ANTHROPIC_BASE_URL</label>
+                  <label className="block text-xs text-muted-foreground mb-1">ANTHROPIC_BASE_URL</label>
                   <Input
                     type="text"
                     value={baseUrl}
@@ -951,7 +951,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
                 </div>
 
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">HAPPYCLAW_MODEL</label>
+                  <label className="block text-xs text-muted-foreground mb-1">HAPPYCLAW_MODEL</label>
                   <Input
                     type="text"
                     value={model}
@@ -963,7 +963,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
                 </div>
 
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">
+                  <label className="block text-xs text-muted-foreground mb-1">
                     ANTHROPIC_AUTH_TOKEN{' '}
                     {editorMode === 'edit' && editingProfile?.hasAnthropicAuthToken
                       ? `(${editingProfile.anthropicAuthTokenMasked})`
@@ -987,7 +987,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
                     }
                   />
                   {editorMode === 'edit' && editingProfile?.hasAnthropicAuthToken && (
-                    <label className="mt-2 inline-flex items-center gap-2 text-xs text-slate-600">
+                    <label className="mt-2 inline-flex items-center gap-2 text-xs text-muted-foreground">
                       <input
                         type="checkbox"
                         checked={clearTokenOnSave}
@@ -1006,9 +1006,9 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
                 </div>
               </div>
 
-              <div className="border-t border-slate-100 pt-4">
+              <div className="border-t border-border pt-4">
                 <div className="flex items-center justify-between mb-2">
-                  <label className="text-xs text-slate-600">其他自定义环境变量（可选）</label>
+                  <label className="text-xs text-muted-foreground">其他自定义环境变量（可选）</label>
                   <button
                     type="button"
                     onClick={addRow}
@@ -1018,12 +1018,12 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
                     添加
                   </button>
                 </div>
-                <p className="mb-2 text-xs text-slate-500">
+                <p className="mb-2 text-xs text-muted-foreground">
                   这些变量仅在当前配置生效，不同配置互不影响。
                 </p>
 
                 {customEnvRows.length === 0 ? (
-                  <p className="text-xs text-slate-400">暂无</p>
+                  <p className="text-xs text-muted-foreground/60">暂无</p>
                 ) : (
                   <div className="space-y-2">
                     {customEnvRows.map((row, idx) => (
@@ -1045,7 +1045,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
                         <button
                           type="button"
                           onClick={() => removeRow(idx)}
-                          className="w-8 h-8 rounded-md hover:bg-slate-100 text-slate-400 hover:text-red-500 flex items-center justify-center cursor-pointer"
+                          className="w-8 h-8 rounded-md hover:bg-muted text-muted-foreground/60 hover:text-red-500 flex items-center justify-center cursor-pointer"
                           aria-label="删除环境变量"
                         >
                           <X className="w-4 h-4" />
@@ -1065,7 +1065,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
         </div>
       )}
 
-      <div className="pt-4 border-t border-slate-100 flex flex-wrap items-center gap-3">
+      <div className="pt-4 border-t border-border flex flex-wrap items-center gap-3">
         <Button variant="outline" onClick={loadConfig} disabled={loading || saving || applying}>
           <RefreshCw className="w-4 h-4" />
           重新加载
@@ -1077,7 +1077,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
         </Button>
       </div>
 
-      <div className="text-xs text-slate-500">
+      <div className="text-xs text-muted-foreground">
         最近保存：{updatedAt}
         {providerMode === 'third_party' && activeProfile ? ` · 当前激活：${activeProfile.name}` : ''}
       </div>

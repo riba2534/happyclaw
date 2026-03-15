@@ -188,7 +188,7 @@ export default function RedeemCodeCreateDialog({
                   onClick={() => setType(opt.value)}
                   className={`flex-1 px-3 py-1.5 text-sm rounded transition-colors ${
                     type === opt.value
-                      ? 'bg-white dark:bg-zinc-800 shadow-sm font-medium'
+                      ? 'bg-card font-medium'
                       : 'text-zinc-500 hover:text-zinc-700'
                   }`}
                 >

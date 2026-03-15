@@ -102,12 +102,12 @@ export function FeishuChannelCard({ setNotice, setError }: FeishuChannelCardProp
 
   return (
     <div className="rounded-xl border border-border bg-card overflow-hidden">
-      <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 bg-slate-50/50">
+      <div className="flex items-center justify-between px-5 py-4 border-b border-border bg-muted/50">
         <div className="flex items-center gap-2">
-          <span className={`inline-block w-2 h-2 rounded-full ${config?.connected ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+          <span className={`inline-block w-2 h-2 rounded-full ${config?.connected ? 'bg-emerald-500' : 'bg-border'}`} />
           <div>
-            <h3 className="text-sm font-semibold text-slate-800">飞书 Feishu</h3>
-            <p className="text-xs text-slate-500 mt-0.5">接收飞书群消息并通过 Agent 自动回复</p>
+            <h3 className="text-sm font-semibold text-foreground">飞书 Feishu</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">接收飞书群消息并通过 Agent 自动回复</p>
           </div>
         </div>
         <ToggleSwitch checked={enabled} disabled={loading || toggling} onChange={handleToggle} />
@@ -115,17 +115,17 @@ export function FeishuChannelCard({ setNotice, setError }: FeishuChannelCardProp
 
       <div className={`px-5 py-4 space-y-4 transition-opacity ${!enabled ? 'opacity-50 pointer-events-none' : ''}`}>
         {loading ? (
-          <div className="text-sm text-slate-500">加载中...</div>
+          <div className="text-sm text-muted-foreground">加载中...</div>
         ) : (
           <>
             {config?.hasAppSecret && (
-              <div className="text-xs text-slate-500">
+              <div className="text-xs text-muted-foreground">
                 当前 Secret: {config.appSecretMasked || '已配置'}
               </div>
             )}
             <div className="grid md:grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs text-slate-500 mb-1">App ID</label>
+                <label className="block text-xs text-muted-foreground mb-1">App ID</label>
                 <Input
                   type="text"
                   value={appId}
@@ -134,7 +134,7 @@ export function FeishuChannelCard({ setNotice, setError }: FeishuChannelCardProp
                 />
               </div>
               <div>
-                <label className="block text-xs text-slate-500 mb-1">App Secret</label>
+                <label className="block text-xs text-muted-foreground mb-1">App Secret</label>
                 <Input
                   type="password"
                   value={appSecret}

@@ -20,9 +20,9 @@ export function TaskCard({ task, onPause, onResume, onDelete }: TaskCardProps) {
       case 'paused':
         return 'bg-amber-100 text-amber-600';
       case 'completed':
-        return 'bg-slate-100 text-slate-500';
+        return 'bg-muted text-muted-foreground';
       default:
-        return 'bg-slate-100 text-slate-600';
+        return 'bg-muted text-muted-foreground';
     }
   };
 
@@ -54,7 +54,7 @@ export function TaskCard({ task, onPause, onResume, onDelete }: TaskCardProps) {
   };
 
   return (
-    <div className="bg-card rounded-xl border border-border hover:border-brand-300 transition-colors duration-200">
+    <div className="bg-card rounded-xl border border-border hover:border-primary/60 transition-colors duration-200">
       {/* Card Header - Clickable */}
       <button
         onClick={() => setExpanded(!expanded)}
@@ -77,7 +77,7 @@ export function TaskCard({ task, onPause, onResume, onDelete }: TaskCardProps) {
                 </span>
               )}
               <div className="flex items-center gap-2">
-                <span className="text-slate-500">调度:</span>
+                <span className="text-muted-foreground">调度:</span>
                 <span className="text-foreground font-medium">
                   {task.schedule_type === 'cron' && 'Cron'}
                   {task.schedule_type === 'interval' && '间隔'}
@@ -89,7 +89,7 @@ export function TaskCard({ task, onPause, onResume, onDelete }: TaskCardProps) {
               </div>
 
               <div className="flex items-center gap-2">
-                <span className="text-slate-500">群组:</span>
+                <span className="text-muted-foreground">群组:</span>
                 <span className="text-foreground font-medium">
                   {task.group_folder}
                 </span>
@@ -114,7 +114,7 @@ export function TaskCard({ task, onPause, onResume, onDelete }: TaskCardProps) {
             {(task.status === 'active' || task.status === 'paused') && (
               <button
                 onClick={handleTogglePause}
-                className="p-2 text-slate-600 hover:text-primary hover:bg-brand-50 rounded-lg transition-colors cursor-pointer"
+                className="p-2 text-muted-foreground hover:text-primary hover:bg-primary/5 rounded-lg transition-colors cursor-pointer"
                 title={task.status === 'active' ? '暂停' : '恢复'}
                 aria-label={task.status === 'active' ? '暂停任务' : '恢复任务'}
               >
@@ -129,7 +129,7 @@ export function TaskCard({ task, onPause, onResume, onDelete }: TaskCardProps) {
             {/* Delete */}
             <button
               onClick={handleDelete}
-              className="p-2 text-slate-600 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
+              className="p-2 text-muted-foreground hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
               title="删除"
               aria-label="删除任务"
             >
@@ -139,9 +139,9 @@ export function TaskCard({ task, onPause, onResume, onDelete }: TaskCardProps) {
             {/* Expand Icon */}
             <div className="ml-2">
               {expanded ? (
-                <ChevronUp className="w-5 h-5 text-slate-400" />
+                <ChevronUp className="w-5 h-5 text-muted-foreground/60" />
               ) : (
-                <ChevronDown className="w-5 h-5 text-slate-400" />
+                <ChevronDown className="w-5 h-5 text-muted-foreground/60" />
               )}
             </div>
           </div>

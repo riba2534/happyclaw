@@ -212,7 +212,7 @@ export function GroupSkillsPanel({ groupJid }: GroupSkillsPanelProps) {
                   type="checkbox"
                   checked={isSelected(skill.id)}
                   onChange={() => toggleSkill(skill.id)}
-                  className="mt-0.5 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer"
+                  className="mt-0.5 rounded border-border text-primary focus:ring-primary cursor-pointer"
                 />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">

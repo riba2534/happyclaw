@@ -14,7 +14,7 @@ export function ToggleSwitch({ checked, disabled, onChange, 'aria-label': ariaLa
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
-        checked ? 'bg-primary' : 'bg-slate-200'
+        checked ? 'bg-primary' : 'bg-border'
       }`}
     >
       <span

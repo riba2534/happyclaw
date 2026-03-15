@@ -30,24 +30,24 @@ function ReasoningBlock({ content }: { content: string }) {
   const [expanded, setExpanded] = useState(false);
 
   return (
-    <div className="mb-3 rounded-xl border border-amber-200/60 bg-amber-50/40 overflow-hidden">
+    <div className="mb-3 overflow-hidden">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-amber-50/60 transition-colors"
+        className="w-full flex items-center gap-2 px-1 py-1.5 text-left hover:bg-muted/50 rounded-md transition-colors"
       >
-        <svg className="w-4 h-4 text-amber-500 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <svg className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z" />
         </svg>
-        <span className="text-xs font-medium text-amber-700">Reasoning</span>
+        <span className="text-xs text-muted-foreground">思考过程</span>
         <span className="flex-1" />
         {expanded ? (
-          <ChevronUp className="w-3.5 h-3.5 text-amber-400" />
+          <ChevronUp className="w-3.5 h-3.5 text-muted-foreground/50" />
         ) : (
-          <ChevronDown className="w-3.5 h-3.5 text-amber-400" />
+          <ChevronDown className="w-3.5 h-3.5 text-muted-foreground/50" />
         )}
       </button>
       {expanded && (
-        <div className="px-3 pb-3 text-sm text-amber-900/70 whitespace-pre-wrap break-words max-h-64 overflow-y-auto border-t border-amber-100">
+        <div className="px-1 pb-2 text-sm text-muted-foreground whitespace-pre-wrap break-words max-h-64 overflow-y-auto border-l-2 border-border ml-1.5 pl-3 mt-1">
           {content}
         </div>
       )}
@@ -230,7 +230,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
       <div className="mb-6">
         {showTime && (
           <div className="flex items-center gap-2 mb-2">
-            <span className="text-xs text-slate-500">{time}</span>
+            <span className="text-xs text-muted-foreground">{time}</span>
             <span className="text-xs font-medium text-red-600">系统消息</span>
           </div>
         )}
@@ -266,7 +266,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
       <div className="mb-6">
         {showTime && (
           <div className="flex items-center gap-2 mb-2">
-            <span className="text-xs text-slate-500">{time}</span>
+            <span className="text-xs text-muted-foreground">{time}</span>
             <span className="text-xs font-medium text-amber-600">
               {isBalanceBlocked ? '余额提醒' : '配额提醒'}
             </span>
@@ -322,10 +322,10 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
         {/* Sender line — no avatars in compact mode */}
         <div className="flex items-center gap-1.5 mb-1">
           <span className={`text-xs font-semibold ${isAI ? 'text-primary' : 'text-muted-foreground'}`}>{senderName}</span>
-          {showTime && <span className="text-[11px] text-slate-400">{time}</span>}
+          {showTime && <span className="text-[11px] text-muted-foreground/60">{time}</span>}
           <button
             onClick={handleCopy}
-            className="ml-1 w-5 h-5 rounded flex items-center justify-center text-slate-300 hover:text-slate-600 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+            className="ml-1 w-5 h-5 rounded flex items-center justify-center text-muted-foreground/60 hover:text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
             title="复制"
           >
             {copied ? <Check className="w-3 h-3 text-primary" /> : <Copy className="w-3 h-3" />}
@@ -343,7 +343,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
                 key={i}
                 src={`data:${img.mimeType || 'image/png'};base64,${img.data}`}
                 alt={img.name || `图片 ${i + 1}`}
-                className="max-w-48 max-h-48 rounded-lg object-cover cursor-pointer border border-slate-200 hover:border-primary transition-colors"
+                className="max-w-48 max-h-48 rounded-lg object-cover cursor-pointer border border-border hover:border-primary transition-colors"
                 onClick={() => setLightboxState({ images: allImageSrcs, index: i })}
               />
             ))}
@@ -385,7 +385,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
       return (
         <div className="group mb-4" onContextMenu={handleContextMenu} onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd} onTouchMove={handleTouchMove}>
           <div className="flex items-center gap-2 mb-1.5 lg:hidden">
-            <div className="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center text-xs font-medium text-slate-600 flex-shrink-0">
+            <div className="w-6 h-6 rounded-full bg-border flex items-center justify-center text-xs font-medium text-muted-foreground flex-shrink-0">
               {initial}
             </div>
             <span className="text-xs text-muted-foreground font-medium">{otherName}</span>
@@ -394,7 +394,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
 
           <div className="lg:flex lg:gap-3">
             <div className="hidden lg:block flex-shrink-0">
-              <div className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-sm font-medium text-slate-600">
+              <div className="w-8 h-8 rounded-full bg-border flex items-center justify-center text-sm font-medium text-muted-foreground">
                 {initial}
               </div>
             </div>
@@ -403,7 +403,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
                 <span className="text-xs text-muted-foreground font-medium">{otherName}</span>
                 {showTime && <span className="text-xs text-muted-foreground">{time}</span>}
               </div>
-              <div className="relative">
+              <div>
                 {images.length > 0 && (
                   <div className="flex flex-wrap gap-2 mb-2">
                     {images.map((img, i) => (
@@ -418,20 +418,29 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
                   </div>
                 )}
                 {!hasOnlyImages && (
-                  <div className="bg-card border border-border text-foreground px-4 py-2.5 rounded-2xl rounded-tl-sm shadow-sm">
+                  <div className="bg-muted text-foreground px-4 py-2.5 rounded-2xl rounded-tl-sm">
                     <p className="text-[15px] leading-relaxed whitespace-pre-wrap break-words">{message.content}</p>
                   </div>
                 )}
-                {!hasOnlyImages && (
+                {/* Action buttons — below bubble */}
+                <div className="flex items-center gap-0.5 mt-1.5 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
+                  <button
+                    onClick={handleCopy}
+                    className="h-6 px-1.5 rounded-md flex items-center justify-center text-muted-foreground/50 hover:text-foreground hover:bg-muted transition-colors max-lg:hidden cursor-pointer"
+                    title="复制"
+                    aria-label="复制消息"
+                  >
+                    {copied ? <Check className="w-3.5 h-3.5 text-primary" /> : <Copy className="w-3.5 h-3.5" />}
+                  </button>
                   <button
                     onClick={handleMenuButton}
-                    className="absolute -right-8 top-1/2 -translate-y-1/2 w-6 h-6 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-foreground/10 lg:opacity-0 lg:group-hover:opacity-100 transition-all cursor-pointer"
+                    className="h-6 px-1.5 rounded-md flex items-center justify-center text-muted-foreground/50 hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
                     title="更多"
                     aria-label="消息菜单"
                   >
-                    <Ellipsis className="w-4 h-4" />
+                    <Ellipsis className="w-3.5 h-3.5" />
                   </button>
-                )}
+                </div>
               </div>
             </div>
           </div>
@@ -466,7 +475,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
               {message.sender_name || currentUser?.display_name || currentUser?.username || '我'}
             </span>
           )}
-          <div className="relative">
+          <div>
             {/* Image attachments */}
             {images.length > 0 && (
               <div className="flex flex-wrap gap-2 mb-2 justify-end">
@@ -482,23 +491,32 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
               </div>
             )}
             {!hasOnlyImages && (
-              <div className="bg-card border border-border text-foreground px-4 py-2.5 rounded-2xl rounded-tr-sm shadow-sm">
+              <div className="bg-secondary dark:bg-secondary text-foreground px-4 py-2.5 rounded-2xl rounded-tr-sm">
                 <p className="text-[15px] leading-relaxed whitespace-pre-wrap break-words">{message.content}</p>
               </div>
             )}
-            {!hasOnlyImages && (
+            {/* Action buttons + time — below bubble, right-aligned */}
+            <div className="flex items-center justify-end gap-1 mt-1.5 mr-1 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
+              <button
+                onClick={handleCopy}
+                className="h-6 px-1.5 rounded-md flex items-center justify-center text-muted-foreground/50 hover:text-foreground hover:bg-muted transition-colors max-lg:hidden cursor-pointer"
+                title="复制"
+                aria-label="复制消息"
+              >
+                {copied ? <Check className="w-3.5 h-3.5 text-primary" /> : <Copy className="w-3.5 h-3.5" />}
+              </button>
               <button
                 onClick={handleMenuButton}
-                className="absolute -left-8 top-1/2 -translate-y-1/2 w-6 h-6 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-foreground/10 lg:opacity-0 lg:group-hover:opacity-100 transition-all cursor-pointer"
+                className="h-6 px-1.5 rounded-md flex items-center justify-center text-muted-foreground/50 hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
                 title="更多"
                 aria-label="消息菜单"
               >
-                <Ellipsis className="w-4 h-4" />
+                <Ellipsis className="w-3.5 h-3.5" />
               </button>
-            )}
+            </div>
           </div>
           {showTime && (
-            <span className="text-xs text-slate-400 mt-1.5 mr-1">{time}</span>
+            <span className="text-xs text-muted-foreground/60 mt-0.5 mr-1">{time}</span>
           )}
         </div>
 
@@ -549,28 +567,8 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
             {showTime && <span className="text-xs text-muted-foreground">{time}</span>}
           </div>
 
-          {/* Card */}
-          <div className="relative bg-card rounded-xl border border-border border-l-[3px] border-l-[var(--brand-400)] px-5 py-4 max-lg:bg-card/90 max-lg:backdrop-blur-sm overflow-hidden">
-            {/* Action buttons */}
-            <div className="absolute top-2 right-2 flex items-center gap-0.5 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
-              <button
-                onClick={handleCopy}
-                className="w-7 h-7 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-foreground/10 max-lg:hidden cursor-pointer"
-                title="复制"
-                aria-label="复制消息"
-              >
-                {copied ? <Check className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}
-              </button>
-              <button
-                onClick={handleMenuButton}
-                className="w-7 h-7 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-foreground/10 cursor-pointer"
-                title="更多"
-                aria-label="消息菜单"
-              >
-                <Ellipsis className="w-4 h-4" />
-              </button>
-            </div>
-
+          {/* Content — no card container, Claude-style */}
+          <div className="overflow-hidden">
             {/* Reasoning block */}
             {thinkingContent && <ReasoningBlock content={thinkingContent} />}
 
@@ -582,7 +580,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
                     key={i}
                     src={`data:${img.mimeType || 'image/png'};base64,${img.data}`}
                     alt={img.name || `图片 ${i + 1}`}
-                    className="max-w-48 max-h-48 rounded-lg object-cover cursor-pointer border border-slate-200 hover:border-primary transition-colors"
+                    className="max-w-48 max-h-48 rounded-lg object-cover cursor-pointer border border-border hover:border-primary transition-colors"
                     onClick={() => setLightboxState({ images: allImageSrcs, index: i })}
                   />
                 ))}
@@ -600,6 +598,26 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
             {message.is_from_me && message.token_usage && (
               <TokenUsageDisplay tokenUsageJson={message.token_usage} />
             )}
+
+            {/* Action buttons — below content, Claude-style */}
+            <div className="flex items-center gap-0.5 mt-2 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
+              <button
+                onClick={handleCopy}
+                className="h-7 px-2 rounded-md flex items-center justify-center gap-1 text-muted-foreground/60 hover:text-foreground hover:bg-muted transition-colors max-lg:hidden cursor-pointer text-xs"
+                title="复制"
+                aria-label="复制消息"
+              >
+                {copied ? <Check className="w-3.5 h-3.5 text-primary" /> : <Copy className="w-3.5 h-3.5" />}
+              </button>
+              <button
+                onClick={handleMenuButton}
+                className="h-7 px-2 rounded-md flex items-center justify-center text-muted-foreground/60 hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
+                title="更多"
+                aria-label="消息菜单"
+              >
+                <Ellipsis className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
         </div>
       </div>

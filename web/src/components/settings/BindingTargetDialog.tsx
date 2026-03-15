@@ -100,7 +100,7 @@ export function BindingTargetDialog({
           {!targetsLoading &&
             Array.from(grouped.entries()).map(([groupJid, items]) => (
               <div key={groupJid} className="space-y-1">
-                <div className="flex items-center gap-1.5 px-1 text-xs font-medium text-slate-500">
+                <div className="flex items-center gap-1.5 px-1 text-xs font-medium text-muted-foreground">
                   <FolderOpen className="w-3 h-3" />
                   {items[0].groupName}
                 </div>
@@ -135,7 +135,7 @@ export function BindingTargetDialog({
             size="sm"
             onClick={onRestoreDefault}
             disabled={!!selecting}
-            className="text-slate-500 hover:text-slate-700 w-full"
+            className="text-muted-foreground hover:text-foreground/80 w-full"
           >
             <RotateCcw className="w-3.5 h-3.5 mr-1.5" />
             恢复默认路由

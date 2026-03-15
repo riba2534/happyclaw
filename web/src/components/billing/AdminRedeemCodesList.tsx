@@ -142,7 +142,7 @@ export default function AdminRedeemCodesList() {
           return (
             <div key={code.code}>
               <div
-                className={`flex items-center justify-between p-3 bg-white dark:bg-zinc-800 rounded-lg border border-zinc-200 dark:border-zinc-700 ${
+                className={`flex items-center justify-between p-3 bg-card rounded-lg border border-zinc-200 dark:border-zinc-700 ${
                   isExpired || isFull ? 'opacity-60' : ''
                 }`}
               >

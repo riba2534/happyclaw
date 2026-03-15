@@ -215,7 +215,7 @@ export function InviteCodesTab({ currentUser, setNotice, setError }: InviteCodes
 
       <div className="bg-card rounded-xl border border-border divide-y divide-border overflow-hidden">
         {invites.length === 0 ? (
-          <div className="p-6 text-center text-sm text-slate-500">暂无邀请码</div>
+          <div className="p-6 text-center text-sm text-muted-foreground">暂无邀请码</div>
         ) : (
           invites.map((invite) => {
             const isExpired = invite.expires_at && new Date(invite.expires_at).getTime() < Date.now();
@@ -229,25 +229,25 @@ export function InviteCodesTab({ currentUser, setNotice, setError }: InviteCodes
                       onClick={() => copyToClipboard(invite.code)}
                       className="p-1 hover:bg-muted rounded cursor-pointer"
                     >
-                      <Copy className="w-3.5 h-3.5 text-slate-400" />
+                      <Copy className="w-3.5 h-3.5 text-muted-foreground/60" />
                     </button>
                     <span className="text-xs px-1.5 py-0.5 rounded bg-muted text-foreground">
                       {invite.role}
                     </span>
                     {invite.permission_template && (
-                      <span className="text-xs px-1.5 py-0.5 rounded bg-brand-100 text-primary">
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-primary/10 text-primary">
                         {invite.permission_template}
                       </span>
                     )}
                     {isExpired && <span className="text-xs px-1.5 py-0.5 bg-red-100 text-red-600 rounded">已过期</span>}
                     {isUsedUp && <span className="text-xs px-1.5 py-0.5 bg-orange-100 text-orange-600 rounded">已用完</span>}
                   </div>
-                  <div className="text-xs text-slate-500 mt-1">
+                  <div className="text-xs text-muted-foreground mt-1">
                     创建者: {invite.creator_username} · 使用: {invite.used_count}/{invite.max_uses || '∞'}
                     {invite.expires_at && ` · 过期: ${new Date(invite.expires_at).toLocaleString('zh-CN')}`}
                   </div>
                   {invite.permissions.length > 0 && (
-                    <div className="text-xs text-slate-500 mt-1">权限: {invite.permissions.join(', ')}</div>
+                    <div className="text-xs text-muted-foreground mt-1">权限: {invite.permissions.join(', ')}</div>
                   )}
                 </div>
                 <button
@@ -261,7 +261,7 @@ export function InviteCodesTab({ currentUser, setNotice, setError }: InviteCodes
                       setError(getErrorMessage(err, '删除失败'));
                     }
                   }}
-                  className="p-2 hover:bg-muted rounded-lg text-slate-500 hover:text-red-600 cursor-pointer"
+                  className="p-2 hover:bg-muted rounded-lg text-muted-foreground hover:text-red-600 cursor-pointer"
                   title="删除邀请码"
                 >
                   <Trash2 className="w-4 h-4" />

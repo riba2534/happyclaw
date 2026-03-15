@@ -212,9 +212,9 @@ export function TerminalPanel({
           <span className={`inline-block w-2 h-2 rounded-full ${
             connState === 'connected' ? 'bg-green-400' :
             connState === 'connecting' ? 'bg-yellow-400 animate-pulse' :
-            'bg-slate-500'
+            'bg-muted0'
           }`} />
-          <span className="text-slate-400">
+          <span className="text-muted-foreground/60">
             {connState === 'connected' ? '已连接' :
              connState === 'connecting' ? '连接中...' :
              connState === 'disconnected' ? '已断开' : '空闲'}
@@ -238,7 +238,7 @@ export function TerminalPanel({
                   wsManager.connect();
                 }
               }}
-              className="text-brand-400 hover:text-brand-300 transition-colors cursor-pointer"
+              className="text-primary hover:text-primary/60 transition-colors cursor-pointer"
             >
               重新连接
             </button>
@@ -246,7 +246,7 @@ export function TerminalPanel({
           {onHide && (
             <button
               onClick={onHide}
-              className="p-1 rounded hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
+              className="p-1 rounded hover:bg-slate-700 text-muted-foreground/60 hover:text-slate-200 transition-colors cursor-pointer"
               aria-label="隐藏终端"
               title="隐藏终端"
             >
@@ -256,7 +256,7 @@ export function TerminalPanel({
           {onDelete && (
             <button
               onClick={onDelete}
-              className="p-1 rounded hover:bg-red-900/30 text-slate-400 hover:text-red-300 transition-colors cursor-pointer"
+              className="p-1 rounded hover:bg-red-900/30 text-muted-foreground/60 hover:text-red-300 transition-colors cursor-pointer"
               aria-label="删除终端"
               title="删除终端"
             >

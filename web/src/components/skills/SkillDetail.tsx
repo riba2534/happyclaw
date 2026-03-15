@@ -76,7 +76,7 @@ export function SkillDetail({ skillId, onDeleted }: SkillDetailProps) {
               <span
                 className={`px-2 py-0.5 rounded text-xs font-medium ${
                   detail.source === 'user'
-                    ? 'bg-brand-100 text-primary'
+                    ? 'bg-primary/10 text-primary'
                     : 'bg-muted text-muted-foreground'
                 }`}
               >

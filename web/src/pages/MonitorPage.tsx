@@ -119,7 +119,7 @@ export function MonitorPage() {
               {/* Build logs */}
               {building && buildLogs.length > 0 && (
                 <div className="mt-4">
-                  <div className="bg-slate-900 rounded-lg p-3 max-h-64 overflow-y-auto font-mono text-xs text-green-400">
+                  <div className="bg-zinc-900 rounded-lg p-3 max-h-64 overflow-y-auto font-mono text-xs text-green-400">
                     {buildLogs.map((line, i) => (
                       <div key={i} className="whitespace-pre-wrap break-all">{line}</div>
                     ))}
@@ -175,16 +175,16 @@ export function MonitorPage() {
                   <table className="min-w-full divide-y divide-border">
                     <thead>
                       <tr>
-                        <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase">
+                        <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase">
                           群组
                         </th>
-                        <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase">
+                        <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase">
                           队列
                         </th>
-                        <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase">
+                        <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase">
                           运行状态
                         </th>
-                        <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase">
+                        <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase">
                           进程标识
                         </th>
                       </tr>
@@ -195,7 +195,7 @@ export function MonitorPage() {
                           <td className="px-4 py-3 text-sm font-medium text-foreground">
                             {group.jid}
                           </td>
-                          <td className="px-4 py-3 text-sm text-slate-600">
+                          <td className="px-4 py-3 text-sm text-muted-foreground">
                             {group.pendingTasks} 个任务 / {group.pendingMessages ? '有新消息' : '无新消息'}
                           </td>
                           <td className="px-4 py-3 text-sm">
@@ -204,12 +204,12 @@ export function MonitorPage() {
                                 运行中
                               </span>
                             ) : (
-                              <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-500">
+                              <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-muted text-muted-foreground">
                                 空闲
                               </span>
                             )}
                           </td>
-                          <td className="px-4 py-3 text-sm text-slate-600 font-mono text-xs">
+                          <td className="px-4 py-3 text-sm text-muted-foreground font-mono text-xs">
                             {group.displayName || group.containerName || '-'}
                           </td>
                         </tr>

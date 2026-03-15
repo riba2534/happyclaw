@@ -126,7 +126,7 @@ export default function UsageCard() {
   if (availableWindows.length === 0) availableWindows.push('monthly');
 
   return (
-    <div className="bg-white dark:bg-zinc-800 rounded-lg border border-zinc-200 dark:border-zinc-700 p-5">
+    <div className="bg-card rounded-lg border border-zinc-200 dark:border-zinc-700 p-5">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <BarChart3 className="w-5 h-5 text-teal-600" />

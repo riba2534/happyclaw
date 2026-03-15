@@ -144,7 +144,7 @@ export default function AdminUsersList({ onSelectUser }: AdminUsersListProps) {
         {filtered.map((u) => (
           <div
             key={u.user_id}
-            className={`grid grid-cols-1 sm:grid-cols-[auto_1fr_120px_100px_100px_80px] gap-2 items-center px-3 py-2.5 bg-white dark:bg-zinc-800 rounded-lg border ${
+            className={`grid grid-cols-1 sm:grid-cols-[auto_1fr_120px_100px_100px_80px] gap-2 items-center px-3 py-2.5 bg-card rounded-lg border ${
               u.access_allowed === false
                 ? 'border-red-200 dark:border-red-900/60'
                 : 'border-zinc-200 dark:border-zinc-700'

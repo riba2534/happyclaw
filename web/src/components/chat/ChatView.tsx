@@ -398,7 +398,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     return (
       <div className="h-full flex items-center justify-center bg-background">
         <div className="text-center">
-          <p className="text-slate-500">群组不存在</p>
+          <p className="text-muted-foreground">群组不存在</p>
         </div>
       </div>
     );
@@ -407,24 +407,24 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   return (
     <div ref={containerRef} className="h-full flex flex-col bg-background">
       {/* Header */}
-      <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border lg:bg-background/80 lg:backdrop-blur-sm max-lg:bg-background/60 max-lg:backdrop-blur-xl max-lg:saturate-[1.8] max-lg:border-border/40 max-lg:shadow-[0_8px_32px_rgba(0,0,0,0.06)]">
+      <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border lg:bg-background/80 lg:backdrop-blur-sm max-lg:bg-background/60 max-lg:backdrop-blur-xl max-lg:saturate-[1.8] max-lg:border-border/40 ">
         {onBack && (
           <button
             onClick={onBack}
-            className="lg:hidden p-2 -ml-2 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+            className="lg:hidden p-2 -ml-2 hover:bg-muted rounded-lg transition-colors cursor-pointer"
             aria-label="返回"
           >
-            <ArrowLeft className="w-5 h-5 text-slate-600" />
+            <ArrowLeft className="w-5 h-5 text-muted-foreground" />
           </button>
         )}
         {headerLeft}
         <div className="flex-1 min-w-0">
-          <h2 className="font-semibold text-slate-900 text-[15px] truncate">{group.name}</h2>
-          <div className="flex items-center gap-1.5 text-xs text-slate-500">
+          <h2 className="font-semibold text-foreground text-[15px] truncate">{group.name}</h2>
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <span>{isWaiting ? '正在思考...' : group.is_home ? '主工作区' : '工作区'}</span>
             {!isWaiting && group.is_shared && (
               <>
-                <span className="text-slate-300">·</span>
+                <span className="text-muted-foreground/60">·</span>
                 <span className="inline-flex items-center gap-0.5">
                   <Users className="w-3 h-3" />
                   {group.member_count ?? 0} 人协作
@@ -433,7 +433,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
             )}
             {!isWaiting && group.execution_mode && (
               <>
-                <span className="text-slate-300">·</span>
+                <span className="text-muted-foreground/60">·</span>
                 <span className={`inline-flex items-center px-1 py-px rounded text-[10px] font-medium ${group.execution_mode === 'host' ? 'bg-amber-100 text-amber-700' : 'bg-sky-100 text-sky-700'}`}>
                   {group.execution_mode === 'host' ? '宿主机' : 'Docker'}
                 </span>
@@ -441,7 +441,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
             )}
             {isOwnHome && imStatus && (imStatus.feishu || imStatus.telegram) && (
               <>
-                <span className="text-slate-300">·</span>
+                <span className="text-muted-foreground/60">·</span>
                 {imStatus.feishu && (
                   <span className="inline-flex items-center gap-0.5">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
@@ -601,7 +601,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                         <div className="text-center py-8 space-y-2">
                           <div className="text-sm font-medium text-emerald-600">子 Agent 已完成</div>
                           {task?.summary && (
-                            <div className="text-xs text-slate-500 max-w-md mx-auto">{task.summary}</div>
+                            <div className="text-xs text-muted-foreground max-w-md mx-auto">{task.summary}</div>
                           )}
                         </div>
                       );
@@ -612,7 +612,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                         <div className="text-center py-8 space-y-2">
                           <div className="text-sm font-medium text-red-600">子 Agent 执行出错</div>
                           {task?.summary && (
-                            <div className="text-xs text-slate-500 max-w-md mx-auto">{task.summary}</div>
+                            <div className="text-xs text-muted-foreground max-w-md mx-auto">{task.summary}</div>
                           )}
                         </div>
                       );
@@ -639,11 +639,11 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                         </div>
 
                         <div className="text-center space-y-2 max-w-md">
-                          <div className="text-sm font-medium text-slate-700">
+                          <div className="text-sm font-medium text-foreground/80">
                             Teammate 正在后台执行中
                           </div>
                           {task?.description && (
-                            <div className="text-xs text-slate-500 leading-relaxed">
+                            <div className="text-xs text-muted-foreground leading-relaxed">
                               {task.description}
                             </div>
                           )}
@@ -651,12 +651,12 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
 
                         {/* 实时计时器 */}
                         {task?.startedAt && (
-                          <div className="text-xs text-slate-400 tabular-nums">
+                          <div className="text-xs text-muted-foreground/60 tabular-nums">
                             已运行 <ElapsedTimer startTime={task.startedAt} />
                           </div>
                         )}
 
-                        <div className="text-[11px] text-slate-400 text-center max-w-sm leading-relaxed">
+                        <div className="text-[11px] text-muted-foreground/60 text-center max-w-sm leading-relaxed">
                           后台任务不传播中间过程，完成后将显示结果摘要
                         </div>
                       </div>
@@ -702,7 +702,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                   );
                 }
                 return (
-                  <div className="px-4 py-2 text-center text-xs text-slate-400 border-t">
+                  <div className="px-4 py-2 text-center text-xs text-muted-foreground/60 border-t">
                     {isSdkTask
                       ? (activeSdkTask?.status === 'running'
                         ? '子 Agent 独立运行中 — 仅主对话可发送消息'
@@ -801,15 +801,15 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
             <div
               onMouseDown={handleDragStart}
               onTouchStart={handleTouchDragStart}
-              className="hidden lg:flex h-1 bg-muted hover:bg-brand-400 cursor-row-resize items-center justify-center transition-colors group"
+              className="hidden lg:flex h-1 bg-muted hover:bg-primary/80 cursor-row-resize items-center justify-center transition-colors group"
             >
-              <div className="w-8 h-0.5 rounded-full bg-slate-400 group-hover:bg-primary transition-colors" />
+              <div className="w-8 h-0.5 rounded-full bg-muted-foreground/60 group-hover:bg-primary transition-colors" />
             </div>
           )}
           {/* Terminal panel */}
           <div
             className={`hidden lg:block flex-shrink-0 overflow-hidden transition-[height] duration-200 ${
-              terminalVisible ? 'border-t border-slate-300' : 'border-t-0'
+              terminalVisible ? 'border-t border-border' : 'border-t-0'
             }`}
             style={{ height: terminalVisible ? terminalHeight : 0 }}
           >

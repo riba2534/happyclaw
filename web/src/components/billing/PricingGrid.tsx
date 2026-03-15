@@ -37,9 +37,9 @@ function PlanCard({ plan, isCurrent, fmt }: { plan: BillingPlan; isCurrent: bool
     <div
       className={`relative rounded-lg border p-5 flex flex-col transition-shadow ${
         isHighlighted
-          ? 'border-teal-500 dark:border-teal-400 shadow-[0_0_12px_rgba(20,184,166,0.25)] dark:shadow-[0_0_12px_rgba(45,212,191,0.2)]'
+          ? 'border-teal-500 dark:border-teal-400 ring-2 ring-primary/20'
           : 'border-zinc-200 dark:border-zinc-700'
-      } bg-white dark:bg-zinc-800`}
+      } bg-card`}
     >
       {/* Recommended badge */}
       {isHighlighted && (
@@ -155,7 +155,7 @@ export default function PricingGrid() {
 
   if (activePlans.length === 0) {
     return (
-      <div className="bg-white dark:bg-zinc-800 rounded-lg border border-zinc-200 dark:border-zinc-700 p-8 text-center">
+      <div className="bg-card rounded-lg border border-zinc-200 dark:border-zinc-700 p-8 text-center">
         <Sparkles className="w-8 h-8 text-zinc-300 mx-auto mb-3" />
         <p className="text-sm text-zinc-500">暂无可用套餐</p>
       </div>

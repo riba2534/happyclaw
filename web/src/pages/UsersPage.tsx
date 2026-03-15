@@ -40,7 +40,7 @@ export function UsersPage() {
   if (tabs.length === 0) {
     return (
       <div className="min-h-full bg-background p-4 lg:p-8">
-        <div className="max-w-3xl mx-auto bg-card rounded-xl border border-border p-8 text-sm text-slate-600">
+        <div className="max-w-3xl mx-auto bg-card rounded-xl border border-border p-8 text-sm text-muted-foreground">
           当前账户无用户管理权限。
         </div>
       </div>

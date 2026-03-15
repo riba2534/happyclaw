@@ -15,7 +15,7 @@ function KpiCard({
   sub?: string;
 }) {
   return (
-    <div className="bg-white dark:bg-zinc-800 rounded-lg border border-zinc-200 dark:border-zinc-700 p-4">
+    <div className="bg-card rounded-lg border border-zinc-200 dark:border-zinc-700 p-4">
       <div className="flex items-center gap-2 text-zinc-500 text-sm mb-2">
         <Icon className="w-4 h-4 text-teal-600" />
         {label}
@@ -34,7 +34,7 @@ function PlanDistribution({
   const total = data.reduce((s, d) => s + d.count, 0) || 1;
 
   return (
-    <div className="bg-white dark:bg-zinc-800 rounded-lg border border-zinc-200 dark:border-zinc-700 p-5">
+    <div className="bg-card rounded-lg border border-zinc-200 dark:border-zinc-700 p-5">
       <h3 className="font-semibold text-sm mb-4">套餐分布</h3>
       {data.length === 0 ? (
         <p className="text-sm text-zinc-500">暂无数据</p>
@@ -75,7 +75,7 @@ function RevenueTrendChart({
   const maxRevenue = Math.max(...data.map((d) => d.revenue), 1);
 
   return (
-    <div className="bg-white dark:bg-zinc-800 rounded-lg border border-zinc-200 dark:border-zinc-700 p-5">
+    <div className="bg-card rounded-lg border border-zinc-200 dark:border-zinc-700 p-5">
       <h3 className="font-semibold text-sm mb-4">收入趋势</h3>
       {data.length === 0 ? (
         <p className="text-sm text-zinc-500">暂无数据</p>

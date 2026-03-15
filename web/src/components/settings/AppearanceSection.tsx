@@ -70,24 +70,24 @@ export function AppearanceSection({ setNotice, setError }: AppearanceSectionProp
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
-        <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
+        <Loader2 className="w-6 h-6 animate-spin text-muted-foreground/60" />
       </div>
     );
   }
 
   if (!canManage) {
-    return <div className="text-sm text-slate-500">需要系统配置权限才能修改外观设置。</div>;
+    return <div className="text-sm text-muted-foreground">需要系统配置权限才能修改外观设置。</div>;
   }
 
   return (
     <div className="space-y-6">
-      <p className="text-sm text-slate-500 bg-slate-50 rounded-lg px-4 py-3">
+      <p className="text-sm text-muted-foreground bg-muted rounded-lg px-4 py-3">
         以下为全局默认值，对所有用户生效。用户可在「个人资料」中覆盖自己的 AI 外观。
       </p>
       {/* Preview */}
       <div>
-        <h3 className="text-base font-semibold text-slate-900 mb-4">预览</h3>
-        <div className="flex items-center gap-3 p-4 bg-slate-50 rounded-lg">
+        <h3 className="text-base font-semibold text-foreground mb-4">预览</h3>
+        <div className="flex items-center gap-3 p-4 bg-muted rounded-lg">
           <EmojiAvatar
             emoji={aiAvatarEmoji}
             color={aiAvatarColor}
@@ -95,15 +95,15 @@ export function AppearanceSection({ setNotice, setError }: AppearanceSectionProp
             size="lg"
           />
           <div>
-            <div className="text-sm font-medium text-slate-900">{aiName || 'HappyClaw'}</div>
-            <div className="text-xs text-slate-500">AI 助手</div>
+            <div className="text-sm font-medium text-foreground">{aiName || 'HappyClaw'}</div>
+            <div className="text-xs text-muted-foreground">AI 助手</div>
           </div>
         </div>
       </div>
 
       {/* App Name */}
       <div>
-        <h3 className="text-base font-semibold text-slate-900 mb-4">项目名称</h3>
+        <h3 className="text-base font-semibold text-foreground mb-4">项目名称</h3>
         <Input
           type="text"
           value={appName}
@@ -112,12 +112,12 @@ export function AppearanceSection({ setNotice, setError }: AppearanceSectionProp
           placeholder="HappyClaw"
           className="max-w-xs"
         />
-        <p className="text-xs text-slate-500 mt-1">显示在 Logo 旁边和欢迎页的项目名称</p>
+        <p className="text-xs text-muted-foreground mt-1">显示在 Logo 旁边和欢迎页的项目名称</p>
       </div>
 
       {/* AI Name */}
       <div>
-        <h3 className="text-base font-semibold text-slate-900 mb-4">AI 默认名称</h3>
+        <h3 className="text-base font-semibold text-foreground mb-4">AI 默认名称</h3>
         <Input
           type="text"
           value={aiName}
@@ -126,18 +126,18 @@ export function AppearanceSection({ setNotice, setError }: AppearanceSectionProp
           placeholder="HappyClaw"
           className="max-w-xs"
         />
-        <p className="text-xs text-slate-500 mt-1">所有用户看到的默认 AI 助手名称（用户可在个人资料中单独覆盖）</p>
+        <p className="text-xs text-muted-foreground mt-1">所有用户看到的默认 AI 助手名称（用户可在个人资料中单独覆盖）</p>
       </div>
 
       {/* AI Avatar Emoji */}
       <div>
-        <h3 className="text-base font-semibold text-slate-900 mb-4">AI 头像 Emoji</h3>
+        <h3 className="text-base font-semibold text-foreground mb-4">AI 头像 Emoji</h3>
         <EmojiPicker value={aiAvatarEmoji} onChange={setAiAvatarEmoji} />
       </div>
 
       {/* AI Avatar Color */}
       <div>
-        <h3 className="text-base font-semibold text-slate-900 mb-4">AI 头像背景色</h3>
+        <h3 className="text-base font-semibold text-foreground mb-4">AI 头像背景色</h3>
         <ColorPicker value={aiAvatarColor} onChange={setAiAvatarColor} />
       </div>
 

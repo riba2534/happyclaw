@@ -65,7 +65,7 @@ export function SetupPage() {
         </div>
 
         {/* Step card */}
-        <div className="bg-card rounded-xl border border-border shadow-sm p-6">
+        <div className="bg-card rounded-xl border border-border p-6">
           <CreateAdminStep
             onDone={() => navigate('/setup/providers', { replace: true })}
             setupAdmin={setupAdmin}

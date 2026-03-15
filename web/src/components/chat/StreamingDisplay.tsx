@@ -31,14 +31,14 @@ function AskUserQuestionCard({ toolInput }: { toolInput: Record<string, unknown>
   return (
     <div className="mt-2 mb-2 space-y-2">
       {questions.map((q, qi) => (
-        <div key={qi} className="rounded-lg border border-brand-200 bg-brand-50/30 p-3">
+        <div key={qi} className="rounded-lg border border-primary/20 bg-primary/5 p-3">
           <div className="text-sm font-medium text-foreground mb-2">{q.question}</div>
           {q.options && q.options.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
               {q.options.map((opt, oi) => (
                 <span
                   key={oi}
-                  className="inline-block px-2.5 py-1 rounded-md text-xs font-medium bg-brand-100 text-primary border border-brand-200"
+                  className="inline-block px-2.5 py-1 rounded-md text-xs font-medium bg-primary/10 text-primary border border-primary/20"
                 >
                   {opt.label || opt.value || '—'}
                 </span>
@@ -101,36 +101,36 @@ function StreamingContent({
 
       {/* Reasoning block */}
       {streaming.thinkingText && (
-        <div className="mb-3 rounded-xl border border-amber-200/60 bg-amber-50/40 overflow-hidden">
+        <div className="mb-3 overflow-hidden">
           <button
             onClick={() => setThinkingExpanded(!thinkingExpanded)}
-            className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-amber-50/60 transition-colors"
+            className="w-full flex items-center gap-2 px-1 py-1.5 text-left hover:bg-muted/50 rounded-md transition-colors"
           >
-            <svg className="w-4 h-4 text-amber-500 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <svg className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z" />
             </svg>
-            <span className="text-xs font-medium text-amber-700">
-              {streaming.isThinking ? 'Reasoning...' : 'Reasoning'}
+            <span className="text-xs text-muted-foreground">
+              {streaming.isThinking ? '思考中...' : '思考过程'}
             </span>
             {streaming.isThinking && (
               <span className="flex gap-0.5 ml-0.5">
-                <span className="w-1 h-1 bg-amber-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
-                <span className="w-1 h-1 bg-amber-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
-                <span className="w-1 h-1 bg-amber-400 rounded-full animate-bounce" />
+                <span className="w-1 h-1 bg-muted-foreground/40 rounded-full animate-bounce [animation-delay:-0.3s]" />
+                <span className="w-1 h-1 bg-muted-foreground/40 rounded-full animate-bounce [animation-delay:-0.15s]" />
+                <span className="w-1 h-1 bg-muted-foreground/40 rounded-full animate-bounce" />
               </span>
             )}
             <span className="flex-1" />
             {thinkingExpanded ? (
-              <ChevronUp className="w-3.5 h-3.5 text-amber-400" />
+              <ChevronUp className="w-3.5 h-3.5 text-muted-foreground/50" />
             ) : (
-              <ChevronDown className="w-3.5 h-3.5 text-amber-400" />
+              <ChevronDown className="w-3.5 h-3.5 text-muted-foreground/50" />
             )}
           </button>
           {thinkingExpanded && (
             <div
               ref={thinkingRef}
               onScroll={handleThinkingScroll}
-              className="px-3 pb-3 text-sm text-amber-900/70 whitespace-pre-wrap break-words max-h-64 overflow-y-auto border-t border-amber-100"
+              className="px-1 pb-2 text-sm text-muted-foreground whitespace-pre-wrap break-words max-h-64 overflow-y-auto border-l-2 border-border ml-1.5 pl-3 mt-1"
             >
               {streaming.thinkingText}
             </div>
@@ -306,9 +306,9 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNamePr
             <span className="text-xs font-semibold text-primary">{senderName}</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
-            <span className="w-1.5 h-1.5 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
-            <span className="w-1.5 h-1.5 bg-brand-400 rounded-full animate-bounce" />
+            <span className="w-1.5 h-1.5 bg-muted-foreground/40 rounded-full animate-bounce [animation-delay:-0.3s]" />
+            <span className="w-1.5 h-1.5 bg-muted-foreground/40 rounded-full animate-bounce [animation-delay:-0.15s]" />
+            <span className="w-1.5 h-1.5 bg-muted-foreground/40 rounded-full animate-bounce" />
             <span className="text-sm text-muted-foreground ml-1">正在思考...</span>
           </div>
         </div>
@@ -330,13 +330,11 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNamePr
             <div className="hidden lg:flex items-center gap-2 mb-1">
               <span className="text-xs text-muted-foreground font-medium">{senderName}</span>
             </div>
-            <div className="bg-card rounded-xl border border-border border-l-[3px] border-l-[var(--brand-400)] px-5 py-4">
-              <div className="flex items-center gap-1.5">
-                <span className="w-2 h-2 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
-                <span className="w-2 h-2 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
-                <span className="w-2 h-2 bg-brand-400 rounded-full animate-bounce" />
-                <span className="text-sm text-muted-foreground ml-1">正在思考...</span>
-              </div>
+            <div className="flex items-center gap-1.5 py-2">
+              <span className="w-1.5 h-1.5 bg-muted-foreground/40 rounded-full animate-bounce [animation-delay:-0.3s]" />
+              <span className="w-1.5 h-1.5 bg-muted-foreground/40 rounded-full animate-bounce [animation-delay:-0.15s]" />
+              <span className="w-1.5 h-1.5 bg-muted-foreground/40 rounded-full animate-bounce" />
+              <span className="text-sm text-muted-foreground ml-1">正在思考...</span>
             </div>
           </div>
         </div>
@@ -355,9 +353,9 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNamePr
           <span className="text-xs font-semibold text-primary">{senderName}</span>
           {streaming.isThinking && (
             <span className="flex gap-0.5 ml-0.5">
-              <span className="w-1 h-1 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
-              <span className="w-1 h-1 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
-              <span className="w-1 h-1 bg-brand-400 rounded-full animate-bounce" />
+              <span className="w-1 h-1 bg-muted-foreground/40 rounded-full animate-bounce [animation-delay:-0.3s]" />
+              <span className="w-1 h-1 bg-muted-foreground/40 rounded-full animate-bounce [animation-delay:-0.15s]" />
+              <span className="w-1 h-1 bg-muted-foreground/40 rounded-full animate-bounce" />
             </span>
           )}
         </div>
@@ -393,9 +391,9 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNamePr
         <span className="text-xs text-muted-foreground font-medium">{senderName}</span>
         {streaming.isThinking && (
           <span className="flex gap-0.5 ml-1">
-            <span className="w-1 h-1 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
-            <span className="w-1 h-1 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
-            <span className="w-1 h-1 bg-brand-400 rounded-full animate-bounce" />
+            <span className="w-1 h-1 bg-muted-foreground/40 rounded-full animate-bounce [animation-delay:-0.3s]" />
+            <span className="w-1 h-1 bg-muted-foreground/40 rounded-full animate-bounce [animation-delay:-0.15s]" />
+            <span className="w-1 h-1 bg-muted-foreground/40 rounded-full animate-bounce" />
           </span>
         )}
       </div>
@@ -410,15 +408,15 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNamePr
             <span className="text-xs text-muted-foreground font-medium">{senderName}</span>
             {streaming.isThinking && (
               <span className="flex gap-0.5 ml-1">
-                <span className="w-1 h-1 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
-                <span className="w-1 h-1 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
-                <span className="w-1 h-1 bg-brand-400 rounded-full animate-bounce" />
+                <span className="w-1 h-1 bg-muted-foreground/40 rounded-full animate-bounce [animation-delay:-0.3s]" />
+                <span className="w-1 h-1 bg-muted-foreground/40 rounded-full animate-bounce [animation-delay:-0.15s]" />
+                <span className="w-1 h-1 bg-muted-foreground/40 rounded-full animate-bounce" />
               </span>
             )}
           </div>
 
           {/* Card */}
-          <div className="bg-card rounded-xl border border-border border-l-[3px] border-l-[var(--brand-400)] px-5 py-4 overflow-hidden">
+          <div className="overflow-hidden">
             <StreamingContent
               streaming={streaming}
               sdkTasks={sdkTasks}

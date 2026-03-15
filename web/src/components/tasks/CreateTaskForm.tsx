@@ -152,7 +152,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin }: CreateTas
           <h2 className="text-xl font-bold text-foreground">创建定时任务</h2>
           <button
             onClick={onClose}
-            className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+            className="p-2 text-muted-foreground/60 hover:text-muted-foreground hover:bg-muted rounded-lg transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
@@ -205,7 +205,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin }: CreateTas
                   <SelectItem value="script">脚本（Shell 命令）</SelectItem>
                 </SelectContent>
               </Select>
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 text-xs text-muted-foreground">
                 {isScript
                   ? '直接执行 Shell 命令，零 API 消耗，适合确定性任务'
                   : '启动完整 Claude Agent，消耗 API tokens'}
@@ -230,7 +230,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin }: CreateTas
               {errors.scriptCommand && (
                 <p className="mt-1 text-sm text-red-600">{errors.scriptCommand}</p>
               )}
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 text-xs text-muted-foreground">
                 命令在群组工作目录下执行，最大 4096 字符
               </p>
             </div>
@@ -299,7 +299,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin }: CreateTas
                   className={cn(errors.scheduleValue && "border-red-500")}
                   placeholder="例如: 0 0 * * * (每天 0 点)"
                 />
-                <p className="mt-1 text-xs text-slate-500">
+                <p className="mt-1 text-xs text-muted-foreground">
                   格式: 分 时 日 月 星期（如 0 9 * * * = 每天 9 点）
                 </p>
               </>
@@ -329,7 +329,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin }: CreateTas
                     </SelectContent>
                   </Select>
                 </div>
-                <p className="mt-1 text-xs text-slate-500">
+                <p className="mt-1 text-xs text-muted-foreground">
                   设置任务执行间隔
                 </p>
               </>
@@ -343,7 +343,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin }: CreateTas
                   onChange={(e) => setOnceDateTime(e.target.value)}
                   className={cn(errors.scheduleValue && "border-red-500")}
                 />
-                <p className="mt-1 text-xs text-slate-500">
+                <p className="mt-1 text-xs text-muted-foreground">
                   选择任务的执行时间
                 </p>
               </>
@@ -377,7 +377,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin }: CreateTas
                   <SelectItem value="group">共享群组上下文</SelectItem>
                 </SelectContent>
               </Select>
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 text-xs text-muted-foreground">
                 共享群组上下文会复用该群组会话，独立执行每次使用隔离会话
               </p>
             </div>

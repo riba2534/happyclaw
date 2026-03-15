@@ -22,7 +22,7 @@ export function GroupCard({ group }: GroupCardProps) {
   };
 
   return (
-    <div className="bg-card rounded-xl border border-border hover:border-brand-300 transition-colors duration-200">
+    <div className="bg-card rounded-xl border border-border hover:border-primary/60 transition-colors duration-200">
       {/* Card Header - Clickable */}
       <button
         onClick={() => setExpanded(!expanded)}
@@ -36,7 +36,7 @@ export function GroupCard({ group }: GroupCardProps) {
                 {group.name}
               </h3>
               {group.is_shared && (
-                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-brand-100 text-primary text-[10px] font-medium flex-shrink-0">
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-medium flex-shrink-0">
                   <Users className="w-3 h-3" />
                   {group.member_count ?? 0}
                 </span>
@@ -44,14 +44,14 @@ export function GroupCard({ group }: GroupCardProps) {
             </div>
 
             {/* JID */}
-            <p className="text-xs text-slate-500 font-mono mb-2">
+            <p className="text-xs text-muted-foreground font-mono mb-2">
               {truncateJid(group.jid)}
             </p>
 
             {/* Folder & Trigger */}
             <div className="space-y-1 text-sm">
               <div className="flex items-center gap-2">
-                <span className="text-slate-500">文件夹:</span>
+                <span className="text-muted-foreground">文件夹:</span>
                 <span className="text-foreground font-medium">
                   {group.folder}
                 </span>
@@ -62,9 +62,9 @@ export function GroupCard({ group }: GroupCardProps) {
           {/* Expand Icon */}
           <div className="ml-4 flex-shrink-0">
             {expanded ? (
-              <ChevronUp className="w-5 h-5 text-slate-400" />
+              <ChevronUp className="w-5 h-5 text-muted-foreground/60" />
             ) : (
-              <ChevronDown className="w-5 h-5 text-slate-400" />
+              <ChevronDown className="w-5 h-5 text-muted-foreground/60" />
             )}
           </div>
         </div>

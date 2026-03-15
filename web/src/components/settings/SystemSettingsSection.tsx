@@ -238,27 +238,27 @@ export function SystemSettingsSection({ setNotice, setError }: SystemSettingsSec
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
-        <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
+        <Loader2 className="w-6 h-6 animate-spin text-muted-foreground/60" />
       </div>
     );
   }
 
   if (!canManage) {
-    return <div className="text-sm text-slate-500">需要系统配置权限才能修改系统参数。</div>;
+    return <div className="text-sm text-muted-foreground">需要系统配置权限才能修改系统参数。</div>;
   }
 
   if (!settings) return null;
 
   return (
     <div className="space-y-6">
-      <p className="text-sm text-slate-500">
+      <p className="text-sm text-muted-foreground">
         调整容器运行参数和安全限制。修改后无需重启，新参数对后续创建的容器/进程立即生效。
       </p>
 
       <div className="space-y-5">
         {fields.map((f) => (
           <div key={f.key}>
-            <label className="block text-sm font-medium text-slate-900 mb-1">
+            <label className="block text-sm font-medium text-foreground mb-1">
               {f.label}
             </label>
             <div className="flex items-center gap-2">
@@ -277,9 +277,9 @@ export function SystemSettingsSection({ setNotice, setError }: SystemSettingsSec
                 step={f.step}
                 className="max-w-32"
               />
-              <span className="text-sm text-slate-500">{f.unit}</span>
+              <span className="text-sm text-muted-foreground">{f.unit}</span>
             </div>
-            <p className="text-xs text-slate-400 mt-1">
+            <p className="text-xs text-muted-foreground/60 mt-1">
               {f.description}（范围：{f.min} - {f.max} {f.unit}）
             </p>
           </div>

@@ -10,8 +10,8 @@ export function Badge({ variant = 'neutral', children }: BadgeProps) {
     success: 'bg-green-100 text-green-600',
     warning: 'bg-amber-100 text-amber-600',
     error: 'bg-red-100 text-red-600',
-    info: 'bg-brand-100 text-primary',
-    neutral: 'bg-slate-100 text-slate-600',
+    info: 'bg-primary/10 text-primary',
+    neutral: 'bg-muted text-muted-foreground',
   };
 
   return (

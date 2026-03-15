@@ -154,7 +154,7 @@ export function AddMcpServerDialog({ open, onClose, onAdd }: AddMcpServerDialogP
                   className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
                     serverType === t
                       ? 'bg-primary text-primary-foreground'
-                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      : 'bg-muted text-muted-foreground hover:bg-border'
                   } disabled:opacity-50`}
                 >
                   {t.toUpperCase()}
@@ -212,7 +212,7 @@ export function AddMcpServerDialog({ open, onClose, onAdd }: AddMcpServerDialogP
                         type="button"
                         onClick={() => setHeaders(headers.filter((_, j) => j !== i))}
                         disabled={submitting}
-                        className="p-1.5 text-slate-400 hover:text-red-500 transition-colors disabled:opacity-50"
+                        className="p-1.5 text-muted-foreground/60 hover:text-red-500 transition-colors disabled:opacity-50"
                       >
                         <X size={16} />
                       </button>
@@ -269,7 +269,7 @@ export function AddMcpServerDialog({ open, onClose, onAdd }: AddMcpServerDialogP
                         type="button"
                         onClick={() => setArgs(args.filter((_, j) => j !== i))}
                         disabled={submitting}
-                        className="p-1.5 text-slate-400 hover:text-red-500 transition-colors disabled:opacity-50"
+                        className="p-1.5 text-muted-foreground/60 hover:text-red-500 transition-colors disabled:opacity-50"
                       >
                         <X size={16} />
                       </button>
@@ -320,7 +320,7 @@ export function AddMcpServerDialog({ open, onClose, onAdd }: AddMcpServerDialogP
                         type="button"
                         onClick={() => setEnv(env.filter((_, j) => j !== i))}
                         disabled={submitting}
-                        className="p-1.5 text-slate-400 hover:text-red-500 transition-colors disabled:opacity-50"
+                        className="p-1.5 text-muted-foreground/60 hover:text-red-500 transition-colors disabled:opacity-50"
                       >
                         <X size={16} />
                       </button>

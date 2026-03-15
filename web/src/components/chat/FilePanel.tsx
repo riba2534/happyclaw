@@ -75,8 +75,8 @@ function FileIcon({ name }: { name: string }) {
   if (CODE_EXTENSIONS.has(ext))
     return <FileCode className="w-4 h-4 text-emerald-500" />;
   if (TEXT_EXTENSIONS.has(ext))
-    return <FileText className="w-4 h-4 text-slate-500" />;
-  return <File className="w-4 h-4 text-slate-400" />;
+    return <FileText className="w-4 h-4 text-muted-foreground" />;
+  return <File className="w-4 h-4 text-muted-foreground/60" />;
 }
 
 function getFileExt(name: string): string {
@@ -232,7 +232,7 @@ function TextEditor({
             </Button>
             <button
               onClick={onClose}
-              className="text-slate-400 hover:text-slate-600 transition-colors p-2 rounded-md hover:bg-muted cursor-pointer"
+              className="text-muted-foreground/60 hover:text-muted-foreground transition-colors p-2 rounded-md hover:bg-muted cursor-pointer"
               aria-label="关闭编辑器"
             >
               <X className="w-5 h-5" />
@@ -244,7 +244,7 @@ function TextEditor({
         <div className="flex-1 p-3 overflow-hidden">
           {loading ? (
             <div className="flex items-center justify-center h-full">
-              <p className="text-sm text-slate-500">加载中...</p>
+              <p className="text-sm text-muted-foreground">加载中...</p>
             </div>
           ) : (
             <Textarea
@@ -260,7 +260,7 @@ function TextEditor({
         </div>
 
         {/* Footer hint */}
-        <div className="px-4 py-2 border-t border-slate-100 text-xs text-slate-400 flex-shrink-0">
+        <div className="px-4 py-2 border-t border-border text-xs text-muted-foreground/60 flex-shrink-0">
           Ctrl/Cmd+S 保存 · Esc 关闭
         </div>
       </div>
@@ -443,7 +443,7 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
             <button
               onClick={handleOpenLocalFolder}
               disabled={openDirLoading}
-              className="hidden md:inline-flex text-slate-400 hover:text-slate-600 transition-colors p-2 rounded-md hover:bg-muted cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              className="hidden md:inline-flex text-muted-foreground/60 hover:text-muted-foreground transition-colors p-2 rounded-md hover:bg-muted cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               title="打开工作区文件夹"
               aria-label="打开工作区文件夹"
             >
@@ -452,7 +452,7 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
           )}
           <button
             onClick={handleRefresh}
-            className="text-slate-400 hover:text-slate-600 transition-colors p-2 rounded-md hover:bg-muted cursor-pointer"
+            className="text-muted-foreground/60 hover:text-muted-foreground transition-colors p-2 rounded-md hover:bg-muted cursor-pointer"
             title="刷新"
             aria-label="刷新文件列表"
           >
@@ -461,7 +461,7 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
           {onClose && (
             <button
               onClick={onClose}
-              className="text-slate-400 hover:text-slate-600 transition-colors p-2 rounded-md hover:bg-muted cursor-pointer"
+              className="text-muted-foreground/60 hover:text-muted-foreground transition-colors p-2 rounded-md hover:bg-muted cursor-pointer"
               aria-label="关闭文件面板"
             >
               <X className="w-5 h-5" />
@@ -481,7 +481,7 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
           </button>
           {breadcrumbs.map((crumb, index) => (
             <div key={index} className="flex items-center gap-1">
-              <ChevronRight className="w-4 h-4 text-slate-400 flex-shrink-0" />
+              <ChevronRight className="w-4 h-4 text-muted-foreground/60 flex-shrink-0" />
               <button
                 onClick={() => handleNavigate(index)}
                 className="text-primary hover:underline whitespace-nowrap cursor-pointer"
@@ -503,11 +503,11 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
       <div className="flex-1 overflow-y-auto px-2 py-2">
         {loading && fileList.length === 0 ? (
           <div className="flex items-center justify-center h-32">
-            <p className="text-sm text-slate-500">加载中...</p>
+            <p className="text-sm text-muted-foreground">加载中...</p>
           </div>
         ) : sortedFiles.length === 0 ? (
           <div className="flex items-center justify-center h-32">
-            <p className="text-sm text-slate-500">暂无文件</p>
+            <p className="text-sm text-muted-foreground">暂无文件</p>
           </div>
         ) : (
           <div className="space-y-0.5">
@@ -539,7 +539,7 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
                     <div className="flex items-center gap-1.5">
                       <span
                         className={`text-sm truncate ${
-                          item.isSystem ? 'text-slate-400' : 'text-slate-700'
+                          item.isSystem ? 'text-muted-foreground/60' : 'text-foreground/80'
                         }`}
                       >
                         {item.name}
@@ -549,7 +549,7 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
                       )}
                     </div>
                     {item.type === 'file' && (
-                      <p className="text-[11px] text-slate-400 leading-tight">{formatSize(item.size)}</p>
+                      <p className="text-[11px] text-muted-foreground/60 leading-tight">{formatSize(item.size)}</p>
                     )}
                   </div>
 
@@ -563,7 +563,7 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
                             e.stopPropagation();
                             setEditFile(item);
                           }}
-                          className="p-2.5 rounded hover:bg-brand-100 text-slate-400 hover:text-primary transition-colors cursor-pointer"
+                          className="p-2.5 rounded hover:bg-primary/10 text-muted-foreground/60 hover:text-primary transition-colors cursor-pointer"
                           title="编辑"
                           aria-label="编辑文件"
                         >
@@ -576,7 +576,7 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
                             e.stopPropagation();
                             handleDownload(item);
                           }}
-                          className="p-2.5 rounded hover:bg-slate-200 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+                          className="p-2.5 rounded hover:bg-border text-muted-foreground/60 hover:text-muted-foreground transition-colors cursor-pointer"
                           title="下载"
                           aria-label="下载文件"
                         >
@@ -588,7 +588,7 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
                           e.stopPropagation();
                           handleDeleteClick(item);
                         }}
-                        className="p-2.5 rounded hover:bg-red-100 text-slate-400 hover:text-red-600 transition-colors cursor-pointer"
+                        className="p-2.5 rounded hover:bg-red-100 text-muted-foreground/60 hover:text-red-600 transition-colors cursor-pointer"
                         title="删除"
                         aria-label="删除文件"
                       >
@@ -604,7 +604,7 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
                           e.stopPropagation();
                           handleDownload(item);
                         }}
-                        className="p-2.5 rounded hover:bg-slate-200 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+                        className="p-2.5 rounded hover:bg-border text-muted-foreground/60 hover:text-muted-foreground transition-colors cursor-pointer"
                         title="下载"
                         aria-label="下载文件"
                       >

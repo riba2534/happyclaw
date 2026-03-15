@@ -72,54 +72,54 @@
    Primary: #0d9488 (Teal) | Logo accent: #d97706 (Amber) | Base: Slate
    ===================================================== */
 :root {
-  /* shadcn/ui semantic tokens */
-  --background: #ffffff;
-  --foreground: #0f172a;
-  --card: #ffffff;
-  --card-foreground: #0f172a;
-  --popover: #ffffff;
-  --popover-foreground: #0f172a;
-  --primary: #0d9488;
-  --primary-foreground: #ffffff;
-  --secondary: #f1f5f9;
-  --secondary-foreground: #0f172a;
-  --muted: #f1f5f9;
-  --muted-foreground: #64748b;
-  --accent: #f0fdfa;
-  --accent-foreground: #134e4a;
+  /* shadcn/ui semantic tokens — warm cream palette (Claude-inspired) */
+  --background: #FAF9F6;
+  --foreground: #1C1917;
+  --card: #FFFFFF;
+  --card-foreground: #1C1917;
+  --popover: #FFFFFF;
+  --popover-foreground: #1C1917;
+  --primary: #C96442;
+  --primary-foreground: #FFFFFF;
+  --secondary: #F5F3EF;
+  --secondary-foreground: #1C1917;
+  --muted: #F5F3EF;
+  --muted-foreground: #78716C;
+  --accent: #FDF4EF;
+  --accent-foreground: #7C2D12;
   --destructive: #dc2626;
   --destructive-foreground: #ffffff;
-  --border: #e2e8f0;
-  --input: #e2e8f0;
-  --ring: #0d9488;
-  --radius: 0.5rem;
+  --border: #EBE8E3;
+  --input: #EBE8E3;
+  --ring: #C96442;
+  --radius: 0.625rem;
 
-  /* Brand color scale (Teal) */
-  --brand-50: #f0fdfa;
-  --brand-100: #ccfbf1;
-  --brand-200: #99f6e4;
-  --brand-300: #5eead4;
-  --brand-400: #2dd4bf;
-  --brand-500: #0d9488;
-  --brand-600: #0f766e;
-  --brand-700: #115e59;
+  /* Brand color scale (Warm Terracotta) */
+  --brand-50: #FDF4EF;
+  --brand-100: #FDDCCC;
+  --brand-200: #FBBF93;
+  --brand-300: #F5A06A;
+  --brand-400: #E8845C;
+  --brand-500: #C96442;
+  --brand-600: #A84E34;
+  --brand-700: #7C2D12;
 
   /* Chart colors */
-  --chart-1: #0d9488;
+  --chart-1: #C96442;
   --chart-2: #d97706;
   --chart-3: #4c6ef5;
   --chart-4: #9333ea;
   --chart-5: #dc2626;
 
-  /* Sidebar */
-  --sidebar-background: #f8fafc;
-  --sidebar-foreground: #0f172a;
-  --sidebar-primary: #0d9488;
-  --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #f1f5f9;
-  --sidebar-accent-foreground: #0f172a;
-  --sidebar-border: #e2e8f0;
-  --sidebar-ring: #0d9488;
+  /* Sidebar — slightly warmer than main bg */
+  --sidebar-background: #F5F2ED;
+  --sidebar-foreground: #1C1917;
+  --sidebar-primary: #C96442;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #EDE9E3;
+  --sidebar-accent-foreground: #1C1917;
+  --sidebar-border: #E5E0DA;
+  --sidebar-ring: #C96442;
 
   /* Feedback colors */
   --success: #16a34a;
@@ -147,34 +147,35 @@
    Dark mode token overrides
    ===================================================== */
 .dark {
-  --background: #0f172a;
-  --foreground: #e2e8f0;
-  --card: #1e293b;
-  --card-foreground: #e2e8f0;
-  --popover: #1e293b;
-  --popover-foreground: #e2e8f0;
-  --primary: #2dd4bf;
-  --primary-foreground: #0f172a;
-  --secondary: #1e293b;
-  --secondary-foreground: #e2e8f0;
-  --muted: #1e293b;
-  --muted-foreground: #94a3b8;
-  --accent: #134e4a;
-  --accent-foreground: #99f6e4;
-  --destructive: #f87171;
+  /* Warm dark palette — slightly brown-black, not pure cold black */
+  --background: #1A1816;
+  --foreground: #F5F2EE;
+  --card: #242220;
+  --card-foreground: #F5F2EE;
+  --popover: #242220;
+  --popover-foreground: #F5F2EE;
+  --primary: #E8845C;
+  --primary-foreground: #1A1816;
+  --secondary: #2C2A27;
+  --secondary-foreground: #F5F2EE;
+  --muted: #2C2A27;
+  --muted-foreground: #A8A29E;
+  --accent: #2E2018;
+  --accent-foreground: #FBBF93;
+  --destructive: #EF4444;
   --destructive-foreground: #ffffff;
-  --border: #334155;
-  --input: #334155;
-  --ring: #2dd4bf;
+  --border: #33302C;
+  --input: #33302C;
+  --ring: #E8845C;
 
-  --sidebar-background: #0f172a;
-  --sidebar-foreground: #cbd5e1;
-  --sidebar-primary: #2dd4bf;
-  --sidebar-primary-foreground: #0f172a;
-  --sidebar-accent: #1e293b;
-  --sidebar-accent-foreground: #cbd5e1;
-  --sidebar-border: #1e293b;
-  --sidebar-ring: #2dd4bf;
+  --sidebar-background: #161412;
+  --sidebar-foreground: #A8A29E;
+  --sidebar-primary: #E8845C;
+  --sidebar-primary-foreground: #1A1816;
+  --sidebar-accent: #2C2A27;
+  --sidebar-accent-foreground: #F5F2EE;
+  --sidebar-border: #2C2A27;
+  --sidebar-ring: #E8845C;
 
   --success: #4ade80;
   --success-bg: #14532d;
@@ -183,12 +184,12 @@
   --error: #f87171;
   --error-bg: #450a0a;
 
-  --glass-bg: rgba(15, 23, 42, 0.55);
-  --glass-bg-heavy: rgba(15, 23, 42, 0.80);
-  --glass-border: rgba(255, 255, 255, 0.08);
-  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-  --glass-highlight: linear-gradient(135deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0) 60%);
-  --glass-inner-shadow: inset 0 1px 1px rgba(255,255,255,0.06);
+  --glass-bg: rgba(9, 9, 11, 0.60);
+  --glass-bg-heavy: rgba(9, 9, 11, 0.82);
+  --glass-border: rgba(255, 255, 255, 0.06);
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  --glass-highlight: linear-gradient(135deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0) 60%);
+  --glass-inner-shadow: inset 0 1px 1px rgba(255,255,255,0.04);
 }
 
 /* =====================================================
@@ -202,7 +203,7 @@
 ::before,
 ::backdrop,
 ::file-selector-button {
-  border-color: var(--border, #e2e8f0);
+  border-color: var(--border, #EBE8E3);
 }
 
 html {
@@ -223,6 +224,14 @@ body {
   touch-action: manipulation;
   overflow-wrap: break-word;
   word-break: break-word;
+}
+
+/* Text selection */
+::selection {
+  background: rgba(13, 148, 136, 0.15);
+}
+.dark ::selection {
+  background: rgba(45, 212, 191, 0.25);
 }
 
 /* Code highlighting theme override — GitHub light */
@@ -389,7 +398,7 @@ pre code.hljs {
   width: 52px;
   height: 44px;
   border-radius: 9999px;
-  color: rgba(100, 116, 139, 0.7);
+  color: var(--muted-foreground);
   transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
   text-decoration: none;
   -webkit-tap-highlight-color: transparent;
@@ -398,9 +407,9 @@ pre code.hljs {
 .floating-nav-item:active { transform: scale(0.92); }
 
 .floating-nav-item.active {
-  background: rgba(13, 148, 136, 0.15);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
   color: var(--primary);
-  box-shadow: 0 2px 8px rgba(13, 148, 136, 0.15),
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--primary) 15%, transparent),
               var(--glass-inner-shadow);
   transition: all 350ms cubic-bezier(0.34, 1.56, 0.64, 1);
   transform: scale(1.08);
@@ -411,7 +420,7 @@ pre code.hljs {
   position: absolute;
   inset: 0;
   border-radius: 9999px;
-  background: radial-gradient(circle, rgba(13, 148, 136, 0.2) 0%, transparent 70%);
+  background: radial-gradient(circle, color-mix(in srgb, var(--primary) 20%, transparent) 0%, transparent 70%);
   animation: glass-ripple 400ms ease-out;
 }
 

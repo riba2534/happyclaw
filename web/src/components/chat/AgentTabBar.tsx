@@ -21,7 +21,7 @@ const TASK_STATUS_ICON: Record<string, string> = {
 const tabClass = (active: boolean) =>
   `flex-shrink-0 px-3 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
     active
-      ? 'bg-accent text-accent-foreground shadow-sm'
+      ? 'bg-accent text-accent-foreground'
       : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
   }`;
 
@@ -109,7 +109,7 @@ export function AgentTabBar({ agents, activeTab, onSelectTab, onDeleteAgent, onC
               key={agent.id}
               className={`flex-shrink-0 flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer group ${
                 activeTab === agent.id
-                  ? 'bg-muted text-foreground shadow-sm'
+                  ? 'bg-muted text-foreground'
                   : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
               }`}
               onClick={() => onSelectTab(agent.id)}

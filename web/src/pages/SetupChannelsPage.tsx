@@ -115,7 +115,7 @@ export function SetupChannelsPage() {
         )}
 
         {/* Feishu */}
-        <section className="bg-card rounded-xl border border-border shadow-sm p-5">
+        <section className="bg-card rounded-xl border border-border p-5">
           <h2 className="text-base font-semibold text-foreground mb-3">飞书</h2>
           <p className="text-xs text-muted-foreground mb-3">
             填写你的飞书应用凭证，绑定后即可在飞书中与 AI 对话。
@@ -143,7 +143,7 @@ export function SetupChannelsPage() {
         </section>
 
         {/* Telegram */}
-        <section className="bg-card rounded-xl border border-border shadow-sm p-5">
+        <section className="bg-card rounded-xl border border-border p-5">
           <h2 className="text-base font-semibold text-foreground mb-3">Telegram</h2>
           <p className="text-xs text-muted-foreground mb-3">
             填写 Telegram Bot Token，绑定后即可在 Telegram 中与 AI 对话。
@@ -160,7 +160,7 @@ export function SetupChannelsPage() {
         </section>
 
         {/* QQ */}
-        <section className="bg-card rounded-xl border border-border shadow-sm p-5">
+        <section className="bg-card rounded-xl border border-border p-5">
           <h2 className="text-base font-semibold text-foreground mb-3">QQ</h2>
           <p className="text-xs text-muted-foreground mb-3">
             填写 QQ Bot 应用凭证，绑定后即可在 QQ 中与 AI 对话。

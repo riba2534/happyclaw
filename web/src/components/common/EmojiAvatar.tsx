@@ -62,7 +62,7 @@ export function EmojiAvatar({
     return (
       <div
         className={base}
-        style={{ backgroundColor: color || '#0d9488' }}
+        style={{ backgroundColor: color || '#C96442' }}
       >
         <span>{emoji}</span>
       </div>
@@ -72,8 +72,8 @@ export function EmojiAvatar({
   const letter = (fallbackChar || '?')[0].toUpperCase();
 
   return (
-    <div className={cn(base, 'bg-brand-100')}>
-      <span className={cn('font-medium text-brand-600', fallbackTextClasses[size])}>
+    <div className={cn(base, 'bg-primary/15')}>
+      <span className={cn('font-medium text-primary', fallbackTextClasses[size])}>
         {letter}
       </span>
     </div>

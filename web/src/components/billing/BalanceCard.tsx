@@ -46,7 +46,7 @@ export default function BalanceCard() {
   };
 
   return (
-    <div className="bg-white dark:bg-zinc-800 rounded-lg border border-zinc-200 dark:border-zinc-700 p-5">
+    <div className="bg-card rounded-lg border border-zinc-200 dark:border-zinc-700 p-5">
       <div className="flex items-center gap-2 mb-4">
         <Wallet className="w-5 h-5 text-teal-600" />
         <h3 className="font-semibold">余额</h3>

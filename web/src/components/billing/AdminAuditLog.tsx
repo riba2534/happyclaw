@@ -117,7 +117,7 @@ export default function AdminAuditLog() {
         {filteredLogs.map((log) => (
           <div
             key={log.id}
-            className="bg-white dark:bg-zinc-800 rounded-lg border border-zinc-200 dark:border-zinc-700"
+            className="bg-card rounded-lg border border-zinc-200 dark:border-zinc-700"
           >
             <button
               onClick={() =>

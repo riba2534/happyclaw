@@ -29,7 +29,7 @@ export function GroupStatusCard({ group }: GroupStatusCardProps) {
         )}
       </div>
 
-      <div className="space-y-1.5 text-xs text-slate-500">
+      <div className="space-y-1.5 text-xs text-muted-foreground">
         <div className="flex items-center justify-between">
           <span>队列</span>
           <span className="text-foreground">

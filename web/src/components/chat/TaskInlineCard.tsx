@@ -45,7 +45,7 @@ export function TaskInlineCard({ toolUseId, description, startTime, groupJid }: 
   }, [expanded, streaming?.partialText, streaming?.thinkingText]);
 
   const statusIcon = isRunning ? (
-    <Loader2 className="w-4 h-4 text-brand-500 animate-spin flex-shrink-0" />
+    <Loader2 className="w-4 h-4 text-primary animate-spin flex-shrink-0" />
   ) : status === 'completed' ? (
     <CheckCircle2 className="w-4 h-4 text-emerald-500 flex-shrink-0" />
   ) : (
@@ -66,7 +66,7 @@ export function TaskInlineCard({ toolUseId, description, startTime, groupJid }: 
         onClick={() => setExpanded(v => !v)}
         className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg border transition-colors text-left ${
           isRunning
-            ? 'border-brand-200 bg-brand-50/50 hover:bg-brand-50'
+            ? 'border-primary/20 bg-primary/5 hover:bg-primary/10'
             : status === 'completed'
               ? 'border-emerald-200 bg-emerald-50/50 hover:bg-emerald-50'
               : 'border-red-200 bg-red-50/50 hover:bg-red-50'
@@ -77,18 +77,18 @@ export function TaskInlineCard({ toolUseId, description, startTime, groupJid }: 
           Task: {description}
         </span>
         {summary && !expanded && (
-          <span className="text-[11px] text-slate-500 truncate max-w-[200px]">
+          <span className="text-[11px] text-muted-foreground truncate max-w-[200px]">
             {summary}
           </span>
         )}
-        <span className="text-[11px] text-slate-400 flex-shrink-0 tabular-nums">
+        <span className="text-[11px] text-muted-foreground/60 flex-shrink-0 tabular-nums">
           {Math.round(elapsed)}s
         </span>
         {hasContent && (
           expanded ? (
-            <ChevronUp className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
+            <ChevronUp className="w-3.5 h-3.5 text-muted-foreground/60 flex-shrink-0" />
           ) : (
-            <ChevronDown className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
+            <ChevronDown className="w-3.5 h-3.5 text-muted-foreground/60 flex-shrink-0" />
           )
         )}
       </button>
@@ -123,7 +123,7 @@ export function TaskInlineCard({ toolUseId, description, startTime, groupJid }: 
                 {streaming.activeTools.map((tool, i) => (
                   <span
                     key={tool.toolUseId || i}
-                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[11px] font-medium bg-brand-50 text-primary border border-brand-200"
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[11px] font-medium bg-primary/5 text-primary border border-primary/20"
                   >
                     <svg className="w-2.5 h-2.5 animate-spin" viewBox="0 0 24 24" fill="none">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
@@ -138,10 +138,10 @@ export function TaskInlineCard({ toolUseId, description, startTime, groupJid }: 
             {/* Recent events timeline */}
             {streaming.recentEvents.length > 0 && (
               <div className="rounded-md border border-border bg-muted/50 p-1.5">
-                <div className="text-[10px] font-medium text-slate-500 mb-0.5">调用轨迹</div>
+                <div className="text-[10px] font-medium text-muted-foreground mb-0.5">调用轨迹</div>
                 <div className="space-y-0.5 max-h-20 overflow-y-auto">
                   {streaming.recentEvents.map((item) => (
-                    <div key={item.id} className="text-[11px] text-slate-600 break-words">
+                    <div key={item.id} className="text-[11px] text-muted-foreground break-words">
                       {item.text}
                     </div>
                   ))}
@@ -178,7 +178,7 @@ export function TaskInlineCard({ toolUseId, description, startTime, groupJid }: 
 
       {/* Collapsed summary for completed tasks */}
       {!expanded && !isRunning && summary && (
-        <div className="mt-0.5 px-3 text-[11px] text-slate-500 truncate">
+        <div className="mt-0.5 px-3 text-[11px] text-muted-foreground truncate">
           {summary}
         </div>
       )}

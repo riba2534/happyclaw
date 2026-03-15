@@ -121,7 +121,7 @@ export function BindingsSection() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
+            <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
               <Link2 className="w-6 h-6" />
               IM 绑定管理
             </h1>
@@ -160,7 +160,7 @@ export function BindingsSection() {
                     className={`px-3 py-1 text-xs font-medium rounded-full transition-colors cursor-pointer ${
                       channelFilter === ch.key
                         ? 'bg-primary text-white'
-                        : 'bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-700'
+                        : 'bg-muted text-muted-foreground hover:bg-border hover:text-foreground/80'
                     }`}
                   >
                     {ch.label}
@@ -187,7 +187,7 @@ export function BindingsSection() {
           </div>
         ) : bindings.length === 0 ? (
           <div className="bg-card rounded-xl border border-border p-8 text-center">
-            <MessageSquare className="w-10 h-10 mx-auto text-slate-300 mb-3" />
+            <MessageSquare className="w-10 h-10 mx-auto text-muted-foreground/60 mb-3" />
             <p className="text-sm text-muted-foreground">
               暂无 IM 群组。在飞书、Telegram 或 QQ 群中向 Bot 发送消息后，群组会自动出现在这里。
             </p>

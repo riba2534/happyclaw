@@ -52,7 +52,7 @@ export default function AdminPlansList({
           return (
             <div
               key={plan.id}
-              className={`relative bg-white dark:bg-zinc-800 rounded-lg border p-5 ${
+              className={`relative bg-card rounded-lg border p-5 ${
                 plan.highlight
                   ? 'border-teal-400 dark:border-teal-600 ring-1 ring-teal-400/30'
                   : 'border-zinc-200 dark:border-zinc-700'

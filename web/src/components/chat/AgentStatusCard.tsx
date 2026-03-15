@@ -26,7 +26,7 @@ export function AgentStatusCard({ agent, onClick }: AgentStatusCardProps) {
   return (
     <div
       onClick={onClick}
-      className={`${colors.bg} border border-current/10 rounded-lg p-3 my-2 cursor-pointer hover:shadow-sm transition-shadow`}
+      className={`${colors.bg} border border-current/10 rounded-lg p-3 my-2 cursor-pointer hover:bg-muted/50 transition-colors`}
     >
       <div className="flex items-center gap-2">
         <span className={`w-2 h-2 rounded-full ${colors.dot}`} />
@@ -37,7 +37,7 @@ export function AgentStatusCard({ agent, onClick }: AgentStatusCardProps) {
           {STATUS_LABELS[agent.status]}
         </span>
       </div>
-      <p className="mt-1 text-xs text-slate-600 line-clamp-2">
+      <p className="mt-1 text-xs text-muted-foreground line-clamp-2">
         {agent.prompt}
       </p>
       {isRunning && streaming && (
@@ -58,14 +58,14 @@ export function AgentStatusCard({ agent, onClick }: AgentStatusCardProps) {
             </div>
           )}
           {streaming.partialText && (
-            <p className="text-xs text-slate-500 truncate">
+            <p className="text-xs text-muted-foreground truncate">
               {streaming.partialText.slice(0, 100)}
             </p>
           )}
         </div>
       )}
       {agent.result_summary && !isRunning && (
-        <p className="mt-1.5 text-xs text-slate-500 line-clamp-3 border-t border-current/5 pt-1.5">
+        <p className="mt-1.5 text-xs text-muted-foreground line-clamp-3 border-t border-current/5 pt-1.5">
           {agent.result_summary}
         </p>
       )}

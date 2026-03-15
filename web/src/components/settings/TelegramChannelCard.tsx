@@ -144,12 +144,12 @@ export function TelegramChannelCard({ setNotice, setError }: TelegramChannelCard
 
   return (
     <div className="rounded-xl border border-border bg-card overflow-hidden">
-      <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 bg-slate-50/50">
+      <div className="flex items-center justify-between px-5 py-4 border-b border-border bg-muted/50">
         <div className="flex items-center gap-2">
-          <span className={`inline-block w-2 h-2 rounded-full ${config?.connected ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+          <span className={`inline-block w-2 h-2 rounded-full ${config?.connected ? 'bg-emerald-500' : 'bg-border'}`} />
           <div>
-            <h3 className="text-sm font-semibold text-slate-800">Telegram</h3>
-            <p className="text-xs text-slate-500 mt-0.5">通过 Telegram Bot 接收和回复消息</p>
+            <h3 className="text-sm font-semibold text-foreground">Telegram</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">通过 Telegram Bot 接收和回复消息</p>
           </div>
         </div>
         <ToggleSwitch checked={enabled} disabled={loading || toggling} onChange={handleToggle} />
@@ -157,16 +157,16 @@ export function TelegramChannelCard({ setNotice, setError }: TelegramChannelCard
 
       <div className={`px-5 py-4 space-y-4 transition-opacity ${!enabled ? 'opacity-50 pointer-events-none' : ''}`}>
         {loading ? (
-          <div className="text-sm text-slate-500">加载中...</div>
+          <div className="text-sm text-muted-foreground">加载中...</div>
         ) : (
           <>
             {config?.hasBotToken && (
-              <div className="text-xs text-slate-500">
+              <div className="text-xs text-muted-foreground">
                 当前 Token: {config.botTokenMasked || '已配置'}
               </div>
             )}
             <div>
-              <label className="block text-xs text-slate-500 mb-1">Bot Token</label>
+              <label className="block text-xs text-muted-foreground mb-1">Bot Token</label>
               <Input
                 type="password"
                 value={botToken}
@@ -175,7 +175,7 @@ export function TelegramChannelCard({ setNotice, setError }: TelegramChannelCard
               />
             </div>
             <div>
-              <label className="block text-xs text-slate-500 mb-1">代理 URL（可选）</label>
+              <label className="block text-xs text-muted-foreground mb-1">代理 URL（可选）</label>
               <Input
                 type="text"
                 value={proxyUrl}
@@ -183,7 +183,7 @@ export function TelegramChannelCard({ setNotice, setError }: TelegramChannelCard
                 placeholder="例如 http://127.0.0.1:7897 或 socks5://127.0.0.1:7897"
               />
               {proxyHint && (
-                <p className="mt-1 text-xs text-slate-400">{proxyHint}</p>
+                <p className="mt-1 text-xs text-muted-foreground/60">{proxyHint}</p>
               )}
             </div>
             <div className="flex flex-wrap items-center gap-3">

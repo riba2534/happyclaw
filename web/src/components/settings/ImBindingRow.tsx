@@ -59,7 +59,7 @@ export function ImBindingRow({ group, isActioning, onRebind, onUnbind }: ImBindi
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium truncate">{group.name}</span>
-          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${CHANNEL_COLORS[group.channel_type] || 'bg-slate-100 text-slate-600'}`}>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${CHANNEL_COLORS[group.channel_type] || 'bg-muted text-muted-foreground'}`}>
             {CHANNEL_LABEL[group.channel_type] || group.channel_type}
           </span>
         </div>
@@ -70,7 +70,7 @@ export function ImBindingRow({ group, isActioning, onRebind, onUnbind }: ImBindi
               {group.member_count}
             </span>
           )}
-          <span className={hasBound ? 'text-teal-600 dark:text-teal-400' : 'text-slate-400'}>
+          <span className={hasBound ? 'text-teal-600 dark:text-teal-400' : 'text-muted-foreground/60'}>
             → {bindingLabel()}
           </span>
         </div>
@@ -84,7 +84,7 @@ export function ImBindingRow({ group, isActioning, onRebind, onUnbind }: ImBindi
             variant="ghost"
             onClick={() => onUnbind(group)}
             disabled={isActioning}
-            className="text-slate-400 hover:text-red-500"
+            className="text-muted-foreground/60 hover:text-red-500"
           >
             {isActioning ? (
               <Loader2 className="w-3.5 h-3.5 animate-spin" />

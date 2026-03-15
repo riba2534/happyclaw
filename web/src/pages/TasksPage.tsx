@@ -123,7 +123,7 @@ export function TasksPage() {
           <div className="space-y-6">
             {activeTasks.length > 0 && (
               <div>
-                <h2 className="text-sm font-semibold text-slate-700 mb-3">运行中</h2>
+                <h2 className="text-sm font-semibold text-foreground/80 mb-3">运行中</h2>
                 <div className="space-y-3">
                   {activeTasks.map((task) => (
                     <TaskCard
@@ -140,7 +140,7 @@ export function TasksPage() {
 
             {pausedTasks.length > 0 && (
               <div>
-                <h2 className="text-sm font-semibold text-slate-700 mb-3">已暂停</h2>
+                <h2 className="text-sm font-semibold text-foreground/80 mb-3">已暂停</h2>
                 <div className="space-y-3">
                   {pausedTasks.map((task) => (
                     <TaskCard
@@ -157,7 +157,7 @@ export function TasksPage() {
 
             {otherTasks.length > 0 && (
               <div>
-                <h2 className="text-sm font-semibold text-slate-700 mb-3">其他</h2>
+                <h2 className="text-sm font-semibold text-foreground/80 mb-3">其他</h2>
                 <div className="space-y-3">
                   {otherTasks.map((task) => (
                     <TaskCard

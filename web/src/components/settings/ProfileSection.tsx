@@ -145,39 +145,39 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
     <div className="space-y-6">
       {/* Avatar */}
       <div>
-        <h3 className="text-base font-semibold text-slate-900 mb-4">头像设置</h3>
-        <div className="flex items-center gap-4 mb-4">
-          <EmojiAvatar
-            emoji={avatarEmoji}
-            color={avatarColor}
-            fallbackChar={displayName || username}
-            size="lg"
-          />
-          <div className="text-sm text-slate-500">
-            选择一个 Emoji 和背景色作为你的头像
+        <h3 className="text-base font-semibold text-foreground mb-4">头像设置</h3>
+        <div className="flex items-start gap-5">
+          <div className="flex flex-col items-center gap-2 flex-shrink-0">
+            <EmojiAvatar
+              emoji={avatarEmoji}
+              color={avatarColor}
+              fallbackChar={displayName || username}
+              size="lg"
+            />
+            <span className="text-xs text-muted-foreground">预览</span>
           </div>
-        </div>
-        <div className="space-y-4">
-          <div>
-            <label className="block text-xs text-slate-500 mb-2">Emoji</label>
-            <EmojiPicker value={avatarEmoji ?? undefined} onChange={setAvatarEmoji} />
-          </div>
-          <div>
-            <label className="block text-xs text-slate-500 mb-2">背景色</label>
-            <ColorPicker value={avatarColor ?? undefined} onChange={setAvatarColor} />
+          <div className="flex-1 min-w-0 space-y-3">
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1.5">Emoji</label>
+              <EmojiPicker value={avatarEmoji ?? undefined} onChange={setAvatarEmoji} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1.5">背景色</label>
+              <ColorPicker value={avatarColor ?? undefined} onChange={setAvatarColor} />
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Divider */}
-      <div className="border-t border-slate-200" />
+      {/* Spacer */}
+      <div className="h-2" />
 
       {/* Account Info */}
       <div>
-        <h3 className="text-base font-semibold text-slate-900 mb-4">账户信息</h3>
+        <h3 className="text-base font-semibold text-foreground mb-4">账户信息</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
           <div>
-            <label className="block text-xs text-slate-500 mb-1">用户名</label>
+            <label className="block text-xs text-muted-foreground mb-1">用户名</label>
             <Input
               type="text"
               value={username}
@@ -185,7 +185,7 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
             />
           </div>
           <div>
-            <label className="block text-xs text-slate-500 mb-1">显示名称</label>
+            <label className="block text-xs text-muted-foreground mb-1">显示名称</label>
             <Input
               type="text"
               value={displayName}
@@ -193,13 +193,13 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
             />
           </div>
         </div>
-        <div className="mt-4 flex flex-wrap items-center gap-4 text-xs text-slate-500">
+        <div className="mt-4 flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
           <span>角色：{currentUser?.role === 'admin' ? '管理员' : '普通成员'}</span>
           <span>状态：{currentUser?.status === 'active' ? '启用' : currentUser?.status === 'disabled' ? '禁用' : '已删除'}</span>
           <span>最近登录：{currentUser?.last_login_at ? new Date(currentUser.last_login_at).toLocaleString('zh-CN') : '-'}</span>
         </div>
         {currentUser?.permissions && currentUser.permissions.length > 0 && (
-          <div className="mt-3 text-xs text-slate-500">
+          <div className="mt-3 text-xs text-muted-foreground">
             权限：{currentUser.permissions.join(', ')}
           </div>
         )}
@@ -214,30 +214,18 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
         </div>
       </div>
 
-      {/* Divider */}
-      <div className="border-t border-slate-200" />
+      {/* Spacer */}
+      <div className="h-2" />
 
       {/* AI Appearance */}
       <div>
-        <h3 className="text-base font-semibold text-slate-900 mb-4">我的机器人外观</h3>
-        <p className="text-xs text-slate-500 mb-4">
+        <h3 className="text-base font-semibold text-foreground mb-4">我的机器人外观</h3>
+        <p className="text-xs text-muted-foreground mb-4">
           自定义你的 AI 助手外观，覆盖系统默认值，仅影响你看到的对话界面。
         </p>
         <div className="space-y-4">
-          <div className="flex items-center gap-4 mb-4">
-            <EmojiAvatar
-              imageUrl={aiAvatarUrl}
-              emoji={aiAvatarEmoji}
-              color={aiAvatarColor}
-              fallbackChar={aiName || 'AI'}
-              size="lg"
-            />
-            <div className="text-sm text-slate-500">
-              设置机器人的头像图片、Emoji 和背景色
-            </div>
-          </div>
           <div>
-            <label className="block text-xs text-slate-500 mb-1">AI 名称</label>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">AI 名称</label>
             <Input
               type="text"
               value={aiName}
@@ -245,16 +233,30 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
               placeholder="留空使用系统默认"
             />
           </div>
-          <div>
-            <label className="block text-xs text-slate-500 mb-2">Emoji</label>
-            <EmojiPicker value={aiAvatarEmoji ?? undefined} onChange={setAiAvatarEmoji} />
+          <div className="flex items-start gap-5">
+            <div className="flex flex-col items-center gap-2 flex-shrink-0">
+              <EmojiAvatar
+                imageUrl={aiAvatarUrl}
+                emoji={aiAvatarEmoji}
+                color={aiAvatarColor}
+                fallbackChar={aiName || 'AI'}
+                size="lg"
+              />
+              <span className="text-xs text-muted-foreground">预览</span>
+            </div>
+            <div className="flex-1 min-w-0 space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1.5">Emoji</label>
+                <EmojiPicker value={aiAvatarEmoji ?? undefined} onChange={setAiAvatarEmoji} />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1.5">背景色</label>
+                <ColorPicker value={aiAvatarColor ?? undefined} onChange={setAiAvatarColor} />
+              </div>
+            </div>
           </div>
           <div>
-            <label className="block text-xs text-slate-500 mb-2">背景色</label>
-            <ColorPicker value={aiAvatarColor ?? undefined} onChange={setAiAvatarColor} />
-          </div>
-          <div>
-            <label className="block text-xs text-slate-500 mb-1">自定义头像图片</label>
+            <label className="block text-xs text-muted-foreground mb-1">自定义头像图片</label>
             <input
               ref={avatarInputRef}
               type="file"
@@ -285,7 +287,7 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
                 </Button>
               )}
             </div>
-            <p className="text-xs text-slate-400 mt-1">
+            <p className="text-xs text-muted-foreground/60 mt-1">
               支持 jpg、png、gif、webp，最大 2MB。上传后将优先于 Emoji 头像显示
             </p>
           </div>
@@ -298,15 +300,15 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
         </div>
       </div>
 
-      {/* Divider */}
-      <div className="border-t border-slate-200" />
+      {/* Spacer */}
+      <div className="h-2" />
 
       {/* Change Password */}
       <div>
-        <h3 className="text-base font-semibold text-slate-900 mb-4">修改密码</h3>
+        <h3 className="text-base font-semibold text-foreground mb-4">修改密码</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
-            <label className="block text-xs text-slate-600 mb-1">当前密码</label>
+            <label className="block text-xs text-muted-foreground mb-1">当前密码</label>
             <Input
               type="password"
               value={currentPwd}
@@ -314,7 +316,7 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
             />
           </div>
           <div>
-            <label className="block text-xs text-slate-600 mb-1">新密码</label>
+            <label className="block text-xs text-muted-foreground mb-1">新密码</label>
             <Input
               type="password"
               value={newPwd}

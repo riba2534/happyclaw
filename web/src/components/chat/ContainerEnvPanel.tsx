@@ -121,19 +121,19 @@ export function ContainerEnvPanel({ groupJid, onClose }: ContainerEnvPanelProps)
 
   if (loading && !config) {
     return (
-      <div className="p-4 text-sm text-slate-400 text-center">加载中...</div>
+      <div className="p-4 text-sm text-muted-foreground/60 text-center">加载中...</div>
     );
   }
 
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
-        <h3 className="font-semibold text-slate-900 text-sm">工作区环境变量</h3>
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+        <h3 className="font-semibold text-foreground text-sm">工作区环境变量</h3>
         <div className="flex items-center gap-1">
           <button
             onClick={() => loadConfig(groupJid)}
-            className="text-slate-400 hover:text-slate-600 p-2 rounded-md hover:bg-slate-100 cursor-pointer"
+            className="text-muted-foreground/60 hover:text-muted-foreground p-2 rounded-md hover:bg-muted cursor-pointer"
             title="刷新"
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
@@ -141,7 +141,7 @@ export function ContainerEnvPanel({ groupJid, onClose }: ContainerEnvPanelProps)
           {onClose && (
             <button
               onClick={onClose}
-              className="text-slate-400 hover:text-slate-600 p-2 rounded-md hover:bg-slate-100 cursor-pointer"
+              className="text-muted-foreground/60 hover:text-muted-foreground p-2 rounded-md hover:bg-muted cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
@@ -151,14 +151,14 @@ export function ContainerEnvPanel({ groupJid, onClose }: ContainerEnvPanelProps)
 
       {/* Content */}
       <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-4">
-        <p className="text-[11px] text-slate-400 leading-relaxed">
+        <p className="text-[11px] text-muted-foreground/60 leading-relaxed">
           覆盖全局 Claude 配置，仅对当前工作区生效。留空则使用全局配置。保存后工作区将自动重建。
         </p>
 
         {/* Claude Provider Fields */}
         <div className="space-y-3">
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">
+            <label className="block text-xs font-medium text-muted-foreground mb-1">
               ANTHROPIC_BASE_URL
             </label>
             <Input
@@ -171,10 +171,10 @@ export function ContainerEnvPanel({ groupJid, onClose }: ContainerEnvPanelProps)
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">
+            <label className="block text-xs font-medium text-muted-foreground mb-1">
               ANTHROPIC_AUTH_TOKEN
               {config?.hasAnthropicAuthToken && (
-                <span className="ml-1.5 text-[10px] text-slate-400 font-normal">
+                <span className="ml-1.5 text-[10px] text-muted-foreground/60 font-normal">
                   ({config.anthropicAuthTokenMasked})
                 </span>
               )}
@@ -192,7 +192,7 @@ export function ContainerEnvPanel({ groupJid, onClose }: ContainerEnvPanelProps)
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">
+            <label className="block text-xs font-medium text-muted-foreground mb-1">
               模型（ANTHROPIC_MODEL）
             </label>
             <div className="space-y-1.5">
@@ -209,8 +209,8 @@ export function ContainerEnvPanel({ groupJid, onClose }: ContainerEnvPanelProps)
                   <option key={preset} value={preset} />
                 ))}
               </datalist>
-              <p className="text-[11px] text-slate-400">
-                留空则回退到全局配置（默认值通常为 <code className="bg-slate-100 px-1 rounded">opus</code>）。
+              <p className="text-[11px] text-muted-foreground/60">
+                留空则回退到全局配置（默认值通常为 <code className="bg-muted px-1 rounded">opus</code>）。
               </p>
             </div>
           </div>
@@ -218,12 +218,12 @@ export function ContainerEnvPanel({ groupJid, onClose }: ContainerEnvPanelProps)
         </div>
 
         {/* Separator */}
-        <div className="border-t border-slate-100" />
+        <div className="border-t border-border" />
 
         {/* Custom Env Vars */}
         <div>
           <div className="flex items-center justify-between mb-2">
-            <label className="text-xs font-medium text-slate-600">自定义环境变量</label>
+            <label className="text-xs font-medium text-muted-foreground">自定义环境变量</label>
             <button
               onClick={addCustomEnv}
               className="flex-shrink-0 flex items-center gap-1 text-[11px] text-primary hover:text-primary cursor-pointer"
@@ -234,7 +234,7 @@ export function ContainerEnvPanel({ groupJid, onClose }: ContainerEnvPanelProps)
           </div>
 
           {customEnv.length === 0 ? (
-            <p className="text-[11px] text-slate-400">暂无自定义变量</p>
+            <p className="text-[11px] text-muted-foreground/60">暂无自定义变量</p>
           ) : (
             <div className="space-y-1.5">
               {customEnv.map((item, i) => (
@@ -246,7 +246,7 @@ export function ContainerEnvPanel({ groupJid, onClose }: ContainerEnvPanelProps)
                     placeholder="KEY"
                     className="w-[40%] px-2 py-1 text-[11px] font-mono h-auto"
                   />
-                  <span className="text-slate-300 text-xs">=</span>
+                  <span className="text-muted-foreground/60 text-xs">=</span>
                   <Input
                     type="text"
                     value={item.value}
@@ -256,7 +256,7 @@ export function ContainerEnvPanel({ groupJid, onClose }: ContainerEnvPanelProps)
                   />
                   <button
                     onClick={() => removeCustomEnv(i)}
-                    className="flex-shrink-0 p-1 text-slate-400 hover:text-red-500 cursor-pointer"
+                    className="flex-shrink-0 p-1 text-muted-foreground/60 hover:text-red-500 cursor-pointer"
                   >
                     <X className="w-3.5 h-3.5" />
                   </button>
@@ -268,7 +268,7 @@ export function ContainerEnvPanel({ groupJid, onClose }: ContainerEnvPanelProps)
       </div>
 
       {/* Footer */}
-      <div className="flex-shrink-0 p-3 border-t border-slate-200 space-y-2">
+      <div className="flex-shrink-0 p-3 border-t border-border space-y-2">
         <div className="flex gap-2">
           <Button onClick={handleSave} disabled={saving || clearing} className="flex-1" size="sm">
             {saving && <Loader2 className="size-4 animate-spin" />}
