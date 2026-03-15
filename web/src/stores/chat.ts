@@ -1185,7 +1185,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     ) {
       ensureSdkTask(
         event.toolUseId!,
-        event.taskDescription || event.toolInputSummary,
+        event.taskName || event.taskDescription || event.toolInputSummary,
         event.isTeammate,
       );
       // 不 return — 让 task_start 同时落入主对话 streaming（显示 Task 工具卡片）

@@ -426,6 +426,7 @@ export class StreamEventProcessor {
         this.pendingTaskInput.delete(blockIndex);
         const isTeammate = pendingTask.isTeammate || false;
         if (isTeammate) this.teammateTaskToolUseIds.add(pendingTask.toolUseId);
+        const nameMatch = pendingTask.inputJson.match(/"name"\s*:\s*"((?:[^"\\]|\\.)*)"/);
         this.emit({
           status: 'stream', result: null,
           streamEvent: {
@@ -433,6 +434,7 @@ export class StreamEventProcessor {
             toolUseId: pendingTask.toolUseId,
             toolName: 'Task',
             taskDescription: descMatch[1].replace(/\\"/g, '"').slice(0, 200),
+            ...(nameMatch ? { taskName: nameMatch[1].replace(/\\"/g, '"').slice(0, 40) } : {}),
             ...(isTeammate ? { isTeammate: true } : {}),
           },
         });
