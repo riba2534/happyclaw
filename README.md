@@ -531,6 +531,32 @@ cd web && npx vite --port 3001
 | `TRUST_PROXY` | `false` | 信任反向代理的 `X-Forwarded-For` 头 |
 | `TZ` | 系统时区 | 定时任务时区 |
 
+### 生产部署
+
+仓库已提供一套不修改源码的生产部署资产，适合 Linux + systemd + nginx 场景：
+
+```bash
+cp .env.example .env.production
+vim .env.production
+
+./deploy/bin/doctor.sh
+./deploy/bin/build-production.sh
+./deploy/bin/start-production.sh
+```
+
+可复用文件：
+
+- `deploy/bin/doctor.sh`：检查 Node.js、npm、make、Docker 等前置条件
+- `deploy/bin/build-production.sh`：安装依赖并构建后端、前端与 agent-runner
+- `deploy/bin/build-agent-image.sh`：按 `CONTAINER_IMAGE` 构建 Agent 镜像
+- `deploy/bin/start-production.sh`：基于已构建产物启动生产服务
+- `deploy/bin/healthcheck.sh`：校验 HTTP 服务可用性
+- `deploy/systemd/happyclaw.service`：systemd 服务模板
+- `deploy/nginx/happyclaw.conf`：nginx 反向代理模板
+- `deploy/README.md`：部署资产说明
+
+主机前置条件除了 Node.js 20+、npm、make 外，还需要 `python3 >= 3.8` 以完成 `node-gyp` 原生模块编译；如需容器模式，还需要 Docker。
+
 ### 管理员密码恢复
 
 ```bash

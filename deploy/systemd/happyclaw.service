@@ -1,0 +1,19 @@
+[Unit]
+Description=HappyClaw service
+After=network.target
+
+[Service]
+Type=simple
+User=happyclaw
+Group=happyclaw
+WorkingDirectory=/opt/happyclaw
+EnvironmentFile=/opt/happyclaw/.env.production
+ExecStart=/opt/happyclaw/deploy/bin/start-production.sh
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+TimeoutStartSec=120
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
