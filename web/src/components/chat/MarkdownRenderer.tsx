@@ -1,5 +1,6 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkBreaks from 'remark-breaks';
 import remarkMath from 'remark-math';
 import rehypeHighlight from 'rehype-highlight';
 import rehypeKatex from 'rehype-katex';
@@ -186,7 +187,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, groupJ
   return (
     <div className={textSizeClass}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
+        remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
         rehypePlugins={[
           [rehypeHighlight, { plainText: ['mermaid'] }],
           [rehypeKatex, { throwOnError: false, strict: false }],

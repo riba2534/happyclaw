@@ -165,6 +165,9 @@ let shuttingDown = false;
 const queue = new GroupQueue();
 const EMPTY_CURSOR: MessageCursor = { timestamp: '', id: '' };
 const terminalWarmupInFlight = new Set<string>();
+/** Tracks group folders whose agent has sent at least one IPC message via send_message.
+ *  When set, onOutput must NOT skip the final result IM send — both messages should reach the user. */
+const ipcMessageSentFolders = new Set<string>();
 const STUCK_RUNNER_CHECK_INTERVAL_POLLS = 15;
 const STUCK_RUNNER_IDLE_MS = 6 * 60 * 1000;
 let stuckRunnerCheckCounter = 0;
@@ -2015,18 +2018,20 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               }
             }
 
-            // For direct IM Feishu chats, if streaming card handled the reply,
-            // still store in DB + broadcast to web, but skip IM send.
-            const skipImSend = streamingCardHandledIM && directImReply;
+            // For direct IM chats, if streaming card handled the reply,
+            // skip IM send — UNLESS the agent already sent content via
+            // send_message MCP tool, in which case both messages must reach IM.
+            const ipcAlreadySent = ipcMessageSentFolders.has(effectiveGroup.folder);
+            const skipImSend = streamingCardHandledIM && directImReply && !ipcAlreadySent;
             lastReplyMsgId = await sendMessage(chatJid, text, {
               sendToIM: directImReply && !skipImSend,
               localImagePaths,
             });
 
             // For routed IM (web JID with IM source), skip the source channel
-            // if streaming card handled it, but still relay to it otherwise.
+            // if streaming card handled it (and no IPC send_message was used).
             if (replySourceImJid && replySourceImJid !== chatJid) {
-              if (!streamingCardHandledIM) {
+              if (!streamingCardHandledIM || ipcAlreadySent) {
                 sendImWithFailTracking(replySourceImJid, text, localImagePaths);
               }
             }
@@ -2102,6 +2107,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         logger.warn({ err, chatJid }, 'Failed to save interrupted text');
       }
     }
+
+    // Clear IPC send_message flag so next run starts fresh
+    ipcMessageSentFolders.delete(effectiveGroup.folder);
   }
 
   // runAgent threw — output is undefined, cannot proceed with post-processing
@@ -2673,9 +2681,10 @@ function startIpcWatcher(): void {
                     )
                   ) {
                     await sendMessage(data.chatJid, data.text);
+                    ipcMessageSentFolders.add(sourceGroup);
                     logger.info(
                       { chatJid: data.chatJid, sourceGroup },
-                      'IPC message sent',
+                      'IPC message sent (flagged for dual-reply)',
                     );
                   } else {
                     logger.warn(
