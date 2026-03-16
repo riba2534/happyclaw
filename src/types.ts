@@ -355,7 +355,16 @@ export type WsMessageOut =
       userId: string;
       usage: BillingAccessResult;
     }
-  | { type: 'ws_error'; error: string; chatJid?: string };
+  | { type: 'ws_error'; error: string; chatJid?: string }
+  | {
+      type: 'btw_response';
+      chatJid: string;
+      id: string;
+      question: string;
+      answer: string;
+      timestamp: string;
+      final: boolean;
+    };
 
 export type WsMessageIn =
   | {

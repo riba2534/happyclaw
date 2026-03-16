@@ -4,7 +4,7 @@
 delete process.env.npm_config_proxy;
 delete process.env.npm_config_https_proxy;
 
-import { ChildProcess, execFile } from 'child_process';
+import { ChildProcess, execFile, spawn } from 'child_process';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -98,6 +98,9 @@ import {
   formatWorkspaceList,
   formatSystemStatus,
   resolveLocationInfo,
+  buildBtwTranscript,
+  BTW_PROMPT_TEMPLATE,
+  resolveBtwTarget,
   type WorkspaceInfo,
 } from './im-command-utils.js';
 import { analyzeIntent } from './intent-analyzer.js';
@@ -147,6 +150,7 @@ import {
   broadcastStreamEvent,
   broadcastAgentStatus,
   broadcastBillingUpdate,
+  broadcastBtwResponse,
   shutdownTerminals,
   shutdownWebServer,
 } from './web.js';
@@ -591,6 +595,8 @@ async function handleCommand(
       return handleNewCommand(chatJid, rawArgs);
     case 'require_mention':
       return handleRequireMentionCommand(chatJid, rawArgs);
+    case 'btw':
+      return handleBtwCommand(chatJid, rawArgs);
     default:
       return null;
   }
@@ -937,17 +943,27 @@ function handleRequireMentionCommand(chatJid: string, rawArgs: string): string {
   return '用法: /require_mention true|false';
 }
 
+function checkAndCleanCooldown(map: Map<string, number>, key: string, cooldownMs: number): boolean {
+  const now = Date.now();
+  if (map.size > 100) {
+    for (const [k, v] of map) {
+      if (now - v > 60000) map.delete(k);
+    }
+  }
+  const last = map.get(key) || 0;
+  if (now - last < cooldownMs) return false;
+  map.set(key, now);
+  return true;
+}
+
 const recallCooldowns = new Map<string, number>();
 
 async function handleRecallCommand(chatJid: string): Promise<string> {
   logger.info({ chatJid }, '/recall command received');
 
-  const now = Date.now();
-  const lastRecall = recallCooldowns.get(chatJid) || 0;
-  if (now - lastRecall < 10000) {
+  if (!checkAndCleanCooldown(recallCooldowns, chatJid, 10000)) {
     return '⏳ 请稍后再试（冷却中）';
   }
-  recallCooldowns.set(chatJid, now);
 
   const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
   if (!group) {
@@ -1097,6 +1113,225 @@ async function summarizeWithClaude(transcript: string): Promise<string | null> {
     child.stdin?.write(prompt);
     child.stdin?.end();
   });
+}
+
+const btwCooldowns = new Map<string, number>();
+const MAX_BTW_OUTPUT = 102400; // 100KB limit
+
+interface BtwResult {
+  answer: string | null;
+  sentViaCard: boolean;
+}
+
+/**
+ * Stream a btw answer via Claude CLI (`--output-format stream-json`).
+ * Feeds text deltas into a Feishu StreamingCardController (if available)
+ * and broadcasts `btw_response` to Web clients with streaming updates.
+ * Returns BtwResult with the final answer text and whether the card handled delivery.
+ */
+function streamBtwAnswer(
+  chatJid: string,
+  question: string,
+  transcript: string,
+): Promise<BtwResult> {
+  const btwId = crypto.randomUUID();
+  const prompt = BTW_PROMPT_TEMPLATE(transcript, question);
+
+  return new Promise((resolve) => {
+    const model = process.env.RECALL_MODEL || '';
+    const args = ['--print', '--output-format', 'stream-json', '--verbose'];
+    if (model) args.push('--model', model);
+
+    // Create streaming card for Feishu (no-op for non-Feishu channels)
+    const makeOnCardCreated = (jid: string) => (messageId: string) =>
+      registerMessageIdMapping(messageId, jid);
+    const streamingSession = imManager.createStreamingSession(
+      chatJid,
+      makeOnCardCreated(chatJid),
+    );
+    if (streamingSession) {
+      registerStreamingSession(chatJid, streamingSession);
+      streamingSession.setThinking();
+    }
+
+    let accumulatedText = '';
+    let lastBroadcastLen = 0;
+    let finalResult: string | null = null;
+    let buffer = '';
+
+    const child = spawn('claude', args, {
+      env: { ...process.env, CLAUDECODE: '' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 60000,
+    });
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      buffer += chunk.toString();
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || ''; // keep incomplete last line
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const event = JSON.parse(line);
+
+          if (event.type === 'assistant' && event.message?.content) {
+            for (const block of event.message.content) {
+              if (block.type === 'text' && block.text) {
+                accumulatedText += block.text;
+
+                // Kill child if output exceeds limit
+                if (accumulatedText.length > MAX_BTW_OUTPUT) {
+                  logger.warn({ chatJid, len: accumulatedText.length }, 'streamBtwAnswer: output exceeded MAX_BTW_OUTPUT, killing');
+                  child.kill();
+                  return;
+                }
+
+                if (streamingSession) {
+                  streamingSession.append(accumulatedText);
+                }
+                // Broadcast streaming delta to Web with 200-char buffer threshold
+                if (accumulatedText.length - lastBroadcastLen >= 200) {
+                  broadcastBtwResponse(chatJid, btwId, question, accumulatedText, false);
+                  lastBroadcastLen = accumulatedText.length;
+                }
+              }
+            }
+          } else if (event.type === 'result' && event.result) {
+            finalResult = event.result;
+          }
+        } catch {
+          // Skip non-JSON lines
+        }
+      }
+    });
+
+    child.stderr.on('data', () => {
+      // Ignore stderr (debug/progress info)
+    });
+
+    child.on('close', async (code) => {
+      const answer = finalResult || accumulatedText || null;
+      let sentViaCard = false;
+
+      // Check card state BEFORE unregistering
+      if (streamingSession?.isActive()) {
+        try {
+          if (answer) {
+            await streamingSession.complete(answer);
+          } else {
+            await streamingSession.abort('回答失败');
+          }
+        } catch (err) {
+          logger.debug({ err, chatJid }, 'btw streaming card finalize failed');
+        }
+      }
+      sentViaCard = streamingSession?.currentState === 'completed';
+      unregisterStreamingSession(chatJid);
+
+      // Send final broadcast
+      broadcastBtwResponse(chatJid, btwId, question, answer || '', true);
+
+      if (!answer) {
+        logger.warn({ chatJid, code }, 'streamBtwAnswer: CLI failed or empty');
+      }
+      resolve({ answer, sentViaCard });
+    });
+
+    child.on('error', (err) => {
+      logger.warn(
+        { message: err.message?.slice(0, 200) },
+        'streamBtwAnswer: spawn failed',
+      );
+      if (streamingSession?.isActive()) {
+        streamingSession.abort('CLI 不可用').catch(() => {});
+      }
+      unregisterStreamingSession(chatJid);
+      broadcastBtwResponse(chatJid, btwId, question, '', true);
+      resolve({ answer: null, sentViaCard: false });
+    });
+
+    child.stdin?.write(prompt);
+    child.stdin?.end();
+  });
+}
+
+/**
+ * Handle /btw (By The Way) side-question command.
+ * Returns '' (empty string = handled, reply sent directly via IM) or an error string.
+ */
+async function handleBtwCommand(
+  chatJid: string,
+  question: string,
+): Promise<string> {
+  logger.info({ chatJid }, '/btw command received');
+
+  if (!question.trim()) {
+    return '用法: /btw <你的问题>\n\n旁路提问：不中断 Agent、不写入历史，基于对话上下文回答';
+  }
+
+  if (!checkAndCleanCooldown(btwCooldowns, chatJid, 10000)) {
+    return '⏳ 请稍后再试（冷却中）';
+  }
+
+  const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
+  if (!group) return '当前 IM 未绑定工作区';
+
+  // Resolve binding target via pure function
+  const target = resolveBtwTarget(
+    group,
+    getAgent,
+    (folder) => findWebJidForFolder(folder) ?? undefined,
+  );
+  if (!target) return '该对话暂无消息记录，无法回答旁路问题';
+
+  const messages = getMessagesPage(target.targetJid, undefined, 20);
+  if (messages.length === 0) return '该对话暂无消息记录，无法回答旁路问题';
+
+  const transcript = buildBtwTranscript(messages);
+
+  logger.info({ chatJid, transcriptLen: transcript.length }, '/btw: built transcript');
+
+  const result = await streamBtwAnswer(chatJid, question, transcript);
+  if (result.answer) {
+    // Streaming card may have handled the Feishu reply already.
+    // If not (card failed or non-Feishu channel), send via imManager as fallback.
+    if (!result.sentViaCard) {
+      logger.info({ chatJid, answerLen: result.answer.length }, '/btw: streaming card did not complete, sending via imManager');
+      try {
+        await imManager.sendMessage(chatJid, result.answer);
+      } catch (err) {
+        logger.error({ chatJid, err }, '/btw: failed to send rich reply');
+        return result.answer; // fallback to plain text via sendTextToChat
+      }
+    }
+    return '';
+  }
+
+  return 'Claude CLI 暂不可用，无法回答旁路问题。请确认 Claude CLI 已正确配置。';
+}
+
+/**
+ * Execute /btw command from Web — no IM target resolution needed.
+ */
+export async function executeBtw(chatJid: string, question: string): Promise<void> {
+  if (!checkAndCleanCooldown(btwCooldowns, chatJid, 10000)) {
+    broadcastBtwResponse(chatJid, crypto.randomUUID(), question, '⏳ 请稍后再试（冷却中）', true);
+    return;
+  }
+
+  const messages = getMessagesPage(chatJid, undefined, 20);
+  if (messages.length === 0) {
+    broadcastBtwResponse(chatJid, crypto.randomUUID(), question, '该对话暂无消息记录，无法回答旁路问题', true);
+    return;
+  }
+
+  const transcript = buildBtwTranscript(messages);
+  const result = await streamBtwAnswer(chatJid, question, transcript);
+  // streamBtwAnswer already broadcasts final result + handles streaming session
+  if (!result.answer) {
+    broadcastBtwResponse(chatJid, crypto.randomUUID(), question, 'Claude CLI 暂不可用，无法回答旁路问题。', true);
+  }
 }
 
 async function setTyping(jid: string, isTyping: boolean): Promise<void> {
@@ -5117,6 +5352,7 @@ async function main(): Promise<void> {
     updateReplyRoute: (folder: string, sourceJid: string | null) => {
       activeRouteUpdaters.get(folder)?.(sourceJid);
     },
+    executeBtw,
   });
 
   // Clean expired sessions every hour

@@ -7,7 +7,8 @@ import { MessageBubble } from './MessageBubble';
 import { StreamingDisplay } from './StreamingDisplay';
 import { AgentStatusCard } from './AgentStatusCard';
 import { EmojiAvatar } from '../common/EmojiAvatar';
-import { Loader2, ChevronUp, ChevronDown, AlertTriangle, Square } from 'lucide-react';
+import { Loader2, ChevronUp, ChevronDown, AlertTriangle, Square, MessageCircleQuestion } from 'lucide-react';
+import { BtwBubble } from './BtwBubble';
 import { useDisplayMode } from '../../hooks/useDisplayMode';
 
 interface MessageListProps {
@@ -210,6 +211,9 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
 
   // Auto-scroll when streaming content updates
   const streaming = useChatStore(s => agentId ? s.agentStreaming[agentId] : s.streaming[groupJid ?? '']);
+  const btwResponses = useChatStore(s => groupJid ? s.btwResponses[groupJid] : undefined);
+  const btwLoading = useChatStore(s => groupJid ? s.btwLoading[groupJid] : false);
+  const dismissBtw = useChatStore(s => s.dismissBtw);
   useEffect(() => {
     if (autoScroll && streaming) {
       parentRef.current?.scrollTo({ top: parentRef.current.scrollHeight });
@@ -392,6 +396,25 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
         )}
         {groupJid && agentId && (
           <StreamingDisplay groupJid={groupJid} isWaiting={!!isWaiting} agentId={agentId} />
+        )}
+
+        {/* BTW side-question responses */}
+        {groupJid && !agentId && btwResponses && btwResponses.length > 0 && (
+          <div className="py-1">
+            {btwResponses.map((btw) => (
+              <BtwBubble
+                key={btw.id}
+                {...btw}
+                onDismiss={() => dismissBtw(groupJid, btw.id)}
+              />
+            ))}
+          </div>
+        )}
+        {groupJid && !agentId && btwLoading && (
+          <div className="flex items-center gap-2 py-2 px-1 text-xs text-amber-600 dark:text-amber-400">
+            <MessageCircleQuestion size={14} className="animate-pulse" />
+            正在回答旁路问题...
+          </div>
         )}
 
         {/* Agent status cards in main conversation (task agents only) */}
