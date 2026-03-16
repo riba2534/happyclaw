@@ -1,3 +1,9 @@
+// npm run 会注入 npm_config_proxy（来自 .npmrc），导致 axios 等 HTTP 客户端
+// 将所有请求路由到 npm 代理（如 bnpm.byted.org），破坏飞书等外部 API 连接。
+// 在最早时机清除，确保所有后续 HTTP 请求直连目标服务器。
+delete process.env.npm_config_proxy;
+delete process.env.npm_config_https_proxy;
+
 import { ChildProcess, execFile } from 'child_process';
 import crypto from 'crypto';
 import fs from 'fs';
