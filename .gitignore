@@ -45,6 +45,3 @@ Thumbs.db
 
 /log/
 nohup.out
-
-# Container
-container/Dockerfile
