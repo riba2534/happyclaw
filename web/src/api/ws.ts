@@ -97,6 +97,29 @@ class WsManager {
       this.connect();
     }, this.reconnectDelay);
   }
+
+  /** Listen for network status changes to reconnect immediately or pause retries. */
+  setupNetworkListeners() {
+    window.addEventListener('online', () => {
+      // Network restored — reconnect immediately, reset backoff
+      if (!this.isConnected()) {
+        if (this.reconnectTimer) {
+          clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
+        }
+        this.reconnectDelay = 1000;
+        this.connect();
+      }
+    });
+    window.addEventListener('offline', () => {
+      // Network lost — cancel pending reconnect to avoid wasted attempts
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+    });
+  }
 }
 
 export const wsManager = new WsManager();
+wsManager.setupNetworkListeners();

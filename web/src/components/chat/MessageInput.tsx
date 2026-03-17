@@ -464,7 +464,7 @@ export function MessageInput({
               onPaste={handlePaste}
               placeholder="输入消息..."
               disabled={disabled}
-              className="w-full text-[15px] leading-6 resize-none focus:outline-none placeholder:text-slate-400 disabled:opacity-50 disabled:cursor-not-allowed bg-transparent"
+              className="w-full text-base leading-6 resize-none focus:outline-none placeholder:text-slate-400 disabled:opacity-50 disabled:cursor-not-allowed bg-transparent"
               rows={1}
               style={{ minHeight: '28px', maxHeight: '144px' }}
             />
@@ -479,7 +479,7 @@ export function MessageInput({
                   type="button"
                   onClick={() => setShowActions(!showActions)}
                   disabled={uploading}
-                  className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all cursor-pointer ${
+                  className={`w-10 h-10 rounded-lg flex items-center justify-center transition-all cursor-pointer ${
                     showActions
                       ? 'bg-brand-50 text-primary'
                       : 'hover:bg-slate-100 text-slate-400 hover:text-slate-600'
@@ -487,35 +487,35 @@ export function MessageInput({
                   title="添加文件"
                   aria-label="添加文件"
                 >
-                  <Paperclip className="w-4 h-4" />
+                  <Paperclip className="w-4.5 h-4.5" />
                 </button>
               )}
               {onResetSession && (
                 <button
                   type="button"
                   onClick={onResetSession}
-                  className="w-9 h-9 rounded-lg flex items-center justify-center hover:bg-amber-50 text-slate-400 hover:text-amber-600 transition-all cursor-pointer"
+                  className="w-10 h-10 rounded-lg flex items-center justify-center hover:bg-amber-50 text-slate-400 hover:text-amber-600 transition-all cursor-pointer"
                   title="清除上下文"
                 >
-                  <Brush className="w-4 h-4" />
+                  <Brush className="w-4.5 h-4.5" />
                 </button>
               )}
               {onToggleTerminal && (
                 <button
                   type="button"
                   onClick={onToggleTerminal}
-                  className="w-9 h-9 rounded-lg flex items-center justify-center hover:bg-brand-50 text-slate-400 hover:text-primary transition-all cursor-pointer"
+                  className="w-10 h-10 rounded-lg flex items-center justify-center hover:bg-brand-50 text-slate-400 hover:text-primary transition-all cursor-pointer"
                   title="终端"
                   aria-label="终端"
                 >
-                  <TerminalSquare className="w-4 h-4" />
+                  <TerminalSquare className="w-4.5 h-4.5" />
                 </button>
               )}
               {onTogglePermissionMode && (
                 <button
                   type="button"
                   onClick={onTogglePermissionMode}
-                  className={`h-9 px-2 rounded-lg flex items-center gap-1 text-xs font-medium transition-all cursor-pointer ${
+                  className={`h-10 px-2 rounded-lg flex items-center gap-1 text-xs font-medium transition-all cursor-pointer ${
                     permissionMode === 'plan'
                       ? 'bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/50 dark:text-amber-400 dark:border-amber-800'
                       : 'hover:bg-slate-100 text-slate-400 hover:text-slate-600'
@@ -535,7 +535,7 @@ export function MessageInput({
             <button
               onClick={handleSend}
               disabled={!canSend || disabled || sending}
-              className={`w-9 h-9 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-90 ${
+              className={`w-10 h-10 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-90 ${
                 canSend && !disabled && !sending
                   ? 'bg-primary text-white hover:bg-primary/90 max-lg:shadow-[0_2px_8px_rgba(13,148,136,0.3)]'
                   : 'bg-slate-100 text-slate-400'

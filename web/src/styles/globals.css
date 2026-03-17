@@ -332,12 +332,11 @@ pre code.hljs {
     bottom: 0;
     left: 0;
     right: 0;
-    height: 44px;
+    height: env(safe-area-inset-bottom, 0px);
     background: transparent;
-    touch-action: none;
+    touch-action: manipulation;
     z-index: 9999;
-    pointer-events: auto;
-    /* 确保这个层可以接收触摸事件 */
+    pointer-events: none;
     -webkit-tap-highlight-color: transparent;
   }
 

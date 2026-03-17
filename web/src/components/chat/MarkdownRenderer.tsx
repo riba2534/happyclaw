@@ -5,7 +5,7 @@ import remarkMath from 'remark-math';
 import rehypeHighlight from 'rehype-highlight';
 import rehypeKatex from 'rehype-katex';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
-import React, { useState, memo } from 'react';
+import React, { useState, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { Copy, Check } from 'lucide-react';
 import { MermaidDiagram } from './MermaidDiagram';
@@ -18,6 +18,8 @@ interface MarkdownRendererProps {
   content: string;
   groupJid?: string;
   variant?: 'chat' | 'docs';
+  /** When true, skip expensive plugins (KaTeX, sanitize) for faster streaming render */
+  streaming?: boolean;
 }
 
 /** Resolve relative image paths to the file download API */
@@ -47,7 +49,7 @@ function MarkdownImageLightbox({ src, onClose }: { src: string; onClose: () => v
 }
 
 /** Inline image component with lightbox support */
-function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
+function MarkdownImage({ src, alt, loading }: { src?: string; alt?: string; loading?: 'lazy' | 'eager' }) {
   const [expanded, setExpanded] = useState(false);
   const [error, setError] = useState(false);
 
@@ -69,6 +71,7 @@ function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
       <img
         src={src}
         alt={alt || ''}
+        loading={loading}
         className="my-3 max-w-full rounded-lg border border-border cursor-pointer hover:shadow-md transition-shadow"
         style={{ maxHeight: '400px', objectFit: 'contain' }}
         onClick={() => setExpanded(true)}
@@ -178,24 +181,36 @@ function CodeBlock({
   );
 }
 
-export const MarkdownRenderer = memo(function MarkdownRenderer({ content, groupJid, variant = 'chat' }: MarkdownRendererProps) {
+export const MarkdownRenderer = memo(function MarkdownRenderer({ content, groupJid, variant = 'chat', streaming = false }: MarkdownRendererProps) {
   const textSizeClass = variant === 'chat'
     ? 'text-[15px] leading-7 text-foreground'
     : 'text-sm leading-6 text-foreground';
   const tableTextClass = variant === 'chat' ? 'text-[0.95em]' : 'text-sm';
 
+  // Streaming mode: skip expensive KaTeX + sanitize for faster renders
+  const remarkPluginsList = useMemo(() =>
+    streaming ? [remarkGfm, remarkBreaks] : [remarkGfm, remarkBreaks, remarkMath],
+    [streaming]
+  );
+  const rehypePluginsList = useMemo(() =>
+    streaming
+      ? [[rehypeHighlight, { plainText: ['mermaid'] }] as const]
+      : [
+          [rehypeHighlight, { plainText: ['mermaid'] }] as const,
+          [rehypeKatex, { throwOnError: false, strict: false }] as const,
+          [rehypeSanitize, sanitizeSchema] as const,
+        ],
+    [streaming]
+  );
+
   return (
     <div className={textSizeClass}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
-        rehypePlugins={[
-          [rehypeHighlight, { plainText: ['mermaid'] }],
-          [rehypeKatex, { throwOnError: false, strict: false }],
-          [rehypeSanitize, sanitizeSchema],
-        ]}
+        remarkPlugins={remarkPluginsList as any}
+        rehypePlugins={rehypePluginsList as any}
         components={{
           code: (props) => <CodeBlock {...props} variant={variant} />,
-          img: ({ src, alt }) => <MarkdownImage src={src ? resolveImageSrc(src, groupJid) : undefined} alt={alt} />,
+          img: ({ src, alt }) => <MarkdownImage src={src ? resolveImageSrc(src, groupJid) : undefined} alt={alt} loading="lazy" />,
           a: ({ href, children }) => (
             <a
               href={href}
@@ -208,7 +223,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, groupJ
           ),
           table: ({ children }) => (
             <div
-              className="my-4 max-w-full overflow-x-auto overflow-y-hidden overscroll-x-contain [-webkit-overflow-scrolling:touch] [touch-action:pan-x]"
+              className="my-4 max-w-full overflow-x-auto overflow-y-hidden overscroll-x-contain [-webkit-overflow-scrolling:touch] [touch-action:pan-x_pan-y]"
               data-swipe-back-ignore="true"
             >
               <table className="w-max min-w-full border-collapse border border-border">

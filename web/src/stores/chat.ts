@@ -222,6 +222,74 @@ const completedSdkTaskIds = new Set<string>();
 const DB_TASK_AGENT_AUTO_CLEAN_MS = 5000;
 const dbTaskAgentCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+/**
+ * rAF batching for text_delta / thinking_delta events.
+ * Instead of calling set() on every single delta (~50ms intervals), we accumulate
+ * deltas and flush them once per animation frame (~16ms), merging multiple deltas
+ * into a single state update.
+ */
+interface PendingDelta {
+  texts: string[];
+  thinkings: string[];
+  raf: number;
+}
+const pendingDeltas = new Map<string, PendingDelta>();
+
+function flushPendingDelta(
+  key: string,
+  chatJid: string,
+  agentId: string | undefined,
+  set: (fn: (s: ChatState) => Partial<ChatState>) => void,
+): void {
+  const entry = pendingDeltas.get(key);
+  if (!entry) return;
+  pendingDeltas.delete(key);
+
+  const mergedText = entry.texts.join('');
+  const mergedThinking = entry.thinkings.join('');
+
+  if (agentId) {
+    set((s) => {
+      if (!s.agentStreaming[agentId] && s.agentWaiting[agentId] === false) return s;
+      const prev = s.agentStreaming[agentId] || { ...DEFAULT_STREAMING_STATE };
+      const next = { ...prev };
+      if (mergedText) {
+        const combined = prev.partialText + mergedText;
+        next.partialText = combined.length > 8000 ? combined.slice(-8000) : combined;
+        next.isThinking = false;
+      }
+      if (mergedThinking) {
+        const combined = prev.thinkingText + mergedThinking;
+        next.thinkingText = combined.length > 8000 ? combined.slice(-8000) : combined;
+        next.isThinking = true;
+      }
+      return { agentStreaming: { ...s.agentStreaming, [agentId]: next } };
+    });
+  } else {
+    set((s) => {
+      if (!s.streaming[chatJid] && s.waiting[chatJid] === false) return s;
+      if (s.streaming[chatJid]?.interrupted) return s;
+      const MAX_STREAMING_TEXT = 8000;
+      const prev = s.streaming[chatJid] || { ...DEFAULT_STREAMING_STATE };
+      const next = { ...prev };
+      if (mergedText) {
+        const combined = prev.partialText + mergedText;
+        next.partialText = combined.length > MAX_STREAMING_TEXT ? combined.slice(-MAX_STREAMING_TEXT) : combined;
+        next.isThinking = false;
+      }
+      if (mergedThinking) {
+        const combined = prev.thinkingText + mergedThinking;
+        next.thinkingText = combined.length > MAX_STREAMING_TEXT ? combined.slice(-MAX_STREAMING_TEXT) : combined;
+        next.isThinking = true;
+      }
+      return {
+        waiting: { ...s.waiting, [chatJid]: true },
+        streaming: { ...s.streaming, [chatJid]: next },
+      };
+    });
+  }
+}
+
 function scheduleDbTaskAgentCleanup(
   set: (fn: (s: ChatState) => Partial<ChatState>) => void,
   agentId: string,
@@ -1037,6 +1105,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
   handleStreamEvent: (chatJid, event, agentId?) => {
     // Skip while clearHistory is in-flight
     if (get().clearing[chatJid]) return;
+
+    // ⓪ text_delta / thinking_delta — rAF batch for both agent and main conversation
+    if (event.eventType === 'text_delta' || event.eventType === 'thinking_delta') {
+      const key = agentId ? `agent:${agentId}` : `main:${chatJid}`;
+      let entry = pendingDeltas.get(key);
+      if (entry) {
+        // Already have a pending rAF — just accumulate
+        if (event.eventType === 'text_delta') entry.texts.push(event.text || '');
+        else entry.thinkings.push(event.text || '');
+        return;
+      }
+      entry = { texts: [], thinkings: [], raf: 0 };
+      if (event.eventType === 'text_delta') entry.texts.push(event.text || '');
+      else entry.thinkings.push(event.text || '');
+      entry.raf = requestAnimationFrame(() => {
+        flushPendingDelta(key, chatJid, agentId, set);
+      });
+      pendingDeltas.set(key, entry);
+      return;
+    }
 
     // ① conversation agent（DB 持久化的）— 已有逻辑不变
     if (agentId) {

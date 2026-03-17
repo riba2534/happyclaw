@@ -154,6 +154,7 @@ function TaskAgentBlock({ agent, groupJid }: { agent: AgentInfo; groupJid: strin
                       : streaming.partialText}
                     groupJid={groupJid}
                     variant="chat"
+                    streaming
                   />
                 </div>
               )}
@@ -302,11 +303,12 @@ function StreamingContent({
       {streaming.partialText && (
         <div className="max-w-none overflow-hidden [&>div>*:first-child]:!mt-0">
           <MarkdownRenderer
-            content={streaming.partialText.length > 5000
-              ? '...' + streaming.partialText.slice(-4000)
+            content={streaming.partialText.length > 3000
+              ? '...' + streaming.partialText.slice(-2000)
               : streaming.partialText}
             groupJid={groupJid}
             variant="chat"
+            streaming
           />
         </div>
       )}

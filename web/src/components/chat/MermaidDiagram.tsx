@@ -208,7 +208,7 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
               <X size={16} />
             </button>
             <div
-              className="w-full h-full flex items-center justify-center [touch-action:pinch-zoom] [&>svg]:!w-[90vw] [&>svg]:!max-w-none [&>svg]:!h-auto [&>svg]:!max-h-[90vh]"
+              className="w-full h-full flex items-center justify-center [touch-action:pan-x_pan-y_pinch-zoom] [&>svg]:!w-[90vw] [&>svg]:!max-w-none [&>svg]:!h-auto [&>svg]:!max-h-[90vh]"
               dangerouslySetInnerHTML={{ __html: svg! }}
             />
           </div>

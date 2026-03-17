@@ -73,7 +73,7 @@ export function AppLayout() {
           className={`flex-1 min-h-0 lg:overflow-auto lg:pb-0 ${
             isChatRoute
               ? 'overflow-hidden'
-              : `overflow-y-auto overflow-x-hidden overscroll-y-contain ${hideMobileTabBar ? 'pb-6' : 'pb-28'}`
+              : `overflow-y-auto overflow-x-hidden overscroll-y-none ${hideMobileTabBar ? 'pb-6' : 'pb-28'}`
           }`}
         >
           <Outlet />
