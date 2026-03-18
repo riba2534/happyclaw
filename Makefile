@@ -63,7 +63,7 @@ ifeq ($(HAS_BUN),1)
 	bun src/index.ts
 else
 	@if [ ! -f .build-sentinel ] || [ -n "$$(find src/ web/src/ container/agent-runner/src/ shared/ -newer .build-sentinel \( -name '*.ts' -o -name '*.tsx' \) 2>/dev/null | head -1)" ]; then echo "🔨 检测到源码变更，重新编译..."; $(MAKE) build; else echo "✅ dist/ 已是最新，跳过编译"; fi
-	npm run start
+	node dist/index.js
 endif
 
 # ─── Quality ─────────────────────────────────────────────────

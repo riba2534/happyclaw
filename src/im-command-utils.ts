@@ -185,3 +185,48 @@ export function formatSystemStatus(
 
   return lines.join('\n');
 }
+
+// ─── BTW Support ─────────────────────────────────────────────
+
+export interface MessageForTranscript {
+  content: string;
+  is_from_me: boolean;
+  sender_name: string;
+}
+
+export function buildBtwTranscript(
+  messages: MessageForTranscript[],
+  maxCharsPerMsg = 500,
+): string {
+  return [...messages]
+    .reverse()
+    .map((msg) => {
+      const who = msg.is_from_me ? 'AI' : msg.sender_name || '用户';
+      const text = (msg.content || '').slice(0, maxCharsPerMsg);
+      return `${who}: ${text}`;
+    })
+    .join('\n');
+}
+
+export const BTW_PROMPT_TEMPLATE = (transcript: string, question: string) =>
+  `你是一个 AI 助手。以下是当前对话的上下文：\n\n${transcript}\n\n用户在旁路提问（不中断主任务）：${question}\n\n请基于上下文简洁地回答这个问题。不要使用任何工具，仅从上下文推理回答。`;
+
+export interface BtwTargetResult {
+  targetJid: string;
+}
+
+export function resolveBtwTarget(
+  group: RegisteredGroupLike,
+  getAgent: (id: string) => AgentLike | undefined,
+  findWebJidForFolder: (folder: string) => string | undefined,
+): BtwTargetResult | null {
+  if (group.target_agent_id) {
+    const agent = getAgent(group.target_agent_id);
+    return agent ? { targetJid: `${agent.chat_jid}#agent:${group.target_agent_id}` } : null;
+  }
+  if (group.target_main_jid) {
+    return { targetJid: group.target_main_jid };
+  }
+  const jid = findWebJidForFolder(group.folder);
+  return jid ? { targetJid: jid } : null;
+}

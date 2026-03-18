@@ -327,6 +327,15 @@ function isUnrecoverableTranscriptError(msg: string): boolean {
   return isApiReject && (isImageSizeError || isMimeMismatch);
 }
 
+/**
+ * 检测 thinking block signature 无效错误。
+ * 旧会话中的 thinking block 包含 signature 字段，SDK/API 升级后 signature 可能失效，
+ * 导致恢复会话时 API 返回 400 错误。此类错误应清除旧 session 后重试。
+ */
+function isInvalidThinkingSignatureError(msg: string): boolean {
+  return /invalid.*signature.*thinking/i.test(msg) || /thinking.*invalid.*signature/i.test(msg);
+}
+
 function getSessionSummary(sessionId: string, transcriptPath: string): string | null {
   const projectDir = path.dirname(transcriptPath);
   const indexPath = path.join(projectDir, 'sessions-index.json');
@@ -1133,6 +1142,11 @@ async function runQuery(
         processor.resetFullTextAccumulator();
         return { newSessionId, lastAssistantUuid, closedDuringQuery, unrecoverableTranscriptError: true, interruptedDuringQuery };
       }
+      if (textResult && isInvalidThinkingSignatureError(textResult)) {
+        log(`Invalid thinking signature in result: ${textResult.slice(0, 200)}`);
+        processor.resetFullTextAccumulator();
+        return { newSessionId, lastAssistantUuid, closedDuringQuery, interruptedDuringQuery, sessionResumeFailed: true };
+      }
 
       const { effectiveResult } = processor.processResult(textResult);
       const finalText = canonicalAssistantText || effectiveResult;
@@ -1214,6 +1228,12 @@ async function runQuery(
     if (isUnrecoverableTranscriptError(errorMessage)) {
       log(`Unrecoverable transcript error: ${errorMessage}`);
       return { newSessionId, lastAssistantUuid, closedDuringQuery, unrecoverableTranscriptError: true, interruptedDuringQuery };
+    }
+
+    // 检测会话历史中 thinking block signature 无效（SDK/API 升级后旧会话不兼容）
+    if (isInvalidThinkingSignatureError(errorMessage)) {
+      log(`Invalid thinking signature detected, treating as session resume failure: ${errorMessage}`);
+      return { newSessionId, lastAssistantUuid, closedDuringQuery, interruptedDuringQuery, sessionResumeFailed: true };
     }
 
     // 中断导致的 SDK 错误（error_during_execution 等）：正常返回，不抛出
