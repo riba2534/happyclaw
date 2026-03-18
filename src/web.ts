@@ -730,6 +730,18 @@ function setupWebSocket(server: any): WebSocketServer {
             return;
           }
 
+          // ── /btw command: side question ──
+          // 与 /clear 保持一致，通过 send_message 内容前缀拦截而非独立 WsMessageIn 类型。
+          if (content.trim().startsWith('/btw ')) {
+            const question = content.trim().slice(5);
+            if (question) {
+              deps?.executeBtw?.(chatJid, question).catch((err) => {
+                logger.error({ chatJid, err }, '/btw command failed');
+              });
+            }
+            return;
+          }
+
           const result = await handleWebUserMessage(
             chatJid,
             content.trim(),
@@ -1200,6 +1212,32 @@ function normalizeHomeJid(chatJid: string): string {
     }
   }
   return chatJid;
+}
+
+// --- /btw (side question) support ---
+
+export function broadcastBtwResponse(
+  chatJid: string,
+  id: string,
+  question: string,
+  answer: string,
+  final: boolean,
+): void {
+  const jid = normalizeHomeJid(chatJid);
+  const allowedUserIds = getGroupAllowedUserIds(chatJid);
+  safeBroadcast(
+    {
+      type: 'btw_response',
+      chatJid: jid,
+      id,
+      question,
+      answer,
+      timestamp: new Date().toISOString(),
+      final,
+    },
+    isHostGroupJid(chatJid),
+    allowedUserIds,
+  );
 }
 
 export function broadcastToWebClients(chatJid: string, text: string): void {
