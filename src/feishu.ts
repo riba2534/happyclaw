@@ -952,9 +952,9 @@ export function createFeishuConnection(
           },
           'Feishu slash command processed',
         );
-        if (reply) {
-          await sendTextToChat(chatId, reply);
-          return; // 已知命令，拦截
+        if (reply != null) {
+          if (reply) await sendTextToChat(chatId, reply);
+          return; // 已知命令，拦截（reply='' 表示命令已自行发送回复）
         }
         // reply 为 null 表示未知命令，继续作为普通消息处理
       } catch (err) {

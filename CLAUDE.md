@@ -239,6 +239,7 @@ StreamEvent 类型以 `shared/stream-event.ts` 为单一真相源，构建时通
 | `terminal_error` | 终端错误 |
 | `docker_build_log` | Docker 镜像构建日志 |
 | `docker_build_complete` | Docker 镜像构建完成 |
+| `btw_response` | 旁路提问回复（含 `chatJid`、`id`、`question`、`answer`、`final`） |
 
 **客户端 → 服务端（`WsMessageIn`）**：
 
