@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChevronDown, ChevronUp, Pause, Play, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronUp, Pause, Play, Trash2, Zap } from 'lucide-react';
 import { ScheduledTask } from '../../stores/tasks';
 import { TaskDetail } from './TaskDetail';
 
@@ -8,10 +8,12 @@ interface TaskCardProps {
   onPause: (id: string) => void;
   onResume: (id: string) => void;
   onDelete: (id: string) => void;
+  onRunNow?: (id: string) => void;
 }
 
-export function TaskCard({ task, onPause, onResume, onDelete }: TaskCardProps) {
+export function TaskCard({ task, onPause, onResume, onDelete, onRunNow }: TaskCardProps) {
   const [expanded, setExpanded] = useState(false);
+  const [runningNow, setRunningNow] = useState(false);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -45,6 +47,17 @@ export function TaskCard({ task, onPause, onResume, onDelete }: TaskCardProps) {
       onPause(task.id);
     } else {
       onResume(task.id);
+    }
+  };
+
+  const handleRunNow = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!onRunNow || runningNow) return;
+    setRunningNow(true);
+    try {
+      await onRunNow(task.id);
+    } finally {
+      setTimeout(() => setRunningNow(false), 3000);
     }
   };
 
@@ -110,6 +123,22 @@ export function TaskCard({ task, onPause, onResume, onDelete }: TaskCardProps) {
 
           {/* Action Buttons */}
           <div className="flex items-center gap-2 flex-shrink-0">
+            {/* Run Now */}
+            {onRunNow &&
+              (task.status === 'active' || task.status === 'paused') && (
+                <button
+                  onClick={handleRunNow}
+                  disabled={runningNow}
+                  className="p-2 text-slate-600 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+                  title="立即运行"
+                  aria-label="立即运行任务"
+                >
+                  <Zap
+                    className={`w-5 h-5 ${runningNow ? 'animate-pulse text-amber-500' : ''}`}
+                  />
+                </button>
+              )}
+
             {/* Pause/Resume */}
             {(task.status === 'active' || task.status === 'paused') && (
               <button

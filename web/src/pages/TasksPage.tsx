@@ -11,7 +11,7 @@ import { EmptyState } from '@/components/common/EmptyState';
 import { Button } from '@/components/ui/button';
 
 export function TasksPage() {
-  const { tasks, loading, error, loadTasks, createTask, updateTaskStatus, deleteTask } = useTasksStore();
+  const { tasks, loading, error, loadTasks, createTask, updateTaskStatus, deleteTask, runTaskNow } = useTasksStore();
   const { groups, loadGroups } = useChatStore();
   const { user } = useAuthStore();
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -132,6 +132,7 @@ export function TasksPage() {
                       onPause={handlePause}
                       onResume={handleResume}
                       onDelete={handleDelete}
+                      onRunNow={runTaskNow}
                     />
                   ))}
                 </div>
@@ -149,6 +150,7 @@ export function TasksPage() {
                       onPause={handlePause}
                       onResume={handleResume}
                       onDelete={handleDelete}
+                      onRunNow={runTaskNow}
                     />
                   ))}
                 </div>
@@ -166,6 +168,7 @@ export function TasksPage() {
                       onPause={handlePause}
                       onResume={handleResume}
                       onDelete={handleDelete}
+                      onRunNow={runTaskNow}
                     />
                   ))}
                 </div>

@@ -1277,6 +1277,7 @@ async function main(): Promise<void> {
     groupFolder: containerInput.groupFolder,
     isHome,
     isAdminHome,
+    isScheduledTask: containerInput.isScheduledTask || false,
     workspaceIpc: WORKSPACE_IPC,
     workspaceGroup: WORKSPACE_GROUP,
     workspaceGlobal: WORKSPACE_GLOBAL,

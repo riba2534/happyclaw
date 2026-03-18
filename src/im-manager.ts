@@ -269,6 +269,20 @@ class IMConnectionManager {
     return undefined;
   }
 
+  /**
+   * Get all connected channel types for a user.
+   * Used by scheduled task IM broadcast to discover available channels.
+   */
+  getConnectedChannelTypes(userId: string): string[] {
+    const conn = this.connections.get(userId);
+    if (!conn) return [];
+    const types: string[] = [];
+    for (const [type, ch] of conn.channels.entries()) {
+      if (ch.isConnected()) types.push(type);
+    }
+    return types;
+  }
+
   // ─── Convenience Methods (API-compatible wrappers) ──────────
 
   /**

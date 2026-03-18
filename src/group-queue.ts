@@ -40,6 +40,8 @@ interface GroupState {
   displayName: string | null;
   groupFolder: string | null;
   agentId: string | null;
+  /** Isolated task run ID — used for tasks-run/{taskRunId}/ IPC namespace. */
+  taskRunId: string | null;
   retryCount: number;
   retryTimer: ReturnType<typeof setTimeout> | null;
   restarting: boolean;
@@ -86,6 +88,7 @@ export class GroupQueue {
         displayName: null,
         groupFolder: null,
         agentId: null,
+        taskRunId: null,
         retryCount: 0,
         retryTimer: null,
         restarting: false,
@@ -365,6 +368,7 @@ export class GroupQueue {
     groupFolder?: string,
     displayName?: string,
     agentId?: string,
+    taskRunId?: string,
   ): void {
     const state = this.getGroup(groupJid);
     state.process = proc;
@@ -372,6 +376,7 @@ export class GroupQueue {
     state.displayName = displayName || null;
     if (groupFolder) state.groupFolder = groupFolder;
     state.agentId = agentId || null;
+    state.taskRunId = taskRunId || null;
     if (state.pendingMessages && !state.agentId) {
       this.requestDrainForActiveRunner(
         groupJid,
@@ -385,6 +390,16 @@ export class GroupQueue {
    * Sub-agents use a nested path: data/ipc/{folder}/agents/{agentId}/input/
    */
   private resolveIpcInputDir(state: ActiveGroupState): string {
+    if (state.taskRunId) {
+      return path.join(
+        DATA_DIR,
+        'ipc',
+        state.groupFolder,
+        'tasks-run',
+        state.taskRunId,
+        'input',
+      );
+    }
     if (state.agentId) {
       return path.join(
         DATA_DIR,
@@ -512,10 +527,16 @@ export class GroupQueue {
    * subsequent runner for the same folder does not immediately see stale
    * sentinels and exit prematurely.
    */
-  private cleanupIpcSentinels(groupFolder: string, agentId?: string | null): void {
-    const inputDir = agentId
-      ? path.join(DATA_DIR, 'ipc', groupFolder, 'agents', agentId, 'input')
-      : path.join(DATA_DIR, 'ipc', groupFolder, 'input');
+  private cleanupIpcSentinels(
+    groupFolder: string,
+    agentId?: string | null,
+    taskRunId?: string | null,
+  ): void {
+    const inputDir = taskRunId
+      ? path.join(DATA_DIR, 'ipc', groupFolder, 'tasks-run', taskRunId, 'input')
+      : agentId
+        ? path.join(DATA_DIR, 'ipc', groupFolder, 'agents', agentId, 'input')
+        : path.join(DATA_DIR, 'ipc', groupFolder, 'input');
     for (const name of ['_drain', '_close']) {
       try {
         fs.unlinkSync(path.join(inputDir, name));
@@ -872,7 +893,7 @@ export class GroupQueue {
       // Clean up stale sentinel files before clearing groupFolder/agentId
       if (state.groupFolder) {
         try {
-          this.cleanupIpcSentinels(state.groupFolder, state.agentId);
+          this.cleanupIpcSentinels(state.groupFolder, state.agentId, state.taskRunId);
         } catch (err) {
           logger.warn({ groupJid, err }, 'Failed to clean up IPC sentinels');
         }
@@ -886,6 +907,7 @@ export class GroupQueue {
       state.displayName = null;
       state.groupFolder = null;
       state.agentId = null;
+      state.taskRunId = null;
       this.activeCount--;
       if (isHostMode) {
         this.activeHostProcessCount--;
@@ -949,7 +971,7 @@ export class GroupQueue {
       // Clean up stale sentinel files before clearing groupFolder/agentId
       if (state.groupFolder) {
         try {
-          this.cleanupIpcSentinels(state.groupFolder, state.agentId);
+          this.cleanupIpcSentinels(state.groupFolder, state.agentId, state.taskRunId);
         } catch (err) {
           logger.warn({ groupJid, err }, 'Failed to clean up IPC sentinels');
         }
@@ -964,6 +986,7 @@ export class GroupQueue {
       state.displayName = null;
       state.groupFolder = null;
       state.agentId = null;
+      state.taskRunId = null;
       this.activeCount--;
       if (isHostMode) {
         this.activeHostProcessCount--;

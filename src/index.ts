@@ -105,7 +105,7 @@ import {
   type WorkspaceInfo,
 } from './im-command-utils.js';
 import { analyzeIntent } from './intent-analyzer.js';
-import { invalidateSessionCache } from './web-context.js';
+import { invalidateSessionCache, getWebDeps } from './web-context.js';
 import {
   getFeishuProviderConfigWithSource,
   getTelegramProviderConfig,
@@ -124,7 +124,7 @@ import type {
   QQConnectConfig,
 } from './im-manager.js';
 import { GroupQueue } from './group-queue.js';
-import { startSchedulerLoop } from './task-scheduler.js';
+import { startSchedulerLoop, triggerTaskNow } from './task-scheduler.js';
 import {
   checkBillingAccessFresh,
   formatBillingAccessDeniedMessage,
@@ -2938,7 +2938,7 @@ function startIpcWatcher(): void {
       );
       const isHome = !!sourceGroupEntry?.is_home;
 
-      // Collect all IPC roots: main group dir + agents/*/
+      // Collect all IPC roots: main group dir + agents/*/ + tasks-run/*/
       const groupIpcRoot = path.join(ipcBaseDir, sourceGroup);
       const ipcRoots = [groupIpcRoot];
       try {
@@ -2953,6 +2953,19 @@ function startIpcWatcher(): void {
         }
       } catch {
         /* agents dir may not exist */
+      }
+      try {
+        const tasksRunDir = path.join(groupIpcRoot, 'tasks-run');
+        const taskRunEntries = await fsp.readdir(tasksRunDir, {
+          withFileTypes: true,
+        });
+        for (const entry of taskRunEntries) {
+          if (entry.isDirectory()) {
+            ipcRoots.push(path.join(tasksRunDir, entry.name));
+          }
+        }
+      } catch {
+        /* tasks-run dir may not exist */
       }
 
       for (const ipcRoot of ipcRoots) {
@@ -3001,6 +3014,53 @@ function startIpcWatcher(): void {
                     );
                     sendImWithFailTracking(ipcImRoute, data.text, localImages);
                   }
+
+                  // Scheduled task: broadcast to all connected IM channels of the owner
+                  if (data.isScheduledTask && sourceGroupEntry?.created_by) {
+                    const sentChannelTypes = new Set<string>();
+                    // Mark already-sent channel types
+                    const primaryType = getChannelType(data.chatJid);
+                    if (primaryType) sentChannelTypes.add(primaryType);
+                    if (ipcImRoute) {
+                      const routeType = getChannelType(ipcImRoute);
+                      if (routeType) sentChannelTypes.add(routeType);
+                    }
+
+                    const connectedTypes = imManager.getConnectedChannelTypes(
+                      sourceGroupEntry.created_by,
+                    );
+                    const ownerGroups = getGroupsByOwner(
+                      sourceGroupEntry.created_by,
+                    );
+
+                    for (const channelType of connectedTypes) {
+                      if (sentChannelTypes.has(channelType)) continue;
+                      // Find an IM JID of this channel type (prefer same folder)
+                      const sameFolderGroup = ownerGroups.find(
+                        (g) =>
+                          getChannelType(g.jid) === channelType &&
+                          g.folder === sourceGroup,
+                      );
+                      const anyGroup =
+                        sameFolderGroup ||
+                        ownerGroups.find(
+                          (g) => getChannelType(g.jid) === channelType,
+                        );
+                      if (anyGroup) {
+                        const taskLocalImages = extractLocalImImagePaths(
+                          data.text,
+                          sourceGroup,
+                        );
+                        sendImWithFailTracking(
+                          anyGroup.jid,
+                          data.text,
+                          taskLocalImages,
+                        );
+                        sentChannelTypes.add(channelType);
+                      }
+                    }
+                  }
+
                   ipcMessageSentFolders.add(sourceGroup);
                   logger.info(
                     { chatJid: data.chatJid, sourceGroup, imRoute: ipcImRoute },
@@ -3086,6 +3146,56 @@ function startIpcWatcher(): void {
                       finalization_reason: null,
                     });
                     broadcastToWebClients(data.chatJid, displayText);
+
+                    // Scheduled task: broadcast image to all connected IM channels
+                    if (data.isScheduledTask && sourceGroupEntry?.created_by) {
+                      const sentImgChannelTypes = new Set<string>();
+                      const imgPrimaryType = getChannelType(data.chatJid);
+                      if (imgPrimaryType) sentImgChannelTypes.add(imgPrimaryType);
+                      if (imgImRoute) {
+                        const imgRouteType = getChannelType(imgImRoute);
+                        if (imgRouteType)
+                          sentImgChannelTypes.add(imgRouteType);
+                      }
+
+                      const imgConnectedTypes =
+                        imManager.getConnectedChannelTypes(
+                          sourceGroupEntry.created_by,
+                        );
+                      const imgOwnerGroups = getGroupsByOwner(
+                        sourceGroupEntry.created_by,
+                      );
+
+                      for (const ct of imgConnectedTypes) {
+                        if (sentImgChannelTypes.has(ct)) continue;
+                        const target =
+                          imgOwnerGroups.find(
+                            (g) =>
+                              getChannelType(g.jid) === ct &&
+                              g.folder === sourceGroup,
+                          ) ||
+                          imgOwnerGroups.find(
+                            (g) => getChannelType(g.jid) === ct,
+                          );
+                        if (target) {
+                          imManager
+                            .sendImage(
+                              target.jid,
+                              imageBuffer,
+                              mimeType,
+                              caption,
+                              fileName,
+                            )
+                            .catch((err) =>
+                              logger.warn(
+                                { jid: target.jid, err },
+                                'Failed to broadcast task image to IM',
+                              ),
+                            );
+                          sentImgChannelTypes.add(ct);
+                        }
+                      }
+                    }
 
                     logger.info(
                       {
@@ -5500,11 +5610,18 @@ async function main(): Promise<void> {
 
   queue.setProcessMessagesFn(processGroupMessages);
   queue.setHostModeChecker((groupJid: string) => {
-    let group = registeredGroups[groupJid];
+    // Strip virtual JID suffixes to resolve the actual registered group
+    let baseJid = groupJid;
+    const taskSep = baseJid.indexOf('#task:');
+    if (taskSep >= 0) baseJid = baseJid.slice(0, taskSep);
+    const agentSep = baseJid.indexOf('#agent:');
+    if (agentSep >= 0) baseJid = baseJid.slice(0, agentSep);
+
+    let group = registeredGroups[baseJid];
     if (!group) {
-      const dbGroup = getRegisteredGroup(groupJid);
+      const dbGroup = getRegisteredGroup(baseJid);
       if (dbGroup) {
-        registeredGroups[groupJid] = dbGroup;
+        registeredGroups[baseJid] = dbGroup;
         group = dbGroup;
       }
     }
@@ -5523,6 +5640,14 @@ async function main(): Promise<void> {
       const folder = group?.folder || baseJid;
       return `${folder}#${agentId}`;
     }
+    // Task virtual JIDs: {chatJid}#task:{taskId} → separate serialization key
+    const taskSep = groupJid.indexOf('#task:');
+    if (taskSep >= 0) {
+      const baseJid = groupJid.slice(0, taskSep);
+      const taskId = groupJid.slice(taskSep + 6);
+      const group = registeredGroups[baseJid];
+      return `${group?.folder || baseJid}#task:${taskId}`;
+    }
     const group = registeredGroups[groupJid];
     return group?.folder || groupJid;
   });
@@ -5539,7 +5664,13 @@ async function main(): Promise<void> {
   // Billing: user-level concurrent container limit
   queue.setUserConcurrentLimitChecker((groupJid: string) => {
     if (!isBillingEnabled()) return { allowed: true };
-    const group = registeredGroups[groupJid];
+    // Strip virtual JID suffixes
+    let baseJid = groupJid;
+    const taskSep = baseJid.indexOf('#task:');
+    if (taskSep >= 0) baseJid = baseJid.slice(0, taskSep);
+    const agentSep = baseJid.indexOf('#agent:');
+    if (agentSep >= 0) baseJid = baseJid.slice(0, agentSep);
+    const group = registeredGroups[baseJid];
     if (!group?.created_by) return { allowed: true };
     const owner = getUserById(group.created_by);
     if (!owner || owner.role === 'admin') return { allowed: true };
@@ -5554,17 +5685,19 @@ async function main(): Promise<void> {
     }
     return { allowed: userActive < limit };
   });
-  startSchedulerLoop({
+  const schedulerDeps: import('./task-scheduler.js').SchedulerDependencies = {
     registeredGroups: () => registeredGroups,
     getSessions: () => sessions,
     queue,
-    onProcess: (groupJid, proc, containerName, groupFolder, displayName) =>
+    onProcess: (groupJid, proc, containerName, groupFolder, displayName, taskRunId) =>
       queue.registerProcess(
         groupJid,
         proc,
         containerName,
         groupFolder,
         displayName,
+        undefined, // agentId
+        taskRunId,
       ),
     sendMessage,
     assistantName: ASSISTANT_NAME,
@@ -5572,7 +5705,16 @@ async function main(): Promise<void> {
       logger,
       dataDir: DATA_DIR,
     },
-  });
+  };
+  startSchedulerLoop(schedulerDeps);
+
+  // Inject triggerTaskRun into WebDeps (schedulerDeps must exist first)
+  const webDeps = getWebDeps();
+  if (webDeps) {
+    webDeps.triggerTaskRun = (taskId: string) =>
+      triggerTaskNow(taskId, schedulerDeps);
+  }
+
   startIpcWatcher();
   recoverPendingMessages();
   startMessageLoop();

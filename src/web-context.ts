@@ -62,6 +62,7 @@ export interface WebDeps {
   clearImFailCounts?: (jid: string) => void;
   updateReplyRoute?: (folder: string, sourceJid: string | null) => void;
   executeBtw?: (chatJid: string, question: string) => Promise<void>;
+  triggerTaskRun?: (taskId: string) => { success: boolean; error?: string };
 }
 
 export type Variables = {

@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 
 import {
+  DATA_DIR,
   GROUPS_DIR,
   MAIN_GROUP_FOLDER,
   SCHEDULER_POLL_INTERVAL,
@@ -42,6 +43,7 @@ export interface SchedulerDependencies {
     containerName: string | null,
     groupFolder: string,
     displayName?: string,
+    taskRunId?: string,
   ) => void;
   sendMessage: (
     jid: string,
@@ -50,6 +52,13 @@ export interface SchedulerDependencies {
   ) => Promise<string | undefined | void>;
   assistantName: string;
   dailySummaryDeps?: DailySummaryDeps;
+}
+
+export interface RunTaskOptions {
+  /** Unique ID for isolated task IPC namespace (tasks-run/{taskRunId}/) */
+  taskRunId?: string;
+  /** Manual trigger — don't update next_run, skip isTaskStillActive check */
+  manualRun?: boolean;
 }
 
 const runningTaskIds = new Set<string>();
@@ -95,8 +104,13 @@ async function runTask(
   task: ScheduledTask,
   deps: SchedulerDependencies,
   groupJid: string,
+  options?: RunTaskOptions,
 ): Promise<void> {
-  if (!isTaskStillActive(task.id, 'task')) return;
+  if (!options?.manualRun && !isTaskStillActive(task.id, 'task')) return;
+
+  const effectiveJid = options?.taskRunId
+    ? `${groupJid}#task:${options.taskRunId}`
+    : groupJid;
 
   runningTaskIds.add(task.id);
   const startTime = Date.now();
@@ -198,7 +212,7 @@ async function runTask(
         { taskId: task.id },
         'Scheduled task idle timeout, closing container stdin',
       );
-      deps.queue.closeStdin(groupJid);
+      deps.queue.closeStdin(effectiveJid);
     }, getSystemSettings().idleTimeout);
   };
 
@@ -231,14 +245,16 @@ async function runTask(
         isHome,
         isAdminHome,
         isScheduledTask: true,
+        taskRunId: options?.taskRunId,
       },
       (proc, identifier) =>
         deps.onProcess(
-          groupJid,
+          effectiveJid,
           proc,
           executionMode === 'container' ? identifier : null,
           task.group_folder,
           identifier,
+          options?.taskRunId,
         ),
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
@@ -274,6 +290,21 @@ async function runTask(
     logger.error({ taskId: task.id, error }, 'Task failed');
   } finally {
     runningTaskIds.delete(task.id);
+    // Clean up isolated task IPC directory
+    if (options?.taskRunId) {
+      const taskRunDir = path.join(
+        DATA_DIR,
+        'ipc',
+        task.group_folder,
+        'tasks-run',
+        options.taskRunId,
+      );
+      try {
+        fs.rmSync(taskRunDir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   const durationMs = Date.now() - startTime;
@@ -287,7 +318,8 @@ async function runTask(
     error,
   });
 
-  const nextRun = computeNextRun(task);
+  // manualRun: preserve original next_run schedule
+  const nextRun = options?.manualRun ? task.next_run : computeNextRun(task);
 
   const resultSummary = error
     ? `Error: ${error}`
@@ -301,8 +333,9 @@ async function runScriptTask(
   task: ScheduledTask,
   deps: SchedulerDependencies,
   groupJid: string,
+  manualRun = false,
 ): Promise<void> {
-  if (!isTaskStillActive(task.id, 'script task')) return;
+  if (!manualRun && !isTaskStillActive(task.id, 'script task')) return;
 
   runningTaskIds.add(task.id);
   const startTime = Date.now();
@@ -419,7 +452,8 @@ async function runScriptTask(
     error,
   });
 
-  const nextRun = computeNextRun(task);
+  // manualRun: preserve original next_run schedule
+  const nextRun = manualRun ? task.next_run : computeNextRun(task);
   const resultSummary = error
     ? `Error: ${error}`
     : result
@@ -516,7 +550,16 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
               'Unhandled error in runScriptTask',
             );
           });
+        } else if (currentTask.context_mode === 'isolated') {
+          // Isolated tasks use a virtual JID for independent serialization
+          const virtualJid = `${targetGroupJid}#task:${currentTask.id}`;
+          deps.queue.enqueueTask(virtualJid, currentTask.id, () =>
+            runTask(currentTask, deps, targetGroupJid, {
+              taskRunId: currentTask.id,
+            }),
+          );
         } else {
+          // Group-mode tasks share the group's serialization key
           deps.queue.enqueueTask(targetGroupJid, currentTask.id, () =>
             runTask(currentTask, deps, targetGroupJid),
           );
@@ -530,4 +573,58 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
   };
 
   loop();
+}
+
+/**
+ * Manually trigger a task to run now (fire-and-forget).
+ * Does not change next_run — the task continues its normal schedule.
+ */
+export function triggerTaskNow(
+  taskId: string,
+  deps: SchedulerDependencies,
+): { success: boolean; error?: string } {
+  const task = getTaskById(taskId);
+  if (!task) return { success: false, error: 'Task not found' };
+  if (task.status === 'completed')
+    return { success: false, error: 'Task already completed' };
+  if (runningTaskIds.has(taskId))
+    return { success: false, error: 'Task is already running' };
+
+  // Resolve target group JID (same logic as scheduler loop)
+  const groups = deps.registeredGroups();
+  let targetGroupJid = task.chat_jid;
+  const directTarget = groups[targetGroupJid];
+  if (!directTarget || directTarget.folder !== task.group_folder) {
+    const sameFolder = Object.entries(groups).filter(
+      ([, g]) => g.folder === task.group_folder,
+    );
+    const preferred =
+      sameFolder.find(([jid]) => jid.startsWith('web:')) || sameFolder[0];
+    targetGroupJid = preferred?.[0] || '';
+  }
+  if (!targetGroupJid)
+    return { success: false, error: 'Target group not registered' };
+
+  if (task.execution_type === 'script') {
+    if (!hasScriptCapacity())
+      return { success: false, error: 'Script concurrency limit reached' };
+    runScriptTask(task, deps, targetGroupJid, true).catch((err) =>
+      logger.error({ taskId, err }, 'Manual script task failed'),
+    );
+  } else {
+    const opts: RunTaskOptions = { manualRun: true };
+    if (task.context_mode === 'isolated') {
+      opts.taskRunId = task.id;
+      const virtualJid = `${targetGroupJid}#task:${task.id}`;
+      deps.queue.enqueueTask(virtualJid, task.id, () =>
+        runTask(task, deps, targetGroupJid, opts),
+      );
+    } else {
+      deps.queue.enqueueTask(targetGroupJid, task.id, () =>
+        runTask(task, deps, targetGroupJid, opts),
+      );
+    }
+  }
+
+  return { success: true };
 }
