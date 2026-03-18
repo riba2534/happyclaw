@@ -322,7 +322,7 @@ export function MessageInput({
       className="px-4 pt-2 pb-6 bg-background ios-pwa-bottom-safe max-lg:bg-background/60 max-lg:backdrop-blur-xl max-lg:saturate-[1.8] max-lg:border-t max-lg:border-border/40"
       style={{ paddingBottom: `max(1.5rem, var(--keyboard-height, 0px))` }}
     >
-      <div className={isCompact ? 'mx-auto' : 'max-w-3xl mx-auto'}>
+      <div className={isCompact ? 'mx-auto' : 'max-w-4xl mx-auto'}>
         {/* Upload progress bar */}
         {uploading && uploadProgress && (
           <div className={`mb-2 px-4 py-2.5 ${isCompact ? 'bg-card border border-border' : 'bg-card rounded-xl border border-border shadow-sm'}`}>

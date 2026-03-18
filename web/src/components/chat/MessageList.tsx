@@ -259,7 +259,7 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
         ref={parentRef}
         className="h-full overflow-y-auto overflow-x-hidden py-6 bg-background"
       >
-        <div className={displayMode === 'compact' ? 'mx-auto px-4 min-w-0' : 'max-w-3xl mx-auto px-4 min-w-0'}>
+        <div className={displayMode === 'compact' ? 'mx-auto px-4 min-w-0' : 'max-w-4xl mx-auto px-4 min-w-0'}>
         {loading && hasMore && (
           <div className="flex justify-center py-4">
             <Loader2 className="animate-spin text-primary" size={24} />

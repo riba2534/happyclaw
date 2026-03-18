@@ -404,7 +404,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         <div className="flex-1 min-w-0">
           <h2 className="font-semibold text-slate-900 text-[15px] truncate">{group.name}</h2>
           <div className="flex items-center gap-1.5 text-xs text-slate-500">
-            <span>{isWaiting ? '正在思考...' : group.is_home ? '主工作区' : '工作区'}</span>
+            <span>{isWaiting ? '正在思考...' : group.is_home ? '主 Agent' : 'Agent'}</span>
             {!isWaiting && group.is_shared && (
               <>
                 <span className="text-slate-300">·</span>
