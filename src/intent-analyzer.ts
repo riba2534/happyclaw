@@ -1,5 +1,8 @@
 export type MessageIntent = 'stop' | 'correction' | 'continue';
 
+// Keywords that trigger stop/correction intent.
+// ALL keywords use exact-match only to avoid false positives when a keyword
+// appears as part of a normal sentence (e.g. "取消订单", "cancel the order").
 const STOP_KEYWORDS = [
   '停',
   '暂停',
@@ -44,10 +47,6 @@ const CORRECTION_KEYWORDS = [
 
 const MAX_SHORT_MESSAGE_LENGTH = 50;
 
-// Short keywords that are common substrings of other words (e.g., "esc" in
-// "describe", "fix" in "prefix") — only match exactly, never as substrings.
-const EXACT_ONLY = new Set(['esc', 'wait', 'fix', 'correct', 'redo']);
-
 export function analyzeIntent(text: string): MessageIntent {
   const trimmed = text.trim();
 
@@ -57,20 +56,12 @@ export function analyzeIntent(text: string): MessageIntent {
 
   const lower = trimmed.toLowerCase();
 
-  // Exact match first
+  // Exact match only — the entire message must be the keyword
   for (const kw of STOP_KEYWORDS) {
     if (lower === kw) return 'stop';
   }
   for (const kw of CORRECTION_KEYWORDS) {
     if (lower === kw) return 'correction';
-  }
-
-  // Substring match (skip keywords that are common substrings of normal words)
-  for (const kw of STOP_KEYWORDS) {
-    if (!EXACT_ONLY.has(kw) && lower.includes(kw)) return 'stop';
-  }
-  for (const kw of CORRECTION_KEYWORDS) {
-    if (!EXACT_ONLY.has(kw) && lower.includes(kw)) return 'correction';
   }
 
   return 'continue';

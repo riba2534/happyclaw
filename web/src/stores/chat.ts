@@ -24,6 +24,8 @@ export interface Message {
   sdk_message_uuid?: string | null;
   source_kind?: 'sdk_final' | 'sdk_send_message' | 'interrupt_partial' | 'legacy' | null;
   finalization_reason?: 'completed' | 'interrupted' | 'error' | null;
+  /** Set when this user message triggered a stop/correction interrupt */
+  intent?: 'stop' | 'correction';
 }
 
 // Streaming event types (canonical source: shared/stream-event.ts)
@@ -800,7 +802,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         body.attachments = attachments.map(att => ({ type: 'image', ...att }));
       }
 
-      const data = await api.post<{ success: boolean; messageId: string; timestamp: string }>('/api/messages', body);
+      const data = await api.post<{ success: boolean; messageId: string; timestamp: string; intent?: 'stop' | 'correction' }>('/api/messages', body);
       if (data.success) {
         // Add user message to local state immediately
         const authState = useAuthStore.getState();
@@ -824,16 +826,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
             [msg],
           );
           const latest = merged.length > 0 ? merged[merged.length - 1] : null;
+          const isStopIntent = data.intent === 'stop' || data.intent === 'correction';
           const shouldWait =
+            !isStopIntent &&
             !!latest &&
             latest.is_from_me === false &&
             !isTerminalSystemMessage(latest);
+
+          // Stop/correction intent: also clear streaming state
+          const nextStreaming = isStopIntent
+            ? (() => { const n = { ...s.streaming }; delete n[jid]; return n; })()
+            : s.streaming;
+          const nextPending = isStopIntent
+            ? (() => { const n = { ...s.pendingThinking }; delete n[jid]; return n; })()
+            : s.pendingThinking;
+
           return {
             messages: {
               ...s.messages,
               [jid]: merged,
             },
             waiting: { ...s.waiting, [jid]: shouldWait },
+            streaming: nextStreaming,
+            pendingThinking: nextPending,
             error: null,
           };
         });
@@ -1436,6 +1451,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       sdk_message_uuid: wsMsg.sdk_message_uuid ?? null,
       source_kind: wsMsg.source_kind ?? null,
       finalization_reason: wsMsg.finalization_reason ?? null,
+      ...(wsMsg.intent ? { intent: wsMsg.intent } : {}),
     };
 
     // Route to agentMessages if this is a conversation agent message
@@ -1502,6 +1518,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
           streaming: nextStreaming,
           pendingThinking: nextPending,
           ...(thinkingText ? { thinkingCache: capThinkingCache({ ...s.thinkingCache, [msg.id]: thinkingText }) } : {}),
+        };
+      }
+
+      // Stop/correction intent from user: clear waiting & streaming state
+      if (msg.intent === 'stop' || msg.intent === 'correction') {
+        const nextStreaming = { ...s.streaming };
+        delete nextStreaming[chatJid];
+        const nextPending = { ...s.pendingThinking };
+        delete nextPending[chatJid];
+        return {
+          messages: { ...s.messages, [chatJid]: updated },
+          waiting: { ...s.waiting, [chatJid]: false },
+          streaming: nextStreaming,
+          pendingThinking: nextPending,
         };
       }
 

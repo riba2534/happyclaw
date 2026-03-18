@@ -4138,6 +4138,15 @@ async function startMessageLoop(): Promise<void> {
               { chatJid },
               'Message queued (drain mode), cursor not advanced',
             );
+          } else if (intent === 'stop') {
+            // Stop intent but no active runner — nothing to interrupt.
+            // Advance cursor so this "cancel" message doesn't start a new agent.
+            const lastProcessed = messagesToSend[messagesToSend.length - 1];
+            lastAgentTimestamp[chatJid] = {
+              timestamp: lastProcessed.timestamp,
+              id: lastProcessed.id,
+            };
+            saveState();
           } else {
             // no_active — enqueue for a new one
             queue.enqueueMessageCheck(chatJid);

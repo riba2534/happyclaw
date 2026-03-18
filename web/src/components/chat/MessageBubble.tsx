@@ -359,7 +359,12 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
             {isAI ? (
               <MarkdownRenderer content={message.content} groupJid={message.chat_jid} variant="chat" />
             ) : (
-              <p className="text-[15px] leading-relaxed whitespace-pre-wrap break-words text-foreground">{message.content}</p>
+              <>
+                <p className={`text-[15px] leading-relaxed whitespace-pre-wrap break-words ${message.intent === 'stop' ? 'text-red-600' : message.intent === 'correction' ? 'text-orange-600' : 'text-foreground'}`}>
+                  {message.content}
+                  {message.intent && <span className="text-[11px] ml-2 opacity-70">{message.intent === 'stop' ? '⏹ 已中断' : '🔄 已纠正'}</span>}
+                </p>
+              </>
             )}
           </div>
         )}
@@ -461,6 +466,12 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
 
     // User message (own): right-aligned
     const showSenderLabel = isShared;
+    const isInterrupt = message.intent === 'stop' || message.intent === 'correction';
+    const interruptBorderClass = message.intent === 'stop'
+      ? 'border-red-400 bg-red-50/50 dark:bg-red-950/20'
+      : message.intent === 'correction'
+        ? 'border-orange-400 bg-orange-50/50 dark:bg-orange-950/20'
+        : '';
     return (
       <div className="group flex justify-end mb-4" onContextMenu={handleContextMenu} onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd} onTouchMove={handleTouchMove}>
         <div className="flex flex-col items-end min-w-0 w-full">
@@ -485,8 +496,13 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
               </div>
             )}
             {!hasOnlyImages && (
-              <div className="bg-card border border-border text-foreground px-4 py-2.5 rounded-2xl rounded-tr-sm shadow-sm">
+              <div className={`px-4 py-2.5 rounded-2xl rounded-tr-sm shadow-sm ${isInterrupt ? `border-2 ${interruptBorderClass}` : 'bg-card border border-border text-foreground'}`}>
                 <p className="text-[15px] leading-relaxed whitespace-pre-wrap break-words">{message.content}</p>
+                {isInterrupt && (
+                  <span className={`text-[11px] mt-1 block ${message.intent === 'stop' ? 'text-red-500' : 'text-orange-500'}`}>
+                    {message.intent === 'stop' ? '⏹ 已中断' : '🔄 已纠正'}
+                  </span>
+                )}
               </div>
             )}
             {!hasOnlyImages && (

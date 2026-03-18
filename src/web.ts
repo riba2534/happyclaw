@@ -214,6 +214,7 @@ app.post('/api/messages', authMiddleware, async (c) => {
     success: true,
     messageId: result.messageId,
     timestamp: result.timestamp,
+    ...(result.intent ? { intent: result.intent } : {}),
   });
 });
 
@@ -230,6 +231,7 @@ async function handleWebUserMessage(
       ok: true;
       messageId: string;
       timestamp: string;
+      intent?: 'stop' | 'correction';
     }
   | {
       ok: false;
@@ -274,6 +276,9 @@ async function handleWebUserMessage(
     { attachments: attachmentsStr },
   );
 
+  // Analyze intent early so we can include it in the broadcast
+  const intent = analyzeIntent(content);
+
   broadcastNewMessage(chatJid, {
     id: messageId,
     chat_jid: chatJid,
@@ -283,6 +288,7 @@ async function handleWebUserMessage(
     timestamp,
     is_from_me: false,
     attachments: attachmentsStr,
+    ...(intent !== 'continue' ? { intent } : {}),
   });
 
   if (group.created_by) {
@@ -313,7 +319,7 @@ async function handleWebUserMessage(
         });
         deps.setLastAgentTimestamp(chatJid, { timestamp, id: messageId });
         deps.advanceGlobalCursor({ timestamp, id: messageId });
-        return { ok: true, messageId, timestamp };
+        return { ok: true, messageId, timestamp, ...(intent !== 'continue' ? { intent } : {}) };
       }
     }
   }
@@ -338,7 +344,6 @@ async function handleWebUserMessage(
   // longer need to kill and restart the process (#99).
   let pipedToActive = false;
   const images = toAgentImages(normalizedAttachments);
-  const intent = analyzeIntent(content);
   const updateRoute = deps.updateReplyRoute;
   const sendResult = deps.queue.sendMessage(
     chatJid,
@@ -363,6 +368,11 @@ async function handleWebUserMessage(
     // Message queued for next container run; don't advance cursor so
     // processGroupMessages re-reads it from DB. Drain sentinel already
     // written — the current runner will exit and drainGroup picks it up.
+  } else if (intent === 'stop') {
+    // Stop intent but no active runner — nothing to interrupt.
+    // Advance cursor so this message doesn't get picked up later, but
+    // don't start a new agent just to process a "cancel" message.
+    pipedToActive = true;
   } else {
     deps.queue.enqueueMessageCheck(chatJid);
   }
@@ -373,7 +383,7 @@ async function handleWebUserMessage(
     deps.setLastAgentTimestamp(chatJid, { timestamp, id: messageId });
   }
   deps.advanceGlobalCursor({ timestamp, id: messageId });
-  return { ok: true, messageId, timestamp };
+  return { ok: true, messageId, timestamp, ...(intent !== 'continue' ? { intent } : {}) };
 }
 
 // --- Agent Conversation Message Handler ---
