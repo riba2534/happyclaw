@@ -27,8 +27,10 @@ interface MarkdownRendererProps {
 function resolveImageSrc(src: string, groupJid?: string): string {
   if (!groupJid || !src) return src;
   if (/^(https?:\/\/|data:|\/\/)/.test(src) || src.startsWith('/')) return src;
+  // Strip #agent:xxx suffix — file API uses the base group JID
+  const baseJid = groupJid.replace(/#agent:.*$/, '');
   const encoded = toBase64Url(src);
-  return withBasePath(`/api/groups/${encodeURIComponent(groupJid)}/files/download/${encoded}`);
+  return withBasePath(`/api/groups/${encodeURIComponent(baseJid)}/files/download/${encoded}`);
 }
 
 /** Image lightbox for markdown images */
