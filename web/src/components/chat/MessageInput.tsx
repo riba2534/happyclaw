@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useKeyboardHeight } from '@/hooks/useKeyboardHeight';
 import { successTap } from '../../hooks/useHaptic';
 import {
@@ -15,6 +15,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { useFileStore } from '../../stores/files';
+import { useChatStore } from '../../stores/chat';
 import { useDisplayMode } from '../../hooks/useDisplayMode';
 
 interface PendingFile {
@@ -61,13 +62,64 @@ export function MessageInput({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const prevGroupJidRef = useRef<string | undefined>(groupJid);
 
   const { uploadFiles, uploading, uploadProgress } = useFileStore();
+  const { drafts, saveDraft, clearDraft } = useChatStore();
   const { mode: displayMode } = useDisplayMode();
   const isCompact = displayMode === 'compact';
 
   // iOS keyboard adaptation
   useKeyboardHeight();
+
+  // Restore draft when groupJid changes (including initial mount)
+  useEffect(() => {
+    // Save current draft before switching
+    if (prevGroupJidRef.current && prevGroupJidRef.current !== groupJid) {
+      const currentText = content.trim();
+      if (currentText) {
+        saveDraft(prevGroupJidRef.current, currentText);
+      } else {
+        clearDraft(prevGroupJidRef.current);
+      }
+    }
+    prevGroupJidRef.current = groupJid;
+
+    // Load draft for new group
+    const draft = groupJid ? drafts[groupJid] || '' : '';
+    setContent(draft);
+    // Clear any pending debounce timer
+    if (draftTimerRef.current) {
+      clearTimeout(draftTimerRef.current);
+      draftTimerRef.current = undefined;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupJid]);
+
+  // Cleanup debounce timer on unmount, save current draft
+  useEffect(() => {
+    return () => {
+      if (draftTimerRef.current) {
+        clearTimeout(draftTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Debounced draft save
+  const debouncedSaveDraft = useCallback(
+    (text: string) => {
+      if (draftTimerRef.current) {
+        clearTimeout(draftTimerRef.current);
+      }
+      draftTimerRef.current = setTimeout(() => {
+        if (groupJid) {
+          saveDraft(groupJid, text.trim());
+        }
+      }, 300);
+    },
+    [groupJid, saveDraft],
+  );
 
   // Auto-resize textarea (1-6 lines)
   useEffect(() => {
@@ -124,6 +176,11 @@ export function MessageInput({
       onSend(message, attachments);
       successTap();
       setContent('');
+      if (groupJid) clearDraft(groupJid);
+      if (draftTimerRef.current) {
+        clearTimeout(draftTimerRef.current);
+        draftTimerRef.current = undefined;
+      }
 
       // Clean up image previews
       if (hasImages) {
@@ -457,7 +514,10 @@ export function MessageInput({
             <textarea
               ref={textareaRef}
               value={content}
-              onChange={(e) => setContent(e.target.value)}
+              onChange={(e) => {
+                setContent(e.target.value);
+                debouncedSaveDraft(e.target.value);
+              }}
               onKeyDown={handleKeyDown}
               onCompositionStart={() => { composingRef.current = true; }}
               onCompositionEnd={() => { composingRef.current = false; compositionEndTimeRef.current = Date.now(); }}

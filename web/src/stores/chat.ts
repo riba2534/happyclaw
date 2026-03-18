@@ -189,6 +189,10 @@ interface ChatState {
   unbindImGroup: (jid: string, agentId: string, imJid: string) => Promise<boolean>;
   bindMainImGroup: (jid: string, imJid: string, force?: boolean) => Promise<boolean>;
   unbindMainImGroup: (jid: string, imJid: string) => Promise<boolean>;
+  // Draft persistence across route navigation
+  drafts: Record<string, string>;
+  saveDraft: (jid: string, text: string) => void;
+  clearDraft: (jid: string) => void;
 }
 
 const DEFAULT_STREAMING_STATE: StreamingState = {
@@ -629,6 +633,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   agentMessages: {},
   agentWaiting: {},
   agentHasMore: {},
+  drafts: {},
 
   loadGroups: async () => {
     set({ loading: true });
@@ -2007,6 +2012,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
         pendingThinking: nextPendingThinking,
         ...(agentStreamingChanged ? { agentStreaming: nextAgentStreaming } : {}),
       };
+    });
+  },
+
+  saveDraft: (jid, text) => {
+    set((s) => {
+      const next = { ...s.drafts };
+      if (text) {
+        next[jid] = text;
+      } else {
+        delete next[jid];
+      }
+      return { drafts: next };
+    });
+  },
+
+  clearDraft: (jid) => {
+    set((s) => {
+      const next = { ...s.drafts };
+      delete next[jid];
+      return { drafts: next };
     });
   },
 }));
