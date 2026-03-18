@@ -449,18 +449,8 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
           </div>
         )}
 
-        {/* Agent status cards in main conversation (task agents only) */}
-        {!agentId && agents && agents.filter(a => a.kind === 'task').length > 0 && (
-          <div className="py-2">
-            {agents.filter(a => a.kind === 'task').map((agent) => (
-              <AgentStatusCard
-                key={agent.id}
-                agent={agent}
-                onClick={() => onAgentClick?.(agent.id)}
-              />
-            ))}
-          </div>
-        )}
+
+
 
         {isWaiting && onInterrupt && (
           <div className="flex justify-center py-1">
