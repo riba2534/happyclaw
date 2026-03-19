@@ -4440,11 +4440,12 @@ async function processAgentConversation(
         logger.warn({ err, chatJid, agentId }, 'Failed to save overflow partial agent text');
       }
     }
-  }
 
-  // Process ended → set status back to idle (conversation agents persist)
-  updateAgentStatus(agentId, 'idle');
-  broadcastAgentStatus(chatJid, agentId, 'idle', agent.name, agent.prompt);
+    // Process ended → set status back to idle (conversation agents persist).
+    // MUST be inside finally so status is reset even on unhandled exceptions (#227).
+    updateAgentStatus(agentId, 'idle');
+    broadcastAgentStatus(chatJid, agentId, 'idle', agent.name, agent.prompt);
+  }
 }
 
 async function startMessageLoop(): Promise<void> {
