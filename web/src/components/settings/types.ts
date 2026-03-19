@@ -80,6 +80,8 @@ export interface SystemSettings {
   billingMinStartBalanceUsd: number;
   billingCurrency: string;
   billingCurrencyRate: number;
+  customSystemPrompt: string;
+  replaceSystemPrompt: boolean;
 }
 
 export type SettingsTab = 'claude' | 'registration' | 'appearance' | 'system' | 'profile' | 'my-channels' | 'security' | 'groups' | 'memory' | 'skills' | 'mcp-servers' | 'agent-definitions' | 'users' | 'about' | 'bindings';

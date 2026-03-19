@@ -234,6 +234,8 @@ export const SystemSettingsSchema = z.object({
   billingMinStartBalanceUsd: z.number().min(0).max(1000000).optional(),
   billingCurrency: z.string().min(1).max(10).optional(),
   billingCurrencyRate: z.number().min(0.0001).max(1000000).optional(),
+  customSystemPrompt: z.string().max(50000).optional(),
+  replaceSystemPrompt: z.boolean().optional(),
 });
 
 export const AppearanceConfigSchema = z.object({

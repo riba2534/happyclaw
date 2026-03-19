@@ -938,6 +938,7 @@ async function runQuery(
   ].join('\n') : '';
 
   const systemPromptAppend = [
+    containerInput.customSystemPrompt,
     globalClaudeMd,
     heartbeatContent,
     interactionGuidelines,
@@ -973,7 +974,9 @@ async function runQuery(
       additionalDirectories: extraDirs,
       resume: sessionId,
       resumeSessionAt: resumeAt,
-      systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const, append: systemPromptAppend },
+      systemPrompt: containerInput.replaceSystemPrompt
+        ? systemPromptAppend
+        : { type: 'preset' as const, preset: 'claude_code' as const, append: systemPromptAppend },
       allowedTools,
       ...(disallowedTools && { disallowedTools }),
       maxThinkingTokens: 16384,

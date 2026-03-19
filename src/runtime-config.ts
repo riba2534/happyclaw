@@ -2542,6 +2542,9 @@ export interface SystemSettings {
   billingMinStartBalanceUsd: number;
   billingCurrency: string;
   billingCurrencyRate: number;
+  // Custom system prompt
+  customSystemPrompt: string;
+  replaceSystemPrompt: boolean;
 }
 
 const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
@@ -2559,6 +2562,8 @@ const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
   billingMinStartBalanceUsd: 0.01,
   billingCurrency: 'USD',
   billingCurrencyRate: 1,
+  customSystemPrompt: '',
+  replaceSystemPrompt: false,
 };
 
 function parseIntEnv(envVar: string | undefined, fallback: number): number {
@@ -2641,6 +2646,14 @@ function readSystemSettingsFromFile(): SystemSettings | null {
       typeof raw.billingCurrencyRate === 'number' && raw.billingCurrencyRate > 0
         ? raw.billingCurrencyRate
         : DEFAULT_SYSTEM_SETTINGS.billingCurrencyRate,
+    customSystemPrompt:
+      typeof raw.customSystemPrompt === 'string'
+        ? raw.customSystemPrompt
+        : DEFAULT_SYSTEM_SETTINGS.customSystemPrompt,
+    replaceSystemPrompt:
+      typeof raw.replaceSystemPrompt === 'boolean'
+        ? raw.replaceSystemPrompt
+        : DEFAULT_SYSTEM_SETTINGS.replaceSystemPrompt,
   };
 }
 
@@ -2697,6 +2710,8 @@ function buildEnvFallbackSettings(): SystemSettings {
       process.env.BILLING_CURRENCY_RATE,
       DEFAULT_SYSTEM_SETTINGS.billingCurrencyRate,
     ),
+    customSystemPrompt: '',
+    replaceSystemPrompt: false,
   };
 }
 
@@ -2776,6 +2791,8 @@ export function saveSystemSettings(
       DEFAULT_SYSTEM_SETTINGS.billingMinStartBalanceUsd;
   if (merged.billingMinStartBalanceUsd > 1000000)
     merged.billingMinStartBalanceUsd = 1000000;
+  if (merged.customSystemPrompt && merged.customSystemPrompt.length > 50000)
+    merged.customSystemPrompt = merged.customSystemPrompt.slice(0, 50000);
 
   fs.mkdirSync(CLAUDE_CONFIG_DIR, { recursive: true });
   const tmp = `${SYSTEM_SETTINGS_FILE}.tmp`;

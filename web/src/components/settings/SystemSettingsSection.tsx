@@ -137,6 +137,8 @@ export function SystemSettingsSection({ setNotice, setError }: SystemSettingsSec
   const [billingMinStartBalanceUsd, setBillingMinStartBalanceUsd] = useState(0.01);
   const [billingCurrency, setBillingCurrency] = useState('USD');
   const [billingCurrencyRate, setBillingCurrencyRate] = useState(1);
+  const [customSystemPrompt, setCustomSystemPrompt] = useState('');
+  const [replaceSystemPrompt, setReplaceSystemPrompt] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -161,6 +163,8 @@ export function SystemSettingsSection({ setNotice, setError }: SystemSettingsSec
         setBillingMinStartBalanceUsd(data.billingMinStartBalanceUsd ?? 0.01);
         setBillingCurrency(data.billingCurrency ?? 'USD');
         setBillingCurrencyRate(data.billingCurrencyRate ?? 1);
+        setCustomSystemPrompt(data.customSystemPrompt ?? '');
+        setReplaceSystemPrompt(data.replaceSystemPrompt ?? false);
       } catch (err) {
         setError(getErrorMessage(err, '加载系统参数失败'));
       } finally {
@@ -207,6 +211,8 @@ export function SystemSettingsSection({ setNotice, setError }: SystemSettingsSec
         billingMinStartBalanceUsd,
         billingCurrency,
         billingCurrencyRate,
+        customSystemPrompt,
+        replaceSystemPrompt,
       };
       for (const f of fields) {
         const val = displayValues[f.key];
@@ -401,6 +407,38 @@ export function SystemSettingsSection({ setNotice, setError }: SystemSettingsSec
             </div>
           </>
         )}
+      </div>
+
+      {/* 自定义系统提示词 */}
+      <div className="border-t border-border pt-6 space-y-2">
+        <h3 className="text-sm font-semibold text-foreground">自定义系统提示词</h3>
+        <p className="text-xs text-muted-foreground">
+          此内容将注入到所有 Agent 的 system prompt 中。留空则不注入。最多 50,000 字符。
+        </p>
+        <textarea
+          value={customSystemPrompt}
+          onChange={(e) => setCustomSystemPrompt(e.target.value)}
+          maxLength={50000}
+          rows={6}
+          className="w-full rounded-md border border-zinc-300 dark:border-zinc-600 bg-transparent px-3 py-2 text-sm font-mono placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-y"
+          placeholder="在此输入自定义的系统提示词..."
+        />
+        <p className="text-xs text-muted-foreground text-right">
+          {customSystemPrompt.length.toLocaleString()} / 50,000
+        </p>
+        <div className="flex items-center justify-between pt-2">
+          <div>
+            <label className="block text-sm font-medium text-foreground">替换默认 System Prompt</label>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              开启后将替换 Claude Code 内置的 system prompt，仅使用上方自定义内容加内部指南。关闭时自定义内容作为追加注入。
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={replaceSystemPrompt}
+            onChange={setReplaceSystemPrompt}
+            aria-label="替换默认 System Prompt"
+          />
+        </div>
       </div>
 
       <div>

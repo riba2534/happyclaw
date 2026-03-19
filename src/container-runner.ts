@@ -107,6 +107,8 @@ export interface ContainerInput {
   images?: Array<{ data: string; mimeType?: string }>;
   agentId?: string;
   agentName?: string;
+  customSystemPrompt?: string;
+  replaceSystemPrompt?: boolean;
 }
 
 export interface ContainerOutput {
