@@ -84,6 +84,44 @@ export interface SystemSettings {
 
 export type SettingsTab = 'claude' | 'registration' | 'appearance' | 'system' | 'profile' | 'my-channels' | 'security' | 'groups' | 'memory' | 'skills' | 'mcp-servers' | 'agent-definitions' | 'users' | 'about' | 'bindings';
 
+// ─── Provider Pool Types ──────────────────────────────────────────
+
+export interface ProviderPoolHealthStatus {
+  profileId: string;
+  healthy: boolean;
+  consecutiveErrors: number;
+  lastErrorAt: number | null;
+  lastSuccessAt: number | null;
+  unhealthySince: number | null;
+  activeSessionCount: number;
+}
+
+export interface ProviderPoolMemberWithHealth {
+  profileId: string;
+  profileName: string;
+  isOfficial: boolean;
+  weight: number;
+  enabled: boolean;
+  health: ProviderPoolHealthStatus;
+}
+
+export interface ProviderPoolAvailableProfile {
+  id: string;
+  name: string;
+  isOfficial: boolean;
+  inPool: boolean;
+}
+
+export interface ProviderPoolResponse {
+  mode: 'fixed' | 'pool';
+  strategy: 'round-robin' | 'weighted-round-robin' | 'failover';
+  members: ProviderPoolMemberWithHealth[];
+  unhealthyThreshold: number;
+  recoveryIntervalMs: number;
+  updatedAt: string;
+  availableProfiles: ProviderPoolAvailableProfile[];
+}
+
 export function getErrorMessage(err: unknown, fallback: string): string {
   if (typeof err === 'object' && err !== null && 'message' in err) {
     const msg = (err as { message?: unknown }).message;

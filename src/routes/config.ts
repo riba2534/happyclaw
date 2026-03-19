@@ -28,6 +28,7 @@ import {
   RegistrationConfigSchema,
   AppearanceConfigSchema,
   SystemSettingsSchema,
+  ProviderPoolSchema,
 } from '../schemas.js';
 import {
   getClaudeProviderConfig,
@@ -72,7 +73,13 @@ import type { ClaudeOAuthCredentials } from '../runtime-config.js';
 import type { AuthUser, RegisteredGroup } from '../types.js';
 import { hasPermission } from '../permissions.js';
 import { logger } from '../logger.js';
-import { checkImChannelLimit, isBillingEnabled, clearBillingEnabledCache } from '../billing.js';
+import {
+  checkImChannelLimit,
+  isBillingEnabled,
+  clearBillingEnabledCache,
+} from '../billing.js';
+import { providerPool } from '../provider-pool.js';
+import type { StoredProviderPoolConfig } from '../provider-pool.js';
 
 const configRoutes = new Hono<{ Variables: Variables }>();
 
@@ -85,8 +92,10 @@ function countOtherEnabledImChannels(
   excludeChannel: 'feishu' | 'telegram' | 'qq',
 ): number {
   let count = 0;
-  if (excludeChannel !== 'feishu' && getUserFeishuConfig(userId)?.enabled) count++;
-  if (excludeChannel !== 'telegram' && getUserTelegramConfig(userId)?.enabled) count++;
+  if (excludeChannel !== 'feishu' && getUserFeishuConfig(userId)?.enabled)
+    count++;
+  if (excludeChannel !== 'telegram' && getUserTelegramConfig(userId)?.enabled)
+    count++;
   if (excludeChannel !== 'qq' && getUserQQConfig(userId)?.enabled) count++;
   return count;
 }
@@ -982,7 +991,10 @@ function applyBindingUpdate(imJid: string, updated: RegisteredGroup): void {
 }
 
 configRoutes.get('/feishu', authMiddleware, systemConfigMiddleware, (c) => {
-  logDeprecationOnce('GET /api/config/feishu', 'GET /api/config/user-im/feishu');
+  logDeprecationOnce(
+    'GET /api/config/feishu',
+    'GET /api/config/user-im/feishu',
+  );
   try {
     const { config, source } = getFeishuProviderConfigWithSource();
     const pub = toPublicFeishuProviderConfig(config, source);
@@ -1055,7 +1067,10 @@ configRoutes.put(
 // ─── Telegram config ─────────────────────────────────────────────
 
 configRoutes.get('/telegram', authMiddleware, systemConfigMiddleware, (c) => {
-  logDeprecationOnce('GET /api/config/telegram', 'GET /api/config/user-im/telegram');
+  logDeprecationOnce(
+    'GET /api/config/telegram',
+    'GET /api/config/user-im/telegram',
+  );
   try {
     const { config, source } = getTelegramProviderConfigWithSource();
     const pub = toPublicTelegramProviderConfig(config, source);
@@ -1380,7 +1395,11 @@ configRoutes.put('/user-im/feishu', authMiddleware, async (c) => {
   if (validation.data.enabled === true && isBillingEnabled()) {
     const currentFeishu = getUserFeishuConfig(user.id);
     if (!currentFeishu?.enabled) {
-      const limit = checkImChannelLimit(user.id, user.role, countOtherEnabledImChannels(user.id, 'feishu'));
+      const limit = checkImChannelLimit(
+        user.id,
+        user.role,
+        countOtherEnabledImChannels(user.id, 'feishu'),
+      );
       if (!limit.allowed) {
         return c.json({ error: limit.reason }, 403);
       }
@@ -1490,7 +1509,11 @@ configRoutes.put('/user-im/telegram', authMiddleware, async (c) => {
   if (validation.data.enabled === true && isBillingEnabled()) {
     const currentTg = getUserTelegramConfig(user.id);
     if (!currentTg?.enabled) {
-      const limit = checkImChannelLimit(user.id, user.role, countOtherEnabledImChannels(user.id, 'telegram'));
+      const limit = checkImChannelLimit(
+        user.id,
+        user.role,
+        countOtherEnabledImChannels(user.id, 'telegram'),
+      );
       if (!limit.allowed) {
         return c.json({ error: limit.reason }, 403);
       }
@@ -1715,7 +1738,11 @@ configRoutes.put('/user-im/qq', authMiddleware, async (c) => {
   if (validation.data.enabled === true && isBillingEnabled()) {
     const currentQQ = getUserQQConfig(user.id);
     if (!currentQQ?.enabled) {
-      const limit = checkImChannelLimit(user.id, user.role, countOtherEnabledImChannels(user.id, 'qq'));
+      const limit = checkImChannelLimit(
+        user.id,
+        user.role,
+        countOtherEnabledImChannels(user.id, 'qq'),
+      );
       if (!limit.allowed) {
         return c.json({ error: limit.reason }, 403);
       }
@@ -1955,16 +1982,23 @@ configRoutes.put('/user-im/bindings/:imJid', authMiddleware, async (c) => {
       return c.json({ error: 'Agent not found' }, 404);
     }
     if (agent.kind !== 'conversation') {
-      return c.json({ error: 'Only conversation agents can bind IM groups' }, 400);
+      return c.json(
+        { error: 'Only conversation agents can bind IM groups' },
+        400,
+      );
     }
     // Check user can access the workspace that owns this agent
     const ownerGroup = getRegisteredGroup(agent.chat_jid);
-    if (!ownerGroup || !canAccessGroup(user, { ...ownerGroup, jid: agent.chat_jid })) {
+    if (
+      !ownerGroup ||
+      !canAccessGroup(user, { ...ownerGroup, jid: agent.chat_jid })
+    ) {
       return c.json({ error: 'Forbidden' }, 403);
     }
 
     const force = body.force === true;
-    const replyPolicy = body.reply_policy === 'mirror' ? 'mirror' : 'source_only';
+    const replyPolicy =
+      body.reply_policy === 'mirror' ? 'mirror' : 'source_only';
     const hasConflict =
       (imGroup.target_agent_id && imGroup.target_agent_id !== agentId) ||
       !!imGroup.target_main_jid;
@@ -1979,7 +2013,10 @@ configRoutes.put('/user-im/bindings/:imJid', authMiddleware, async (c) => {
       reply_policy: replyPolicy,
     };
     applyBindingUpdate(imJid, updated);
-    logger.info({ imJid, agentId, userId: user.id }, 'IM group bound to agent (bindings page)');
+    logger.info(
+      { imJid, agentId, userId: user.id },
+      'IM group bound to agent (bindings page)',
+    );
     return c.json({ success: true });
   }
 
@@ -1994,11 +2031,15 @@ configRoutes.put('/user-im/bindings/:imJid', authMiddleware, async (c) => {
       return c.json({ error: 'Forbidden' }, 403);
     }
     if (targetGroup.is_home) {
-      return c.json({ error: 'Home workspace main conversation uses default IM routing' }, 400);
+      return c.json(
+        { error: 'Home workspace main conversation uses default IM routing' },
+        400,
+      );
     }
 
     const force = body.force === true;
-    const replyPolicy = body.reply_policy === 'mirror' ? 'mirror' : 'source_only';
+    const replyPolicy =
+      body.reply_policy === 'mirror' ? 'mirror' : 'source_only';
     const legacyMainJid = `web:${targetGroup.folder}`;
     const hasConflict =
       !!imGroup.target_agent_id ||
@@ -2016,11 +2057,17 @@ configRoutes.put('/user-im/bindings/:imJid', authMiddleware, async (c) => {
       reply_policy: replyPolicy,
     };
     applyBindingUpdate(imJid, updated);
-    logger.info({ imJid, targetMainJid, userId: user.id }, 'IM group bound to workspace (bindings page)');
+    logger.info(
+      { imJid, targetMainJid, userId: user.id },
+      'IM group bound to workspace (bindings page)',
+    );
     return c.json({ success: true });
   }
 
-  return c.json({ error: 'Must provide target_main_jid, target_agent_id, or unbind' }, 400);
+  return c.json(
+    { error: 'Must provide target_main_jid, target_agent_id, or unbind' },
+    400,
+  );
 });
 
 // ─── Local Claude Code detection ──────────────────────────────────
@@ -2073,6 +2120,169 @@ configRoutes.post(
       logger.warn({ err }, 'Failed to import local Claude Code credentials');
       return c.json({ error: message }, 500);
     }
+  },
+);
+
+// ─── Provider Pool Routes ──────────────────────────────────────────
+
+/** GET /claude/pool — Pool config + health + available profiles */
+configRoutes.get(
+  '/claude/pool',
+  authMiddleware,
+  systemConfigMiddleware,
+  (c) => {
+    const config = providerPool.getConfig();
+    const healthStatuses = providerPool.getHealthStatuses();
+    const { activeProfileId, profiles } = listClaudeThirdPartyProfiles();
+
+    // Build member list with health + profile name + isOfficial tag
+    const membersWithHealth = config.members.map((m) => {
+      const isOfficial = m.profileId === '__official__';
+      const profile = profiles.find((p) => p.id === m.profileId);
+      const health = healthStatuses.find(
+        (h) => h.profileId === m.profileId,
+      ) || {
+        profileId: m.profileId,
+        healthy: true,
+        consecutiveErrors: 0,
+        lastErrorAt: null,
+        lastSuccessAt: null,
+        unhealthySince: null,
+        activeSessionCount: 0,
+      };
+      return {
+        profileId: m.profileId,
+        profileName: isOfficial ? '官方 Claude' : profile?.name || m.profileId,
+        isOfficial,
+        weight: m.weight,
+        enabled: m.enabled,
+        health,
+      };
+    });
+
+    // Available profiles not yet in pool
+    const poolIds = new Set(config.members.map((m) => m.profileId));
+    const availableProfiles = [
+      {
+        id: '__official__',
+        name: '官方 Claude',
+        isOfficial: true,
+        inPool: poolIds.has('__official__'),
+      },
+      ...profiles.map((p) => ({
+        id: p.id,
+        name: p.name,
+        isOfficial: false,
+        inPool: poolIds.has(p.id),
+      })),
+    ];
+
+    return c.json({
+      mode: config.mode,
+      strategy: config.strategy,
+      members: membersWithHealth,
+      unhealthyThreshold: config.unhealthyThreshold,
+      recoveryIntervalMs: config.recoveryIntervalMs,
+      updatedAt: config.updatedAt,
+      availableProfiles,
+    });
+  },
+);
+
+/** PUT /claude/pool — Update pool config */
+configRoutes.put(
+  '/claude/pool',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const body = await c.req.json();
+    const parsed = ProviderPoolSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json(
+        { error: 'Invalid pool config', details: parsed.error.issues },
+        400,
+      );
+    }
+
+    const input = parsed.data;
+    const current = providerPool.getConfig();
+
+    const updated: StoredProviderPoolConfig = {
+      version: 1,
+      mode: input.mode,
+      strategy: input.strategy ?? current.strategy,
+      members:
+        input.members?.map((m) => ({
+          profileId: m.profileId,
+          weight: m.weight,
+          enabled: m.enabled,
+        })) ?? current.members,
+      unhealthyThreshold:
+        input.unhealthyThreshold ?? current.unhealthyThreshold,
+      recoveryIntervalMs:
+        input.recoveryIntervalMs ?? current.recoveryIntervalMs,
+      updatedAt: new Date().toISOString(),
+    };
+
+    providerPool.saveConfig(updated);
+
+    const user = c.get('user') as AuthUser;
+    appendClaudeConfigAudit(user.username, 'update_pool', [
+      `mode:${updated.mode}`,
+      `strategy:${updated.strategy}`,
+      `members:${updated.members.length}`,
+    ]);
+
+    return c.json({ ok: true });
+  },
+);
+
+/** POST /claude/pool/members/:profileId/toggle — Enable/disable a member */
+configRoutes.post(
+  '/claude/pool/members/:profileId/toggle',
+  authMiddleware,
+  systemConfigMiddleware,
+  (c) => {
+    const profileId = c.req.param('profileId');
+    const current = providerPool.getConfig();
+    const idx = current.members.findIndex((m) => m.profileId === profileId);
+    if (idx === -1) {
+      return c.json({ error: 'Member not found in pool' }, 404);
+    }
+
+    // Clone to avoid mutating in-memory reference directly
+    const updated: StoredProviderPoolConfig = {
+      ...current,
+      members: current.members.map((m, i) =>
+        i === idx ? { ...m, enabled: !m.enabled } : { ...m },
+      ),
+      updatedAt: new Date().toISOString(),
+    };
+    providerPool.saveConfig(updated);
+
+    return c.json({ profileId, enabled: updated.members[idx].enabled });
+  },
+);
+
+/** POST /claude/pool/members/:profileId/reset-health — Reset health status */
+configRoutes.post(
+  '/claude/pool/members/:profileId/reset-health',
+  authMiddleware,
+  systemConfigMiddleware,
+  (c) => {
+    const profileId = c.req.param('profileId');
+    providerPool.resetHealth(profileId);
+    return c.json({ ok: true });
+  },
+);
+
+/** GET /claude/pool/health — Health statuses only (for polling) */
+configRoutes.get(
+  '/claude/pool/health',
+  authMiddleware,
+  systemConfigMiddleware,
+  (c) => {
+    return c.json({ statuses: providerPool.getHealthStatuses() });
   },
 );
 

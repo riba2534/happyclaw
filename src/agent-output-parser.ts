@@ -579,3 +579,36 @@ function parseLegacyOutput(ctx: CloseHandlerContext): void {
     });
   }
 }
+
+// ─── API Error Classification ────────────────────────────────────────
+
+/** Patterns that indicate an API-level error (provider issue, not user code bug) */
+const API_ERROR_PATTERNS = [
+  /\bapi[_ ]?key\b.*\b(invalid|missing|expired|required)\b/i,
+  /\bauthentication\s+(failed|error|required)\b/i,
+  /\b(401|403)\b.*\bunauthorized\b/i,
+  /\brate[_ ]?limit(ed)?\b/i,
+  /\bquota\s+(exceeded|exhausted)\b/i,
+  /\boverloaded\b/i,
+  /\binternal\s+server\s+error\b/i,
+  /\b(502|503|504|529)\b/,
+  /ANTHROPIC_API_KEY/,
+  /ANTHROPIC_AUTH_TOKEN/,
+  /\binvalid[_ ]?api\b/i,
+  /\bbilling\s+(error|issue|limit)\b/i,
+  /\bcredit(s)?\s+(exhausted|insufficient)\b/i,
+  /connection\s*(refused|reset|timed?\s*out)/i,
+  /ECONNREFUSED|ECONNRESET|ETIMEDOUT/,
+];
+
+/**
+ * Classify whether stderr output indicates an API-level error
+ * (provider unreachable, auth failure, rate limit, etc.)
+ * vs a normal agent exit or user code issue.
+ *
+ * Used by container-runner to decide whether to report failure to ProviderPool.
+ */
+export function isApiError(stderr: string): boolean {
+  if (!stderr) return false;
+  return API_ERROR_PATTERNS.some((pattern) => pattern.test(stderr));
+}

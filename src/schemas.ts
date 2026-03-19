@@ -456,7 +456,11 @@ export const TerminalStopSchema = z.object({
 // --- Billing schemas ---
 
 export const BillingPlanCreateSchema = z.object({
-  id: z.string().min(1).max(64).regex(/^[\w-]+$/, 'ID must be alphanumeric with hyphens/underscores'),
+  id: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[\w-]+$/, 'ID must be alphanumeric with hyphens/underscores'),
   name: z.string().min(1).max(64),
   description: z.string().max(500).nullable().optional(),
   tier: z.number().int().min(0).max(100).optional(),
@@ -483,7 +487,9 @@ export const BillingPlanCreateSchema = z.object({
   is_active: z.boolean().optional(),
 });
 
-export const BillingPlanPatchSchema = BillingPlanCreateSchema.omit({ id: true }).partial();
+export const BillingPlanPatchSchema = BillingPlanCreateSchema.omit({
+  id: true,
+}).partial();
 
 export const AssignPlanSchema = z.object({
   plan_id: z.string().min(1),
@@ -502,39 +508,48 @@ export const BatchAssignPlanSchema = z.object({
   duration_days: z.number().int().min(1).max(3650).optional(),
 });
 
-export const RedeemCodeCreateSchema = z.object({
-  type: z.enum(['balance', 'subscription', 'trial']),
-  value_usd: z.number().min(0.01).optional(),
-  plan_id: z.string().min(1).optional(),
-  duration_days: z.number().int().min(1).max(3650).optional(),
-  max_uses: z.number().int().min(1).max(10000).optional(),
-  count: z.number().int().min(1).max(100).optional(), // 批量生成数量
-  prefix: z.string().max(16).regex(/^[\w-]*$/).optional(), // 兑换码前缀
-  expires_in_hours: z.number().int().min(1).max(87600).optional(),
-  notes: z.string().max(500).optional(),
-}).superRefine((data, ctx) => {
-  if (data.type === 'balance' && (!data.value_usd || data.value_usd <= 0)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['value_usd'],
-      message: 'Balance type requires a positive value_usd',
-    });
-  }
-  if (data.type === 'subscription' && !data.plan_id) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['plan_id'],
-      message: 'Subscription type requires a plan_id',
-    });
-  }
-  if (data.type === 'trial' && (!data.duration_days || data.duration_days <= 0)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['duration_days'],
-      message: 'Trial type requires a positive duration_days',
-    });
-  }
-});
+export const RedeemCodeCreateSchema = z
+  .object({
+    type: z.enum(['balance', 'subscription', 'trial']),
+    value_usd: z.number().min(0.01).optional(),
+    plan_id: z.string().min(1).optional(),
+    duration_days: z.number().int().min(1).max(3650).optional(),
+    max_uses: z.number().int().min(1).max(10000).optional(),
+    count: z.number().int().min(1).max(100).optional(), // 批量生成数量
+    prefix: z
+      .string()
+      .max(16)
+      .regex(/^[\w-]*$/)
+      .optional(), // 兑换码前缀
+    expires_in_hours: z.number().int().min(1).max(87600).optional(),
+    notes: z.string().max(500).optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.type === 'balance' && (!data.value_usd || data.value_usd <= 0)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['value_usd'],
+        message: 'Balance type requires a positive value_usd',
+      });
+    }
+    if (data.type === 'subscription' && !data.plan_id) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['plan_id'],
+        message: 'Subscription type requires a plan_id',
+      });
+    }
+    if (
+      data.type === 'trial' &&
+      (!data.duration_days || data.duration_days <= 0)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['duration_days'],
+        message: 'Trial type requires a positive duration_days',
+      });
+    }
+  });
 
 export const RedeemCodeSchema = z.object({
   code: z.string().min(1).max(64),
@@ -582,4 +597,25 @@ export const BugReportGenerateSchema = z.object({
 export const BugReportSubmitSchema = z.object({
   title: z.string().min(1).max(256),
   body: z.string().min(1).max(65536),
+});
+
+// ─── Provider Pool ──────────────────────────────────────────
+
+export const ProviderPoolSchema = z.object({
+  mode: z.enum(['fixed', 'pool']),
+  strategy: z
+    .enum(['round-robin', 'weighted-round-robin', 'failover'])
+    .optional(),
+  members: z
+    .array(
+      z.object({
+        profileId: z.string().min(1).max(64),
+        weight: z.number().int().min(1).max(100).optional().default(1),
+        enabled: z.boolean().optional().default(true),
+      }),
+    )
+    .max(20)
+    .optional(),
+  unhealthyThreshold: z.number().int().min(1).max(20).optional(),
+  recoveryIntervalMs: z.number().int().min(30000).max(3600000).optional(),
 });

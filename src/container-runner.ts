@@ -22,11 +22,16 @@ import {
   buildContainerEnvLines,
   getClaudeProviderConfig,
   getContainerEnvConfig,
+  getCustomEnvForProfile,
   getSystemSettings,
   mergeClaudeEnvConfig,
+  resolveProfileToConfig,
   shellQuoteEnvLines,
   writeCredentialsFile,
 } from './runtime-config.js';
+import { providerPool } from './provider-pool.js';
+import { isApiError } from './agent-output-parser.js';
+import type { ClaudeProviderConfig } from './runtime-config.js';
 import { resolveGroupMcpServers } from './mcp-utils.js';
 import { RegisteredGroup, StreamEvent } from './types.js';
 import {
@@ -90,7 +95,6 @@ function ensureSettingsJson(
   fs.writeFileSync(settingsFile, newContent, { mode: 0o644 });
 }
 
-
 export interface ContainerInput {
   prompt: string;
   sessionId?: string;
@@ -118,7 +122,13 @@ export interface ContainerOutput {
   turnId?: string;
   sessionId?: string;
   sdkMessageUuid?: string;
-  sourceKind?: 'sdk_final' | 'sdk_send_message' | 'interrupt_partial' | 'overflow_partial' | 'compact_partial' | 'legacy';
+  sourceKind?:
+    | 'sdk_final'
+    | 'sdk_send_message'
+    | 'interrupt_partial'
+    | 'overflow_partial'
+    | 'compact_partial'
+    | 'legacy';
   finalizationReason?: 'completed' | 'interrupted' | 'error';
 }
 
@@ -142,6 +152,11 @@ function mkdirForContainer(dirPath: string): void {
   }
 }
 
+interface ResolvedProvider {
+  config: ClaudeProviderConfig;
+  customEnv: Record<string, string>;
+}
+
 function buildVolumeMounts(
   group: RegisteredGroup,
   isAdminHome: boolean,
@@ -150,6 +165,7 @@ function buildVolumeMounts(
   agentId?: string,
   ownerHomeFolder?: string,
   taskRunId?: string,
+  resolvedProvider?: ResolvedProvider,
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
@@ -328,9 +344,13 @@ function buildVolumeMounts(
   // Global config merged with per-container overrides.
   const envDir = path.join(DATA_DIR, 'env', group.folder);
   fs.mkdirSync(envDir, { recursive: true });
-  const globalConfig = getClaudeProviderConfig();
+  const globalConfig = resolvedProvider?.config ?? getClaudeProviderConfig();
   const containerOverride = getContainerEnvConfig(group.folder);
-  const envLines = buildContainerEnvLines(globalConfig, containerOverride);
+  const envLines = buildContainerEnvLines(
+    globalConfig,
+    containerOverride,
+    resolvedProvider?.customEnv,
+  );
   if (envLines.length > 0) {
     const envFilePath = path.join(envDir, 'env');
     const quotedLines = shellQuoteEnvLines(envLines);
@@ -424,166 +444,223 @@ export async function runContainerAgent(
   const groupDir = path.join(GROUPS_DIR, group.folder);
   mkdirForContainer(groupDir);
 
-  // Determine if this is an admin home container (full privileges)
-  const isAdminHome = !!group.is_home && group.folder === 'main';
-  // Per-user skills: always mount if the group has an owner
-  const shouldMountUserSkills = !!group.created_by;
-  const mounts = buildVolumeMounts(
-    group,
-    isAdminHome,
-    shouldMountUserSkills,
-    group.selected_skills ?? null,
-    input.agentId,
-    ownerHomeFolder,
-    input.taskRunId,
-  );
-  const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
-  const agentSuffix = input.agentId
-    ? `-${input.agentId.replace(/[^a-zA-Z0-9-]/g, '-')}`
-    : '';
-  const containerName = `happyclaw-${safeName}${agentSuffix}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName);
-
-  logger.debug(
-    {
-      group: group.name,
-      containerName,
-      mounts: mounts.map(
-        (m) =>
-          `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
-      ),
-      containerArgs: containerArgs.join(' '),
-    },
-    'Container mount configuration',
+  // ─── Provider Pool selection ───
+  const containerOverrideForCheck = getContainerEnvConfig(group.folder);
+  const hasProviderOverride = !!(
+    containerOverrideForCheck.anthropicApiKey ||
+    containerOverrideForCheck.anthropicAuthToken ||
+    containerOverrideForCheck.anthropicBaseUrl
   );
 
-  logger.info(
-    {
-      group: group.name,
-      containerName,
-      mountCount: mounts.length,
-      isMain: input.isMain,
-    },
-    'Spawning container agent',
-  );
+  let selectedProfileId: string | null = null;
+  let resolvedProvider: ResolvedProvider | undefined;
 
-  const logsDir = path.join(GROUPS_DIR, group.folder, 'logs');
-  fs.mkdirSync(logsDir, { recursive: true });
-
-  return new Promise((resolve) => {
-    const container = spawn('docker', containerArgs, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    onProcess(container, containerName);
-
-    const stdoutState = createStdoutParserState();
-    const stderrState = createStderrState();
-
-    // Write input and close stdin (容器需要 EOF 来刷新 stdin 管道)
-    container.stdin.on('error', (err) => {
-      logger.error({ group: group.name, err }, 'Container stdin write failed');
-      container.kill();
-    });
-    container.stdin.write(JSON.stringify(input));
-    container.stdin.end();
-
-    let timedOut = false;
-    const timeoutMs =
-      group.containerConfig?.timeout || getSystemSettings().containerTimeout;
-
-    const killOnTimeout = () => {
-      timedOut = true;
-      logger.error(
-        { group: group.name, containerName },
-        'Container timeout, stopping gracefully',
+  if (!hasProviderOverride && providerPool.getConfig().mode === 'pool') {
+    try {
+      selectedProfileId = providerPool.selectProvider();
+      resolvedProvider = {
+        config: resolveProfileToConfig(selectedProfileId),
+        customEnv: getCustomEnvForProfile(selectedProfileId),
+      };
+      providerPool.acquireSession(selectedProfileId);
+    } catch (err) {
+      logger.warn(
+        { err },
+        'Provider pool selection failed, falling back to active profile',
       );
-      execFile('docker', ['stop', containerName], { timeout: 15000 }, (err) => {
-        if (err) {
-          logger.warn(
-            { group: group.name, containerName, err },
-            'Graceful stop failed, force killing',
-          );
-          container.kill('SIGKILL');
-        }
+      selectedProfileId = null;
+      resolvedProvider = undefined;
+    }
+  }
+
+  try {
+    // Determine if this is an admin home container (full privileges)
+    const isAdminHome = !!group.is_home && group.folder === 'main';
+    // Per-user skills: always mount if the group has an owner
+    const shouldMountUserSkills = !!group.created_by;
+    const mounts = buildVolumeMounts(
+      group,
+      isAdminHome,
+      shouldMountUserSkills,
+      group.selected_skills ?? null,
+      input.agentId,
+      ownerHomeFolder,
+      input.taskRunId,
+      resolvedProvider,
+    );
+    const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
+    const agentSuffix = input.agentId
+      ? `-${input.agentId.replace(/[^a-zA-Z0-9-]/g, '-')}`
+      : '';
+    const containerName = `happyclaw-${safeName}${agentSuffix}-${Date.now()}`;
+    const containerArgs = buildContainerArgs(mounts, containerName);
+
+    logger.debug(
+      {
+        group: group.name,
+        containerName,
+        mounts: mounts.map(
+          (m) =>
+            `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
+        ),
+        containerArgs: containerArgs.join(' '),
+      },
+      'Container mount configuration',
+    );
+
+    logger.info(
+      {
+        group: group.name,
+        containerName,
+        mountCount: mounts.length,
+        isMain: input.isMain,
+      },
+      'Spawning container agent',
+    );
+
+    const logsDir = path.join(GROUPS_DIR, group.folder, 'logs');
+    fs.mkdirSync(logsDir, { recursive: true });
+
+    const result = await new Promise<ContainerOutput>((resolve) => {
+      const container = spawn('docker', containerArgs, {
+        stdio: ['pipe', 'pipe', 'pipe'],
       });
-    };
 
-    let timeout = setTimeout(killOnTimeout, timeoutMs);
+      onProcess(container, containerName);
 
-    const resetTimeout = () => {
-      clearTimeout(timeout);
-      timeout = setTimeout(killOnTimeout, timeoutMs);
-    };
+      const stdoutState = createStdoutParserState();
+      const stderrState = createStderrState();
 
-    // Attach stdout/stderr handlers using shared parser
-    attachStdoutHandler(container.stdout, stdoutState, {
-      groupName: group.name,
-      label: 'Container',
-      onOutput,
-      resetTimeout,
-    });
-    attachStderrHandler(container.stderr, stderrState, group.name, {
-      container: group.folder,
-    });
+      // Write input and close stdin (容器需要 EOF 来刷新 stdin 管道)
+      container.stdin.on('error', (err) => {
+        logger.error(
+          { group: group.name, err },
+          'Container stdin write failed',
+        );
+        container.kill();
+      });
+      container.stdin.write(JSON.stringify(input));
+      container.stdin.end();
 
-    container.on('close', (code, signal) => {
-      clearTimeout(timeout);
-      const duration = Date.now() - startTime;
+      let timedOut = false;
+      const timeoutMs =
+        group.containerConfig?.timeout || getSystemSettings().containerTimeout;
 
-      const closeCtx: CloseHandlerContext = {
-        groupName: group.name,
-        label: 'Container',
-        filePrefix: 'container',
-        identifier: containerName,
-        logsDir,
-        input,
-        stdoutState,
-        stderrState,
-        onOutput,
-        resolvePromise: resolve,
-        startTime,
-        timeoutMs,
-        extraSummaryLines: [
-          ``,
-          `=== Mounts ===`,
-          mounts
-            .map((m) => `${m.containerPath}${m.readonly ? ' (ro)' : ''}`)
-            .join('\n'),
-        ],
-        extraVerboseLines: [
-          `=== Container Args ===`,
-          containerArgs.join(' '),
-          ``,
-          `=== Mounts (detailed) ===`,
-          mounts
-            .map(
-              (m) =>
-                `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
-            )
-            .join('\n'),
-        ],
+      const killOnTimeout = () => {
+        timedOut = true;
+        logger.error(
+          { group: group.name, containerName },
+          'Container timeout, stopping gracefully',
+        );
+        execFile(
+          'docker',
+          ['stop', containerName],
+          { timeout: 15000 },
+          (err) => {
+            if (err) {
+              logger.warn(
+                { group: group.name, containerName, err },
+                'Graceful stop failed, force killing',
+              );
+              container.kill('SIGKILL');
+            }
+          },
+        );
       };
 
-      if (handleTimeoutClose(closeCtx, code, duration, timedOut)) return;
-      const logFile = writeRunLog(closeCtx, code, duration);
-      if (handleNonZeroExit(closeCtx, code, signal, duration, logFile)) return;
-      handleSuccessClose(closeCtx, duration);
-    });
+      let timeout = setTimeout(killOnTimeout, timeoutMs);
 
-    container.on('error', (err) => {
-      clearTimeout(timeout);
-      logger.error(
-        { group: group.name, containerName, error: err },
-        'Container spawn error',
-      );
-      resolve({
-        status: 'error',
-        result: null,
-        error: `Container spawn error: ${err.message}`,
+      const resetTimeout = () => {
+        clearTimeout(timeout);
+        timeout = setTimeout(killOnTimeout, timeoutMs);
+      };
+
+      // Attach stdout/stderr handlers using shared parser
+      attachStdoutHandler(container.stdout, stdoutState, {
+        groupName: group.name,
+        label: 'Container',
+        onOutput,
+        resetTimeout,
+      });
+      attachStderrHandler(container.stderr, stderrState, group.name, {
+        container: group.folder,
+      });
+
+      container.on('close', (code, signal) => {
+        clearTimeout(timeout);
+        const duration = Date.now() - startTime;
+
+        const closeCtx: CloseHandlerContext = {
+          groupName: group.name,
+          label: 'Container',
+          filePrefix: 'container',
+          identifier: containerName,
+          logsDir,
+          input,
+          stdoutState,
+          stderrState,
+          onOutput,
+          resolvePromise: resolve,
+          startTime,
+          timeoutMs,
+          extraSummaryLines: [
+            ``,
+            `=== Mounts ===`,
+            mounts
+              .map((m) => `${m.containerPath}${m.readonly ? ' (ro)' : ''}`)
+              .join('\n'),
+          ],
+          extraVerboseLines: [
+            `=== Container Args ===`,
+            containerArgs.join(' '),
+            ``,
+            `=== Mounts (detailed) ===`,
+            mounts
+              .map(
+                (m) =>
+                  `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
+              )
+              .join('\n'),
+          ],
+        };
+
+        if (handleTimeoutClose(closeCtx, code, duration, timedOut)) return;
+        const logFile = writeRunLog(closeCtx, code, duration);
+        if (handleNonZeroExit(closeCtx, code, signal, duration, logFile))
+          return;
+        handleSuccessClose(closeCtx, duration);
+      });
+
+      container.on('error', (err) => {
+        clearTimeout(timeout);
+        logger.error(
+          { group: group.name, containerName, error: err },
+          'Container spawn error',
+        );
+        resolve({
+          status: 'error',
+          result: null,
+          error: `Container spawn error: ${err.message}`,
+        });
       });
     });
-  });
+
+    // ─── Provider Pool health reporting ───
+    if (selectedProfileId) {
+      if (result.status === 'success' || result.status === 'closed') {
+        providerPool.reportSuccess(selectedProfileId);
+      } else if (result.status === 'error' && isApiError(result.error || '')) {
+        providerPool.reportFailure(selectedProfileId);
+      }
+    }
+
+    return result;
+  } finally {
+    // Guarantee session release even if buildVolumeMounts/spawn throws
+    if (selectedProfileId) {
+      providerPool.releaseSession(selectedProfileId);
+    }
+  }
 }
 
 export function writeTasksSnapshot(
@@ -665,7 +742,10 @@ export function writeGroupsSnapshot(
  * 杀死进程及其所有子进程。
  * 如果进程以 detached 模式启动（独立进程组），使用负 PID 杀整个进程组。
  */
-export function killProcessTree(proc: ChildProcess, signal: NodeJS.Signals = 'SIGTERM'): boolean {
+export function killProcessTree(
+  proc: ChildProcess,
+  signal: NodeJS.Signals = 'SIGTERM',
+): boolean {
   try {
     if (proc.pid) {
       process.kill(-proc.pid, signal);
@@ -889,261 +969,315 @@ export async function runHostAgent(
     ...(process.env as Record<string, string>),
   };
 
-  // 配置层环境变量
-  const globalConfig = getClaudeProviderConfig();
+  // ─── Provider Pool selection (host mode) ───
   const containerOverride = getContainerEnvConfig(group.folder);
-  const envLines = buildContainerEnvLines(globalConfig, containerOverride);
-  for (const line of envLines) {
-    const eqIdx = line.indexOf('=');
-    if (eqIdx > 0) {
-      hostEnv[line.slice(0, eqIdx)] = line.slice(eqIdx + 1);
-    }
-  }
+  const hasProviderOverride = !!(
+    containerOverride.anthropicApiKey ||
+    containerOverride.anthropicAuthToken ||
+    containerOverride.anthropicBaseUrl
+  );
 
-  // Write .credentials.json for OAuth credentials
-  const mergedConfig = mergeClaudeEnvConfig(globalConfig, containerOverride);
-  if (mergedConfig.claudeOAuthCredentials) {
+  let hostSelectedProfileId: string | null = null;
+  let hostProviderCustomEnv: Record<string, string> | undefined;
+  let globalConfig: ClaudeProviderConfig;
+
+  if (!hasProviderOverride && providerPool.getConfig().mode === 'pool') {
     try {
-      writeCredentialsFile(groupSessionsDir, mergedConfig);
+      hostSelectedProfileId = providerPool.selectProvider();
+      globalConfig = resolveProfileToConfig(hostSelectedProfileId);
+      hostProviderCustomEnv = getCustomEnvForProfile(hostSelectedProfileId);
+      providerPool.acquireSession(hostSelectedProfileId);
     } catch (err) {
       logger.warn(
-        { folder: group.folder, err },
-        'Failed to write .credentials.json for host agent',
+        { err },
+        'Provider pool selection failed in host mode, falling back',
       );
+      hostSelectedProfileId = null;
+      globalConfig = getClaudeProviderConfig();
     }
-  }
-
-  // 路径映射
-  hostEnv['HAPPYCLAW_WORKSPACE_GROUP'] = groupDir;
-  // Per-user global memory
-  const ownerId = group.created_by;
-  if (ownerId) {
-    const userGlobalDir = path.join(GROUPS_DIR, 'user-global', ownerId);
-    fs.mkdirSync(userGlobalDir, { recursive: true });
-    hostEnv['HAPPYCLAW_WORKSPACE_GLOBAL'] = userGlobalDir;
   } else {
-    const legacyGlobalDir = path.join(GROUPS_DIR, 'global');
-    fs.mkdirSync(legacyGlobalDir, { recursive: true });
-    hostEnv['HAPPYCLAW_WORKSPACE_GLOBAL'] = legacyGlobalDir;
-  }
-  const memoryFolder = group.is_home
-    ? group.folder
-    : ownerHomeFolder || group.folder;
-  hostEnv['HAPPYCLAW_WORKSPACE_MEMORY'] = path.join(
-    DATA_DIR,
-    'memory',
-    memoryFolder,
-  );
-  hostEnv['HAPPYCLAW_WORKSPACE_IPC'] = groupIpcDir;
-  hostEnv['CLAUDE_CONFIG_DIR'] = groupSessionsDir;
-  // 让 SDK 捕获 CLI 的 stderr 输出，便于排查启动失败
-  hostEnv['DEBUG_CLAUDE_AGENT_SDK'] = '1';
-  // CLI 禁止 root 用户使用 --dangerously-skip-permissions，
-  // 通过 IS_SANDBOX 标记告知 CLI 当前运行在受控环境中以绕过此限制
-  if (typeof process.getuid === 'function' && process.getuid() === 0) {
-    hostEnv['IS_SANDBOX'] = '1';
+    globalConfig = getClaudeProviderConfig();
   }
 
-  // 6. 编译检查
-  const projectRoot = process.cwd();
-  const agentRunnerRoot = path.join(projectRoot, 'container', 'agent-runner');
-  const agentRunnerNodeModules = path.join(agentRunnerRoot, 'node_modules');
-  const agentRunnerDist = path.join(agentRunnerRoot, 'dist', 'index.js');
-  const requiredDeps = ['@anthropic-ai/claude-agent-sdk'];
-  const missingDeps = requiredDeps.filter((dep) => {
-    const depJson = path.join(
-      agentRunnerNodeModules,
-      ...dep.split('/'),
-      'package.json',
-    );
-    return !fs.existsSync(depJson);
-  });
-  if (missingDeps.length > 0) {
-    const missing = missingDeps.join(', ');
-    logger.error(
-      { group: group.name, missingDeps },
-      'Host agent preflight failed: dependencies missing',
-    );
-    return hostModeSetupError(
-      `缺少 agent-runner 依赖（${missing}）。请先执行：${setupInstallHint}`,
-    );
-  }
-  if (!fs.existsSync(agentRunnerDist)) {
-    logger.error(
-      { group: group.name, agentRunnerDist },
-      'Host agent preflight failed: dist not found',
-    );
-    return hostModeSetupError(
-      `agent-runner 未编译。请先执行：${setupBuildHint}`,
-    );
-  }
-
-  // Auto-rebuild if dist is stale (src newer than dist)
   try {
-    const distMtime = fs.statSync(agentRunnerDist).mtimeMs;
-    const srcDir = path.join(agentRunnerRoot, 'src');
-    const srcFiles = fs.readdirSync(srcDir);
-    const newestSrc = Math.max(
-      ...srcFiles.map((f) => fs.statSync(path.join(srcDir, f)).mtimeMs),
+    // 配置层环境变量
+    const envLines = buildContainerEnvLines(
+      globalConfig,
+      containerOverride,
+      hostProviderCustomEnv,
     );
-    if (newestSrc > distMtime) {
-      logger.info(
-        { group: group.name },
-        'agent-runner dist 已过期，自动重新编译...',
-      );
+    for (const line of envLines) {
+      const eqIdx = line.indexOf('=');
+      if (eqIdx > 0) {
+        hostEnv[line.slice(0, eqIdx)] = line.slice(eqIdx + 1);
+      }
+    }
+
+    // Write .credentials.json for OAuth credentials
+    const mergedConfig = mergeClaudeEnvConfig(globalConfig, containerOverride);
+    if (mergedConfig.claudeOAuthCredentials) {
       try {
-        const { execSync } = await import('child_process');
-        execSync('npm run build', {
-          cwd: agentRunnerRoot,
-          stdio: 'pipe',
-          timeout: 30_000,
-        });
-        logger.info(
-          { group: group.name },
-          'agent-runner 自动编译完成',
-        );
-      } catch (buildErr) {
+        writeCredentialsFile(groupSessionsDir, mergedConfig);
+      } catch (err) {
         logger.warn(
-          { group: group.name, err: buildErr },
-          `agent-runner 自动编译失败，使用旧版 dist。手动执行：${setupBuildHint}`,
+          { folder: group.folder, err },
+          'Failed to write .credentials.json for host agent',
         );
       }
     }
-  } catch {
-    // Best effort, don't block execution
-  }
 
-  logger.info(
-    {
-      group: group.name,
-      workingDir: groupDir,
-      isMain: input.isMain,
-    },
-    'Spawning host agent',
-  );
+    // 路径映射
+    hostEnv['HAPPYCLAW_WORKSPACE_GROUP'] = groupDir;
+    // Per-user global memory
+    const ownerId = group.created_by;
+    if (ownerId) {
+      const userGlobalDir = path.join(GROUPS_DIR, 'user-global', ownerId);
+      fs.mkdirSync(userGlobalDir, { recursive: true });
+      hostEnv['HAPPYCLAW_WORKSPACE_GLOBAL'] = userGlobalDir;
+    } else {
+      const legacyGlobalDir = path.join(GROUPS_DIR, 'global');
+      fs.mkdirSync(legacyGlobalDir, { recursive: true });
+      hostEnv['HAPPYCLAW_WORKSPACE_GLOBAL'] = legacyGlobalDir;
+    }
+    const memoryFolder = group.is_home
+      ? group.folder
+      : ownerHomeFolder || group.folder;
+    hostEnv['HAPPYCLAW_WORKSPACE_MEMORY'] = path.join(
+      DATA_DIR,
+      'memory',
+      memoryFolder,
+    );
+    hostEnv['HAPPYCLAW_WORKSPACE_IPC'] = groupIpcDir;
+    hostEnv['CLAUDE_CONFIG_DIR'] = groupSessionsDir;
+    // 让 SDK 捕获 CLI 的 stderr 输出，便于排查启动失败
+    hostEnv['DEBUG_CLAUDE_AGENT_SDK'] = '1';
+    // CLI 禁止 root 用户使用 --dangerously-skip-permissions，
+    // 通过 IS_SANDBOX 标记告知 CLI 当前运行在受控环境中以绕过此限制
+    if (typeof process.getuid === 'function' && process.getuid() === 0) {
+      hostEnv['IS_SANDBOX'] = '1';
+    }
 
-  const logsDir = path.join(groupDir, 'logs');
-
-  return new Promise((resolve) => {
-    let settled = false;
-    const resolveOnce = (output: ContainerOutput): void => {
-      if (settled) return;
-      settled = true;
-      resolve(output);
-    };
-
-    // 7. 启动进程
-    const proc = spawn('node', [agentRunnerDist], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: hostEnv,
-      cwd: groupDir,
-      detached: true,
-    });
-
-    const processId = `host-${group.folder}-${Date.now()}`;
-    onProcess(proc, processId);
-
-    const stdoutState = createStdoutParserState();
-    const stderrState = createStderrState();
-
-    // 8. stdin 输入
-    proc.stdin.on('error', (err) => {
-      logger.error({ group: group.name, err }, 'Host agent stdin write failed');
-      killProcessTree(proc);
-    });
-    proc.stdin.write(JSON.stringify(input));
-    proc.stdin.end();
-
-    // 9. 超时管理
-    let timedOut = false;
-    const timeoutMs =
-      group.containerConfig?.timeout || getSystemSettings().containerTimeout;
-
-    let killTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const killOnTimeout = () => {
-      timedOut = true;
-      logger.error(
-        { group: group.name, processId },
-        'Host agent timeout, killing',
+    // 6. 编译检查
+    const projectRoot = process.cwd();
+    const agentRunnerRoot = path.join(projectRoot, 'container', 'agent-runner');
+    const agentRunnerNodeModules = path.join(agentRunnerRoot, 'node_modules');
+    const agentRunnerDist = path.join(agentRunnerRoot, 'dist', 'index.js');
+    const requiredDeps = ['@anthropic-ai/claude-agent-sdk'];
+    const missingDeps = requiredDeps.filter((dep) => {
+      const depJson = path.join(
+        agentRunnerNodeModules,
+        ...dep.split('/'),
+        'package.json',
       );
-      killProcessTree(proc, 'SIGTERM');
-      killTimer = setTimeout(() => {
-        if (proc.exitCode === null && proc.signalCode === null) {
-          killProcessTree(proc, 'SIGKILL');
-        }
-      }, 5000);
-    };
-
-    let timeout = setTimeout(killOnTimeout, timeoutMs);
-
-    const resetTimeout = () => {
-      clearTimeout(timeout);
-      timeout = setTimeout(killOnTimeout, timeoutMs);
-    };
-
-    // 10. stdout/stderr 解析
-    attachStdoutHandler(proc.stdout, stdoutState, {
-      groupName: group.name,
-      label: 'Host agent',
-      onOutput,
-      resetTimeout,
+      return !fs.existsSync(depJson);
     });
-    attachStderrHandler(proc.stderr, stderrState, group.name, {
-      host: group.folder,
-    });
+    if (missingDeps.length > 0) {
+      const missing = missingDeps.join(', ');
+      logger.error(
+        { group: group.name, missingDeps },
+        'Host agent preflight failed: dependencies missing',
+      );
+      return hostModeSetupError(
+        `缺少 agent-runner 依赖（${missing}）。请先执行：${setupInstallHint}`,
+      );
+    }
+    if (!fs.existsSync(agentRunnerDist)) {
+      logger.error(
+        { group: group.name, agentRunnerDist },
+        'Host agent preflight failed: dist not found',
+      );
+      return hostModeSetupError(
+        `agent-runner 未编译。请先执行：${setupBuildHint}`,
+      );
+    }
 
-    // 11. close 事件处理
-    proc.on('close', (code, signal) => {
-      clearTimeout(timeout);
-      if (killTimer) clearTimeout(killTimer);
-      const duration = Date.now() - startTime;
-
-      const closeCtx: CloseHandlerContext = {
-        groupName: group.name,
-        label: 'Host Agent',
-        filePrefix: 'host',
-        identifier: processId,
-        logsDir,
-        input,
-        stdoutState,
-        stderrState,
-        onOutput,
-        resolvePromise: resolveOnce,
-        startTime,
-        timeoutMs,
-        extraSummaryLines: [`Working Directory: ${groupDir}`],
-        enrichError: (stderrContent, exitLabel) => {
-          const missingPackageMatch = stderrContent.match(
-            /Cannot find package '([^']+)' imported from/u,
+    // Auto-rebuild if dist is stale (src newer than dist)
+    try {
+      const distMtime = fs.statSync(agentRunnerDist).mtimeMs;
+      const srcDir = path.join(agentRunnerRoot, 'src');
+      const srcFiles = fs.readdirSync(srcDir);
+      const newestSrc = Math.max(
+        ...srcFiles.map((f) => fs.statSync(path.join(srcDir, f)).mtimeMs),
+      );
+      if (newestSrc > distMtime) {
+        logger.info(
+          { group: group.name },
+          'agent-runner dist 已过期，自动重新编译...',
+        );
+        try {
+          const { execSync } = await import('child_process');
+          execSync('npm run build', {
+            cwd: agentRunnerRoot,
+            stdio: 'pipe',
+            timeout: 30_000,
+          });
+          logger.info({ group: group.name }, 'agent-runner 自动编译完成');
+        } catch (buildErr) {
+          logger.warn(
+            { group: group.name, err: buildErr },
+            `agent-runner 自动编译失败，使用旧版 dist。手动执行：${setupBuildHint}`,
           );
-          const userFacingError = missingPackageMatch
-            ? `宿主机模式启动失败：缺少依赖 ${missingPackageMatch[1]}。请先执行：${setupInstallHint}`
-            : null;
-          return {
-            result: userFacingError,
-            error: `Host agent exited with ${exitLabel}: ${stderrContent.slice(-200)}`,
-          };
-        },
+        }
+      }
+    } catch {
+      // Best effort, don't block execution
+    }
+
+    logger.info(
+      {
+        group: group.name,
+        workingDir: groupDir,
+        isMain: input.isMain,
+      },
+      'Spawning host agent',
+    );
+
+    const logsDir = path.join(groupDir, 'logs');
+
+    const hostResult = await new Promise<ContainerOutput>((resolve) => {
+      let settled = false;
+      const resolveOnce = (output: ContainerOutput): void => {
+        if (settled) return;
+        settled = true;
+        resolve(output);
       };
 
-      if (handleTimeoutClose(closeCtx, code, duration, timedOut)) return;
-      const logFile = writeRunLog(closeCtx, code, duration);
-      if (handleNonZeroExit(closeCtx, code, signal, duration, logFile)) return;
-      handleSuccessClose(closeCtx, duration);
-    });
+      // 7. 启动进程
+      const proc = spawn('node', [agentRunnerDist], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: hostEnv,
+        cwd: groupDir,
+        detached: true,
+      });
 
-    proc.on('error', (err) => {
-      clearTimeout(timeout);
-      logger.error(
-        { group: group.name, processId, error: err },
-        'Host agent spawn error',
-      );
-      resolveOnce({
-        status: 'error',
-        result: null,
-        error: `Host agent spawn error: ${err.message}`,
+      const processId = `host-${group.folder}-${Date.now()}`;
+      onProcess(proc, processId);
+
+      const stdoutState = createStdoutParserState();
+      const stderrState = createStderrState();
+
+      // 8. stdin 输入
+      proc.stdin.on('error', (err) => {
+        logger.error(
+          { group: group.name, err },
+          'Host agent stdin write failed',
+        );
+        killProcessTree(proc);
+      });
+      proc.stdin.write(JSON.stringify(input));
+      proc.stdin.end();
+
+      // 9. 超时管理
+      let timedOut = false;
+      const timeoutMs =
+        group.containerConfig?.timeout || getSystemSettings().containerTimeout;
+
+      let killTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const killOnTimeout = () => {
+        timedOut = true;
+        logger.error(
+          { group: group.name, processId },
+          'Host agent timeout, killing',
+        );
+        killProcessTree(proc, 'SIGTERM');
+        killTimer = setTimeout(() => {
+          if (proc.exitCode === null && proc.signalCode === null) {
+            killProcessTree(proc, 'SIGKILL');
+          }
+        }, 5000);
+      };
+
+      let timeout = setTimeout(killOnTimeout, timeoutMs);
+
+      const resetTimeout = () => {
+        clearTimeout(timeout);
+        timeout = setTimeout(killOnTimeout, timeoutMs);
+      };
+
+      // 10. stdout/stderr 解析
+      attachStdoutHandler(proc.stdout, stdoutState, {
+        groupName: group.name,
+        label: 'Host agent',
+        onOutput,
+        resetTimeout,
+      });
+      attachStderrHandler(proc.stderr, stderrState, group.name, {
+        host: group.folder,
+      });
+
+      // 11. close 事件处理
+      proc.on('close', (code, signal) => {
+        clearTimeout(timeout);
+        if (killTimer) clearTimeout(killTimer);
+        const duration = Date.now() - startTime;
+
+        const closeCtx: CloseHandlerContext = {
+          groupName: group.name,
+          label: 'Host Agent',
+          filePrefix: 'host',
+          identifier: processId,
+          logsDir,
+          input,
+          stdoutState,
+          stderrState,
+          onOutput,
+          resolvePromise: resolveOnce,
+          startTime,
+          timeoutMs,
+          extraSummaryLines: [`Working Directory: ${groupDir}`],
+          enrichError: (stderrContent, exitLabel) => {
+            const missingPackageMatch = stderrContent.match(
+              /Cannot find package '([^']+)' imported from/u,
+            );
+            const userFacingError = missingPackageMatch
+              ? `宿主机模式启动失败：缺少依赖 ${missingPackageMatch[1]}。请先执行：${setupInstallHint}`
+              : null;
+            return {
+              result: userFacingError,
+              error: `Host agent exited with ${exitLabel}: ${stderrContent.slice(-200)}`,
+            };
+          },
+        };
+
+        if (handleTimeoutClose(closeCtx, code, duration, timedOut)) return;
+        const logFile = writeRunLog(closeCtx, code, duration);
+        if (handleNonZeroExit(closeCtx, code, signal, duration, logFile))
+          return;
+        handleSuccessClose(closeCtx, duration);
+      });
+
+      proc.on('error', (err) => {
+        clearTimeout(timeout);
+        logger.error(
+          { group: group.name, processId, error: err },
+          'Host agent spawn error',
+        );
+        resolveOnce({
+          status: 'error',
+          result: null,
+          error: `Host agent spawn error: ${err.message}`,
+        });
       });
     });
-  });
+
+    // ─── Provider Pool health reporting (host mode) ───
+    if (hostSelectedProfileId) {
+      if (hostResult.status === 'success' || hostResult.status === 'closed') {
+        providerPool.reportSuccess(hostSelectedProfileId);
+      } else if (
+        hostResult.status === 'error' &&
+        isApiError(hostResult.error || '')
+      ) {
+        providerPool.reportFailure(hostSelectedProfileId);
+      }
+    }
+
+    return hostResult;
+  } finally {
+    // Guarantee session release even if spawn/setup throws
+    if (hostSelectedProfileId) {
+      providerPool.releaseSession(hostSelectedProfileId);
+    }
+  }
 }

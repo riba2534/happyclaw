@@ -606,7 +606,9 @@ function fromStoredProfile(
     name: normalizeProfileName(stored.name),
     anthropicBaseUrl: normalizeBaseUrl(stored.anthropicBaseUrl),
     anthropicAuthToken: secrets.anthropicAuthToken,
-    anthropicModel: normalizeModel(stored.anthropicModel ?? (stored as any).happyclawModel ?? ''),
+    anthropicModel: normalizeModel(
+      stored.anthropicModel ?? (stored as any).happyclawModel ?? '',
+    ),
     updatedAt: stored.updatedAt || null,
     customEnv: sanitizeCustomEnvMap(stored.customEnv || {}, {
       skipReservedClaudeKeys: true,
@@ -1695,7 +1697,10 @@ export function shellQuoteEnvLines(lines: string[]): string[] {
   });
 }
 
-export function buildClaudeEnvLines(config: ClaudeProviderConfig): string[] {
+export function buildClaudeEnvLines(
+  config: ClaudeProviderConfig,
+  profileCustomEnv?: Record<string, string>,
+): string[] {
   const lines: string[] = [];
 
   // When full OAuth credentials exist, authentication is handled by .credentials.json file.
@@ -1722,7 +1727,8 @@ export function buildClaudeEnvLines(config: ClaudeProviderConfig): string[] {
     lines.push(`ANTHROPIC_MODEL=${sanitizeEnvValue(config.anthropicModel)}`);
   }
 
-  const customEnv = getActiveProfileCustomEnv();
+  // Use explicit profileCustomEnv if provided (pool mode), otherwise active profile
+  const customEnv = profileCustomEnv ?? getActiveProfileCustomEnv();
   for (const [key, value] of Object.entries(customEnv)) {
     if (RESERVED_CLAUDE_ENV_KEYS.has(key)) continue;
     lines.push(`${key}=${sanitizeEnvValue(value)}`);
@@ -1747,6 +1753,79 @@ export function getActiveProfileCustomEnv(): Record<string, string> {
   if (!active) return {};
 
   return sanitizeCustomEnvMap(active.customEnv || {}, {
+    skipReservedClaudeKeys: true,
+  });
+}
+
+/**
+ * Resolve any profileId to a full ClaudeProviderConfig.
+ * Used by ProviderPool to build env for a non-active profile.
+ */
+export function resolveProfileToConfig(
+  profileId: string,
+): ClaudeProviderConfig {
+  const state = readStoredState();
+  if (!state) return defaultsFromEnv();
+
+  if (isOfficialClaudeMode(profileId)) {
+    return buildOfficialClaudeProviderConfig(
+      state.officialSecrets,
+      state.officialUpdatedAt,
+    );
+  }
+
+  const stored = state.profiles.find((p) => p.id === profileId);
+  if (!stored) {
+    // Profile not found — fallback to current active config
+    logger.warn(
+      { profileId },
+      'resolveProfileToConfig: profile not found, falling back to active',
+    );
+    return getClaudeProviderConfig();
+  }
+
+  const profile = fromStoredProfile(stored);
+  return buildConfig(
+    {
+      anthropicBaseUrl: profile.anthropicBaseUrl,
+      anthropicAuthToken: profile.anthropicAuthToken,
+      anthropicApiKey: state.officialSecrets.anthropicApiKey,
+      claudeCodeOauthToken: state.officialSecrets.claudeCodeOauthToken,
+      claudeOAuthCredentials:
+        state.officialSecrets.claudeOAuthCredentials ?? null,
+      anthropicModel: profile.anthropicModel,
+    },
+    profile.updatedAt || state.officialUpdatedAt,
+  );
+}
+
+/**
+ * Get customEnv for a specific profileId (not necessarily the active one).
+ */
+export function getCustomEnvForProfile(
+  profileId: string,
+): Record<string, string> {
+  const state = readStoredState();
+  if (!state) return {};
+
+  if (isOfficialClaudeMode(profileId)) {
+    return sanitizeCustomEnvMap(state.officialCustomEnv || {}, {
+      skipReservedClaudeKeys: true,
+    });
+  }
+
+  const exact = state.profiles.find((p) => p.id === profileId);
+  if (!exact) {
+    logger.warn(
+      { profileId },
+      'getCustomEnvForProfile: profile not found, falling back to active',
+    );
+  }
+  const profile = exact || state.profiles[0];
+  if (!profile) return {};
+
+  const resolved = fromStoredProfile(profile);
+  return sanitizeCustomEnvMap(resolved.customEnv || {}, {
     skipReservedClaudeKeys: true,
   });
 }
@@ -1830,7 +1909,10 @@ export function getContainerEnvConfig(folder: string): ContainerEnvConfig {
         fs.readFileSync(filePath, 'utf-8'),
       ) as ContainerEnvConfig & { happyclawModel?: string };
       // Backward compat: migrate old field name
-      if (stored.anthropicModel === undefined && stored.happyclawModel !== undefined) {
+      if (
+        stored.anthropicModel === undefined &&
+        stored.happyclawModel !== undefined
+      ) {
         stored.anthropicModel = stored.happyclawModel;
         delete stored.happyclawModel;
       }
@@ -2001,9 +2083,10 @@ export function saveRegistrationConfig(
 export function buildContainerEnvLines(
   global: ClaudeProviderConfig,
   override: ContainerEnvConfig,
+  profileCustomEnv?: Record<string, string>,
 ): string[] {
   const merged = mergeClaudeEnvConfig(global, override);
-  const lines = buildClaudeEnvLines(merged);
+  const lines = buildClaudeEnvLines(merged, profileCustomEnv);
 
   // Append custom env vars (with safety sanitization as defense-in-depth)
   if (override.customEnv) {
@@ -2691,8 +2774,7 @@ function buildEnvFallbackSettings(): SystemSettings {
       DEFAULT_SYSTEM_SETTINGS.billingMinStartBalanceUsd,
     ),
     billingCurrency:
-      process.env.BILLING_CURRENCY ||
-      DEFAULT_SYSTEM_SETTINGS.billingCurrency,
+      process.env.BILLING_CURRENCY || DEFAULT_SYSTEM_SETTINGS.billingCurrency,
     billingCurrencyRate: parseFloatEnv(
       process.env.BILLING_CURRENCY_RATE,
       DEFAULT_SYSTEM_SETTINGS.billingCurrencyRate,

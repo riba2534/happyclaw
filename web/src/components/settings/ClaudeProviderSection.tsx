@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  Activity,
+  ChevronDown,
+  ChevronRight,
   Edit3,
   ExternalLink,
   HardDrive,
@@ -7,6 +10,7 @@ import {
   Loader2,
   Plus,
   RefreshCw,
+  RotateCcw,
   Rocket,
   Trash2,
   X,
@@ -23,6 +27,8 @@ import type {
   ClaudeThirdPartyProfileItem,
   ClaudeThirdPartyProfilesResp,
   EnvRow,
+  ProviderPoolResponse,
+  ProviderPoolMemberWithHealth,
   SettingsNotification,
 } from './types';
 import { getErrorMessage } from './types';
@@ -120,6 +126,12 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
   const [showApplyConfirm, setShowApplyConfirm] = useState(false);
   const [pendingDeleteProfile, setPendingDeleteProfile] = useState<ClaudeThirdPartyProfileItem | null>(null);
 
+  // Provider Pool state
+  const [poolData, setPoolData] = useState<ProviderPoolResponse | null>(null);
+  const [poolExpanded, setPoolExpanded] = useState(false);
+  const [poolSaving, setPoolSaving] = useState(false);
+  const [poolAdvancedOpen, setPoolAdvancedOpen] = useState(false);
+
   const activeProfile = useMemo(() => {
     if (!profilesState) return null;
     return (
@@ -207,6 +219,138 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
   useEffect(() => {
     loadConfig();
   }, [loadConfig]);
+
+  // ─── Provider Pool loading ───
+  const loadPoolData = useCallback(async () => {
+    try {
+      const data = await api.get<ProviderPoolResponse>('/api/config/claude/pool');
+      setPoolData(data);
+    } catch {
+      // Pool API may not be available — ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    loadPoolData();
+  }, [loadPoolData]);
+
+  // Auto-poll health when pool is expanded and mode=pool
+  useEffect(() => {
+    if (!poolExpanded || poolData?.mode !== 'pool') return;
+    const interval = setInterval(async () => {
+      try {
+        const data = await api.get<{ statuses: ProviderPoolResponse['members'][0]['health'][] }>(
+          '/api/config/claude/pool/health',
+        );
+        setPoolData((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            members: prev.members.map((m) => {
+              const updated = data.statuses.find((s) => s.profileId === m.profileId);
+              return updated ? { ...m, health: updated } : m;
+            }),
+          };
+        });
+      } catch {
+        // ignore
+      }
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [poolExpanded, poolData?.mode]);
+
+  const handlePoolModeToggle = useCallback(async () => {
+    if (!poolData) return;
+    setPoolSaving(true);
+    try {
+      const newMode = poolData.mode === 'fixed' ? 'pool' : 'fixed';
+      await api.put('/api/config/claude/pool', {
+        mode: newMode,
+        strategy: poolData.strategy,
+        members: poolData.members.map((m) => ({
+          profileId: m.profileId,
+          weight: m.weight,
+          enabled: m.enabled,
+        })),
+      });
+      await loadPoolData();
+      setNotice(newMode === 'pool' ? '已启用负载均衡模式' : '已切换回固定模式');
+    } catch (err) {
+      setError(getErrorMessage(err, '切换模式失败'));
+    } finally {
+      setPoolSaving(false);
+    }
+  }, [poolData, loadPoolData, setNotice, setError]);
+
+  const handlePoolSave = useCallback(async (updates: Partial<{
+    strategy: string;
+    members: { profileId: string; weight: number; enabled: boolean }[];
+    unhealthyThreshold: number;
+    recoveryIntervalMs: number;
+  }>) => {
+    if (!poolData) return;
+    setPoolSaving(true);
+    try {
+      await api.put('/api/config/claude/pool', {
+        mode: poolData.mode,
+        ...updates,
+      });
+      await loadPoolData();
+      setNotice('负载均衡配置已保存');
+    } catch (err) {
+      setError(getErrorMessage(err, '保存配置失败'));
+    } finally {
+      setPoolSaving(false);
+    }
+  }, [poolData, loadPoolData, setNotice, setError]);
+
+  const handlePoolToggleMember = useCallback(async (profileId: string) => {
+    try {
+      await api.post(`/api/config/claude/pool/members/${profileId}/toggle`);
+      await loadPoolData();
+    } catch (err) {
+      setError(getErrorMessage(err, '切换成员状态失败'));
+    }
+  }, [loadPoolData, setError]);
+
+  const handlePoolResetHealth = useCallback(async (profileId: string) => {
+    try {
+      await api.post(`/api/config/claude/pool/members/${profileId}/reset-health`);
+      await loadPoolData();
+      setNotice('健康状态已重置');
+    } catch (err) {
+      setError(getErrorMessage(err, '重置健康状态失败'));
+    }
+  }, [loadPoolData, setNotice, setError]);
+
+  const handleAddToPool = useCallback(async (profileId: string) => {
+    if (!poolData) return;
+    const exists = poolData.members.some((m) => m.profileId === profileId);
+    if (exists) return;
+    await handlePoolSave({
+      members: [
+        ...poolData.members.map((m) => ({
+          profileId: m.profileId,
+          weight: m.weight,
+          enabled: m.enabled,
+        })),
+        { profileId, weight: 1, enabled: true },
+      ],
+    });
+  }, [poolData, handlePoolSave]);
+
+  const handleRemoveFromPool = useCallback(async (profileId: string) => {
+    if (!poolData) return;
+    await handlePoolSave({
+      members: poolData.members
+        .filter((m) => m.profileId !== profileId)
+        .map((m) => ({
+          profileId: m.profileId,
+          weight: m.weight,
+          enabled: m.enabled,
+        })),
+    });
+  }, [poolData, handlePoolSave]);
 
   // Detect local Claude Code credentials
   useEffect(() => {
@@ -1191,6 +1335,199 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
         </div>
       )}
 
+      {/* ─── Provider Pool Section ─── */}
+      {poolData && (
+        <div className="border border-slate-200 rounded-lg overflow-hidden">
+          <button
+            type="button"
+            className="w-full flex items-center justify-between px-4 py-3 bg-slate-50 hover:bg-slate-100 transition-colors cursor-pointer"
+            onClick={() => setPoolExpanded(!poolExpanded)}
+          >
+            <div className="flex items-center gap-2">
+              <Activity className="w-4 h-4 text-slate-500" />
+              <span className="text-sm font-medium">负载均衡</span>
+              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                poolData.mode === 'pool'
+                  ? 'bg-teal-100 text-teal-800'
+                  : 'bg-slate-100 text-slate-600'
+              }`}>
+                {poolData.mode === 'pool' ? '已启用' : '固定模式'}
+              </span>
+            </div>
+            {poolExpanded ? (
+              <ChevronDown className="w-4 h-4 text-slate-400" />
+            ) : (
+              <ChevronRight className="w-4 h-4 text-slate-400" />
+            )}
+          </button>
+
+          {poolExpanded && (
+            <div className="p-4 space-y-4">
+              {/* Mode toggle */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium">模式</div>
+                  <div className="text-xs text-slate-500">
+                    {poolData.mode === 'pool'
+                      ? '多个提供商轮流处理会话请求'
+                      : '使用单一活跃配置处理所有请求'}
+                  </div>
+                </div>
+                <Button
+                  variant={poolData.mode === 'pool' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={handlePoolModeToggle}
+                  disabled={poolSaving}
+                >
+                  {poolSaving && <Loader2 className="w-3 h-3 animate-spin" />}
+                  {poolData.mode === 'pool' ? '切换为固定' : '启用负载均衡'}
+                </Button>
+              </div>
+
+              {poolData.mode === 'pool' && (
+                <>
+                  {/* Strategy selector */}
+                  <div>
+                    <label className="text-sm font-medium block mb-1">策略</label>
+                    <select
+                      className="w-full border border-slate-200 rounded-md px-3 py-1.5 text-sm bg-white"
+                      value={poolData.strategy}
+                      onChange={(e) =>
+                        handlePoolSave({ strategy: e.target.value })
+                      }
+                    >
+                      <option value="round-robin">轮询</option>
+                      <option value="weighted-round-robin">加权轮询</option>
+                      <option value="failover">故障转移</option>
+                    </select>
+                  </div>
+
+                  {/* Pool members */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm font-medium">提供商池</span>
+                    </div>
+                    {poolData.members.length === 0 ? (
+                      <div className="text-sm text-slate-400 text-center py-4 border border-dashed border-slate-200 rounded-lg">
+                        暂无提供商，请从下方添加
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {poolData.members.map((member) => (
+                          <PoolMemberRow
+                            key={member.profileId}
+                            member={member}
+                            strategy={poolData.strategy}
+                            onToggle={() => handlePoolToggleMember(member.profileId)}
+                            onResetHealth={() => handlePoolResetHealth(member.profileId)}
+                            onRemove={() => handleRemoveFromPool(member.profileId)}
+                            onWeightChange={(w) => {
+                              handlePoolSave({
+                                members: poolData.members.map((m) =>
+                                  m.profileId === member.profileId
+                                    ? { profileId: m.profileId, weight: w, enabled: m.enabled }
+                                    : { profileId: m.profileId, weight: m.weight, enabled: m.enabled },
+                                ),
+                              });
+                            }}
+                          />
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Add to pool */}
+                    {poolData.availableProfiles.filter((p) => !p.inPool).length > 0 && (
+                      <div className="mt-3">
+                        <div className="text-xs text-slate-500 mb-1">可添加的提供商：</div>
+                        <div className="flex flex-wrap gap-2">
+                          {poolData.availableProfiles
+                            .filter((p) => !p.inPool)
+                            .map((p) => (
+                              <button
+                                key={p.id}
+                                type="button"
+                                className="inline-flex items-center gap-1 px-2 py-1 text-xs border border-slate-200 rounded-md hover:bg-slate-50 cursor-pointer transition-colors"
+                                onClick={() => handleAddToPool(p.id)}
+                              >
+                                <Plus className="w-3 h-3" />
+                                {p.name}
+                                <span className={`px-1 py-0.5 rounded text-[10px] leading-none ${
+                                  p.isOfficial ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'
+                                }`}>
+                                  {p.isOfficial ? '官方' : '第三方'}
+                                </span>
+                              </button>
+                            ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Advanced settings */}
+                  <div className="border-t border-slate-100 pt-3">
+                    <button
+                      type="button"
+                      className="text-xs text-slate-500 hover:text-slate-700 flex items-center gap-1 cursor-pointer"
+                      onClick={() => setPoolAdvancedOpen(!poolAdvancedOpen)}
+                    >
+                      {poolAdvancedOpen ? (
+                        <ChevronDown className="w-3 h-3" />
+                      ) : (
+                        <ChevronRight className="w-3 h-3" />
+                      )}
+                      高级设置
+                    </button>
+                    {poolAdvancedOpen && (
+                      <div className="mt-2 grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="text-xs text-slate-500 block mb-1">
+                            不健康阈值（连续失败次数）
+                          </label>
+                          <Input
+                            type="number"
+                            min={1}
+                            max={20}
+                            value={poolData.unhealthyThreshold}
+                            onChange={(e) =>
+                              handlePoolSave({
+                                unhealthyThreshold: Math.max(
+                                  1,
+                                  Math.min(20, parseInt(e.target.value) || 3),
+                                ),
+                              })
+                            }
+                            className="h-8 text-sm"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs text-slate-500 block mb-1">
+                            自动恢复间隔（秒）
+                          </label>
+                          <Input
+                            type="number"
+                            min={30}
+                            max={3600}
+                            value={Math.round(poolData.recoveryIntervalMs / 1000)}
+                            onChange={(e) =>
+                              handlePoolSave({
+                                recoveryIntervalMs:
+                                  Math.max(30, Math.min(3600, parseInt(e.target.value) || 300)) *
+                                  1000,
+                              })
+                            }
+                            className="h-8 text-sm"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="pt-4 border-t border-slate-100 flex flex-wrap items-center gap-3">
         <Button variant="outline" onClick={loadConfig} disabled={loading || saving || applying}>
           <RefreshCw className="w-4 h-4" />
@@ -1229,6 +1566,127 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
         confirmVariant="danger"
         loading={deletingProfileId !== null}
       />
+    </div>
+  );
+}
+
+// ─── Pool Member Row ──────────────────────────────────────────
+
+function PoolMemberRow({
+  member,
+  strategy,
+  onToggle,
+  onResetHealth,
+  onRemove,
+  onWeightChange,
+}: {
+  member: ProviderPoolMemberWithHealth;
+  strategy: string;
+  onToggle: () => void;
+  onResetHealth: () => void;
+  onRemove: () => void;
+  onWeightChange: (weight: number) => void;
+}) {
+  const health = member.health;
+  const statusColor = !member.enabled
+    ? 'bg-slate-300'
+    : health.healthy
+      ? 'bg-emerald-400'
+      : health.consecutiveErrors > 0
+        ? 'bg-red-400'
+        : 'bg-amber-400';
+
+  return (
+    <div className={`flex items-center gap-3 p-3 rounded-lg border transition-colors ${
+      member.enabled ? 'border-slate-200 bg-white' : 'border-slate-100 bg-slate-50 opacity-60'
+    }`}>
+      {/* Status dot */}
+      <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${statusColor}`} />
+
+      {/* Name & info */}
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-medium truncate flex items-center gap-1.5">
+          {member.profileName}
+          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium leading-none ${
+            member.isOfficial
+              ? 'bg-blue-100 text-blue-700'
+              : 'bg-amber-100 text-amber-700'
+          }`}>
+            {member.isOfficial ? '官方' : '第三方'}
+          </span>
+        </div>
+        <div className="text-xs text-slate-400 flex items-center gap-2 flex-wrap">
+          {health.activeSessionCount > 0 && (
+            <span className="text-teal-600">{health.activeSessionCount} 活跃会话</span>
+          )}
+          {health.consecutiveErrors > 0 && (
+            <span className="text-red-500">连续错误 {health.consecutiveErrors}</span>
+          )}
+          {health.lastErrorAt && (
+            <span>
+              最近错误{' '}
+              {new Date(health.lastErrorAt).toLocaleTimeString('zh-CN', {
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
+            </span>
+          )}
+          {!health.healthy && health.unhealthySince && (
+            <span className="text-red-500 font-medium">不健康</span>
+          )}
+        </div>
+      </div>
+
+      {/* Weight (only for weighted strategy) */}
+      {strategy === 'weighted-round-robin' && (
+        <div className="flex items-center gap-1">
+          <span className="text-xs text-slate-400">权重</span>
+          <input
+            type="number"
+            min={1}
+            max={100}
+            value={member.weight}
+            onChange={(e) =>
+              onWeightChange(Math.max(1, Math.min(100, parseInt(e.target.value) || 1)))
+            }
+            className="w-14 h-7 border border-slate-200 rounded px-2 text-xs text-center"
+          />
+        </div>
+      )}
+
+      {/* Actions */}
+      <div className="flex items-center gap-1">
+        {!health.healthy && (
+          <button
+            type="button"
+            className="p-1 rounded hover:bg-slate-100 text-slate-400 hover:text-slate-600 cursor-pointer"
+            onClick={onResetHealth}
+            title="重置健康状态"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+          </button>
+        )}
+        <button
+          type="button"
+          className={`p-1 rounded cursor-pointer transition-colors ${
+            member.enabled
+              ? 'hover:bg-slate-100 text-teal-500 hover:text-teal-700'
+              : 'hover:bg-slate-100 text-slate-300 hover:text-slate-500'
+          }`}
+          onClick={onToggle}
+          title={member.enabled ? '禁用' : '启用'}
+        >
+          <Activity className="w-3.5 h-3.5" />
+        </button>
+        <button
+          type="button"
+          className="p-1 rounded hover:bg-red-50 text-slate-300 hover:text-red-500 cursor-pointer transition-colors"
+          onClick={onRemove}
+          title="从池中移除"
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
     </div>
   );
 }
