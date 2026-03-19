@@ -33,6 +33,26 @@ import { hasScriptCapacity, runScript } from './script-runner.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 import { checkBillingAccessFresh, isBillingEnabled } from './billing.js';
 
+/**
+ * Resolve the actual group JID to send a task to.
+ * Falls back from the task's stored chat_jid to any group matching the same folder.
+ */
+function resolveTargetGroupJid(
+  task: ScheduledTask,
+  groups: Record<string, RegisteredGroup>,
+): string {
+  const directTarget = groups[task.chat_jid];
+  if (directTarget && directTarget.folder === task.group_folder) {
+    return task.chat_jid;
+  }
+  const sameFolder = Object.entries(groups).filter(
+    ([, g]) => g.folder === task.group_folder,
+  );
+  const preferred =
+    sameFolder.find(([jid]) => jid.startsWith('web:')) || sameFolder[0];
+  return preferred?.[0] || '';
+}
+
 export interface SchedulerDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
   getSessions: () => Record<string, string>;
@@ -516,16 +536,7 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
         }
 
         const groups = deps.registeredGroups();
-        let targetGroupJid = currentTask.chat_jid;
-        const directTarget = groups[targetGroupJid];
-        if (!directTarget || directTarget.folder !== currentTask.group_folder) {
-          const sameFolder = Object.entries(groups).filter(
-            ([, group]) => group.folder === currentTask.group_folder,
-          );
-          const preferred =
-            sameFolder.find(([jid]) => jid.startsWith('web:')) || sameFolder[0];
-          targetGroupJid = preferred?.[0] || '';
-        }
+        const targetGroupJid = resolveTargetGroupJid(currentTask, groups);
 
         if (!targetGroupJid) {
           logger.error(
@@ -590,18 +601,8 @@ export function triggerTaskNow(
   if (runningTaskIds.has(taskId))
     return { success: false, error: 'Task is already running' };
 
-  // Resolve target group JID (same logic as scheduler loop)
   const groups = deps.registeredGroups();
-  let targetGroupJid = task.chat_jid;
-  const directTarget = groups[targetGroupJid];
-  if (!directTarget || directTarget.folder !== task.group_folder) {
-    const sameFolder = Object.entries(groups).filter(
-      ([, g]) => g.folder === task.group_folder,
-    );
-    const preferred =
-      sameFolder.find(([jid]) => jid.startsWith('web:')) || sameFolder[0];
-    targetGroupJid = preferred?.[0] || '';
-  }
+  const targetGroupJid = resolveTargetGroupJid(task, groups);
   if (!targetGroupJid)
     return { success: false, error: 'Target group not registered' };
 

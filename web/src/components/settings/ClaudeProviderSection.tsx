@@ -3,6 +3,7 @@ import {
   Edit3,
   ExternalLink,
   HardDrive,
+  Key,
   Loader2,
   Plus,
   RefreshCw,
@@ -32,8 +33,9 @@ type ProfileEditorMode = 'create' | 'edit';
 const RESERVED_ENV_KEYS = new Set([
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_API_KEY',
   'CLAUDE_CODE_OAUTH_TOKEN',
-  'HAPPYCLAW_MODEL',
+  'ANTHROPIC_MODEL',
 ]);
 
 interface ClaudeProviderSectionProps extends SettingsNotification {}
@@ -79,6 +81,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
   const [providerMode, setProviderMode] = useState<ProviderMode>('third_party');
 
   const [officialCode, setOfficialCode] = useState('');
+  const [officialApiKey, setOfficialApiKey] = useState('');
 
   // OAuth flow state
   const [oauthLoading, setOauthLoading] = useState(false);
@@ -149,7 +152,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
     setEditingProfileId(profile.id);
     setProfileName(profile.name);
     setBaseUrl(profile.anthropicBaseUrl || '');
-    setModel(profile.happyclawModel || '');
+    setModel(profile.anthropicModel || '');
     setAuthToken('');
     setAuthTokenDirty(false);
     setClearTokenOnSave(false);
@@ -188,7 +191,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
       }
 
       const inferredMode: ProviderMode =
-        (configData.hasClaudeCodeOauthToken || configData.hasClaudeOAuthCredentials) &&
+        (configData.hasClaudeCodeOauthToken || configData.hasClaudeOAuthCredentials || configData.hasAnthropicApiKey) &&
         !configData.hasAnthropicAuthToken &&
         !configData.anthropicBaseUrl
           ? 'official'
@@ -245,6 +248,31 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
   const updatedAt = useMemo(() => {
     return formatDateTime(config?.updatedAt ?? null);
   }, [config?.updatedAt]);
+
+  // Switch back to official using existing API Key (no re-auth needed)
+  const handleUseExistingApiKey = async () => {
+    setSaving(true);
+    setNotice(null);
+    setError(null);
+    try {
+      await api.put<ClaudeConfigPublic>('/api/config/claude', {
+        anthropicBaseUrl: '',
+      });
+      const saved = await api.put<ClaudeConfigPublic>('/api/config/claude/secrets', {
+        clearAnthropicAuthToken: true,
+        clearClaudeCodeOauthToken: true,
+        clearClaudeOAuthCredentials: true,
+      });
+      setConfig(saved);
+      setProviderMode('official');
+      setNotice('已切换回官方渠道，使用已有 API Key。');
+      await loadConfig();
+    } catch (err) {
+      setError(getErrorMessage(err, '切换失败'));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   // Switch back to official using existing OAuth credentials (no re-auth needed)
   const handleUseExistingOAuth = async () => {
@@ -347,6 +375,37 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
     }
   };
 
+  const handleSaveApiKey = async () => {
+    if (!officialApiKey.trim()) {
+      setError('请填写 Anthropic API Key');
+      return;
+    }
+
+    setSaving(true);
+    setNotice(null);
+    setError(null);
+    try {
+      await api.put<ClaudeConfigPublic>('/api/config/claude/secrets', {
+        anthropicApiKey: officialApiKey.trim(),
+        clearAnthropicAuthToken: true,
+        clearClaudeCodeOauthToken: true,
+        clearClaudeOAuthCredentials: true,
+      });
+      const saved = await api.put<ClaudeConfigPublic>('/api/config/claude', {
+        anthropicBaseUrl: '',
+      });
+      setConfig(saved);
+      setOfficialApiKey('');
+      setProviderMode('official');
+      setNotice('API Key 已保存。');
+      await loadConfig();
+    } catch (err) {
+      setError(getErrorMessage(err, '保存 API Key 失败'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleImportLocalCC = async () => {
     setLocalCCImporting(true);
     setNotice(null);
@@ -437,7 +496,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
           name: trimmedName,
           anthropicBaseUrl: trimmedBaseUrl,
           anthropicAuthToken: trimmedToken,
-          happyclawModel: trimmedModel,
+          anthropicModel: trimmedModel,
           customEnv: envResult.customEnv,
         });
       } else {
@@ -451,7 +510,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
           {
             name: trimmedName,
             anthropicBaseUrl: trimmedBaseUrl,
-            happyclawModel: trimmedModel,
+            anthropicModel: trimmedModel,
             customEnv: envResult.customEnv,
           },
         );
@@ -628,6 +687,28 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
             </div>
           )}
 
+          {config?.hasAnthropicApiKey && !config?.hasClaudeOAuthCredentials && (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50/50 p-4 space-y-2">
+              <div className="flex items-center gap-2">
+                <Key className="w-4 h-4 text-emerald-700" />
+                <div className="text-sm font-medium text-emerald-800">API Key 已配置</div>
+              </div>
+              <div className="text-xs text-emerald-700">
+                ANTHROPIC_API_KEY: {config.anthropicApiKeyMasked || '***'}
+              </div>
+              {/* Show switch button when third-party config is still active */}
+              {(config.anthropicBaseUrl || config.hasAnthropicAuthToken) && (
+                <div className="pt-2 border-t border-emerald-200">
+                  <div className="text-xs text-slate-600 mb-2">当前正在使用第三方渠道，可直接切换回官方。</div>
+                  <Button size="sm" onClick={handleUseExistingApiKey} disabled={loading || saving}>
+                    {saving && <Loader2 className="size-4 animate-spin" />}
+                    使用 API Key 切换回官方
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Claude service status */}
           {claudeStatus && (
             <div className={`rounded-lg border p-3 space-y-1.5 ${
@@ -770,6 +851,51 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
             {saving && <Loader2 className="size-4 animate-spin" />}
             保存凭据
           </Button>
+
+          <div className="relative flex items-center gap-3 text-xs text-slate-400">
+            <div className="flex-1 border-t border-slate-200" />
+            或使用 Anthropic API Key
+            <div className="flex-1 border-t border-slate-200" />
+          </div>
+
+          <div>
+            <label className="block text-xs text-slate-600 mb-1">
+              <div className="flex items-center gap-1.5">
+                <Key className="w-3.5 h-3.5" />
+                ANTHROPIC_API_KEY{' '}
+                {config?.hasAnthropicApiKey ? `(${config.anthropicApiKeyMasked})` : ''}
+              </div>
+            </label>
+            <Input
+              type="password"
+              value={officialApiKey}
+              onChange={(e) => setOfficialApiKey(e.target.value)}
+              disabled={loading || saving}
+              placeholder={
+                config?.hasAnthropicApiKey
+                  ? '输入新值覆盖'
+                  : 'sk-ant-api03-...'
+              }
+              className="font-mono"
+            />
+            <p className="text-xs text-slate-400 mt-1">
+              直接使用 Anthropic 官方 API Key，从{' '}
+              <a
+                href="https://console.anthropic.com/settings/keys"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-teal-600 underline"
+              >
+                console.anthropic.com
+              </a>{' '}
+              获取
+            </p>
+          </div>
+
+          <Button onClick={handleSaveApiKey} disabled={loading || saving}>
+            {saving && <Loader2 className="size-4 animate-spin" />}
+            保存 API Key
+          </Button>
         </div>
       ) : (
         <div className="space-y-4">
@@ -818,7 +944,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
                             <div>
                               <div className="text-slate-400">Model</div>
                               <div className="text-slate-700 font-mono break-all sm:truncate">
-                                {profile.happyclawModel || '-'}
+                                {profile.anthropicModel || '-'}
                               </div>
                             </div>
                             <div>
@@ -894,7 +1020,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
             <Button
               variant="outline"
               size="sm"
-              onClick={() => resetEditorForCreate(config?.happyclawModel || '')}
+              onClick={() => resetEditorForCreate(config?.anthropicModel || '')}
               disabled={loading || saving || applying || activatingProfileId !== null || deletingProfileId !== null}
             >
               <Plus className="size-4" />
@@ -951,7 +1077,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
                 </div>
 
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">HAPPYCLAW_MODEL</label>
+                  <label className="block text-xs text-slate-600 mb-1">ANTHROPIC_MODEL</label>
                   <Input
                     type="text"
                     value={model}

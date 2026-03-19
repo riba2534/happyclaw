@@ -4,6 +4,7 @@ import remarkBreaks from 'remark-breaks';
 import remarkMath from 'remark-math';
 import rehypeHighlight from 'rehype-highlight';
 import rehypeKatex from 'rehype-katex';
+import rehypeRaw from 'rehype-raw';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import React, { useState, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
@@ -26,8 +27,10 @@ interface MarkdownRendererProps {
 function resolveImageSrc(src: string, groupJid?: string): string {
   if (!groupJid || !src) return src;
   if (/^(https?:\/\/|data:|\/\/)/.test(src) || src.startsWith('/')) return src;
+  // Strip #agent:xxx suffix — file API uses the base group JID
+  const baseJid = groupJid.replace(/#agent:.*$/, '');
   const encoded = toBase64Url(src);
-  return withBasePath(`/api/groups/${encodeURIComponent(groupJid)}/files/download/${encoded}`);
+  return withBasePath(`/api/groups/${encodeURIComponent(baseJid)}/files/download/${encoded}`);
 }
 
 /** Image lightbox for markdown images */
@@ -40,7 +43,7 @@ function MarkdownImageLightbox({ src, onClose }: { src: string; onClose: () => v
       <img
         src={src}
         alt="放大查看"
-        className="w-[90vw] h-[90vh] object-contain cursor-default"
+        className="max-w-[90vw] max-h-[90vh] object-contain cursor-default"
         onClick={(e) => e.stopPropagation()}
       />
     </div>,
@@ -90,6 +93,7 @@ const sanitizeSchema = {
     code: [...(defaultSchema.attributes?.code || []), 'class', 'className'],
     span: [...(defaultSchema.attributes?.span || []), 'class', 'className', 'style', 'aria-hidden'],
     div: [...(defaultSchema.attributes?.div || []), 'class', 'className', 'style'],
+    img: ['src', 'alt', 'width', 'height', 'loading', 'longDesc', 'title'],
     math: ['xmlns', 'display'],
     annotation: ['encoding'],
   },
@@ -196,6 +200,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, groupJ
     streaming
       ? [[rehypeHighlight, { plainText: ['mermaid'] }] as const]
       : [
+          rehypeRaw,
           [rehypeHighlight, { plainText: ['mermaid'] }] as const,
           [rehypeKatex, { throwOnError: false, strict: false }] as const,
           [rehypeSanitize, sanitizeSchema] as const,
@@ -226,7 +231,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, groupJ
               className="my-4 max-w-full overflow-x-auto overflow-y-hidden overscroll-x-contain [-webkit-overflow-scrolling:touch] [touch-action:pan-x_pan-y]"
               data-swipe-back-ignore="true"
             >
-              <table className="w-max min-w-full border-collapse border border-border">
+              <table className="min-w-full border-collapse border border-border">
                 {children}
               </table>
             </div>
@@ -241,12 +246,12 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, groupJ
             </tr>
           ),
           th: ({ children }) => (
-            <th className={`px-4 py-2 text-left font-semibold text-foreground border border-border whitespace-nowrap break-normal align-top ${tableTextClass}`}>
+            <th className={`px-4 py-2 text-left font-semibold text-foreground border border-border whitespace-nowrap align-top ${tableTextClass}`}>
               {children}
             </th>
           ),
           td: ({ children }) => (
-            <td className={`px-4 py-2 text-foreground border border-border whitespace-nowrap break-normal align-top ${tableTextClass}`}>
+            <td className={`px-4 py-2 text-foreground border border-border whitespace-nowrap align-top ${tableTextClass}`}>
               {children}
             </td>
           ),

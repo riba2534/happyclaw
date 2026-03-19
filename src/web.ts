@@ -585,6 +585,38 @@ function setupWebSocket(server: any): WebSocketServer {
       role: (connSession?.role || 'member') as UserRole,
     });
 
+    // Push streaming snapshots for active groups this user can access
+    if (connSession && streamingSnapshots.size > 0) {
+      const userId = connSession.user_id;
+      for (const [jid, snap] of streamingSnapshots) {
+        // Skip stale snapshots (> 5 min)
+        if (Date.now() - snap.updatedAt > 5 * 60 * 1000) {
+          streamingSnapshots.delete(jid);
+          continue;
+        }
+        // Skip empty snapshots
+        if (!snap.partialText && snap.activeTools.length === 0 && snap.recentEvents.length === 0) {
+          continue;
+        }
+        const allowed = getGroupAllowedUserIds(jid);
+        if (allowed === null || !allowed.has(userId)) continue;
+        try {
+          ws.send(JSON.stringify({
+            type: 'stream_snapshot',
+            chatJid: jid,
+            snapshot: {
+              partialText: snap.partialText,
+              activeTools: snap.activeTools,
+              recentEvents: snap.recentEvents,
+              todos: snap.todos,
+              systemStatus: snap.systemStatus,
+              turnId: snap.turnId,
+            },
+          } satisfies WsMessageOut));
+        } catch { /* client not ready */ }
+      }
+    }
+
     const cleanupTerminalForWs = () => {
       const termJid = wsTerminals.get(ws);
       if (!termJid) return;
@@ -1249,6 +1281,166 @@ export function broadcastTyping(chatJid: string, isTyping: boolean): void {
   );
 }
 
+// ─── Streaming Snapshot Accumulation ─────────────────────────────────
+// Tracks current streaming state per group so WS reconnects can recover.
+
+interface StreamingSnapshotEntry {
+  partialText: string;
+  activeTools: Array<{
+    toolName: string;
+    toolUseId: string;
+    startTime: number;
+    toolInputSummary?: string;
+    parentToolUseId?: string | null;
+  }>;
+  recentEvents: Array<{
+    id: string;
+    timestamp: number;
+    text: string;
+    kind: 'tool' | 'skill' | 'hook' | 'status';
+  }>;
+  todos?: Array<{ id: string; content: string; status: string }>;
+  systemStatus: string | null;
+  turnId?: string;
+  updatedAt: number;
+}
+
+const streamingSnapshots = new Map<string, StreamingSnapshotEntry>();
+/** Accumulates full (non-truncated) text per group for shutdown persistence & disk buffer. */
+const streamingFullTexts = new Map<string, string>();
+const MAX_SNAPSHOT_TEXT = 4000;
+const MAX_SNAPSHOT_EVENTS = 20;
+
+/** Push a recent event entry and truncate to MAX_SNAPSHOT_EVENTS. */
+function pushRecentEvent(snap: StreamingSnapshotEntry, event: { id: string; timestamp: number; text: string; kind: 'tool' | 'skill' | 'hook' | 'status' }): void {
+  snap.recentEvents.push(event);
+  if (snap.recentEvents.length > MAX_SNAPSHOT_EVENTS) {
+    snap.recentEvents = snap.recentEvents.slice(-MAX_SNAPSHOT_EVENTS);
+  }
+}
+
+function updateStreamingSnapshot(normalizedJid: string, event: StreamEvent): void {
+  let snap = streamingSnapshots.get(normalizedJid);
+
+  // Reset on new turn
+  if (snap?.turnId && event.turnId && snap.turnId !== event.turnId) {
+    snap = undefined;
+    streamingFullTexts.delete(normalizedJid);
+  }
+
+  if (!snap) {
+    snap = {
+      partialText: '',
+      activeTools: [],
+      recentEvents: [],
+      systemStatus: null,
+      turnId: event.turnId,
+      updatedAt: Date.now(),
+    };
+  }
+
+  snap.updatedAt = Date.now();
+  if (event.turnId) snap.turnId = event.turnId;
+
+  switch (event.eventType) {
+    case 'text_delta':
+      if (event.text) {
+        snap.partialText += event.text;
+        if (snap.partialText.length > MAX_SNAPSHOT_TEXT) {
+          snap.partialText = snap.partialText.slice(-MAX_SNAPSHOT_TEXT);
+        }
+        // Accumulate full (non-truncated) text for shutdown persistence
+        streamingFullTexts.set(normalizedJid, (streamingFullTexts.get(normalizedJid) || '') + event.text);
+      }
+      break;
+
+    case 'tool_use_start':
+      if (event.toolUseId && event.toolName) {
+        snap.activeTools.push({
+          toolName: event.toolName,
+          toolUseId: event.toolUseId,
+          startTime: Date.now(),
+          toolInputSummary: event.toolInputSummary,
+          parentToolUseId: event.parentToolUseId,
+        });
+        pushRecentEvent(snap, {
+          id: event.toolUseId,
+          timestamp: Date.now(),
+          text: event.skillName || event.toolName,
+          kind: event.skillName ? 'skill' : 'tool',
+        });
+      }
+      break;
+
+    case 'tool_use_end':
+      if (event.toolUseId) {
+        snap.activeTools = snap.activeTools.filter(t => t.toolUseId !== event.toolUseId);
+      }
+      break;
+
+    case 'tool_progress':
+      if (event.toolUseId) {
+        const tool = snap.activeTools.find(t => t.toolUseId === event.toolUseId);
+        if (tool) {
+          if (event.toolInputSummary) tool.toolInputSummary = event.toolInputSummary;
+        }
+      }
+      break;
+
+    case 'status':
+      snap.systemStatus = event.statusText || null;
+      if (event.statusText) {
+        pushRecentEvent(snap, {
+          id: `status-${Date.now()}`,
+          timestamp: Date.now(),
+          text: event.statusText,
+          kind: 'status',
+        });
+      }
+      break;
+
+    case 'hook_started':
+      if (event.hookName) {
+        pushRecentEvent(snap, {
+          id: `hook-${Date.now()}`,
+          timestamp: Date.now(),
+          text: `${event.hookName} (${event.hookEvent || ''})`,
+          kind: 'hook',
+        });
+      }
+      break;
+
+    case 'todo_update':
+      if (event.todos) {
+        snap.todos = event.todos.map(t => ({ id: t.id, content: t.content, status: t.status }));
+      }
+      break;
+  }
+
+  streamingSnapshots.set(normalizedJid, snap);
+}
+
+export function clearStreamingSnapshot(chatJid: string): void {
+  const jid = normalizeHomeJid(chatJid);
+  streamingSnapshots.delete(jid);
+  streamingFullTexts.delete(jid);
+}
+
+/**
+ * Return all active streaming texts with non-empty content.
+ * Uses the full (non-truncated) text accumulator for shutdown persistence & disk buffer.
+ */
+export function getActiveStreamingTexts(): Map<string, string> {
+  const result = new Map<string, string>();
+  for (const [jid, fullText] of streamingFullTexts) {
+    const text = fullText.trim();
+    if (text) {
+      result.set(jid, text);
+    }
+  }
+  return result;
+}
+
 export function broadcastStreamEvent(
   chatJid: string,
   event: StreamEvent,
@@ -1260,6 +1452,11 @@ export function broadcastStreamEvent(
     ? { type: 'stream_event', chatJid: jid, event, agentId }
     : { type: 'stream_event', chatJid: jid, event };
   safeBroadcast(msg, isHostGroupJid(chatJid), allowedUserIds);
+
+  // Accumulate snapshot for both main and agent streams.
+  // Agent streams use virtual JID format (jid#agent:agentId) as the key.
+  const snapshotJid = agentId ? `${jid}#agent:${agentId}` : jid;
+  updateStreamingSnapshot(snapshotJid, event);
 }
 
 export function broadcastBillingUpdate(
@@ -1314,6 +1511,22 @@ export function broadcastRunnerState(
     state,
   };
   safeBroadcast(msg, isHostGroupJid(chatJid), allowedUserIds);
+
+  // Clear streaming snapshots when runner goes idle (main + all agent snapshots)
+  if (state === 'idle') {
+    streamingSnapshots.delete(jid);
+    streamingFullTexts.delete(jid);
+    for (const key of streamingSnapshots.keys()) {
+      if (key.startsWith(jid + '#agent:')) {
+        streamingSnapshots.delete(key);
+      }
+    }
+    for (const key of streamingFullTexts.keys()) {
+      if (key.startsWith(jid + '#agent:')) {
+        streamingFullTexts.delete(key);
+      }
+    }
+  }
 }
 
 export function broadcastDockerBuildLog(line: string): void {

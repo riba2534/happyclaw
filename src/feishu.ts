@@ -392,6 +392,15 @@ function getFileType(
  * - Code block / table spacing with <br>
  * - Invalid image cleanup
  */
+/** Build a post+md fallback content string for when interactive card send fails. */
+function buildPostMdFallback(text: string): string {
+  return JSON.stringify({
+    zh_cn: {
+      content: [[{ tag: 'md', text: optimizeMarkdownStyle(text, 1) }]],
+    },
+  });
+}
+
 function buildInteractiveCard(text: string): object {
   const optimized = optimizeMarkdownStyle(text, 2);
   const lines = text.split('\n');
@@ -463,7 +472,10 @@ function buildInteractiveCard(text: string): object {
 
   return {
     schema: '2.0',
-    config: { wide_screen_mode: true },
+    config: {
+      wide_screen_mode: true,
+      summary: { content: title },
+    },
     header: {
       title: { tag: 'plain_text', content: title },
       template: 'indigo',
@@ -1497,16 +1509,10 @@ export function createFeishuConnection(
               { err, chatId },
               'Feishu interactive reply failed, fallback to post+md',
             );
-            // Fallback: use post message with md tag for proper Markdown rendering
-            const postContent = JSON.stringify({
-              zh_cn: {
-                content: [[{ tag: 'md', text: optimizeMarkdownStyle(text, 1) }]],
-              },
-            });
             await client.im.message.reply({
               path: { message_id: lastMsgId },
               data: {
-                content: postContent,
+                content: buildPostMdFallback(text),
                 msg_type: 'post',
               },
             });
@@ -1526,18 +1532,12 @@ export function createFeishuConnection(
               { err, chatId },
               'Feishu interactive create failed, fallback to post+md',
             );
-            // Fallback: use post message with md tag for proper Markdown rendering
-            const postContent = JSON.stringify({
-              zh_cn: {
-                content: [[{ tag: 'md', text: optimizeMarkdownStyle(text, 1) }]],
-              },
-            });
             await client.im.v1.message.create({
               params: { receive_id_type: 'chat_id' },
               data: {
                 receive_id: chatId,
                 msg_type: 'post',
-                content: postContent,
+                content: buildPostMdFallback(text),
               },
             });
           }

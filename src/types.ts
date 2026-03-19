@@ -85,12 +85,15 @@ export type MessageSourceKind =
   | 'sdk_final'
   | 'sdk_send_message'
   | 'interrupt_partial'
+  | 'overflow_partial'
   | 'legacy';
 
 export type MessageFinalizationReason =
   | 'completed'
   | 'interrupted'
-  | 'error';
+  | 'error'
+  | 'shutdown'
+  | 'crash_recovery';
 
 export interface MessageAttachment {
   type: 'image';
@@ -355,7 +358,30 @@ export type WsMessageOut =
       userId: string;
       usage: BillingAccessResult;
     }
-  | { type: 'ws_error'; error: string; chatJid?: string };
+  | { type: 'ws_error'; error: string; chatJid?: string }
+  | {
+      type: 'stream_snapshot';
+      chatJid: string;
+      snapshot: {
+        partialText: string;
+        activeTools: Array<{
+          toolName: string;
+          toolUseId: string;
+          startTime: number;
+          toolInputSummary?: string;
+          parentToolUseId?: string | null;
+        }>;
+        recentEvents: Array<{
+          id: string;
+          timestamp: number;
+          text: string;
+          kind: string;
+        }>;
+        todos?: Array<{ id: string; content: string; status: string }>;
+        systemStatus: string | null;
+        turnId?: string;
+      };
+    };
 
 export type WsMessageIn =
   | {

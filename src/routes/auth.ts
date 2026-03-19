@@ -103,7 +103,8 @@ function buildSetupStatus() {
   const claudeConfig = getClaudeProviderConfig();
   const officialConfigured =
     !!claudeConfig.claudeCodeOauthToken?.trim() ||
-    !!claudeConfig.claudeOAuthCredentials;
+    !!claudeConfig.claudeOAuthCredentials ||
+    !!claudeConfig.anthropicApiKey?.trim();
   const thirdPartyConfigured = !!(
     claudeConfig.anthropicBaseUrl?.trim() &&
     claudeConfig.anthropicAuthToken?.trim()

@@ -259,7 +259,7 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
         ref={parentRef}
         className="h-full overflow-y-auto overflow-x-hidden py-6 bg-background"
       >
-        <div className={displayMode === 'compact' ? 'mx-auto px-4 min-w-0' : 'max-w-3xl mx-auto px-4 min-w-0'}>
+        <div className={displayMode === 'compact' ? 'mx-auto px-4 min-w-0' : 'max-w-4xl mx-auto px-4 min-w-0'}>
         {loading && hasMore && (
           <div className="flex justify-center py-4">
             <Loader2 className="animate-spin text-primary" size={24} />
@@ -419,20 +419,24 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
           <StreamingDisplay groupJid={groupJid} isWaiting={!!isWaiting} agentId={agentId} />
         )}
 
-        {isWaiting && onInterrupt && (
-          <div className="flex justify-center py-1">
-            <button
-              type="button"
-              onClick={onInterrupt}
-              className="inline-flex items-center gap-1.5 px-3 py-1 text-xs text-slate-500 hover:text-red-600 bg-slate-100 hover:bg-red-50 rounded-full transition-colors cursor-pointer"
-            >
-              <Square className="w-3 h-3" />
-              中断
-            </button>
-          </div>
-        )}
         </div>
       </div>
+
+      {/* Floating interrupt button — positioned outside scroll content to avoid
+          layout shift when textarea height changes (container resize would
+          briefly hide the button if it lived inside scroll content). */}
+      {isWaiting && onInterrupt && (
+        <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-10">
+          <button
+            type="button"
+            onClick={onInterrupt}
+            className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs text-slate-500 hover:text-red-600 bg-card/90 backdrop-blur-sm hover:bg-red-50 rounded-full border border-border shadow-sm transition-colors cursor-pointer"
+          >
+            <Square className="w-3 h-3" />
+            中断
+          </button>
+        </div>
+      )}
 
       {/* Floating scroll buttons */}
       {showScrollButtons && (

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { useKeyboardHeight } from '@/hooks/useKeyboardHeight';
 import { successTap } from '../../hooks/useHaptic';
 import {
@@ -15,6 +15,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { useFileStore } from '../../stores/files';
+import { useChatStore } from '../../stores/chat';
 import { useDisplayMode } from '../../hooks/useDisplayMode';
 
 interface PendingFile {
@@ -61,24 +62,81 @@ export function MessageInput({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const prevGroupJidRef = useRef<string | undefined>(groupJid);
 
   const { uploadFiles, uploading, uploadProgress } = useFileStore();
+  const { drafts, saveDraft, clearDraft } = useChatStore();
   const { mode: displayMode } = useDisplayMode();
   const isCompact = displayMode === 'compact';
 
   // iOS keyboard adaptation
   useKeyboardHeight();
 
-  // Auto-resize textarea (1-6 lines)
+  // Restore draft when groupJid changes (including initial mount)
   useEffect(() => {
+    // Save current draft before switching
+    if (prevGroupJidRef.current && prevGroupJidRef.current !== groupJid) {
+      const currentText = content.trim();
+      if (currentText) {
+        saveDraft(prevGroupJidRef.current, currentText);
+      } else {
+        clearDraft(prevGroupJidRef.current);
+      }
+    }
+    prevGroupJidRef.current = groupJid;
+
+    // Load draft for new group
+    const draft = groupJid ? drafts[groupJid] || '' : '';
+    setContent(draft);
+    // Clear any pending debounce timer
+    if (draftTimerRef.current) {
+      clearTimeout(draftTimerRef.current);
+      draftTimerRef.current = undefined;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupJid]);
+
+  // Cleanup debounce timer on unmount, save current draft
+  useEffect(() => {
+    return () => {
+      if (draftTimerRef.current) {
+        clearTimeout(draftTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Debounced draft save
+  const debouncedSaveDraft = useCallback(
+    (text: string) => {
+      if (draftTimerRef.current) {
+        clearTimeout(draftTimerRef.current);
+      }
+      draftTimerRef.current = setTimeout(() => {
+        if (groupJid) {
+          saveDraft(groupJid, text.trim());
+        }
+      }, 300);
+    },
+    [groupJid, saveDraft],
+  );
+
+  // Auto-resize textarea (1-6 lines)
+  // useLayoutEffect runs BEFORE paint → height update is invisible to the user (no jitter)
+  useLayoutEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
 
-    textarea.style.height = 'auto';
+    // Temporarily hide overflow to prevent scrollbar flash during measurement
+    const prevOverflow = textarea.style.overflow;
+    textarea.style.overflow = 'hidden';
+    textarea.style.height = '0px';
     const scrollHeight = textarea.scrollHeight;
     const lineHeight = 24;
     const maxHeight = lineHeight * 6;
-    textarea.style.height = `${Math.min(scrollHeight, maxHeight)}px`;
+    const newHeight = Math.max(lineHeight, Math.min(scrollHeight, maxHeight));
+    textarea.style.height = `${newHeight}px`;
+    textarea.style.overflow = newHeight >= maxHeight ? 'auto' : prevOverflow || '';
   }, [content]);
 
   // IME composition state — prevent Enter from sending while composing (e.g. Chinese input)
@@ -124,6 +182,11 @@ export function MessageInput({
       onSend(message, attachments);
       successTap();
       setContent('');
+      if (groupJid) clearDraft(groupJid);
+      if (draftTimerRef.current) {
+        clearTimeout(draftTimerRef.current);
+        draftTimerRef.current = undefined;
+      }
 
       // Clean up image previews
       if (hasImages) {
@@ -322,7 +385,7 @@ export function MessageInput({
       className="px-4 pt-2 pb-6 bg-background ios-pwa-bottom-safe max-lg:bg-background/60 max-lg:backdrop-blur-xl max-lg:saturate-[1.8] max-lg:border-t max-lg:border-border/40"
       style={{ paddingBottom: `max(1.5rem, var(--keyboard-height, 0px))` }}
     >
-      <div className={isCompact ? 'mx-auto' : 'max-w-3xl mx-auto'}>
+      <div className={isCompact ? 'mx-auto' : 'max-w-4xl mx-auto'}>
         {/* Upload progress bar */}
         {uploading && uploadProgress && (
           <div className={`mb-2 px-4 py-2.5 ${isCompact ? 'bg-card border border-border' : 'bg-card rounded-xl border border-border shadow-sm'}`}>
@@ -457,7 +520,10 @@ export function MessageInput({
             <textarea
               ref={textareaRef}
               value={content}
-              onChange={(e) => setContent(e.target.value)}
+              onChange={(e) => {
+                setContent(e.target.value);
+                debouncedSaveDraft(e.target.value);
+              }}
               onKeyDown={handleKeyDown}
               onCompositionStart={() => { composingRef.current = true; }}
               onCompositionEnd={() => { composingRef.current = false; compositionEndTimeRef.current = Date.now(); }}

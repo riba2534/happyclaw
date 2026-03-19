@@ -17,8 +17,9 @@ type ProviderMode = 'official' | 'third_party';
 const RESERVED_ENV_KEYS = new Set([
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_API_KEY',
   'CLAUDE_CODE_OAUTH_TOKEN',
-  'HAPPYCLAW_MODEL',
+  'ANTHROPIC_MODEL',
 ]);
 
 function buildCustomEnv(rows: EnvRow[]): { customEnv: Record<string, string>; error: string | null } {
@@ -58,7 +59,10 @@ export function SetupProvidersPage() {
   const [feishuAppSecret, setFeishuAppSecret] = useState('');
 
   // Official mode
+  type OfficialTab = 'oauth' | 'setup-token' | 'api-key';
+  const [officialTab, setOfficialTab] = useState<OfficialTab>('oauth');
   const [officialToken, setOfficialToken] = useState('');
+  const [apiKey, setApiKey] = useState('');
 
   // Local Claude Code detection
   const [localCC, setLocalCC] = useState<{
@@ -192,8 +196,8 @@ export function SetupProvidersPage() {
         return;
       }
       customEnv = envResult.customEnv;
-    } else if (!officialToken.trim() && !oauthDone && !localCCImported) {
-      setError('官方渠道请通过一键登录、导入本机凭据或手动填写 setup-token / .credentials.json');
+    } else if (!officialToken.trim() && !apiKey.trim() && !oauthDone && !localCCImported) {
+      setError('官方渠道请通过一键登录、导入本机凭据、填写 API Key 或手动填写 setup-token / .credentials.json');
       return;
     }
 
@@ -210,6 +214,15 @@ export function SetupProvidersPage() {
         if (oauthDone || localCCImported) {
           // OAuth or local import already saved the credentials — just clear base URL
           await api.put('/api/config/claude', { anthropicBaseUrl: '' });
+        } else if (apiKey.trim()) {
+          // API Key mode
+          await api.put('/api/config/claude', { anthropicBaseUrl: '' });
+          await api.put('/api/config/claude/secrets', {
+            anthropicApiKey: apiKey.trim(),
+            clearAnthropicAuthToken: true,
+            clearClaudeCodeOauthToken: true,
+            clearClaudeOAuthCredentials: true,
+          });
         } else {
           await api.put('/api/config/claude', { anthropicBaseUrl: '' });
 
@@ -256,7 +269,7 @@ export function SetupProvidersPage() {
             name: '默认第三方',
             anthropicBaseUrl: baseUrl.trim(),
             anthropicAuthToken: authToken.trim(),
-            happyclawModel: model.trim(),
+            anthropicModel: model.trim(),
             customEnv,
           },
         );
@@ -380,82 +393,154 @@ export function SetupProvidersPage() {
                 </div>
               )}
 
-              {/* OAuth one-click login */}
-              <div className="rounded-lg border border-primary/20 bg-primary/5 p-4 space-y-3">
-                <div className="text-sm font-medium text-foreground">一键登录 Claude（推荐）</div>
-                <div className="text-xs text-muted-foreground">
-                  点击按钮后会打开 claude.ai 授权页面，完成授权后将页面上显示的授权码粘贴回来。
-                </div>
+              {/* Official auth tabs */}
+              <div className="inline-flex rounded-lg border border-border p-1 bg-muted">
+                <button
+                  type="button"
+                  onClick={() => setOfficialTab('oauth')}
+                  className={`px-3 py-1.5 text-sm rounded-md transition-colors cursor-pointer ${
+                    officialTab === 'oauth' ? 'bg-background text-primary shadow-sm' : 'text-muted-foreground'
+                  }`}
+                >
+                  OAuth 登录
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOfficialTab('setup-token')}
+                  className={`px-3 py-1.5 text-sm rounded-md transition-colors cursor-pointer ${
+                    officialTab === 'setup-token' ? 'bg-background text-primary shadow-sm' : 'text-muted-foreground'
+                  }`}
+                >
+                  Setup Token
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOfficialTab('api-key')}
+                  className={`px-3 py-1.5 text-sm rounded-md transition-colors cursor-pointer ${
+                    officialTab === 'api-key' ? 'bg-background text-primary shadow-sm' : 'text-muted-foreground'
+                  }`}
+                >
+                  API Key
+                </button>
+              </div>
 
-                {oauthDone ? (
-                  <div className="text-sm bg-success-bg border border-success/30 text-success rounded-md px-3 py-2">
-                    OAuth 登录成功，点击下方按钮完成配置。
-                  </div>
-                ) : !oauthState ? (
-                  <Button onClick={handleOAuthStart} disabled={oauthLoading || saving}>
-                    {oauthLoading ? <Loader2 className="size-4 animate-spin" /> : <ExternalLink className="size-4" />}
-                    一键登录 Claude
-                  </Button>
-                ) : (
-                  <div className="space-y-2">
-                    <div className="text-xs bg-warning-bg border border-warning/30 text-warning rounded-md px-3 py-2">
-                      授权窗口已打开，请在 claude.ai 完成授权后，将页面上显示的授权码粘贴到下方。
+              {officialTab === 'oauth' && (
+                <>
+                  {/* OAuth one-click login */}
+                  <div className="rounded-lg border border-primary/20 bg-primary/5 p-4 space-y-3">
+                    <div className="text-sm font-medium text-foreground">一键登录 Claude（推荐）</div>
+                    <div className="text-xs text-muted-foreground">
+                      点击按钮后会打开 claude.ai 授权页面，完成授权后将页面上显示的授权码粘贴回来。
                     </div>
-                    <div className="flex gap-2">
-                      <Input
-                        type="text"
-                        value={oauthCode}
-                        onChange={(e) => setOauthCode(e.target.value)}
-                        disabled={oauthExchanging}
-                        placeholder="粘贴授权码"
-                        className="flex-1"
-                      />
-                      <Button onClick={handleOAuthCallback} disabled={oauthExchanging || !oauthCode.trim()}>
-                        {oauthExchanging && <Loader2 className="size-4 animate-spin" />}
-                        确认
+
+                    {oauthDone ? (
+                      <div className="text-sm bg-success-bg border border-success/30 text-success rounded-md px-3 py-2">
+                        OAuth 登录成功，点击下方按钮完成配置。
+                      </div>
+                    ) : !oauthState ? (
+                      <Button onClick={handleOAuthStart} disabled={oauthLoading || saving}>
+                        {oauthLoading ? <Loader2 className="size-4 animate-spin" /> : <ExternalLink className="size-4" />}
+                        一键登录 Claude
                       </Button>
-                      <Button variant="outline" onClick={() => { setOauthState(null); setOauthCode(''); }}>
-                        取消
-                      </Button>
-                    </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="text-xs bg-warning-bg border border-warning/30 text-warning rounded-md px-3 py-2">
+                          授权窗口已打开，请在 claude.ai 完成授权后，将页面上显示的授权码粘贴到下方。
+                        </div>
+                        <div className="flex gap-2">
+                          <Input
+                            type="text"
+                            value={oauthCode}
+                            onChange={(e) => setOauthCode(e.target.value)}
+                            disabled={oauthExchanging}
+                            placeholder="粘贴授权码"
+                            className="flex-1"
+                          />
+                          <Button onClick={handleOAuthCallback} disabled={oauthExchanging || !oauthCode.trim()}>
+                            {oauthExchanging && <Loader2 className="size-4 animate-spin" />}
+                            确认
+                          </Button>
+                          <Button variant="outline" onClick={() => { setOauthState(null); setOauthCode(''); }}>
+                            取消
+                          </Button>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+                </>
+              )}
 
-              <div className="relative flex items-center gap-3 text-xs text-muted-foreground">
-                <div className="flex-1 border-t border-border" />
-                或手动粘贴 setup-token
-                <div className="flex-1 border-t border-border" />
-              </div>
+              {officialTab === 'setup-token' && (
+                <>
+                  <div className="rounded-lg border border-border bg-muted p-3 text-sm text-foreground">
+                    <div className="font-medium mb-2">获取凭据</div>
+                    <ol className="list-decimal ml-5 space-y-1 text-xs text-muted-foreground">
+                      <li>在目标机器安装 Claude Code CLI（若未安装）。</li>
+                      <li>在终端执行 <code>claude login</code> 完成账号登录。</li>
+                      <li>
+                        方式 A：执行 <code>cat ~/.claude/.credentials.json</code>，复制完整 JSON 内容到下方（推荐）。
+                      </li>
+                      <li>
+                        方式 B：执行 <code>claude setup-token</code>，复制输出 token 到下方。
+                      </li>
+                    </ol>
+                  </div>
 
-              <div className="rounded-lg border border-border bg-muted p-3 text-sm text-foreground">
-                <div className="font-medium mb-2">获取凭据</div>
-                <ol className="list-decimal ml-5 space-y-1 text-xs text-muted-foreground">
-                  <li>在目标机器安装 Claude Code CLI（若未安装）。</li>
-                  <li>在终端执行 <code>claude login</code> 完成账号登录。</li>
-                  <li>
-                    方式 A：执行 <code>cat ~/.claude/.credentials.json</code>，复制完整 JSON 内容到下方（推荐）。
-                  </li>
-                  <li>
-                    方式 B：执行 <code>claude setup-token</code>，复制输出 token 到下方。
-                  </li>
-                </ol>
-              </div>
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">
+                      setup-token 或 .credentials.json
+                    </label>
+                    <Input
+                      type="password"
+                      value={officialToken}
+                      onChange={(e) => setOfficialToken(e.target.value)}
+                      placeholder="粘贴 setup-token 或 cat ~/.claude/.credentials.json 输出"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      支持粘贴 <code className="bg-muted px-1 rounded">cat ~/.claude/.credentials.json</code> 的 JSON 内容
+                    </p>
+                  </div>
+                </>
+              )}
 
-              <div>
-                <label className="block text-sm font-medium text-foreground mb-1">
-                  setup-token 或 .credentials.json
-                </label>
-                <Input
-                  type="password"
-                  value={officialToken}
-                  onChange={(e) => setOfficialToken(e.target.value)}
-                  placeholder="粘贴 setup-token 或 cat ~/.claude/.credentials.json 输出"
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                  支持粘贴 <code className="bg-muted px-1 rounded">cat ~/.claude/.credentials.json</code> 的 JSON 内容
-                </p>
-              </div>
+              {officialTab === 'api-key' && (
+                <>
+                  <div className="rounded-lg border border-border bg-muted p-3 text-sm text-foreground">
+                    <div className="font-medium mb-2">Anthropic API Key</div>
+                    <ol className="list-decimal ml-5 space-y-1 text-xs text-muted-foreground">
+                      <li>
+                        前往{' '}
+                        <a
+                          href="https://console.anthropic.com/settings/keys"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary underline"
+                        >
+                          console.anthropic.com
+                        </a>{' '}
+                        创建 API Key。
+                      </li>
+                      <li>将以 <code>sk-ant-api03-</code> 开头的 Key 粘贴到下方。</li>
+                    </ol>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1">
+                      ANTHROPIC_API_KEY
+                    </label>
+                    <Input
+                      type="password"
+                      value={apiKey}
+                      onChange={(e) => setApiKey(e.target.value)}
+                      placeholder="sk-ant-api03-..."
+                      className="font-mono"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      直接使用 Anthropic 官方 API Key 调用 Claude
+                    </p>
+                  </div>
+                </>
+              )}
             </div>
           ) : (
             <div className="space-y-4">
@@ -476,7 +561,7 @@ export function SetupProvidersPage() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-1">HAPPYCLAW_MODEL（可选）</label>
+                  <label className="block text-sm font-medium text-foreground mb-1">ANTHROPIC_MODEL（可选）</label>
                   <Input
                     type="text"
                     value={model}

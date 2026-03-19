@@ -57,12 +57,13 @@ ifeq ($(HAS_BUN),1)
 	  if [ ! -f "$$target" ] || [ -n "$$(find shared/ -newer "$$target" -name '*.ts' 2>/dev/null | head -1)" ]; then NEED_SYNC=1; break; fi; \
 	done; \
 	if [ "$$NEED_SYNC" = "1" ]; then echo "🔄 检测到 shared/ 类型变更，同步类型..."; $(MAKE) sync-types; fi
-	@if [ ! -f web/dist/index.html ] || [ -n "$$(find web/src/ -newer web/dist/index.html \( -name '*.ts' -o -name '*.tsx' -o -name '*.css' \) 2>/dev/null | head -1)" ]; then echo "🔨 检测到前端源码变更，重新编译前端..."; cd web && bun run build; fi
-	@if [ ! -f container/agent-runner/dist/index.js ] || [ -n "$$(find container/agent-runner/src/ -newer container/agent-runner/dist/index.js \( -name '*.ts' \) 2>/dev/null | head -1)" ]; then echo "🔨 检测到 agent-runner 源码变更，重新编译..."; cd container/agent-runner && bun run build; fi
+	@if [ ! -f web/dist/index.html ] || [ -n "$$(find web/src/ -newer web/dist/index.html \( -name '*.ts' -o -name '*.tsx' -o -name '*.css' \) 2>/dev/null | head -1)" ]; then echo "🔨 检测到前端源码变更，重新编译前端..."; cd web && bun run build; else echo "✅ 前端无变更，跳过编译"; fi
+	@if [ ! -f container/agent-runner/dist/.tsbuildinfo ] || [ -n "$$(find container/agent-runner/src/ -newer container/agent-runner/dist/.tsbuildinfo \( -name '*.ts' \) 2>/dev/null | head -1)" ]; then echo "🔨 检测到 agent-runner 源码变更，重新编译..."; cd container/agent-runner && bun run build; else echo "✅ agent-runner 无变更，跳过编译"; fi
 	@echo "⚡ Bun 模式：直接运行 TypeScript，跳过后端编译"
 	bun src/index.ts
 else
-	@if [ ! -f .build-sentinel ] || [ -n "$$(find src/ web/src/ container/agent-runner/src/ shared/ -newer .build-sentinel \( -name '*.ts' -o -name '*.tsx' \) 2>/dev/null | head -1)" ]; then echo "🔨 检测到源码变更，重新编译..."; $(MAKE) build; else echo "✅ dist/ 已是最新，跳过编译"; fi
+	@echo "🔨 编译全部..."
+	@$(MAKE) build
 	npm run start
 endif
 

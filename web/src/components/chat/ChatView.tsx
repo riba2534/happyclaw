@@ -8,6 +8,7 @@ import { FilePanel } from './FilePanel';
 import { ContainerEnvPanel } from './ContainerEnvPanel';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
+import { PromptDialog } from '@/components/common/PromptDialog';
 import { ArrowLeft, FolderOpen, Link, MessageSquare, Monitor, Moon, MoreHorizontal, PanelRightClose, PanelRightOpen, Server, Sun, Terminal, Users, Variable, X, Zap } from 'lucide-react';
 import { useDisplayMode } from '../../hooks/useDisplayMode';
 import { useTheme } from '../../hooks/useTheme';
@@ -67,6 +68,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
   // null = dialog closed; MAIN_BINDING = main conversation; other = agent id
   const [bindingAgentId, setBindingAgentId] = useState<string | null>(null);
+  const [showNewConversation, setShowNewConversation] = useState(false);
   // Code / Plan mode toggle (per group)
   const [permissionMode, setPermissionMode] = useState<'bypassPermissions' | 'plan'>('bypassPermissions');
   const [imStatus, setImStatus] = useState<{ feishu: boolean; telegram: boolean } | null>(null);
@@ -94,6 +96,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const resetSession = useChatStore(s => s.resetSession);
   const handleStreamEvent = useChatStore(s => s.handleStreamEvent);
   const handleWsNewMessage = useChatStore(s => s.handleWsNewMessage);
+  const handleStreamSnapshot = useChatStore(s => s.handleStreamSnapshot);
 
   const agents = useChatStore(s => s.agents[groupJid] ?? EMPTY_AGENTS);
   const activeAgentTab = useChatStore(s => s.activeAgentTab[groupJid] ?? null);
@@ -103,6 +106,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const agentStreaming = useChatStore(s => s.agentStreaming);
   const createConversation = useChatStore(s => s.createConversation);
   const loadAgentMessages = useChatStore(s => s.loadAgentMessages);
+  const refreshAgentMessages = useChatStore(s => s.refreshAgentMessages);
   const sendAgentMessage = useChatStore(s => s.sendAgentMessage);
   const agentMessages = useChatStore(s => s.agentMessages);
   const agentWaiting = useChatStore(s => s.agentWaiting);
@@ -194,10 +198,19 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     restoreActiveState();
     const unsub = wsManager.on('connected', () => {
       restoreActiveState();
+      // Refresh conversation agent messages that may have been missed during WS disconnection
+      const state = useChatStore.getState();
+      const currentTab = state.activeAgentTab[groupJid];
+      if (currentTab) {
+        const agentInfo = (state.agents[groupJid] || []).find(a => a.id === currentTab);
+        if (agentInfo?.kind === 'conversation') {
+          refreshAgentMessages(groupJid, currentTab);
+        }
+      }
     });
     return () => { unsub(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [groupJid]);
 
   // Derived: active agent info and kind
   const activeAgent = activeAgentTab ? agents.find(a => a.id === activeAgentTab) : null;
@@ -243,9 +256,15 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         showToast('发送失败', data.error || '消息格式无效', 4000);
       }
     });
+    // 后端推送的流式快照（WS 重连时恢复）
+    const unsub4 = wsManager.on('stream_snapshot', (data: any) => {
+      if (data.chatJid === groupJid && data.snapshot) {
+        handleStreamSnapshot(groupJid, data.snapshot);
+      }
+    });
     // agent_status 已提升到 AppLayout 全局监听
-    return () => { unsub1(); unsub2(); unsub3(); };
-  }, [groupJid, handleStreamEvent, handleWsNewMessage]);
+    return () => { unsub1(); unsub2(); unsub3(); unsub4(); };
+  }, [groupJid, handleStreamEvent, handleWsNewMessage, handleStreamSnapshot]);
 
   const [scrollTrigger, setScrollTrigger] = useState(0);
 
@@ -404,7 +423,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         <div className="flex-1 min-w-0">
           <h2 className="font-semibold text-slate-900 text-[15px] truncate">{group.name}</h2>
           <div className="flex items-center gap-1.5 text-xs text-slate-500">
-            <span>{isWaiting ? '正在思考...' : group.is_home ? '主工作区' : '工作区'}</span>
+            <span>{isWaiting ? '正在思考...' : group.is_home ? '主 Agent' : 'Agent'}</span>
             {!isWaiting && group.is_shared && (
               <>
                 <span className="text-slate-300">·</span>
@@ -520,14 +539,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
           }
           deleteAgentAction(groupJid, id);
         }}
-        onCreateConversation={() => {
-          const name = prompt('对话名称：');
-          if (name?.trim()) {
-            createConversation(groupJid, name.trim()).then((agent) => {
-              if (agent) setActiveAgentTab(groupJid, agent.id);
-            });
-          }
-        }}
+        onCreateConversation={() => setShowNewConversation(true)}
         onBindIm={setBindingAgentId}
         onBindMainIm={!isHome ? () => setBindingAgentId(MAIN_BINDING) : undefined}
       />
@@ -836,6 +848,19 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
           onClose={() => setBindingAgentId(null)}
         />
       )}
+
+      <PromptDialog
+        open={showNewConversation}
+        title="新建对话"
+        label="对话名称"
+        placeholder="输入对话名称"
+        onConfirm={(name) => {
+          createConversation(groupJid, name).then((agent) => {
+            if (agent) setActiveAgentTab(groupJid, agent.id);
+          });
+        }}
+        onClose={() => setShowNewConversation(false)}
+      />
     </div>
   );
 }

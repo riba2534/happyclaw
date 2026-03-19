@@ -42,7 +42,7 @@ const WORKSPACE_IPC = process.env.HAPPYCLAW_WORKSPACE_IPC || '/workspace/ipc';
 
 // 模型配置：支持别名（opus/sonnet/haiku）或完整模型 ID
 // 别名自动解析为最新版本，如 opus → Opus 4.6
-const CLAUDE_MODEL = process.env.HAPPYCLAW_MODEL || process.env.ANTHROPIC_MODEL || 'opus';
+const CLAUDE_MODEL = process.env.ANTHROPIC_MODEL || 'opus';
 
 const IPC_INPUT_DIR = path.join(WORKSPACE_IPC, 'input');
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
@@ -275,6 +275,10 @@ function writeOutput(output: ContainerOutput): void {
 
 function log(message: string): void {
   console.error(`[agent-runner] ${message}`);
+}
+
+function generateTurnId(): string {
+  return `ipc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 /**
@@ -1125,6 +1129,18 @@ async function runQuery(
       // SDK 将某些 API 错误包装为 subtype=success 的 result（不抛异常）
       if (textResult && isContextOverflowError(textResult)) {
         log(`Context overflow detected in result: ${textResult.slice(0, 100)}`);
+        // ── 发射已累积的部分回复，避免用户已看到的流式内容丢失 ──
+        const partialText = processor.getFullText();
+        if (partialText.trim()) {
+          log(`Emitting overflow_partial with ${partialText.length} chars`);
+          emit({
+            status: 'success',
+            result: partialText,
+            newSessionId,
+            sourceKind: 'overflow_partial',
+            finalizationReason: 'error',
+          });
+        }
         processor.resetFullTextAccumulator();
         return { newSessionId, lastAssistantUuid, closedDuringQuery, contextOverflow: true, interruptedDuringQuery };
       }
@@ -1144,6 +1160,10 @@ async function runQuery(
         sourceKind: 'sdk_final',
         finalizationReason: 'completed',
       });
+      // After emitting an sdk_final result, rotate turnId so that if
+      // another result is emitted within the same query (e.g. user sent
+      // a follow-up via IPC mid-query), it won't overwrite this one (#214).
+      containerInput.turnId = generateTurnId();
 
       // Emit usage stream event with token counts and cost
       const resultMsg = message as Record<string, unknown>;
@@ -1207,6 +1227,18 @@ async function runQuery(
     // 检测上下文溢出错误
     if (isContextOverflowError(errorMessage)) {
       log(`Context overflow detected: ${errorMessage}`);
+      // ── 发射已累积的部分回复，避免用户已看到的流式内容丢失 ──
+      const partialText = processor.getFullText();
+      if (partialText.trim()) {
+        log(`Emitting overflow_partial (catch) with ${partialText.length} chars`);
+        emit({
+          status: 'success',
+          result: partialText,
+          newSessionId,
+          sourceKind: 'overflow_partial',
+          finalizationReason: 'error',
+        });
+      }
       return { newSessionId, lastAssistantUuid, closedDuringQuery, contextOverflow: true, interruptedDuringQuery };
     }
 
@@ -1410,6 +1442,7 @@ async function main(): Promise<void> {
         clearInterruptRequested();
         prompt = nextMessage.text;
         promptImages = nextMessage.images;
+        containerInput.turnId = generateTurnId();
         continue;
       }
 
@@ -1465,6 +1498,7 @@ async function main(): Promise<void> {
       log(`Got new message (${nextMessage.text.length} chars, ${nextMessage.images?.length || 0} images), starting new query`);
       prompt = nextMessage.text;
       promptImages = nextMessage.images;
+      containerInput.turnId = generateTurnId();
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);

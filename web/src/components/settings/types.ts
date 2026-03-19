@@ -1,6 +1,6 @@
 export interface ClaudeConfigPublic {
   anthropicBaseUrl: string;
-  happyclawModel: string;
+  anthropicModel: string;
   updatedAt: string | null;
   hasAnthropicAuthToken: boolean;
   hasAnthropicApiKey: boolean;
@@ -17,7 +17,7 @@ export interface ClaudeThirdPartyProfileItem {
   id: string;
   name: string;
   anthropicBaseUrl: string;
-  happyclawModel: string;
+  anthropicModel: string;
   updatedAt: string | null;
   hasAnthropicAuthToken: boolean;
   anthropicAuthTokenMasked: string | null;

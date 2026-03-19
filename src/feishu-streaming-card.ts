@@ -225,12 +225,9 @@ function buildCardContent(
       elements.push({ tag: 'markdown', content: chunk });
     }
   } else if (contentToRender) {
-    const sections = contentToRender.split(/\n-{3,}\n/);
-    for (let i = 0; i < sections.length; i++) {
-      if (i > 0) elements.push({ tag: 'hr' });
-      const s = sections[i].trim();
-      if (s) elements.push({ tag: 'markdown', content: s });
-    }
+    // Keep --- as markdown content instead of using { tag: 'hr' }
+    // because Schema 2.0 (CardKit) does not support the hr tag.
+    elements.push({ tag: 'markdown', content: contentToRender });
   }
 
   if (elements.length === 0) {
@@ -242,16 +239,23 @@ function buildCardContent(
 
 // ─── Interrupt Button Element ────────────────────────────────
 
+/** Schema 1.0: `action` container wrapping a button (used by legacy message.patch path) */
 const INTERRUPT_BUTTON = {
   tag: 'action',
   actions: [{
     tag: 'button',
     text: { tag: 'plain_text', content: '⏹ 中断回复' },
     type: 'danger',
-    // Legacy path: card.action.trigger callback (飞书标准卡片回调机制，不依赖 CardKit)
-    // CardKit path: same value, routed via CardKit card callback
     value: { action: 'interrupt_stream' },
   }],
+} as const;
+
+/** Schema 2.0: standalone button (CardKit rejects `tag: 'action'` in v2 cards) */
+const INTERRUPT_BUTTON_V2 = {
+  tag: 'button',
+  text: { tag: 'plain_text', content: '⏹ 中断回复' },
+  type: 'danger',
+  value: { action: 'interrupt_stream' },
 } as const;
 
 // ─── Tool Progress & Elapsed Helpers ─────────────────────────
@@ -348,19 +352,23 @@ function buildSchema2Card(
   const displayTitle = titlePrefix ? `${titlePrefix}${title}` : title;
 
   if (state === 'streaming') {
-    elements.push(INTERRUPT_BUTTON);
+    elements.push(INTERRUPT_BUTTON_V2);
   }
 
   if (SCHEMA2_NOTE_MAP[state]) {
     elements.push({
-      tag: 'note',
-      elements: [{ tag: 'plain_text', content: SCHEMA2_NOTE_MAP[state] }],
+      tag: 'markdown',
+      content: SCHEMA2_NOTE_MAP[state],
+      text_size: 'notation',
     });
   }
 
   return {
     schema: '2.0',
-    config: { wide_screen_mode: true },
+    config: {
+      wide_screen_mode: true,
+      summary: { content: displayTitle },
+    },
     header: {
       title: { tag: 'plain_text', content: displayTitle },
       template: SCHEMA2_HEADER_MAP[state],
@@ -577,181 +585,6 @@ class CardKitBackend {
 
 }
 
-// ─── CardKit Streaming Backend (v1 API with streaming_mode) ───
-
-const STREAMING_ELEMENT_ID = 'streaming_content';
-
-class CardKitStreamingBackend {
-  private cardId: string | null = null;
-  private _messageId: string | null = null;
-  private sequence = 0;
-  private readonly client: lark.Client;
-
-  constructor(client: lark.Client) {
-    this.client = client;
-  }
-
-  get messageId(): string | null {
-    return this._messageId;
-  }
-
-  /**
-   * Create a streaming card entity via cardkit.v1.card.create,
-   * then send it as an IM message referencing the card_id.
-   *
-   * Uses the same approach as OpenClaw-Lark:
-   * - cardkit.v1.card.create with streaming_mode: true
-   * - im.message.create/reply with content: { type: "card", data: { card_id } }
-   * - cardkit.v1.cardElement.content for typewriter streaming
-   * - cardkit.v1.card.settings to close streaming_mode
-   * - cardkit.v1.card.update for final full card
-   */
-  async createStreamingCard(
-    chatId: string,
-    _initialText: string,
-    replyToMsgId?: string,
-  ): Promise<string> {
-    const cardJson = {
-      schema: '2.0',
-      config: {
-        streaming_mode: true,
-        wide_screen_mode: true,
-        summary: { content: '思考中...' },
-      },
-      body: {
-        elements: [
-          {
-            tag: 'markdown',
-            content: '',
-            text_align: 'left',
-            text_size: 'normal',
-            element_id: STREAMING_ELEMENT_ID,
-          },
-        ],
-      },
-    };
-
-    // Step 1: Create card entity via CardKit v1 API
-    const createResp = await this.client.cardkit.v1.card.create({
-      data: {
-        type: 'card_json',
-        data: JSON.stringify(cardJson),
-      },
-    });
-
-    const cardId = createResp?.data?.card_id;
-    if (!cardId) {
-      const code = (createResp as any)?.code;
-      const msg = (createResp as any)?.msg;
-      throw new Error(
-        `CardKit card.create returned no card_id (code=${code}, msg=${msg})`,
-      );
-    }
-    this.cardId = cardId;
-    this.sequence = 1;
-    logger.debug({ cardId }, 'CardKit streaming card created');
-
-    // Step 2: Send IM message referencing card_id
-    // Use { type: "card", data: { card_id } } format (OpenClaw pattern)
-    const content = JSON.stringify({
-      type: 'card',
-      data: { card_id: this.cardId },
-    });
-
-    let resp: any;
-    if (replyToMsgId) {
-      resp = await this.client.im.message.reply({
-        path: { message_id: replyToMsgId },
-        data: { content, msg_type: 'interactive' },
-      });
-    } else {
-      resp = await this.client.im.v1.message.create({
-        params: { receive_id_type: 'chat_id' },
-        data: {
-          receive_id: chatId,
-          msg_type: 'interactive',
-          content,
-        },
-      });
-    }
-
-    const messageId = resp?.data?.message_id;
-    if (!messageId) {
-      throw new Error('No message_id in streaming card send response');
-    }
-    this._messageId = messageId;
-    return messageId;
-  }
-
-  /**
-   * Stream text content to the card via cardElement.content (typewriter effect).
-   * The content is cumulative (full text, not a delta).
-   * Feishu auto-diffs and renders incremental changes.
-   */
-  async streamContent(text: string): Promise<'ok' | 'fail'> {
-    if (!this.cardId) return 'fail';
-    try {
-      this.sequence++;
-      const resp = await this.client.cardkit.v1.cardElement.content({
-        data: {
-          content: text,
-          sequence: this.sequence,
-        },
-        path: {
-          card_id: this.cardId,
-          element_id: STREAMING_ELEMENT_ID,
-        },
-      });
-      const code = (resp as any)?.code;
-      if (code && code !== 0) {
-        logger.debug(
-          { cardId: this.cardId, code, msg: (resp as any)?.msg, seq: this.sequence },
-          'cardElement.content returned non-zero code',
-        );
-        // Rate limit (230020): skip, don't count as failure
-        if (code === 230020) return 'ok';
-        return 'fail';
-      }
-      return 'ok';
-    } catch (err) {
-      logger.debug({ err, cardId: this.cardId, seq: this.sequence }, 'cardElement.content failed');
-      return 'fail';
-    }
-  }
-
-  /**
-   * Close streaming mode via card.settings.
-   */
-  async stopStreaming(): Promise<void> {
-    if (!this.cardId) return;
-    this.sequence++;
-    await this.client.cardkit.v1.card.settings({
-      data: {
-        settings: JSON.stringify({ streaming_mode: false }),
-        sequence: this.sequence,
-      },
-      path: { card_id: this.cardId },
-    });
-  }
-
-  /**
-   * Final full update of the card (after streaming is stopped).
-   */
-  async updateFinal(cardJson: object): Promise<void> {
-    if (!this.cardId) return;
-    this.sequence++;
-    await this.client.cardkit.v1.card.update({
-      path: { card_id: this.cardId },
-      data: {
-        card: {
-          type: 'card_json' as const,
-          data: JSON.stringify(cardJson),
-        },
-        sequence: this.sequence,
-      },
-    });
-  }
-}
 
 // ─── Multi-Card Manager ───────────────────────────────────────
 
@@ -908,12 +741,11 @@ export class StreamingCardController {
   private useCardKit = false;
   private multiCard: MultiCardManager | null = null;
 
-  // V2 streaming state
+  // Streaming state
   private thinking = false;
   private toolCalls = new Map<string, { name: string; status: 'running' | 'complete' | 'error' }>();
   private startTime = 0;
-  private backendMode: 'v2' | 'v1' | 'legacy' = 'v1';
-  private v2Backend: CardKitStreamingBackend | null = null;
+  private backendMode: 'v1' | 'legacy' = 'v1';
 
   constructor(opts: StreamingCardOptions) {
     this.client = opts.client;
@@ -958,8 +790,6 @@ export class StreamingCardController {
         this.state = 'error';
         this.onFallback?.();
       });
-    } else if (this.state === 'streaming' && this.backendMode === 'v2') {
-      this.schedulePatch();
     }
   }
 
@@ -1020,13 +850,7 @@ export class StreamingCardController {
     this.state = 'completed';
     this.flushCtrl.dispose();
 
-    if (this.backendMode === 'v2' && this.v2Backend) {
-      try {
-        await this.finalizeV2Card('completed');
-      } catch (err) {
-        logger.debug({ err, chatId: this.chatId }, 'V2 streaming card: finalize failed');
-      }
-    } else if (this.messageId || this.multiCard) {
+    if (this.messageId || this.multiCard) {
       try {
         await this.patchCard('completed');
       } catch (err) {
@@ -1045,22 +869,14 @@ export class StreamingCardController {
     this.state = 'aborted';
     this.flushCtrl.dispose();
 
-    if ((this.messageId || this.multiCard || this.v2Backend) && wasActive) {
+    if ((this.messageId || this.multiCard) && wasActive) {
       if (reason) {
         this.accumulatedText += `\n\n---\n*${reason}*`;
       }
-      if (this.backendMode === 'v2' && this.v2Backend) {
-        try {
-          await this.finalizeV2Card('aborted');
-        } catch (err) {
-          logger.debug({ err, chatId: this.chatId }, 'V2 streaming card: abort finalize failed');
-        }
-      } else {
-        try {
-          await this.patchCard('aborted');
-        } catch (err) {
-          logger.debug({ err, chatId: this.chatId }, 'Streaming card: abort patch failed');
-        }
+      try {
+        await this.patchCard('aborted');
+      } catch (err) {
+        logger.debug({ err, chatId: this.chatId }, 'Streaming card: abort patch failed');
       }
     }
   }
@@ -1074,36 +890,9 @@ export class StreamingCardController {
   private async createInitialCard(): Promise<void> {
     const initialText = this.accumulatedText || (this.thinking ? '' : '...');
 
-    // ── Try CardKit streaming (cardElement.content typewriter) ──
-    try {
-      this.v2Backend = new CardKitStreamingBackend(this.client);
-      const messageId = await this.v2Backend.createStreamingCard(
-        this.chatId, initialText, this.replyToMsgId,
-      );
-
-      this.messageId = messageId;
-      this.backendMode = 'v2';
-      this.startTime = Date.now();
-      // Streaming mode: 300ms interval, 30 char threshold
-      this.flushCtrl.dispose();
-      this.flushCtrl = new FlushController(300, 30);
-      this.maxPatchFailures = 3;
-
-      logger.debug(
-        { chatId: this.chatId, messageId, mode: 'cardkit-streaming' },
-        'Streaming card created via CardKit cardElement.content',
-      );
-      this.finishCardCreation();
-      return;
-    } catch (streamErr) {
-      logger.info(
-        { err: streamErr, chatId: this.chatId },
-        'CardKit streaming unavailable, trying CardKit full-update',
-      );
-      this.v2Backend = null;
-    }
-
     // ── Try CardKit full-update (card.update with full JSON) ──
+    // Preferred over cardElement.content typewriter mode because full-update
+    // supports richer streaming UI (interrupt button, thinking status, tool progress).
     try {
       this.multiCard = new MultiCardManager(
         this.client,
@@ -1193,15 +982,9 @@ export class StreamingCardController {
         { chatId: this.chatId, messageId: this.messageId, finalState },
         'Streaming card created but state already changed, patching to final',
       );
-      if (this.backendMode === 'v2' && this.v2Backend) {
-        this.finalizeV2Card(finalState).catch((err) => {
-          logger.debug({ err, chatId: this.chatId }, 'Failed to finalize v2 card after late creation');
-        });
-      } else {
-        this.patchCard(finalState).catch((err) => {
-          logger.debug({ err, chatId: this.chatId }, 'Failed to patch to final state after late creation');
-        });
-      }
+      this.patchCard(finalState).catch((err) => {
+        logger.debug({ err, chatId: this.chatId }, 'Failed to patch to final state after late creation');
+      });
       return;
     }
 
@@ -1236,25 +1019,7 @@ export class StreamingCardController {
   private async patchCard(
     displayState: 'streaming' | 'completed' | 'aborted',
   ): Promise<void> {
-    if (this.backendMode === 'v2' && this.v2Backend) {
-      // CardKit v2 streamContent path
-      try {
-        const text = this.buildStreamContentText();
-        const result = await this.v2Backend.streamContent(text);
-        if (result !== 'ok') {
-          throw new Error('streamContent returned fail');
-        }
-        this.flushCtrl.markFlushed(this.accumulatedText.length);
-        this.patchFailCount = 0;
-      } catch (err) {
-        this.patchFailCount++;
-        logger.debug(
-          { err, chatId: this.chatId, failCount: this.patchFailCount, mode: 'v2' },
-          'V2 streamContent failed',
-        );
-        throw err;
-      }
-    } else if (this.useCardKit && this.multiCard) {
+    if (this.useCardKit && this.multiCard) {
       // CardKit v1 path
       try {
         await this.multiCard.commitContent(this.accumulatedText, displayState);
@@ -1293,84 +1058,6 @@ export class StreamingCardController {
     }
   }
 
-  // ─── V2 Helpers ──────────────────────────────────────────
-
-  /**
-   * Build the text content for v2 streamContent calls.
-   * Includes tool progress appended to the main text.
-   * Applies optimizeMarkdownStyle() for proper Feishu rendering.
-   */
-  private buildStreamContentText(): string {
-    let content = '';
-    if (this.thinking && !this.accumulatedText) {
-      content = '💭 思考中...';
-    } else {
-      content = this.accumulatedText || '💭 思考中...';
-    }
-    // Apply Markdown optimization for streaming content
-    content = optimizeMarkdownStyle(content, 2);
-    const toolMd = buildToolProgressMarkdown(this.toolCalls);
-    if (toolMd) {
-      content += '\n\n---\n' + toolMd;
-    }
-    return content;
-  }
-
-  /**
-   * Build the final v2 card JSON (after streaming is stopped).
-   */
-  private buildV2FinalCard(state: 'completed' | 'aborted' | 'error'): object {
-    const { title, contentElements: elements } = buildCardContent(
-      this.accumulatedText || '...',
-      splitCodeBlockSafe,
-    );
-
-    // Tool summary
-    const toolMd = buildToolProgressMarkdown(this.toolCalls);
-    if (toolMd) {
-      elements.push({ tag: 'markdown', content: toolMd, text_size: 'notation' });
-    }
-
-    // Footer separator + status
-    const elapsed = this.startTime ? formatElapsed(Date.now() - this.startTime) : '';
-    const statusMap: Record<string, string> = {
-      completed: `✅ 完成${elapsed ? ` · ${elapsed}` : ''}`,
-      aborted: `⚠️ 已中断${elapsed ? ` · ${elapsed}` : ''}`,
-      error: `❌ 出错${elapsed ? ` · ${elapsed}` : ''}`,
-    };
-    const headerTemplateMap: Record<string, string> = {
-      completed: 'indigo',
-      aborted: 'orange',
-      error: 'red',
-    };
-
-    elements.push({ tag: 'hr' });
-    elements.push({ tag: 'markdown', content: statusMap[state], text_size: 'notation' });
-
-    return {
-      schema: '2.0',
-      config: { wide_screen_mode: true },
-      header: {
-        title: { tag: 'plain_text', content: title },
-        template: headerTemplateMap[state],
-      },
-      body: { elements },
-    };
-  }
-
-  /**
-   * Stop streaming and update the card to its final state.
-   */
-  private async finalizeV2Card(state: 'completed' | 'aborted' | 'error'): Promise<void> {
-    if (!this.v2Backend) return;
-    try {
-      await this.v2Backend.stopStreaming();
-    } catch (err) {
-      logger.debug({ err, chatId: this.chatId }, 'V2 stopStreaming failed');
-    }
-    const finalCard = this.buildV2FinalCard(state);
-    await this.v2Backend.updateFinal(finalCard);
-  }
 }
 
 // ─── MessageId → ChatJid Mapping ─────────────────────────────

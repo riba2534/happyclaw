@@ -9,7 +9,7 @@ export interface ContainerEnvPublicConfig {
   hasAnthropicAuthToken: boolean;
   hasAnthropicApiKey: boolean;
   hasClaudeCodeOauthToken: boolean;
-  happyclawModel: string;
+  anthropicModel: string;
   customEnv: Record<string, string>;
 }
 
@@ -25,7 +25,7 @@ interface ContainerEnvState {
     anthropicAuthToken?: string;
     anthropicApiKey?: string;
     claudeCodeOauthToken?: string;
-    happyclawModel?: string;
+    anthropicModel?: string;
     customEnv?: Record<string, string>;
   }) => Promise<boolean>;
 }

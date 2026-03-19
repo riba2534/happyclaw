@@ -882,6 +882,9 @@ export class GroupQueue {
         const success = await this.processMessagesFn(groupJid);
         if (success) {
           state.retryCount = 0;
+          // Defensive: clear any lingering retry timer from a previous failed
+          // run that was superseded by a successful drain-triggered run.
+          this.clearRetryTimer(state);
         } else {
           this.scheduleRetry(groupJid, state);
         }
@@ -1090,8 +1093,11 @@ export class GroupQueue {
       return;
     }
 
-    // Then pending messages
-    if (state.pendingMessages) {
+    // Then pending messages — but NOT if a retry timer is already scheduled.
+    // When processMessagesFn() fails, both scheduleRetry() and drainGroup() fire.
+    // Without this guard, drainGroup would start a new container while the retry
+    // timer later starts another, causing duplicate processing of the same messages.
+    if (state.pendingMessages && !state.retryTimer) {
       this.runForGroup(groupJid, 'drain');
       return;
     }
@@ -1136,11 +1142,13 @@ export class GroupQueue {
         }
         if (validTask) {
           this.runTask(jid, validTask);
-        } else if (state.pendingMessages) {
+        } else if (state.pendingMessages && !state.retryTimer) {
           // All tasks were stale, fall through to messages
+          // (skip if retry timer is pending to avoid duplicate processing)
           this.runForGroup(jid, 'drain');
         }
-      } else if (state.pendingMessages) {
+      } else if (state.pendingMessages && !state.retryTimer) {
+        // Skip if retry timer is pending to avoid duplicate processing
         this.runForGroup(jid, 'drain');
       }
       // If neither pending, skip this group

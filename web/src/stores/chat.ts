@@ -37,6 +37,27 @@ export interface StreamingTimelineEvent {
   kind: 'tool' | 'skill' | 'hook' | 'status';
 }
 
+/** Shape of the snapshot payload pushed from the backend on WS reconnect (stream_snapshot). */
+export interface StreamSnapshotData {
+  partialText: string;
+  activeTools: Array<{
+    toolName: string;
+    toolUseId: string;
+    startTime: number;
+    toolInputSummary?: string;
+    parentToolUseId?: string | null;
+  }>;
+  recentEvents: Array<{
+    id: string;
+    timestamp: number;
+    text: string;
+    kind: string;
+  }>;
+  todos?: Array<{ id: string; content: string; status: string }>;
+  systemStatus: string | null;
+  turnId?: string;
+}
+
 export interface StreamingState {
   turnId?: string;
   sessionId?: string;
@@ -172,6 +193,7 @@ interface ChatState {
     options?: { preserveThinking?: boolean },
   ) => void;
   restoreActiveState: () => Promise<void>;
+  handleStreamSnapshot: (chatJid: string, snapshot: StreamSnapshotData) => void;
   // Sub-agent actions
   loadAgents: (jid: string) => Promise<void>;
   deleteAgentAction: (jid: string, agentId: string) => Promise<boolean>;
@@ -189,6 +211,10 @@ interface ChatState {
   unbindImGroup: (jid: string, agentId: string, imJid: string) => Promise<boolean>;
   bindMainImGroup: (jid: string, imJid: string, force?: boolean) => Promise<boolean>;
   unbindMainImGroup: (jid: string, imJid: string) => Promise<boolean>;
+  // Draft persistence across route navigation
+  drafts: Record<string, string>;
+  saveDraft: (jid: string, text: string) => void;
+  clearDraft: (jid: string) => void;
 }
 
 const DEFAULT_STREAMING_STATE: StreamingState = {
@@ -208,6 +234,7 @@ function resolveStreamingPrev(current: StreamingState | undefined, event: Stream
   return current || { ...DEFAULT_STREAMING_STATE };
 }
 
+const MAX_STREAMING_TEXT = 8000;
 const MAX_EVENT_LOG = 30;
 const SDK_TASK_AUTO_CLOSE_MS = 3000;
 const SDK_TASK_TOOL_END_FALLBACK_CLOSE_MS = 1200;
@@ -221,6 +248,73 @@ const completedSdkTaskIds = new Set<string>();
 /** DB task agent 自动清理定时器（完成后延迟移除） */
 const DB_TASK_AGENT_AUTO_CLEAN_MS = 5000;
 const dbTaskAgentCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+// ─── Streaming state sessionStorage persistence ───────────────────────
+// Survives page refresh so StreamingDisplay can restore accumulated content.
+const STREAMING_STORAGE_KEY = 'hc_streaming';
+const streamingSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** Debounced save of streaming state to sessionStorage (max once per 500ms per jid). */
+function saveStreamingToSession(chatJid: string, state: StreamingState | undefined): void {
+  if (streamingSaveTimers.has(chatJid)) return; // already scheduled
+  streamingSaveTimers.set(chatJid, setTimeout(() => {
+    streamingSaveTimers.delete(chatJid);
+    try {
+      const stored = JSON.parse(sessionStorage.getItem(STREAMING_STORAGE_KEY) || '{}');
+      if (state && (state.partialText || state.activeTools.length > 0 || state.recentEvents.length > 0)) {
+        stored[chatJid] = {
+          partialText: state.partialText.slice(-4000), // cap size
+          thinkingText: '',  // don't persist thinking
+          isThinking: false,
+          activeTools: state.activeTools,
+          recentEvents: state.recentEvents.slice(-10),
+          todos: state.todos,
+          systemStatus: state.systemStatus,
+          turnId: state.turnId,
+          ts: Date.now(),
+        };
+      } else {
+        delete stored[chatJid];
+      }
+      sessionStorage.setItem(STREAMING_STORAGE_KEY, JSON.stringify(stored));
+    } catch { /* quota exceeded or SSR */ }
+  }, 500));
+}
+
+/** Remove streaming state from sessionStorage. */
+function clearStreamingFromSession(chatJid: string): void {
+  const timer = streamingSaveTimers.get(chatJid);
+  if (timer) { clearTimeout(timer); streamingSaveTimers.delete(chatJid); }
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(STREAMING_STORAGE_KEY) || '{}');
+    delete stored[chatJid];
+    sessionStorage.setItem(STREAMING_STORAGE_KEY, JSON.stringify(stored));
+  } catch { /* SSR */ }
+}
+
+/** Restore streaming state from sessionStorage (stale entries > 5min are discarded). */
+function restoreStreamingFromSession(chatJid: string): StreamingState | null {
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(STREAMING_STORAGE_KEY) || '{}');
+    const entry = stored[chatJid];
+    if (!entry) return null;
+    // Discard stale entries (> 5 minutes old)
+    if (Date.now() - (entry.ts || 0) > 5 * 60 * 1000) {
+      delete stored[chatJid];
+      sessionStorage.setItem(STREAMING_STORAGE_KEY, JSON.stringify(stored));
+      return null;
+    }
+    return {
+      ...DEFAULT_STREAMING_STATE,
+      partialText: entry.partialText || '',
+      activeTools: entry.activeTools || [],
+      recentEvents: entry.recentEvents || [],
+      todos: entry.todos,
+      systemStatus: entry.systemStatus || null,
+      turnId: entry.turnId,
+    };
+  } catch { return null; }
+}
 
 /**
  * rAF batching for text_delta / thinking_delta events.
@@ -255,12 +349,12 @@ function flushPendingDelta(
       const next = { ...prev };
       if (mergedText) {
         const combined = prev.partialText + mergedText;
-        next.partialText = combined.length > 8000 ? combined.slice(-8000) : combined;
+        next.partialText = combined.length > MAX_STREAMING_TEXT ? combined.slice(-MAX_STREAMING_TEXT) : combined;
         next.isThinking = false;
       }
       if (mergedThinking) {
         const combined = prev.thinkingText + mergedThinking;
-        next.thinkingText = combined.length > 8000 ? combined.slice(-8000) : combined;
+        next.thinkingText = combined.length > MAX_STREAMING_TEXT ? combined.slice(-MAX_STREAMING_TEXT) : combined;
         next.isThinking = true;
       }
       return { agentStreaming: { ...s.agentStreaming, [agentId]: next } };
@@ -269,7 +363,6 @@ function flushPendingDelta(
     set((s) => {
       if (!s.streaming[chatJid] && s.waiting[chatJid] === false) return s;
       if (s.streaming[chatJid]?.interrupted) return s;
-      const MAX_STREAMING_TEXT = 8000;
       const prev = s.streaming[chatJid] || { ...DEFAULT_STREAMING_STATE };
       const next = { ...prev };
       if (mergedText) {
@@ -282,6 +375,7 @@ function flushPendingDelta(
         next.thinkingText = combined.length > MAX_STREAMING_TEXT ? combined.slice(-MAX_STREAMING_TEXT) : combined;
         next.isThinking = true;
       }
+      saveStreamingToSession(chatJid, next);
       return {
         waiting: { ...s.waiting, [chatJid]: true },
         streaming: { ...s.streaming, [chatJid]: next },
@@ -623,12 +717,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
   clearing: {},
   agents: {},
   agentStreaming: {},
-  activeAgentTab: {},
+  activeAgentTab: (() => {
+    try { return JSON.parse(sessionStorage.getItem('activeAgentTabs') || '{}'); } catch { return {}; }
+  })(),
   sdkTasks: {},
   sdkTaskAliases: {},
   agentMessages: {},
   agentWaiting: {},
   agentHasMore: {},
+  drafts: {},
 
   loadGroups: async () => {
     set({ loading: true });
@@ -1408,6 +1505,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const prev = resolveStreamingPrev(s.streaming[chatJid], event);
       const next = { ...prev };
       applyStreamEvent(event, prev, next, MAX_STREAMING_TEXT);
+      saveStreamingToSession(chatJid, next);
       return {
         waiting: { ...s.waiting, [chatJid]: true },
         streaming: { ...s.streaming, [chatJid]: next },
@@ -1452,11 +1550,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ? (() => { const n = { ...s.agentStreaming }; delete n[agentId]; return n; })()
           : s.agentStreaming;
 
+        // For user messages (non-reply), set agentWaiting=true so subsequent
+        // streaming events are accepted.  This handles messages injected from
+        // Feishu/Telegram which don't go through sendAgentMessage().
+        const nextAgentWaiting = isAgentReply
+          ? { ...s.agentWaiting, [agentId]: false }
+          : !msg.is_from_me
+            ? { ...s.agentWaiting, [agentId]: true }
+            : s.agentWaiting;
+
         return {
           agentMessages: { ...s.agentMessages, [agentId]: updated },
-          agentWaiting: isAgentReply
-            ? { ...s.agentWaiting, [agentId]: false }
-            : s.agentWaiting,
+          agentWaiting: nextAgentWaiting,
           agentStreaming: nextAgentStreaming,
         };
       });
@@ -1595,9 +1700,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
       }
 
+      // Conversation agent started running: reset agentWaiting so stream events
+      // are accepted (mirrors handleRunnerState for the main conversation).
+      // Without this, Feishu-sourced messages (which skip sendAgentMessage) would
+      // leave agentWaiting=false and cause all streaming events to be dropped.
+      const nextAgentWaiting =
+        resolvedKind === 'conversation' && status === 'running'
+          ? { ...s.agentWaiting, [agentId]: true }
+          : s.agentWaiting;
+
       return {
         agents: { ...s.agents, [chatJid]: updated },
         agentStreaming: nextAgentStreaming,
+        agentWaiting: nextAgentWaiting,
         sdkTasks: nextSdkTasks,
         sdkTaskAliases: nextSdkTaskAliases,
       };
@@ -1710,11 +1825,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  // 切换子 Agent 标签页
+  // 切换子 Agent 标签页（持久化到 sessionStorage，刷新后恢复）
   setActiveAgentTab: (jid, agentId) => {
     set((s) => ({
       activeAgentTab: { ...s.activeAgentTab, [jid]: agentId },
     }));
+    try {
+      const stored = JSON.parse(sessionStorage.getItem('activeAgentTabs') || '{}');
+      if (agentId) {
+        stored[jid] = agentId;
+      } else {
+        delete stored[jid];
+      }
+      sessionStorage.setItem('activeAgentTabs', JSON.stringify(stored));
+    } catch { /* ignore */ }
   },
 
   // -- Conversation agent actions --
@@ -1904,6 +2028,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           if (!knownJids.has(jid)) {
             delete nextWaiting[jid];
             delete nextStreaming[jid];
+            clearStreamingFromSession(jid);
           }
         }
 
@@ -1916,6 +2041,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           if (!g.active) {
             delete nextWaiting[g.jid];
             delete nextStreaming[g.jid];
+            clearStreamingFromSession(g.jid);
             continue;
           }
           // active 可能仅表示 runner 空闲存活，这里回退到消息语义推断。
@@ -1927,8 +2053,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
             (latest.is_from_me === false || latest.source_kind === 'sdk_send_message');
           if (inferredWaiting) {
             nextWaiting[g.jid] = true;
+            // Restore streaming state from sessionStorage if available
+            if (!nextStreaming[g.jid]) {
+              const restored = restoreStreamingFromSession(g.jid);
+              if (restored) {
+                nextStreaming[g.jid] = restored;
+              }
+            }
           } else {
             delete nextWaiting[g.jid];
+            clearStreamingFromSession(g.jid);
           }
         }
         return { waiting: nextWaiting, streaming: nextStreaming };
@@ -1936,6 +2070,33 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch {
       // 静默失败
     }
+  },
+
+  // WS 重连时接收后端推送的流式快照，恢复 StreamingDisplay
+  handleStreamSnapshot: (chatJid, snapshot) => {
+    set((s) => {
+      // 已有流式状态 → 不覆盖（可能已经在接收新事件）
+      if (s.streaming[chatJid]?.partialText) return s;
+      const restored: StreamingState = {
+        ...DEFAULT_STREAMING_STATE,
+        partialText: snapshot.partialText || '',
+        activeTools: (snapshot.activeTools || []).map((t) => ({
+          toolName: t.toolName,
+          toolUseId: t.toolUseId,
+          startTime: t.startTime,
+          toolInputSummary: t.toolInputSummary,
+          parentToolUseId: t.parentToolUseId,
+        })),
+        recentEvents: (snapshot.recentEvents || []) as StreamingTimelineEvent[],
+        todos: snapshot.todos,
+        systemStatus: snapshot.systemStatus || null,
+        turnId: snapshot.turnId,
+      };
+      return {
+        waiting: { ...s.waiting, [chatJid]: true },
+        streaming: { ...s.streaming, [chatJid]: restored },
+      };
+    });
   },
 
   // Runner 状态同步：idle 时清理残留状态，running 时重新启用 stream event 接收
@@ -1964,6 +2125,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   // 清除流式状态（保留仍在运行的后台 SDK Task 的 agentStreaming）
   clearStreaming: (chatJid, options) => {
+    // Cancel any pending rAF for this chatJid to prevent stale flushes
+    const mainKey = `main:${chatJid}`;
+    const mainEntry = pendingDeltas.get(mainKey);
+    if (mainEntry) {
+      cancelAnimationFrame(mainEntry.raf);
+      pendingDeltas.delete(mainKey);
+    }
+    clearStreamingFromSession(chatJid);
     set((s) => {
       const next = { ...s.streaming };
       const thinkingText = next[chatJid]?.thinkingText;
@@ -2007,6 +2176,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
         pendingThinking: nextPendingThinking,
         ...(agentStreamingChanged ? { agentStreaming: nextAgentStreaming } : {}),
       };
+    });
+  },
+
+  saveDraft: (jid, text) => {
+    set((s) => {
+      if (text) {
+        if (s.drafts[jid] === text) return s;
+        return { drafts: { ...s.drafts, [jid]: text } };
+      }
+      if (!(jid in s.drafts)) return s;
+      const next = { ...s.drafts };
+      delete next[jid];
+      return { drafts: next };
+    });
+  },
+
+  clearDraft: (jid) => {
+    set((s) => {
+      if (!(jid in s.drafts)) return s;
+      const next = { ...s.drafts };
+      delete next[jid];
+      return { drafts: next };
     });
   },
 }));

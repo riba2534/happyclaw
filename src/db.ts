@@ -3749,6 +3749,16 @@ export function markAllRunningTaskAgentsAsError(
   return result.changes;
 }
 
+export function listActiveConversationAgents(): SubAgent[] {
+  return (
+    db
+      .prepare(
+        "SELECT * FROM agents WHERE kind = 'conversation' AND status IN ('running', 'idle')",
+      )
+      .all() as Record<string, unknown>[]
+  ).map(mapAgentRow);
+}
+
 export function deleteAgent(id: string): void {
   // Delete associated session
   db.prepare('DELETE FROM sessions WHERE agent_id = ?').run(id);
