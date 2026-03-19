@@ -1614,6 +1614,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let lastError = '';
   let cursorCommitted = false;
   let lastReplyMsgId: string | undefined;
+  let lastSavedTurnId: string | undefined;  // tracks last turnId saved to DB, prevents UPSERT overwrite
   const queryTaskIds = new Set<string>();
   const lastProcessed = missedMessages[missedMessages.length - 1];
 
@@ -2072,17 +2073,27 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             // Any send_message content is delivered independently via IPC watcher.
             const routeSwitchedAway = directImReply && replySourceImJid !== null && replySourceImJid !== chatJid;
             const skipImSend = (streamingCardHandledIM && directImReply) || routeSwitchedAway;
+            // When the container stays alive and processes multiple IPC messages,
+            // result.turnId stays the same (set at container start).  If we already
+            // saved a reply with this turnId, the INSERT OR REPLACE would overwrite
+            // the previous reply.  Use a fresh ID to prevent that.
+            const effectiveTurnId = (result.turnId || lastProcessed.id);
+            const turnIdForDb = (sentReply && effectiveTurnId === lastSavedTurnId)
+              ? undefined  // no turnId → fresh INSERT, no UPSERT dedup
+              : effectiveTurnId;
+
             lastReplyMsgId = await sendMessage(chatJid, text, {
               sendToIM: directImReply && !skipImSend,
               localImagePaths,
               messageMeta: {
-                turnId: result.turnId || lastProcessed.id,
+                turnId: turnIdForDb,
                 sessionId: result.sessionId || activeSessionId,
                 sdkMessageUuid: result.sdkMessageUuid,
                 sourceKind: result.sourceKind || 'sdk_final',
                 finalizationReason: result.finalizationReason || 'completed',
               },
             });
+            lastSavedTurnId = effectiveTurnId;
 
             // For routed IM (web JID with IM source), skip the source channel
             // if streaming card handled it. send_message content is already
