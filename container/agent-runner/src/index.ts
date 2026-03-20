@@ -1363,6 +1363,21 @@ async function runQuery(
   }
 }
 
+/**
+ * process.exit() with SIGKILL safety net.
+ * When SDK has pending async resources (background Task tools, MCP connections),
+ * process.exit() may hang indefinitely. Force SIGKILL after 5 seconds.
+ * See GitHub issue #236.
+ */
+function forceExitWithSafetyNet(code: number): never {
+  log(`Exiting with code ${code}, SIGKILL safety net in 5s`);
+  setTimeout(() => {
+    console.error('[agent-runner] process.exit() did not terminate, forcing SIGKILL');
+    process.kill(process.pid, 'SIGKILL');
+  }, 5000).unref();
+  process.exit(code);
+}
+
 async function main(): Promise<void> {
   let containerInput: ContainerInput;
 
@@ -1632,15 +1647,18 @@ async function main(): Promise<void> {
       result: null,
       error: errorMessage
     });
-    process.exit(1);
+    forceExitWithSafetyNet(1);
   }
 
   // main() 正常结束后必须显式退出。
   // SDK 内部可能留有未关闭的异步资源（MCP 连接、定时器等），
   // 如果不调用 process.exit()，Node.js 事件循环不会自动退出，
   // 导致 agent-runner 进程以 0% CPU 挂起，阻塞队列。
-  log('main() completed, forcing process exit');
-  process.exit(0);
+  //
+  // Safety net: 当 SDK 的后台 Task (run_in_background) 持有异步资源时，
+  // process.exit() 可能无法终止进程。5 秒后强制 SIGKILL。
+  // 参考 GitHub issue #236。
+  forceExitWithSafetyNet(0);
 }
 
 // 处理管道断开（EPIPE）：父进程关闭管道后仍有写入时，静默退出避免 code 1 错误输出
@@ -1658,12 +1676,12 @@ async function main(): Promise<void> {
  */
 process.on('SIGTERM', () => {
   log('Received SIGTERM, exiting gracefully');
-  process.exit(0);
+  forceExitWithSafetyNet(0);
 });
 
 process.on('SIGINT', () => {
   log('Received SIGINT, exiting gracefully');
-  process.exit(0);
+  forceExitWithSafetyNet(0);
 });
 
 process.on('uncaughtException', (err: unknown) => {

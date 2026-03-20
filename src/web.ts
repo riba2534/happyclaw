@@ -579,8 +579,10 @@ function setupWebSocket(server: any): WebSocketServer {
     if (connSession && streamingSnapshots.size > 0) {
       const userId = connSession.user_id;
       for (const [jid, snap] of streamingSnapshots) {
-        // Skip stale snapshots (> 5 min)
-        if (Date.now() - snap.updatedAt > 5 * 60 * 1000) {
+        // Skip stale snapshots (> 30 min)
+        // Extended from 5 min to 30 min to support long-running sub-agents.
+        // See GitHub issue #241.
+        if (Date.now() - snap.updatedAt > 30 * 60 * 1000) {
           streamingSnapshots.delete(jid);
           continue;
         }
@@ -1447,8 +1449,6 @@ export function clearStreamingSnapshot(chatJid: string): void {
 export function getActiveStreamingTexts(): Map<string, string> {
   const result = new Map<string, string>();
   for (const [jid, fullText] of streamingFullTexts) {
-    // Skip agent virtual JIDs (e.g. web:main#agent:abc) — only persist main streams
-    if (jid.includes('#agent:')) continue;
     const text = fullText.trim();
     if (text) {
       result.set(jid, text);

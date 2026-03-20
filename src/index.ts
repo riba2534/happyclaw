@@ -6052,6 +6052,21 @@ async function main(): Promise<void> {
     }
     return { allowed: userActive < limit };
   });
+  // Recovery: when agent process exits with unconsumed IPC messages,
+  // re-enqueue processAgentConversation to pick them up. See issue #240.
+  queue.setOnUnconsumedAgentIpc((groupJid: string, agentId: string) => {
+    // Extract base chat JID from virtual JID (e.g. web:main#agent:abc → web:main)
+    const baseChatJid = groupJid.includes('#agent:')
+      ? groupJid.split('#agent:')[0]
+      : groupJid;
+    const agent = getAgent(agentId);
+    const homeChatJid = agent?.chat_jid || baseChatJid;
+    const virtualChatJid = `${homeChatJid}#agent:${agentId}`;
+    const taskId = `agent-ipc-recovery:${agentId}:${Date.now()}`;
+    queue.enqueueTask(virtualChatJid, taskId, async () => {
+      await processAgentConversation(homeChatJid, agentId);
+    });
+  });
   const schedulerDeps: import('./task-scheduler.js').SchedulerDependencies = {
     registeredGroups: () => registeredGroups,
     getSessions: () => sessions,
