@@ -77,7 +77,7 @@ export default function AdminUsersList({ onSelectUser }: AdminUsersListProps) {
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h3 className="font-semibold flex items-center gap-2">
-          <Users className="w-5 h-5 text-teal-600" />
+          <Users className="w-5 h-5 text-primary" />
           用户计费管理
         </h3>
         <div className="flex items-center gap-2 text-sm text-zinc-500">
@@ -127,7 +127,7 @@ export default function AdminUsersList({ onSelectUser }: AdminUsersListProps) {
       <div className="hidden sm:grid sm:grid-cols-[auto_1fr_120px_100px_100px_80px] gap-2 px-3 py-2 text-xs text-zinc-500 font-medium border-b border-zinc-200 dark:border-zinc-700">
         <button onClick={toggleAll} className="p-0.5">
           {allSelected ? (
-            <CheckSquare className="w-4 h-4 text-teal-600" />
+            <CheckSquare className="w-4 h-4 text-primary" />
           ) : (
             <Square className="w-4 h-4" />
           )}
@@ -156,7 +156,7 @@ export default function AdminUsersList({ onSelectUser }: AdminUsersListProps) {
               className="hidden sm:block p-0.5"
             >
               {selected.has(u.user_id) ? (
-                <CheckSquare className="w-4 h-4 text-teal-600" />
+                <CheckSquare className="w-4 h-4 text-primary" />
               ) : (
                 <Square className="w-4 h-4 text-zinc-400" />
               )}

@@ -21,8 +21,8 @@ export function McpServerCard({ server, selected, onSelect }: McpServerCardProps
       onClick={onSelect}
       className={`w-full text-left rounded-lg border p-4 transition-all ${
         selected
-          ? 'ring-2 ring-ring bg-primary/5 border-primary'
-          : 'border-border hover:bg-muted/50'
+          ? 'ring-2 ring-ring bg-brand-50 border-primary'
+          : 'border-border hover:bg-muted'
       }`}
     >
       <div className="flex items-start justify-between gap-3">
@@ -35,7 +35,7 @@ export function McpServerCard({ server, selected, onSelect }: McpServerCardProps
               </span>
             )}
             {server.syncedFromHost && (
-              <span className="px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700 inline-flex items-center gap-1">
+              <span className="px-2 py-0.5 rounded text-xs font-medium bg-warning-bg text-warning inline-flex items-center gap-1">
                 <Download size={10} />
                 已同步
               </span>
@@ -43,7 +43,7 @@ export function McpServerCard({ server, selected, onSelect }: McpServerCardProps
           </div>
           <p className="text-sm text-muted-foreground truncate font-mono">{preview}</p>
           {server.description && (
-            <p className="text-xs text-muted-foreground/60 mt-1 line-clamp-1">{server.description}</p>
+            <p className="text-xs text-muted-foreground mt-1 line-clamp-1">{server.description}</p>
           )}
         </div>
 
@@ -56,7 +56,7 @@ export function McpServerCard({ server, selected, onSelect }: McpServerCardProps
         >
           <div
             className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer ${
-              server.enabled ? 'bg-primary' : 'bg-border'
+              server.enabled ? 'bg-primary' : 'bg-muted-foreground/40'
             }`}
           >
             <span

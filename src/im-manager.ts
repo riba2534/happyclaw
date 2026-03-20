@@ -133,15 +133,10 @@ class IMConnectionManager {
 
     const chatId = extractChatId(jid);
     const channel = this.findChannelForJid(jid, channelType);
-    if (channel) {
-      await channel.sendMessage(chatId, text, localImagePaths);
-      return;
+    if (!channel) {
+      throw new Error(`No IM channel available for ${jid} (${channelType})`);
     }
-
-    logger.warn(
-      { jid, channelType },
-      'No IM channel available to send message',
-    );
+    await channel.sendMessage(chatId, text, localImagePaths);
   }
 
   /**
@@ -218,14 +213,14 @@ class IMConnectionManager {
    * Create a streaming card session for an IM chat (Feishu only).
    * Returns undefined for non-Feishu channels or if not supported.
    */
-  createStreamingSession(jid: string): StreamingCardController | undefined {
+  createStreamingSession(jid: string, onCardCreated?: (messageId: string) => void): StreamingCardController | undefined {
     const channelType = getChannelType(jid);
     if (channelType !== 'feishu') return undefined;
 
     const chatId = extractChatId(jid);
     const channel = this.findChannelForJid(jid, channelType);
     if (channel?.createStreamingSession) {
-      return channel.createStreamingSession(chatId);
+      return channel.createStreamingSession(chatId, onCardCreated);
     }
     return undefined;
   }
@@ -267,6 +262,20 @@ class IMConnectionManager {
     }
 
     return undefined;
+  }
+
+  /**
+   * Get all connected channel types for a user.
+   * Used by scheduled task IM broadcast to discover available channels.
+   */
+  getConnectedChannelTypes(userId: string): string[] {
+    const conn = this.connections.get(userId);
+    if (!conn) return [];
+    const types: string[] = [];
+    for (const [type, ch] of conn.channels.entries()) {
+      if (ch.isConnected()) types.push(type);
+    }
+    return types;
   }
 
   // ─── Convenience Methods (API-compatible wrappers) ──────────

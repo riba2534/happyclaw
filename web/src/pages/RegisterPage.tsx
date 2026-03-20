@@ -2,9 +2,12 @@ import { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 import { useAuthStore } from '../stores/auth';
+import { LogoLoading } from '../components/common/LogoLoading';
 import { api } from '../api/client';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { Label } from '@/components/ui/label';
 
 interface RegisterStatus {
   allowRegistration: boolean;
@@ -100,11 +103,7 @@ export function RegisterPage() {
   };
 
   if (initialized !== true || statusLoading) {
-    return (
-      <div className="h-screen bg-background overflow-y-auto flex items-center justify-center p-4">
-        <div className="text-muted-foreground text-sm">加载中...</div>
-      </div>
-    );
+    return <LogoLoading full />;
   }
 
   // Registration disabled
@@ -112,25 +111,27 @@ export function RegisterPage() {
     return (
       <div className="h-screen bg-background overflow-y-auto flex items-center justify-center p-4">
         <div className="w-full max-w-md">
-          <div className="bg-card rounded-lg border border-border p-8">
-            <div className="flex justify-center mb-6">
-              <div className="w-16 h-16 rounded-2xl overflow-hidden mx-auto">
-                <img src={`${import.meta.env.BASE_URL}icons/icon-192.png`} alt="HappyClaw" className="w-full h-full object-cover" />
+          <Card>
+            <CardContent>
+              <div className="flex justify-center mb-6">
+                <div className="w-16 h-16 rounded-2xl overflow-hidden mx-auto">
+                  <img src={`${import.meta.env.BASE_URL}icons/icon-192.png`} alt="HappyClaw" className="w-full h-full object-cover" />
+                </div>
               </div>
-            </div>
-            <h1 className="text-2xl font-bold text-foreground text-center mb-2">
-              注册已关闭
-            </h1>
-            <p className="text-muted-foreground text-center mb-6">
-              管理员已关闭注册功能，如需账户请联系管理员。
-            </p>
-            <Link
-              to="/login"
-              className="block w-full text-center bg-primary text-white py-2 px-4 rounded-md hover:bg-primary/90 transition-colors"
-            >
-              返回登录
-            </Link>
-          </div>
+              <h1 className="text-2xl font-bold text-foreground text-center mb-2">
+                注册已关闭
+              </h1>
+              <p className="text-muted-foreground text-center mb-6">
+                管理员已关闭注册功能，如需账户请联系管理员。
+              </p>
+              <Link
+                to="/login"
+                className="block w-full text-center bg-primary text-white py-2 px-4 rounded-md hover:bg-primary/90 transition-colors"
+              >
+                返回登录
+              </Link>
+            </CardContent>
+          </Card>
         </div>
       </div>
     );
@@ -139,8 +140,9 @@ export function RegisterPage() {
   return (
     <div className="h-screen bg-background overflow-y-auto flex items-center justify-center p-4">
       <div className="w-full max-w-md">
-        <div className="bg-card rounded-lg border border-border p-8">
-          {/* Logo */}
+        <Card>
+          <CardContent>
+            {/* Logo */}
           <div className="flex justify-center mb-6">
             <div className="w-16 h-16 rounded-2xl overflow-hidden mx-auto">
               <img src={`${import.meta.env.BASE_URL}icons/icon-192.png`} alt="HappyClaw" className="w-full h-full object-cover" />
@@ -163,9 +165,9 @@ export function RegisterPage() {
           <form onSubmit={handleSubmit}>
             {status.requireInviteCode && (
               <div className="mb-4">
-                <label htmlFor="invite_code" className="block text-sm font-medium text-foreground mb-1">
+                <Label htmlFor="invite_code" className="mb-1">
                   邀请码
-                </label>
+                </Label>
                 <Input
                   id="invite_code"
                   type="text"
@@ -180,9 +182,9 @@ export function RegisterPage() {
             )}
 
             <div className="mb-4">
-              <label htmlFor="reg-username" className="block text-sm font-medium text-foreground mb-1">
+              <Label htmlFor="reg-username" className="mb-1">
                 用户名
-              </label>
+              </Label>
               <Input
                 id="reg-username"
                 type="text"
@@ -195,9 +197,9 @@ export function RegisterPage() {
             </div>
 
             <div className="mb-4">
-              <label htmlFor="reg-display-name" className="block text-sm font-medium text-foreground mb-1">
+              <Label htmlFor="reg-display-name" className="mb-1">
                 显示名称 <span className="text-muted-foreground">(可选)</span>
-              </label>
+              </Label>
               <Input
                 id="reg-display-name"
                 type="text"
@@ -208,9 +210,9 @@ export function RegisterPage() {
             </div>
 
             <div className="mb-6">
-              <label htmlFor="reg-password" className="block text-sm font-medium text-foreground mb-1">
+              <Label htmlFor="reg-password" className="mb-1">
                 密码
-              </label>
+              </Label>
               <Input
                 id="reg-password"
                 type="password"
@@ -240,7 +242,8 @@ export function RegisterPage() {
               riba2534
             </a>
           </p>
-        </div>
+          </CardContent>
+        </Card>
       </div>
     </div>
   );

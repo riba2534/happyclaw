@@ -13,6 +13,7 @@ import { UsersPage } from './pages/UsersPage';
 import { AuthGuard } from './components/auth/AuthGuard';
 import { AppLayout } from './components/layout/AppLayout';
 import { APP_BASE, shouldUseHashRouter } from './utils/url';
+import { Toaster } from '@/components/ui/sonner';
 
 const ChatPage = lazy(() => import('./pages/ChatPage').then(m => ({ default: m.ChatPage })));
 const TasksPage = lazy(() => import('./pages/TasksPage').then(m => ({ default: m.TasksPage })));
@@ -26,6 +27,7 @@ export function App() {
 
   return (
     <Router basename={APP_BASE === '/' ? undefined : APP_BASE}>
+      <Toaster position="top-right" richColors />
       <Routes>
         {/* Public Routes */}
         <Route path="/login" element={<LoginPage />} />

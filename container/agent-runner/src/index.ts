@@ -25,6 +25,7 @@ import type {
   SessionsIndex,
   SDKUserMessage,
   ParsedMessage,
+  StreamEvent,
 } from './types.js';
 export type { StreamEventType, StreamEvent } from './types.js';
 
@@ -41,17 +42,12 @@ const WORKSPACE_IPC = process.env.HAPPYCLAW_WORKSPACE_IPC || '/workspace/ipc';
 
 // 模型配置：支持别名（opus/sonnet/haiku）或完整模型 ID
 // 别名自动解析为最新版本，如 opus → Opus 4.6
-const CLAUDE_MODEL = process.env.HAPPYCLAW_MODEL || process.env.ANTHROPIC_MODEL || 'opus';
+const CLAUDE_MODEL = process.env.ANTHROPIC_MODEL || 'opus';
 
 const IPC_INPUT_DIR = path.join(WORKSPACE_IPC, 'input');
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
 
-/**
- * 流式消息空闲超时：如果 query 期间超过此时间没有收到任何 SDK 消息，
- * 认为 SDK 已挂起（例如子 Agent 进程崩溃但迭代器未结束），主动中断。
- */
-const STREAM_IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 分钟
 
 let needsMemoryFlush = false;
 let currentPermissionMode: PermissionMode = 'bypassPermissions';
@@ -281,6 +277,10 @@ function log(message: string): void {
   console.error(`[agent-runner] ${message}`);
 }
 
+function generateTurnId(): string {
+  return `ipc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 /**
  * Normalize isMain/isHome/isAdminHome flags for backward compatibility.
  * If the host sends the old `isMain` field, treat it as isHome=true + isAdminHome=true.
@@ -354,13 +354,98 @@ function getSessionSummary(sessionId: string, transcriptPath: string): string | 
 }
 
 /**
- * Archive the full transcript to conversations/ before compaction.
+ * Trim session JSONL file by removing all entries before the last compact_boundary.
+ * After compaction, entries before the boundary are already summarized and no longer
+ * needed for session reconstruction. This prevents unbounded file growth.
+ *
+ * Safety: uses atomic write (tmp + rename) to avoid data loss on crash.
  */
-function createPreCompactHook(isHome: boolean, _isAdminHome: boolean): HookCallback {
+function trimSessionJsonl(jsonlPath: string): void {
+  try {
+    const content = fs.readFileSync(jsonlPath, 'utf-8');
+    const lines = content.split('\n');
+    const nonEmptyLines: { index: number; line: string }[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].trim()) nonEmptyLines.push({ index: i, line: lines[i] });
+    }
+
+    // Find the last compact_boundary entry
+    let lastBoundaryPos = -1;
+    let parseSkipped = 0;
+    for (let i = nonEmptyLines.length - 1; i >= 0; i--) {
+      try {
+        const entry = JSON.parse(nonEmptyLines[i].line);
+        if (entry.type === 'system' && entry.subtype === 'compact_boundary') {
+          lastBoundaryPos = i;
+          break;
+        }
+      } catch {
+        parseSkipped++;
+      }
+    }
+    if (parseSkipped > 0) {
+      log(`Session trim: skipped ${parseSkipped} unparseable JSONL lines`);
+    }
+
+    if (lastBoundaryPos <= 0) {
+      // No boundary found or it's already the first entry — nothing to trim
+      log('Session trim: no compact_boundary found or already minimal');
+      return;
+    }
+
+    // Keep entries from last compact_boundary onwards
+    const trimmedLines = nonEmptyLines.slice(lastBoundaryPos).map(e => e.line);
+    const removedCount = lastBoundaryPos;
+
+    const TRIM_MIN_ENTRIES = 50; // Skip trimming if fewer entries before boundary (not worth the I/O)
+    if (removedCount < TRIM_MIN_ENTRIES) {
+      log(`Session trim: only ${removedCount} entries before boundary, skipping`);
+      return;
+    }
+
+    // Atomic write: temp file + rename
+    const tmpPath = jsonlPath + '.trim-tmp';
+    fs.writeFileSync(tmpPath, trimmedLines.join('\n') + '\n');
+    fs.renameSync(tmpPath, jsonlPath);
+
+    const sizeBefore = Buffer.byteLength(content, 'utf-8');
+    const sizeAfter = fs.statSync(jsonlPath).size;
+    log(`Session trim: ${nonEmptyLines.length} → ${trimmedLines.length} entries (removed ${removedCount}), ` +
+        `${(sizeBefore / 1024 / 1024).toFixed(1)}MB → ${(sizeAfter / 1024 / 1024).toFixed(1)}MB`);
+  } catch (err) {
+    log(`Session trim failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * Archive the full transcript to conversations/ before compaction.
+ * Also flush any accumulated streaming text as a compact_partial message
+ * so users don't lose the response that was being generated.
+ * Finally, trim the JSONL file to remove already-compacted history.
+ */
+function createPreCompactHook(
+  isHome: boolean,
+  _isAdminHome: boolean,
+  deps: { emit: (output: ContainerOutput) => void; getFullText: () => string; resetFullText: () => void },
+): HookCallback {
   return async (input, _toolUseId, _context) => {
     const preCompact = input as PreCompactHookInput;
     const transcriptPath = preCompact.transcript_path;
     const sessionId = preCompact.session_id;
+
+    // ── Flush accumulated streaming text as compact_partial ──
+    // This ensures users see the partial response even after compaction.
+    const partialText = deps.getFullText();
+    if (partialText.trim()) {
+      log(`PreCompact: flushing ${partialText.length} chars as compact_partial`);
+      deps.emit({
+        status: 'success',
+        result: partialText,
+        sourceKind: 'compact_partial',
+        finalizationReason: 'completed',
+      });
+      deps.resetFullText();
+    }
 
     if (!transcriptPath || !fs.existsSync(transcriptPath)) {
       log('No transcript found for archiving');
@@ -393,6 +478,11 @@ function createPreCompactHook(isHome: boolean, _isAdminHome: boolean): HookCallb
     } catch (err) {
       log(`Failed to archive transcript: ${err instanceof Error ? err.message : String(err)}`);
     }
+
+    // ── Trim session JSONL to prevent unbounded growth ──
+    // Remove entries before the last compact_boundary (already summarized).
+    // Must run AFTER archiving (archive needs full transcript).
+    trimSessionJsonl(transcriptPath);
 
     // Flag memory flush for home containers (full memory write access)
     if (isHome) {
@@ -506,6 +596,21 @@ function shouldInterrupt(): boolean {
     return true;
   }
   return false;
+}
+
+function cleanupStartupInterruptSentinel(): void {
+  try {
+    const stat = fs.statSync(IPC_INPUT_INTERRUPT_SENTINEL);
+    const ageMs = Date.now() - stat.mtimeMs;
+    if (ageMs <= INTERRUPT_GRACE_WINDOW_MS) {
+      log(`Preserving recent interrupt sentinel at startup (${Math.round(ageMs)}ms old)`);
+      return;
+    }
+    fs.unlinkSync(IPC_INPUT_INTERRUPT_SENTINEL);
+    log(`Removed stale interrupt sentinel at startup (${Math.round(ageMs)}ms old)`);
+  } catch {
+    /* ignore */
+  }
 }
 
 /**
@@ -701,8 +806,31 @@ async function runQuery(
   images?: Array<{ data: string; mimeType?: string }>,
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean; contextOverflow?: boolean; unrecoverableTranscriptError?: boolean; interruptedDuringQuery: boolean; sessionResumeFailed?: boolean }> {
   const stream = new MessageStream();
+  let newSessionId: string | undefined;
+  let lastAssistantUuid: string | undefined;
+  let canonicalAssistantText: string | undefined;
+  let canonicalAssistantUuid: string | undefined;
   const initialRejected = stream.push(prompt, images);
+  const decorateStreamEvent = (event: StreamEvent): StreamEvent => ({
+    ...event,
+    turnId: containerInput.turnId,
+    sessionId: newSessionId || sessionId,
+  });
   const emit = (output: ContainerOutput): void => {
+    if (output.streamEvent) {
+      output = {
+        ...output,
+        streamEvent: decorateStreamEvent(output.streamEvent),
+        turnId: containerInput.turnId,
+        sessionId: newSessionId || sessionId,
+      };
+    } else if (output.status === 'success' || output.status === 'error') {
+      output = {
+        ...output,
+        turnId: containerInput.turnId,
+        sessionId: newSessionId || sessionId,
+      };
+    }
     if (emitOutput) writeOutput(output);
   };
 
@@ -715,8 +843,12 @@ async function runQuery(
   let ipcPolling = true;
   let closedDuringQuery = false;
   let interruptedDuringQuery = false;
-  // Track last SDK message time for idle timeout detection
-  let lastSdkMessageAt = Date.now();
+  let suppressOutputAfterInterrupt = false;
+  let visibleOutputStarted = false;
+  // After a result is received, allow a short window for the host to write _drain
+  // before force-closing the stream.
+  let resultReceivedAt: number | null = null;
+  const POST_RESULT_TIMEOUT_MS = 5_000;
   // queryRef is set just before the for-await loop so pollIpcDuringQuery can call interrupt()
   let queryRef: { interrupt(): Promise<void>; setPermissionMode(mode: PermissionMode): Promise<void> } | null = null;
   const pollIpcDuringQuery = () => {
@@ -731,6 +863,10 @@ async function runQuery(
     if (shouldInterrupt()) {
       log('Interrupt sentinel detected, interrupting current query');
       interruptedDuringQuery = true;
+      if (!visibleOutputStarted && resultCount === 0) {
+        suppressOutputAfterInterrupt = true;
+        log('Interrupt arrived before visible output, suppressing query output');
+      }
       lastInterruptRequestedAt = Date.now();
       queryRef?.interrupt().catch((err: unknown) => log(`Interrupt call failed: ${err}`));
       stream.end();
@@ -747,14 +883,12 @@ async function runQuery(
       ipcPolling = false;
       return;
     }
-    // 空闲超时检测：如果 SDK 长时间没有发送任何消息（子 Agent 崩溃等），
-    // 主动中断 query 防止进程死等。
-    const idleMs = Date.now() - lastSdkMessageAt;
-    if (idleMs > STREAM_IDLE_TIMEOUT_MS) {
-      log(`Stream idle timeout: no SDK messages for ${Math.round(idleMs / 1000)}s, interrupting query`);
-      emit({ status: 'error', result: null, error: `Stream idle timeout: SDK 超过 ${Math.round(idleMs / 1000)} 秒无响应，已自动中断` });
-      interruptedDuringQuery = true;
-      queryRef?.interrupt().catch((err: unknown) => log(`Idle timeout interrupt failed: ${err}`));
+    // ── 结果后超时：result 已收到，给 host 短暂时间写 _drain ──
+    // 注意：不设置 closedDuringQuery — 这只是 stream 清理，不是退出信号。
+    // 主循环会继续进入 waitForIpcMessage()，等待 _close/_drain 才退出。
+    // 这保证了终端预热等场景下容器不会在查询完成后立即退出。
+    if (resultReceivedAt && Date.now() - resultReceivedAt > POST_RESULT_TIMEOUT_MS) {
+      log(`Post-result timeout (${POST_RESULT_TIMEOUT_MS / 1000}s), closing stream`);
       stream.end();
       ipcPolling = false;
       return;
@@ -787,8 +921,6 @@ async function runQuery(
     );
   });
 
-  let newSessionId: string | undefined;
-  let lastAssistantUuid: string | undefined;
   let messageCount = 0;
   let resultCount = 0;
 
@@ -878,6 +1010,23 @@ async function runQuery(
     '- 如果用户的消息很简短（如打招呼），简洁回应即可，不要用工具列表填充回复。',
   ].join('\n');
 
+  // Conversation agents (sub-conversations with agentId) get special behavioral guidelines
+  // to prevent excessive send_message usage and duplicate responses.
+  const conversationAgentGuidelines = containerInput.agentId ? [
+    '',
+    '## 子会话行为规则（最高优先级，覆盖其他冲突指令）',
+    '',
+    '你正在一个**子会话**中运行，不是主会话。以下规则覆盖全局记忆中的"响应行为准则"：',
+    '',
+    '1. **不要用 `send_message` 发送"收到"之类的确认消息** — 你的正常文本输出就是回复，不需要额外发消息',
+    '2. **每次回复只产生一条消息** — 把分析、结论、建议整合到一条回复中，不要拆成多条',
+    '3. **只在以下情况使用 `send_message`**：',
+    '   - 执行超过 2 分钟的长任务时，发送一次进度更新（不是确认收到）',
+    '   - 用户明确要求你"先回复一下"时',
+    '4. **你的正常文本输出会自动发送给用户**，不需要通过 `send_message` 转发',
+    '5. **回复语言使用简体中文**，除非用户用其他语言提问',
+  ].join('\n') : '';
+
   const systemPromptAppend = [
     globalClaudeMd,
     heartbeatContent,
@@ -886,6 +1035,7 @@ async function runQuery(
     outputGuidelines,
     webFetchGuidelines,
     backgroundTaskGuidelines,
+    conversationAgentGuidelines,
   ].filter(Boolean).join('\n');
 
   // Home containers (admin & member) can access global and memory directories.
@@ -894,6 +1044,15 @@ async function runQuery(
   const extraDirs = isHome
     ? [WORKSPACE_GLOBAL, WORKSPACE_MEMORY]
     : [WORKSPACE_MEMORY];
+
+  if (shouldInterrupt()) {
+    log('Interrupt sentinel detected before query start, skipping query');
+    interruptedDuringQuery = true;
+    suppressOutputAfterInterrupt = true;
+    ipcPolling = false;
+    stream.end();
+    return { newSessionId, lastAssistantUuid, closedDuringQuery, interruptedDuringQuery };
+  }
 
   try {
     const q = query({
@@ -917,28 +1076,57 @@ async function runQuery(
         happyclaw: mcpServerConfig,  // 内置 SDK MCP 放最后，确保不被同名覆盖
       },
       hooks: {
-        PreCompact: [{ hooks: [createPreCompactHook(isHome, isAdminHome)] }]
+        PreCompact: [{ hooks: [createPreCompactHook(isHome, isAdminHome, {
+          emit,
+          getFullText: () => processor.getFullText(),
+          resetFullText: () => processor.resetFullTextAccumulator(),
+        })] }]
       },
       agents: PREDEFINED_AGENTS,
     }
   });
     queryRef = q;
+    if (shouldInterrupt()) {
+      log('Interrupt sentinel already present when query started, interrupting immediately');
+      interruptedDuringQuery = true;
+      if (!visibleOutputStarted && resultCount === 0) {
+        suppressOutputAfterInterrupt = true;
+      }
+      queryRef.interrupt().catch((err: unknown) => log(`Immediate interrupt call failed: ${err}`));
+      stream.end();
+      ipcPolling = false;
+    }
     for await (const message of q) {
-    // 每收到一条 SDK 消息就重置空闲计时器
-    lastSdkMessageAt = Date.now();
-
     // 流式事件处理
     if (message.type === 'stream_event') {
+      if (!suppressOutputAfterInterrupt) {
+        visibleOutputStarted = true;
+      }
+      if (suppressOutputAfterInterrupt) {
+        continue;
+      }
       processor.processStreamEvent(message as any);
       continue;
     }
 
     if (message.type === 'tool_progress') {
+      if (!suppressOutputAfterInterrupt) {
+        visibleOutputStarted = true;
+      }
+      if (suppressOutputAfterInterrupt) {
+        continue;
+      }
       processor.processToolProgress(message as any);
       continue;
     }
 
     if (message.type === 'tool_use_summary') {
+      if (!suppressOutputAfterInterrupt) {
+        visibleOutputStarted = true;
+      }
+      if (suppressOutputAfterInterrupt) {
+        continue;
+      }
       processor.processToolUseSummary(message as any);
       continue;
     }
@@ -965,11 +1153,37 @@ async function runQuery(
       log(`[msg #${messageCount}] type=${msgType}${msgParentToolUseId ? ` parent=${msgParentToolUseId.slice(0, 12)}` : ''}`);
     }
 
+    if (message.type !== 'system') {
+      visibleOutputStarted = true;
+    }
+    if (suppressOutputAfterInterrupt && message.type !== 'system') {
+      if (message.type === 'result') {
+        resultCount++;
+        resultReceivedAt = Date.now();
+      }
+      log(`[msg #${messageCount}] suppressed after early interrupt`);
+      continue;
+    }
+
     // ── 子 Agent 消息转 StreamEvent ──
     processor.processSubAgentMessage(message as any);
 
     if (message.type === 'assistant' && 'uuid' in message) {
       lastAssistantUuid = (message as { uuid: string }).uuid;
+      const assistantMsg = message as Record<string, unknown>;
+      if ((assistantMsg.parent_tool_use_id ?? null) === null) {
+        const msgContent = (assistantMsg.message as Record<string, unknown> | undefined)?.content;
+        const topLevelText = Array.isArray(msgContent)
+          ? (msgContent as Array<{ type: string; text?: string }>)
+              .filter((block) => block.type === 'text' && typeof block.text === 'string')
+              .map((block) => block.text!)
+              .join('')
+          : '';
+        if (topLevelText) {
+          canonicalAssistantText = topLevelText;
+          canonicalAssistantUuid = assistantMsg.uuid as string;
+        }
+      }
       processor.processAssistantMessage(message as any);
     }
 
@@ -1009,6 +1223,18 @@ async function runQuery(
       // SDK 将某些 API 错误包装为 subtype=success 的 result（不抛异常）
       if (textResult && isContextOverflowError(textResult)) {
         log(`Context overflow detected in result: ${textResult.slice(0, 100)}`);
+        // ── 发射已累积的部分回复，避免用户已看到的流式内容丢失 ──
+        const partialText = processor.getFullText();
+        if (partialText.trim()) {
+          log(`Emitting overflow_partial with ${partialText.length} chars`);
+          emit({
+            status: 'success',
+            result: partialText,
+            newSessionId,
+            sourceKind: 'overflow_partial',
+            finalizationReason: 'error',
+          });
+        }
         processor.resetFullTextAccumulator();
         return { newSessionId, lastAssistantUuid, closedDuringQuery, contextOverflow: true, interruptedDuringQuery };
       }
@@ -1019,11 +1245,19 @@ async function runQuery(
       }
 
       const { effectiveResult } = processor.processResult(textResult);
+      const finalText = canonicalAssistantText || effectiveResult;
       emit({
         status: 'success',
-        result: effectiveResult,
-        newSessionId
+        result: finalText,
+        newSessionId,
+        sdkMessageUuid: canonicalAssistantUuid || lastAssistantUuid,
+        sourceKind: 'sdk_final',
+        finalizationReason: 'completed',
       });
+      // After emitting an sdk_final result, rotate turnId so that if
+      // another result is emitted within the same query (e.g. user sent
+      // a follow-up via IPC mid-query), it won't overwrite this one (#214).
+      containerInput.turnId = generateTurnId();
 
       // Emit usage stream event with token counts and cost
       const resultMsg = message as Record<string, unknown>;
@@ -1066,6 +1300,11 @@ async function runQuery(
         });
         log(`Usage: input=${sdkUsage.input_tokens} output=${sdkUsage.output_tokens} cost=$${resultMsg.total_cost_usd} turns=${resultMsg.num_turns}`);
       }
+
+      // ── 标记结果已收到 ──
+      // pollIpcDuringQuery 会在 POST_RESULT_TIMEOUT_MS 后关闭 stream，
+      // 期间仍可检测 _drain/_close/_interrupt sentinel。
+      resultReceivedAt = Date.now();
     }
   }
 
@@ -1082,6 +1321,18 @@ async function runQuery(
     // 检测上下文溢出错误
     if (isContextOverflowError(errorMessage)) {
       log(`Context overflow detected: ${errorMessage}`);
+      // ── 发射已累积的部分回复，避免用户已看到的流式内容丢失 ──
+      const partialText = processor.getFullText();
+      if (partialText.trim()) {
+        log(`Emitting overflow_partial (catch) with ${partialText.length} chars`);
+        emit({
+          status: 'success',
+          result: partialText,
+          newSessionId,
+          sourceKind: 'overflow_partial',
+          finalizationReason: 'error',
+        });
+      }
       return { newSessionId, lastAssistantUuid, closedDuringQuery, contextOverflow: true, interruptedDuringQuery };
     }
 
@@ -1132,6 +1383,7 @@ async function main(): Promise<void> {
     groupFolder: containerInput.groupFolder,
     isHome,
     isAdminHome,
+    isScheduledTask: containerInput.isScheduledTask || false,
     workspaceIpc: WORKSPACE_IPC,
     workspaceGroup: WORKSPACE_GROUP,
     workspaceGlobal: WORKSPACE_GLOBAL,
@@ -1148,7 +1400,7 @@ async function main(): Promise<void> {
 
   // Clean up stale sentinels from previous container runs
   try { fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL); } catch { /* ignore */ }
-  try { fs.unlinkSync(IPC_INPUT_INTERRUPT_SENTINEL); } catch { /* ignore */ }
+  cleanupStartupInterruptSentinel();
   try { fs.unlinkSync(IPC_INPUT_DRAIN_SENTINEL); } catch { /* ignore */ }
 
   // Build initial prompt (drain any pending IPC messages too)
@@ -1284,6 +1536,7 @@ async function main(): Promise<void> {
         clearInterruptRequested();
         prompt = nextMessage.text;
         promptImages = nextMessage.images;
+        containerInput.turnId = generateTurnId();
         continue;
       }
 
@@ -1339,6 +1592,7 @@ async function main(): Promise<void> {
       log(`Got new message (${nextMessage.text.length} chars, ${nextMessage.images?.length || 0} images), starting new query`);
       prompt = nextMessage.text;
       promptImages = nextMessage.images;
+      containerInput.turnId = generateTurnId();
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);

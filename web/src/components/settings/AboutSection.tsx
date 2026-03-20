@@ -1,6 +1,11 @@
-import { Github, ExternalLink, Heart, Code2, Lightbulb } from 'lucide-react';
+import { useState } from 'react';
+import { Github, ExternalLink, Heart, Code2, Lightbulb, Bug } from 'lucide-react';
+import { BugReportDialog } from '@/components/common/BugReportDialog';
+import { Button } from '@/components/ui/button';
 
 export function AboutSection() {
+  const [showBugReport, setShowBugReport] = useState(false);
+
   return (
     <div className="space-y-6">
       {/* 项目信息 */}
@@ -9,25 +14,41 @@ export function AboutSection() {
         <p className="text-sm text-muted-foreground">自托管个人 AI Agent 系统</p>
       </div>
 
-      {/* 开源地址 & 作者 */}
+      {/* 开源地址 & 作者 & 报告问题 */}
       <div className="space-y-3">
         <div className="flex items-center gap-3">
-          <Github className="w-4 h-4 text-muted-foreground/60 shrink-0" />
+          <Github className="w-4 h-4 text-muted-foreground shrink-0" />
           <a
             href="https://github.com/riba2534/happyclaw"
             target="_blank"
             rel="noopener noreferrer"
-            className="text-sm text-teal-600 hover:text-teal-700 inline-flex items-center gap-1"
+            className="text-sm text-primary hover:text-primary/80 inline-flex items-center gap-1"
           >
             riba2534/happyclaw
             <ExternalLink className="w-3 h-3" />
           </a>
         </div>
         <div className="flex items-center gap-3">
-          <Code2 className="w-4 h-4 text-muted-foreground/60 shrink-0" />
-          <span className="text-sm text-foreground/80">作者：riba2534</span>
+          <Code2 className="w-4 h-4 text-muted-foreground shrink-0" />
+          <span className="text-sm text-foreground">作者：riba2534</span>
+        </div>
+        <div className="flex items-center gap-3">
+          <Bug className="w-4 h-4 text-muted-foreground shrink-0" />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowBugReport(true)}
+          >
+            <Bug className="w-3.5 h-3.5" />
+            报告问题
+          </Button>
         </div>
       </div>
+
+      <BugReportDialog
+        open={showBugReport}
+        onClose={() => setShowBugReport(false)}
+      />
 
       <hr className="border-border" />
 
@@ -43,7 +64,7 @@ export function AboutSection() {
               href="https://github.com/slopus/happy"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-teal-600 hover:text-teal-700 font-medium inline-flex items-center gap-1"
+              className="text-primary hover:text-primary/80 font-medium inline-flex items-center gap-1"
             >
               Happy
               <ExternalLink className="w-3 h-3" />
@@ -57,7 +78,7 @@ export function AboutSection() {
               href="https://github.com/openclaw/openclaw"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-teal-600 hover:text-teal-700 font-medium inline-flex items-center gap-1"
+              className="text-primary hover:text-primary/80 font-medium inline-flex items-center gap-1"
             >
               OpenClaw
               <ExternalLink className="w-3 h-3" />

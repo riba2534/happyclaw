@@ -214,10 +214,10 @@ configRoutes.put(
           anthropicApiKey: current.anthropicApiKey,
           claudeCodeOauthToken: current.claudeCodeOauthToken,
           claudeOAuthCredentials: current.claudeOAuthCredentials,
-          happyclawModel:
-            validation.data.happyclawModel !== undefined
-              ? validation.data.happyclawModel
-              : current.happyclawModel,
+          anthropicModel:
+            validation.data.anthropicModel !== undefined
+              ? validation.data.anthropicModel
+              : current.anthropicModel,
         },
         {
           mode: newBaseUrl ? 'third_party' : 'official',
@@ -225,8 +225,8 @@ configRoutes.put(
       );
       appendClaudeConfigAudit(actor, 'update_base_url', [
         'anthropicBaseUrl',
-        ...(validation.data.happyclawModel !== undefined
-          ? ['happyclawModel']
+        ...(validation.data.anthropicModel !== undefined
+          ? ['anthropicModel']
           : []),
       ]);
       return c.json(toPublicClaudeProviderConfig(saved));
@@ -389,7 +389,7 @@ configRoutes.put(
             anthropicApiKey: current.anthropicApiKey,
             claudeCodeOauthToken: current.claudeCodeOauthToken,
             claudeOAuthCredentials: current.claudeOAuthCredentials,
-            happyclawModel: current.happyclawModel,
+            anthropicModel: current.anthropicModel,
           },
           {
             mode: 'third_party',
@@ -483,7 +483,7 @@ configRoutes.post(
           'name',
           'anthropicBaseUrl',
           'anthropicAuthToken:set',
-          'happyclawModel',
+          'anthropicModel',
           ...(validation.data.customEnv ? ['customEnv'] : []),
         ],
         {
@@ -524,8 +524,8 @@ configRoutes.patch(
     if (validation.data.anthropicBaseUrl !== undefined) {
       changedFields.push('anthropicBaseUrl');
     }
-    if (validation.data.happyclawModel !== undefined) {
-      changedFields.push('happyclawModel');
+    if (validation.data.anthropicModel !== undefined) {
+      changedFields.push('anthropicModel');
     }
     if (validation.data.customEnv !== undefined) {
       changedFields.push('customEnv');

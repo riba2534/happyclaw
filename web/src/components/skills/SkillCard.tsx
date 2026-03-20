@@ -22,8 +22,8 @@ export function SkillCard({ skill, selected, onSelect }: SkillCardProps) {
       onClick={onSelect}
       className={`w-full text-left rounded-lg border p-4 transition-all ${
         selected
-          ? 'ring-2 ring-ring bg-primary/5 border-primary'
-          : 'border-border hover:bg-muted/50'
+          ? 'ring-2 ring-ring bg-brand-50 border-primary'
+          : 'border-border hover:bg-muted'
       }`}
     >
       <div className="flex items-start justify-between gap-3">
@@ -33,14 +33,14 @@ export function SkillCard({ skill, selected, onSelect }: SkillCardProps) {
             <span
               className={`px-2 py-0.5 rounded text-xs font-medium ${
                 skill.source === 'user'
-                  ? 'bg-primary/10 text-primary'
+                  ? 'bg-brand-100 text-primary'
                   : 'bg-muted text-muted-foreground'
               }`}
             >
               {SOURCE_LABELS[skill.source]}
             </span>
             {skill.syncedFromHost && (
-              <span className="px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700">
+              <span className="px-2 py-0.5 rounded text-xs font-medium bg-warning-bg text-warning">
                 已同步
               </span>
             )}
@@ -52,16 +52,16 @@ export function SkillCard({ skill, selected, onSelect }: SkillCardProps) {
           </div>
           <p className="text-sm text-muted-foreground line-clamp-2">{skill.description}</p>
           {skill.packageName && (
-            <p className="text-xs text-muted-foreground/60 mt-1 font-mono truncate">{skill.packageName}</p>
+            <p className="text-xs text-muted-foreground mt-1 font-mono truncate">{skill.packageName}</p>
           )}
         </div>
 
         {isReadonly && (
           <div className="flex items-center gap-2">
-            <Lock size={16} className="text-muted-foreground/60" />
+            <Lock size={16} className="text-muted-foreground" />
             <div
               className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                skill.enabled ? 'bg-primary' : 'bg-border'
+                skill.enabled ? 'bg-primary' : 'bg-muted-foreground/40'
               } opacity-50`}
             >
               <span
@@ -83,7 +83,7 @@ export function SkillCard({ skill, selected, onSelect }: SkillCardProps) {
           >
             <div
               className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer ${
-                skill.enabled ? 'bg-primary' : 'bg-border'
+                skill.enabled ? 'bg-primary' : 'bg-muted-foreground/40'
               }`}
             >
               <span

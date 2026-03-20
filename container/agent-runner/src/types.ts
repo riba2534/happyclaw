@@ -11,6 +11,7 @@ import type { StreamEvent } from './stream-event.types.js';
 export interface ContainerInput {
   prompt: string;
   sessionId?: string;
+  turnId?: string;
   groupFolder: string;
   chatJid: string;
   /** @deprecated Use isHome + isAdminHome instead. Kept for backward compatibility with older host processes. */
@@ -31,6 +32,11 @@ export interface ContainerOutput {
   newSessionId?: string;
   error?: string;
   streamEvent?: StreamEvent;
+  turnId?: string;
+  sessionId?: string;
+  sdkMessageUuid?: string;
+  sourceKind?: 'sdk_final' | 'sdk_send_message' | 'interrupt_partial' | 'overflow_partial' | 'compact_partial' | 'legacy';
+  finalizationReason?: 'completed' | 'interrupted' | 'error';
 }
 
 export interface SessionEntry {

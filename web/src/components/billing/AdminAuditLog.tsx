@@ -83,7 +83,7 @@ export default function AdminAuditLog() {
     <div className="space-y-4">
       {/* Header */}
       <h3 className="font-semibold flex items-center gap-2">
-        <FileText className="w-5 h-5 text-teal-600" />
+        <FileText className="w-5 h-5 text-primary" />
         审计日志
       </h3>
 
@@ -130,7 +130,7 @@ export default function AdminAuditLog() {
               ) : (
                 <ChevronRight className="w-4 h-4 text-zinc-400 shrink-0" />
               )}
-              <span className="px-1.5 py-0.5 text-[10px] rounded bg-teal-100 text-teal-700 dark:bg-teal-900 dark:text-teal-300 shrink-0">
+              <span className="px-1.5 py-0.5 text-[10px] rounded bg-brand-100 text-brand-700 dark:bg-brand-700/30 dark:text-brand-300 shrink-0">
                 {eventLabel(log.event_type)}
               </span>
               <span className="text-sm text-zinc-600 dark:text-zinc-400 truncate flex-1">

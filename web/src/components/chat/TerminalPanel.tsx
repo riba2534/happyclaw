@@ -129,19 +129,29 @@ export function TerminalPanel({
       if (data.chatJid === groupJid) {
         syncConnState('disconnected');
         terminal.write(`\r\n\x1b[33m[${data.reason || '终端已断开'}]\x1b[0m\r\n`);
+        // Auto-reconnect after unexpected stop (not user-initiated)
+        if (data.reason !== '用户关闭终端') {
+          terminal.write('\x1b[33m[3 秒后自动重连...]\x1b[0m\r\n');
+          setTimeout(() => {
+            if (connStateRef.current === 'disconnected' && wsManager.isConnected()) {
+              requestStartTerminal();
+            }
+          }, 3000);
+        }
       }
     });
 
     const unsubError = wsManager.on('terminal_error', (data: any) => {
       if (data.chatJid === groupJid) {
         syncConnState('disconnected');
-        // 针对工作区未运行的错误给出更友好的提示
-        if (data.error?.includes('工作区未运行')) {
-          terminal.write(`\r\n\x1b[33m[工作区启动中...]\x1b[0m\r\n`);
-          terminal.write(`\r\n已自动尝试启动工作区，请稍后点击"重新连接"。\r\n`);
-        } else if (data.error?.includes('工作区启动中')) {
-          terminal.write(`\r\n\x1b[33m[工作区启动中...]\x1b[0m\r\n`);
-          terminal.write(`\r\n工作区正在启动，请稍后点击"重新连接"。\r\n`);
+        // 针对工作区未运行/启动中的错误，自动延迟重连
+        if (data.error?.includes('工作区未运行') || data.error?.includes('工作区启动中')) {
+          terminal.write(`\r\n\x1b[33m[工作区启动中，5 秒后自动重连...]\x1b[0m\r\n`);
+          setTimeout(() => {
+            if (connStateRef.current === 'disconnected' && wsManager.isConnected()) {
+              requestStartTerminal();
+            }
+          }, 5000);
         } else {
           terminal.write(`\r\n\x1b[31m[错误: ${data.error}]\x1b[0m\r\n`);
         }
@@ -167,10 +177,13 @@ export function TerminalPanel({
       }
     });
 
-    // ResizeObserver 监听尺寸变化
+    // ResizeObserver 监听尺寸变化（debounce 防止动画期间 resize 风暴）
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
     const resizeObserver = new ResizeObserver(() => {
       if (!visibleRef.current) return;
-      requestAnimationFrame(() => {
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        resizeTimer = null;
         if (fitAddonRef.current && xtermRef.current) {
           fitAddonRef.current.fit();
           if (connStateRef.current === 'connected') {
@@ -178,7 +191,7 @@ export function TerminalPanel({
             wsManager.send({ type: 'terminal_resize', chatJid: groupJid, cols, rows });
           }
         }
-      });
+      }, 150);
     });
     resizeObserver.observe(termRef.current);
 
@@ -187,6 +200,7 @@ export function TerminalPanel({
 
     // Cleanup
     return () => {
+      if (resizeTimer) clearTimeout(resizeTimer);
       resizeObserver.disconnect();
       onDataDisposable.dispose();
       unsubOutput();

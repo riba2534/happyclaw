@@ -20,29 +20,59 @@ import { logger } from '../logger.js';
 
 const execFileAsync = promisify(execFile);
 
-// --- Claude Code version cache (1h TTL) ---
+// --- Claude Code version cache (1h TTL, invalidated on image ID change) ---
 
-let cachedClaudeVersion: { version: string | null; fetchedAt: number } | null =
-  null;
+let cachedClaudeVersion: {
+  version: string | null;
+  fetchedAt: number;
+  imageId: string | null;
+} | null = null;
 const VERSION_CACHE_TTL = 60 * 60 * 1000;
+
+async function getDockerImageId(): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      'docker',
+      ['images', CONTAINER_IMAGE, '--format', '{{.ID}}'],
+      { timeout: 5000 },
+    );
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
 
 async function getClaudeCodeVersion(): Promise<string | null> {
   const now = Date.now();
+  const imageId = await getDockerImageId();
+
+  // Return cached version if same image and within TTL
   if (
     cachedClaudeVersion &&
+    cachedClaudeVersion.imageId === imageId &&
     now - cachedClaudeVersion.fetchedAt < VERSION_CACHE_TTL
   ) {
     return cachedClaudeVersion.version;
   }
+
+  // No image → no version
+  if (!imageId) {
+    cachedClaudeVersion = { version: null, fetchedAt: now, imageId: null };
+    return null;
+  }
+
+  // Query Claude Code version from Docker image
   try {
-    const { stdout } = await execFileAsync('claude', ['--version'], {
-      timeout: 5000,
-    });
+    const { stdout } = await execFileAsync(
+      'docker',
+      ['run', '--rm', '--entrypoint', 'claude', CONTAINER_IMAGE, '--version'],
+      { timeout: 30000 },
+    );
     const version = stdout.trim() || null;
-    cachedClaudeVersion = { version, fetchedAt: now };
+    cachedClaudeVersion = { version, fetchedAt: now, imageId };
     return version;
   } catch {
-    cachedClaudeVersion = { version: null, fetchedAt: now };
+    cachedClaudeVersion = { version: null, fetchedAt: now, imageId };
     return null;
   }
 }
@@ -275,6 +305,8 @@ monitorRoutes.post(
         : `Build process exited with code ${code}`;
       if (success) {
         logger.info('Docker image build completed');
+        // Invalidate version cache so next query fetches from new image
+        cachedClaudeVersion = null;
       } else {
         logger.error({ code }, 'Docker image build failed');
       }

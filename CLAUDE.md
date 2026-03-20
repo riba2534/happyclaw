@@ -366,6 +366,7 @@ data/
   config/registration.json                 # 注册设置（开关、邀请码要求）
   config/session-secret.key                # 会话签名密钥（0600 权限）
   config/system-settings.json              # 系统运行参数（容器超时、并发限制等）
+  streaming-buffer/                         # 流式文本磁盘缓冲（崩溃恢复用，自动清理）
   skills/{userId}/                         # 用户级 Skills 数据
   mcp-servers/{userId}/servers.json        # 用户 MCP Servers 配置
 
@@ -589,11 +590,66 @@ scripts/                      # 构建辅助脚本
 - 当前阶段允许不兼容重构，优先代码清晰与行为一致
 - 修改容器 / 调度逻辑时，优先保证：不丢消息、不重复回复、失败可重试
 - **Git commit message 使用简体中文**，格式：`类型: 简要描述`（如 `修复: 侧边栏下拉菜单无法点击`）
+- **Issue / PR 规范**见下方 §10.1
 - 系统路径不可通过文件 API 操作：`logs/`、`CLAUDE.md`、`.claude/`、`conversations/`
 - StreamEvent 类型以 `shared/stream-event.ts` 为单一真相源，修改后运行 `make sync-types` 同步（`make build` 自动触发，`make typecheck` 校验一致性）
 - Claude SDK 和 CLI 始终使用最新版本（agent-runner `package.json` 中 `"*"`，通过 `make update-sdk` 更新）
 - 容器内以 `node` 非 root 用户运行，需注意文件权限
 - **关闭服务时禁止 `lsof -ti:PORT | xargs kill`**，该命令会杀掉所有连接到该端口的进程（包括 OrbStack/Docker 网络代理），导致 Docker daemon 崩溃。正确做法：`lsof -ti:PORT -sTCP:LISTEN | xargs kill`（仅杀监听进程）
+
+### 10.1 Issue / PR 规范
+
+**Issue 标题**：`类型: 简要描述`，类型使用小写英文前缀：
+
+| 前缀 | 用途 | 示例 |
+|------|------|------|
+| `bug:` | Bug 报告 | `bug: 已取消的定时任务仍从 GroupQueue 执行` |
+| `feat:` | 功能请求 | `feat: 支持 Latex 渲染` |
+| `perf:` | 性能问题 | `perf: 大量消息时虚拟滚动卡顿` |
+
+**Issue 正文**（Bug）：
+
+```markdown
+## 用户现象
+从用户视角描述看到了什么、体验上有什么异常。
+让不熟悉代码的人也能理解问题的严重性。
+
+## 问题描述
+从技术视角简要说明发生了什么。
+
+## 复现路径
+1. 步骤一
+2. 步骤二
+3. 期望行为 vs 实际行为
+
+## 根因（可选）
+如果已定位，说明代码层面的原因。
+
+## 影响
+对用户体验 / 数据 / 安全的影响。
+
+## 建议修复（可选）
+修复思路或代码片段。
+```
+
+**Issue 正文**（Feature）：自由格式，说清需求背景和预期行为即可。
+
+**PR 标题**：与 commit message 一致，`类型: 简要描述`（如 `修复: 定时任务运行时用户消息被吞掉的问题 (#151)`）。关联 Issue 时在末尾加 `(#issue号)`。
+
+**PR 正文**：
+
+```markdown
+## 问题描述
+关闭 #xxx。（或：关联 #xxx）
+简要说明要解决的问题。
+
+## 修复方案 / 实现方案
+核心思路，按模块分段说明改动：
+
+### `src/affected-file.ts`
+- 改动点一
+- 改动点二
+```
 
 ## 11. 本地开发
 

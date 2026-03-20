@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { toast } from 'sonner';
 import {
   Dialog,
   DialogContent,
@@ -8,7 +9,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { ToggleSwitch } from '@/components/ui/toggle-switch';
+import { Switch } from '@/components/ui/switch';
 import { useBillingStore, type BillingPlan } from '../../stores/billing';
 
 interface PlanFormDialogProps {
@@ -155,7 +156,6 @@ export default function PlanFormDialog({
   const { createPlan, updatePlan } = useBillingStore();
   const [form, setForm] = useState<FormState>(INITIAL);
   const [submitting, setSubmitting] = useState(false);
-  const [formError, setFormError] = useState('');
   const isEdit = plan !== null;
 
   useEffect(() => {
@@ -171,10 +171,9 @@ export default function PlanFormDialog({
 
   const handleSubmit = async () => {
     if (!form.id.trim() || !form.name.trim()) {
-      setFormError('套餐 ID 和名称不能为空');
+      toast.error('套餐 ID 和名称不能为空');
       return;
     }
-    setFormError('');
     setSubmitting(true);
     try {
       const payload: Record<string, unknown> = {
@@ -217,7 +216,7 @@ export default function PlanFormDialog({
       }
       onOpenChange(false);
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : String(err));
+      toast.error(err instanceof Error ? err.message : String(err));
     } finally {
       setSubmitting(false);
     }
@@ -422,9 +421,9 @@ export default function PlanFormDialog({
               ).map(([key, label]) => (
                 <div key={key} className="flex items-center justify-between">
                   <span className="text-sm">{label}</span>
-                  <ToggleSwitch
+                  <Switch
                     checked={form[key]}
-                    onChange={(v) => set(key, v)}
+                    onCheckedChange={(v) => set(key, v)}
                   />
                 </div>
               ))}
@@ -444,9 +443,6 @@ export default function PlanFormDialog({
           </div>
         </div>
 
-        {formError && (
-          <p className="text-xs text-red-500 px-1">{formError}</p>
-        )}
         <DialogFooter>
           <Button
             variant="outline"

@@ -9,6 +9,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { useChatStore } from '../../stores/chat';
 
 interface RenameDialogProps {
@@ -48,7 +49,7 @@ export function RenameDialog({ open, jid, currentName, onClose }: RenameDialogPr
         </DialogHeader>
 
         <div>
-          <label className="block text-sm font-medium mb-2">工作区名称</label>
+          <Label className="mb-2">工作区名称</Label>
           <Input
             value={name}
             onChange={(e) => setName(e.target.value)}

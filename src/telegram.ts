@@ -1,5 +1,6 @@
 import { Bot, InputFile } from 'grammy';
 import crypto from 'crypto';
+import fsPromises from 'node:fs/promises';
 import https from 'node:https';
 import { Agent as HttpsAgent } from 'node:https';
 import { ProxyAgent } from 'proxy-agent';
@@ -68,6 +69,11 @@ export interface TelegramConnection {
     mimeType: string,
     caption?: string,
     fileName?: string,
+  ): Promise<void>;
+  sendFile(
+    chatId: string,
+    filePath: string,
+    fileName: string,
   ): Promise<void>;
   sendChatAction(chatId: string, action: 'typing'): Promise<void>;
   isConnected(): boolean;
@@ -544,9 +550,7 @@ export function createTelegramConnection(
             text,
             timestamp,
             false,
-            undefined,
-            undefined,
-            jid,
+            { sourceJid: jid },
           );
 
           // 广播到 Web 客户端
@@ -698,9 +702,7 @@ export function createTelegramConnection(
             text,
             timestamp,
             false,
-            attachmentsJson,
-            undefined,
-            jid,
+            { attachments: attachmentsJson, sourceJid: jid },
           );
 
           broadcastNewMessage(
@@ -784,9 +786,7 @@ export function createTelegramConnection(
               text,
               timestamp,
               false,
-              undefined,
-              undefined,
-              jid,
+              { sourceJid: jid },
             );
             broadcastNewMessage(
               earlyTargetJid,
@@ -847,9 +847,7 @@ export function createTelegramConnection(
             text,
             timestamp,
             false,
-            undefined,
-            undefined,
-            jid,
+            { sourceJid: jid },
           );
 
           broadcastNewMessage(
@@ -1117,6 +1115,53 @@ export function createTelegramConnection(
         logger.error(
           { err, chatId, mimeType },
           'Failed to send Telegram image',
+        );
+        throw err;
+      }
+    },
+
+    async sendFile(
+      chatId: string,
+      filePath: string,
+      fileName: string,
+    ): Promise<void> {
+      if (!bot) {
+        logger.warn(
+          { chatId },
+          'Telegram bot not initialized, skip sending file',
+        );
+        return;
+      }
+
+      const chatIdNum = Number(chatId);
+      if (isNaN(chatIdNum)) {
+        logger.error({ chatId }, 'Invalid Telegram chat ID for file');
+        return;
+      }
+
+      try {
+        // Check file size (30MB limit, same as MCP tool)
+        const stat = await fsPromises.stat(filePath);
+        const MAX_SEND_FILE_SIZE = 30 * 1024 * 1024;
+        if (stat.size > MAX_SEND_FILE_SIZE) {
+          throw new Error(
+            `文件大小超过 30MB 限制 (${(stat.size / 1024 / 1024).toFixed(2)}MB)`,
+          );
+        }
+
+        await bot.api.sendDocument(
+          chatIdNum,
+          new InputFile(filePath, fileName),
+        );
+
+        logger.info(
+          { chatId, filePath, fileName, size: stat.size },
+          'Telegram file sent',
+        );
+      } catch (err) {
+        logger.error(
+          { err, chatId, filePath, fileName },
+          'Failed to send Telegram file',
         );
         throw err;
       }

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
+import { toast } from 'sonner';
 
 import { useAuthStore } from '../../stores/auth';
 import { api } from '../../api/client';
@@ -8,13 +9,10 @@ import { Button } from '@/components/ui/button';
 import { EmojiAvatar } from '@/components/common/EmojiAvatar';
 import { EmojiPicker } from '@/components/common/EmojiPicker';
 import { ColorPicker } from '@/components/common/ColorPicker';
-import type { SettingsNotification } from './types';
 import { getErrorMessage } from './types';
 import type { AppearanceConfig } from '../../stores/auth';
 
-interface AppearanceSectionProps extends SettingsNotification {}
-
-export function AppearanceSection({ setNotice, setError }: AppearanceSectionProps) {
+export function AppearanceSection() {
   const { hasPermission } = useAuthStore();
 
   const [appName, setAppName] = useState('');
@@ -36,17 +34,15 @@ export function AppearanceSection({ setNotice, setError }: AppearanceSectionProp
         setAiAvatarEmoji(data.aiAvatarEmoji);
         setAiAvatarColor(data.aiAvatarColor);
       } catch (err) {
-        setError(getErrorMessage(err, '加载外观配置失败'));
+        toast.error(getErrorMessage(err, '加载外观配置失败'));
       } finally {
         setLoading(false);
       }
     })();
-  }, [setError]);
+  }, []);
 
   const handleSave = async () => {
     setSaving(true);
-    setError(null);
-    setNotice(null);
     try {
       const data = await api.put<AppearanceConfig>('/api/config/appearance', {
         appName: appName.trim() || undefined,
@@ -59,9 +55,9 @@ export function AppearanceSection({ setNotice, setError }: AppearanceSectionProp
       setAiAvatarEmoji(data.aiAvatarEmoji);
       setAiAvatarColor(data.aiAvatarColor);
       useAuthStore.setState({ appearance: data });
-      setNotice('外观设置已保存');
+      toast.success('外观设置已保存');
     } catch (err) {
-      setError(getErrorMessage(err, '保存外观设置失败'));
+      toast.error(getErrorMessage(err, '保存外观设置失败'));
     } finally {
       setSaving(false);
     }
@@ -70,7 +66,7 @@ export function AppearanceSection({ setNotice, setError }: AppearanceSectionProp
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
-        <Loader2 className="w-6 h-6 animate-spin text-muted-foreground/60" />
+        <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
       </div>
     );
   }

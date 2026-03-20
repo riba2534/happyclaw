@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
 import { useUsersStore } from '../../stores/users';
 import { getErrorMessage } from './utils';
 import { withBasePath } from '../../utils/url';
@@ -83,13 +84,13 @@ export function AuditLogTab({ setError }: AuditLogTabProps) {
         </Button>
         <a
           href={exportUrl}
-          className="px-3 py-2 rounded-lg border border-border text-sm text-foreground/80 hover:bg-muted/50"
+          className="px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-muted"
         >
           导出 CSV
         </a>
       </div>
 
-      <div className="bg-card rounded-xl border border-border divide-y divide-border overflow-hidden">
+      <Card className="divide-y divide-border overflow-hidden">
         {auditLogs.length === 0 ? (
           <div className="p-6 text-center text-sm text-muted-foreground">暂无记录</div>
         ) : (
@@ -109,7 +110,7 @@ export function AuditLogTab({ setError }: AuditLogTabProps) {
             </div>
           ))
         )}
-      </div>
+      </Card>
     </div>
   );
 }

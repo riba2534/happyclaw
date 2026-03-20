@@ -50,7 +50,7 @@ import {
 } from '../auth.js';
 import type { AuthUser, User, UserPublic } from '../types.js';
 import { logger } from '../logger.js';
-import { lastActiveCache } from '../web-context.js';
+import { lastActiveCache, invalidateSessionCache, invalidateUserSessions } from '../web-context.js';
 import { SESSION_COOKIE_NAME } from '../config.js';
 import { getSystemSettings } from '../runtime-config.js';
 
@@ -103,7 +103,8 @@ function buildSetupStatus() {
   const claudeConfig = getClaudeProviderConfig();
   const officialConfigured =
     !!claudeConfig.claudeCodeOauthToken?.trim() ||
-    !!claudeConfig.claudeOAuthCredentials;
+    !!claudeConfig.claudeOAuthCredentials ||
+    !!claudeConfig.anthropicApiKey?.trim();
   const thirdPartyConfigured = !!(
     claudeConfig.anthropicBaseUrl?.trim() &&
     claudeConfig.anthropicAuthToken?.trim()
@@ -506,7 +507,7 @@ authRoutes.post('/register', async (c) => {
 authRoutes.post('/logout', authMiddleware, (c) => {
   const sessionId = c.get('sessionId');
   deleteUserSession(sessionId);
-  lastActiveCache.delete(sessionId);
+  invalidateSessionCache(sessionId);
   const user = c.get('user') as AuthUser;
   logAuthEvent({
     event_type: 'logout',
@@ -649,6 +650,7 @@ authRoutes.put('/password', authMiddleware, async (c) => {
   });
 
   // Revoke all existing sessions for this user
+  invalidateUserSessions(user.id);
   deleteUserSessionsByUserId(user.id);
 
   // Create a fresh session for the current request
@@ -713,7 +715,7 @@ authRoutes.delete('/sessions/:id', authMiddleware, (c) => {
   if (!target) return c.json({ error: 'Session not found' }, 404);
 
   deleteUserSession(target.id);
-  lastActiveCache.delete(target.id);
+  invalidateSessionCache(target.id);
   logAuthEvent({
     event_type: 'session_revoked',
     username: user.username,

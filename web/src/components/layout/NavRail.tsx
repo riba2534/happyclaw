@@ -1,9 +1,10 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
-import { LogOut } from 'lucide-react';
+import { LogOut, Bug } from 'lucide-react';
 import { useAuthStore } from '../../stores/auth';
 import { useBillingStore } from '../../stores/billing';
 import { EmojiAvatar } from '../common/EmojiAvatar';
+import { BugReportDialog } from '../common/BugReportDialog';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { baseNavItems } from './nav-items';
 
@@ -12,6 +13,7 @@ export function NavRail() {
   const logout = useAuthStore((s) => s.logout);
   const navigate = useNavigate();
   const billingEnabled = useBillingStore((s) => s.billingEnabled);
+  const [showBugReport, setShowBugReport] = useState(false);
 
   const navItems = useMemo(
     () => baseNavItems.filter((item) => !item.requiresBilling || billingEnabled),
@@ -27,7 +29,7 @@ export function NavRail() {
 
   return (
     <TooltipProvider delayDuration={200}>
-      <nav className="w-16 h-full bg-sidebar border-r border-sidebar-border flex flex-col items-center py-4 gap-2">
+      <nav className="w-16 h-full bg-background border-r border-border flex flex-col items-center py-4 gap-2">
         {/* Logo */}
         <div className="w-10 h-10 rounded-xl overflow-hidden mb-2 flex-shrink-0">
           <img src={`${import.meta.env.BASE_URL}icons/icon-192.png`} alt="HappyClaw" className="w-full h-full object-cover" />
@@ -41,8 +43,8 @@ export function NavRail() {
                 className={({ isActive }) =>
                   `w-12 h-12 rounded-lg flex flex-col items-center justify-center gap-0.5 transition-colors ${
                     isActive
-                      ? 'bg-sidebar-accent text-sidebar-primary'
-                      : 'text-muted-foreground hover:bg-sidebar-accent/50'
+                      ? 'bg-brand-50 text-primary'
+                      : 'text-muted-foreground hover:bg-accent'
                   }`
                 }
               >
@@ -59,13 +61,29 @@ export function NavRail() {
         {/* Spacer */}
         <div className="flex-1" />
 
+        {/* Bug report */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              onClick={() => setShowBugReport(true)}
+              className="w-9 h-9 rounded-lg flex items-center justify-center text-muted-foreground hover:text-amber-600 hover:bg-amber-50 transition-colors"
+            >
+              <Bug className="w-4 h-4" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right">
+            报告问题
+          </TooltipContent>
+        </Tooltip>
+        <BugReportDialog open={showBugReport} onClose={() => setShowBugReport(false)} />
+
         {/* User avatar + logout */}
         <div className="flex flex-col items-center gap-1.5 mb-1">
           <Tooltip>
             <TooltipTrigger asChild>
               <button
                 onClick={() => navigate('/settings?tab=profile')}
-                className="rounded-lg hover:ring-2 hover:ring-sidebar-border transition-all cursor-pointer"
+                className="rounded-full hover:ring-2 hover:ring-brand-200 transition-all cursor-pointer"
               >
                 <EmojiAvatar
                   emoji={user?.avatar_emoji}

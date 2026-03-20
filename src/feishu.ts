@@ -17,6 +17,11 @@ import {
 import { broadcastNewMessage } from './web.js';
 import { detectImageMimeType } from './image-detector.js';
 import { analyzeIntent } from './intent-analyzer.js';
+import {
+  resolveJidByMessageId,
+  getStreamingSession,
+} from './feishu-streaming-card.js';
+import { optimizeMarkdownStyle } from './feishu-markdown-style.js';
 
 // ─── FeishuConnection Interface ────────────────────────────────
 
@@ -155,8 +160,12 @@ function extractMessageContent(
       // Extract text and inline images from rich post content.
       const lines: string[] = [];
       const imageKeys: string[] = [];
-      const post = parsed.post;
-      if (!post) {
+      // 飞书 post 消息有三种已知格式：
+      // 1. 带 post + 语言包裹：{"post": {"zh_cn": {"title": "...", "content": [[...]]}}}
+      // 2. 仅语言包裹：{"zh_cn": {"title": "...", "content": [[...]]}}
+      // 3. 无包裹（直接 title+content）：{"title": "...", "content": [[...]]}
+      const post = parsed.post || parsed;
+      if (!post || typeof post !== 'object') {
         logger.warn(
           { keys: Object.keys(parsed) },
           'Empty post object in post message',
@@ -164,8 +173,16 @@ function extractMessageContent(
         return { text: '' };
       }
 
-      // Try zh_cn first, then en_us, then other languages
-      const contentData = post.zh_cn || post.en_us || Object.values(post)[0];
+      // 判断 contentData：如果 post 本身就有 content 数组，直接用；否则查找语言层
+      let contentData: any;
+      if (Array.isArray(post.content)) {
+        // 格式 3：无包裹，post 本身就是 {title, content}
+        contentData = post;
+        logger.debug('Post message using flat format (no locale wrapper)');
+      } else {
+        // 格式 1/2：有语言层包裹
+        contentData = post.zh_cn || post.en_us || Object.values(post)[0];
+      }
       if (!contentData || !Array.isArray(contentData.content)) {
         logger.warn(
           { keys: Object.keys(post) },
@@ -369,15 +386,28 @@ function getFileType(
 }
 
 /**
- * Build a Feishu interactive card from markdown text.
- * Extracts headings as card title, splits content into visual sections.
+ * Build a Feishu interactive card (Schema 2.0) from markdown text.
+ * Applies optimizeMarkdownStyle() for proper rendering in Feishu cards:
+ * - Heading demotion (H1→H4, H2~H6→H5)
+ * - Code block / table spacing with <br>
+ * - Invalid image cleanup
  */
+/** Build a post+md fallback content string for when interactive card send fails. */
+function buildPostMdFallback(text: string): string {
+  return JSON.stringify({
+    zh_cn: {
+      content: [[{ tag: 'md', text: optimizeMarkdownStyle(text, 1) }]],
+    },
+  });
+}
+
 function buildInteractiveCard(text: string): object {
+  const optimized = optimizeMarkdownStyle(text, 2);
   const lines = text.split('\n');
   let title = '';
   let bodyStartIdx = 0;
 
-  // Extract title from first heading if present
+  // Extract title from first heading if present (use original text for title)
   for (let i = 0; i < lines.length; i++) {
     if (!lines[i].trim()) continue;
     if (/^#{1,3}\s+/.test(lines[i])) {
@@ -387,7 +417,22 @@ function buildInteractiveCard(text: string): object {
     break;
   }
 
-  const body = lines.slice(bodyStartIdx).join('\n').trim();
+  // Apply optimizeMarkdownStyle to body (title was already extracted from original)
+  const optimizedLines = optimized.split('\n');
+  // Skip lines corresponding to the title in optimized text
+  let optimizedBody: string;
+  if (bodyStartIdx > 0) {
+    // Find the first non-empty line in optimized text and skip it (it's the demoted title)
+    let skipIdx = 0;
+    for (let i = 0; i < optimizedLines.length; i++) {
+      if (!optimizedLines[i].trim()) continue;
+      skipIdx = i + 1;
+      break;
+    }
+    optimizedBody = optimizedLines.slice(skipIdx).join('\n').trim();
+  } else {
+    optimizedBody = optimized.trim();
+  }
 
   // Generate title if no heading found — use first line preview
   if (!title) {
@@ -402,7 +447,7 @@ function buildInteractiveCard(text: string): object {
 
   // Build card elements
   const elements: Array<Record<string, unknown>> = [];
-  const contentToRender = body || text.trim();
+  const contentToRender = optimizedBody || optimized.trim();
 
   if (contentToRender.length > CARD_MD_LIMIT) {
     // Long content: split into multiple markdown elements
@@ -422,16 +467,20 @@ function buildInteractiveCard(text: string): object {
 
   // Ensure at least one element
   if (elements.length === 0) {
-    elements.push({ tag: 'markdown', content: text.trim() });
+    elements.push({ tag: 'markdown', content: optimized.trim() });
   }
 
   return {
-    config: { wide_screen_mode: true },
+    schema: '2.0',
+    config: {
+      wide_screen_mode: true,
+      summary: { content: title },
+    },
     header: {
       title: { tag: 'plain_text', content: title },
       template: 'indigo',
     },
-    elements,
+    body: { elements },
   };
 }
 
@@ -989,9 +1038,7 @@ export function createFeishuConnection(
       text,
       timestamp,
       false,
-      attachmentsJson,
-      undefined,
-      chatJid,
+      { attachments: attachmentsJson, sourceJid: chatJid },
     );
     broadcastNewMessage(
       targetJid,
@@ -1347,6 +1394,30 @@ export function createFeishuConnection(
             logger.error({ err }, 'Error handling group disbanded event');
           }
         },
+        'card.action.trigger': async (data: any) => {
+          try {
+            const action = data?.action?.value?.action;
+            const messageId = data?.context?.open_message_id;
+            if (action !== 'interrupt_stream' || !messageId) return;
+
+            const chatJid = resolveJidByMessageId(messageId);
+            if (!chatJid) {
+              logger.debug({ messageId }, 'Card action: no mapping for messageId');
+              return;
+            }
+
+            const session = getStreamingSession(chatJid);
+            if (!session?.isActive()) {
+              logger.debug({ chatJid, messageId }, 'Card action: session not active');
+              return;
+            }
+
+            logger.info({ chatJid, messageId }, 'Card action: interrupt via button');
+            connectOptions?.onInterruptRequest?.(chatJid, 'stop');
+          } catch (err) {
+            logger.error({ err }, 'Error handling card action trigger');
+          }
+        },
       });
 
       // Initialize WebSocket client
@@ -1436,13 +1507,13 @@ export function createFeishuConnection(
           } catch (err) {
             logger.warn(
               { err, chatId },
-              'Feishu interactive reply failed, fallback to plain text',
+              'Feishu interactive reply failed, fallback to post+md',
             );
             await client.im.message.reply({
               path: { message_id: lastMsgId },
               data: {
-                content: JSON.stringify({ text }),
-                msg_type: 'text',
+                content: buildPostMdFallback(text),
+                msg_type: 'post',
               },
             });
           }
@@ -1459,14 +1530,14 @@ export function createFeishuConnection(
           } catch (err) {
             logger.warn(
               { err, chatId },
-              'Feishu interactive create failed, fallback to plain text',
+              'Feishu interactive create failed, fallback to post+md',
             );
             await client.im.v1.message.create({
               params: { receive_id_type: 'chat_id' },
               data: {
                 receive_id: chatId,
-                msg_type: 'text',
-                content: JSON.stringify({ text }),
+                msg_type: 'post',
+                content: buildPostMdFallback(text),
               },
             });
           }

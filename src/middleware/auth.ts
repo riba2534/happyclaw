@@ -4,10 +4,11 @@ import {
   lastActiveCache,
   LAST_ACTIVE_DEBOUNCE_MS,
   parseCookie,
+  getCachedSessionWithUser,
+  invalidateSessionCache,
   type Variables,
 } from '../web-context.js';
 import {
-  getSessionWithUser,
   updateSessionLastActive,
   deleteUserSession,
 } from '../db.js';
@@ -23,15 +24,15 @@ export const authMiddleware = async (c: any, next: any) => {
     return c.json({ error: 'Unauthorized' }, 401);
   }
 
-  const session = getSessionWithUser(token);
+  const session = getCachedSessionWithUser(token);
   if (!session) {
-    lastActiveCache.delete(token);
+    invalidateSessionCache(token);
     return c.json({ error: 'Unauthorized' }, 401);
   }
 
   if (isSessionExpired(session.expires_at)) {
     deleteUserSession(token);
-    lastActiveCache.delete(token);
+    invalidateSessionCache(token);
     return c.json({ error: 'Session expired' }, 401);
   }
 

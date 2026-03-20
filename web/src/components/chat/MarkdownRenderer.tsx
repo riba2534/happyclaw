@@ -1,10 +1,12 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkBreaks from 'remark-breaks';
 import remarkMath from 'remark-math';
 import rehypeHighlight from 'rehype-highlight';
 import rehypeKatex from 'rehype-katex';
+import rehypeRaw from 'rehype-raw';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
-import React, { useState, memo } from 'react';
+import React, { useState, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { Copy, Check } from 'lucide-react';
 import { MermaidDiagram } from './MermaidDiagram';
@@ -17,14 +19,18 @@ interface MarkdownRendererProps {
   content: string;
   groupJid?: string;
   variant?: 'chat' | 'docs';
+  /** When true, skip expensive plugins (KaTeX, sanitize) for faster streaming render */
+  streaming?: boolean;
 }
 
 /** Resolve relative image paths to the file download API */
 function resolveImageSrc(src: string, groupJid?: string): string {
   if (!groupJid || !src) return src;
   if (/^(https?:\/\/|data:|\/\/)/.test(src) || src.startsWith('/')) return src;
+  // Strip #agent:xxx suffix — file API uses the base group JID
+  const baseJid = groupJid.replace(/#agent:.*$/, '');
   const encoded = toBase64Url(src);
-  return withBasePath(`/api/groups/${encodeURIComponent(groupJid)}/files/download/${encoded}`);
+  return withBasePath(`/api/groups/${encodeURIComponent(baseJid)}/files/download/${encoded}`);
 }
 
 /** Image lightbox for markdown images */
@@ -37,7 +43,7 @@ function MarkdownImageLightbox({ src, onClose }: { src: string; onClose: () => v
       <img
         src={src}
         alt="放大查看"
-        className="w-[90vw] h-[90vh] object-contain cursor-default"
+        className="max-w-[90vw] max-h-[90vh] object-contain cursor-default"
         onClick={(e) => e.stopPropagation()}
       />
     </div>,
@@ -46,7 +52,7 @@ function MarkdownImageLightbox({ src, onClose }: { src: string; onClose: () => v
 }
 
 /** Inline image component with lightbox support */
-function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
+function MarkdownImage({ src, alt, loading }: { src?: string; alt?: string; loading?: 'lazy' | 'eager' }) {
   const [expanded, setExpanded] = useState(false);
   const [error, setError] = useState(false);
 
@@ -54,7 +60,7 @@ function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
 
   if (error) {
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-1 bg-muted text-muted-foreground rounded text-sm">
+      <span className="inline-flex items-center gap-1 px-2 py-1 bg-slate-100 text-slate-500 rounded text-sm">
         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
           <path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Z" />
         </svg>
@@ -68,7 +74,8 @@ function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
       <img
         src={src}
         alt={alt || ''}
-        className="my-3 max-w-full rounded-lg border border-border cursor-pointer hover:bg-muted/50 transition-colors"
+        loading={loading}
+        className="my-3 max-w-full rounded-lg border border-border cursor-pointer hover:shadow-md transition-shadow"
         style={{ maxHeight: '400px', objectFit: 'contain' }}
         onClick={() => setExpanded(true)}
         onError={() => setError(true)}
@@ -86,6 +93,7 @@ const sanitizeSchema = {
     code: [...(defaultSchema.attributes?.code || []), 'class', 'className'],
     span: [...(defaultSchema.attributes?.span || []), 'class', 'className', 'style', 'aria-hidden'],
     div: [...(defaultSchema.attributes?.div || []), 'class', 'className', 'style'],
+    img: ['src', 'alt', 'width', 'height', 'loading', 'longDesc', 'title'],
     math: ['xmlns', 'display'],
     annotation: ['encoding'],
   },
@@ -154,7 +162,7 @@ function CodeBlock({
             )}
           </button>
         </div>
-        <pre className="!bg-[#f6f8fa] dark:!bg-[#22272e] rounded-lg p-4 overflow-x-auto">
+        <pre className="!bg-[var(--code-block-bg)] rounded-lg p-3.5 overflow-x-auto font-mono text-sm">
           <code className={className} {...props}>
             {children}
           </code>
@@ -167,8 +175,8 @@ function CodeBlock({
     <code
       className={
         variant === 'chat'
-          ? 'bg-primary/10 dark:bg-primary/20 text-primary px-1.5 py-0.5 rounded text-[0.9em] leading-relaxed font-mono break-all'
-          : 'bg-primary/10 dark:bg-primary/20 text-primary px-1.5 py-0.5 rounded text-sm font-mono break-all'
+          ? 'bg-[var(--inline-code-bg)] text-[var(--inline-code-text)] px-1 py-px rounded-md text-[0.9em] leading-relaxed font-mono break-all'
+          : 'bg-[var(--inline-code-bg)] text-[var(--inline-code-text)] px-1 py-px rounded-md text-sm font-mono break-all'
       }
       {...props}
     >
@@ -177,24 +185,37 @@ function CodeBlock({
   );
 }
 
-export const MarkdownRenderer = memo(function MarkdownRenderer({ content, groupJid, variant = 'chat' }: MarkdownRendererProps) {
+export const MarkdownRenderer = memo(function MarkdownRenderer({ content, groupJid, variant = 'chat', streaming = false }: MarkdownRendererProps) {
   const textSizeClass = variant === 'chat'
-    ? 'text-[15px] leading-7 text-foreground'
+    ? 'text-base leading-[1.65] text-foreground'
     : 'text-sm leading-6 text-foreground';
   const tableTextClass = variant === 'chat' ? 'text-[0.95em]' : 'text-sm';
+
+  // Streaming mode: skip expensive KaTeX + sanitize for faster renders
+  const remarkPluginsList = useMemo(() =>
+    streaming ? [remarkGfm, remarkBreaks] : [remarkGfm, remarkBreaks, remarkMath],
+    [streaming]
+  );
+  const rehypePluginsList = useMemo(() =>
+    streaming
+      ? [[rehypeHighlight, { plainText: ['mermaid'] }] as const]
+      : [
+          rehypeRaw,
+          [rehypeHighlight, { plainText: ['mermaid'] }] as const,
+          [rehypeKatex, { throwOnError: false, strict: false }] as const,
+          [rehypeSanitize, sanitizeSchema] as const,
+        ],
+    [streaming]
+  );
 
   return (
     <div className={textSizeClass}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[
-          [rehypeHighlight, { plainText: ['mermaid'] }],
-          [rehypeKatex, { throwOnError: false, strict: false }],
-          [rehypeSanitize, sanitizeSchema],
-        ]}
+        remarkPlugins={remarkPluginsList as any}
+        rehypePlugins={rehypePluginsList as any}
         components={{
           code: (props) => <CodeBlock {...props} variant={variant} />,
-          img: ({ src, alt }) => <MarkdownImage src={src ? resolveImageSrc(src, groupJid) : undefined} alt={alt} />,
+          img: ({ src, alt }) => <MarkdownImage src={src ? resolveImageSrc(src, groupJid) : undefined} alt={alt} loading="lazy" />,
           a: ({ href, children }) => (
             <a
               href={href}
@@ -207,10 +228,10 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, groupJ
           ),
           table: ({ children }) => (
             <div
-              className="my-4 max-w-full overflow-x-auto overflow-y-hidden overscroll-x-contain [-webkit-overflow-scrolling:touch] [touch-action:pan-x]"
+              className="my-4 max-w-full overflow-x-auto overflow-y-hidden overscroll-x-contain [-webkit-overflow-scrolling:touch] [touch-action:pan-x_pan-y]"
               data-swipe-back-ignore="true"
             >
-              <table className="w-max min-w-full border-collapse border border-border">
+              <table className="min-w-full border-collapse border border-border">
                 {children}
               </table>
             </div>
@@ -225,12 +246,12 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, groupJ
             </tr>
           ),
           th: ({ children }) => (
-            <th className={`px-4 py-2 text-left font-semibold text-foreground border border-border whitespace-nowrap break-normal align-top ${tableTextClass}`}>
+            <th className={`px-4 py-2 text-left font-semibold text-foreground border border-border whitespace-nowrap align-top ${tableTextClass}`}>
               {children}
             </th>
           ),
           td: ({ children }) => (
-            <td className={`px-4 py-2 text-foreground border border-border whitespace-nowrap break-normal align-top ${tableTextClass}`}>
+            <td className={`px-4 py-2 text-foreground border border-border whitespace-nowrap align-top ${tableTextClass}`}>
               {children}
             </td>
           ),
@@ -251,7 +272,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, groupJ
             <h3 className="text-lg font-semibold mt-4 mb-2 leading-snug">{children}</h3>
           ),
           blockquote: ({ children }) => (
-            <blockquote className="border-l-4 border-border pl-4 my-4 text-muted-foreground italic">
+            <blockquote className="border-l-4 border-slate-300 pl-4 my-4 text-slate-600 italic">
               {children}
             </blockquote>
           ),

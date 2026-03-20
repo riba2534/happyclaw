@@ -47,7 +47,7 @@ export default defineConfig(({ command }) => {
             name: 'HappyClaw',
             short_name: 'HappyClaw',
             description: 'Personal Claude Assistant',
-            theme_color: '#0d9488',
+            theme_color: '#f97316',
             background_color: '#f8fafc',
             display: 'standalone',
             display_override: ['standalone'],

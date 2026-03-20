@@ -80,10 +80,10 @@ export function SettingsNav({ activeTab, onTabChange, canManageSystemConfig, can
   return (
     <>
       {/* Desktop: vertical sidebar */}
-      <nav className="hidden lg:block w-56 shrink-0 bg-muted/30 py-6 px-3">
+      <nav className="hidden lg:block w-56 shrink-0 bg-background border-r border-border py-6 px-3">
         {visibleItems.map((section, si) => (
           <div key={section.group} className={si > 0 ? 'mt-6' : ''}>
-            <div className="px-3 mb-2 text-xs font-semibold text-muted-foreground/60 uppercase tracking-wider">
+            <div className="px-3 mb-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
               {section.group}
             </div>
             <div className="space-y-1">
@@ -97,10 +97,10 @@ export function SettingsNav({ activeTab, onTabChange, canManageSystemConfig, can
                     disabled={disabled}
                     className={`w-full flex items-center gap-3 px-3 py-2 text-sm rounded-lg transition-colors cursor-pointer ${
                       active
-                        ? 'bg-primary/5 text-primary font-medium'
+                        ? 'bg-brand-50 text-primary font-medium'
                         : disabled
-                          ? 'text-muted-foreground/60 cursor-not-allowed'
-                          : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
+                          ? 'text-slate-300 cursor-not-allowed'
+                          : 'text-muted-foreground hover:bg-muted hover:text-foreground'
                     }`}
                   >
                     {item.icon}
@@ -122,7 +122,7 @@ export function SettingsNav({ activeTab, onTabChange, canManageSystemConfig, can
           <nav className="px-3 pb-4 overflow-y-auto">
             {visibleItems.map((section, si) => (
               <div key={section.group} className={si > 0 ? 'mt-5' : ''}>
-                <div className="px-3 mb-2 text-xs font-semibold text-muted-foreground/60 uppercase tracking-wider">
+                <div className="px-3 mb-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                   {section.group}
                 </div>
                 <div className="space-y-1">
@@ -141,10 +141,10 @@ export function SettingsNav({ activeTab, onTabChange, canManageSystemConfig, can
                         disabled={disabled}
                         className={`w-full flex items-center gap-3 px-3 py-2 text-sm rounded-lg transition-colors cursor-pointer ${
                           active
-                            ? 'bg-primary/5 text-primary font-medium'
+                            ? 'bg-brand-50 text-primary font-medium'
                             : disabled
-                              ? 'text-muted-foreground/60 cursor-not-allowed'
-                              : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
+                              ? 'text-slate-300 cursor-not-allowed'
+                              : 'text-muted-foreground hover:bg-muted hover:text-foreground'
                         }`}
                       >
                         {item.icon}

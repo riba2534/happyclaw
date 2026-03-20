@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { useKeyboardHeight } from '@/hooks/useKeyboardHeight';
 import { successTap } from '../../hooks/useHaptic';
 import {
@@ -15,6 +15,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { useFileStore } from '../../stores/files';
+import { useChatStore } from '../../stores/chat';
 import { useDisplayMode } from '../../hooks/useDisplayMode';
 
 interface PendingFile {
@@ -61,24 +62,81 @@ export function MessageInput({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const prevGroupJidRef = useRef<string | undefined>(groupJid);
 
   const { uploadFiles, uploading, uploadProgress } = useFileStore();
+  const { drafts, saveDraft, clearDraft } = useChatStore();
   const { mode: displayMode } = useDisplayMode();
   const isCompact = displayMode === 'compact';
 
   // iOS keyboard adaptation
   useKeyboardHeight();
 
-  // Auto-resize textarea (1-6 lines)
+  // Restore draft when groupJid changes (including initial mount)
   useEffect(() => {
+    // Save current draft before switching
+    if (prevGroupJidRef.current && prevGroupJidRef.current !== groupJid) {
+      const currentText = content.trim();
+      if (currentText) {
+        saveDraft(prevGroupJidRef.current, currentText);
+      } else {
+        clearDraft(prevGroupJidRef.current);
+      }
+    }
+    prevGroupJidRef.current = groupJid;
+
+    // Load draft for new group
+    const draft = groupJid ? drafts[groupJid] || '' : '';
+    setContent(draft);
+    // Clear any pending debounce timer
+    if (draftTimerRef.current) {
+      clearTimeout(draftTimerRef.current);
+      draftTimerRef.current = undefined;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupJid]);
+
+  // Cleanup debounce timer on unmount, save current draft
+  useEffect(() => {
+    return () => {
+      if (draftTimerRef.current) {
+        clearTimeout(draftTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Debounced draft save
+  const debouncedSaveDraft = useCallback(
+    (text: string) => {
+      if (draftTimerRef.current) {
+        clearTimeout(draftTimerRef.current);
+      }
+      draftTimerRef.current = setTimeout(() => {
+        if (groupJid) {
+          saveDraft(groupJid, text.trim());
+        }
+      }, 300);
+    },
+    [groupJid, saveDraft],
+  );
+
+  // Auto-resize textarea (1-6 lines)
+  // useLayoutEffect runs BEFORE paint → height update is invisible to the user (no jitter)
+  useLayoutEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
 
-    textarea.style.height = 'auto';
+    // Temporarily hide overflow to prevent scrollbar flash during measurement
+    const prevOverflow = textarea.style.overflow;
+    textarea.style.overflow = 'hidden';
+    textarea.style.height = '0px';
     const scrollHeight = textarea.scrollHeight;
     const lineHeight = 24;
     const maxHeight = lineHeight * 6;
-    textarea.style.height = `${Math.min(scrollHeight, maxHeight)}px`;
+    const newHeight = Math.max(lineHeight, Math.min(scrollHeight, maxHeight));
+    textarea.style.height = `${newHeight}px`;
+    textarea.style.overflow = newHeight >= maxHeight ? 'auto' : prevOverflow || '';
   }, [content]);
 
   // IME composition state — prevent Enter from sending while composing (e.g. Chinese input)
@@ -124,6 +182,11 @@ export function MessageInput({
       onSend(message, attachments);
       successTap();
       setContent('');
+      if (groupJid) clearDraft(groupJid);
+      if (draftTimerRef.current) {
+        clearTimeout(draftTimerRef.current);
+        draftTimerRef.current = undefined;
+      }
 
       // Clean up image previews
       if (hasImages) {
@@ -319,18 +382,18 @@ export function MessageInput({
 
   return (
     <div
-      className="px-4 pt-2 pb-6 bg-background ios-pwa-bottom-safe max-lg:bg-background/60 max-lg:backdrop-blur-xl max-lg:saturate-[1.8] max-lg:border-t max-lg:border-border/40"
+      className="pt-2 pb-6 bg-background ios-pwa-bottom-safe max-lg:bg-background/60 max-lg:backdrop-blur-xl max-lg:saturate-[1.8] max-lg:border-t max-lg:border-border/40"
       style={{ paddingBottom: `max(1.5rem, var(--keyboard-height, 0px))` }}
     >
-      <div className={isCompact ? 'mx-auto' : 'max-w-3xl mx-auto'}>
+      <div className={isCompact ? 'mx-auto px-4' : 'max-w-4xl mx-auto px-4 lg:pl-[60px]'}>
         {/* Upload progress bar */}
         {uploading && uploadProgress && (
-          <div className={`mb-2 px-4 py-2.5 ${isCompact ? 'bg-card border border-border' : 'bg-card rounded-xl border border-border'}`}>
+          <div className={`mb-2 px-4 py-2.5 ${isCompact ? 'bg-card border border-border' : 'bg-card rounded-xl border border-border shadow-sm'}`}>
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-xs text-muted-foreground truncate max-w-[65%]">
+              <span className="text-xs text-foreground/70 truncate max-w-[65%]">
                 {uploadProgress.currentFile || '完成'}
               </span>
-              <span className="text-xs text-muted-foreground/60">
+              <span className="text-xs text-muted-foreground">
                 {uploadProgress.completed}/{uploadProgress.total} · {progressPercent}%
               </span>
             </div>
@@ -344,7 +407,7 @@ export function MessageInput({
         )}
 
         {/* Main input card */}
-        <div className={isCompact ? 'bg-card border border-border rounded-lg' : 'bg-card rounded-2xl border border-border'}>
+        <div className={isCompact ? 'bg-surface border border-border rounded-lg' : 'bg-surface rounded-2xl border border-border shadow-sm'}>
           {/* Send error banner */}
           {sendError && (
             <div className={`px-4 py-2 bg-red-50 text-red-600 text-xs font-medium border-b border-red-100 flex items-center gap-2 ${isCompact ? 'rounded-t-lg' : 'rounded-t-2xl'}`}>
@@ -356,13 +419,13 @@ export function MessageInput({
           {pendingImages.length > 0 && (
             <div className="px-3 pt-2.5 pb-1 border-b border-border">
               <div className="flex items-center gap-1 mb-1.5">
-                <ImageIcon className="w-3 h-3 text-muted-foreground/60" />
-                <span className="text-[11px] text-muted-foreground/60">
+                <ImageIcon className="w-3 h-3 text-muted-foreground" />
+                <span className="text-[11px] text-muted-foreground">
                   已添加 {pendingImages.length} 张图片
                 </span>
                 <button
                   onClick={clearPendingImages}
-                  className="ml-auto text-[11px] text-muted-foreground/60 hover:text-muted-foreground cursor-pointer"
+                  className="ml-auto text-[11px] text-muted-foreground hover:text-foreground/70 cursor-pointer"
                 >
                   清空
                 </button>
@@ -377,7 +440,7 @@ export function MessageInput({
                     />
                     <button
                       onClick={() => removePendingImage(i)}
-                      className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-slate-700 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer hover:bg-slate-900"
+                      className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-foreground/70 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer hover:bg-foreground/90"
                       aria-label="移除图片"
                     >
                       <X className="w-3 h-3" />
@@ -392,13 +455,13 @@ export function MessageInput({
           {pendingFiles.length > 0 && (
             <div className="px-3 pt-2.5 pb-1 border-b border-border">
               <div className="flex items-center gap-1 mb-1">
-                <Paperclip className="w-3 h-3 text-muted-foreground/60" />
-                <span className="text-[11px] text-muted-foreground/60">
+                <Paperclip className="w-3 h-3 text-muted-foreground" />
+                <span className="text-[11px] text-muted-foreground">
                   已上传 {pendingFiles.length} 个文件，发送时将告知 AI
                 </span>
                 <button
                   onClick={clearPendingFiles}
-                  className="ml-auto text-[11px] text-muted-foreground/60 hover:text-muted-foreground cursor-pointer"
+                  className="ml-auto text-[11px] text-muted-foreground hover:text-foreground/70 cursor-pointer"
                 >
                   清空
                 </button>
@@ -407,7 +470,7 @@ export function MessageInput({
                 {pendingFiles.map((file, i) => (
                   <span
                     key={i}
-                    className="inline-flex items-center gap-1 max-w-[200px] px-2 py-0.5 bg-primary/5 text-primary text-[11px] rounded-md"
+                    className="inline-flex items-center gap-1 max-w-[200px] px-2 py-0.5 bg-brand-50 text-primary text-[11px] rounded-md"
                   >
                     <span className="truncate">{file.label}</span>
                     <button
@@ -436,7 +499,7 @@ export function MessageInput({
               <button
                 onClick={() => fileInputRef.current?.click()}
                 disabled={uploading}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-primary bg-primary/5 hover:bg-primary/10 rounded-lg transition-colors cursor-pointer disabled:opacity-40"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-primary bg-brand-50 hover:bg-brand-100 rounded-lg transition-colors cursor-pointer disabled:opacity-40"
               >
                 <FileUp className="w-3.5 h-3.5" />
                 上传文件
@@ -444,7 +507,7 @@ export function MessageInput({
               <button
                 onClick={() => folderInputRef.current?.click()}
                 disabled={uploading}
-                className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-muted-foreground bg-muted hover:bg-border rounded-lg transition-colors cursor-pointer disabled:opacity-40"
+                className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-foreground/70 bg-muted hover:bg-muted/80 rounded-lg transition-colors cursor-pointer disabled:opacity-40"
               >
                 <FolderUp className="w-3.5 h-3.5" />
                 上传文件夹
@@ -457,14 +520,17 @@ export function MessageInput({
             <textarea
               ref={textareaRef}
               value={content}
-              onChange={(e) => setContent(e.target.value)}
+              onChange={(e) => {
+                setContent(e.target.value);
+                debouncedSaveDraft(e.target.value);
+              }}
               onKeyDown={handleKeyDown}
               onCompositionStart={() => { composingRef.current = true; }}
               onCompositionEnd={() => { composingRef.current = false; compositionEndTimeRef.current = Date.now(); }}
               onPaste={handlePaste}
               placeholder="输入消息..."
               disabled={disabled}
-              className="w-full text-[15px] leading-6 resize-none focus:outline-none placeholder:text-muted-foreground/60 disabled:opacity-50 disabled:cursor-not-allowed bg-transparent"
+              className="w-full text-base leading-6 resize-none focus:outline-none placeholder:text-muted-foreground disabled:opacity-50 disabled:cursor-not-allowed bg-transparent"
               rows={1}
               style={{ minHeight: '28px', maxHeight: '144px' }}
             />
@@ -479,46 +545,46 @@ export function MessageInput({
                   type="button"
                   onClick={() => setShowActions(!showActions)}
                   disabled={uploading}
-                  className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all cursor-pointer ${
+                  className={`w-10 h-10 rounded-lg flex items-center justify-center transition-all cursor-pointer ${
                     showActions
-                      ? 'bg-primary/5 text-primary'
-                      : 'hover:bg-muted text-muted-foreground/60 hover:text-muted-foreground'
+                      ? 'bg-brand-50 text-primary'
+                      : 'hover:bg-muted text-muted-foreground hover:text-foreground/70'
                   } ${uploading ? 'opacity-40 pointer-events-none' : ''}`}
                   title="添加文件"
                   aria-label="添加文件"
                 >
-                  <Paperclip className="w-4 h-4" />
+                  <Paperclip className="w-4.5 h-4.5" />
                 </button>
               )}
               {onResetSession && (
                 <button
                   type="button"
                   onClick={onResetSession}
-                  className="w-9 h-9 rounded-lg flex items-center justify-center hover:bg-amber-50 text-muted-foreground/60 hover:text-amber-600 transition-all cursor-pointer"
+                  className="w-10 h-10 rounded-lg flex items-center justify-center hover:bg-amber-50 text-muted-foreground hover:text-amber-600 transition-all cursor-pointer"
                   title="清除上下文"
                 >
-                  <Brush className="w-4 h-4" />
+                  <Brush className="w-4.5 h-4.5" />
                 </button>
               )}
               {onToggleTerminal && (
                 <button
                   type="button"
                   onClick={onToggleTerminal}
-                  className="w-9 h-9 rounded-lg flex items-center justify-center hover:bg-primary/5 text-muted-foreground/60 hover:text-primary transition-all cursor-pointer"
+                  className="w-10 h-10 rounded-lg flex items-center justify-center hover:bg-brand-50 text-muted-foreground hover:text-primary transition-all cursor-pointer"
                   title="终端"
                   aria-label="终端"
                 >
-                  <TerminalSquare className="w-4 h-4" />
+                  <TerminalSquare className="w-4.5 h-4.5" />
                 </button>
               )}
               {onTogglePermissionMode && (
                 <button
                   type="button"
                   onClick={onTogglePermissionMode}
-                  className={`h-9 px-2 rounded-lg flex items-center gap-1 text-xs font-medium transition-all cursor-pointer ${
+                  className={`h-10 px-2 rounded-lg flex items-center gap-1 text-xs font-medium transition-all cursor-pointer ${
                     permissionMode === 'plan'
                       ? 'bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/50 dark:text-amber-400 dark:border-amber-800'
-                      : 'hover:bg-muted text-muted-foreground/60 hover:text-muted-foreground'
+                      : 'hover:bg-muted text-muted-foreground hover:text-foreground/70'
                   }`}
                   title={permissionMode === 'plan' ? 'Plan 模式，点击切到 Code' : 'Code 模式，点击切到 Plan'}
                 >
@@ -535,10 +601,10 @@ export function MessageInput({
             <button
               onClick={handleSend}
               disabled={!canSend || disabled || sending}
-              className={`w-9 h-9 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-90 ${
+              className={`w-10 h-10 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-90 ${
                 canSend && !disabled && !sending
-                  ? 'bg-primary text-white hover:bg-primary/90'
-                  : 'bg-muted text-muted-foreground/60'
+                  ? 'bg-primary text-white hover:bg-primary/90 max-lg:shadow-[0_2px_8px_rgba(249,115,22,0.3)]'
+                  : 'bg-muted text-muted-foreground'
               }`}
             >
               {sending ? <Loader2 className="w-4.5 h-4.5 animate-spin" /> : <ArrowUp className="w-4.5 h-4.5" />}

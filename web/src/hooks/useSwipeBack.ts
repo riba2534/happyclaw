@@ -11,8 +11,9 @@ export function useSwipeBack(
   onBack: () => void,
   options: SwipeBackOptions = {}
 ) {
-  const { edgeWidth = 30, threshold = 0.4 } = options;
+  const { edgeWidth = 20, threshold = 0.4 } = options;
   const isMobile = useMediaQuery('(max-width: 1023px)');
+  const isStandalone = useMediaQuery('(display-mode: standalone)');
   const touchRef = useRef({
     startX: 0,
     startY: 0,
@@ -129,7 +130,7 @@ export function useSwipeBack(
 
   useEffect(() => {
     const el = containerRef.current;
-    if (!el || !isMobile) return;
+    if (!el || !isMobile || !isStandalone) return;
 
     el.addEventListener('touchstart', handleTouchStart, { passive: true });
     el.addEventListener('touchmove', handleTouchMove, { passive: true });
@@ -144,5 +145,5 @@ export function useSwipeBack(
       clearTimer();
       resetTransformNow();
     };
-  }, [containerRef, isMobile, handleTouchStart, handleTouchMove, handleTouchEnd, handleTouchCancel, clearTimer, resetTransformNow]);
+  }, [containerRef, isMobile, isStandalone, handleTouchStart, handleTouchMove, handleTouchEnd, handleTouchCancel, clearTimer, resetTransformNow]);
 }

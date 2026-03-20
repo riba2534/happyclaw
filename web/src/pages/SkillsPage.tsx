@@ -5,6 +5,7 @@ import { PageHeader } from '@/components/common/PageHeader';
 import { SkeletonCardList } from '@/components/common/Skeletons';
 import { EmptyState } from '@/components/common/EmptyState';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
 import { useSkillsStore } from '../stores/skills';
 import { useAuthStore } from '../stores/auth';
 import { SkillCard } from '../components/skills/SkillCard';
@@ -99,7 +100,7 @@ export function SkillsPage() {
 
         {/* Sync message toast */}
         {syncMessage && (
-          <div className="mx-6 mt-4 p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-700">
+          <div className="mx-6 mt-4 p-3 bg-success-bg border border-success/20 rounded-lg text-sm text-success">
             {syncMessage}
           </div>
         )}
@@ -120,9 +121,11 @@ export function SkillsPage() {
               {loading && skills.length === 0 ? (
                 <SkeletonCardList count={3} />
               ) : error ? (
-                <div className="bg-card rounded-xl border border-red-200 p-6 text-center">
-                  <p className="text-red-600">{error}</p>
-                </div>
+                <Card className="border-error/20">
+                  <CardContent className="text-center">
+                    <p className="text-error">{error}</p>
+                  </CardContent>
+                </Card>
               ) : filtered.length === 0 ? (
                 <EmptyState
                   icon={Puzzle}

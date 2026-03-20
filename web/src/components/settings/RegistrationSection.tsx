@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
+import { toast } from 'sonner';
 
 import { api } from '../../api/client';
-import type { SettingsNotification } from './types';
 import { getErrorMessage } from './types';
 
-interface RegistrationSectionProps extends SettingsNotification {}
-
-export function RegistrationSection({ setNotice, setError }: RegistrationSectionProps) {
+export function RegistrationSection() {
   const [allowRegistration, setAllowRegistration] = useState(true);
   const [requireInviteCode, setRequireInviteCode] = useState(true);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
@@ -31,8 +29,6 @@ export function RegistrationSection({ setNotice, setError }: RegistrationSection
 
   const saveConfig = useCallback(async (allow: boolean, invite: boolean) => {
     setSaving(true);
-    setNotice(null);
-    setError(null);
     try {
       const data = await api.put<{ allowRegistration: boolean; requireInviteCode: boolean; updatedAt: string | null }>('/api/config/registration', {
         allowRegistration: allow,
@@ -41,13 +37,13 @@ export function RegistrationSection({ setNotice, setError }: RegistrationSection
       setAllowRegistration(data.allowRegistration);
       setRequireInviteCode(data.requireInviteCode);
       setUpdatedAt(data.updatedAt);
-      setNotice('注册配置已保存');
+      toast.success('注册配置已保存');
     } catch (err) {
-      setError(getErrorMessage(err, '保存注册配置失败'));
+      toast.error(getErrorMessage(err, '保存注册配置失败'));
     } finally {
       setSaving(false);
     }
-  }, [setNotice, setError]);
+  }, []);
 
   if (loading) {
     return <div className="text-sm text-muted-foreground">加载中...</div>;
@@ -67,7 +63,7 @@ export function RegistrationSection({ setNotice, setError }: RegistrationSection
           disabled={saving}
           onClick={() => saveConfig(!allowRegistration, requireInviteCode)}
           className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:opacity-50 ${
-            allowRegistration ? 'bg-primary' : 'bg-border'
+            allowRegistration ? 'bg-primary' : 'bg-muted-foreground/40'
           }`}
         >
           <span
@@ -90,7 +86,7 @@ export function RegistrationSection({ setNotice, setError }: RegistrationSection
           disabled={saving}
           onClick={() => saveConfig(allowRegistration, !requireInviteCode)}
           className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:opacity-50 ${
-            requireInviteCode ? 'bg-primary' : 'bg-border'
+            requireInviteCode ? 'bg-primary' : 'bg-muted-foreground/40'
           }`}
         >
           <span

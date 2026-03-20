@@ -21,6 +21,14 @@ export type StreamEventType =
 
 export interface StreamEvent {
   eventType: StreamEventType;
+  /** Correlates all stream events for a single user turn. */
+  turnId?: string;
+  /** SDK session identifier if known. */
+  sessionId?: string;
+  /** SDK message uuid if known. */
+  messageUuid?: string;
+  /** Reserved — whether this event was synthesized locally rather than emitted directly by SDK semantics. */
+  isSynthetic?: boolean;
   text?: string;
   toolName?: string;
   toolUseId?: string;

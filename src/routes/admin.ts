@@ -19,7 +19,7 @@ import type {
   PermissionTemplateKey,
   AuthEventType,
 } from '../types.js';
-import { lastActiveCache } from '../web-context.js';
+import { lastActiveCache, invalidateUserSessions } from '../web-context.js';
 import {
   listUsers,
   getUserById,
@@ -28,7 +28,7 @@ import {
   updateUserFields,
   deleteUser,
   restoreUser,
-  getUserSessions,
+
   deleteUserSessionsByUserId,
   getActiveAdminCount,
   logAuthEvent,
@@ -323,10 +323,9 @@ adminRoutes.patch(
 
       updates.status = validation.data.status;
       if (validation.data.status === 'disabled') {
-        // Revoke all sessions when disabling + clean cache
-        const userSessions = getUserSessions(id);
+        // Revoke all sessions when disabling + clean caches
+        invalidateUserSessions(id);
         deleteUserSessionsByUserId(id);
-        for (const s of userSessions) lastActiveCache.delete(s.id);
         updates.disable_reason =
           validation.data.disable_reason ?? 'disabled_by_admin';
         logAuthEvent({
@@ -367,9 +366,8 @@ adminRoutes.patch(
     if (validation.data.password !== undefined) {
       updates.password_hash = await hashPassword(validation.data.password);
       updates.must_change_password = true;
-      const userSessions = getUserSessions(id);
+      invalidateUserSessions(id);
       deleteUserSessionsByUserId(id);
-      for (const s of userSessions) lastActiveCache.delete(s.id);
       logAuthEvent({
         event_type: 'password_changed',
         username: target.username,
@@ -503,9 +501,8 @@ adminRoutes.delete(
       );
     }
 
-    const userSessions = getUserSessions(id);
+    invalidateUserSessions(id);
     deleteUserSessionsByUserId(id);
-    for (const s of userSessions) lastActiveCache.delete(s.id);
     logAuthEvent({
       event_type: 'session_revoked',
       username: target.username,

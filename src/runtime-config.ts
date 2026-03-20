@@ -35,7 +35,7 @@ const RESERVED_CLAUDE_ENV_KEYS = new Set([
   'CLAUDE_CODE_OAUTH_TOKEN',
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_AUTH_TOKEN',
-  'HAPPYCLAW_MODEL',
+  'ANTHROPIC_MODEL',
 ]);
 const DANGEROUS_ENV_VARS = new Set([
   // Code execution / preload attacks
@@ -99,13 +99,13 @@ export interface ClaudeProviderConfig {
   anthropicApiKey: string;
   claudeCodeOauthToken: string;
   claudeOAuthCredentials: ClaudeOAuthCredentials | null;
-  happyclawModel: string;
+  anthropicModel: string;
   updatedAt: string | null;
 }
 
 export interface ClaudeProviderPublicConfig {
   anthropicBaseUrl: string;
-  happyclawModel: string;
+  anthropicModel: string;
   updatedAt: string | null;
   hasAnthropicAuthToken: boolean;
   hasAnthropicApiKey: boolean;
@@ -123,7 +123,7 @@ export interface ClaudeThirdPartyProfile {
   name: string;
   anthropicBaseUrl: string;
   anthropicAuthToken: string;
-  happyclawModel: string;
+  anthropicModel: string;
   updatedAt: string | null;
   customEnv: Record<string, string>;
 }
@@ -132,7 +132,7 @@ export interface ClaudeThirdPartyProfilePublic {
   id: string;
   name: string;
   anthropicBaseUrl: string;
-  happyclawModel: string;
+  anthropicModel: string;
   updatedAt: string | null;
   hasAnthropicAuthToken: boolean;
   anthropicAuthTokenMasked: string | null;
@@ -223,7 +223,7 @@ interface StoredClaudeThirdPartyProfileV1 {
   id: string;
   name: string;
   anthropicBaseUrl: string;
-  happyclawModel: string;
+  anthropicModel: string;
   updatedAt: string;
   secrets: EncryptedSecrets;
   customEnv?: Record<string, string>;
@@ -309,12 +309,12 @@ function normalizeBaseUrl(input: unknown): string {
 
 function normalizeModel(input: unknown): string {
   if (typeof input !== 'string') {
-    throw new Error('Invalid field: happyclawModel');
+    throw new Error('Invalid field: anthropicModel');
   }
   const value = input.trim();
   if (!value) return '';
   if (value.length > 128) {
-    throw new Error('Field too long: happyclawModel');
+    throw new Error('Field too long: anthropicModel');
   }
   return value;
 }
@@ -421,7 +421,7 @@ function normalizeConfig(
       'claudeCodeOauthToken',
     ),
     claudeOAuthCredentials: input.claudeOAuthCredentials ?? null,
-    happyclawModel: normalizeModel(input.happyclawModel),
+    anthropicModel: normalizeModel(input.anthropicModel),
   };
 }
 
@@ -564,7 +564,7 @@ function readLegacyConfig(
       anthropicApiKey: raw.anthropicApiKey ?? '',
       claudeCodeOauthToken: raw.claudeCodeOauthToken ?? '',
       claudeOAuthCredentials: null,
-      happyclawModel: process.env.HAPPYCLAW_MODEL || '',
+      anthropicModel: process.env.ANTHROPIC_MODEL || '',
     },
     typeof raw.updatedAt === 'string' ? raw.updatedAt : null,
   );
@@ -580,7 +580,7 @@ function toStoredProfile(
     id: normalizeProfileId(profile.id),
     name: normalizeProfileName(profile.name),
     anthropicBaseUrl: normalizeBaseUrl(profile.anthropicBaseUrl),
-    happyclawModel: normalizeModel(profile.happyclawModel),
+    anthropicModel: normalizeModel(profile.anthropicModel),
     updatedAt: profile.updatedAt || new Date().toISOString(),
     secrets: encryptSecrets({
       anthropicAuthToken: normalizeSecret(
@@ -606,7 +606,7 @@ function fromStoredProfile(
     name: normalizeProfileName(stored.name),
     anthropicBaseUrl: normalizeBaseUrl(stored.anthropicBaseUrl),
     anthropicAuthToken: secrets.anthropicAuthToken,
-    happyclawModel: normalizeModel(stored.happyclawModel ?? ''),
+    anthropicModel: normalizeModel(stored.anthropicModel ?? (stored as any).happyclawModel ?? ''),
     updatedAt: stored.updatedAt || null,
     customEnv: sanitizeCustomEnvMap(stored.customEnv || {}, {
       skipReservedClaudeKeys: true,
@@ -622,8 +622,8 @@ function makeDefaultThirdPartyProfile(
     name: DEFAULT_THIRD_PARTY_PROFILE_NAME,
     anthropicBaseUrl: config.anthropicBaseUrl,
     anthropicAuthToken: config.anthropicAuthToken,
-    happyclawModel: normalizeModel(
-      config.happyclawModel || process.env.HAPPYCLAW_MODEL || '',
+    anthropicModel: normalizeModel(
+      config.anthropicModel || process.env.ANTHROPIC_MODEL || '',
     ),
     updatedAt: config.updatedAt || new Date().toISOString(),
     customEnv: {},
@@ -660,7 +660,7 @@ function buildOfficialClaudeProviderConfig(
       anthropicApiKey: officialSecrets.anthropicApiKey,
       claudeCodeOauthToken: officialSecrets.claudeCodeOauthToken,
       claudeOAuthCredentials: officialSecrets.claudeOAuthCredentials ?? null,
-      happyclawModel: '',
+      anthropicModel: '',
     },
     officialUpdatedAt,
   );
@@ -736,7 +736,7 @@ function normalizeStoredState(
         anthropicApiKey: '',
         claudeCodeOauthToken: '',
         claudeOAuthCredentials: null,
-        happyclawModel: process.env.HAPPYCLAW_MODEL || '',
+        anthropicModel: process.env.ANTHROPIC_MODEL || '',
         updatedAt: null,
       }),
     );
@@ -808,7 +808,7 @@ function readStoredState(): ClaudeStoredStateV3Resolved | null {
           anthropicApiKey: secrets.anthropicApiKey,
           claudeCodeOauthToken: secrets.claudeCodeOauthToken,
           claudeOAuthCredentials: secrets.claudeOAuthCredentials ?? null,
-          happyclawModel: process.env.HAPPYCLAW_MODEL || '',
+          anthropicModel: process.env.ANTHROPIC_MODEL || '',
         },
         v2.updatedAt || null,
       );
@@ -931,7 +931,7 @@ function readStoredConfig(): ClaudeProviderConfig | null {
       claudeCodeOauthToken: resolved.officialSecrets.claudeCodeOauthToken,
       claudeOAuthCredentials:
         resolved.officialSecrets.claudeOAuthCredentials ?? null,
-      happyclawModel: resolved.profile.happyclawModel,
+      anthropicModel: resolved.profile.anthropicModel,
     },
     resolved.profile.updatedAt || resolved.officialUpdatedAt,
   );
@@ -944,7 +944,7 @@ function defaultsFromEnv(): ClaudeProviderConfig {
     anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
     claudeCodeOauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN || '',
     claudeOAuthCredentials: null,
-    happyclawModel: process.env.HAPPYCLAW_MODEL || '',
+    anthropicModel: process.env.ANTHROPIC_MODEL || '',
   };
 
   try {
@@ -956,7 +956,7 @@ function defaultsFromEnv(): ClaudeProviderConfig {
       anthropicApiKey: raw.anthropicApiKey.trim(),
       claudeCodeOauthToken: raw.claudeCodeOauthToken.trim(),
       claudeOAuthCredentials: null,
-      happyclawModel: raw.happyclawModel.trim(),
+      anthropicModel: raw.anthropicModel.trim(),
       updatedAt: null,
     };
   }
@@ -1201,7 +1201,7 @@ export function toPublicClaudeProviderConfig(
 ): ClaudeProviderPublicConfig {
   return {
     anthropicBaseUrl: config.anthropicBaseUrl,
-    happyclawModel: config.happyclawModel,
+    anthropicModel: config.anthropicModel,
     updatedAt: config.updatedAt,
     hasAnthropicAuthToken: !!config.anthropicAuthToken,
     hasAnthropicApiKey: !!config.anthropicApiKey,
@@ -1280,7 +1280,7 @@ export function saveClaudeProviderConfig(
                 anthropicApiKey: normalized.anthropicApiKey,
                 claudeCodeOauthToken: normalized.claudeCodeOauthToken,
                 claudeOAuthCredentials: normalized.claudeOAuthCredentials,
-                happyclawModel: normalized.happyclawModel,
+                anthropicModel: normalized.anthropicModel,
                 updatedAt: normalized.updatedAt,
               }),
             ),
@@ -1332,7 +1332,7 @@ export function saveClaudeProviderConfig(
     ...activeProfile,
     anthropicBaseUrl: normalized.anthropicBaseUrl,
     anthropicAuthToken: normalized.anthropicAuthToken,
-    happyclawModel: normalized.happyclawModel,
+    anthropicModel: normalized.anthropicModel,
     updatedAt: normalized.updatedAt,
   };
 
@@ -1426,7 +1426,7 @@ export function toPublicClaudeThirdPartyProfile(
     id: profile.id,
     name: profile.name,
     anthropicBaseUrl: profile.anthropicBaseUrl,
-    happyclawModel: profile.happyclawModel,
+    anthropicModel: profile.anthropicModel,
     updatedAt: profile.updatedAt,
     hasAnthropicAuthToken: !!profile.anthropicAuthToken,
     anthropicAuthTokenMasked: maskSecret(profile.anthropicAuthToken),
@@ -1442,7 +1442,7 @@ export function createClaudeThirdPartyProfile(input: {
   name: string;
   anthropicBaseUrl: string;
   anthropicAuthToken: string;
-  happyclawModel?: string;
+  anthropicModel?: string;
   customEnv?: Record<string, string>;
 }): ClaudeThirdPartyProfile {
   const state = readStoredState() || {
@@ -1471,7 +1471,7 @@ export function createClaudeThirdPartyProfile(input: {
       input.anthropicAuthToken,
       'anthropicAuthToken',
     ),
-    happyclawModel: normalizeModel(input.happyclawModel ?? ''),
+    anthropicModel: normalizeModel(input.anthropicModel ?? ''),
     updatedAt: now,
     customEnv: sanitizeCustomEnvMap(input.customEnv || {}, {
       skipReservedClaudeKeys: true,
@@ -1486,7 +1486,7 @@ export function createClaudeThirdPartyProfile(input: {
       claudeCodeOauthToken: state.officialSecrets.claudeCodeOauthToken,
       claudeOAuthCredentials:
         state.officialSecrets.claudeOAuthCredentials ?? null,
-      happyclawModel: profile.happyclawModel,
+      anthropicModel: profile.anthropicModel,
     },
     now,
   );
@@ -1510,7 +1510,7 @@ export function updateClaudeThirdPartyProfile(
   patch: {
     name?: string;
     anthropicBaseUrl?: string;
-    happyclawModel?: string;
+    anthropicModel?: string;
     customEnv?: Record<string, string>;
   },
 ): ClaudeThirdPartyProfile {
@@ -1532,10 +1532,10 @@ export function updateClaudeThirdPartyProfile(
       patch.anthropicBaseUrl !== undefined
         ? normalizeBaseUrl(patch.anthropicBaseUrl)
         : decoded.anthropicBaseUrl,
-    happyclawModel:
-      patch.happyclawModel !== undefined
-        ? normalizeModel(patch.happyclawModel)
-        : decoded.happyclawModel,
+    anthropicModel:
+      patch.anthropicModel !== undefined
+        ? normalizeModel(patch.anthropicModel)
+        : decoded.anthropicModel,
     customEnv:
       patch.customEnv !== undefined
         ? sanitizeCustomEnvMap(patch.customEnv, {
@@ -1553,7 +1553,7 @@ export function updateClaudeThirdPartyProfile(
       claudeCodeOauthToken: state.officialSecrets.claudeCodeOauthToken,
       claudeOAuthCredentials:
         state.officialSecrets.claudeOAuthCredentials ?? null,
-      happyclawModel: next.happyclawModel,
+      anthropicModel: next.anthropicModel,
     },
     next.updatedAt,
   );
@@ -1608,7 +1608,7 @@ export function updateClaudeThirdPartyProfileSecret(
       claudeCodeOauthToken: state.officialSecrets.claudeCodeOauthToken,
       claudeOAuthCredentials:
         state.officialSecrets.claudeOAuthCredentials ?? null,
-      happyclawModel: next.happyclawModel,
+      anthropicModel: next.anthropicModel,
     },
     next.updatedAt,
   );
@@ -1718,8 +1718,8 @@ export function buildClaudeEnvLines(config: ClaudeProviderConfig): string[] {
       `ANTHROPIC_AUTH_TOKEN=${sanitizeEnvValue(config.anthropicAuthToken)}`,
     );
   }
-  if (config.happyclawModel) {
-    lines.push(`HAPPYCLAW_MODEL=${sanitizeEnvValue(config.happyclawModel)}`);
+  if (config.anthropicModel) {
+    lines.push(`ANTHROPIC_MODEL=${sanitizeEnvValue(config.anthropicModel)}`);
   }
 
   const customEnv = getActiveProfileCustomEnv();
@@ -1798,7 +1798,7 @@ export interface ContainerEnvConfig {
   anthropicApiKey?: string;
   claudeCodeOauthToken?: string;
   claudeOAuthCredentials?: ClaudeOAuthCredentials | null;
-  happyclawModel?: string;
+  anthropicModel?: string;
   /** Arbitrary extra env vars injected into the container */
   customEnv?: Record<string, string>;
 }
@@ -1811,7 +1811,7 @@ export interface ContainerEnvPublicConfig {
   hasAnthropicAuthToken: boolean;
   hasAnthropicApiKey: boolean;
   hasClaudeCodeOauthToken: boolean;
-  happyclawModel: string;
+  anthropicModel: string;
   customEnv: Record<string, string>;
 }
 
@@ -1826,9 +1826,15 @@ export function getContainerEnvConfig(folder: string): ContainerEnvConfig {
   const filePath = containerEnvPath(folder);
   try {
     if (fs.existsSync(filePath)) {
-      return JSON.parse(
+      const stored = JSON.parse(
         fs.readFileSync(filePath, 'utf-8'),
-      ) as ContainerEnvConfig;
+      ) as ContainerEnvConfig & { happyclawModel?: string };
+      // Backward compat: migrate old field name
+      if (stored.anthropicModel === undefined && stored.happyclawModel !== undefined) {
+        stored.anthropicModel = stored.happyclawModel;
+        delete stored.happyclawModel;
+      }
+      return stored;
     }
   } catch (err) {
     logger.warn(
@@ -1857,8 +1863,8 @@ export function saveContainerEnvConfig(
     sanitized.claudeCodeOauthToken = sanitizeEnvValue(
       sanitized.claudeCodeOauthToken,
     );
-  if (sanitized.happyclawModel)
-    sanitized.happyclawModel = sanitizeEnvValue(sanitized.happyclawModel);
+  if (sanitized.anthropicModel)
+    sanitized.anthropicModel = sanitizeEnvValue(sanitized.anthropicModel);
   if (sanitized.customEnv) {
     const cleanEnv: Record<string, string> = {};
     for (const [k, v] of Object.entries(sanitized.customEnv)) {
@@ -1900,7 +1906,7 @@ export function toPublicContainerEnvConfig(
     anthropicAuthTokenMasked: maskSecret(config.anthropicAuthToken || ''),
     anthropicApiKeyMasked: maskSecret(config.anthropicApiKey || ''),
     claudeCodeOauthTokenMasked: maskSecret(config.claudeCodeOauthToken || ''),
-    happyclawModel: config.happyclawModel || '',
+    anthropicModel: config.anthropicModel || '',
     customEnv: config.customEnv || {},
   };
 }
@@ -1922,7 +1928,7 @@ export function mergeClaudeEnvConfig(
       override.claudeCodeOauthToken || global.claudeCodeOauthToken,
     claudeOAuthCredentials:
       override.claudeOAuthCredentials ?? global.claudeOAuthCredentials,
-    happyclawModel: override.happyclawModel || global.happyclawModel,
+    anthropicModel: override.anthropicModel || global.anthropicModel,
     updatedAt: global.updatedAt,
   };
 }

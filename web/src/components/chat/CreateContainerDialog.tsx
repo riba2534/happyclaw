@@ -9,6 +9,7 @@ import {
   GitBranch,
   Loader2,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import {
   Dialog,
   DialogContent,
@@ -38,7 +39,6 @@ export function CreateContainerDialog({
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [executionMode, setExecutionMode] = useState<'container' | 'host'>('container');
   const [customCwd, setCustomCwd] = useState('');
-  const [error, setError] = useState<string | null>(null);
   const [initMode, setInitMode] = useState<'empty' | 'local' | 'git'>('empty');
   const [initSourcePath, setInitSourcePath] = useState('');
   const [initGitUrl, setInitGitUrl] = useState('');
@@ -51,7 +51,6 @@ export function CreateContainerDialog({
     setAdvancedOpen(false);
     setExecutionMode('container');
     setCustomCwd('');
-    setError(null);
     setInitMode('empty');
     setInitSourcePath('');
     setInitGitUrl('');
@@ -67,7 +66,6 @@ export function CreateContainerDialog({
     if (!trimmed) return;
 
     setLoading(true);
-    setError(null);
     try {
       const options: Record<string, string> = {};
       if (executionMode === 'host') {
@@ -85,10 +83,10 @@ export function CreateContainerDialog({
         onCreated(created.jid, created.folder);
         handleClose();
       } else {
-        setError('创建失败，请重试');
+        toast.error('创建失败，请重试');
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : '创建失败');
+      toast.error(err instanceof Error ? err.message : '创建失败');
     } finally {
       setLoading(false);
     }
@@ -239,13 +237,6 @@ export function CreateContainerDialog({
             )}
           </div>
 
-          {/* Error */}
-          {error && (
-            <div className="flex items-start gap-2 p-3 bg-destructive/10 border border-destructive/20 rounded-lg">
-              <AlertTriangle className="w-4 h-4 text-destructive flex-shrink-0 mt-0.5" />
-              <p className="text-sm text-destructive">{error}</p>
-            </div>
-          )}
         </div>
 
         <DialogFooter>

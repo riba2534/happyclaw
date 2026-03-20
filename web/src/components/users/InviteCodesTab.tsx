@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Copy, Key, Loader2, RefreshCw, Trash2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -9,9 +9,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import type { Permission, UserPublic } from '../../stores/auth';
+import { Card, CardContent } from '@/components/ui/card';
+import { Label } from '@/components/ui/label';
+import type { UserPublic } from '../../stores/auth';
 import { useUsersStore, type PermissionTemplateKey } from '../../stores/users';
-import { getErrorMessage, PERMISSION_LABELS, type TabNotification } from './utils';
+import { getErrorMessage, ROLE_LABELS, type TabNotification } from './utils';
 
 interface InviteCodesTabProps extends TabNotification {
   currentUser: UserPublic | null;
@@ -21,8 +23,6 @@ export function InviteCodesTab({ currentUser, setNotice, setError }: InviteCodes
   const {
     invites,
     loading,
-    permissions,
-    templates,
     fetchPermissionMeta,
     fetchInvites,
     createInvite,
@@ -31,55 +31,27 @@ export function InviteCodesTab({ currentUser, setNotice, setError }: InviteCodes
 
   const [showCreate, setShowCreate] = useState(false);
   const [inviteRole, setInviteRole] = useState<'member' | 'admin'>('member');
-  const [inviteTemplate, setInviteTemplate] = useState<PermissionTemplateKey | ''>('member_basic');
-  const [invitePermissions, setInvitePermissions] = useState<Permission[]>([]);
   const [inviteMaxUses, setInviteMaxUses] = useState(1);
   const [inviteExpiresHours, setInviteExpiresHours] = useState(0);
   const [creating, setCreating] = useState(false);
   const [generatedCode, setGeneratedCode] = useState<string | null>(null);
   const isAdmin = currentUser?.role === 'admin';
-  const ownPermissions = currentUser?.permissions || [];
-  const assignablePermissions = useMemo(() => {
-    if (isAdmin) return permissions;
-    const ownSet = new Set(ownPermissions);
-    return permissions.filter((perm) => ownSet.has(perm));
-  }, [isAdmin, ownPermissions, permissions]);
-  const availableTemplates = useMemo(
-    () =>
-      templates.filter((item) => {
-        if (item.role === 'admin' && !isAdmin) return false;
-        if (isAdmin) return true;
-        return item.permissions.every((perm) => ownPermissions.includes(perm));
-      }),
-    [isAdmin, ownPermissions, templates],
-  );
 
   useEffect(() => {
     void fetchPermissionMeta();
     void fetchInvites();
   }, [fetchInvites, fetchPermissionMeta]);
 
-  useEffect(() => {
-    if (!inviteTemplate) return;
-    const allowed = availableTemplates.some((item) => item.key === inviteTemplate);
-    if (!allowed) setInviteTemplate('');
-  }, [availableTemplates, inviteTemplate]);
-
   const handleCreate = async () => {
     setCreating(true);
     setError(null);
     try {
       const roleForCreate: 'member' | 'admin' = isAdmin ? inviteRole : 'member';
-      const permissionsForCreate = isAdmin
-        ? invitePermissions
-        : invitePermissions.filter((perm) => ownPermissions.includes(perm));
-      const templateForCreate = inviteTemplate
-        ? availableTemplates.find((item) => item.key === inviteTemplate)?.key
-        : undefined;
+      const templateKey: PermissionTemplateKey = roleForCreate === 'admin' ? 'admin_full' : 'member_basic';
       const payload = {
         role: roleForCreate,
-        permission_template: templateForCreate,
-        permissions: permissionsForCreate,
+        permission_template: templateKey,
+        permissions: [],
         max_uses: inviteMaxUses,
         expires_in_hours: inviteExpiresHours > 0 ? inviteExpiresHours : undefined,
       };
@@ -112,79 +84,46 @@ export function InviteCodesTab({ currentUser, setNotice, setError }: InviteCodes
       </div>
 
       {showCreate && (
-        <div className="bg-card rounded-xl border border-border p-6 space-y-4">
+        <Card>
+          <CardContent className="space-y-4">
           <h3 className="text-sm font-medium text-foreground">创建邀请码</h3>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <Select
-              value={inviteTemplate}
-              onValueChange={(value) => {
-                const v = value === 'none' ? '' : value as PermissionTemplateKey;
-                setInviteTemplate(v as PermissionTemplateKey | '');
-                if (!v) return;
-                const template = availableTemplates.find((item) => item.key === v);
-                if (!template) return;
-                setInviteRole(template.role);
-                setInvitePermissions(template.permissions);
-              }}
-            >
-              <SelectTrigger className="text-sm">
-                <SelectValue placeholder="不使用模板" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">不使用模板</SelectItem>
-                {availableTemplates.map((item) => (
-                  <SelectItem key={item.key} value={item.key}>{item.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select value={inviteRole} onValueChange={(value) => setInviteRole(value as 'member' | 'admin')}>
-              <SelectTrigger className="text-sm">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="member">member</SelectItem>
-                {isAdmin && <SelectItem value="admin">admin</SelectItem>}
-              </SelectContent>
-            </Select>
-            <Input
-              type="number"
-              value={inviteMaxUses}
-              onChange={(e) => setInviteMaxUses(parseInt(e.target.value, 10) || 0)}
-              min={0}
-              max={1000}
-              className="text-sm"
-              placeholder="最大使用次数"
-            />
-            <Input
-              type="number"
-              value={inviteExpiresHours}
-              onChange={(e) => setInviteExpiresHours(parseInt(e.target.value, 10) || 0)}
-              min={0}
-              className="text-sm md:col-span-3"
-              placeholder="过期小时（0=永不过期）"
-            />
-          </div>
-
-          {assignablePermissions.length > 0 && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-              {assignablePermissions.map((perm) => (
-                <label key={perm} className="inline-flex items-center gap-2 text-xs">
-                  <input
-                    type="checkbox"
-                    checked={invitePermissions.includes(perm)}
-                    onChange={() => {
-                      if (invitePermissions.includes(perm)) {
-                        setInvitePermissions(invitePermissions.filter((item) => item !== perm));
-                      } else {
-                        setInvitePermissions([...invitePermissions, perm]);
-                      }
-                    }}
-                  />
-                  {PERMISSION_LABELS[perm] || perm}
-                </label>
-              ))}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <Label className="text-xs text-muted-foreground mb-1">角色</Label>
+              <Select value={inviteRole} onValueChange={(value) => setInviteRole(value as 'member' | 'admin')}>
+                <SelectTrigger className="text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="member">{ROLE_LABELS.member}</SelectItem>
+                  {isAdmin && <SelectItem value="admin">{ROLE_LABELS.admin}</SelectItem>}
+                </SelectContent>
+              </Select>
             </div>
-          )}
+            <div>
+              <Label className="text-xs text-muted-foreground mb-1">最大使用次数</Label>
+              <Input
+                type="number"
+                value={inviteMaxUses}
+                onChange={(e) => setInviteMaxUses(parseInt(e.target.value, 10) || 0)}
+                min={0}
+                max={1000}
+                className="text-sm"
+              />
+              <p className="text-xs text-muted-foreground mt-1">0 = 不限次数</p>
+            </div>
+            <div>
+              <Label className="text-xs text-muted-foreground mb-1">过期时间（小时）</Label>
+              <Input
+                type="number"
+                value={inviteExpiresHours || ''}
+                onChange={(e) => setInviteExpiresHours(parseInt(e.target.value, 10) || 0)}
+                min={0}
+                className="text-sm"
+                placeholder="留空 = 永不过期"
+              />
+            </div>
+          </div>
 
           <div className="flex gap-2">
             <Button onClick={handleCreate} disabled={creating}>
@@ -195,25 +134,26 @@ export function InviteCodesTab({ currentUser, setNotice, setError }: InviteCodes
           </div>
 
           {generatedCode && (
-            <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded-lg">
-              <div className="text-xs text-green-700 mb-1">邀请码已生成（请立即复制）：</div>
+            <div className="mt-3 p-3 bg-success-bg border border-success/20 rounded-lg">
+              <div className="text-xs text-success mb-1">邀请码已生成（请立即复制）：</div>
               <div className="flex items-center gap-2">
-                <code className="flex-1 text-sm font-mono bg-card px-2 py-1 rounded border border-green-200 select-all">
+                <code className="flex-1 text-sm font-mono bg-card px-2 py-1 rounded border border-success/20 select-all">
                   {generatedCode}
                 </code>
                 <button
                   onClick={() => copyToClipboard(generatedCode)}
-                  className="p-1.5 hover:bg-green-100 rounded cursor-pointer"
+                  className="p-1.5 hover:bg-success-bg rounded cursor-pointer"
                 >
-                  <Copy className="w-4 h-4 text-green-700" />
+                  <Copy className="w-4 h-4 text-success" />
                 </button>
               </div>
             </div>
           )}
-        </div>
+          </CardContent>
+        </Card>
       )}
 
-      <div className="bg-card rounded-xl border border-border divide-y divide-border overflow-hidden">
+      <Card className="divide-y divide-border overflow-hidden">
         {invites.length === 0 ? (
           <div className="p-6 text-center text-sm text-muted-foreground">暂无邀请码</div>
         ) : (
@@ -229,26 +169,18 @@ export function InviteCodesTab({ currentUser, setNotice, setError }: InviteCodes
                       onClick={() => copyToClipboard(invite.code)}
                       className="p-1 hover:bg-muted rounded cursor-pointer"
                     >
-                      <Copy className="w-3.5 h-3.5 text-muted-foreground/60" />
+                      <Copy className="w-3.5 h-3.5 text-muted-foreground" />
                     </button>
                     <span className="text-xs px-1.5 py-0.5 rounded bg-muted text-foreground">
-                      {invite.role}
+                      {ROLE_LABELS[invite.role] || invite.role}
                     </span>
-                    {invite.permission_template && (
-                      <span className="text-xs px-1.5 py-0.5 rounded bg-primary/10 text-primary">
-                        {invite.permission_template}
-                      </span>
-                    )}
-                    {isExpired && <span className="text-xs px-1.5 py-0.5 bg-red-100 text-red-600 rounded">已过期</span>}
+                    {isExpired && <span className="text-xs px-1.5 py-0.5 bg-error-bg text-error rounded">已过期</span>}
                     {isUsedUp && <span className="text-xs px-1.5 py-0.5 bg-orange-100 text-orange-600 rounded">已用完</span>}
                   </div>
                   <div className="text-xs text-muted-foreground mt-1">
                     创建者: {invite.creator_username} · 使用: {invite.used_count}/{invite.max_uses || '∞'}
                     {invite.expires_at && ` · 过期: ${new Date(invite.expires_at).toLocaleString('zh-CN')}`}
                   </div>
-                  {invite.permissions.length > 0 && (
-                    <div className="text-xs text-muted-foreground mt-1">权限: {invite.permissions.join(', ')}</div>
-                  )}
                 </div>
                 <button
                   onClick={async () => {
@@ -261,7 +193,7 @@ export function InviteCodesTab({ currentUser, setNotice, setError }: InviteCodes
                       setError(getErrorMessage(err, '删除失败'));
                     }
                   }}
-                  className="p-2 hover:bg-muted rounded-lg text-muted-foreground hover:text-red-600 cursor-pointer"
+                  className="p-2 hover:bg-muted rounded-lg text-muted-foreground hover:text-error cursor-pointer"
                   title="删除邀请码"
                 >
                   <Trash2 className="w-4 h-4" />
@@ -270,7 +202,7 @@ export function InviteCodesTab({ currentUser, setNotice, setError }: InviteCodes
             );
           })
         )}
-      </div>
+      </Card>
     </div>
   );
 }

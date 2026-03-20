@@ -23,7 +23,13 @@ function resolveTheme(theme: Theme): 'light' | 'dark' {
 
 export function applyTheme(theme: Theme) {
   if (typeof document === 'undefined') return;
-  document.documentElement.classList.toggle('dark', resolveTheme(theme) === 'dark');
+  const isDark = resolveTheme(theme) === 'dark';
+  document.documentElement.classList.toggle('dark', isDark);
+  // Sync theme-color meta tag for Android nav bar / iOS status bar
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) {
+    meta.setAttribute('content', isDark ? '#0f172a' : '#0d9488');
+  }
 }
 
 function subscribe(cb: () => void) {

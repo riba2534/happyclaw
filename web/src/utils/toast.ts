@@ -18,7 +18,12 @@ function getContainer(): HTMLDivElement {
   return container;
 }
 
-export function showToast(title: string, body?: string, durationMs = 5000): void {
+export function showToast(
+  title: string,
+  body?: string,
+  durationMs = 5000,
+  link?: { text: string; url: string },
+): void {
   const c = getContainer();
 
   // Evict oldest toasts when at capacity
@@ -43,6 +48,18 @@ export function showToast(title: string, body?: string, durationMs = 5000): void
     bodyEl.style.cssText = 'margin-top:4px;font-size:13px;opacity:0.85;';
     bodyEl.textContent = body.length > 120 ? body.slice(0, 120) + '…' : body;
     el.appendChild(bodyEl);
+  }
+
+  if (link) {
+    const linkEl = document.createElement('a');
+    linkEl.href = link.url;
+    linkEl.target = '_blank';
+    linkEl.rel = 'noopener noreferrer';
+    linkEl.textContent = link.text;
+    linkEl.style.cssText =
+      'display:inline-block;margin-top:6px;font-size:13px;color:#5eead4;' +
+      'text-decoration:underline;cursor:pointer;';
+    el.appendChild(linkEl);
   }
 
   c.appendChild(el);

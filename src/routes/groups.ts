@@ -74,6 +74,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { z } from 'zod';
 import { broadcastNewMessage, invalidateAllowedUserCache } from '../web.js';
+import { getStreamingSession } from '../feishu-streaming-card.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -648,6 +649,11 @@ groupRoutes.post('/', authMiddleware, async (c) => {
     return c.json({ error: `Workspace initialization failed: ${errMsg}` }, 500);
   }
 
+  // 容器模式工作区创建后立即启动容器预热，避免用户打开终端时还需等待
+  if (executionMode === 'container') {
+    deps.ensureTerminalContainerStarted(jid);
+  }
+
   return c.json({
     success: true,
     jid,
@@ -925,6 +931,12 @@ groupRoutes.post('/:jid/interrupt', authMiddleware, async (c) => {
 
   const interrupted = deps.queue.interruptQuery(jid);
   if (interrupted) {
+    // ── 立即 abort 飞书流式卡片 ──
+    const session = getStreamingSession(jid);
+    if (session?.isActive()) {
+      session.abort('已中断').catch(() => {});
+    }
+
     // Persist interrupt as a system marker so refresh/state-restore can
     // deterministically clear waiting even when no assistant reply exists.
     const messageId = crypto.randomUUID();
@@ -1413,8 +1425,8 @@ groupRoutes.put('/:jid/env', authMiddleware, async (c) => {
     updated.anthropicApiKey = data.anthropicApiKey;
   if (data.claudeCodeOauthToken !== undefined)
     updated.claudeCodeOauthToken = data.claudeCodeOauthToken;
-  if (data.happyclawModel !== undefined)
-    updated.happyclawModel = data.happyclawModel;
+  if (data.anthropicModel !== undefined)
+    updated.anthropicModel = data.anthropicModel;
   if (data.customEnv !== undefined) updated.customEnv = data.customEnv;
 
   try {

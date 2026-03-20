@@ -4,6 +4,8 @@ import { useNavigate } from 'react-router-dom';
 
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { Label } from '@/components/ui/label';
 import { useAuthStore } from '../stores/auth';
 import { api } from '../api/client';
 import { getErrorMessage } from '../components/settings/types';
@@ -115,77 +117,83 @@ export function SetupChannelsPage() {
         )}
 
         {/* Feishu */}
-        <section className="bg-card rounded-xl border border-border p-5">
-          <h2 className="text-base font-semibold text-foreground mb-3">飞书</h2>
-          <p className="text-xs text-muted-foreground mb-3">
-            填写你的飞书应用凭证，绑定后即可在飞书中与 AI 对话。
-          </p>
-          <div className="grid md:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-sm font-medium text-foreground mb-1">App ID</label>
-              <Input
-                type="text"
-                value={feishuAppId}
-                onChange={(e) => setFeishuAppId(e.target.value)}
-                placeholder="输入飞书 App ID"
-              />
+        <Card className="shadow-sm">
+          <CardContent>
+            <h2 className="text-base font-semibold text-foreground mb-3">飞书</h2>
+            <p className="text-xs text-muted-foreground mb-3">
+              填写你的飞书应用凭证，绑定后即可在飞书中与 AI 对话。
+            </p>
+            <div className="grid md:grid-cols-2 gap-3">
+              <div>
+                <Label className="mb-1">App ID</Label>
+                <Input
+                  type="text"
+                  value={feishuAppId}
+                  onChange={(e) => setFeishuAppId(e.target.value)}
+                  placeholder="输入飞书 App ID"
+                />
+              </div>
+              <div>
+                <Label className="mb-1">App Secret</Label>
+                <Input
+                  type="password"
+                  value={feishuAppSecret}
+                  onChange={(e) => setFeishuAppSecret(e.target.value)}
+                  placeholder="输入飞书 App Secret"
+                />
+              </div>
             </div>
-            <div>
-              <label className="block text-sm font-medium text-foreground mb-1">App Secret</label>
-              <Input
-                type="password"
-                value={feishuAppSecret}
-                onChange={(e) => setFeishuAppSecret(e.target.value)}
-                placeholder="输入飞书 App Secret"
-              />
-            </div>
-          </div>
-        </section>
+          </CardContent>
+        </Card>
 
         {/* Telegram */}
-        <section className="bg-card rounded-xl border border-border p-5">
-          <h2 className="text-base font-semibold text-foreground mb-3">Telegram</h2>
-          <p className="text-xs text-muted-foreground mb-3">
-            填写 Telegram Bot Token，绑定后即可在 Telegram 中与 AI 对话。
-          </p>
-          <div>
-            <label className="block text-sm font-medium text-foreground mb-1">Bot Token</label>
-            <Input
-              type="password"
-              value={telegramBotToken}
-              onChange={(e) => setTelegramBotToken(e.target.value)}
-              placeholder="输入 Telegram Bot Token"
-            />
-          </div>
-        </section>
-
-        {/* QQ */}
-        <section className="bg-card rounded-xl border border-border p-5">
-          <h2 className="text-base font-semibold text-foreground mb-3">QQ</h2>
-          <p className="text-xs text-muted-foreground mb-3">
-            填写 QQ Bot 应用凭证，绑定后即可在 QQ 中与 AI 对话。
-          </p>
-          <div className="grid md:grid-cols-2 gap-3">
+        <Card className="shadow-sm">
+          <CardContent>
+            <h2 className="text-base font-semibold text-foreground mb-3">Telegram</h2>
+            <p className="text-xs text-muted-foreground mb-3">
+              填写 Telegram Bot Token，绑定后即可在 Telegram 中与 AI 对话。
+            </p>
             <div>
-              <label className="block text-sm font-medium text-foreground mb-1">App ID</label>
-              <Input
-                type="text"
-                value={qqAppId}
-                onChange={(e) => setQqAppId(e.target.value)}
-                placeholder="输入 QQ Bot App ID"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-foreground mb-1">App Secret</label>
+              <Label className="mb-1">Bot Token</Label>
               <Input
                 type="password"
-                value={qqAppSecret}
-                onChange={(e) => setQqAppSecret(e.target.value)}
-                placeholder="输入 QQ Bot App Secret"
+                value={telegramBotToken}
+                onChange={(e) => setTelegramBotToken(e.target.value)}
+                placeholder="输入 Telegram Bot Token"
               />
             </div>
-          </div>
-        </section>
+          </CardContent>
+        </Card>
+
+        {/* QQ */}
+        <Card className="shadow-sm">
+          <CardContent>
+            <h2 className="text-base font-semibold text-foreground mb-3">QQ</h2>
+            <p className="text-xs text-muted-foreground mb-3">
+              填写 QQ Bot 应用凭证，绑定后即可在 QQ 中与 AI 对话。
+            </p>
+            <div className="grid md:grid-cols-2 gap-3">
+              <div>
+                <Label className="mb-1">App ID</Label>
+                <Input
+                  type="text"
+                  value={qqAppId}
+                  onChange={(e) => setQqAppId(e.target.value)}
+                  placeholder="输入 QQ Bot App ID"
+                />
+              </div>
+              <div>
+                <Label className="mb-1">App Secret</Label>
+                <Input
+                  type="password"
+                  value={qqAppSecret}
+                  onChange={(e) => setQqAppSecret(e.target.value)}
+                  placeholder="输入 QQ Bot App Secret"
+                />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
 
         {/* Actions */}
         <div className="flex flex-col sm:flex-row gap-3 justify-end">

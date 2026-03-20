@@ -14,6 +14,17 @@ export function stripAgentInternalTags(text: string): string {
     .trim();
 }
 
+/**
+ * Strip virtual JID suffixes (#task:xxx, #agent:xxx) to get the base JID.
+ */
+export function stripVirtualJidSuffix(jid: string): string {
+  const taskSep = jid.indexOf('#task:');
+  if (taskSep >= 0) return jid.slice(0, taskSep);
+  const agentSep = jid.indexOf('#agent:');
+  if (agentSep >= 0) return jid.slice(0, agentSep);
+  return jid;
+}
+
 export function getClientIp(c: any): string {
   if (TRUST_PROXY) {
     const xff = c.req.header('x-forwarded-for');

@@ -137,14 +137,14 @@ export const MemoryGlobalSchema = z.object({
 
 export const ClaudeConfigSchema = z.object({
   anthropicBaseUrl: z.string(),
-  happyclawModel: z.string().max(128).optional(),
+  anthropicModel: z.string().max(128).optional(),
 });
 
 export const ClaudeThirdPartyProfileCreateSchema = z.object({
   name: z.string().min(1).max(64),
   anthropicBaseUrl: z.string().max(2000),
   anthropicAuthToken: z.string().max(2000),
-  happyclawModel: z.string().max(128).optional(),
+  anthropicModel: z.string().max(128).optional(),
   customEnv: z.record(z.string().max(256), z.string().max(4096)).optional(),
 });
 
@@ -152,14 +152,14 @@ export const ClaudeThirdPartyProfilePatchSchema = z
   .object({
     name: z.string().min(1).max(64).optional(),
     anthropicBaseUrl: z.string().max(2000).optional(),
-    happyclawModel: z.string().max(128).optional(),
+    anthropicModel: z.string().max(128).optional(),
     customEnv: z.record(z.string().max(256), z.string().max(4096)).optional(),
   })
   .refine(
     (data) =>
       typeof data.name === 'string' ||
       typeof data.anthropicBaseUrl === 'string' ||
-      typeof data.happyclawModel === 'string' ||
+      typeof data.anthropicModel === 'string' ||
       data.customEnv !== undefined,
     { message: 'At least one profile field must be provided' },
   );
@@ -422,7 +422,7 @@ export const ContainerEnvSchema = z.object({
   anthropicAuthToken: z.string().max(2000).optional(),
   anthropicApiKey: z.string().max(2000).optional(),
   claudeCodeOauthToken: z.string().max(2000).optional(),
-  happyclawModel: z.string().max(128).optional(),
+  anthropicModel: z.string().max(128).optional(),
   customEnv: z
     .record(z.string().max(256), z.string().max(4096))
     .optional()
@@ -565,3 +565,21 @@ export interface MemorySearchHit extends MemorySource {
   hits: number;
   snippet: string;
 }
+
+// --- Bug Report schemas ---
+
+// 单张截图上限 5MB（base64 编码后约 6.67MB）
+const MAX_SCREENSHOT_BASE64_LENGTH = (5 * 1024 * 1024 * 4) / 3;
+
+export const BugReportGenerateSchema = z.object({
+  description: z.string().min(1).max(5000),
+  screenshots: z
+    .array(z.string().max(MAX_SCREENSHOT_BASE64_LENGTH))
+    .max(3)
+    .optional(),
+});
+
+export const BugReportSubmitSchema = z.object({
+  title: z.string().min(1).max(256),
+  body: z.string().min(1).max(65536),
+});

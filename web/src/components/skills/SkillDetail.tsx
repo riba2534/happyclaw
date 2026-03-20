@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { File, Folder, Loader2, Lock, Trash2, RefreshCw, Package } from 'lucide-react';
+import { Card, CardContent } from '@/components/ui/card';
 import { useSkillsStore, type SkillDetail as SkillDetailType } from '../../stores/skills';
 import { MarkdownRenderer } from '../chat/MarkdownRenderer';
 
@@ -44,30 +45,36 @@ export function SkillDetail({ skillId, onDeleted }: SkillDetailProps) {
 
   if (!skillId) {
     return (
-      <div className="bg-card rounded-xl border border-border p-12 flex items-center justify-center">
-        <p className="text-muted-foreground text-center">选择一个技能查看详情</p>
-      </div>
+      <Card>
+        <CardContent className="flex items-center justify-center py-8">
+          <p className="text-muted-foreground text-center">选择一个技能查看详情</p>
+        </CardContent>
+      </Card>
     );
   }
 
   if (loading) {
     return (
-      <div className="bg-card rounded-xl border border-border p-12 flex items-center justify-center">
-        <Loader2 className="animate-spin text-primary" size={32} />
-      </div>
+      <Card>
+        <CardContent className="flex items-center justify-center py-8">
+          <Loader2 className="animate-spin text-primary" size={32} />
+        </CardContent>
+      </Card>
     );
   }
 
   if (error || !detail) {
     return (
-      <div className="bg-card rounded-xl border border-border p-12 flex items-center justify-center">
-        <p className="text-red-600 text-center">{error || '加载失败'}</p>
-      </div>
+      <Card>
+        <CardContent className="flex items-center justify-center py-8">
+          <p className="text-error text-center">{error || '加载失败'}</p>
+        </CardContent>
+      </Card>
     );
   }
 
   return (
-    <div className="bg-card rounded-xl border border-border overflow-hidden">
+    <Card className="overflow-hidden">
       <div className="p-6 border-b border-border">
         <div className="flex items-start justify-between gap-4 mb-3">
           <div className="flex-1 min-w-0">
@@ -83,7 +90,7 @@ export function SkillDetail({ skillId, onDeleted }: SkillDetailProps) {
                 {detail.source === 'user' ? '用户级' : '项目级'}
               </span>
               {detail.syncedFromHost && (
-                <span className="px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700">
+                <span className="px-2 py-0.5 rounded text-xs font-medium bg-warning-bg text-warning">
                   已同步
                 </span>
               )}
@@ -150,7 +157,7 @@ export function SkillDetail({ skillId, onDeleted }: SkillDetailProps) {
                     setDeleting(false);
                   }
                 }}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-950 transition-colors disabled:opacity-50"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-error hover:bg-error-bg transition-colors disabled:opacity-50"
               >
                 <Trash2 size={16} />
                 {deleting ? '删除中...' : '删除'}
@@ -245,6 +252,6 @@ export function SkillDetail({ skillId, onDeleted }: SkillDetailProps) {
             : '项目级技能为只读，不可修改或删除'}
         </p>
       </div>
-    </div>
+    </Card>
   );
 }

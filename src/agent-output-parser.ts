@@ -404,27 +404,43 @@ export function handleNonZeroExit(
 
   // Graceful shutdown: agent was killed by SIGTERM/SIGKILL (e.g. user
   // clicked stop, session reset, clear-history). Treat as normal
-  // completion instead of an error.
+  // completion instead of an error — BUT only if the agent had already
+  // produced some output. If killed before emitting ANY output markers
+  // (success/closed), it means the process died during initialization
+  // (e.g., race condition) and should be treated as an error so the UI
+  // waiting state gets cleared via sendSystemMessage('agent_error').
   const isForceKilled =
     signal === 'SIGTERM' || signal === 'SIGKILL' || code === 137;
   if (isForceKilled && ctx.onOutput) {
-    logger.info(
-      { group: ctx.groupName, signal, code, duration, newSessionId },
-      `${ctx.label} terminated by signal (user stop / graceful shutdown)`,
+    const hadOutput =
+      ctx.stdoutState.hasSuccessOutput || ctx.stdoutState.hasClosedOutput;
+
+    if (hadOutput) {
+      logger.info(
+        { group: ctx.groupName, signal, code, duration, newSessionId },
+        `${ctx.label} terminated by signal (user stop / graceful shutdown)`,
+      );
+      waitForOutputChain(
+        outputChain,
+        ctx.groupName,
+        `${ctx.filePrefix} force-kill path`,
+        () => {
+          ctx.resolvePromise({
+            status: 'success',
+            result: null,
+            newSessionId,
+          });
+        },
+      );
+      return true;
+    }
+
+    // Agent was killed before producing any output — fall through to
+    // error path so the caller can broadcast an error and clear the UI.
+    logger.warn(
+      { group: ctx.groupName, signal, code, duration },
+      `${ctx.label} killed before producing any output — treating as error`,
     );
-    waitForOutputChain(
-      outputChain,
-      ctx.groupName,
-      `${ctx.filePrefix} force-kill path`,
-      () => {
-        ctx.resolvePromise({
-          status: 'success',
-          result: null,
-          newSessionId,
-        });
-      },
-    );
-    return true;
   }
 
   // Build error output

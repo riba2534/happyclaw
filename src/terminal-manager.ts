@@ -1,9 +1,18 @@
 import { spawn, type ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import { createRequire } from 'module';
-import pty from 'node-pty';
+import { fileURLToPath } from 'url';
 import { logger } from './logger.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Standalone Node.js script that wraps node-pty.
+ * Spawned as `node pty-worker.cjs <json-args>`, communicates via JSON lines
+ * over stdin/stdout.  This sidesteps Bun's incompatibility with node-pty's
+ * native addon.
+ */
+const PTY_WORKER_PATH = path.resolve(__dirname, '..', 'src', 'pty-worker.cjs');
 
 interface TerminalSessionBase {
   containerName: string;
@@ -14,7 +23,7 @@ interface TerminalSessionBase {
 
 interface PtyTerminalSession extends TerminalSessionBase {
   mode: 'pty';
-  pty: pty.IPty;
+  process: ChildProcess;
 }
 
 interface PipeTerminalSession extends TerminalSessionBase {
@@ -26,42 +35,7 @@ interface PipeTerminalSession extends TerminalSessionBase {
 type TerminalSession = PtyTerminalSession | PipeTerminalSession;
 
 export class TerminalManager {
-  private static ensuredPtyHelper = false;
   private sessions = new Map<string, TerminalSession>();
-
-  private ensurePtySpawnHelperExecutable(): void {
-    if (TerminalManager.ensuredPtyHelper) return;
-    TerminalManager.ensuredPtyHelper = true;
-
-    if (process.platform === 'win32') return;
-
-    try {
-      const require = createRequire(import.meta.url);
-      const nodePtyMain = require.resolve('node-pty');
-      const helperPath = path.join(
-        path.dirname(nodePtyMain),
-        '..',
-        'prebuilds',
-        `${process.platform}-${process.arch}`,
-        'spawn-helper',
-      );
-      if (!fs.existsSync(helperPath)) return;
-      const stat = fs.statSync(helperPath);
-      // Ensure user-executable bit for node-pty helper.
-      if ((stat.mode & 0o100) === 0) {
-        fs.chmodSync(helperPath, stat.mode | 0o755);
-        logger.info(
-          { helperPath },
-          'Fixed node-pty spawn-helper executable bit',
-        );
-      }
-    } catch (err) {
-      logger.warn(
-        { err },
-        'Failed to validate node-pty spawn-helper permissions',
-      );
-    }
-  }
 
   start(
     groupJid: string,
@@ -86,47 +60,92 @@ export class TerminalManager {
       'elif command -v bash >/dev/null 2>&1; then exec bash -il; ' +
       'else exec sh -i; fi';
 
-    this.ensurePtySpawnHelperExecutable();
-
-    try {
-      const ptyProcess = pty.spawn(
-        'docker',
-        ['exec', '-it', containerName, '/bin/sh', '-lc', shellBootstrap],
-        {
+    // Try PTY mode via node subprocess (Bun can't load node-pty natively)
+    if (fs.existsSync(PTY_WORKER_PATH)) {
+      try {
+        const workerArgs = JSON.stringify({
+          file: 'docker',
+          args: ['exec', '-it', '-u', 'node', containerName, '/bin/sh', '-c', shellBootstrap],
           name: 'xterm-256color',
           cols,
           rows,
+        });
+
+        const proc = spawn('node', [PTY_WORKER_PATH, workerArgs], {
+          stdio: ['pipe', 'pipe', 'pipe'],
           env: process.env as Record<string, string>,
-        },
-      );
+        });
 
-      const session: PtyTerminalSession = {
-        mode: 'pty',
-        pty: ptyProcess,
-        containerName,
-        groupJid,
-        createdAt: Date.now(),
-        stoppedManually: false,
-      };
+        const session: PtyTerminalSession = {
+          mode: 'pty',
+          process: proc,
+          containerName,
+          groupJid,
+          createdAt: Date.now(),
+          stoppedManually: false,
+        };
 
-      ptyProcess.onData(onData);
-      ptyProcess.onExit(({ exitCode, signal }) => {
-        if (session.stoppedManually) return;
-        logger.info({ groupJid, exitCode, signal }, 'Terminal session exited');
-        this.sessions.delete(groupJid);
-        onExit(exitCode, signal);
-      });
+        // Parse JSON-line messages from the worker
+        let buffer = '';
+        proc.stdout?.on('data', (chunk: Buffer) => {
+          buffer += chunk.toString();
+          let newlineIdx: number;
+          while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
+            const line = buffer.slice(0, newlineIdx);
+            buffer = buffer.slice(newlineIdx + 1);
+            try {
+              const msg = JSON.parse(line);
+              if (msg.type === 'data') {
+                onData(msg.data);
+              } else if (msg.type === 'exit') {
+                if (!session.stoppedManually) {
+                  logger.info({ groupJid, exitCode: msg.exitCode, signal: msg.signal }, 'Terminal session exited');
+                  this.sessions.delete(groupJid);
+                  onExit(msg.exitCode, msg.signal);
+                }
+              }
+            } catch {
+              // Not JSON — forward as raw output
+              onData(line);
+            }
+          }
+        });
 
-      this.sessions.set(groupJid, session);
-      return;
-    } catch (err) {
-      logger.warn(
-        { err, groupJid, containerName },
-        'PTY spawn failed, falling back to pipe terminal',
-      );
+        proc.stderr?.on('data', (chunk: Buffer) => {
+          logger.warn({ groupJid, stderr: chunk.toString().trim() }, 'PTY worker stderr');
+        });
+
+        proc.on('close', (exitCode) => {
+          if (!session.stoppedManually && this.sessions.has(groupJid)) {
+            logger.info({ groupJid, exitCode }, 'PTY worker process closed');
+            this.sessions.delete(groupJid);
+            onExit(exitCode ?? 1);
+          }
+        });
+
+        proc.on('error', (err) => {
+          logger.warn({ err, groupJid }, 'PTY worker spawn error');
+          if (!session.stoppedManually && this.sessions.has(groupJid)) {
+            this.sessions.delete(groupJid);
+            onData(`\r\n[terminal error: ${err.message}]\r\n`);
+            onExit(1);
+          }
+        });
+
+        this.sessions.set(groupJid, session);
+        return;
+      } catch (err) {
+        logger.warn(
+          { err, groupJid, containerName },
+          'PTY worker spawn failed, falling back to pipe terminal',
+        );
+      }
+    } else {
+      logger.warn({ path: PTY_WORKER_PATH }, 'PTY worker script not found, falling back to pipe terminal');
     }
 
-    const proc = spawn('docker', ['exec', '-i', containerName, '/bin/sh'], {
+    // Fallback: pipe mode (no PTY, no prompt, line-based input)
+    const proc = spawn('docker', ['exec', '-i', '-u', 'node', containerName, '/bin/sh'], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
         ...process.env,
@@ -176,22 +195,19 @@ export class TerminalManager {
 
   write(groupJid: string, data: string): void {
     const session = this.sessions.get(groupJid);
-    if (session) {
-      if (session.mode === 'pty') {
-        session.pty.write(data);
-      } else if (session.process.stdin?.writable) {
-        // xterm sends Enter as "\r"; pipes need "\n" to submit commands.
-        const normalized = data.replace(/\r/g, '\n');
-        session.process.stdin.write(normalized);
+    if (!session) return;
 
-        // In non-TTY mode, remote shell usually won't echo input.
-        // Emit a lightweight local echo so users can see what they typed.
-        if (normalized.length > 0) {
-          const echoed = normalized
-            .replace(/\n/g, '\r\n')
-            .replace(/\u007f/g, '\b \b');
-          session.onData(echoed);
-        }
+    if (session.mode === 'pty') {
+      // Send write command to PTY worker via JSON line
+      session.process.stdin?.write(JSON.stringify({ type: 'write', data }) + '\n');
+    } else if (session.process.stdin?.writable) {
+      const normalized = data.replace(/\r/g, '\n');
+      session.process.stdin.write(normalized);
+      if (normalized.length > 0) {
+        const echoed = normalized
+          .replace(/\n/g, '\r\n')
+          .replace(/\u007f/g, '\b \b');
+        session.onData(echoed);
       }
     }
   }
@@ -199,7 +215,11 @@ export class TerminalManager {
   resize(groupJid: string, cols: number, rows: number): void {
     const session = this.sessions.get(groupJid);
     if (session?.mode === 'pty') {
-      session.pty.resize(cols, rows);
+      try {
+        session.process.stdin?.write(JSON.stringify({ type: 'resize', cols, rows }) + '\n');
+      } catch {
+        // Worker may already be dead — ignore
+      }
     }
   }
 
@@ -211,7 +231,8 @@ export class TerminalManager {
       this.sessions.delete(groupJid);
       try {
         if (session.mode === 'pty') {
-          session.pty.kill();
+          session.process.stdin?.write(JSON.stringify({ type: 'kill' }) + '\n');
+          setTimeout(() => { try { session.process.kill(); } catch {} }, 500);
         } else {
           session.process.kill();
         }

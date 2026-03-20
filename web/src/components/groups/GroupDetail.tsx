@@ -47,7 +47,7 @@ export function GroupDetail({ group }: GroupDetailProps) {
             {group.lastMessage}
           </div>
           {group.lastMessageTime && (
-            <div className="text-xs text-muted-foreground/60 mt-1">
+            <div className="text-xs text-muted-foreground mt-1">
               {formatDate(group.lastMessageTime)}
             </div>
           )}
@@ -55,7 +55,7 @@ export function GroupDetail({ group }: GroupDetailProps) {
       )}
 
       {/* Note */}
-      <div className="text-xs text-muted-foreground/60 pt-2 border-t border-border">
+      <div className="text-xs text-muted-foreground pt-2 border-t border-border">
         暂不支持编辑群组配置
       </div>
     </div>

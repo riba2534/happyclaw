@@ -47,6 +47,7 @@ interface TasksState {
   updateTaskStatus: (id: string, status: 'active' | 'paused') => Promise<void>;
   deleteTask: (id: string) => Promise<void>;
   loadLogs: (taskId: string) => Promise<void>;
+  runTaskNow: (id: string) => Promise<void>;
 }
 
 function normalizeOnceScheduleValue(value: string): string {
@@ -139,6 +140,17 @@ export const useTasksStore = create<TasksState>((set, get) => ({
         logs: { ...s.logs, [taskId]: data.logs },
         error: null,
       }));
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : String(err) });
+    }
+  },
+
+  runTaskNow: async (id: string) => {
+    try {
+      await api.post(`/api/tasks/${id}/run`);
+      set({ error: null });
+      // Refresh after a short delay (task runs in background)
+      setTimeout(() => get().loadTasks(), 2000);
     } catch (err) {
       set({ error: err instanceof Error ? err.message : String(err) });
     }

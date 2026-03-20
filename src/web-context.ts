@@ -3,11 +3,12 @@
 import { WebSocket } from 'ws';
 import { RegisteredGroup, UserRole } from './types.js';
 import { GroupQueue } from './group-queue.js';
-import type { AuthUser, NewMessage, MessageCursor } from './types.js';
+import type { AuthUser, NewMessage, MessageCursor, UserSessionWithUser } from './types.js';
 import {
   getJidsByFolder,
   getRegisteredGroup,
   getGroupMemberRole,
+  getSessionWithUser,
 } from './db.js';
 
 export interface WsClientInfo {
@@ -60,6 +61,7 @@ export interface WebDeps {
   } | null>;
   clearImFailCounts?: (jid: string) => void;
   updateReplyRoute?: (folder: string, sourceJid: string | null) => void;
+  triggerTaskRun?: (taskId: string) => { success: boolean; error?: string };
 }
 
 export type Variables = {
@@ -92,6 +94,53 @@ const lastActiveCleanupTimer = setInterval(
   60 * 60 * 1000,
 );
 lastActiveCleanupTimer.unref?.();
+
+// Session data cache — 30s TTL, avoids DB query on every request
+const SESSION_CACHE_TTL_MS = 30 * 1000;
+const sessionCache = new Map<string, { data: UserSessionWithUser; expiry: number }>();
+
+export function getCachedSessionWithUser(
+  sessionId: string,
+): UserSessionWithUser | undefined {
+  const cached = sessionCache.get(sessionId);
+  if (cached && cached.expiry > Date.now()) {
+    return cached.data;
+  }
+  sessionCache.delete(sessionId);
+  const data = getSessionWithUser(sessionId);
+  if (data) {
+    sessionCache.set(sessionId, {
+      data,
+      expiry: Date.now() + SESSION_CACHE_TTL_MS,
+    });
+  }
+  return data;
+}
+
+export function invalidateSessionCache(sessionId: string): void {
+  sessionCache.delete(sessionId);
+  lastActiveCache.delete(sessionId);
+}
+
+export function invalidateUserSessions(userId: string): void {
+  for (const [sid, entry] of sessionCache.entries()) {
+    if (entry.data.user_id === userId) {
+      sessionCache.delete(sid);
+      lastActiveCache.delete(sid);
+    }
+  }
+}
+
+const sessionCacheCleanupTimer = setInterval(
+  () => {
+    const now = Date.now();
+    for (const [sid, entry] of sessionCache.entries()) {
+      if (entry.expiry < now) sessionCache.delete(sid);
+    }
+  },
+  5 * 60 * 1000,
+);
+sessionCacheCleanupTimer.unref?.();
 
 // Cookie parser - used by middleware and WebSocket
 export function parseCookie(

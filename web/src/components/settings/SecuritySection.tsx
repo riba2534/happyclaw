@@ -1,15 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import { RefreshCw, Trash2 } from 'lucide-react';
+import { toast } from 'sonner';
 
 import { useAuthStore } from '../../stores/auth';
 import { Button } from '@/components/ui/button';
 import { api } from '../../api/client';
-import type { SessionInfo, SettingsNotification } from './types';
+import type { SessionInfo } from './types';
 import { getErrorMessage } from './types';
 
-interface SecuritySectionProps extends SettingsNotification {}
-
-export function SecuritySection({ setNotice, setError }: SecuritySectionProps) {
+export function SecuritySection() {
   const { logout } = useAuthStore();
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [loading, setLoading] = useState(false);
@@ -31,10 +30,10 @@ export function SecuritySection({ setNotice, setError }: SecuritySectionProps) {
   const handleRevoke = async (id: string) => {
     try {
       await api.delete(`/api/auth/sessions/${id}`);
-      setNotice('会话已撤销');
+      toast.success('会话已撤销');
       loadSessions();
     } catch (err) {
-      setError(getErrorMessage(err, '操作失败'));
+      toast.error(getErrorMessage(err, '操作失败'));
     }
   };
 
@@ -61,8 +60,8 @@ export function SecuritySection({ setNotice, setError }: SecuritySectionProps) {
               <div key={s.id} className="flex items-center justify-between py-3">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 text-sm">
-                    <span className="text-foreground/80 truncate max-w-xs">{s.user_agent?.split(' ').slice(0, 3).join(' ') || '未知设备'}</span>
-                    {s.is_current && <span className="text-xs px-1.5 py-0.5 bg-green-100 text-green-700 rounded">当前</span>}
+                    <span className="text-foreground truncate max-w-xs">{s.user_agent?.split(' ').slice(0, 3).join(' ') || '未知设备'}</span>
+                    {s.is_current && <span className="text-xs px-1.5 py-0.5 bg-success-bg text-success rounded">当前</span>}
                   </div>
                   <div className="text-xs text-muted-foreground mt-0.5">
                     IP: {s.ip_address || '未知'} · 最后活跃: {new Date(s.last_active_at).toLocaleString('zh-CN')}
@@ -71,7 +70,7 @@ export function SecuritySection({ setNotice, setError }: SecuritySectionProps) {
                 {!s.is_current && (
                   <button
                     onClick={() => handleRevoke(s.id)}
-                    className="p-2 hover:bg-muted rounded-lg text-muted-foreground hover:text-red-600 cursor-pointer"
+                    className="p-2 hover:bg-muted rounded-lg text-muted-foreground hover:text-error cursor-pointer"
                     title="撤销会话"
                   >
                     <Trash2 className="w-4 h-4" />
@@ -94,7 +93,7 @@ export function SecuritySection({ setNotice, setError }: SecuritySectionProps) {
         </div>
         <button
           onClick={handleLogout}
-          className="px-4 py-2 text-red-600 hover:bg-red-50 rounded-lg border border-red-600 transition-colors font-medium cursor-pointer"
+          className="px-4 py-2 text-error hover:bg-error-bg rounded-lg border border-error transition-colors font-medium cursor-pointer"
         >
           退出登录
         </button>

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronUp, Users } from 'lucide-react';
+import { Card } from '@/components/ui/card';
 import { GroupInfo } from '../../stores/groups';
 import { GroupDetail } from './GroupDetail';
 
@@ -22,7 +23,7 @@ export function GroupCard({ group }: GroupCardProps) {
   };
 
   return (
-    <div className="bg-card rounded-xl border border-border hover:border-primary/60 transition-colors duration-200">
+    <Card className="hover:border-brand-300 transition-colors duration-200">
       {/* Card Header - Clickable */}
       <button
         onClick={() => setExpanded(!expanded)}
@@ -36,7 +37,7 @@ export function GroupCard({ group }: GroupCardProps) {
                 {group.name}
               </h3>
               {group.is_shared && (
-                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-medium flex-shrink-0">
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-brand-100 text-primary text-[10px] font-medium flex-shrink-0">
                   <Users className="w-3 h-3" />
                   {group.member_count ?? 0}
                 </span>
@@ -62,9 +63,9 @@ export function GroupCard({ group }: GroupCardProps) {
           {/* Expand Icon */}
           <div className="ml-4 flex-shrink-0">
             {expanded ? (
-              <ChevronUp className="w-5 h-5 text-muted-foreground/60" />
+              <ChevronUp className="w-5 h-5 text-muted-foreground" />
             ) : (
-              <ChevronDown className="w-5 h-5 text-muted-foreground/60" />
+              <ChevronDown className="w-5 h-5 text-muted-foreground" />
             )}
           </div>
         </div>
@@ -76,6 +77,6 @@ export function GroupCard({ group }: GroupCardProps) {
           <GroupDetail group={group} />
         </div>
       )}
-    </div>
+    </Card>
   );
 }

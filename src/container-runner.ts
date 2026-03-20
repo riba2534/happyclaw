@@ -98,9 +98,12 @@ export interface ContainerInput {
   chatJid: string;
   /** @deprecated Use isHome + isAdminHome instead */
   isMain: boolean;
+  turnId?: string;
   isHome?: boolean;
   isAdminHome?: boolean;
   isScheduledTask?: boolean;
+  /** Isolated task run ID — determines IPC namespace (tasks-run/{taskRunId}/) */
+  taskRunId?: string;
   images?: Array<{ data: string; mimeType?: string }>;
   agentId?: string;
   agentName?: string;
@@ -112,6 +115,11 @@ export interface ContainerOutput {
   newSessionId?: string;
   error?: string;
   streamEvent?: StreamEvent;
+  turnId?: string;
+  sessionId?: string;
+  sdkMessageUuid?: string;
+  sourceKind?: 'sdk_final' | 'sdk_send_message' | 'interrupt_partial' | 'overflow_partial' | 'compact_partial' | 'legacy';
+  finalizationReason?: 'completed' | 'interrupted' | 'error';
 }
 
 interface VolumeMount {
@@ -141,6 +149,7 @@ function buildVolumeMounts(
   selectedSkills: string[] | null = null,
   agentId?: string,
   ownerHomeFolder?: string,
+  taskRunId?: string,
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
@@ -290,10 +299,13 @@ function buildVolumeMounts(
 
   // Per-group IPC namespace: each group gets its own IPC directory
   // Sub-agents get their own IPC subdirectory under agents/{agentId}/
+  // Isolated tasks get their own IPC subdirectory under tasks-run/{taskRunId}/
   // Use 0o777 so container (node/1000) and host (agent/1002) can both read/write.
   const groupIpcDir = agentId
     ? path.join(DATA_DIR, 'ipc', group.folder, 'agents', agentId)
-    : path.join(DATA_DIR, 'ipc', group.folder);
+    : taskRunId
+      ? path.join(DATA_DIR, 'ipc', group.folder, 'tasks-run', taskRunId)
+      : path.join(DATA_DIR, 'ipc', group.folder);
   mkdirForContainer(groupIpcDir);
   // All agents (main + sub/conversation) get agents/ subdir for spawn/message IPC
   // Use chmod 777 so both host (agent/1002) and container (node/1000) can write
@@ -423,6 +435,7 @@ export async function runContainerAgent(
     group.selected_skills ?? null,
     input.agentId,
     ownerHomeFolder,
+    input.taskRunId,
   );
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const agentSuffix = input.agentId
@@ -775,9 +788,12 @@ export async function runHostAgent(
 
   // 2. 确保目录结构（宿主机模式下限制目录权限）
   // Sub-agents get their own IPC and session directories
+  // Isolated tasks get their own IPC subdirectory under tasks-run/{taskRunId}/
   const groupIpcDir = input.agentId
     ? path.join(DATA_DIR, 'ipc', group.folder, 'agents', input.agentId)
-    : path.join(DATA_DIR, 'ipc', group.folder);
+    : input.taskRunId
+      ? path.join(DATA_DIR, 'ipc', group.folder, 'tasks-run', input.taskRunId)
+      : path.join(DATA_DIR, 'ipc', group.folder);
   fs.mkdirSync(path.join(groupIpcDir, 'messages'), {
     recursive: true,
     mode: 0o700,
@@ -962,7 +978,7 @@ export async function runHostAgent(
     );
   }
 
-  // Warn if dist may be stale (src newer than dist)
+  // Auto-rebuild if dist is stale (src newer than dist)
   try {
     const distMtime = fs.statSync(agentRunnerDist).mtimeMs;
     const srcDir = path.join(agentRunnerRoot, 'src');
@@ -971,10 +987,27 @@ export async function runHostAgent(
       ...srcFiles.map((f) => fs.statSync(path.join(srcDir, f)).mtimeMs),
     );
     if (newestSrc > distMtime) {
-      logger.warn(
+      logger.info(
         { group: group.name },
-        `agent-runner dist 可能已过期（src 比 dist 新）。建议执行：${setupBuildHint}`,
+        'agent-runner dist 已过期，自动重新编译...',
       );
+      try {
+        const { execSync } = await import('child_process');
+        execSync('npm run build', {
+          cwd: agentRunnerRoot,
+          stdio: 'pipe',
+          timeout: 30_000,
+        });
+        logger.info(
+          { group: group.name },
+          'agent-runner 自动编译完成',
+        );
+      } catch (buildErr) {
+        logger.warn(
+          { group: group.name, err: buildErr },
+          `agent-runner 自动编译失败，使用旧版 dist。手动执行：${setupBuildHint}`,
+        );
+      }
     }
   } catch {
     // Best effort, don't block execution

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Copy, FileText, Trash2 } from 'lucide-react';
+import { Copy, FileText, ImageDown, Trash2 } from 'lucide-react';
 import { useChatStore } from '../../stores/chat';
 
 interface MessageContextMenuProps {
@@ -9,9 +9,10 @@ interface MessageContextMenuProps {
   onClose: () => void;
   chatJid?: string;
   messageId?: string;
+  onShareImage?: () => void;
 }
 
-export function MessageContextMenu({ content, position, onClose, chatJid, messageId }: MessageContextMenuProps) {
+export function MessageContextMenu({ content, position, onClose, chatJid, messageId, onShareImage }: MessageContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -94,6 +95,18 @@ export function MessageContextMenu({ content, position, onClose, chatJid, messag
           <FileText className="w-4 h-4 text-muted-foreground group-hover/item:text-primary transition-colors" />
           复制 Markdown
         </button>
+        {onShareImage && (
+          <>
+            <div className="mx-3 my-0.5 border-t border-border" />
+            <button
+              onClick={() => { onShareImage(); onClose(); }}
+              className="group/item w-full flex items-center gap-3 mx-1 px-3 py-2.5 text-sm text-foreground rounded-lg hover:bg-foreground/10 active:bg-foreground/15 transition-colors"
+            >
+              <ImageDown className="w-4 h-4 text-muted-foreground group-hover/item:text-primary transition-colors" />
+              生成分享图片
+            </button>
+          </>
+        )}
         {chatJid && messageId && (
           <>
             <div className="mx-3 my-0.5 border-t border-border" />

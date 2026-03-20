@@ -15,9 +15,26 @@ export function useKeyboardHeight() {
 
     viewport.addEventListener('resize', handleResize);
     viewport.addEventListener('scroll', handleResize);
+
+    // When a textarea/input gains focus, scroll it into view after a short
+    // delay so the iOS keyboard animation has time to settle.
+    const handleFocusIn = (e: FocusEvent) => {
+      const target = e.target;
+      if (
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLInputElement
+      ) {
+        setTimeout(() => {
+          target.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }, 300);
+      }
+    };
+    document.addEventListener('focusin', handleFocusIn);
+
     return () => {
       viewport.removeEventListener('resize', handleResize);
       viewport.removeEventListener('scroll', handleResize);
+      document.removeEventListener('focusin', handleFocusIn);
     };
   }, []);
 

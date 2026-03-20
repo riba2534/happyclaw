@@ -74,7 +74,27 @@ export interface NewMessage {
   content: string;
   timestamp: string;
   attachments?: string;
+  turn_id?: string | null;
+  session_id?: string | null;
+  sdk_message_uuid?: string | null;
+  source_kind?: MessageSourceKind | null;
+  finalization_reason?: MessageFinalizationReason | null;
 }
+
+export type MessageSourceKind =
+  | 'sdk_final'
+  | 'sdk_send_message'
+  | 'interrupt_partial'
+  | 'overflow_partial'
+  | 'compact_partial'
+  | 'legacy';
+
+export type MessageFinalizationReason =
+  | 'completed'
+  | 'interrupted'
+  | 'error'
+  | 'shutdown'
+  | 'crash_recovery';
 
 export interface MessageAttachment {
   type: 'image';
@@ -271,6 +291,7 @@ export interface SubAgent {
   created_at: string;
   completed_at: string | null;
   result_summary: string | null;
+  last_im_jid: string | null;
 }
 
 // WebSocket message types
@@ -338,6 +359,30 @@ export type WsMessageOut =
       type: 'billing_update';
       userId: string;
       usage: BillingAccessResult;
+    }
+  | { type: 'ws_error'; error: string; chatJid?: string }
+  | {
+      type: 'stream_snapshot';
+      chatJid: string;
+      snapshot: {
+        partialText: string;
+        activeTools: Array<{
+          toolName: string;
+          toolUseId: string;
+          startTime: number;
+          toolInputSummary?: string;
+          parentToolUseId?: string | null;
+        }>;
+        recentEvents: Array<{
+          id: string;
+          timestamp: number;
+          text: string;
+          kind: 'tool' | 'skill' | 'hook' | 'status';
+        }>;
+        todos?: Array<{ id: string; content: string; status: string }>;
+        systemStatus: string | null;
+        turnId?: string;
+      };
     };
 
 export type WsMessageIn =

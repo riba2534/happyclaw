@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Loader2, X } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -10,6 +10,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Label } from '@/components/ui/label';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
 
 interface Group {
@@ -145,28 +153,22 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin }: CreateTas
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="bg-card rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-        {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-border">
-          <h2 className="text-xl font-bold text-foreground">创建定时任务</h2>
-          <button
-            onClick={onClose}
-            className="p-2 text-muted-foreground/60 hover:text-muted-foreground hover:bg-muted rounded-lg transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto" showCloseButton>
+        <DialogHeader>
+          <DialogTitle>创建定时任务</DialogTitle>
+          <DialogDescription className="sr-only">填写以下表单创建新的定时任务</DialogDescription>
+        </DialogHeader>
 
         {/* Form */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-4">
           {/* Group Selection */}
           <div>
-            <label className="block text-sm font-medium text-foreground mb-2">
-              选择群组 <span className="text-red-500">*</span>
-            </label>
+            <Label className="mb-2">
+              选择群组 <span className="text-error">*</span>
+            </Label>
             <Select value={formData.groupFolder || undefined} onValueChange={handleGroupChange}>
-              <SelectTrigger className={cn("w-full", errors.groupFolder && "border-red-500")}>
+              <SelectTrigger className={cn("w-full", errors.groupFolder && "border-error")}>
                 <SelectValue placeholder="请选择" />
               </SelectTrigger>
               <SelectContent>
@@ -178,16 +180,16 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin }: CreateTas
               </SelectContent>
             </Select>
             {errors.groupFolder && (
-              <p className="mt-1 text-sm text-red-600">{errors.groupFolder}</p>
+              <p className="mt-1 text-sm text-error">{errors.groupFolder}</p>
             )}
           </div>
 
           {/* Execution Type */}
           {isAdmin && (
             <div>
-              <label className="block text-sm font-medium text-foreground mb-2">
+              <Label className="mb-2">
                 执行方式
-              </label>
+              </Label>
               <Select
                 value={formData.executionType}
                 onValueChange={(value) =>
@@ -216,19 +218,19 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin }: CreateTas
           {/* Script Command (script mode only) */}
           {isScript && (
             <div>
-              <label className="block text-sm font-medium text-foreground mb-2">
-                脚本命令 <span className="text-red-500">*</span>
-              </label>
+              <Label className="mb-2">
+                脚本命令 <span className="text-error">*</span>
+              </Label>
               <Textarea
                 value={formData.scriptCommand}
                 onChange={(e) => setFormData({ ...formData, scriptCommand: e.target.value })}
                 rows={3}
                 maxLength={4096}
-                className={cn("resize-none font-mono text-sm", errors.scriptCommand && "border-red-500")}
+                className={cn("resize-none font-mono text-sm", errors.scriptCommand && "border-error")}
                 placeholder="例如: curl -s https://api.example.com/health | jq .status"
               />
               {errors.scriptCommand && (
-                <p className="mt-1 text-sm text-red-600">{errors.scriptCommand}</p>
+                <p className="mt-1 text-sm text-error">{errors.scriptCommand}</p>
               )}
               <p className="mt-1 text-xs text-muted-foreground">
                 命令在群组工作目录下执行，最大 4096 字符
@@ -238,27 +240,27 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin }: CreateTas
 
           {/* Prompt / Task Description */}
           <div>
-            <label className="block text-sm font-medium text-foreground mb-2">
+            <Label className="mb-2">
               {isScript ? '任务描述' : '任务 Prompt'}{' '}
-              {!isScript && <span className="text-red-500">*</span>}
-            </label>
+              {!isScript && <span className="text-error">*</span>}
+            </Label>
             <Textarea
               value={formData.prompt}
               onChange={(e) => setFormData({ ...formData, prompt: e.target.value })}
               rows={isScript ? 2 : 4}
-              className={cn("resize-none", errors.prompt && "border-red-500")}
+              className={cn("resize-none", errors.prompt && "border-error")}
               placeholder={isScript ? '可选的任务描述...' : '输入任务的提示词...'}
             />
             {errors.prompt && (
-              <p className="mt-1 text-sm text-red-600">{errors.prompt}</p>
+              <p className="mt-1 text-sm text-error">{errors.prompt}</p>
             )}
           </div>
 
           {/* Schedule Type */}
           <div>
-            <label className="block text-sm font-medium text-foreground mb-2">
-              调度类型 <span className="text-red-500">*</span>
-            </label>
+            <Label className="mb-2">
+              调度类型 <span className="text-error">*</span>
+            </Label>
             <Select
               value={formData.scheduleType}
               onValueChange={(value) => {
@@ -284,9 +286,9 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin }: CreateTas
 
           {/* Schedule Value */}
           <div>
-            <label className="block text-sm font-medium text-foreground mb-2">
-              调度值 <span className="text-red-500">*</span>
-            </label>
+            <Label className="mb-2">
+              调度值 <span className="text-error">*</span>
+            </Label>
 
             {formData.scheduleType === 'cron' && (
               <>
@@ -296,7 +298,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin }: CreateTas
                   onChange={(e) =>
                     setFormData({ ...formData, scheduleValue: e.target.value })
                   }
-                  className={cn(errors.scheduleValue && "border-red-500")}
+                  className={cn(errors.scheduleValue && "border-error")}
                   placeholder="例如: 0 0 * * * (每天 0 点)"
                 />
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -313,7 +315,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin }: CreateTas
                     min="1"
                     value={intervalNumber}
                     onChange={(e) => setIntervalNumber(e.target.value)}
-                    className={cn("flex-1", errors.scheduleValue && "border-red-500")}
+                    className={cn("flex-1", errors.scheduleValue && "border-error")}
                     placeholder="数值"
                   />
                   <Select value={intervalUnit} onValueChange={setIntervalUnit}>
@@ -341,7 +343,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin }: CreateTas
                   type="datetime-local"
                   value={onceDateTime}
                   onChange={(e) => setOnceDateTime(e.target.value)}
-                  className={cn(errors.scheduleValue && "border-red-500")}
+                  className={cn(errors.scheduleValue && "border-error")}
                 />
                 <p className="mt-1 text-xs text-muted-foreground">
                   选择任务的执行时间
@@ -350,16 +352,16 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin }: CreateTas
             )}
 
             {errors.scheduleValue && (
-              <p className="mt-1 text-sm text-red-600">{errors.scheduleValue}</p>
+              <p className="mt-1 text-sm text-error">{errors.scheduleValue}</p>
             )}
           </div>
 
           {/* Context Mode (agent mode only) */}
           {!isScript && (
             <div>
-              <label className="block text-sm font-medium text-foreground mb-2">
+              <Label className="mb-2">
                 上下文模式
-              </label>
+              </Label>
               <Select
                 value={formData.contextMode}
                 onValueChange={(value) =>
@@ -394,7 +396,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin }: CreateTas
             </Button>
           </div>
         </form>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

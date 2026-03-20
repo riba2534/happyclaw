@@ -840,9 +840,7 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
         content,
         timestamp,
         false,
-        attachmentsJson,
-        undefined,
-        jid,
+        { attachments: attachmentsJson, sourceJid: jid },
       );
 
       broadcastNewMessage(
@@ -1037,9 +1035,7 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
         content,
         timestamp,
         false,
-        attachmentsJson,
-        undefined,
-        jid,
+        { attachments: attachmentsJson, sourceJid: jid },
       );
 
       broadcastNewMessage(

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { toast } from 'sonner';
 import { api } from '../../../api/client';
 import { getErrorMessage } from '../types';
 import { copyToClipboard } from '../../../utils/clipboard';
@@ -12,11 +13,9 @@ interface PairingCodeResult {
 interface UsePairingCodeOptions {
   /** API endpoint for generating pairing codes, e.g. '/api/config/user-im/telegram/pairing-code' */
   endpoint: string;
-  setNotice: (msg: string | null) => void;
-  setError: (msg: string | null) => void;
 }
 
-export function usePairingCode({ endpoint, setNotice, setError }: UsePairingCodeOptions) {
+export function usePairingCode({ endpoint }: UsePairingCodeOptions) {
   const [code, setCode] = useState<string | null>(null);
   const [countdown, setCountdown] = useState(0);
   const [generating, setGenerating] = useState(false);
@@ -47,18 +46,16 @@ export function usePairingCode({ endpoint, setNotice, setError }: UsePairingCode
 
   const generate = useCallback(async () => {
     setGenerating(true);
-    setNotice(null);
-    setError(null);
     try {
       const result = await api.post<PairingCodeResult>(endpoint);
       setCode(result.code);
       startCountdown(Date.now() + result.ttlSeconds * 1000);
     } catch (err) {
-      setError(getErrorMessage(err, '生成配对码失败'));
+      toast.error(getErrorMessage(err, '生成配对码失败'));
     } finally {
       setGenerating(false);
     }
-  }, [endpoint, setNotice, setError, startCountdown]);
+  }, [endpoint, startCountdown]);
 
   const copyCommand = useCallback(() => {
     if (!code) return;
@@ -69,9 +66,9 @@ export function usePairingCode({ endpoint, setNotice, setError }: UsePairingCode
         copiedTimerRef.current = setTimeout(() => setCopied(false), 2000);
       })
       .catch(() => {
-        setError('复制失败，请手动复制');
+        toast.error('复制失败，请手动复制');
       });
-  }, [code, setError]);
+  }, [code]);
 
   return { code, countdown, generating, copied, generate, copyCommand };
 }

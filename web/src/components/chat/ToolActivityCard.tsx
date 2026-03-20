@@ -52,8 +52,8 @@ export function ToolActivityCard({ tool, localElapsed }: ToolActivityCardProps) 
   const isBash = tool.toolName === 'Bash';
 
   return (
-    <div className={`${isNested ? 'ml-4 border-l-2 border-primary/20 pl-2' : ''}`}>
-      <div className="rounded-lg border border-primary/20 bg-primary/5 px-2.5 py-1.5 text-xs">
+    <div className={`${isNested ? 'ml-4 border-l-2 border-brand-200 pl-2' : ''}`}>
+      <div className="rounded-lg border border-brand-200 bg-brand-50/50 px-2.5 py-1.5 text-[13px] font-sans">
         {/* Header: tool name + elapsed */}
         <div className="flex items-center gap-1.5">
           <svg className="w-3 h-3 animate-spin text-primary flex-shrink-0" viewBox="0 0 24 24" fill="none">

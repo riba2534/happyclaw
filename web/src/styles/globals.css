@@ -1,4 +1,7 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/inter";
 @plugin "tailwindcss-animate";
 
 @custom-variant dark (&:is(.dark *));
@@ -59,67 +62,74 @@
   --color-warning-bg: var(--warning-bg);
   --color-error: var(--error);
   --color-error-bg: var(--error-bg);
+  --color-surface: var(--surface);
 
   /* Border radius tokens */
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
+  --font-sans: 'Inter Variable', system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-serif: Georgia, "Noto Serif SC", "Times New Roman", serif;
+  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
 }
 
 /* =====================================================
-   Design Token values — Teal theme
-   Primary: #0d9488 (Teal) | Logo accent: #d97706 (Amber) | Base: Slate
+   Design Token values — Orange theme (shadcn preset a3PBYm)
+   Primary: Orange | Base: Neutral
    ===================================================== */
 :root {
-  /* shadcn/ui semantic tokens — warm cream palette (Claude-inspired) */
-  --background: #FAF9F6;
-  --foreground: #1C1917;
-  --card: #FFFFFF;
-  --card-foreground: #1C1917;
-  --popover: #FFFFFF;
-  --popover-foreground: #1C1917;
-  --primary: #C96442;
-  --primary-foreground: #FFFFFF;
-  --secondary: #F5F3EF;
-  --secondary-foreground: #1C1917;
-  --muted: #F5F3EF;
-  --muted-foreground: #78716C;
-  --accent: #FDF4EF;
-  --accent-foreground: #7C2D12;
-  --destructive: #dc2626;
+  /* shadcn/ui semantic tokens */
+  --background: #FAF9F5;
+  --foreground: #141413;
+  --card: #F0EEE6;
+  --card-foreground: #141413;
+  --popover: #F0EEE6;
+  --popover-foreground: #141413;
+  --primary: oklch(0.553 0.195 38.402);
+  --primary-foreground: oklch(0.98 0.016 73.684);
+  --secondary: #F0EEE6;
+  --secondary-foreground: #141413;
+  --muted: #F0EEE6;
+  --muted-foreground: #8b857d;
+  --accent: #F0EEE6;
+  --accent-foreground: #141413;
+  --destructive: oklch(0.577 0.245 27.325);
   --destructive-foreground: #ffffff;
-  --border: #EBE8E3;
-  --input: #EBE8E3;
-  --ring: #C96442;
+  --border: #DAD9D5;
+  --input: #DAD9D5;
+  --ring: oklch(0.708 0 0);
   --radius: 0.625rem;
 
-  /* Brand color scale (Warm Terracotta) */
-  --brand-50: #FDF4EF;
-  --brand-100: #FDDCCC;
-  --brand-200: #FBBF93;
-  --brand-300: #F5A06A;
-  --brand-400: #E8845C;
-  --brand-500: #C96442;
-  --brand-600: #A84E34;
-  --brand-700: #7C2D12;
+  /* Brand color scale (Orange) */
+  --brand-50: #fff7ed;
+  --brand-100: #ffedd5;
+  --brand-200: #fed7aa;
+  --brand-300: #fdba74;
+  --brand-400: #fb923c;
+  --brand-500: #f97316;
+  --brand-600: #ea580c;
+  --brand-700: #c2410c;
 
   /* Chart colors */
-  --chart-1: #C96442;
-  --chart-2: #d97706;
-  --chart-3: #4c6ef5;
-  --chart-4: #9333ea;
-  --chart-5: #dc2626;
+  --chart-1: oklch(0.837 0.128 66.29);
+  --chart-2: oklch(0.705 0.213 47.604);
+  --chart-3: oklch(0.646 0.222 41.116);
+  --chart-4: oklch(0.553 0.195 38.402);
+  --chart-5: oklch(0.47 0.157 37.304);
 
-  /* Sidebar — slightly warmer than main bg */
-  --sidebar-background: #F5F2ED;
-  --sidebar-foreground: #1C1917;
-  --sidebar-primary: #C96442;
-  --sidebar-primary-foreground: #FFFFFF;
-  --sidebar-accent: #EDE9E3;
-  --sidebar-accent-foreground: #1C1917;
-  --sidebar-border: #E5E0DA;
-  --sidebar-ring: #C96442;
+  /* Sidebar */
+  --sidebar-background: #FAF9F6;
+  --sidebar-foreground: #141413;
+  --sidebar-primary: oklch(0.646 0.222 41.116);
+  --sidebar-primary-foreground: oklch(0.98 0.016 73.684);
+  --sidebar-accent: #F0EEE6;
+  --sidebar-accent-foreground: #141413;
+  --sidebar-border: #DAD9D5;
+  --sidebar-ring: oklch(0.708 0 0);
 
   /* Feedback colors */
   --success: #16a34a;
@@ -129,53 +139,67 @@
   --error: #dc2626;
   --error-bg: #fee2e2;
 
+  /* Elevated surface — cards that need to stand out from page background */
+  --surface: #ffffff;
+
+  /* Code colors */
+  --code-block-bg: rgba(61, 61, 58, 0.05);
+  --inline-code-bg: rgba(61, 61, 58, 0.05);
+  --inline-code-text: rgb(138, 36, 36);
+
   /* iOS keyboard height */
   --keyboard-height: 0px;
 
   /* Liquid Glass design tokens */
   --glass-blur: 20px;
   --glass-saturate: 1.8;
-  --glass-bg: rgba(255, 255, 255, 0.55);
-  --glass-bg-heavy: rgba(255, 255, 255, 0.75);
-  --glass-border: rgba(255, 255, 255, 0.35);
+  --glass-bg: rgba(250, 249, 245, 0.65);
+  --glass-bg-heavy: rgba(250, 249, 245, 0.85);
+  --glass-border: rgba(218, 217, 213, 0.5);
   --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.06);
   --glass-highlight: linear-gradient(135deg, rgba(255,255,255,0.5) 0%, rgba(255,255,255,0) 60%);
   --glass-inner-shadow: inset 0 1px 1px rgba(255,255,255,0.6);
+  --sidebar: oklch(0.985 0 0);
+}
+
+/* AI response typography: semibold (600) instead of bold (700) for cleaner readability */
+.font-serif strong,
+.font-serif b {
+  font-weight: 600;
 }
 
 /* =====================================================
    Dark mode token overrides
    ===================================================== */
 .dark {
-  /* Warm dark palette — slightly brown-black, not pure cold black */
-  --background: #1A1816;
-  --foreground: #F5F2EE;
-  --card: #242220;
-  --card-foreground: #F5F2EE;
-  --popover: #242220;
-  --popover-foreground: #F5F2EE;
-  --primary: #E8845C;
-  --primary-foreground: #1A1816;
-  --secondary: #2C2A27;
-  --secondary-foreground: #F5F2EE;
-  --muted: #2C2A27;
-  --muted-foreground: #A8A29E;
-  --accent: #2E2018;
-  --accent-foreground: #FBBF93;
-  --destructive: #EF4444;
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.47 0.157 37.304);
+  --primary-foreground: oklch(0.98 0.016 73.684);
+  --secondary: oklch(0.274 0.006 286.033);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
   --destructive-foreground: #ffffff;
-  --border: #33302C;
-  --input: #33302C;
-  --ring: #E8845C;
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
 
-  --sidebar-background: #161412;
-  --sidebar-foreground: #A8A29E;
-  --sidebar-primary: #E8845C;
-  --sidebar-primary-foreground: #1A1816;
-  --sidebar-accent: #2C2A27;
-  --sidebar-accent-foreground: #F5F2EE;
-  --sidebar-border: #2C2A27;
-  --sidebar-ring: #E8845C;
+  --sidebar-background: #0f172a;
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.705 0.213 47.604);
+  --sidebar-primary-foreground: oklch(0.98 0.016 73.684);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
 
   --success: #4ade80;
   --success-bg: #14532d;
@@ -184,12 +208,24 @@
   --error: #f87171;
   --error-bg: #450a0a;
 
-  --glass-bg: rgba(9, 9, 11, 0.60);
-  --glass-bg-heavy: rgba(9, 9, 11, 0.82);
-  --glass-border: rgba(255, 255, 255, 0.06);
-  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
-  --glass-highlight: linear-gradient(135deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0) 60%);
-  --glass-inner-shadow: inset 0 1px 1px rgba(255,255,255,0.04);
+  --surface: oklch(0.205 0 0);
+
+  --code-block-bg: rgba(200, 200, 195, 0.08);
+  --inline-code-bg: rgba(200, 200, 195, 0.1);
+  --inline-code-text: rgb(220, 140, 140);
+
+  --glass-bg: rgba(15, 23, 42, 0.55);
+  --glass-bg-heavy: rgba(15, 23, 42, 0.80);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  --glass-highlight: linear-gradient(135deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0) 60%);
+  --glass-inner-shadow: inset 0 1px 1px rgba(255,255,255,0.06);
+  --chart-1: oklch(0.837 0.128 66.29);
+  --chart-2: oklch(0.705 0.213 47.604);
+  --chart-3: oklch(0.646 0.222 41.116);
+  --chart-4: oklch(0.553 0.195 38.402);
+  --chart-5: oklch(0.47 0.157 37.304);
+  --sidebar: oklch(0.205 0 0);
 }
 
 /* =====================================================
@@ -203,7 +239,7 @@
 ::before,
 ::backdrop,
 ::file-selector-button {
-  border-color: var(--border, #EBE8E3);
+  border-color: var(--border, #e2e8f0);
 }
 
 html {
@@ -224,14 +260,6 @@ body {
   touch-action: manipulation;
   overflow-wrap: break-word;
   word-break: break-word;
-}
-
-/* Text selection */
-::selection {
-  background: rgba(13, 148, 136, 0.15);
-}
-.dark ::selection {
-  background: rgba(45, 212, 191, 0.25);
 }
 
 /* Code highlighting theme override — GitHub light */
@@ -341,12 +369,11 @@ pre code.hljs {
     bottom: 0;
     left: 0;
     right: 0;
-    height: 44px;
+    height: env(safe-area-inset-bottom, 0px);
     background: transparent;
-    touch-action: none;
+    touch-action: manipulation;
     z-index: 9999;
-    pointer-events: auto;
-    /* 确保这个层可以接收触摸事件 */
+    pointer-events: none;
     -webkit-tap-highlight-color: transparent;
   }
 
@@ -398,7 +425,7 @@ pre code.hljs {
   width: 52px;
   height: 44px;
   border-radius: 9999px;
-  color: var(--muted-foreground);
+  color: rgba(100, 116, 139, 0.7);
   transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
   text-decoration: none;
   -webkit-tap-highlight-color: transparent;
@@ -407,9 +434,9 @@ pre code.hljs {
 .floating-nav-item:active { transform: scale(0.92); }
 
 .floating-nav-item.active {
-  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  background: rgba(249, 115, 22, 0.15);
   color: var(--primary);
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--primary) 15%, transparent),
+  box-shadow: 0 2px 8px rgba(249, 115, 22, 0.15),
               var(--glass-inner-shadow);
   transition: all 350ms cubic-bezier(0.34, 1.56, 0.64, 1);
   transform: scale(1.08);
@@ -420,7 +447,7 @@ pre code.hljs {
   position: absolute;
   inset: 0;
   border-radius: 9999px;
-  background: radial-gradient(circle, color-mix(in srgb, var(--primary) 20%, transparent) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(249, 115, 22, 0.2) 0%, transparent 70%);
   animation: glass-ripple 400ms ease-out;
 }
 
@@ -445,3 +472,14 @@ pre code.hljs {
   box-sizing: border-box;
 }
 
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}

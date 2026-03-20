@@ -222,7 +222,7 @@ export function ImBindingDialog({ open, groupJid, agentId, agent, onClose }: ImB
                   key={group.jid}
                   className={`flex items-center gap-3 p-3 rounded-lg border ${
                     boundToThis
-                      ? 'border-teal-500/30 bg-teal-50/50 dark:bg-teal-950/20'
+                      ? 'border-primary/30 bg-brand-50/50 dark:bg-brand-700/10'
                       : boundToOther
                         ? 'border-amber-200/50 dark:border-amber-800/30'
                         : 'border-border hover:border-border/80'

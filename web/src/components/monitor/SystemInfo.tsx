@@ -1,4 +1,5 @@
 import { Activity } from 'lucide-react';
+import { Card, CardContent } from '@/components/ui/card';
 import { SystemStatus } from '../../stores/monitor';
 
 interface SystemInfoProps {
@@ -17,10 +18,11 @@ export function SystemInfo({ status }: SystemInfoProps) {
   };
 
   return (
-    <div className="bg-card rounded-xl border border-border p-6">
-      <div className="flex items-center gap-3 mb-4">
-        <div className="p-2 bg-green-100 rounded-lg">
-          <Activity className="w-6 h-6 text-green-600" />
+    <Card>
+      <CardContent>
+        <div className="flex items-center gap-3 mb-4">
+        <div className="p-2 bg-success-bg rounded-lg">
+          <Activity className="w-6 h-6 text-success" />
         </div>
         <div>
           <h3 className="text-sm font-medium text-muted-foreground">系统信息</h3>
@@ -47,11 +49,12 @@ export function SystemInfo({ status }: SystemInfoProps) {
 
         <div className="flex items-center justify-between text-sm">
           <span className="text-muted-foreground">飞书连接</span>
-          <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-600">
+          <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-success-bg text-success">
             已连接
           </span>
         </div>
-      </div>
-    </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 }

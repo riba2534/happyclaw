@@ -1,4 +1,5 @@
 import { Server } from 'lucide-react';
+import { Card, CardContent } from '@/components/ui/card';
 import { SystemStatus } from '../../stores/monitor';
 
 interface ContainerStatusProps {
@@ -11,9 +12,10 @@ export function ContainerStatus({ status }: ContainerStatusProps) {
   const progressWidth = Math.min(100, percentage);
 
   return (
-    <div className="bg-card rounded-xl border border-border p-6">
-      <div className="flex items-center gap-3 mb-4">
-        <div className="p-2 bg-primary/10 rounded-lg">
+    <Card>
+      <CardContent>
+        <div className="flex items-center gap-3 mb-4">
+        <div className="p-2 bg-brand-100 rounded-lg">
           <Server className="w-6 h-6 text-primary" />
         </div>
         <div>
@@ -29,10 +31,10 @@ export function ContainerStatus({ status }: ContainerStatusProps) {
         <div
           className={`h-2 rounded-full transition-all duration-300 ${
             percentage > 80
-              ? 'bg-red-500'
+              ? 'bg-error'
               : percentage > 60
-              ? 'bg-amber-500'
-              : 'bg-green-500'
+              ? 'bg-warning'
+              : 'bg-success'
           }`}
           style={{ width: `${progressWidth}%` }}
         />
@@ -42,7 +44,8 @@ export function ContainerStatus({ status }: ContainerStatusProps) {
         {percentage > 80 && '工作区使用率较高'}
         {percentage > 60 && percentage <= 80 && '工作区使用正常'}
         {percentage <= 60 && '工作区资源充足'}
-      </div>
-    </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 }

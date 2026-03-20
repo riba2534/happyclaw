@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback } from 'react';
 import { Loader2, Link2, RefreshCw, MessageSquare } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
 import { SearchInput } from '@/components/common/SearchInput';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { useImBindings } from './hooks/useImBindings';
@@ -142,9 +143,9 @@ export function BindingsSection() {
 
         {/* Error banner */}
         {errorMsg && (
-          <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-2.5 flex items-center justify-between">
+          <div className="bg-error-bg border border-error/20 text-error text-sm rounded-lg px-4 py-2.5 flex items-center justify-between">
             <span>{errorMsg}</span>
-            <button onClick={() => { setLocalError(null); clearHookError(); }} className="text-red-400 hover:text-red-600 ml-2 text-xs">✕</button>
+            <button onClick={() => { setLocalError(null); clearHookError(); }} className="text-error hover:text-error ml-2 text-xs">✕</button>
           </div>
         )}
 
@@ -160,7 +161,7 @@ export function BindingsSection() {
                     className={`px-3 py-1 text-xs font-medium rounded-full transition-colors cursor-pointer ${
                       channelFilter === ch.key
                         ? 'bg-primary text-white'
-                        : 'bg-muted text-muted-foreground hover:bg-border hover:text-foreground/80'
+                        : 'bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground'
                     }`}
                   >
                     {ch.label}
@@ -186,12 +187,14 @@ export function BindingsSection() {
             加载中...
           </div>
         ) : bindings.length === 0 ? (
-          <div className="bg-card rounded-xl border border-border p-8 text-center">
-            <MessageSquare className="w-10 h-10 mx-auto text-muted-foreground/60 mb-3" />
+          <Card>
+            <CardContent className="text-center">
+            <MessageSquare className="w-10 h-10 mx-auto text-muted-foreground mb-3" />
             <p className="text-sm text-muted-foreground">
               暂无 IM 群组。在飞书、Telegram 或 QQ 群中向 Bot 发送消息后，群组会自动出现在这里。
             </p>
-          </div>
+            </CardContent>
+          </Card>
         ) : filtered.length === 0 ? (
           <div className="text-center py-10 text-muted-foreground text-sm">
             没有匹配的群组
