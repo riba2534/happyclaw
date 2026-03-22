@@ -100,6 +100,8 @@ export interface FeishuConnection {
 
 // Max characters per markdown element in Feishu cards
 const CARD_MD_LIMIT = 4000;
+// Feishu card allows at most 5 markdown tables; beyond this, skip card and use post+md directly
+const CARD_TABLE_LIMIT = 5;
 const FEISHU_WS_READY_STATE_OPEN = 1;
 const WS_HEALTH_CHECK_INTERVAL_MS = 15_000;
 const WS_RECONNECT_CHECK_THRESHOLD = 4;
@@ -1552,52 +1554,78 @@ export function createFeishuConnection(
       };
 
       try {
-        const card = buildInteractiveCard(text);
-        const content = JSON.stringify(card);
+        // Count markdown tables to decide format upfront — Feishu cards have a table limit
+        // Each table has exactly one separator row (e.g. |---|---|), so counting those = table count
+        const tableCount = (text.match(/^\|[\s:-]+\|/gm) || []).length;
+        const usePostMd = tableCount > CARD_TABLE_LIMIT;
 
-        const lastMsgId = lastMessageIdByChat.get(chatId);
-        if (lastMsgId) {
-          try {
+        if (usePostMd) {
+          // Too many tables for card format, go directly to post+md
+          const postContent = buildPostMdFallback(text);
+          const lastMsgId = lastMessageIdByChat.get(chatId);
+          if (lastMsgId) {
             await client.im.message.reply({
               path: { message_id: lastMsgId },
-              data: { content, msg_type: 'interactive' },
+              data: { content: postContent, msg_type: 'post' },
             });
-          } catch (err) {
-            logger.warn(
-              { err, chatId },
-              'Feishu interactive reply failed, fallback to post+md',
-            );
-            await client.im.message.reply({
-              path: { message_id: lastMsgId },
+          } else {
+            await client.im.v1.message.create({
+              params: { receive_id_type: 'chat_id' },
               data: {
-                content: buildPostMdFallback(text),
+                receive_id: chatId,
                 msg_type: 'post',
+                content: postContent,
               },
             });
           }
         } else {
-          try {
-            await client.im.v1.message.create({
-              params: { receive_id_type: 'chat_id' },
-              data: {
-                receive_id: chatId,
-                msg_type: 'interactive',
-                content,
-              },
-            });
-          } catch (err) {
-            logger.warn(
-              { err, chatId },
-              'Feishu interactive create failed, fallback to post+md',
-            );
-            await client.im.v1.message.create({
-              params: { receive_id_type: 'chat_id' },
-              data: {
-                receive_id: chatId,
-                msg_type: 'post',
-                content: buildPostMdFallback(text),
-              },
-            });
+          const card = buildInteractiveCard(text);
+          const content = JSON.stringify(card);
+
+          const lastMsgId = lastMessageIdByChat.get(chatId);
+          if (lastMsgId) {
+            try {
+              await client.im.message.reply({
+                path: { message_id: lastMsgId },
+                data: { content, msg_type: 'interactive' },
+              });
+            } catch (err) {
+              logger.warn(
+                { err, chatId },
+                'Feishu interactive reply failed, fallback to post+md',
+              );
+              await client.im.message.reply({
+                path: { message_id: lastMsgId },
+                data: {
+                  content: buildPostMdFallback(text),
+                  msg_type: 'post',
+                },
+              });
+            }
+          } else {
+            try {
+              await client.im.v1.message.create({
+                params: { receive_id_type: 'chat_id' },
+                data: {
+                  receive_id: chatId,
+                  msg_type: 'interactive',
+                  content,
+                },
+              });
+            } catch (err) {
+              logger.warn(
+                { err, chatId },
+                'Feishu interactive create failed, fallback to post+md',
+              );
+              await client.im.v1.message.create({
+                params: { receive_id_type: 'chat_id' },
+                data: {
+                  receive_id: chatId,
+                  msg_type: 'post',
+                  content: buildPostMdFallback(text),
+                },
+              });
+            }
           }
         }
         logger.debug({ chatId }, 'Sent Feishu card message');
