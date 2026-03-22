@@ -101,6 +101,8 @@ const IMAGE_MAX_DIMENSION = 8000; // Anthropic API 限制
  * - 最后兜底 image/jpeg
  */
 type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+const SUPPORTED_MEDIA_TYPES: Set<string> = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+
 function resolveImageMimeType(img: { data: string; mimeType?: string }): ImageMediaType {
   const declared =
     typeof img.mimeType === 'string' && img.mimeType.startsWith('image/')
@@ -108,12 +110,15 @@ function resolveImageMimeType(img: { data: string; mimeType?: string }): ImageMe
       : undefined;
   const detected = detectImageMimeTypeFromBase64Strict(img.data);
 
+  let resolved: string;
   if (declared && detected && declared !== detected) {
     log(`Image MIME mismatch: declared=${declared}, detected=${detected}, using detected`);
-    return detected as ImageMediaType;
+    resolved = detected;
+  } else {
+    resolved = declared || detected || 'image/jpeg';
   }
 
-  return (declared || detected || 'image/jpeg') as ImageMediaType;
+  return SUPPORTED_MEDIA_TYPES.has(resolved) ? (resolved as ImageMediaType) : 'image/jpeg';
 }
 
 /**
