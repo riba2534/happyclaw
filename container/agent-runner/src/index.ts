@@ -716,6 +716,7 @@ function createIpcWatcher(onFileDetected: () => void): { close: () => void } {
   fallbackTimer = setInterval(() => {
     if (!closed) onFileDetected();
   }, IPC_FALLBACK_POLL_MS);
+  fallbackTimer.unref();  // Don't prevent process from naturally exiting
 
   return {
     close() {

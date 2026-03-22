@@ -263,7 +263,7 @@ let shuttingDown = false;
 // ── IPC Watcher Manager (event-driven fs.watch + fallback polling) ──
 
 class IpcWatcherManager {
-  private watchers = new Map<string, fs.FSWatcher[]>();
+  private watchers = new Map<string, { watchers: fs.FSWatcher[], refCount: number }>();
   private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private processingFolders = new Set<string>();
   private pendingReprocess = new Set<string>();
@@ -282,7 +282,11 @@ class IpcWatcherManager {
 
   /** Start watching a group's IPC directories. Called when a container/process starts. */
   watchGroup(folder: string): void {
-    if (this.watchers.has(folder)) return;
+    const existing = this.watchers.get(folder);
+    if (existing) {
+      existing.refCount++;
+      return;
+    }
 
     const groupIpcRoot = path.join(DATA_DIR, 'ipc', folder);
     const dirsToWatch = [
@@ -307,16 +311,18 @@ class IpcWatcherManager {
         // Watch failed — fallback polling will handle it
       }
     }
-    this.watchers.set(folder, folderWatchers);
+    this.watchers.set(folder, { watchers: folderWatchers, refCount: 1 });
   }
 
   /** Stop watching a group's IPC directories. Called when a container/process stops. */
   unwatchGroup(folder: string): void {
-    const ws = this.watchers.get(folder);
-    if (ws) {
-      for (const w of ws) { try { w.close(); } catch {} }
-      this.watchers.delete(folder);
-    }
+    const entry = this.watchers.get(folder);
+    if (!entry) return;
+    entry.refCount--;
+    if (entry.refCount > 0) return;
+
+    for (const w of entry.watchers) { try { w.close(); } catch {} }
+    this.watchers.delete(folder);
     const timer = this.debounceTimers.get(folder);
     if (timer) {
       clearTimeout(timer);
@@ -360,8 +366,8 @@ class IpcWatcherManager {
 
   /** Close all watchers and timers. */
   closeAll(): void {
-    for (const [, ws] of this.watchers) {
-      for (const w of ws) { try { w.close(); } catch {} }
+    for (const [, entry] of this.watchers) {
+      for (const w of entry.watchers) { try { w.close(); } catch {} }
     }
     this.watchers.clear();
     for (const [, timer] of this.debounceTimers) {
