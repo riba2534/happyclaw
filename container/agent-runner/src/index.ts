@@ -1067,7 +1067,7 @@ async function runQuery(
     prompt: stream,
     options: {
       model: CLAUDE_MODEL,
-      betas: ['context-1m-2025-08-07'],
+      ...(!process.env.ANTHROPIC_BASE_URL && { betas: ['context-1m-2025-08-07'] as const }),
       cwd: WORKSPACE_GROUP,
       additionalDirectories: extraDirs,
       resume: sessionId,
