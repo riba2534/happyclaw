@@ -46,14 +46,13 @@ export interface RegisteredGroup {
   initGitUrl?: string; // 容器模式下 clone 来源的 Git URL
   created_by?: string;
   is_home?: boolean; // 用户主容器标记
-  selected_skills?: string[] | null; // null = 全部启用
   target_agent_id?: string; // IM 消息路由到指定 conversation agent
   target_main_jid?: string; // IM 消息路由到指定工作区的主对话（web:{folder}）
   reply_policy?: 'source_only' | 'mirror'; // IM 绑定的回复策略
   require_mention?: boolean; // 群聊是否需要 @机器人 才响应（默认 false）
   activation_mode?: 'auto' | 'always' | 'when_mentioned' | 'disabled'; // 消息门控模式（默认 'auto'，兼容 require_mention）
-  mcp_mode?: 'inherit' | 'custom'; // MCP 模式：继承全局或自定义（默认 'inherit'）
-  selected_mcps?: string[] | null; // 自定义模式下选中的 MCP 列表（null = 使用全局全部）
+  mcp_mode?: 'inherit' | 'custom'; // MCP 配置模式（默认 'inherit' 继承用户配置）
+  selected_mcps?: string[] | null; // custom 模式下选中的 MCP server IDs
 }
 
 export interface GroupMember {
@@ -123,6 +122,7 @@ export interface ScheduledTask {
   status: 'active' | 'paused' | 'completed';
   created_at: string;
   created_by?: string;
+  notify_channels?: string[] | null;
 }
 
 export interface TaskRunLog {

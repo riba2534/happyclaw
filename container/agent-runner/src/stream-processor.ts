@@ -270,12 +270,12 @@ export class StreamEventProcessor {
       }
     }
 
-    // Track Task tool
-    if (block.name === 'Task' && block.id) {
+    // Track Task / Agent tool (both spawn sub-agents whose messages need forwarding)
+    if ((block.name === 'Task' || block.name === 'Agent') && block.id) {
       this.taskToolUseIds.add(block.id);
       this.emit({
         status: 'stream', result: null,
-        streamEvent: { eventType: 'task_start', toolUseId: block.id, toolName: 'Task' },
+        streamEvent: { eventType: 'task_start', toolUseId: block.id, toolName: block.name },
       });
       if (typeof blockIndex === 'number') {
         this.pendingTaskInput.set(blockIndex, {
@@ -525,7 +525,41 @@ export class StreamEventProcessor {
       });
       return true;
     }
+    // API retry — emit status so user sees retry progress and activity stays alive
+    if (message.subtype === 'api_retry') {
+      const attempt = message.attempt ?? '?';
+      const max = message.max_retries ?? '?';
+      const delayMs = message.retry_delay_ms ?? 0;
+      const delaySec = Math.round(delayMs / 1000);
+      this.emit({
+        status: 'stream', result: null,
+        streamEvent: { eventType: 'status', statusText: `API 重试中 (${attempt}/${max})，${delaySec}s 后重试` },
+      });
+      return true;
+    }
+    // task_started / task_progress — emit a status event to keep stdout activity alive.
+    // Without this, long-running tasks produce no stdout output, and the host's
+    // stuck-runner detector may kill the process after 6 minutes of silence.
+    if (message.subtype === 'task_started' || message.subtype === 'task_progress') {
+      const desc = message.description || message.summary || '';
+      const toolName = message.last_tool_name || '';
+      const statusText = message.subtype === 'task_started'
+        ? `Task 启动: ${desc.slice(0, 80)}`
+        : `Task 进度${toolName ? ` [${toolName}]` : ''}: ${desc.slice(0, 80)}`;
+      this.emit({
+        status: 'stream', result: null,
+        streamEvent: { eventType: 'status', statusText },
+      });
+      return true;
+    }
     return false;
+  }
+
+  /**
+   * Convenience: emit a status StreamEvent.
+   */
+  emitStatus(statusText: string): void {
+    this.emit({ status: 'stream', result: null, streamEvent: { eventType: 'status', statusText } });
   }
 
   /**
@@ -535,6 +569,9 @@ export class StreamEventProcessor {
   processSubAgentMessage(message: any): boolean {
     const msgParentToolUseId = message.parent_tool_use_id ?? null;
     if (!msgParentToolUseId || !this.taskToolUseIds.has(msgParentToolUseId)) {
+      if (msgParentToolUseId && (message.type === 'assistant' || message.type === 'user')) {
+        this.log(`[WARN] Sub-agent message dropped: parent=${msgParentToolUseId.slice(0, 12)} not in taskToolUseIds=[${[...this.taskToolUseIds].map(id => id.slice(0, 12)).join(',')}]`);
+      }
       return false;
     }
 
@@ -651,7 +688,7 @@ export class StreamEventProcessor {
 
     // Fallback: identify background Tasks and Teammate Tasks from complete input
     for (const block of content) {
-      if (block.type === 'tool_use' && block.name === 'Task' && block.id && block.input) {
+      if (block.type === 'tool_use' && (block.name === 'Task' || block.name === 'Agent') && block.id && block.input) {
         const taskInput = block.input as Record<string, unknown>;
         if (taskInput.run_in_background === true) {
           this.backgroundTaskToolUseIds.add(block.id);

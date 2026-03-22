@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowRight, Loader2, MessageSquare, SkipForward } from 'lucide-react';
+import { ArrowRight, Loader2, MessageSquare, QrCode, SkipForward } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 import { Input } from '@/components/ui/input';
@@ -9,6 +9,7 @@ import { Label } from '@/components/ui/label';
 import { useAuthStore } from '../stores/auth';
 import { api } from '../api/client';
 import { getErrorMessage } from '../components/settings/types';
+import { WeChatQRDialog } from '../components/settings/WeChatQRDialog';
 
 export function SetupChannelsPage() {
   const navigate = useNavigate();
@@ -27,6 +28,10 @@ export function SetupChannelsPage() {
   // QQ
   const [qqAppId, setQqAppId] = useState('');
   const [qqAppSecret, setQqAppSecret] = useState('');
+
+  // WeChat
+  const [wechatQROpen, setWechatQROpen] = useState(false);
+  const [wechatConnected, setWechatConnected] = useState(false);
 
   useEffect(() => {
     if (user === null && initialized === true) {
@@ -195,6 +200,24 @@ export function SetupChannelsPage() {
           </CardContent>
         </Card>
 
+        {/* WeChat */}
+        <section className="bg-card rounded-xl border border-border shadow-sm p-5">
+          <h2 className="text-base font-semibold text-foreground mb-3">微信</h2>
+          <p className="text-xs text-muted-foreground mb-3">
+            扫描二维码登录微信，绑定后即可在微信中与 AI 对话。
+          </p>
+          {wechatConnected ? (
+            <div className="flex items-center gap-2 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-700 font-medium">
+              微信已登录
+            </div>
+          ) : (
+            <Button variant="outline" onClick={() => setWechatQROpen(true)}>
+              <QrCode className="w-4 h-4" />
+              扫码登录微信
+            </Button>
+          )}
+        </section>
+
         {/* Actions */}
         <div className="flex flex-col sm:flex-row gap-3 justify-end">
           <Button variant="outline" onClick={handleSkip}>
@@ -207,6 +230,15 @@ export function SetupChannelsPage() {
             <ArrowRight className="w-4 h-4" />
           </Button>
         </div>
+
+        <WeChatQRDialog
+          isOpen={wechatQROpen}
+          onClose={() => setWechatQROpen(false)}
+          onSuccess={() => {
+            setWechatQROpen(false);
+            setWechatConnected(true);
+          }}
+        />
       </div>
     </div>
   );

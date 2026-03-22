@@ -310,6 +310,7 @@ router.get('/:jid/im-groups', authMiddleware, async (c) => {
     member_count?: number;
     channel_type: string;
     chat_mode?: string; // 'p2p' | 'group' — from Feishu API (distinguishes P2P vs group chat)
+    activation_mode?: string;
   }
 
   const candidates: ImGroupCandidate[] = [];
@@ -351,6 +352,7 @@ router.get('/:jid/im-groups', authMiddleware, async (c) => {
       bound_target_name: boundTargetName,
       bound_workspace_name: boundWorkspaceName,
       channel_type: getChannelType(j) ?? 'unknown',
+      activation_mode: g.activation_mode,
     });
   }
 
@@ -550,7 +552,11 @@ router.put('/:jid/im-binding', authMiddleware, async (c) => {
   const targetMainJid = jid; // Use actual registered JID (not folder-based)
   const legacyMainJid = `web:${group.folder}`;
   const force = body.force === true;
-  const replyPolicy = body.reply_policy === 'mirror' ? 'mirror' : 'source_only';
+  // Only update reply_policy if explicitly provided; otherwise preserve existing value
+  const replyPolicy =
+    body.reply_policy === 'mirror' ? 'mirror'
+    : body.reply_policy === 'source_only' ? 'source_only'
+    : undefined;
   const hasConflict =
     !!imGroup.target_agent_id ||
     (imGroup.target_main_jid &&
@@ -560,12 +566,21 @@ router.put('/:jid/im-binding', authMiddleware, async (c) => {
     return c.json({ error: 'IM group is already bound elsewhere' }, 409);
   }
 
+  // Parse activation_mode from request body
+  const validActivationModes = ['always', 'when_mentioned', 'auto', 'disabled'] as const;
+  const rawActivationMode = body.activation_mode;
+  const activationMode =
+    typeof rawActivationMode === 'string' && validActivationModes.includes(rawActivationMode as typeof validActivationModes[number])
+      ? (rawActivationMode as typeof validActivationModes[number])
+      : undefined;
+
   // Update DB + in-memory cache — clear target_agent_id to avoid conflicts
   const updated: RegisteredGroup = {
     ...imGroup,
     target_main_jid: targetMainJid,
     target_agent_id: undefined,
-    reply_policy: replyPolicy,
+    ...(replyPolicy !== undefined ? { reply_policy: replyPolicy } : {}),
+    ...(activationMode !== undefined ? { activation_mode: activationMode } : {}),
   };
   setRegisteredGroup(imJid, updated);
   const deps = getWebDeps();
@@ -575,7 +590,7 @@ router.put('/:jid/im-binding', authMiddleware, async (c) => {
   }
 
   logger.info(
-    { imJid, targetMainJid, userId: user.id },
+    { imJid, targetMainJid, activationMode, userId: user.id },
     'IM group bound to workspace main conversation',
   );
   return c.json({ success: true });
@@ -611,8 +626,8 @@ router.delete('/:jid/im-binding/:imJid', authMiddleware, async (c) => {
     return c.json({ error: 'IM group is not bound to this workspace' }, 400);
   }
 
-  // Update DB + in-memory cache
-  const updated = { ...imGroup, target_main_jid: undefined };
+  // Update DB + in-memory cache — reset activation_mode to 'auto' on unbind
+  const updated = { ...imGroup, target_main_jid: undefined, activation_mode: 'auto' as const };
   setRegisteredGroup(imJid, updated);
   const deps = getWebDeps();
   if (deps) {

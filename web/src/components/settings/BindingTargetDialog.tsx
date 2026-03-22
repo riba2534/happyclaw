@@ -135,7 +135,7 @@ export function BindingTargetDialog({
             size="sm"
             onClick={onRestoreDefault}
             disabled={!!selecting}
-            className="text-muted-foreground hover:text-slate-700 w-full"
+            className="text-muted-foreground hover:text-foreground w-full"
           >
             <RotateCcw className="w-3.5 h-3.5 mr-1.5" />
             恢复默认路由

@@ -63,6 +63,7 @@ export function formatWorkspaceList(
   workspaces: WorkspaceInfo[],
   currentFolder: string,
   currentAgentId: string | null,
+  currentOnMain = true,
 ): string {
   if (workspaces.length === 0) return '没有可用的工作区';
 
@@ -73,7 +74,7 @@ export function formatWorkspaceList(
     const marker = isCurrent ? ' ▶' : '';
     lines.push(`${marker} ${ws.name} (${ws.folder})`);
 
-    const mainMarker = isCurrent && !currentAgentId ? ' ← 当前' : '';
+    const mainMarker = isCurrent && currentOnMain ? ' ← 当前' : '';
     lines.push(`  · 主对话${mainMarker}`);
 
     for (const agent of ws.agents) {

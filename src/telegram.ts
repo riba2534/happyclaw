@@ -5,6 +5,7 @@ import https from 'node:https';
 import { Agent as HttpsAgent } from 'node:https';
 import { ProxyAgent } from 'proxy-agent';
 import { storeChatMetadata, storeMessageDirect, updateChatName } from './db.js';
+import { notifyNewImMessage } from './message-notifier.js';
 import { broadcastNewMessage } from './web.js';
 import { logger } from './logger.js';
 import {
@@ -13,8 +14,6 @@ import {
   FileTooLargeError,
 } from './im-downloader.js';
 import { detectImageMimeType } from './image-detector.js';
-import { analyzeIntent } from './intent-analyzer.js';
-
 // ─── TelegramConnection Interface ──────────────────────────────
 
 export interface TelegramConnectionConfig {
@@ -36,6 +35,8 @@ export interface TelegramConnectOpts {
   ) => Promise<boolean>;
   /** 斜杠指令回调（如 /clear），返回回复文本或 null */
   onCommand?: (chatJid: string, command: string) => Promise<string | null>;
+  /** 热重连时设置：丢弃 date 早于此时间戳（epoch ms）的消息，避免处理渠道关闭期间的堆积消息 */
+  ignoreMessagesBefore?: number;
   /** 根据 jid 解析群组 folder，用于下载文件/图片到工作区 */
   resolveGroupFolder?: (jid: string) => string | undefined;
   /** 将 IM chatJid 解析为绑定目标 JID（conversation agent 或工作区主对话） */
@@ -48,11 +49,6 @@ export interface TelegramConnectOpts {
   onBotAddedToGroup?: (chatJid: string, chatName: string) => void;
   /** Bot 被移出群聊或群被解散时调用 */
   onBotRemovedFromGroup?: (chatJid: string) => void;
-  /** 中断 fast-path：消息到达时立即检测中断意图，绕过轮询延迟直接触发中断 */
-  onInterruptRequest?: (
-    chatJid: string,
-    intent: 'stop' | 'correction',
-  ) => void;
 }
 
 export interface TelegramConnection {
@@ -365,6 +361,23 @@ export function createTelegramConnection(
     return msg.includes('Aborted delay') || msg.includes('AbortError');
   }
 
+  /** Return true if this message was sent before the current connection window. */
+  function isStaleMessage(
+    msgDate: number,
+    ignoreMessagesBefore: number | undefined,
+  ): boolean {
+    if (!ignoreMessagesBefore) return false;
+    const msgTimeMs = msgDate * 1000;
+    if (msgTimeMs < ignoreMessagesBefore) {
+      logger.info(
+        { msgTime: msgTimeMs, threshold: ignoreMessagesBefore },
+        'Skipping stale Telegram message from before reconnection',
+      );
+      return true;
+    }
+    return false;
+  }
+
   const connection: TelegramConnection = {
     async connect(opts: TelegramConnectOpts): Promise<void> {
       if (!config.botToken) {
@@ -397,6 +410,8 @@ export function createTelegramConnection(
             return;
           }
           markSeen(msgId);
+
+          if (isStaleMessage(ctx.message.date, opts.ignoreMessagesBefore)) return;
 
           const chatId = String(ctx.chat.id);
           const jid = `telegram:${chatId}`;
@@ -525,18 +540,6 @@ export function createTelegramConnection(
           const agentRouting = opts.resolveEffectiveChatJid?.(jid);
           const targetJid = agentRouting?.effectiveJid ?? jid;
 
-          // ── 中断 fast-path（使用路由后的 targetJid） ──
-          if (opts.onInterruptRequest && text.length <= 50) {
-            const intent = analyzeIntent(text);
-            if (intent !== 'continue') {
-              opts.onInterruptRequest(targetJid, intent);
-              logger.info(
-                { jid, targetJid, intent },
-                'Interrupt fast-path triggered from Telegram',
-              );
-            }
-          }
-
           // 存储消息
           const id = crypto.randomUUID();
           const timestamp = new Date(ctx.message.date * 1000).toISOString();
@@ -568,6 +571,7 @@ export function createTelegramConnection(
             },
             agentRouting?.agentId ?? undefined,
           );
+          notifyNewImMessage();
 
           // 触发 agent 处理
           if (agentRouting?.agentId) {
@@ -600,6 +604,8 @@ export function createTelegramConnection(
             String(ctx.message.message_id) + ':' + String(ctx.chat.id);
           if (isDuplicate(msgId)) return;
           markSeen(msgId);
+
+          if (isStaleMessage(ctx.message.date, opts.ignoreMessagesBefore)) return;
 
           const chatId = String(ctx.chat.id);
           const jid = `telegram:${chatId}`;
@@ -720,6 +726,7 @@ export function createTelegramConnection(
             },
             agentRouting?.agentId ?? undefined,
           );
+          notifyNewImMessage();
 
           if (agentRouting?.agentId) {
             opts.onAgentMessage?.(jid, agentRouting.agentId);
@@ -741,6 +748,8 @@ export function createTelegramConnection(
             String(ctx.message.message_id) + ':' + String(ctx.chat.id);
           if (isDuplicate(msgId)) return;
           markSeen(msgId);
+
+          if (isStaleMessage(ctx.message.date, opts.ignoreMessagesBefore)) return;
 
           const chatId = String(ctx.chat.id);
           const jid = `telegram:${chatId}`;
@@ -802,6 +811,7 @@ export function createTelegramConnection(
               },
               earlyRouting?.agentId ?? undefined,
             );
+            notifyNewImMessage();
             return;
           }
 
@@ -864,6 +874,7 @@ export function createTelegramConnection(
             },
             agentRouting?.agentId ?? undefined,
           );
+          notifyNewImMessage();
 
           if (agentRouting?.agentId) {
             opts.onAgentMessage?.(jid, agentRouting.agentId);

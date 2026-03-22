@@ -50,7 +50,11 @@ const IPC_POLL_MS = 500;
 
 
 let needsMemoryFlush = false;
+let hadCompaction = false;
 let currentPermissionMode: PermissionMode = 'bypassPermissions';
+// Module-level session ID so SIGTERM handler can emit it before exit.
+// Updated in main() whenever a query returns a new session.
+let latestSessionId: string | undefined;
 
 const DEFAULT_ALLOWED_TOOLS = [
   'Bash',
@@ -483,6 +487,10 @@ function createPreCompactHook(
     // Remove entries before the last compact_boundary (already summarized).
     // Must run AFTER archiving (archive needs full transcript).
     trimSessionJsonl(transcriptPath);
+
+    // Flag compaction so the query loop auto-continues instead of
+    // waiting for user input (non-blocking compaction #229).
+    hadCompaction = true;
 
     // Flag memory flush for home containers (full memory write access)
     if (isHome) {
@@ -1066,9 +1074,10 @@ async function runQuery(
       systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const, append: systemPromptAppend },
       allowedTools,
       ...(disallowedTools && { disallowedTools }),
-      maxThinkingTokens: 16384,
+      thinking: { type: 'adaptive' as const },
       permissionMode: currentPermissionMode,
       allowDangerouslySkipPermissions: true,
+      agentProgressSummaries: true,
       settingSources: ['project', 'user'],
       includePartialMessages: true,
       mcpServers: {
@@ -1131,7 +1140,19 @@ async function runQuery(
       continue;
     }
 
-    // Hook 事件
+    // Rate limit event — notify user and keep activity alive
+    if (message.type === 'rate_limit_event') {
+      const info = (message as any).rate_limit_info;
+      if (info?.status === 'rejected') {
+        const resetsAt = info.resetsAt ? new Date(info.resetsAt * 1000).toLocaleTimeString() : '未知';
+        processor.emitStatus(`API 限流中，预计 ${resetsAt} 恢复`);
+      } else if (info?.status === 'allowed_warning') {
+        processor.emitStatus(`接近 API 限流阈值`);
+      }
+      continue;
+    }
+
+    // System messages
     if (message.type === 'system') {
       const sys = message as any;
       if (processor.processSystemMessage(sys)) {
@@ -1358,6 +1379,26 @@ async function runQuery(
   }
 }
 
+/**
+ * process.exit() with SIGKILL safety net.
+ * When SDK has pending async resources (background Task tools, MCP connections),
+ * process.exit() may hang indefinitely. Force SIGKILL after 5 seconds.
+ * See GitHub issue #236.
+ *
+ * The timer must NOT use .unref() — if process.exit() silently fails to
+ * terminate (observed with SDK MCP transports holding the event loop),
+ * an unref'd timer won't keep the loop alive and the SIGKILL never fires.
+ * Using a ref'd timer guarantees the safety net triggers.
+ */
+function forceExitWithSafetyNet(code: number): never {
+  log(`Exiting with code ${code}, SIGKILL safety net in 5s`);
+  setTimeout(() => {
+    console.error('[agent-runner] process.exit() did not terminate, forcing SIGKILL');
+    process.kill(process.pid, 'SIGKILL');
+  }, 5000);
+  process.exit(code);
+}
+
 async function main(): Promise<void> {
   let containerInput: ContainerInput;
 
@@ -1375,6 +1416,7 @@ async function main(): Promise<void> {
   }
 
   let sessionId = containerInput.sessionId;
+  latestSessionId = sessionId;
   const { isHome, isAdminHome } = normalizeHomeFlags(containerInput);
 
   // Create in-process SDK MCP server (replaces the stdio subprocess)
@@ -1398,10 +1440,14 @@ async function main(): Promise<void> {
   const memoryRecallPrompt = buildMemoryRecallPrompt(isHome, isAdminHome);
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
 
-  // Clean up stale sentinels from previous container runs
+  // Clean up stale sentinels from previous container runs.
+  // Note: _drain is NOT cleaned here — the host's cleanupIpcSentinels() in
+  // runForGroup's finally block already removes stale sentinels between runs.
+  // A _drain present at startup was written by registerProcess() for the
+  // CURRENT run (indicating pending messages arrived during container boot).
+  // Deleting it here causes those messages to be silently lost (#xxx).
   try { fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL); } catch { /* ignore */ }
   cleanupStartupInterruptSentinel();
-  try { fs.unlinkSync(IPC_INPUT_DRAIN_SENTINEL); } catch { /* ignore */ }
 
   // Build initial prompt (drain any pending IPC messages too)
   let prompt = containerInput.prompt;
@@ -1429,9 +1475,10 @@ async function main(): Promise<void> {
   const MAX_OVERFLOW_RETRIES = 3;
   try {
     while (true) {
-      // 清理残留的 sentinel，防止空闲期间写入的信号影响下一次 query
+      // 清理残留的 _interrupt sentinel（空闲期间写入的中断信号不应影响下一次 query）。
+      // 注意：_drain 不在此处清理 — 如果 _drain 存在，说明有待处理的消息，
+      // pollIpcDuringQuery 会在查询结果后检测到并正确退出容器。
       try { fs.unlinkSync(IPC_INPUT_INTERRUPT_SENTINEL); } catch { /* ignore */ }
-      try { fs.unlinkSync(IPC_INPUT_DRAIN_SENTINEL); } catch { /* ignore */ }
       clearInterruptRequested();
 
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
@@ -1450,6 +1497,7 @@ async function main(): Promise<void> {
       );
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
+        latestSessionId = sessionId;
       }
       if (queryResult.lastAssistantUuid) {
         resumeAt = queryResult.lastAssistantUuid;
@@ -1459,6 +1507,7 @@ async function main(): Promise<void> {
       if (queryResult.sessionResumeFailed) {
         log(`Session resume failed, retrying with fresh session (old: ${sessionId})`);
         sessionId = undefined;
+        latestSessionId = undefined;
         resumeAt = undefined;
         // Rebuild MCP server to avoid "Already connected to a transport" error
         mcpServerConfig = buildMcpServerConfig();
@@ -1566,7 +1615,7 @@ async function main(): Promise<void> {
           MEMORY_FLUSH_ALLOWED_TOOLS,
           MEMORY_FLUSH_DISALLOWED_TOOLS,
         );
-        if (flushResult.newSessionId) sessionId = flushResult.newSessionId;
+        if (flushResult.newSessionId) { sessionId = flushResult.newSessionId; latestSessionId = sessionId; }
         if (flushResult.lastAssistantUuid) resumeAt = flushResult.lastAssistantUuid;
         log('Memory flush completed');
 
@@ -1579,6 +1628,18 @@ async function main(): Promise<void> {
 
       // Emit session update so host can track it
       writeOutput({ status: 'success', result: null, newSessionId: sessionId });
+
+      // ── Non-blocking compaction: auto-continue after context compaction ──
+      // Instead of waiting for user to send "继续", automatically start a
+      // new query so the agent resumes seamlessly where it left off.
+      if (hadCompaction) {
+        hadCompaction = false;
+        log('Auto-continuing after compaction (non-blocking)');
+        prompt = '继续';
+        promptImages = undefined;
+        containerInput.turnId = generateTurnId();
+        continue;
+      }
 
       log('Query ended, waiting for next IPC message...');
 
@@ -1615,15 +1676,18 @@ async function main(): Promise<void> {
       result: null,
       error: errorMessage
     });
-    process.exit(1);
+    forceExitWithSafetyNet(1);
   }
 
   // main() 正常结束后必须显式退出。
   // SDK 内部可能留有未关闭的异步资源（MCP 连接、定时器等），
   // 如果不调用 process.exit()，Node.js 事件循环不会自动退出，
   // 导致 agent-runner 进程以 0% CPU 挂起，阻塞队列。
-  log('main() completed, forcing process exit');
-  process.exit(0);
+  //
+  // Safety net: 当 SDK 的后台 Task (run_in_background) 持有异步资源时，
+  // process.exit() 可能无法终止进程。5 秒后强制 SIGKILL。
+  // 参考 GitHub issue #236。
+  forceExitWithSafetyNet(0);
 }
 
 // 处理管道断开（EPIPE）：父进程关闭管道后仍有写入时，静默退出避免 code 1 错误输出
@@ -1641,12 +1705,19 @@ async function main(): Promise<void> {
  */
 process.on('SIGTERM', () => {
   log('Received SIGTERM, exiting gracefully');
-  process.exit(0);
+  // Emit latest session ID so the host can persist it before we exit.
+  // Without this, the host starts a fresh session on restart, losing context.
+  if (latestSessionId) {
+    try {
+      writeOutput({ status: 'success', result: null, newSessionId: latestSessionId });
+    } catch { /* stdout may be closed */ }
+  }
+  forceExitWithSafetyNet(0);
 });
 
 process.on('SIGINT', () => {
   log('Received SIGINT, exiting gracefully');
-  process.exit(0);
+  forceExitWithSafetyNet(0);
 });
 
 process.on('uncaughtException', (err: unknown) => {

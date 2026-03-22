@@ -1,12 +1,11 @@
 /**
  * Shared MCP server loading utilities.
- * Used by container-runner (Docker + Host modes) and routes/groups.
+ * Used by container-runner (Docker + Host modes) and routes/mcp-servers.
  */
 import fs from 'fs';
 import path from 'path';
 
 import { DATA_DIR } from './config.js';
-import type { RegisteredGroup } from './types.js';
 
 /**
  * Load enabled MCP server configs from a servers.json file.
@@ -65,45 +64,11 @@ function loadMcpServersFromFile(
 /**
  * Load enabled MCP server configs for a user.
  * Reads data/mcp-servers/{userId}/servers.json.
+ * All workspaces owned by this user share the same MCP server set.
  */
 export function loadUserMcpServers(
   userId: string,
 ): Record<string, Record<string, unknown>> {
   const serversFile = path.join(DATA_DIR, 'mcp-servers', userId, 'servers.json');
   return loadMcpServersFromFile(serversFile);
-}
-
-/**
- * Resolve effective MCP servers for a group based on its mcp_mode and selected_mcps.
- *
- * - 'inherit' (default): use all global user MCP servers
- * - 'custom' with selected_mcps: filter global user MCP servers to only selected names
- * - 'custom' without selected_mcps (null): same as inherit (all user MCP servers)
- */
-export function resolveGroupMcpServers(
-  group: RegisteredGroup,
-  ownerId: string | undefined,
-): Record<string, Record<string, unknown>> {
-  if (!ownerId) return {};
-
-  const userMcpServers = loadUserMcpServers(ownerId);
-
-  if (group.mcp_mode !== 'custom') {
-    // Inherit mode: use all user MCP servers
-    return userMcpServers;
-  }
-
-  // Custom mode: filter by selected_mcps
-  if (!group.selected_mcps || group.selected_mcps.length === 0) {
-    // No selection = use all (same as inherit)
-    return userMcpServers;
-  }
-
-  const result: Record<string, Record<string, unknown>> = {};
-  for (const mcpName of group.selected_mcps) {
-    if (userMcpServers[mcpName]) {
-      result[mcpName] = userMcpServers[mcpName];
-    }
-  }
-  return result;
 }

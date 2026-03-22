@@ -9,16 +9,16 @@ import { ContainerEnvPanel } from './ContainerEnvPanel';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { PromptDialog } from '@/components/common/PromptDialog';
-import { ArrowLeft, FolderOpen, Link, MessageSquare, Monitor, Moon, MoreHorizontal, PanelRightClose, PanelRightOpen, Server, Sun, Terminal, Users, Variable, X, Zap } from 'lucide-react';
+import { ArrowLeft, FolderOpen, Link, MessageSquare, Monitor, Moon, MoreHorizontal, PanelRightClose, PanelRightOpen, Puzzle, Server, Sun, Terminal, Users, Variable, X } from 'lucide-react';
 import { useDisplayMode } from '../../hooks/useDisplayMode';
 import { useTheme } from '../../hooks/useTheme';
 import { cn } from '@/lib/utils';
 import { wsManager } from '../../api/ws';
 import { api } from '../../api/client';
 import { TerminalPanel } from './TerminalPanel';
-import { GroupSkillsPanel } from './GroupSkillsPanel';
-import { GroupMcpPanel } from './GroupMcpPanel';
 import { GroupMembersPanel } from './GroupMembersPanel';
+import { WorkspaceSkillsPanel } from './WorkspaceSkillsPanel';
+import { WorkspaceMcpPanel } from './WorkspaceMcpPanel';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { AgentTabBar } from './AgentTabBar';
 import { ImBindingDialog } from './ImBindingDialog';
@@ -30,8 +30,8 @@ const MAIN_BINDING = '__main__' as const;
 const SIDEBAR_TABS = [
   { id: 'files' as const, icon: FolderOpen, label: '文件管理' },
   { id: 'env' as const, icon: Variable, label: '环境变量' },
-  { id: 'skills' as const, icon: Zap, label: '技能' },
-  { id: 'mcp' as const, icon: Server, label: 'MCP 服务器' },
+  { id: 'skills' as const, icon: Puzzle, label: '工作区 Skills' },
+  { id: 'mcp' as const, icon: Server, label: '工作区 MCP' },
   { id: 'members' as const, icon: Users, label: '成员' },
 ];
 
@@ -542,7 +542,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
           const agent = agents.find((a) => a.id === id);
           if (agent?.linked_im_groups && agent.linked_im_groups.length > 0) {
             const names = agent.linked_im_groups.map((g) => g.name).join('、');
-            alert(`该对话已绑定 IM 群组（${names}），请先解绑后再删除。`);
+            alert(`该对话已绑定 IM 渠道（${names}），请先解绑后再删除。`);
             setBindingAgentId(id);
             return;
           }
@@ -649,12 +649,12 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
               <FilePanel groupJid={groupJid} />
             ) : sidebarTab === 'env' ? (
               <ContainerEnvPanel groupJid={groupJid} />
+            ) : sidebarTab === 'skills' ? (
+              <WorkspaceSkillsPanel groupJid={groupJid} />
             ) : sidebarTab === 'mcp' ? (
-              <GroupMcpPanel groupJid={groupJid} />
-            ) : sidebarTab === 'members' ? (
-              <GroupMembersPanel groupJid={groupJid} />
+              <WorkspaceMcpPanel groupJid={groupJid} />
             ) : (
-              <GroupSkillsPanel groupJid={groupJid} />
+              <GroupMembersPanel groupJid={groupJid} />
             )}
           </div>
         </div>
@@ -727,11 +727,12 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
       <Sheet open={mobilePanel === 'skills'} onOpenChange={(v) => !v && setMobilePanel(null)}>
         <SheetContent side="bottom" className="h-[80dvh] p-0">
           <SheetHeader className="px-4 pt-4 pb-2">
-            <SheetTitle>技能管理</SheetTitle>
+            <SheetTitle>工作区 Skills</SheetTitle>
           </SheetHeader>
           <div className="flex-1 overflow-hidden h-[calc(80dvh-56px)]">
-            <GroupSkillsPanel
+            <WorkspaceSkillsPanel
               groupJid={groupJid}
+              onClose={() => setMobilePanel(null)}
             />
           </div>
         </SheetContent>
@@ -741,10 +742,13 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
       <Sheet open={mobilePanel === 'mcp'} onOpenChange={(v) => !v && setMobilePanel(null)}>
         <SheetContent side="bottom" className="h-[80dvh] p-0">
           <SheetHeader className="px-4 pt-4 pb-2">
-            <SheetTitle>MCP 服务器</SheetTitle>
+            <SheetTitle>工作区 MCP Servers</SheetTitle>
           </SheetHeader>
           <div className="flex-1 overflow-hidden h-[calc(80dvh-56px)]">
-            <GroupMcpPanel groupJid={groupJid} />
+            <WorkspaceMcpPanel
+              groupJid={groupJid}
+              onClose={() => setMobilePanel(null)}
+            />
           </div>
         </SheetContent>
       </Sheet>
@@ -801,13 +805,13 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
               onClick={() => { setMobileActionsOpen(false); setMobilePanel('skills'); }}
               className="w-full text-left px-4 py-3 rounded-lg border border-border hover:bg-accent transition-colors cursor-pointer text-foreground text-sm"
             >
-              技能
+              工作区 Skills
             </button>
             <button
               onClick={() => { setMobileActionsOpen(false); setMobilePanel('mcp'); }}
               className="w-full text-left px-4 py-3 rounded-lg border border-border hover:bg-accent transition-colors cursor-pointer text-foreground text-sm"
             >
-              MCP 服务器
+              工作区 MCP
             </button>
             {showMembersTab && (
               <button

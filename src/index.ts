@@ -17,6 +17,7 @@ import {
   POLL_INTERVAL,
   TIMEZONE,
 } from './config.js';
+import { interruptibleSleep } from './message-notifier.js';
 import {
   AvailableGroup,
   ContainerInput,
@@ -46,6 +47,8 @@ import {
   getMessagesSince,
   getNewMessages,
   getRouterState,
+  getRouterStateByPrefix,
+  deleteRouterState,
   getTaskById,
   getUserHomeGroup,
   initDatabase,
@@ -98,7 +101,6 @@ import {
   resolveLocationInfo,
   type WorkspaceInfo,
 } from './im-command-utils.js';
-import { analyzeIntent } from './intent-analyzer.js';
 import { invalidateSessionCache, getWebDeps } from './web-context.js';
 import {
   getFeishuProviderConfigWithSource,
@@ -107,6 +109,7 @@ import {
   getUserFeishuConfig,
   getUserTelegramConfig,
   getUserQQConfig,
+  getUserWeChatConfig,
   getSystemSettings,
   saveUserFeishuConfig,
   saveUserTelegramConfig,
@@ -116,6 +119,7 @@ import type {
   FeishuConnectConfig,
   TelegramConnectConfig,
   QQConnectConfig,
+  WeChatConnectConfig,
 } from './im-manager.js';
 import { GroupQueue } from './group-queue.js';
 import { startSchedulerLoop, triggerTaskNow } from './task-scheduler.js';
@@ -152,7 +156,7 @@ import {
   getActiveStreamingTexts,
   clearStreamingSnapshot,
 } from './web.js';
-import { installSkillForUser, deleteSkillForUser } from './routes/skills.js';
+import { installSkillForUser, deleteSkillForUser, syncHostSkillsForUser } from './routes/skills.js';
 import { verifyPairingCode } from './telegram-pairing.js';
 import { executeSessionReset } from './commands.js';
 
@@ -161,6 +165,7 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_MAIN_JID = 'web:main';
 const DEFAULT_MAIN_NAME = 'Main';
 const SAFE_REQUEST_ID_RE = /^[A-Za-z0-9_-]+$/;
+const OOM_EXIT_RE = /code 137/;
 
 /**
  * Feed a stream event into a Feishu streaming card controller.
@@ -219,6 +224,25 @@ function feedStreamEventToCard(
       break;
     case 'todo_update':
       if (se.todos) session.setTodos(se.todos);
+      break;
+    case 'task_start':
+      if (se.toolUseId) {
+        const label = se.taskDescription ? `Task: ${se.taskDescription.slice(0, 40)}` : 'Task';
+        session.startTool(se.toolUseId, label);
+        session.pushRecentEvent(`🚀 ${label}`);
+      }
+      break;
+    case 'task_notification':
+      if (se.toolUseId || se.taskId) {
+        const id = se.toolUseId || se.taskId || '';
+        session.endTool(id, false);
+        const label = se.taskSummary ? `Task: ${se.taskSummary.slice(0, 40)}` : 'Task 完成';
+        session.pushRecentEvent(`✅ ${label}`);
+      }
+      break;
+    case 'hook_progress':
+      // Update hook state (no card push needed — card already shows hook indicator)
+      session.setHook({ hookName: se.hookName || '', hookEvent: se.hookEvent || '' });
       break;
   }
 }
@@ -482,34 +506,49 @@ function extractLocalImImagePaths(
 }
 
 /**
- * Send an IM message with retry + exponential backoff.
- * On final failure, increments imSendFailCounts and may auto-unbind the IM group.
- * Used by both main session and sub-agent paths for consistent reliability.
+ * Generic IM operation retry with linear backoff (2s, 4s, 6s).
+ * Returns true on success, false when all retries are exhausted.
  */
 const IM_SEND_MAX_RETRIES = 3;
 const IM_SEND_RETRY_DELAY_MS = 2_000;
 
-async function sendImWithRetry(
+async function retryImOperation(
+  label: string,
   imJid: string,
-  text: string,
-  localImagePaths: string[],
+  fn: () => Promise<void>,
 ): Promise<boolean> {
   for (let attempt = 0; attempt < IM_SEND_MAX_RETRIES; attempt++) {
     try {
-      await imManager.sendMessage(imJid, text, localImagePaths);
-      imSendFailCounts.delete(imJid);
+      await fn();
       return true;
     } catch (err) {
-      logger.warn(
-        { imJid, attempt, err },
-        'IM send attempt failed',
-      );
+      logger.warn({ imJid, attempt, label, err }, 'IM operation attempt failed');
       if (attempt < IM_SEND_MAX_RETRIES - 1) {
         await new Promise(r => setTimeout(r, IM_SEND_RETRY_DELAY_MS * (attempt + 1)));
       }
     }
   }
-  // All retries exhausted
+  logger.error({ imJid, label }, 'IM operation failed after all retries');
+  return false;
+}
+
+/**
+ * Send an IM message with retry.
+ * On final failure, increments imSendFailCounts and may auto-unbind the IM group.
+ */
+async function sendImWithRetry(
+  imJid: string,
+  text: string,
+  localImagePaths: string[],
+): Promise<boolean> {
+  const ok = await retryImOperation('send_message', imJid, () =>
+    imManager.sendMessage(imJid, text, localImagePaths),
+  );
+  if (ok) {
+    imSendFailCounts.delete(imJid);
+    return true;
+  }
+  // All retries exhausted — track cumulative failures
   const count = (imSendFailCounts.get(imJid) ?? 0) + 1;
   imSendFailCounts.set(imJid, count);
   if (count >= IM_SEND_FAIL_THRESHOLD) {
@@ -665,8 +704,8 @@ async function handleCommand(
   command: string,
 ): Promise<string | null> {
   const parts = command.split(/\s+/);
-  const cmd = parts[0];
-  const rawArgs = command.slice(cmd.length).trim();
+  const cmd = parts[0].toLowerCase();
+  const rawArgs = command.slice(parts[0].length).trim();
 
   switch (cmd) {
     case 'clear':
@@ -866,9 +905,25 @@ function handleListCommand(chatJid: string): string {
   const workspaces = collectWorkspaces(userId);
   if (workspaces.length === 0) return '没有可用的工作区';
 
+  const lookupGroup = (jid: string) =>
+    registeredGroups[jid] ?? getRegisteredGroup(jid);
+  const location = resolveLocationInfo(
+    group,
+    lookupGroup,
+    getAgent,
+    findGroupNameByFolder,
+  );
+
+  const currentAgentId = group.target_agent_id ?? null;
+  const currentOnMain = !currentAgentId;
+
   return (
-    formatWorkspaceList(workspaces, group.folder, null) +
-    '\n💡 使用 /bind <workspace> 或 /bind <workspace>/<agent短ID>'
+    formatWorkspaceList(
+      workspaces,
+      location.folder,
+      currentAgentId,
+      currentOnMain,
+    ) + '\n💡 使用 /bind <workspace> 或 /bind <workspace>/<agent短ID>'
   );
 }
 
@@ -1326,6 +1381,16 @@ function loadState(): void {
   }
   sessions = getAllSessions();
   registeredGroups = getAllRegisteredGroups();
+
+  // Restore persisted OOM counters
+  for (const { key, value } of getRouterStateByPrefix('oom_exits:')) {
+    const folder = key.slice('oom_exits:'.length);
+    const count = parseInt(value, 10);
+    if (count > 0) {
+      consecutiveOomExits[folder] = count;
+      logger.info({ folder, count }, 'Restored OOM counter from DB');
+    }
+  }
 
   // Auto-register default groups from config/default-groups.json
   const defaultGroupsPath = path.resolve(
@@ -2286,16 +2351,18 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       }
     }
 
-    // ── 兜底：overflow 等异常导致累积文本未持久化 ──
+    // ── 兜底：进程异常退出导致累积文本未持久化 ──
+    // 使用 buildInterruptedReply 而非 buildOverflowPartialReply：
+    // 进程被杀（SIGTERM/错误）后不会自动继续，"上下文压缩中"提示会误导用户。
     if (!sentReply && !alreadySavedByShutdown && streamingAccumulatedText.trim()) {
       try {
-        const partialReply = buildOverflowPartialReply(streamingAccumulatedText);
+        const partialReply = buildInterruptedReply(streamingAccumulatedText);
         lastReplyMsgId = await sendMessage(chatJid, partialReply, {
           sendToIM: false,
           messageMeta: {
             turnId: lastProcessed.id,
             sessionId: activeSessionId,
-            sourceKind: 'overflow_partial',
+            sourceKind: 'interrupt_partial',
             finalizationReason: 'error',
           },
         });
@@ -2455,11 +2522,16 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       return true;
     }
 
-    // ── OOM auto-recovery: detect consecutive exit code 137 (SIGKILL/OOM) ──
-    const isOom = /code 137|signal SIGKILL/.test(errorDetail);
+    // ── OOM auto-recovery: detect consecutive exit code 137 (OOM) ──
+    // Only match `code 137` (Docker cgroup OOM killer), not `signal SIGKILL`
+    // which is ambiguous for host processes (could be user stop, process tree
+    // kill, or actual OOM).  exitLabel is either `code N` or `signal X` —
+    // never both — so this only triggers on Docker container OOM exits.
+    const isOom = OOM_EXIT_RE.test(errorDetail);
     if (isOom) {
       const folder = effectiveGroup.folder;
       consecutiveOomExits[folder] = (consecutiveOomExits[folder] || 0) + 1;
+      setRouterState(`oom_exits:${folder}`, String(consecutiveOomExits[folder]));
       logger.warn(
         { folder, consecutive: consecutiveOomExits[folder], threshold: OOM_AUTO_RESET_THRESHOLD },
         'OOM exit detected (code 137)',
@@ -2471,6 +2543,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           'Consecutive OOM threshold reached, auto-resetting session to break death loop',
         );
         consecutiveOomExits[folder] = 0;
+        deleteRouterState(`oom_exits:${folder}`);
 
         // Clear session files and DB records (same as unrecoverable_transcript handling)
         try {
@@ -2493,9 +2566,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         commitCursor();
         return true;
       }
-    } else {
-      // Non-OOM error: reset the consecutive counter
+    } else if (consecutiveOomExits[effectiveGroup.folder]) {
+      // Non-OOM error: reset the consecutive counter only if it was set
       delete consecutiveOomExits[effectiveGroup.folder];
+      deleteRouterState(`oom_exits:${effectiveGroup.folder}`);
     }
 
     sendSystemMessage(chatJid, 'agent_error', errorDetail);
@@ -2506,8 +2580,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     return false;
   }
 
-  // Reset OOM counter on successful exit
-  delete consecutiveOomExits[effectiveGroup.folder];
+  // Reset OOM counter on successful exit (only write DB if counter was set)
+  if (consecutiveOomExits[effectiveGroup.folder]) {
+    delete consecutiveOomExits[effectiveGroup.folder];
+    deleteRouterState(`oom_exits:${effectiveGroup.folder}`);
+  }
 
   // Final fallback for silent-success paths (no visible reply).
   commitCursor();
@@ -2840,8 +2917,8 @@ function buildInterruptedReply(partialText: string): string {
 function buildOverflowPartialReply(partialText: string): string {
   const trimmed = partialText.trimEnd();
   return trimmed
-    ? `${trimmed}\n\n---\n*⚠️ 上下文压缩中，以上为部分回复*`
-    : '*⚠️ 上下文压缩中*';
+    ? `${trimmed}\n\n---\n*⚠️ 上下文压缩中，稍后自动继续*`
+    : '*⚠️ 上下文压缩中，稍后自动继续*';
 }
 
 /**
@@ -3063,6 +3140,7 @@ function startIpcWatcher(): void {
     sourceFolder: string,
     alreadySentJids: Set<string>,
     sendFn: (jid: string) => void,
+    notifyChannels?: string[] | null,
   ): void {
     const sentChannelTypes = new Set<string>();
     for (const jid of alreadySentJids) {
@@ -3073,6 +3151,8 @@ function startIpcWatcher(): void {
     const ownerGroups = getGroupsByOwner(userId);
     for (const channelType of connectedTypes) {
       if (sentChannelTypes.has(channelType)) continue;
+      // Filter by notify_channels if specified (null = all channels)
+      if (notifyChannels && !notifyChannels.includes(channelType)) continue;
       const target =
         ownerGroups.find(
           (g) =>
@@ -3115,8 +3195,8 @@ function startIpcWatcher(): void {
       // Collect all IPC roots: main group dir + agents/*/ + tasks-run/*/
       // Tag agent roots with their agentId so we can route messages to virtual JIDs.
       const groupIpcRoot = path.join(ipcBaseDir, sourceGroup);
-      const ipcRoots: Array<{ path: string; agentId: string | null }> = [
-        { path: groupIpcRoot, agentId: null },
+      const ipcRoots: Array<{ path: string; agentId: string | null; taskId: string | null }> = [
+        { path: groupIpcRoot, agentId: null, taskId: null },
       ];
       try {
         const agentsDir = path.join(groupIpcRoot, 'agents');
@@ -3128,6 +3208,7 @@ function startIpcWatcher(): void {
             ipcRoots.push({
               path: path.join(agentsDir, entry.name),
               agentId: entry.name,
+              taskId: null,
             });
           }
         }
@@ -3144,6 +3225,7 @@ function startIpcWatcher(): void {
             ipcRoots.push({
               path: path.join(tasksRunDir, entry.name),
               agentId: null,
+              taskId: entry.name,
             });
           }
         }
@@ -3151,7 +3233,7 @@ function startIpcWatcher(): void {
         /* tasks-run dir may not exist */
       }
 
-      for (const { path: ipcRoot, agentId: ipcAgentId } of ipcRoots) {
+      for (const { path: ipcRoot, agentId: ipcAgentId, taskId: ipcTaskId } of ipcRoots) {
         const messagesDir = path.join(ipcRoot, 'messages');
         const tasksDir = path.join(ipcRoot, 'tasks');
 
@@ -3214,12 +3296,19 @@ function startIpcWatcher(): void {
                         data.text,
                         sourceGroup,
                       );
+                      // Resolve notify_channels from the task
+                      let taskNotifyChannels: string[] | null | undefined;
+                      if (ipcTaskId) {
+                        const taskRecord = getTaskById(ipcTaskId);
+                        taskNotifyChannels = taskRecord?.notify_channels;
+                      }
                       broadcastToOwnerIMChannels(
                         sourceGroupEntry.created_by,
                         sourceGroup,
                         alreadySent,
                         (jid) =>
                           sendImWithFailTracking(jid, data.text, taskLocalImages),
+                        taskNotifyChannels,
                       );
                     }
                   }
@@ -3266,12 +3355,8 @@ function startIpcWatcher(): void {
                         ? data.chatJid
                         : activeImReplyRoutes.get(sourceGroup) ?? null;
                     if (imgImRoute) {
-                      await imManager.sendImage(
-                        imgImRoute,
-                        imageBuffer,
-                        mimeType,
-                        caption,
-                        fileName,
+                      await retryImOperation('send_image', imgImRoute, () =>
+                        imManager.sendImage(imgImRoute, imageBuffer, mimeType, caption, fileName),
                       );
                     }
 
@@ -3319,6 +3404,11 @@ function startIpcWatcher(): void {
                       const alreadySent = new Set<string>(
                         [data.chatJid, imgImRoute].filter(Boolean) as string[],
                       );
+                      let imgTaskNotifyChannels: string[] | null | undefined;
+                      if (ipcTaskId) {
+                        const imgTaskRecord = getTaskById(ipcTaskId);
+                        imgTaskNotifyChannels = imgTaskRecord?.notify_channels;
+                      }
                       broadcastToOwnerIMChannels(
                         sourceGroupEntry.created_by,
                         sourceGroup,
@@ -3332,6 +3422,7 @@ function startIpcWatcher(): void {
                                 'Failed to broadcast task image to IM',
                               ),
                             ),
+                        imgTaskNotifyChannels,
                       );
                     }
 
@@ -3923,7 +4014,10 @@ async function processTaskIpc(
               ? data.chatJid
               : activeImReplyRoutes.get(sourceGroup) ?? null;
           if (fileImRoute) {
-            await imManager.sendFile(fileImRoute, resolvedPath, data.fileName);
+            const imFileName = data.fileName || path.basename(resolvedPath);
+            await retryImOperation('send_file', fileImRoute, () =>
+              imManager.sendFile(fileImRoute, resolvedPath, imFileName),
+            );
           } else {
             logger.debug(
               { chatJid: data.chatJid, sourceGroup },
@@ -4010,14 +4104,23 @@ async function processAgentConversation(
 
   // Fallback: if no IM source in current messages (e.g. web "继续" after
   // restart), recover from the persisted last_im_jid in the DB (#225).
+  // Verify the channel is actually connected — stale JIDs from disabled
+  // channels would cause unnecessary retries and eventual auto-unbind.
   if (!replySourceImJid) {
     const agentRow = getAgent(agentId);
-    if (agentRow?.last_im_jid && getChannelType(agentRow.last_im_jid) !== null) {
-      replySourceImJid = agentRow.last_im_jid;
-      logger.info(
-        { chatJid, agentId, recoveredImJid: replySourceImJid },
-        'Recovered IM routing from persisted last_im_jid',
-      );
+    if (agentRow?.last_im_jid) {
+      if (imManager.isChannelAvailableForJid(agentRow.last_im_jid)) {
+        replySourceImJid = agentRow.last_im_jid;
+        logger.info(
+          { chatJid, agentId, recoveredImJid: replySourceImJid },
+          'Recovered IM routing from persisted last_im_jid',
+        );
+      } else {
+        logger.info(
+          { chatJid, agentId, staleImJid: agentRow.last_im_jid },
+          'Skipped last_im_jid recovery: channel disconnected',
+        );
+      }
     }
   }
 
@@ -4030,11 +4133,14 @@ async function processAgentConversation(
   // Unlike processGroupMessages which falls back to chatJid, conversation agents
   // only stream when the message originates from an IM channel (replySourceImJid).
   // Web-only interactions don't need a Feishu streaming card.
-  const streamingSessionJid = replySourceImJid;
-  let agentStreamingSession = streamingSessionJid
+  // Use agent-scoped key to avoid colliding with the main session's streaming card (#242).
+  const streamingSessionJid = replySourceImJid
+    ? `${replySourceImJid}#agent:${agentId}`
+    : undefined;
+  let agentStreamingSession = replySourceImJid
     ? imManager.createStreamingSession(
-        streamingSessionJid,
-        (messageId) => registerMessageIdMapping(messageId, streamingSessionJid),
+        replySourceImJid,
+        (messageId) => registerMessageIdMapping(messageId, streamingSessionJid!),
       )
     : undefined;
   let agentStreamingAccText = '';
@@ -4264,8 +4370,8 @@ async function processAgentConversation(
           agentStreamingAccText = '';
           unregisterStreamingSession(streamingSessionJid);
           agentStreamingSession = imManager.createStreamingSession(
-            streamingSessionJid,
-            (messageId) => registerMessageIdMapping(messageId, streamingSessionJid),
+            replySourceImJid!,
+            (messageId) => registerMessageIdMapping(messageId, streamingSessionJid!),
           );
           if (agentStreamingSession) {
             registerStreamingSession(streamingSessionJid, agentStreamingSession);
@@ -4499,10 +4605,10 @@ async function processAgentConversation(
       }
     }
 
-    // ── 兜底：overflow 等异常导致累积文本未持久化 ──
+    // ── 兜底：进程异常退出导致累积文本未持久化 ──
     if (!cursorCommitted && agentStreamingAccText.trim()) {
       try {
-        const partialReply = buildOverflowPartialReply(agentStreamingAccText);
+        const partialReply = buildInterruptedReply(agentStreamingAccText);
         const msgId = crypto.randomUUID();
         const timestamp = new Date().toISOString();
         ensureChatExists(virtualChatJid);
@@ -4518,7 +4624,7 @@ async function processAgentConversation(
             meta: {
               turnId: lastProcessed.id,
               sessionId: currentAgentSessionId,
-              sourceKind: 'overflow_partial',
+              sourceKind: 'interrupt_partial',
               finalizationReason: 'error',
             },
           },
@@ -4530,12 +4636,12 @@ async function processAgentConversation(
           turn_id: lastProcessed.id,
           session_id: currentAgentSessionId,
           sdk_message_uuid: null,
-          source_kind: 'overflow_partial',
+          source_kind: 'interrupt_partial',
           finalization_reason: 'error',
         }, agentId);
         commitCursor();
       } catch (err) {
-        logger.warn({ err, chatJid, agentId }, 'Failed to save overflow partial agent text');
+        logger.warn({ err, chatJid, agentId }, 'Failed to save interrupted partial agent text');
       }
     }
 
@@ -4661,9 +4767,6 @@ async function startMessageLoop(): Promise<void> {
           const images = collectMessageImages(chatJid, messagesToSend);
           const imagesForAgent = images.length > 0 ? images : undefined;
 
-          const lastRawText = messagesToSend[messagesToSend.length - 1].content;
-          const intent = analyzeIntent(lastRawText);
-
           // Determine the IM source JID for route update on successful injection
           const lastSourceJidForRoute =
             messagesToSend[messagesToSend.length - 1]?.source_jid || chatJid;
@@ -4672,7 +4775,6 @@ async function startMessageLoop(): Promise<void> {
             chatJid,
             formatted,
             imagesForAgent,
-            intent,
             () => {
               // IPC write succeeded — update reply route for the running agent
               activeRouteUpdaters.get(group.folder)?.(lastSourceJidForRoute);
@@ -4687,24 +4789,6 @@ async function startMessageLoop(): Promise<void> {
               },
               'Piped messages to active container',
             );
-            const lastProcessed = messagesToSend[messagesToSend.length - 1];
-            lastAgentTimestamp[chatJid] = {
-              timestamp: lastProcessed.timestamp,
-              id: lastProcessed.id,
-            };
-            saveState();
-          } else if (sendResult === 'interrupted_stop') {
-            // Stop intent: update cursor, don't enqueue (agent stops)
-            const lastProcessed = messagesToSend[messagesToSend.length - 1];
-            lastAgentTimestamp[chatJid] = {
-              timestamp: lastProcessed.timestamp,
-              id: lastProcessed.id,
-            };
-            saveState();
-          } else if (sendResult === 'interrupted_correction') {
-            // Correction intent: update cursor; the IPC message was written so the
-            // interrupted agent will pick it up in its session loop after the abort.
-            // No enqueueMessageCheck needed — the existing agent handles it.
             const lastProcessed = messagesToSend[messagesToSend.length - 1];
             lastAgentTimestamp[chatJid] = {
               timestamp: lastProcessed.timestamp,
@@ -4735,7 +4819,7 @@ async function startMessageLoop(): Promise<void> {
       recoverStuckPendingGroups();
     }
 
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
+    await interruptibleSleep(POLL_INTERVAL);
   }
 }
 
@@ -4944,6 +5028,20 @@ function buildOnNewChat(
 
       // Don't override groups with explicit IM routing configured.
       if (existing.target_agent_id || existing.target_main_jid) return;
+
+      // Backfill missing created_by without changing folder binding.
+      // Legacy IM groups may have NULL created_by after migration;
+      // we should claim ownership but preserve the user's chosen folder.
+      if (!existing.created_by) {
+        existing.created_by = userId;
+        setRegisteredGroup(chatJid, existing);
+        registeredGroups[chatJid] = existing;
+        logger.info(
+          { chatJid, chatName, userId, folder: existing.folder },
+          'Backfilled created_by for IM chat (preserved existing folder)',
+        );
+        return;
+      }
 
       // Different user's connection now owns this IM app.
       // Re-route the chat to the current user's home folder.
@@ -5175,8 +5273,10 @@ function shouldProcessGroupMessage(chatJid: string): boolean {
   const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
   if (!group) return false;
 
-  // activation_mode 优先于 require_mention
+  // activation_mode 直接存在 IM 群组自身的 registered_groups 记录上（绑定时设置），
+  // 无需追溯 target_main_jid
   const mode = group.activation_mode ?? 'auto';
+
   switch (mode) {
     case 'always':
       return true; // 群聊不需要 @bot
@@ -5192,27 +5292,19 @@ function shouldProcessGroupMessage(chatJid: string): boolean {
 }
 
 /**
- * 中断 fast-path 回调：IM 消息到达时立即触发中断，绕过 2s 轮询延迟。
- * 模块级函数，所有 IM 连接共享。
+ * 飞书流式卡片按钮中断回调。
+ * 仅由飞书卡片按钮触发，不涉及自动关键词检测。
  */
-function handleIMInterruptRequest(
-  chatJid: string,
-  intent: 'stop' | 'correction',
-): void {
+function handleCardInterrupt(chatJid: string): void {
   const interrupted = queue.interruptQuery(chatJid);
   if (interrupted) {
-    logger.info(
-      { chatJid, intent },
-      'Interrupt fast-path: query interrupted immediately',
-    );
+    logger.info({ chatJid }, 'Card interrupt: query interrupted');
   }
 
-  // Immediately abort the streaming card so the user sees "已中断" right away,
-  // without waiting for the agent-runner to process the interrupt sentinel.
   const session = getStreamingSession(chatJid);
   if (session?.isActive()) {
     session.abort('用户中断').catch((err) => {
-      logger.debug({ err, chatJid }, 'Failed to abort streaming card on interrupt');
+      logger.debug({ err, chatJid }, 'Failed to abort streaming card');
     });
   }
 }
@@ -5227,8 +5319,9 @@ async function connectUserIMChannels(
   feishuConfig?: FeishuConnectConfig | null,
   telegramConfig?: TelegramConnectConfig | null,
   qqConfig?: QQConnectConfig | null,
+  wechatConfig?: WeChatConnectConfig | null,
   ignoreMessagesBefore?: number,
-): Promise<{ feishu: boolean; telegram: boolean; qq: boolean }> {
+): Promise<{ feishu: boolean; telegram: boolean; qq: boolean; wechat: boolean }> {
   const onNewChat = buildOnNewChat(userId, homeFolder);
   const resolveGroupFolder = (chatJid: string): string | undefined => {
     return resolveEffectiveFolder(chatJid);
@@ -5241,6 +5334,7 @@ async function connectUserIMChannels(
   let feishu = false;
   let telegram = false;
   let qq = false;
+  let wechat = false;
 
   if (
     feishuConfig &&
@@ -5261,7 +5355,7 @@ async function connectUserIMChannels(
         onBotAddedToGroup,
         onBotRemovedFromGroup,
         shouldProcessGroupMessage,
-        onInterruptRequest: handleIMInterruptRequest,
+        onCardInterrupt: handleCardInterrupt,
       },
     );
   }
@@ -5279,12 +5373,12 @@ async function connectUserIMChannels(
       buildOnPairAttempt(userId),
       {
         onCommand: handleCommand,
+        ignoreMessagesBefore,
         resolveGroupFolder,
         resolveEffectiveChatJid,
         onAgentMessage,
         onBotAddedToGroup: buildTelegramBotAddedHandler(userId, homeFolder),
         onBotRemovedFromGroup,
-        onInterruptRequest: handleIMInterruptRequest,
       },
     );
   }
@@ -5306,12 +5400,30 @@ async function connectUserIMChannels(
         resolveGroupFolder,
         resolveEffectiveChatJid,
         onAgentMessage,
-        onInterruptRequest: handleIMInterruptRequest,
       },
     );
   }
 
-  return { feishu, telegram, qq };
+  if (
+    wechatConfig &&
+    wechatConfig.enabled !== false &&
+    wechatConfig.botToken &&
+    wechatConfig.ilinkBotId
+  ) {
+    wechat = await imManager.connectUserWeChat(
+      userId,
+      wechatConfig,
+      onNewChat,
+      {
+        onCommand: handleCommand,
+        resolveGroupFolder,
+        resolveEffectiveChatJid,
+        onAgentMessage,
+      },
+    );
+  }
+
+  return { feishu, telegram, qq, wechat };
 }
 
 function movePathWithFallback(src: string, dst: string): void {
@@ -5614,7 +5726,7 @@ async function main(): Promise<void> {
           onBotAddedToGroup: buildOnNewChat(adminUser.id, homeFolder),
           onBotRemovedFromGroup: buildOnBotRemovedFromGroup(),
           shouldProcessGroupMessage,
-          onInterruptRequest: handleIMInterruptRequest,
+          onCardInterrupt: handleCardInterrupt,
         },
       );
       if (connected) {
@@ -5665,6 +5777,7 @@ async function main(): Promise<void> {
         buildOnPairAttempt(adminUser.id),
         {
           onCommand: handleCommand,
+          ignoreMessagesBefore: Date.now(),
           resolveGroupFolder: (chatJid) => resolveEffectiveFolder(chatJid),
           resolveEffectiveChatJid: buildResolveEffectiveChatJid(),
           onAgentMessage: buildOnAgentMessage(),
@@ -5673,7 +5786,6 @@ async function main(): Promise<void> {
             homeFolder,
           ),
           onBotRemovedFromGroup: buildOnBotRemovedFromGroup(),
-          onInterruptRequest: handleIMInterruptRequest,
         },
       );
       return connected;
@@ -5685,7 +5797,7 @@ async function main(): Promise<void> {
   // Reload a per-user IM channel (hot-reload on user-im config save)
   const reloadUserIMConfig = async (
     userId: string,
-    channel: 'feishu' | 'telegram' | 'qq',
+    channel: 'feishu' | 'telegram' | 'qq' | 'wechat',
   ): Promise<boolean> => {
     const homeGroup = getUserHomeGroup(userId);
     if (!homeGroup) {
@@ -5718,7 +5830,7 @@ async function main(): Promise<void> {
             onBotAddedToGroup: buildOnNewChat(userId, homeFolder),
             onBotRemovedFromGroup: buildOnBotRemovedFromGroup(),
             shouldProcessGroupMessage,
-            onInterruptRequest: handleIMInterruptRequest,
+            onCardInterrupt: handleCardInterrupt,
           },
         );
         logger.info(
@@ -5745,13 +5857,13 @@ async function main(): Promise<void> {
           buildOnPairAttempt(userId),
           {
             onCommand: handleCommand,
+            ignoreMessagesBefore,
             resolveGroupFolder: (chatJid: string) =>
               resolveEffectiveFolder(chatJid),
             resolveEffectiveChatJid: buildResolveEffectiveChatJid(),
             onAgentMessage: buildOnAgentMessage(),
             onBotAddedToGroup: buildTelegramBotAddedHandler(userId, homeFolder),
             onBotRemovedFromGroup: buildOnBotRemovedFromGroup(),
-            onInterruptRequest: handleIMInterruptRequest,
           },
         );
         logger.info(
@@ -5762,8 +5874,7 @@ async function main(): Promise<void> {
       }
       logger.info({ userId }, 'User Telegram channel disabled via hot-reload');
       return false;
-    } else {
-      // QQ
+    } else if (channel === 'qq') {
       await imManager.disconnectUserQQ(userId);
       const config = getUserQQConfig(userId);
       if (
@@ -5784,13 +5895,48 @@ async function main(): Promise<void> {
               resolveEffectiveFolder(chatJid),
             resolveEffectiveChatJid: buildResolveEffectiveChatJid(),
             onAgentMessage: buildOnAgentMessage(),
-            onInterruptRequest: handleIMInterruptRequest,
           },
         );
         logger.info({ userId, connected }, 'User QQ connection hot-reloaded');
         return connected;
       }
       logger.info({ userId }, 'User QQ channel disabled via hot-reload');
+      return false;
+    } else {
+      // WeChat
+      await imManager.disconnectUserWeChat(userId);
+      const config = getUserWeChatConfig(userId);
+      if (
+        config &&
+        config.enabled !== false &&
+        config.botToken &&
+        config.ilinkBotId
+      ) {
+        const connected = await imManager.connectUserWeChat(
+          userId,
+          {
+            botToken: config.botToken,
+            ilinkBotId: config.ilinkBotId,
+            baseUrl: config.baseUrl,
+            cdnBaseUrl: config.cdnBaseUrl,
+            getUpdatesBuf: config.getUpdatesBuf,
+          },
+          onNewChat,
+          {
+            onCommand: handleCommand,
+            resolveGroupFolder: (chatJid: string) =>
+              resolveEffectiveFolder(chatJid),
+            resolveEffectiveChatJid: buildResolveEffectiveChatJid(),
+            onAgentMessage: buildOnAgentMessage(),
+          },
+        );
+        logger.info(
+          { userId, connected },
+          'User WeChat connection hot-reloaded',
+        );
+        return connected;
+      }
+      logger.info({ userId }, 'User WeChat channel disabled via hot-reload');
       return false;
     }
   };
@@ -5824,6 +5970,8 @@ async function main(): Promise<void> {
     isUserTelegramConnected: (userId: string) =>
       imManager.isTelegramConnected(userId),
     isUserQQConnected: (userId: string) => imManager.isQQConnected(userId),
+    isUserWeChatConnected: (userId: string) =>
+      imManager.isWeChatConnected(userId),
     processAgentConversation,
     getFeishuChatInfo: (userId: string, chatId: string) =>
       imManager.getFeishuChatInfo(userId, chatId),
@@ -5921,6 +6069,78 @@ async function main(): Promise<void> {
     24 * 60 * 60 * 1000,
   );
 
+  // Skills auto-sync: periodically sync host skills to all admin users
+  let skillAutoSyncTimer: ReturnType<typeof setInterval> | null = null;
+
+  function startSkillAutoSync(): void {
+    stopSkillAutoSync();
+    const settings = getSystemSettings();
+    if (!settings.skillAutoSyncEnabled) return;
+
+    const intervalMs = settings.skillAutoSyncIntervalMinutes * 60 * 1000;
+    logger.info(
+      { intervalMinutes: settings.skillAutoSyncIntervalMinutes },
+      'Starting skill auto-sync timer',
+    );
+
+    const runSync = async () => {
+      const currentSettings = getSystemSettings();
+      if (!currentSettings.skillAutoSyncEnabled) {
+        stopSkillAutoSync();
+        return;
+      }
+
+      try {
+        const { users: adminUsers } = listUsers({ role: 'admin', status: 'active' });
+        for (const admin of adminUsers) {
+          try {
+            const result = await syncHostSkillsForUser(admin.id);
+            const { added, updated, deleted } = result.stats;
+            if (added > 0 || updated > 0 || deleted > 0) {
+              logger.info(
+                { userId: admin.id, username: admin.username, ...result.stats, total: result.total },
+                'Skill auto-sync completed with changes',
+              );
+            }
+          } catch (err) {
+            logger.warn({ err, userId: admin.id }, 'Skill auto-sync failed for user');
+          }
+        }
+      } catch (err) {
+        logger.error({ err }, 'Skill auto-sync failed');
+      }
+    };
+
+    // Run once immediately, then on interval
+    void runSync();
+    skillAutoSyncTimer = setInterval(() => void runSync(), intervalMs);
+  }
+
+  function stopSkillAutoSync(): void {
+    if (skillAutoSyncTimer) {
+      clearInterval(skillAutoSyncTimer);
+      skillAutoSyncTimer = null;
+    }
+  }
+
+  // Initial start + restart when settings change (check every 60s)
+  const initSettings = getSystemSettings();
+  let _lastSkillSyncEnabled: boolean = initSettings.skillAutoSyncEnabled;
+  let _lastSkillSyncInterval: number = initSettings.skillAutoSyncIntervalMinutes;
+  startSkillAutoSync();
+
+  setInterval(() => {
+    const settings = getSystemSettings();
+    if (
+      settings.skillAutoSyncEnabled !== _lastSkillSyncEnabled ||
+      settings.skillAutoSyncIntervalMinutes !== _lastSkillSyncInterval
+    ) {
+      _lastSkillSyncEnabled = settings.skillAutoSyncEnabled;
+      _lastSkillSyncInterval = settings.skillAutoSyncIntervalMinutes;
+      startSkillAutoSync();
+    }
+  }, 60 * 1000);
+
   await ensureDockerRunning();
 
   queue.setProcessMessagesFn(processGroupMessages);
@@ -5989,6 +6209,21 @@ async function main(): Promise<void> {
       }
     }
     return { allowed: userActive < limit };
+  });
+  // Recovery: when agent process exits with unconsumed IPC messages,
+  // re-enqueue processAgentConversation to pick them up. See issue #240.
+  queue.setOnUnconsumedAgentIpc((groupJid: string, agentId: string) => {
+    // Extract base chat JID from virtual JID (e.g. web:main#agent:abc → web:main)
+    const baseChatJid = groupJid.includes('#agent:')
+      ? groupJid.split('#agent:')[0]
+      : groupJid;
+    const agent = getAgent(agentId);
+    const homeChatJid = agent?.chat_jid || baseChatJid;
+    const virtualChatJid = `${homeChatJid}#agent:${agentId}`;
+    const taskId = `agent-ipc-recovery:${agentId}:${Date.now()}`;
+    queue.enqueueTask(virtualChatJid, taskId, async () => {
+      await processAgentConversation(homeChatJid, agentId);
+    });
   });
   const schedulerDeps: import('./task-scheduler.js').SchedulerDependencies = {
     registeredGroups: () => registeredGroups,
@@ -6063,6 +6298,7 @@ async function main(): Promise<void> {
     const userFeishu = getUserFeishuConfig(user.id);
     const userTelegram = getUserTelegramConfig(user.id);
     const userQQ = getUserQQConfig(user.id);
+    const userWeChat = getUserWeChatConfig(user.id);
 
     // Determine effective Feishu config: per-user > global (admin only)
     let effectiveFeishu: FeishuConnectConfig | null = null;
@@ -6111,7 +6347,20 @@ async function main(): Promise<void> {
       };
     }
 
-    if (!effectiveFeishu && !effectiveTelegram && !effectiveQQ) continue;
+    // Determine effective WeChat config: per-user only (no global fallback)
+    let effectiveWeChat: WeChatConnectConfig | null = null;
+    if (userWeChat && userWeChat.botToken && userWeChat.ilinkBotId) {
+      effectiveWeChat = {
+        botToken: userWeChat.botToken,
+        ilinkBotId: userWeChat.ilinkBotId,
+        baseUrl: userWeChat.baseUrl,
+        cdnBaseUrl: userWeChat.cdnBaseUrl,
+        getUpdatesBuf: userWeChat.getUpdatesBuf,
+        enabled: userWeChat.enabled,
+      };
+    }
+
+    if (!effectiveFeishu && !effectiveTelegram && !effectiveQQ && !effectiveWeChat) continue;
 
     try {
       const result = await connectUserIMChannels(
@@ -6120,6 +6369,7 @@ async function main(): Promise<void> {
         effectiveFeishu,
         effectiveTelegram,
         effectiveQQ,
+        effectiveWeChat,
       );
       if (result.feishu) anyFeishuConnected = true;
       logger.info(
@@ -6128,6 +6378,7 @@ async function main(): Promise<void> {
           feishu: result.feishu,
           telegram: result.telegram,
           qq: result.qq,
+          wechat: result.wechat,
         },
         'User IM channels connected',
       );

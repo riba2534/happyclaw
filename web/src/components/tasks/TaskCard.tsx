@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { ChevronDown, ChevronUp, Pause, Play, Trash2, Zap } from 'lucide-react';
 import { ScheduledTask } from '../../stores/tasks';
 import { TaskDetail } from './TaskDetail';
+import { showToast } from '../../utils/toast';
 
 interface TaskCardProps {
   task: ScheduledTask;
@@ -56,6 +57,7 @@ export function TaskCard({ task, onPause, onResume, onDelete, onRunNow }: TaskCa
     setRunningNow(true);
     try {
       await onRunNow(task.id);
+      showToast('任务已触发', '后台执行中，稍后刷新查看结果');
     } finally {
       setTimeout(() => setRunningNow(false), 3000);
     }

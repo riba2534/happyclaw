@@ -61,7 +61,7 @@ export function App() {
           <Route path="/chat/:groupFolder?" element={<Suspense fallback={null}><ChatPage /></Suspense>} />
           <Route path="/groups" element={<Navigate to="/settings?tab=groups" replace />} />
           <Route path="/tasks" element={<Suspense fallback={null}><TasksPage /></Suspense>} />
-          <Route path="/monitor" element={<Suspense fallback={null}><MonitorPage /></Suspense>} />
+          <Route path="/monitor" element={<AuthGuard requireAdmin><Suspense fallback={null}><MonitorPage /></Suspense></AuthGuard>} />
           <Route path="/usage" element={<Suspense fallback={null}><UsagePage /></Suspense>} />
           <Route path="/billing" element={<Suspense fallback={null}><BillingPage /></Suspense>} />
           <Route path="/memory" element={<MemoryPage />} />

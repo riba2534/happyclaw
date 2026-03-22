@@ -153,7 +153,6 @@ interface GroupPayloadItem {
   is_shared?: boolean;
   member_role?: 'owner' | 'member';
   member_count?: number;
-  selected_skills?: string[] | null;
   pinned_at?: string;
   activation_mode?: 'auto' | 'always' | 'when_mentioned' | 'disabled';
 }
@@ -262,7 +261,6 @@ function buildGroupsPayload(user: AuthUser): Record<string, GroupPayloadItem> {
       is_shared: isShared || undefined,
       member_role: memberInfo?.role ?? undefined,
       member_count: isShared ? memberInfo?.count : undefined,
-      selected_skills: group.selected_skills ?? null,
       pinned_at: pins[jid] || undefined,
       activation_mode: group.activation_mode ?? 'auto',
     };
@@ -696,7 +694,6 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
 
   const {
     name: rawName,
-    selected_skills,
     is_pinned,
     activation_mode,
   } = validation.data;
@@ -705,7 +702,6 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
   // 至少需要提供一个字段
   if (
     !name &&
-    selected_skills === undefined &&
     is_pinned === undefined &&
     activation_mode === undefined
   ) {
@@ -716,7 +712,6 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
   const isPinOnly =
     is_pinned !== undefined &&
     !name &&
-    selected_skills === undefined &&
     activation_mode === undefined;
   if (isPinOnly) {
     if (
@@ -759,12 +754,8 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
     unpinGroup(authUser.id, jid);
   }
 
-  // Update registered group if name, skills, or activation_mode changed
-  if (
-    name ||
-    selected_skills !== undefined ||
-    activation_mode !== undefined
-  ) {
+  // Update registered group if name or activation_mode changed
+  if (name || activation_mode !== undefined) {
     const updated: RegisteredGroup = {
       name: name || existing.name,
       folder: existing.folder,
@@ -776,10 +767,6 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
       initGitUrl: existing.initGitUrl,
       created_by: existing.created_by,
       is_home: existing.is_home,
-      selected_skills:
-        selected_skills !== undefined
-          ? (selected_skills ?? null)
-          : existing.selected_skills,
       target_agent_id: existing.target_agent_id,
       target_main_jid: existing.target_main_jid,
       reply_policy: existing.reply_policy,
@@ -1693,32 +1680,6 @@ groupRoutes.put('/:jid/mcp', authMiddleware, async (c) => {
     mcp_mode: updatedGroup.mcp_mode,
     selected_mcps: updatedGroup.selected_mcps,
   });
-});
-
-// POST /api/groups/:jid/stop - 停止工作区容器/进程（下次发送消息时自动重启）
-groupRoutes.post('/:jid/stop', authMiddleware, async (c) => {
-  const jid = c.req.param('jid');
-  const group = getRegisteredGroup(jid);
-  if (!group) return c.json({ error: 'Group not found' }, 404);
-
-  const authUser = c.get('user') as AuthUser;
-  if (!canAccessGroup({ id: authUser.id, role: authUser.role }, group)) {
-    return c.json({ error: 'Group not found' }, 404);
-  }
-
-  const deps = getWebDeps();
-  if (!deps) return c.json({ error: 'Server not initialized' }, 500);
-
-  try {
-    await deps.queue.stopGroup(jid);
-    return c.json({
-      success: true,
-      message: 'Container stopped. It will restart on the next message.',
-    });
-  } catch (err) {
-    logger.error({ jid, err }, 'Failed to stop group');
-    return c.json({ error: 'Failed to stop container' }, 500);
-  }
 });
 
 export default groupRoutes;

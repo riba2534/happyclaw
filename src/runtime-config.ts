@@ -263,6 +263,83 @@ interface ClaudeStoredProfileResolved {
   officialUpdatedAt: string | null;
 }
 
+// ─── V4 统一供应商模型 ────────────────────────────────────────
+
+export interface BalancingConfig {
+  strategy: 'round-robin' | 'weighted-round-robin' | 'failover';
+  unhealthyThreshold: number;
+  recoveryIntervalMs: number;
+}
+
+const DEFAULT_BALANCING_CONFIG: BalancingConfig = {
+  strategy: 'round-robin',
+  unhealthyThreshold: 3,
+  recoveryIntervalMs: 300_000,
+};
+
+/** V4 磁盘格式 — 每个供应商的 secrets 独立加密 */
+interface StoredProviderV4 {
+  id: string;
+  name: string;
+  type: 'official' | 'third_party';
+  enabled: boolean;
+  weight: number;
+  anthropicBaseUrl: string;
+  anthropicModel: string;
+  secrets: EncryptedSecrets;
+  customEnv?: Record<string, string>;
+  updatedAt: string;
+}
+
+interface StoredClaudeProviderConfigV4 {
+  version: 4;
+  providers: StoredProviderV4[];
+  balancing: BalancingConfig;
+  updatedAt: string;
+}
+
+/** 解密后的统一供应商运行时结构 */
+export interface UnifiedProvider {
+  id: string;
+  name: string;
+  type: 'official' | 'third_party';
+  enabled: boolean;
+  weight: number;
+  anthropicBaseUrl: string;
+  anthropicAuthToken: string;
+  anthropicModel: string;
+  anthropicApiKey: string;
+  claudeCodeOauthToken: string;
+  claudeOAuthCredentials: ClaudeOAuthCredentials | null;
+  customEnv: Record<string, string>;
+  updatedAt: string;
+}
+
+/** UnifiedProvider 的公开（脱敏）版本 */
+export interface UnifiedProviderPublic {
+  id: string;
+  name: string;
+  type: 'official' | 'third_party';
+  enabled: boolean;
+  weight: number;
+  anthropicBaseUrl: string;
+  anthropicModel: string;
+  hasAnthropicAuthToken: boolean;
+  anthropicAuthTokenMasked: string | null;
+  hasAnthropicApiKey: boolean;
+  anthropicApiKeyMasked: string | null;
+  hasClaudeCodeOauthToken: boolean;
+  claudeCodeOauthTokenMasked: string | null;
+  hasClaudeOAuthCredentials: boolean;
+  claudeOAuthCredentialsExpiresAt: number | null;
+  claudeOAuthCredentialsAccessTokenMasked: string | null;
+  customEnv: Record<string, string>;
+  updatedAt: string;
+}
+
+const MAX_PROVIDERS = 20;
+const POOL_CONFIG_FILE = path.join(CLAUDE_CONFIG_DIR, 'provider-pool.json');
+
 interface ClaudeConfigAuditEntry {
   timestamp: string;
   actor: string;
@@ -606,7 +683,9 @@ function fromStoredProfile(
     name: normalizeProfileName(stored.name),
     anthropicBaseUrl: normalizeBaseUrl(stored.anthropicBaseUrl),
     anthropicAuthToken: secrets.anthropicAuthToken,
-    anthropicModel: normalizeModel(stored.anthropicModel ?? (stored as any).happyclawModel ?? ''),
+    anthropicModel: normalizeModel(
+      stored.anthropicModel ?? (stored as any).happyclawModel ?? '',
+    ),
     updatedAt: stored.updatedAt || null,
     customEnv: sanitizeCustomEnvMap(stored.customEnv || {}, {
       skipReservedClaudeKeys: true,
@@ -878,6 +957,537 @@ function writeStoredState(state: ClaudeStoredStateV3Resolved): void {
   fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
   fs.renameSync(tmp, CLAUDE_CONFIG_FILE);
 }
+
+// ─── V4 统一供应商 Read / Write / CRUD ──────────────────────────
+
+function toStoredProviderV4(provider: UnifiedProvider): StoredProviderV4 {
+  const secrets: SecretPayload = {
+    anthropicAuthToken: provider.anthropicAuthToken || '',
+    anthropicApiKey: provider.anthropicApiKey || '',
+    claudeCodeOauthToken: provider.claudeCodeOauthToken || '',
+    claudeOAuthCredentials: provider.claudeOAuthCredentials ?? null,
+  };
+  const sanitizedEnv = sanitizeCustomEnvMap(provider.customEnv || {}, {
+    skipReservedClaudeKeys: true,
+  });
+  return {
+    id: provider.id,
+    name: provider.name,
+    type: provider.type,
+    enabled: provider.enabled,
+    weight: Math.max(1, Math.min(100, provider.weight || 1)),
+    anthropicBaseUrl: provider.anthropicBaseUrl || '',
+    anthropicModel: provider.anthropicModel || '',
+    secrets: encryptSecrets(secrets),
+    ...(Object.keys(sanitizedEnv).length > 0
+      ? { customEnv: sanitizedEnv }
+      : {}),
+    updatedAt: provider.updatedAt || new Date().toISOString(),
+  };
+}
+
+function fromStoredProviderV4(stored: StoredProviderV4): UnifiedProvider {
+  const secrets = decryptSecrets(stored.secrets);
+  return {
+    id: stored.id,
+    name: stored.name,
+    type: stored.type,
+    enabled: stored.enabled,
+    weight: Math.max(1, Math.min(100, stored.weight || 1)),
+    anthropicBaseUrl: stored.anthropicBaseUrl || '',
+    anthropicAuthToken: secrets.anthropicAuthToken || '',
+    anthropicModel: stored.anthropicModel || '',
+    anthropicApiKey: secrets.anthropicApiKey || '',
+    claudeCodeOauthToken: secrets.claudeCodeOauthToken || '',
+    claudeOAuthCredentials: secrets.claudeOAuthCredentials ?? null,
+    customEnv: sanitizeCustomEnvMap(stored.customEnv || {}, {
+      skipReservedClaudeKeys: true,
+    }),
+    updatedAt: stored.updatedAt || '',
+  };
+}
+
+/** Migrate V3 stored state to V4 unified provider list */
+function migrateV3toV4(
+  v3: ClaudeStoredStateV3Resolved,
+): { providers: UnifiedProvider[]; balancing: BalancingConfig } {
+  const providers: UnifiedProvider[] = [];
+  const now = new Date().toISOString();
+
+  // 1. Official credentials → official provider (if any secret present)
+  const hasOfficial =
+    !!v3.officialSecrets.anthropicApiKey ||
+    !!v3.officialSecrets.claudeCodeOauthToken ||
+    !!v3.officialSecrets.claudeOAuthCredentials;
+  if (hasOfficial) {
+    providers.push({
+      id: OFFICIAL_CLAUDE_PROFILE_ID,
+      name: '官方 Claude',
+      type: 'official',
+      enabled: isOfficialClaudeMode(v3.activeProfileId),
+      weight: 1,
+      anthropicBaseUrl: '',
+      anthropicAuthToken: '',
+      anthropicModel: '',
+      anthropicApiKey: v3.officialSecrets.anthropicApiKey,
+      claudeCodeOauthToken: v3.officialSecrets.claudeCodeOauthToken,
+      claudeOAuthCredentials:
+        v3.officialSecrets.claudeOAuthCredentials ?? null,
+      customEnv: v3.officialCustomEnv || {},
+      updatedAt: v3.officialUpdatedAt || now,
+    });
+  }
+
+  // 2. Each third-party profile → third_party provider
+  for (const stored of v3.profiles) {
+    const profile = fromStoredProfile(stored);
+    providers.push({
+      id: profile.id,
+      name: profile.name,
+      type: 'third_party',
+      enabled: profile.id === v3.activeProfileId,
+      weight: 1,
+      anthropicBaseUrl: profile.anthropicBaseUrl,
+      anthropicAuthToken: profile.anthropicAuthToken,
+      anthropicModel: profile.anthropicModel,
+      anthropicApiKey: '',
+      claudeCodeOauthToken: '',
+      claudeOAuthCredentials: null,
+      customEnv: profile.customEnv || {},
+      updatedAt: profile.updatedAt || now,
+    });
+  }
+
+  // 3. If provider-pool.json exists with mode=pool, use its members' enabled/weight
+  let balancing: BalancingConfig = { ...DEFAULT_BALANCING_CONFIG };
+  try {
+    if (fs.existsSync(POOL_CONFIG_FILE)) {
+      const poolContent = fs.readFileSync(POOL_CONFIG_FILE, 'utf-8');
+      const pool = JSON.parse(poolContent) as Record<string, unknown>;
+      if (pool.version === 1 && pool.mode === 'pool') {
+        const members = pool.members as Array<{
+          profileId: string;
+          weight: number;
+          enabled: boolean;
+        }>;
+        if (Array.isArray(members)) {
+          for (const member of members) {
+            const p = providers.find((pv) => pv.id === member.profileId);
+            if (p) {
+              p.enabled = member.enabled;
+              p.weight = Math.max(1, Math.min(100, member.weight || 1));
+            }
+          }
+        }
+        // Migrate strategy and thresholds
+        if (
+          typeof pool.strategy === 'string' &&
+          ['round-robin', 'weighted-round-robin', 'failover'].includes(
+            pool.strategy,
+          )
+        ) {
+          balancing.strategy = pool.strategy as BalancingConfig['strategy'];
+        }
+        if (typeof pool.unhealthyThreshold === 'number') {
+          balancing.unhealthyThreshold = pool.unhealthyThreshold;
+        }
+        if (typeof pool.recoveryIntervalMs === 'number') {
+          balancing.recoveryIntervalMs = pool.recoveryIntervalMs;
+        }
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Failed to read provider-pool.json during migration');
+  }
+
+  // 4. Ensure at least one provider is enabled
+  if (providers.length > 0 && !providers.some((p) => p.enabled)) {
+    providers[0].enabled = true;
+  }
+
+  return { providers, balancing };
+}
+
+/** Read V4 config, with automatic V3→V4 migration */
+function readStoredStateV4(): {
+  providers: UnifiedProvider[];
+  balancing: BalancingConfig;
+} | null {
+  if (!fs.existsSync(CLAUDE_CONFIG_FILE)) return null;
+  try {
+    const content = fs.readFileSync(CLAUDE_CONFIG_FILE, 'utf-8');
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+
+    if (parsed.version === 4) {
+      const v4 = parsed as unknown as StoredClaudeProviderConfigV4;
+      return {
+        providers: v4.providers.map(fromStoredProviderV4),
+        balancing: {
+          strategy: v4.balancing?.strategy || DEFAULT_BALANCING_CONFIG.strategy,
+          unhealthyThreshold:
+            v4.balancing?.unhealthyThreshold ??
+            DEFAULT_BALANCING_CONFIG.unhealthyThreshold,
+          recoveryIntervalMs:
+            v4.balancing?.recoveryIntervalMs ??
+            DEFAULT_BALANCING_CONFIG.recoveryIntervalMs,
+        },
+      };
+    }
+
+    // V3 or older → read as V3, then migrate
+    const v3 = readStoredState();
+    if (!v3) return null;
+
+    const migrated = migrateV3toV4(v3);
+
+    // Auto-save as V4 on first read (lazy migration)
+    writeStoredStateV4(migrated.providers, migrated.balancing);
+    logger.info(
+      { providerCount: migrated.providers.length },
+      'Migrated Claude provider config from V3 to V4',
+    );
+
+    return migrated;
+  } catch (err) {
+    logger.error(
+      { err, file: CLAUDE_CONFIG_FILE },
+      'Failed to read Claude provider config V4',
+    );
+    return null;
+  }
+}
+
+function writeStoredStateV4(
+  providers: UnifiedProvider[],
+  balancing: BalancingConfig,
+): void {
+  const payload: StoredClaudeProviderConfigV4 = {
+    version: 4,
+    providers: providers.map(toStoredProviderV4),
+    balancing,
+    updatedAt: new Date().toISOString(),
+  };
+
+  fs.mkdirSync(CLAUDE_CONFIG_DIR, { recursive: true });
+  const tmp = `${CLAUDE_CONFIG_FILE}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
+  fs.renameSync(tmp, CLAUDE_CONFIG_FILE);
+}
+
+// ─── V4 公开 API ─────────────────────────────────────────────
+
+export function getProviders(): UnifiedProvider[] {
+  const state = readStoredStateV4();
+  return state?.providers ?? [];
+}
+
+export function getEnabledProviders(): UnifiedProvider[] {
+  return getProviders().filter((p) => p.enabled);
+}
+
+export function getBalancingConfig(): BalancingConfig {
+  const state = readStoredStateV4();
+  return state?.balancing ?? { ...DEFAULT_BALANCING_CONFIG };
+}
+
+export function saveBalancingConfig(
+  config: Partial<BalancingConfig>,
+): BalancingConfig {
+  const state = readStoredStateV4() || {
+    providers: [],
+    balancing: { ...DEFAULT_BALANCING_CONFIG },
+  };
+  const merged: BalancingConfig = {
+    ...state.balancing,
+    ...config,
+  };
+  writeStoredStateV4(state.providers, merged);
+  return merged;
+}
+
+export function createProvider(input: {
+  name: string;
+  type: 'official' | 'third_party';
+  anthropicBaseUrl?: string;
+  anthropicAuthToken?: string;
+  anthropicModel?: string;
+  anthropicApiKey?: string;
+  claudeCodeOauthToken?: string;
+  claudeOAuthCredentials?: ClaudeOAuthCredentials | null;
+  customEnv?: Record<string, string>;
+  weight?: number;
+  enabled?: boolean;
+}): UnifiedProvider {
+  const state = readStoredStateV4() || {
+    providers: [],
+    balancing: { ...DEFAULT_BALANCING_CONFIG },
+  };
+
+  if (state.providers.length >= MAX_PROVIDERS) {
+    throw new Error(`最多只能创建 ${MAX_PROVIDERS} 个供应商`);
+  }
+
+  const now = new Date().toISOString();
+  const provider: UnifiedProvider = {
+    id: crypto.randomBytes(8).toString('hex'),
+    name: normalizeProfileName(input.name),
+    type: input.type,
+    enabled: input.enabled ?? (state.providers.length === 0),
+    weight: Math.max(1, Math.min(100, input.weight ?? 1)),
+    anthropicBaseUrl: input.anthropicBaseUrl
+      ? normalizeBaseUrl(input.anthropicBaseUrl)
+      : '',
+    anthropicAuthToken: input.anthropicAuthToken
+      ? normalizeSecret(input.anthropicAuthToken, 'anthropicAuthToken')
+      : '',
+    anthropicModel: input.anthropicModel
+      ? normalizeModel(input.anthropicModel)
+      : '',
+    anthropicApiKey: input.anthropicApiKey
+      ? normalizeSecret(input.anthropicApiKey, 'anthropicApiKey')
+      : '',
+    claudeCodeOauthToken: input.claudeCodeOauthToken
+      ? normalizeSecret(input.claudeCodeOauthToken, 'claudeCodeOauthToken')
+      : '',
+    claudeOAuthCredentials: input.claudeOAuthCredentials ?? null,
+    customEnv: sanitizeCustomEnvMap(input.customEnv || {}, {
+      skipReservedClaudeKeys: true,
+    }),
+    updatedAt: now,
+  };
+
+  state.providers.push(provider);
+  writeStoredStateV4(state.providers, state.balancing);
+  return provider;
+}
+
+export function updateProvider(
+  id: string,
+  patch: {
+    name?: string;
+    anthropicBaseUrl?: string;
+    anthropicModel?: string;
+    customEnv?: Record<string, string>;
+    weight?: number;
+  },
+): UnifiedProvider {
+  const state = readStoredStateV4();
+  if (!state) throw new Error('Claude 配置不存在');
+
+  const idx = state.providers.findIndex((p) => p.id === id);
+  if (idx < 0) throw new Error('未找到指定供应商');
+
+  const current = state.providers[idx];
+  const updated: UnifiedProvider = {
+    ...current,
+    ...(patch.name !== undefined
+      ? { name: normalizeProfileName(patch.name) }
+      : {}),
+    ...(patch.anthropicBaseUrl !== undefined
+      ? { anthropicBaseUrl: normalizeBaseUrl(patch.anthropicBaseUrl) }
+      : {}),
+    ...(patch.anthropicModel !== undefined
+      ? { anthropicModel: normalizeModel(patch.anthropicModel) }
+      : {}),
+    ...(patch.customEnv !== undefined
+      ? {
+          customEnv: sanitizeCustomEnvMap(patch.customEnv, {
+            skipReservedClaudeKeys: true,
+          }),
+        }
+      : {}),
+    ...(patch.weight !== undefined
+      ? { weight: Math.max(1, Math.min(100, patch.weight)) }
+      : {}),
+    updatedAt: new Date().toISOString(),
+  };
+
+  state.providers[idx] = updated;
+  writeStoredStateV4(state.providers, state.balancing);
+  return updated;
+}
+
+export function updateProviderSecrets(
+  id: string,
+  secrets: {
+    anthropicAuthToken?: string;
+    clearAnthropicAuthToken?: boolean;
+    anthropicApiKey?: string;
+    clearAnthropicApiKey?: boolean;
+    claudeCodeOauthToken?: string;
+    clearClaudeCodeOauthToken?: boolean;
+    claudeOAuthCredentials?: ClaudeOAuthCredentials;
+    clearClaudeOAuthCredentials?: boolean;
+  },
+): UnifiedProvider {
+  const state = readStoredStateV4();
+  if (!state) throw new Error('Claude 配置不存在');
+
+  const idx = state.providers.findIndex((p) => p.id === id);
+  if (idx < 0) throw new Error('未找到指定供应商');
+
+  const current = state.providers[idx];
+  const updated = { ...current, updatedAt: new Date().toISOString() };
+
+  if (typeof secrets.anthropicAuthToken === 'string') {
+    updated.anthropicAuthToken = normalizeSecret(
+      secrets.anthropicAuthToken,
+      'anthropicAuthToken',
+    );
+  } else if (secrets.clearAnthropicAuthToken) {
+    updated.anthropicAuthToken = '';
+  }
+
+  if (typeof secrets.anthropicApiKey === 'string') {
+    updated.anthropicApiKey = normalizeSecret(
+      secrets.anthropicApiKey,
+      'anthropicApiKey',
+    );
+  } else if (secrets.clearAnthropicApiKey) {
+    updated.anthropicApiKey = '';
+  }
+
+  if (typeof secrets.claudeCodeOauthToken === 'string') {
+    updated.claudeCodeOauthToken = normalizeSecret(
+      secrets.claudeCodeOauthToken,
+      'claudeCodeOauthToken',
+    );
+  } else if (secrets.clearClaudeCodeOauthToken) {
+    updated.claudeCodeOauthToken = '';
+  }
+
+  if (secrets.claudeOAuthCredentials) {
+    updated.claudeOAuthCredentials = secrets.claudeOAuthCredentials;
+    // When full OAuth creds set, clear legacy single token
+    updated.claudeCodeOauthToken = '';
+  } else if (secrets.clearClaudeOAuthCredentials) {
+    updated.claudeOAuthCredentials = null;
+  }
+
+  state.providers[idx] = updated;
+  writeStoredStateV4(state.providers, state.balancing);
+  return updated;
+}
+
+export function toggleProvider(id: string): UnifiedProvider {
+  const state = readStoredStateV4();
+  if (!state) throw new Error('Claude 配置不存在');
+
+  const idx = state.providers.findIndex((p) => p.id === id);
+  if (idx < 0) throw new Error('未找到指定供应商');
+
+  const provider = state.providers[idx];
+  const newEnabled = !provider.enabled;
+
+  // Prevent disabling the last enabled provider
+  if (
+    !newEnabled &&
+    state.providers.filter((p) => p.enabled).length <= 1
+  ) {
+    throw new Error('至少需要保留一个启用的供应商');
+  }
+
+  state.providers[idx] = {
+    ...provider,
+    enabled: newEnabled,
+    updatedAt: new Date().toISOString(),
+  };
+  writeStoredStateV4(state.providers, state.balancing);
+  return state.providers[idx];
+}
+
+export function deleteProvider(id: string): void {
+  const state = readStoredStateV4();
+  if (!state) throw new Error('Claude 配置不存在');
+
+  const idx = state.providers.findIndex((p) => p.id === id);
+  if (idx < 0) throw new Error('未找到指定供应商');
+
+  if (state.providers.length <= 1) {
+    throw new Error('至少需要保留一个供应商');
+  }
+
+  const wasEnabled = state.providers[idx].enabled;
+  state.providers.splice(idx, 1);
+
+  // If deleted provider was the only enabled one, enable the first remaining
+  if (wasEnabled && !state.providers.some((p) => p.enabled)) {
+    state.providers[0].enabled = true;
+  }
+
+  writeStoredStateV4(state.providers, state.balancing);
+}
+
+/** Convert a UnifiedProvider to the flat ClaudeProviderConfig used by container runner */
+export function providerToConfig(provider: UnifiedProvider): ClaudeProviderConfig {
+  return {
+    anthropicBaseUrl: provider.anthropicBaseUrl,
+    anthropicAuthToken: provider.anthropicAuthToken,
+    anthropicApiKey: provider.anthropicApiKey,
+    claudeCodeOauthToken: provider.claudeCodeOauthToken,
+    claudeOAuthCredentials: provider.claudeOAuthCredentials,
+    anthropicModel: provider.anthropicModel,
+    updatedAt: provider.updatedAt,
+  };
+}
+
+/** Convert UnifiedProvider to public (masked) representation */
+export function toPublicProvider(provider: UnifiedProvider): UnifiedProviderPublic {
+  return {
+    id: provider.id,
+    name: provider.name,
+    type: provider.type,
+    enabled: provider.enabled,
+    weight: provider.weight,
+    anthropicBaseUrl: provider.anthropicBaseUrl,
+    anthropicModel: provider.anthropicModel,
+    hasAnthropicAuthToken: !!provider.anthropicAuthToken,
+    anthropicAuthTokenMasked: maskSecret(provider.anthropicAuthToken),
+    hasAnthropicApiKey: !!provider.anthropicApiKey,
+    anthropicApiKeyMasked: maskSecret(provider.anthropicApiKey),
+    hasClaudeCodeOauthToken: !!provider.claudeCodeOauthToken,
+    claudeCodeOauthTokenMasked: maskSecret(provider.claudeCodeOauthToken),
+    hasClaudeOAuthCredentials: !!provider.claudeOAuthCredentials,
+    claudeOAuthCredentialsExpiresAt:
+      provider.claudeOAuthCredentials?.expiresAt ?? null,
+    claudeOAuthCredentialsAccessTokenMasked: provider.claudeOAuthCredentials
+      ? maskSecret(provider.claudeOAuthCredentials.accessToken)
+      : null,
+    customEnv: provider.customEnv || {},
+    updatedAt: provider.updatedAt,
+  };
+}
+
+/**
+ * Resolve a provider by ID to { config, customEnv } in a single disk read.
+ * Used by container-runner for pool-selected providers.
+ */
+export function resolveProviderById(providerId: string): {
+  config: ClaudeProviderConfig;
+  customEnv: Record<string, string>;
+} {
+  const state = readStoredStateV4();
+  if (!state) return { config: defaultsFromEnv(), customEnv: {} };
+
+  const provider = state.providers.find((p) => p.id === providerId);
+  if (!provider) {
+    logger.warn(
+      { providerId },
+      'resolveProviderById: provider not found, falling back to first enabled',
+    );
+    const fallback =
+      state.providers.find((p) => p.enabled) || state.providers[0];
+    if (!fallback) return { config: defaultsFromEnv(), customEnv: {} };
+    return { config: providerToConfig(fallback), customEnv: fallback.customEnv };
+  }
+
+  return {
+    config: providerToConfig(provider),
+    customEnv: provider.customEnv,
+  };
+}
+
+// ─── V3 compat layer (used by remaining V3 code paths) ───────────
 
 function resolveActiveProfile(
   state: ClaudeStoredStateV3Resolved,
@@ -1243,8 +1853,12 @@ export function validateClaudeProviderConfig(
 
 export function getClaudeProviderConfig(): ClaudeProviderConfig {
   try {
-    const stored = readStoredConfig();
-    if (stored) return stored;
+    const state = readStoredStateV4();
+    if (state) {
+      const enabled =
+        state.providers.find((p) => p.enabled) || state.providers[0];
+      if (enabled) return providerToConfig(enabled);
+    }
   } catch {
     // ignore corrupted file and use env fallback
   }
@@ -1695,7 +2309,10 @@ export function shellQuoteEnvLines(lines: string[]): string[] {
   });
 }
 
-export function buildClaudeEnvLines(config: ClaudeProviderConfig): string[] {
+export function buildClaudeEnvLines(
+  config: ClaudeProviderConfig,
+  profileCustomEnv?: Record<string, string>,
+): string[] {
   const lines: string[] = [];
 
   // When full OAuth credentials exist, authentication is handled by .credentials.json file.
@@ -1722,7 +2339,8 @@ export function buildClaudeEnvLines(config: ClaudeProviderConfig): string[] {
     lines.push(`ANTHROPIC_MODEL=${sanitizeEnvValue(config.anthropicModel)}`);
   }
 
-  const customEnv = getActiveProfileCustomEnv();
+  // Use explicit profileCustomEnv if provided (pool mode), otherwise active profile
+  const customEnv = profileCustomEnv ?? getActiveProfileCustomEnv();
   for (const [key, value] of Object.entries(customEnv)) {
     if (RESERVED_CLAUDE_ENV_KEYS.has(key)) continue;
     lines.push(`${key}=${sanitizeEnvValue(value)}`);
@@ -1732,23 +2350,101 @@ export function buildClaudeEnvLines(config: ClaudeProviderConfig): string[] {
 }
 
 export function getActiveProfileCustomEnv(): Record<string, string> {
+  const state = readStoredStateV4();
+  if (!state) return {};
+
+  const enabled =
+    state.providers.find((p) => p.enabled) || state.providers[0];
+  if (!enabled) return {};
+
+  return sanitizeCustomEnvMap(enabled.customEnv || {}, {
+    skipReservedClaudeKeys: true,
+  });
+}
+
+/**
+ * Resolve any profileId to a full ClaudeProviderConfig.
+ * Used by ProviderPool to build env for a non-active profile.
+ */
+export function resolveProfileToConfig(
+  profileId: string,
+): ClaudeProviderConfig {
+  const state = readStoredState();
+  if (!state) return defaultsFromEnv();
+
+  if (isOfficialClaudeMode(profileId)) {
+    return buildOfficialClaudeProviderConfig(
+      state.officialSecrets,
+      state.officialUpdatedAt,
+    );
+  }
+
+  const stored = state.profiles.find((p) => p.id === profileId);
+  if (!stored) {
+    // Profile not found — fallback to current active config
+    logger.warn(
+      { profileId },
+      'resolveProfileToConfig: profile not found, falling back to active',
+    );
+    return getClaudeProviderConfig();
+  }
+
+  const profile = fromStoredProfile(stored);
+  return buildConfig(
+    {
+      anthropicBaseUrl: profile.anthropicBaseUrl,
+      anthropicAuthToken: profile.anthropicAuthToken,
+      anthropicApiKey: state.officialSecrets.anthropicApiKey,
+      claudeCodeOauthToken: state.officialSecrets.claudeCodeOauthToken,
+      claudeOAuthCredentials:
+        state.officialSecrets.claudeOAuthCredentials ?? null,
+      anthropicModel: profile.anthropicModel,
+    },
+    profile.updatedAt || state.officialUpdatedAt,
+  );
+}
+
+/**
+ * Get customEnv for a specific profileId (not necessarily the active one).
+ */
+export function getCustomEnvForProfile(
+  profileId: string,
+): Record<string, string> {
   const state = readStoredState();
   if (!state) return {};
 
-  if (isOfficialClaudeMode(state.activeProfileId)) {
+  if (isOfficialClaudeMode(profileId)) {
     return sanitizeCustomEnvMap(state.officialCustomEnv || {}, {
       skipReservedClaudeKeys: true,
     });
   }
 
-  const active =
-    state.profiles.find((item) => item.id === state.activeProfileId) ||
-    state.profiles[0];
-  if (!active) return {};
+  const exact = state.profiles.find((p) => p.id === profileId);
+  if (!exact) {
+    logger.warn(
+      { profileId },
+      'getCustomEnvForProfile: profile not found, falling back to active',
+    );
+  }
+  const profile = exact || state.profiles[0];
+  if (!profile) return {};
 
-  return sanitizeCustomEnvMap(active.customEnv || {}, {
+  const resolved = fromStoredProfile(profile);
+  return sanitizeCustomEnvMap(resolved.customEnv || {}, {
     skipReservedClaudeKeys: true,
   });
+}
+
+/**
+ * Resolve config AND customEnv for a profileId in a single disk read.
+ * Used by container-runner to avoid double readStoredState() calls.
+ */
+/** @deprecated Use resolveProviderById instead. Kept for backward compat. */
+export function resolveProfileFull(profileId: string): {
+  config: ClaudeProviderConfig;
+  customEnv: Record<string, string>;
+} {
+  return resolveProviderById(profileId);
 }
 
 export function saveOfficialCustomEnv(
@@ -1830,7 +2526,10 @@ export function getContainerEnvConfig(folder: string): ContainerEnvConfig {
         fs.readFileSync(filePath, 'utf-8'),
       ) as ContainerEnvConfig & { happyclawModel?: string };
       // Backward compat: migrate old field name
-      if (stored.anthropicModel === undefined && stored.happyclawModel !== undefined) {
+      if (
+        stored.anthropicModel === undefined &&
+        stored.happyclawModel !== undefined
+      ) {
         stored.anthropicModel = stored.happyclawModel;
         delete stored.happyclawModel;
       }
@@ -2001,9 +2700,10 @@ export function saveRegistrationConfig(
 export function buildContainerEnvLines(
   global: ClaudeProviderConfig,
   override: ContainerEnvConfig,
+  profileCustomEnv?: Record<string, string>,
 ): string[] {
   const merged = mergeClaudeEnvConfig(global, override);
-  const lines = buildClaudeEnvLines(merged);
+  const lines = buildClaudeEnvLines(merged, profileCustomEnv);
 
   // Append custom env vars (with safety sanitization as defense-in-depth)
   if (override.customEnv) {
@@ -2519,6 +3219,127 @@ export function saveUserQQConfig(
   return normalized;
 }
 
+// ========== WeChat User IM Config ==========
+
+export interface UserWeChatConfig {
+  botToken: string; // iLink bot_token
+  ilinkBotId: string; // bot ID (xxx@im.bot)
+  baseUrl?: string; // 默认 https://ilinkai.weixin.qq.com
+  cdnBaseUrl?: string; // 默认 https://novac2c.cdn.weixin.qq.com/c2c
+  getUpdatesBuf?: string; // 长轮询游标
+  enabled?: boolean;
+  updatedAt: string | null;
+}
+
+interface StoredWeChatProviderConfigV1 {
+  version: 1;
+  ilinkBotId: string;
+  baseUrl?: string;
+  cdnBaseUrl?: string;
+  getUpdatesBuf?: string;
+  enabled?: boolean;
+  updatedAt: string;
+  secret: EncryptedSecrets;
+}
+
+interface WeChatSecretPayload {
+  botToken: string;
+}
+
+function encryptWeChatSecret(payload: WeChatSecretPayload): EncryptedSecrets {
+  const key = getOrCreateEncryptionKey();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+
+  const plaintext = Buffer.from(JSON.stringify(payload), 'utf-8');
+  const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const tag = cipher.getAuthTag();
+
+  return {
+    iv: iv.toString('base64'),
+    tag: tag.toString('base64'),
+    data: encrypted.toString('base64'),
+  };
+}
+
+function decryptWeChatSecret(secrets: EncryptedSecrets): WeChatSecretPayload {
+  const key = getOrCreateEncryptionKey();
+  const iv = Buffer.from(secrets.iv, 'base64');
+  const tag = Buffer.from(secrets.tag, 'base64');
+  const encrypted = Buffer.from(secrets.data, 'base64');
+
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+  decipher.setAuthTag(tag);
+
+  const decrypted = Buffer.concat([
+    decipher.update(encrypted),
+    decipher.final(),
+  ]).toString('utf-8');
+  const parsed = JSON.parse(decrypted) as Record<string, unknown>;
+  return {
+    botToken: normalizeSecret(parsed.botToken ?? '', 'botToken'),
+  };
+}
+
+export function getUserWeChatConfig(userId: string): UserWeChatConfig | null {
+  const filePath = path.join(userImDir(userId), 'wechat.json');
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    if (parsed.version !== 1) return null;
+
+    const stored = parsed as unknown as StoredWeChatProviderConfigV1;
+    const secret = decryptWeChatSecret(stored.secret);
+    return {
+      botToken: secret.botToken,
+      ilinkBotId: ((stored.ilinkBotId as string) ?? '').trim(),
+      baseUrl: stored.baseUrl,
+      cdnBaseUrl: stored.cdnBaseUrl,
+      getUpdatesBuf: stored.getUpdatesBuf,
+      enabled: stored.enabled,
+      updatedAt: stored.updatedAt || null,
+    };
+  } catch (err) {
+    logger.warn({ err, userId }, 'Failed to read user WeChat config');
+    return null;
+  }
+}
+
+export function saveUserWeChatConfig(
+  userId: string,
+  next: Omit<UserWeChatConfig, 'updatedAt'>,
+): UserWeChatConfig {
+  const normalized: UserWeChatConfig = {
+    botToken: normalizeSecret(next.botToken, 'botToken'),
+    ilinkBotId: (next.ilinkBotId ?? '').trim(),
+    baseUrl: next.baseUrl?.trim() || undefined,
+    cdnBaseUrl: next.cdnBaseUrl?.trim() || undefined,
+    getUpdatesBuf: next.getUpdatesBuf,
+    enabled: next.enabled,
+    updatedAt: new Date().toISOString(),
+  };
+
+  const payload: StoredWeChatProviderConfigV1 = {
+    version: 1,
+    ilinkBotId: normalized.ilinkBotId,
+    baseUrl: normalized.baseUrl,
+    cdnBaseUrl: normalized.cdnBaseUrl,
+    getUpdatesBuf: normalized.getUpdatesBuf,
+    enabled: normalized.enabled,
+    updatedAt: normalized.updatedAt || new Date().toISOString(),
+    secret: encryptWeChatSecret({ botToken: normalized.botToken }),
+  };
+
+  const dir = userImDir(userId);
+  fs.mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, 'wechat.json');
+  const tmp = `${filePath}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
+  fs.renameSync(tmp, filePath);
+  return normalized;
+}
+
 // ─── System settings (plain JSON, no encryption) ─────────────────
 
 const SYSTEM_SETTINGS_FILE = path.join(
@@ -2536,6 +3357,9 @@ export interface SystemSettings {
   loginLockoutMinutes: number;
   maxConcurrentScripts: number;
   scriptTimeout: number;
+  // Skills auto-sync
+  skillAutoSyncEnabled: boolean;
+  skillAutoSyncIntervalMinutes: number;
   // Billing
   billingEnabled: boolean;
   billingMode: 'wallet_first';
@@ -2554,6 +3378,8 @@ const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
   loginLockoutMinutes: 15,
   maxConcurrentScripts: 10,
   scriptTimeout: 60000,
+  skillAutoSyncEnabled: false,
+  skillAutoSyncIntervalMinutes: 10,
   billingEnabled: false,
   billingMode: 'wallet_first',
   billingMinStartBalanceUsd: 0.01,
@@ -2623,6 +3449,15 @@ function readSystemSettingsFromFile(): SystemSettings | null {
       typeof raw.scriptTimeout === 'number' && raw.scriptTimeout > 0
         ? raw.scriptTimeout
         : DEFAULT_SYSTEM_SETTINGS.scriptTimeout,
+    skillAutoSyncEnabled:
+      typeof raw.skillAutoSyncEnabled === 'boolean'
+        ? raw.skillAutoSyncEnabled
+        : DEFAULT_SYSTEM_SETTINGS.skillAutoSyncEnabled,
+    skillAutoSyncIntervalMinutes:
+      typeof raw.skillAutoSyncIntervalMinutes === 'number' &&
+      raw.skillAutoSyncIntervalMinutes >= 1
+        ? raw.skillAutoSyncIntervalMinutes
+        : DEFAULT_SYSTEM_SETTINGS.skillAutoSyncIntervalMinutes,
     billingEnabled:
       typeof raw.billingEnabled === 'boolean'
         ? raw.billingEnabled
@@ -2682,6 +3517,13 @@ function buildEnvFallbackSettings(): SystemSettings {
       process.env.SCRIPT_TIMEOUT,
       DEFAULT_SYSTEM_SETTINGS.scriptTimeout,
     ),
+    skillAutoSyncEnabled:
+      process.env.SKILL_AUTO_SYNC_ENABLED === 'true' ||
+      DEFAULT_SYSTEM_SETTINGS.skillAutoSyncEnabled,
+    skillAutoSyncIntervalMinutes: parseIntEnv(
+      process.env.SKILL_AUTO_SYNC_INTERVAL_MINUTES,
+      DEFAULT_SYSTEM_SETTINGS.skillAutoSyncIntervalMinutes,
+    ),
     billingEnabled:
       process.env.BILLING_ENABLED === 'true' ||
       DEFAULT_SYSTEM_SETTINGS.billingEnabled,
@@ -2691,8 +3533,7 @@ function buildEnvFallbackSettings(): SystemSettings {
       DEFAULT_SYSTEM_SETTINGS.billingMinStartBalanceUsd,
     ),
     billingCurrency:
-      process.env.BILLING_CURRENCY ||
-      DEFAULT_SYSTEM_SETTINGS.billingCurrency,
+      process.env.BILLING_CURRENCY || DEFAULT_SYSTEM_SETTINGS.billingCurrency,
     billingCurrencyRate: parseFloatEnv(
       process.env.BILLING_CURRENCY_RATE,
       DEFAULT_SYSTEM_SETTINGS.billingCurrencyRate,
@@ -2770,6 +3611,8 @@ export function saveSystemSettings(
   if (merged.maxConcurrentScripts > 50) merged.maxConcurrentScripts = 50;
   if (merged.scriptTimeout < 5000) merged.scriptTimeout = 5000; // min 5s
   if (merged.scriptTimeout > 600000) merged.scriptTimeout = 600000; // max 10 min
+  if (merged.skillAutoSyncIntervalMinutes < 1) merged.skillAutoSyncIntervalMinutes = 1;
+  if (merged.skillAutoSyncIntervalMinutes > 1440) merged.skillAutoSyncIntervalMinutes = 1440; // max 24h
   merged.billingMode = 'wallet_first';
   if (merged.billingMinStartBalanceUsd < 0)
     merged.billingMinStartBalanceUsd =

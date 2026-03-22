@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
-import { ArrowRight, Check, ExternalLink, HardDrive, KeyRound, Loader2, Link2, Plus, Server, ShieldCheck, X } from 'lucide-react';
+import { ArrowRight, ExternalLink, KeyRound, Loader2, Link2, Plus, Server, ShieldCheck, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { api } from '../api/client';
 import type {
-  ClaudeThirdPartyProfileItem,
+  UnifiedProviderPublic,
   EnvRow,
 } from '../components/settings/types';
 import { getErrorMessage } from '../components/settings/types';
@@ -64,16 +64,6 @@ export function SetupProvidersPage() {
   const [officialToken, setOfficialToken] = useState('');
   const [apiKey, setApiKey] = useState('');
 
-  // Local Claude Code detection
-  const [localCC, setLocalCC] = useState<{
-    detected: boolean;
-    hasCredentials: boolean;
-    expiresAt: number | null;
-    accessTokenMasked: string | null;
-  } | null>(null);
-  const [localCCImporting, setLocalCCImporting] = useState(false);
-  const [localCCImported, setLocalCCImported] = useState(false);
-
   // OAuth flow state
   const [oauthLoading, setOauthLoading] = useState(false);
   const [oauthState, setOauthState] = useState<string | null>(null);
@@ -101,16 +91,6 @@ export function SetupProvidersPage() {
     }
   }, [setupStatus, navigate]);
 
-  // Detect local Claude Code credentials on mount
-  useEffect(() => {
-    api.get<{
-      detected: boolean;
-      hasCredentials: boolean;
-      expiresAt: number | null;
-      accessTokenMasked: string | null;
-    }>('/api/config/claude/detect-local').then(setLocalCC).catch(() => {});
-  }, []);
-
   const addCustomEnvRow = () => setCustomEnvRows((rows) => [...rows, { key: '', value: '' }]);
   const removeCustomEnvRow = (idx: number) =>
     setCustomEnvRows((rows) => rows.filter((_, i) => i !== idx));
@@ -119,19 +99,6 @@ export function SetupProvidersPage() {
       rows.map((row, i) => (i === idx ? { ...row, [field]: value } : row)),
     );
 
-  const handleImportLocalCC = async () => {
-    setLocalCCImporting(true);
-    setError(null);
-    try {
-      await api.post('/api/config/claude/import-local');
-      setLocalCCImported(true);
-      setNotice('已导入本机 Claude Code 登录凭据。');
-    } catch (err) {
-      setError(getErrorMessage(err, '导入本机凭据失败'));
-    } finally {
-      setLocalCCImporting(false);
-    }
-  };
 
   const handleOAuthStart = async () => {
     setOauthLoading(true);
@@ -196,8 +163,8 @@ export function SetupProvidersPage() {
         return;
       }
       customEnv = envResult.customEnv;
-    } else if (!officialToken.trim() && !apiKey.trim() && !oauthDone && !localCCImported) {
-      setError('官方渠道请通过一键登录、导入本机凭据、填写 API Key 或手动填写 setup-token / .credentials.json');
+    } else if (!officialToken.trim() && !apiKey.trim() && !oauthDone) {
+      setError('官方渠道请通过一键登录、填写 API Key 或手动填写 setup-token / .credentials.json');
       return;
     }
 
@@ -211,31 +178,29 @@ export function SetupProvidersPage() {
       }
 
       if (providerMode === 'official') {
-        if (oauthDone || localCCImported) {
-          // OAuth or local import already saved the credentials — just clear base URL
-          await api.put('/api/config/claude', { anthropicBaseUrl: '' });
+        if (oauthDone) {
+          // OAuth already created the provider via callback — nothing to do
         } else if (apiKey.trim()) {
-          // API Key mode
-          await api.put('/api/config/claude', { anthropicBaseUrl: '' });
-          await api.put('/api/config/claude/secrets', {
+          // API Key mode — create official provider
+          await api.post('/api/config/claude/providers', {
+            name: '官方 Claude (API Key)',
+            type: 'official',
             anthropicApiKey: apiKey.trim(),
-            clearAnthropicAuthToken: true,
-            clearClaudeCodeOauthToken: true,
-            clearClaudeOAuthCredentials: true,
+            enabled: true,
           });
         } else {
-          await api.put('/api/config/claude', { anthropicBaseUrl: '' });
-
-          // Detect if user pasted .credentials.json content
+          // Setup token or .credentials.json
           const trimmed = officialToken.trim();
-          let isCredentialsJson = false;
+          let created = false;
           if (trimmed.startsWith('{')) {
             try {
               const parsed = JSON.parse(trimmed) as Record<string, unknown>;
               const oauth = parsed.claudeAiOauth as Record<string, unknown> | undefined;
               if (oauth?.accessToken && oauth?.refreshToken) {
-                isCredentialsJson = true;
-                await api.put('/api/config/claude/secrets', {
+                created = true;
+                await api.post('/api/config/claude/providers', {
+                  name: '官方 Claude (OAuth)',
+                  type: 'official',
                   claudeOAuthCredentials: {
                     accessToken: oauth.accessToken,
                     refreshToken: oauth.refreshToken,
@@ -244,9 +209,7 @@ export function SetupProvidersPage() {
                       : Date.now() + 8 * 60 * 60 * 1000,
                     scopes: Array.isArray(oauth.scopes) ? oauth.scopes : [],
                   },
-                  clearAnthropicAuthToken: true,
-                  clearAnthropicApiKey: true,
-                  clearClaudeCodeOauthToken: true,
+                  enabled: true,
                 });
               }
             } catch {
@@ -254,23 +217,26 @@ export function SetupProvidersPage() {
             }
           }
 
-          if (!isCredentialsJson) {
-            await api.put('/api/config/claude/secrets', {
+          if (!created) {
+            await api.post('/api/config/claude/providers', {
+              name: '官方 Claude (Setup Token)',
+              type: 'official',
               claudeCodeOauthToken: trimmed,
-              clearAnthropicAuthToken: true,
-              clearAnthropicApiKey: true,
+              enabled: true,
             });
           }
         }
       } else {
-        await api.post<ClaudeThirdPartyProfileItem>(
-          '/api/config/claude/third-party/profiles',
+        await api.post<UnifiedProviderPublic>(
+          '/api/config/claude/providers',
           {
             name: '默认第三方',
+            type: 'third_party',
             anthropicBaseUrl: baseUrl.trim(),
             anthropicAuthToken: authToken.trim(),
             anthropicModel: model.trim(),
             customEnv,
+            enabled: true,
           },
         );
       }
@@ -306,7 +272,7 @@ export function SetupProvidersPage() {
           <div className="p-3 rounded-lg bg-success-bg border border-success/30 text-success text-sm">{notice}</div>
         )}
 
-        <section className="bg-card rounded-xl border border-border p-5">
+        <section className="bg-card rounded-xl border border-border shadow-sm p-5">
           <div className="flex items-center gap-2 mb-3">
             <Link2 className="w-4 h-4 text-primary" />
             <h2 className="text-base font-semibold text-foreground">飞书配置（可选）</h2>
@@ -334,7 +300,7 @@ export function SetupProvidersPage() {
           </div>
         </section>
 
-        <section className="bg-card rounded-xl border border-border p-5">
+        <section className="bg-card rounded-xl border border-border shadow-sm p-5">
           <div className="flex items-center gap-2 mb-3">
             <KeyRound className="w-4 h-4 text-primary" />
             <h2 className="text-base font-semibold text-foreground">Claude Code 配置（二选一）</h2>
@@ -345,7 +311,7 @@ export function SetupProvidersPage() {
               type="button"
               onClick={() => setProviderMode('official')}
               className={`px-3 py-1.5 text-sm rounded-md transition-colors cursor-pointer ${
-                providerMode === 'official' ? 'bg-background text-primary' : 'text-muted-foreground'
+                providerMode === 'official' ? 'bg-background text-primary shadow-sm' : 'text-muted-foreground'
               }`}
             >
               官方渠道
@@ -354,7 +320,7 @@ export function SetupProvidersPage() {
               type="button"
               onClick={() => setProviderMode('third_party')}
               className={`px-3 py-1.5 text-sm rounded-md transition-colors cursor-pointer ${
-                providerMode === 'third_party' ? 'bg-background text-primary' : 'text-muted-foreground'
+                providerMode === 'third_party' ? 'bg-background text-primary shadow-sm' : 'text-muted-foreground'
               }`}
             >
               第三方渠道
@@ -363,36 +329,6 @@ export function SetupProvidersPage() {
 
           {providerMode === 'official' ? (
             <div className="space-y-4">
-              {/* Local Claude Code detection */}
-              {localCC?.hasCredentials && (
-                <div className={`rounded-lg border p-4 space-y-3 ${
-                  localCCImported
-                    ? 'border-emerald-200 bg-emerald-50/50'
-                    : 'border-blue-200 bg-blue-50/50'
-                }`}>
-                  <div className="flex items-center gap-2">
-                    <HardDrive className="w-4 h-4 text-blue-600" />
-                    <div className="text-sm font-medium text-foreground">
-                      检测到本机已登录 Claude Code
-                    </div>
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    本机 <code className="bg-background/60 px-1 rounded">~/.claude/.credentials.json</code> 中存在有效凭据（{localCC.accessTokenMasked}），可一键导入。
-                  </div>
-                  {localCCImported ? (
-                    <div className="flex items-center gap-1.5 text-sm text-emerald-700">
-                      <Check className="w-4 h-4" />
-                      已导入，点击下方按钮完成配置。
-                    </div>
-                  ) : (
-                    <Button onClick={handleImportLocalCC} disabled={localCCImporting || saving}>
-                      {localCCImporting ? <Loader2 className="size-4 animate-spin" /> : <HardDrive className="size-4" />}
-                      导入本机凭据
-                    </Button>
-                  )}
-                </div>
-              )}
-
               {/* Official auth tabs */}
               <div className="inline-flex rounded-lg border border-border p-1 bg-muted">
                 <button
@@ -635,7 +571,7 @@ export function SetupProvidersPage() {
           )}
         </section>
 
-        <div className="bg-card rounded-xl border border-border p-5 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+        <div className="bg-card rounded-xl border border-border shadow-sm p-5 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
           <div className="text-sm text-muted-foreground flex items-start gap-2">
             <ShieldCheck className="w-4 h-4 text-primary mt-0.5 shrink-0" />
             当前页保存的数据会作为系统全局默认配置，后续可在后台设置页继续修改。

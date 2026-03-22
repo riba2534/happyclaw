@@ -25,11 +25,12 @@ try {
 
 const args = JSON.parse(process.argv[2]);
 
+const termName = args.name || 'xterm-256color';
 const p = pty.spawn(args.file, args.args, {
-  name: args.name || 'xterm-256color',
+  name: termName,
   cols: args.cols || 80,
   rows: args.rows || 24,
-  env: process.env,
+  env: { ...process.env, TERM: termName },
 });
 
 function send(msg) {

@@ -1,5 +1,4 @@
 @import "tailwindcss";
-@import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/inter";
 @plugin "tailwindcss-animate";
@@ -63,6 +62,7 @@
   --color-error: var(--error);
   --color-error-bg: var(--error-bg);
   --color-surface: var(--surface);
+  --shadow-card: var(--card-shadow);
 
   /* Border radius tokens */
   --radius-sm: calc(var(--radius) - 4px);
@@ -147,6 +147,9 @@
   --inline-code-bg: rgba(61, 61, 58, 0.05);
   --inline-code-text: rgb(138, 36, 36);
 
+  /* AI message card shadow — light enough for warm bg, dark mode uses higher opacity */
+  --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+
   /* iOS keyboard height */
   --keyboard-height: 0px;
 
@@ -213,6 +216,8 @@
   --code-block-bg: rgba(200, 200, 195, 0.08);
   --inline-code-bg: rgba(200, 200, 195, 0.1);
   --inline-code-text: rgb(220, 140, 140);
+
+  --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 
   --glass-bg: rgba(15, 23, 42, 0.55);
   --glass-bg-heavy: rgba(15, 23, 42, 0.80);

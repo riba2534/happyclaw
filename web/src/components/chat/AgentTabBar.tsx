@@ -37,7 +37,7 @@ export function AgentTabBar({ agents, activeTab, onSelectTab, onDeleteAgent, onC
           <button
             onClick={(e) => { e.stopPropagation(); onBindMainIm(); }}
             className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-accent transition-all cursor-pointer"
-            title="绑定 IM 群组"
+            title="绑定 IM 渠道"
           >
             <Link className="w-3 h-3" />
           </button>
@@ -66,7 +66,7 @@ export function AgentTabBar({ agents, activeTab, onSelectTab, onDeleteAgent, onC
               <button
                 onClick={(e) => { e.stopPropagation(); onBindIm(agent.id); }}
                 className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-accent transition-all cursor-pointer"
-                title="绑定 IM 群组"
+                title="绑定 IM 渠道"
               >
                 <Link className="w-3 h-3" />
               </button>

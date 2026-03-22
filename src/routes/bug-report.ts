@@ -122,10 +122,26 @@ function readRecentLogs(folder: string, maxLines = 50): string {
 
 /** Mask environment variable values in log text */
 function sanitizeLogs(text: string): string {
+  let result = text;
+
+  // Replace absolute paths to project root and home directory with placeholders
+  const projectRoot = path.resolve(process.cwd());
+  const homeDir = os.homedir();
+  // Replace longer path first to avoid partial replacement
+  if (projectRoot.startsWith(homeDir)) {
+    result = result.replaceAll(projectRoot, '<project>');
+    result = result.replaceAll(homeDir, '<home>');
+  } else {
+    result = result.replaceAll(homeDir, '<home>');
+    result = result.replaceAll(projectRoot, '<project>');
+  }
+
   // Generic pattern matching any env var name containing sensitive keywords
   const sensitivePattern =
     /(\b\w*(?:token|password|passwd|secret|api[_-]?key|auth[_-]?token|authorization|cookie|credential|private[_-]?key|access[_-]?key|app[_-]?secret)\w*)[=:]\s*\S+/gi;
-  return text.replace(sensitivePattern, '$1=***');
+  result = result.replace(sensitivePattern, '$1=***');
+
+  return result;
 }
 
 function buildGeneratePrompt(
@@ -157,24 +173,32 @@ ${logs}
 \`\`\`
 
 请生成一个结构化的 GitHub Issue。输出**纯 JSON**（不要 markdown 代码块），包含两个字段：
-- "title": 简洁的 issue 标题（不超过 80 字符），以类别开头如 "Bug:", "Crash:", "UI:" 等
-- "body": 结构化的 Markdown 正文，包含以下章节：
+- "title": 简洁的 issue 标题，格式为 "bug: 简要描述"（小写 bug: 前缀，不超过 80 字符）
+- "body": 结构化的 Markdown 正文，严格按照以下模板：
+
+  ## 用户现象
+  （从用户视角描述看到了什么、体验上有什么异常）
+
   ## 问题描述
-  （清晰总结 bug）
+  （从技术视角简要说明发生了什么）
+
+  ## 复现路径
+  1. 步骤一
+  2. 步骤二
+  3. 期望行为 vs 实际行为
+  （如果能从描述和日志推断出复现步骤就写，无法推断则省略此章节）
+
+  ## 根因（可选）
+  （如果能从日志分析出代码层面的原因就写，否则省略）
+
+  ## 影响
+  （对用户体验/数据/安全的影响）
 
   ## 环境信息
   （系统信息表格）
 
-  ## 重现步骤
-  （如果能从描述和日志推断）
-
-  ## 期望行为 vs 实际行为
-
   ## 相关日志
   （如有错误日志，摘录关键部分）
-
-  ## 可能的原因分析
-  （基于日志和描述的分析）
 
 只输出 JSON，不要其他内容。`;
 }
@@ -188,9 +212,17 @@ function buildFallbackReport(
     .map(([k, v]) => `| ${k} | ${v} |`)
     .join('\n');
 
-  const body = `## 问题描述
+  const body = `## 用户现象
 
 ${description}
+
+## 问题描述
+
+（待补充技术分析）
+
+## 影响
+
+（待补充）
 
 ## 环境信息
 
@@ -206,7 +238,7 @@ ${logs.slice(0, 3000)}
 `;
 
   return {
-    title: `Bug: ${description.slice(0, 70)}`,
+    title: `bug: ${description.slice(0, 70)}`,
     body,
   };
 }

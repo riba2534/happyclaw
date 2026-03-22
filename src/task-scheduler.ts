@@ -83,6 +83,10 @@ export interface RunTaskOptions {
 
 const runningTaskIds = new Set<string>();
 
+export function getRunningTaskIds(): string[] {
+  return [...runningTaskIds];
+}
+
 function computeNextRun(task: ScheduledTask): string | null {
   if (task.schedule_type === 'cron') {
     const interval = CronExpressionParser.parse(task.schedule_value, {
@@ -215,6 +219,9 @@ async function runTask(
 
   let result: string | null = null;
   let error: string | null = null;
+  // Track the time of last meaningful output from the agent.
+  // duration_ms should measure actual work time, not include idle wait.
+  let lastOutputTime = startTime;
 
   // For group context mode, use the group's current session
   const sessions = deps.getSessions();
@@ -279,6 +286,7 @@ async function runTask(
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
           result = streamedOutput.result;
+          lastOutputTime = Date.now();
           // Scheduled tasks should only produce user-visible output via the
           // send_message MCP tool (IPC messages/*.json → index.ts polling).
           // Do NOT forward raw agent text here — it contains intermediate
@@ -287,6 +295,7 @@ async function runTask(
         }
         if (streamedOutput.status === 'error') {
           error = streamedOutput.error || 'Unknown error';
+          lastOutputTime = Date.now();
         }
       },
     );
@@ -295,18 +304,21 @@ async function runTask(
 
     if (output.status === 'error') {
       error = output.error || 'Unknown error';
+      lastOutputTime = Date.now();
     } else if (output.result) {
       // Messages are sent via MCP tool (IPC), result text is just logged
       result = output.result;
+      lastOutputTime = Date.now();
     }
 
     logger.info(
-      { taskId: task.id, durationMs: Date.now() - startTime },
+      { taskId: task.id, durationMs: lastOutputTime - startTime },
       'Task completed',
     );
   } catch (err) {
     if (idleTimer) clearTimeout(idleTimer);
     error = err instanceof Error ? err.message : String(err);
+    lastOutputTime = Date.now();
     logger.error({ taskId: task.id, error }, 'Task failed');
   } finally {
     runningTaskIds.delete(task.id);
@@ -327,7 +339,8 @@ async function runTask(
     }
   }
 
-  const durationMs = Date.now() - startTime;
+  // Use lastOutputTime instead of Date.now() to exclude idle wait time
+  const durationMs = lastOutputTime - startTime;
 
   logTaskRun({
     task_id: task.id,

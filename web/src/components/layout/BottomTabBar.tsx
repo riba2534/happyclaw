@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
+import { useAuthStore } from '../../stores/auth';
 import { useBillingStore } from '../../stores/billing';
 import { useScrollDirection } from '../../hooks/useScrollDirection';
 import { lightTap } from '../../hooks/useHaptic';
@@ -9,11 +10,16 @@ export function BottomTabBar() {
   const location = useLocation();
   const scrollDir = useScrollDirection();
   const isCompact = scrollDir === 'down';
+  const user = useAuthStore((s) => s.user);
   const billingEnabled = useBillingStore((s) => s.billingEnabled);
 
   const navItems = useMemo(
-    () => baseNavItems.filter((item) => !item.requiresBilling || billingEnabled),
-    [billingEnabled],
+    () => baseNavItems.filter((item) => {
+      if (item.requiresBilling && !billingEnabled) return false;
+      if (item.requireAdmin && user?.role !== 'admin') return false;
+      return true;
+    }),
+    [billingEnabled, user?.role],
   );
 
   return (

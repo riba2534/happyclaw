@@ -170,8 +170,23 @@ export function TerminalPanel({
       terminal.write('\r\n\x1b[33m[WebSocket 已断开，等待重连]\x1b[0m\r\n');
     });
 
-    // 用户输入 → WebSocket（仅在已连接时发送）
+    // IME 组合事件处理 —— 防止中文输入法在英文直输模式下产生重复输入
+    // xterm.js v6 内部已有 IME 处理，但 macOS 中文 IME 某些边界情况仍会泄漏
+    let composing = false;
+    const textarea = termRef.current?.querySelector('textarea');
+    const onCompositionStart = () => { composing = true; };
+    const onCompositionEnd = () => {
+      // 延迟重置，确保 compositionend 后的 onData 事件能正确发送
+      setTimeout(() => { composing = false; }, 50);
+    };
+    if (textarea) {
+      textarea.addEventListener('compositionstart', onCompositionStart);
+      textarea.addEventListener('compositionend', onCompositionEnd);
+    }
+
+    // 用户输入 → WebSocket（仅在已连接且非 IME 组合状态时发送）
     const onDataDisposable = terminal.onData((data) => {
+      if (composing) return;
       if (connStateRef.current === 'connected') {
         wsManager.send({ type: 'terminal_input', chatJid: groupJid, data });
       }
@@ -202,6 +217,10 @@ export function TerminalPanel({
     return () => {
       if (resizeTimer) clearTimeout(resizeTimer);
       resizeObserver.disconnect();
+      if (textarea) {
+        textarea.removeEventListener('compositionstart', onCompositionStart);
+        textarea.removeEventListener('compositionend', onCompositionEnd);
+      }
       onDataDisposable.dispose();
       unsubOutput();
       unsubStarted();

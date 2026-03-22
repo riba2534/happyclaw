@@ -17,6 +17,8 @@ import {
   Pencil,
   Save,
   Loader2,
+  Eye,
+  FileEdit,
 } from 'lucide-react';
 import { useFileStore, FileEntry, toBase64Url } from '../../stores/files';
 import { useChatStore } from '../../stores/chat';
@@ -33,6 +35,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
 import { FileUploadZone } from './FileUploadZone';
+import { MarkdownRenderer } from './MarkdownRenderer';
 
 interface FilePanelProps {
   groupJid: string;
@@ -272,6 +275,204 @@ function TextEditor({
   );
 }
 
+// ─── Markdown File Viewer (Preview + Edit) ─────────────────────
+
+function MarkdownFileViewer({
+  groupJid,
+  file,
+  onClose,
+}: {
+  groupJid: string;
+  file: FileEntry;
+  onClose: () => void;
+}) {
+  const { getFileContent, saveFileContent } = useFileStore();
+  const [content, setContent] = useState('');
+  const [editContent, setEditContent] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [mode, setMode] = useState<'preview' | 'edit'>('preview');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Lock body scroll on mount, restore on unmount (critical for iOS)
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, []);
+
+  useEffect(() => {
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    const handleSaveKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+        e.preventDefault();
+        doSave();
+      }
+    };
+    window.addEventListener('keydown', handleEsc);
+    window.addEventListener('keydown', handleSaveKey);
+    return () => {
+      window.removeEventListener('keydown', handleEsc);
+      window.removeEventListener('keydown', handleSaveKey);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onClose, editContent, dirty, mode]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      const text = await getFileContent(groupJid, file.path);
+      if (!cancelled && text !== null) {
+        setContent(text);
+        setEditContent(text);
+      }
+      if (!cancelled) setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [groupJid, file.path, getFileContent]);
+
+  const doSave = async () => {
+    if (!dirty || saving || mode !== 'edit') return;
+    setSaving(true);
+    const ok = await saveFileContent(groupJid, file.path, editContent);
+    setSaving(false);
+    if (ok) {
+      setContent(editContent);
+      setDirty(false);
+    }
+  };
+
+  const switchToEdit = () => {
+    setEditContent(content);
+    setMode('edit');
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+
+  const switchToPreview = () => {
+    if (dirty) {
+      setContent(editContent);
+    }
+    setMode('preview');
+  };
+
+  // Only close on backdrop click (not on touch-scroll that ends on backdrop)
+  const handleBackdropClick = useCallback((e: React.MouseEvent) => {
+    if (e.target === e.currentTarget) onClose();
+  }, [onClose]);
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 bg-black/50 sm:flex sm:items-center sm:justify-center sm:p-4 lg:p-6"
+      onClick={handleBackdropClick}
+      style={{ touchAction: 'none' }}
+    >
+      <div
+        className="bg-card w-full h-full sm:rounded-xl sm:shadow-xl sm:max-w-4xl sm:h-[90vh] sm:supports-[height:100dvh]:h-[90dvh] flex flex-col sm:animate-in sm:zoom-in-95 sm:duration-200"
+        style={{ maxHeight: '100dvh' }}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-3 sm:px-4 py-2.5 border-b border-border flex-shrink-0">
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <FileIcon name={file.name} />
+            <span className="font-medium text-foreground text-sm truncate">{file.name}</span>
+            {dirty && (
+              <span className="text-xs text-amber-500 flex-shrink-0">未保存</span>
+            )}
+          </div>
+          <div className="flex items-center gap-1 sm:gap-1.5 flex-shrink-0">
+            {/* Mode toggle */}
+            <div className="flex items-center bg-muted rounded-lg p-0.5">
+              <button
+                onClick={switchToPreview}
+                className={`flex items-center gap-1 px-2.5 py-1.5 sm:px-2 sm:py-1 rounded-md text-xs font-medium transition-colors touch-manipulation ${
+                  mode === 'preview'
+                    ? 'bg-background text-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                <Eye className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
+                <span className="hidden sm:inline">预览</span>
+              </button>
+              <button
+                onClick={switchToEdit}
+                className={`flex items-center gap-1 px-2.5 py-1.5 sm:px-2 sm:py-1 rounded-md text-xs font-medium transition-colors touch-manipulation ${
+                  mode === 'edit'
+                    ? 'bg-background text-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                <FileEdit className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
+                <span className="hidden sm:inline">编辑</span>
+              </button>
+            </div>
+            {mode === 'edit' && (
+              <Button
+                size="sm"
+                onClick={doSave}
+                disabled={!dirty || saving}
+                className="touch-manipulation"
+              >
+                {saving && <Loader2 className="size-4 animate-spin" />}
+                <Save className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">保存</span>
+              </Button>
+            )}
+            <button
+              onClick={onClose}
+              className="text-slate-400 hover:text-slate-600 transition-colors p-2 rounded-md hover:bg-muted touch-manipulation"
+              aria-label="关闭"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Content — explicit overflow container with touch-action for iOS */}
+        <div className="flex-1 min-h-0 relative">
+          {loading ? (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : mode === 'preview' ? (
+            <div
+              ref={scrollRef}
+              className="absolute inset-0 overflow-y-auto overscroll-y-contain px-4 sm:px-6 py-4 [&_table_td]:!whitespace-normal [&_table_th]:!whitespace-normal"
+              style={{ WebkitOverflowScrolling: 'touch', touchAction: 'pan-y' }}
+            >
+              <MarkdownRenderer content={content} groupJid={groupJid} variant="docs" />
+            </div>
+          ) : (
+            <div className="absolute inset-0 p-2 sm:p-3">
+              <Textarea
+                ref={textareaRef}
+                value={editContent}
+                onChange={(e) => {
+                  setEditContent(e.target.value);
+                  setDirty(true);
+                }}
+                className="w-full h-full font-mono text-sm text-foreground resize-none bg-muted"
+                style={{ WebkitOverflowScrolling: 'touch', touchAction: 'pan-y' }}
+                spellCheck={false}
+              />
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-3 sm:px-4 py-1.5 border-t border-border text-xs text-muted-foreground flex-shrink-0">
+          {mode === 'edit' ? 'Ctrl/Cmd+S 保存 · Esc 关闭' : '点击「编辑」修改内容 · Esc 关闭'}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 // ─── Main FilePanel ─────────────────────────────────────────────
 
 export function FilePanel({ groupJid, onClose }: FilePanelProps) {
@@ -295,6 +496,7 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
   // Preview / Editor state
   const [previewFile, setPreviewFile] = useState<FileEntry | null>(null);
   const [editFile, setEditFile] = useState<FileEntry | null>(null);
+  const [mdViewFile, setMdViewFile] = useState<FileEntry | null>(null);
 
   const isStreaming = useChatStore((s) => !!s.streaming[groupJid]);
   const canOpenLocalFolder = useAuthStore((s) => s.user?.role === 'admin');
@@ -357,6 +559,12 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
     // 图片 → 预览
     if (IMAGE_EXTENSIONS.has(ext)) {
       setPreviewFile(item);
+      return;
+    }
+
+    // Markdown 文件（非系统） → Markdown 预览/编辑
+    if (ext === 'md' && !item.isSystem) {
+      setMdViewFile(item);
       return;
     }
 
@@ -689,6 +897,15 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
           groupJid={groupJid}
           file={editFile}
           onClose={() => setEditFile(null)}
+        />
+      )}
+
+      {/* Markdown Viewer Overlay */}
+      {mdViewFile && (
+        <MarkdownFileViewer
+          groupJid={groupJid}
+          file={mdViewFile}
+          onClose={() => setMdViewFile(null)}
         />
       )}
     </div>

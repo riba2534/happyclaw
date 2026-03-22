@@ -16,8 +16,12 @@ export function NavRail() {
   const [showBugReport, setShowBugReport] = useState(false);
 
   const navItems = useMemo(
-    () => baseNavItems.filter((item) => !item.requiresBilling || billingEnabled),
-    [billingEnabled],
+    () => baseNavItems.filter((item) => {
+      if (item.requiresBilling && !billingEnabled) return false;
+      if (item.requireAdmin && user?.role !== 'admin') return false;
+      return true;
+    }),
+    [billingEnabled, user?.role],
   );
 
   const userInitial = (user?.display_name || user?.username || '?')[0].toUpperCase();

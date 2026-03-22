@@ -1,6 +1,7 @@
 import { FeishuChannelCard } from './FeishuChannelCard';
 import { TelegramChannelCard } from './TelegramChannelCard';
 import { QQChannelCard } from './QQChannelCard';
+import { WeChatChannelCard } from './WeChatChannelCard';
 
 export function UserChannelsSection() {
   return (
@@ -11,6 +12,7 @@ export function UserChannelsSection() {
       <FeishuChannelCard />
       <TelegramChannelCard />
       <QQChannelCard />
+      <WeChatChannelCard />
     </div>
   );
 }

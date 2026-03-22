@@ -11,7 +11,7 @@ export interface SystemStatus {
   uptime: number;
   dockerImageExists: boolean;
   dockerBuildInProgress?: boolean;
-  claudeCodeVersion?: string | null;
+  claudeCodeVersions?: { host: string | null; container: string | null; latest: string | null } | null;
   dockerBuildLogs?: string[];
   dockerBuildResult?: { success: boolean; error?: string } | null;
   groups: Array<{

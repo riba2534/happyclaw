@@ -1,6 +1,6 @@
 .PHONY: dev dev-backend dev-web build build-backend build-web start \
        typecheck typecheck-backend typecheck-web typecheck-agent-runner \
-       format format-check install clean reset-init update-sdk sync-types \
+       format format-check install clean reset-init update-sdk ensure-latest-sdk sync-types \
        backup restore help
 
 # ─── Runtime Detection ──────────────────────────────────────
@@ -48,7 +48,7 @@ build-web: ## 仅编译前端
 
 # ─── Production ──────────────────────────────────────────────
 
-start: ## 一键启动生产环境
+start: ensure-latest-sdk ## 一键启动生产环境
 	@if [ ! -d node_modules ] || [ package.json -nt node_modules ] || [ web/package.json -nt web/node_modules ] || [ container/agent-runner/package.json -nt container/agent-runner/node_modules ]; then echo "📦 依赖有更新，安装依赖..."; $(MAKE) install; fi
 	@if command -v docker >/dev/null 2>&1 && ! docker image inspect happyclaw-agent:latest >/dev/null 2>&1; then echo "🐳 构建 Agent 容器镜像..."; ./container/build.sh; fi
 ifeq ($(HAS_BUN),1)
@@ -98,10 +98,23 @@ update-sdk: ## 更新 agent-runner 的 Claude Agent SDK 到最新版本
 	cd container/agent-runner && $(PKG) update @anthropic-ai/claude-agent-sdk && $(PKG) run build
 	@echo "SDK updated. Run 'make typecheck' to verify."
 
+ensure-latest-sdk: ## 启动前自动检测并更新 SDK（有新版才更新）
+	@LOCAL=$$(node -p "require('./container/agent-runner/node_modules/@anthropic-ai/claude-agent-sdk/package.json').version" 2>/dev/null || echo "0.0.0"); \
+	LATEST=$$(npm view @anthropic-ai/claude-agent-sdk version 2>/dev/null || echo "$$LOCAL"); \
+	if [ "$$LOCAL" != "$$LATEST" ]; then \
+		echo "🔄 Claude Agent SDK 有新版本: $$LOCAL → $$LATEST，正在更新..."; \
+		cd container/agent-runner && $(PKG) update @anthropic-ai/claude-agent-sdk && $(PKG) run build; \
+		echo "✅ SDK 更新完成（内置 Claude Code 版本随之更新）"; \
+	else \
+		echo "✅ Claude Agent SDK 已是最新 ($$LOCAL)"; \
+	fi
+
 # ─── Setup ───────────────────────────────────────────────────
 
 install: ## 安装全部依赖并编译 agent-runner
 	$(PKG) install
+	@# node-pty 的 spawn-helper 预构建二进制可能缺少可执行权限，导致 PTY 模式失败
+	@chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper 2>/dev/null || true
 	cd container/agent-runner && $(PKG) install
 	cd container/agent-runner && $(PKG) run build
 	cd web && $(PKG) install

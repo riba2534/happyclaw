@@ -104,7 +104,7 @@ export function SettingsPage() {
     security: '安全与设备',
     groups: '会话管理',
     memory: '记忆管理',
-    skills: '技能管理',
+    skills: '技能(Skill)管理',
     'mcp-servers': 'MCP 服务器',
     'agent-definitions': 'Agent 管理',
     users: '用户管理',

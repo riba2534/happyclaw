@@ -329,20 +329,20 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
                 rows={4}
                 maxLength={5000}
               />
-              <p className="text-xs text-slate-400 mt-1">
+              <p className="text-xs text-muted-foreground mt-1">
                 {description.length}/5000
               </p>
             </div>
 
             <div>
-              <label className="text-sm font-medium text-slate-700 mb-1 block">
+              <label className="text-sm font-medium text-foreground mb-1 block">
                 截图（可选，最多 {MAX_SCREENSHOTS} 张）
               </label>
               <div className="flex flex-wrap gap-2">
                 {screenshots.map((_, i) => (
                   <div
                     key={i}
-                    className="relative w-16 h-16 rounded-md bg-slate-100 border border-slate-200 flex items-center justify-center text-xs text-slate-500"
+                    className="relative w-16 h-16 rounded-md bg-muted border border-border flex items-center justify-center text-xs text-muted-foreground"
                   >
                     截图 {i + 1}
                     <button
@@ -358,14 +358,14 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="w-16 h-16 rounded-md border-2 border-dashed border-slate-300 flex flex-col items-center justify-center text-slate-400 hover:border-brand-400 hover:text-brand-500 transition-colors"
+                    className="w-16 h-16 rounded-md border-2 border-dashed border-border flex flex-col items-center justify-center text-muted-foreground hover:border-brand-400 hover:text-brand-500 transition-colors"
                   >
                     <ImagePlus className="w-5 h-5" />
                     <span className="text-[10px] mt-0.5">添加</span>
                   </button>
                 )}
               </div>
-              <p className="text-xs text-slate-400 mt-1">
+              <p className="text-xs text-muted-foreground mt-1">
                 支持粘贴截图或点击添加，单张不超过 5MB
               </p>
               <input
@@ -382,10 +382,10 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
         {/* Confirmation when gh available */}
         {step === 1 && showConfirm && (
           <div className="text-center py-4 space-y-3">
-            <p className="text-sm text-slate-700">
-              将以 <span className="font-semibold text-slate-900">{caps?.ghUsername || 'GitHub'}</span> 的身份提交 Issue 到
+            <p className="text-sm text-foreground">
+              将以 <span className="font-semibold text-foreground">{caps?.ghUsername || 'GitHub'}</span> 的身份提交 Issue 到
             </p>
-            <p className="text-sm text-slate-500">riba2534/happyclaw</p>
+            <p className="text-sm text-muted-foreground">riba2534/happyclaw</p>
           </div>
         )}
 
@@ -393,7 +393,7 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
         {step === 2 && (
           <div className="space-y-4">
             <div>
-              <label className="text-sm font-medium text-slate-700 mb-1 block">
+              <label className="text-sm font-medium text-foreground mb-1 block">
                 Issue 标题
               </label>
               <Input
@@ -404,7 +404,7 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
             </div>
 
             <div>
-              <label className="text-sm font-medium text-slate-700 mb-1 block">
+              <label className="text-sm font-medium text-foreground mb-1 block">
                 Issue 内容（Markdown）
               </label>
               <Textarea
@@ -417,14 +417,14 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
 
             {Object.keys(systemInfo).length > 0 && (
               <div>
-                <p className="text-xs font-medium text-slate-500 mb-1">
+                <p className="text-xs font-medium text-muted-foreground mb-1">
                   系统信息
                 </p>
                 <div className="flex flex-wrap gap-1">
                   {Object.entries(systemInfo).map(([k, v]) => (
                     <span
                       key={k}
-                      className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded"
+                      className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded"
                     >
                       {k}: {v}
                     </span>

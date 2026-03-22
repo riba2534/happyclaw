@@ -1,3 +1,61 @@
+// ─── 统一供应商类型 (V4) ─────────────────────────────────────
+
+export interface UnifiedProviderPublic {
+  id: string;
+  name: string;
+  type: 'official' | 'third_party';
+  enabled: boolean;
+  weight: number;
+  anthropicBaseUrl: string;
+  anthropicModel: string;
+  hasAnthropicAuthToken: boolean;
+  anthropicAuthTokenMasked: string | null;
+  hasAnthropicApiKey: boolean;
+  anthropicApiKeyMasked: string | null;
+  hasClaudeCodeOauthToken: boolean;
+  claudeCodeOauthTokenMasked: string | null;
+  hasClaudeOAuthCredentials: boolean;
+  claudeOAuthCredentialsExpiresAt: number | null;
+  claudeOAuthCredentialsAccessTokenMasked: string | null;
+  customEnv: Record<string, string>;
+  updatedAt: string;
+}
+
+export interface ProviderHealthStatus {
+  profileId: string;
+  healthy: boolean;
+  consecutiveErrors: number;
+  lastErrorAt: number | null;
+  lastSuccessAt: number | null;
+  unhealthySince: number | null;
+  activeSessionCount: number;
+}
+
+export interface ProviderWithHealth extends UnifiedProviderPublic {
+  health: ProviderHealthStatus | null;
+}
+
+export interface BalancingConfig {
+  strategy: 'round-robin' | 'weighted-round-robin' | 'failover';
+  unhealthyThreshold: number;
+  recoveryIntervalMs: number;
+}
+
+export interface ProvidersListResponse {
+  providers: ProviderWithHealth[];
+  balancing: BalancingConfig;
+  enabledCount: number;
+}
+
+export interface ClaudeApplyResult {
+  success: boolean;
+  stoppedCount: number;
+  failedCount?: number;
+  error?: string;
+}
+
+// ─── 兼容旧类型（仍被 GET /claude 返回） ────────────────────
+
 export interface ClaudeConfigPublic {
   anthropicBaseUrl: string;
   anthropicModel: string;
@@ -13,38 +71,7 @@ export interface ClaudeConfigPublic {
   claudeOAuthCredentialsAccessTokenMasked: string | null;
 }
 
-export interface ClaudeThirdPartyProfileItem {
-  id: string;
-  name: string;
-  anthropicBaseUrl: string;
-  anthropicModel: string;
-  updatedAt: string | null;
-  hasAnthropicAuthToken: boolean;
-  anthropicAuthTokenMasked: string | null;
-  customEnv: Record<string, string>;
-}
-
-export interface ClaudeThirdPartyProfilesResp {
-  activeProfileId: string;
-  profiles: ClaudeThirdPartyProfileItem[];
-}
-
-export interface ClaudeThirdPartyActivateResult {
-  success: boolean;
-  alreadyActive?: boolean;
-  activeProfileId: string;
-  profile: ClaudeThirdPartyProfileItem | null;
-  stoppedCount: number;
-  failedCount: number;
-  error?: string;
-}
-
-export interface ClaudeApplyResult {
-  success: boolean;
-  stoppedCount: number;
-  failedCount?: number;
-  error?: string;
-}
+// ─── 通用类型 ────────────────────────────────────────────────
 
 export interface EnvRow {
   key: string;
@@ -70,6 +97,8 @@ export interface SystemSettings {
   loginLockoutMinutes: number;
   maxConcurrentScripts: number;
   scriptTimeout: number;
+  skillAutoSyncEnabled: boolean;
+  skillAutoSyncIntervalMinutes: number;
   billingEnabled: boolean;
   billingMode: 'wallet_first';
   billingMinStartBalanceUsd: number;

@@ -49,6 +49,7 @@ import skillsRoutes from './routes/skills.js';
 import browseRoutes from './routes/browse.js';
 import agentRoutes from './routes/agents.js';
 import mcpServersRoutes from './routes/mcp-servers.js';
+import workspaceConfigRoutes from './routes/workspace-config.js';
 import agentDefinitionsRoutes from './routes/agent-definitions.js';
 import { usage as usageRoutes } from './routes/usage.js';
 import billingRoutes from './routes/billing.js';
@@ -82,7 +83,6 @@ import type {
 } from './types.js';
 import { WEB_PORT, SESSION_COOKIE_NAME, ASSISTANT_NAME } from './config.js';
 import { logger } from './logger.js';
-import { analyzeIntent } from './intent-analyzer.js';
 import { executeSessionReset } from './commands.js';
 import {
   normalizeImageAttachments,
@@ -170,6 +170,7 @@ app.route('/api/browse', browseRoutes);
 app.route('/api/mcp-servers', mcpServersRoutes);
 app.route('/api/agent-definitions', agentDefinitionsRoutes);
 app.route('/api/groups', agentRoutes); // Agent routes under /api/groups/:jid/agents
+app.route('/api/groups', workspaceConfigRoutes); // Workspace config under /api/groups/:jid/workspace-config
 app.route('/api', monitorRoutes);
 app.route('/api/usage', usageRoutes);
 app.route('/api/billing', billingRoutes);
@@ -338,13 +339,11 @@ async function handleWebUserMessage(
   // longer need to kill and restart the process (#99).
   let pipedToActive = false;
   const images = toAgentImages(normalizedAttachments);
-  const intent = analyzeIntent(content);
   const updateRoute = deps.updateReplyRoute;
   const sendResult = deps.queue.sendMessage(
     chatJid,
     formatted,
     images,
-    intent,
     () => {
       // IPC write succeeded — update reply route for home groups.
       // Web messages have no IM source, so clear the IM route.
@@ -352,12 +351,6 @@ async function handleWebUserMessage(
     },
   );
   if (sendResult === 'sent') {
-    pipedToActive = true;
-  } else if (sendResult === 'interrupted_stop') {
-    // Stop intent: cursor updated, no enqueue needed
-    pipedToActive = true;
-  } else if (sendResult === 'interrupted_correction') {
-    // Correction intent: IPC message written, agent handles it after interrupt
     pipedToActive = true;
   } else if (sendResult === 'queued') {
     // Message queued for next container run; don't advance cursor so
@@ -369,8 +362,13 @@ async function handleWebUserMessage(
 
   // Only advance per-group cursor when we piped directly into a running container.
   // For queued processing, processGroupMessages must still see this message from DB.
+  //
+  // When piped to active, we also mark the group as having pending IPC-injected
+  // messages. If the agent crashes without processing them, the close handler
+  // resets pendingMessages so drainGroup re-reads from DB.
   if (pipedToActive) {
     deps.setLastAgentTimestamp(chatJid, { timestamp, id: messageId });
+    deps.queue.markIpcInjectedMessage(chatJid);
   }
   deps.advanceGlobalCursor({ timestamp, id: messageId });
   return { ok: true, messageId, timestamp };
@@ -460,16 +458,16 @@ async function handleAgentConversationMessage(
   );
 
   // Try to pipe into running agent process
-  const agentIntent = analyzeIntent(content);
   const agentImages = toAgentImages(normalizedAttachments);
   const agentSendResult = deps.queue.sendMessage(
     virtualChatJid,
     formatted,
     agentImages,
-    agentIntent,
   );
   if (agentSendResult === 'no_active') {
-    // No running process — start one via processAgentConversation
+    // No running process — force close any stale state and start fresh.
+    // Mirrors the reliable IM path in buildOnAgentMessage() (#240).
+    deps.queue.closeStdin(virtualChatJid);
     if (deps.processAgentConversation) {
       const taskId = `agent-conv:${agentId}:${Date.now()}`;
       deps.queue.enqueueTask(virtualChatJid, taskId, async () => {
@@ -477,8 +475,7 @@ async function handleAgentConversationMessage(
       });
     }
   }
-  // 'sent', 'interrupted_stop', 'interrupted_correction' need no further action —
-  // for correction, the IPC message was written and the agent handles it after interrupt
+  // 'sent' needs no further action
 }
 
 // --- Static Files ---
@@ -589,8 +586,10 @@ function setupWebSocket(server: any): WebSocketServer {
     if (connSession && streamingSnapshots.size > 0) {
       const userId = connSession.user_id;
       for (const [jid, snap] of streamingSnapshots) {
-        // Skip stale snapshots (> 5 min)
-        if (Date.now() - snap.updatedAt > 5 * 60 * 1000) {
+        // Skip stale snapshots (> 30 min)
+        // Extended from 5 min to 30 min to support long-running sub-agents.
+        // See GitHub issue #241.
+        if (Date.now() - snap.updatedAt > 30 * 60 * 1000) {
           streamingSnapshots.delete(jid);
           continue;
         }
@@ -748,7 +747,7 @@ function setupWebSocket(server: any): WebSocketServer {
           }
 
           // ── /clear command: reset session without entering message pipeline ──
-          if (content.trim() === '/clear' && deps) {
+          if (content.trim().toLowerCase() === '/clear' && deps) {
             const targetGroup = getRegisteredGroup(chatJid);
             if (targetGroup) {
               try {
@@ -1457,8 +1456,6 @@ export function clearStreamingSnapshot(chatJid: string): void {
 export function getActiveStreamingTexts(): Map<string, string> {
   const result = new Map<string, string>();
   for (const [jid, fullText] of streamingFullTexts) {
-    // Skip agent virtual JIDs (e.g. web:main#agent:abc) — only persist main streams
-    if (jid.includes('#agent:')) continue;
     const text = fullText.trim();
     if (text) {
       result.set(jid, text);

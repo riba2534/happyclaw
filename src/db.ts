@@ -264,7 +264,8 @@ export function initDatabase(): void {
       last_result TEXT,
       status TEXT DEFAULT 'active',
       created_at TEXT NOT NULL,
-      created_by TEXT
+      created_by TEXT,
+      notify_channels TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_next_run ON scheduled_tasks(next_run);
     CREATE INDEX IF NOT EXISTS idx_status ON scheduled_tasks(status);
@@ -633,6 +634,7 @@ export function initDatabase(): void {
   ensureColumn('scheduled_tasks', 'created_by', 'TEXT');
   ensureColumn('scheduled_tasks', 'execution_type', "TEXT DEFAULT 'agent'");
   ensureColumn('scheduled_tasks', 'script_command', 'TEXT');
+  ensureColumn('scheduled_tasks', 'notify_channels', 'TEXT');
   ensureColumn('registered_groups', 'selected_skills', 'TEXT');
   ensureColumn('sessions', 'agent_id', "TEXT NOT NULL DEFAULT ''");
   ensureColumn('agents', 'kind', "TEXT NOT NULL DEFAULT 'task'");
@@ -1170,7 +1172,7 @@ export function initDatabase(): void {
     db.exec('ALTER TABLE agents ADD COLUMN last_im_jid TEXT');
   }
 
-  const SCHEMA_VERSION = '30';
+  const SCHEMA_VERSION = '31';
   db.prepare(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', SCHEMA_VERSION);
@@ -1798,8 +1800,8 @@ export function createTask(
 ): void {
   db.prepare(
     `
-    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, execution_type, script_command, next_run, status, created_at, created_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, execution_type, script_command, next_run, status, created_at, created_by, notify_channels)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     task.id,
@@ -1815,13 +1817,28 @@ export function createTask(
     task.status,
     task.created_at,
     task.created_by ?? null,
+    task.notify_channels != null ? JSON.stringify(task.notify_channels) : null,
   );
 }
 
+/** Parse notify_channels from JSON string stored in DB */
+function mapTaskRow(row: unknown): ScheduledTask {
+  const r = row as any;
+  if (typeof r.notify_channels === 'string') {
+    try {
+      r.notify_channels = JSON.parse(r.notify_channels);
+    } catch {
+      r.notify_channels = null;
+    }
+  } else if (r.notify_channels === undefined) {
+    r.notify_channels = null;
+  }
+  return r as ScheduledTask;
+}
+
 export function getTaskById(id: string): ScheduledTask | undefined {
-  return db.prepare('SELECT * FROM scheduled_tasks WHERE id = ?').get(id) as
-    | ScheduledTask
-    | undefined;
+  const row = db.prepare('SELECT * FROM scheduled_tasks WHERE id = ?').get(id);
+  return row ? mapTaskRow(row) : undefined;
 }
 
 export function getTasksForGroup(groupFolder: string): ScheduledTask[] {
@@ -1829,13 +1846,15 @@ export function getTasksForGroup(groupFolder: string): ScheduledTask[] {
     .prepare(
       'SELECT * FROM scheduled_tasks WHERE group_folder = ? ORDER BY created_at DESC',
     )
-    .all(groupFolder) as ScheduledTask[];
+    .all(groupFolder)
+    .map(mapTaskRow);
 }
 
 export function getAllTasks(): ScheduledTask[] {
   return db
     .prepare('SELECT * FROM scheduled_tasks ORDER BY created_at DESC')
-    .all() as ScheduledTask[];
+    .all()
+    .map(mapTaskRow);
 }
 
 export function updateTask(
@@ -1851,6 +1870,7 @@ export function updateTask(
       | 'script_command'
       | 'next_run'
       | 'status'
+      | 'notify_channels'
     >
   >,
 ): void {
@@ -1888,6 +1908,10 @@ export function updateTask(
   if (updates.status !== undefined) {
     fields.push('status = ?');
     values.push(updates.status);
+  }
+  if (updates.notify_channels !== undefined) {
+    fields.push('notify_channels = ?');
+    values.push(updates.notify_channels != null ? JSON.stringify(updates.notify_channels) : null);
   }
 
   if (fields.length === 0) return;
@@ -1931,7 +1955,8 @@ export function getDueTasks(): ScheduledTask[] {
     ORDER BY next_run
   `,
     )
-    .all(now) as ScheduledTask[];
+    .all(now)
+    .map(mapTaskRow);
 }
 
 export function updateTaskAfterRun(
@@ -2008,6 +2033,18 @@ export function setRouterState(key: string, value: string): void {
   db.prepare(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run(key, value);
+}
+
+export function deleteRouterState(key: string): void {
+  db.prepare('DELETE FROM router_state WHERE key = ?').run(key);
+}
+
+export function getRouterStateByPrefix(
+  prefix: string,
+): Array<{ key: string; value: string }> {
+  return db
+    .prepare('SELECT key, value FROM router_state WHERE key LIKE ?')
+    .all(`${prefix}%`) as Array<{ key: string; value: string }>;
 }
 
 // --- Session accessors ---
@@ -2120,16 +2157,11 @@ function parseGroupRow(
     initGitUrl: row.init_git_url ?? undefined,
     created_by: row.created_by ?? undefined,
     is_home: row.is_home === 1,
-    selected_skills: row.selected_skills
-      ? JSON.parse(row.selected_skills)
-      : null,
     target_agent_id: row.target_agent_id ?? undefined,
     target_main_jid: row.target_main_jid ?? undefined,
     reply_policy: row.reply_policy === 'mirror' ? 'mirror' : 'source_only',
     require_mention: row.require_mention === 1,
     activation_mode: parseActivationMode(row.activation_mode),
-    mcp_mode: row.mcp_mode === 'custom' ? 'custom' : 'inherit',
-    selected_mcps: row.selected_mcps ? JSON.parse(row.selected_mcps) : null,
   };
 }
 
@@ -2174,14 +2206,14 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.initGitUrl ?? null,
     group.created_by ?? null,
     group.is_home ? 1 : 0,
-    group.selected_skills ? JSON.stringify(group.selected_skills) : null,
+    null, // selected_skills: deprecated, always null (user-level skills apply globally)
     group.target_agent_id ?? null,
     group.target_main_jid ?? null,
     group.reply_policy ?? 'source_only',
     group.require_mention === true ? 1 : 0,
     group.activation_mode ?? 'auto',
-    group.mcp_mode ?? 'inherit',
-    group.selected_mcps ? JSON.stringify(group.selected_mcps) : null,
+    'inherit', // mcp_mode: deprecated, always inherit (user-level MCP applies globally)
+    null, // selected_mcps: deprecated, always null
   );
 }
 
@@ -2643,9 +2675,6 @@ export function getGroupsByOwner(
     initGitUrl: row.init_git_url ?? undefined,
     created_by: row.created_by ?? undefined,
     is_home: row.is_home === 1,
-    selected_skills: row.selected_skills
-      ? JSON.parse(row.selected_skills)
-      : null,
   }));
 }
 

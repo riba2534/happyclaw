@@ -14,12 +14,11 @@ import http from 'node:http';
 import https from 'node:https';
 import WebSocket from 'ws';
 import { storeChatMetadata, storeMessageDirect, updateChatName } from './db.js';
+import { notifyNewImMessage } from './message-notifier.js';
 import { broadcastNewMessage } from './web.js';
 import { logger } from './logger.js';
 import { saveDownloadedFile, MAX_FILE_SIZE } from './im-downloader.js';
 import { detectImageMimeType } from './image-detector.js';
-import { analyzeIntent } from './intent-analyzer.js';
-
 // ─── Constants ──────────────────────────────────────────────────
 
 const QQ_TOKEN_URL = 'https://bots.qq.com/app/getAppAccessToken';
@@ -67,11 +66,6 @@ export interface QQConnectOpts {
     chatJid: string,
   ) => { effectiveJid: string; agentId: string | null } | null;
   onAgentMessage?: (baseChatJid: string, agentId: string) => void;
-  /** 中断 fast-path：消息到达时立即检测中断意图，绕过轮询延迟直接触发中断 */
-  onInterruptRequest?: (
-    chatJid: string,
-    intent: 'stop' | 'correction',
-  ) => void;
 }
 
 export interface QQConnection {
@@ -182,21 +176,6 @@ function parseQQChatId(
     return { type: 'group', openid: chatId.slice(6) };
   }
   return null;
-}
-
-/** Check for interrupt intent on short messages and fire callback if matched. */
-function checkInterruptFastPath(
-  text: string,
-  jid: string,
-  onInterruptRequest: ((jid: string, intent: 'stop' | 'correction') => void) | undefined,
-  source: string,
-): void {
-  if (!onInterruptRequest || text.length > 50) return;
-  const intent = analyzeIntent(text);
-  if (intent !== 'continue') {
-    onInterruptRequest(jid, intent);
-    logger.info({ jid, intent }, `Interrupt fast-path triggered from ${source}`);
-  }
 }
 
 // ─── Factory Function ───────────────────────────────────────────
@@ -818,9 +797,6 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
       const agentRouting = opts.resolveEffectiveChatJid?.(jid);
       const targetJid = agentRouting?.effectiveJid ?? jid;
 
-      // ── 中断 fast-path（使用路由后的 targetJid） ──
-      checkInterruptFastPath(content, targetJid, opts.onInterruptRequest, 'QQ C2C');
-
       const id = crypto.randomUUID();
       let timestamp: string;
       try {
@@ -858,6 +834,7 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
         },
         agentRouting?.agentId ?? undefined,
       );
+      notifyNewImMessage();
 
       if (agentRouting?.agentId) {
         opts.onAgentMessage?.(jid, agentRouting.agentId);
@@ -1013,9 +990,6 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
       const agentRouting = opts.resolveEffectiveChatJid?.(jid);
       const targetJid = agentRouting?.effectiveJid ?? jid;
 
-      // ── 中断 fast-path（使用路由后的 targetJid） ──
-      checkInterruptFastPath(content, targetJid, opts.onInterruptRequest, 'QQ group');
-
       const id = crypto.randomUUID();
       let timestamp: string;
       try {
@@ -1053,6 +1027,7 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
         },
         agentRouting?.agentId ?? undefined,
       );
+      notifyNewImMessage();
 
       if (agentRouting?.agentId) {
         opts.onAgentMessage?.(jid, agentRouting.agentId);

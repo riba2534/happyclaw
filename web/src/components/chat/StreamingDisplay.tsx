@@ -495,7 +495,7 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNamePr
             <div className="hidden lg:flex items-center gap-2 mb-1">
               <span className="text-xs text-muted-foreground font-medium">{senderName}</span>
             </div>
-            <div className="bg-surface rounded-xl border border-border/60 px-5 py-4 font-serif shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
+            <div className="bg-surface rounded-xl border border-border/60 px-5 py-4 font-serif shadow-card">
               <div className="flex items-center gap-1.5">
                 <span className="w-2 h-2 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
                 <span className="w-2 h-2 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
@@ -589,7 +589,7 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNamePr
           </div>
 
           {/* Card */}
-          <div className="bg-surface rounded-xl border border-border/60 px-5 py-4 overflow-hidden font-serif shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
+          <div className="bg-surface rounded-xl border border-border/60 px-5 py-4 overflow-hidden font-serif shadow-card">
             {streaming && (
               <StreamingContent
                 streaming={streaming}

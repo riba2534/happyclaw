@@ -19,6 +19,11 @@ import {
   type QQConnection,
   type QQConnectionConfig,
 } from './qq.js';
+import {
+  createWeChatConnection,
+  type WeChatConnection,
+  type WeChatConnectionConfig,
+} from './wechat.js';
 import { logger } from './logger.js';
 import {
   StreamingCardController,
@@ -54,11 +59,8 @@ export interface IMChannelConnectOpts {
   onBotRemovedFromGroup?: (chatJid: string) => void;
   /** 群聊消息过滤：bot 未被 @mention 时调用，返回 true 则处理，false 则丢弃 */
   shouldProcessGroupMessage?: (chatJid: string) => boolean;
-  /** 中断 fast-path：消息到达时立即检测中断意图，绕过轮询延迟直接触发中断 */
-  onInterruptRequest?: (
-    chatJid: string,
-    intent: 'stop' | 'correction',
-  ) => void;
+  /** 飞书流式卡片按钮中断回调 */
+  onCardInterrupt?: (chatJid: string) => void;
 }
 
 export interface IMChannel {
@@ -99,6 +101,7 @@ export const CHANNEL_REGISTRY: Record<string, { prefix: string }> = {
   feishu: { prefix: 'feishu:' },
   telegram: { prefix: 'telegram:' },
   qq: { prefix: 'qq:' },
+  wechat: { prefix: 'wechat:' },
 };
 
 /**
@@ -143,7 +146,7 @@ export function createFeishuChannel(config: FeishuConnectionConfig): IMChannel {
         onBotAddedToGroup: opts.onBotAddedToGroup,
         onBotRemovedFromGroup: opts.onBotRemovedFromGroup,
         shouldProcessGroupMessage: opts.shouldProcessGroupMessage,
-        onInterruptRequest: opts.onInterruptRequest,
+        onCardInterrupt: opts.onCardInterrupt,
       });
       if (!connected) {
         inner = null;
@@ -269,12 +272,12 @@ export function createTelegramChannel(
           isChatAuthorized: opts.isChatAuthorized ?? (() => true),
           onPairAttempt: opts.onPairAttempt,
           onCommand: opts.onCommand,
+          ignoreMessagesBefore: opts.ignoreMessagesBefore,
           resolveGroupFolder: opts.resolveGroupFolder,
           resolveEffectiveChatJid: opts.resolveEffectiveChatJid,
           onAgentMessage: opts.onAgentMessage,
           onBotAddedToGroup: opts.onBotAddedToGroup,
           onBotRemovedFromGroup: opts.onBotRemovedFromGroup,
-          onInterruptRequest: opts.onInterruptRequest,
         });
         return inner.isConnected();
       } catch (err) {
@@ -385,7 +388,6 @@ export function createQQChannel(config: QQConnectionConfig): IMChannel {
           resolveGroupFolder: opts.resolveGroupFolder,
           resolveEffectiveChatJid: opts.resolveEffectiveChatJid,
           onAgentMessage: opts.onAgentMessage,
-          onInterruptRequest: opts.onInterruptRequest,
         });
         return inner.isConnected();
       } catch (err) {
@@ -415,6 +417,67 @@ export function createQQChannel(config: QQConnectionConfig): IMChannel {
 
     async setTyping(_chatId: string, _isTyping: boolean): Promise<void> {
       // QQ Bot API v2 does not support typing indicators
+    },
+
+    isConnected(): boolean {
+      return inner?.isConnected() ?? false;
+    },
+  };
+
+  return channel;
+}
+
+// ─── WeChat Adapter ─────────────────────────────────────────────
+
+export function createWeChatChannel(
+  config: WeChatConnectionConfig,
+): IMChannel {
+  let inner: WeChatConnection | null = null;
+
+  const channel: IMChannel = {
+    channelType: 'wechat',
+
+    async connect(opts: IMChannelConnectOpts): Promise<boolean> {
+      inner = createWeChatConnection(config);
+      try {
+        await inner.connect({
+          onReady: opts.onReady,
+          onNewChat: opts.onNewChat,
+          onCommand: opts.onCommand,
+          ignoreMessagesBefore: opts.ignoreMessagesBefore,
+          resolveGroupFolder: opts.resolveGroupFolder,
+          resolveEffectiveChatJid: opts.resolveEffectiveChatJid,
+          onAgentMessage: opts.onAgentMessage,
+        });
+        return inner.isConnected();
+      } catch (err) {
+        logger.error({ err }, 'WeChat channel connect failed');
+        inner = null;
+        return false;
+      }
+    },
+
+    async disconnect(): Promise<void> {
+      if (inner) {
+        await inner.disconnect();
+        inner = null;
+      }
+    },
+
+    async sendMessage(chatId: string, text: string): Promise<void> {
+      if (!inner) {
+        logger.warn(
+          { chatId },
+          'WeChat channel not connected, skip sending message',
+        );
+        return;
+      }
+      await inner.sendMessage(chatId, text);
+    },
+
+    async setTyping(chatId: string, isTyping: boolean): Promise<void> {
+      if (!inner) return;
+      await inner.sendTyping(chatId, isTyping);
     },
 
     isConnected(): boolean {

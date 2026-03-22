@@ -31,6 +31,7 @@ export function TasksPage() {
     contextMode: 'group' | 'isolated';
     executionType: 'agent' | 'script';
     scriptCommand: string;
+    notifyChannels: string[] | null;
   }) => {
     await createTask(
       data.groupFolder,
@@ -41,6 +42,7 @@ export function TasksPage() {
       data.contextMode,
       data.executionType,
       data.scriptCommand,
+      data.notifyChannels,
     );
     setShowCreateForm(false);
   };
@@ -68,6 +70,8 @@ export function TasksPage() {
     name: group.name,
     folder: group.folder,
   }));
+
+  const homeFolder = Object.values(groups).find((g) => g.is_my_home)?.folder;
 
   const activeTasks = tasks.filter((t) => t.status === 'active');
   const pausedTasks = tasks.filter((t) => t.status === 'paused');
@@ -184,6 +188,7 @@ export function TasksPage() {
           onSubmit={handleCreateTask}
           onClose={() => setShowCreateForm(false)}
           isAdmin={isAdmin}
+          homeFolder={homeFolder}
         />
       )}
     </div>

@@ -10,7 +10,7 @@ import { BindingTargetDialog } from './BindingTargetDialog';
 import type { AvailableImGroup } from '../../types';
 import type { BindingTarget } from './hooks/useImBindings';
 
-type ChannelFilter = 'all' | 'feishu' | 'telegram' | 'qq';
+type ChannelFilter = 'all' | 'feishu' | 'telegram' | 'qq' | 'wechat';
 
 export function BindingsSection() {
   const { bindings, loading, targets, targetsLoading, reload, rebind, error: hookError, clearError: clearHookError } = useImBindings();
@@ -31,6 +31,7 @@ export function BindingsSection() {
     if (types.has('feishu')) all.push({ key: 'feishu', label: '飞书' });
     if (types.has('telegram')) all.push({ key: 'telegram', label: 'Telegram' });
     if (types.has('qq')) all.push({ key: 'qq', label: 'QQ' });
+    if (types.has('wechat')) all.push({ key: 'wechat', label: '微信' });
     return all;
   }, [bindings]);
 
@@ -127,7 +128,7 @@ export function BindingsSection() {
               IM 绑定管理
             </h1>
             <p className="text-sm text-muted-foreground mt-1">
-              查看和管理所有 IM 群组的消息路由。未绑定的群组默认发送到你的主工作区。
+              查看和管理所有 IM 渠道的消息路由。未绑定的渠道默认发送到你的主工作区。
             </p>
           </div>
           <Button
@@ -173,7 +174,7 @@ export function BindingsSection() {
               <SearchInput
                 value={search}
                 onChange={setSearch}
-                placeholder="搜索群组名称..."
+                placeholder="搜索渠道名称..."
                 debounce={200}
               />
             </div>
@@ -191,13 +192,13 @@ export function BindingsSection() {
             <CardContent className="text-center">
             <MessageSquare className="w-10 h-10 mx-auto text-muted-foreground mb-3" />
             <p className="text-sm text-muted-foreground">
-              暂无 IM 群组。在飞书、Telegram 或 QQ 群中向 Bot 发送消息后，群组会自动出现在这里。
+              暂无 IM 渠道。在飞书、Telegram、QQ 或微信中向 Bot 发送消息后，渠道会自动出现在这里。
             </p>
             </CardContent>
           </Card>
         ) : filtered.length === 0 ? (
           <div className="text-center py-10 text-muted-foreground text-sm">
-            没有匹配的群组
+            没有匹配的渠道
           </div>
         ) : (
           <div className="space-y-2">

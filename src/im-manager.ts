@@ -13,10 +13,12 @@ import {
   createFeishuChannel,
   createTelegramChannel,
   createQQChannel,
+  createWeChatChannel,
 } from './im-channel.js';
 import type { FeishuConnectionConfig } from './feishu.js';
 import type { TelegramConnectionConfig } from './telegram.js';
 import type { QQConnectionConfig } from './qq.js';
+import type { WeChatConnectionConfig } from './wechat.js';
 import type { StreamingCardController } from './feishu-streaming-card.js';
 import { getRegisteredGroup, getJidsByFolder } from './db.js';
 import { logger } from './logger.js';
@@ -44,6 +46,15 @@ export interface QQConnectConfig {
   enabled?: boolean;
 }
 
+export interface WeChatConnectConfig {
+  botToken: string;
+  ilinkBotId: string;
+  baseUrl?: string;
+  cdnBaseUrl?: string;
+  getUpdatesBuf?: string;
+  enabled?: boolean;
+}
+
 export interface ConnectFeishuOptions {
   ignoreMessagesBefore?: number;
   onCommand?: (chatJid: string, command: string) => Promise<string | null>;
@@ -55,10 +66,7 @@ export interface ConnectFeishuOptions {
   onBotAddedToGroup?: (chatJid: string, chatName: string) => void;
   onBotRemovedFromGroup?: (chatJid: string) => void;
   shouldProcessGroupMessage?: (chatJid: string) => boolean;
-  onInterruptRequest?: (
-    chatJid: string,
-    intent: 'stop' | 'correction',
-  ) => void;
+  onCardInterrupt?: (chatJid: string) => void;
 }
 
 class IMConnectionManager {
@@ -278,6 +286,16 @@ class IMConnectionManager {
     return types;
   }
 
+  /**
+   * Check if a specific JID has a connected channel available.
+   * Uses the same routing logic as sendMessage (group ownership + sibling fallback).
+   */
+  isChannelAvailableForJid(jid: string): boolean {
+    const channelType = getChannelType(jid);
+    if (!channelType) return false;
+    return !!this.findChannelForJid(jid, channelType);
+  }
+
   // ─── Convenience Methods (API-compatible wrappers) ──────────
 
   /**
@@ -312,7 +330,7 @@ class IMConnectionManager {
       onBotAddedToGroup: options?.onBotAddedToGroup,
       onBotRemovedFromGroup: options?.onBotRemovedFromGroup,
       shouldProcessGroupMessage: options?.shouldProcessGroupMessage,
-      onInterruptRequest: options?.onInterruptRequest,
+      onCardInterrupt: options?.onCardInterrupt,
     });
   }
 
@@ -331,6 +349,7 @@ class IMConnectionManager {
     ) => Promise<boolean>,
     options?: {
       onCommand?: (chatJid: string, command: string) => Promise<string | null>;
+      ignoreMessagesBefore?: number;
       resolveGroupFolder?: (jid: string) => string | undefined;
       resolveEffectiveChatJid?: (
         chatJid: string,
@@ -338,10 +357,6 @@ class IMConnectionManager {
       onAgentMessage?: (baseChatJid: string, agentId: string) => void;
       onBotAddedToGroup?: (chatJid: string, chatName: string) => void;
       onBotRemovedFromGroup?: (chatJid: string) => void;
-      onInterruptRequest?: (
-        chatJid: string,
-        intent: 'stop' | 'correction',
-      ) => void;
     },
   ): Promise<boolean> {
     if (!config.botToken) {
@@ -362,12 +377,12 @@ class IMConnectionManager {
       isChatAuthorized,
       onPairAttempt,
       onCommand: options?.onCommand,
+      ignoreMessagesBefore: options?.ignoreMessagesBefore,
       resolveGroupFolder: options?.resolveGroupFolder,
       resolveEffectiveChatJid: options?.resolveEffectiveChatJid,
       onAgentMessage: options?.onAgentMessage,
       onBotAddedToGroup: options?.onBotAddedToGroup,
       onBotRemovedFromGroup: options?.onBotRemovedFromGroup,
-      onInterruptRequest: options?.onInterruptRequest,
     });
   }
 
@@ -391,10 +406,6 @@ class IMConnectionManager {
         chatJid: string,
       ) => { effectiveJid: string; agentId: string | null } | null;
       onAgentMessage?: (baseChatJid: string, agentId: string) => void;
-      onInterruptRequest?: (
-        chatJid: string,
-        intent: 'stop' | 'correction',
-      ) => void;
     },
   ): Promise<boolean> {
     if (!config.appId || !config.appSecret) {
@@ -418,7 +429,6 @@ class IMConnectionManager {
       resolveGroupFolder: options?.resolveGroupFolder,
       resolveEffectiveChatJid: options?.resolveEffectiveChatJid,
       onAgentMessage: options?.onAgentMessage,
-      onInterruptRequest: options?.onInterruptRequest,
     });
   }
 
@@ -432,6 +442,51 @@ class IMConnectionManager {
 
   async disconnectUserQQ(userId: string): Promise<void> {
     await this.disconnectChannel(userId, 'qq');
+  }
+
+  /**
+   * Connect a WeChat iLink instance for a specific user.
+   */
+  async connectUserWeChat(
+    userId: string,
+    config: WeChatConnectConfig,
+    onNewChat: (chatJid: string, chatName: string) => void,
+    options?: {
+      onCommand?: (chatJid: string, command: string) => Promise<string | null>;
+      resolveGroupFolder?: (jid: string) => string | undefined;
+      resolveEffectiveChatJid?: (
+        chatJid: string,
+      ) => { effectiveJid: string; agentId: string | null } | null;
+      onAgentMessage?: (baseChatJid: string, agentId: string) => void;
+    },
+  ): Promise<boolean> {
+    if (!config.botToken || !config.ilinkBotId) {
+      logger.info({ userId }, 'WeChat config empty, skipping connection');
+      return false;
+    }
+
+    const channel = createWeChatChannel({
+      botToken: config.botToken,
+      ilinkBotId: config.ilinkBotId,
+      baseUrl: config.baseUrl,
+      cdnBaseUrl: config.cdnBaseUrl,
+      getUpdatesBuf: config.getUpdatesBuf,
+    });
+
+    return this.connectChannel(userId, 'wechat', channel, {
+      onReady: () => {
+        logger.info({ userId }, 'User WeChat bot connected');
+      },
+      onNewChat,
+      onCommand: options?.onCommand,
+      resolveGroupFolder: options?.resolveGroupFolder,
+      resolveEffectiveChatJid: options?.resolveEffectiveChatJid,
+      onAgentMessage: options?.onAgentMessage,
+    });
+  }
+
+  async disconnectUserWeChat(userId: string): Promise<void> {
+    await this.disconnectChannel(userId, 'wechat');
   }
 
   /**
@@ -543,6 +598,19 @@ class IMConnectionManager {
   isAnyQQConnected(): boolean {
     for (const conn of this.connections.values()) {
       if (conn.channels.get('qq')?.isConnected()) return true;
+    }
+    return false;
+  }
+
+  isWeChatConnected(userId: string): boolean {
+    const conn = this.connections.get(userId);
+    return conn?.channels.get('wechat')?.isConnected() ?? false;
+  }
+
+  /** Check if any user has an active WeChat connection */
+  isAnyWeChatConnected(): boolean {
+    for (const conn of this.connections.values()) {
+      if (conn.channels.get('wechat')?.isConnected()) return true;
     }
     return false;
   }

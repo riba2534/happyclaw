@@ -93,14 +93,13 @@ user-invocable: false
 
 ```
 bg-surface rounded-xl border border-border/60
-px-5 py-4 font-serif
-shadow-[0_1px_3px_rgba(0,0,0,0.04)]
-移动端: max-lg:bg-white/90 max-lg:backdrop-blur-sm
+px-5 py-4 font-serif shadow-card
+移动端: max-lg:bg-surface/90 max-lg:backdrop-blur-sm
 ```
 
-- 白色背景在暖色页面 (#FAF9F5) 上形成干净对比
+- `bg-surface` 在亮/暗模式下自动适配（light: #ffffff, dark: oklch(0.205 0 0)）
 - 不使用 `bg-card`（#F0EEE6 太黄暗）
-- 极淡投影增加层次感
+- `shadow-card` 通过 CSS 变量定义，暗色模式自动加深
 
 ### 4.2 用户消息
 
@@ -133,9 +132,9 @@ px-2.5 py-1.5 text-[13px] font-sans
 
 | Light | Dark | 说明 |
 |-------|------|------|
-| `bg-white` | `dark:bg-card` | 卡片 |
+| `bg-surface` | 自动适配 | 卡片（通过 CSS 变量 `--surface`） |
 | `border-border/60` | 自动适配 | 边框 |
-| `shadow-[...]` | 自动适配 | 投影 |
+| `shadow-card` | 自动适配 | 投影（通过 CSS 变量 `--card-shadow`） |
 | `bg-amber-50/40` | `dark:bg-amber-950/30` | Reasoning 块 |
 | `text-amber-700` | `dark:text-amber-300` | Reasoning 标签 |
 | `text-blue-700` | `dark:text-blue-300` | Running 状态 |
@@ -179,3 +178,7 @@ px-2.5 py-1.5 text-[13px] font-sans
 - [ ] 文字大小符合层级规范（16px/13px/12px/11px）
 - [ ] 卡片使用 `bg-surface`，不使用 `bg-card`
 - [ ] 行内代码使用暖棕色 `rgb(138,36,36)`，不使用 `text-primary`
+
+### Known Limitations
+
+- `billing/` 目录组件仍使用 `bg-white dark:bg-zinc-800`、`border-zinc-*` 等旧模式，待后续统一迁移

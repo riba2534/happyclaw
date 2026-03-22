@@ -38,13 +38,14 @@ export interface WebDeps {
   }) => Promise<boolean>;
   reloadUserIMConfig?: (
     userId: string,
-    channel: 'feishu' | 'telegram' | 'qq',
+    channel: 'feishu' | 'telegram' | 'qq' | 'wechat',
   ) => Promise<boolean>;
   isFeishuConnected?: () => boolean;
   isTelegramConnected?: () => boolean;
   isUserFeishuConnected?: (userId: string) => boolean;
   isUserTelegramConnected?: (userId: string) => boolean;
   isUserQQConnected?: (userId: string) => boolean;
+  isUserWeChatConnected?: (userId: string) => boolean;
   processAgentConversation?: (
     chatJid: string,
     agentId: string,
