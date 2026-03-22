@@ -449,15 +449,17 @@ async function runScriptTask(
       error = scriptResult.stderr.trim() || `退出码: ${scriptResult.exitCode}`;
       result = scriptResult.stdout.trim() || null;
     } else {
-      result = scriptResult.stdout.trim() || '(无输出)';
+      result = scriptResult.stdout.trim() || null;
     }
 
-    // Send result to user
-    const text = error
-      ? `[脚本] 执行失败: ${error}${result ? `\n输出:\n${result.slice(0, 500)}` : ''}`
-      : `[脚本] ${result!.slice(0, 1000)}`;
+    // Send result to user (skip if no output and no error)
+    if (error || result) {
+      const text = error
+        ? `[脚本] 执行失败: ${error}${result ? `\n输出:\n${result.slice(0, 500)}` : ''}`
+        : `[脚本] ${result!.slice(0, 1000)}`;
 
-    await deps.sendMessage(groupJid, `${deps.assistantName}: ${text}`, { source: 'scheduled_task' });
+      await deps.sendMessage(groupJid, `${deps.assistantName}: ${text}`, { source: 'scheduled_task' });
+    }
 
     logger.info(
       {
