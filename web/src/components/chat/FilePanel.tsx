@@ -32,7 +32,8 @@ import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { Badge } from '../shared/Badge';
+import { Badge } from '@/components/ui/badge';
+import { Label } from '@/components/ui/label';
 import { FileUploadZone } from './FileUploadZone';
 import { MarkdownRenderer } from './MarkdownRenderer';
 
@@ -843,7 +844,7 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
           </DialogHeader>
           <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-foreground mb-2">文件夹名称</label>
+              <Label className="mb-2">文件夹名称</Label>
               <Input
                 type="text"
                 value={newDirName}

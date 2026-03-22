@@ -53,7 +53,7 @@ export function ToolActivityCard({ tool, localElapsed }: ToolActivityCardProps) 
 
   return (
     <div className={`${isNested ? 'ml-4 border-l-2 border-brand-200 pl-2' : ''}`}>
-      <div className="rounded-lg border border-brand-200 bg-brand-50/50 px-2.5 py-1.5 text-xs">
+      <div className="rounded-lg border border-brand-200 bg-brand-50/50 px-2.5 py-1.5 text-[13px] font-sans">
         {/* Header: tool name + elapsed */}
         <div className="flex items-center gap-1.5">
           <svg className="w-3 h-3 animate-spin text-primary flex-shrink-0" viewBox="0 0 24 24" fill="none">
@@ -69,7 +69,7 @@ export function ToolActivityCard({ tool, localElapsed }: ToolActivityCardProps) 
         {/* Param line */}
         {param && (
           <div className={`mt-1 text-muted-foreground break-all max-h-16 overflow-y-auto ${isBash ? 'font-mono' : ''}`}>
-            <span className="text-slate-400">{param.label}: </span>
+            <span className="text-muted-foreground/60">{param.label}: </span>
             {param.value}
           </div>
         )}

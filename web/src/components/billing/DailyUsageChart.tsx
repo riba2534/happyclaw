@@ -36,7 +36,7 @@ export default function DailyUsageChart() {
   return (
     <div className="bg-white dark:bg-zinc-800 rounded-lg border border-zinc-200 dark:border-zinc-700 p-5">
       <div className="flex items-center gap-2 mb-4">
-        <BarChart3 className="w-5 h-5 text-teal-600" />
+        <BarChart3 className="w-5 h-5 text-primary" />
         <h3 className="font-semibold">近 {CHART_DAYS} 天用量</h3>
       </div>
 
@@ -71,8 +71,8 @@ export default function DailyUsageChart() {
                   <div
                     className={`w-full rounded-t transition-all cursor-pointer ${
                       isHovered
-                        ? 'bg-teal-500 dark:bg-teal-400'
-                        : 'bg-teal-400/70 dark:bg-teal-600/70'
+                        ? 'bg-brand-500 dark:bg-brand-400'
+                        : 'bg-brand-400/70 dark:bg-brand-600/70'
                     }`}
                     style={{
                       height: `${Math.max(heightPercent, d.cost > 0 ? 4 : 0)}%`,
@@ -91,7 +91,7 @@ export default function DailyUsageChart() {
                 key={d.date}
                 className={`flex-1 text-center text-[10px] leading-tight ${
                   hoveredIdx === i
-                    ? 'text-teal-600 dark:text-teal-400 font-medium'
+                    ? 'text-primary dark:text-brand-400 font-medium'
                     : 'text-zinc-400'
                 }`}
               >

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { PageHeader } from '@/components/common/PageHeader';
+import { Card, CardContent } from '@/components/ui/card';
 import { useAuthStore } from '../stores/auth';
 import { UserListTab } from '../components/users/UserListTab';
 import { InviteCodesTab } from '../components/users/InviteCodesTab';
@@ -40,9 +41,11 @@ export function UsersPage() {
   if (tabs.length === 0) {
     return (
       <div className="min-h-full bg-background p-4 lg:p-8">
-        <div className="max-w-3xl mx-auto bg-card rounded-xl border border-border p-8 text-sm text-slate-600">
-          当前账户无用户管理权限。
-        </div>
+        <Card className="max-w-3xl mx-auto">
+          <CardContent className="text-sm text-muted-foreground">
+            当前账户无用户管理权限。
+          </CardContent>
+        </Card>
       </div>
     );
   }
@@ -56,10 +59,12 @@ export function UsersPage() {
         />
 
         {(notice || error) && (
-          <div className="bg-card rounded-xl border border-border p-4 space-y-1">
-            {notice && <div className="text-sm text-green-600">{notice}</div>}
-            {error && <div className="text-sm text-red-600">{error}</div>}
-          </div>
+          <Card>
+            <CardContent className="space-y-1">
+              {notice && <div className="text-sm text-success">{notice}</div>}
+              {error && <div className="text-sm text-error">{error}</div>}
+            </CardContent>
+          </Card>
         )}
 
         <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>

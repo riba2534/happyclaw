@@ -45,7 +45,7 @@ function AskUserQuestionCard({ toolInput }: { toolInput: Record<string, unknown>
               ))}
             </div>
           )}
-          <div className="text-[11px] text-muted-foreground mt-2">
+          <div className="text-xs text-muted-foreground mt-2">
             请在 Agent 终端中回复
           </div>
         </div>
@@ -89,13 +89,13 @@ function TaskAgentBlock({ agent, groupJid }: { agent: AgentInfo; groupJid: strin
     return () => clearInterval(interval);
   }, [streaming?.activeTools]);
 
-  const borderColor = isRunning ? 'border-blue-200/60' : agent.status === 'error' ? 'border-red-200/60' : 'border-emerald-200/60';
-  const bgColor = isRunning ? 'bg-blue-50/40' : agent.status === 'error' ? 'bg-red-50/40' : 'bg-emerald-50/40';
-  const hoverBg = isRunning ? 'hover:bg-blue-50/60' : agent.status === 'error' ? 'hover:bg-red-50/60' : 'hover:bg-emerald-50/60';
+  const borderColor = isRunning ? 'border-blue-200/60 dark:border-blue-700/40' : agent.status === 'error' ? 'border-red-200/60 dark:border-red-700/40' : 'border-emerald-200/60 dark:border-emerald-700/40';
+  const bgColor = isRunning ? 'bg-blue-50/40 dark:bg-blue-950/30' : agent.status === 'error' ? 'bg-red-50/40 dark:bg-red-950/30' : 'bg-emerald-50/40 dark:bg-emerald-950/30';
+  const hoverBg = isRunning ? 'hover:bg-blue-50/60 dark:hover:bg-blue-900/30' : agent.status === 'error' ? 'hover:bg-red-50/60 dark:hover:bg-red-900/30' : 'hover:bg-emerald-50/60 dark:hover:bg-emerald-900/30';
   const dotColor = isRunning ? 'bg-blue-500 animate-pulse' : agent.status === 'error' ? 'bg-red-500' : 'bg-emerald-500';
-  const textColor = isRunning ? 'text-blue-700' : agent.status === 'error' ? 'text-red-700' : 'text-emerald-700';
-  const chevronColor = isRunning ? 'text-blue-400' : agent.status === 'error' ? 'text-red-400' : 'text-emerald-400';
-  const contentBorderColor = isRunning ? 'border-blue-100' : agent.status === 'error' ? 'border-red-100' : 'border-emerald-100';
+  const textColor = isRunning ? 'text-blue-700 dark:text-blue-300' : agent.status === 'error' ? 'text-red-700 dark:text-red-300' : 'text-emerald-700 dark:text-emerald-300';
+  const chevronColor = isRunning ? 'text-blue-400 dark:text-blue-500' : agent.status === 'error' ? 'text-red-400 dark:text-red-500' : 'text-emerald-400 dark:text-emerald-500';
+  const contentBorderColor = isRunning ? 'border-blue-100 dark:border-blue-800/50' : agent.status === 'error' ? 'border-red-100 dark:border-red-800/50' : 'border-emerald-100 dark:border-emerald-800/50';
 
   return (
     <div className={`mb-3 rounded-xl border ${borderColor} ${bgColor} overflow-hidden`}>
@@ -107,7 +107,7 @@ function TaskAgentBlock({ agent, groupJid }: { agent: AgentInfo; groupJid: strin
         <span className={`text-xs font-medium ${textColor}`}>
           子 Agent: {agent.name}
         </span>
-        <span className={`text-[10px] ${textColor} opacity-70`}>
+        <span className={`text-[11px] ${textColor} opacity-70`}>
           {TASK_STATUS_LABELS[agent.status] || agent.status}
         </span>
         <span className="flex-1" />
@@ -120,13 +120,13 @@ function TaskAgentBlock({ agent, groupJid }: { agent: AgentInfo; groupJid: strin
       {expanded && (
         <div className={`px-3 pb-3 border-t ${contentBorderColor} space-y-2`}>
           {/* Agent prompt */}
-          <p className="text-xs text-foreground/60 mt-2 line-clamp-2">{agent.prompt}</p>
+          <p className="text-[13px] text-foreground/60 mt-2 line-clamp-2">{agent.prompt}</p>
 
           {/* Live streaming state (running) */}
           {isRunning && streaming && (
             <>
               {streaming.isThinking && (
-                <p className="text-xs text-blue-500 italic flex items-center gap-1">
+                <p className="text-[13px] text-blue-500 dark:text-blue-400 italic flex items-center gap-1">
                   思考中
                   <span className="flex gap-0.5 ml-0.5">
                     <span className="w-1 h-1 bg-blue-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
@@ -163,7 +163,7 @@ function TaskAgentBlock({ agent, groupJid }: { agent: AgentInfo; groupJid: strin
 
           {/* Result summary (completed/error) */}
           {!isRunning && agent.result_summary && (
-            <p className="text-xs text-foreground/70">{agent.result_summary}</p>
+            <p className="text-[13px] text-foreground/70">{agent.result_summary}</p>
           )}
         </div>
       )}
@@ -201,7 +201,7 @@ function StreamingContent({
     <>
       {/* System status */}
       {streaming.systemStatus && (
-        <div className="flex items-center gap-2 text-xs text-muted-foreground mb-2">
+        <div className="flex items-center gap-2 text-[13px] text-muted-foreground mb-2">
           <svg className="w-3.5 h-3.5 animate-spin text-primary" viewBox="0 0 24 24" fill="none">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
@@ -212,15 +212,15 @@ function StreamingContent({
 
       {/* Reasoning block */}
       {streaming.thinkingText && (
-        <div className="mb-3 rounded-xl border border-amber-200/60 bg-amber-50/40 overflow-hidden">
+        <div className="mb-3 rounded-xl border border-amber-200/60 dark:border-amber-800/40 bg-amber-50/40 dark:bg-amber-950/30 overflow-hidden">
           <button
             onClick={() => setThinkingExpanded(!thinkingExpanded)}
-            className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-amber-50/60 transition-colors"
+            className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-amber-50/60 dark:hover:bg-amber-900/30 transition-colors"
           >
             <svg className="w-4 h-4 text-amber-500 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z" />
             </svg>
-            <span className="text-xs font-medium text-amber-700">
+            <span className="text-xs font-medium text-amber-700 dark:text-amber-300">
               {streaming.isThinking ? 'Reasoning...' : 'Reasoning'}
             </span>
             {streaming.isThinking && (
@@ -241,7 +241,7 @@ function StreamingContent({
             <div
               ref={thinkingRef}
               onScroll={handleThinkingScroll}
-              className="px-3 pb-3 text-sm text-amber-900/70 whitespace-pre-wrap break-words max-h-64 overflow-y-auto border-t border-amber-100"
+              className="px-3 pb-3 text-sm text-amber-900/70 dark:text-amber-200/70 whitespace-pre-wrap break-words max-h-64 overflow-y-auto border-t border-amber-100 dark:border-amber-800/50"
             >
               {streaming.thinkingText}
             </div>
@@ -277,10 +277,10 @@ function StreamingContent({
       {/* Recent events timeline */}
       {streaming.recentEvents.length > 0 && (
         <div className="rounded-lg border border-border bg-muted/30 p-2 mb-2">
-          <div className="text-[11px] font-medium text-muted-foreground mb-1">调用轨迹</div>
+          <div className="text-xs font-medium text-muted-foreground mb-1">调用轨迹</div>
           <div className="space-y-0.5 max-h-28 overflow-y-auto">
             {streaming.recentEvents.map((item) => (
-              <div key={item.id} className="text-xs text-foreground/70 break-words">
+              <div key={item.id} className="text-[13px] text-foreground/70 break-words">
                 {item.text}
               </div>
             ))}
@@ -290,7 +290,7 @@ function StreamingContent({
 
       {/* Hook */}
       {streaming.activeHook && (
-        <div className="flex items-center gap-2 text-xs text-muted-foreground mb-2">
+        <div className="flex items-center gap-2 text-[13px] text-muted-foreground mb-2">
           <svg className="w-3.5 h-3.5 animate-spin text-primary" viewBox="0 0 24 24" fill="none">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
@@ -316,7 +316,7 @@ function StreamingContent({
       {/* Interrupted indicator */}
       {streaming.interrupted && (
         <div className="mt-3 pt-3 border-t border-border">
-          <div className="flex items-center gap-1.5 text-xs text-amber-600">
+          <div className="flex items-center gap-1.5 text-[13px] text-amber-600">
             <OctagonX className="w-3.5 h-3.5" />
             <span>已中断</span>
           </div>
@@ -495,7 +495,7 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNamePr
             <div className="hidden lg:flex items-center gap-2 mb-1">
               <span className="text-xs text-muted-foreground font-medium">{senderName}</span>
             </div>
-            <div className="bg-card rounded-xl border border-border border-l-[3px] border-l-[var(--brand-400)] px-5 py-4">
+            <div className="bg-surface rounded-xl border border-border/60 px-5 py-4 font-serif shadow-card">
               <div className="flex items-center gap-1.5">
                 <span className="w-2 h-2 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
                 <span className="w-2 h-2 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
@@ -589,7 +589,7 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNamePr
           </div>
 
           {/* Card */}
-          <div className="bg-card rounded-xl border border-border border-l-[3px] border-l-[var(--brand-400)] px-5 py-4 overflow-hidden">
+          <div className="bg-surface rounded-xl border border-border/60 px-5 py-4 overflow-hidden font-serif shadow-card">
             {streaming && (
               <StreamingContent
                 streaming={streaming}

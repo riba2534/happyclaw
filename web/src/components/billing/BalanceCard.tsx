@@ -48,12 +48,12 @@ export default function BalanceCard() {
   return (
     <div className="bg-white dark:bg-zinc-800 rounded-lg border border-zinc-200 dark:border-zinc-700 p-5">
       <div className="flex items-center gap-2 mb-4">
-        <Wallet className="w-5 h-5 text-teal-600" />
+        <Wallet className="w-5 h-5 text-primary" />
         <h3 className="font-semibold">余额</h3>
       </div>
 
       {/* Balance display */}
-      <div className="text-3xl font-bold text-teal-600 mb-1">
+      <div className="text-3xl font-bold text-primary mb-1">
         {balance ? fmt(balance.balance_usd) : '--'}
       </div>
       {balance && (
@@ -95,7 +95,7 @@ export default function BalanceCard() {
         <button
           onClick={handleRedeem}
           disabled={submitting || !redeemInput.trim()}
-          className="px-3 py-1.5 text-sm bg-teal-600 text-white rounded-md hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="px-3 py-1.5 text-sm bg-primary text-white rounded-md hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {submitting ? '...' : '兑换'}
         </button>

@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, BookOpen, Loader2, RefreshCw, Save } from 'lucide-react';
+import { toast } from 'sonner';
 import { api } from '../api/client';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 
 interface MemorySource {
@@ -70,9 +72,6 @@ export function MemoryPage() {
   const [saving, setSaving] = useState(false);
   const [searchingContent, setSearchingContent] = useState(false);
 
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-
   const isMobile = useMediaQuery('(max-width: 1023px)');
   const [showContent, setShowContent] = useState(false);
 
@@ -101,8 +100,6 @@ export function MemoryPage() {
 
   const loadFile = useCallback(async (path: string) => {
     setLoadingFile(true);
-    setError(null);
-    setNotice(null);
     try {
       const data = await api.get<MemoryFile>(
         `/api/memory/file?${new URLSearchParams({ path })}`,
@@ -112,7 +109,7 @@ export function MemoryPage() {
       setInitialContent(data.content);
       setFileMeta(data);
     } catch (err) {
-      setError(getErrorMessage(err, '加载记忆文件失败'));
+      toast.error(getErrorMessage(err, '加载记忆文件失败'));
     } finally {
       setLoadingFile(false);
     }
@@ -120,7 +117,6 @@ export function MemoryPage() {
 
   const loadSources = useCallback(async () => {
     setLoadingSources(true);
-    setError(null);
     try {
       const data = await api.get<{ sources: MemorySource[] }>('/api/memory/sources');
       setSources(data.sources);
@@ -146,7 +142,7 @@ export function MemoryPage() {
         setFileMeta(null);
       }
     } catch (err) {
-      setError(getErrorMessage(err, '加载记忆源失败'));
+      toast.error(getErrorMessage(err, '加载记忆源失败'));
     } finally {
       setLoadingSources(false);
     }
@@ -205,8 +201,6 @@ export function MemoryPage() {
     if (!selectedPath || !fileMeta?.writable) return;
 
     setSaving(true);
-    setError(null);
-    setNotice(null);
     try {
       const data = await api.put<MemoryFile>('/api/memory/file', {
         path: selectedPath,
@@ -215,10 +209,10 @@ export function MemoryPage() {
       setContent(data.content);
       setInitialContent(data.content);
       setFileMeta(data);
-      setNotice('已保存');
+      toast.success('已保存');
       await loadSources();
     } catch (err) {
-      setError(getErrorMessage(err, '保存记忆文件失败'));
+      toast.error(getErrorMessage(err, '保存记忆文件失败'));
     } finally {
       setSaving(false);
     }
@@ -239,35 +233,38 @@ export function MemoryPage() {
   return (
     <div className="min-h-full bg-background p-4 lg:p-8">
       <div className="max-w-7xl mx-auto space-y-4">
-        <div className="bg-card rounded-xl border border-border p-6">
-          <div className="flex items-center gap-3 mb-3">
-            <div className="p-2 bg-brand-100 rounded-lg">
-              <BookOpen className="w-5 h-5 text-primary" />
+        <Card>
+          <CardContent>
+            <div className="flex items-center gap-3 mb-3">
+              <div className="p-2 bg-brand-100 rounded-lg">
+                <BookOpen className="w-5 h-5 text-primary" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold text-foreground">记忆管理</h1>
+                <p className="text-sm text-muted-foreground mt-0.5">
+                  管理个人全局记忆、主会话记忆、各会话流记忆，以及可读取的自动记忆文件。
+                </p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-2xl font-bold text-foreground">记忆管理</h1>
-              <p className="text-sm text-slate-500 mt-0.5">
-                管理个人全局记忆、主会话记忆、各会话流记忆，以及可读取的自动记忆文件。
-              </p>
-            </div>
-          </div>
 
-          <div className="text-xs text-slate-500">
-            已加载记忆源: {sources.length}
-          </div>
-        </div>
+            <div className="text-xs text-muted-foreground">
+              已加载记忆源: {sources.length}
+            </div>
+          </CardContent>
+        </Card>
 
         <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-4">
           {(!isMobile || !showContent) && (
-          <div className="bg-card rounded-xl border border-border p-4">
-            <div className="mb-3">
+          <Card>
+            <CardContent>
+              <div className="mb-3">
               <Input
                 type="text"
                 value={keyword}
                 onChange={(e) => setKeyword(e.target.value)}
                 placeholder="搜索记忆源（路径 + 全文）"
               />
-              <div className="mt-1 text-[11px] text-slate-500">
+              <div className="mt-1 text-[11px] text-muted-foreground">
                 {keyword.trim()
                   ? searchingContent
                     ? '正在做全文检索...'
@@ -282,7 +279,7 @@ export function MemoryPage() {
                 if (items.length === 0) return null;
                 return (
                   <div key={scope}>
-                    <div className="text-xs font-semibold text-slate-500 mb-2">
+                    <div className="text-xs font-semibold text-muted-foreground mb-2">
                       {scopeLabel(scope)} ({items.length})
                     </div>
                     <div className="space-y-1">
@@ -302,7 +299,7 @@ export function MemoryPage() {
                             <div className="text-sm font-medium text-foreground truncate">
                               {source.label}
                             </div>
-                            <div className="text-[11px] text-slate-500 truncate mt-0.5">
+                            <div className="text-[11px] text-muted-foreground truncate mt-0.5">
                               {source.path}
                             </div>
                             <div className="text-[11px] mt-1 text-slate-500">
@@ -322,77 +319,78 @@ export function MemoryPage() {
               })}
 
               {!loadingSources && filteredSources.length === 0 && (
-                <div className="text-sm text-slate-500">没有匹配的记忆源</div>
+                <div className="text-sm text-muted-foreground">没有匹配的记忆源</div>
               )}
-            </div>
-          </div>
+              </div>
+            </CardContent>
+          </Card>
           )}
 
           {(!isMobile || showContent) && (
-          <div className="bg-card rounded-xl border border-border p-4 lg:p-6">
-            {selectedPath ? (
-              <>
-                {isMobile && (
-                  <button
-                    onClick={() => setShowContent(false)}
-                    className="flex items-center gap-1 text-sm text-primary mb-3 hover:underline"
-                  >
-                    <ArrowLeft className="w-4 h-4" />
-                    返回列表
-                  </button>
-                )}
-                <div className="mb-3">
-                  <div className="text-sm font-semibold text-foreground break-all">{selectedPath}</div>
-                  <div className="text-xs text-slate-500 mt-1">
-                    最近更新时间: {updatedText} · 字节数: {new TextEncoder().encode(content).length} · {fileMeta?.writable ? '可编辑' : '只读'}
+          <Card>
+            <CardContent>
+              {selectedPath ? (
+                <>
+                  {isMobile && (
+                    <button
+                      onClick={() => setShowContent(false)}
+                      className="flex items-center gap-1 text-sm text-primary mb-3 hover:underline"
+                    >
+                      <ArrowLeft className="w-4 h-4" />
+                      返回列表
+                    </button>
+                  )}
+                  <div className="mb-3">
+                    <div className="text-sm font-semibold text-foreground break-all">{selectedPath}</div>
+                    <div className="text-xs text-muted-foreground mt-1">
+                      最近更新时间: {updatedText} · 字节数: {new TextEncoder().encode(content).length} · {fileMeta?.writable ? '可编辑' : '只读'}
+                    </div>
                   </div>
-                </div>
 
-                <Textarea
-                  value={content}
-                  onChange={(e) => setContent(e.target.value)}
-                  className="min-h-[calc(100dvh-380px)] lg:min-h-[460px] resize-y p-4 font-mono text-sm leading-6 disabled:bg-muted"
-                  placeholder={loadingFile ? '正在加载...' : '此记忆源暂无内容'}
-                  disabled={loadingFile || saving || !fileMeta?.writable}
-                />
+                  <Textarea
+                    value={content}
+                    onChange={(e) => setContent(e.target.value)}
+                    className="min-h-[calc(100dvh-380px)] lg:min-h-[460px] resize-y p-4 font-mono text-sm leading-6 disabled:bg-muted"
+                    placeholder={loadingFile ? '正在加载...' : '此记忆源暂无内容'}
+                    disabled={loadingFile || saving || !fileMeta?.writable}
+                  />
 
-                <div className="mt-4 flex flex-wrap items-center gap-3">
-                  <Button
-                    onClick={handleSave}
-                    disabled={loadingFile || saving || !fileMeta?.writable || !dirty}
-                  >
-                    {saving && <Loader2 className="size-4 animate-spin" />}
-                    <Save className="w-4 h-4" />
-                    保存
-                  </Button>
+                  <div className="mt-4 flex flex-wrap items-center gap-3">
+                    <Button
+                      onClick={handleSave}
+                      disabled={loadingFile || saving || !fileMeta?.writable || !dirty}
+                    >
+                      {saving && <Loader2 className="size-4 animate-spin" />}
+                      <Save className="w-4 h-4" />
+                      保存
+                    </Button>
 
-                  <Button
-                    variant="outline"
-                    onClick={handleReloadFile}
-                    disabled={loadingFile || saving}
-                  >
-                    <RefreshCw className="w-4 h-4" />
-                    重新加载当前
-                  </Button>
+                    <Button
+                      variant="outline"
+                      onClick={handleReloadFile}
+                      disabled={loadingFile || saving}
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      重新加载当前
+                    </Button>
 
-                  <Button
-                    variant="outline"
-                    onClick={loadSources}
-                    disabled={loadingSources || loadingFile || saving}
-                  >
-                    <RefreshCw className="w-4 h-4" />
-                    刷新记忆源
-                  </Button>
+                    <Button
+                      variant="outline"
+                      onClick={loadSources}
+                      disabled={loadingSources || loadingFile || saving}
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      刷新记忆源
+                    </Button>
 
-                  {dirty && <span className="text-sm text-amber-600">有未保存修改</span>}
-                  {notice && <span className="text-sm text-green-600">{notice}</span>}
-                  {error && <span className="text-sm text-red-600">{error}</span>}
-                </div>
-              </>
-            ) : (
-              <div className="text-sm text-slate-500">暂无可用记忆源</div>
-            )}
-          </div>
+                    {dirty && <span className="text-sm text-warning">有未保存修改</span>}
+                  </div>
+                </>
+              ) : (
+                <div className="text-sm text-muted-foreground">暂无可用记忆源</div>
+              )}
+            </CardContent>
+          </Card>
           )}
         </div>
       </div>

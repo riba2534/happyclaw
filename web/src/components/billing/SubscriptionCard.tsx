@@ -28,7 +28,7 @@ export default function SubscriptionCard() {
   return (
     <div className="bg-white dark:bg-zinc-800 rounded-lg border border-zinc-200 dark:border-zinc-700 p-5">
       <div className="flex items-center gap-2 mb-4">
-        <Package className="w-5 h-5 text-teal-600" />
+        <Package className="w-5 h-5 text-primary" />
         <h3 className="font-semibold">当前套餐</h3>
       </div>
 
@@ -36,7 +36,7 @@ export default function SubscriptionCard() {
         <div>
           {/* Plan name + badges */}
           <div className="flex items-center gap-2 mb-1">
-            <span className="text-2xl font-bold text-teal-600">{plan.name}</span>
+            <span className="text-2xl font-bold text-primary">{plan.name}</span>
             {isFallback && (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-zinc-100 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-400">
                 默认
@@ -62,7 +62,7 @@ export default function SubscriptionCard() {
 
           {/* Display price */}
           {plan.display_price && (
-            <p className="text-sm text-teal-700 dark:text-teal-400 font-medium mb-1">
+            <p className="text-sm text-brand-700 dark:text-brand-400 font-medium mb-1">
               {plan.display_price}
             </p>
           )}

@@ -2,9 +2,12 @@ import { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 import { useAuthStore } from '../stores/auth';
+import { LogoLoading } from '../components/common/LogoLoading';
 import { api } from '../api/client';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { Label } from '@/components/ui/label';
 
 interface RegisterStatus {
   allowRegistration: boolean;
@@ -68,18 +71,15 @@ export function LoginPage() {
   };
 
   if (initialized !== true) {
-    return (
-      <div className="h-screen bg-background overflow-y-auto flex items-center justify-center p-4">
-        <div className="text-muted-foreground text-sm">加载中...</div>
-      </div>
-    );
+    return <LogoLoading full />;
   }
 
   return (
     <div className="h-screen bg-background overflow-y-auto flex items-center justify-center p-4">
       <div className="w-full max-w-md">
-        <div className="bg-card rounded-lg border border-border p-8">
-          {/* Logo */}
+        <Card>
+          <CardContent>
+            {/* Logo */}
           <div className="flex justify-center mb-6">
             <div className="w-16 h-16 rounded-2xl overflow-hidden mx-auto">
               <img src={`${import.meta.env.BASE_URL}icons/icon-192.png`} alt="HappyClaw" className="w-full h-full object-cover" />
@@ -104,9 +104,9 @@ export function LoginPage() {
           {/* Login Form */}
           <form onSubmit={handleSubmit}>
             <div className="mb-4">
-              <label htmlFor="username" className="block text-sm font-medium text-foreground mb-1">
+              <Label htmlFor="username" className="mb-1">
                 用户名
-              </label>
+              </Label>
               <Input
                 id="username"
                 type="text"
@@ -118,9 +118,9 @@ export function LoginPage() {
             </div>
 
             <div className="mb-6">
-              <label htmlFor="password" className="block text-sm font-medium text-foreground mb-1">
+              <Label htmlFor="password" className="mb-1">
                 密码
-              </label>
+              </Label>
               <Input
                 id="password"
                 type="password"
@@ -145,7 +145,8 @@ export function LoginPage() {
               </Link>
             </p>
           )}
-        </div>
+          </CardContent>
+        </Card>
 
         {/* Footer */}
         <p className="text-center text-sm text-muted-foreground mt-4">

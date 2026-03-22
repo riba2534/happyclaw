@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { Download, Eye, EyeOff, Pencil, Save, Trash2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Card, CardContent } from '@/components/ui/card';
+import { Label } from '@/components/ui/label';
 import type { McpServer } from '../../stores/mcp-servers';
 import { useMcpServersStore } from '../../stores/mcp-servers';
 
@@ -29,9 +31,11 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
 
   if (!server) {
     return (
-      <div className="bg-card rounded-xl border border-border p-12 flex items-center justify-center">
-        <p className="text-muted-foreground text-center">选择一个 MCP 服务器查看详情</p>
-      </div>
+      <Card>
+        <CardContent className="flex items-center justify-center py-8">
+          <p className="text-muted-foreground text-center">选择一个 MCP 服务器查看详情</p>
+        </CardContent>
+      </Card>
     );
   }
 
@@ -115,7 +119,7 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
   const headerEntries = server.headers ? Object.entries(server.headers) : [];
 
   return (
-    <div className="bg-card rounded-xl border border-border overflow-hidden">
+    <Card className="overflow-hidden">
       {/* Header */}
       <div className="p-6 border-b border-border">
         <div className="flex items-start justify-between gap-4 mb-3">
@@ -123,7 +127,7 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
             <div className="flex items-center gap-2 mb-2">
               <h2 className="text-xl font-bold text-foreground">{server.id}</h2>
               {server.syncedFromHost && (
-                <span className="px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700 inline-flex items-center gap-1">
+                <span className="px-2 py-0.5 rounded text-xs font-medium bg-warning-bg text-warning inline-flex items-center gap-1">
                   <Download size={10} />
                   已同步
                 </span>
@@ -131,7 +135,7 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
               <span
                 className={`px-2 py-0.5 rounded text-xs font-medium ${
                   server.enabled
-                    ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                    ? 'bg-success-bg text-success'
                     : 'bg-muted text-muted-foreground'
                 }`}
               >
@@ -156,7 +160,7 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
             <button
               disabled={deleting}
               onClick={handleDelete}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-950 transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-error hover:bg-error-bg transition-colors disabled:opacity-50"
             >
               <Trash2 size={16} />
               {deleting ? '删除中...' : '删除'}
@@ -172,7 +176,7 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
             <>
               {/* URL */}
               <div>
-                <label className="block text-sm font-medium text-foreground mb-1">URL</label>
+                <Label className="mb-1">URL</Label>
                 <Input
                   value={editUrl}
                   onChange={(e) => setEditUrl(e.target.value)}
@@ -183,7 +187,7 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
 
               {/* Headers */}
               <div>
-                <label className="block text-sm font-medium text-foreground mb-1">Headers</label>
+                <Label className="mb-1">Headers</Label>
                 <div className="space-y-2">
                   {editHeaders.map((row, i) => (
                     <div key={i} className="flex items-center gap-2">
@@ -210,7 +214,7 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
                       <button
                         type="button"
                         onClick={() => setEditHeaders(editHeaders.filter((_, j) => j !== i))}
-                        className="p-1.5 text-muted-foreground hover:text-red-500 transition-colors"
+                        className="p-1.5 text-muted-foreground hover:text-error transition-colors"
                       >
                         <X size={16} />
                       </button>
@@ -231,7 +235,7 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
             <>
               {/* Command */}
               <div>
-                <label className="block text-sm font-medium text-foreground mb-1">命令</label>
+                <Label className="mb-1">命令</Label>
                 <Input
                   value={editCommand}
                   onChange={(e) => setEditCommand(e.target.value)}
@@ -241,7 +245,7 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
 
               {/* Args */}
               <div>
-                <label className="block text-sm font-medium text-foreground mb-1">参数</label>
+                <Label className="mb-1">参数</Label>
                 <div className="space-y-2">
                   {editArgs.map((arg, i) => (
                     <div key={i} className="flex items-center gap-2">
@@ -257,7 +261,7 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
                       <button
                         type="button"
                         onClick={() => setEditArgs(editArgs.filter((_, j) => j !== i))}
-                        className="p-1.5 text-muted-foreground hover:text-red-500 transition-colors"
+                        className="p-1.5 text-muted-foreground hover:text-error transition-colors"
                       >
                         <X size={16} />
                       </button>
@@ -276,7 +280,7 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
 
               {/* Env */}
               <div>
-                <label className="block text-sm font-medium text-foreground mb-1">环境变量</label>
+                <Label className="mb-1">环境变量</Label>
                 <div className="space-y-2">
                   {editEnv.map((row, i) => (
                     <div key={i} className="flex items-center gap-2">
@@ -303,7 +307,7 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
                       <button
                         type="button"
                         onClick={() => setEditEnv(editEnv.filter((_, j) => j !== i))}
-                        className="p-1.5 text-muted-foreground hover:text-red-500 transition-colors"
+                        className="p-1.5 text-muted-foreground hover:text-error transition-colors"
                       >
                         <X size={16} />
                       </button>
@@ -324,7 +328,7 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
 
           {/* Description */}
           <div>
-            <label className="block text-sm font-medium text-foreground mb-1">描述</label>
+            <Label className="mb-1">描述</Label>
             <Input
               value={editDescription}
               onChange={(e) => setEditDescription(e.target.value)}
@@ -466,6 +470,6 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
           </div>
         </>
       )}
-    </div>
+    </Card>
   );
 }

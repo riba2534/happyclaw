@@ -103,7 +103,7 @@ export function EmojiPicker({ value, onChange }: EmojiPickerProps) {
               'px-2.5 py-1 text-xs rounded-md whitespace-nowrap transition-colors cursor-pointer',
               activeCategory === i
                 ? 'bg-brand-50 text-primary font-medium'
-                : 'text-slate-500 hover:bg-slate-100',
+                : 'text-muted-foreground hover:bg-muted',
             )}
           >
             {cat.label}
@@ -119,7 +119,7 @@ export function EmojiPicker({ value, onChange }: EmojiPickerProps) {
             type="button"
             onClick={() => onChange(emoji)}
             className={cn(
-              'w-8 h-8 flex items-center justify-center rounded-md text-lg hover:bg-slate-100 transition-colors cursor-pointer',
+              'w-8 h-8 flex items-center justify-center rounded-md text-lg hover:bg-muted transition-colors cursor-pointer',
               value === emoji && 'ring-2 ring-primary ring-offset-1 bg-brand-50',
             )}
           >
@@ -129,14 +129,14 @@ export function EmojiPicker({ value, onChange }: EmojiPickerProps) {
       </div>
 
       {/* Custom input */}
-      <div className="flex items-center gap-2 pt-1 border-t border-slate-100">
+      <div className="flex items-center gap-2 pt-1 border-t border-border">
         <input
           type="text"
           value={customInput}
           onChange={(e) => setCustomInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleCustomSubmit()}
           placeholder="输入任意 emoji..."
-          className="flex-1 px-2.5 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-primary"
+          className="flex-1 px-2.5 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-1 focus:ring-primary"
           maxLength={8}
         />
         <button
@@ -151,7 +151,7 @@ export function EmojiPicker({ value, onChange }: EmojiPickerProps) {
 
       {/* Current selection indicator */}
       {value && (
-        <div className="flex items-center gap-2 text-xs text-slate-500">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span>当前选择：</span>
           <span className="text-lg">{value}</span>
         </div>

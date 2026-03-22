@@ -20,6 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Card } from '@/components/ui/card';
 import type { Permission, UserPublic } from '../../stores/auth';
 import { useUsersStore, type UserQuery } from '../../stores/users';
 import { getErrorMessage, samePermissions, PERMISSION_LABELS, type TabNotification } from './utils';
@@ -298,7 +299,7 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
       </div>
 
       {showCreate && (
-        <div className="bg-card rounded-xl border border-border p-6 space-y-4">
+        <Card className="p-6 space-y-4">
           <h3 className="text-sm font-medium text-foreground">创建新用户</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <Input
@@ -396,12 +397,12 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
             </Button>
             <Button variant="outline" onClick={() => setShowCreate(false)}>取消</Button>
           </div>
-        </div>
+        </Card>
       )}
 
-      <div className="bg-card rounded-xl border border-border divide-y divide-border overflow-hidden">
+      <Card className="divide-y divide-border overflow-hidden">
         {users.length === 0 ? (
-          <div className="p-6 text-center text-sm text-slate-500">暂无用户</div>
+          <div className="p-6 text-center text-sm text-muted-foreground">暂无用户</div>
         ) : (
           users.map((user) => (
             <div key={user.id} className="px-5 py-4 space-y-3">
@@ -409,7 +410,7 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm font-medium text-foreground">{user.display_name || user.username}</span>
-                    <span className="text-xs text-slate-500">@{user.username}</span>
+                    <span className="text-xs text-muted-foreground">@{user.username}</span>
                     <span className={`text-xs px-1.5 py-0.5 rounded ${
                       user.role === 'admin' ? 'bg-brand-100 text-primary' : 'bg-muted text-foreground'
                     }`}>
@@ -417,7 +418,7 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
                     </span>
                     {user.status !== 'active' && (
                       <span className={`text-xs px-1.5 py-0.5 rounded ${
-                        user.status === 'deleted' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'
+                        user.status === 'deleted' ? 'bg-error-bg text-error' : 'bg-warning-bg text-warning'
                       }`}>
                         {user.status}
                       </span>
@@ -428,11 +429,11 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
                       </span>
                     )}
                   </div>
-                  <div className="text-xs text-slate-500 mt-1">
+                  <div className="text-xs text-muted-foreground mt-1">
                     最近登录: {user.last_login_at ? new Date(user.last_login_at).toLocaleString('zh-CN') : '-'} · 最后活跃: {user.last_active_at ? new Date(user.last_active_at).toLocaleString('zh-CN') : '-'}
                   </div>
-                  {user.notes && <div className="text-xs text-slate-500 mt-1">备注: {user.notes}</div>}
-                  {user.disable_reason && <div className="text-xs text-amber-600 mt-1">禁用原因: {user.disable_reason}</div>}
+                  {user.notes && <div className="text-xs text-muted-foreground mt-1">备注: {user.notes}</div>}
+                  {user.disable_reason && <div className="text-xs text-warning mt-1">禁用原因: {user.disable_reason}</div>}
                 </div>
 
                 {canOperateTargetUser(user) && (
@@ -445,7 +446,7 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
                           setChangePasswordValue('');
                           if (opening) setEditingId(null);
                         }}
-                        className="p-2 hover:bg-muted rounded-lg text-slate-500 hover:text-indigo-700 cursor-pointer"
+                        className="p-2 hover:bg-muted rounded-lg text-muted-foreground hover:text-indigo-700 cursor-pointer"
                         title="修改密码"
                       >
                         <KeyRound className="w-4 h-4" />
@@ -455,7 +456,7 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
                       <>
                         <button
                           onClick={() => startEdit(user)}
-                          className="p-2 hover:bg-muted rounded-lg text-slate-500 hover:text-foreground cursor-pointer"
+                          className="p-2 hover:bg-muted rounded-lg text-muted-foreground hover:text-foreground cursor-pointer"
                           title="编辑"
                         >
                           <Edit3 className="w-4 h-4" />
@@ -463,7 +464,7 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
                         {user.status === 'active' ? (
                           <button
                             onClick={() => changeStatus(user, 'disabled')}
-                            className="p-2 hover:bg-muted rounded-lg text-slate-500 hover:text-amber-700 cursor-pointer"
+                            className="p-2 hover:bg-muted rounded-lg text-muted-foreground hover:text-warning cursor-pointer"
                             title="禁用"
                           >
                             <ShieldOff className="w-4 h-4" />
@@ -471,7 +472,7 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
                         ) : user.status === 'disabled' ? (
                           <button
                             onClick={() => changeStatus(user, 'active')}
-                            className="p-2 hover:bg-muted rounded-lg text-slate-500 hover:text-primary cursor-pointer"
+                            className="p-2 hover:bg-muted rounded-lg text-muted-foreground hover:text-primary cursor-pointer"
                             title="启用"
                           >
                             <ShieldCheck className="w-4 h-4" />
@@ -479,7 +480,7 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
                         ) : (
                           <button
                             onClick={() => handleRestore(user)}
-                            className="p-2 hover:bg-muted rounded-lg text-slate-500 hover:text-primary cursor-pointer"
+                            className="p-2 hover:bg-muted rounded-lg text-muted-foreground hover:text-primary cursor-pointer"
                             title="恢复"
                           >
                             <Undo2 className="w-4 h-4" />
@@ -487,14 +488,14 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
                         )}
                         <button
                           onClick={() => handleRevokeAll(user)}
-                          className="p-2 hover:bg-muted rounded-lg text-slate-500 hover:text-orange-600 cursor-pointer"
+                          className="p-2 hover:bg-muted rounded-lg text-muted-foreground hover:text-orange-600 cursor-pointer"
                           title="撤销全部会话"
                         >
                           <LogOut className="w-4 h-4" />
                         </button>
                         <button
                           onClick={() => handleDelete(user)}
-                          className="p-2 hover:bg-muted rounded-lg text-slate-500 hover:text-red-600 cursor-pointer"
+                          className="p-2 hover:bg-muted rounded-lg text-muted-foreground hover:text-error cursor-pointer"
                           title="删除"
                         >
                           <Trash2 className="w-4 h-4" />
@@ -607,7 +608,7 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
             </div>
           ))
         )}
-      </div>
+      </Card>
 
       <div className="flex items-center justify-between text-sm text-slate-600">
         <div>共 {totalUsers} 条</div>

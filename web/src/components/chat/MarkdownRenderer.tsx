@@ -162,7 +162,7 @@ function CodeBlock({
             )}
           </button>
         </div>
-        <pre className="!bg-[#f6f8fa] dark:!bg-[#22272e] rounded-lg p-4 overflow-x-auto">
+        <pre className="!bg-[var(--code-block-bg)] rounded-lg p-3.5 overflow-x-auto font-mono text-sm">
           <code className={className} {...props}>
             {children}
           </code>
@@ -175,8 +175,8 @@ function CodeBlock({
     <code
       className={
         variant === 'chat'
-          ? 'bg-primary/10 dark:bg-primary/20 text-primary px-1.5 py-0.5 rounded text-[0.9em] leading-relaxed font-mono break-all'
-          : 'bg-primary/10 dark:bg-primary/20 text-primary px-1.5 py-0.5 rounded text-sm font-mono break-all'
+          ? 'bg-[var(--inline-code-bg)] text-[var(--inline-code-text)] px-1 py-px rounded-md text-[0.9em] leading-relaxed font-mono break-all'
+          : 'bg-[var(--inline-code-bg)] text-[var(--inline-code-text)] px-1 py-px rounded-md text-sm font-mono break-all'
       }
       {...props}
     >
@@ -187,7 +187,7 @@ function CodeBlock({
 
 export const MarkdownRenderer = memo(function MarkdownRenderer({ content, groupJid, variant = 'chat', streaming = false }: MarkdownRendererProps) {
   const textSizeClass = variant === 'chat'
-    ? 'text-[15px] leading-7 text-foreground'
+    ? 'text-base leading-[1.65] text-foreground'
     : 'text-sm leading-6 text-foreground';
   const tableTextClass = variant === 'chat' ? 'text-[0.95em]' : 'text-sm';
 

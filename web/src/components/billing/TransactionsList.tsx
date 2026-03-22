@@ -34,7 +34,7 @@ export default function TransactionsList() {
     <div className="bg-white dark:bg-zinc-800 rounded-lg border border-zinc-200 dark:border-zinc-700 p-5">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
-          <History className="w-5 h-5 text-teal-600" />
+          <History className="w-5 h-5 text-primary" />
           <h3 className="font-semibold">余额变动记录</h3>
         </div>
         {transactionsTotal > 0 && (

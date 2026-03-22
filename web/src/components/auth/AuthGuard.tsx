@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { Loader2 } from 'lucide-react';
+import { Card, CardContent } from '@/components/ui/card';
 import { type Permission, useAuthStore } from '../../stores/auth';
+import { LogoLoading } from '../common/LogoLoading';
 
 interface AuthGuardProps {
   children: React.ReactNode;
@@ -41,39 +42,34 @@ export function AuthGuard({
     if (timedOut) {
       return (
         <div className="min-h-screen bg-background flex items-center justify-center p-6">
-          <div className="max-w-md text-center bg-card rounded-xl border border-border p-6">
-            <h2 className="text-lg font-semibold text-foreground mb-2">页面初始化超时</h2>
-            <p className="text-sm text-slate-600 mb-4">
-              后端可能刚启动或浏览器缓存异常，请先刷新页面；若仍失败，重新登录。
-            </p>
-            <div className="flex items-center justify-center gap-3">
-              <button
-                onClick={() => window.location.reload()}
-                className="px-4 py-2 text-sm rounded-lg bg-primary text-white hover:bg-primary/90"
-              >
-                刷新页面
-              </button>
-              <button
-                onClick={() => {
-                  navigate('/login', { replace: true });
-                }}
-                className="px-4 py-2 text-sm rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-100"
-              >
-                去登录页
-              </button>
-            </div>
-          </div>
+          <Card className="max-w-md text-center">
+            <CardContent>
+              <h2 className="text-lg font-semibold text-foreground mb-2">页面初始化超时</h2>
+              <p className="text-sm text-muted-foreground mb-4">
+                后端可能刚启动或浏览器缓存异常，请先刷新页面；若仍失败，重新登录。
+              </p>
+              <div className="flex items-center justify-center gap-3">
+                <button
+                  onClick={() => window.location.reload()}
+                  className="px-4 py-2 text-sm rounded-lg bg-primary text-white hover:bg-primary/90"
+                >
+                  刷新页面
+                </button>
+                <button
+                  onClick={() => {
+                    navigate('/login', { replace: true });
+                  }}
+                  className="px-4 py-2 text-sm rounded-lg border border-border text-foreground hover:bg-muted"
+                >
+                  去登录页
+                </button>
+              </div>
+            </CardContent>
+          </Card>
         </div>
       );
     }
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="text-center">
-          <Loader2 className="w-16 h-16 text-primary animate-spin mx-auto mb-4" />
-          <p className="text-slate-500">加载中...</p>
-        </div>
-      </div>
-    );
+    return <LogoLoading full />;
   }
 
   // System not initialized — redirect to setup page

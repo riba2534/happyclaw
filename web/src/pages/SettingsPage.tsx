@@ -19,6 +19,7 @@ import { McpServersPage } from './McpServersPage';
 import { AgentDefinitionsPage } from './AgentDefinitionsPage';
 import { UsersPage } from './UsersPage';
 import { BindingsSection } from '../components/settings/BindingsSection';
+import { Card, CardContent } from '@/components/ui/card';
 import type { SettingsTab } from '../components/settings/types';
 
 const VALID_TABS: SettingsTab[] = ['claude', 'registration', 'appearance', 'system', 'profile', 'my-channels', 'security', 'groups', 'memory', 'skills', 'mcp-servers', 'agent-definitions', 'users', 'about', 'bindings'];
@@ -28,8 +29,6 @@ const FULLPAGE_TABS: SettingsTab[] = ['groups', 'memory', 'skills', 'mcp-servers
 export function SettingsPage() {
   const { user: currentUser } = useAuthStore();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [notice, setNotice] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [navOpen, setNavOpen] = useState(false);
 
   const hasSystemConfigPermission =
@@ -55,8 +54,6 @@ export function SettingsPage() {
   }, [searchParams, canManageSystemConfig, mustChangePassword, defaultTab]);
 
   const handleTabChange = useCallback((tab: SettingsTab) => {
-    setNotice(null);
-    setError(null);
     setNavOpen(false);
     setSearchParams({ tab }, { replace: true });
   }, [setSearchParams]);
@@ -185,32 +182,27 @@ export function SettingsPage() {
           <div className="p-4 lg:p-8">
             <div className="max-w-3xl mx-auto space-y-6">
               <div>
-                <h1 className="text-2xl font-bold text-slate-900">{sectionTitle[activeTab]}</h1>
+                <h1 className="text-2xl font-bold text-foreground">{sectionTitle[activeTab]}</h1>
               </div>
 
               {mustChangePassword && (
-                <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800">
+                <div className="bg-warning-bg border border-warning/20 rounded-xl px-4 py-3 text-sm text-warning">
                   检测到首次登录或管理员重置密码，请先完成"修改密码"，其余关键操作会被暂时限制。
                 </div>
               )}
 
-              {(notice || error) && (
-                <div className="bg-card rounded-xl border border-border p-4 space-y-1">
-                  {notice && <div className="text-sm text-green-600">{notice}</div>}
-                  {error && <div className="text-sm text-red-600">{error}</div>}
-                </div>
-              )}
-
-              <div className="bg-card rounded-xl border border-border p-6">
-                {activeTab === 'claude' && <ClaudeProviderSection setNotice={setNotice} setError={setError} />}
-                {activeTab === 'registration' && <RegistrationSection setNotice={setNotice} setError={setError} />}
-                {activeTab === 'appearance' && <AppearanceSection setNotice={setNotice} setError={setError} />}
-                {activeTab === 'system' && <SystemSettingsSection setNotice={setNotice} setError={setError} />}
-                {activeTab === 'profile' && <ProfileSection setNotice={setNotice} setError={setError} />}
-                {activeTab === 'my-channels' && <UserChannelsSection setNotice={setNotice} setError={setError} />}
-                {activeTab === 'security' && <SecuritySection setNotice={setNotice} setError={setError} />}
-                {activeTab === 'about' && <AboutSection />}
-              </div>
+              <Card>
+                <CardContent>
+                  {activeTab === 'claude' && <ClaudeProviderSection setNotice={() => {}} setError={() => {}} />}
+                  {activeTab === 'registration' && <RegistrationSection />}
+                  {activeTab === 'appearance' && <AppearanceSection />}
+                  {activeTab === 'system' && <SystemSettingsSection />}
+                  {activeTab === 'profile' && <ProfileSection />}
+                  {activeTab === 'my-channels' && <UserChannelsSection />}
+                  {activeTab === 'security' && <SecuritySection />}
+                  {activeTab === 'about' && <AboutSection />}
+                </CardContent>
+              </Card>
             </div>
           </div>
         )}

@@ -205,7 +205,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
       <div className="mb-6">
         {showTime && (
           <div className="flex items-center gap-2 mb-2">
-            <span className="text-xs text-slate-500">{time}</span>
+            <span className="text-xs text-muted-foreground">{time}</span>
             <span className="text-xs font-medium text-red-600">系统消息</span>
           </div>
         )}
@@ -241,7 +241,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
       <div className="mb-6">
         {showTime && (
           <div className="flex items-center gap-2 mb-2">
-            <span className="text-xs text-slate-500">{time}</span>
+            <span className="text-xs text-muted-foreground">{time}</span>
             <span className="text-xs font-medium text-amber-600">
               {isBalanceBlocked ? '余额提醒' : '配额提醒'}
             </span>
@@ -297,10 +297,10 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
         {/* Sender line — no avatars in compact mode */}
         <div className="flex items-center gap-1.5 mb-1">
           <span className={`text-xs font-semibold ${isAI ? 'text-primary' : 'text-muted-foreground'}`}>{senderName}</span>
-          {showTime && <span className="text-[11px] text-slate-400">{time}</span>}
+          {showTime && <span className="text-[11px] text-muted-foreground">{time}</span>}
           <button
             onClick={handleCopy}
-            className="ml-1 w-5 h-5 rounded flex items-center justify-center text-slate-300 hover:text-slate-600 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+            className="ml-1 w-5 h-5 rounded flex items-center justify-center text-muted-foreground/50 hover:text-foreground/70 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
             title="复制"
           >
             {copied ? <Check className="w-3 h-3 text-primary" /> : <Copy className="w-3 h-3" />}
@@ -318,7 +318,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
                 key={i}
                 src={`data:${img.mimeType || 'image/png'};base64,${img.data}`}
                 alt={img.name || `图片 ${i + 1}`}
-                className="max-w-48 max-h-48 rounded-lg object-cover cursor-pointer border border-slate-200 hover:border-primary transition-colors"
+                className="max-w-48 max-h-48 rounded-lg object-cover cursor-pointer border border-border hover:border-primary transition-colors"
                 onClick={() => setLightboxState({ images: allImageSrcs, index: i })}
               />
             ))}
@@ -360,7 +360,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
       return (
         <div className="group mb-4">
           <div className="flex items-center gap-2 mb-1.5 lg:hidden">
-            <div className="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center text-xs font-medium text-slate-600 flex-shrink-0">
+            <div className="w-6 h-6 rounded-full bg-muted flex items-center justify-center text-xs font-medium text-foreground/70 flex-shrink-0">
               {initial}
             </div>
             <span className="text-xs text-muted-foreground font-medium">{otherName}</span>
@@ -369,7 +369,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
 
           <div className="lg:flex lg:gap-3">
             <div className="hidden lg:block flex-shrink-0">
-              <div className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-sm font-medium text-slate-600">
+              <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-sm font-medium text-foreground/70">
                 {initial}
               </div>
             </div>
@@ -473,7 +473,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
             )}
           </div>
           {showTime && (
-            <span className="text-xs text-slate-400 mt-1.5 mr-1">{time}</span>
+            <span className="text-xs text-muted-foreground mt-1.5 mr-1">{time}</span>
           )}
         </div>
 
@@ -525,7 +525,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
           </div>
 
           {/* Card */}
-          <div className="relative bg-card rounded-xl border border-border border-l-[3px] border-l-[var(--brand-400)] px-5 py-4 max-lg:bg-card/90 max-lg:backdrop-blur-sm overflow-hidden">
+          <div className="relative bg-surface rounded-xl border border-border/60 px-5 py-4 max-lg:bg-surface/90 max-lg:backdrop-blur-sm overflow-hidden font-serif shadow-card">
             {/* Action buttons */}
             <div className="absolute top-2 right-2 flex items-center gap-0.5 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
               <button
@@ -565,7 +565,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
                     key={i}
                     src={`data:${img.mimeType || 'image/png'};base64,${img.data}`}
                     alt={img.name || `图片 ${i + 1}`}
-                    className="max-w-48 max-h-48 rounded-lg object-cover cursor-pointer border border-slate-200 hover:border-primary transition-colors"
+                    className="max-w-48 max-h-48 rounded-lg object-cover cursor-pointer border border-border hover:border-primary transition-colors"
                     onClick={() => setLightboxState({ images: allImageSrcs, index: i })}
                   />
                 ))}

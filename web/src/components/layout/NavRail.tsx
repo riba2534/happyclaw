@@ -87,7 +87,7 @@ export function NavRail() {
             <TooltipTrigger asChild>
               <button
                 onClick={() => navigate('/settings?tab=profile')}
-                className="rounded-lg hover:ring-2 hover:ring-brand-200 transition-all cursor-pointer"
+                className="rounded-full hover:ring-2 hover:ring-brand-200 transition-all cursor-pointer"
               >
                 <EmojiAvatar
                   emoji={user?.avatar_emoji}

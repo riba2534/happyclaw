@@ -1,18 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import { Loader2, Upload, Trash2 } from 'lucide-react';
+import { toast } from 'sonner';
 
 import { useAuthStore } from '../../stores/auth';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
 import { EmojiAvatar } from '@/components/common/EmojiAvatar';
 import { EmojiPicker } from '@/components/common/EmojiPicker';
 import { ColorPicker } from '@/components/common/ColorPicker';
-import type { SettingsNotification } from './types';
 import { getErrorMessage } from './types';
 
-interface ProfileSectionProps extends SettingsNotification {}
-
-export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
+export function ProfileSection() {
   const { user: currentUser, changePassword, updateProfile, uploadAvatar } = useAuthStore();
 
   // Profile
@@ -49,8 +48,6 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
 
   const handleUpdateProfile = async () => {
     setProfileSaving(true);
-    setError(null);
-    setNotice(null);
     try {
       await updateProfile({
         username: username.trim(),
@@ -58,9 +55,9 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
         avatar_emoji: avatarEmoji,
         avatar_color: avatarColor,
       });
-      setNotice('基础信息已更新');
+      toast.success('基础信息已更新');
     } catch (err) {
-      setError(getErrorMessage(err, '更新基础信息失败'));
+      toast.error(getErrorMessage(err, '更新基础信息失败'));
     } finally {
       setProfileSaving(false);
     }
@@ -68,15 +65,13 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
 
   const handleChangePassword = async () => {
     setPwdChanging(true);
-    setError(null);
-    setNotice(null);
     try {
       await changePassword(currentPwd, newPwd);
       setCurrentPwd('');
       setNewPwd('');
-      setNotice('密码已修改');
+      toast.success('密码已修改');
     } catch (err) {
-      setError(getErrorMessage(err, '修改密码失败'));
+      toast.error(getErrorMessage(err, '修改密码失败'));
     } finally {
       setPwdChanging(false);
     }
@@ -84,17 +79,15 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
 
   const handleSaveAiAppearance = async () => {
     setAiAppearanceSaving(true);
-    setError(null);
-    setNotice(null);
     try {
       await updateProfile({
         ai_name: aiName.trim() || null,
         ai_avatar_emoji: aiAvatarEmoji,
         ai_avatar_color: aiAvatarColor,
       });
-      setNotice('机器人外观已更新');
+      toast.success('机器人外观已更新');
     } catch (err) {
-      setError(getErrorMessage(err, '更新机器人外观失败'));
+      toast.error(getErrorMessage(err, '更新机器人外观失败'));
     } finally {
       setAiAppearanceSaving(false);
     }
@@ -107,37 +100,33 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
     e.target.value = '';
 
     if (file.size > 2 * 1024 * 1024) {
-      setError('图片文件不能超过 2MB');
+      toast.error('图片文件不能超过 2MB');
       return;
     }
     if (!['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.type)) {
-      setError('仅支持 jpg、png、gif、webp 格式');
+      toast.error('仅支持 jpg、png、gif、webp 格式');
       return;
     }
 
     setAvatarUploading(true);
-    setError(null);
-    setNotice(null);
     try {
       const url = await uploadAvatar(file);
       setAiAvatarUrl(url);
-      setNotice('头像已上传');
+      toast.success('头像已上传');
     } catch (err) {
-      setError(getErrorMessage(err, '上传头像失败'));
+      toast.error(getErrorMessage(err, '上传头像失败'));
     } finally {
       setAvatarUploading(false);
     }
   };
 
   const handleRemoveAvatar = async () => {
-    setError(null);
-    setNotice(null);
     try {
       await updateProfile({ ai_avatar_url: null });
       setAiAvatarUrl(null);
-      setNotice('头像已移除');
+      toast.success('头像已移除');
     } catch (err) {
-      setError(getErrorMessage(err, '移除头像失败'));
+      toast.error(getErrorMessage(err, '移除头像失败'));
     }
   };
 
@@ -145,7 +134,7 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
     <div className="space-y-6">
       {/* Avatar */}
       <div>
-        <h3 className="text-base font-semibold text-slate-900 mb-4">头像设置</h3>
+        <h3 className="text-base font-semibold text-foreground mb-4">头像设置</h3>
         <div className="flex items-center gap-4 mb-4">
           <EmojiAvatar
             emoji={avatarEmoji}
@@ -153,31 +142,31 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
             fallbackChar={displayName || username}
             size="lg"
           />
-          <div className="text-sm text-slate-500">
+          <div className="text-sm text-muted-foreground">
             选择一个 Emoji 和背景色作为你的头像
           </div>
         </div>
         <div className="space-y-4">
           <div>
-            <label className="block text-xs text-slate-500 mb-2">Emoji</label>
+            <Label className="text-xs text-muted-foreground mb-2">Emoji</Label>
             <EmojiPicker value={avatarEmoji ?? undefined} onChange={setAvatarEmoji} />
           </div>
           <div>
-            <label className="block text-xs text-slate-500 mb-2">背景色</label>
+            <Label className="text-xs text-muted-foreground mb-2">背景色</Label>
             <ColorPicker value={avatarColor ?? undefined} onChange={setAvatarColor} />
           </div>
         </div>
       </div>
 
       {/* Divider */}
-      <div className="border-t border-slate-200" />
+      <div className="border-t border-border" />
 
       {/* Account Info */}
       <div>
-        <h3 className="text-base font-semibold text-slate-900 mb-4">账户信息</h3>
+        <h3 className="text-base font-semibold text-foreground mb-4">账户信息</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
           <div>
-            <label className="block text-xs text-slate-500 mb-1">用户名</label>
+            <Label className="text-xs text-muted-foreground mb-1">用户名</Label>
             <Input
               type="text"
               value={username}
@@ -185,7 +174,7 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
             />
           </div>
           <div>
-            <label className="block text-xs text-slate-500 mb-1">显示名称</label>
+            <Label className="text-xs text-muted-foreground mb-1">显示名称</Label>
             <Input
               type="text"
               value={displayName}
@@ -193,13 +182,13 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
             />
           </div>
         </div>
-        <div className="mt-4 flex flex-wrap items-center gap-4 text-xs text-slate-500">
+        <div className="mt-4 flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
           <span>角色：{currentUser?.role === 'admin' ? '管理员' : '普通成员'}</span>
           <span>状态：{currentUser?.status === 'active' ? '启用' : currentUser?.status === 'disabled' ? '禁用' : '已删除'}</span>
           <span>最近登录：{currentUser?.last_login_at ? new Date(currentUser.last_login_at).toLocaleString('zh-CN') : '-'}</span>
         </div>
         {currentUser?.permissions && currentUser.permissions.length > 0 && (
-          <div className="mt-3 text-xs text-slate-500">
+          <div className="mt-3 text-xs text-muted-foreground">
             权限：{currentUser.permissions.join(', ')}
           </div>
         )}
@@ -215,12 +204,12 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
       </div>
 
       {/* Divider */}
-      <div className="border-t border-slate-200" />
+      <div className="border-t border-border" />
 
       {/* AI Appearance */}
       <div>
-        <h3 className="text-base font-semibold text-slate-900 mb-4">我的机器人外观</h3>
-        <p className="text-xs text-slate-500 mb-4">
+        <h3 className="text-base font-semibold text-foreground mb-4">我的机器人外观</h3>
+        <p className="text-xs text-muted-foreground mb-4">
           自定义你的 AI 助手外观，覆盖系统默认值，仅影响你看到的对话界面。
         </p>
         <div className="space-y-4">
@@ -232,12 +221,12 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
               fallbackChar={aiName || 'AI'}
               size="lg"
             />
-            <div className="text-sm text-slate-500">
+            <div className="text-sm text-muted-foreground">
               设置机器人的头像图片、Emoji 和背景色
             </div>
           </div>
           <div>
-            <label className="block text-xs text-slate-500 mb-1">AI 名称</label>
+            <Label className="text-xs text-muted-foreground mb-1">AI 名称</Label>
             <Input
               type="text"
               value={aiName}
@@ -246,15 +235,15 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
             />
           </div>
           <div>
-            <label className="block text-xs text-slate-500 mb-2">Emoji</label>
+            <Label className="text-xs text-muted-foreground mb-2">Emoji</Label>
             <EmojiPicker value={aiAvatarEmoji ?? undefined} onChange={setAiAvatarEmoji} />
           </div>
           <div>
-            <label className="block text-xs text-slate-500 mb-2">背景色</label>
+            <Label className="text-xs text-muted-foreground mb-2">背景色</Label>
             <ColorPicker value={aiAvatarColor ?? undefined} onChange={setAiAvatarColor} />
           </div>
           <div>
-            <label className="block text-xs text-slate-500 mb-1">自定义头像图片</label>
+            <Label className="text-xs text-muted-foreground mb-1">自定义头像图片</Label>
             <input
               ref={avatarInputRef}
               type="file"
@@ -285,7 +274,7 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
                 </Button>
               )}
             </div>
-            <p className="text-xs text-slate-400 mt-1">
+            <p className="text-xs text-muted-foreground mt-1">
               支持 jpg、png、gif、webp，最大 2MB。上传后将优先于 Emoji 头像显示
             </p>
           </div>
@@ -299,14 +288,14 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
       </div>
 
       {/* Divider */}
-      <div className="border-t border-slate-200" />
+      <div className="border-t border-border" />
 
       {/* Change Password */}
       <div>
-        <h3 className="text-base font-semibold text-slate-900 mb-4">修改密码</h3>
+        <h3 className="text-base font-semibold text-foreground mb-4">修改密码</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
-            <label className="block text-xs text-slate-600 mb-1">当前密码</label>
+            <Label className="text-xs text-muted-foreground mb-1">当前密码</Label>
             <Input
               type="password"
               value={currentPwd}
@@ -314,7 +303,7 @@ export function ProfileSection({ setNotice, setError }: ProfileSectionProps) {
             />
           </div>
           <div>
-            <label className="block text-xs text-slate-600 mb-1">新密码</label>
+            <Label className="text-xs text-muted-foreground mb-1">新密码</Label>
             <Input
               type="password"
               value={newPwd}

@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
 import { ChevronRight, Eye, EyeOff, Loader2 } from 'lucide-react';
+import { LogoLoading } from '../components/common/LogoLoading';
 
 import { useAuthStore } from '../stores/auth';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { Label } from '@/components/ui/label';
 
 // --- Helpers ---
 
@@ -43,11 +46,7 @@ export function SetupPage() {
 
   // Loading or redirecting
   if (initialized !== false) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <Loader2 className="w-16 h-16 text-primary animate-spin" />
-      </div>
-    );
+    return <LogoLoading full />;
   }
 
   return (
@@ -65,12 +64,14 @@ export function SetupPage() {
         </div>
 
         {/* Step card */}
-        <div className="bg-card rounded-xl border border-border shadow-sm p-6">
-          <CreateAdminStep
-            onDone={() => navigate('/setup/providers', { replace: true })}
-            setupAdmin={setupAdmin}
-          />
-        </div>
+        <Card className="shadow-sm">
+          <CardContent>
+            <CreateAdminStep
+              onDone={() => navigate('/setup/providers', { replace: true })}
+              setupAdmin={setupAdmin}
+            />
+          </CardContent>
+        </Card>
       </div>
     </div>
   );
@@ -147,7 +148,7 @@ function CreateAdminStep({
 
       <div className="space-y-3">
         <div>
-          <label className="block text-sm font-medium text-foreground mb-1">用户名</label>
+          <Label className="mb-1">用户名</Label>
           <Input
             type="text"
             value={username}
@@ -157,7 +158,7 @@ function CreateAdminStep({
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-foreground mb-1">密码</label>
+          <Label className="mb-1">密码</Label>
           <div className="relative">
             <Input
               type={showPassword ? 'text' : 'password'}
@@ -176,7 +177,7 @@ function CreateAdminStep({
           </div>
         </div>
         <div>
-          <label className="block text-sm font-medium text-foreground mb-1">确认密码</label>
+          <Label className="mb-1">确认密码</Label>
           <div className="relative">
             <Input
               type={showConfirm ? 'text' : 'password'}

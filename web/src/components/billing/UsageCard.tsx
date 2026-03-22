@@ -13,7 +13,7 @@ const WINDOW_LABELS: Record<WindowKey, string> = {
 
 function ProgressBar({ value, max, className }: { value: number; max: number; className?: string }) {
   const percent = max > 0 ? Math.min((value / max) * 100, 100) : 0;
-  const color = percent >= 90 ? 'bg-red-500' : percent >= 70 ? 'bg-yellow-500' : 'bg-teal-500';
+  const color = percent >= 90 ? 'bg-red-500' : percent >= 70 ? 'bg-yellow-500' : 'bg-brand-500';
   return (
     <div className={`h-2 bg-zinc-200 dark:bg-zinc-700 rounded-full overflow-hidden ${className ?? ''}`}>
       <div className={`h-full ${color} rounded-full transition-all`} style={{ width: `${percent}%` }} />
@@ -129,7 +129,7 @@ export default function UsageCard() {
     <div className="bg-white dark:bg-zinc-800 rounded-lg border border-zinc-200 dark:border-zinc-700 p-5">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
-          <BarChart3 className="w-5 h-5 text-teal-600" />
+          <BarChart3 className="w-5 h-5 text-primary" />
           <h3 className="font-semibold">用量</h3>
         </div>
         {/* Window tabs */}
@@ -141,7 +141,7 @@ export default function UsageCard() {
                 onClick={() => setActiveWindow(w)}
                 className={`px-2 py-0.5 text-xs rounded transition-colors ${
                   activeWindow === w
-                    ? 'bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-300'
+                    ? 'bg-brand-100 dark:bg-brand-700/30 text-brand-700 dark:text-brand-300'
                     : 'text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300'
                 }`}
               >

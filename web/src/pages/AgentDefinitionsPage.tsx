@@ -3,6 +3,8 @@ import { ArrowLeft, Bot, Loader2, Plus, RefreshCw, Save, Trash2 } from 'lucide-r
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { Label } from '@/components/ui/label';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import {
   useAgentDefinitionsStore,
@@ -159,15 +161,16 @@ tools:
     <div className="min-h-full bg-background p-4 lg:p-8">
       <div className="max-w-7xl mx-auto space-y-4">
         {/* Header card */}
-        <div className="bg-card rounded-xl border border-border p-6">
-          <div className="flex items-center justify-between gap-3 mb-3">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-brand-100 rounded-lg">
-                <Bot className="w-5 h-5 text-primary" />
-              </div>
+        <Card>
+          <CardContent>
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-brand-100 rounded-lg">
+                  <Bot className="w-5 h-5 text-primary" />
+                </div>
               <div>
                 <h1 className="text-2xl font-bold text-foreground">Agent 管理</h1>
-                <p className="text-sm text-slate-500 mt-0.5">
+                <p className="text-sm text-muted-foreground mt-0.5">
                   管理 Agent 定义文件，通过 Task 工具的 subagent_type 调用。
                 </p>
               </div>
@@ -183,34 +186,36 @@ tools:
               </Button>
             </div>
           </div>
-          <div className="text-xs text-slate-500">
-            已加载 Agent: {agents.length}
-          </div>
-        </div>
+            <div className="text-xs text-muted-foreground">
+              已加载 Agent: {agents.length}
+            </div>
+          </CardContent>
+        </Card>
 
         {/* Grid: left list + right detail */}
         <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-4">
           {/* Left: agent list */}
           {(!isMobile || !showContent) && (
-            <div className="bg-card rounded-xl border border-border p-4">
-              <div className="mb-3">
-                <Input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="搜索 Agent 名称或描述"
-                />
-              </div>
+            <Card>
+              <CardContent>
+                <div className="mb-3">
+                  <Input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="搜索 Agent 名称或描述"
+                  />
+                </div>
 
-              <div className="space-y-2 max-h-[calc(100dvh-280px)] lg:max-h-[560px] overflow-auto pr-1">
+                <div className="space-y-2 max-h-[calc(100dvh-280px)] lg:max-h-[560px] overflow-auto pr-1">
                 {loading && agents.length === 0 ? (
                   <div className="flex items-center justify-center py-8">
                     <Loader2 className="animate-spin text-primary" size={24} />
                   </div>
                 ) : listError ? (
-                  <div className="text-sm text-red-600 py-4 text-center">{listError}</div>
+                  <div className="text-sm text-error py-4 text-center">{listError}</div>
                 ) : filtered.length === 0 ? (
-                  <div className="text-sm text-slate-500 py-4 text-center">
+                  <div className="text-sm text-muted-foreground py-4 text-center">
                     {searchQuery ? '没有匹配的 Agent' : '暂无 Agent 定义'}
                   </div>
                 ) : (
@@ -237,7 +242,7 @@ tools:
                             {agent.tools.slice(0, 4).map((tool) => (
                               <span
                                 key={tool}
-                                className="px-1.5 py-0.5 bg-muted text-slate-600 rounded text-[10px]"
+                                className="px-1.5 py-0.5 bg-muted text-muted-foreground rounded text-[10px]"
                               >
                                 {tool}
                               </span>
@@ -252,15 +257,17 @@ tools:
                       </button>
                     );
                   })
-                )}
-              </div>
-            </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
           )}
 
           {/* Right: detail / editor */}
           {(!isMobile || showContent) && (
-            <div className="bg-card rounded-xl border border-border p-4 lg:p-6 min-h-[calc(100dvh-280px)] lg:min-h-[560px]">
-              {selectedId && detail ? (
+            <Card className="min-h-[calc(100dvh-280px)] lg:min-h-[560px]">
+              <CardContent>
+                {selectedId && detail ? (
                 <>
                   {isMobile && (
                     <button
@@ -275,7 +282,7 @@ tools:
                   {/* Meta info */}
                   <div className="mb-3">
                     <div className="text-sm font-semibold text-foreground break-all">{detail.name}</div>
-                    <div className="text-xs text-slate-500 mt-1">
+                    <div className="text-xs text-muted-foreground mt-1">
                       最近更新时间: {updatedText} · 字节数: {byteCount}
                     </div>
                   </div>
@@ -309,15 +316,15 @@ tools:
                       variant="outline"
                       onClick={handleDelete}
                       disabled={deleting || saving}
-                      className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950"
+                      className="text-error hover:text-error hover:bg-error-bg"
                     >
                       <Trash2 className="w-4 h-4" />
                       {deleting ? '删除中...' : '删除'}
                     </Button>
 
-                    {dirty && <span className="text-sm text-amber-600">有未保存修改</span>}
-                    {notice && <span className="text-sm text-green-600">{notice}</span>}
-                    {detailError && <span className="text-sm text-red-600">{detailError}</span>}
+                    {dirty && <span className="text-sm text-warning">有未保存修改</span>}
+                    {notice && <span className="text-sm text-success">{notice}</span>}
+                    {detailError && <span className="text-sm text-error">{detailError}</span>}
                   </div>
                 </>
               ) : loadingDetail ? (
@@ -325,11 +332,12 @@ tools:
                   <Loader2 className="animate-spin text-primary" size={32} />
                 </div>
               ) : (
-                <div className="flex items-center justify-center h-full text-sm text-slate-500">
+                <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
                   {selectedId ? (detailError || '加载失败') : '选择一个 Agent 查看详情'}
                 </div>
-              )}
-            </div>
+                )}
+              </CardContent>
+            </Card>
           )}
         </div>
       </div>
@@ -337,13 +345,14 @@ tools:
       {/* Create dialog */}
       {showCreate && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="bg-card rounded-xl border border-border p-6 w-full max-w-md mx-4">
-            <h2 className="text-lg font-semibold text-foreground mb-4">新建 Agent</h2>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-foreground mb-1">
-                  名称
-                </label>
+          <Card className="w-full max-w-md mx-4">
+            <CardContent>
+              <h2 className="text-lg font-semibold text-foreground mb-4">新建 Agent</h2>
+              <div className="space-y-4">
+                <div>
+                  <Label className="mb-1">
+                    名称
+                  </Label>
                 <input
                   type="text"
                   value={createName}
@@ -364,9 +373,10 @@ tools:
                 <Button onClick={handleCreate} disabled={!createName.trim() || creating}>
                   {creating ? '创建中...' : '创建'}
                 </Button>
+                </div>
               </div>
-            </div>
-          </div>
+            </CardContent>
+          </Card>
         </div>
       )}
     </div>

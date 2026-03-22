@@ -22,28 +22,28 @@ export function McpServerCard({ server, selected, onSelect }: McpServerCardProps
       className={`w-full text-left rounded-lg border p-4 transition-all ${
         selected
           ? 'ring-2 ring-ring bg-brand-50 border-primary'
-          : 'border-slate-200 hover:bg-slate-50'
+          : 'border-border hover:bg-muted'
       }`}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
-            <h3 className="font-medium text-slate-900 truncate">{server.id}</h3>
+            <h3 className="font-medium text-foreground truncate">{server.id}</h3>
             {isHttpType && (
               <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700">
                 {server.type?.toUpperCase()}
               </span>
             )}
             {server.syncedFromHost && (
-              <span className="px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700 inline-flex items-center gap-1">
+              <span className="px-2 py-0.5 rounded text-xs font-medium bg-warning-bg text-warning inline-flex items-center gap-1">
                 <Download size={10} />
                 已同步
               </span>
             )}
           </div>
-          <p className="text-sm text-slate-500 truncate font-mono">{preview}</p>
+          <p className="text-sm text-muted-foreground truncate font-mono">{preview}</p>
           {server.description && (
-            <p className="text-xs text-slate-400 mt-1 line-clamp-1">{server.description}</p>
+            <p className="text-xs text-muted-foreground mt-1 line-clamp-1">{server.description}</p>
           )}
         </div>
 
@@ -56,7 +56,7 @@ export function McpServerCard({ server, selected, onSelect }: McpServerCardProps
         >
           <div
             className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer ${
-              server.enabled ? 'bg-primary' : 'bg-slate-300'
+              server.enabled ? 'bg-primary' : 'bg-muted-foreground/40'
             }`}
           >
             <span

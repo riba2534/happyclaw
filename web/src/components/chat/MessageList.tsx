@@ -389,8 +389,8 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
                   />
                 </div>
                 <div>
-                  <h3 className="text-lg font-semibold text-slate-900">{aiName}</h3>
-                  <p className="text-sm text-slate-500 mt-1">有什么我可以帮你的吗？</p>
+                  <h3 className="text-lg font-semibold text-foreground">{aiName}</h3>
+                  <p className="text-sm text-muted-foreground mt-1">有什么我可以帮你的吗？</p>
                 </div>
               </div>
 

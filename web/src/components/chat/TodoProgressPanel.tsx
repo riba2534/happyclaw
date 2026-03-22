@@ -19,10 +19,10 @@ export function TodoProgressPanel({ todos }: TodoProgressPanelProps) {
     <div className="rounded-lg border border-brand-200 bg-brand-50/40 p-3 mb-2">
       {/* Progress header */}
       <div className="flex items-center justify-between mb-2">
-        <span className="text-xs font-medium text-primary">
+        <span className="text-[13px] font-medium text-primary">
           {completed}/{total} 已完成
         </span>
-        <span className="text-xs text-muted-foreground">
+        <span className="text-[13px] text-muted-foreground">
           {Math.round(progress)}%
         </span>
       </div>
@@ -38,7 +38,7 @@ export function TodoProgressPanel({ todos }: TodoProgressPanelProps) {
       {/* Todo items */}
       <div className="space-y-1">
         {todos.map((todo) => (
-          <div key={todo.id} className="flex items-start gap-2 text-xs">
+          <div key={todo.id} className="flex items-start gap-2 text-[13px]">
             <span className="flex-shrink-0 mt-0.5">
               {todo.status === 'completed' ? (
                 <Check className="w-3.5 h-3.5 text-brand-500" strokeWidth={3} />

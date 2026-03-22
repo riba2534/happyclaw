@@ -95,7 +95,7 @@ export default function AdminRedeemCodesList() {
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h3 className="font-semibold flex items-center gap-2">
-          <Gift className="w-5 h-5 text-teal-600" />
+          <Gift className="w-5 h-5 text-primary" />
           兑换码管理
         </h3>
         <div className="flex items-center gap-2">
@@ -193,14 +193,14 @@ export default function AdminRedeemCodesList() {
                 <div className="flex items-center gap-1 shrink-0 ml-2">
                   <button
                     onClick={() => handleViewUsage(code.code)}
-                    className="p-1.5 text-zinc-400 hover:text-teal-600"
+                    className="p-1.5 text-zinc-400 hover:text-primary"
                     title="查看使用明细"
                   >
                     <Eye className="w-4 h-4" />
                   </button>
                   <button
                     onClick={() => handleCopy(code.code)}
-                    className="p-1.5 text-zinc-400 hover:text-teal-600"
+                    className="p-1.5 text-zinc-400 hover:text-primary"
                     title="复制"
                   >
                     {copiedCode === code.code ? (

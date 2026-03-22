@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Loader2, Search, ExternalLink, Download, ChevronDown, ChevronUp } from 'lucide-react';
+import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -151,7 +152,6 @@ export function InstallSkillDialog({
   const [tab, setTab] = useState<Tab>('search');
   const [pkg, setPkg] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const [error, setError] = useState<string | null>(null);
   const [installingPkg, setInstallingPkg] = useState<string | null>(null);
 
   const { searching, searchResults, searchSkills } = useSkillsStore();
@@ -160,20 +160,18 @@ export function InstallSkillDialog({
     e.preventDefault();
     const trimmed = searchQuery.trim();
     if (!trimmed) return;
-    setError(null);
     await searchSkills(trimmed);
   };
 
   const handleInstallFromSearch = async (result: SearchResult) => {
     try {
-      setError(null);
       setInstallingPkg(result.package);
       await onInstall(result.package);
       setInstallingPkg(null);
       onClose();
     } catch (err) {
       setInstallingPkg(null);
-      setError(err instanceof Error ? err.message : '安装失败');
+      toast.error(err instanceof Error ? err.message : '安装失败');
     }
   };
 
@@ -181,17 +179,16 @@ export function InstallSkillDialog({
     e.preventDefault();
     const trimmed = pkg.trim();
     if (!trimmed) {
-      setError('请输入技能包名称');
+      toast.error('请输入技能包名称');
       return;
     }
 
     try {
-      setError(null);
       await onInstall(trimmed);
       setPkg('');
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : '安装失败');
+      toast.error(err instanceof Error ? err.message : '安装失败');
     }
   };
 
@@ -199,7 +196,6 @@ export function InstallSkillDialog({
     if (!installing) {
       setPkg('');
       setSearchQuery('');
-      setError(null);
       setInstallingPkg(null);
       onClose();
     }
@@ -223,7 +219,7 @@ export function InstallSkillDialog({
                 ? 'border-primary text-primary'
                 : 'border-transparent text-muted-foreground hover:text-foreground'
             }`}
-            onClick={() => { setTab('search'); setError(null); }}
+            onClick={() => { setTab('search'); }}
             disabled={isInstalling}
           >
             <Search className="size-3.5 inline-block mr-1.5 -mt-0.5" />
@@ -236,7 +232,7 @@ export function InstallSkillDialog({
                 ? 'border-primary text-primary'
                 : 'border-transparent text-muted-foreground hover:text-foreground'
             }`}
-            onClick={() => { setTab('manual'); setError(null); }}
+            onClick={() => { setTab('manual'); }}
             disabled={isInstalling}
           >
             手动安装
@@ -338,12 +334,6 @@ export function InstallSkillDialog({
           </form>
         )}
 
-        {/* Error display */}
-        {error && (
-          <div className="p-3 bg-error-bg border border-destructive/20 rounded-lg shrink-0">
-            <p className="text-sm text-destructive">{error}</p>
-          </div>
-        )}
       </DialogContent>
     </Dialog>
   );

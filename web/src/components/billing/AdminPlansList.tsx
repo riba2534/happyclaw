@@ -35,7 +35,7 @@ export default function AdminPlansList({
       {/* Header */}
       <div className="flex items-center justify-between">
         <h3 className="font-semibold flex items-center gap-2">
-          <Package className="w-5 h-5 text-teal-600" />
+          <Package className="w-5 h-5 text-primary" />
           套餐管理
         </h3>
         <Button size="sm" onClick={onCreatePlan}>
@@ -54,14 +54,14 @@ export default function AdminPlansList({
               key={plan.id}
               className={`relative bg-white dark:bg-zinc-800 rounded-lg border p-5 ${
                 plan.highlight
-                  ? 'border-teal-400 dark:border-teal-600 ring-1 ring-teal-400/30'
+                  ? 'border-brand-400 dark:border-brand-600 ring-1 ring-brand-400/30'
                   : 'border-zinc-200 dark:border-zinc-700'
               } ${!plan.is_active ? 'opacity-60' : ''}`}
             >
               {/* Badges */}
               <div className="flex items-center gap-1.5 mb-2 flex-wrap">
                 {plan.is_default && (
-                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-xs rounded-full bg-teal-100 text-teal-700 dark:bg-teal-900 dark:text-teal-300">
+                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-xs rounded-full bg-brand-100 text-brand-700 dark:bg-brand-700/30 dark:text-brand-300">
                     <Star className="w-3 h-3" />
                     默认
                   </span>

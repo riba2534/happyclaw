@@ -8,6 +8,7 @@ import { useAuthStore } from '../stores/auth';
 import { PageHeader } from '@/components/common/PageHeader';
 import { SkeletonStatCards } from '@/components/common/Skeletons';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip,
   ResponsiveContainer, CartesianGrid, Legend, PieChart, Pie, Cell,
@@ -274,8 +275,8 @@ export function UsagePage() {
                     icon={<Filter className="w-5 h-5" />}
                     label="缓存命中率"
                     value={`${cacheHitRate}%`}
-                    color="text-teal-600 dark:text-teal-400"
-                    bgColor="bg-teal-50 dark:bg-teal-950"
+                    color="text-primary dark:text-brand-400"
+                    bgColor="bg-brand-50 dark:bg-brand-700/10"
                   />
                 )}
               </div>
@@ -283,45 +284,48 @@ export function UsagePage() {
 
             {/* Daily Token Chart */}
             {dailyData.length > 0 && (
-              <div className="bg-card rounded-xl border border-border p-4 lg:p-6">
-                <h2 className="text-lg font-semibold text-foreground mb-4">每日 Token 用量</h2>
-                <div className="h-64 lg:h-80">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={dailyData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                      <XAxis
-                        dataKey="date"
-                        tick={{ fontSize: 12, fill: 'var(--muted-foreground)' }}
-                        tickFormatter={(v: string) => v.slice(5)} // MM-DD
-                      />
-                      <YAxis
-                        tick={{ fontSize: 12, fill: 'var(--muted-foreground)' }}
-                        tickFormatter={formatTokens}
-                      />
-                      <RechartsTooltip
-                        contentStyle={{
-                          backgroundColor: 'var(--card)',
-                          border: '1px solid var(--border)',
-                          borderRadius: '8px',
-                          color: 'var(--foreground)',
-                        }}
-                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                        formatter={(value: any, name: any) => [formatTokens(Number(value) || 0), String(name)]}
-                        labelFormatter={(label) => `日期: ${label}`}
-                      />
-                      <Legend />
-                      <Bar dataKey="input" name="输入" stackId="tokens" fill="var(--color-primary)" radius={[0, 0, 0, 0]} />
-                      <Bar dataKey="output" name="输出" stackId="tokens" fill="#f59e0b" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
+              <Card>
+                <CardContent>
+                  <h2 className="text-lg font-semibold text-foreground mb-4">每日 Token 用量</h2>
+                  <div className="h-64 lg:h-80">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={dailyData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                        <XAxis
+                          dataKey="date"
+                          tick={{ fontSize: 12, fill: 'var(--muted-foreground)' }}
+                          tickFormatter={(v: string) => v.slice(5)} // MM-DD
+                        />
+                        <YAxis
+                          tick={{ fontSize: 12, fill: 'var(--muted-foreground)' }}
+                          tickFormatter={formatTokens}
+                        />
+                        <RechartsTooltip
+                          contentStyle={{
+                            backgroundColor: 'var(--card)',
+                            border: '1px solid var(--border)',
+                            borderRadius: '8px',
+                            color: 'var(--foreground)',
+                          }}
+                          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                          formatter={(value: any, name: any) => [formatTokens(Number(value) || 0), String(name)]}
+                          labelFormatter={(label) => `日期: ${label}`}
+                        />
+                        <Legend />
+                        <Bar dataKey="input" name="输入" stackId="tokens" fill="var(--color-primary)" radius={[0, 0, 0, 0]} />
+                        <Bar dataKey="output" name="输出" stackId="tokens" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </CardContent>
+              </Card>
             )}
 
             {/* Daily Cost Chart */}
             {dailyData.length > 0 && (
-              <div className="bg-card rounded-xl border border-border p-4 lg:p-6">
-                <h2 className="text-lg font-semibold text-foreground mb-4">每日费用</h2>
+              <Card>
+                <CardContent>
+                  <h2 className="text-lg font-semibold text-foreground mb-4">每日费用</h2>
                 <div className="h-64 lg:h-80">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={dailyData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
@@ -349,14 +353,16 @@ export function UsagePage() {
                       <Bar dataKey="cost" name="费用 (USD)" fill="#ef4444" radius={[4, 4, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
-                </div>
-              </div>
+                  </div>
+                </CardContent>
+              </Card>
             )}
 
             {/* Model Breakdown */}
             {modelData.length > 0 && (
-              <div className="bg-card rounded-xl border border-border p-4 lg:p-6">
-                <h2 className="text-lg font-semibold text-foreground mb-4">模型用量分布</h2>
+              <Card>
+                <CardContent>
+                  <h2 className="text-lg font-semibold text-foreground mb-4">模型用量分布</h2>
                 <div className="flex flex-col lg:flex-row gap-6">
                   {/* Pie Chart */}
                   <div className="h-64 w-full lg:w-1/2">
@@ -415,19 +421,22 @@ export function UsagePage() {
                       </tbody>
                     </table>
                   </div>
-                </div>
-              </div>
+                  </div>
+                </CardContent>
+              </Card>
             )}
 
             {/* Empty State */}
             {summary.totalMessages === 0 && !loading && (
-              <div className="bg-card rounded-xl border border-border p-12 text-center">
+              <Card>
+                <CardContent className="text-center py-8">
                 <Zap className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
                 <h3 className="text-lg font-semibold text-foreground mb-2">暂无用量数据</h3>
                 <p className="text-muted-foreground">
                   与 AI 对话后，用量数据将自动记录在这里
                 </p>
-              </div>
+                </CardContent>
+              </Card>
             )}
           </div>
         )}
@@ -450,14 +459,16 @@ function StatCard({
   bgColor: string;
 }) {
   return (
-    <div className="bg-card rounded-xl border border-border p-4">
-      <div className="flex items-center gap-3 mb-2">
+    <Card>
+      <CardContent>
+        <div className="flex items-center gap-3 mb-2">
         <div className={`w-10 h-10 rounded-lg ${bgColor} flex items-center justify-center ${color}`}>
           {icon}
         </div>
       </div>
-      <p className="text-2xl font-bold text-foreground">{value}</p>
-      <p className="text-sm text-muted-foreground">{label}</p>
-    </div>
+        <p className="text-2xl font-bold text-foreground">{value}</p>
+        <p className="text-sm text-muted-foreground">{label}</p>
+      </CardContent>
+    </Card>
   );
 }

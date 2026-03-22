@@ -409,7 +409,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     return (
       <div className="h-full flex items-center justify-center bg-background">
         <div className="text-center">
-          <p className="text-slate-500">群组不存在</p>
+          <p className="text-muted-foreground">群组不存在</p>
         </div>
       </div>
     );
@@ -422,20 +422,20 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         {onBack && (
           <button
             onClick={onBack}
-            className="lg:hidden p-2 -ml-2 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+            className="lg:hidden p-2 -ml-2 hover:bg-muted rounded-lg transition-colors cursor-pointer"
             aria-label="返回"
           >
-            <ArrowLeft className="w-5 h-5 text-slate-600" />
+            <ArrowLeft className="w-5 h-5 text-foreground/70" />
           </button>
         )}
         {headerLeft}
         <div className="flex-1 min-w-0">
-          <h2 className="font-semibold text-slate-900 text-[15px] truncate">{group.name}</h2>
-          <div className="flex items-center gap-1.5 text-xs text-slate-500">
+          <h2 className="font-semibold text-foreground text-[15px] truncate">{group.name}</h2>
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <span>{isWaiting ? '正在思考...' : group.is_home ? '主 Agent' : 'Agent'}</span>
             {!isWaiting && group.is_shared && (
               <>
-                <span className="text-slate-300">·</span>
+                <span className="text-muted-foreground/40">·</span>
                 <span className="inline-flex items-center gap-0.5">
                   <Users className="w-3 h-3" />
                   {group.member_count ?? 0} 人协作
@@ -444,7 +444,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
             )}
             {!isWaiting && group.execution_mode && (
               <>
-                <span className="text-slate-300">·</span>
+                <span className="text-muted-foreground/40">·</span>
                 <span className={`inline-flex items-center px-1 py-px rounded text-[10px] font-medium ${group.execution_mode === 'host' ? 'bg-amber-100 text-amber-700' : 'bg-sky-100 text-sky-700'}`}>
                   {group.execution_mode === 'host' ? '宿主机' : 'Docker'}
                 </span>
@@ -452,7 +452,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
             )}
             {isOwnHome && imStatus && (imStatus.feishu || imStatus.telegram) && (
               <>
-                <span className="text-slate-300">·</span>
+                <span className="text-muted-foreground/40">·</span>
                 {imStatus.feishu && (
                   <span className="inline-flex items-center gap-0.5">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
@@ -670,13 +670,13 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
               onTouchStart={handleTouchDragStart}
               className="hidden lg:flex h-1 bg-muted hover:bg-brand-400 cursor-row-resize items-center justify-center transition-colors group"
             >
-              <div className="w-8 h-0.5 rounded-full bg-slate-400 group-hover:bg-primary transition-colors" />
+              <div className="w-8 h-0.5 rounded-full bg-muted-foreground group-hover:bg-primary transition-colors" />
             </div>
           )}
           {/* Terminal panel */}
           <div
             className={`hidden lg:block flex-shrink-0 overflow-hidden transition-[height] duration-200 ${
-              terminalVisible ? 'border-t border-slate-300' : 'border-t-0'
+              terminalVisible ? 'border-t border-border' : 'border-t-0'
             }`}
             style={{ height: terminalVisible ? terminalHeight : 0 }}
           >

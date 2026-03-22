@@ -100,7 +100,7 @@ export function BindingTargetDialog({
           {!targetsLoading &&
             Array.from(grouped.entries()).map(([groupJid, items]) => (
               <div key={groupJid} className="space-y-1">
-                <div className="flex items-center gap-1.5 px-1 text-xs font-medium text-slate-500">
+                <div className="flex items-center gap-1.5 px-1 text-xs font-medium text-muted-foreground">
                   <FolderOpen className="w-3 h-3" />
                   {items[0].groupName}
                 </div>
@@ -112,7 +112,7 @@ export function BindingTargetDialog({
                       key={key}
                       onClick={() => onSelect(target)}
                       disabled={!!selecting}
-                      className="w-full flex items-center gap-3 px-3 py-2 rounded-lg border border-border hover:border-teal-300 hover:bg-teal-50/50 dark:hover:border-teal-700 dark:hover:bg-teal-950/20 transition-colors text-left cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="w-full flex items-center gap-3 px-3 py-2 rounded-lg border border-border hover:border-brand-300 hover:bg-brand-50/50 dark:hover:border-brand-600 dark:hover:bg-brand-700/10 transition-colors text-left cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <MessageSquare className="w-4 h-4 text-muted-foreground flex-shrink-0" />
                       <span className="flex-1 text-sm truncate">
@@ -120,7 +120,7 @@ export function BindingTargetDialog({
                           ? target.agentName || 'Agent'
                           : '主对话'}
                       </span>
-                      {isSelecting && <Loader2 className="w-3.5 h-3.5 animate-spin text-teal-500" />}
+                      {isSelecting && <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />}
                     </button>
                   );
                 })}
@@ -135,7 +135,7 @@ export function BindingTargetDialog({
             size="sm"
             onClick={onRestoreDefault}
             disabled={!!selecting}
-            className="text-slate-500 hover:text-slate-700 w-full"
+            className="text-muted-foreground hover:text-foreground w-full"
           >
             <RotateCcw className="w-3.5 h-3.5 mr-1.5" />
             恢复默认路由

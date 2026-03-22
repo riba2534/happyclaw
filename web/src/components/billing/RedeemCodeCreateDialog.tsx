@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import { Copy, Check } from 'lucide-react';
+import { toast } from 'sonner';
 import {
   Dialog,
   DialogContent,
@@ -8,7 +10,6 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { Copy, Check } from 'lucide-react';
 import { useBillingStore, type RedeemCode } from '../../stores/billing';
 import { useCurrency } from './utils';
 
@@ -52,27 +53,24 @@ export default function RedeemCodeCreateDialog({
   const [generatedCodes, setGeneratedCodes] = useState<RedeemCode[]>([]);
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
 
-  const [validationError, setValidationError] = useState('');
-
   const handleCreate = async () => {
     // Client-side validation
     if (count < 1 || count > 100 || !Number.isInteger(count)) {
-      setValidationError('生成数量须为 1-100 之间的整数');
+      toast.error('生成数量须为 1-100 之间的整数');
       return;
     }
     if (type === 'balance' && (!valueUsd || valueUsd <= 0)) {
-      setValidationError('余额充值类型须设置正数面值');
+      toast.error('余额充值类型须设置正数面值');
       return;
     }
     if (type === 'subscription' && !planId) {
-      setValidationError('套餐激活类型须选择套餐');
+      toast.error('套餐激活类型须选择套餐');
       return;
     }
     if ((type === 'subscription' || type === 'trial') && durationDays < 1) {
-      setValidationError('有效天数须至少为 1');
+      toast.error('有效天数须至少为 1');
       return;
     }
-    setValidationError('');
 
     setSubmitting(true);
     try {
@@ -162,7 +160,7 @@ export default function RedeemCodeCreateDialog({
                   <code className="text-sm font-mono">{c.code}</code>
                   <button
                     onClick={() => handleCopy(c.code, i)}
-                    className="p-1 text-zinc-400 hover:text-teal-600"
+                    className="p-1 text-zinc-400 hover:text-primary"
                   >
                     {copiedIdx === i ? (
                       <Check className="w-4 h-4 text-green-500" />
@@ -322,9 +320,6 @@ export default function RedeemCodeCreateDialog({
               />
             </div>
 
-            {validationError && (
-              <p className="text-xs text-red-500">{validationError}</p>
-            )}
             <DialogFooter>
               <Button
                 variant="outline"

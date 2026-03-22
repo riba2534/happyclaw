@@ -66,7 +66,7 @@ export function ChatGroupItem({
       className={cn(
         'group relative rounded-lg mb-0.5 transition-colors',
         isActive
-          ? 'bg-accent max-lg:bg-background/70 max-lg:backdrop-blur-lg max-lg:saturate-[1.8] max-lg:border max-lg:border-border/40 max-lg:shadow-[0_8px_32px_rgba(0,0,0,0.06)]'
+          ? 'bg-accent dark:bg-accent max-lg:bg-background/70 max-lg:backdrop-blur-lg max-lg:saturate-[1.8] max-lg:border max-lg:border-border/40 max-lg:shadow-[0_8px_32px_rgba(0,0,0,0.06)]'
           : 'hover:bg-accent/50',
       )}
     >
@@ -79,7 +79,7 @@ export function ChatGroupItem({
             <Star className="w-3.5 h-3.5 text-yellow-500 fill-yellow-500 flex-shrink-0" />
           )}
           {isPinned && !isHome && (
-            <Pin className="w-3 h-3 text-teal-500 flex-shrink-0" />
+            <Pin className="w-3 h-3 text-primary flex-shrink-0" />
           )}
           <span
             className={cn(

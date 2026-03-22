@@ -40,6 +40,13 @@ bun.lockb
 .claude/
 .mcp.json
 /.omc/
+.trae/
+.coco/
+.agent/
+.agents/
+skills-lock.json
+--connect
+log/
 
 # OS
 .DS_Store

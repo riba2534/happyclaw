@@ -17,7 +17,7 @@ function KpiCard({
   return (
     <div className="bg-white dark:bg-zinc-800 rounded-lg border border-zinc-200 dark:border-zinc-700 p-4">
       <div className="flex items-center gap-2 text-zinc-500 text-sm mb-2">
-        <Icon className="w-4 h-4 text-teal-600" />
+        <Icon className="w-4 h-4 text-primary" />
         {label}
       </div>
       <div className="text-2xl font-bold">{value}</div>
@@ -52,7 +52,7 @@ function PlanDistribution({
                 </div>
                 <div className="h-2 bg-zinc-200 dark:bg-zinc-700 rounded-full overflow-hidden">
                   <div
-                    className="h-full bg-teal-500 rounded-full transition-all"
+                    className="h-full bg-brand-500 rounded-full transition-all"
                     style={{ width: `${pct}%` }}
                   />
                 </div>
@@ -93,7 +93,7 @@ function RevenueTrendChart({
                   {fmt(item.revenue)}
                 </span>
                 <div
-                  className="w-full bg-teal-500 rounded-t transition-all hover:bg-teal-400"
+                  className="w-full bg-brand-500 rounded-t transition-all hover:bg-brand-400"
                   style={{ height: `${height}%` }}
                   title={`${item.month}: ${fmt(item.revenue)} / ${item.users} 用户`}
                 />

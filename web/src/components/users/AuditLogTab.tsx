@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
 import { useUsersStore } from '../../stores/users';
 import { getErrorMessage } from './utils';
 import { withBasePath } from '../../utils/url';
@@ -83,33 +84,33 @@ export function AuditLogTab({ setError }: AuditLogTabProps) {
         </Button>
         <a
           href={exportUrl}
-          className="px-3 py-2 rounded-lg border border-slate-300 text-sm text-slate-700 hover:bg-slate-50"
+          className="px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-muted"
         >
           导出 CSV
         </a>
       </div>
 
-      <div className="bg-card rounded-xl border border-border divide-y divide-border overflow-hidden">
+      <Card className="divide-y divide-border overflow-hidden">
         {auditLogs.length === 0 ? (
-          <div className="p-6 text-center text-sm text-slate-500">暂无记录</div>
+          <div className="p-6 text-center text-sm text-muted-foreground">暂无记录</div>
         ) : (
           auditLogs.map((log) => (
             <div key={log.id} className="px-5 py-3">
               <div className="text-sm text-foreground">
                 {log.event_type} · {log.username}
               </div>
-              <div className="text-xs text-slate-500 mt-1">
+              <div className="text-xs text-muted-foreground mt-1">
                 操作者: {log.actor_username || '-'} · IP: {log.ip_address || '-'} · 时间: {new Date(log.created_at).toLocaleString('zh-CN')}
               </div>
               {log.details && (
-                <pre className="mt-2 text-[11px] text-slate-600 bg-slate-50 rounded p-2 overflow-x-auto">
+                <pre className="mt-2 text-[11px] text-muted-foreground bg-muted rounded p-2 overflow-x-auto">
                   {JSON.stringify(log.details, null, 2)}
                 </pre>
               )}
             </div>
           ))
         )}
-      </div>
+      </Card>
     </div>
   );
 }

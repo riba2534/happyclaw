@@ -87,11 +87,6 @@ export interface SessionInfo {
   is_current: boolean;
 }
 
-export interface SettingsNotification {
-  setNotice: (msg: string | null) => void;
-  setError: (msg: string | null) => void;
-}
-
 export interface SystemSettings {
   containerTimeout: number;
   idleTimeout: number;

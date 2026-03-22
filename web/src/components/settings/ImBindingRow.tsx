@@ -28,7 +28,7 @@ export function ImBindingRow({ group, isActioning, onRebind, onUnbind }: ImBindi
   return (
     <div className={`flex items-center gap-3 p-3 rounded-lg border transition-colors ${
       hasBound
-        ? 'border-teal-200 bg-teal-50/50 dark:border-teal-800/30 dark:bg-teal-950/20'
+        ? 'border-brand-200 bg-brand-50/50 dark:border-brand-700/30 dark:bg-brand-700/10'
         : 'border-border'
     }`}>
       {/* Avatar */}
@@ -57,7 +57,7 @@ export function ImBindingRow({ group, isActioning, onRebind, onUnbind }: ImBindi
               {group.member_count}
             </span>
           )}
-          <span className={hasBound ? 'text-teal-600 dark:text-teal-400' : 'text-slate-400'}>
+          <span className={hasBound ? 'text-primary dark:text-brand-400' : 'text-muted-foreground'}>
             → {bindingLabel()}
           </span>
         </div>
@@ -71,7 +71,7 @@ export function ImBindingRow({ group, isActioning, onRebind, onUnbind }: ImBindi
             variant="ghost"
             onClick={() => onUnbind(group)}
             disabled={isActioning}
-            className="text-slate-400 hover:text-red-500"
+            className="text-muted-foreground hover:text-error"
           >
             {isActioning ? (
               <Loader2 className="w-3.5 h-3.5 animate-spin" />

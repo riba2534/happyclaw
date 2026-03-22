@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
+import { toast } from 'sonner';
 
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
-import { ToggleSwitch } from '@/components/ui/toggle-switch';
+import { Switch } from '@/components/ui/switch';
 import { api } from '../../api/client';
-import type { SettingsNotification } from './types';
 import { getErrorMessage } from './types';
 import { usePairingCode } from './hooks/usePairingCode';
 import { usePairedChats } from './hooks/usePairedChats';
@@ -20,9 +21,7 @@ interface UserQQConfig {
   updatedAt: string | null;
 }
 
-interface QQChannelCardProps extends SettingsNotification {}
-
-export function QQChannelCard({ setNotice, setError }: QQChannelCardProps) {
+export function QQChannelCard() {
   const [config, setConfig] = useState<UserQQConfig | null>(null);
   const [appId, setAppId] = useState('');
   const [appSecret, setAppSecret] = useState('');
@@ -35,13 +34,9 @@ export function QQChannelCard({ setNotice, setError }: QQChannelCardProps) {
 
   const pairing = usePairingCode({
     endpoint: '/api/config/user-im/qq/pairing-code',
-    setNotice,
-    setError,
   });
   const paired = usePairedChats({
     endpoint: '/api/config/user-im/qq/paired-chats',
-    setNotice,
-    setError,
   });
 
   const loadConfig = useCallback(async () => {
@@ -65,14 +60,12 @@ export function QQChannelCard({ setNotice, setError }: QQChannelCardProps) {
 
   const handleToggle = async (newEnabled: boolean) => {
     setToggling(true);
-    setNotice(null);
-    setError(null);
     try {
       const data = await api.put<UserQQConfig>('/api/config/user-im/qq', { enabled: newEnabled });
       setConfig(data);
-      setNotice(`QQ 渠道已${newEnabled ? '启用' : '停用'}`);
+      toast.success(`QQ 渠道已${newEnabled ? '启用' : '停用'}`);
     } catch (err) {
-      setError(getErrorMessage(err, '切换 QQ 渠道状态失败'));
+      toast.error(getErrorMessage(err, '切换 QQ 渠道状态失败'));
     } finally {
       setToggling(false);
     }
@@ -80,23 +73,21 @@ export function QQChannelCard({ setNotice, setError }: QQChannelCardProps) {
 
   const handleSave = async () => {
     setSaving(true);
-    setError(null);
-    setNotice(null);
     try {
       const id = appId.trim();
       const secret = appSecret.trim();
 
       if (id && !secret && !config?.hasAppSecret) {
-        setError('首次配置 QQ 需要同时提供 App ID 和 App Secret');
+        toast.error('首次配置 QQ 需要同时提供 App ID 和 App Secret');
         setSaving(false);
         return;
       }
 
       if (!id && !secret) {
         if (config?.appId || config?.hasAppSecret) {
-          setNotice('QQ 配置未变更');
+          toast.success('QQ 配置未变更');
         } else {
-          setError('请填写 QQ Bot App ID 和 App Secret');
+          toast.error('请填写 QQ Bot App ID 和 App Secret');
         }
         setSaving(false);
         return;
@@ -108,9 +99,9 @@ export function QQChannelCard({ setNotice, setError }: QQChannelCardProps) {
       const data = await api.put<UserQQConfig>('/api/config/user-im/qq', payload);
       setConfig(data);
       setAppSecret('');
-      setNotice('QQ 配置已保存');
+      toast.success('QQ 配置已保存');
     } catch (err) {
-      setError(getErrorMessage(err, '保存 QQ 配置失败'));
+      toast.error(getErrorMessage(err, '保存 QQ 配置失败'));
     } finally {
       setSaving(false);
     }
@@ -118,13 +109,11 @@ export function QQChannelCard({ setNotice, setError }: QQChannelCardProps) {
 
   const handleTest = async () => {
     setTesting(true);
-    setError(null);
-    setNotice(null);
     try {
       await api.post('/api/config/user-im/qq/test');
-      setNotice('QQ 连接测试成功');
+      toast.success('QQ 连接测试成功');
     } catch (err) {
-      setError(getErrorMessage(err, 'QQ 连接测试失败'));
+      toast.error(getErrorMessage(err, 'QQ 连接测试失败'));
     } finally {
       setTesting(false);
     }
@@ -132,15 +121,15 @@ export function QQChannelCard({ setNotice, setError }: QQChannelCardProps) {
 
   return (
     <div className="rounded-xl border border-border bg-card overflow-hidden">
-      <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 bg-slate-50/50">
+      <div className="flex items-center justify-between px-5 py-4 border-b border-border bg-muted/50">
         <div className="flex items-center gap-2">
-          <span className={`inline-block w-2 h-2 rounded-full ${config?.connected ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+          <span className={`inline-block w-2 h-2 rounded-full ${config?.connected ? 'bg-success' : 'bg-muted-foreground/40'}`} />
           <div>
-            <h3 className="text-sm font-semibold text-slate-800">QQ</h3>
+            <h3 className="text-sm font-semibold text-foreground">QQ</h3>
             <p className="text-xs text-slate-500 mt-0.5">通过 QQ Bot 接收和回复消息</p>
           </div>
         </div>
-        <ToggleSwitch checked={enabled} disabled={loading || toggling} onChange={handleToggle} />
+        <Switch checked={enabled} disabled={loading || toggling} onCheckedChange={handleToggle} />
       </div>
 
       <div className={`px-5 py-4 space-y-4 transition-opacity ${!enabled ? 'opacity-50 pointer-events-none' : ''}`}>
@@ -155,7 +144,7 @@ export function QQChannelCard({ setNotice, setError }: QQChannelCardProps) {
             )}
             <div className="grid md:grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs text-slate-500 mb-1">App ID</label>
+                <Label className="text-xs text-muted-foreground mb-1">App ID</Label>
                 <Input
                   type="text"
                   value={appId}
@@ -164,7 +153,7 @@ export function QQChannelCard({ setNotice, setError }: QQChannelCardProps) {
                 />
               </div>
               <div>
-                <label className="block text-xs text-slate-500 mb-1">App Secret</label>
+                <Label className="text-xs text-muted-foreground mb-1">App Secret</Label>
                 <Input
                   type="password"
                   value={appSecret}

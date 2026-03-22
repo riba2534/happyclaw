@@ -1,4 +1,6 @@
 @import "tailwindcss";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/inter";
 @plugin "tailwindcss-animate";
 
 @custom-variant dark (&:is(.dark *));
@@ -59,67 +61,75 @@
   --color-warning-bg: var(--warning-bg);
   --color-error: var(--error);
   --color-error-bg: var(--error-bg);
+  --color-surface: var(--surface);
+  --shadow-card: var(--card-shadow);
 
   /* Border radius tokens */
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
+  --font-sans: 'Inter Variable', system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-serif: Georgia, "Noto Serif SC", "Times New Roman", serif;
+  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
 }
 
 /* =====================================================
-   Design Token values — Teal theme
-   Primary: #0d9488 (Teal) | Logo accent: #d97706 (Amber) | Base: Slate
+   Design Token values — Orange theme (shadcn preset a3PBYm)
+   Primary: Orange | Base: Neutral
    ===================================================== */
 :root {
   /* shadcn/ui semantic tokens */
-  --background: #ffffff;
-  --foreground: #0f172a;
-  --card: #ffffff;
-  --card-foreground: #0f172a;
-  --popover: #ffffff;
-  --popover-foreground: #0f172a;
-  --primary: #0d9488;
-  --primary-foreground: #ffffff;
-  --secondary: #f1f5f9;
-  --secondary-foreground: #0f172a;
-  --muted: #f1f5f9;
-  --muted-foreground: #64748b;
-  --accent: #f0fdfa;
-  --accent-foreground: #134e4a;
-  --destructive: #dc2626;
+  --background: #FAF9F5;
+  --foreground: #141413;
+  --card: #F0EEE6;
+  --card-foreground: #141413;
+  --popover: #F0EEE6;
+  --popover-foreground: #141413;
+  --primary: oklch(0.553 0.195 38.402);
+  --primary-foreground: oklch(0.98 0.016 73.684);
+  --secondary: #F0EEE6;
+  --secondary-foreground: #141413;
+  --muted: #F0EEE6;
+  --muted-foreground: #8b857d;
+  --accent: #F0EEE6;
+  --accent-foreground: #141413;
+  --destructive: oklch(0.577 0.245 27.325);
   --destructive-foreground: #ffffff;
-  --border: #e2e8f0;
-  --input: #e2e8f0;
-  --ring: #0d9488;
-  --radius: 0.5rem;
+  --border: #DAD9D5;
+  --input: #DAD9D5;
+  --ring: oklch(0.708 0 0);
+  --radius: 0.625rem;
 
-  /* Brand color scale (Teal) */
-  --brand-50: #f0fdfa;
-  --brand-100: #ccfbf1;
-  --brand-200: #99f6e4;
-  --brand-300: #5eead4;
-  --brand-400: #2dd4bf;
-  --brand-500: #0d9488;
-  --brand-600: #0f766e;
-  --brand-700: #115e59;
+  /* Brand color scale (Orange) */
+  --brand-50: #fff7ed;
+  --brand-100: #ffedd5;
+  --brand-200: #fed7aa;
+  --brand-300: #fdba74;
+  --brand-400: #fb923c;
+  --brand-500: #f97316;
+  --brand-600: #ea580c;
+  --brand-700: #c2410c;
 
   /* Chart colors */
-  --chart-1: #0d9488;
-  --chart-2: #d97706;
-  --chart-3: #4c6ef5;
-  --chart-4: #9333ea;
-  --chart-5: #dc2626;
+  --chart-1: oklch(0.837 0.128 66.29);
+  --chart-2: oklch(0.705 0.213 47.604);
+  --chart-3: oklch(0.646 0.222 41.116);
+  --chart-4: oklch(0.553 0.195 38.402);
+  --chart-5: oklch(0.47 0.157 37.304);
 
   /* Sidebar */
-  --sidebar-background: #f8fafc;
-  --sidebar-foreground: #0f172a;
-  --sidebar-primary: #0d9488;
-  --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #f1f5f9;
-  --sidebar-accent-foreground: #0f172a;
-  --sidebar-border: #e2e8f0;
-  --sidebar-ring: #0d9488;
+  --sidebar-background: #FAF9F6;
+  --sidebar-foreground: #141413;
+  --sidebar-primary: oklch(0.646 0.222 41.116);
+  --sidebar-primary-foreground: oklch(0.98 0.016 73.684);
+  --sidebar-accent: #F0EEE6;
+  --sidebar-accent-foreground: #141413;
+  --sidebar-border: #DAD9D5;
+  --sidebar-ring: oklch(0.708 0 0);
 
   /* Feedback colors */
   --success: #16a34a;
@@ -129,52 +139,70 @@
   --error: #dc2626;
   --error-bg: #fee2e2;
 
+  /* Elevated surface — cards that need to stand out from page background */
+  --surface: #ffffff;
+
+  /* Code colors */
+  --code-block-bg: rgba(61, 61, 58, 0.05);
+  --inline-code-bg: rgba(61, 61, 58, 0.05);
+  --inline-code-text: rgb(138, 36, 36);
+
+  /* AI message card shadow — light enough for warm bg, dark mode uses higher opacity */
+  --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+
   /* iOS keyboard height */
   --keyboard-height: 0px;
 
   /* Liquid Glass design tokens */
   --glass-blur: 20px;
   --glass-saturate: 1.8;
-  --glass-bg: rgba(255, 255, 255, 0.55);
-  --glass-bg-heavy: rgba(255, 255, 255, 0.75);
-  --glass-border: rgba(255, 255, 255, 0.35);
+  --glass-bg: rgba(250, 249, 245, 0.65);
+  --glass-bg-heavy: rgba(250, 249, 245, 0.85);
+  --glass-border: rgba(218, 217, 213, 0.5);
   --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.06);
   --glass-highlight: linear-gradient(135deg, rgba(255,255,255,0.5) 0%, rgba(255,255,255,0) 60%);
   --glass-inner-shadow: inset 0 1px 1px rgba(255,255,255,0.6);
+  --sidebar: oklch(0.985 0 0);
+}
+
+/* AI response typography: semibold (600) instead of bold (700) for cleaner readability */
+.font-serif strong,
+.font-serif b {
+  font-weight: 600;
 }
 
 /* =====================================================
    Dark mode token overrides
    ===================================================== */
 .dark {
-  --background: #0f172a;
-  --foreground: #e2e8f0;
-  --card: #1e293b;
-  --card-foreground: #e2e8f0;
-  --popover: #1e293b;
-  --popover-foreground: #e2e8f0;
-  --primary: #2dd4bf;
-  --primary-foreground: #0f172a;
-  --secondary: #1e293b;
-  --secondary-foreground: #e2e8f0;
-  --muted: #1e293b;
-  --muted-foreground: #94a3b8;
-  --accent: #134e4a;
-  --accent-foreground: #99f6e4;
-  --destructive: #f87171;
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.47 0.157 37.304);
+  --primary-foreground: oklch(0.98 0.016 73.684);
+  --secondary: oklch(0.274 0.006 286.033);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
   --destructive-foreground: #ffffff;
-  --border: #334155;
-  --input: #334155;
-  --ring: #2dd4bf;
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
 
   --sidebar-background: #0f172a;
-  --sidebar-foreground: #cbd5e1;
-  --sidebar-primary: #2dd4bf;
-  --sidebar-primary-foreground: #0f172a;
-  --sidebar-accent: #1e293b;
-  --sidebar-accent-foreground: #cbd5e1;
-  --sidebar-border: #1e293b;
-  --sidebar-ring: #2dd4bf;
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.705 0.213 47.604);
+  --sidebar-primary-foreground: oklch(0.98 0.016 73.684);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
 
   --success: #4ade80;
   --success-bg: #14532d;
@@ -183,12 +211,26 @@
   --error: #f87171;
   --error-bg: #450a0a;
 
+  --surface: oklch(0.205 0 0);
+
+  --code-block-bg: rgba(200, 200, 195, 0.08);
+  --inline-code-bg: rgba(200, 200, 195, 0.1);
+  --inline-code-text: rgb(220, 140, 140);
+
+  --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+
   --glass-bg: rgba(15, 23, 42, 0.55);
   --glass-bg-heavy: rgba(15, 23, 42, 0.80);
   --glass-border: rgba(255, 255, 255, 0.08);
   --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
   --glass-highlight: linear-gradient(135deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0) 60%);
   --glass-inner-shadow: inset 0 1px 1px rgba(255,255,255,0.06);
+  --chart-1: oklch(0.837 0.128 66.29);
+  --chart-2: oklch(0.705 0.213 47.604);
+  --chart-3: oklch(0.646 0.222 41.116);
+  --chart-4: oklch(0.553 0.195 38.402);
+  --chart-5: oklch(0.47 0.157 37.304);
+  --sidebar: oklch(0.205 0 0);
 }
 
 /* =====================================================
@@ -397,9 +439,9 @@ pre code.hljs {
 .floating-nav-item:active { transform: scale(0.92); }
 
 .floating-nav-item.active {
-  background: rgba(13, 148, 136, 0.15);
+  background: rgba(249, 115, 22, 0.15);
   color: var(--primary);
-  box-shadow: 0 2px 8px rgba(13, 148, 136, 0.15),
+  box-shadow: 0 2px 8px rgba(249, 115, 22, 0.15),
               var(--glass-inner-shadow);
   transition: all 350ms cubic-bezier(0.34, 1.56, 0.64, 1);
   transform: scale(1.08);
@@ -410,7 +452,7 @@ pre code.hljs {
   position: absolute;
   inset: 0;
   border-radius: 9999px;
-  background: radial-gradient(circle, rgba(13, 148, 136, 0.2) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(249, 115, 22, 0.2) 0%, transparent 70%);
   animation: glass-ripple 400ms ease-out;
 }
 
@@ -435,3 +477,14 @@ pre code.hljs {
   box-sizing: border-box;
 }
 
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}

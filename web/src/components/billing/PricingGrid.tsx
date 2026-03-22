@@ -37,14 +37,14 @@ function PlanCard({ plan, isCurrent, fmt }: { plan: BillingPlan; isCurrent: bool
     <div
       className={`relative rounded-lg border p-5 flex flex-col transition-shadow ${
         isHighlighted
-          ? 'border-teal-500 dark:border-teal-400 shadow-[0_0_12px_rgba(20,184,166,0.25)] dark:shadow-[0_0_12px_rgba(45,212,191,0.2)]'
+          ? 'border-brand-500 dark:border-brand-400 shadow-[0_0_12px_rgba(249,115,22,0.25)] dark:shadow-[0_0_12px_rgba(251,146,60,0.2)]'
           : 'border-zinc-200 dark:border-zinc-700'
       } bg-white dark:bg-zinc-800`}
     >
       {/* Recommended badge */}
       {isHighlighted && (
         <div className="absolute -top-3 left-1/2 -translate-x-1/2">
-          <span className="inline-flex items-center gap-1 px-3 py-0.5 text-xs font-medium rounded-full bg-teal-600 text-white">
+          <span className="inline-flex items-center gap-1 px-3 py-0.5 text-xs font-medium rounded-full bg-brand-600 text-white">
             <Sparkles className="w-3 h-3" />
             推荐
           </span>
@@ -54,7 +54,7 @@ function PlanCard({ plan, isCurrent, fmt }: { plan: BillingPlan; isCurrent: bool
       {/* Current plan badge */}
       {isCurrent && (
         <div className="absolute top-3 right-3">
-          <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300">
+          <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-brand-100 text-brand-700 dark:bg-brand-700/30 dark:text-brand-300">
             当前
           </span>
         </div>
@@ -64,11 +64,11 @@ function PlanCard({ plan, isCurrent, fmt }: { plan: BillingPlan; isCurrent: bool
       <div className="mb-4">
         <h4 className="text-lg font-bold">{plan.name}</h4>
         {plan.display_price ? (
-          <p className="text-xl font-bold text-teal-600 dark:text-teal-400 mt-1">
+          <p className="text-xl font-bold text-primary dark:text-brand-400 mt-1">
             {plan.display_price}
           </p>
         ) : (
-          <p className="text-xl font-bold text-teal-600 dark:text-teal-400 mt-1">
+          <p className="text-xl font-bold text-primary dark:text-brand-400 mt-1">
             {plan.monthly_cost_usd === 0 ? '免费' : `${fmt(plan.monthly_cost_usd)}/月`}
           </p>
         )}
@@ -98,7 +98,7 @@ function PlanCard({ plan, isCurrent, fmt }: { plan: BillingPlan; isCurrent: bool
         <div className="space-y-1.5 mb-4">
           {plan.features.map((feature, i) => (
             <div key={i} className="flex items-start gap-2 text-sm">
-              <Check className="w-4 h-4 text-teal-500 mt-0.5 shrink-0" />
+              <Check className="w-4 h-4 text-brand-500 mt-0.5 shrink-0" />
               <span>{feature}</span>
             </div>
           ))}

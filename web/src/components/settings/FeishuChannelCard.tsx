@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
+import { toast } from 'sonner';
 
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
-import { ToggleSwitch } from '@/components/ui/toggle-switch';
+import { Switch } from '@/components/ui/switch';
 import { api } from '../../api/client';
-import type { SettingsNotification } from './types';
 import { getErrorMessage } from './types';
 
 interface UserFeishuConfig {
@@ -17,9 +18,7 @@ interface UserFeishuConfig {
   updatedAt: string | null;
 }
 
-interface FeishuChannelCardProps extends SettingsNotification {}
-
-export function FeishuChannelCard({ setNotice, setError }: FeishuChannelCardProps) {
+export function FeishuChannelCard() {
   const [config, setConfig] = useState<UserFeishuConfig | null>(null);
   const [appId, setAppId] = useState('');
   const [appSecret, setAppSecret] = useState('');
@@ -49,14 +48,12 @@ export function FeishuChannelCard({ setNotice, setError }: FeishuChannelCardProp
 
   const handleToggle = async (newEnabled: boolean) => {
     setToggling(true);
-    setNotice(null);
-    setError(null);
     try {
       const data = await api.put<UserFeishuConfig>('/api/config/user-im/feishu', { enabled: newEnabled });
       setConfig(data);
-      setNotice(`飞书渠道已${newEnabled ? '启用' : '停用'}`);
+      toast.success(`飞书渠道已${newEnabled ? '启用' : '停用'}`);
     } catch (err) {
-      setError(getErrorMessage(err, '切换飞书渠道状态失败'));
+      toast.error(getErrorMessage(err, '切换飞书渠道状态失败'));
     } finally {
       setToggling(false);
     }
@@ -64,23 +61,21 @@ export function FeishuChannelCard({ setNotice, setError }: FeishuChannelCardProp
 
   const handleSave = async () => {
     setSaving(true);
-    setError(null);
-    setNotice(null);
     try {
       const id = appId.trim();
       const secret = appSecret.trim();
 
       if (id && !secret && !config?.hasAppSecret) {
-        setError('首次配置飞书需要同时提供 App ID 和 App Secret');
+        toast.error('首次配置飞书需要同时提供 App ID 和 App Secret');
         setSaving(false);
         return;
       }
 
       if (!id && !secret) {
         if (config?.appId || config?.hasAppSecret) {
-          setNotice('飞书配置未变更');
+          toast.success('飞书配置未变更');
         } else {
-          setError('请填写飞书 App ID 和 App Secret');
+          toast.error('请填写飞书 App ID 和 App Secret');
         }
         setSaving(false);
         return;
@@ -92,9 +87,9 @@ export function FeishuChannelCard({ setNotice, setError }: FeishuChannelCardProp
       const data = await api.put<UserFeishuConfig>('/api/config/user-im/feishu', payload);
       setConfig(data);
       setAppSecret('');
-      setNotice('飞书配置已保存');
+      toast.success('飞书配置已保存');
     } catch (err) {
-      setError(getErrorMessage(err, '保存飞书配置失败'));
+      toast.error(getErrorMessage(err, '保存飞书配置失败'));
     } finally {
       setSaving(false);
     }
@@ -102,15 +97,15 @@ export function FeishuChannelCard({ setNotice, setError }: FeishuChannelCardProp
 
   return (
     <div className="rounded-xl border border-border bg-card overflow-hidden">
-      <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 bg-slate-50/50">
+      <div className="flex items-center justify-between px-5 py-4 border-b border-border bg-muted/50">
         <div className="flex items-center gap-2">
-          <span className={`inline-block w-2 h-2 rounded-full ${config?.connected ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+          <span className={`inline-block w-2 h-2 rounded-full ${config?.connected ? 'bg-success' : 'bg-muted-foreground/40'}`} />
           <div>
-            <h3 className="text-sm font-semibold text-slate-800">飞书 Feishu</h3>
+            <h3 className="text-sm font-semibold text-foreground">飞书 Feishu</h3>
             <p className="text-xs text-slate-500 mt-0.5">接收飞书群消息并通过 Agent 自动回复</p>
           </div>
         </div>
-        <ToggleSwitch checked={enabled} disabled={loading || toggling} onChange={handleToggle} />
+        <Switch checked={enabled} disabled={loading || toggling} onCheckedChange={handleToggle} />
       </div>
 
       <div className={`px-5 py-4 space-y-4 transition-opacity ${!enabled ? 'opacity-50 pointer-events-none' : ''}`}>
@@ -125,7 +120,7 @@ export function FeishuChannelCard({ setNotice, setError }: FeishuChannelCardProp
             )}
             <div className="grid md:grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs text-slate-500 mb-1">App ID</label>
+                <Label className="text-xs text-muted-foreground mb-1">App ID</Label>
                 <Input
                   type="text"
                   value={appId}
@@ -134,7 +129,7 @@ export function FeishuChannelCard({ setNotice, setError }: FeishuChannelCardProp
                 />
               </div>
               <div>
-                <label className="block text-xs text-slate-500 mb-1">App Secret</label>
+                <Label className="text-xs text-muted-foreground mb-1">App Secret</Label>
                 <Input
                   type="password"
                   value={appSecret}

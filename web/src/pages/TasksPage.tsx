@@ -99,11 +99,11 @@ export function TasksPage() {
         />
 
         {error && (
-          <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 flex items-center justify-between">
-            <span className="text-sm text-red-700">{error}</span>
+          <div className="mb-4 p-3 rounded-lg bg-error-bg border border-error/20 flex items-center justify-between">
+            <span className="text-sm text-error">{error}</span>
             <button
               onClick={() => useTasksStore.setState({ error: null })}
-              className="p-1 text-red-400 hover:text-red-600 rounded transition-colors"
+              className="p-1 text-error hover:text-error rounded transition-colors"
             >
               <X size={16} />
             </button>
@@ -127,7 +127,7 @@ export function TasksPage() {
           <div className="space-y-6">
             {activeTasks.length > 0 && (
               <div>
-                <h2 className="text-sm font-semibold text-slate-700 mb-3">运行中</h2>
+                <h2 className="text-sm font-semibold text-foreground mb-3">运行中</h2>
                 <div className="space-y-3">
                   {activeTasks.map((task) => (
                     <TaskCard
@@ -145,7 +145,7 @@ export function TasksPage() {
 
             {pausedTasks.length > 0 && (
               <div>
-                <h2 className="text-sm font-semibold text-slate-700 mb-3">已暂停</h2>
+                <h2 className="text-sm font-semibold text-foreground mb-3">已暂停</h2>
                 <div className="space-y-3">
                   {pausedTasks.map((task) => (
                     <TaskCard
@@ -163,7 +163,7 @@ export function TasksPage() {
 
             {otherTasks.length > 0 && (
               <div>
-                <h2 className="text-sm font-semibold text-slate-700 mb-3">其他</h2>
+                <h2 className="text-sm font-semibold text-foreground mb-3">其他</h2>
                 <div className="space-y-3">
                   {otherTasks.map((task) => (
                     <TaskCard

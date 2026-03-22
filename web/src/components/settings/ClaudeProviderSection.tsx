@@ -11,14 +11,16 @@ import type {
   ProvidersListResponse,
   BalancingConfig,
   ProviderHealthStatus,
-  SettingsNotification,
 } from './types';
 import { getErrorMessage } from './types';
 import { ProviderList } from './ProviderList';
 import { ProviderEditor } from './ProviderEditor';
 import { BalancingSettings } from './BalancingSettings';
 
-interface ClaudeProviderSectionProps extends SettingsNotification {}
+interface ClaudeProviderSectionProps {
+  setNotice: (msg: string | null) => void;
+  setError: (msg: string | null) => void;
+}
 
 export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSectionProps) {
   const [providers, setProviders] = useState<ProviderWithHealth[]>([]);

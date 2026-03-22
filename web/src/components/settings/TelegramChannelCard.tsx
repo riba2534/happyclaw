@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
+import { toast } from 'sonner';
 
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
-import { ToggleSwitch } from '@/components/ui/toggle-switch';
+import { Switch } from '@/components/ui/switch';
 import { api } from '../../api/client';
-import type { SettingsNotification } from './types';
 import { getErrorMessage } from './types';
 import { usePairingCode } from './hooks/usePairingCode';
 import { usePairedChats } from './hooks/usePairedChats';
@@ -29,9 +30,7 @@ interface TelegramTestResult {
   error?: string;
 }
 
-interface TelegramChannelCardProps extends SettingsNotification {}
-
-export function TelegramChannelCard({ setNotice, setError }: TelegramChannelCardProps) {
+export function TelegramChannelCard() {
   const [config, setConfig] = useState<UserTelegramConfig | null>(null);
   const [botToken, setBotToken] = useState('');
   const [proxyUrl, setProxyUrl] = useState('');
@@ -44,13 +43,9 @@ export function TelegramChannelCard({ setNotice, setError }: TelegramChannelCard
 
   const pairing = usePairingCode({
     endpoint: '/api/config/user-im/telegram/pairing-code',
-    setNotice,
-    setError,
   });
   const paired = usePairedChats({
     endpoint: '/api/config/user-im/telegram/paired-chats',
-    setNotice,
-    setError,
   });
 
   const loadConfig = useCallback(async () => {
@@ -74,14 +69,12 @@ export function TelegramChannelCard({ setNotice, setError }: TelegramChannelCard
 
   const handleToggle = async (newEnabled: boolean) => {
     setToggling(true);
-    setNotice(null);
-    setError(null);
     try {
       const data = await api.put<UserTelegramConfig>('/api/config/user-im/telegram', { enabled: newEnabled });
       setConfig(data);
-      setNotice(`Telegram 渠道已${newEnabled ? '启用' : '停用'}`);
+      toast.success(`Telegram 渠道已${newEnabled ? '启用' : '停用'}`);
     } catch (err) {
-      setError(getErrorMessage(err, '切换 Telegram 渠道状态失败'));
+      toast.error(getErrorMessage(err, '切换 Telegram 渠道状态失败'));
     } finally {
       setToggling(false);
     }
@@ -89,12 +82,10 @@ export function TelegramChannelCard({ setNotice, setError }: TelegramChannelCard
 
   const handleSave = async () => {
     setSaving(true);
-    setError(null);
-    setNotice(null);
     try {
       const token = botToken.trim();
       if (!token && !config?.hasBotToken) {
-        setError('请输入 Telegram Bot Token');
+        toast.error('请输入 Telegram Bot Token');
         setSaving(false);
         return;
       }
@@ -109,9 +100,9 @@ export function TelegramChannelCard({ setNotice, setError }: TelegramChannelCard
       setConfig(data);
       setBotToken('');
       setProxyUrl(data.proxyUrl || '');
-      setNotice('Telegram 配置已保存');
+      toast.success('Telegram 配置已保存');
     } catch (err) {
-      setError(getErrorMessage(err, '保存 Telegram 配置失败'));
+      toast.error(getErrorMessage(err, '保存 Telegram 配置失败'));
     } finally {
       setSaving(false);
     }
@@ -119,17 +110,15 @@ export function TelegramChannelCard({ setNotice, setError }: TelegramChannelCard
 
   const handleTest = async () => {
     setTesting(true);
-    setNotice(null);
-    setError(null);
     try {
       const result = await api.post<TelegramTestResult>('/api/config/user-im/telegram/test');
       if (result.success) {
-        setNotice(`Telegram 连接成功！Bot: @${result.bot_username} (${result.bot_name})`);
+        toast.success(`Telegram 连接成功！Bot: @${result.bot_username} (${result.bot_name})`);
       } else {
-        setError(result.error || 'Telegram 连接失败');
+        toast.error(result.error || 'Telegram 连接失败');
       }
     } catch (err) {
-      setError(getErrorMessage(err, 'Telegram 连接测试失败'));
+      toast.error(getErrorMessage(err, 'Telegram 连接测试失败'));
     } finally {
       setTesting(false);
     }
@@ -144,15 +133,15 @@ export function TelegramChannelCard({ setNotice, setError }: TelegramChannelCard
 
   return (
     <div className="rounded-xl border border-border bg-card overflow-hidden">
-      <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 bg-slate-50/50">
+      <div className="flex items-center justify-between px-5 py-4 border-b border-border bg-muted/50">
         <div className="flex items-center gap-2">
-          <span className={`inline-block w-2 h-2 rounded-full ${config?.connected ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+          <span className={`inline-block w-2 h-2 rounded-full ${config?.connected ? 'bg-success' : 'bg-muted-foreground/40'}`} />
           <div>
-            <h3 className="text-sm font-semibold text-slate-800">Telegram</h3>
+            <h3 className="text-sm font-semibold text-foreground">Telegram</h3>
             <p className="text-xs text-slate-500 mt-0.5">通过 Telegram Bot 接收和回复消息</p>
           </div>
         </div>
-        <ToggleSwitch checked={enabled} disabled={loading || toggling} onChange={handleToggle} />
+        <Switch checked={enabled} disabled={loading || toggling} onCheckedChange={handleToggle} />
       </div>
 
       <div className={`px-5 py-4 space-y-4 transition-opacity ${!enabled ? 'opacity-50 pointer-events-none' : ''}`}>
@@ -166,7 +155,7 @@ export function TelegramChannelCard({ setNotice, setError }: TelegramChannelCard
               </div>
             )}
             <div>
-              <label className="block text-xs text-slate-500 mb-1">Bot Token</label>
+              <Label className="text-xs text-muted-foreground mb-1">Bot Token</Label>
               <Input
                 type="password"
                 value={botToken}
@@ -175,7 +164,7 @@ export function TelegramChannelCard({ setNotice, setError }: TelegramChannelCard
               />
             </div>
             <div>
-              <label className="block text-xs text-slate-500 mb-1">代理 URL（可选）</label>
+              <Label className="text-xs text-muted-foreground mb-1">代理 URL（可选）</Label>
               <Input
                 type="text"
                 value={proxyUrl}

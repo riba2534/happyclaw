@@ -53,7 +53,7 @@ interface UserDetail extends UserBillingOverview {
 function ProgressBar({ value, max }: { value: number; max: number }) {
   const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
   const color =
-    pct >= 90 ? 'bg-red-500' : pct >= 70 ? 'bg-yellow-500' : 'bg-teal-500';
+    pct >= 90 ? 'bg-red-500' : pct >= 70 ? 'bg-yellow-500' : 'bg-brand-500';
   return (
     <div className="h-2 bg-zinc-200 dark:bg-zinc-700 rounded-full overflow-hidden">
       <div
@@ -169,7 +169,7 @@ export default function UserBillingDrawer({
 
         {loading ? (
           <div className="flex items-center justify-center py-12">
-            <Loader2 className="w-6 h-6 animate-spin text-teal-600" />
+            <Loader2 className="w-6 h-6 animate-spin text-primary" />
           </div>
         ) : !detail ? (
           <p className="text-sm text-zinc-500 p-4">无法加载用户信息</p>
@@ -178,7 +178,7 @@ export default function UserBillingDrawer({
             {/* Current plan */}
             <div>
               <div className="flex items-center gap-2 text-sm font-medium mb-2">
-                <Package className="w-4 h-4 text-teal-600" />
+                <Package className="w-4 h-4 text-primary" />
                 当前套餐
               </div>
               <div className="flex items-center gap-2">
@@ -201,10 +201,10 @@ export default function UserBillingDrawer({
             {/* Balance */}
             <div>
               <div className="flex items-center gap-2 text-sm font-medium mb-2">
-                <Wallet className="w-4 h-4 text-teal-600" />
+                <Wallet className="w-4 h-4 text-primary" />
                 余额
               </div>
-              <div className="text-2xl font-bold text-teal-600">
+              <div className="text-2xl font-bold text-primary">
                 {fmt(detail.balance_usd)}
               </div>
               <div
@@ -373,7 +373,7 @@ export default function UserBillingDrawer({
             {/* Recent transactions */}
             <div className="pt-2 border-t border-zinc-200 dark:border-zinc-700">
               <div className="flex items-center gap-2 text-sm font-medium mb-2">
-                <History className="w-4 h-4 text-teal-600" />
+                <History className="w-4 h-4 text-primary" />
                 交易记录
               </div>
               {transactions.length === 0 ? (

@@ -81,19 +81,19 @@ export function PairingSection({ channelName, pairing, paired }: PairingSectionP
         {paired.loading ? (
           <div className="text-xs text-slate-400">加载中...</div>
         ) : paired.chats.length === 0 ? (
-          <div className="text-xs text-slate-400">暂无已配对的聊天</div>
+          <div className="text-xs text-muted-foreground">暂无已配对的聊天</div>
         ) : (
           <div className="space-y-1.5">
             {paired.chats.map((chat) => (
-              <div key={chat.jid} className="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-50 group">
+              <div key={chat.jid} className="flex items-center justify-between px-3 py-2 rounded-lg bg-muted group">
                 <div className="min-w-0">
-                  <div className="text-sm text-slate-700 truncate">{chat.name}</div>
-                  <div className="text-xs text-slate-400">{new Date(chat.addedAt).toLocaleString('zh-CN')}</div>
+                  <div className="text-sm text-foreground truncate">{chat.name}</div>
+                  <div className="text-xs text-muted-foreground">{new Date(chat.addedAt).toLocaleString('zh-CN')}</div>
                 </div>
                 <button
                   onClick={() => paired.remove(chat.jid)}
                   disabled={paired.removingJid === chat.jid}
-                  className="ml-2 p-1 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all disabled:opacity-50"
+                  className="ml-2 p-1 rounded text-muted-foreground hover:text-error hover:bg-error-bg opacity-0 group-hover:opacity-100 transition-all disabled:opacity-50"
                   title="移除配对"
                 >
                   {paired.removingJid === chat.jid ? (

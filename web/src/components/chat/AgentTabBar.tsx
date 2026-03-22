@@ -54,11 +54,11 @@ export function AgentTabBar({ agents, activeTab, onSelectTab, onDeleteAgent, onC
             onClick={() => onSelectTab(agent.id)}
           >
             {agent.status === 'running' && (
-              <span className="w-1.5 h-1.5 rounded-full bg-teal-500 animate-pulse flex-shrink-0" />
+              <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse flex-shrink-0" />
             )}
             {hasLinked && (
               <span title={`已绑定: ${agent.linked_im_groups!.map(g => g.name).join(', ')}`}>
-                <MessageSquare className="w-3 h-3 text-teal-500 flex-shrink-0" />
+                <MessageSquare className="w-3 h-3 text-primary flex-shrink-0" />
               </span>
             )}
             <span className="truncate max-w-[120px]">{agent.name}</span>

@@ -6,6 +6,7 @@ import {
   Loader2,
   Copy,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { api } from '@/api/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -63,7 +64,6 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
   // State
   const [step, setStep] = useState<1 | 2>(1);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -86,7 +86,6 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
     setShowConfirm(false);
     setStep(1);
     setLoading(false);
-    setError(null);
     setCopied(false);
     setCaps(null);
   }, []);
@@ -101,11 +100,10 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
   const addScreenshot = useCallback(
     (base64: string) => {
       if (screenshots.length >= MAX_SCREENSHOTS) {
-        setError(`最多上传 ${MAX_SCREENSHOTS} 张截图`);
+        toast.error(`最多上传 ${MAX_SCREENSHOTS} 张截图`);
         return;
       }
       setScreenshots((prev) => [...prev, base64]);
-      setError(null);
     },
     [screenshots.length],
   );
@@ -115,11 +113,11 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
       const file = e.target.files?.[0];
       if (!file) return;
       if (file.size > MAX_SCREENSHOT_SIZE) {
-        setError('单张截图不能超过 5MB');
+        toast.error('单张截图不能超过 5MB');
         return;
       }
       if (!file.type.startsWith('image/')) {
-        setError('请选择图片文件');
+        toast.error('请选择图片文件');
         return;
       }
       const reader = new FileReader();
@@ -144,7 +142,7 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
           const file = item.getAsFile();
           if (!file) continue;
           if (file.size > MAX_SCREENSHOT_SIZE) {
-            setError('粘贴的截图不能超过 5MB');
+            toast.error('粘贴的截图不能超过 5MB');
             return;
           }
           const reader = new FileReader();
@@ -191,11 +189,10 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
   // No gh: generate report then show preview
   const handleGenerateForPreview = useCallback(async () => {
     if (!description.trim()) {
-      setError('请输入问题描述');
+      toast.error('请输入问题描述');
       return;
     }
     setLoading(true);
-    setError(null);
 
     try {
       const result = await generateReport();
@@ -206,7 +203,7 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
       setStep(2);
     } catch (err) {
       const msg = err instanceof Error ? err.message : '生成报告失败，请重试';
-      setError(msg);
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -214,10 +211,9 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
 
   const handleSubmitClick = useCallback(() => {
     if (!description.trim()) {
-      setError('请输入问题描述');
+      toast.error('请输入问题描述');
       return;
     }
-    setError(null);
 
     if (caps?.ghAvailable) {
       // Show confirmation dialog
@@ -263,11 +259,10 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
   // Preview step: manual submit (opens pre-filled URL)
   const handleManualSubmit = useCallback(async () => {
     if (!title.trim() || !body.trim()) {
-      setError('标题和内容不能为空');
+      toast.error('标题和内容不能为空');
       return;
     }
     setLoading(true);
-    setError(null);
 
     try {
       const result = await api.post<SubmitResult>('/api/bug-report/submit', {
@@ -291,7 +286,7 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
         typeof err === 'object' && err !== null && 'message' in err
           ? (err as { message: string }).message
           : '提交失败，请重试';
-      setError(msg);
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -320,19 +315,12 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
           </DialogTitle>
         </DialogHeader>
 
-        {/* Error display */}
-        {error && (
-          <div className="text-sm text-red-600 bg-red-50 px-3 py-2 rounded-md">
-            {error}
-          </div>
-        )}
-
         {/* Step 1: Input */}
         {step === 1 && !showConfirm && (
           <div className="space-y-4" onPaste={handlePaste}>
             <div>
-              <label className="text-sm font-medium text-slate-700 mb-1 block">
-                问题描述 <span className="text-red-500">*</span>
+              <label className="text-sm font-medium text-foreground mb-1 block">
+                问题描述 <span className="text-error">*</span>
               </label>
               <Textarea
                 value={description}
@@ -341,20 +329,20 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
                 rows={4}
                 maxLength={5000}
               />
-              <p className="text-xs text-slate-400 mt-1">
+              <p className="text-xs text-muted-foreground mt-1">
                 {description.length}/5000
               </p>
             </div>
 
             <div>
-              <label className="text-sm font-medium text-slate-700 mb-1 block">
+              <label className="text-sm font-medium text-foreground mb-1 block">
                 截图（可选，最多 {MAX_SCREENSHOTS} 张）
               </label>
               <div className="flex flex-wrap gap-2">
                 {screenshots.map((_, i) => (
                   <div
                     key={i}
-                    className="relative w-16 h-16 rounded-md bg-slate-100 border border-slate-200 flex items-center justify-center text-xs text-slate-500"
+                    className="relative w-16 h-16 rounded-md bg-muted border border-border flex items-center justify-center text-xs text-muted-foreground"
                   >
                     截图 {i + 1}
                     <button
@@ -370,14 +358,14 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="w-16 h-16 rounded-md border-2 border-dashed border-slate-300 flex flex-col items-center justify-center text-slate-400 hover:border-teal-400 hover:text-teal-500 transition-colors"
+                    className="w-16 h-16 rounded-md border-2 border-dashed border-border flex flex-col items-center justify-center text-muted-foreground hover:border-brand-400 hover:text-brand-500 transition-colors"
                   >
                     <ImagePlus className="w-5 h-5" />
                     <span className="text-[10px] mt-0.5">添加</span>
                   </button>
                 )}
               </div>
-              <p className="text-xs text-slate-400 mt-1">
+              <p className="text-xs text-muted-foreground mt-1">
                 支持粘贴截图或点击添加，单张不超过 5MB
               </p>
               <input
@@ -394,10 +382,10 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
         {/* Confirmation when gh available */}
         {step === 1 && showConfirm && (
           <div className="text-center py-4 space-y-3">
-            <p className="text-sm text-slate-700">
-              将以 <span className="font-semibold text-slate-900">{caps?.ghUsername || 'GitHub'}</span> 的身份提交 Issue 到
+            <p className="text-sm text-foreground">
+              将以 <span className="font-semibold text-foreground">{caps?.ghUsername || 'GitHub'}</span> 的身份提交 Issue 到
             </p>
-            <p className="text-sm text-slate-500">riba2534/happyclaw</p>
+            <p className="text-sm text-muted-foreground">riba2534/happyclaw</p>
           </div>
         )}
 
@@ -405,7 +393,7 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
         {step === 2 && (
           <div className="space-y-4">
             <div>
-              <label className="text-sm font-medium text-slate-700 mb-1 block">
+              <label className="text-sm font-medium text-foreground mb-1 block">
                 Issue 标题
               </label>
               <Input
@@ -416,7 +404,7 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
             </div>
 
             <div>
-              <label className="text-sm font-medium text-slate-700 mb-1 block">
+              <label className="text-sm font-medium text-foreground mb-1 block">
                 Issue 内容（Markdown）
               </label>
               <Textarea
@@ -429,14 +417,14 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
 
             {Object.keys(systemInfo).length > 0 && (
               <div>
-                <p className="text-xs font-medium text-slate-500 mb-1">
+                <p className="text-xs font-medium text-muted-foreground mb-1">
                   系统信息
                 </p>
                 <div className="flex flex-wrap gap-1">
                   {Object.entries(systemInfo).map(([k, v]) => (
                     <span
                       key={k}
-                      className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded"
+                      className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded"
                     >
                       {k}: {v}
                     </span>
@@ -479,7 +467,6 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
                 variant="outline"
                 onClick={() => {
                   setStep(1);
-                  setError(null);
                 }}
               >
                 返回

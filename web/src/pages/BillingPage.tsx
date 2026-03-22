@@ -87,7 +87,7 @@ export default function BillingPage() {
       <div className="sticky top-0 z-10 bg-white dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-800 px-4 py-3">
         <div className="flex items-center gap-4 overflow-x-auto">
           <h2 className="text-lg font-semibold flex items-center gap-2 shrink-0">
-            <CreditCard className="w-5 h-5 text-teal-600" />
+            <CreditCard className="w-5 h-5 text-primary" />
             账单
           </h2>
           <div className="flex gap-1">
@@ -97,7 +97,7 @@ export default function BillingPage() {
                 onClick={() => setTab(key)}
                 className={`flex cursor-pointer items-center gap-1.5 px-3 py-1.5 text-sm rounded-md transition-colors whitespace-nowrap ${
                   tab === key
-                    ? 'bg-teal-50 dark:bg-teal-900/30 text-teal-700 dark:text-teal-300'
+                    ? 'bg-brand-50 dark:bg-brand-700/20 text-brand-700 dark:text-brand-300'
                     : 'text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800'
                 }`}
               >
