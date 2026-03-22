@@ -82,6 +82,8 @@ export interface IMChannel {
     fileName?: string,
   ): Promise<void>;
   setTyping(chatId: string, isTyping: boolean): Promise<void>;
+  /** Clear the ack reaction for a chat (e.g. when streaming card handled the reply) */
+  clearAckReaction?(chatId: string): void;
   isConnected(): boolean;
   syncGroups?(): Promise<void>;
   /** Create a streaming card session for real-time card updates (Feishu only) */
@@ -196,6 +198,11 @@ export function createFeishuChannel(config: FeishuConnectionConfig): IMChannel {
     async setTyping(chatId: string, isTyping: boolean): Promise<void> {
       if (!inner) return;
       await inner.sendReaction(chatId, isTyping);
+    },
+
+    clearAckReaction(chatId: string): void {
+      if (!inner) return;
+      inner.clearAckReaction(chatId);
     },
 
     isConnected(): boolean {

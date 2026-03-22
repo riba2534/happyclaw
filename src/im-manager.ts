@@ -218,6 +218,20 @@ class IMConnectionManager {
   }
 
   /**
+   * Clear the ack reaction for a chat (e.g. when streaming card handled the reply).
+   */
+  clearAckReaction(jid: string): void {
+    const channelType = getChannelType(jid);
+    if (!channelType) return;
+
+    const chatId = extractChatId(jid);
+    const channel = this.findChannelForJid(jid, channelType);
+    if (channel?.clearAckReaction) {
+      channel.clearAckReaction(chatId);
+    }
+  }
+
+  /**
    * Create a streaming card session for an IM chat (Feishu only).
    * Returns undefined for non-Feishu channels or if not supported.
    */

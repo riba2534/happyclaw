@@ -87,6 +87,8 @@ export interface FeishuConnection {
   ): Promise<void>;
   sendFile(chatId: string, filePath: string, fileName: string): Promise<void>;
   sendReaction(chatId: string, isTyping: boolean): Promise<void>;
+  /** Clear the "OnIt" ack reaction for a chat (e.g. when streaming card handled the reply). */
+  clearAckReaction(chatId: string): void;
   isConnected(): boolean;
   syncGroups(): Promise<void>;
   getChatInfo(chatId: string): Promise<FeishuChatInfo | null>;
@@ -1848,6 +1850,15 @@ export function createFeishuConnection(
           await removeReaction(msgId, reactionId);
           typingReactionByChat.delete(chatId);
         }
+      }
+    },
+
+    clearAckReaction(chatId: string): void {
+      const ackStored = ackReactionByChat.get(chatId);
+      if (ackStored) {
+        const [ackMsgId, ackReactionId] = ackStored.split(':');
+        removeReaction(ackMsgId, ackReactionId).catch(() => {});
+        ackReactionByChat.delete(chatId);
       }
     },
 
