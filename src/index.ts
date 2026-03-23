@@ -1881,11 +1881,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const directImReply = getChannelType(chatJid) !== null;
   let replySourceImJid: string | null = null;
   if (!directImReply) {
-    // chatJid is a web channel — check if ALL messages share the same IM source
-    const firstSourceJid = missedMessages[0]?.source_jid || chatJid;
+    // chatJid is a web channel — check if ALL user messages share the same IM source.
+    // Ignore agent replies (sender='happyclaw-agent') to avoid false negatives when
+    // agent replies are included in missedMessages context.
+    const userMessages = missedMessages.filter((m) => m.sender !== 'happyclaw-agent');
+    const firstSourceJid = userMessages[0]?.source_jid || chatJid;
     const allSameImSource =
       getChannelType(firstSourceJid) !== null &&
-      missedMessages.every((m) => (m.source_jid || chatJid) === firstSourceJid);
+      userMessages.every((m) => (m.source_jid || chatJid) === firstSourceJid);
     if (allSameImSource) {
       replySourceImJid = firstSourceJid;
     }
@@ -2414,7 +2417,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                 streamingCardHandledIM = true;
                 // Streaming card replaced the normal sendMessage path,
                 // so clear the ack reaction that would normally be cleared in sendMessage.
-                imManager.clearAckReaction(chatJid);
+                // Use replySourceImJid (original IM JID) — chatJid may be normalized to web:xxx
+                imManager.clearAckReaction(replySourceImJid || chatJid);
                 logger.debug(
                   { chatJid },
                   'Streaming card completed with final text',
@@ -2538,7 +2542,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     await setTyping(chatJid, false);
     // Always clear ack reaction in finally — covers error/interrupt/abort paths
     // where the normal sendMessage (which clears it) is never called.
-    imManager.clearAckReaction(chatJid);
+    // Use replySourceImJid (original IM JID) — chatJid may be normalized to web:xxx
+    imManager.clearAckReaction(replySourceImJid || chatJid);
     if (idleTimer) clearTimeout(idleTimer);
     activeRouteUpdaters.delete(effectiveGroup.folder);
     activeImReplyRoutes.delete(effectiveGroup.folder);
