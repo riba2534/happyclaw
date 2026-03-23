@@ -115,6 +115,8 @@ import {
   saveUserFeishuConfig,
   saveUserTelegramConfig,
   updateAllSessionCredentials,
+  getEnabledProviders,
+  providerToConfig,
 } from './runtime-config.js';
 import type {
   FeishuConnectConfig,
@@ -2935,6 +2937,32 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     // rolling back would cause the same messages to be re-processed,
     // leading to duplicate replies.
     const errorDetail = output.error || lastError || '未知错误';
+
+    // ── API 错误自动切换备用渠道 ──
+    const isApiError = errorDetail.includes('API Error') ||
+                       errorDetail.includes('model_not_found') ||
+                       errorDetail.includes('No available channel');
+    if (isApiError) {
+      const enabledProviders = getEnabledProviders();
+      if (enabledProviders.length > 1) {
+        // 标记当前供应商为不健康
+        const { providerPool } = await import('./provider-pool.js');
+        const currentProviderId = enabledProviders[0].id;
+        providerPool.reportFailure(currentProviderId);
+
+        logger.warn(
+          { currentProvider: enabledProviders[0].name, error: errorDetail },
+          'API error detected, marked provider as unhealthy, will retry with next provider',
+        );
+        sendSystemMessage(
+          chatJid,
+          'info',
+          `主 API 不可用，已切换到备用渠道，正在重试...`,
+        );
+        // 不提交游标，让队列重试时自动选择下一个健康的供应商
+        return false;
+      }
+    }
 
     // 上下文溢出错误：跳过重试，提交游标，通知用户
     if (errorDetail.startsWith('context_overflow:')) {

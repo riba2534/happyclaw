@@ -1457,7 +1457,6 @@ export function toPublicProvider(provider: UnifiedProvider): UnifiedProviderPubl
     updatedAt: provider.updatedAt,
   };
 }
-
 /**
  * Resolve a provider by ID to { config, customEnv } in a single disk read.
  * Used by container-runner for pool-selected providers.
