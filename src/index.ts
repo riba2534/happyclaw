@@ -3710,7 +3710,14 @@ function startIpcWatcher(): void {
                   const effectiveChatJid = ipcAgentId
                     ? `${data.chatJid}#agent:${ipcAgentId}`
                     : data.chatJid;
+                  // Suppress auto IM send when we have a tracked route — the route
+                  // is authoritative and may differ from the stale data.chatJid
+                  // (set at agent start, never updated on IM channel switch).
+                  // Fall back to default auto-send when no route is tracked
+                  // (edge case: race during agent shutdown).
+                  const hasTrackedRoute = !ipcAgentId && activeImReplyRoutes.has(sourceGroup);
                   await sendMessage(effectiveChatJid, data.text, {
+                    sendToIM: hasTrackedRoute ? false : undefined,
                     messageMeta: {
                       sourceKind: 'sdk_send_message',
                     },
@@ -3721,11 +3728,7 @@ function startIpcWatcher(): void {
                   // processAgentConversation's wrappedOnOutput callback.
                   if (!ipcAgentId) {
                     const ipcImRoute = activeImReplyRoutes.get(sourceGroup);
-                    if (
-                      ipcImRoute &&
-                      getChannelType(data.chatJid) === null &&
-                      ipcImRoute !== data.chatJid
-                    ) {
+                    if (ipcImRoute) {
                       const localImages = extractLocalImImagePaths(
                         data.text,
                         sourceGroup,
@@ -3735,8 +3738,9 @@ function startIpcWatcher(): void {
 
                     // Scheduled task: broadcast to all connected IM channels of the owner
                     if (data.isScheduledTask && sourceGroupEntry?.created_by) {
+                      // Only include JIDs we actually sent to (not the potentially stale data.chatJid)
                       const alreadySent = new Set<string>(
-                        [data.chatJid, ipcImRoute].filter(Boolean) as string[],
+                        [ipcImRoute].filter(Boolean) as string[],
                       );
                       const taskLocalImages = extractLocalImImagePaths(
                         data.text,
@@ -3794,12 +3798,15 @@ function startIpcWatcher(): void {
                     const fileName = data.fileName || undefined;
 
                     // Conversation agents: skip IM forwarding (handled in wrappedOnOutput).
-                    // Non-agent: route to IM via activeImReplyRoutes.
+                    // Non-agent: use activeImReplyRoutes (authoritative, tracks route changes).
+                    // Fall back to data.chatJid only when no route is tracked (race during shutdown).
                     const imgImRoute = ipcAgentId
                       ? null
-                      : getChannelType(data.chatJid) !== null
-                        ? data.chatJid
-                        : activeImReplyRoutes.get(sourceGroup) ?? null;
+                      : activeImReplyRoutes.has(sourceGroup)
+                        ? activeImReplyRoutes.get(sourceGroup) ?? null
+                        : getChannelType(data.chatJid) !== null
+                          ? data.chatJid
+                          : null;
                     if (imgImRoute) {
                       await retryImOperation('send_image', imgImRoute, () =>
                         imManager.sendImage(imgImRoute, imageBuffer, mimeType, caption, fileName),
