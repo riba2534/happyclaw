@@ -227,7 +227,7 @@ html.dark.theme-neutral {
 html.theme-orange {
   --background: #FAF9F5;
   --foreground: #141413;
-  --card: #F0EEE6;
+  --card: #F0EEE630;
   --card-foreground: #141413;
   --popover: #F0EEE6;
   --popover-foreground: #141413;

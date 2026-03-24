@@ -249,6 +249,12 @@ export const ProfileUpdateSchema = z.object({
     .regex(/^#[0-9a-fA-F]{6}$/)
     .nullable()
     .optional(),
+  avatar_url: z
+    .string()
+    .max(2048)
+    .refine((v) => v.startsWith('/api/auth/avatars/'), 'Invalid avatar URL')
+    .nullable()
+    .optional(),
   ai_name: z.string().min(1).max(32).nullable().optional(),
   ai_avatar_emoji: z.string().max(8).nullable().optional(),
   ai_avatar_color: z

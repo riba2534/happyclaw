@@ -25,6 +25,7 @@ export interface UserPublic {
   deleted_at: string | null;
   avatar_emoji: string | null;
   avatar_color: string | null;
+  avatar_url: string | null;
   ai_name: string | null;
   ai_avatar_emoji: string | null;
   ai_avatar_color: string | null;
@@ -58,8 +59,8 @@ interface AuthState {
   checkStatus: () => Promise<void>;
   setupAdmin: (username: string, password: string) => Promise<void>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
-  updateProfile: (payload: { username?: string; display_name?: string; avatar_emoji?: string | null; avatar_color?: string | null; ai_name?: string | null; ai_avatar_emoji?: string | null; ai_avatar_color?: string | null; ai_avatar_url?: string | null }) => Promise<void>;
-  uploadAvatar: (file: File) => Promise<string>;
+  updateProfile: (payload: { username?: string; display_name?: string; avatar_emoji?: string | null; avatar_color?: string | null; avatar_url?: string | null; ai_name?: string | null; ai_avatar_emoji?: string | null; ai_avatar_color?: string | null; ai_avatar_url?: string | null }) => Promise<void>;
+  uploadAvatar: (file: File, target?: 'user' | 'ai') => Promise<string>;
   fetchAppearance: () => Promise<void>;
   hasPermission: (permission: Permission) => boolean;
 }
@@ -161,10 +162,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ user: data.user });
   },
 
-  uploadAvatar: async (file: File) => {
+  uploadAvatar: async (file: File, target: 'user' | 'ai' = 'ai') => {
     const formData = new FormData();
     formData.append('avatar', file);
-    const data = await apiFetch<{ success: boolean; avatarUrl: string; user: UserPublic }>('/api/auth/avatar', {
+    const url = target === 'user' ? '/api/auth/avatar?target=user' : '/api/auth/avatar';
+    const data = await apiFetch<{ success: boolean; avatarUrl: string; user: UserPublic }>(url, {
       method: 'POST',
       body: formData,
       headers: {},

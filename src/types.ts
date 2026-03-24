@@ -177,6 +177,7 @@ export interface User {
   notes: string | null;
   avatar_emoji: string | null;
   avatar_color: string | null;
+  avatar_url: string | null;
   ai_name: string | null;
   ai_avatar_emoji: string | null;
   ai_avatar_color: string | null;
@@ -199,6 +200,7 @@ export interface UserPublic {
   notes: string | null;
   avatar_emoji: string | null;
   avatar_color: string | null;
+  avatar_url: string | null;
   ai_name: string | null;
   ai_avatar_emoji: string | null;
   ai_avatar_color: string | null;

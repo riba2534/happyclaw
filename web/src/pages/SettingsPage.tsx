@@ -23,7 +23,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import type { SettingsTab } from '../components/settings/types';
 
 const VALID_TABS: SettingsTab[] = ['claude', 'registration', 'appearance', 'system', 'profile', 'my-channels', 'security', 'groups', 'memory', 'skills', 'mcp-servers', 'agent-definitions', 'users', 'about', 'bindings'];
-const SYSTEM_TABS: SettingsTab[] = ['claude', 'registration', 'system'];
+const SYSTEM_TABS: SettingsTab[] = ['claude', 'registration', 'appearance', 'system'];
 const FULLPAGE_TABS: SettingsTab[] = ['groups', 'memory', 'skills', 'mcp-servers', 'agent-definitions', 'users', 'bindings'];
 
 export function SettingsPage() {
@@ -61,13 +61,13 @@ export function SettingsPage() {
   // Mobile horizontal tab bar
   const mobileTabs = useMemo(() => {
     const tabs: { key: SettingsTab; label: string }[] = [];
-    tabs.push({ key: 'profile', label: '个人资料' });
-    tabs.push({ key: 'appearance', label: '外观' });
+    tabs.push({ key: 'profile', label: '个人偏好' });
     tabs.push({ key: 'my-channels', label: '消息通道' });
     tabs.push({ key: 'security', label: '安全' });
     if (canManageSystemConfig) {
       tabs.push({ key: 'claude', label: 'Claude' });
       tabs.push({ key: 'registration', label: '注册' });
+      tabs.push({ key: 'appearance', label: '全局外观' });
       tabs.push({ key: 'system', label: '系统' });
     }
     tabs.push({ key: 'groups', label: '会话' });
@@ -97,9 +97,9 @@ export function SettingsPage() {
   const sectionTitle: Record<SettingsTab, string> = {
     claude: 'Claude 提供商',
     registration: '注册管理',
-    appearance: '外观设置',
+    appearance: '全局外观',
     system: '系统参数',
-    profile: '个人资料',
+    profile: '个人偏好',
     'my-channels': '消息通道',
     security: '安全与设备',
     groups: '会话管理',
@@ -113,7 +113,7 @@ export function SettingsPage() {
   };
 
   return (
-    <div className="min-h-full bg-background flex flex-col lg:flex-row">
+    <div className="h-full bg-background flex flex-col lg:flex-row overflow-hidden">
       {/* Mobile header */}
       <div
         className="lg:hidden sticky top-0 z-10 flex items-center bg-background border-b border-border px-4 h-12"
@@ -167,7 +167,7 @@ export function SettingsPage() {
         onOpenChange={setNavOpen}
       />
 
-      <div className="flex-1 min-w-0 overflow-visible lg:overflow-y-auto">
+      <div className="flex-1 min-w-0 overflow-y-auto">
         {FULLPAGE_TABS.includes(activeTab) ? (
           <>
             {activeTab === 'groups' && <GroupsPage />}

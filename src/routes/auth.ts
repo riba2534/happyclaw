@@ -117,6 +117,7 @@ export function toUserPublic(u: User): UserPublic {
     notes: u.notes,
     avatar_emoji: u.avatar_emoji ?? null,
     avatar_color: u.avatar_color ?? null,
+    avatar_url: u.avatar_url ?? null,
     ai_name: u.ai_name ?? null,
     ai_avatar_emoji: u.ai_avatar_emoji ?? null,
     ai_avatar_color: u.ai_avatar_color ?? null,
@@ -613,6 +614,9 @@ authRoutes.put('/profile', authMiddleware, async (c) => {
   if (validation.data.avatar_color !== undefined) {
     updates.avatar_color = validation.data.avatar_color;
   }
+  if (validation.data.avatar_url !== undefined) {
+    updates.avatar_url = validation.data.avatar_url;
+  }
   if (validation.data.ai_name !== undefined) {
     updates.ai_name = validation.data.ai_name;
   }
@@ -767,7 +771,7 @@ const ALLOWED_AVATAR_TYPES: Record<string, string> = {
   'image/gif': '.gif',
   'image/webp': '.webp',
 };
-const MAX_AVATAR_SIZE = 2 * 1024 * 1024; // 2MB
+const MAX_AVATAR_SIZE = 3 * 1024 * 1024; // 3MB
 
 authRoutes.post('/avatar', authMiddleware, async (c) => {
   const user = c.get('user') as AuthUser;
@@ -784,7 +788,7 @@ authRoutes.post('/avatar', authMiddleware, async (c) => {
   }
 
   if (file.size > MAX_AVATAR_SIZE) {
-    return c.json({ error: 'File too large (max 2MB)' }, 400);
+    return c.json({ error: 'File too large (max 3MB)' }, 400);
   }
 
   const ext = ALLOWED_AVATAR_TYPES[file.type];
@@ -818,8 +822,10 @@ authRoutes.post('/avatar', authMiddleware, async (c) => {
 
   const avatarUrl = `/api/auth/avatars/${filename}`;
 
-  // Update user profile with new avatar URL
-  updateUserFields(user.id, { ai_avatar_url: avatarUrl });
+  // Update user profile — target=user stores as avatar_url, otherwise ai_avatar_url
+  const target = c.req.query('target');
+  const field = target === 'user' ? 'avatar_url' : 'ai_avatar_url';
+  updateUserFields(user.id, { [field]: avatarUrl });
 
   const updated = getUserById(user.id)!;
   return c.json({ success: true, avatarUrl, user: toUserPublic(updated) });
