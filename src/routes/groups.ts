@@ -9,7 +9,7 @@ import {
 } from '../schemas.js';
 import type { AuthUser, RegisteredGroup, ExecutionMode } from '../types.js';
 import { checkGroupLimit } from '../billing.js';
-import { DATA_DIR, GROUPS_DIR } from '../config.js';
+import { DATA_DIR, GROUPS_DIR, isDockerAvailable } from '../config.js';
 import {
   isHostExecutionGroup,
   hasHostExecutionPermission,
@@ -375,7 +375,8 @@ groupRoutes.post('/', authMiddleware, async (c) => {
     return c.json({ error: 'Group name is required' }, 400);
   }
 
-  const executionMode = validation.data.execution_mode || 'container';
+  // If user didn't specify execution mode, pick based on Docker availability
+  const executionMode = validation.data.execution_mode || (await isDockerAvailable() ? 'container' : 'host');
   const customCwd = validation.data.custom_cwd; // Schema already trims and converts empty to undefined
   const initSourcePath = validation.data.init_source_path;
   const initGitUrl = validation.data.init_git_url;
@@ -696,6 +697,7 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
     name: rawName,
     is_pinned,
     activation_mode,
+    execution_mode,
   } = validation.data;
   const name = rawName ? normalizeGroupName(rawName) : undefined;
 
@@ -703,16 +705,34 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
   if (
     !name &&
     is_pinned === undefined &&
-    activation_mode === undefined
+    activation_mode === undefined &&
+    execution_mode === undefined
   ) {
     return c.json({ error: 'No fields to update' }, 400);
+  }
+
+  // 不允许修改 is_home=true 的主容器执行模式（主容器由 loadState 强制管理）
+  if (execution_mode !== undefined && existing.is_home) {
+    return c.json(
+      { error: 'Cannot change execution mode of home containers' },
+      403,
+    );
+  }
+
+  // member 用户不允许使用 host 模式（安全限制）
+  if (execution_mode === 'host' && !hasHostExecutionPermission(authUser)) {
+    return c.json(
+      { error: 'Insufficient permissions for host execution mode' },
+      403,
+    );
   }
 
   // Pin/unpin only requires canAccessGroup (it's a per-user preference)
   const isPinOnly =
     is_pinned !== undefined &&
     !name &&
-    activation_mode === undefined;
+    activation_mode === undefined &&
+    execution_mode === undefined;
   if (isPinOnly) {
     if (
       !canAccessGroup(
@@ -754,14 +774,17 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
     unpinGroup(authUser.id, jid);
   }
 
-  // Update registered group if name or activation_mode changed
-  if (name || activation_mode !== undefined) {
+  // Update registered group if name, activation_mode, or execution_mode changed
+  if (name || activation_mode !== undefined || execution_mode !== undefined) {
     const updated: RegisteredGroup = {
       name: name || existing.name,
       folder: existing.folder,
       added_at: existing.added_at,
       containerConfig: existing.containerConfig,
-      executionMode: existing.executionMode,
+      executionMode:
+        execution_mode !== undefined
+          ? (execution_mode as ExecutionMode)
+          : existing.executionMode,
       customCwd: existing.customCwd,
       initSourcePath: existing.initSourcePath,
       initGitUrl: existing.initGitUrl,

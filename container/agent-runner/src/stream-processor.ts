@@ -12,6 +12,9 @@
 import type { ContainerOutput, StreamEvent } from './types.js';
 import { extractSkillName, summarizeToolInput } from './utils.js';
 
+/** Tools with specialized input_json_delta handling — generic accumulation is skipped for these. */
+const SPECIAL_TOOLS = ['Skill', 'Task', 'Agent', 'AskUserQuestion', 'TodoWrite'];
+
 type EmitFn = (output: ContainerOutput) => void;
 type LogFn = (message: string) => void;
 type ModeChangeRequestFn = (mode: string) => void;
@@ -61,6 +64,13 @@ export class StreamEventProcessor {
     toolUseId: string; inputJson: string; resolved: boolean;
     parentToolUseId: string | null; isNested: boolean;
   }>();
+  // Accumulate generic tool input_json_delta to extract toolInputSummary
+  private readonly pendingGenericInput = new Map<number, {
+    toolUseId: string; inputJson: string; resolved: boolean;
+    parentToolUseId: string | null; isNested: boolean;
+    toolName: string;
+  }>();
+
   // Confirmed teammate Tasks (detected via team_name)
   private readonly teammateTaskToolUseIds = new Set<string>();
 
@@ -270,6 +280,15 @@ export class StreamEventProcessor {
       }
     }
 
+    // Track generic tools for input_json_delta → toolInputSummary
+    if (block.name && !SPECIAL_TOOLS.includes(block.name) && typeof blockIndex === 'number') {
+      this.pendingGenericInput.set(blockIndex, {
+        toolUseId: block.id || '', inputJson: '', resolved: false,
+        parentToolUseId: effectiveParentToolUseId, isNested: effectiveIsNested,
+        toolName: block.name,
+      });
+    }
+
     // Track Task / Agent tool (both spawn sub-agents whose messages need forwarding)
     if ((block.name === 'Task' || block.name === 'Agent') && block.id) {
       this.taskToolUseIds.add(block.id);
@@ -434,6 +453,40 @@ export class StreamEventProcessor {
             toolName: 'Task',
             taskDescription: descMatch[1].replace(/\\"/g, '"').slice(0, 200),
             ...(isTeammate ? { isTeammate: true } : {}),
+          },
+        });
+      }
+    }
+
+    // Accumulate generic tool input JSON for toolInputSummary.
+    // Only attempt JSON.parse when the accumulated string looks complete (ends with '}')
+    // to avoid O(n^2) repeated parse failures on large tool inputs.
+    // Cap at 10KB to avoid unbounded memory growth on tools with large inputs (Write, Edit).
+    const GENERIC_INPUT_MAX = 10_240;
+    const pendingGeneric = this.pendingGenericInput.get(blockIndex);
+    if (pendingGeneric && !pendingGeneric.resolved) {
+      if (pendingGeneric.inputJson.length >= GENERIC_INPUT_MAX) {
+        pendingGeneric.resolved = true;
+        this.pendingGenericInput.delete(blockIndex);
+        return;
+      }
+      pendingGeneric.inputJson += partialJson;
+      const trimmed = pendingGeneric.inputJson.trimEnd();
+      const summary = trimmed.endsWith('}') ? summarizeToolInput((() => {
+        try { return JSON.parse(pendingGeneric.inputJson); } catch { return null; }
+      })()) : undefined;
+      if (summary) {
+        pendingGeneric.resolved = true;
+        this.pendingGenericInput.delete(blockIndex);
+        this.emit({
+          status: 'stream', result: null,
+          streamEvent: {
+            eventType: 'tool_progress',
+            toolName: pendingGeneric.toolName,
+            toolUseId: pendingGeneric.toolUseId,
+            parentToolUseId: pendingGeneric.parentToolUseId,
+            isNested: pendingGeneric.isNested,
+            toolInputSummary: summary,
           },
         });
       }
@@ -745,6 +798,7 @@ export class StreamEventProcessor {
     this.pendingTaskInput.clear();
     this.pendingAskUserInput.clear();
     this.pendingTodoInput.clear();
+    this.pendingGenericInput.clear();
   }
 
   /**

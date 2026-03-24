@@ -81,7 +81,12 @@ import type {
   StreamEvent,
   UserRole,
 } from './types.js';
-import { WEB_PORT, SESSION_COOKIE_NAME, ASSISTANT_NAME } from './config.js';
+import {
+  WEB_PORT,
+  SESSION_COOKIE_NAME_SECURE,
+  SESSION_COOKIE_NAME_PLAIN,
+  ASSISTANT_NAME,
+} from './config.js';
 import { logger } from './logger.js';
 import { executeSessionReset } from './commands.js';
 import {
@@ -352,16 +357,11 @@ async function handleWebUserMessage(
   );
   if (sendResult === 'sent') {
     pipedToActive = true;
-  } else if (sendResult === 'queued') {
-    // Message queued for next container run; don't advance cursor so
-    // processGroupMessages re-reads it from DB. Drain sentinel already
-    // written — the current runner will exit and drainGroup picks it up.
   } else {
     deps.queue.enqueueMessageCheck(chatJid);
   }
 
   // Only advance per-group cursor when we piped directly into a running container.
-  // For queued processing, processGroupMessages must still see this message from DB.
   //
   // When piped to active, we also mark the group as having pending IPC-injected
   // messages. If the agent crashes without processing them, the close handler
@@ -539,7 +539,8 @@ function setupWebSocket(server: any): WebSocketServer {
 
     // Verify session cookie
     const cookies = parseCookie(request.headers.cookie);
-    const token = cookies[SESSION_COOKIE_NAME];
+    const token =
+      cookies[SESSION_COOKIE_NAME_SECURE] || cookies[SESSION_COOKIE_NAME_PLAIN];
     if (!token) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
@@ -731,6 +732,46 @@ function setupWebSocket(server: any): WebSocketServer {
                 return;
               }
             }
+          }
+
+          // ── /sw or /spawn command: spawn parallel task (checked before agent routing) ──
+          const swMatch = content.trim().match(/^\/(sw|spawn)\s+([\s\S]+)$/i);
+          if (swMatch && deps?.handleSpawnCommand) {
+            const spawnMessage = swMatch[2].trim();
+            if (spawnMessage) {
+              try {
+                // For agent tab, include agentId in chatJid so spawn resolves the right workspace
+                const effectiveChatJid = agentId
+                  ? `${chatJid}#agent:${agentId}`
+                  : chatJid;
+                // Store user's /sw message in the current chat so it's visible
+                const userMsgId = crypto.randomUUID();
+                const userMsgTs = new Date().toISOString();
+                ensureChatExists(effectiveChatJid);
+                storeMessageDirect(
+                  userMsgId, effectiveChatJid,
+                  session.user_id,
+                  session.display_name || session.username,
+                  content.trim(),
+                  userMsgTs,
+                  false,
+                  { meta: { sourceKind: 'user_command' } },
+                );
+                broadcastNewMessage(effectiveChatJid, {
+                  id: userMsgId, chat_jid: effectiveChatJid,
+                  sender: session.user_id,
+                  sender_name: session.display_name || session.username,
+                  content: content.trim(),
+                  timestamp: userMsgTs,
+                  is_from_me: false,
+                });
+
+                await deps.handleSpawnCommand(effectiveChatJid, spawnMessage);
+              } catch (err) {
+                logger.error({ chatJid, err }, '/sw command failed');
+              }
+            }
+            return;
           }
 
           // Route to agent conversation handler if agentId is present

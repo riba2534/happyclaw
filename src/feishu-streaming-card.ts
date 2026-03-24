@@ -440,6 +440,7 @@ function buildAuxiliaryElements(aux: AuxiliaryState): {
 function buildStreamingCard(
   text: string,
   state: 'streaming' | 'completed' | 'aborted',
+  footerNote?: string,
 ): object {
   const { title, contentElements: elements } = buildCardContent(text, splitAtParagraphs);
 
@@ -462,6 +463,13 @@ function buildStreamingCard(
     elements.push({
       tag: 'note',
       elements: [{ tag: 'plain_text', content: noteMap[state] }],
+    });
+  }
+
+  if (footerNote) {
+    elements.push({
+      tag: 'note',
+      elements: [{ tag: 'plain_text', content: footerNote }],
     });
   }
 
@@ -499,6 +507,7 @@ function buildSchema2Card(
   titlePrefix = '',
   overrideTitle?: string,
   auxiliaryState?: AuxiliaryState,
+  footerNote?: string,
 ): object {
   const { title, contentElements } = buildCardContent(
     text,
@@ -531,6 +540,14 @@ function buildSchema2Card(
     });
   }
 
+  if (footerNote) {
+    elements.push({
+      tag: 'markdown',
+      content: footerNote,
+      text_size: 'notation',
+    });
+  }
+
   return {
     schema: '2.0',
     config: {
@@ -543,6 +560,26 @@ function buildSchema2Card(
     },
     body: { elements },
   };
+}
+
+// ─── Usage Note Formatter ─────────────────────────────────────
+
+function formatUsageNote(usage: {
+  inputTokens: number;
+  outputTokens: number;
+  costUSD: number;
+  durationMs: number;
+  numTurns: number;
+}): string {
+  const fmt = (n: number) =>
+    n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
+  const parts: string[] = [];
+  parts.push(`${fmt(usage.inputTokens)} / ${fmt(usage.outputTokens)} tokens`);
+  if (usage.costUSD > 0) parts.push(`$${usage.costUSD.toFixed(4)}`);
+  if (usage.durationMs > 0)
+    parts.push(`${(usage.durationMs / 1000).toFixed(1)}s`);
+  if (usage.numTurns > 1) parts.push(`${usage.numTurns} turns`);
+  return `💰 ${parts.join(' · ')}`;
 }
 
 // ─── Streaming Mode Card Builder ──────────────────────────────
@@ -1037,6 +1074,10 @@ class MultiCardManager {
     this.onCardCreated = onCardCreated;
   }
 
+  getCardCount(): number {
+    return this.cards.length;
+  }
+
   /**
    * Create the first card and send it as a message.
    * Returns the initial messageId.
@@ -1069,6 +1110,7 @@ class MultiCardManager {
     text: string,
     state: 'streaming' | 'completed' | 'aborted',
     auxiliaryState?: AuxiliaryState,
+    footerNote?: string,
   ): Promise<void> {
     const titlePrefix = this.cardIndex > 0 ? '(续) ' : '';
 
@@ -1081,7 +1123,8 @@ class MultiCardManager {
         })()
       : 0;
     const fixedCount = (state === 'streaming' ? 1 : 0)        // button
-                     + (SCHEMA2_NOTE_MAP[state] ? 1 : 0);     // note
+                     + (SCHEMA2_NOTE_MAP[state] ? 1 : 0)      // note
+                     + (footerNote ? 1 : 0);                   // footer
     const totalElements = contentElements.length + auxCount + fixedCount;
 
     if (totalElements > this.MAX_ELEMENTS && state === 'streaming') {
@@ -1094,7 +1137,7 @@ class MultiCardManager {
     const currentCard = this.cards[this.cards.length - 1];
     if (!currentCard) return;
 
-    const cardJson = buildSchema2Card(text, state, titlePrefix, undefined, auxiliaryState);
+    const cardJson = buildSchema2Card(text, state, titlePrefix, undefined, auxiliaryState, footerNote);
 
     // Byte size check (Feishu limit ~30KB, use 25KB safety margin)
     const cardSize = Buffer.byteLength(JSON.stringify(cardJson), 'utf-8');
@@ -1409,24 +1452,67 @@ export class StreamingCardController {
   async complete(finalText: string): Promise<void> {
     if (this.state !== 'streaming' && this.state !== 'creating') return;
 
+    const prevState = this.state;
     this.accumulatedText = finalText;
     this.state = 'completed';
     this.flushCtrl.dispose();
     this.textFlushCtrl?.dispose();
     this.auxFlushCtrl?.dispose();
 
-    if (this.backendMode === 'streaming' && this.streamingBackend) {
-      try {
+    try {
+      if (this.backendMode === 'streaming' && this.streamingBackend) {
         await this.finalizeStreamingCard('completed');
-      } catch (err) {
-        logger.debug({ err, chatId: this.chatId }, 'Streaming card: finalize failed');
-      }
-    } else if (this.messageId || this.multiCard) {
-      try {
+      } else if (this.messageId || this.multiCard) {
         await this.patchCard('completed');
-      } catch (err) {
-        logger.debug({ err, chatId: this.chatId }, 'Streaming card: final patch failed');
       }
+    } catch (err) {
+      // Revert state so abort() doesn't bail on the 'completed' check
+      this.state = prevState;
+      throw err;
+    }
+  }
+
+  /**
+   * Patch a completed card to append a usage note at the bottom.
+   * Called AFTER complete() because agent-runner emits usage after the final result.
+   */
+  async patchUsageNote(usage: {
+    inputTokens: number;
+    outputTokens: number;
+    costUSD: number;
+    durationMs: number;
+    numTurns: number;
+  }): Promise<void> {
+    if (this.state !== 'completed') return;
+
+    const note = formatUsageNote(usage);
+    if (!note) return;
+
+    try {
+      if (this.backendMode === 'streaming' && this.streamingBackend) {
+        const cardJson = buildSchema2Card(
+          this.accumulatedText,
+          'completed',
+          '',
+          undefined,
+          undefined,
+          note,
+        );
+        // Skip if card was split during finalization — rebuilding a single card
+        // would overwrite the first card with full text while continuation cards remain.
+        const cardSize = Buffer.byteLength(JSON.stringify(cardJson), 'utf-8');
+        if (cardSize > CARD_SIZE_LIMIT) return;
+        await this.streamingBackend.updateCardFull(cardJson);
+      } else if (this.messageId || this.multiCard) {
+        // For CardKit v1 / legacy: skip if multiCard has split content
+        if (this.multiCard && this.multiCard.getCardCount() > 1) return;
+        await this.patchCard('completed', note);
+      }
+    } catch (err) {
+      logger.debug(
+        { err, chatId: this.chatId },
+        'Streaming card: patchUsageNote failed (non-fatal)',
+      );
     }
   }
 
@@ -1833,12 +1919,13 @@ export class StreamingCardController {
 
   private async patchCard(
     displayState: 'streaming' | 'completed' | 'aborted',
+    footerNote?: string,
   ): Promise<void> {
     if (this.useCardKit && this.multiCard) {
       // CardKit v1 path — pass auxiliary state for rich display
       const auxState = displayState === 'streaming' ? this.getAuxiliaryState() : undefined;
       try {
-        await this.multiCard.commitContent(this.accumulatedText, displayState, auxState);
+        await this.multiCard.commitContent(this.accumulatedText, displayState, auxState, footerNote);
         this.flushCtrl.markFlushed(this.accumulatedText.length);
         this.patchFailCount = 0;
       } catch (err) {
@@ -1853,7 +1940,7 @@ export class StreamingCardController {
       // Legacy message.patch path (no auxiliary content)
       if (!this.messageId) return;
 
-      const card = buildStreamingCard(this.accumulatedText, displayState);
+      const card = buildStreamingCard(this.accumulatedText, displayState, footerNote);
       const content = JSON.stringify(card);
 
       try {

@@ -3227,6 +3227,7 @@ export interface UserWeChatConfig {
   baseUrl?: string; // 默认 https://ilinkai.weixin.qq.com
   cdnBaseUrl?: string; // 默认 https://novac2c.cdn.weixin.qq.com/c2c
   getUpdatesBuf?: string; // 长轮询游标
+  bypassProxy?: boolean; // 直连模式：绕过 HTTP 代理（默认 true）
   enabled?: boolean;
   updatedAt: string | null;
 }
@@ -3237,6 +3238,7 @@ interface StoredWeChatProviderConfigV1 {
   baseUrl?: string;
   cdnBaseUrl?: string;
   getUpdatesBuf?: string;
+  bypassProxy?: boolean;
   enabled?: boolean;
   updatedAt: string;
   secret: EncryptedSecrets;
@@ -3297,6 +3299,7 @@ export function getUserWeChatConfig(userId: string): UserWeChatConfig | null {
       baseUrl: stored.baseUrl,
       cdnBaseUrl: stored.cdnBaseUrl,
       getUpdatesBuf: stored.getUpdatesBuf,
+      bypassProxy: stored.bypassProxy ?? true, // 默认直连
       enabled: stored.enabled,
       updatedAt: stored.updatedAt || null,
     };
@@ -3316,6 +3319,7 @@ export function saveUserWeChatConfig(
     baseUrl: next.baseUrl?.trim() || undefined,
     cdnBaseUrl: next.cdnBaseUrl?.trim() || undefined,
     getUpdatesBuf: next.getUpdatesBuf,
+    bypassProxy: next.bypassProxy ?? true,
     enabled: next.enabled,
     updatedAt: new Date().toISOString(),
   };
@@ -3326,6 +3330,7 @@ export function saveUserWeChatConfig(
     baseUrl: normalized.baseUrl,
     cdnBaseUrl: normalized.cdnBaseUrl,
     getUpdatesBuf: normalized.getUpdatesBuf,
+    bypassProxy: normalized.bypassProxy,
     enabled: normalized.enabled,
     updatedAt: normalized.updatedAt || new Date().toISOString(),
     secret: encryptWeChatSecret({ botToken: normalized.botToken }),
@@ -3542,36 +3547,35 @@ function buildEnvFallbackSettings(): SystemSettings {
 }
 
 export function getSystemSettings(): SystemSettings {
-  // Fast path: return cached value if file hasn't changed
-  try {
-    if (_settingsCache) {
-      if (!fs.existsSync(SYSTEM_SETTINGS_FILE)) return _settingsCache;
+  // Fast path: return cached value if file hasn't changed (single stat)
+  if (_settingsCache) {
+    try {
       const mtimeMs = fs.statSync(SYSTEM_SETTINGS_FILE).mtimeMs;
       if (mtimeMs === _settingsMtimeMs) return _settingsCache;
+    } catch {
+      return _settingsCache; // file gone or stat failed — cached value is still valid
     }
-  } catch {
-    // stat failed — fall through to full read
   }
 
   // 1. Try reading from file
   try {
-    if (fs.existsSync(SYSTEM_SETTINGS_FILE)) {
-      const settings = readSystemSettingsFromFile();
-      if (settings) {
-        _settingsCache = settings;
-        try {
-          _settingsMtimeMs = fs.statSync(SYSTEM_SETTINGS_FILE).mtimeMs;
-        } catch {
-          /* ignore */
-        }
-        return settings;
+    const settings = readSystemSettingsFromFile();
+    if (settings) {
+      _settingsCache = settings;
+      try {
+        _settingsMtimeMs = fs.statSync(SYSTEM_SETTINGS_FILE).mtimeMs;
+      } catch {
+        /* ignore */
       }
+      return settings;
     }
   } catch (err) {
-    logger.warn(
-      { err },
-      'Failed to read system settings, falling back to env/defaults',
-    );
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      logger.warn(
+        { err },
+        'Failed to read system settings, falling back to env/defaults',
+      );
+    }
   }
 
   // 2. Fall back to env vars, then hardcoded defaults

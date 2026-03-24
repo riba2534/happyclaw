@@ -69,6 +69,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   // null = dialog closed; MAIN_BINDING = main conversation; other = agent id
   const [bindingAgentId, setBindingAgentId] = useState<string | null>(null);
   const [showNewConversation, setShowNewConversation] = useState(false);
+  const [renameTarget, setRenameTarget] = useState<{ agentId: string; name: string } | null>(null);
   // Code / Plan mode toggle (per group)
   const [permissionMode, setPermissionMode] = useState<'bypassPermissions' | 'plan'>('bypassPermissions');
   const [imStatus, setImStatus] = useState<{ feishu: boolean; telegram: boolean } | null>(null);
@@ -105,6 +106,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const deleteAgentAction = useChatStore(s => s.deleteAgentAction);
   const agentStreaming = useChatStore(s => s.agentStreaming);
   const createConversation = useChatStore(s => s.createConversation);
+  const renameConversation = useChatStore(s => s.renameConversation);
   const loadAgentMessages = useChatStore(s => s.loadAgentMessages);
   const refreshAgentMessages = useChatStore(s => s.refreshAgentMessages);
   const sendAgentMessage = useChatStore(s => s.sendAgentMessage);
@@ -548,6 +550,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
           }
           deleteAgentAction(groupJid, id);
         }}
+        onRenameAgent={(id, currentName) => setRenameTarget({ agentId: id, name: currentName })}
         onCreateConversation={() => setShowNewConversation(true)}
         onBindIm={setBindingAgentId}
         onBindMainIm={!isHome ? () => setBindingAgentId(MAIN_BINDING) : undefined}
@@ -873,6 +876,18 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
           });
         }}
         onClose={() => setShowNewConversation(false)}
+      />
+
+      <PromptDialog
+        open={renameTarget !== null}
+        title="重命名对话"
+        label="对话名称"
+        placeholder="输入新名称"
+        defaultValue={renameTarget?.name ?? ''}
+        onConfirm={(name) => {
+          if (renameTarget) renameConversation(groupJid, renameTarget.agentId, name);
+        }}
+        onClose={() => setRenameTarget(null)}
       />
     </div>
   );

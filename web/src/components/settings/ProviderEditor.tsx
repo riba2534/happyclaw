@@ -242,7 +242,6 @@ export function ProviderEditor({
           }
           createBody.anthropicBaseUrl = trimmedBaseUrl;
           createBody.anthropicAuthToken = trimmedToken;
-          if (model.trim()) createBody.anthropicModel = model.trim();
         } else {
           // 官方模式 — 根据认证方式设置凭据
           if (authTab === 'setup_token') {
@@ -288,6 +287,8 @@ export function ProviderEditor({
             // 允许不带凭据创建，用户之后通过 OAuth 流程补充
           }
         }
+
+        if (model.trim()) createBody.anthropicModel = model.trim();
 
         await api.post('/api/config/claude/providers', createBody);
         setNotice('提供商已创建。');
@@ -606,18 +607,6 @@ export function ProviderEditor({
               </div>
 
               <div>
-                <label className="block text-xs text-slate-600 mb-1">ANTHROPIC_MODEL</label>
-                <Input
-                  type="text"
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  disabled={saving}
-                  placeholder="opus / sonnet / haiku 或完整模型 ID"
-                  className="font-mono"
-                />
-              </div>
-
-              <div>
                 <label className="block text-xs text-slate-600 mb-1">
                   ANTHROPIC_AUTH_TOKEN{' '}
                   {!isCreate && provider?.hasAnthropicAuthToken
@@ -661,6 +650,44 @@ export function ProviderEditor({
               </div>
             </div>
           )}
+
+          {/* ─── 模型选择 ─── */}
+          <div>
+            <label className="block text-xs text-slate-600 mb-1">
+              {providerType === 'official' ? '模型' : 'ANTHROPIC_MODEL'}
+            </label>
+            {providerType === 'official' ? (
+              <>
+                <select
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  disabled={saving}
+                  className="w-full rounded-md border border-slate-200 bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"
+                >
+                  <option value="">default（默认）</option>
+                  <option value="sonnet">sonnet</option>
+                  <option value="haiku">haiku</option>
+                </select>
+                <p className="text-xs text-slate-400 mt-1">
+                  别名自动解析为最新版本，留空使用 default。
+                </p>
+              </>
+            ) : (
+              <>
+                <Input
+                  type="text"
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  disabled={saving}
+                  placeholder="第三方 API 的模型名称"
+                  className="font-mono"
+                />
+                <p className="text-xs text-slate-400 mt-1">
+                  注入为 ANTHROPIC_MODEL 环境变量，值取决于第三方 API 支持的模型。
+                </p>
+              </>
+            )}
+          </div>
 
           {/* ─── 自定义环境变量 ─── */}
           <div className="border-t border-slate-100 pt-4">

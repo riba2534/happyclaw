@@ -30,6 +30,7 @@ interface MessageListProps {
 type FlatItem =
   | { type: 'date'; content: string }
   | { type: 'divider'; content: string }
+  | { type: 'spawn'; content: string }
   | { type: 'error'; content: string }
   | { type: 'message'; content: Message };
 
@@ -44,6 +45,14 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
   const { mode: displayMode } = useDisplayMode();
   const thinkingCache = useChatStore(s => s.thinkingCache ?? {});
   const isShared = useChatStore(s => !!s.groups[groupJid ?? '']?.is_shared);
+  // Spawn agents: selector returns stable reference (the agents array itself),
+  // then useMemo filters for spawn kind. Direct .filter() in selector causes
+  // infinite re-render because Zustand sees a new array reference every time.
+  const allAgentsForSpawn = useChatStore(s => groupJid ? s.agents[groupJid] : undefined);
+  const spawnAgents = useMemo(
+    () => (allAgentsForSpawn ?? []).filter(a => a.kind === 'spawn' && a.status === 'running'),
+    [allAgentsForSpawn],
+  );
   const currentUser = useAuthStore(s => s.user);
   const appearance = useAuthStore(s => s.appearance);
   const aiName = currentUser?.ai_name || appearance?.aiName || 'AI 助手';
@@ -82,7 +91,12 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
             items.push({ type: 'error', content: msg.content.slice('agent_error:'.length) });
           } else if (msg.content.startsWith('agent_max_retries:')) {
             items.push({ type: 'error', content: msg.content.slice('agent_max_retries:'.length) });
+          } else if (msg.content.startsWith('system_info:')) {
+            items.push({ type: 'divider', content: msg.content.slice('system_info:'.length) });
           }
+        } else if (!msg.is_from_me && /^\/(sw|spawn)\s+/i.test(msg.content)) {
+          // /sw or /spawn commands render as compact spawn-task cards
+          items.push({ type: 'spawn', content: msg.content.replace(/^\/(sw|spawn)\s+/i, '') });
         } else {
           items.push({ type: 'message', content: msg });
         }
@@ -103,6 +117,7 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
       switch (item.type) {
         case 'date': return `date-${item.content}`;
         case 'divider': return `div-${index}`;
+        case 'spawn': return `spawn-${index}`;
         case 'error': return `err-${index}`;
         case 'message': return item.content.id;
       }
@@ -113,6 +128,7 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
       switch (item.type) {
         case 'date': return 48;
         case 'divider':
+        case 'spawn':
         case 'error': return 56;
         case 'message': {
           const len = item.content.content.length;
@@ -325,6 +341,32 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
               );
             }
 
+            if (item.type === 'spawn') {
+              return (
+                <div
+                  key={virtualItem.key}
+                  ref={virtualizer.measureElement}
+                  data-index={virtualItem.index}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    transform: `translateY(${virtualItem.start}px)`,
+                  }}
+                >
+                  <div className="flex items-center gap-2 my-4 px-4">
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-violet-50 dark:bg-violet-950/40 text-xs text-violet-600 dark:text-violet-400 border border-violet-200 dark:border-violet-800">
+                      <span>⚡</span>
+                      <span className="font-medium">并行任务</span>
+                      <span className="text-violet-400 dark:text-violet-500">|</span>
+                      <span className="max-w-[400px] truncate">{item.content}</span>
+                    </span>
+                  </div>
+                </div>
+              );
+            }
+
             if (item.type === 'error') {
               return (
                 <div
@@ -418,6 +460,11 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
         {groupJid && agentId && (
           <StreamingDisplay groupJid={groupJid} isWaiting={!!isWaiting} agentId={agentId} />
         )}
+
+        {/* Inline streaming for spawn agents — parallel tasks in same chat */}
+        {groupJid && !agentId && spawnAgents.map(a => (
+          <StreamingDisplay key={a.id} groupJid={groupJid} isWaiting={true} agentId={a.id} senderName={a.name} />
+        ))}
 
         </div>
       </div>

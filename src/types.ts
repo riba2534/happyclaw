@@ -86,6 +86,7 @@ export type MessageSourceKind =
   | 'interrupt_partial'
   | 'overflow_partial'
   | 'compact_partial'
+  | 'user_command'
   | 'legacy';
 
 export type MessageFinalizationReason =
@@ -277,7 +278,7 @@ export interface AuthAuditLog {
 // --- Sub-Agent types ---
 
 export type AgentStatus = 'idle' | 'running' | 'completed' | 'error';
-export type AgentKind = 'task' | 'conversation';
+export type AgentKind = 'task' | 'conversation' | 'spawn';
 
 export interface SubAgent {
   id: string;
@@ -292,6 +293,8 @@ export interface SubAgent {
   completed_at: string | null;
   result_summary: string | null;
   last_im_jid: string | null;
+  /** 发起 /spawn 命令的源会话 JID，用于完成后结果回注 */
+  spawned_from_jid: string | null;
 }
 
 // WebSocket message types

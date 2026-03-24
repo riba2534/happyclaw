@@ -21,6 +21,8 @@ import {
   setRegisteredGroup,
   getJidsByFolder,
   updateAgentLastImJid,
+  updateAgentInfo,
+  updateChatName,
 } from '../db.js';
 import { DATA_DIR } from '../config.js';
 import type { RegisteredGroup, SubAgent } from '../types.js';
@@ -109,6 +111,7 @@ router.post('/:jid/agents', authMiddleware, async (c) => {
     completed_at: null,
     result_summary: null,
     last_im_jid: null,
+    spawned_from_jid: null,
   };
 
   createAgent(agent);
@@ -160,6 +163,46 @@ router.post('/:jid/agents', authMiddleware, async (c) => {
       created_at: agent.created_at,
     },
   });
+});
+
+// PATCH /api/groups/:jid/agents/:agentId — rename a conversation agent
+router.patch('/:jid/agents/:agentId', authMiddleware, async (c) => {
+  const jid = decodeURIComponent(c.req.param('jid'));
+  const agentId = c.req.param('agentId');
+  const user = c.get('user');
+
+  const group = getRegisteredGroup(jid);
+  if (!group) {
+    return c.json({ error: 'Group not found' }, 404);
+  }
+  if (!canAccessGroup(user, { ...group, jid })) {
+    return c.json({ error: 'Forbidden' }, 403);
+  }
+
+  const agent = getAgent(agentId);
+  if (!agent || agent.chat_jid !== jid) {
+    return c.json({ error: 'Agent not found' }, 404);
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  if (!name || name.length > 40) {
+    return c.json({ error: 'Name is required (max 40 chars)' }, 400);
+  }
+
+  // Update agent name in DB
+  updateAgentInfo(agentId, name, agent.prompt);
+
+  // Update virtual chat name
+  const virtualChatJid = `${jid}#agent:${agentId}`;
+  updateChatName(virtualChatJid, name);
+
+  // Broadcast update via WebSocket
+  const { broadcastAgentStatus } = await import('../web.js');
+  broadcastAgentStatus(jid, agentId, agent.status as import('../types.js').AgentStatus, name, agent.prompt);
+
+  logger.info({ agentId, jid, name, userId: user.id }, 'Agent renamed');
+  return c.json({ success: true });
 });
 
 // DELETE /api/groups/:jid/agents/:agentId — stop and delete an agent

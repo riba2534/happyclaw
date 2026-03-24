@@ -25,7 +25,7 @@
     <title>HappyClaw</title>
   </head>
   <body>
-    <script>(function(){var s=localStorage.getItem('happyclaw-theme');var dark=s==='dark'||(s!=='light'&&window.matchMedia('(prefers-color-scheme: dark)').matches);if(dark)document.documentElement.classList.add('dark');})();</script>
+    <script>(function(){var d=document.documentElement,s=localStorage.getItem('happyclaw-theme');if(s==='dark'||(s!=='light'&&window.matchMedia('(prefers-color-scheme: dark)').matches))d.classList.add('dark');if(localStorage.getItem('happyclaw-color-scheme')==='neutral')d.classList.add('theme-neutral');if(localStorage.getItem('happyclaw-font-style')==='anthropic')d.classList.add('font-anthropic');})();</script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

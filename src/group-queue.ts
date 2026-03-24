@@ -7,7 +7,7 @@ import { killProcessTree } from './container-runner.js';
 import { getTaskById } from './db.js';
 import { getSystemSettings } from './runtime-config.js';
 import { logger } from './logger.js';
-export type SendMessageResult = 'sent' | 'queued' | 'no_active';
+export type SendMessageResult = 'sent' | 'no_active';
 
 interface QueuedTask {
   id: string;
@@ -403,12 +403,6 @@ export class GroupQueue {
     if (groupFolder) state.groupFolder = groupFolder;
     state.agentId = agentId || null;
     state.taskRunId = taskRunId || null;
-    if (state.pendingMessages && !state.agentId) {
-      this.requestDrainForActiveRunner(
-        groupJid,
-        'Drain sentinel written during registerProcess for already-pending messages',
-      );
-    }
   }
 
   /**
@@ -443,8 +437,7 @@ export class GroupQueue {
    * Send a follow-up message to the active container via IPC file.
    *
    * Returns:
-   * - 'sent': message written to IPC
-   * - 'queued': message queued for next container run
+   * - 'sent': message written to IPC (包括 queryInFlight 时的排队写入)
    * - 'no_active': no active container/process for this group
    */
   sendMessage(
@@ -476,20 +469,10 @@ export class GroupQueue {
       return 'no_active';
     }
 
-    // For main agent (not sub-agent), queue the message instead of
-    // IPC-injecting into the running query. This aligns with Claude Code's
-    // one-question-one-answer model: the current query finishes first, then
-    // drainGroup starts a new container to process queued messages.
-    if (state.agentId === null && state.queryInFlight) {
-      const own = this.getGroup(groupJid);
-      own.pendingMessages = true;
-      this.waitingGroups.add(groupJid);
-      this.requestDrainForActiveRunner(
-        groupJid,
-        'Message queued, drain sentinel written',
-      );
-      return 'queued';
-    }
+    // queryInFlight=true：当前 query 正在执行，将消息写入 IPC 文件排队。
+    // 当前 query 完成后 waitForIpcMessage() → drainIpcInput() 会合并所有
+    // 待处理的 IPC 消息为一个 prompt，实现自然聚合（如飞书转发+评论场景）。
+    // 不再写 _drain：容器无需退出重启，复用当前进程即可。
 
     const inputDir = this.resolveIpcInputDir(state);
     try {

@@ -23,7 +23,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import type { SettingsTab } from '../components/settings/types';
 
 const VALID_TABS: SettingsTab[] = ['claude', 'registration', 'appearance', 'system', 'profile', 'my-channels', 'security', 'groups', 'memory', 'skills', 'mcp-servers', 'agent-definitions', 'users', 'about', 'bindings'];
-const SYSTEM_TABS: SettingsTab[] = ['claude', 'registration', 'appearance', 'system'];
+const SYSTEM_TABS: SettingsTab[] = ['claude', 'registration', 'system'];
 const FULLPAGE_TABS: SettingsTab[] = ['groups', 'memory', 'skills', 'mcp-servers', 'agent-definitions', 'users', 'bindings'];
 
 export function SettingsPage() {
@@ -62,12 +62,12 @@ export function SettingsPage() {
   const mobileTabs = useMemo(() => {
     const tabs: { key: SettingsTab; label: string }[] = [];
     tabs.push({ key: 'profile', label: '个人资料' });
+    tabs.push({ key: 'appearance', label: '外观' });
     tabs.push({ key: 'my-channels', label: '消息通道' });
     tabs.push({ key: 'security', label: '安全' });
     if (canManageSystemConfig) {
       tabs.push({ key: 'claude', label: 'Claude' });
       tabs.push({ key: 'registration', label: '注册' });
-      tabs.push({ key: 'appearance', label: '外观' });
       tabs.push({ key: 'system', label: '系统' });
     }
     tabs.push({ key: 'groups', label: '会话' });
@@ -97,7 +97,7 @@ export function SettingsPage() {
   const sectionTitle: Record<SettingsTab, string> = {
     claude: 'Claude 提供商',
     registration: '注册管理',
-    appearance: '外观设置（全局默认）',
+    appearance: '外观设置',
     system: '系统参数',
     profile: '个人资料',
     'my-channels': '消息通道',

@@ -24,7 +24,7 @@ export interface AgentInfo {
   name: string;
   prompt: string;
   status: 'idle' | 'running' | 'completed' | 'error';
-  kind: 'task' | 'conversation';
+  kind: 'task' | 'conversation' | 'spawn';
   created_at: string;
   completed_at?: string;
   result_summary?: string;

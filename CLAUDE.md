@@ -193,7 +193,7 @@ StreamEvent 类型以 `shared/stream-event.ts` 为单一真相源，构建时通
 | 容器 → 主进程 | `data/ipc/{folder}/messages/*.json` | Agent 主动发送消息（`send_message` MCP 工具） |
 | 容器 → 主进程 | `data/ipc/{folder}/tasks/*.json` | 任务管理（创建 / 暂停 / 恢复 / 取消） |
 
-文件操作使用原子写入（先写 `.tmp` 再 `rename`），读取后立即删除。IPC 轮询间隔 1s（`IPC_POLL_INTERVAL`）。
+文件操作使用原子写入（先写 `.tmp` 再 `rename`），读取后立即删除。IPC 通信使用 `fs.watch` 事件驱动（50-100ms debounce）+ 5s 后备轮询。
 
 ### 3.4 容器挂载策略
 

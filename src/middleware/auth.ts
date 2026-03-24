@@ -15,11 +15,16 @@ import {
 import { isSessionExpired } from '../auth.js';
 import type { AuthUser, Permission } from '../types.js';
 import { hasPermission } from '../permissions.js';
-import { SESSION_COOKIE_NAME } from '../config.js';
+import {
+  SESSION_COOKIE_NAME_SECURE,
+  SESSION_COOKIE_NAME_PLAIN,
+} from '../config.js';
 
 export const authMiddleware = async (c: any, next: any) => {
   const cookies = parseCookie(c.req.header('cookie'));
-  const token = cookies[SESSION_COOKIE_NAME];
+  // Accept either cookie name — the browser will send whichever was set
+  const token =
+    cookies[SESSION_COOKIE_NAME_SECURE] || cookies[SESSION_COOKIE_NAME_PLAIN];
   if (!token) {
     return c.json({ error: 'Unauthorized' }, 401);
   }

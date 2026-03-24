@@ -87,6 +87,8 @@ export interface FeishuConnection {
   ): Promise<void>;
   sendFile(chatId: string, filePath: string, fileName: string): Promise<void>;
   sendReaction(chatId: string, isTyping: boolean): Promise<void>;
+  /** Clear the "OnIt" ack reaction for a chat (e.g. when streaming card handled the reply). */
+  clearAckReaction(chatId: string): void;
   isConnected(): boolean;
   syncGroups(): Promise<void>;
   getChatInfo(chatId: string): Promise<FeishuChatInfo | null>;
@@ -648,9 +650,12 @@ export function createFeishuConnection(
 
   function isDuplicate(msgId: string): boolean {
     const now = Date.now();
+    // Map preserves insertion order; stop at first non-expired entry
     for (const [id, ts] of msgCache.entries()) {
       if (now - ts > MSG_DEDUP_TTL) {
         msgCache.delete(id);
+      } else {
+        break;
       }
     }
     if (msgCache.size >= MSG_DEDUP_MAX) {
@@ -1638,8 +1643,12 @@ export function createFeishuConnection(
                 image_type: 'message',
                 image: fs.createReadStream(localImagePath),
               },
-            })) as { data?: { image_key?: string } } | null;
-            const imageKey = uploadRes?.data?.image_key;
+            })) as
+              | { image_key?: string; data?: { image_key?: string } }
+              | null
+              | undefined;
+            const imageKey =
+              uploadRes?.image_key ?? uploadRes?.data?.image_key;
             if (!imageKey) {
               logger.warn(
                 { chatId, localImagePath },
@@ -1690,9 +1699,13 @@ export function createFeishuConnection(
             image_type: 'message',
             image: imageBuffer,
           },
-        })) as { data?: { image_key?: string } } | null;
+        })) as
+          | { image_key?: string; data?: { image_key?: string } }
+          | null
+          | undefined;
 
-        const imageKey = uploadResult?.data?.image_key;
+        const imageKey =
+          uploadResult?.image_key ?? uploadResult?.data?.image_key;
         if (!imageKey) {
           logger.error(
             { chatId },
@@ -1783,9 +1796,13 @@ export function createFeishuConnection(
             file_name: fileName,
             file: buffer,
           },
-        })) as { data?: { file_key?: string } } | null;
+        })) as
+          | { file_key?: string; data?: { file_key?: string } }
+          | null
+          | undefined;
 
-        const fileKey = uploadResult?.data?.file_key;
+        const fileKey =
+          uploadResult?.file_key ?? uploadResult?.data?.file_key;
         if (!fileKey) {
           throw new Error('文件上传失败：未返回 file_key');
         }
@@ -1833,6 +1850,15 @@ export function createFeishuConnection(
           await removeReaction(msgId, reactionId);
           typingReactionByChat.delete(chatId);
         }
+      }
+    },
+
+    clearAckReaction(chatId: string): void {
+      const ackStored = ackReactionByChat.get(chatId);
+      if (ackStored) {
+        const [ackMsgId, ackReactionId] = ackStored.split(':');
+        removeReaction(ackMsgId, ackReactionId).catch(() => {});
+        ackReactionByChat.delete(chatId);
       }
     },
 

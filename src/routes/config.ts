@@ -5,6 +5,7 @@ import { Agent as HttpsAgent } from 'node:https';
 import { ProxyAgent } from 'proxy-agent';
 import QRCode from 'qrcode';
 import { Hono } from 'hono';
+import { updateWeChatNoProxy } from '../config.js';
 import type { Variables } from '../web-context.js';
 import { canAccessGroup, getWebDeps } from '../web-context.js';
 import { getChannelType } from '../im-channel.js';
@@ -1735,6 +1736,7 @@ configRoutes.get('/user-im/wechat', authMiddleware, (c) => {
         ilinkBotId: '',
         hasBotToken: false,
         botTokenMasked: null,
+        bypassProxy: true,
         enabled: false,
         updatedAt: null,
         connected,
@@ -1744,6 +1746,7 @@ configRoutes.get('/user-im/wechat', authMiddleware, (c) => {
       ilinkBotId: config.ilinkBotId || '',
       hasBotToken: !!config.botToken,
       botTokenMasked: maskBotToken(config.botToken),
+      bypassProxy: config.bypassProxy ?? true,
       enabled: config.enabled ?? false,
       updatedAt: config.updatedAt,
       connected,
@@ -1787,6 +1790,7 @@ configRoutes.put('/user-im/wechat', authMiddleware, async (c) => {
     baseUrl: current?.baseUrl,
     cdnBaseUrl: current?.cdnBaseUrl,
     getUpdatesBuf: current?.getUpdatesBuf,
+    bypassProxy: current?.bypassProxy ?? true,
     enabled: current?.enabled ?? false,
   };
 
@@ -1797,9 +1801,15 @@ configRoutes.put('/user-im/wechat', authMiddleware, async (c) => {
   if (typeof validation.data.enabled === 'boolean') {
     next.enabled = validation.data.enabled;
   }
+  if (typeof validation.data.bypassProxy === 'boolean') {
+    next.bypassProxy = validation.data.bypassProxy;
+  }
 
   try {
     const saved = saveUserWeChatConfig(user.id, next);
+
+    // Update NO_PROXY based on bypassProxy setting
+    updateWeChatNoProxy(saved.bypassProxy ?? true);
 
     // Hot-reload: reconnect user's WeChat channel
     if (deps?.reloadUserIMConfig) {
@@ -1818,6 +1828,7 @@ configRoutes.put('/user-im/wechat', authMiddleware, async (c) => {
       ilinkBotId: saved.ilinkBotId || '',
       hasBotToken: !!saved.botToken,
       botTokenMasked: maskBotToken(saved.botToken),
+      bypassProxy: saved.bypassProxy ?? true,
       enabled: saved.enabled ?? false,
       updatedAt: saved.updatedAt,
       connected,

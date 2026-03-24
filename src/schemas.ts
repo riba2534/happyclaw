@@ -184,6 +184,7 @@ export const GroupPatchSchema = z.object({
   activation_mode: z
     .enum(['auto', 'always', 'when_mentioned', 'disabled'])
     .optional(),
+  execution_mode: z.enum(['container', 'host']).optional(),
 });
 
 export const LoginSchema = z.object({
@@ -676,4 +677,5 @@ export const BalancingConfigSchema = z.object({
 export const WeChatConfigSchema = z.object({
   enabled: z.boolean().optional(),
   clearBotToken: z.boolean().optional(),
+  bypassProxy: z.boolean().optional(),
 });

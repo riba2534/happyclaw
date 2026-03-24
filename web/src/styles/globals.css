@@ -70,8 +70,8 @@
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
   --font-sans: 'Inter Variable', system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  --font-serif: Georgia, "Noto Serif SC", "Times New Roman", serif;
-  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+  --font-serif: 'Inter Variable', system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: 'SF Mono', 'Fira Code', ui-monospace, monospace;
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
@@ -163,6 +163,81 @@
   --glass-highlight: linear-gradient(135deg, rgba(255,255,255,0.5) 0%, rgba(255,255,255,0) 60%);
   --glass-inner-shadow: inset 0 1px 1px rgba(255,255,255,0.6);
   --sidebar: oklch(0.985 0 0);
+}
+
+/* =====================================================
+   Neutral theme — white/gray based design system
+   html prefix ensures specificity beats :root (0,1,0)
+   ===================================================== */
+html.theme-neutral {
+  --background: #ffffff;
+  --foreground: #18181b;
+  --card: #f4f4f5;
+  --card-foreground: #18181b;
+  --popover: #ffffff;
+  --popover-foreground: #18181b;
+  --primary: #52525b;
+  --primary-foreground: #ffffff;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #18181b;
+  --muted: #f4f4f5;
+  --muted-foreground: #71717a;
+  --accent: #f4f4f5;
+  --accent-foreground: #18181b;
+  --border: #e4e4e7;
+  --input: #e4e4e7;
+  --ring: #a1a1aa;
+  --brand-50: #fafafa;  --brand-100: #f4f4f5;  --brand-200: #e4e4e7;
+  --brand-300: #d4d4d8;  --brand-400: #a1a1aa;  --brand-500: #71717a;
+  --brand-600: #52525b;  --brand-700: #3f3f46;
+  --surface: #ffffff;
+  --sidebar-background: #fafafa;  --sidebar-foreground: #18181b;
+  --sidebar-primary: #52525b;  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #f4f4f5;  --sidebar-accent-foreground: #18181b;
+  --sidebar-border: #e4e4e7;  --sidebar-ring: #a1a1aa;  --sidebar: #fafafa;
+  --glass-bg: rgba(255,255,255,0.65);  --glass-bg-heavy: rgba(255,255,255,0.85);
+  --glass-border: rgba(228,228,231,0.5);
+}
+
+html.dark.theme-neutral {
+  --background: #09090b;  --foreground: #fafafa;
+  --card: #18181b;  --card-foreground: #fafafa;
+  --popover: #18181b;  --popover-foreground: #fafafa;
+  --primary: #a1a1aa;  --primary-foreground: #09090b;
+  --secondary: #27272a;  --secondary-foreground: #fafafa;
+  --muted: #27272a;  --muted-foreground: #a1a1aa;
+  --accent: #27272a;  --accent-foreground: #fafafa;
+  --border: #27272a;  --input: #27272a;  --ring: #52525b;
+  --brand-50: #18181b;  --brand-100: #27272a;  --brand-200: #3f3f46;
+  --brand-300: #52525b;  --brand-400: #71717a;  --brand-500: #a1a1aa;
+  --brand-600: #d4d4d8;  --brand-700: #e4e4e7;
+  --surface: #18181b;
+  --sidebar-background: #09090b;  --sidebar-foreground: #fafafa;
+  --sidebar-primary: #a1a1aa;  --sidebar-primary-foreground: #09090b;
+  --sidebar-accent: #27272a;  --sidebar-accent-foreground: #fafafa;
+  --sidebar-border: #27272a;  --sidebar-ring: #52525b;  --sidebar: #09090b;
+  --glass-bg: rgba(9,9,11,0.55);  --glass-bg-heavy: rgba(9,9,11,0.80);
+  --glass-border: rgba(255,255,255,0.08);
+}
+
+/* =====================================================
+   Anthropic font style — serif AI responses
+   Uses direct font-family overrides because @theme inline
+   bakes values into utilities at build time.
+   ===================================================== */
+html.font-anthropic body,
+html.font-anthropic input,
+html.font-anthropic textarea,
+html.font-anthropic button {
+  font-family: 'DM Sans', system-ui, 'Segoe UI', Roboto, sans-serif;
+}
+html.font-anthropic .font-serif {
+  font-family: Georgia, 'Noto Serif SC', 'Times New Roman', serif;
+}
+html.font-anthropic code,
+html.font-anthropic pre,
+html.font-anthropic .font-mono {
+  font-family: 'Söhne Mono', 'Fira Code', ui-monospace, monospace;
 }
 
 /* AI response typography: semibold (600) instead of bold (700) for cleaner readability */

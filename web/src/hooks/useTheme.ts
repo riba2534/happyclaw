@@ -1,9 +1,15 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 
 export type Theme = 'light' | 'dark' | 'system';
+export type ColorScheme = 'default' | 'neutral';
+export type FontStyle = 'default' | 'anthropic';
 
-const STORAGE_KEY = 'happyclaw-theme';
+const THEME_KEY = 'happyclaw-theme';
+const SCHEME_KEY = 'happyclaw-color-scheme';
+const FONT_KEY = 'happyclaw-font-style';
 const listeners = new Set<() => void>();
+
+function notify() { listeners.forEach((cb) => cb()); }
 
 function getSystemTheme(): 'light' | 'dark' {
   if (typeof window === 'undefined') return 'light';
@@ -12,24 +18,58 @@ function getSystemTheme(): 'light' | 'dark' {
 
 function readTheme(): Theme {
   if (typeof window === 'undefined') return 'system';
-  const stored = window.localStorage.getItem(STORAGE_KEY);
+  const stored = window.localStorage.getItem(THEME_KEY);
   if (stored === 'light' || stored === 'dark' || stored === 'system') return stored;
-  return 'system'; // default: follow system
+  return 'system';
+}
+
+function readColorScheme(): ColorScheme {
+  if (typeof window === 'undefined') return 'default';
+  const stored = window.localStorage.getItem(SCHEME_KEY);
+  if (stored === 'default' || stored === 'neutral') return stored;
+  return 'default';
+}
+
+function readFontStyle(): FontStyle {
+  if (typeof window === 'undefined') return 'default';
+  const stored = window.localStorage.getItem(FONT_KEY);
+  if (stored === 'default' || stored === 'anthropic') return stored;
+  return 'default';
 }
 
 function resolveTheme(theme: Theme): 'light' | 'dark' {
   return theme === 'system' ? getSystemTheme() : theme;
 }
 
+function syncMetaThemeColor() {
+  if (typeof document === 'undefined') return;
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (!meta) return;
+  const isDark = document.documentElement.classList.contains('dark');
+  const isNeutral = document.documentElement.classList.contains('theme-neutral');
+  if (isDark) {
+    meta.setAttribute('content', isNeutral ? '#09090b' : '#0f172a');
+  } else {
+    // Orange theme: warm cream, Neutral theme: white
+    meta.setAttribute('content', isNeutral ? '#ffffff' : '#FAF9F5');
+  }
+}
+
 export function applyTheme(theme: Theme) {
   if (typeof document === 'undefined') return;
-  const isDark = resolveTheme(theme) === 'dark';
-  document.documentElement.classList.toggle('dark', isDark);
-  // Sync theme-color meta tag for Android nav bar / iOS status bar
-  const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) {
-    meta.setAttribute('content', isDark ? '#0f172a' : '#0d9488');
-  }
+  document.documentElement.classList.toggle('dark', resolveTheme(theme) === 'dark');
+  syncMetaThemeColor();
+}
+
+function applyColorScheme(scheme: ColorScheme) {
+  if (typeof document === 'undefined') return;
+  document.documentElement.classList.toggle('theme-neutral', scheme === 'neutral');
+  syncMetaThemeColor();
+}
+
+function applyFontStyle(style: FontStyle) {
+  if (typeof document === 'undefined') return;
+  document.documentElement.classList.toggle('font-anthropic', style === 'anthropic');
 }
 
 function subscribe(cb: () => void) {
@@ -38,44 +78,48 @@ function subscribe(cb: () => void) {
 }
 
 export function useTheme() {
-  const getSnapshot = useCallback(() => readTheme(), []);
-  const theme = useSyncExternalStore(subscribe, getSnapshot, () => 'system' as Theme);
+  const theme = useSyncExternalStore(subscribe, readTheme, () => 'system' as Theme);
+  const colorScheme = useSyncExternalStore(subscribe, readColorScheme, () => 'default' as ColorScheme);
+  const fontStyle = useSyncExternalStore(subscribe, readFontStyle, () => 'default' as FontStyle);
 
-  // Apply theme whenever it changes
-  useEffect(() => {
-    applyTheme(theme);
-  }, [theme]);
+  useEffect(() => { applyTheme(theme); }, [theme]);
+  useEffect(() => { applyColorScheme(colorScheme); }, [colorScheme]);
+  useEffect(() => { applyFontStyle(fontStyle); }, [fontStyle]);
 
-  // Listen to system preference changes — only matters when theme === 'system'
   useEffect(() => {
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
     const handler = () => {
-      if (readTheme() === 'system') {
-        applyTheme('system');
-        listeners.forEach((cb) => cb());
-      }
+      if (readTheme() === 'system') { applyTheme('system'); notify(); }
     };
     mq.addEventListener('change', handler);
     return () => mq.removeEventListener('change', handler);
   }, []);
 
   const setTheme = useCallback((t: Theme) => {
-    if (typeof window !== 'undefined') {
-      if (t === 'system') {
-        window.localStorage.removeItem(STORAGE_KEY); // no storage = follow system
-      } else {
-        window.localStorage.setItem(STORAGE_KEY, t);
-      }
-    }
+    if (t === 'system') window.localStorage.removeItem(THEME_KEY);
+    else window.localStorage.setItem(THEME_KEY, t);
     applyTheme(t);
-    listeners.forEach((cb) => cb());
+    notify();
   }, []);
 
-  // Cycle: light → dark → system → light
+  const setColorScheme = useCallback((s: ColorScheme) => {
+    if (s === 'default') window.localStorage.removeItem(SCHEME_KEY);
+    else window.localStorage.setItem(SCHEME_KEY, s);
+    applyColorScheme(s);
+    notify();
+  }, []);
+
+  const setFontStyle = useCallback((f: FontStyle) => {
+    if (f === 'default') window.localStorage.removeItem(FONT_KEY);
+    else window.localStorage.setItem(FONT_KEY, f);
+    applyFontStyle(f);
+    notify();
+  }, []);
+
   const toggle = useCallback(() => {
     const next: Theme = theme === 'light' ? 'dark' : theme === 'dark' ? 'system' : 'light';
     setTheme(next);
   }, [theme, setTheme]);
 
-  return { theme, resolvedTheme: resolveTheme(theme), toggle, setTheme };
+  return { theme, resolvedTheme: resolveTheme(theme), colorScheme, fontStyle, toggle, setTheme, setColorScheme, setFontStyle };
 }

@@ -218,6 +218,20 @@ class IMConnectionManager {
   }
 
   /**
+   * Clear the ack reaction for a chat (e.g. when streaming card handled the reply).
+   */
+  clearAckReaction(jid: string): void {
+    const channelType = getChannelType(jid);
+    if (!channelType) return;
+
+    const chatId = extractChatId(jid);
+    const channel = this.findChannelForJid(jid, channelType);
+    if (channel?.clearAckReaction) {
+      channel.clearAckReaction(chatId);
+    }
+  }
+
+  /**
    * Create a streaming card session for an IM chat (Feishu only).
    * Returns undefined for non-Feishu channels or if not supported.
    */
@@ -452,6 +466,7 @@ class IMConnectionManager {
     config: WeChatConnectConfig,
     onNewChat: (chatJid: string, chatName: string) => void,
     options?: {
+      ignoreMessagesBefore?: number;
       onCommand?: (chatJid: string, command: string) => Promise<string | null>;
       resolveGroupFolder?: (jid: string) => string | undefined;
       resolveEffectiveChatJid?: (
@@ -478,6 +493,7 @@ class IMConnectionManager {
         logger.info({ userId }, 'User WeChat bot connected');
       },
       onNewChat,
+      ignoreMessagesBefore: options?.ignoreMessagesBefore,
       onCommand: options?.onCommand,
       resolveGroupFolder: options?.resolveGroupFolder,
       resolveEffectiveChatJid: options?.resolveEffectiveChatJid,
@@ -649,6 +665,11 @@ class IMConnectionManager {
   /**
    * Get chat info for an IM group by JID, auto-routing to the correct connection.
    * Used for health checks to detect disbanded groups.
+   *
+   * Returns:
+   * - object: chat info (reachable)
+   * - null: channel supports getChatInfo but chat is not reachable
+   * - undefined: channel does not support getChatInfo (e.g. Telegram, QQ)
    */
   async getChatInfo(jid: string): Promise<{
     avatar?: string;
@@ -656,7 +677,7 @@ class IMConnectionManager {
     user_count?: string;
     chat_type?: string;
     chat_mode?: string;
-  } | null> {
+  } | null | undefined> {
     const channelType = getChannelType(jid);
     if (!channelType) return null;
 
@@ -665,7 +686,8 @@ class IMConnectionManager {
     if (channel?.getChatInfo) {
       return channel.getChatInfo(chatId);
     }
-    return null;
+    // Channel doesn't implement getChatInfo — not a reachability failure
+    return undefined;
   }
 
   /** Get all user IDs with active connections */

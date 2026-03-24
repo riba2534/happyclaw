@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Sun, Moon, Monitor } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { useAuthStore } from '../../stores/auth';
+import { useTheme, type Theme, type ColorScheme, type FontStyle } from '../../hooks/useTheme';
 import { api } from '../../api/client';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -25,6 +26,7 @@ export function AppearanceSection() {
   const canManage = hasPermission('manage_system_config');
 
   useEffect(() => {
+    if (!canManage) { setLoading(false); return; }
     (async () => {
       setLoading(true);
       try {
@@ -39,7 +41,7 @@ export function AppearanceSection() {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [canManage]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -72,11 +74,18 @@ export function AppearanceSection() {
   }
 
   if (!canManage) {
-    return <div className="text-sm text-muted-foreground">需要系统配置权限才能修改外观设置。</div>;
+    return (
+      <div className="space-y-6">
+        <ThemeSelector />
+        <p className="text-sm text-muted-foreground">需要系统配置权限才能修改其他外观设置。</p>
+      </div>
+    );
   }
 
   return (
     <div className="space-y-6">
+      <ThemeSelector />
+
       <p className="text-sm text-muted-foreground bg-muted rounded-lg px-4 py-3">
         以下为全局默认值，对所有用户生效。用户可在「个人资料」中覆盖自己的 AI 外观。
       </p>
@@ -143,6 +152,128 @@ export function AppearanceSection() {
           {saving && <Loader2 className="size-4 animate-spin" />}
           保存外观设置
         </Button>
+      </div>
+    </div>
+  );
+}
+
+/* ── Theme selector sub-components ─────────────────────────── */
+
+const THEME_OPTIONS: { value: Theme; label: string; icon: typeof Sun }[] = [
+  { value: 'light', label: '浅色', icon: Sun },
+  { value: 'dark', label: '深色', icon: Moon },
+  { value: 'system', label: '跟随系统', icon: Monitor },
+];
+
+const SCHEME_OPTIONS: { value: ColorScheme; label: string; preview: { bg: string; accent: string; text: string } }[] = [
+  { value: 'default', label: '暖橙', preview: { bg: '#FAF9F5', accent: '#f97316', text: '#141413' } },
+  { value: 'neutral', label: '素白', preview: { bg: '#ffffff', accent: '#52525b', text: '#18181b' } },
+];
+
+const FONT_OPTIONS: { value: FontStyle; label: string; sample: string; fontFamily: string }[] = [
+  { value: 'default', label: 'HappyClaw', sample: 'Hello 你好', fontFamily: "'Inter Variable', system-ui, sans-serif" },
+  { value: 'anthropic', label: 'Anthropic', sample: 'Hello 你好', fontFamily: "Georgia, 'Noto Serif SC', serif" },
+];
+
+function ThemeSelector() {
+  const { theme, setTheme, colorScheme, setColorScheme, fontStyle, setFontStyle } = useTheme();
+
+  return (
+    <div className="space-y-6">
+      {/* Color scheme */}
+      <div>
+        <h3 className="text-base font-semibold text-foreground mb-1">主题色</h3>
+        <p className="text-xs text-muted-foreground mb-3">选择界面的配色方案</p>
+        <div className="grid grid-cols-2 gap-3">
+          {SCHEME_OPTIONS.map((opt) => {
+            const active = colorScheme === opt.value;
+            return (
+              <button
+                key={opt.value}
+                onClick={() => setColorScheme(opt.value)}
+                className={`relative flex flex-col gap-2.5 p-3 rounded-xl border-2 transition-all cursor-pointer ${
+                  active
+                    ? 'border-primary ring-1 ring-primary/20'
+                    : 'border-border hover:border-muted-foreground/30'
+                }`}
+              >
+                <div
+                  className="w-full h-14 rounded-lg border border-black/5 overflow-hidden flex items-end p-2 gap-1.5"
+                  style={{ background: opt.preview.bg }}
+                >
+                  <div className="w-5 h-5 rounded-full" style={{ background: opt.preview.accent }} />
+                  <div className="flex-1 space-y-1">
+                    <div className="h-1.5 rounded-full w-3/4" style={{ background: opt.preview.text, opacity: 0.7 }} />
+                    <div className="h-1.5 rounded-full w-1/2" style={{ background: opt.preview.text, opacity: 0.3 }} />
+                  </div>
+                </div>
+                <span className={`text-sm font-medium ${active ? 'text-primary' : 'text-foreground'}`}>
+                  {opt.label}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Font style */}
+      <div>
+        <h3 className="text-base font-semibold text-foreground mb-1">字体风格</h3>
+        <p className="text-xs text-muted-foreground mb-3">AI 回复和界面的字体</p>
+        <div className="grid grid-cols-2 gap-3">
+          {FONT_OPTIONS.map((opt) => {
+            const active = fontStyle === opt.value;
+            return (
+              <button
+                key={opt.value}
+                onClick={() => setFontStyle(opt.value)}
+                className={`flex flex-col gap-2 p-3 rounded-xl border-2 transition-all cursor-pointer ${
+                  active
+                    ? 'border-primary ring-1 ring-primary/20'
+                    : 'border-border hover:border-muted-foreground/30'
+                }`}
+              >
+                <span
+                  className="text-base leading-snug text-foreground truncate"
+                  style={{ fontFamily: opt.fontFamily }}
+                >
+                  {opt.sample}
+                </span>
+                <span className={`text-sm font-medium ${active ? 'text-primary' : 'text-foreground'}`}>
+                  {opt.label}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Light / Dark / System */}
+      <div>
+        <h3 className="text-base font-semibold text-foreground mb-1">明暗模式</h3>
+        <p className="text-xs text-muted-foreground mb-3">选择亮色或暗色外观</p>
+        <div className="grid grid-cols-3 gap-3">
+          {THEME_OPTIONS.map((opt) => {
+            const active = theme === opt.value;
+            const Icon = opt.icon;
+            return (
+              <button
+                key={opt.value}
+                onClick={() => setTheme(opt.value)}
+                className={`flex flex-col items-center gap-1.5 p-3 rounded-xl border-2 transition-all cursor-pointer ${
+                  active
+                    ? 'border-primary bg-accent'
+                    : 'border-border hover:border-muted-foreground/30'
+                }`}
+              >
+                <Icon className={`w-5 h-5 ${active ? 'text-primary' : 'text-muted-foreground'}`} />
+                <span className={`text-sm font-medium ${active ? 'text-primary' : 'text-foreground'}`}>
+                  {opt.label}
+                </span>
+              </button>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

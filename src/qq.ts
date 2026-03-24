@@ -208,9 +208,12 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
 
   function isDuplicate(msgId: string): boolean {
     const now = Date.now();
+    // Map preserves insertion order; stop at first non-expired entry
     for (const [id, ts] of msgCache.entries()) {
       if (now - ts > MSG_DEDUP_TTL) {
         msgCache.delete(id);
+      } else {
+        break;
       }
     }
     if (msgCache.size >= MSG_DEDUP_MAX) {
@@ -221,6 +224,8 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
   }
 
   function markSeen(msgId: string): void {
+    // delete + set to refresh insertion order (move to end)
+    msgCache.delete(msgId);
     msgCache.set(msgId, Date.now());
   }
 

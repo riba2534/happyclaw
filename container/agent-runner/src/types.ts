@@ -50,13 +50,15 @@ export interface SessionsIndex {
   entries: SessionEntry[];
 }
 
+export type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+
 export interface SDKUserMessage {
   type: 'user';
   message: {
     role: 'user';
     content:
       | string
-      | Array<{ type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }>;
+      | Array<{ type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: ImageMediaType; data: string } }>;
   };
   parent_tool_use_id: null;
   session_id: string;

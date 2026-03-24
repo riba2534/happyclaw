@@ -209,6 +209,7 @@ interface ChatState {
   setActiveAgentTab: (jid: string, agentId: string | null) => void;
   // Conversation agent actions
   createConversation: (jid: string, name: string, description?: string) => Promise<AgentInfo | null>;
+  renameConversation: (jid: string, agentId: string, name: string) => Promise<boolean>;
   loadAgentMessages: (jid: string, agentId: string, loadMore?: boolean) => Promise<void>;
   sendAgentMessage: (jid: string, agentId: string, content: string, attachments?: Array<{ data: string; mimeType: string }>) => void;
   refreshAgentMessages: (jid: string, agentId: string) => Promise<void>;
@@ -466,8 +467,8 @@ function pickSdkTaskAliasTarget(
 
 function isTerminalSystemMessage(message: Pick<Message, 'sender' | 'content'>): boolean {
   if (message.sender === '__billing__') return true;
-  // query_interrupted 不再作为终端消息：中断后由 status:interrupted 流式事件冻结 UI，
-  // 再由后续 new_message（含中断文本）完成最终转换，避免提前清除 streaming 导致内容消失。
+  // query_interrupted 仅作为视觉分隔线，不参与流式状态清理。
+  // 流式状态由 status:interrupted（冻结）→ interrupt_partial（转正）两阶段处理。
   return message.sender === '__system__' && (
     message.content.startsWith('agent_error:') ||
     message.content.startsWith('agent_max_retries:') ||
@@ -711,6 +712,13 @@ function applyStreamEvent(
       }
       break;
     }
+    case 'usage':
+      // Token usage is handled at handleStreamEvent level (direct message table update).
+      // No streaming state mutation needed.
+      break;
+    case 'init':
+      // Internal signal, no UI handling needed.
+      break;
   }
 }
 
@@ -848,15 +856,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
             data.messages,
           );
           // Check if agent has truly finalized (explicit sdk_send_message should not clear streaming)
+          // interrupt_partial 到达时若流式卡片已冻结，不视为"agent 已回复"，
+          // 避免清除冻结的富内容。消息仍添加到列表，10s 兜底计时器做最终清理。
+          const isFrozen = !!s.streaming[jid]?.interrupted;
           const agentReplied = data.messages.some(
             (m) =>
               m.is_from_me &&
               m.sender !== '__system__' &&
-              m.source_kind !== 'sdk_send_message',
+              m.source_kind !== 'sdk_send_message' &&
+              !(isFrozen && m.source_kind === 'interrupt_partial'),
           );
           const hasSystemError = data.messages.some((m) => isTerminalSystemMessage(m));
-          const hasInterruptMarker = data.messages.some((m) => isInterruptSystemMessage(m));
-          const shouldFinalizeInterrupt = hasInterruptMarker && !s.streaming[jid]?.interrupted;
 
           // Transfer pending thinking to thinkingCache
           let nextThinkingCache = s.thinkingCache;
@@ -879,10 +889,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
           return {
             messages: { ...s.messages, [jid]: merged },
-            waiting: (agentReplied || hasSystemError || shouldFinalizeInterrupt)
+            waiting: (agentReplied || hasSystemError)
               ? { ...s.waiting, [jid]: false }
               : s.waiting,
-            streaming: (agentReplied || hasSystemError || shouldFinalizeInterrupt)
+            streaming: (agentReplied || hasSystemError)
               ? (() => { const next = { ...s.streaming }; delete next[jid]; return next; })()
               : s.streaming,
             thinkingCache: nextThinkingCache,
@@ -1397,6 +1407,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     // 中断事件：冻结流式 UI（保留已输出文本），等待 new_message 完成最终转换。
     if (event.eventType === 'status' && event.statusText === 'interrupted') {
+      // 强制 flush rAF 缓冲：thinking_delta/text_delta 通过 requestAnimationFrame 批处理，
+      // 中断信号可能在 rAF 回调执行前到达，导致 thinkingText 仍为空 → hasData=false → 卡片消失。
+      const mainKey = `main:${chatJid}`;
+      const pendingEntry = pendingDeltas.get(mainKey);
+      if (pendingEntry) {
+        cancelAnimationFrame(pendingEntry.raf);
+        flushPendingDelta(mainKey, chatJid, undefined, set);
+      }
       set((s) => {
         const streamState = s.streaming[chatJid];
         const nextStreaming = { ...s.streaming };
@@ -1592,17 +1610,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
         source !== 'scheduled_task' &&
         msg.source_kind !== 'sdk_send_message';
       const isSystemError = isTerminalSystemMessage(msg);
-      const isInterruptMarker = isInterruptSystemMessage(msg);
-      const shouldFinalizeInterrupt = isInterruptMarker && !s.streaming[chatJid]?.interrupted;
+      // interrupt_partial 到达时，如果流式卡片已冻结（interrupted=true），
+      // 不清除 streaming——保留冻结的富内容（thinking、工具、任务进度）。
+      // 消息仍会添加到列表（走下方普通消息分支），10s 兜底计时器做最终清理。
+      const interruptPartialWhileFrozen =
+        msg.source_kind === 'interrupt_partial' && s.streaming[chatJid]?.interrupted;
       const shouldFinalizeAssistant =
         isAgentReply &&
+        !interruptPartialWhileFrozen &&
         (msg.source_kind === 'sdk_final'
           || msg.source_kind === 'interrupt_partial'
           || msg.source_kind === null
           || msg.source_kind === undefined
           || msg.source_kind === 'legacy');
 
-      if (shouldFinalizeAssistant || isSystemError || shouldFinalizeInterrupt) {
+      if (shouldFinalizeAssistant || isSystemError) {
         // Agent 回复或系统错误：立即清除流式状态和等待标志，转移 thinking 缓存
         const streamState = s.streaming[chatJid];
         const thinkingText = isAgentReply
@@ -1627,6 +1649,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
         messages: { ...s.messages, [chatJid]: updated },
       };
     });
+
+    // query_interrupted 仅作为视觉分隔线，不清理流式状态。
+    // 流式状态由 status:interrupted（冻结）→ interrupt_partial（转正）两阶段处理。
+    // 兜底：20s 后若两个事件均未到达（如 agent runner 异常），强制清理。
+    if (isInterruptSystemMessage(msg) && get().streaming[chatJid]) {
+      setTimeout(() => {
+        const state = get();
+        if (state.streaming[chatJid] && !state.waiting[chatJid]) {
+          set((s) => {
+            const next = { ...s.streaming };
+            delete next[chatJid];
+            return { streaming: next };
+          });
+        }
+      }, 20_000);
+    }
   },
 
   // 处理子 Agent 状态变更事件
@@ -1711,13 +1749,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }
         }
       }
+      // Spawn agents are fire-and-forget: auto-remove from frontend state after completion
+      if (resolvedKind === 'spawn' && (status === 'completed' || status === 'error')) {
+        scheduleDbTaskAgentCleanup(set, agentId, chatJid);
+      }
 
       // Conversation agent started running: reset agentWaiting so stream events
       // are accepted (mirrors handleRunnerState for the main conversation).
       // Without this, Feishu-sourced messages (which skip sendAgentMessage) would
       // leave agentWaiting=false and cause all streaming events to be dropped.
       const nextAgentWaiting =
-        resolvedKind === 'conversation' && status === 'running'
+        (resolvedKind === 'conversation' || resolvedKind === 'spawn') && status === 'running'
           ? { ...s.agentWaiting, [agentId]: true }
           : s.agentWaiting;
 
@@ -1738,7 +1780,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         `/api/groups/${encodeURIComponent(jid)}/agents`,
       );
       set((s) => {
-        const visibleAgents = data.agents.filter((a) => a.kind === 'conversation' || a.status === 'running');
+        const visibleAgents = data.agents.filter((a) => a.kind === 'conversation' || (a.kind === 'spawn' && a.status !== 'completed') || a.status === 'running');
         const runningTasks = data.agents.filter((a) => a.kind === 'task' && a.status === 'running');
         const runningTaskIds = new Set(runningTasks.map((a) => a.id));
         const runningTaskMap = new Map(runningTasks.map((a) => [a.id, a]));
@@ -1871,6 +1913,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch (err) {
       set({ error: err instanceof Error ? err.message : String(err) });
       return null;
+    }
+  },
+
+  renameConversation: async (jid, agentId, name) => {
+    try {
+      await api.patch(`/api/groups/${encodeURIComponent(jid)}/agents/${agentId}`, { name });
+      set((s) => {
+        const agents = (s.agents[jid] || []).map((a) =>
+          a.id === agentId ? { ...a, name } : a,
+        );
+        return { agents: { ...s.agents, [jid]: agents } };
+      });
+      return true;
+    } catch {
+      return false;
     }
   },
 

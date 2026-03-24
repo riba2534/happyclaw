@@ -259,15 +259,21 @@ export function createWeChatConnection(
   const baseUrl = config.baseUrl || DEFAULT_BASE_URL;
   const cdnBaseUrl = config.cdnBaseUrl || DEFAULT_CDN_BASE_URL;
 
+  // Generate UIN once per connection instance (no need to regenerate per request)
+  const wechatUin = randomWechatUin();
+
   // Polling state
   let currentGetUpdatesBuf = config.getUpdatesBuf || '';
   let longpollTimeoutMs = DEFAULT_LONGPOLL_TIMEOUT_MS;
   let stopping = false;
   let connected = false;
-  let pollAbortController: AbortController | null = null;
+  let cancelSleep: (() => void) | null = null;
 
   // context_token cache: from_user_id -> latest context_token
   const contextTokenCache = new Map<string, string>();
+
+  // Known JIDs — skip redundant storeChatMetadata/onNewChat for repeat messages
+  const knownJids = new Set<string>();
 
   // Message deduplication: key -> timestamp
   const msgCache = new Map<string, number>();
@@ -276,10 +282,13 @@ export function createWeChatConnection(
 
   function isDuplicate(key: string): boolean {
     const now = Date.now();
-    // Evict expired entries
+    // Evict expired entries — Map preserves insertion order, so oldest entries
+    // come first. Stop at the first non-expired entry for O(expired) instead of O(n).
     for (const [id, ts] of msgCache.entries()) {
       if (now - ts > MSG_DEDUP_TTL) {
         msgCache.delete(id);
+      } else {
+        break;
       }
     }
     // Evict oldest if at capacity
@@ -291,6 +300,8 @@ export function createWeChatConnection(
   }
 
   function markSeen(key: string): void {
+    // delete + set to refresh insertion order (move to end)
+    msgCache.delete(key);
     msgCache.set(key, Date.now());
   }
 
@@ -301,7 +312,7 @@ export function createWeChatConnection(
       'Content-Type': 'application/json',
       AuthorizationType: 'ilink_bot_token',
       Authorization: `Bearer ${config.botToken}`,
-      'X-WECHAT-UIN': randomWechatUin(),
+      'X-WECHAT-UIN': wechatUin,
     };
   }
 
@@ -544,9 +555,9 @@ export function createWeChatConnection(
       if (isDuplicate(key)) return;
       markSeen(key);
 
-      // Skip stale messages
-      if (opts.ignoreMessagesBefore && msg.create_time_ms) {
-        if (msg.create_time_ms < opts.ignoreMessagesBefore) return;
+      // Skip stale messages — if no timestamp available, skip as well (can't verify freshness)
+      if (opts.ignoreMessagesBefore) {
+        if (!msg.create_time_ms || msg.create_time_ms < opts.ignoreMessagesBefore) return;
       }
 
       // Cache context_token for replies
@@ -563,9 +574,12 @@ export function createWeChatConnection(
 
       // ── Auto-register chat (WeChat is 1:1 bound, no pairing needed) ──
       const nowIso = new Date().toISOString();
-      storeChatMetadata(jid, nowIso);
-      updateChatName(jid, chatName);
-      opts.onNewChat(jid, chatName);
+      if (!knownJids.has(jid)) {
+        knownJids.add(jid);
+        storeChatMetadata(jid, nowIso);
+        updateChatName(jid, chatName);
+        opts.onNewChat(jid, chatName);
+      }
 
       // Handle slash commands
       const slashMatch = content.match(/^\/(\S+)(?:\s+(.*))?$/i);
@@ -607,26 +621,34 @@ export function createWeChatConnection(
         }[] = [];
         const textPrefixes: string[] = [];
 
-        for (const item of msg.item_list) {
-          if (item.type === MESSAGE_ITEM_TYPE_IMAGE) {
-            const msgId =
-              msg.message_id !== undefined
-                ? String(msg.message_id)
-                : String(msg.seq ?? Date.now());
-            const result = await processImageItem(
-              item,
-              msgId.slice(-8),
-              groupFolder,
-            );
-            if (result.attachmentEntry) {
-              imageAttachments.push(result.attachmentEntry);
-            }
-            if (result.textPrefix) {
-              textPrefixes.push(result.textPrefix);
+        // Download images in parallel (independent CDN requests)
+        const msgId =
+          msg.message_id !== undefined
+            ? String(msg.message_id)
+            : String(msg.seq ?? Date.now());
+        const imageItems = msg.item_list.filter(
+          (item) => item.type === MESSAGE_ITEM_TYPE_IMAGE,
+        );
+        if (imageItems.length > 0) {
+          const results = await Promise.allSettled(
+            imageItems.map((item) =>
+              processImageItem(item, msgId.slice(-8), groupFolder),
+            ),
+          );
+          for (const r of results) {
+            if (r.status === 'fulfilled') {
+              if (r.value.attachmentEntry) {
+                imageAttachments.push(r.value.attachmentEntry);
+              }
+              if (r.value.textPrefix) {
+                textPrefixes.push(r.value.textPrefix);
+              }
             }
           }
+        }
 
-          // Handle file items — note the path in content
+        // Handle file items — note the path in content
+        for (const item of msg.item_list) {
           if (item.type === MESSAGE_ITEM_TYPE_FILE && item.file_item) {
             const fileName = item.file_item.file_name || 'unknown_file';
             content = `[文件: ${fileName}]\n${content}`.trim();
@@ -657,7 +679,7 @@ export function createWeChatConnection(
         : nowIso;
       const senderId = `wechat:${fromUserId}`;
 
-      storeChatMetadata(targetJid, timestamp);
+      if (targetJid !== jid) storeChatMetadata(targetJid, timestamp);
       storeMessageDirect(id, targetJid, senderId, senderName, content, timestamp, false, {
         attachments: attachmentsJson,
         sourceJid: jid,
@@ -746,6 +768,13 @@ export function createWeChatConnection(
       } catch (err) {
         if (stopping) break;
 
+        // Long-poll timeout is expected when no new messages arrive — just retry immediately.
+        const isTimeout = err instanceof Error && err.message.includes('timed out');
+        if (isTimeout) {
+          logger.debug({ err }, 'WeChat poll timeout (normal, retrying)');
+          continue;
+        }
+
         logger.error({ err }, 'WeChat poll loop error');
         await sleep(reconnectDelay);
         reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_DELAY_MS);
@@ -756,14 +785,10 @@ export function createWeChatConnection(
   function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => {
       const timer = setTimeout(resolve, ms);
-      // Store abort capability
-      pollAbortController = {
-        abort: () => {
-          clearTimeout(timer);
-          resolve();
-        },
-        signal: new AbortController().signal,
-      } as unknown as AbortController;
+      cancelSleep = () => {
+        clearTimeout(timer);
+        resolve();
+      };
     });
   }
 
@@ -780,6 +805,7 @@ export function createWeChatConnection(
       connected = true;
       msgCache.clear();
       contextTokenCache.clear();
+      knownJids.clear();
 
       logger.info(
         { baseUrl, ilinkBotId: config.ilinkBotId },
@@ -801,17 +827,12 @@ export function createWeChatConnection(
       connected = false;
 
       // Abort any pending sleep
-      if (pollAbortController) {
-        try {
-          pollAbortController.abort();
-        } catch {
-          // ignore
-        }
-        pollAbortController = null;
-      }
+      cancelSleep?.();
+      cancelSleep = null;
 
       msgCache.clear();
       contextTokenCache.clear();
+      knownJids.clear();
       logger.info('WeChat iLink bot disconnected');
     },
 

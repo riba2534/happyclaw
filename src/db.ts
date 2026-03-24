@@ -146,6 +146,7 @@ function getNewMessagesStmt(jidCount: number): any {
        WHERE (timestamp > ? OR (timestamp = ? AND id > ?))
          AND chat_jid IN (${placeholders})
          AND is_from_me = 0
+         AND COALESCE(source_kind, '') != 'user_command'
        ORDER BY timestamp ASC, id ASC`,
     );
     _newMsgStmtCache.set(jidCount, s);
@@ -409,7 +410,8 @@ export function initDatabase(): void {
       created_at TEXT NOT NULL,
       completed_at TEXT,
       result_summary TEXT,
-      last_im_jid TEXT
+      last_im_jid TEXT,
+      spawned_from_jid TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_agents_group ON agents(group_folder);
     CREATE INDEX IF NOT EXISTS idx_agents_jid ON agents(chat_jid);
@@ -1172,7 +1174,17 @@ export function initDatabase(): void {
     db.exec('ALTER TABLE agents ADD COLUMN last_im_jid TEXT');
   }
 
-  const SCHEMA_VERSION = '31';
+  // v31 → v32: Add spawned_from_jid to agents table (spawn parallel tasks)
+  if (
+    !db
+      .prepare("PRAGMA table_info('agents')")
+      .all()
+      .some((c: any) => c.name === 'spawned_from_jid')
+  ) {
+    db.exec('ALTER TABLE agents ADD COLUMN spawned_from_jid TEXT');
+  }
+
+  const SCHEMA_VERSION = '32';
   db.prepare(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', SCHEMA_VERSION);
@@ -3685,8 +3697,8 @@ export function getUserMemberFolders(
 
 export function createAgent(agent: SubAgent): void {
   db.prepare(
-    `INSERT INTO agents (id, group_folder, chat_jid, name, prompt, status, kind, created_by, created_at, completed_at, result_summary)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO agents (id, group_folder, chat_jid, name, prompt, status, kind, created_by, created_at, completed_at, result_summary, spawned_from_jid)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     agent.id,
     agent.group_folder,
@@ -3699,6 +3711,7 @@ export function createAgent(agent: SubAgent): void {
     agent.created_at,
     agent.completed_at ?? null,
     agent.result_summary ?? null,
+    agent.spawned_from_jid ?? null,
   );
 }
 
@@ -3760,10 +3773,10 @@ export function updateAgentInfo(
   );
 }
 
-export function deleteCompletedTaskAgents(beforeTimestamp: string): number {
+export function deleteCompletedAgents(beforeTimestamp: string): number {
   const result = db
     .prepare(
-      "DELETE FROM agents WHERE kind = 'task' AND status IN ('completed', 'error') AND completed_at IS NOT NULL AND completed_at < ?",
+      "DELETE FROM agents WHERE kind IN ('task', 'spawn') AND status IN ('completed', 'error') AND completed_at IS NOT NULL AND completed_at < ?",
     )
     .run(beforeTimestamp);
   return result.changes;
@@ -3800,11 +3813,29 @@ export function markAllRunningTaskAgentsAsError(
   return result.changes;
 }
 
+/**
+ * Mark stale spawn agents (idle/running) as error at startup.
+ * After a process restart, spawn agents that were idle or running can never
+ * resume — their in-memory task callbacks are lost. Mark them as error so
+ * they don't render as "正在思考..." in the frontend.
+ */
+export function markStaleSpawnAgentsAsError(
+  summary = '进程重启，并行任务中断',
+): number {
+  const now = new Date().toISOString();
+  const result = db
+    .prepare(
+      "UPDATE agents SET status = 'error', completed_at = ?, result_summary = COALESCE(result_summary, ?) WHERE kind = 'spawn' AND status IN ('idle', 'running')",
+    )
+    .run(now, summary);
+  return result.changes;
+}
+
 export function listActiveConversationAgents(): SubAgent[] {
   return (
     db
       .prepare(
-        "SELECT * FROM agents WHERE kind = 'conversation' AND status IN ('running', 'idle')",
+        "SELECT * FROM agents WHERE kind IN ('conversation', 'spawn') AND status IN ('running', 'idle')",
       )
       .all() as Record<string, unknown>[]
   ).map(mapAgentRow);
@@ -3833,6 +3864,8 @@ function mapAgentRow(row: Record<string, unknown>): SubAgent {
       typeof row.result_summary === 'string' ? row.result_summary : null,
     last_im_jid:
       typeof row.last_im_jid === 'string' ? row.last_im_jid : null,
+    spawned_from_jid:
+      typeof row.spawned_from_jid === 'string' ? row.spawned_from_jid : null,
   };
 }
 
