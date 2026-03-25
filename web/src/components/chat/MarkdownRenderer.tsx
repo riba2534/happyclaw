@@ -128,8 +128,8 @@ function CodeBlock({
   const [copied, setCopied] = useState(false);
   const match = /language-(\w+)/.exec(className || '');
   const lang = match?.[1];
-  const isBlock = Boolean(match);
   const codeString = extractText(children).replace(/\n$/, '');
+  const isBlock = Boolean(match) || codeString.includes('\n');
 
   if (lang === 'mermaid') {
     return <MermaidDiagram code={codeString} />;
@@ -256,10 +256,13 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, groupJ
             </td>
           ),
           ul: ({ children }) => (
-            <ul className="list-disc list-inside my-2 space-y-1">{children}</ul>
+            <ul className="list-disc pl-6 my-2 space-y-1">{children}</ul>
           ),
           ol: ({ children }) => (
-            <ol className="list-decimal list-inside my-2 space-y-1">{children}</ol>
+            <ol className="list-decimal pl-6 my-2 space-y-1">{children}</ol>
+          ),
+          li: ({ children }) => (
+            <li className="[&>p]:inline [&>p]:my-0">{children}</li>
           ),
           p: ({ children }) => <p className="my-2">{children}</p>,
           h1: ({ children }) => (
@@ -272,7 +275,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, groupJ
             <h3 className="text-lg font-semibold mt-4 mb-2 leading-snug">{children}</h3>
           ),
           blockquote: ({ children }) => (
-            <blockquote className="border-l-4 border-border pl-4 my-4 text-foreground/70 italic">
+            <blockquote className="border-l-4 border-border pl-4 my-4 text-muted-foreground italic">
               {children}
             </blockquote>
           ),

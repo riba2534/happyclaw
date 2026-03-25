@@ -16,8 +16,9 @@
 
 import fs from 'fs';
 import path from 'path';
-import { query, HookCallback, PreCompactHookInput, createSdkMcpServer, PermissionMode } from '@anthropic-ai/claude-agent-sdk';
+import { query, HookCallback, PreCompactHookInput, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { detectImageMimeTypeFromBase64Strict } from './image-detector.js';
+import { getChannelFromJid } from './channel-prefixes.js';
 
 import type {
   ContainerInput,
@@ -52,7 +53,6 @@ const IPC_FALLBACK_POLL_MS = 5000; // 后备轮询间隔（仅防止 inotify 事
 
 let needsMemoryFlush = false;
 let hadCompaction = false;
-let currentPermissionMode: PermissionMode = 'bypassPermissions';
 // Module-level session ID so SIGTERM handler can emit it before exit.
 // Updated in main() whenever a query returns a new session.
 let latestSessionId: string | undefined;
@@ -95,41 +95,15 @@ const MEMORY_FLUSH_DISALLOWED_TOOLS = [
 
 const IMAGE_MAX_DIMENSION = 8000; // Anthropic API 限制
 
-// ── 系统提示词优化：安全守则常量（从 globalClaudeMd 模板提取，始终注入所有容器） ──
+// ── 系统提示词优化：安全守则（从独立 Markdown 文件加载，始终注入所有容器） ──
 
-const SECURITY_RULES = [
-  '## 安全守则',
-  '',
-  '### 红线操作（必须暂停并请求用户确认）',
-  '',
-  '以下操作在执行前**必须**向用户说明意图并获得明确批准，绝不可静默执行：',
-  '',
-  '- **破坏性命令**：`rm -rf /`、`rm -rf ~`、`mkfs`、`dd if=`、`wipefs`、批量删除系统文件',
-  '- **凭据/认证篡改**：修改 `authorized_keys`、`sshd_config`、`passwd`、`.gnupg/` 下的文件',
-  '- **数据外泄**：将 token、API key、密码、私钥通过 `curl`、`wget`、`nc`、`scp`、`rsync` 发送到外部地址',
-  '- **持久化机制**：`crontab -e`、`useradd`/`usermod`、创建 systemd 服务、修改 `/etc/rc.local`',
-  '- **远程代码执行**：`curl | sh`、`wget | bash`、`eval "$(curl ...)"`、`base64 -d | bash`、可疑的 `$()` 链式替换',
-  '- **私钥与助记词**：绝不主动索要用户的加密货币私钥或助记词明文，绝不将已知的密钥信息写入日志或发送到外部',
-  '',
-  '### 黄线操作（可执行，但必须记录到日期记忆）',
-  '',
-  '以下操作执行后，如有 `memory_append` 工具可用，使用它记录时间、命令、原因和结果：',
-  '',
-  '- 所有 `sudo` 命令',
-  '- 全局包安装（`pip install`、`npm install -g`）',
-  '- Docker 容器操作（`docker run`、`docker exec`）',
-  '- 防火墙规则变更（`iptables`、`ufw`）',
-  '- PM2 进程管理（启动/停止/删除进程）',
-  '- 系统服务管理（`systemctl start/stop/restart`）',
-  '',
-  '### Skill / MCP 安装审查',
-  '',
-  '安装任何外部 Skill 或 MCP Server 前，必须：',
-  '',
-  '1. 检查源代码，扫描是否包含可疑指令（`curl | sh`、环境变量读取如 `$ANTHROPIC_API_KEY`、文件外传）',
-  '2. 确认不会修改 HappyClaw 核心配置文件（`data/config/`、`.claude/`）',
-  '3. 向用户说明来源和风险评估，等待明确批准后再安装',
-].join('\n');
+const SECURITY_RULES_PATH = path.join(
+  path.dirname(new URL(import.meta.url).pathname),
+  '..',
+  'prompts',
+  'security-rules.md',
+);
+const SECURITY_RULES = fs.readFileSync(SECURITY_RULES_PATH, 'utf-8');
 
 // globalClaudeMd 截断保护：防止用户 CLAUDE.md 过大导致系统提示词膨胀
 const GLOBAL_CLAUDE_MD_MAX_CHARS = 8000;
@@ -140,14 +114,6 @@ function truncateWithHeadTail(content: string, maxChars: number): string {
   const headSize = Math.floor(maxChars * 0.75);
   const tailSize = Math.max(0, maxChars - headSize - 30);
   return content.slice(0, headSize) + '\n\n[...内容过长，已截断...]\n\n' + content.slice(-tailSize);
-}
-
-/** 从 chatJid 推导 IM 渠道类型 */
-function getChannelFromJid(chatJid: string): string {
-  if (chatJid.startsWith('feishu:')) return 'feishu';
-  if (chatJid.startsWith('telegram:')) return 'telegram';
-  if (chatJid.startsWith('qq:')) return 'qq';
-  return 'web';
 }
 
 /** 按渠道生成格式指南（仅 IM 渠道需要，Web 前端原生支持 Markdown + Mermaid） */
@@ -727,7 +693,6 @@ function shouldDrain(): boolean {
  */
 interface IpcDrainResult {
   messages: Array<{ text: string; images?: Array<{ data: string; mimeType?: string }> }>;
-  modeChange?: string; // 'plan' | 'bypassPermissions'
 }
 
 function drainIpcInput(): IpcDrainResult {
@@ -747,8 +712,6 @@ function drainIpcInput(): IpcDrainResult {
             text: data.text,
             images: data.images,
           });
-        } else if (data.type === 'set_mode' && data.mode) {
-          result.modeChange = data.mode;
         }
       } catch (err) {
         log(`Failed to process input file ${file}: ${err instanceof Error ? err.message : String(err)}`);
@@ -845,11 +808,7 @@ function waitForIpcMessage(): Promise<{ text: string; images?: Array<{ data: str
         clearInterruptRequested();
       }
 
-      const { messages, modeChange } = drainIpcInput();
-      if (modeChange) {
-        currentPermissionMode = modeChange as PermissionMode;
-        log(`Mode change during idle: ${modeChange}`);
-      }
+      const { messages } = drainIpcInput();
 
       if (messages.length > 0) {
         const combinedText = messages.map((m) => m.text).join('\n');
@@ -1013,7 +972,7 @@ async function runQuery(
   let resultReceivedAt: number | null = null;
   const POST_RESULT_TIMEOUT_MS = 5_000;
   // queryRef is set just before the for-await loop so pollIpcDuringQuery can call interrupt()
-  let queryRef: { interrupt(): Promise<void>; setPermissionMode(mode: PermissionMode): Promise<void> } | null = null;
+  let queryRef: { interrupt(): Promise<void> } | null = null;
   let messageCount = 0;
   let resultCount = 0;
 
@@ -1072,14 +1031,7 @@ async function runQuery(
       return; // No setTimeout needed — watcher will trigger next check on file change
     }
 
-    const { messages, modeChange } = drainIpcInput();
-    if (modeChange) {
-      currentPermissionMode = modeChange as PermissionMode;
-      log(`Mode change via IPC: ${modeChange}`);
-      queryRef?.setPermissionMode(modeChange as PermissionMode).catch((err: unknown) =>
-        log(`setPermissionMode failed: ${err}`),
-      );
-    }
+    const { messages } = drainIpcInput();
     for (const msg of messages) {
       log(`Piping IPC message into active query (${msg.text.length} chars, ${msg.images?.length || 0} images)`);
       const rejected = stream.push(msg.text, msg.images);
@@ -1097,14 +1049,7 @@ async function runQuery(
   // Initial drain to process any pre-existing files
   pollIpcDuringQuery();
 
-  // Create the StreamEventProcessor with mode change callback
-  const processor = new StreamEventProcessor(emit, log, (newMode) => {
-    currentPermissionMode = newMode as PermissionMode;
-    log(`Auto mode switch on ${newMode === 'plan' ? 'EnterPlanMode' : 'ExitPlanMode'} detection`);
-    queryRef?.setPermissionMode(newMode as PermissionMode).catch((err: unknown) =>
-      log(`setPermissionMode failed: ${err}`),
-    );
-  });
+  const processor = new StreamEventProcessor(emit, log);
 
   // Build system prompt: memory recall guidance + global CLAUDE.md (for non-admin-home)
   const { isHome, isAdminHome } = normalizeHomeFlags(containerInput);
@@ -1265,7 +1210,7 @@ async function runQuery(
       allowedTools,
       ...(disallowedTools && { disallowedTools }),
       thinking: { type: 'adaptive' as const },
-      permissionMode: currentPermissionMode,
+      permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       agentProgressSummaries: true,
       settingSources: ['project', 'user'],
@@ -1404,7 +1349,7 @@ async function runQuery(
     }
 
     if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
-      const tn = message as unknown as { task_id: string; status: string; summary: string };
+      const tn = message as unknown as { task_id: string; tool_use_id?: string; status: string; summary: string };
       processor.processTaskNotification(tn);
     }
 
@@ -1660,10 +1605,6 @@ async function main(): Promise<void> {
     prompt = `[定时任务 - 以下内容由系统自动发送，并非来自用户或群组的直接消息。]\n\n${prompt}`;
   }
   const pendingDrain = drainIpcInput();
-  if (pendingDrain.modeChange) {
-    currentPermissionMode = pendingDrain.modeChange as PermissionMode;
-    log(`Initial mode change via IPC: ${pendingDrain.modeChange}`);
-  }
   if (pendingDrain.messages.length > 0) {
     log(`Draining ${pendingDrain.messages.length} pending IPC messages into initial prompt`);
     prompt += '\n' + pendingDrain.messages.map((m) => m.text).join('\n');

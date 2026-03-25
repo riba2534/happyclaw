@@ -34,6 +34,7 @@ bun.lockb
 
 # Build cache
 .build-sentinel
+.docker-build-sentinel
 *.tsbuildinfo
 
 # Local tooling metadata

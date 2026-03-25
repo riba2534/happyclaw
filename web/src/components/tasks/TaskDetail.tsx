@@ -174,7 +174,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
             <button
               onClick={handleCancel}
               disabled={saving}
-              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-foreground/70 bg-muted hover:bg-muted rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-muted-foreground bg-muted hover:bg-muted/80 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
             >
               <X className="w-3.5 h-3.5" /> 取消
             </button>
@@ -189,7 +189,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
         ) : (
           <button
             onClick={() => setEditing(true)}
-            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-foreground/70 hover:text-primary hover:bg-brand-50 rounded-lg transition-colors cursor-pointer"
+            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-primary hover:bg-brand-50 rounded-lg transition-colors cursor-pointer"
           >
             <Pencil className="w-3.5 h-3.5" /> 编辑
           </button>

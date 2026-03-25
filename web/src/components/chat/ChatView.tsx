@@ -70,8 +70,6 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const [bindingAgentId, setBindingAgentId] = useState<string | null>(null);
   const [showNewConversation, setShowNewConversation] = useState(false);
   const [renameTarget, setRenameTarget] = useState<{ agentId: string; name: string } | null>(null);
-  // Code / Plan mode toggle (per group)
-  const [permissionMode, setPermissionMode] = useState<'bypassPermissions' | 'plan'>('bypassPermissions');
   const [imStatus, setImStatus] = useState<{ feishu: boolean; telegram: boolean } | null>(null);
   const [imBannerDismissed, setImBannerDismissed] = useState(() =>
     localStorage.getItem('im-banner-dismissed') === '1',
@@ -242,11 +240,6 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     const unsub1 = wsManager.on('stream_event', (data: any) => {
       if (data.chatJid === groupJid) {
         handleStreamEvent(groupJid, data.event, data.agentId);
-        // Sync permission mode when agent calls ExitPlanMode/EnterPlanMode
-        if (data.event?.eventType === 'mode_change' && data.event?.permissionMode) {
-          const newMode = data.event.permissionMode as 'bypassPermissions' | 'plan';
-          setPermissionMode(newMode);
-        }
       }
     });
     // 通过 new_message 立即添加消息到本地状态（消除轮询延迟导致的消息"丢失"）
@@ -296,24 +289,6 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     setResetLoading(false);
     setShowResetConfirm(false);
     setResetAgentId(null);
-  };
-
-  const togglePermissionMode = async () => {
-    const newMode = permissionMode === 'bypassPermissions' ? 'plan' : 'bypassPermissions';
-    setPermissionMode(newMode);
-    try {
-      const res = await api.put<{ success: boolean; mode: string; applied: boolean }>(
-        `/api/groups/${encodeURIComponent(groupJid)}/mode`, { mode: newMode },
-      );
-      if (res.applied === false) {
-        const label = newMode === 'plan' ? 'Plan' : 'Code';
-        showToast(`已切换到 ${label} 模式`, '容器未运行，模式将在下次启动时生效');
-      }
-    } catch {
-      // Revert on failure
-      setPermissionMode(permissionMode);
-      showToast('模式切换失败', '请稍后重试');
-    }
   };
 
   // --- Drag resize handlers (mouse + touch) ---
@@ -604,8 +579,6 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                 groupJid={groupJid}
                 onResetSession={() => { setResetAgentId(null); setShowResetConfirm(true); }}
                 onToggleTerminal={canUseTerminal ? handleTerminalToggle : undefined}
-                permissionMode={permissionMode}
-                onTogglePermissionMode={togglePermissionMode}
               />
             </>
           )}

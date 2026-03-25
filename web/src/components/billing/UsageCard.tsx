@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { BarChart3, AlertTriangle } from 'lucide-react';
 import { useBillingStore } from '../../stores/billing';
 import { useCurrency, formatTokens } from './utils';
+import { ProgressBar } from './ProgressBar';
 
 type WindowKey = 'daily' | 'weekly' | 'monthly';
 
@@ -10,16 +11,6 @@ const WINDOW_LABELS: Record<WindowKey, string> = {
   weekly: '周度',
   monthly: '月度',
 };
-
-function ProgressBar({ value, max, className }: { value: number; max: number; className?: string }) {
-  const percent = max > 0 ? Math.min((value / max) * 100, 100) : 0;
-  const color = percent >= 90 ? 'bg-red-500' : percent >= 70 ? 'bg-yellow-500' : 'bg-brand-500';
-  return (
-    <div className={`h-2 bg-muted rounded-full overflow-hidden ${className ?? ''}`}>
-      <div className={`h-full ${color} rounded-full transition-all`} style={{ width: `${percent}%` }} />
-    </div>
-  );
-}
 
 function WindowUsageBlock({
   label,

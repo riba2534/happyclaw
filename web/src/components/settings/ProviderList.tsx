@@ -29,8 +29,8 @@ interface ProviderListProps {
 
 /** 健康指示灯 */
 function HealthDot({ health, enabled }: { health: ProviderHealthStatus | null; enabled: boolean }) {
-  if (!enabled) return <div className="w-2 h-2 rounded-full shrink-0 bg-muted-foreground" />;
-  if (!health) return <div className="w-2 h-2 rounded-full shrink-0 bg-muted-foreground" />;
+  if (!enabled) return <div className="w-2 h-2 rounded-full shrink-0 bg-muted-foreground/50" />;
+  if (!health) return <div className="w-2 h-2 rounded-full shrink-0 bg-muted-foreground/50" />;
 
   const color = health.healthy
     ? 'bg-emerald-400'
@@ -113,7 +113,7 @@ export function ProviderList({
   return (
     <div className="space-y-4">
       <div className="rounded-xl border border-border overflow-hidden">
-        <div className="px-4 py-3 border-b border-border bg-muted/70">
+        <div className="px-4 py-3 border-b border-border bg-muted/50">
           <div className="flex items-center justify-between">
             <div className="text-sm font-medium text-foreground">提供商列表</div>
             <span className="text-xs text-muted-foreground">{providers.length} 个提供商</span>
@@ -221,7 +221,7 @@ export function ProviderList({
                       </span>
                     )}
                     {provider.anthropicModel && (
-                      <span className="font-mono text-foreground/70">
+                      <span className="font-mono text-muted-foreground">
                         {provider.anthropicModel}
                       </span>
                     )}

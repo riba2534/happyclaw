@@ -30,12 +30,12 @@ interface NavItem {
 const systemItems: NavItem[] = [
   { key: 'claude', label: 'Claude 提供商', icon: <ShieldCheck className="w-4 h-4" />, group: 'system' },
   { key: 'registration', label: '注册管理', icon: <UserPlus className="w-4 h-4" />, group: 'system' },
+  { key: 'appearance', label: '全局外观', icon: <Palette className="w-4 h-4" />, group: 'system' },
   { key: 'system', label: '系统参数', icon: <SlidersHorizontal className="w-4 h-4" />, group: 'system' },
 ];
 
 const accountItems: NavItem[] = [
-  { key: 'profile', label: '个人资料', icon: <User className="w-4 h-4" />, group: 'account' },
-  { key: 'appearance', label: '外观', icon: <Palette className="w-4 h-4" />, group: 'account' },
+  { key: 'profile', label: '个人偏好', icon: <User className="w-4 h-4" />, group: 'account' },
   { key: 'my-channels', label: '消息通道', icon: <MessageSquare className="w-4 h-4" />, group: 'account' },
   { key: 'security', label: '安全与设备', icon: <Shield className="w-4 h-4" />, group: 'account' },
 ];
@@ -84,7 +84,7 @@ export function SettingsNav({ activeTab, onTabChange, canManageSystemConfig, can
   return (
     <>
       {/* Desktop: vertical sidebar */}
-      <nav className="hidden lg:block w-56 shrink-0 bg-background border-r border-border py-6 px-3">
+      <nav className="hidden lg:block w-56 shrink-0 bg-background border-r border-border py-6 px-3 overflow-y-auto">
         {visibleItems.map((section, si) => (
           <div key={section.group} className={si > 0 ? 'mt-6' : ''}>
             <div className="px-3 mb-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
@@ -103,7 +103,7 @@ export function SettingsNav({ activeTab, onTabChange, canManageSystemConfig, can
                       active
                         ? 'bg-brand-50 text-primary font-medium'
                         : disabled
-                          ? 'text-muted-foreground cursor-not-allowed'
+                          ? 'text-muted-foreground/50 cursor-not-allowed'
                           : 'text-muted-foreground hover:bg-muted hover:text-foreground'
                     }`}
                   >
@@ -147,7 +147,7 @@ export function SettingsNav({ activeTab, onTabChange, canManageSystemConfig, can
                           active
                             ? 'bg-brand-50 text-primary font-medium'
                             : disabled
-                              ? 'text-muted-foreground cursor-not-allowed'
+                              ? 'text-muted-foreground/50 cursor-not-allowed'
                               : 'text-muted-foreground hover:bg-muted hover:text-foreground'
                         }`}
                       >

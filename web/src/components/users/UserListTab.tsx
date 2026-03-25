@@ -332,7 +332,7 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
                 {isAdmin && <SelectItem value="admin">管理员</SelectItem>}
               </SelectContent>
             </Select>
-            <label className="inline-flex items-center gap-2 text-xs text-foreground/70">
+            <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
               <input
                 type="checkbox"
                 checked={newMustChange}
@@ -363,7 +363,7 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
                       setNewRole(item.role);
                       setNewPermissions(item.permissions);
                     }}
-                    className="px-2.5 py-1.5 rounded-md border border-border text-xs hover:bg-muted cursor-pointer"
+                    className="px-2.5 py-1.5 rounded-md border border-border text-xs hover:bg-muted/50 cursor-pointer"
                   >
                     {item.label}
                   </button>
@@ -610,7 +610,7 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
         )}
       </Card>
 
-      <div className="flex items-center justify-between text-sm text-foreground/70">
+      <div className="flex items-center justify-between text-sm text-muted-foreground">
         <div>共 {totalUsers} 条</div>
         <div className="flex items-center gap-2">
           <Button

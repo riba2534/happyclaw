@@ -65,7 +65,7 @@ export function FileUploadZone({ groupJid }: FileUploadZoneProps) {
         onDrop={handleDrop}
         className={`relative border-2 border-dashed rounded-lg p-3 transition-all ${
           isDragging
-            ? 'border-primary bg-primary/5'
+            ? 'border-primary bg-brand-50'
             : 'border-border'
         } ${uploading ? 'pointer-events-none' : ''}`}
       >
@@ -95,18 +95,18 @@ export function FileUploadZone({ groupJid }: FileUploadZoneProps) {
               <span className="truncate max-w-[60%]">{uploadProgress.currentFile || '完成'}</span>
               <span>{uploadProgress.completed}/{uploadProgress.total} 个文件</span>
             </div>
-            <div className="w-full h-2 bg-border rounded-full overflow-hidden">
+            <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
               <div
                 className="h-full bg-primary rounded-full transition-all duration-300 ease-out"
                 style={{ width: `${progressPercent}%` }}
               />
             </div>
-            <p className="text-[11px] text-muted-foreground/60 text-center">{progressPercent}%</p>
+            <p className="text-[11px] text-muted-foreground text-center">{progressPercent}%</p>
           </div>
         ) : (
           /* Idle state */
           <div className="flex flex-col items-center gap-2 text-center py-1">
-            <p className="text-xs text-muted-foreground/60">
+            <p className="text-xs text-muted-foreground">
               {isDragging ? '释放以上传' : '拖拽文件到这里，或'}
             </p>
             <div className="flex items-center gap-2">
@@ -119,7 +119,7 @@ export function FileUploadZone({ groupJid }: FileUploadZoneProps) {
               </button>
               <button
                 onClick={() => folderInputRef.current?.click()}
-                className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-foreground/80 bg-muted hover:bg-border rounded-md transition-colors cursor-pointer"
+                className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-foreground bg-muted hover:bg-muted/80 rounded-md transition-colors cursor-pointer"
               >
                 <FolderUp className="w-3.5 h-3.5" />
                 上传文件夹

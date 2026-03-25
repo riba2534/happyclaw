@@ -1603,41 +1603,6 @@ groupRoutes.delete('/:jid/members/:userId', authMiddleware, (c) => {
   return c.json({ success: true, members });
 });
 
-// ─── Permission Mode (Code / Plan mode switching) ────────────────
-
-const VALID_PERMISSION_MODES = ['bypassPermissions', 'plan'];
-
-groupRoutes.put('/:jid/mode', authMiddleware, async (c) => {
-  const user = c.get('user') as AuthUser;
-  const jid = decodeURIComponent(c.req.param('jid'));
-
-  const group = getRegisteredGroup(jid);
-  if (!group) {
-    return c.json({ error: 'Group not found' }, 404);
-  }
-  if (!canAccessGroup(user, { ...group, jid })) {
-    return c.json({ error: 'Not authorized' }, 403);
-  }
-
-  const body = await c.req.json().catch(() => ({}));
-  const mode = (body as { mode?: string }).mode;
-
-  if (!mode || !VALID_PERMISSION_MODES.includes(mode)) {
-    return c.json(
-      {
-        error: `Invalid mode. Must be one of: ${VALID_PERMISSION_MODES.join(', ')}`,
-      },
-      400,
-    );
-  }
-
-  const deps = getWebDeps();
-  if (!deps) return c.json({ error: 'Server not initialized' }, 500);
-
-  const sent = deps.queue.setPermissionMode(jid, mode);
-  return c.json({ success: true, mode, applied: sent });
-});
-
 // --- MCP Configuration Routes ---
 
 // GET /api/groups/:jid/mcp - 获取工作区 MCP 配置

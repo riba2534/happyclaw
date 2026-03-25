@@ -121,7 +121,7 @@ export function MonitorPage() {
               {/* Build logs */}
               {building && buildLogs.length > 0 && (
                 <div className="mt-4">
-                  <div className="bg-zinc-900 rounded-lg p-3 max-h-64 overflow-y-auto font-mono text-xs text-green-400">
+                  <div className="bg-[#0f172a] dark:bg-[#0a0f1a] rounded-lg p-3 max-h-64 overflow-y-auto font-mono text-xs text-green-400">
                     {buildLogs.map((line, i) => (
                       <div key={i} className="whitespace-pre-wrap break-all">{line}</div>
                     ))}

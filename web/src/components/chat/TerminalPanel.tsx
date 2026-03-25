@@ -240,14 +240,14 @@ export function TerminalPanel({
   return (
     <div className="h-full flex flex-col terminal-panel">
       {/* Status bar */}
-      <div className="flex items-center justify-between px-3 py-1.5 bg-[#1a1b26] border-b border-border text-xs">
+      <div className="flex items-center justify-between px-3 py-1.5 bg-[#1a1b26] border-b border-[#2a2b36] text-xs">
         <div className="flex items-center gap-2">
           <span className={`inline-block w-2 h-2 rounded-full ${
             connState === 'connected' ? 'bg-green-400' :
             connState === 'connecting' ? 'bg-yellow-400 animate-pulse' :
-            'bg-muted0'
+            'bg-neutral-500'
           }`} />
-          <span className="text-muted-foreground/60">
+          <span className="text-neutral-400">
             {connState === 'connected' ? '已连接' :
              connState === 'connecting' ? '连接中...' :
              connState === 'disconnected' ? '已断开' : '空闲'}
@@ -279,7 +279,7 @@ export function TerminalPanel({
           {onHide && (
             <button
               onClick={onHide}
-              className="p-1 rounded hover:bg-foreground text-muted-foreground/60 hover:text-foreground transition-colors cursor-pointer"
+              className="p-1 rounded hover:bg-[#2a2b36] text-neutral-400 hover:text-neutral-200 transition-colors cursor-pointer"
               aria-label="隐藏终端"
               title="隐藏终端"
             >
@@ -289,7 +289,7 @@ export function TerminalPanel({
           {onDelete && (
             <button
               onClick={onDelete}
-              className="p-1 rounded hover:bg-red-900/30 text-muted-foreground/60 hover:text-red-300 transition-colors cursor-pointer"
+              className="p-1 rounded hover:bg-red-900/30 text-neutral-400 hover:text-red-300 transition-colors cursor-pointer"
               aria-label="删除终端"
               title="删除终端"
             >

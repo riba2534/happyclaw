@@ -270,7 +270,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
               key={ch.key}
               className={cn(
                 'inline-flex items-center gap-1.5 text-sm cursor-pointer',
-                !connected && 'text-muted-foreground cursor-not-allowed',
+                !connected && 'text-muted-foreground/50 cursor-not-allowed',
               )}
             >
               <input
@@ -281,7 +281,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
                 className="rounded"
               />
               {ch.label}
-              {!connected && <span className="text-xs text-muted-foreground">（未连接）</span>}
+              {!connected && <span className="text-xs text-muted-foreground/50">（未连接）</span>}
             </label>
           );
         })}
@@ -410,7 +410,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
                     <Sparkles className="w-4 h-4" />
                     AI 解析结果
                   </div>
-                  <p className="text-sm text-foreground/70">{parsedTask.summary}</p>
+                  <p className="text-sm text-muted-foreground">{parsedTask.summary}</p>
 
                   <div className="grid grid-cols-2 gap-3 text-sm">
                     <div>

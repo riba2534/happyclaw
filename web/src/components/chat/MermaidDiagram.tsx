@@ -119,7 +119,7 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
       <div className="my-4 rounded-lg bg-muted border border-border p-8 flex items-center justify-center">
         <div className="animate-pulse flex flex-col items-center gap-2">
           <div className="h-24 w-48 bg-muted-foreground/20 rounded" />
-          <span className="text-sm text-muted-foreground/60">Mermaid 图表渲染中...</span>
+          <span className="text-sm text-muted-foreground">Mermaid 图表渲染中...</span>
         </div>
       </div>
     );
@@ -131,7 +131,7 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
         <div className="absolute right-2 top-2 opacity-70 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
           <button
             onClick={handleCopy}
-            className="p-2 rounded-lg bg-border hover:bg-border text-foreground/80 text-xs flex items-center gap-1"
+            className="p-2 rounded-lg bg-muted hover:bg-muted/80 text-foreground text-xs flex items-center gap-1"
           >
             {copied ? (
               <>
@@ -162,14 +162,14 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
         <div className="absolute right-2 top-2 opacity-70 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity z-10 flex gap-1">
           <button
             onClick={() => setExpanded(true)}
-            className="p-2 rounded-lg bg-border hover:bg-border text-foreground/80 text-xs flex items-center gap-1"
+            className="p-2 rounded-lg bg-muted hover:bg-muted/80 text-foreground text-xs flex items-center gap-1"
             title="放大查看"
           >
             <Maximize2 size={14} />
           </button>
           <button
             onClick={handleCopy}
-            className="p-2 rounded-lg bg-border hover:bg-border text-foreground/80 text-xs flex items-center gap-1"
+            className="p-2 rounded-lg bg-muted hover:bg-muted/80 text-foreground text-xs flex items-center gap-1"
           >
             {copied ? (
               <>
@@ -201,7 +201,7 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
           >
             <button
               onClick={() => setExpanded(false)}
-              className="absolute top-3 right-3 z-20 p-2 rounded-full bg-foreground/70 text-white hover:bg-foreground transition-colors cursor-pointer"
+              className="absolute top-3 right-3 z-20 p-2 rounded-full bg-black/70 text-white hover:bg-black transition-colors cursor-pointer"
               aria-label="关闭图表预览"
               title="关闭"
             >

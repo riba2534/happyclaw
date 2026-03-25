@@ -131,7 +131,7 @@ export function TaskCard({ task, onPause, onResume, onDelete, onRunNow }: TaskCa
                 <button
                   onClick={handleRunNow}
                   disabled={runningNow}
-                  className="p-2 text-foreground/70 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+                  className="p-2 text-muted-foreground hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
                   title="立即运行"
                   aria-label="立即运行任务"
                 >
@@ -145,7 +145,7 @@ export function TaskCard({ task, onPause, onResume, onDelete, onRunNow }: TaskCa
             {(task.status === 'active' || task.status === 'paused') && (
               <button
                 onClick={handleTogglePause}
-                className="p-2 text-muted-foreground hover:text-primary hover:bg-primary/5 rounded-lg transition-colors cursor-pointer"
+                className="p-2 text-muted-foreground hover:text-primary hover:bg-brand-50 rounded-lg transition-colors cursor-pointer"
                 title={task.status === 'active' ? '暂停' : '恢复'}
                 aria-label={task.status === 'active' ? '暂停任务' : '恢复任务'}
               >
@@ -170,9 +170,9 @@ export function TaskCard({ task, onPause, onResume, onDelete, onRunNow }: TaskCa
             {/* Expand Icon */}
             <div className="ml-2">
               {expanded ? (
-                <ChevronUp className="w-5 h-5 text-muted-foreground/60" />
+                <ChevronUp className="w-5 h-5 text-muted-foreground" />
               ) : (
-                <ChevronDown className="w-5 h-5 text-muted-foreground/60" />
+                <ChevronDown className="w-5 h-5 text-muted-foreground" />
               )}
             </div>
           </div>

@@ -1,4 +1,4 @@
-import { forwardRef } from 'react';
+import { forwardRef, useMemo } from 'react';
 import { EmojiAvatar } from '../common/EmojiAvatar';
 import { MarkdownRenderer } from './MarkdownRenderer';
 
@@ -13,18 +13,16 @@ interface ShareCardRendererProps {
 }
 
 /**
- * Inline light-theme CSS variables for consistent rendering regardless of current theme.
- * Extracted from globals.css :root values.
+ * Fixed light-theme base variables (background, foreground, muted, etc.).
+ * These do NOT change with the user's color scheme.
  */
-const LIGHT_THEME_VARS: React.CSSProperties = {
-  // shadcn/ui semantic tokens
+const LIGHT_BASE_VARS: Record<string, string> = {
   '--background': '#ffffff',
   '--foreground': '#0f172a',
   '--card': '#ffffff',
   '--card-foreground': '#0f172a',
   '--popover': '#ffffff',
   '--popover-foreground': '#0f172a',
-  '--primary': '#f97316',
   '--primary-foreground': '#ffffff',
   '--secondary': '#f5f5f5',
   '--secondary-foreground': '#171717',
@@ -37,7 +35,10 @@ const LIGHT_THEME_VARS: React.CSSProperties = {
   '--border': '#e5e5e5',
   '--input': '#e5e5e5',
   '--ring': '#a3a3a3',
-  // Brand (Orange)
+};
+
+/** Default brand fallbacks (classic orange) in case CSS vars are unavailable. */
+const BRAND_DEFAULTS: Record<string, string> = {
   '--brand-50': '#fff7ed',
   '--brand-100': '#ffedd5',
   '--brand-200': '#fed7aa',
@@ -46,7 +47,23 @@ const LIGHT_THEME_VARS: React.CSSProperties = {
   '--brand-500': '#f97316',
   '--brand-600': '#ea580c',
   '--brand-700': '#c2410c',
-} as React.CSSProperties;
+};
+
+/**
+ * Read current brand/primary colors from the live CSS custom properties.
+ * Falls back to orange defaults when a variable is missing.
+ */
+function getCurrentBrandVars(): Record<string, string> {
+  const style = getComputedStyle(document.documentElement);
+  const get = (key: string) => style.getPropertyValue(key).trim();
+
+  const brand: Record<string, string> = {};
+  for (const [key, fallback] of Object.entries(BRAND_DEFAULTS)) {
+    brand[key] = get(key) || fallback;
+  }
+  brand['--primary'] = get('--brand-500') || BRAND_DEFAULTS['--brand-500'];
+  return brand;
+}
 
 const MAX_HEIGHT = 20000;
 export const SHARE_CARD_DEFAULT_WIDTH = 720;
@@ -85,11 +102,17 @@ export const ShareCardRenderer = forwardRef<HTMLDivElement, ShareCardRendererPro
     { content, senderName, timestamp, groupJid, aiEmoji, aiColor, aiImageUrl },
     ref,
   ) {
+    // Merge fixed light-mode base vars with dynamic brand colors from current theme
+    const themeVars = useMemo<React.CSSProperties>(() => {
+      const brandVars = getCurrentBrandVars();
+      return { ...LIGHT_BASE_VARS, ...brandVars } as React.CSSProperties;
+    }, []);
+
     return (
       <div
         ref={ref}
         style={{
-          ...LIGHT_THEME_VARS,
+          ...themeVars,
           minWidth: SHARE_CARD_DEFAULT_WIDTH,
           fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
           background: '#ffffff',

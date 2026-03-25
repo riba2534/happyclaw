@@ -106,9 +106,6 @@ export function isWeChatBypassingProxy(): boolean {
   return WECHAT_NO_PROXY_DOMAINS.every((d) => existing.has(d));
 }
 
-// Apply default: bypass proxy on startup
-updateWeChatNoProxy(true);
-
 // Proxy trust configuration
 // Set TRUST_PROXY=true when behind a reverse proxy (nginx, Cloudflare, etc.)
 export const TRUST_PROXY = process.env.TRUST_PROXY === 'true';

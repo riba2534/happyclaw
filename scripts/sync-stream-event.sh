@@ -34,3 +34,12 @@ for target in \
 ; do
   sync_file "$SRC_ID" "$target"
 done
+
+# --- Channel prefixes (2 targets: backend + agent-runner; not needed by web) ---
+SRC_CP="$ROOT/shared/channel-prefixes.ts"
+for target in \
+  "$ROOT/src/channel-prefixes.ts" \
+  "$ROOT/container/agent-runner/src/channel-prefixes.ts" \
+; do
+  sync_file "$SRC_CP" "$target"
+done

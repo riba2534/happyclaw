@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { Plus, X, Link, MessageSquare, Pencil, Trash2 } from 'lucide-react';
 import type { AgentInfo } from '../../types';
 
@@ -35,11 +35,13 @@ function ContextMenuOverlay({ menu, onRename, onDelete, onClose }: {
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent | TouchEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) {
-        onClose();
+        onCloseRef.current();
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -48,7 +50,7 @@ function ContextMenuOverlay({ menu, onRename, onDelete, onClose }: {
       document.removeEventListener('mousedown', handleClickOutside);
       document.removeEventListener('touchstart', handleClickOutside);
     };
-  }, [onClose]);
+  }, []);
 
   return (
     <div
@@ -78,7 +80,7 @@ function ContextMenuOverlay({ menu, onRename, onDelete, onClose }: {
 
 export function AgentTabBar({ agents, activeTab, onSelectTab, onDeleteAgent, onRenameAgent, onCreateConversation, onBindIm, onBindMainIm }: AgentTabBarProps) {
   // Spawn agents are rendered inline in the main chat, not as separate tabs
-  const conversations = agents.filter(a => a.kind === 'conversation');
+  const conversations = useMemo(() => agents.filter(a => a.kind === 'conversation'), [agents]);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 

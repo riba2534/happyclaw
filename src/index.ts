@@ -16,6 +16,7 @@ import {
   POLL_INTERVAL,
   TIMEZONE,
   isDockerAvailable,
+  updateWeChatNoProxy,
 } from './config.js';
 import { interruptibleSleep } from './message-notifier.js';
 import {
@@ -143,7 +144,11 @@ import {
   SubAgent,
 } from './types.js';
 import { logger } from './logger.js';
-import { stripAgentInternalTags, stripVirtualJidSuffix } from './utils.js';
+import {
+  ensureAgentDirectories,
+  stripAgentInternalTags,
+  stripVirtualJidSuffix,
+} from './utils.js';
 import { normalizeImageAttachments } from './message-attachments.js';
 import {
   startWebServer,
@@ -245,13 +250,6 @@ function feedStreamEventToCard(
     case 'hook_progress':
       // Update hook state (no card push needed — card already shows hook indicator)
       session.setHook({ hookName: se.hookName || '', hookEvent: se.hookEvent || '' });
-      break;
-    case 'mode_change':
-      if (se.permissionMode === 'plan') {
-        session.setSystemStatus('📋 Plan 模式');
-      } else if (se.permissionMode) {
-        session.setSystemStatus(null);
-      }
       break;
     case 'usage':
       if (se.usage) session.patchUsageNote(se.usage);
@@ -1421,6 +1419,62 @@ async function summarizeWithClaude(transcript: string): Promise<string | null> {
 
 // ─── /sw & /spawn: parallel task spawning ────────────────────────
 
+interface SpawnWorkspace {
+  homeChatJid: string;
+  homeGroup: RegisteredGroup;
+  effectiveGroup: RegisteredGroup;
+}
+
+/**
+ * Resolve the workspace for a /spawn command.
+ * Returns a SpawnWorkspace on success, or an error message string on failure.
+ */
+function resolveSpawnWorkspace(
+  baseJid: string,
+  group: RegisteredGroup,
+  userId: string,
+): SpawnWorkspace | string {
+  let homeChatJid: string;
+  let homeGroup: RegisteredGroup;
+
+  if (group.target_main_jid) {
+    const target =
+      registeredGroups[group.target_main_jid] ??
+      getRegisteredGroup(group.target_main_jid);
+    if (!target) return '绑定的工作区不存在';
+    homeChatJid = group.target_main_jid;
+    homeGroup = target;
+  } else if (group.target_agent_id) {
+    const agentInfo = getAgent(group.target_agent_id);
+    if (!agentInfo) return '绑定的 Agent 不存在';
+    const parent =
+      registeredGroups[agentInfo.chat_jid] ??
+      getRegisteredGroup(agentInfo.chat_jid);
+    if (!parent) return '绑定 Agent 所属的工作区不存在';
+    homeChatJid = agentInfo.chat_jid;
+    homeGroup = parent;
+  } else if (baseJid.startsWith('web:')) {
+    homeChatJid = baseJid;
+    homeGroup = group;
+  } else {
+    // IM group not bound — use the user's home workspace
+    const userHome = getUserHomeGroup(userId);
+    if (!userHome) return '未找到用户主工作区';
+    homeChatJid = `web:${userHome.folder}`;
+    // Lookup the RegisteredGroup object — prefer the web: JID, fall back to any JID for this folder
+    const homeJids = getJidsByFolder(userHome.folder);
+    const webJid = homeJids.find((j) => j.startsWith('web:')) ?? homeJids[0];
+    const resolvedHome = webJid
+      ? (registeredGroups[webJid] ?? getRegisteredGroup(webJid))
+      : undefined;
+    if (!resolvedHome) return '未找到用户主工作区';
+    homeGroup = resolvedHome;
+  }
+
+  const { effectiveGroup } = resolveEffectiveGroup(homeGroup);
+  return { homeChatJid, homeGroup, effectiveGroup };
+}
+
 async function handleSpawnCommand(
   chatJid: string,
   rawMessage: string,
@@ -1435,41 +1489,9 @@ async function handleSpawnCommand(
   const userId = group.created_by;
   if (!userId) return '无法确定当前聊天所属用户';
 
-  // 2. Resolve the effective workspace JID and folder
-  let homeChatJid: string;
-  let homeGroup: RegisteredGroup;
-
-  if (group.target_main_jid) {
-    const target = registeredGroups[group.target_main_jid] ?? getRegisteredGroup(group.target_main_jid);
-    if (!target) return '绑定的工作区不存在';
-    homeChatJid = group.target_main_jid;
-    homeGroup = target;
-  } else if (group.target_agent_id) {
-    const agentInfo = getAgent(group.target_agent_id);
-    if (!agentInfo) return '绑定的 Agent 不存在';
-    const parent = registeredGroups[agentInfo.chat_jid] ?? getRegisteredGroup(agentInfo.chat_jid);
-    if (!parent) return '绑定 Agent 所属的工作区不存在';
-    homeChatJid = agentInfo.chat_jid;
-    homeGroup = parent;
-  } else if (baseJid.startsWith('web:')) {
-    homeChatJid = baseJid;
-    homeGroup = group;
-  } else {
-    // IM group not bound — use the user's home workspace
-    const userHome = getUserHomeGroup(userId);
-    if (!userHome) return '未找到用户主工作区';
-    homeChatJid = `web:${userHome.folder}`;
-    // Lookup the RegisteredGroup object — prefer the web: JID, fall back to any JID for this folder
-    const homeJids = getJidsByFolder(userHome.folder);
-    const webJid = homeJids.find(j => j.startsWith('web:')) ?? homeJids[0];
-    const resolvedHome = webJid
-      ? (registeredGroups[webJid] ?? getRegisteredGroup(webJid))
-      : undefined;
-    if (!resolvedHome) return '未找到用户主工作区';
-    homeGroup = resolvedHome;
-  }
-
-  const { effectiveGroup } = resolveEffectiveGroup(homeGroup);
+  const resolved = resolveSpawnWorkspace(baseJid, group, userId);
+  if (typeof resolved === 'string') return resolved;
+  const { homeChatJid, effectiveGroup } = resolved;
 
   // 3. Determine the spawned_from_jid (where to inject results back)
   //    For IM: resolve to the effective web JID so results enter the web message stream
@@ -1505,14 +1527,7 @@ async function handleSpawnCommand(
   createAgent(newAgent);
 
   // Create IPC + session directories
-  const agentIpcDir = path.join(DATA_DIR, 'ipc', effectiveGroup.folder, 'agents', agentId);
-  fs.mkdirSync(path.join(agentIpcDir, 'input'), { recursive: true });
-  fs.mkdirSync(path.join(agentIpcDir, 'messages'), { recursive: true });
-  fs.mkdirSync(path.join(agentIpcDir, 'tasks'), { recursive: true });
-  fs.mkdirSync(
-    path.join(DATA_DIR, 'sessions', effectiveGroup.folder, 'agents', agentId, '.claude'),
-    { recursive: true },
-  );
+  ensureAgentDirectories(effectiveGroup.folder, agentId);
 
   // Create virtual chat + store user's message in it
   const virtualChatJid = `${homeChatJid}#agent:${agentId}`;
@@ -2432,17 +2447,19 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               let targetTaskId = se.taskId;
               let existing = getAgent(targetTaskId);
               if (!existing || existing.kind !== 'task') {
+                // agent-runner now translates SDK task_id → toolUseId,
+                // so this fallback should rarely trigger. Keep as safety net.
                 const fallbackTaskId = pickRunningTaskForNotification();
                 if (fallbackTaskId) {
                   targetTaskId = fallbackTaskId;
                   existing = getAgent(fallbackTaskId);
-                  logger.warn(
+                  logger.debug(
                     {
                       chatJid,
                       sdkTaskId: se.taskId,
                       mappedTaskId: fallbackTaskId,
                     },
-                    'Task notification ID mismatch, mapped to running task',
+                    'Task notification ID fallback to running task',
                   );
                 }
               }
@@ -4257,6 +4274,7 @@ async function processTaskIpc(
           break;
         }
 
+        fs.mkdirSync(path.dirname(resultFilePath), { recursive: true });
         try {
           const allTasks = getAllTasks();
           // Admin home sees all tasks, others only see their own group's tasks
@@ -4274,7 +4292,6 @@ async function processTaskIpc(
           }));
           const resultData = JSON.stringify({ success: true, tasks: taskList });
           const tmpPath = `${resultFilePath}.tmp`;
-          fs.mkdirSync(path.dirname(resultFilePath), { recursive: true });
           fs.writeFileSync(tmpPath, resultData);
           fs.renameSync(tmpPath, resultFilePath);
           logger.debug(
@@ -4287,7 +4304,6 @@ async function processTaskIpc(
             error: err instanceof Error ? err.message : String(err),
           });
           const tmpPath = `${resultFilePath}.tmp`;
-          fs.mkdirSync(path.dirname(resultFilePath), { recursive: true });
           fs.writeFileSync(tmpPath, errorResult);
           fs.renameSync(tmpPath, resultFilePath);
           logger.error(
@@ -6246,6 +6262,9 @@ async function main(): Promise<void> {
   } catch (err) {
     logger.warn({ err }, 'Failed to mark stale spawn agents at startup');
   }
+
+  // WeChat iLink API domains bypass proxy (applied at startup, updated on config save)
+  updateWeChatNoProxy(true);
 
   // Migrate system-level IM config → admin's per-user config (one-time)
   migrateSystemIMToPerUser();

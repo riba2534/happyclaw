@@ -29,6 +29,7 @@ import {
   StreamingCardController,
   type StreamingCardOptions,
 } from './feishu-streaming-card.js';
+import { CHANNEL_PREFIXES } from './channel-prefixes.js';
 
 // ─── Unified Interface ──────────────────────────────────────────
 
@@ -99,19 +100,18 @@ export interface IMChannel {
 
 // ─── Channel Registry ───────────────────────────────────────────
 
-export const CHANNEL_REGISTRY: Record<string, { prefix: string }> = {
-  feishu: { prefix: 'feishu:' },
-  telegram: { prefix: 'telegram:' },
-  qq: { prefix: 'qq:' },
-  wechat: { prefix: 'wechat:' },
-};
+/** Backward-compatible registry derived from the shared CHANNEL_PREFIXES. */
+export const CHANNEL_REGISTRY: Record<string, { prefix: string }> =
+  Object.fromEntries(
+    Object.entries(CHANNEL_PREFIXES).map(([type, prefix]) => [type, { prefix }]),
+  );
 
 /**
  * Determine the channel type from a JID string.
  * Returns the matching channelType key or null if no prefix matches.
  */
 export function getChannelType(jid: string): string | null {
-  for (const [type, { prefix }] of Object.entries(CHANNEL_REGISTRY)) {
+  for (const [type, prefix] of Object.entries(CHANNEL_PREFIXES)) {
     if (jid.startsWith(prefix)) return type;
   }
   return null;
@@ -121,7 +121,7 @@ export function getChannelType(jid: string): string | null {
  * Strip the channel prefix from a JID, returning the raw chat ID.
  */
 export function extractChatId(jid: string): string {
-  for (const { prefix } of Object.values(CHANNEL_REGISTRY)) {
+  for (const prefix of Object.values(CHANNEL_PREFIXES)) {
     if (jid.startsWith(prefix)) return jid.slice(prefix.length);
   }
   return jid;

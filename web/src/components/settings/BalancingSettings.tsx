@@ -17,7 +17,7 @@ export function BalancingSettings({ balancing, onChange, disabled }: BalancingSe
     <div className="border border-border rounded-lg overflow-hidden">
       <button
         type="button"
-        className="w-full flex items-center justify-between px-4 py-3 bg-muted hover:bg-muted transition-colors cursor-pointer"
+        className="w-full flex items-center justify-between px-4 py-3 bg-muted/50 hover:bg-muted transition-colors cursor-pointer"
         onClick={() => setExpanded(!expanded)}
       >
         <div className="flex items-center gap-2">
@@ -47,7 +47,7 @@ export function BalancingSettings({ balancing, onChange, disabled }: BalancingSe
           <div>
             <label className="text-sm font-medium block mb-1">策略</label>
             <select
-              className="w-full border border-border rounded-md px-3 py-1.5 text-sm bg-white"
+              className="w-full border border-border rounded-md px-3 py-1.5 text-sm bg-background"
               value={balancing.strategy}
               disabled={disabled}
               onChange={(e) =>

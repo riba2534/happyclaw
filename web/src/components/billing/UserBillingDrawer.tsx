@@ -23,6 +23,7 @@ import {
   type SubscriptionHistoryItem,
 } from '../../stores/billing';
 import { useCurrency } from './utils';
+import { ProgressBar } from './ProgressBar';
 import { api } from '../../api/client';
 
 const TX_SOURCE_LABELS: Record<string, string> = {
@@ -48,20 +49,6 @@ interface UserDetail extends UserBillingOverview {
   weekly_cost_used?: number;
   weekly_cost_quota?: number | null;
   monthly_cost_quota?: number | null;
-}
-
-function ProgressBar({ value, max }: { value: number; max: number }) {
-  const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
-  const color =
-    pct >= 90 ? 'bg-red-500' : pct >= 70 ? 'bg-yellow-500' : 'bg-brand-500';
-  return (
-    <div className="h-2 bg-muted rounded-full overflow-hidden">
-      <div
-        className={`h-full ${color} rounded-full transition-all`}
-        style={{ width: `${pct}%` }}
-      />
-    </div>
-  );
 }
 
 export default function UserBillingDrawer({

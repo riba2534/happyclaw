@@ -42,6 +42,39 @@ function writeIpcFile(dir: string, data: object): string {
   return filename;
 }
 
+/**
+ * Send an IPC request and poll for the result file.
+ * Fixes TOCTOU by directly attempting readFileSync and catching ENOENT.
+ * Returns the parsed JSON result, or throws on timeout.
+ */
+async function pollIpcResult(
+  dir: string,
+  data: Record<string, unknown> & { requestId: string },
+  resultFilePrefix: string,
+  timeoutMs: number = 30_000,
+): Promise<Record<string, unknown>> {
+  const resultFileName = `${resultFilePrefix}_${data.requestId}.json`;
+  const resultFilePath = path.join(dir, resultFileName);
+
+  writeIpcFile(dir, data);
+
+  const pollInterval = 500;
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    try {
+      const raw = fs.readFileSync(resultFilePath, 'utf-8');
+      fs.unlinkSync(resultFilePath);
+      return JSON.parse(raw) as Record<string, unknown>;
+    } catch (err) {
+      // File not ready yet — only swallow ENOENT
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollInterval));
+  }
+  throw new Error(`Timeout waiting for IPC result (${timeoutMs / 1000}s)`);
+}
+
 // --- Memory helpers ---
 const MEMORY_EXTENSIONS = new Set(['.md', '.txt']);
 const MEMORY_SUBDIRS = new Set(['memory', 'conversations']);
@@ -569,81 +602,66 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
       {},
       async () => {
         const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const resultFileName = `list_tasks_result_${requestId}.json`;
-        const resultFilePath = path.join(TASKS_DIR, resultFileName);
-
-        const data = {
-          type: 'list_tasks',
-          requestId,
-          groupFolder: ctx.groupFolder,
-          isAdminHome: hasCrossGroupAccess,
-          timestamp: new Date().toISOString(),
-        };
-        writeIpcFile(TASKS_DIR, data);
-
-        // Poll for result file (timeout 30s)
-        const timeout = 30_000;
-        const pollInterval = 500;
-        const deadline = Date.now() + timeout;
-
-        while (Date.now() < deadline) {
-          try {
-            if (fs.existsSync(resultFilePath)) {
-              const raw = fs.readFileSync(resultFilePath, 'utf-8');
-              fs.unlinkSync(resultFilePath);
-              const result = JSON.parse(raw);
-              if (!result.success) {
-                return {
-                  content: [
-                    {
-                      type: 'text' as const,
-                      text: `Error listing tasks: ${result.error || 'Unknown error'}`,
-                    },
-                  ],
-                  isError: true,
-                };
-              }
-              const tasks = result.tasks || [];
-              if (tasks.length === 0) {
-                return {
-                  content: [
-                    { type: 'text' as const, text: 'No scheduled tasks found.' },
-                  ],
-                };
-              }
-              const formatted = tasks
-                .map(
-                  (t: {
-                    id: string;
-                    prompt: string;
-                    schedule_type: string;
-                    schedule_value: string;
-                    status: string;
-                    next_run: string;
-                  }) =>
-                    `- [${t.id}] ${t.prompt.slice(0, 50)}... (${t.schedule_type}: ${t.schedule_value}) - ${t.status}, next: ${t.next_run || 'N/A'}`,
-                )
-                .join('\n');
-              return {
-                content: [
-                  { type: 'text' as const, text: `Scheduled tasks:\n${formatted}` },
-                ],
-              };
-            }
-          } catch {
-            // ignore read errors, retry
-          }
-          await new Promise((resolve) => setTimeout(resolve, pollInterval));
-        }
-        return {
-          content: [
+        try {
+          const result = await pollIpcResult(
+            TASKS_DIR,
             {
-              type: 'text' as const,
-              text: 'Timeout waiting for task list response.',
+              type: 'list_tasks',
+              requestId,
+              groupFolder: ctx.groupFolder,
+              isAdminHome: hasCrossGroupAccess,
+              timestamp: new Date().toISOString(),
             },
-          ],
-          isError: true,
-        };
+            'list_tasks_result',
+          );
+          if (!result.success) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Error listing tasks: ${result.error || 'Unknown error'}`,
+                },
+              ],
+              isError: true,
+            };
+          }
+          const tasks = (result.tasks || []) as Array<{
+            id: string;
+            prompt: string;
+            schedule_type: string;
+            schedule_value: string;
+            status: string;
+            next_run: string;
+          }>;
+          if (tasks.length === 0) {
+            return {
+              content: [
+                { type: 'text' as const, text: 'No scheduled tasks found.' },
+              ],
+            };
+          }
+          const formatted = tasks
+            .map(
+              (t) =>
+                `- [${t.id}] ${t.prompt.slice(0, 50)}... (${t.schedule_type}: ${t.schedule_value}) - ${t.status}, next: ${t.next_run || 'N/A'}`,
+            )
+            .join('\n');
+          return {
+            content: [
+              { type: 'text' as const, text: `Scheduled tasks:\n${formatted}` },
+            ],
+          };
+        } catch {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: 'Timeout waiting for task list response.',
+              },
+            ],
+            isError: true,
+          };
+        }
       },
     ),
 
@@ -810,65 +828,52 @@ Example packages: "anthropic/memory", "anthropic/think", "owner/repo", "owner/re
           }
 
           const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-          const resultFileName = `install_skill_result_${requestId}.json`;
-          const resultFilePath = path.join(TASKS_DIR, resultFileName);
-
-          const data = {
-            type: 'install_skill',
-            package: pkg,
-            requestId,
-            groupFolder: ctx.groupFolder,
-            timestamp: new Date().toISOString(),
-          };
-          writeIpcFile(TASKS_DIR, data);
-
-          // Poll for result file (timeout 120s)
-          const timeout = 120_000;
-          const pollInterval = 500;
-          const deadline = Date.now() + timeout;
-
-          while (Date.now() < deadline) {
-            try {
-              if (fs.existsSync(resultFilePath)) {
-                const raw = fs.readFileSync(resultFilePath, 'utf-8');
-                fs.unlinkSync(resultFilePath);
-                const result = JSON.parse(raw);
-                if (result.success) {
-                  const installed = (result.installed || []).join(', ') || pkg;
-                  return {
-                    content: [
-                      {
-                        type: 'text' as const,
-                        text: `Skill installed successfully: ${installed}\n\nNote: The skill will be available in the next conversation (new container/process).`,
-                      },
-                    ],
-                  };
-                } else {
-                  return {
-                    content: [
-                      {
-                        type: 'text' as const,
-                        text: `Failed to install skill "${pkg}": ${result.error || 'Unknown error'}`,
-                      },
-                    ],
-                    isError: true,
-                  };
-                }
-              }
-            } catch {
-              // ignore read errors, retry
-            }
-            await new Promise((resolve) => setTimeout(resolve, pollInterval));
-          }
-          return {
-            content: [
+          try {
+            const result = await pollIpcResult(
+              TASKS_DIR,
               {
-                type: 'text' as const,
-                text: `Timeout waiting for skill installation result (${timeout / 1000}s). The installation may still be in progress.`,
+                type: 'install_skill',
+                package: pkg,
+                requestId,
+                groupFolder: ctx.groupFolder,
+                timestamp: new Date().toISOString(),
               },
-            ],
-            isError: true,
-          };
+              'install_skill_result',
+              120_000,
+            );
+            if (result.success) {
+              const installed =
+                ((result.installed as string[]) || []).join(', ') || pkg;
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: `Skill installed successfully: ${installed}\n\nNote: The skill will be available in the next conversation (new container/process).`,
+                  },
+                ],
+              };
+            } else {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: `Failed to install skill "${pkg}": ${result.error || 'Unknown error'}`,
+                  },
+                ],
+                isError: true,
+              };
+            }
+          } catch {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Timeout waiting for skill installation result (120s). The installation may still be in progress.`,
+                },
+              ],
+              isError: true,
+            };
+          }
         },
       ),
 
@@ -899,64 +904,49 @@ Use the skills panel in the UI to find the skill ID (directory name, e.g. "memor
           }
 
           const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-          const resultFileName = `uninstall_skill_result_${requestId}.json`;
-          const resultFilePath = path.join(TASKS_DIR, resultFileName);
-
-          const data = {
-            type: 'uninstall_skill',
-            skillId,
-            requestId,
-            groupFolder: ctx.groupFolder,
-            timestamp: new Date().toISOString(),
-          };
-          writeIpcFile(TASKS_DIR, data);
-
-          // Poll for result file (timeout 30s)
-          const timeout = 30_000;
-          const pollInterval = 500;
-          const deadline = Date.now() + timeout;
-
-          while (Date.now() < deadline) {
-            try {
-              if (fs.existsSync(resultFilePath)) {
-                const raw = fs.readFileSync(resultFilePath, 'utf-8');
-                fs.unlinkSync(resultFilePath);
-                const result = JSON.parse(raw);
-                if (result.success) {
-                  return {
-                    content: [
-                      {
-                        type: 'text' as const,
-                        text: `Skill "${skillId}" uninstalled successfully.`,
-                      },
-                    ],
-                  };
-                } else {
-                  return {
-                    content: [
-                      {
-                        type: 'text' as const,
-                        text: `Failed to uninstall skill "${skillId}": ${result.error || 'Unknown error'}`,
-                      },
-                    ],
-                    isError: true,
-                  };
-                }
-              }
-            } catch {
-              // ignore read errors, retry
-            }
-            await new Promise((resolve) => setTimeout(resolve, pollInterval));
-          }
-          return {
-            content: [
+          try {
+            const result = await pollIpcResult(
+              TASKS_DIR,
               {
-                type: 'text' as const,
-                text: `Timeout waiting for skill uninstall result.`,
+                type: 'uninstall_skill',
+                skillId,
+                requestId,
+                groupFolder: ctx.groupFolder,
+                timestamp: new Date().toISOString(),
               },
-            ],
-            isError: true,
-          };
+              'uninstall_skill_result',
+            );
+            if (result.success) {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: `Skill "${skillId}" uninstalled successfully.`,
+                  },
+                ],
+              };
+            } else {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: `Failed to uninstall skill "${skillId}": ${result.error || 'Unknown error'}`,
+                  },
+                ],
+                isError: true,
+              };
+            }
+          } catch {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Timeout waiting for skill uninstall result.`,
+                },
+              ],
+              isError: true,
+            };
+          }
         },
       ),
     );

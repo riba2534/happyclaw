@@ -48,7 +48,7 @@ export const CHANNEL_ICON: Record<string, React.FC> = {
 export function ChannelBadge({ channelType }: { channelType: string }) {
   const Icon = CHANNEL_ICON[channelType];
   return (
-    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium inline-flex items-center gap-0.5 ${CHANNEL_COLORS[channelType] || 'bg-muted text-foreground/70'}`}>
+    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium inline-flex items-center gap-0.5 ${CHANNEL_COLORS[channelType] || 'bg-muted text-muted-foreground'}`}>
       {Icon && <Icon />}
       {CHANNEL_LABEL[channelType] || channelType}
     </span>

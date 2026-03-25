@@ -10,6 +10,7 @@ import {
   spawn,
 } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import { CONTAINER_IMAGE, DATA_DIR, GROUPS_DIR } from './config.js';
@@ -400,6 +401,31 @@ function buildVolumeMounts(
     containerPath: '/app/src',
     readonly: true,
   });
+
+  // Admin's ~/.claude/ config: mount CLAUDE.md and rules/ into /workspace/
+  // so the SDK's directory traversal (cwd → root) discovers them at /workspace/ level.
+  // Only for admin-created workspaces (ownerHomeFolder === 'main').
+  const isCreatorAdmin = ownerHomeFolder === 'main';
+  if (isCreatorAdmin) {
+    const hostClaudeDir = path.join(os.homedir(), '.claude');
+    const hostClaudeMd = path.join(hostClaudeDir, 'CLAUDE.md');
+    const hostRulesDir = path.join(hostClaudeDir, 'rules');
+
+    if (fs.existsSync(hostClaudeMd)) {
+      mounts.push({
+        hostPath: hostClaudeMd,
+        containerPath: '/workspace/CLAUDE.md',
+        readonly: true,
+      });
+    }
+    if (fs.existsSync(hostRulesDir)) {
+      mounts.push({
+        hostPath: hostRulesDir,
+        containerPath: '/workspace/.claude/rules',
+        readonly: true,
+      });
+    }
+  }
 
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {

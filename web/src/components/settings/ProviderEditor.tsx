@@ -395,7 +395,7 @@ export function ProviderEditor({
           {/* 类型选择（仅创建模式） */}
           {isCreate && (
             <div>
-              <label className="block text-xs text-foreground/70 mb-1">提供商类型</label>
+              <label className="block text-xs text-muted-foreground mb-1">提供商类型</label>
               <div className="inline-flex rounded-lg border border-border p-1 bg-muted">
                 <button
                   type="button"
@@ -425,7 +425,7 @@ export function ProviderEditor({
 
           {/* 名称 */}
           <div>
-            <label className="block text-xs text-foreground/70 mb-1">名称</label>
+            <label className="block text-xs text-muted-foreground mb-1">名称</label>
             <Input
               type="text"
               value={name}
@@ -439,7 +439,7 @@ export function ProviderEditor({
           {providerType === 'official' && (
             <div className="space-y-4">
               <div>
-                <label className="block text-xs text-foreground/70 mb-2">认证方式</label>
+                <label className="block text-xs text-muted-foreground mb-2">认证方式</label>
                 <div className="inline-flex rounded-lg border border-border p-1 bg-muted">
                   {(['oauth', 'setup_token', 'api_key'] as const).map((tab) => (
                     <button
@@ -461,7 +461,7 @@ export function ProviderEditor({
               {authTab === 'oauth' && (
                 <div className="rounded-lg border border-teal-200 bg-teal-50/50 p-4 space-y-3">
                   <div className="text-sm font-medium text-foreground">一键登录 Claude（推荐）</div>
-                  <div className="text-xs text-foreground/70">
+                  <div className="text-xs text-muted-foreground">
                     点击按钮后会打开 claude.ai 授权页面，完成授权后将页面上显示的授权码粘贴回来。
                   </div>
 
@@ -527,7 +527,7 @@ export function ProviderEditor({
 
               {authTab === 'setup_token' && (
                 <div className="space-y-2">
-                  <label className="block text-xs text-foreground/70 mb-1">
+                  <label className="block text-xs text-muted-foreground mb-1">
                     setup-token 或 .credentials.json{' '}
                     {!isCreate && provider?.hasClaudeCodeOauthToken
                       ? `(${provider.claudeCodeOauthTokenMasked})`
@@ -554,7 +554,7 @@ export function ProviderEditor({
 
               {authTab === 'api_key' && (
                 <div className="space-y-2">
-                  <label className="block text-xs text-foreground/70 mb-1">
+                  <label className="block text-xs text-muted-foreground mb-1">
                     <span className="flex items-center gap-1.5">
                       <Key className="w-3.5 h-3.5" />
                       ANTHROPIC_API_KEY{' '}
@@ -596,7 +596,7 @@ export function ProviderEditor({
           {providerType === 'third_party' && (
             <div className="space-y-4">
               <div>
-                <label className="block text-xs text-foreground/70 mb-1">ANTHROPIC_BASE_URL</label>
+                <label className="block text-xs text-muted-foreground mb-1">ANTHROPIC_BASE_URL</label>
                 <Input
                   type="text"
                   value={baseUrl}
@@ -607,7 +607,7 @@ export function ProviderEditor({
               </div>
 
               <div>
-                <label className="block text-xs text-foreground/70 mb-1">
+                <label className="block text-xs text-muted-foreground mb-1">
                   ANTHROPIC_AUTH_TOKEN{' '}
                   {!isCreate && provider?.hasAnthropicAuthToken
                     ? `(${provider.anthropicAuthTokenMasked})`
@@ -631,7 +631,7 @@ export function ProviderEditor({
                   }
                 />
                 {!isCreate && provider?.hasAnthropicAuthToken && (
-                  <label className="mt-2 inline-flex items-center gap-2 text-xs text-foreground/70">
+                  <label className="mt-2 inline-flex items-center gap-2 text-xs text-muted-foreground">
                     <input
                       type="checkbox"
                       checked={clearTokenOnSave}
@@ -653,7 +653,7 @@ export function ProviderEditor({
 
           {/* ─── 模型选择 ─── */}
           <div>
-            <label className="block text-xs text-foreground/70 mb-1">
+            <label className="block text-xs text-muted-foreground mb-1">
               {providerType === 'official' ? '模型' : 'ANTHROPIC_MODEL'}
             </label>
             {providerType === 'official' ? (
@@ -692,7 +692,7 @@ export function ProviderEditor({
           {/* ─── 自定义环境变量 ─── */}
           <div className="border-t border-border pt-4">
             <div className="flex items-center justify-between mb-2">
-              <label className="text-xs text-foreground/70">其他自定义环境变量（可选）</label>
+              <label className="text-xs text-muted-foreground">其他自定义环境变量（可选）</label>
               <button
                 type="button"
                 onClick={addRow}
@@ -751,7 +751,7 @@ export function ProviderEditor({
             </button>
             {showAdvanced && (
               <div className="mt-2">
-                <label className="block text-xs text-foreground/70 mb-1">
+                <label className="block text-xs text-muted-foreground mb-1">
                   权重（用于加权轮询策略）
                 </label>
                 <Input

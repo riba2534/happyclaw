@@ -110,20 +110,25 @@ RUN npm install -g agent-browser
 RUN npm install
 
 # Install feishu-cli (pre-compiled binary from GitHub Releases)
+# Non-fatal: GitHub API rate limits may cause transient failures
 ARG TARGETARCH
-RUN set -e; \
-    ARCH="${TARGETARCH:-$(dpkg --print-architecture)}"; \
-    VERSION=$(curl -fsSL https://api.github.com/repos/riba2534/feishu-cli/releases/latest | jq -r .tag_name); \
-    curl -fsSL "https://github.com/riba2534/feishu-cli/releases/download/${VERSION}/feishu-cli_${VERSION}_linux-${ARCH}.tar.gz" \
-      | tar -xz --strip-components=1 -C /usr/local/bin; \
-    feishu-cli --version
+RUN ARCH="${TARGETARCH:-$(dpkg --print-architecture)}"; \
+    VERSION=$(curl -fsSL https://api.github.com/repos/riba2534/feishu-cli/releases/latest 2>/dev/null | jq -r .tag_name 2>/dev/null); \
+    if [ -n "$VERSION" ] && [ "$VERSION" != "null" ]; then \
+      curl -fsSL "https://github.com/riba2534/feishu-cli/releases/download/${VERSION}/feishu-cli_${VERSION}_linux-${ARCH}.tar.gz" \
+        | tar -xz --strip-components=1 -C /usr/local/bin && \
+      feishu-cli --version; \
+    else \
+      echo "WARNING: Failed to fetch feishu-cli version (GitHub API rate limit?), skipping installation"; \
+    fi
 
 # Install feishu-cli skills (builtin, lowest priority in discovery)
-RUN set -e; \
-    mkdir -p /opt/builtin-skills; \
-    curl -fsSL https://api.github.com/repos/riba2534/feishu-cli/tarball/main \
-      | tar -xz --strip-components=2 -C /opt/builtin-skills --wildcards '*/skills/*'; \
-    ls /opt/builtin-skills/
+# Non-fatal: GitHub API rate limits may cause transient failures
+RUN mkdir -p /opt/builtin-skills; \
+    curl -fsSL https://api.github.com/repos/riba2534/feishu-cli/tarball/main 2>/dev/null \
+      | tar -xz --strip-components=2 -C /opt/builtin-skills --wildcards '*/skills/*' 2>/dev/null \
+    && ls /opt/builtin-skills/ \
+    || echo "WARNING: Failed to fetch feishu-cli skills, skipping"
 
 # Copy source code
 COPY agent-runner/ ./

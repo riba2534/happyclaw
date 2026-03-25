@@ -1,6 +1,9 @@
 // Utility functions
 
-import { TRUST_PROXY } from './config.js';
+import fs from 'fs';
+import path from 'path';
+
+import { DATA_DIR, TRUST_PROXY } from './config.js';
 
 /**
  * Strip agent-internal XML tags from output text.
@@ -42,4 +45,20 @@ export function getClientIp(c: any): string {
     c.env?.remoteAddr ||
     c.req.raw?.socket?.remoteAddress;
   return connInfo || 'unknown';
+}
+
+/** Create IPC + session directories for an agent. */
+export function ensureAgentDirectories(
+  folder: string,
+  agentId: string,
+): string {
+  const agentIpcDir = path.join(DATA_DIR, 'ipc', folder, 'agents', agentId);
+  fs.mkdirSync(path.join(agentIpcDir, 'input'), { recursive: true });
+  fs.mkdirSync(path.join(agentIpcDir, 'messages'), { recursive: true });
+  fs.mkdirSync(path.join(agentIpcDir, 'tasks'), { recursive: true });
+  fs.mkdirSync(
+    path.join(DATA_DIR, 'sessions', folder, 'agents', agentId, '.claude'),
+    { recursive: true },
+  );
+  return agentIpcDir;
 }

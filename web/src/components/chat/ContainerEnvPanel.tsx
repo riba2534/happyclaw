@@ -121,7 +121,7 @@ export function ContainerEnvPanel({ groupJid, onClose }: ContainerEnvPanelProps)
 
   if (loading && !config) {
     return (
-      <div className="p-4 text-sm text-muted-foreground/60 text-center">加载中...</div>
+      <div className="p-4 text-sm text-muted-foreground text-center">加载中...</div>
     );
   }
 
@@ -133,7 +133,7 @@ export function ContainerEnvPanel({ groupJid, onClose }: ContainerEnvPanelProps)
         <div className="flex items-center gap-1">
           <button
             onClick={() => loadConfig(groupJid)}
-            className="text-muted-foreground/60 hover:text-muted-foreground p-2 rounded-md hover:bg-muted cursor-pointer"
+            className="text-muted-foreground hover:text-foreground p-2 rounded-md hover:bg-muted cursor-pointer"
             title="刷新"
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
@@ -141,7 +141,7 @@ export function ContainerEnvPanel({ groupJid, onClose }: ContainerEnvPanelProps)
           {onClose && (
             <button
               onClick={onClose}
-              className="text-muted-foreground/60 hover:text-muted-foreground p-2 rounded-md hover:bg-muted cursor-pointer"
+              className="text-muted-foreground hover:text-foreground p-2 rounded-md hover:bg-muted cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
@@ -151,7 +151,7 @@ export function ContainerEnvPanel({ groupJid, onClose }: ContainerEnvPanelProps)
 
       {/* Content */}
       <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-4">
-        <p className="text-[11px] text-muted-foreground/60 leading-relaxed">
+        <p className="text-[11px] text-muted-foreground leading-relaxed">
           覆盖全局 Claude 配置，仅对当前工作区生效。留空则使用全局配置。保存后工作区将自动重建。
         </p>
 
@@ -174,7 +174,7 @@ export function ContainerEnvPanel({ groupJid, onClose }: ContainerEnvPanelProps)
             <label className="block text-xs font-medium text-muted-foreground mb-1">
               ANTHROPIC_AUTH_TOKEN
               {config?.hasAnthropicAuthToken && (
-                <span className="ml-1.5 text-[10px] text-muted-foreground/60 font-normal">
+                <span className="ml-1.5 text-[10px] text-muted-foreground font-normal">
                   ({config.anthropicAuthTokenMasked})
                 </span>
               )}
@@ -209,7 +209,7 @@ export function ContainerEnvPanel({ groupJid, onClose }: ContainerEnvPanelProps)
                   <option key={preset} value={preset} />
                 ))}
               </datalist>
-              <p className="text-[11px] text-muted-foreground/60">
+              <p className="text-[11px] text-muted-foreground">
                 留空则回退到全局配置（默认值通常为 <code className="bg-muted px-1 rounded">opus</code>）。
               </p>
             </div>
@@ -234,7 +234,7 @@ export function ContainerEnvPanel({ groupJid, onClose }: ContainerEnvPanelProps)
           </div>
 
           {customEnv.length === 0 ? (
-            <p className="text-[11px] text-muted-foreground/60">暂无自定义变量</p>
+            <p className="text-[11px] text-muted-foreground">暂无自定义变量</p>
           ) : (
             <div className="space-y-1.5">
               {customEnv.map((item, i) => (
@@ -246,7 +246,7 @@ export function ContainerEnvPanel({ groupJid, onClose }: ContainerEnvPanelProps)
                     placeholder="KEY"
                     className="w-[40%] px-2 py-1 text-[11px] font-mono h-auto"
                   />
-                  <span className="text-muted-foreground/60 text-xs">=</span>
+                  <span className="text-muted-foreground/50 text-xs">=</span>
                   <Input
                     type="text"
                     value={item.value}
@@ -256,7 +256,7 @@ export function ContainerEnvPanel({ groupJid, onClose }: ContainerEnvPanelProps)
                   />
                   <button
                     onClick={() => removeCustomEnv(i)}
-                    className="flex-shrink-0 p-1 text-muted-foreground/60 hover:text-red-500 cursor-pointer"
+                    className="flex-shrink-0 p-1 text-muted-foreground hover:text-red-500 cursor-pointer"
                   >
                     <X className="w-3.5 h-3.5" />
                   </button>

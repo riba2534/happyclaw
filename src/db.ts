@@ -629,6 +629,7 @@ export function initDatabase(): void {
   ensureColumn('messages', 'source_jid', 'TEXT');
   ensureColumn('registered_groups', 'created_by', 'TEXT');
   ensureColumn('registered_groups', 'is_home', 'INTEGER DEFAULT 0');
+  ensureColumn('users', 'avatar_url', 'TEXT');
   ensureColumn('users', 'ai_name', 'TEXT');
   ensureColumn('users', 'ai_avatar_emoji', 'TEXT');
   ensureColumn('users', 'ai_avatar_color', 'TEXT');
@@ -767,6 +768,7 @@ export function initDatabase(): void {
     'notes',
     'avatar_emoji',
     'avatar_color',
+    'avatar_url',
     'ai_name',
     'ai_avatar_emoji',
     'ai_avatar_color',
@@ -2745,6 +2747,8 @@ function mapUserRow(row: Record<string, unknown>): User {
       typeof row.avatar_emoji === 'string' ? row.avatar_emoji : null,
     avatar_color:
       typeof row.avatar_color === 'string' ? row.avatar_color : null,
+    avatar_url:
+      typeof row.avatar_url === 'string' ? row.avatar_url : null,
     ai_name: typeof row.ai_name === 'string' ? row.ai_name : null,
     ai_avatar_emoji:
       typeof row.ai_avatar_emoji === 'string' ? row.ai_avatar_emoji : null,
@@ -2773,6 +2777,7 @@ function toUserPublic(user: User, lastActiveAt: string | null): UserPublic {
     notes: user.notes,
     avatar_emoji: user.avatar_emoji,
     avatar_color: user.avatar_color,
+    avatar_url: user.avatar_url,
     ai_name: user.ai_name,
     ai_avatar_emoji: user.ai_avatar_emoji,
     ai_avatar_color: user.ai_avatar_color,
@@ -3057,6 +3062,7 @@ export function updateUserFields(
       | 'notes'
       | 'avatar_emoji'
       | 'avatar_color'
+      | 'avatar_url'
       | 'ai_name'
       | 'ai_avatar_emoji'
       | 'ai_avatar_color'
@@ -3115,6 +3121,10 @@ export function updateUserFields(
   if (updates.avatar_color !== undefined) {
     fields.push('avatar_color = ?');
     values.push(updates.avatar_color);
+  }
+  if (updates.avatar_url !== undefined) {
+    fields.push('avatar_url = ?');
+    values.push(updates.avatar_url);
   }
   if (updates.ai_name !== undefined) {
     fields.push('ai_name = ?');

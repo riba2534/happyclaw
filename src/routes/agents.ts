@@ -28,6 +28,7 @@ import { DATA_DIR } from '../config.js';
 import type { RegisteredGroup, SubAgent } from '../types.js';
 import { logger } from '../logger.js';
 import { getChannelType, extractChatId } from '../im-channel.js';
+import { ensureAgentDirectories } from '../utils.js';
 
 const router = new Hono<{ Variables: Variables }>();
 
@@ -116,28 +117,8 @@ router.post('/:jid/agents', authMiddleware, async (c) => {
 
   createAgent(agent);
 
-  // Create IPC directories for this conversation agent
-  const agentIpcDir = path.join(
-    DATA_DIR,
-    'ipc',
-    group.folder,
-    'agents',
-    agentId,
-  );
-  fs.mkdirSync(path.join(agentIpcDir, 'input'), { recursive: true });
-  fs.mkdirSync(path.join(agentIpcDir, 'messages'), { recursive: true });
-  fs.mkdirSync(path.join(agentIpcDir, 'tasks'), { recursive: true });
-
-  // Create session directory
-  const agentSessionDir = path.join(
-    DATA_DIR,
-    'sessions',
-    group.folder,
-    'agents',
-    agentId,
-    '.claude',
-  );
-  fs.mkdirSync(agentSessionDir, { recursive: true });
+  // Create IPC + session directories
+  ensureAgentDirectories(group.folder, agentId);
 
   // Create virtual chat record for this agent's messages
   const virtualChatJid = `${jid}#agent:${agentId}`;

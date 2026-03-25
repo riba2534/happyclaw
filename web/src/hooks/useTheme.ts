@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 
 export type Theme = 'light' | 'dark' | 'system';
-export type ColorScheme = 'default' | 'neutral';
+export type ColorScheme = 'default' | 'orange' | 'neutral';
 export type FontStyle = 'default' | 'anthropic';
 
 const THEME_KEY = 'happyclaw-theme';
@@ -26,7 +26,7 @@ function readTheme(): Theme {
 function readColorScheme(): ColorScheme {
   if (typeof window === 'undefined') return 'default';
   const stored = window.localStorage.getItem(SCHEME_KEY);
-  if (stored === 'default' || stored === 'neutral') return stored;
+  if (stored === 'default' || stored === 'orange' || stored === 'neutral') return stored;
   return 'default';
 }
 
@@ -47,11 +47,11 @@ function syncMetaThemeColor() {
   if (!meta) return;
   const isDark = document.documentElement.classList.contains('dark');
   const isNeutral = document.documentElement.classList.contains('theme-neutral');
+  const isOrange = document.documentElement.classList.contains('theme-orange');
   if (isDark) {
     meta.setAttribute('content', isNeutral ? '#09090b' : '#0f172a');
   } else {
-    // Orange theme: warm cream, Neutral theme: white
-    meta.setAttribute('content', isNeutral ? '#ffffff' : '#FAF9F5');
+    meta.setAttribute('content', isOrange ? '#FAF9F5' : isNeutral ? '#ffffff' : '#ffffff');
   }
 }
 
@@ -63,6 +63,7 @@ export function applyTheme(theme: Theme) {
 
 function applyColorScheme(scheme: ColorScheme) {
   if (typeof document === 'undefined') return;
+  document.documentElement.classList.toggle('theme-orange', scheme === 'orange');
   document.documentElement.classList.toggle('theme-neutral', scheme === 'neutral');
   syncMetaThemeColor();
 }

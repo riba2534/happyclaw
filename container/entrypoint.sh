@@ -44,6 +44,7 @@ chown -R node:node /home/node/.claude/skills 2>/dev/null || true
 # Compile TypeScript (agent-runner source may be hot-mounted from host)
 cd /app && npx tsc --outDir /tmp/dist 2>&1 >&2
 ln -s /app/node_modules /tmp/dist/node_modules
+ln -s /app/prompts /tmp/prompts
 chmod -R a-w /tmp/dist
 
 # Buffer stdin to file (container requires EOF to flush stdin pipe)

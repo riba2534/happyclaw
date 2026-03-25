@@ -673,29 +673,6 @@ export class GroupQueue {
     }
   }
 
-  /**
-   * Send a permission mode change command to a running container/process via IPC.
-   * Returns true if the command was written successfully.
-   */
-  setPermissionMode(groupJid: string, mode: string): boolean {
-    const state = this.resolveActiveState(groupJid);
-    if (!state) return false;
-
-    const inputDir = this.resolveIpcInputDir(state);
-    try {
-      fs.mkdirSync(inputDir, { recursive: true });
-      const filename = `${Date.now()}-mode-${Math.random().toString(36).slice(2, 6)}.json`;
-      const filepath = path.join(inputDir, filename);
-      const tempPath = `${filepath}.tmp`;
-      fs.writeFileSync(tempPath, JSON.stringify({ type: 'set_mode', mode }));
-      fs.renameSync(tempPath, filepath);
-      logger.info({ groupJid, mode }, 'Permission mode change IPC written');
-      return true;
-    } catch (err) {
-      logger.warn({ groupJid, mode, err }, 'Failed to write mode change IPC');
-      return false;
-    }
-  }
 
   /**
    * Force-stop a group's active container and clear queued work.

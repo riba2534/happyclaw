@@ -69,11 +69,11 @@ export function PairingSection({ channelName, pairing, paired }: PairingSectionP
       {/* Paired chats list */}
       <div className="mt-4">
         <div className="flex items-center justify-between mb-2">
-          <h5 className="text-xs font-medium text-foreground/70">已配对的聊天</h5>
+          <h5 className="text-xs font-medium text-muted-foreground">已配对的聊天</h5>
           <button
             onClick={paired.load}
             disabled={paired.loading}
-            className="text-xs text-muted-foreground hover:text-foreground/70 disabled:opacity-50"
+            className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
           >
             刷新
           </button>

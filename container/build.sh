@@ -19,6 +19,10 @@ docker build --progress=plain --build-arg CACHEBUST="$(date +%s)" -t "${IMAGE_NA
 echo ""
 echo "Build complete!"
 echo "Image: ${IMAGE_NAME}:${TAG}"
+
+# Touch sentinel so Makefile can detect stale image
+touch "$SCRIPT_DIR/../.docker-build-sentinel"
+
 echo ""
 echo "Test with:"
 echo "  echo '{\"prompt\":\"What is 2+2?\",\"groupFolder\":\"test\",\"chatJid\":\"test@g.us\",\"isMain\":false}' | docker run -i ${IMAGE_NAME}:${TAG}"
