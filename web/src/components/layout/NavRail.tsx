@@ -12,7 +12,7 @@ export function NavRail() {
   const navItems = useMemo(
     () => baseNavItems.filter((item) => {
       if (item.requiresBilling && !billingEnabled) return false;
-      if (item.requireAdmin && user?.role !== 'admin') return false;
+      if ('requireAdmin' in item && item.requireAdmin && user?.role !== 'admin') return false;
       return true;
     }),
     [billingEnabled, user?.role],
