@@ -8,6 +8,7 @@ import { useBillingStore, type BillingPlan } from '../../stores/billing';
 import { api } from '../../api/client';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { ToggleSwitch } from '@/components/ui/toggle-switch';
 import { Switch } from '@/components/ui/switch';
 import type { SystemSettings } from './types';
 import { getErrorMessage } from './types';
