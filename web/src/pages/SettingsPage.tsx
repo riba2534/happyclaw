@@ -18,13 +18,15 @@ import { SkillsPage } from './SkillsPage';
 import { McpServersPage } from './McpServersPage';
 import { AgentDefinitionsPage } from './AgentDefinitionsPage';
 import { UsersPage } from './UsersPage';
+import { UsagePage } from './UsagePage';
+import { MonitorPage } from './MonitorPage';
 import { BindingsSection } from '../components/settings/BindingsSection';
 import { Card, CardContent } from '@/components/ui/card';
 import type { SettingsTab } from '../components/settings/types';
 
-const VALID_TABS: SettingsTab[] = ['claude', 'registration', 'appearance', 'system', 'profile', 'my-channels', 'security', 'groups', 'memory', 'skills', 'mcp-servers', 'agent-definitions', 'users', 'about', 'bindings'];
+const VALID_TABS: SettingsTab[] = ['claude', 'registration', 'appearance', 'system', 'profile', 'my-channels', 'security', 'groups', 'memory', 'skills', 'mcp-servers', 'agent-definitions', 'users', 'about', 'bindings', 'usage', 'monitor'];
 const SYSTEM_TABS: SettingsTab[] = ['claude', 'registration', 'system'];
-const FULLPAGE_TABS: SettingsTab[] = ['groups', 'memory', 'skills', 'mcp-servers', 'agent-definitions', 'users', 'bindings'];
+const FULLPAGE_TABS: SettingsTab[] = ['groups', 'memory', 'skills', 'mcp-servers', 'agent-definitions', 'users', 'bindings', 'usage', 'monitor'];
 
 export function SettingsPage() {
   const { user: currentUser } = useAuthStore();
@@ -110,6 +112,8 @@ export function SettingsPage() {
     users: '用户管理',
     about: '关于',
     bindings: 'IM 绑定',
+    usage: '用量统计',
+    monitor: '系统监控',
   };
 
   return (
@@ -177,6 +181,8 @@ export function SettingsPage() {
             {activeTab === 'agent-definitions' && <AgentDefinitionsPage />}
             {activeTab === 'users' && <UsersPage />}
             {activeTab === 'bindings' && <BindingsSection />}
+            {activeTab === 'usage' && <UsagePage />}
+            {activeTab === 'monitor' && <MonitorPage />}
           </>
         ) : (
           <div className="p-4 lg:p-8">

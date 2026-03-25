@@ -214,7 +214,7 @@ function TextEditor({
       onClick={onClose}
     >
       <div
-        className="bg-card rounded-xl shadow-xl w-full max-w-4xl h-[85vh] supports-[height:100dvh]:h-[85dvh] flex flex-col animate-in zoom-in-95 duration-200"
+        className="bg-surface rounded-xl shadow-xl w-full max-w-4xl h-[85vh] supports-[height:100dvh]:h-[85dvh] flex flex-col animate-in zoom-in-95 duration-200"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -424,7 +424,7 @@ function MarkdownFileViewer({
             )}
             <button
               onClick={onClose}
-              className="text-slate-400 hover:text-slate-600 transition-colors p-2 rounded-md hover:bg-muted touch-manipulation"
+              className="text-muted-foreground hover:text-foreground transition-colors p-2 rounded-md hover:bg-muted touch-manipulation"
               aria-label="关闭"
             >
               <X className="w-5 h-5" />

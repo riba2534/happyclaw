@@ -5,6 +5,29 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Alibaba PuHuiTi 3.0 — Chinese text fallback */
+@font-face {
+  font-family: 'Alibaba PuHuiTi 3';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/AlibabaPuHuiTi-3-55-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Alibaba PuHuiTi 3';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/AlibabaPuHuiTi-3-65-Medium.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Alibaba PuHuiTi 3';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/AlibabaPuHuiTi-3-75-SemiBold.woff2') format('woff2');
+}
+
 /* =====================================================
    Tailwind CSS 4 Theme — shadcn/ui CSS variable mapping
    Maps semantic CSS variables → Tailwind utility classes
@@ -69,9 +92,9 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
-  --font-sans: 'Inter Variable', system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  --font-serif: 'Inter Variable', system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  --font-mono: 'SF Mono', 'Fira Code', ui-monospace, monospace;
+  --font-sans: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji';
+  --font-serif: Georgia, "Noto Serif SC", "PingFang SC", "Times New Roman", serif;
+  --font-mono: 'Söhne Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
@@ -82,25 +105,25 @@
    Primary: Orange | Base: Neutral
    ===================================================== */
 :root {
-  /* shadcn/ui semantic tokens */
-  --background: #FAF9F5;
-  --foreground: #141413;
-  --card: #F0EEE6;
-  --card-foreground: #141413;
-  --popover: #F0EEE6;
-  --popover-foreground: #141413;
+  /* shadcn/ui semantic tokens — clean neutral palette */
+  --background: #FFFFFF;
+  --foreground: #171717;
+  --card: #F7F7F7;
+  --card-foreground: #171717;
+  --popover: #F7F7F7;
+  --popover-foreground: #171717;
   --primary: oklch(0.553 0.195 38.402);
   --primary-foreground: oklch(0.98 0.016 73.684);
-  --secondary: #F0EEE6;
-  --secondary-foreground: #141413;
-  --muted: #F0EEE6;
-  --muted-foreground: #8b857d;
-  --accent: #F0EEE6;
-  --accent-foreground: #141413;
+  --secondary: #F5F5F5;
+  --secondary-foreground: #171717;
+  --muted: #F5F5F5;
+  --muted-foreground: #737373;
+  --accent: #F5F5F5;
+  --accent-foreground: #171717;
   --destructive: oklch(0.577 0.245 27.325);
   --destructive-foreground: #ffffff;
-  --border: #DAD9D5;
-  --input: #DAD9D5;
+  --border: #E5E5E5;
+  --input: #E5E5E5;
   --ring: oklch(0.708 0 0);
   --radius: 0.625rem;
 
@@ -122,13 +145,13 @@
   --chart-5: oklch(0.47 0.157 37.304);
 
   /* Sidebar */
-  --sidebar-background: #FAF9F6;
-  --sidebar-foreground: #141413;
+  --sidebar-background: #FFFFFF;
+  --sidebar-foreground: #171717;
   --sidebar-primary: oklch(0.646 0.222 41.116);
   --sidebar-primary-foreground: oklch(0.98 0.016 73.684);
-  --sidebar-accent: #F0EEE6;
-  --sidebar-accent-foreground: #141413;
-  --sidebar-border: #DAD9D5;
+  --sidebar-accent: #F5F5F5;
+  --sidebar-accent-foreground: #171717;
+  --sidebar-border: #E5E5E5;
   --sidebar-ring: oklch(0.708 0 0);
 
   /* Feedback colors */
@@ -156,9 +179,9 @@
   /* Liquid Glass design tokens */
   --glass-blur: 20px;
   --glass-saturate: 1.8;
-  --glass-bg: rgba(250, 249, 245, 0.65);
-  --glass-bg-heavy: rgba(250, 249, 245, 0.85);
-  --glass-border: rgba(218, 217, 213, 0.5);
+  --glass-bg: rgba(255, 255, 255, 0.65);
+  --glass-bg-heavy: rgba(255, 255, 255, 0.85);
+  --glass-border: rgba(229, 229, 229, 0.5);
   --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.06);
   --glass-highlight: linear-gradient(135deg, rgba(255,255,255,0.5) 0%, rgba(255,255,255,0) 60%);
   --glass-inner-shadow: inset 0 1px 1px rgba(255,255,255,0.6);
@@ -320,6 +343,25 @@ html.font-anthropic .font-mono {
 ::backdrop,
 ::file-selector-button {
   border-color: var(--border, #e2e8f0);
+}
+
+/* Global Lucide icon style — thinner, more rounded feel */
+svg.lucide {
+  stroke-width: 1.75px;
+}
+
+/* Welcome avatar animations */
+@keyframes breathe {
+  0%, 100% { transform: scale(1); opacity: 0.4; }
+  50% { transform: scale(1.25); opacity: 0.15; }
+}
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+@keyframes orbit {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 html {

@@ -46,7 +46,7 @@ export default function BalanceCard() {
   };
 
   return (
-    <div className="bg-card rounded-lg border border-zinc-200 dark:border-zinc-700 p-5">
+    <div className="bg-card rounded-lg border border-border p-5">
       <div className="flex items-center gap-2 mb-4">
         <Wallet className="w-5 h-5 text-primary" />
         <h3 className="font-semibold">余额</h3>
@@ -57,7 +57,7 @@ export default function BalanceCard() {
         {balance ? fmt(balance.balance_usd) : '--'}
       </div>
       {balance && (
-        <div className="flex gap-4 text-xs text-zinc-400 mb-4">
+        <div className="flex gap-4 text-xs text-muted-foreground mb-4">
           <span>累计充值 {fmt(balance.total_deposited_usd)}</span>
           <span>累计消耗 {fmt(balance.total_consumed_usd)}</span>
         </div>
@@ -90,7 +90,7 @@ export default function BalanceCard() {
           onChange={(e) => setRedeemInput(e.target.value.toUpperCase())}
           onKeyDown={(e) => e.key === 'Enter' && handleRedeem()}
           maxLength={64}
-          className="flex-1 px-3 py-1.5 text-sm border border-zinc-300 dark:border-zinc-600 rounded-md bg-transparent font-mono tracking-wider"
+          className="flex-1 px-3 py-1.5 text-sm border border-border rounded-md bg-transparent font-mono tracking-wider"
         />
         <button
           onClick={handleRedeem}

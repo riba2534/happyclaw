@@ -418,9 +418,9 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   }
 
   return (
-    <div ref={containerRef} className="h-full flex flex-col bg-background">
+    <div ref={containerRef} className="h-full flex flex-col bg-white dark:bg-background rounded-2xl lg:rounded-t-3xl lg:rounded-b-none lg:mt-5 lg:mr-5 lg:mb-0 lg:ml-3 lg:overflow-hidden lg:shadow-sm">
       {/* Header */}
-      <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border lg:bg-background/80 lg:backdrop-blur-sm max-lg:bg-background/60 max-lg:backdrop-blur-xl max-lg:saturate-[1.8] max-lg:border-border/40 max-lg:shadow-[0_8px_32px_rgba(0,0,0,0.06)]">
+      <div className="flex items-center gap-3 px-6 py-4 max-lg:px-4 max-lg:py-2.5 max-lg:bg-background/60 max-lg:backdrop-blur-xl max-lg:saturate-[1.8] max-lg:border-border/40">
         {onBack && (
           <button
             onClick={onBack}
@@ -447,7 +447,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
             {!isWaiting && group.execution_mode && (
               <>
                 <span className="text-muted-foreground/40">·</span>
-                <span className={`inline-flex items-center px-1 py-px rounded text-[10px] font-medium ${group.execution_mode === 'host' ? 'bg-amber-100 text-amber-700' : 'bg-sky-100 text-sky-700'}`}>
+                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-medium border ${group.execution_mode === 'host' ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/30 dark:text-amber-300 dark:border-amber-800' : 'bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-950/30 dark:text-sky-300 dark:border-sky-800'}`}>
                   {group.execution_mode === 'host' ? '宿主机' : 'Docker'}
                 </span>
               </>

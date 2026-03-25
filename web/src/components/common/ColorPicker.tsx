@@ -15,7 +15,7 @@ const COLORS = [
 
 export function ColorPicker({ value, onChange }: ColorPickerProps) {
   return (
-    <div className="grid grid-cols-8 gap-1 p-1">
+    <div className="grid grid-cols-8 gap-2 p-2">
       {COLORS.map((color) => (
         <button
           key={color}
@@ -23,7 +23,7 @@ export function ColorPicker({ value, onChange }: ColorPickerProps) {
           onClick={() => onChange(color)}
           className={cn(
             'w-8 h-8 rounded-lg cursor-pointer flex items-center justify-center transition-transform hover:scale-110',
-            value === color && 'outline-2 outline-primary outline-offset-0 outline',
+            value === color && 'outline-2 outline-primary outline-offset-2 outline',
           )}
           style={{ backgroundColor: color }}
         >

@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.2.8",
+    "@material-symbols/font-400": "^0.42.3",
     "@tanstack/react-virtual": "^3.0.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
@@ -46,12 +47,12 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.0",
+    "shadcn": "^4.0.8",
     "sharp": "^0.34.5",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.0",
     "vite": "^6.0.0",
-    "vite-plugin-pwa": "^1.2.0",
-    "shadcn": "^4.0.8"
+    "vite-plugin-pwa": "^1.2.0"
   },
   "license": "MIT",
   "repository": {

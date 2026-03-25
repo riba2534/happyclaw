@@ -240,7 +240,7 @@ export function TerminalPanel({
   return (
     <div className="h-full flex flex-col terminal-panel">
       {/* Status bar */}
-      <div className="flex items-center justify-between px-3 py-1.5 bg-[#1a1b26] border-b border-slate-700 text-xs">
+      <div className="flex items-center justify-between px-3 py-1.5 bg-[#1a1b26] border-b border-border text-xs">
         <div className="flex items-center gap-2">
           <span className={`inline-block w-2 h-2 rounded-full ${
             connState === 'connected' ? 'bg-green-400' :
@@ -279,7 +279,7 @@ export function TerminalPanel({
           {onHide && (
             <button
               onClick={onHide}
-              className="p-1 rounded hover:bg-slate-700 text-muted-foreground/60 hover:text-slate-200 transition-colors cursor-pointer"
+              className="p-1 rounded hover:bg-foreground text-muted-foreground/60 hover:text-foreground transition-colors cursor-pointer"
               aria-label="隐藏终端"
               title="隐藏终端"
             >

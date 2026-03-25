@@ -31,34 +31,34 @@ export default function TransactionsList() {
   }, [loadMyTransactions]);
 
   return (
-    <div className="bg-card rounded-lg border border-zinc-200 dark:border-zinc-700 p-5">
+    <div className="bg-card rounded-lg border border-border p-5">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <History className="w-5 h-5 text-primary" />
           <h3 className="font-semibold">余额变动记录</h3>
         </div>
         {transactionsTotal > 0 && (
-          <span className="text-xs text-zinc-400">共 {transactionsTotal} 条</span>
+          <span className="text-xs text-muted-foreground">共 {transactionsTotal} 条</span>
         )}
       </div>
 
       {transactions.length === 0 ? (
-        <p className="text-sm text-zinc-500">暂无记录</p>
+        <p className="text-sm text-muted-foreground">暂无记录</p>
       ) : (
         <div className="space-y-2 max-h-64 overflow-y-auto">
           {transactions.map((tx) => (
             <div
               key={tx.id}
-              className="flex justify-between items-center py-2 border-b border-zinc-100 dark:border-zinc-700 last:border-0"
+              className="flex justify-between items-center py-2 border-b border-border last:border-0"
             >
               <div className="min-w-0 flex-1">
                 <div className="text-sm truncate">
                   {tx.description || TYPE_LABELS[tx.type] || tx.type}
                 </div>
-                <div className="flex items-center gap-2 text-xs text-zinc-400">
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <span>{new Date(tx.created_at).toLocaleString()}</span>
                   {(tx.source || tx.type) && (
-                    <span className="px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-700 text-zinc-500 dark:text-zinc-400">
+                    <span className="px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
                       {SOURCE_LABELS[tx.source || ''] || TYPE_LABELS[tx.type] || tx.type}
                     </span>
                   )}
@@ -73,7 +73,7 @@ export default function TransactionsList() {
                   {tx.amount_usd > 0 ? '+' : ''}
                   {fmt(tx.amount_usd)}
                 </span>
-                <span className="text-[11px] text-zinc-400">
+                <span className="text-[11px] text-muted-foreground">
                   余额 {fmt(tx.balance_after)}
                 </span>
               </div>

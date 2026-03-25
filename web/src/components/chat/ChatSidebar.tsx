@@ -5,7 +5,6 @@ import { useChatStore } from '../../stores/chat';
 import { useAuthStore } from '../../stores/auth';
 import { useGroupsStore } from '../../stores/groups';
 import { Button } from '@/components/ui/button';
-import { SearchInput } from '@/components/common';
 import { ConfirmDialog } from '@/components/common';
 import { ChatGroupItem } from './ChatGroupItem';
 import { CreateContainerDialog } from './CreateContainerDialog';
@@ -41,7 +40,6 @@ interface ChatSidebarProps {
 }
 
 export function ChatSidebar({ className, onToggleCollapse }: ChatSidebarProps) {
-  const [searchQuery, setSearchQuery] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
 
   // Rename dialog state
@@ -96,9 +94,7 @@ export function ChatSidebar({ className, onToggleCollapse }: ChatSidebarProps) {
 
   // Split non-main groups into pinned / private / collaborative, then sub-group by date
   const { pinnedGroups, mySections, collabSections } = useMemo(() => {
-    const filtered = searchQuery.trim()
-      ? otherGroups.filter((g) => g.name.toLowerCase().includes(searchQuery.toLowerCase()))
-      : otherGroups;
+    const filtered = otherGroups;
 
     const pinned: typeof otherGroups = [];
     const my: typeof otherGroups = [];
@@ -118,7 +114,7 @@ export function ChatSidebar({ className, onToggleCollapse }: ChatSidebarProps) {
     pinned.sort((a, b) => (a.pinned_at || '').localeCompare(b.pinned_at || ''));
 
     return { pinnedGroups: pinned, mySections: groupByDate(my), collabSections: groupByDate(collab) };
-  }, [otherGroups, searchQuery]);
+  }, [otherGroups]);
 
   const handleGroupSelect = (jid: string, folder: string) => {
     selectGroup(jid);
@@ -207,7 +203,7 @@ export function ChatSidebar({ className, onToggleCollapse }: ChatSidebarProps) {
     ));
 
   return (
-    <div className={cn('flex flex-col h-full bg-background border-r', className)}>
+    <div className={cn('flex flex-col h-full bg-muted/30', className)}>
       {/* Logo Header — only on mobile (PC has NavRail logo) */}
       <div className="flex items-center gap-2.5 px-4 pt-4 pb-1 lg:hidden">
         <img
@@ -218,8 +214,8 @@ export function ChatSidebar({ className, onToggleCollapse }: ChatSidebarProps) {
         <span className="text-lg font-bold text-foreground truncate">{appName}</span>
       </div>
 
-      {/* New Chat + Search */}
-      <div className="p-3 space-y-2">
+      {/* New Chat */}
+      <div className="p-3">
         <div className="flex gap-2">
           <Button
             variant="outline"
@@ -231,19 +227,12 @@ export function ChatSidebar({ className, onToggleCollapse }: ChatSidebarProps) {
           </Button>
           <button
             onClick={onToggleCollapse}
-            className="hidden lg:flex items-center p-2 rounded-md border hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
-            title="折叠侧边栏"
+            className="hidden lg:flex items-center justify-center w-9 h-9 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
+            title="收起侧边栏"
           >
             <PanelLeftClose className="w-4 h-4" />
           </button>
         </div>
-        <SearchInput
-          value={searchQuery}
-          onChange={setSearchQuery}
-          placeholder="搜索工作区..."
-          debounce={200}
-          className="max-lg:bg-background/60 max-lg:backdrop-blur-lg max-lg:border-border/30 max-lg:rounded-lg"
-        />
       </div>
 
       {/* Groups List */}
@@ -280,7 +269,8 @@ export function ChatSidebar({ className, onToggleCollapse }: ChatSidebarProps) {
             {/* Section: Pinned workspaces */}
             {pinnedGroups.length > 0 && (
               <div className="mb-1">
-                <div className="px-2 pt-3 pb-1.5">
+                <div className="mx-2 mt-2 border-t border-border/40" />
+                <div className="px-2 pt-2 pb-1.5">
                   <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">
                     已固定
                   </span>
@@ -316,14 +306,15 @@ export function ChatSidebar({ className, onToggleCollapse }: ChatSidebarProps) {
             {mySections.length === 0 && collabSections.length === 0 && pinnedGroups.length === 0 && !mainGroup ? (
               <div className="flex flex-col items-center justify-center h-32 px-4">
                 <p className="text-sm text-muted-foreground text-center">
-                  {searchQuery ? '未找到匹配的工作区' : '暂无工作区'}
+                  暂无工作区
                 </p>
               </div>
             ) : (
               <>
                 {mySections.length > 0 && (
                   <div>
-                    <div className="px-2 pt-3 pb-1.5">
+                    <div className="mx-2 mt-2 border-t border-border/40" />
+                    <div className="px-2 pt-2 pb-1.5">
                       <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">
                         我的工作区
                       </span>
@@ -334,7 +325,8 @@ export function ChatSidebar({ className, onToggleCollapse }: ChatSidebarProps) {
 
                 {collabSections.length > 0 && (
                   <div>
-                    <div className="px-2 pt-3 pb-1.5">
+                    <div className="mx-2 mt-2 border-t border-border/40" />
+                    <div className="px-2 pt-2 pb-1.5">
                       <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">
                         协作工作区
                       </span>

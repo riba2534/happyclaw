@@ -29,8 +29,8 @@ interface ProviderListProps {
 
 /** 健康指示灯 */
 function HealthDot({ health, enabled }: { health: ProviderHealthStatus | null; enabled: boolean }) {
-  if (!enabled) return <div className="w-2 h-2 rounded-full shrink-0 bg-slate-300" />;
-  if (!health) return <div className="w-2 h-2 rounded-full shrink-0 bg-slate-300" />;
+  if (!enabled) return <div className="w-2 h-2 rounded-full shrink-0 bg-muted-foreground" />;
+  if (!health) return <div className="w-2 h-2 rounded-full shrink-0 bg-muted-foreground" />;
 
   const color = health.healthy
     ? 'bg-emerald-400'
@@ -78,19 +78,19 @@ function CredentialBadges({ provider }: { provider: ProviderWithHealth }) {
   }
 
   if (badges.length === 0) {
-    return <span className="text-xs text-slate-400 italic">未配置凭据</span>;
+    return <span className="text-xs text-muted-foreground italic">未配置凭据</span>;
   }
 
   return (
     <span className="inline-flex items-center gap-1.5 flex-wrap">
-      <Key className="w-3 h-3 text-slate-400 shrink-0" />
+      <Key className="w-3 h-3 text-muted-foreground shrink-0" />
       {badges.map((b) => (
         <span key={b.label} className="inline-flex items-center gap-1">
           <span className={`text-[11px] px-1.5 py-0.5 rounded border ${b.color}`}>
             {b.label}
           </span>
           {b.detail && (
-            <span className="text-[10px] text-slate-400">{b.detail}</span>
+            <span className="text-[10px] text-muted-foreground">{b.detail}</span>
           )}
         </span>
       ))}
@@ -112,20 +112,20 @@ export function ProviderList({
 }: ProviderListProps) {
   return (
     <div className="space-y-4">
-      <div className="rounded-xl border border-slate-200 overflow-hidden">
-        <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/70">
+      <div className="rounded-xl border border-border overflow-hidden">
+        <div className="px-4 py-3 border-b border-border bg-muted/70">
           <div className="flex items-center justify-between">
-            <div className="text-sm font-medium text-slate-800">提供商列表</div>
-            <span className="text-xs text-slate-400">{providers.length} 个提供商</span>
+            <div className="text-sm font-medium text-foreground">提供商列表</div>
+            <span className="text-xs text-muted-foreground">{providers.length} 个提供商</span>
           </div>
         </div>
 
         {providers.length === 0 ? (
-          <div className="p-6 text-center text-sm text-slate-500">
+          <div className="p-6 text-center text-sm text-muted-foreground">
             暂无提供商，请点击下方按钮添加。
           </div>
         ) : (
-          <div className="divide-y divide-slate-100">
+          <div className="divide-y divide-border">
             {providers.map((provider) => {
               const toggling = togglingId === provider.id;
               const deleting = deletingId === provider.id;
@@ -135,14 +135,14 @@ export function ProviderList({
                 <div
                   key={provider.id}
                   className={`px-4 py-3 transition-colors ${
-                    !provider.enabled ? 'bg-slate-50/50 opacity-60' : ''
+                    !provider.enabled ? 'bg-muted/50 opacity-60' : ''
                   }`}
                 >
                   {/* 第一行：名称 + 类型 + 操作 */}
                   <div className="flex items-center gap-2 justify-between">
                     <div className="flex items-center gap-2 min-w-0">
                       <HealthDot health={health} enabled={provider.enabled} />
-                      <span className="text-sm font-medium text-slate-900 truncate">
+                      <span className="text-sm font-medium text-foreground truncate">
                         {provider.name}
                       </span>
                       <span
@@ -202,7 +202,7 @@ export function ProviderList({
                         variant="ghost"
                         onClick={() => onDelete(provider)}
                         disabled={disabled || toggling || deleting}
-                        className="h-7 px-2 text-xs text-slate-500 hover:text-red-600"
+                        className="h-7 px-2 text-xs text-muted-foreground hover:text-red-600"
                       >
                         {deleting ? (
                           <Loader2 className="size-3.5 animate-spin" />
@@ -214,14 +214,14 @@ export function ProviderList({
                   </div>
 
                   {/* 第二行：关键信息摘要 */}
-                  <div className="mt-1.5 ml-4 flex items-center gap-3 text-xs text-slate-500 flex-wrap">
+                  <div className="mt-1.5 ml-4 flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
                     {provider.type === 'third_party' && provider.anthropicBaseUrl && (
                       <span className="font-mono truncate max-w-[200px]" title={provider.anthropicBaseUrl}>
                         {provider.anthropicBaseUrl}
                       </span>
                     )}
                     {provider.anthropicModel && (
-                      <span className="font-mono text-slate-600">
+                      <span className="font-mono text-foreground/70">
                         {provider.anthropicModel}
                       </span>
                     )}

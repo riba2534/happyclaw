@@ -58,7 +58,7 @@ export default function BillingPage() {
   }, [billingStatusLoaded, loadBillingStatus]);
 
   if (!billingStatusLoaded) {
-    return <div className="h-full p-6 text-sm text-zinc-500">加载账单状态中...</div>;
+    return <div className="h-full p-6 text-sm text-muted-foreground">加载账单状态中...</div>;
   }
 
   if (!billingEnabled) {
@@ -98,7 +98,7 @@ export default function BillingPage() {
                 className={`flex cursor-pointer items-center gap-1.5 px-3 py-1.5 text-sm rounded-md transition-colors whitespace-nowrap ${
                   tab === key
                     ? 'bg-brand-50 dark:bg-brand-700/20 text-brand-700 dark:text-brand-300'
-                    : 'text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                    : 'text-muted-foreground hover:bg-accent'
                 }`}
               >
                 <Icon className="w-4 h-4" />

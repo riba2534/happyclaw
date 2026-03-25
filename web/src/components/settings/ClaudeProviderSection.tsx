@@ -237,7 +237,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
   if (loading && providers.length === 0) {
     return (
       <div className="flex items-center justify-center py-12">
-        <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
+        <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
       </div>
     );
   }
@@ -266,11 +266,11 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
 
       {/* Anthropic 服务状态 */}
       {claudeStatus && (
-        <div className="rounded-xl border border-slate-200 px-4 py-3">
+        <div className="rounded-xl border border-border px-4 py-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-sm">
-              <span className="text-slate-700 font-medium">Anthropic 服务状态</span>
-              <span className="text-xs text-slate-400">
+              <span className="text-foreground font-medium">Anthropic 服务状态</span>
+              <span className="text-xs text-muted-foreground">
                 {claudeStatus.indicator === 'none'
                   ? '正常运行'
                   : claudeStatus.indicator === 'minor'
@@ -282,14 +282,14 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
               href="https://status.claude.com"
               target="_blank"
               rel="noreferrer"
-              className="text-xs text-slate-400 hover:text-teal-600 flex items-center gap-1"
+              className="text-xs text-muted-foreground hover:text-teal-600 flex items-center gap-1"
             >
               详情
               <ExternalLink className="w-3 h-3" />
             </a>
           </div>
           {claudeStatus.components.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
               {claudeStatus.components.map((comp) => (
                 <span key={comp.name} className="inline-flex items-center gap-1.5">
                   <span

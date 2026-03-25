@@ -38,8 +38,8 @@ function PlanCard({ plan, isCurrent, fmt }: { plan: BillingPlan; isCurrent: bool
       className={`relative rounded-lg border p-5 flex flex-col transition-shadow ${
         isHighlighted
           ? 'border-brand-500 dark:border-brand-400 shadow-[0_0_12px_rgba(249,115,22,0.25)] dark:shadow-[0_0_12px_rgba(251,146,60,0.2)]'
-          : 'border-zinc-200 dark:border-zinc-700'
-      } bg-white dark:bg-zinc-800`}
+          : 'border-border'
+      } bg-card`}
     >
       {/* Recommended badge */}
       {isHighlighted && (
@@ -73,7 +73,7 @@ function PlanCard({ plan, isCurrent, fmt }: { plan: BillingPlan; isCurrent: bool
           </p>
         )}
         {plan.description && (
-          <p className="text-sm text-zinc-500 mt-1">{plan.description}</p>
+          <p className="text-sm text-muted-foreground mt-1">{plan.description}</p>
         )}
       </div>
 
@@ -108,14 +108,14 @@ function PlanCard({ plan, isCurrent, fmt }: { plan: BillingPlan; isCurrent: bool
       {/* Quotas */}
       {quotas.length > 0 && (
         <div className="mb-4">
-          <div className="flex items-center gap-1.5 text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
             <Layers className="w-3.5 h-3.5" />
             配额
           </div>
           <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
             {quotas.map((q) => (
               <div key={q.label} className="flex justify-between">
-                <span className="text-zinc-500">{q.label}</span>
+                <span className="text-muted-foreground">{q.label}</span>
                 <span className="font-medium">{q.value}</span>
               </div>
             ))}
@@ -125,12 +125,12 @@ function PlanCard({ plan, isCurrent, fmt }: { plan: BillingPlan; isCurrent: bool
 
       {/* Resources */}
       {resources.length > 0 && (
-        <div className="mt-auto pt-3 border-t border-zinc-100 dark:border-zinc-700">
+        <div className="mt-auto pt-3 border-t border-border">
           <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
             {resources.map((r) => (
               <div key={r.label} className="flex justify-between">
-                <span className="text-zinc-400">{r.label}</span>
-                <span className="text-zinc-600 dark:text-zinc-300">{r.value}</span>
+                <span className="text-muted-foreground">{r.label}</span>
+                <span className="text-foreground">{r.value}</span>
               </div>
             ))}
           </div>
@@ -155,9 +155,9 @@ export default function PricingGrid() {
 
   if (activePlans.length === 0) {
     return (
-      <div className="bg-white dark:bg-zinc-800 rounded-lg border border-zinc-200 dark:border-zinc-700 p-8 text-center">
-        <Sparkles className="w-8 h-8 text-zinc-300 mx-auto mb-3" />
-        <p className="text-sm text-zinc-500">暂无可用套餐</p>
+      <div className="bg-card rounded-lg border border-border p-8 text-center">
+        <Sparkles className="w-8 h-8 text-muted-foreground mx-auto mb-3" />
+        <p className="text-sm text-muted-foreground">暂无可用套餐</p>
       </div>
     );
   }

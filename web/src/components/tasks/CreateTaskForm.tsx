@@ -258,7 +258,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
     <div>
       <label className="block text-sm font-medium text-foreground mb-2">通知渠道</label>
       <div className="flex flex-wrap gap-3">
-        <label className="inline-flex items-center gap-1.5 text-sm text-slate-400">
+        <label className="inline-flex items-center gap-1.5 text-sm text-muted-foreground">
           <input type="checkbox" checked disabled className="rounded" />
           Web（始终）
         </label>
@@ -270,7 +270,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
               key={ch.key}
               className={cn(
                 'inline-flex items-center gap-1.5 text-sm cursor-pointer',
-                !connected && 'text-slate-300 cursor-not-allowed',
+                !connected && 'text-muted-foreground cursor-not-allowed',
               )}
             >
               <input
@@ -281,12 +281,12 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
                 className="rounded"
               />
               {ch.label}
-              {!connected && <span className="text-xs text-slate-300">（未连接）</span>}
+              {!connected && <span className="text-xs text-muted-foreground">（未连接）</span>}
             </label>
           );
         })}
       </div>
-      <p className="mt-1 text-xs text-slate-500">
+      <p className="mt-1 text-xs text-muted-foreground">
         选择任务结果推送的 IM 渠道，默认推送到所有已连接渠道
       </p>
     </div>
@@ -300,7 +300,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
           <h2 className="text-xl font-bold text-foreground">创建定时任务</h2>
           <button
             onClick={onClose}
-            className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+            className="p-2 text-muted-foreground hover:text-foreground hover:bg-muted rounded-lg transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
@@ -314,7 +314,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
               'flex-1 flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium transition-colors cursor-pointer',
               mode === 'ai'
                 ? 'text-primary border-b-2 border-primary bg-brand-50/50'
-                : 'text-slate-500 hover:text-foreground hover:bg-muted/50',
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted/50',
             )}
           >
             <Sparkles className="w-4 h-4" />
@@ -326,7 +326,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
               'flex-1 flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium transition-colors cursor-pointer',
               mode === 'manual'
                 ? 'text-primary border-b-2 border-primary bg-brand-50/50'
-                : 'text-slate-500 hover:text-foreground hover:bg-muted/50',
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted/50',
             )}
           >
             <SlidersHorizontal className="w-4 h-4" />
@@ -360,7 +360,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
                   </SelectContent>
                 </Select>
               )}
-              <p className="mt-1 text-xs text-slate-500">默认使用主工作区，通常无需修改</p>
+              <p className="mt-1 text-xs text-muted-foreground">默认使用主工作区，通常无需修改</p>
             </div>
 
             {/* Description */}
@@ -410,23 +410,23 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
                     <Sparkles className="w-4 h-4" />
                     AI 解析结果
                   </div>
-                  <p className="text-sm text-slate-600">{parsedTask.summary}</p>
+                  <p className="text-sm text-foreground/70">{parsedTask.summary}</p>
 
                   <div className="grid grid-cols-2 gap-3 text-sm">
                     <div>
-                      <span className="text-slate-500">调度类型：</span>
+                      <span className="text-muted-foreground">调度类型：</span>
                       <span className="text-foreground font-medium ml-1">
                         {scheduleTypeLabel(parsedTask.schedule_type)}
                       </span>
                     </div>
                     <div>
-                      <span className="text-slate-500">调度值：</span>
+                      <span className="text-muted-foreground">调度值：</span>
                       <code className="text-foreground bg-card px-1.5 py-0.5 rounded border border-border text-xs ml-1">
                         {parsedTask.schedule_value}
                       </code>
                     </div>
                     <div>
-                      <span className="text-slate-500">上下文：</span>
+                      <span className="text-muted-foreground">上下文：</span>
                       <span className="text-foreground font-medium ml-1">
                         {parsedTask.context_mode === 'isolated' ? '独立执行' : '共享上下文'}
                       </span>
@@ -435,7 +435,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
 
                   {/* Editable prompt */}
                   <div>
-                    <label className="block text-xs text-slate-500 mb-1">任务 Prompt（可编辑）</label>
+                    <label className="block text-xs text-muted-foreground mb-1">任务 Prompt（可编辑）</label>
                     <Textarea
                       value={parsedTask.prompt}
                       onChange={(e) => setParsedTask({ ...parsedTask, prompt: e.target.value })}
@@ -446,7 +446,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
 
                   {/* Editable schedule_value */}
                   <div>
-                    <label className="block text-xs text-slate-500 mb-1">调度值（可编辑）</label>
+                    <label className="block text-xs text-muted-foreground mb-1">调度值（可编辑）</label>
                     <Input
                       value={parsedTask.schedule_value}
                       onChange={(e) => setParsedTask({ ...parsedTask, schedule_value: e.target.value })}
@@ -505,7 +505,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
                   </SelectContent>
                 </Select>
               )}
-              <p className="mt-1 text-xs text-slate-500">默认使用主工作区，通常无需修改</p>
+              <p className="mt-1 text-xs text-muted-foreground">默认使用主工作区，通常无需修改</p>
               {errors.groupFolder && (
                 <p className="mt-1 text-sm text-red-600">{errors.groupFolder}</p>
               )}
@@ -531,7 +531,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
                     <SelectItem value="script">脚本（Shell 命令）</SelectItem>
                   </SelectContent>
                 </Select>
-                <p className="mt-1 text-xs text-slate-500">
+                <p className="mt-1 text-xs text-muted-foreground">
                   {isScript
                     ? '直接执行 Shell 命令，零 API 消耗，适合确定性任务'
                     : '启动完整 Claude Agent，消耗 API tokens'}
@@ -556,7 +556,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
                 {errors.scriptCommand && (
                   <p className="mt-1 text-sm text-red-600">{errors.scriptCommand}</p>
                 )}
-                <p className="mt-1 text-xs text-slate-500">
+                <p className="mt-1 text-xs text-muted-foreground">
                   命令在群组工作目录下执行，最大 4096 字符
                 </p>
               </div>
@@ -618,7 +618,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
                     className={cn(errors.scheduleValue && "border-red-500")}
                     placeholder="例如: 0 0 * * * (每天 0 点)"
                   />
-                  <p className="mt-1 text-xs text-slate-500">
+                  <p className="mt-1 text-xs text-muted-foreground">
                     格式: 分 时 日 月 星期（如 0 9 * * * = 每天 9 点）
                   </p>
                 </>
@@ -647,7 +647,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
                       </SelectContent>
                     </Select>
                   </div>
-                  <p className="mt-1 text-xs text-slate-500">设置任务执行间隔</p>
+                  <p className="mt-1 text-xs text-muted-foreground">设置任务执行间隔</p>
                 </>
               )}
               {formData.scheduleType === 'once' && (
@@ -658,7 +658,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
                     onChange={(e) => setOnceDateTime(e.target.value)}
                     className={cn(errors.scheduleValue && "border-red-500")}
                   />
-                  <p className="mt-1 text-xs text-slate-500">选择任务的执行时间</p>
+                  <p className="mt-1 text-xs text-muted-foreground">选择任务的执行时间</p>
                 </>
               )}
               {errors.scheduleValue && (
@@ -686,7 +686,7 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
                     <SelectItem value="group">共享群组上下文</SelectItem>
                   </SelectContent>
                 </Select>
-                <p className="mt-1 text-xs text-slate-500">
+                <p className="mt-1 text-xs text-muted-foreground">
                   共享群组上下文会复用该群组会话，独立执行每次使用隔离会话
                 </p>
               </div>

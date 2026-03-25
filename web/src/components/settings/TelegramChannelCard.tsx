@@ -138,7 +138,7 @@ export function TelegramChannelCard() {
           <span className={`inline-block w-2 h-2 rounded-full ${config?.connected ? 'bg-success' : 'bg-muted-foreground/40'}`} />
           <div>
             <h3 className="text-sm font-semibold text-foreground">Telegram</h3>
-            <p className="text-xs text-slate-500 mt-0.5">通过 Telegram Bot 接收和回复消息</p>
+            <p className="text-xs text-muted-foreground mt-0.5">通过 Telegram Bot 接收和回复消息</p>
           </div>
         </div>
         <Switch checked={enabled} disabled={loading || toggling} onCheckedChange={handleToggle} />
@@ -146,11 +146,11 @@ export function TelegramChannelCard() {
 
       <div className={`px-5 py-4 space-y-4 transition-opacity ${!enabled ? 'opacity-50 pointer-events-none' : ''}`}>
         {loading ? (
-          <div className="text-sm text-slate-500">加载中...</div>
+          <div className="text-sm text-muted-foreground">加载中...</div>
         ) : (
           <>
             {config?.hasBotToken && (
-              <div className="text-xs text-slate-500">
+              <div className="text-xs text-muted-foreground">
                 当前 Token: {config.botTokenMasked || '已配置'}
               </div>
             )}
@@ -172,7 +172,7 @@ export function TelegramChannelCard() {
                 placeholder="例如 http://127.0.0.1:7897 或 socks5://127.0.0.1:7897"
               />
               {proxyHint && (
-                <p className="mt-1 text-xs text-slate-400">{proxyHint}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{proxyHint}</p>
               )}
             </div>
             <div className="flex flex-wrap items-center gap-3">

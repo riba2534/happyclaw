@@ -14,6 +14,8 @@ import {
   MessageSquare,
   SlidersHorizontal,
   Link2,
+  PieChart,
+  Gauge,
 } from 'lucide-react';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import type { SettingsTab } from './types';
@@ -45,6 +47,8 @@ const featureItems: NavItem[] = [
   { key: 'mcp-servers', label: 'MCP 服务器', icon: <Server className="w-4 h-4" />, group: 'features' },
   { key: 'agent-definitions', label: 'Agent', icon: <Bot className="w-4 h-4" />, group: 'features' },
   { key: 'bindings', label: 'IM 绑定', icon: <Link2 className="w-4 h-4" />, group: 'features' },
+  { key: 'usage', label: '用量统计', icon: <PieChart className="w-4 h-4" />, group: 'features' },
+  { key: 'monitor', label: '系统监控', icon: <Gauge className="w-4 h-4" />, group: 'features' },
   { key: 'users', label: '用户管理', icon: <UserCog className="w-4 h-4" />, group: 'features' },
   { key: 'about', label: '关于', icon: <Info className="w-4 h-4" />, group: 'features' },
 ];
@@ -99,7 +103,7 @@ export function SettingsNav({ activeTab, onTabChange, canManageSystemConfig, can
                       active
                         ? 'bg-brand-50 text-primary font-medium'
                         : disabled
-                          ? 'text-slate-300 cursor-not-allowed'
+                          ? 'text-muted-foreground cursor-not-allowed'
                           : 'text-muted-foreground hover:bg-muted hover:text-foreground'
                     }`}
                   >
@@ -143,7 +147,7 @@ export function SettingsNav({ activeTab, onTabChange, canManageSystemConfig, can
                           active
                             ? 'bg-brand-50 text-primary font-medium'
                             : disabled
-                              ? 'text-slate-300 cursor-not-allowed'
+                              ? 'text-muted-foreground cursor-not-allowed'
                               : 'text-muted-foreground hover:bg-muted hover:text-foreground'
                         }`}
                       >

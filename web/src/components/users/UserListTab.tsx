@@ -332,7 +332,7 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
                 {isAdmin && <SelectItem value="admin">管理员</SelectItem>}
               </SelectContent>
             </Select>
-            <label className="inline-flex items-center gap-2 text-xs text-slate-600">
+            <label className="inline-flex items-center gap-2 text-xs text-foreground/70">
               <input
                 type="checkbox"
                 checked={newMustChange}
@@ -351,7 +351,7 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
 
           {templates.length > 0 && (
             <div>
-              <div className="text-xs text-slate-500 mb-1">快捷权限模板</div>
+              <div className="text-xs text-muted-foreground mb-1">快捷权限模板</div>
               <div className="flex flex-wrap gap-2">
                 {templates
                   .filter((item) => isAdmin || item.role !== 'admin')
@@ -363,7 +363,7 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
                       setNewRole(item.role);
                       setNewPermissions(item.permissions);
                     }}
-                    className="px-2.5 py-1.5 rounded-md border border-slate-300 text-xs hover:bg-slate-50 cursor-pointer"
+                    className="px-2.5 py-1.5 rounded-md border border-border text-xs hover:bg-muted cursor-pointer"
                   >
                     {item.label}
                   </button>
@@ -374,7 +374,7 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
 
           {assignablePermissions.length > 0 && (
             <div>
-              <div className="text-xs text-slate-500 mb-1">权限明细</div>
+              <div className="text-xs text-muted-foreground mb-1">权限明细</div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                 {assignablePermissions.map((perm) => (
                   <label key={perm} className="inline-flex items-center gap-2 text-xs text-foreground">
@@ -560,7 +560,7 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
                         type="text"
                         value={user.role}
                         disabled
-                        className="bg-muted px-2.5 py-1.5 text-sm text-slate-500 h-auto"
+                        className="bg-muted px-2.5 py-1.5 text-sm text-muted-foreground h-auto"
                       />
                     )}
                     <Input
@@ -610,7 +610,7 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
         )}
       </Card>
 
-      <div className="flex items-center justify-between text-sm text-slate-600">
+      <div className="flex items-center justify-between text-sm text-foreground/70">
         <div>共 {totalUsers} 条</div>
         <div className="flex items-center gap-2">
           <Button

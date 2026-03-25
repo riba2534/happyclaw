@@ -14,10 +14,10 @@ export function BalancingSettings({ balancing, onChange, disabled }: BalancingSe
   const [expanded, setExpanded] = useState(false);
 
   return (
-    <div className="border border-slate-200 rounded-lg overflow-hidden">
+    <div className="border border-border rounded-lg overflow-hidden">
       <button
         type="button"
-        className="w-full flex items-center justify-between px-4 py-3 bg-slate-50 hover:bg-slate-100 transition-colors cursor-pointer"
+        className="w-full flex items-center justify-between px-4 py-3 bg-muted hover:bg-muted transition-colors cursor-pointer"
         onClick={() => setExpanded(!expanded)}
       >
         <div className="flex items-center gap-2">
@@ -31,15 +31,15 @@ export function BalancingSettings({ balancing, onChange, disabled }: BalancingSe
           </span>
         </div>
         {expanded ? (
-          <ChevronDown className="w-4 h-4 text-slate-400" />
+          <ChevronDown className="w-4 h-4 text-muted-foreground" />
         ) : (
-          <ChevronRight className="w-4 h-4 text-slate-400" />
+          <ChevronRight className="w-4 h-4 text-muted-foreground" />
         )}
       </button>
 
       {expanded && (
         <div className="p-4 space-y-4">
-          <div className="text-xs text-slate-500 mb-2">
+          <div className="text-xs text-muted-foreground mb-2">
             启用多个提供商后，系统会根据以下策略自动分配会话请求。
           </div>
 
@@ -47,7 +47,7 @@ export function BalancingSettings({ balancing, onChange, disabled }: BalancingSe
           <div>
             <label className="text-sm font-medium block mb-1">策略</label>
             <select
-              className="w-full border border-slate-200 rounded-md px-3 py-1.5 text-sm bg-white"
+              className="w-full border border-border rounded-md px-3 py-1.5 text-sm bg-white"
               value={balancing.strategy}
               disabled={disabled}
               onChange={(e) =>
@@ -58,7 +58,7 @@ export function BalancingSettings({ balancing, onChange, disabled }: BalancingSe
               <option value="weighted-round-robin">加权轮询</option>
               <option value="failover">故障转移</option>
             </select>
-            <p className="text-xs text-slate-400 mt-1">
+            <p className="text-xs text-muted-foreground mt-1">
               {balancing.strategy === 'round-robin'
                 ? '按顺序轮流分配给每个启用的提供商'
                 : balancing.strategy === 'weighted-round-robin'
@@ -70,7 +70,7 @@ export function BalancingSettings({ balancing, onChange, disabled }: BalancingSe
           {/* 高级参数 */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="text-xs text-slate-500 block mb-1">
+              <label className="text-xs text-muted-foreground block mb-1">
                 不健康阈值（连续失败次数）
               </label>
               <Input
@@ -89,12 +89,12 @@ export function BalancingSettings({ balancing, onChange, disabled }: BalancingSe
                 }
                 className="h-8 text-sm"
               />
-              <p className="text-xs text-slate-400 mt-1">
+              <p className="text-xs text-muted-foreground mt-1">
                 连续失败达到该次数后，提供商标记为不健康。
               </p>
             </div>
             <div>
-              <label className="text-xs text-slate-500 block mb-1">
+              <label className="text-xs text-muted-foreground block mb-1">
                 自动恢复间隔（秒）
               </label>
               <Input
@@ -111,7 +111,7 @@ export function BalancingSettings({ balancing, onChange, disabled }: BalancingSe
                 }
                 className="h-8 text-sm"
               />
-              <p className="text-xs text-slate-400 mt-1">
+              <p className="text-xs text-muted-foreground mt-1">
                 不健康提供商经过该时间后自动恢复为健康状态，重新接受请求。
               </p>
             </div>

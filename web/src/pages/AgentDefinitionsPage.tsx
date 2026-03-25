@@ -234,7 +234,7 @@ tools:
                         <div className="text-sm font-medium text-foreground truncate">
                           {agent.name}
                         </div>
-                        <div className="text-[11px] text-slate-500 line-clamp-2 mt-0.5">
+                        <div className="text-[11px] text-muted-foreground line-clamp-2 mt-0.5">
                           {agent.description || '无描述'}
                         </div>
                         {agent.tools.length > 0 && (
@@ -248,7 +248,7 @@ tools:
                               </span>
                             ))}
                             {agent.tools.length > 4 && (
-                              <span className="px-1.5 py-0.5 text-slate-400 text-[10px]">
+                              <span className="px-1.5 py-0.5 text-muted-foreground text-[10px]">
                                 +{agent.tools.length - 4}
                               </span>
                             )}

@@ -80,7 +80,7 @@ export default function AdminUsersList({ onSelectUser }: AdminUsersListProps) {
           <Users className="w-5 h-5 text-primary" />
           用户计费管理
         </h3>
-        <div className="flex items-center gap-2 text-sm text-zinc-500">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
           共 {allUsers.length} 人
           {selected.size > 0 && ` / 已选 ${selected.size}`}
         </div>
@@ -89,7 +89,7 @@ export default function AdminUsersList({ onSelectUser }: AdminUsersListProps) {
       {/* Search + Batch */}
       <div className="flex flex-col sm:flex-row gap-2">
         <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -102,7 +102,7 @@ export default function AdminUsersList({ onSelectUser }: AdminUsersListProps) {
             <select
               value={batchPlanId}
               onChange={(e) => setBatchPlanId(e.target.value)}
-              className="h-9 px-3 text-sm border border-zinc-300 dark:border-zinc-600 rounded-md bg-transparent"
+              className="h-9 px-3 text-sm border border-border rounded-md bg-transparent"
             >
               <option value="">选择套餐</option>
               {plans.map((p) => (
@@ -124,7 +124,7 @@ export default function AdminUsersList({ onSelectUser }: AdminUsersListProps) {
       </div>
 
       {/* Table header */}
-      <div className="hidden sm:grid sm:grid-cols-[auto_1fr_120px_100px_100px_80px] gap-2 px-3 py-2 text-xs text-zinc-500 font-medium border-b border-zinc-200 dark:border-zinc-700">
+      <div className="hidden sm:grid sm:grid-cols-[auto_1fr_120px_100px_100px_80px] gap-2 px-3 py-2 text-xs text-muted-foreground font-medium border-b border-border">
         <button onClick={toggleAll} className="p-0.5">
           {allSelected ? (
             <CheckSquare className="w-4 h-4 text-primary" />
@@ -147,7 +147,7 @@ export default function AdminUsersList({ onSelectUser }: AdminUsersListProps) {
             className={`grid grid-cols-1 sm:grid-cols-[auto_1fr_120px_100px_100px_80px] gap-2 items-center px-3 py-2.5 bg-card rounded-lg border ${
               u.access_allowed === false
                 ? 'border-red-200 dark:border-red-900/60'
-                : 'border-zinc-200 dark:border-zinc-700'
+                : 'border-border'
             }`}
           >
             {/* Checkbox */}
@@ -158,7 +158,7 @@ export default function AdminUsersList({ onSelectUser }: AdminUsersListProps) {
               {selected.has(u.user_id) ? (
                 <CheckSquare className="w-4 h-4 text-primary" />
               ) : (
-                <Square className="w-4 h-4 text-zinc-400" />
+                <Square className="w-4 h-4 text-muted-foreground" />
               )}
             </button>
 
@@ -168,7 +168,7 @@ export default function AdminUsersList({ onSelectUser }: AdminUsersListProps) {
                 {u.display_name || u.username}
               </span>
               <div className="flex items-center gap-2">
-                <span className="text-xs text-zinc-400">@{u.username}</span>
+                <span className="text-xs text-muted-foreground">@{u.username}</span>
                 {u.access_allowed === false && (
                   <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-medium text-red-700 dark:bg-red-950/30 dark:text-red-300">
                     <AlertTriangle className="h-3 w-3" />
@@ -184,16 +184,16 @@ export default function AdminUsersList({ onSelectUser }: AdminUsersListProps) {
             </div>
 
             {/* Plan */}
-            <span className="text-sm text-zinc-600 dark:text-zinc-400 truncate">
+            <span className="text-sm text-muted-foreground truncate">
               {u.plan_name ? (
                 <>
                   {u.plan_name}
                   {u.is_fallback && (
-                    <span className="ml-1 text-[10px] text-zinc-400">(默认)</span>
+                    <span className="ml-1 text-[10px] text-muted-foreground">(默认)</span>
                   )}
                 </>
               ) : (
-                <span className="text-zinc-400 italic">无套餐</span>
+                <span className="text-muted-foreground italic">无套餐</span>
               )}
             </span>
 
@@ -203,7 +203,7 @@ export default function AdminUsersList({ onSelectUser }: AdminUsersListProps) {
             </span>
 
             {/* Month cost */}
-            <span className="text-sm text-right font-mono text-zinc-500">
+            <span className="text-sm text-right font-mono text-muted-foreground">
               {fmt(u.current_month_cost)}
             </span>
 
@@ -222,7 +222,7 @@ export default function AdminUsersList({ onSelectUser }: AdminUsersListProps) {
       </div>
 
       {filtered.length === 0 && (
-        <p className="text-sm text-zinc-500 text-center py-8">
+        <p className="text-sm text-muted-foreground text-center py-8">
           {search ? '未找到匹配的用户' : '暂无用户'}
         </p>
       )}

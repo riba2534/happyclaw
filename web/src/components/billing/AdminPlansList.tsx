@@ -55,7 +55,7 @@ export default function AdminPlansList({
               className={`relative bg-card rounded-lg border p-5 ${
                 plan.highlight
                   ? 'border-brand-400 dark:border-brand-600 ring-1 ring-brand-400/30'
-                  : 'border-zinc-200 dark:border-zinc-700'
+                  : 'border-border'
               } ${!plan.is_active ? 'opacity-60' : ''}`}
             >
               {/* Badges */}
@@ -73,7 +73,7 @@ export default function AdminPlansList({
                   </span>
                 )}
                 {!plan.is_active && (
-                  <span className="px-1.5 py-0.5 text-xs rounded-full bg-zinc-200 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-400">
+                  <span className="px-1.5 py-0.5 text-xs rounded-full bg-muted text-muted-foreground">
                     已禁用
                   </span>
                 )}
@@ -81,12 +81,12 @@ export default function AdminPlansList({
 
               {/* Name + price */}
               <div className="text-lg font-bold mb-0.5">{plan.name}</div>
-              <div className="text-sm text-zinc-500 mb-3">
+              <div className="text-sm text-muted-foreground mb-3">
                 {plan.display_price ?? fmt(plan.monthly_cost_usd) + '/月'}
               </div>
 
               {/* Meta */}
-              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-zinc-500">
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground">
                 <span>ID: {plan.id}</span>
                 <span>Tier: {plan.tier}</span>
                 <span>排序: {plan.sort_order}</span>
@@ -98,7 +98,7 @@ export default function AdminPlansList({
               </div>
 
               {/* Quotas */}
-              <div className="mt-3 pt-3 border-t border-zinc-100 dark:border-zinc-700 grid grid-cols-2 gap-1 text-xs text-zinc-500">
+              <div className="mt-3 pt-3 border-t border-border grid grid-cols-2 gap-1 text-xs text-muted-foreground">
                 {plan.daily_cost_quota != null && (
                   <span>日费用: {fmt(plan.daily_cost_quota)}</span>
                 )}
@@ -134,7 +134,7 @@ export default function AdminPlansList({
                   size="xs"
                   disabled={plan.is_default}
                   onClick={() => handleDelete(plan)}
-                  className="text-zinc-400 hover:text-red-500"
+                  className="text-muted-foreground hover:text-red-500"
                 >
                   <Trash2 className="w-3 h-3" />
                   删除
@@ -146,7 +146,7 @@ export default function AdminPlansList({
       </div>
 
       {plans.length === 0 && (
-        <p className="text-sm text-zinc-500 text-center py-8">
+        <p className="text-sm text-muted-foreground text-center py-8">
           暂无套餐，点击「新建套餐」创建
         </p>
       )}

@@ -159,13 +159,13 @@ export default defineConfig(({ command }) => {
       ];
     })(),
     server: {
-      port: 5173,
+      port: 5288,
       host: '0.0.0.0',
       strictPort: true,
       allowedHosts: true,
       hmr: {
         // VS Code Remote port forwarding requires explicit HMR client config
-        clientPort: 5173,
+        clientPort: 5288,
       },
       proxy: {
         '/api': API_PROXY_TARGET,

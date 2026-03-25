@@ -15,13 +15,13 @@ function KpiCard({
   sub?: string;
 }) {
   return (
-    <div className="bg-card rounded-lg border border-zinc-200 dark:border-zinc-700 p-4">
-      <div className="flex items-center gap-2 text-zinc-500 text-sm mb-2">
+    <div className="bg-card rounded-lg border border-border p-4">
+      <div className="flex items-center gap-2 text-muted-foreground text-sm mb-2">
         <Icon className="w-4 h-4 text-primary" />
         {label}
       </div>
       <div className="text-2xl font-bold">{value}</div>
-      {sub && <div className="text-xs text-zinc-400 mt-1">{sub}</div>}
+      {sub && <div className="text-xs text-muted-foreground mt-1">{sub}</div>}
     </div>
   );
 }
@@ -34,10 +34,10 @@ function PlanDistribution({
   const total = data.reduce((s, d) => s + d.count, 0) || 1;
 
   return (
-    <div className="bg-card rounded-lg border border-zinc-200 dark:border-zinc-700 p-5">
+    <div className="bg-card rounded-lg border border-border p-5">
       <h3 className="font-semibold text-sm mb-4">套餐分布</h3>
       {data.length === 0 ? (
-        <p className="text-sm text-zinc-500">暂无数据</p>
+        <p className="text-sm text-muted-foreground">暂无数据</p>
       ) : (
         <div className="space-y-3">
           {data.map((item) => {
@@ -46,11 +46,11 @@ function PlanDistribution({
               <div key={item.plan_name}>
                 <div className="flex justify-between text-sm mb-1">
                   <span>{item.plan_name}</span>
-                  <span className="text-zinc-500">
+                  <span className="text-muted-foreground">
                     {item.count} ({pct}%)
                   </span>
                 </div>
-                <div className="h-2 bg-zinc-200 dark:bg-zinc-700 rounded-full overflow-hidden">
+                <div className="h-2 bg-muted rounded-full overflow-hidden">
                   <div
                     className="h-full bg-brand-500 rounded-full transition-all"
                     style={{ width: `${pct}%` }}
@@ -75,10 +75,10 @@ function RevenueTrendChart({
   const maxRevenue = Math.max(...data.map((d) => d.revenue), 1);
 
   return (
-    <div className="bg-card rounded-lg border border-zinc-200 dark:border-zinc-700 p-5">
+    <div className="bg-card rounded-lg border border-border p-5">
       <h3 className="font-semibold text-sm mb-4">收入趋势</h3>
       {data.length === 0 ? (
-        <p className="text-sm text-zinc-500">暂无数据</p>
+        <p className="text-sm text-muted-foreground">暂无数据</p>
       ) : (
         <div className="flex items-end gap-1 h-40">
           {data.map((item) => {
@@ -89,7 +89,7 @@ function RevenueTrendChart({
                 key={item.month}
                 className="flex-1 flex flex-col items-center gap-1 min-w-0"
               >
-                <span className="text-[10px] text-zinc-400 truncate w-full text-center">
+                <span className="text-[10px] text-muted-foreground truncate w-full text-center">
                   {fmt(item.revenue)}
                 </span>
                 <div
@@ -97,7 +97,7 @@ function RevenueTrendChart({
                   style={{ height: `${height}%` }}
                   title={`${item.month}: ${fmt(item.revenue)} / ${item.users} 用户`}
                 />
-                <span className="text-[10px] text-zinc-400 truncate w-full text-center">
+                <span className="text-[10px] text-muted-foreground truncate w-full text-center">
                   {label}
                 </span>
               </div>

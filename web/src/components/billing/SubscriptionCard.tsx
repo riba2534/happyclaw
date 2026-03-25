@@ -26,7 +26,7 @@ export default function SubscriptionCard() {
   const isFallback = subscription?.id.startsWith('fallback_');
 
   return (
-    <div className="bg-card rounded-lg border border-zinc-200 dark:border-zinc-700 p-5">
+    <div className="bg-card rounded-lg border border-border p-5">
       <div className="flex items-center gap-2 mb-4">
         <Package className="w-5 h-5 text-primary" />
         <h3 className="font-semibold">当前套餐</h3>
@@ -38,7 +38,7 @@ export default function SubscriptionCard() {
           <div className="flex items-center gap-2 mb-1">
             <span className="text-2xl font-bold text-primary">{plan.name}</span>
             {isFallback && (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-zinc-100 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-400">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-muted text-muted-foreground">
                 默认
               </span>
             )}
@@ -48,7 +48,7 @@ export default function SubscriptionCard() {
               </span>
             )}
             {isExpired && (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-zinc-100 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-400">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-muted text-muted-foreground">
                 已过期
               </span>
             )}
@@ -68,7 +68,7 @@ export default function SubscriptionCard() {
           )}
 
           {plan.description && (
-            <p className="text-sm text-zinc-500 mb-3">{plan.description}</p>
+            <p className="text-sm text-muted-foreground mb-3">{plan.description}</p>
           )}
 
           {/* Rate multiplier */}
@@ -83,37 +83,37 @@ export default function SubscriptionCard() {
           <div className="grid grid-cols-2 gap-2 text-sm">
             {plan.monthly_cost_quota != null && (
               <div>
-                <span className="text-zinc-500">月度费用上限</span>
+                <span className="text-muted-foreground">月度费用上限</span>
                 <div className="font-medium">{fmt(plan.monthly_cost_quota)}</div>
               </div>
             )}
             {plan.monthly_token_quota != null && (
               <div>
-                <span className="text-zinc-500">月度 Token 上限</span>
+                <span className="text-muted-foreground">月度 Token 上限</span>
                 <div className="font-medium">{formatTokens(plan.monthly_token_quota)}</div>
               </div>
             )}
             {plan.daily_cost_quota != null && (
               <div>
-                <span className="text-zinc-500">日度费用上限</span>
+                <span className="text-muted-foreground">日度费用上限</span>
                 <div className="font-medium">{fmt(plan.daily_cost_quota)}</div>
               </div>
             )}
             {plan.weekly_cost_quota != null && (
               <div>
-                <span className="text-zinc-500">周度费用上限</span>
+                <span className="text-muted-foreground">周度费用上限</span>
                 <div className="font-medium">{fmt(plan.weekly_cost_quota)}</div>
               </div>
             )}
             {plan.max_groups != null && (
               <div>
-                <span className="text-zinc-500">工作区上限</span>
+                <span className="text-muted-foreground">工作区上限</span>
                 <div className="font-medium">{plan.max_groups}</div>
               </div>
             )}
             {plan.max_im_channels != null && (
               <div>
-                <span className="text-zinc-500">IM 通道上限</span>
+                <span className="text-muted-foreground">IM 通道上限</span>
                 <div className="font-medium">{plan.max_im_channels}</div>
               </div>
             )}
@@ -128,12 +128,12 @@ export default function SubscriptionCard() {
               </p>
             )}
             {subscription?.expires_at && (
-              <p className="text-xs text-zinc-400">
+              <p className="text-xs text-muted-foreground">
                 到期时间: {new Date(subscription.expires_at).toLocaleDateString()}
               </p>
             )}
-            <div className="pt-2 border-t border-zinc-100 dark:border-zinc-700 mt-2 space-y-2">
-              <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            <div className="pt-2 border-t border-border mt-2 space-y-2">
+              <p className="text-xs text-muted-foreground">
                 钱包优先模式下，套餐决定费率和资源上限；是否可以继续使用，取决于当前余额是否达到 {fmt(access?.minBalanceUsd ?? billingMinStartBalanceUsd)}。
               </p>
               {!access?.allowed && (
@@ -145,7 +145,7 @@ export default function SubscriptionCard() {
           </div>
         </div>
       ) : (
-        <p className="text-zinc-500">未订阅任何套餐</p>
+        <p className="text-muted-foreground">未订阅任何套餐</p>
       )}
     </div>
   );

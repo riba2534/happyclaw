@@ -160,7 +160,7 @@ export function ShareImageDialog({ onClose, message }: ShareImageDialogProps) {
     >
       {/* Dialog card */}
       <div
-        className="relative bg-card rounded-2xl shadow-2xl border border-border w-[90vw] max-w-2xl max-h-[85vh] flex flex-col animate-in zoom-in-95 fade-in duration-200"
+        className="relative bg-surface rounded-2xl shadow-2xl border border-border w-[90vw] max-w-2xl max-h-[85vh] flex flex-col animate-in zoom-in-95 fade-in duration-200"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}

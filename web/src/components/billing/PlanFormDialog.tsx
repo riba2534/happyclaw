@@ -125,7 +125,7 @@ function Section({
 }) {
   return (
     <div>
-      <div className="text-xs font-medium text-zinc-500 mb-2">{title}</div>
+      <div className="text-xs font-medium text-muted-foreground mb-2">{title}</div>
       <div className="grid grid-cols-2 gap-3">{children}</div>
     </div>
   );
@@ -142,7 +142,7 @@ function Field({
 }) {
   return (
     <div className={span ? 'col-span-2' : ''}>
-      <label className="block text-xs text-zinc-500 mb-1">{label}</label>
+      <label className="block text-xs text-muted-foreground mb-1">{label}</label>
       {children}
     </div>
   );
@@ -409,7 +409,7 @@ export default function PlanFormDialog({
 
           {/* Toggles */}
           <div>
-            <div className="text-xs font-medium text-zinc-500 mb-2">开关</div>
+            <div className="text-xs font-medium text-muted-foreground mb-2">开关</div>
             <div className="grid grid-cols-2 gap-3">
               {(
                 [
@@ -432,7 +432,7 @@ export default function PlanFormDialog({
 
           {/* Features */}
           <div>
-            <div className="text-xs font-medium text-zinc-500 mb-2">
+            <div className="text-xs font-medium text-muted-foreground mb-2">
               特性标签
             </div>
             <Input

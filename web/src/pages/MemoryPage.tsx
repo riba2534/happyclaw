@@ -302,7 +302,7 @@ export function MemoryPage() {
                             <div className="text-[11px] text-muted-foreground truncate mt-0.5">
                               {source.path}
                             </div>
-                            <div className="text-[11px] mt-1 text-slate-500">
+                            <div className="text-[11px] mt-1 text-muted-foreground">
                               {source.writable ? '可编辑' : '只读'} · {source.exists ? `${source.size} B` : '文件不存在'}
                             </div>
                             {hit && (

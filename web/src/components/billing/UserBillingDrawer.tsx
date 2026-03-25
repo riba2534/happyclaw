@@ -55,7 +55,7 @@ function ProgressBar({ value, max }: { value: number; max: number }) {
   const color =
     pct >= 90 ? 'bg-red-500' : pct >= 70 ? 'bg-yellow-500' : 'bg-brand-500';
   return (
-    <div className="h-2 bg-zinc-200 dark:bg-zinc-700 rounded-full overflow-hidden">
+    <div className="h-2 bg-muted rounded-full overflow-hidden">
       <div
         className={`h-full ${color} rounded-full transition-all`}
         style={{ width: `${pct}%` }}
@@ -172,7 +172,7 @@ export default function UserBillingDrawer({
             <Loader2 className="w-6 h-6 animate-spin text-primary" />
           </div>
         ) : !detail ? (
-          <p className="text-sm text-zinc-500 p-4">无法加载用户信息</p>
+          <p className="text-sm text-muted-foreground p-4">无法加载用户信息</p>
         ) : (
           <div className="space-y-6 p-4">
             {/* Current plan */}
@@ -186,13 +186,13 @@ export default function UserBillingDrawer({
                   {detail.plan_name || '无套餐'}
                 </div>
                 {detail.is_fallback && (
-                  <span className="px-1.5 py-0.5 text-xs rounded bg-zinc-100 dark:bg-zinc-700 text-zinc-500">
+                  <span className="px-1.5 py-0.5 text-xs rounded bg-muted text-muted-foreground">
                     默认
                   </span>
                 )}
               </div>
               {detail.subscription_status && detail.subscription_status !== 'default' && (
-                <span className="text-xs text-zinc-400">
+                <span className="text-xs text-muted-foreground">
                   状态: {detail.subscription_status}
                 </span>
               )}
@@ -234,7 +234,7 @@ export default function UserBillingDrawer({
               <div className="space-y-3">
                 {detail.daily_cost_quota != null && (
                   <div>
-                    <div className="flex justify-between text-xs text-zinc-500 mb-1">
+                    <div className="flex justify-between text-xs text-muted-foreground mb-1">
                       <span>日度费用</span>
                       <span>
                         {fmt(detail.daily_cost_used ?? 0)} /{' '}
@@ -249,7 +249,7 @@ export default function UserBillingDrawer({
                 )}
                 {detail.weekly_cost_quota != null && (
                   <div>
-                    <div className="flex justify-between text-xs text-zinc-500 mb-1">
+                    <div className="flex justify-between text-xs text-muted-foreground mb-1">
                       <span>周度费用</span>
                       <span>
                         {fmt(detail.weekly_cost_used ?? 0)} /{' '}
@@ -264,7 +264,7 @@ export default function UserBillingDrawer({
                 )}
                 {detail.monthly_cost_quota != null && (
                   <div>
-                    <div className="flex justify-between text-xs text-zinc-500 mb-1">
+                    <div className="flex justify-between text-xs text-muted-foreground mb-1">
                       <span>月度费用</span>
                       <span>
                         {fmt(detail.current_month_cost)} /{' '}
@@ -281,15 +281,15 @@ export default function UserBillingDrawer({
             </div>
 
             {/* Actions */}
-            <div className="space-y-4 pt-2 border-t border-zinc-200 dark:border-zinc-700">
+            <div className="space-y-4 pt-2 border-t border-border">
               {/* Assign plan */}
               <div>
-                <label className="text-xs text-zinc-500">分配套餐</label>
+                <label className="text-xs text-muted-foreground">分配套餐</label>
                 <div className="flex gap-2 mt-1">
                   <select
                     value={assignPlanId}
                     onChange={(e) => setAssignPlanId(e.target.value)}
-                    className="flex-1 h-9 px-3 text-sm border border-zinc-300 dark:border-zinc-600 rounded-md bg-transparent"
+                    className="flex-1 h-9 px-3 text-sm border border-border rounded-md bg-transparent"
                   >
                     <option value="">选择套餐</option>
                     {plans.map((p) => (
@@ -310,7 +310,7 @@ export default function UserBillingDrawer({
 
               {/* Adjust balance */}
               <div>
-                <label className="text-xs text-zinc-500">充值 / 扣减额度</label>
+                <label className="text-xs text-muted-foreground">充值 / 扣减额度</label>
                 <div className="flex gap-2 mt-1">
                   <Input
                     type="number"
@@ -351,7 +351,7 @@ export default function UserBillingDrawer({
 
             {/* Subscription history */}
             {subHistory.length > 0 && (
-              <div className="pt-2 border-t border-zinc-200 dark:border-zinc-700">
+              <div className="pt-2 border-t border-border">
                 <div className="text-sm font-medium mb-2">订阅历史</div>
                 <div className="space-y-1 max-h-32 overflow-y-auto">
                   {subHistory.map((h) => (
@@ -360,7 +360,7 @@ export default function UserBillingDrawer({
                       className="flex justify-between text-xs py-1"
                     >
                       <span>{h.plan_name}</span>
-                      <span className="text-zinc-400">
+                      <span className="text-muted-foreground">
                         {h.status} /{' '}
                         {new Date(h.started_at).toLocaleDateString()}
                       </span>
@@ -371,26 +371,26 @@ export default function UserBillingDrawer({
             )}
 
             {/* Recent transactions */}
-            <div className="pt-2 border-t border-zinc-200 dark:border-zinc-700">
+            <div className="pt-2 border-t border-border">
               <div className="flex items-center gap-2 text-sm font-medium mb-2">
                 <History className="w-4 h-4 text-primary" />
                 交易记录
               </div>
               {transactions.length === 0 ? (
-                <p className="text-xs text-zinc-500">暂无记录</p>
+                <p className="text-xs text-muted-foreground">暂无记录</p>
               ) : (
                 <div className="space-y-1 max-h-48 overflow-y-auto">
                   {transactions.map((tx) => (
                     <div
                       key={tx.id}
-                      className="flex justify-between items-center py-1.5 border-b border-zinc-100 dark:border-zinc-700 last:border-0"
+                      className="flex justify-between items-center py-1.5 border-b border-border last:border-0"
                     >
                       <div>
                         <div className="text-xs">{tx.description || tx.type}</div>
-                        <div className="flex items-center gap-1.5 text-[10px] text-zinc-400">
+                        <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
                           {new Date(tx.created_at).toLocaleString()}
                           {(tx.source || tx.type) && (
-                            <span className="rounded bg-zinc-100 px-1 py-0.5 text-zinc-500 dark:bg-zinc-700 dark:text-zinc-400">
+                            <span className="rounded bg-muted px-1 py-0.5 text-muted-foreground">
                               {TX_SOURCE_LABELS[tx.source || ''] || tx.type}
                             </span>
                           )}

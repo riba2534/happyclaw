@@ -1,9 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { PanelLeftOpen } from 'lucide-react';
 import { useChatStore } from '../stores/chat';
 import { useAuthStore } from '../stores/auth';
-import { ChatSidebar } from '../components/chat/ChatSidebar';
 import { ChatView } from '../components/chat/ChatView';
 import { useSwipeBack } from '../hooks/useSwipeBack';
 
@@ -42,7 +40,6 @@ export function ChatPage() {
 
   const activeGroupJid = groupFolder ? routeGroupJid : currentGroup;
   const chatViewRef = useRef<HTMLDivElement>(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const handleBackToList = () => {
     navigate('/chat');
@@ -51,11 +48,24 @@ export function ChatPage() {
   useSwipeBack(chatViewRef, handleBackToList);
 
   return (
-    <div className="h-full flex">
-      {/* Sidebar - Desktop: always visible, Mobile: visible in list route */}
-      <div className={`${groupFolder ? 'hidden lg:block' : 'block'} w-full ${sidebarCollapsed ? 'lg:w-0 lg:overflow-hidden' : 'lg:w-72'} flex-shrink-0 transition-all duration-200`}>
-        <ChatSidebar onToggleCollapse={() => setSidebarCollapsed(true)} />
-      </div>
+    <div className="h-full flex bg-muted/30">
+      {/* On mobile without groupFolder, show empty state (sidebar is in UnifiedSidebar on desktop) */}
+      {!groupFolder && (
+        <div className="block lg:hidden w-full">
+          {/* Mobile list view — handled by BottomTabBar navigation */}
+          <div className="flex flex-col items-center justify-center h-full px-4">
+            <div className="w-16 h-16 rounded-2xl overflow-hidden mx-auto mb-6">
+              <img src={`${import.meta.env.BASE_URL}icons/icon-192.png`} alt="HappyClaw" className="w-full h-full object-cover" />
+            </div>
+            <h2 className="text-xl font-semibold text-foreground mb-2">
+              欢迎使用 {appearance?.appName || 'HappyClaw'}
+            </h2>
+            <p className="text-muted-foreground text-sm">
+              从侧边栏选择一个工作区开始对话
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Chat View - Desktop: visible when active group exists, Mobile: only in detail route */}
       {activeGroupJid ? (
@@ -63,28 +73,11 @@ export function ChatPage() {
           <ChatView
             groupJid={activeGroupJid}
             onBack={handleBackToList}
-            headerLeft={sidebarCollapsed ? (
-              <button
-                onClick={() => setSidebarCollapsed(false)}
-                className="hidden lg:flex p-1.5 -ml-1 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
-                title="展开侧边栏"
-              >
-                <PanelLeftOpen className="w-4 h-4" />
-              </button>
-            ) : undefined}
+            headerLeft={undefined}
           />
         </div>
       ) : (
-        <div className="hidden lg:flex flex-1 items-center justify-center bg-background relative">
-          {sidebarCollapsed && (
-            <button
-              onClick={() => setSidebarCollapsed(false)}
-              className="absolute left-3 top-3 p-1.5 rounded-md border hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
-              title="展开侧边栏"
-            >
-              <PanelLeftOpen className="w-4 h-4" />
-            </button>
-          )}
+        <div className="hidden lg:flex flex-1 items-center justify-center bg-white dark:bg-background rounded-t-3xl rounded-b-none mt-5 mr-5 mb-0 ml-3 relative">
           <div className="text-center max-w-sm">
             {/* Logo */}
             <div className="w-16 h-16 rounded-2xl overflow-hidden mx-auto mb-6">

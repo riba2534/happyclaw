@@ -15,7 +15,7 @@ function ProgressBar({ value, max, className }: { value: number; max: number; cl
   const percent = max > 0 ? Math.min((value / max) * 100, 100) : 0;
   const color = percent >= 90 ? 'bg-red-500' : percent >= 70 ? 'bg-yellow-500' : 'bg-brand-500';
   return (
-    <div className={`h-2 bg-zinc-200 dark:bg-zinc-700 rounded-full overflow-hidden ${className ?? ''}`}>
+    <div className={`h-2 bg-muted rounded-full overflow-hidden ${className ?? ''}`}>
       <div className={`h-full ${color} rounded-full transition-all`} style={{ width: `${percent}%` }} />
     </div>
   );
@@ -43,11 +43,11 @@ function WindowUsageBlock({
 
   return (
     <div className="space-y-2">
-      <h4 className="text-xs font-medium text-zinc-500 uppercase tracking-wider">{label}</h4>
+      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{label}</h4>
       {hasCostQuota && (
         <div>
           <div className="flex justify-between text-sm mb-1">
-            <span className="text-zinc-500">费用</span>
+            <span className="text-muted-foreground">费用</span>
             <span>
               {fmt(costUsed)} / {fmt(costQuota!)}
             </span>
@@ -58,7 +58,7 @@ function WindowUsageBlock({
       {hasTokenQuota && (
         <div>
           <div className="flex justify-between text-sm mb-1">
-            <span className="text-zinc-500">Token</span>
+            <span className="text-muted-foreground">Token</span>
             <span>
               {formatTokens(tokenUsed)} / {formatTokens(tokenQuota!)}
             </span>
@@ -126,7 +126,7 @@ export default function UsageCard() {
   if (availableWindows.length === 0) availableWindows.push('monthly');
 
   return (
-    <div className="bg-card rounded-lg border border-zinc-200 dark:border-zinc-700 p-5">
+    <div className="bg-card rounded-lg border border-border p-5">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <BarChart3 className="w-5 h-5 text-primary" />
@@ -142,7 +142,7 @@ export default function UsageCard() {
                 className={`px-2 py-0.5 text-xs rounded transition-colors ${
                   activeWindow === w
                     ? 'bg-brand-100 dark:bg-brand-700/30 text-brand-700 dark:text-brand-300'
-                    : 'text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300'
+                    : 'text-muted-foreground hover:text-foreground'
                 }`}
               >
                 {WINDOW_LABELS[w]}
@@ -215,16 +215,16 @@ export default function UsageCard() {
         )}
 
         {/* Summary stats (always visible) */}
-        <div className="grid grid-cols-2 gap-2 text-sm text-zinc-500">
+        <div className="grid grid-cols-2 gap-2 text-sm text-muted-foreground">
           <div>
-            <span className="block text-xs text-zinc-400">本月费用</span>
-            <span className="font-medium text-zinc-700 dark:text-zinc-300">
+            <span className="block text-xs text-muted-foreground">本月费用</span>
+            <span className="font-medium text-foreground">
               {fmt(currentUsage?.total_cost_usd ?? 0)}
             </span>
           </div>
           <div>
-            <span className="block text-xs text-zinc-400">本月 Token</span>
-            <span className="font-medium text-zinc-700 dark:text-zinc-300">
+            <span className="block text-xs text-muted-foreground">本月 Token</span>
+            <span className="font-medium text-foreground">
               {formatTokens(
                 (currentUsage?.total_input_tokens ?? 0) +
                   (currentUsage?.total_output_tokens ?? 0),
@@ -232,8 +232,8 @@ export default function UsageCard() {
             </span>
           </div>
           <div>
-            <span className="block text-xs text-zinc-400">消息数</span>
-            <span className="font-medium text-zinc-700 dark:text-zinc-300">
+            <span className="block text-xs text-muted-foreground">消息数</span>
+            <span className="font-medium text-foreground">
               {currentUsage?.message_count ?? 0}
             </span>
           </div>

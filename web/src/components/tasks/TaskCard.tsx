@@ -131,7 +131,7 @@ export function TaskCard({ task, onPause, onResume, onDelete, onRunNow }: TaskCa
                 <button
                   onClick={handleRunNow}
                   disabled={runningNow}
-                  className="p-2 text-slate-600 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+                  className="p-2 text-foreground/70 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
                   title="立即运行"
                   aria-label="立即运行任务"
                 >

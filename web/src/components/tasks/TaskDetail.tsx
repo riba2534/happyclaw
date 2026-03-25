@@ -149,7 +149,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
       return <span className="text-sm text-foreground">所有渠道</span>;
     }
     if (channels.length === 0) {
-      return <span className="text-sm text-slate-400">仅 Web</span>;
+      return <span className="text-sm text-muted-foreground">仅 Web</span>;
     }
     return (
       <div className="flex flex-wrap gap-1">
@@ -174,7 +174,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
             <button
               onClick={handleCancel}
               disabled={saving}
-              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-foreground/70 bg-muted hover:bg-muted rounded-lg transition-colors cursor-pointer disabled:opacity-50"
             >
               <X className="w-3.5 h-3.5" /> 取消
             </button>
@@ -189,7 +189,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
         ) : (
           <button
             onClick={() => setEditing(true)}
-            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-slate-600 hover:text-primary hover:bg-brand-50 rounded-lg transition-colors cursor-pointer"
+            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-foreground/70 hover:text-primary hover:bg-brand-50 rounded-lg transition-colors cursor-pointer"
           >
             <Pencil className="w-3.5 h-3.5" /> 编辑
           </button>
@@ -199,7 +199,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
       {/* Script Command (script mode) */}
       {task.execution_type === 'script' && (
         <div>
-          <div className="text-xs text-slate-500 mb-2">脚本命令</div>
+          <div className="text-xs text-muted-foreground mb-2">脚本命令</div>
           {editing ? (
             <textarea
               value={editForm.script_command}
@@ -220,7 +220,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
 
       {/* Full Prompt / Description */}
       <div>
-        <div className="text-xs text-slate-500 mb-2">
+        <div className="text-xs text-muted-foreground mb-2">
           {task.execution_type === 'script' ? '任务描述' : '完整 Prompt'}
         </div>
         {editing ? (
@@ -242,14 +242,14 @@ export function TaskDetail({ task }: TaskDetailProps) {
       {/* Schedule Details */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div>
-          <div className="text-xs text-slate-500 mb-1">执行方式</div>
+          <div className="text-xs text-muted-foreground mb-1">执行方式</div>
           <div className="text-sm text-foreground">
             {task.execution_type === 'script' ? '脚本' : 'Agent'}
           </div>
         </div>
 
         <div>
-          <div className="text-xs text-slate-500 mb-1">调度类型</div>
+          <div className="text-xs text-muted-foreground mb-1">调度类型</div>
           {editing ? (
             <select
               value={editForm.schedule_type}
@@ -272,7 +272,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
         </div>
 
         <div>
-          <div className="text-xs text-slate-500 mb-1">调度值</div>
+          <div className="text-xs text-muted-foreground mb-1">调度值</div>
           {editing ? (
             <input
               type="text"
@@ -288,7 +288,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
         </div>
 
         <div>
-          <div className="text-xs text-slate-500 mb-1">下次运行</div>
+          <div className="text-xs text-muted-foreground mb-1">下次运行</div>
           <div className="text-sm text-foreground">
             {formatDate(task.next_run)}
           </div>
@@ -296,7 +296,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
 
         {task.last_run && (
           <div>
-            <div className="text-xs text-slate-500 mb-1">上次运行</div>
+            <div className="text-xs text-muted-foreground mb-1">上次运行</div>
             <div className="text-sm text-foreground">
               {formatDate(task.last_run)}
             </div>
@@ -305,7 +305,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
 
         {task.execution_type !== 'script' && (
           <div>
-            <div className="text-xs text-slate-500 mb-1">上下文模式</div>
+            <div className="text-xs text-muted-foreground mb-1">上下文模式</div>
             {editing ? (
               <select
                 value={editForm.context_mode}
@@ -330,7 +330,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
         )}
 
         <div>
-          <div className="text-xs text-slate-500 mb-1">创建时间</div>
+          <div className="text-xs text-muted-foreground mb-1">创建时间</div>
           <div className="text-sm text-foreground">
             {formatDate(task.created_at)}
           </div>
@@ -338,10 +338,10 @@ export function TaskDetail({ task }: TaskDetailProps) {
 
         {/* Notify Channels */}
         <div>
-          <div className="text-xs text-slate-500 mb-1">通知渠道</div>
+          <div className="text-xs text-muted-foreground mb-1">通知渠道</div>
           {editing ? (
             <div className="flex flex-wrap gap-2">
-              <label className="inline-flex items-center gap-1 text-sm text-slate-400">
+              <label className="inline-flex items-center gap-1 text-sm text-muted-foreground">
                 <input type="checkbox" checked disabled className="rounded" />
                 Web
               </label>
@@ -364,7 +364,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
 
         {task.last_result && (
           <div className="col-span-1 md:col-span-2">
-            <div className="text-xs text-slate-500 mb-1">最近结果</div>
+            <div className="text-xs text-muted-foreground mb-1">最近结果</div>
             <div className="text-sm text-foreground bg-card px-3 py-2 rounded border border-border whitespace-pre-wrap break-words">
               {task.last_result}
             </div>
@@ -375,10 +375,10 @@ export function TaskDetail({ task }: TaskDetailProps) {
       {/* Execution Logs */}
       <div>
         <div className="flex items-center justify-between mb-2">
-          <div className="text-xs text-slate-500">执行日志</div>
+          <div className="text-xs text-muted-foreground">执行日志</div>
           <button
             onClick={() => loadLogs(task.id)}
-            className="p-1 text-slate-400 hover:text-primary hover:bg-brand-50 rounded transition-colors cursor-pointer"
+            className="p-1 text-muted-foreground hover:text-primary hover:bg-brand-50 rounded transition-colors cursor-pointer"
             title="刷新日志"
           >
             <RefreshCw className="w-3.5 h-3.5" />
@@ -391,7 +391,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
           </div>
         )}
         {taskLogs.length === 0 && !isRunning ? (
-          <div className="text-sm text-slate-400 bg-card px-3 py-4 rounded border border-border text-center">
+          <div className="text-sm text-muted-foreground bg-card px-3 py-4 rounded border border-border text-center">
             暂无执行记录
           </div>
         ) : (
@@ -399,16 +399,16 @@ export function TaskDetail({ task }: TaskDetailProps) {
             <table className="min-w-full divide-y divide-border text-sm">
               <thead className="bg-muted">
                 <tr>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-slate-500">
+                  <th className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
                     运行时间
                   </th>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-slate-500">
+                  <th className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
                     耗时
                   </th>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-slate-500">
+                  <th className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
                     状态
                   </th>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-slate-500">
+                  <th className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
                     结果
                   </th>
                 </tr>

@@ -126,7 +126,7 @@ export function QQChannelCard() {
           <span className={`inline-block w-2 h-2 rounded-full ${config?.connected ? 'bg-success' : 'bg-muted-foreground/40'}`} />
           <div>
             <h3 className="text-sm font-semibold text-foreground">QQ</h3>
-            <p className="text-xs text-slate-500 mt-0.5">通过 QQ Bot 接收和回复消息</p>
+            <p className="text-xs text-muted-foreground mt-0.5">通过 QQ Bot 接收和回复消息</p>
           </div>
         </div>
         <Switch checked={enabled} disabled={loading || toggling} onCheckedChange={handleToggle} />
@@ -134,11 +134,11 @@ export function QQChannelCard() {
 
       <div className={`px-5 py-4 space-y-4 transition-opacity ${!enabled ? 'opacity-50 pointer-events-none' : ''}`}>
         {loading ? (
-          <div className="text-sm text-slate-500">加载中...</div>
+          <div className="text-sm text-muted-foreground">加载中...</div>
         ) : (
           <>
             {config?.hasAppSecret && (
-              <div className="text-xs text-slate-500">
+              <div className="text-xs text-muted-foreground">
                 当前 Secret: {config.appSecretMasked || '已配置'}
               </div>
             )}

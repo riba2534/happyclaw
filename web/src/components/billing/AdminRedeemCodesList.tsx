@@ -114,7 +114,7 @@ export default function AdminRedeemCodesList() {
         <select
           value={typeFilter}
           onChange={(e) => setTypeFilter(e.target.value)}
-          className="h-9 px-3 text-sm border border-zinc-300 dark:border-zinc-600 rounded-md bg-transparent"
+          className="h-9 px-3 text-sm border border-border rounded-md bg-transparent"
         >
           <option value="all">全部类型</option>
           <option value="balance">余额充值</option>
@@ -122,7 +122,7 @@ export default function AdminRedeemCodesList() {
           <option value="trial">试用</option>
         </select>
         <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -142,14 +142,14 @@ export default function AdminRedeemCodesList() {
           return (
             <div key={code.code}>
               <div
-                className={`flex items-center justify-between p-3 bg-card rounded-lg border border-zinc-200 dark:border-zinc-700 ${
+                className={`flex items-center justify-between p-3 bg-card rounded-lg border border-border ${
                   isExpired || isFull ? 'opacity-60' : ''
                 }`}
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
                     <code className="text-sm font-mono">{code.code}</code>
-                    <span className="px-1.5 py-0.5 text-[10px] rounded-full bg-zinc-100 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-400">
+                    <span className="px-1.5 py-0.5 text-[10px] rounded-full bg-muted text-muted-foreground">
                       {TYPE_LABELS[code.type] ?? code.type}
                     </span>
                     {isExpired && (
@@ -158,7 +158,7 @@ export default function AdminRedeemCodesList() {
                       </span>
                     )}
                   </div>
-                  <div className="text-xs text-zinc-500 mt-0.5 space-x-2">
+                  <div className="text-xs text-muted-foreground mt-0.5 space-x-2">
                     {code.type === 'balance' && (
                       <span>面值: {fmt(code.value_usd ?? 0)}</span>
                     )}
@@ -184,7 +184,7 @@ export default function AdminRedeemCodesList() {
                     {code.batch_id && <span>批次: {code.batch_id}</span>}
                   </div>
                   {code.notes && (
-                    <div className="text-[10px] text-zinc-400 mt-0.5">
+                    <div className="text-[10px] text-muted-foreground mt-0.5">
                       {code.notes}
                     </div>
                   )}
@@ -193,14 +193,14 @@ export default function AdminRedeemCodesList() {
                 <div className="flex items-center gap-1 shrink-0 ml-2">
                   <button
                     onClick={() => handleViewUsage(code.code)}
-                    className="p-1.5 text-zinc-400 hover:text-primary"
+                    className="p-1.5 text-muted-foreground hover:text-primary"
                     title="查看使用明细"
                   >
                     <Eye className="w-4 h-4" />
                   </button>
                   <button
                     onClick={() => handleCopy(code.code)}
-                    className="p-1.5 text-zinc-400 hover:text-primary"
+                    className="p-1.5 text-muted-foreground hover:text-primary"
                     title="复制"
                   >
                     {copiedCode === code.code ? (
@@ -211,7 +211,7 @@ export default function AdminRedeemCodesList() {
                   </button>
                   <button
                     onClick={() => handleDelete(code)}
-                    className="p-1.5 text-zinc-400 hover:text-red-500"
+                    className="p-1.5 text-muted-foreground hover:text-red-500"
                     title="删除"
                   >
                     <Trash2 className="w-4 h-4" />
@@ -221,14 +221,14 @@ export default function AdminRedeemCodesList() {
 
               {/* Usage detail expand */}
               {expandedCode === code.code && (
-                <div className="ml-4 mt-1 p-3 bg-zinc-50 dark:bg-zinc-900 rounded-md border border-zinc-200 dark:border-zinc-700">
+                <div className="ml-4 mt-1 p-3 bg-muted rounded-md border border-border">
                   {loadingUsage ? (
-                    <div className="flex items-center gap-2 text-xs text-zinc-500">
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <Loader2 className="w-3 h-3 animate-spin" />
                       加载中...
                     </div>
                   ) : usageDetail.length === 0 ? (
-                    <p className="text-xs text-zinc-500">暂无使用记录</p>
+                    <p className="text-xs text-muted-foreground">暂无使用记录</p>
                   ) : (
                     <div className="space-y-1">
                       {usageDetail.map((d, i) => (
@@ -237,7 +237,7 @@ export default function AdminRedeemCodesList() {
                           className="flex justify-between text-xs"
                         >
                           <span>@{d.username}</span>
-                          <span className="text-zinc-400">
+                          <span className="text-muted-foreground">
                             {new Date(d.redeemed_at).toLocaleString()}
                           </span>
                         </div>
@@ -252,7 +252,7 @@ export default function AdminRedeemCodesList() {
       </div>
 
       {filtered.length === 0 && (
-        <p className="text-sm text-zinc-500 text-center py-8">
+        <p className="text-sm text-muted-foreground text-center py-8">
           {search || typeFilter !== 'all'
             ? '未找到匹配的兑换码'
             : '暂无兑换码'}

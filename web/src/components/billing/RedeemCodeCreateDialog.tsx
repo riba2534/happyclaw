@@ -139,7 +139,7 @@ export default function RedeemCodeCreateDialog({
           /* Show generated codes */
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <span className="text-sm text-zinc-500">
+              <span className="text-sm text-muted-foreground">
                 已生成 {generatedCodes.length} 个兑换码
               </span>
               <Button variant="outline" size="xs" onClick={handleCopyAll}>
@@ -155,12 +155,12 @@ export default function RedeemCodeCreateDialog({
               {generatedCodes.map((c, i) => (
                 <div
                   key={c.code}
-                  className="flex items-center justify-between px-3 py-2 bg-zinc-50 dark:bg-zinc-900 rounded-md"
+                  className="flex items-center justify-between px-3 py-2 bg-muted rounded-md"
                 >
                   <code className="text-sm font-mono">{c.code}</code>
                   <button
                     onClick={() => handleCopy(c.code, i)}
-                    className="p-1 text-zinc-400 hover:text-primary"
+                    className="p-1 text-muted-foreground hover:text-primary"
                   >
                     {copiedIdx === i ? (
                       <Check className="w-4 h-4 text-green-500" />
@@ -179,7 +179,7 @@ export default function RedeemCodeCreateDialog({
           /* Creation form */
           <div className="space-y-4">
             {/* Type selector */}
-            <div className="flex gap-1 p-1 bg-zinc-100 dark:bg-zinc-900 rounded-md">
+            <div className="flex gap-1 p-1 bg-muted rounded-md">
               {TYPE_OPTIONS.map((opt) => (
                 <button
                   key={opt.value}
@@ -187,7 +187,7 @@ export default function RedeemCodeCreateDialog({
                   className={`flex-1 px-3 py-1.5 text-sm rounded transition-colors ${
                     type === opt.value
                       ? 'bg-card font-medium'
-                      : 'text-zinc-500 hover:text-zinc-700'
+                      : 'text-muted-foreground hover:text-foreground'
                   }`}
                 >
                   {opt.label}
@@ -198,7 +198,7 @@ export default function RedeemCodeCreateDialog({
             {/* Type-specific fields */}
             {type === 'balance' && (
               <div>
-                <label className="block text-xs text-zinc-500 mb-1">
+                <label className="block text-xs text-muted-foreground mb-1">
                   面值 (USD)
                 </label>
                 <Input
@@ -208,7 +208,7 @@ export default function RedeemCodeCreateDialog({
                   value={valueUsd}
                   onChange={(e) => setValueUsd(Number(e.target.value))}
                 />
-                <span className="text-xs text-zinc-400 mt-1 block">
+                <span className="text-xs text-muted-foreground mt-1 block">
                   转换后: {fmt(valueUsd)}
                 </span>
               </div>
@@ -217,13 +217,13 @@ export default function RedeemCodeCreateDialog({
             {type === 'subscription' && (
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs text-zinc-500 mb-1">
+                  <label className="block text-xs text-muted-foreground mb-1">
                     套餐
                   </label>
                   <select
                     value={planId}
                     onChange={(e) => setPlanId(e.target.value)}
-                    className="w-full h-9 px-3 text-sm border border-zinc-300 dark:border-zinc-600 rounded-md bg-transparent"
+                    className="w-full h-9 px-3 text-sm border border-border rounded-md bg-transparent"
                   >
                     <option value="">选择套餐</option>
                     {plans.map((p) => (
@@ -234,7 +234,7 @@ export default function RedeemCodeCreateDialog({
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs text-zinc-500 mb-1">
+                  <label className="block text-xs text-muted-foreground mb-1">
                     有效天数
                   </label>
                   <Input
@@ -249,7 +249,7 @@ export default function RedeemCodeCreateDialog({
 
             {type === 'trial' && (
               <div>
-                <label className="block text-xs text-zinc-500 mb-1">
+                <label className="block text-xs text-muted-foreground mb-1">
                   试用天数
                 </label>
                 <Input
@@ -264,7 +264,7 @@ export default function RedeemCodeCreateDialog({
             {/* Common fields */}
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs text-zinc-500 mb-1">
+                <label className="block text-xs text-muted-foreground mb-1">
                   生成数量
                 </label>
                 <Input
@@ -276,7 +276,7 @@ export default function RedeemCodeCreateDialog({
                 />
               </div>
               <div>
-                <label className="block text-xs text-zinc-500 mb-1">
+                <label className="block text-xs text-muted-foreground mb-1">
                   每码可用次数
                 </label>
                 <Input
@@ -287,7 +287,7 @@ export default function RedeemCodeCreateDialog({
                 />
               </div>
               <div>
-                <label className="block text-xs text-zinc-500 mb-1">
+                <label className="block text-xs text-muted-foreground mb-1">
                   前缀（可选）
                 </label>
                 <Input
@@ -297,7 +297,7 @@ export default function RedeemCodeCreateDialog({
                 />
               </div>
               <div>
-                <label className="block text-xs text-zinc-500 mb-1">
+                <label className="block text-xs text-muted-foreground mb-1">
                   过期时间（小时，留空=不过期）
                 </label>
                 <Input
@@ -310,7 +310,7 @@ export default function RedeemCodeCreateDialog({
             </div>
 
             <div>
-              <label className="block text-xs text-zinc-500 mb-1">
+              <label className="block text-xs text-muted-foreground mb-1">
                 备注（可选）
               </label>
               <Input

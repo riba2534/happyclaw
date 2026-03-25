@@ -112,7 +112,7 @@ export function EmojiPicker({ value, onChange }: EmojiPickerProps) {
       </div>
 
       {/* Emoji grid */}
-      <div className="grid grid-cols-8 gap-1 max-h-48 overflow-y-auto">
+      <div className="grid grid-cols-8 gap-1 max-h-48 overflow-y-auto p-1">
         {EMOJI_CATEGORIES[activeCategory].emojis.map((emoji, i) => (
           <button
             key={`${emoji}-${i}`}

@@ -185,7 +185,7 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
           </button>
         </div>
         <div
-          className="bg-card rounded-lg border border-border p-4 overflow-x-auto flex justify-center cursor-pointer [&>svg]:!max-w-full [&>svg]:!h-auto"
+          className="bg-surface rounded-lg border border-border p-4 overflow-x-auto flex justify-center cursor-pointer [&>svg]:!max-w-full [&>svg]:!h-auto"
           onClick={() => setExpanded(true)}
           dangerouslySetInnerHTML={{ __html: svg! }}
         />
@@ -196,12 +196,12 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
           onClick={() => setExpanded(false)}
         >
           <div
-            className="relative bg-card rounded-xl p-6 w-[95vw] h-[95vh] overflow-auto cursor-default"
+            className="relative bg-surface rounded-xl p-6 w-[95vw] h-[95vh] overflow-auto cursor-default"
             onClick={(e) => e.stopPropagation()}
           >
             <button
               onClick={() => setExpanded(false)}
-              className="absolute top-3 right-3 z-20 p-2 rounded-full bg-slate-900/70 text-white hover:bg-slate-900 transition-colors cursor-pointer"
+              className="absolute top-3 right-3 z-20 p-2 rounded-full bg-foreground/70 text-white hover:bg-foreground transition-colors cursor-pointer"
               aria-label="关闭图表预览"
               title="关闭"
             >
