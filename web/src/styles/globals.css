@@ -273,7 +273,7 @@ html.theme-orange {
   --chart-1: oklch(0.837 0.128 66.29);  --chart-2: oklch(0.705 0.213 47.604);
   --chart-3: oklch(0.646 0.222 41.116);  --chart-4: oklch(0.553 0.195 38.402);
   --chart-5: oklch(0.47 0.157 37.304);
-  --surface: #ffffff;
+  --surface: #FDFCFA;
   --sidebar-background: #FAF9F6;  --sidebar-foreground: #141413;
   --sidebar-primary: oklch(0.646 0.222 41.116);
   --sidebar-primary-foreground: oklch(0.98 0.016 73.684);

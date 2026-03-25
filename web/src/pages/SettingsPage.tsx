@@ -9,7 +9,7 @@ import { RegistrationSection } from '../components/settings/RegistrationSection'
 import { ProfileSection } from '../components/settings/ProfileSection';
 import { SecuritySection } from '../components/settings/SecuritySection';
 import { AboutSection } from '../components/settings/AboutSection';
-import { AppearanceSection } from '../components/settings/AppearanceSection';
+// AppearanceSection merged into ProfileSection
 import { SystemSettingsSection } from '../components/settings/SystemSettingsSection';
 import { UserChannelsSection } from '../components/settings/UserChannelsSection';
 import { GroupsPage } from './GroupsPage';
@@ -24,8 +24,8 @@ import { BindingsSection } from '../components/settings/BindingsSection';
 import { Card, CardContent } from '@/components/ui/card';
 import type { SettingsTab } from '../components/settings/types';
 
-const VALID_TABS: SettingsTab[] = ['claude', 'registration', 'appearance', 'system', 'profile', 'my-channels', 'security', 'groups', 'memory', 'skills', 'mcp-servers', 'agent-definitions', 'users', 'about', 'bindings'];
-const SYSTEM_TABS: SettingsTab[] = ['claude', 'registration', 'appearance', 'system'];
+const VALID_TABS: SettingsTab[] = ['claude', 'registration', 'system', 'profile', 'my-channels', 'security', 'groups', 'memory', 'skills', 'mcp-servers', 'agent-definitions', 'users', 'about', 'bindings'];
+const SYSTEM_TABS: SettingsTab[] = ['claude', 'registration', 'system'];
 const FULLPAGE_TABS: SettingsTab[] = ['groups', 'memory', 'skills', 'mcp-servers', 'agent-definitions', 'users', 'bindings'];
 
 export function SettingsPage() {
@@ -69,7 +69,6 @@ export function SettingsPage() {
     if (canManageSystemConfig) {
       tabs.push({ key: 'claude', label: 'Claude' });
       tabs.push({ key: 'registration', label: '注册' });
-      tabs.push({ key: 'appearance', label: '全局外观' });
       tabs.push({ key: 'system', label: '系统' });
     }
     tabs.push({ key: 'groups', label: '会话' });
@@ -99,9 +98,8 @@ export function SettingsPage() {
   const sectionTitle: Record<SettingsTab, string> = {
     claude: 'Claude 提供商',
     registration: '注册管理',
-    appearance: '全局外观',
     system: '系统参数',
-    profile: '个人偏好',
+    profile: '外观与偏好',
     'my-channels': '消息通道',
     security: '安全与设备',
     groups: '会话管理',
@@ -201,7 +199,6 @@ export function SettingsPage() {
                 <CardContent>
                   {activeTab === 'claude' && <ClaudeProviderSection setNotice={() => {}} setError={() => {}} />}
                   {activeTab === 'registration' && <RegistrationSection />}
-                  {activeTab === 'appearance' && <AppearanceSection />}
                   {activeTab === 'system' && <SystemSettingsSection />}
                   {activeTab === 'profile' && <ProfileSection />}
                   {activeTab === 'my-channels' && <UserChannelsSection />}

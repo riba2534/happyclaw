@@ -393,7 +393,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   }
 
   return (
-    <div ref={containerRef} className="h-full flex flex-col bg-white dark:bg-background rounded-2xl lg:rounded-t-3xl lg:rounded-b-none lg:mt-5 lg:mr-5 lg:mb-0 lg:ml-3 lg:overflow-hidden lg:shadow-sm">
+    <div ref={containerRef} className="h-full flex flex-col bg-surface dark:bg-background max-lg:rounded-none lg:rounded-t-2xl lg:rounded-b-none lg:mr-5 lg:ml-3 lg:overflow-hidden">
       {/* Header */}
       <div className="flex items-center gap-3 px-6 py-4 max-lg:px-4 max-lg:py-2.5 max-lg:bg-background/60 max-lg:backdrop-blur-xl max-lg:saturate-[1.8] max-lg:border-border/40">
         {onBack && (
@@ -586,7 +586,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
 
         {/* Desktop: sidebar with icon tabs (collapsible) */}
         <div className={cn(
-          "hidden lg:flex lg:flex-col flex-shrink-0 border-l border-border bg-background transition-[width] duration-200",
+          "hidden lg:flex lg:flex-col flex-shrink-0 border-l border-border bg-surface dark:bg-background transition-[width] duration-200",
           panelOpen ? "w-80" : "w-0 overflow-hidden border-l-0"
         )}>
           {/* Icon tab bar */}

@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { Loader2, Upload, Trash2, User, Bot, Lock, Palette, Sun, Moon, Monitor } from 'lucide-react';
+import { Loader2, Upload, Trash2, User, Bot, Lock, Palette, Sun, Moon, Monitor, Globe } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { useAuthStore } from '../../stores/auth';
 import { useTheme, type Theme, type ColorScheme, type FontStyle } from '../../hooks/useTheme';
+import { api } from '../../api/client';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -12,6 +13,7 @@ import { EmojiPicker } from '@/components/common/EmojiPicker';
 import { ColorPicker } from '@/components/common/ColorPicker';
 import { getErrorMessage } from './types';
 import { SettingsCard as Section } from './SettingsCard';
+import type { AppearanceConfig } from '../../stores/auth';
 
 /* ── Theme / Appearance selectors ─────────────────────────── */
 
@@ -55,8 +57,9 @@ function OptionButton({ active, onClick, children, className = '' }: {
 /* ── Main component ───────────────────────────────────────── */
 
 export function ProfileSection() {
-  const { user: currentUser, changePassword, updateProfile, uploadAvatar } = useAuthStore();
+  const { user: currentUser, hasPermission, changePassword, updateProfile, uploadAvatar } = useAuthStore();
   const { theme, setTheme, colorScheme, setColorScheme, fontStyle, setFontStyle } = useTheme();
+  const canManageGlobal = hasPermission('manage_system_config');
 
   // Profile
   const [username, setUsername] = useState('');
@@ -82,6 +85,13 @@ export function ProfileSection() {
   const [newPwd, setNewPwd] = useState('');
   const [pwdChanging, setPwdChanging] = useState(false);
 
+  // Global appearance (admin only)
+  const [globalAiName, setGlobalAiName] = useState('');
+  const [globalAiEmoji, setGlobalAiEmoji] = useState('');
+  const [globalAiColor, setGlobalAiColor] = useState('');
+  const [globalLoading, setGlobalLoading] = useState(false);
+  const [globalSaving, setGlobalSaving] = useState(false);
+
   useEffect(() => {
     setUsername(currentUser?.username || '');
     setDisplayName(currentUser?.display_name || '');
@@ -93,6 +103,39 @@ export function ProfileSection() {
     setAiAvatarColor(currentUser?.ai_avatar_color ?? null);
     setAiAvatarUrl(currentUser?.ai_avatar_url ?? null);
   }, [currentUser?.username, currentUser?.display_name, currentUser?.avatar_emoji, currentUser?.avatar_color, currentUser?.avatar_url, currentUser?.ai_name, currentUser?.ai_avatar_emoji, currentUser?.ai_avatar_color, currentUser?.ai_avatar_url]);
+
+  // Load global appearance (admin only)
+  useEffect(() => {
+    if (!canManageGlobal) return;
+    (async () => {
+      setGlobalLoading(true);
+      try {
+        const data = await api.get<AppearanceConfig>('/api/config/appearance');
+        setGlobalAiName(data.aiName);
+        setGlobalAiEmoji(data.aiAvatarEmoji);
+        setGlobalAiColor(data.aiAvatarColor);
+      } catch { /* ignore */ }
+      finally { setGlobalLoading(false); }
+    })();
+  }, [canManageGlobal]);
+
+  const handleSaveGlobalAppearance = async () => {
+    setGlobalSaving(true);
+    try {
+      const data = await api.put<AppearanceConfig>('/api/config/appearance', {
+        aiName: globalAiName.trim(),
+        aiAvatarEmoji: globalAiEmoji,
+        aiAvatarColor: globalAiColor,
+      });
+      setGlobalAiName(data.aiName);
+      setGlobalAiEmoji(data.aiAvatarEmoji);
+      setGlobalAiColor(data.aiAvatarColor);
+      useAuthStore.setState({ appearance: data });
+      toast.success('全局外观已保存');
+    } catch (err) {
+      toast.error(getErrorMessage(err, '保存全局外观失败'));
+    } finally { setGlobalSaving(false); }
+  };
 
   const handleUpdateProfile = async () => {
     setProfileSaving(true);
@@ -365,7 +408,47 @@ export function ProfileSection() {
         </Button>
       </Section>
 
-      {/* ── 4. Password ── */}
+      {/* ── 4. Global AI Appearance (admin only) ── */}
+      {canManageGlobal && (
+        <Section icon={Globe} title="全局 AI 外观" desc="所有用户看到的默认 AI 助手样式（管理员）">
+          {globalLoading ? (
+            <div className="flex justify-center py-4"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground" /></div>
+          ) : (
+            <>
+              <div className="flex items-center gap-4">
+                <EmojiAvatar emoji={globalAiEmoji} color={globalAiColor} fallbackChar={globalAiName || 'AI'} size="lg" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-foreground">{globalAiName || 'HappyClaw'}</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">全局默认 · 用户可个人覆盖</div>
+                </div>
+              </div>
+
+              <div>
+                <Label className="text-xs text-muted-foreground mb-1">AI 名称</Label>
+                <Input value={globalAiName} onChange={(e) => setGlobalAiName(e.target.value)} maxLength={32} placeholder="HappyClaw" />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-[11px] text-muted-foreground mb-1.5">头像 Emoji</Label>
+                  <EmojiPicker value={globalAiEmoji} onChange={setGlobalAiEmoji} />
+                </div>
+                <div>
+                  <Label className="text-[11px] text-muted-foreground mb-1.5">头像背景色</Label>
+                  <ColorPicker value={globalAiColor} onChange={setGlobalAiColor} />
+                </div>
+              </div>
+
+              <Button onClick={handleSaveGlobalAppearance} disabled={globalSaving || !globalAiName.trim()} size="sm">
+                {globalSaving && <Loader2 className="size-4 animate-spin" />}
+                保存全局外观
+              </Button>
+            </>
+          )}
+        </Section>
+      )}
+
+      {/* ── 5. Password ── */}
       <Section icon={Lock} title="修改密码">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>

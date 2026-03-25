@@ -273,7 +273,7 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
     <div className="relative flex-1 overflow-hidden overflow-x-hidden">
       <div
         ref={parentRef}
-        className="h-full overflow-y-auto overflow-x-hidden py-6 bg-background"
+        className="h-full overflow-y-auto overflow-x-hidden py-6"
       >
         <div className={displayMode === 'compact' ? 'mx-auto px-4 min-w-0' : 'max-w-4xl mx-auto px-4 min-w-0'}>
         {loading && hasMore && (
@@ -502,7 +502,7 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
           {!atTop && (
             <button
               onClick={scrollToTop}
-              className="w-10 h-10 rounded-full bg-surface border border-border shadow-sm flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+              className="w-8 h-8 rounded-full bg-foreground/5 backdrop-blur-sm flex items-center justify-center text-muted-foreground/60 hover:text-foreground hover:bg-foreground/10 transition-all cursor-pointer"
               title="回到顶部"
             >
               <ChevronUp className="w-4 h-4" />
@@ -511,7 +511,7 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
           {!autoScroll && (
             <button
               onClick={scrollToBottom}
-              className="w-10 h-10 rounded-full bg-surface border border-border shadow-sm flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+              className="w-8 h-8 rounded-full bg-foreground/5 backdrop-blur-sm flex items-center justify-center text-muted-foreground/60 hover:text-foreground hover:bg-foreground/10 transition-all cursor-pointer"
               title="回到底部"
             >
               <ChevronDown className="w-4 h-4" />

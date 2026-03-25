@@ -69,7 +69,7 @@ export function ChatPage() {
 
       {/* Chat View - Desktop: visible when active group exists, Mobile: only in detail route */}
       {activeGroupJid ? (
-        <div ref={chatViewRef} className={`${groupFolder ? 'flex-1 min-w-0' : 'hidden lg:block flex-1 min-w-0'}`}>
+        <div ref={chatViewRef} className={`${groupFolder ? 'flex-1 min-w-0 h-full overflow-hidden lg:pt-4' : 'hidden lg:block flex-1 min-w-0 h-full overflow-hidden lg:pt-4'}`}>
           <ChatView
             groupJid={activeGroupJid}
             onBack={handleBackToList}

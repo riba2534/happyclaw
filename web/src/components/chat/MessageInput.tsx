@@ -376,7 +376,7 @@ export function MessageInput({
 
   return (
     <div
-      className="pt-1 pb-3 bg-background ios-pwa-bottom-safe max-lg:bg-background/60 max-lg:backdrop-blur-xl max-lg:saturate-[1.8] max-lg:border-t max-lg:border-border/40"
+      className="pt-1 pb-3 bg-surface dark:bg-background ios-pwa-bottom-safe max-lg:bg-background/60 max-lg:backdrop-blur-xl max-lg:saturate-[1.8] max-lg:border-t max-lg:border-border/40"
       style={{ paddingBottom: `max(0.75rem, var(--keyboard-height, 0px))` }}
     >
       {/* lg:pl-[60px] = avatar w-8 (32px) + gap-3 (12px) + visual balance (16px), aligns input left edge with message card content */}

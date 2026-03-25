@@ -1,7 +1,6 @@
 import {
   ShieldCheck,
   UserPlus,
-  User,
   Shield,
   Layers,
   BookOpen,
@@ -30,12 +29,11 @@ interface NavItem {
 const systemItems: NavItem[] = [
   { key: 'claude', label: 'Claude 提供商', icon: <ShieldCheck className="w-4 h-4" />, group: 'system' },
   { key: 'registration', label: '注册管理', icon: <UserPlus className="w-4 h-4" />, group: 'system' },
-  { key: 'appearance', label: '全局外观', icon: <Palette className="w-4 h-4" />, group: 'system' },
   { key: 'system', label: '系统参数', icon: <SlidersHorizontal className="w-4 h-4" />, group: 'system' },
 ];
 
 const accountItems: NavItem[] = [
-  { key: 'profile', label: '个人偏好', icon: <User className="w-4 h-4" />, group: 'account' },
+  { key: 'profile', label: '外观与偏好', icon: <Palette className="w-4 h-4" />, group: 'account' },
   { key: 'my-channels', label: '消息通道', icon: <MessageSquare className="w-4 h-4" />, group: 'account' },
   { key: 'security', label: '安全与设备', icon: <Shield className="w-4 h-4" />, group: 'account' },
 ];

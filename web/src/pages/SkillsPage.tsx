@@ -109,75 +109,77 @@ export function SkillsPage() {
 
         {/* Admin sync panel */}
         {isAdmin && syncStatus && (
-          <div className="mx-6 mt-4 p-4 bg-card border border-border rounded-lg space-y-3">
-            <div className="flex items-center justify-between">
+          <Card className="mx-6 mt-4">
+            <CardContent className="space-y-4">
               <div className="flex items-center gap-2">
                 <Timer size={16} className="text-muted-foreground" />
                 <span className="text-sm font-medium text-foreground">宿主机技能同步</span>
-                {syncStatus.lastSyncAt && (
-                  <span className="text-xs text-muted-foreground">
-                    （上次：{new Date(syncStatus.lastSyncAt).toLocaleString()}）
-                  </span>
-                )}
               </div>
-              <div className="flex items-center gap-3">
-                <Button variant="outline" size="sm" onClick={handleSync} disabled={syncing}>
-                  <Download size={14} className={syncing ? 'animate-pulse' : ''} />
-                  {syncing ? '同步中...' : '立即同步'}
-                </Button>
-              </div>
-            </div>
 
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-muted-foreground">自动同步</span>
-                {syncStatus.autoSyncEnabled && (
-                  <span className="text-xs text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">
-                    每 {syncStatus.autoSyncIntervalMinutes} 分钟
-                  </span>
-                )}
-              </div>
-              <ToggleSwitch
-                checked={syncStatus.autoSyncEnabled}
-                onChange={(enabled) => setAutoSync(enabled)}
-                aria-label="自动同步开关"
-              />
-            </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* Sync status card */}
+                <div className="rounded-xl border border-border bg-background p-3 space-y-2">
+                  <div className="text-xs text-muted-foreground">同步状态</div>
+                  <div className="text-sm font-medium text-foreground">
+                    {syncStatus.lastSyncAt
+                      ? new Date(syncStatus.lastSyncAt).toLocaleString()
+                      : '从未同步'}
+                  </div>
+                  <Button variant="outline" size="sm" className="w-full" onClick={handleSync} disabled={syncing}>
+                    <Download size={14} className={syncing ? 'animate-pulse' : ''} />
+                    {syncing ? '同步中...' : '立即同步'}
+                  </Button>
+                </div>
 
-            {syncStatus.autoSyncEnabled && (
-              <div className="flex items-center gap-2 pt-1">
-                <span className="text-xs text-muted-foreground shrink-0">同步间隔</span>
-                <Input
-                  type="number"
-                  value={intervalInput}
-                  onChange={(e) => {
-                    const val = parseInt(e.target.value, 10);
-                    setIntervalInput(Number.isFinite(val) ? val : 10);
-                  }}
-                  min={1}
-                  max={1440}
-                  step={1}
-                  className="max-w-20 h-7 text-xs"
-                />
-                <span className="text-xs text-muted-foreground">分钟</span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 text-xs px-2"
-                  disabled={savingInterval || intervalInput === syncStatus.autoSyncIntervalMinutes}
-                  onClick={async () => {
-                    setSavingInterval(true);
-                    try {
-                      await setAutoSync(true, intervalInput);
-                    } catch { /* handled by store */ }
-                    setSavingInterval(false);
-                  }}
-                >
-                  保存
-                </Button>
+                {/* Auto sync card */}
+                <div className="rounded-xl border border-border bg-background p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs text-muted-foreground">自动同步</div>
+                    <ToggleSwitch
+                      checked={syncStatus.autoSyncEnabled}
+                      onChange={(enabled) => setAutoSync(enabled)}
+                      aria-label="自动同步开关"
+                    />
+                  </div>
+                  {syncStatus.autoSyncEnabled ? (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground shrink-0">间隔</span>
+                      <Input
+                        type="number"
+                        value={intervalInput}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value, 10);
+                          setIntervalInput(Number.isFinite(val) ? val : 10);
+                        }}
+                        min={1}
+                        max={1440}
+                        step={1}
+                        className="max-w-20 h-7 text-xs"
+                      />
+                      <span className="text-xs text-muted-foreground">分钟</span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-xs px-2"
+                        disabled={savingInterval || intervalInput === syncStatus.autoSyncIntervalMinutes}
+                        onClick={async () => {
+                          setSavingInterval(true);
+                          try {
+                            await setAutoSync(true, intervalInput);
+                          } catch { /* handled by store */ }
+                          setSavingInterval(false);
+                        }}
+                      >
+                        保存
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="text-sm text-muted-foreground">已关闭</div>
+                  )}
+                </div>
               </div>
-            )}
-          </div>
+            </CardContent>
+          </Card>
         )}
 
         {/* Sync message toast */}

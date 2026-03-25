@@ -435,7 +435,7 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
     const showSenderLabel = isShared;
     return (
       <div className="group flex justify-end mb-4">
-        <div className="flex flex-col items-end min-w-0 w-full">
+        <div className="flex flex-col items-end min-w-0 max-w-[75%]">
           {showSenderLabel && (
             <span className="text-xs text-muted-foreground font-medium mb-1 mr-1">
               {message.sender_name || currentUser?.display_name || currentUser?.username || '我'}
