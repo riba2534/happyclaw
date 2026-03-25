@@ -472,9 +472,9 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
           ),
         context_mode: z
           .enum(['group', 'isolated'])
-          .default('group')
+          .default('isolated')
           .describe(
-            '(agent mode only) group=runs with chat history, isolated=fresh session',
+            '(agent mode only) isolated=fresh session (recommended), group=runs with chat history (may block on active sessions)',
           ),
         target_group_jid: z
           .string()
@@ -573,7 +573,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
           prompt: args.prompt || '',
           schedule_type: args.schedule_type,
           schedule_value: args.schedule_value,
-          context_mode: args.context_mode || 'group',
+          context_mode: args.context_mode || 'isolated',
           execution_type: execType,
           targetJid,
           createdBy: ctx.groupFolder,

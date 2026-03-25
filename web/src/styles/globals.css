@@ -307,6 +307,11 @@ html.dark.theme-orange {
   --inline-code-bg: rgba(200, 200, 195, 0.1);
   --inline-code-text: rgb(220, 140, 140);
   --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  /* Brand color scale (Orange) — inverted for dark mode */
+  --brand-50: #431407;  --brand-100: #7c2d12;  --brand-200: #9a3412;
+  --brand-300: #c2410c;  --brand-400: #ea580c;  --brand-500: #f97316;
+  --brand-600: #fb923c;  --brand-700: #fdba74;
+
   --chart-1: oklch(0.837 0.128 66.29);  --chart-2: oklch(0.705 0.213 47.604);
   --chart-3: oklch(0.646 0.222 41.116);  --chart-4: oklch(0.553 0.195 38.402);
   --chart-5: oklch(0.47 0.157 37.304);
@@ -405,6 +410,11 @@ html.font-anthropic .font-mono {
   --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
   --glass-highlight: linear-gradient(135deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0) 60%);
   --glass-inner-shadow: inset 0 1px 1px rgba(255,255,255,0.06);
+  /* Brand color scale (Teal) — inverted for dark mode */
+  --brand-50: #042f2e;  --brand-100: #134e4a;  --brand-200: #115e59;
+  --brand-300: #0f766e;  --brand-400: #0d9488;  --brand-500: #14b8a6;
+  --brand-600: #2dd4bf;  --brand-700: #5eead4;
+
   --chart-1: #2dd4bf;
   --chart-2: #fbbf24;
   --chart-3: #818cf8;

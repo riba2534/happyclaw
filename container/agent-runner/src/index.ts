@@ -1618,6 +1618,8 @@ async function main(): Promise<void> {
   let resumeAt: string | undefined;
   let overflowRetryCount = 0;
   const MAX_OVERFLOW_RETRIES = 3;
+  let consecutiveCompactions = 0;
+  const MAX_CONSECUTIVE_COMPACTIONS = 3;
   try {
     while (true) {
       // 清理残留的 _interrupt sentinel（空闲期间写入的中断信号不应影响下一次 query）。
@@ -1654,6 +1656,7 @@ async function main(): Promise<void> {
         sessionId = undefined;
         latestSessionId = undefined;
         resumeAt = undefined;
+        consecutiveCompactions = 0;
         // Rebuild MCP server to avoid "Already connected to a transport" error
         mcpServerConfig = buildMcpServerConfig();
         continue;
@@ -1734,6 +1737,7 @@ async function main(): Promise<void> {
           break;
         }
         clearInterruptRequested();
+        consecutiveCompactions = 0;
         prompt = nextMessage.text;
         promptImages = nextMessage.images;
         containerInput.turnId = generateTurnId();
@@ -1741,7 +1745,8 @@ async function main(): Promise<void> {
       }
 
       // Memory Flush: run an extra query to let agent save durable memories (home containers only)
-      if (needsMemoryFlush && isHome) {
+      // Skip flush when already in a compaction loop — context is too full for productive work.
+      if (needsMemoryFlush && isHome && consecutiveCompactions === 0) {
         needsMemoryFlush = false;
         log('Running memory flush query after compaction...');
 
@@ -1783,13 +1788,23 @@ async function main(): Promise<void> {
       // ── Non-blocking compaction: auto-continue after context compaction ──
       // Instead of waiting for user to send "继续", automatically start a
       // new query so the agent resumes seamlessly where it left off.
+      // Guard: if compaction keeps firing repeatedly (e.g. system prompt alone
+      // nearly fills the context window), stop auto-continuing to avoid an
+      // infinite loop that burns API tokens without producing useful work.
       if (hadCompaction) {
         hadCompaction = false;
-        log('Auto-continuing after compaction (non-blocking)');
-        prompt = '继续';
-        promptImages = undefined;
-        containerInput.turnId = generateTurnId();
-        continue;
+        consecutiveCompactions++;
+        if (consecutiveCompactions <= MAX_CONSECUTIVE_COMPACTIONS) {
+          log(`Auto-continuing after compaction (${consecutiveCompactions}/${MAX_CONSECUTIVE_COMPACTIONS})`);
+          prompt = '继续';
+          promptImages = undefined;
+          containerInput.turnId = generateTurnId();
+          continue;
+        }
+        log(`Compaction loop detected (${consecutiveCompactions} consecutive), stopping auto-continue and waiting for user input`);
+        consecutiveCompactions = 0;
+      } else {
+        consecutiveCompactions = 0;
       }
 
       log('Query ended, waiting for next IPC message...');
