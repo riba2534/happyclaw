@@ -10,7 +10,7 @@ interface ContainerEnvPanelProps {
 }
 
 const MODEL_ENV_KEY = 'ANTHROPIC_MODEL';
-const MODEL_PRESETS = ['opus', 'sonnet', 'haiku'] as const;
+const MODEL_PRESETS = ['opus[1m]', 'opus', 'sonnet[1m]', 'sonnet', 'haiku'] as const;
 
 export function ContainerEnvPanel({ groupJid, onClose }: ContainerEnvPanelProps) {
   const { configs, loading, saving, loadConfig, saveConfig } = useContainerEnvStore();

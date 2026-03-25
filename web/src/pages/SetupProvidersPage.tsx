@@ -502,7 +502,7 @@ export function SetupProvidersPage() {
                     type="text"
                     value={model}
                     onChange={(e) => setModel(e.target.value)}
-                    placeholder="opus / sonnet / haiku 或完整模型 ID"
+                    placeholder="opus[1m] / opus / sonnet[1m] / sonnet / haiku"
                     className="font-mono"
                   />
                 </div>

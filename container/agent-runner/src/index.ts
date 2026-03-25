@@ -44,7 +44,8 @@ const WORKSPACE_IPC = process.env.HAPPYCLAW_WORKSPACE_IPC || '/workspace/ipc';
 
 // 模型配置：支持别名（opus/sonnet/haiku）或完整模型 ID
 // 别名自动解析为最新版本，如 opus → Opus 4.6
-const CLAUDE_MODEL = process.env.ANTHROPIC_MODEL || 'opus';
+// [1m] 后缀启用 1M 上下文窗口（CLI 内部 jG() 识别后缀，sM() 返回 1M 窗口）
+const CLAUDE_MODEL = process.env.ANTHROPIC_MODEL || 'opus[1m]';
 
 const IPC_INPUT_DIR = path.join(WORKSPACE_IPC, 'input');
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
@@ -1202,7 +1203,6 @@ async function runQuery(
     prompt: stream,
     options: {
       model: CLAUDE_MODEL,
-      betas: ['context-1m-2025-08-07'],
       cwd: WORKSPACE_GROUP,
       additionalDirectories: extraDirs,
       resume: sessionId,
