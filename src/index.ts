@@ -5649,6 +5649,10 @@ async function ensureDockerRunning(): Promise<void> {
  * When the same Feishu app is transferred between users (e.g., admin disables
  * their channel and a member enables the same credentials), existing chats
  * are re-routed to the new user's home folder on first message receipt.
+ *
+ * In multi-bot setups where the same human talks to multiple bots (each owned
+ * by a different HappyClaw user), re-routing is skipped — the chat stays with
+ * its original owner as long as that owner still has an active IM connection.
  */
 function buildOnNewChat(
   userId: string,
@@ -5678,27 +5682,53 @@ function buildOnNewChat(
       }
 
       // Different user's connection now owns this IM app.
-      // Re-route the chat to the current user's home folder.
-      // This handles the common case where the same Feishu app credentials
-      // are moved from one user to another (e.g., admin → member for testing).
+      // Two possible scenarios:
+      //   1. Credential transfer: admin disables their Feishu channel, member
+      //      enables the same appId → re-route chat to the new user.
+      //   2. Multi-bot setup: same human talks to multiple bots, each owned by
+      //      a different HappyClaw user → do NOT re-route.
+      //
+      // Distinguish by checking whether the previous owner still has an active
+      // IM connection.  If they do, both users run their own bot and we must
+      // preserve existing ownership.  If they don't, it's a credential transfer.
       if (!existing.is_home) {
-        const previousFolder = existing.folder;
-        const previousOwner = existing.created_by;
-        existing.folder = homeFolder;
-        existing.created_by = userId;
-        setRegisteredGroup(chatJid, existing);
-        registeredGroups[chatJid] = existing;
-        logger.info(
-          {
-            chatJid,
-            chatName,
-            userId,
-            homeFolder,
-            previousFolder,
-            previousOwner,
-          },
-          'Re-routed IM chat to new user (IM credentials transferred)',
-        );
+        const previousOwner = existing.created_by!;
+        const previousOwnerStillConnected =
+          imManager.isFeishuConnected(previousOwner) ||
+          imManager.isTelegramConnected(previousOwner) ||
+          imManager.isQQConnected(previousOwner);
+
+        if (previousOwnerStillConnected) {
+          // Multi-bot: both users have active IM connections — keep original ownership
+          logger.debug(
+            {
+              chatJid,
+              chatName,
+              userId,
+              existingOwner: previousOwner,
+              existingFolder: existing.folder,
+            },
+            'Skipped IM chat re-route (previous owner still has active IM connection)',
+          );
+        } else {
+          // Credential transfer: previous owner disconnected — re-route to new user
+          const previousFolder = existing.folder;
+          existing.folder = homeFolder;
+          existing.created_by = userId;
+          setRegisteredGroup(chatJid, existing);
+          registeredGroups[chatJid] = existing;
+          logger.info(
+            {
+              chatJid,
+              chatName,
+              userId,
+              homeFolder,
+              previousFolder,
+              previousOwner,
+            },
+            'Re-routed IM chat to new user (IM credentials transferred)',
+          );
+        }
       }
       return;
     }

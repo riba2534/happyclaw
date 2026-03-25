@@ -358,10 +358,10 @@ function buildVolumeMounts(
     const envFilePath = path.join(envDir, 'env');
     const quotedLines = shellQuoteEnvLines(envLines);
     fs.writeFileSync(envFilePath, quotedLines.join('\n') + '\n', {
-      mode: 0o600,
+      mode: 0o644,
     });
     try {
-      fs.chmodSync(envFilePath, 0o600);
+      fs.chmodSync(envFilePath, 0o644);
     } catch (err) {
       logger.warn(
         { group: group.name, err },

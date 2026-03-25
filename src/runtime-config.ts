@@ -2746,12 +2746,21 @@ export function writeCredentialsFile(
   const creds = config.claudeOAuthCredentials;
   if (!creds) return;
 
+  // Claude CLI requires scopes and subscriptionType to recognize the token as valid
+  const defaultScopes = [
+    'user:file_upload',
+    'user:inference',
+    'user:mcp_servers',
+    'user:profile',
+    'user:sessions:claude_code',
+  ];
   const credentialsData = {
     claudeAiOauth: {
       accessToken: creds.accessToken,
       refreshToken: creds.refreshToken,
       expiresAt: creds.expiresAt,
-      scopes: creds.scopes,
+      scopes: creds.scopes?.length ? creds.scopes : defaultScopes,
+      subscriptionType: 'max',
     },
   };
 
