@@ -43,7 +43,7 @@ const WORKSPACE_IPC = process.env.HAPPYCLAW_WORKSPACE_IPC || '/workspace/ipc';
 
 // 模型配置：支持别名（opus/sonnet/haiku）或完整模型 ID
 // 别名自动解析为最新版本，如 opus → Opus 4.6
-const CLAUDE_MODEL = process.env.ANTHROPIC_MODEL || 'opus';
+const CLAUDE_MODEL = process.env.ANTHROPIC_MODEL || 'opus[1m]';
 
 const IPC_INPUT_DIR = path.join(WORKSPACE_IPC, 'input');
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
@@ -1150,6 +1150,12 @@ async function runQuery(
     return { newSessionId, lastAssistantUuid, closedDuringQuery, interruptedDuringQuery };
   }
 
+  // Set autocompact window to 530K → threshold ≈ 500K tokens
+  // (works with 1M context: 'opus' resolves to 'opus[1m]' in SDK)
+  if (!process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW) {
+    process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '530000';
+  }
+
   try {
     const q = query({
     prompt: stream,
@@ -1167,6 +1173,17 @@ async function runQuery(
       permissionMode: currentPermissionMode,
       allowDangerouslySkipPermissions: true,
       agentProgressSummaries: true,
+      settings: {
+        hooks: {
+          PreCompact: [{
+            hooks: [{
+              type: 'command' as const,
+              command: 'echo "This conversation has a 500K token compact threshold. Generate a VERY detailed and comprehensive summary. Include ALL code snippets, file paths, function signatures, error messages, and exact user instructions verbatim. The summary should be 3x-5x longer than a typical compact summary to preserve maximum context from this large conversation window."',
+              timeout: 5,
+            }],
+          }],
+        },
+      },
       settingSources: ['project', 'user'],
       includePartialMessages: true,
       mcpServers: {
