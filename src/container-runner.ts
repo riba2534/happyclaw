@@ -14,6 +14,7 @@ import os from 'os';
 import path from 'path';
 
 import { CONTAINER_IMAGE, DATA_DIR, GROUPS_DIR } from './config.js';
+import { isAdminHomeGroup } from './db.js';
 import { logger } from './logger.js';
 import {
   loadMountAllowlist,
@@ -479,7 +480,7 @@ export async function runContainerAgent(
 
   try {
     // Determine if this is an admin home container (full privileges)
-    const isAdminHome = !!group.is_home && group.folder === 'main';
+    const isAdminHome = isAdminHomeGroup(group);
     // Per-user skills: always mount if the group has an owner
     const shouldMountUserSkills = !!group.created_by;
     const mounts = buildVolumeMounts(

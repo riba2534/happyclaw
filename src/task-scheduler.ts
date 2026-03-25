@@ -24,6 +24,7 @@ import {
   getDueTasks,
   getTaskById,
   getUserById,
+  isAdminHomeGroup,
   logTaskRun,
   updateTaskAfterRun,
 } from './db.js';
@@ -201,7 +202,7 @@ async function runTask(
 
   // Update tasks snapshot for container to read (filtered by group)
   const isHome = !!group.is_home;
-  const isAdminHome = isHome && task.group_folder === MAIN_GROUP_FOLDER;
+  const isAdminHome = isAdminHomeGroup(group);
   const tasks = getAllTasks();
   writeTasksSnapshot(
     task.group_folder,

@@ -36,6 +36,7 @@ import {
   deleteTask,
   ensureChatExists,
   ensureUserHomeGroup,
+  isAdminHomeGroup,
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
@@ -1810,15 +1811,15 @@ function loadState(): void {
   }
 
   // Enforce execution mode on all is_home groups:
-  // - admin home → host mode
+  // - admin home → host mode (regardless of folder name)
   // - member home → container mode
   for (const [jid, group] of Object.entries(registeredGroups)) {
     if (!group.is_home) continue;
 
-    // Determine expected mode based on the owner's role
-    // Admin home groups use host mode, member home groups use container mode
-    const isAdminHome = group.folder === MAIN_GROUP_FOLDER;
-    const expectedMode = isAdminHome ? 'host' : 'container';
+    // Determine expected mode based on the owner's role.
+    // In multi-admin setups, secondary admins have folder=home-{userId}
+    // but still need host mode (same as the primary admin on folder=main).
+    const expectedMode = isAdminHomeGroup(group) ? 'host' : 'container';
 
     if (group.executionMode !== expectedMode) {
       group.executionMode = expectedMode;
@@ -3146,7 +3147,7 @@ async function runAgent(
 ): Promise<{ status: 'success' | 'error' | 'closed'; error?: string }> {
   const isHome = !!group.is_home;
   // For the agent-runner: isMain means this is an admin home container (full privileges)
-  const isAdminHome = isHome && group.folder === MAIN_GROUP_FOLDER;
+  const isAdminHome = isAdminHomeGroup(group);
   const sessionId = sessions[group.folder];
 
   // Update tasks snapshot for container to read (filtered by group)
@@ -3626,9 +3627,9 @@ function startIpcWatcher(): void {
       const sourceGroupEntry = Object.values(registeredGroups).find(
         (g) => g.folder === sourceGroup,
       );
-      const isAdminHome = !!(
-        sourceGroupEntry?.is_home && sourceGroup === MAIN_GROUP_FOLDER
-      );
+      const isAdminHome = sourceGroupEntry
+        ? isAdminHomeGroup(sourceGroupEntry)
+        : false;
       const isHome = !!sourceGroupEntry?.is_home;
 
       // Collect all IPC roots: main group dir + agents/*/ + tasks-run/*/
@@ -4627,7 +4628,7 @@ async function processAgentConversation(
   }
 
   const isHome = !!effectiveGroup.is_home;
-  const isAdminHome = isHome && effectiveGroup.folder === MAIN_GROUP_FOLDER;
+  const isAdminHome = isAdminHomeGroup(effectiveGroup);
 
   // Update agent status → running
   updateAgentStatus(agentId, 'running');

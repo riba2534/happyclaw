@@ -2297,36 +2297,42 @@ export function getGroupsByTargetMainJid(
 export function getUserHomeGroup(
   userId: string,
 ): (RegisteredGroup & { jid: string }) | undefined {
-  // First try exact match: is_home=1 AND created_by=userId
-  let row = db
+  // Exact match: is_home=1 AND created_by=userId.
+  // Each user (admin or member) owns exactly one home group.
+  // In multi-admin setups, only the primary admin (who created web:main)
+  // uses folder=main; other admins get their own home-{userId}.
+  const row = db
     .prepare(
       'SELECT * FROM registered_groups WHERE is_home = 1 AND created_by = ?',
     )
     .get(userId) as RegisteredGroupRow | undefined;
-
-  // Fallback for admin users: all admins share web:main (folder=main).
-  // If no exact match, check if the user is an admin and web:main exists.
-  if (!row) {
-    const user = db
-      .prepare("SELECT role FROM users WHERE id = ? AND status = 'active'")
-      .get(userId) as { role: string } | undefined;
-    if (user?.role === 'admin') {
-      row = db
-        .prepare(
-          "SELECT * FROM registered_groups WHERE jid = 'web:main' AND is_home = 1",
-        )
-        .get() as RegisteredGroupRow | undefined;
-    }
-  }
 
   if (!row) return undefined;
   return parseGroupRow(row);
 }
 
 /**
+ * Check whether a registered group is an admin's home container.
+ * In multi-admin setups the primary admin uses folder='main' while secondary
+ * admins use folder='home-{userId}', but both are admin home containers with
+ * host-mode execution and elevated privileges.
+ */
+export function isAdminHomeGroup(group: RegisteredGroup): boolean {
+  if (!group.is_home) return false;
+  if (group.folder === 'main') return true;
+  if (!group.created_by) return false;
+  const owner = db
+    .prepare("SELECT role FROM users WHERE id = ? AND status = 'active'")
+    .get(group.created_by) as { role: string } | undefined;
+  return owner?.role === 'admin';
+}
+
+/**
  * Ensure a user has a home group. If not, create one.
- * Admin gets folder='main' with executionMode='host'.
- * Member gets folder='home-{userId}' with executionMode='container'.
+ * The first admin gets folder='main' (web:main) with executionMode='host'.
+ * Subsequent admins get folder='home-{userId}' with executionMode='host',
+ * so each admin bot has its own independent workspace.
+ * Members get folder='home-{userId}' with executionMode='container'.
  * Returns the JID of the home group.
  */
 export function ensureUserHomeGroup(
@@ -2339,40 +2345,42 @@ export function ensureUserHomeGroup(
 
   const now = new Date().toISOString();
   const isAdmin = role === 'admin';
-  const jid = isAdmin ? 'web:main' : `web:home-${userId}`;
-  const folder = isAdmin ? 'main' : `home-${userId}`;
 
-  // For admin: check if web:main already exists (created by another admin)
-  // In that case, reuse it rather than overwriting created_by
+  // Determine JID and folder.
+  // For admin: use web:main only if it doesn't exist yet or has no owner.
+  // If web:main is already owned by another admin, create home-{userId} instead.
+  let jid: string;
+  let folder: string;
   if (isAdmin) {
-    const existingMain = getRegisteredGroup(jid);
-    if (existingMain) {
-      // web:main already exists.
-      // Ensure is_home, created_by, and executionMode are correct for owner-based routing.
-      const patched = { ...existingMain };
-      let changed = false;
-      if (!patched.is_home) {
-        patched.is_home = true;
-        changed = true;
+    const existingMain = getRegisteredGroup('web:main');
+    if (!existingMain) {
+      // First admin — claim web:main
+      jid = 'web:main';
+      folder = 'main';
+    } else if (!existingMain.created_by) {
+      // Legacy web:main with no owner — claim it
+      const patched = { ...existingMain, created_by: userId, is_home: true, executionMode: 'host' as const };
+      setRegisteredGroup('web:main', patched);
+      ensureChatExists('web:main');
+      return 'web:main';
+    } else if (existingMain.created_by === userId) {
+      // Already owned by this user (shouldn't happen since getUserHomeGroup checks)
+      if (!existingMain.is_home) {
+        setRegisteredGroup('web:main', { ...existingMain, is_home: true });
       }
-      if (!patched.created_by) {
-        patched.created_by = userId;
-        changed = true;
-      }
-      // Admin home container must use host mode
-      if (patched.executionMode !== 'host') {
-        patched.executionMode = 'host';
-        changed = true;
-      }
-      if (changed) {
-        setRegisteredGroup(jid, patched);
-      }
-      ensureChatExists(jid);
-      return jid;
+      ensureChatExists('web:main');
+      return 'web:main';
+    } else {
+      // web:main is owned by another admin — create independent home
+      jid = `web:home-${userId}`;
+      folder = `home-${userId}`;
     }
+  } else {
+    jid = `web:home-${userId}`;
+    folder = `home-${userId}`;
   }
 
-  const name = username ? `${username} Home` : isAdmin ? 'Main' : 'Home';
+  const name = username ? `${username} Home` : (jid === 'web:main' ? 'Main' : 'Home');
 
   const group: RegisteredGroup = {
     name,
