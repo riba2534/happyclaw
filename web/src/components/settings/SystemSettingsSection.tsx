@@ -8,7 +8,7 @@ import { useBillingStore, type BillingPlan } from '../../stores/billing';
 import { api } from '../../api/client';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { Switch } from '@/components/ui/switch';
+import { ToggleSwitch } from '@/components/ui/toggle-switch';
 import type { SystemSettings } from './types';
 import { getErrorMessage } from './types';
 
@@ -295,9 +295,9 @@ export function SystemSettingsSection() {
               开启后普通用户必须先有余额才能使用，管理员可在后台进行充扣和套餐分配
             </p>
           </div>
-          <Switch
+          <ToggleSwitch
             checked={billingEnabled}
-            onCheckedChange={setBillingEnabled}
+            onChange={setBillingEnabled}
             aria-label="启用计费系统"
           />
         </div>
