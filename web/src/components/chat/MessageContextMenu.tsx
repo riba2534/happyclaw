@@ -76,7 +76,7 @@ export function MessageContextMenu({ content, position, onClose, chatJid, messag
     <div className="fixed inset-0 z-[60]" onClick={onClose}>
       <div
         ref={menuRef}
-        className="absolute bg-card rounded-xl shadow-lg border border-border py-1 min-w-[160px] animate-in zoom-in-95 fade-in duration-150 select-none"
+        className="absolute bg-surface rounded-xl shadow-lg border border-border py-1 min-w-[160px] animate-in zoom-in-95 fade-in duration-150 select-none"
         style={{ left: position.x, top: position.y }}
         onClick={(e) => e.stopPropagation()}
       >

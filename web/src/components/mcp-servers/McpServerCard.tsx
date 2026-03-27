@@ -60,7 +60,7 @@ export function McpServerCard({ server, selected, onSelect }: McpServerCardProps
             }`}
           >
             <span
-              className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${
+              className={`inline-block h-4 w-4 rounded-full bg-white dark:bg-foreground transition-transform ${
                 server.enabled ? 'translate-x-6' : 'translate-x-1'
               }`}
             />

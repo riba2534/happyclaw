@@ -1,11 +1,10 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, PanelLeftClose } from 'lucide-react';
+import { Plus } from 'lucide-react';
 import { useChatStore } from '../../stores/chat';
 import { useAuthStore } from '../../stores/auth';
 import { useGroupsStore } from '../../stores/groups';
 import { Button } from '@/components/ui/button';
-import { SearchInput } from '@/components/common';
 import { ConfirmDialog } from '@/components/common';
 import { ChatGroupItem } from './ChatGroupItem';
 import { CreateContainerDialog } from './CreateContainerDialog';
@@ -41,7 +40,6 @@ interface ChatSidebarProps {
 }
 
 export function ChatSidebar({ className, onToggleCollapse }: ChatSidebarProps) {
-  const [searchQuery, setSearchQuery] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
 
   // Rename dialog state
@@ -96,9 +94,7 @@ export function ChatSidebar({ className, onToggleCollapse }: ChatSidebarProps) {
 
   // Split non-main groups into pinned / private / collaborative, then sub-group by date
   const { pinnedGroups, mySections, collabSections } = useMemo(() => {
-    const filtered = searchQuery.trim()
-      ? otherGroups.filter((g) => g.name.toLowerCase().includes(searchQuery.toLowerCase()))
-      : otherGroups;
+    const filtered = otherGroups;
 
     const pinned: typeof otherGroups = [];
     const my: typeof otherGroups = [];
@@ -118,7 +114,7 @@ export function ChatSidebar({ className, onToggleCollapse }: ChatSidebarProps) {
     pinned.sort((a, b) => (a.pinned_at || '').localeCompare(b.pinned_at || ''));
 
     return { pinnedGroups: pinned, mySections: groupByDate(my), collabSections: groupByDate(collab) };
-  }, [otherGroups, searchQuery]);
+  }, [otherGroups]);
 
   const handleGroupSelect = (jid: string, folder: string) => {
     selectGroup(jid);
@@ -208,42 +204,16 @@ export function ChatSidebar({ className, onToggleCollapse }: ChatSidebarProps) {
 
   return (
     <div className={cn('flex flex-col h-full bg-background border-r', className)}>
-      {/* Logo Header — only on mobile (PC has NavRail logo) */}
-      <div className="flex items-center gap-2.5 px-4 pt-4 pb-1 lg:hidden">
-        <img
-          src={`${import.meta.env.BASE_URL}icons/icon-192.png`}
-          alt={appName}
-          className="w-8 h-8 rounded-lg"
-        />
-        <span className="text-lg font-bold text-foreground truncate">{appName}</span>
-      </div>
-
-      {/* New Chat + Search */}
-      <div className="p-3 space-y-2">
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            className="flex-1 justify-start gap-2"
-            onClick={() => setCreateOpen(true)}
-          >
-            <Plus className="w-4 h-4" />
-            新工作区
-          </Button>
-          <button
-            onClick={onToggleCollapse}
-            className="hidden lg:flex items-center p-2 rounded-md border hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
-            title="折叠侧边栏"
-          >
-            <PanelLeftClose className="w-4 h-4" />
-          </button>
-        </div>
-        <SearchInput
-          value={searchQuery}
-          onChange={setSearchQuery}
-          placeholder="搜索工作区..."
-          debounce={200}
-          className="max-lg:bg-background/60 max-lg:backdrop-blur-lg max-lg:border-border/30 max-lg:rounded-lg"
-        />
+      {/* New workspace button — at top */}
+      <div className="p-3">
+        <Button
+          variant="outline"
+          className="w-full justify-start gap-2"
+          onClick={() => setCreateOpen(true)}
+        >
+          <Plus className="w-4 h-4" />
+          新工作区
+        </Button>
       </div>
 
       {/* Groups List */}
@@ -316,7 +286,7 @@ export function ChatSidebar({ className, onToggleCollapse }: ChatSidebarProps) {
             {mySections.length === 0 && collabSections.length === 0 && pinnedGroups.length === 0 && !mainGroup ? (
               <div className="flex flex-col items-center justify-center h-32 px-4">
                 <p className="text-sm text-muted-foreground text-center">
-                  {searchQuery ? '未找到匹配的工作区' : '暂无工作区'}
+                  暂无工作区
                 </p>
               </div>
             ) : (

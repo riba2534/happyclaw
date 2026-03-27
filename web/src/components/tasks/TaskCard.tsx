@@ -69,7 +69,7 @@ export function TaskCard({ task, onPause, onResume, onDelete, onRunNow }: TaskCa
   };
 
   return (
-    <div className="bg-card rounded-xl border border-border hover:border-brand-300 transition-colors duration-200">
+    <div className="bg-card rounded-xl border border-border hover:border-primary/60 transition-colors duration-200">
       {/* Card Header - Clickable */}
       <button
         onClick={() => setExpanded(!expanded)}

@@ -66,7 +66,7 @@ export function ChatGroupItem({
       className={cn(
         'group relative rounded-lg mb-0.5 transition-colors',
         isActive
-          ? 'bg-accent dark:bg-accent max-lg:bg-background/70 max-lg:backdrop-blur-lg max-lg:saturate-[1.8] max-lg:border max-lg:border-border/40 max-lg:shadow-[0_8px_32px_rgba(0,0,0,0.06)]'
+          ? 'bg-accent dark:bg-accent max-lg:bg-background/70 max-lg:backdrop-blur-lg max-lg:saturate-[1.8]'
           : 'hover:bg-accent/50',
       )}
     >
@@ -95,15 +95,6 @@ export function ChatGroupItem({
               <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
             </span>
           )}
-          {executionMode === 'host' ? (
-            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700">
-              宿主机
-            </span>
-          ) : executionMode === 'container' ? (
-            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-sky-100 text-sky-700">
-              Docker
-            </span>
-          ) : null}
           {isShared && memberRole === 'owner' && (memberCount ?? 0) >= 2 && (
             <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-700">
               Owner

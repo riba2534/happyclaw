@@ -112,7 +112,7 @@ export function SkillDetail({ skillId, onDeleted }: SkillDetailProps) {
                 } opacity-50`}
               >
                 <span
-                  className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${
+                  className={`inline-block h-4 w-4 rounded-full bg-white dark:bg-foreground transition-transform ${
                     detail.enabled ? 'translate-x-6' : 'translate-x-1'
                   }`}
                 />
