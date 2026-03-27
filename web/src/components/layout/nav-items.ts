@@ -1,10 +1,9 @@
-import { MessageSquare, Clock, Activity, Settings, BarChart3, CreditCard } from 'lucide-react';
+import { MessageCircle, Clock4, Puzzle, Wallet, User } from 'lucide-react';
 
 export const baseNavItems = [
-  { path: '/chat', icon: MessageSquare, label: '工作台' },
-  { path: '/tasks', icon: Clock, label: '任务' },
-  { path: '/usage', icon: BarChart3, label: '用量' },
-  { path: '/billing', icon: CreditCard, label: '账单', requiresBilling: true },
-  { path: '/monitor', icon: Activity, label: '监控', requireAdmin: true },
-  { path: '/settings', icon: Settings, label: '设置' },
+  { path: '/chat', icon: MessageCircle, label: '工作台' },
+  { path: '/skills', icon: Puzzle, label: 'Skill' },
+  { path: '/tasks', icon: Clock4, label: '任务' },
+  { path: '/billing', icon: Wallet, label: '账单', requiresBilling: true },
+  { path: '/settings', icon: User, label: '设置' },
 ];

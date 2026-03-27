@@ -166,7 +166,8 @@ export function MemoryPage() {
       conversation: [],
     };
     for (const source of filteredSources) {
-      groups[source.type].push(source);
+      if (groups[source.type]) groups[source.type].push(source);
+      else groups[source.type] = [source];
     }
     return groups;
   }, [filteredSources]);

@@ -16,7 +16,7 @@ export function TodoProgressPanel({ todos }: TodoProgressPanelProps) {
   const progress = total > 0 ? (completed / total) * 100 : 0;
 
   return (
-    <div className="rounded-lg border border-brand-200 bg-brand-50/40 p-3 mb-2">
+    <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 mb-2">
       {/* Progress header */}
       <div className="flex items-center justify-between mb-2">
         <span className="text-[13px] font-medium text-primary">
@@ -28,9 +28,9 @@ export function TodoProgressPanel({ todos }: TodoProgressPanelProps) {
       </div>
 
       {/* Progress bar */}
-      <div className="h-1.5 bg-brand-100 rounded-full mb-2.5 overflow-hidden">
+      <div className="h-1.5 bg-primary/10 rounded-full mb-2.5 overflow-hidden">
         <div
-          className="h-full bg-brand-500 rounded-full transition-all duration-300"
+          className="h-full bg-primary rounded-full transition-all duration-300"
           style={{ width: `${progress}%` }}
         />
       </div>
@@ -41,7 +41,7 @@ export function TodoProgressPanel({ todos }: TodoProgressPanelProps) {
           <div key={todo.id} className="flex items-start gap-2 text-[13px]">
             <span className="flex-shrink-0 mt-0.5">
               {todo.status === 'completed' ? (
-                <Check className="w-3.5 h-3.5 text-brand-500" strokeWidth={3} />
+                <Check className="w-3.5 h-3.5 text-primary" strokeWidth={3} />
               ) : todo.status === 'in_progress' ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
               ) : (

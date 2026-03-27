@@ -15,10 +15,10 @@ interface AgentTabBarProps {
 }
 
 const tabClass = (active: boolean) =>
-  `flex-shrink-0 px-3 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+  `flex-shrink-0 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer ${
     active
-      ? 'bg-accent text-accent-foreground shadow-sm'
-      : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
+      ? 'border-border bg-accent text-accent-foreground'
+      : 'border-border/40 text-muted-foreground hover:border-border hover:bg-accent/60 hover:text-foreground'
   }`;
 
 interface ContextMenuState {
@@ -128,7 +128,7 @@ export function AgentTabBar({ agents, activeTab, onSelectTab, onDeleteAgent, onR
 
   return (
     <>
-      <div className="flex items-center gap-1 px-3 py-1.5 border-b border-border bg-background/80 overflow-x-auto scrollbar-none select-none">
+      <div className="flex items-center gap-1 px-4 pt-1 pb-2 border-b border-border/40 overflow-x-auto scrollbar-none select-none">
         {/* Main conversation tab */}
         <div
           className={`${tabClass(activeTab === null)} flex items-center gap-1.5 group`}
