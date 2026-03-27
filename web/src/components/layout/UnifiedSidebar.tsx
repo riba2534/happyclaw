@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
-import { Plus, PanelLeftClose, Bug } from 'lucide-react';
+import { Plus, PanelLeftClose, Bug, LogOut, Search, UserCog } from 'lucide-react';
 import { useChatStore } from '../../stores/chat';
 import { useAuthStore } from '../../stores/auth';
 import { useBillingStore } from '../../stores/billing';
@@ -10,6 +10,7 @@ import { ConfirmDialog } from '@/components/common';
 import { EmojiAvatar } from '../common/EmojiAvatar';
 import { BugReportDialog } from '../common/BugReportDialog';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ChatGroupItem } from '../chat/ChatGroupItem';
 import { CreateContainerDialog } from '../chat/CreateContainerDialog';
 import { RenameDialog } from '../chat/RenameDialog';
@@ -67,6 +68,7 @@ export function UnifiedSidebar({ collapsed, onToggleCollapse }: UnifiedSidebarPr
   );
 
   // ── Chat sidebar state ──
+  const [searchQuery, setSearchQuery] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
   const [renameState, setRenameState] = useState({ open: false, jid: '', name: '' });
   const [deleteState, setDeleteState] = useState({ open: false, jid: '', name: '' });
@@ -96,18 +98,31 @@ export function UnifiedSidebar({ collapsed, onToggleCollapse }: UnifiedSidebarPr
     return { mainGroup: main, otherGroups: others };
   }, [groups]);
 
+  const filteredOtherGroups = useMemo(() => {
+    if (!searchQuery.trim()) return otherGroups;
+    const q = searchQuery.toLowerCase();
+    return otherGroups.filter((g) => g.name.toLowerCase().includes(q) || g.folder.toLowerCase().includes(q));
+  }, [otherGroups, searchQuery]);
+
+  const filteredMainGroup = useMemo(() => {
+    if (!searchQuery.trim()) return mainGroup;
+    if (!mainGroup) return null;
+    const q = searchQuery.toLowerCase();
+    return mainGroup.name.toLowerCase().includes(q) || mainGroup.folder.toLowerCase().includes(q) ? mainGroup : null;
+  }, [mainGroup, searchQuery]);
+
   const { pinnedGroups, mySections, collabSections } = useMemo(() => {
     const pinned: GroupEntry[] = [];
     const my: GroupEntry[] = [];
     const collab: GroupEntry[] = [];
-    otherGroups.forEach((g) => {
+    filteredOtherGroups.forEach((g) => {
       if (g.pinned_at) pinned.push(g);
       else if (g.is_shared && (g.member_count ?? 0) >= 2) collab.push(g);
       else my.push(g);
     });
     pinned.sort((a, b) => (a.pinned_at || '').localeCompare(b.pinned_at || ''));
     return { pinnedGroups: pinned, mySections: groupByDate(my), collabSections: groupByDate(collab) };
-  }, [otherGroups]);
+  }, [filteredOtherGroups]);
 
   const handleGroupSelect = (jid: string, folder: string) => { selectGroup(jid); navigate(`/chat/${folder}`); };
   const handleCreated = (jid: string, folder: string) => { selectGroup(jid); navigate(`/chat/${folder}`); };
@@ -258,12 +273,9 @@ export function UnifiedSidebar({ collapsed, onToggleCollapse }: UnifiedSidebarPr
                 <TooltipContent side="right">报告问题</TooltipContent>
               </Tooltip>
 
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    onClick={() => navigate('/settings?tab=profile')}
-                    className="rounded-full hover:ring-2 hover:ring-brand-200 transition-all cursor-pointer"
-                  >
+              <Popover>
+                <PopoverTrigger asChild>
+                  <button className="rounded-full hover:ring-2 hover:ring-brand-200 transition-all cursor-pointer">
                     <EmojiAvatar
                       emoji={user?.avatar_emoji}
                       color={user?.avatar_color}
@@ -272,9 +284,27 @@ export function UnifiedSidebar({ collapsed, onToggleCollapse }: UnifiedSidebarPr
                       className="w-8 h-8"
                     />
                   </button>
-                </TooltipTrigger>
-                <TooltipContent side="right">{user?.display_name || user?.username}</TooltipContent>
-              </Tooltip>
+                </PopoverTrigger>
+                <PopoverContent side="right" align="end" className="w-44 p-1">
+                  <div className="px-3 py-2 text-xs font-medium text-muted-foreground truncate border-b border-border mb-1">
+                    {user?.display_name || user?.username}
+                  </div>
+                  <button
+                    onClick={() => navigate('/settings?tab=profile')}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm rounded-md hover:bg-accent text-foreground cursor-pointer"
+                  >
+                    <UserCog className="w-4 h-4" />
+                    个人设置
+                  </button>
+                  <button
+                    onClick={() => { useAuthStore.getState().logout(); navigate('/login'); }}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm rounded-md hover:bg-destructive/10 text-destructive cursor-pointer"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    退出登录
+                  </button>
+                </PopoverContent>
+              </Popover>
             </div>
           </TooltipProvider>
           <BugReportDialog open={showBugReport} onClose={() => setShowBugReport(false)} />
@@ -290,8 +320,18 @@ export function UnifiedSidebar({ collapsed, onToggleCollapse }: UnifiedSidebarPr
         >
           {showWorkspaceList && (
             <>
-              {/* Header area — aligned with first nav item */}
-              <div className="px-2 pt-1 pb-1 flex-shrink-0">
+              {/* Header area — search + new workspace */}
+              <div className="px-2 pt-1 pb-1 flex-shrink-0 space-y-1.5">
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground/60" />
+                  <input
+                    type="text"
+                    placeholder="搜索工作区..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full h-8 pl-8 pr-2 text-xs rounded-lg border border-border bg-background text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-brand-200"
+                  />
+                </div>
                 <Button
                   variant="outline"
                   size="sm"
@@ -309,16 +349,16 @@ export function UnifiedSidebar({ collapsed, onToggleCollapse }: UnifiedSidebarPr
                   <SkeletonCardList count={6} compact />
                 ) : (
                   <>
-                    {mainGroup && (
+                    {filteredMainGroup && (
                       <div className="mb-1">
                         <div className="px-2 pt-1 pb-1">
                           <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">主工作区</span>
                         </div>
                         <ChatGroupItem
-                          jid={mainGroup.jid} name={mainGroup.name} folder={mainGroup.folder}
-                          lastMessage={mainGroup.lastMessage} executionMode={mainGroup.execution_mode}
-                          isActive={currentGroup === mainGroup.jid} isHome
-                          isRunning={runnerStates[mainGroup.jid] === 'running'} editable
+                          jid={filteredMainGroup.jid} name={filteredMainGroup.name} folder={filteredMainGroup.folder}
+                          lastMessage={filteredMainGroup.lastMessage} executionMode={filteredMainGroup.execution_mode}
+                          isActive={currentGroup === filteredMainGroup.jid} isHome
+                          isRunning={runnerStates[filteredMainGroup.jid] === 'running'} editable
                           onSelect={handleGroupSelect}
                           onRename={(jid, name) => setRenameState({ open: true, jid, name })}
                           onClearHistory={(jid, name) => setClearState({ open: true, jid, name })}
@@ -350,7 +390,7 @@ export function UnifiedSidebar({ collapsed, onToggleCollapse }: UnifiedSidebarPr
                       </div>
                     )}
 
-                    {mySections.length === 0 && collabSections.length === 0 && pinnedGroups.length === 0 && !mainGroup ? (
+                    {mySections.length === 0 && collabSections.length === 0 && pinnedGroups.length === 0 && !filteredMainGroup ? (
                       <div className="flex flex-col items-center justify-center h-32 px-4">
                         <p className="text-xs text-muted-foreground text-center">暂无工作区</p>
                       </div>

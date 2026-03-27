@@ -10,8 +10,6 @@
     "generate-icons": "node scripts/generate-icons.js"
   },
   "dependencies": {
-    "@fontsource-variable/inter": "^5.2.8",
-    "@material-symbols/font-400": "^0.42.3",
     "@tanstack/react-virtual": "^3.0.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",

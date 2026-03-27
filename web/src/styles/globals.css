@@ -1,6 +1,6 @@
 @import "tailwindcss";
 @import "shadcn/tailwind.css";
-@import "@fontsource-variable/inter";
+/* Inter removed — DM Sans is the primary UI font (loaded via Google Fonts in index.html) */
 @plugin "tailwindcss-animate";
 
 @custom-variant dark (&:is(.dark *));
@@ -465,7 +465,7 @@ body {
   height: 100%;
   overflow: hidden;
   margin: 0;
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: var(--font-sans);
   background: var(--background);
   color: var(--foreground);
   -webkit-font-smoothing: antialiased;
