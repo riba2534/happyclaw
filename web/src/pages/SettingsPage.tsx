@@ -11,6 +11,7 @@ import { SecuritySection } from '../components/settings/SecuritySection';
 import { AboutSection } from '../components/settings/AboutSection';
 import { AppearanceSection } from '../components/settings/AppearanceSection';
 import { SystemSettingsSection } from '../components/settings/SystemSettingsSection';
+import { SystemBackupSection } from '../components/settings/SystemBackupSection';
 import { UserChannelsSection } from '../components/settings/UserChannelsSection';
 import { GroupsPage } from './GroupsPage';
 import { MemoryPage } from './MemoryPage';
@@ -196,7 +197,12 @@ export function SettingsPage() {
                   {activeTab === 'claude' && <ClaudeProviderSection setNotice={() => {}} setError={() => {}} />}
                   {activeTab === 'registration' && <RegistrationSection />}
                   {activeTab === 'appearance' && <AppearanceSection />}
-                  {activeTab === 'system' && <SystemSettingsSection />}
+                  {activeTab === 'system' && (
+                    <>
+                      <SystemSettingsSection />
+                      <SystemBackupSection />
+                    </>
+                  )}
                   {activeTab === 'profile' && <ProfileSection />}
                   {activeTab === 'my-channels' && <UserChannelsSection />}
                   {activeTab === 'security' && <SecuritySection />}
