@@ -623,6 +623,16 @@ class IMConnectionManager {
     return conn?.channels.get('wechat')?.isConnected() ?? false;
   }
 
+  /**
+   * Check if a user has an active connection for a specific channel type.
+   * Used by multi-bot re-route detection to check at the channel level
+   * rather than the user level.
+   */
+  isChannelConnected(userId: string, channelType: string): boolean {
+    const conn = this.connections.get(userId);
+    return conn?.channels.get(channelType)?.isConnected() ?? false;
+  }
+
   /** Check if any user has an active WeChat connection */
   isAnyWeChatConnected(): boolean {
     for (const conn of this.connections.values()) {

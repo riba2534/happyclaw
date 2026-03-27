@@ -5677,13 +5677,37 @@ function buildOnNewChat(
         return;
       }
 
-      // Different user's connection now owns this IM app.
-      // Re-route the chat to the current user's home folder.
-      // This handles the common case where the same Feishu app credentials
-      // are moved from one user to another (e.g., admin → member for testing).
+      // Different user's connection received a message for this chat.
+      // Determine whether this is a multi-bot setup (both users have
+      // active connections for this channel type) or a credential transfer
+      // (previous owner disconnected this channel type).
+      const channelType = getChannelType(chatJid);
+      const previousOwner = existing.created_by;
+      const previousOwnerStillConnected =
+        channelType !== null &&
+        imManager.isChannelConnected(previousOwner, channelType);
+
+      if (previousOwnerStillConnected) {
+        // Multi-bot setup: the previous owner still has an active connection
+        // for the same channel type. Do NOT re-route — each bot should keep
+        // its own chats.
+        logger.debug(
+          {
+            chatJid,
+            chatName,
+            userId,
+            previousOwner,
+            channelType,
+          },
+          'Multi-bot detected: previous owner still connected on same channel, skipping re-route',
+        );
+        return;
+      }
+
+      // Credential transfer: previous owner no longer has this channel type
+      // connected. Re-route the chat to the current user's home folder.
       if (!existing.is_home) {
         const previousFolder = existing.folder;
-        const previousOwner = existing.created_by;
         existing.folder = homeFolder;
         existing.created_by = userId;
         setRegisteredGroup(chatJid, existing);
@@ -5696,6 +5720,7 @@ function buildOnNewChat(
             homeFolder,
             previousFolder,
             previousOwner,
+            channelType,
           },
           'Re-routed IM chat to new user (IM credentials transferred)',
         );
