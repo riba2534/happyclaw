@@ -6722,7 +6722,7 @@ async function main(): Promise<void> {
         logger.warn({ err }, 'Error shutting down web server'),
       ),
       queue
-        .shutdown(1500)
+        .shutdown(30000)
         .catch((err) => logger.warn({ err }, 'Error shutting down queue')),
     ]);
 
