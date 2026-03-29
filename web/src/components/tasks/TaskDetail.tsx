@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Check, Pencil, X } from 'lucide-react';
-import { ScheduledTask, useTasksStore } from '../../stores/tasks';
+import { Check, Pencil, RefreshCw, X } from 'lucide-react';
+import { ScheduledTask, TaskRunLog, useTasksStore } from '../../stores/tasks';
 import { showToast } from '../../utils/toast';
 import { INTERVAL_UNITS, formatInterval, decomposeInterval, toggleNotifyChannel } from '../../utils/task-utils';
 import { useConnectedChannels } from '../../hooks/useConnectedChannels';
@@ -17,10 +17,49 @@ interface TaskDetailProps {
   task: ScheduledTask;
 }
 
+const LOG_STATUS_STYLES: Record<string, { bg: string; text: string; label: string }> = {
+  running: { bg: 'bg-blue-100', text: 'text-blue-700', label: '运行中' },
+  success: { bg: 'bg-green-100', text: 'text-green-700', label: '成功' },
+  error: { bg: 'bg-red-100', text: 'text-red-700', label: '失败' },
+};
+
+function RunLogStatusBadge({ status }: { status: string }) {
+  const style = LOG_STATUS_STYLES[status] || { bg: 'bg-muted', text: 'text-muted-foreground', label: status };
+  return (
+    <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${style.bg} ${style.text}`}>
+      {style.label}
+    </span>
+  );
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
+}
+
 export function TaskDetail({ task }: TaskDetailProps) {
-  const { updateTask } = useTasksStore();
+  const { updateTask, loadLogs, logs } = useTasksStore();
 
   const connectedChannels = useConnectedChannels();
+  const taskLogs = logs[task.id] || [];
+  const [logsLoading, setLogsLoading] = useState(false);
+
+  useEffect(() => {
+    loadLogs(task.id);
+  }, [task.id, loadLogs]);
+
+  const handleRefreshLogs = async () => {
+    setLogsLoading(true);
+    try {
+      await loadLogs(task.id);
+    } finally {
+      setLogsLoading(false);
+    }
+  };
 
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -439,6 +478,64 @@ export function TaskDetail({ task }: TaskDetailProps) {
             renderNotifyChannelsBadges()
           )}
         </div>
+      </div>
+
+      {/* Execution Logs */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-sm text-muted-foreground">执行日志</div>
+          <button
+            onClick={handleRefreshLogs}
+            disabled={logsLoading}
+            className="p-1 text-muted-foreground hover:text-foreground transition-colors cursor-pointer disabled:opacity-50"
+            title="刷新日志"
+          >
+            <RefreshCw className={`w-4 h-4 ${logsLoading ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
+
+        {taskLogs.length === 0 ? (
+          <p className="text-xs text-muted-foreground">暂无执行记录</p>
+        ) : (
+          <div className="border border-border rounded-lg overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-brand-50 text-primary text-xs">
+                  <th className="text-left px-4 py-2 font-medium">运行时间</th>
+                  <th className="text-left px-4 py-2 font-medium">耗时</th>
+                  <th className="text-left px-4 py-2 font-medium">状态</th>
+                  <th className="text-left px-4 py-2 font-medium">结果</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {taskLogs.map((log: TaskRunLog) => (
+                  <tr key={log.id}>
+                    <td className="px-4 py-2.5 text-foreground whitespace-nowrap">
+                      {formatDate(log.run_at)}
+                    </td>
+                    <td className="px-4 py-2.5 text-foreground whitespace-nowrap">
+                      {log.status === 'running' ? '-' : formatDuration(log.duration_ms)}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <RunLogStatusBadge status={log.status} />
+                    </td>
+                    <td className="px-4 py-2.5 text-foreground truncate max-w-xs" title={log.error || log.result || ''}>
+                      {log.error ? (
+                        <span className="text-red-600">{log.error.slice(0, 100)}</span>
+                      ) : log.result ? (
+                        log.result.slice(0, 100)
+                      ) : log.status === 'running' ? (
+                        <span className="text-muted-foreground">执行中...</span>
+                      ) : (
+                        ''
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );

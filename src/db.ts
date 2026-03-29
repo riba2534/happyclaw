@@ -2027,6 +2027,42 @@ export function logTaskRun(log: TaskRunLog): void {
   );
 }
 
+export function logTaskRunStart(taskId: string): number {
+  const result = db
+    .prepare(
+      `
+    INSERT INTO task_run_logs (task_id, run_at, duration_ms, status, result, error)
+    VALUES (?, ?, 0, 'running', NULL, NULL)
+  `,
+    )
+    .run(taskId, new Date().toISOString());
+  return Number(result.lastInsertRowid);
+}
+
+export function updateTaskRunLog(
+  id: number,
+  updates: { duration_ms: number; status: 'success' | 'error'; result: string | null; error: string | null },
+): void {
+  db.prepare(
+    `
+    UPDATE task_run_logs SET duration_ms = ?, status = ?, result = ?, error = ?
+    WHERE id = ?
+  `,
+  ).run(updates.duration_ms, updates.status, updates.result, updates.error, id);
+}
+
+export function cleanupStaleRunningLogs(): number {
+  const result = db
+    .prepare(
+      `
+    UPDATE task_run_logs SET status = 'error', error = 'Process crashed before completion'
+    WHERE status = 'running'
+  `,
+    )
+    .run();
+  return result.changes;
+}
+
 export function cleanupOldTaskRunLogs(retentionDays = 30): number {
   const cutoff = new Date(
     Date.now() - retentionDays * 24 * 60 * 60 * 1000,
