@@ -491,6 +491,20 @@ function createPreCompactHook(
     const transcriptPath = preCompact.transcript_path;
     const sessionId = preCompact.session_id;
 
+    // ── Skip sub-agent compaction ──
+    // The SDK fires PreCompact hooks at process level, meaning sub-agent
+    // compactions (e.g. a haiku web-researcher hitting its 167K threshold)
+    // also trigger this hook on the main agent. BaseHookInput.agent_id is
+    // present *only* when the hook fires from within a sub-agent, so we can
+    // use it as a reliable guard.  Without this check, every sub-agent
+    // compact would: archive the (unchanged) main-agent transcript, set
+    // hadCompaction = true, and trigger a needless auto-continue + memory
+    // flush — see issue #321.
+    if (preCompact.agent_id) {
+      log(`PreCompact: skipping sub-agent compact (agent_id=${preCompact.agent_id})`);
+      return {};
+    }
+
     // ── Flush accumulated streaming text as compact_partial ──
     // This ensures users see the partial response even after compaction.
     const partialText = deps.getFullText();
