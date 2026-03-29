@@ -6864,11 +6864,14 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info({ signal }, 'Shutdown signal received, cleaning up...');
 
-    // Force exit after 2s if graceful shutdown hangs
+    // Force exit after 30s if graceful shutdown hangs.
+    // Must be longer than queue.shutdown() grace period (15s) plus container
+    // force-stop time (~10s) to avoid killing the process while agents are
+    // still shutting down gracefully.
     const forceExitTimer = setTimeout(() => {
       logger.warn('Graceful shutdown timed out, force exiting');
       process.exit(1);
-    }, 2000);
+    }, 30_000);
     forceExitTimer.unref();
 
     if (feishuSyncInterval) {
@@ -6896,7 +6899,11 @@ async function main(): Promise<void> {
     await Promise.allSettled([
       // Abort all active streaming cards before disconnecting IM,
       // so users see "服务维护中" instead of a stuck "生成中..." card.
-      abortAllStreamingSessions('服务维护中').catch((err) =>
+      // Race with a 5s timeout to avoid a hung Feishu API blocking shutdown.
+      Promise.race([
+        abortAllStreamingSessions('服务维护中'),
+        new Promise<void>((resolve) => setTimeout(resolve, 5000)),
+      ]).catch((err) =>
         logger.warn({ err }, 'Error aborting streaming sessions'),
       ),
       imManager
@@ -6908,9 +6915,11 @@ async function main(): Promise<void> {
         logger.warn({ err }, 'Error shutting down web server'),
       ),
       queue
-        .shutdown(1500)
+        .shutdown(15_000)
         .catch((err) => logger.warn({ err }, 'Error shutting down queue')),
     ]);
+
+    clearTimeout(forceExitTimer);
 
     try {
       closeDatabase();
