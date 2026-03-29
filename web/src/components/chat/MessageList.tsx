@@ -477,7 +477,7 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
           <button
             type="button"
             onClick={onInterrupt}
-            className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs text-muted-foreground hover:text-red-600 bg-card/90 backdrop-blur-sm hover:bg-red-50 rounded-full border border-border shadow-sm transition-colors cursor-pointer"
+            className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs text-muted-foreground hover:text-red-600 dark:hover:text-red-400 bg-card/90 backdrop-blur-sm hover:bg-red-50 dark:hover:bg-red-950/40 rounded-full border border-border shadow-sm transition-colors cursor-pointer"
           >
             <Square className="w-3 h-3" />
             中断

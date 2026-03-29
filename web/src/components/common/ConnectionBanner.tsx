@@ -29,7 +29,7 @@ export function ConnectionBanner() {
 
   if (showRecovered) {
     return (
-      <div className={`${baseClass} bg-emerald-50 border-b border-emerald-200 text-emerald-700 transition-all duration-300 animate-in fade-in slide-in-from-top-2`}>
+      <div className={`${baseClass} bg-emerald-50 dark:bg-emerald-950/50 border-b border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 transition-all duration-300 animate-in fade-in slide-in-from-top-2`}>
         <CheckCircle2 className="w-3.5 h-3.5" />
         <span>已恢复连接</span>
       </div>
@@ -38,7 +38,7 @@ export function ConnectionBanner() {
 
   if (status === 'offline') {
     return (
-      <div className={`${baseClass} bg-red-50 border-b border-red-200 text-red-700`}>
+      <div className={`${baseClass} bg-red-50 dark:bg-red-950/50 border-b border-red-200 dark:border-red-800 text-red-700 dark:text-red-300`}>
         <WifiOff className="w-3.5 h-3.5" />
         <span>网络已断开</span>
       </div>
@@ -47,7 +47,7 @@ export function ConnectionBanner() {
 
   // reconnecting
   return (
-    <div className={`${baseClass} bg-amber-50 border-b border-amber-200 text-amber-700`}>
+    <div className={`${baseClass} bg-amber-50 dark:bg-amber-950/50 border-b border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300`}>
       <Loader2 className="w-3.5 h-3.5 animate-spin" />
       <span>连接中断，正在重连...</span>
     </div>

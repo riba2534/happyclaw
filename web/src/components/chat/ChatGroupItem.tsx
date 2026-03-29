@@ -99,21 +99,21 @@ export function ChatGroupItem({
             </span>
           )}
           {executionMode === 'host' ? (
-            <span className="flex-shrink-0 whitespace-nowrap inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700">
+            <span className="flex-shrink-0 whitespace-nowrap inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300">
               宿主机
             </span>
           ) : executionMode === 'container' ? (
-            <span className="flex-shrink-0 whitespace-nowrap inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-sky-100 text-sky-700">
+            <span className="flex-shrink-0 whitespace-nowrap inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300">
               Docker
             </span>
           ) : null}
           {isShared && memberRole === 'owner' && (memberCount ?? 0) >= 2 && (
-            <span className="flex-shrink-0 whitespace-nowrap inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-700">
+            <span className="flex-shrink-0 whitespace-nowrap inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300">
               Owner
             </span>
           )}
           {isShared && memberRole !== 'owner' && (memberCount ?? 0) >= 2 && (
-            <span className="flex-shrink-0 whitespace-nowrap inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-100 text-violet-700">
+            <span className="flex-shrink-0 whitespace-nowrap inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300">
               {memberCount}人协作
             </span>
           )}
@@ -156,7 +156,7 @@ export function ChatGroupItem({
             )}
             <DropdownMenuItem
               onClick={() => onClearHistory(jid, displayName)}
-              className="text-amber-700 focus:text-amber-700"
+              className="text-amber-700 dark:text-amber-400 focus:text-amber-700 dark:focus:text-amber-400"
             >
               <RotateCcw className="w-4 h-4" />
               重建工作区

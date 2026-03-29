@@ -422,7 +422,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
             {!isWaiting && group.execution_mode && (
               <>
                 <span className="text-muted-foreground/40">·</span>
-                <span className={`inline-flex items-center px-1 py-px rounded text-[10px] font-medium ${group.execution_mode === 'host' ? 'bg-amber-100 text-amber-700' : 'bg-sky-100 text-sky-700'}`}>
+                <span className={`inline-flex items-center px-1 py-px rounded text-[10px] font-medium ${group.execution_mode === 'host' ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300' : 'bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300'}`}>
                   {group.execution_mode === 'host' ? '宿主机' : 'Docker'}
                 </span>
               </>
@@ -488,7 +488,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
 
       {/* IM channel setup banner for home container without IM */}
       {isOwnHome && imStatus && !imStatus.feishu && !imStatus.telegram && !imBannerDismissed && (
-        <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 border-b border-amber-200 text-amber-800 text-sm">
+        <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 text-sm">
           <Link className="w-4 h-4 flex-shrink-0" />
           <span className="flex-1 min-w-0">未配置 IM 渠道，飞书 / Telegram 消息无法与主工作区互通</span>
           <button

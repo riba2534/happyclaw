@@ -6,10 +6,10 @@ export const CHANNEL_LABEL: Record<string, string> = {
 };
 
 export const CHANNEL_COLORS: Record<string, string> = {
-  feishu: 'bg-blue-100 text-blue-700',
-  telegram: 'bg-sky-100 text-sky-700',
-  qq: 'bg-purple-100 text-purple-700',
-  wechat: 'bg-green-100 text-green-700',
+  feishu: 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300',
+  telegram: 'bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300',
+  qq: 'bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300',
+  wechat: 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300',
 };
 
 const FeishuIcon = () => (

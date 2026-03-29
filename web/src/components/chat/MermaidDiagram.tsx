@@ -146,11 +146,11 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
             )}
           </button>
         </div>
-        <div className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-t-lg px-3 py-1">
+        <div className="text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 rounded-t-lg px-3 py-1">
           Mermaid 语法错误，已降级为代码展示
         </div>
-        <pre className="!bg-[#f6f8fa] rounded-b-lg p-4 overflow-x-auto">
-          <code className="language-mermaid">{code}</code>
+        <pre className="!bg-[#f6f8fa] dark:!bg-[#1e1e2e] rounded-b-lg p-4 overflow-x-auto">
+          <code className="language-mermaid text-foreground">{code}</code>
         </pre>
       </div>
     );

@@ -26,13 +26,13 @@ function VersionBadge({ current, latest }: { current: string | null | undefined;
   const outdated = isOutdated(current, latest);
   if (!outdated) {
     return (
-      <span className="ml-1.5 inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 text-green-700">
+      <span className="ml-1.5 inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300">
         最新
       </span>
     );
   }
   return (
-    <span className="ml-1.5 inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700">
+    <span className="ml-1.5 inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300">
       可更新
     </span>
   );

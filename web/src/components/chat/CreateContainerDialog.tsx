@@ -225,9 +225,9 @@ export function CreateContainerDialog({
                 {executionMode === 'host' && (
                   <>
                     <DirectoryBrowser value={customCwd} onChange={setCustomCwd} placeholder="默认: data/groups/{folder}/" />
-                    <div className="flex items-start gap-2 p-2 bg-amber-50 border border-amber-200 rounded-lg">
+                    <div className="flex items-start gap-2 p-2 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg">
                       <AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
-                      <p className="text-xs text-amber-700">
+                      <p className="text-xs text-amber-700 dark:text-amber-300">
                         宿主机模式下 Agent 可访问完整文件系统和工具链，请谨慎使用。
                       </p>
                     </div>

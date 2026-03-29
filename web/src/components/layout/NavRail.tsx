@@ -70,7 +70,7 @@ export function NavRail() {
           <TooltipTrigger asChild>
             <button
               onClick={() => setShowBugReport(true)}
-              className="w-9 h-9 rounded-lg flex items-center justify-center text-muted-foreground hover:text-amber-600 hover:bg-amber-50 transition-colors"
+              className="w-9 h-9 rounded-lg flex items-center justify-center text-muted-foreground hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/40 transition-colors"
             >
               <Bug className="w-4 h-4" />
             </button>

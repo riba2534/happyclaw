@@ -405,7 +405,7 @@ export function MessageInput({
         <div className={isCompact ? 'bg-surface border border-border rounded-lg' : 'bg-surface rounded-2xl border border-border shadow-sm'}>
           {/* Send error banner */}
           {sendError && (
-            <div className={`px-4 py-2 bg-red-50 text-red-600 text-xs font-medium border-b border-red-100 flex items-center gap-2 ${isCompact ? 'rounded-t-lg' : 'rounded-t-2xl'}`}>
+            <div className={`px-4 py-2 bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 text-xs font-medium border-b border-red-100 dark:border-red-800 flex items-center gap-2 ${isCompact ? 'rounded-t-lg' : 'rounded-t-2xl'}`}>
               <span>{sendError}</span>
             </div>
           )}
@@ -486,7 +486,7 @@ export function MessageInput({
             <div className="flex items-center gap-2 px-3 pt-2.5 pb-1.5 border-b border-border">
               <button
                 onClick={() => imageInputRef.current?.click()}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-purple-700 bg-purple-50 hover:bg-purple-100 rounded-lg transition-colors cursor-pointer"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-950/40 hover:bg-purple-100 dark:hover:bg-purple-900/40 rounded-lg transition-colors cursor-pointer"
               >
                 <ImageIcon className="w-3.5 h-3.5" />
                 添加图片
@@ -555,7 +555,7 @@ export function MessageInput({
                 <button
                   type="button"
                   onClick={onResetSession}
-                  className="w-10 h-10 rounded-lg flex items-center justify-center hover:bg-amber-50 text-muted-foreground hover:text-amber-600 transition-all cursor-pointer"
+                  className="w-10 h-10 rounded-lg flex items-center justify-center hover:bg-amber-50 dark:hover:bg-amber-950/40 text-muted-foreground hover:text-amber-600 dark:hover:text-amber-400 transition-all cursor-pointer"
                   title="清除上下文"
                 >
                   <Brush className="w-4.5 h-4.5" />

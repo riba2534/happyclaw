@@ -175,7 +175,7 @@ export function InviteCodesTab({ currentUser, setNotice, setError }: InviteCodes
                       {ROLE_LABELS[invite.role] || invite.role}
                     </span>
                     {isExpired && <span className="text-xs px-1.5 py-0.5 bg-error-bg text-error rounded">已过期</span>}
-                    {isUsedUp && <span className="text-xs px-1.5 py-0.5 bg-orange-100 text-orange-600 rounded">已用完</span>}
+                    {isUsedUp && <span className="text-xs px-1.5 py-0.5 bg-orange-100 dark:bg-orange-900/40 text-orange-600 dark:text-orange-400 rounded">已用完</span>}
                   </div>
                   <div className="text-xs text-muted-foreground mt-1">
                     创建者: {invite.creator_username} · 使用: {invite.used_count}/{invite.max_uses || '∞'}

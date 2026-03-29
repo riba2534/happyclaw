@@ -351,7 +351,7 @@ export function CreateTaskForm({ onSubmit, onClose, isAdmin }: CreateTaskFormPro
                   placeholder="例如: curl -s https://api.example.com/health | jq .status"
                 />
                 {errors.scriptCommand && (
-                  <p className="mt-1 text-sm text-red-600">{errors.scriptCommand}</p>
+                  <p className="mt-1 text-sm text-red-600 dark:text-red-400">{errors.scriptCommand}</p>
                 )}
                 <p className="mt-1 text-xs text-muted-foreground">
                   命令在群组工作目录下执行，最大 4096 字符
@@ -373,7 +373,7 @@ export function CreateTaskForm({ onSubmit, onClose, isAdmin }: CreateTaskFormPro
                 placeholder={isScript ? '可选的任务描述...' : '输入任务的提示词...'}
               />
               {errors.prompt && (
-                <p className="mt-1 text-sm text-red-600">{errors.prompt}</p>
+                <p className="mt-1 text-sm text-red-600 dark:text-red-400">{errors.prompt}</p>
               )}
             </div>
 
@@ -459,7 +459,7 @@ export function CreateTaskForm({ onSubmit, onClose, isAdmin }: CreateTaskFormPro
                 </>
               )}
               {errors.scheduleValue && (
-                <p className="mt-1 text-sm text-red-600">{errors.scheduleValue}</p>
+                <p className="mt-1 text-sm text-red-600 dark:text-red-400">{errors.scheduleValue}</p>
               )}
             </div>
 
