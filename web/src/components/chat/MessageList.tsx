@@ -5,7 +5,7 @@ import { useAuthStore } from '../../stores/auth';
 import { MessageBubble } from './MessageBubble';
 import { StreamingDisplay } from './StreamingDisplay';
 import { EmojiAvatar } from '../common/EmojiAvatar';
-import { Loader2, ChevronUp, ChevronDown, AlertTriangle, Square } from 'lucide-react';
+import { Loader2, ChevronUp, ChevronDown, AlertTriangle, Square, Code2, Zap, BookOpen, Wrench } from 'lucide-react';
 import { useDisplayMode } from '../../hooks/useDisplayMode';
 
 interface MessageListProps {
@@ -35,10 +35,10 @@ type FlatItem =
   | { type: 'message'; content: Message };
 
 const quickPrompts = [
-  '帮我分析一段代码',
-  '写一个自动化脚本',
-  '解释一个技术概念',
-  '帮我调试一个问题',
+  { icon: Code2, title: '分析代码', desc: '帮我阅读和分析一段代码的逻辑' },
+  { icon: Zap, title: '自动化脚本', desc: '编写一个自动化处理任务的脚本' },
+  { icon: BookOpen, title: '技术概念', desc: '用简单的语言解释一个技术概念' },
+  { icon: Wrench, title: '调试问题', desc: '帮我定位和修复一个 Bug' },
 ];
 
 export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrigger, groupJid, isWaiting, onInterrupt, agentId, onSend }: MessageListProps) {
@@ -273,7 +273,7 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
     <div className="relative flex-1 overflow-hidden overflow-x-hidden">
       <div
         ref={parentRef}
-        className="h-full overflow-y-auto overflow-x-hidden py-6 bg-background"
+        className="h-full overflow-y-auto overflow-x-hidden py-6"
       >
         <div className={displayMode === 'compact' ? 'mx-auto px-4 min-w-0' : 'max-w-4xl mx-auto px-4 min-w-0'}>
         {loading && hasMore && (
@@ -308,7 +308,7 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
                   }}
                 >
                   <div className="flex justify-center my-6">
-                    <span className="bg-card px-4 py-1 rounded-full text-xs text-muted-foreground border border-border">
+                    <span className="bg-surface px-4 py-1 rounded-full text-xs text-muted-foreground border border-border">
                       {item.content}
                     </span>
                   </div>
@@ -416,36 +416,47 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
         </div>
 
         {messages.length === 0 && !loading && (
-          <div className="flex flex-col items-center justify-center h-full px-6">
-            <div className="max-w-sm w-full space-y-6">
-              {/* AI avatar + welcome */}
-              <div className="flex flex-col items-center text-center space-y-3">
-                <div className="w-16 h-16">
-                  <EmojiAvatar
-                    imageUrl={aiImageUrl}
-                    emoji={aiEmoji}
-                    color={aiColor}
-                    fallbackChar={aiName[0]}
-                    size="lg"
-                    className="!w-16 !h-16 !text-2xl"
-                  />
+          <div className="absolute inset-0 flex flex-col items-center justify-center px-6">
+            <div className="max-w-lg w-full space-y-8">
+              {/* Welcome header */}
+              <div className="flex flex-col items-center text-center space-y-4">
+                <div className="relative w-16 h-16">
+                  {/* Breathing glow ring */}
+                  <div className="absolute inset-0 rounded-full bg-brand-200/40 dark:bg-brand-500/20 animate-[breathe_3s_ease-in-out_infinite]" />
+                  {/* Orbiting dot */}
+                  <div className="absolute inset-[-6px] animate-[orbit_6s_linear_infinite]">
+                    <div className="w-2 h-2 rounded-full bg-brand-400" />
+                  </div>
+                  {/* Avatar */}
+                  <div className="relative w-16 h-16 animate-[float_4s_ease-in-out_infinite]">
+                    <EmojiAvatar
+                      imageUrl={aiImageUrl}
+                      emoji={aiEmoji}
+                      color={aiColor}
+                      fallbackChar={aiName[0]}
+                      size="lg"
+                      className="!w-16 !h-16 !text-2xl"
+                    />
+                  </div>
                 </div>
                 <div>
-                  <h3 className="text-lg font-semibold text-foreground">{aiName}</h3>
-                  <p className="text-sm text-muted-foreground mt-1">有什么我可以帮你的吗？</p>
+                  <h2 className="text-2xl font-semibold text-foreground">你好，有什么可以帮你？</h2>
+                  <p className="text-sm text-muted-foreground mt-2">我是 {aiName}，你的 AI 助手。选择下方话题快速开始，或直接输入你的问题。</p>
                 </div>
               </div>
 
-              {/* Quick prompts */}
+              {/* Quick prompt cards — 2x2 grid */}
               {onSend && (
-                <div className="space-y-2">
+                <div className="grid grid-cols-2 gap-3">
                   {quickPrompts.map((prompt) => (
                     <button
-                      key={prompt}
-                      onClick={() => onSend(prompt)}
-                      className="w-full text-left px-4 py-3 rounded-xl text-sm text-foreground transition-all active:scale-[0.98] cursor-pointer bg-card/60 backdrop-blur-sm border border-border/60 shadow-[0_2px_8px_rgba(0,0,0,0.04)] hover:bg-card/80 hover:shadow-[0_4px_12px_rgba(0,0,0,0.06)]"
+                      key={prompt.title}
+                      onClick={() => onSend(prompt.desc)}
+                      className="group text-left p-4 rounded-2xl border border-border/60 bg-muted/30 hover:bg-muted/60 hover:border-border transition-all active:scale-[0.98] cursor-pointer"
                     >
-                      {prompt}
+                      <prompt.icon className="w-5 h-5 mb-2 text-muted-foreground" strokeWidth={1.75} />
+                      <span className="text-sm font-medium text-foreground block">{prompt.title}</span>
+                      <span className="text-xs text-muted-foreground mt-0.5 block">{prompt.desc}</span>
                     </button>
                   ))}
                 </div>
@@ -491,7 +502,7 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
           {!atTop && (
             <button
               onClick={scrollToTop}
-              className="w-10 h-10 rounded-full bg-card border border-border shadow-sm flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+              className="w-8 h-8 rounded-full bg-foreground/5 backdrop-blur-sm flex items-center justify-center text-muted-foreground/60 hover:text-foreground hover:bg-foreground/10 transition-all cursor-pointer"
               title="回到顶部"
             >
               <ChevronUp className="w-4 h-4" />
@@ -500,7 +511,7 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
           {!autoScroll && (
             <button
               onClick={scrollToBottom}
-              className="w-10 h-10 rounded-full bg-card border border-border shadow-sm flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+              className="w-8 h-8 rounded-full bg-foreground/5 backdrop-blur-sm flex items-center justify-center text-muted-foreground/60 hover:text-foreground hover:bg-foreground/10 transition-all cursor-pointer"
               title="回到底部"
             >
               <ChevronDown className="w-4 h-4" />

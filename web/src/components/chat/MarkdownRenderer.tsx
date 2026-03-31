@@ -241,7 +241,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, groupJ
           ),
           tbody: ({ children }) => <tbody className="divide-y divide-border">{children}</tbody>,
           tr: ({ children }) => (
-            <tr className="even:bg-card odd:bg-muted/30">
+            <tr className="even:bg-surface odd:bg-muted/30">
               {children}
             </tr>
           ),

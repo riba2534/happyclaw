@@ -1,9 +1,53 @@
 @import "tailwindcss";
 @import "shadcn/tailwind.css";
-@import "@fontsource-variable/inter";
+/* DM Sans is the primary UI font — loaded locally below (no CDN dependency) */
 @plugin "tailwindcss-animate";
 
 @custom-variant dark (&:is(.dark *));
+
+/* DM Sans — primary UI font (local, no CDN dependency) */
+@font-face {
+  font-family: 'DM Sans';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/fonts/DMSans-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'DM Sans';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/fonts/DMSans-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* Alibaba PuHuiTi 3.0 — Chinese text fallback */
+@font-face {
+  font-family: 'Alibaba PuHuiTi 3';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/AlibabaPuHuiTi-3-55-Regular.woff2') format('woff2');
+  unicode-range: U+4E00-9FFF, U+3400-4DBF, U+3000-303F, U+FF00-FFEF, U+2E80-2EFF, U+3100-312F, U+FE30-FE4F, U+F900-FAFF, U+2F800-2FA1F;
+}
+@font-face {
+  font-family: 'Alibaba PuHuiTi 3';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/AlibabaPuHuiTi-3-65-Medium.woff2') format('woff2');
+  unicode-range: U+4E00-9FFF, U+3400-4DBF, U+3000-303F, U+FF00-FFEF, U+2E80-2EFF, U+3100-312F, U+FE30-FE4F, U+F900-FAFF, U+2F800-2FA1F;
+}
+@font-face {
+  font-family: 'Alibaba PuHuiTi 3';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/AlibabaPuHuiTi-3-75-SemiBold.woff2') format('woff2');
+  unicode-range: U+4E00-9FFF, U+3400-4DBF, U+3000-303F, U+FF00-FFEF, U+2E80-2EFF, U+3100-312F, U+FE30-FE4F, U+F900-FAFF, U+2F800-2FA1F;
+}
 
 /* =====================================================
    Tailwind CSS 4 Theme — shadcn/ui CSS variable mapping
@@ -69,9 +113,9 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
-  --font-sans: 'Inter Variable', system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  --font-serif: 'Inter Variable', system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  --font-mono: 'SF Mono', 'Fira Code', ui-monospace, monospace;
+  --font-sans: 'DM Sans', 'Alibaba PuHuiTi 3', -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-serif: 'DM Sans', 'Alibaba PuHuiTi 3', -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
@@ -250,7 +294,7 @@ html.theme-orange {
   --chart-1: oklch(0.837 0.128 66.29);  --chart-2: oklch(0.705 0.213 47.604);
   --chart-3: oklch(0.646 0.222 41.116);  --chart-4: oklch(0.553 0.195 38.402);
   --chart-5: oklch(0.47 0.157 37.304);
-  --surface: #ffffff;
+  --surface: #FDFCFA;
   --sidebar-background: #FAF9F6;  --sidebar-foreground: #141413;
   --sidebar-primary: oklch(0.646 0.222 41.116);
   --sidebar-primary-foreground: oklch(0.98 0.016 73.684);
@@ -316,7 +360,7 @@ html.font-anthropic body,
 html.font-anthropic input,
 html.font-anthropic textarea,
 html.font-anthropic button {
-  font-family: 'DM Sans', system-ui, 'Segoe UI', Roboto, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Alibaba PuHuiTi 3', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
 }
 html.font-anthropic .font-serif {
   font-family: Georgia, 'Noto Serif SC', 'Times New Roman', serif;
@@ -324,7 +368,7 @@ html.font-anthropic .font-serif {
 html.font-anthropic code,
 html.font-anthropic pre,
 html.font-anthropic .font-mono {
-  font-family: 'Söhne Mono', 'Fira Code', ui-monospace, monospace;
+  font-family: 'Fira Code', ui-monospace, monospace;
 }
 
 /* AI response typography: semibold (600) instead of bold (700) for cleaner readability */
@@ -414,6 +458,30 @@ html.font-anthropic .font-mono {
   border-color: var(--border, #e2e8f0);
 }
 
+/* Lucide icons: nav items set strokeWidth inline (1.75 default, 2 active).
+   No global CSS override — it would conflict with inline SVG attributes. */
+
+/* Welcome avatar animations */
+@keyframes breathe {
+  0%, 100% { transform: scale(1); opacity: 0.4; }
+  50% { transform: scale(1.25); opacity: 0.15; }
+}
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+@keyframes orbit {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-\[breathe_3s_ease-in-out_infinite\],
+  .animate-\[float_4s_ease-in-out_infinite\],
+  .animate-\[orbit_6s_linear_infinite\] {
+    animation: none !important;
+  }
+}
+
 html {
   height: 100%;
   overflow: hidden;
@@ -423,7 +491,7 @@ body {
   height: 100%;
   overflow: hidden;
   margin: 0;
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: var(--font-sans);
   background: var(--background);
   color: var(--foreground);
   -webkit-font-smoothing: antialiased;

@@ -308,7 +308,7 @@ export function SystemSettingsSection() {
               <Label className="mb-1">
                 计费模式
               </Label>
-              <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+              <div className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
                 钱包优先（固定）
               </div>
               <p className="text-xs text-muted-foreground mt-1">
@@ -378,7 +378,7 @@ export function SystemSettingsSection() {
                 value={defaultPlanId}
                 onChange={(e) => handleSetDefaultPlan(e.target.value)}
                 disabled={settingDefault || plans.filter((p: BillingPlan) => p.is_active).length === 0}
-                className="h-9 px-3 text-sm border border-zinc-300 dark:border-zinc-600 rounded-md bg-transparent max-w-64"
+                className="h-9 px-3 text-sm border border-border rounded-md bg-transparent max-w-64"
               >
                 <option value="" disabled>
                   {plans.filter((p: BillingPlan) => p.is_active).length === 0

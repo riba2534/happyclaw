@@ -39,7 +39,7 @@ export function SkeletonStatCards() {
 }
 
 /**
- * TasksPage / ChatSidebar - vertical card list
+ * TasksPage - vertical card list
  */
 export function SkeletonCardList({
   count = 4,

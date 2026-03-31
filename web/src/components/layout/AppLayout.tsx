@@ -1,6 +1,6 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
-import { NavRail } from './NavRail';
+import { UnifiedSidebar } from './UnifiedSidebar';
 import { BottomTabBar } from './BottomTabBar';
 import { ConnectionBanner } from '../common/ConnectionBanner';
 import { wsManager } from '../../api/ws';
@@ -14,6 +14,22 @@ export function AppLayout() {
   const isChatRoute = location.pathname.startsWith('/chat');
   const hideMobileTabBar = /^\/chat\/.+/.test(location.pathname);
   useTheme(); // 应用并同步持久化的主题偏好
+
+  // Sidebar: expanded only on chat route, collapsed on other routes
+  const [userCollapsed, setUserCollapsed] = useState(false);
+  const sidebarCollapsed = isChatRoute ? userCollapsed : true;
+
+  // Keyboard shortcut: Cmd+B (Mac) / Ctrl+B (Windows) to toggle sidebar
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
+        e.preventDefault();
+        if (isChatRoute) setUserCollapsed((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [isChatRoute]);
 
   // 应用级别建立 WebSocket 连接，确保所有页面（非仅 ChatView）都有连接
   useEffect(() => {
@@ -72,8 +88,11 @@ export function AppLayout() {
 
   return (
     <div className="h-screen supports-[height:100dvh]:h-dvh flex flex-col lg:flex-row overflow-hidden safe-area-top">
-      <div className="hidden lg:block h-full">
-        <NavRail />
+      <div className="hidden lg:block h-full flex-shrink-0">
+        <UnifiedSidebar
+          collapsed={sidebarCollapsed}
+          onToggleCollapse={() => setUserCollapsed((prev) => !prev)}
+        />
       </div>
 
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden relative">

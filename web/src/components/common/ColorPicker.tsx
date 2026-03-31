@@ -19,16 +19,15 @@ export function ColorPicker({ value, onChange }: ColorPickerProps) {
         <button
           key={color}
           type="button"
+          aria-label={`选择颜色 ${color}`}
           onClick={() => onChange(color)}
           className={cn(
-            'w-8 h-8 rounded-full cursor-pointer flex items-center justify-center transition-transform hover:scale-110',
-            value === color && 'ring-2 ring-offset-2 ring-ring',
+            'w-8 h-8 rounded-full cursor-pointer transition-transform hover:scale-110 flex items-center justify-center',
+            value === color && 'ring-2 ring-primary ring-offset-2 ring-offset-background',
           )}
           style={{ backgroundColor: color }}
         >
-          {value === color && (
-            <Check className="w-4 h-4 text-white" />
-          )}
+          {value === color && <Check className="w-4 h-4 text-white" strokeWidth={2.5} />}
         </button>
       ))}
     </div>

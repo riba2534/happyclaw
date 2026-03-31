@@ -17,9 +17,7 @@ import { Toaster } from '@/components/ui/sonner';
 
 const ChatPage = lazy(() => import('./pages/ChatPage').then(m => ({ default: m.ChatPage })));
 const TasksPage = lazy(() => import('./pages/TasksPage').then(m => ({ default: m.TasksPage })));
-const MonitorPage = lazy(() => import('./pages/MonitorPage').then(m => ({ default: m.MonitorPage })));
 const SettingsPage = lazy(() => import('./pages/SettingsPage').then(m => ({ default: m.SettingsPage })));
-const UsagePage = lazy(() => import('./pages/UsagePage').then(m => ({ default: m.UsagePage })));
 const BillingPage = lazy(() => import('./pages/BillingPage'));
 
 export function App() {
@@ -61,8 +59,8 @@ export function App() {
           <Route path="/chat/:groupFolder?" element={<Suspense fallback={null}><ChatPage /></Suspense>} />
           <Route path="/groups" element={<Navigate to="/settings?tab=groups" replace />} />
           <Route path="/tasks" element={<Suspense fallback={null}><TasksPage /></Suspense>} />
-          <Route path="/monitor" element={<AuthGuard requireAdmin><Suspense fallback={null}><MonitorPage /></Suspense></AuthGuard>} />
-          <Route path="/usage" element={<Suspense fallback={null}><UsagePage /></Suspense>} />
+          <Route path="/monitor" element={<Navigate to="/settings?tab=monitor" replace />} />
+          <Route path="/usage" element={<Navigate to="/settings?tab=usage" replace />} />
           <Route path="/billing" element={<Suspense fallback={null}><BillingPage /></Suspense>} />
           <Route path="/memory" element={<MemoryPage />} />
           <Route path="/skills" element={<SkillsPage />} />

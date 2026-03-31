@@ -19,12 +19,14 @@ import { McpServersPage } from './McpServersPage';
 import { AgentDefinitionsPage } from './AgentDefinitionsPage';
 import { UsersPage } from './UsersPage';
 import { BindingsSection } from '../components/settings/BindingsSection';
+import { UsagePage } from './UsagePage';
+import { MonitorPage } from './MonitorPage';
 import { Card, CardContent } from '@/components/ui/card';
 import type { SettingsTab } from '../components/settings/types';
 
-const VALID_TABS: SettingsTab[] = ['claude', 'registration', 'appearance', 'system', 'profile', 'my-channels', 'security', 'groups', 'memory', 'skills', 'mcp-servers', 'agent-definitions', 'users', 'about', 'bindings'];
+const VALID_TABS: SettingsTab[] = ['claude', 'registration', 'appearance', 'system', 'profile', 'my-channels', 'security', 'groups', 'memory', 'skills', 'mcp-servers', 'agent-definitions', 'users', 'about', 'bindings', 'usage', 'monitor'];
 const SYSTEM_TABS: SettingsTab[] = ['claude', 'registration', 'appearance', 'system'];
-const FULLPAGE_TABS: SettingsTab[] = ['groups', 'memory', 'skills', 'mcp-servers', 'agent-definitions', 'users', 'bindings'];
+const FULLPAGE_TABS: SettingsTab[] = ['groups', 'memory', 'skills', 'mcp-servers', 'agent-definitions', 'users', 'bindings', 'usage', 'monitor'];
 
 export function SettingsPage() {
   const { user: currentUser } = useAuthStore();
@@ -48,10 +50,12 @@ export function SettingsPage() {
     const raw = searchParams.get('tab') as SettingsTab | null;
     if (raw && VALID_TABS.includes(raw)) {
       if (SYSTEM_TABS.includes(raw) && !canManageSystemConfig) return defaultTab;
+      if (raw === 'monitor' && !canManageSystemConfig) return defaultTab;
+      if (raw === 'users' && !canManageUsers) return defaultTab;
       return raw;
     }
     return defaultTab;
-  }, [searchParams, canManageSystemConfig, mustChangePassword, defaultTab]);
+  }, [searchParams, canManageSystemConfig, canManageUsers, mustChangePassword, defaultTab]);
 
   const handleTabChange = useCallback((tab: SettingsTab) => {
     setNavOpen(false);
@@ -76,6 +80,10 @@ export function SettingsPage() {
     tabs.push({ key: 'mcp-servers', label: 'MCP' });
     tabs.push({ key: 'agent-definitions', label: 'Agent' });
     tabs.push({ key: 'bindings', label: 'IM 绑定' });
+    tabs.push({ key: 'usage', label: '用量' });
+    if (canManageSystemConfig) {
+      tabs.push({ key: 'monitor', label: '监控' });
+    }
     if (canManageUsers) {
       tabs.push({ key: 'users', label: '用户' });
     }
@@ -110,6 +118,8 @@ export function SettingsPage() {
     users: '用户管理',
     about: '关于',
     bindings: 'IM 绑定',
+    usage: '用量统计',
+    monitor: '系统监控',
   };
 
   return (
@@ -177,6 +187,8 @@ export function SettingsPage() {
             {activeTab === 'agent-definitions' && <AgentDefinitionsPage />}
             {activeTab === 'users' && <UsersPage />}
             {activeTab === 'bindings' && <BindingsSection />}
+            {activeTab === 'usage' && <UsagePage />}
+            {activeTab === 'monitor' && <MonitorPage />}
           </>
         ) : (
           <div className="p-4 lg:p-8">
