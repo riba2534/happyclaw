@@ -69,7 +69,7 @@ export function SettingsPage() {
     tabs.push({ key: 'my-channels', label: '消息通道' });
     tabs.push({ key: 'security', label: '安全' });
     if (canManageSystemConfig) {
-      tabs.push({ key: 'claude', label: 'Claude' });
+      tabs.push({ key: 'claude', label: 'Agent' });
       tabs.push({ key: 'registration', label: '注册' });
       tabs.push({ key: 'appearance', label: '全局外观' });
       tabs.push({ key: 'system', label: '系统' });
@@ -103,7 +103,7 @@ export function SettingsPage() {
   }, [activeTab]);
 
   const sectionTitle: Record<SettingsTab, string> = {
-    claude: 'Claude 提供商',
+    claude: 'Agent 提供商',
     registration: '注册管理',
     appearance: '全局外观',
     system: '系统参数',

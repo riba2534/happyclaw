@@ -1408,6 +1408,7 @@ groupRoutes.put('/:jid/env', authMiddleware, async (c) => {
   // Build updated config: only update fields that are explicitly provided
   const updated = { ...current };
 
+  if (data.runtime !== undefined) updated.runtime = data.runtime;
   if (data.anthropicBaseUrl !== undefined)
     updated.anthropicBaseUrl = data.anthropicBaseUrl;
   if (data.anthropicAuthToken !== undefined)
@@ -1418,6 +1419,10 @@ groupRoutes.put('/:jid/env', authMiddleware, async (c) => {
     updated.claudeCodeOauthToken = data.claudeCodeOauthToken;
   if (data.anthropicModel !== undefined)
     updated.anthropicModel = data.anthropicModel;
+  if (data.openaiBaseUrl !== undefined)
+    updated.openaiBaseUrl = data.openaiBaseUrl;
+  if (data.openaiApiKey !== undefined) updated.openaiApiKey = data.openaiApiKey;
+  if (data.codexModel !== undefined) updated.codexModel = data.codexModel;
   if (data.customEnv !== undefined) updated.customEnv = data.customEnv;
 
   try {

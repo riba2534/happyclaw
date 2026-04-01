@@ -46,7 +46,7 @@ export default defineConfig(({ command }) => {
           manifest: {
             name: 'HappyClaw',
             short_name: 'HappyClaw',
-            description: 'Personal Claude Assistant',
+            description: 'Personal AI Agent Workspace',
             theme_color: '#0d9488',
             background_color: '#FAF9F5',
             display: 'standalone',

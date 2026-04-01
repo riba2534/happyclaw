@@ -3,11 +3,14 @@
 export interface UnifiedProviderPublic {
   id: string;
   name: string;
+  runtime: 'claude' | 'codex';
   type: 'official' | 'third_party';
   enabled: boolean;
   weight: number;
   anthropicBaseUrl: string;
   anthropicModel: string;
+  openaiBaseUrl: string;
+  codexModel: string;
   hasAnthropicAuthToken: boolean;
   anthropicAuthTokenMasked: string | null;
   hasAnthropicApiKey: boolean;
@@ -17,6 +20,10 @@ export interface UnifiedProviderPublic {
   hasClaudeOAuthCredentials: boolean;
   claudeOAuthCredentialsExpiresAt: number | null;
   claudeOAuthCredentialsAccessTokenMasked: string | null;
+  hasOpenAIApiKey: boolean;
+  openaiApiKeyMasked: string | null;
+  hasCodexAuthJson: boolean;
+  codexAuthMode: string | null;
   customEnv: Record<string, string>;
   updatedAt: string;
 }

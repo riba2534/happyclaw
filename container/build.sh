@@ -12,9 +12,19 @@ TAG="${1:-latest}"
 echo "Building HappyClaw agent container image..."
 echo "Image: ${IMAGE_NAME}:${TAG}"
 
-# Build with Docker (CACHEBUST ensures claude-code is always latest)
-# --progress=plain ensures clean line-based output for piped log capture (WebSocket streaming)
-docker build --progress=plain --build-arg CACHEBUST="$(date +%s)" -t "${IMAGE_NAME}:${TAG}" .
+if ! command -v docker >/dev/null 2>&1; then
+  echo "ERROR: docker command not found"
+  exit 127
+fi
+
+# Some environments only have the legacy builder and do not support --progress.
+# Detect support at runtime so Homebrew/docker-cli without buildx can still work.
+BUILD_ARGS=(build --build-arg CACHEBUST="$(date +%s)" -t "${IMAGE_NAME}:${TAG}" .)
+if docker build --help 2>/dev/null | grep -q -- '--progress'; then
+  BUILD_ARGS=(build --progress=plain --build-arg CACHEBUST="$(date +%s)" -t "${IMAGE_NAME}:${TAG}" .)
+fi
+
+docker "${BUILD_ARGS[@]}"
 
 echo ""
 echo "Build complete!"

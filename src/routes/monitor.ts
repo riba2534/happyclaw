@@ -20,51 +20,61 @@ import { logger } from '../logger.js';
 
 const execFileAsync = promisify(execFile);
 
-// --- Claude Code version cache ---
+// --- Agent runtime version cache ---
 
-interface VersionInfo {
+interface RuntimeVersionInfo {
   host: string | null;
   container: string | null;
   latest: string | null;
 }
 
+interface AgentRuntimeVersions {
+  claude: RuntimeVersionInfo;
+  codex: RuntimeVersionInfo;
+}
+
 let cachedVersions: {
-  info: VersionInfo;
+  info: AgentRuntimeVersions;
   fetchedAt: number;
   imageId: string | null;
 } | null = null;
 const VERSION_CACHE_TTL = 60 * 60 * 1000;
 
-// Latest version cache (separate TTL, queried from npm registry)
-let cachedLatestVersion: { version: string | null; fetchedAt: number } | null =
-  null;
+// Latest version caches (queried from npm registry)
+const cachedLatestVersions = new Map<
+  string,
+  { version: string | null; fetchedAt: number }
+>();
 const LATEST_VERSION_CACHE_TTL = 30 * 60 * 1000; // 30min
 
-/** Query latest Claude Code version from npm registry */
-async function getLatestClaudeCodeVersion(): Promise<string | null> {
+async function getLatestNpmPackageVersion(pkgName: string): Promise<string | null> {
   const now = Date.now();
-  if (
-    cachedLatestVersion &&
-    now - cachedLatestVersion.fetchedAt < LATEST_VERSION_CACHE_TTL
-  ) {
-    return cachedLatestVersion.version;
+  const cached = cachedLatestVersions.get(pkgName);
+  if (cached && now - cached.fetchedAt < LATEST_VERSION_CACHE_TTL) {
+    return cached.version;
   }
 
   try {
-    const { stdout } = await execFileAsync(
-      'npm',
-      ['view', '@anthropic-ai/claude-code', 'version'],
-      { timeout: 15000 },
-    );
+    const { stdout } = await execFileAsync('npm', ['view', pkgName, 'version'], {
+      timeout: 15000,
+    });
     const version = stdout.trim() || null;
-    cachedLatestVersion = { version, fetchedAt: now };
+    cachedLatestVersions.set(pkgName, { version, fetchedAt: now });
     return version;
   } catch {
     // Fallback: keep stale cache if available
-    if (cachedLatestVersion) return cachedLatestVersion.version;
-    cachedLatestVersion = { version: null, fetchedAt: now };
+    if (cached) return cached.version;
+    cachedLatestVersions.set(pkgName, { version: null, fetchedAt: now });
     return null;
   }
+}
+
+async function getLatestClaudeCodeVersion(): Promise<string | null> {
+  return getLatestNpmPackageVersion('@anthropic-ai/claude-code');
+}
+
+async function getLatestCodexVersion(): Promise<string | null> {
+  return getLatestNpmPackageVersion('@openai/codex');
 }
 
 /** Get host Claude Code version by running SDK's built-in cli.js --version */
@@ -116,7 +126,31 @@ async function getContainerClaudeCodeVersion(): Promise<string | null> {
   }
 }
 
-async function getClaudeCodeVersions(): Promise<VersionInfo> {
+async function getHostCodexVersion(): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync('codex', ['--version'], {
+      timeout: 10000,
+    });
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+async function getContainerCodexVersion(): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      'docker',
+      ['run', '--rm', '--entrypoint', 'codex', CONTAINER_IMAGE, '--version'],
+      { timeout: 30000 },
+    );
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+async function getAgentRuntimeVersions(): Promise<AgentRuntimeVersions> {
   const now = Date.now();
   const imageId = await getDockerImageId();
 
@@ -129,13 +163,26 @@ async function getClaudeCodeVersions(): Promise<VersionInfo> {
     return cachedVersions.info;
   }
 
-  // Fetch all versions concurrently
-  const [host, container, latest] = await Promise.all([
+  const [claudeHost, claudeContainer, claudeLatest, codexHost, codexContainer, codexLatest] = await Promise.all([
     getHostClaudeCodeVersion(),
     imageId ? getContainerClaudeCodeVersion() : Promise.resolve(null),
     getLatestClaudeCodeVersion(),
+    getHostCodexVersion(),
+    imageId ? getContainerCodexVersion() : Promise.resolve(null),
+    getLatestCodexVersion(),
   ]);
-  const info: VersionInfo = { host, container, latest };
+  const info: AgentRuntimeVersions = {
+    claude: {
+      host: claudeHost,
+      container: claudeContainer,
+      latest: claudeLatest,
+    },
+    codex: {
+      host: codexHost,
+      container: codexContainer,
+      latest: codexLatest,
+    },
+  };
 
   cachedVersions = { info, fetchedAt: now, imageId };
   return info;
@@ -229,6 +276,49 @@ async function checkDockerImageExists(): Promise<boolean> {
   }
 }
 
+async function getDockerBuildPreflight(): Promise<{
+  ok: boolean;
+  error?: string;
+}> {
+  try {
+    await execFileAsync('docker', ['--version'], { timeout: 5000 });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') {
+      return { ok: false, error: '未检测到 docker 命令，请先安装 Docker CLI' };
+    }
+    return { ok: false, error: '无法执行 docker 命令，请检查 Docker 安装' };
+  }
+
+  try {
+    await execFileAsync('docker', ['info'], { timeout: 10000 });
+  } catch (err) {
+    const stderr =
+      typeof err === 'object' &&
+      err !== null &&
+      'stderr' in err &&
+      typeof (err as { stderr?: unknown }).stderr === 'string'
+        ? (err as { stderr: string }).stderr
+        : '';
+    const stdout =
+      typeof err === 'object' &&
+      err !== null &&
+      'stdout' in err &&
+      typeof (err as { stdout?: unknown }).stdout === 'string'
+        ? (err as { stdout: string }).stdout
+        : '';
+    const detail = (stderr || stdout).trim();
+    return {
+      ok: false,
+      error: detail
+        ? `Docker daemon 不可用：${detail}`
+        : 'Docker daemon 未运行，请先启动 Docker Desktop / OrbStack / Colima',
+    };
+  }
+
+  return { ok: true };
+}
+
 // GET /api/status - 获取系统状态
 monitorRoutes.get('/status', authMiddleware, async (c) => {
   const deps = getWebDeps();
@@ -283,7 +373,7 @@ monitorRoutes.get('/status', authMiddleware, async (c) => {
     groups: filteredGroups,
     dockerImageExists,
     dockerBuildInProgress: buildState.building,
-    claudeCodeVersions: isAdmin ? await getClaudeCodeVersions() : undefined,
+    agentRuntimeVersions: isAdmin ? await getAgentRuntimeVersions() : undefined,
     dockerBuildLogs:
       isAdmin && buildState.building ? buildState.logs.slice(-50) : undefined,
     dockerBuildResult: isAdmin ? buildState.result : undefined,
@@ -305,6 +395,11 @@ monitorRoutes.post(
         },
         409,
       );
+    }
+
+    const preflight = await getDockerBuildPreflight();
+    if (!preflight.ok) {
+      return c.json({ error: preflight.error || 'Docker 不可用' }, 400);
     }
 
     const authUser = c.get('user') as AuthUser;

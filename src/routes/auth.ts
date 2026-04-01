@@ -135,6 +135,9 @@ function buildSetupStatus() {
   // causing getClaudeProviderConfig() (first-match) to return an unconfigured provider.
   const providers = getEnabledProviders();
   const claudeConfigured = providers.some((p) => {
+    if (p.runtime === 'codex') {
+      return !!p.openaiApiKey?.trim() || !!p.codexAuthJson?.trim();
+    }
     const hasOfficial =
       !!p.claudeCodeOauthToken?.trim() ||
       !!p.claudeOAuthCredentials ||

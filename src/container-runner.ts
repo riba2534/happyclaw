@@ -20,20 +20,30 @@ import {
   validateAdditionalMounts,
 } from './mount-security.js';
 import {
+  buildCodexContainerEnvLines,
   buildContainerEnvLines,
   getClaudeProviderConfig,
+  getCodexProviderConfig,
   getContainerEnvConfig,
   getEnabledProviders,
   getBalancingConfig,
+  getPrimaryProvider,
   getSystemSettings,
+  mergeCodexEnvConfig,
   mergeClaudeEnvConfig,
+  providerToCodexConfig,
   resolveProviderById,
   shellQuoteEnvLines,
+  writeCodexAuthFile,
   writeCredentialsFile,
 } from './runtime-config.js';
 import { providerPool } from './provider-pool.js';
 import { isApiError } from './agent-output-parser.js';
-import type { ClaudeProviderConfig } from './runtime-config.js';
+import type {
+  ClaudeProviderConfig,
+  CodexProviderConfig,
+  UnifiedProvider,
+} from './runtime-config.js';
 import { loadUserMcpServers } from './mcp-utils.js';
 import { MessageSourceKind, RegisteredGroup, StreamEvent } from './types.js';
 import {
@@ -149,8 +159,68 @@ function mkdirForContainer(dirPath: string): void {
 }
 
 interface ResolvedProvider {
-  config: ClaudeProviderConfig;
+  provider: UnifiedProvider;
   customEnv: Record<string, string>;
+}
+
+function getSelectedRuntime(
+  override: ReturnType<typeof getContainerEnvConfig>,
+  provider?: UnifiedProvider | null,
+): 'claude' | 'codex' {
+  return override.runtime ?? provider?.runtime ?? 'claude';
+}
+
+function buildRuntimeEnv(
+  override: ReturnType<typeof getContainerEnvConfig>,
+  provider?: UnifiedProvider | null,
+  profileCustomEnv?: Record<string, string>,
+): {
+  runtime: 'claude' | 'codex';
+  envLines: string[];
+  mergedClaudeConfig?: ClaudeProviderConfig;
+  mergedCodexConfig?: CodexProviderConfig;
+} {
+  const runtime = getSelectedRuntime(override, provider);
+
+  if (runtime === 'codex') {
+    const globalCodexConfig =
+      provider?.runtime === 'codex'
+        ? providerToCodexConfig(provider)
+        : getCodexProviderConfig();
+    const mergedCodexConfig = mergeCodexEnvConfig(globalCodexConfig, override);
+    return {
+      runtime,
+      envLines: buildCodexContainerEnvLines(
+        globalCodexConfig,
+        override,
+        profileCustomEnv,
+      ),
+      mergedCodexConfig,
+    };
+  }
+
+  const globalClaudeConfig =
+    provider?.runtime === 'claude'
+      ? {
+          anthropicBaseUrl: provider.anthropicBaseUrl,
+          anthropicAuthToken: provider.anthropicAuthToken,
+          anthropicApiKey: provider.anthropicApiKey,
+          claudeCodeOauthToken: provider.claudeCodeOauthToken,
+          claudeOAuthCredentials: provider.claudeOAuthCredentials,
+          anthropicModel: provider.anthropicModel,
+          updatedAt: provider.updatedAt,
+        }
+      : getClaudeProviderConfig();
+  const mergedClaudeConfig = mergeClaudeEnvConfig(globalClaudeConfig, override);
+  return {
+    runtime,
+    envLines: buildContainerEnvLines(
+      globalClaudeConfig,
+      override,
+      profileCustomEnv,
+    ),
+    mergedClaudeConfig,
+  };
 }
 
 /**
@@ -162,9 +232,12 @@ function trySelectPoolProvider(
 ): { profileId: string; resolved: ResolvedProvider } | null {
   const override = getContainerEnvConfig(groupFolder);
   const hasOverride = !!(
+    override.runtime ||
     override.anthropicApiKey ||
     override.anthropicAuthToken ||
-    override.anthropicBaseUrl
+    override.anthropicBaseUrl ||
+    override.openaiApiKey ||
+    override.openaiBaseUrl
   );
   if (hasOverride) return null;
 
@@ -181,7 +254,7 @@ function trySelectPoolProvider(
     providerPool.acquireSession(profileId);
     return {
       profileId,
-      resolved: { config: resolved.config, customEnv: resolved.customEnv },
+      resolved: { provider: resolved.provider, customEnv: resolved.customEnv },
     };
   } catch (err) {
     logger.warn({ err }, 'Provider pool selection failed, falling back to active profile');
@@ -280,6 +353,13 @@ function buildVolumeMounts(
     containerPath: '/home/node/.claude',
     readonly: false,
   });
+  const groupCodexDir = path.join(path.dirname(groupSessionsDir), '.codex');
+  mkdirForContainer(groupCodexDir);
+  mounts.push({
+    hostPath: groupCodexDir,
+    containerPath: '/home/node/.codex',
+    readonly: false,
+  });
 
   // Skills：以只读卷挂载宿主机目录（由 entrypoint 创建符号链接）
   // 用户的所有 skills 在其所有工作区中全量生效
@@ -341,13 +421,14 @@ function buildVolumeMounts(
   // Global config merged with per-container overrides.
   const envDir = path.join(DATA_DIR, 'env', group.folder);
   fs.mkdirSync(envDir, { recursive: true });
-  const globalConfig = resolvedProvider?.config ?? getClaudeProviderConfig();
+  const selectedProvider = resolvedProvider?.provider ?? getPrimaryProvider();
   const containerOverride = getContainerEnvConfig(group.folder);
-  const envLines = buildContainerEnvLines(
-    globalConfig,
+  const runtimeEnv = buildRuntimeEnv(
     containerOverride,
+    selectedProvider,
     resolvedProvider?.customEnv,
   );
+  const envLines = runtimeEnv.envLines;
   if (envLines.length > 0) {
     const envFilePath = path.join(envDir, 'env');
     const quotedLines = shellQuoteEnvLines(envLines);
@@ -370,14 +451,23 @@ function buildVolumeMounts(
   }
 
   // Write .credentials.json for OAuth credentials (session dir is already mounted)
-  const mergedConfig = mergeClaudeEnvConfig(globalConfig, containerOverride);
-  if (mergedConfig.claudeOAuthCredentials) {
+  if (runtimeEnv.runtime === 'claude' && runtimeEnv.mergedClaudeConfig?.claudeOAuthCredentials) {
     try {
-      writeCredentialsFile(groupSessionsDir, mergedConfig);
+      writeCredentialsFile(groupSessionsDir, runtimeEnv.mergedClaudeConfig);
     } catch (err) {
       logger.warn(
         { group: group.name, err },
         'Failed to write .credentials.json',
+      );
+    }
+  }
+  if (runtimeEnv.runtime === 'codex' && runtimeEnv.mergedCodexConfig?.codexAuthJson) {
+    try {
+      writeCodexAuthFile(groupCodexDir, runtimeEnv.mergedCodexConfig);
+    } catch (err) {
+      logger.warn(
+        { group: group.name, err },
+        'Failed to write Codex auth.json',
       );
     }
   }
@@ -900,6 +990,8 @@ export async function runHostAgent(
       )
     : path.join(DATA_DIR, 'sessions', group.folder, '.claude');
   fs.mkdirSync(groupSessionsDir, { recursive: true });
+  const groupCodexDir = path.join(path.dirname(groupSessionsDir), '.codex');
+  fs.mkdirSync(groupCodexDir, { recursive: true });
 
   // 3. 写入 settings.json（合并模式，不覆盖已有用户配置）
   // Load user's global MCP servers (same logic as Docker mode).
@@ -966,16 +1058,17 @@ export async function runHostAgent(
   const containerOverride = getContainerEnvConfig(group.folder);
   const hostPoolResult = trySelectPoolProvider(group.folder);
   const hostSelectedProfileId = hostPoolResult?.profileId ?? null;
-  const globalConfig = hostPoolResult?.resolved.config ?? getClaudeProviderConfig();
+  const selectedProvider =
+    hostPoolResult?.resolved.provider ?? getPrimaryProvider();
+  const runtimeEnv = buildRuntimeEnv(
+    containerOverride,
+    selectedProvider,
+    hostPoolResult?.resolved.customEnv,
+  );
 
   try {
     // 配置层环境变量
-    const envLines = buildContainerEnvLines(
-      globalConfig,
-      containerOverride,
-      hostPoolResult?.resolved.customEnv,
-    );
-    for (const line of envLines) {
+    for (const line of runtimeEnv.envLines) {
       const eqIdx = line.indexOf('=');
       if (eqIdx > 0) {
         hostEnv[line.slice(0, eqIdx)] = line.slice(eqIdx + 1);
@@ -983,14 +1076,29 @@ export async function runHostAgent(
     }
 
     // Write .credentials.json for OAuth credentials
-    const mergedConfig = mergeClaudeEnvConfig(globalConfig, containerOverride);
-    if (mergedConfig.claudeOAuthCredentials) {
+    if (
+      runtimeEnv.runtime === 'claude' &&
+      runtimeEnv.mergedClaudeConfig?.claudeOAuthCredentials
+    ) {
       try {
-        writeCredentialsFile(groupSessionsDir, mergedConfig);
+        writeCredentialsFile(groupSessionsDir, runtimeEnv.mergedClaudeConfig);
       } catch (err) {
         logger.warn(
           { folder: group.folder, err },
           'Failed to write .credentials.json for host agent',
+        );
+      }
+    }
+    if (
+      runtimeEnv.runtime === 'codex' &&
+      runtimeEnv.mergedCodexConfig?.codexAuthJson
+    ) {
+      try {
+        writeCodexAuthFile(groupCodexDir, runtimeEnv.mergedCodexConfig);
+      } catch (err) {
+        logger.warn(
+          { folder: group.folder, err },
+          'Failed to write Codex auth.json for host agent',
         );
       }
     }

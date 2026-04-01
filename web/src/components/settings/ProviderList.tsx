@@ -76,6 +76,18 @@ function CredentialBadges({ provider }: { provider: ProviderWithHealth }) {
   if (provider.hasAnthropicAuthToken) {
     badges.push({ label: 'Auth Token', color: 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800' });
   }
+  if (provider.hasOpenAIApiKey) {
+    badges.push({ label: 'OpenAI API Key', color: 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800' });
+  }
+  if (provider.hasCodexAuthJson) {
+    badges.push({
+      label:
+        provider.codexAuthMode === 'chatgpt'
+          ? 'ChatGPT OAuth'
+          : 'Codex OAuth',
+      color: 'bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-800',
+    });
+  }
 
   if (badges.length === 0) {
     return <span className="text-xs text-muted-foreground italic">未配置凭据</span>;
@@ -147,12 +159,18 @@ export function ProviderList({
                       </span>
                       <span
                         className={`text-[11px] px-1.5 py-0.5 rounded shrink-0 ${
-                          provider.type === 'official'
+                          provider.runtime === 'codex'
+                            ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300'
+                            : provider.type === 'official'
                             ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300'
                             : 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300'
                         }`}
                       >
-                        {provider.type === 'official' ? '官方' : '第三方'}
+                        {provider.runtime === 'codex'
+                          ? `Codex ${provider.type === 'official' ? '官方' : '兼容'}`
+                          : provider.type === 'official'
+                            ? 'Claude 官方'
+                            : 'Claude 第三方'}
                       </span>
                     </div>
 
@@ -215,16 +233,34 @@ export function ProviderList({
 
                   {/* 第二行：关键信息摘要 */}
                   <div className="mt-1.5 ml-4 flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
-                    {provider.type === 'third_party' && provider.anthropicBaseUrl && (
-                      <span className="font-mono truncate max-w-[200px]" title={provider.anthropicBaseUrl}>
-                        {provider.anthropicBaseUrl}
-                      </span>
-                    )}
-                    {provider.anthropicModel && (
-                      <span className="font-mono text-muted-foreground">
-                        {provider.anthropicModel}
-                      </span>
-                    )}
+                    {provider.runtime === 'codex'
+                      ? (
+                        <>
+                          {provider.openaiBaseUrl && (
+                            <span className="font-mono truncate max-w-[200px]" title={provider.openaiBaseUrl}>
+                              {provider.openaiBaseUrl}
+                            </span>
+                          )}
+                          {provider.codexModel && (
+                            <span className="font-mono text-muted-foreground">
+                              {provider.codexModel}
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          {provider.type === 'third_party' && provider.anthropicBaseUrl && (
+                            <span className="font-mono truncate max-w-[200px]" title={provider.anthropicBaseUrl}>
+                              {provider.anthropicBaseUrl}
+                            </span>
+                          )}
+                          {provider.anthropicModel && (
+                            <span className="font-mono text-muted-foreground">
+                              {provider.anthropicModel}
+                            </span>
+                          )}
+                        </>
+                      )}
                     <CredentialBadges provider={provider} />
                   </div>
 

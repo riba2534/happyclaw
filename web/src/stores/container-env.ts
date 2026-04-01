@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { api } from '../api/client';
 
 export interface ContainerEnvPublicConfig {
+  runtime: 'claude' | 'codex' | null;
   anthropicBaseUrl: string;
   anthropicAuthTokenMasked: string | null;
   anthropicApiKeyMasked: string | null;
@@ -10,6 +11,10 @@ export interface ContainerEnvPublicConfig {
   hasAnthropicApiKey: boolean;
   hasClaudeCodeOauthToken: boolean;
   anthropicModel: string;
+  openaiBaseUrl: string;
+  openaiApiKeyMasked: string | null;
+  hasOpenAIApiKey: boolean;
+  codexModel: string;
   customEnv: Record<string, string>;
 }
 
@@ -21,11 +26,15 @@ interface ContainerEnvState {
 
   loadConfig: (jid: string) => Promise<void>;
   saveConfig: (jid: string, data: {
+    runtime?: 'claude' | 'codex';
     anthropicBaseUrl?: string;
     anthropicAuthToken?: string;
     anthropicApiKey?: string;
     claudeCodeOauthToken?: string;
     anthropicModel?: string;
+    openaiBaseUrl?: string;
+    openaiApiKey?: string;
+    codexModel?: string;
     customEnv?: Record<string, string>;
   }) => Promise<boolean>;
 }

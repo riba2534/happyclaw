@@ -139,7 +139,7 @@ export function MonitorPage() {
                       <AlertTriangle className="w-4 h-4 text-error" />
                     )}
                     <span className={`text-sm font-medium ${buildResult.success ? 'text-success' : 'text-error'}`}>
-                      {buildResult.success ? '构建成功（已使用最新 Claude Code SDK/CLI）' : '构建失败'}
+                      {buildResult.success ? '构建成功（镜像已更新 Claude / Codex 运行时依赖）' : '构建失败'}
                     </span>
                   </div>
                   {buildResult.error && (

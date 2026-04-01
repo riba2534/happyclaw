@@ -1,6 +1,12 @@
 import { create } from 'zustand';
 import { api } from '../api/client';
 
+export interface RuntimeVersionInfo {
+  host: string | null;
+  container: string | null;
+  latest: string | null;
+}
+
 export interface SystemStatus {
   activeContainers: number;
   activeHostProcesses?: number;
@@ -11,7 +17,10 @@ export interface SystemStatus {
   uptime: number;
   dockerImageExists: boolean;
   dockerBuildInProgress?: boolean;
-  claudeCodeVersions?: { host: string | null; container: string | null; latest: string | null } | null;
+  agentRuntimeVersions?: {
+    claude: RuntimeVersionInfo;
+    codex: RuntimeVersionInfo;
+  } | null;
   dockerBuildLogs?: string[];
   dockerBuildResult?: { success: boolean; error?: string } | null;
   groups: Array<{

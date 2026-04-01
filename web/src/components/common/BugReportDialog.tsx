@@ -28,7 +28,8 @@ interface BugReportDialogProps {
 interface Capabilities {
   ghAvailable: boolean;
   ghUsername: string | null;
-  claudeAvailable: boolean;
+  agentAvailable: boolean;
+  agentRuntime: 'claude' | 'codex' | null;
 }
 
 interface GenerateResult {
@@ -72,7 +73,7 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
   useEffect(() => {
     if (open) {
       api.get<Capabilities>('/api/bug-report/capabilities').then(setCaps).catch(() => {
-        setCaps({ ghAvailable: false, ghUsername: null, claudeAvailable: false });
+        setCaps({ ghAvailable: false, ghUsername: null, agentAvailable: false, agentRuntime: null });
       });
     }
   }, [open]);
@@ -163,7 +164,7 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
     setScreenshots((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
-  // --- Generate report (Claude analysis) ---
+  // --- Generate report (agent analysis) ---
 
   const generateReport = useCallback(async (): Promise<GenerateResult | null> => {
     try {

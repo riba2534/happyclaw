@@ -188,9 +188,12 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
       try {
         await api.post('/api/config/claude/providers', {
           name: `${provider.name} (副本)`,
+          runtime: provider.runtime,
           type: 'third_party',
           anthropicBaseUrl: provider.anthropicBaseUrl,
           anthropicModel: provider.anthropicModel,
+          openaiBaseUrl: provider.openaiBaseUrl,
+          codexModel: provider.codexModel,
           customEnv: provider.customEnv,
           enabled: false,
         });
@@ -233,6 +236,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
   );
 
   const busy = loading || togglingId !== null || deletingId !== null;
+  const hasClaudeProviders = providers.some((provider) => provider.runtime === 'claude');
 
   if (loading && providers.length === 0) {
     return (
@@ -264,12 +268,12 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
         disabled={busy}
       />
 
-      {/* Anthropic 服务状态 */}
-      {claudeStatus && (
+      {/* Claude 服务状态（仅 Claude 运行时） */}
+      {claudeStatus && hasClaudeProviders && (
         <div className="rounded-xl border border-border px-4 py-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-sm">
-              <span className="text-foreground font-medium">Anthropic 服务状态</span>
+              <span className="text-foreground font-medium">Claude 服务状态</span>
               <span className="text-xs text-muted-foreground">
                 {claudeStatus.indicator === 'none'
                   ? '正常运行'

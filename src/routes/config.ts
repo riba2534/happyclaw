@@ -1,7 +1,10 @@
 // Configuration management routes
 
 import { randomBytes, createHash } from 'node:crypto';
+import fs from 'node:fs';
 import { Agent as HttpsAgent } from 'node:https';
+import os from 'node:os';
+import path from 'node:path';
 import { ProxyAgent } from 'proxy-agent';
 import QRCode from 'qrcode';
 import { Hono } from 'hono';
@@ -258,6 +261,7 @@ configRoutes.post(
       const provider = createProvider(validation.data);
       appendClaudeConfigAudit(actor, 'create_provider', [
         `id:${provider.id}`,
+        `runtime:${provider.runtime}`,
         `type:${provider.type}`,
         `name:${provider.name}`,
       ]);
@@ -359,6 +363,14 @@ configRoutes.put(
         changedFields.push('claudeOAuthCredentials:set');
       if (validation.data.clearClaudeOAuthCredentials)
         changedFields.push('claudeOAuthCredentials:clear');
+      if (validation.data.openaiApiKey !== undefined)
+        changedFields.push('openaiApiKey:set');
+      if (validation.data.clearOpenAIApiKey)
+        changedFields.push('openaiApiKey:clear');
+      if (validation.data.codexAuthJson !== undefined)
+        changedFields.push('codexAuthJson:set');
+      if (validation.data.clearCodexAuthJson)
+        changedFields.push('codexAuthJson:clear');
 
       appendClaudeConfigAudit(actor, 'update_provider_secrets', [
         `id:${id}`,
@@ -368,6 +380,12 @@ configRoutes.put(
       // Update .credentials.json if OAuth credentials changed
       if (validation.data.claudeOAuthCredentials && updated.enabled) {
         updateAllSessionCredentials(providerToConfig(updated));
+        deps?.queue?.closeAllActiveForCredentialRefresh();
+      }
+      if (
+        (validation.data.codexAuthJson || validation.data.clearCodexAuthJson) &&
+        updated.enabled
+      ) {
         deps?.queue?.closeAllActiveForCredentialRefresh();
       }
 
@@ -389,6 +407,67 @@ configRoutes.put(
         err instanceof Error ? err.message : 'Failed to update secrets';
       logger.warn({ err }, 'Failed to update provider secrets');
       return c.json({ error: message }, 400);
+    }
+  },
+);
+
+configRoutes.post(
+  '/codex/oauth/import-local',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as {
+      targetProviderId?: unknown;
+    };
+    const targetProviderId =
+      typeof body.targetProviderId === 'string' && body.targetProviderId.trim()
+        ? body.targetProviderId.trim()
+        : null;
+
+    const authFilePath = path.join(os.homedir(), '.codex', 'auth.json');
+    if (!fs.existsSync(authFilePath)) {
+      return c.json(
+        { error: '当前服务器未检测到 ~/.codex/auth.json，请先执行 codex login' },
+        400,
+      );
+    }
+
+    try {
+      const codexAuthJson = fs.readFileSync(authFilePath, 'utf-8').trim();
+      const actor = (c.get('user') as AuthUser).username;
+
+      const provider = targetProviderId
+        ? updateProviderSecrets(targetProviderId, {
+            codexAuthJson,
+            clearOpenAIApiKey: true,
+          })
+        : createProvider({
+            name: '官方 Codex (OAuth)',
+            runtime: 'codex',
+            type: 'official',
+            codexAuthJson,
+            enabled: true,
+          });
+
+      appendClaudeConfigAudit(actor, 'codex_oauth_import', [
+        `providerId:${provider.id}`,
+        'codexAuthJson:set',
+      ]);
+
+      if (provider.enabled) {
+        deps?.queue?.closeAllActiveForCredentialRefresh();
+      }
+
+      return c.json(toPublicProvider(provider));
+    } catch (err) {
+      logger.warn({ err }, 'Failed to import local Codex auth.json');
+      return c.json(
+        {
+          error:
+            err instanceof Error ? err.message : '导入本机 Codex 登录态失败',
+        },
+        400,
+      );
     }
   },
 );

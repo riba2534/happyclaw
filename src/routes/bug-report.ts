@@ -8,7 +8,11 @@ import { Hono } from 'hono';
 
 import { DATA_DIR } from '../config.js';
 import { getUserHomeGroup } from '../db.js';
-import { getClaudeProviderConfig } from '../runtime-config.js';
+import {
+  getClaudeProviderConfig,
+  getCodexProviderConfig,
+  getPrimaryProvider,
+} from '../runtime-config.js';
 import { sdkQuery } from '../sdk-query.js';
 import { logger } from '../logger.js';
 import { authMiddleware } from '../middleware/auth.js';
@@ -47,21 +51,38 @@ function checkCooldown(userId: string, map: Map<string, number> = cooldowns, coo
 let capCache: {
   ghAvailable: boolean;
   ghUsername: string | null;
-  claudeAvailable: boolean;
+  agentAvailable: boolean;
+  agentRuntime: 'claude' | 'codex' | null;
   checkedAt: number;
 } | null = null;
 const CAP_CACHE_TTL = 5 * 60 * 1000;
 
+function hasClaudeRuntimeConfig(): boolean {
+  const providerConfig = getClaudeProviderConfig();
+  return !!(
+    providerConfig.anthropicApiKey ||
+    providerConfig.claudeCodeOauthToken ||
+    providerConfig.claudeOAuthCredentials
+  );
+}
+
+function hasCodexRuntimeConfig(): boolean {
+  const providerConfig = getCodexProviderConfig();
+  return !!(providerConfig.openaiApiKey || providerConfig.codexAuthJson);
+}
+
 async function checkCapabilities(): Promise<{
   ghAvailable: boolean;
   ghUsername: string | null;
-  claudeAvailable: boolean;
+  agentAvailable: boolean;
+  agentRuntime: 'claude' | 'codex' | null;
 }> {
   if (capCache && Date.now() - capCache.checkedAt < CAP_CACHE_TTL) {
     return {
       ghAvailable: capCache.ghAvailable,
       ghUsername: capCache.ghUsername,
-      claudeAvailable: capCache.claudeAvailable,
+      agentAvailable: capCache.agentAvailable,
+      agentRuntime: capCache.agentRuntime,
     };
   }
 
@@ -70,9 +91,28 @@ async function checkCapabilities(): Promise<{
       .then(() => true)
       .catch(() => false),
   ]);
-  // Claude availability is determined by provider config, not CLI presence
-  const providerConfig = getClaudeProviderConfig();
-  const claude = !!(providerConfig.anthropicApiKey || providerConfig.claudeCodeOauthToken || providerConfig.claudeOAuthCredentials);
+  const primaryProvider = getPrimaryProvider();
+  let agentRuntime: 'claude' | 'codex' | null = primaryProvider?.runtime ?? null;
+  let agentAvailable = false;
+
+  if (primaryProvider?.runtime === 'codex') {
+    agentAvailable = !!(primaryProvider.openaiApiKey || primaryProvider.codexAuthJson);
+  } else if (primaryProvider?.runtime === 'claude') {
+    agentAvailable = !!(
+      primaryProvider.anthropicApiKey ||
+      primaryProvider.claudeCodeOauthToken ||
+      primaryProvider.claudeOAuthCredentials
+    );
+  }
+
+  if (!agentAvailable && hasCodexRuntimeConfig()) {
+    agentRuntime = 'codex';
+    agentAvailable = true;
+  }
+  if (!agentAvailable && hasClaudeRuntimeConfig()) {
+    agentRuntime = 'claude';
+    agentAvailable = true;
+  }
 
   // Get gh username if available
   let ghUsername: string | null = null;
@@ -85,8 +125,14 @@ async function checkCapabilities(): Promise<{
     }
   }
 
-  capCache = { ghAvailable: gh, ghUsername, claudeAvailable: claude, checkedAt: Date.now() };
-  return { ghAvailable: gh, ghUsername, claudeAvailable: claude };
+  capCache = {
+    ghAvailable: gh,
+    ghUsername,
+    agentAvailable,
+    agentRuntime,
+    checkedAt: Date.now(),
+  };
+  return { ghAvailable: gh, ghUsername, agentAvailable, agentRuntime };
 }
 
 // --- Helpers ---
@@ -330,10 +376,10 @@ bugReportRoutes.post('/generate', authMiddleware, async (c) => {
   const rawLogs = readRecentLogs(folder);
   const logs = sanitizeLogs(rawLogs);
 
-  // Try Claude analysis
+  // Try configured agent runtime analysis
   const caps = await checkCapabilities();
-  if (!caps.claudeAvailable) {
-    logger.info('bug-report: claude CLI not available, using fallback template');
+  if (!caps.agentAvailable) {
+    logger.info('bug-report: no configured agent runtime available, using fallback template');
     const fallback = buildFallbackReport(description, systemInfo, logs);
     return c.json({ ...fallback, systemInfo });
   }
@@ -342,8 +388,12 @@ bugReportRoutes.post('/generate', authMiddleware, async (c) => {
 
   try {
     logger.info(
-      { promptLen: prompt.length, userId: user.id },
-      'bug-report: invoking Claude SDK',
+      {
+        promptLen: prompt.length,
+        runtime: caps.agentRuntime ?? 'unknown',
+        userId: user.id,
+      },
+      'bug-report: invoking configured agent runtime',
     );
 
     const model = process.env.RECALL_MODEL || undefined;
@@ -354,7 +404,7 @@ bugReportRoutes.post('/generate', authMiddleware, async (c) => {
       return c.json({ ...fallback, systemInfo });
     }
 
-    // Try to parse Claude's JSON output
+    // Try to parse the agent output as JSON
     const parsed = tryParseJsonOutput(result);
     if (parsed?.body) {
       return c.json({
@@ -364,8 +414,8 @@ bugReportRoutes.post('/generate', authMiddleware, async (c) => {
       });
     }
 
-    // Claude didn't return valid JSON, use raw output as body
-    logger.info('bug-report: claude output was not valid JSON, using as raw body');
+    // The runtime didn't return valid JSON, use raw output as body
+    logger.info('bug-report: runtime output was not valid JSON, using as raw body');
     return c.json({
       title: `Bug: ${description.slice(0, 70)}`,
       body: result,

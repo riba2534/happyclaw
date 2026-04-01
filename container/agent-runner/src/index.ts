@@ -19,6 +19,7 @@ import path from 'path';
 import { query, HookCallback, PreCompactHookInput, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { detectImageMimeTypeFromBase64Strict } from './image-detector.js';
 import { getChannelFromJid } from './channel-prefixes.js';
+import { runCodexQuery } from './codex-runner.js';
 
 import type {
   ContainerInput,
@@ -41,11 +42,13 @@ const WORKSPACE_GROUP = process.env.HAPPYCLAW_WORKSPACE_GROUP || '/workspace/gro
 const WORKSPACE_GLOBAL = process.env.HAPPYCLAW_WORKSPACE_GLOBAL || '/workspace/global';
 const WORKSPACE_MEMORY = process.env.HAPPYCLAW_WORKSPACE_MEMORY || '/workspace/memory';
 const WORKSPACE_IPC = process.env.HAPPYCLAW_WORKSPACE_IPC || '/workspace/ipc';
+const AGENT_RUNTIME = process.env.HAPPYCLAW_RUNTIME === 'codex' ? 'codex' : 'claude';
 
 // 模型配置：支持别名（opus/sonnet/haiku）或完整模型 ID
 // 别名自动解析为最新版本，如 opus → Opus 4.6
 // [1m] 后缀启用 1M 上下文窗口（CLI 内部 jG() 识别后缀，sM() 返回 1M 窗口）
 const CLAUDE_MODEL = process.env.ANTHROPIC_MODEL || 'opus[1m]';
+const CODEX_MODEL = process.env.HAPPYCLAW_CODEX_MODEL || process.env.OPENAI_MODEL || '';
 
 const IPC_INPUT_DIR = path.join(WORKSPACE_IPC, 'input');
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
@@ -1563,6 +1566,87 @@ function forceExitWithSafetyNet(code: number): never {
   process.exit(code);
 }
 
+async function mainCodex(containerInput: ContainerInput): Promise<void> {
+  let sessionId = containerInput.sessionId;
+  latestSessionId = sessionId;
+
+  let prompt = containerInput.prompt;
+  let promptImages = containerInput.images;
+  if (containerInput.isScheduledTask) {
+    const scheduledTaskPrefixLines = [
+      '[定时任务 - 以下内容由系统自动发送，并非来自用户或群组的直接消息。]',
+      '',
+      '重要：你正在定时任务模式下运行。你的最终输出不会自动发送给用户。你必须使用 mcp__happyclaw__send_message 工具来发送消息，否则用户将收不到任何内容。',
+    ];
+    prompt = scheduledTaskPrefixLines.join('\n') + '\n\n' + prompt;
+  }
+
+  const pendingDrain = drainIpcInput();
+  if (pendingDrain.messages.length > 0) {
+    prompt += '\n' + pendingDrain.messages.map((m) => m.text).join('\n');
+    const pendingImages = pendingDrain.messages.flatMap((m) => m.images || []);
+    if (pendingImages.length > 0) {
+      promptImages = [...(promptImages || []), ...pendingImages];
+    }
+  }
+
+  try {
+    while (true) {
+      try { fs.unlinkSync(IPC_INPUT_INTERRUPT_SENTINEL); } catch { /* ignore */ }
+      clearInterruptRequested();
+
+      const queryResult = await runCodexQuery({
+        prompt,
+        sessionId,
+        containerInput,
+        images: promptImages,
+        workspaceGroup: WORKSPACE_GROUP,
+        workspaceGlobal: WORKSPACE_GLOBAL,
+        workspaceMemory: WORKSPACE_MEMORY,
+        workspaceIpc: WORKSPACE_IPC,
+        claudeConfigDir: process.env.CLAUDE_CONFIG_DIR,
+        codexModel: CODEX_MODEL,
+        openaiBaseUrl: process.env.OPENAI_BASE_URL,
+        openaiApiKey: process.env.OPENAI_API_KEY,
+        codexAuthJson: process.env.HAPPYCLAW_CODEX_AUTH_JSON,
+        writeOutput,
+        log,
+        shouldClose,
+        shouldInterrupt,
+        clearInterruptRequested,
+      });
+
+      if (queryResult.newSessionId) {
+        sessionId = queryResult.newSessionId;
+        latestSessionId = sessionId;
+      }
+
+      if (queryResult.closedDuringQuery) {
+        writeOutput({ status: 'closed', result: null, newSessionId: sessionId });
+        break;
+      }
+
+      if (queryResult.sessionResumeFailed) {
+        log(`Codex session resume failed, retrying with fresh session (old: ${sessionId})`);
+        sessionId = undefined;
+        latestSessionId = undefined;
+        continue;
+      }
+
+      const nextMessage = await waitForIpcMessage();
+      if (!nextMessage) {
+        writeOutput({ status: 'closed', result: null, newSessionId: sessionId });
+        break;
+      }
+
+      prompt = nextMessage.text;
+      promptImages = nextMessage.images;
+    }
+  } finally {
+    forceExitWithSafetyNet(0);
+  }
+}
+
 async function main(): Promise<void> {
   let containerInput: ContainerInput;
 
@@ -1582,6 +1666,11 @@ async function main(): Promise<void> {
   let sessionId = containerInput.sessionId;
   latestSessionId = sessionId;
   const { isHome, isAdminHome } = normalizeHomeFlags(containerInput);
+
+  if (AGENT_RUNTIME === 'codex') {
+    await mainCodex(containerInput);
+    return;
+  }
 
   // Create in-process SDK MCP server (replaces the stdio subprocess)
   const mcpToolsConfig = {

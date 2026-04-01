@@ -6,6 +6,7 @@ import { ASSISTANT_NAME, DATA_DIR } from './config.js';
 import { logger } from './logger.js';
 
 const MAX_FIELD_LENGTH = 2000;
+const MAX_JSON_SECRET_LENGTH = 100_000;
 const CURRENT_CONFIG_VERSION = 3;
 const DEFAULT_THIRD_PARTY_PROFILE_ID = 'default';
 const DEFAULT_THIRD_PARTY_PROFILE_NAME = '默认第三方';
@@ -35,7 +36,12 @@ const RESERVED_CLAUDE_ENV_KEYS = new Set([
   'CLAUDE_CODE_OAUTH_TOKEN',
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_API_KEY',
   'ANTHROPIC_MODEL',
+  'OPENAI_BASE_URL',
+  'OPENAI_API_KEY',
+  'HAPPYCLAW_RUNTIME',
+  'HAPPYCLAW_CODEX_MODEL',
 ]);
 const DANGEROUS_ENV_VARS = new Set([
   // Code execution / preload attacks
@@ -85,6 +91,7 @@ const MAX_CUSTOM_ENV_ENTRIES = 50;
 const MAX_THIRD_PARTY_PROFILES = 20;
 
 type ClaudeProviderMode = 'official' | 'third_party';
+export type AgentRuntime = 'claude' | 'codex';
 
 // Fallback scopes for .credentials.json when stored credentials lack scopes.
 // Differs from OAUTH_SCOPES in routes/config.ts (the authorize-flow request):
@@ -110,6 +117,14 @@ export interface ClaudeProviderConfig {
   claudeCodeOauthToken: string;
   claudeOAuthCredentials: ClaudeOAuthCredentials | null;
   anthropicModel: string;
+  updatedAt: string | null;
+}
+
+export interface CodexProviderConfig {
+  openaiBaseUrl: string;
+  openaiApiKey: string;
+  codexAuthJson: string;
+  codexModel: string;
   updatedAt: string | null;
 }
 
@@ -189,6 +204,8 @@ interface SecretPayload {
   anthropicAuthToken: string;
   anthropicApiKey: string;
   claudeCodeOauthToken: string;
+  openaiApiKey: string;
+  codexAuthJson: string;
   claudeOAuthCredentials?: ClaudeOAuthCredentials | null;
 }
 
@@ -291,11 +308,14 @@ const DEFAULT_BALANCING_CONFIG: BalancingConfig = {
 interface StoredProviderV4 {
   id: string;
   name: string;
+  runtime?: AgentRuntime;
   type: 'official' | 'third_party';
   enabled: boolean;
   weight: number;
   anthropicBaseUrl: string;
   anthropicModel: string;
+  openaiBaseUrl?: string;
+  codexModel?: string;
   secrets: EncryptedSecrets;
   customEnv?: Record<string, string>;
   updatedAt: string;
@@ -312,6 +332,7 @@ interface StoredClaudeProviderConfigV4 {
 export interface UnifiedProvider {
   id: string;
   name: string;
+  runtime: AgentRuntime;
   type: 'official' | 'third_party';
   enabled: boolean;
   weight: number;
@@ -321,6 +342,10 @@ export interface UnifiedProvider {
   anthropicApiKey: string;
   claudeCodeOauthToken: string;
   claudeOAuthCredentials: ClaudeOAuthCredentials | null;
+  openaiBaseUrl: string;
+  openaiApiKey: string;
+  codexAuthJson: string;
+  codexModel: string;
   customEnv: Record<string, string>;
   updatedAt: string;
 }
@@ -329,11 +354,14 @@ export interface UnifiedProvider {
 export interface UnifiedProviderPublic {
   id: string;
   name: string;
+  runtime: AgentRuntime;
   type: 'official' | 'third_party';
   enabled: boolean;
   weight: number;
   anthropicBaseUrl: string;
   anthropicModel: string;
+  openaiBaseUrl: string;
+  codexModel: string;
   hasAnthropicAuthToken: boolean;
   anthropicAuthTokenMasked: string | null;
   hasAnthropicApiKey: boolean;
@@ -343,6 +371,10 @@ export interface UnifiedProviderPublic {
   hasClaudeOAuthCredentials: boolean;
   claudeOAuthCredentialsExpiresAt: number | null;
   claudeOAuthCredentialsAccessTokenMasked: string | null;
+  hasOpenAIApiKey: boolean;
+  openaiApiKeyMasked: string | null;
+  hasCodexAuthJson: boolean;
+  codexAuthMode: string | null;
   customEnv: Record<string, string>;
   updatedAt: string;
 }
@@ -404,6 +436,36 @@ function normalizeModel(input: unknown): string {
     throw new Error('Field too long: anthropicModel');
   }
   return value;
+}
+
+function normalizeJsonSecret(
+  input: unknown,
+  fieldName: string,
+): string {
+  if (typeof input !== 'string') {
+    throw new Error(`Invalid field: ${fieldName}`);
+  }
+  const value = input.trim();
+  if (!value) return '';
+  if (value.length > MAX_JSON_SECRET_LENGTH) {
+    throw new Error(`Field too long: ${fieldName}`);
+  }
+  JSON.parse(value);
+  return value;
+}
+
+function getCodexAuthMode(codexAuthJson: string): string | null {
+  if (!codexAuthJson) return null;
+  try {
+    const parsed = JSON.parse(codexAuthJson) as { auth_mode?: unknown };
+    return typeof parsed.auth_mode === 'string' ? parsed.auth_mode : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeRuntime(input: unknown): AgentRuntime {
+  return input === 'codex' ? 'codex' : 'claude';
 }
 
 function normalizeFeishuAppId(input: unknown): string {
@@ -584,6 +646,11 @@ function decryptSecrets(secrets: EncryptedSecrets): SecretPayload {
       parsed.claudeCodeOauthToken ?? '',
       'claudeCodeOauthToken',
     ),
+    openaiApiKey: normalizeSecret(parsed.openaiApiKey ?? '', 'openaiApiKey'),
+    codexAuthJson: normalizeJsonSecret(
+      parsed.codexAuthJson ?? '',
+      'codexAuthJson',
+    ),
   };
   // Restore OAuth credentials if present
   if (
@@ -672,6 +739,8 @@ function toStoredProfile(
       ),
       anthropicApiKey: '',
       claudeCodeOauthToken: '',
+      openaiApiKey: '',
+      codexAuthJson: '',
       claudeOAuthCredentials: null,
     }),
     ...(Object.keys(sanitizedEnv).length > 0
@@ -726,6 +795,8 @@ function normalizeOfficialSecrets(input: SecretPayload): SecretPayload {
       input.claudeCodeOauthToken ?? '',
       'claudeCodeOauthToken',
     ),
+    openaiApiKey: '',
+    codexAuthJson: '',
     claudeOAuthCredentials: input.claudeOAuthCredentials ?? null,
   };
 }
@@ -867,6 +938,8 @@ function readStoredState(): ClaudeStoredStateV3Resolved | null {
             anthropicAuthToken: '',
             anthropicApiKey: '',
             claudeCodeOauthToken: '',
+            openaiApiKey: '',
+            codexAuthJson: '',
             claudeOAuthCredentials: null,
           };
       return normalizeStoredState({
@@ -907,6 +980,8 @@ function readStoredState(): ClaudeStoredStateV3Resolved | null {
           anthropicAuthToken: '',
           anthropicApiKey: legacyConfig.anthropicApiKey,
           claudeCodeOauthToken: legacyConfig.claudeCodeOauthToken,
+          openaiApiKey: '',
+          codexAuthJson: '',
           claudeOAuthCredentials: legacyConfig.claudeOAuthCredentials,
         },
         officialUpdatedAt: legacyConfig.updatedAt,
@@ -923,6 +998,8 @@ function readStoredState(): ClaudeStoredStateV3Resolved | null {
         anthropicAuthToken: '',
         anthropicApiKey: legacy.anthropicApiKey,
         claudeCodeOauthToken: legacy.claudeCodeOauthToken,
+        openaiApiKey: '',
+        codexAuthJson: '',
         claudeOAuthCredentials: legacy.claudeOAuthCredentials,
       },
       officialUpdatedAt: legacy.updatedAt,
@@ -949,6 +1026,8 @@ function writeStoredState(state: ClaudeStoredStateV3Resolved): void {
         anthropicAuthToken: '',
         anthropicApiKey: normalized.officialSecrets.anthropicApiKey,
         claudeCodeOauthToken: normalized.officialSecrets.claudeCodeOauthToken,
+        openaiApiKey: '',
+        codexAuthJson: '',
         claudeOAuthCredentials:
           normalized.officialSecrets.claudeOAuthCredentials,
       }),
@@ -971,6 +1050,8 @@ function toStoredProviderV4(provider: UnifiedProvider): StoredProviderV4 {
     anthropicAuthToken: provider.anthropicAuthToken || '',
     anthropicApiKey: provider.anthropicApiKey || '',
     claudeCodeOauthToken: provider.claudeCodeOauthToken || '',
+    openaiApiKey: provider.openaiApiKey || '',
+    codexAuthJson: provider.codexAuthJson || '',
     claudeOAuthCredentials: provider.claudeOAuthCredentials ?? null,
   };
   const sanitizedEnv = sanitizeCustomEnvMap(provider.customEnv || {}, {
@@ -979,11 +1060,14 @@ function toStoredProviderV4(provider: UnifiedProvider): StoredProviderV4 {
   return {
     id: provider.id,
     name: provider.name,
+    runtime: provider.runtime,
     type: provider.type,
     enabled: provider.enabled,
     weight: Math.max(1, Math.min(100, provider.weight || 1)),
     anthropicBaseUrl: provider.anthropicBaseUrl || '',
     anthropicModel: provider.anthropicModel || '',
+    ...(provider.openaiBaseUrl ? { openaiBaseUrl: provider.openaiBaseUrl } : {}),
+    ...(provider.codexModel ? { codexModel: provider.codexModel } : {}),
     secrets: encryptSecrets(secrets),
     ...(Object.keys(sanitizedEnv).length > 0
       ? { customEnv: sanitizedEnv }
@@ -997,6 +1081,7 @@ function fromStoredProviderV4(stored: StoredProviderV4): UnifiedProvider {
   return {
     id: stored.id,
     name: stored.name,
+    runtime: normalizeRuntime(stored.runtime),
     type: stored.type,
     enabled: stored.enabled,
     weight: Math.max(1, Math.min(100, stored.weight || 1)),
@@ -1006,6 +1091,10 @@ function fromStoredProviderV4(stored: StoredProviderV4): UnifiedProvider {
     anthropicApiKey: secrets.anthropicApiKey || '',
     claudeCodeOauthToken: secrets.claudeCodeOauthToken || '',
     claudeOAuthCredentials: secrets.claudeOAuthCredentials ?? null,
+    openaiBaseUrl: stored.openaiBaseUrl || '',
+    openaiApiKey: secrets.openaiApiKey || '',
+    codexAuthJson: secrets.codexAuthJson || '',
+    codexModel: stored.codexModel || '',
     customEnv: sanitizeCustomEnvMap(stored.customEnv || {}, {
       skipReservedClaudeKeys: true,
     }),
@@ -1030,6 +1119,7 @@ function migrateV3toV4(v3: ClaudeStoredStateV3Resolved): {
     providers.push({
       id: OFFICIAL_CLAUDE_PROFILE_ID,
       name: '官方 Claude',
+      runtime: 'claude',
       type: 'official',
       enabled: isOfficialClaudeMode(v3.activeProfileId),
       weight: 1,
@@ -1039,6 +1129,10 @@ function migrateV3toV4(v3: ClaudeStoredStateV3Resolved): {
       anthropicApiKey: v3.officialSecrets.anthropicApiKey,
       claudeCodeOauthToken: v3.officialSecrets.claudeCodeOauthToken,
       claudeOAuthCredentials: v3.officialSecrets.claudeOAuthCredentials ?? null,
+      openaiBaseUrl: '',
+      openaiApiKey: '',
+      codexAuthJson: '',
+      codexModel: '',
       customEnv: v3.officialCustomEnv || {},
       updatedAt: v3.officialUpdatedAt || now,
     });
@@ -1050,6 +1144,7 @@ function migrateV3toV4(v3: ClaudeStoredStateV3Resolved): {
     providers.push({
       id: profile.id,
       name: profile.name,
+      runtime: 'claude',
       type: 'third_party',
       enabled: profile.id === v3.activeProfileId,
       weight: 1,
@@ -1058,6 +1153,10 @@ function migrateV3toV4(v3: ClaudeStoredStateV3Resolved): {
       anthropicModel: profile.anthropicModel,
       anthropicApiKey: '',
       claudeCodeOauthToken: '',
+      openaiBaseUrl: '',
+      openaiApiKey: '',
+      codexAuthJson: '',
+      codexModel: '',
       claudeOAuthCredentials: null,
       customEnv: profile.customEnv || {},
       updatedAt: profile.updatedAt || now,
@@ -1191,6 +1290,13 @@ export function getEnabledProviders(): UnifiedProvider[] {
   return getProviders().filter((p) => p.enabled);
 }
 
+export function getPrimaryProvider(): UnifiedProvider | null {
+  const enabled = getEnabledProviders();
+  if (enabled.length > 0) return enabled[0];
+  const all = getProviders();
+  return all[0] ?? null;
+}
+
 export function getBalancingConfig(): BalancingConfig {
   const state = readStoredStateV4();
   return state?.balancing ?? { ...DEFAULT_BALANCING_CONFIG };
@@ -1213,6 +1319,7 @@ export function saveBalancingConfig(
 
 export function createProvider(input: {
   name: string;
+  runtime?: AgentRuntime;
   type: 'official' | 'third_party';
   anthropicBaseUrl?: string;
   anthropicAuthToken?: string;
@@ -1220,6 +1327,10 @@ export function createProvider(input: {
   anthropicApiKey?: string;
   claudeCodeOauthToken?: string;
   claudeOAuthCredentials?: ClaudeOAuthCredentials | null;
+  openaiBaseUrl?: string;
+  openaiApiKey?: string;
+  codexAuthJson?: string;
+  codexModel?: string;
   customEnv?: Record<string, string>;
   weight?: number;
   enabled?: boolean;
@@ -1234,9 +1345,11 @@ export function createProvider(input: {
   }
 
   const now = new Date().toISOString();
+  const runtime = normalizeRuntime(input.runtime);
   const provider: UnifiedProvider = {
     id: crypto.randomBytes(8).toString('hex'),
     name: normalizeProfileName(input.name),
+    runtime,
     type: input.type,
     enabled: input.enabled ?? state.providers.length === 0,
     weight: Math.max(1, Math.min(100, input.weight ?? 1)),
@@ -1256,6 +1369,16 @@ export function createProvider(input: {
       ? normalizeSecret(input.claudeCodeOauthToken, 'claudeCodeOauthToken')
       : '',
     claudeOAuthCredentials: input.claudeOAuthCredentials ?? null,
+    openaiBaseUrl: input.openaiBaseUrl
+      ? normalizeBaseUrl(input.openaiBaseUrl)
+      : '',
+    openaiApiKey: input.openaiApiKey
+      ? normalizeSecret(input.openaiApiKey, 'openaiApiKey')
+      : '',
+    codexAuthJson: input.codexAuthJson
+      ? normalizeJsonSecret(input.codexAuthJson, 'codexAuthJson')
+      : '',
+    codexModel: input.codexModel ? normalizeModel(input.codexModel) : '',
     customEnv: sanitizeCustomEnvMap(input.customEnv || {}, {
       skipReservedClaudeKeys: true,
     }),
@@ -1273,6 +1396,8 @@ export function updateProvider(
     name?: string;
     anthropicBaseUrl?: string;
     anthropicModel?: string;
+    openaiBaseUrl?: string;
+    codexModel?: string;
     customEnv?: Record<string, string>;
     weight?: number;
   },
@@ -1294,6 +1419,12 @@ export function updateProvider(
       : {}),
     ...(patch.anthropicModel !== undefined
       ? { anthropicModel: normalizeModel(patch.anthropicModel) }
+      : {}),
+    ...(patch.openaiBaseUrl !== undefined
+      ? { openaiBaseUrl: normalizeBaseUrl(patch.openaiBaseUrl) }
+      : {}),
+    ...(patch.codexModel !== undefined
+      ? { codexModel: normalizeModel(patch.codexModel) }
       : {}),
     ...(patch.customEnv !== undefined
       ? {
@@ -1324,6 +1455,10 @@ export function updateProviderSecrets(
     clearClaudeCodeOauthToken?: boolean;
     claudeOAuthCredentials?: ClaudeOAuthCredentials;
     clearClaudeOAuthCredentials?: boolean;
+    openaiApiKey?: string;
+    clearOpenAIApiKey?: boolean;
+    codexAuthJson?: string;
+    clearCodexAuthJson?: boolean;
   },
 ): UnifiedProvider {
   const state = readStoredStateV4();
@@ -1368,6 +1503,23 @@ export function updateProviderSecrets(
     updated.claudeCodeOauthToken = '';
   } else if (secrets.clearClaudeOAuthCredentials) {
     updated.claudeOAuthCredentials = null;
+  }
+
+  if (typeof secrets.openaiApiKey === 'string') {
+    updated.openaiApiKey = normalizeSecret(secrets.openaiApiKey, 'openaiApiKey');
+    updated.codexAuthJson = '';
+  } else if (secrets.clearOpenAIApiKey) {
+    updated.openaiApiKey = '';
+  }
+
+  if (typeof secrets.codexAuthJson === 'string') {
+    updated.codexAuthJson = normalizeJsonSecret(
+      secrets.codexAuthJson,
+      'codexAuthJson',
+    );
+    updated.openaiApiKey = '';
+  } else if (secrets.clearCodexAuthJson) {
+    updated.codexAuthJson = '';
   }
 
   state.providers[idx] = updated;
@@ -1436,6 +1588,18 @@ export function providerToConfig(
   };
 }
 
+export function providerToCodexConfig(
+  provider: UnifiedProvider,
+): CodexProviderConfig {
+  return {
+    openaiBaseUrl: provider.openaiBaseUrl,
+    openaiApiKey: provider.openaiApiKey,
+    codexAuthJson: provider.codexAuthJson,
+    codexModel: provider.codexModel,
+    updatedAt: provider.updatedAt,
+  };
+}
+
 /** Convert UnifiedProvider to public (masked) representation */
 export function toPublicProvider(
   provider: UnifiedProvider,
@@ -1443,11 +1607,14 @@ export function toPublicProvider(
   return {
     id: provider.id,
     name: provider.name,
+    runtime: provider.runtime,
     type: provider.type,
     enabled: provider.enabled,
     weight: provider.weight,
     anthropicBaseUrl: provider.anthropicBaseUrl,
     anthropicModel: provider.anthropicModel,
+    openaiBaseUrl: provider.openaiBaseUrl,
+    codexModel: provider.codexModel,
     hasAnthropicAuthToken: !!provider.anthropicAuthToken,
     anthropicAuthTokenMasked: maskSecret(provider.anthropicAuthToken),
     hasAnthropicApiKey: !!provider.anthropicApiKey,
@@ -1460,6 +1627,10 @@ export function toPublicProvider(
     claudeOAuthCredentialsAccessTokenMasked: provider.claudeOAuthCredentials
       ? maskSecret(provider.claudeOAuthCredentials.accessToken)
       : null,
+    hasOpenAIApiKey: !!provider.openaiApiKey,
+    openaiApiKeyMasked: maskSecret(provider.openaiApiKey),
+    hasCodexAuthJson: !!provider.codexAuthJson,
+    codexAuthMode: getCodexAuthMode(provider.codexAuthJson),
     customEnv: provider.customEnv || {},
     updatedAt: provider.updatedAt,
   };
@@ -1470,11 +1641,37 @@ export function toPublicProvider(
  * Used by container-runner for pool-selected providers.
  */
 export function resolveProviderById(providerId: string): {
-  config: ClaudeProviderConfig;
+  provider: UnifiedProvider;
   customEnv: Record<string, string>;
 } {
   const state = readStoredStateV4();
-  if (!state) return { config: defaultsFromEnv(), customEnv: {} };
+  if (!state) {
+    const fallback = getPrimaryProvider();
+    if (fallback) return { provider: fallback, customEnv: fallback.customEnv };
+    return {
+      provider: {
+        id: 'env-claude',
+        name: 'Env Claude',
+        runtime: 'claude',
+        type: 'official',
+        enabled: true,
+        weight: 1,
+        anthropicBaseUrl: '',
+        anthropicAuthToken: '',
+        anthropicModel: '',
+        anthropicApiKey: '',
+        claudeCodeOauthToken: '',
+        claudeOAuthCredentials: null,
+        openaiBaseUrl: '',
+        openaiApiKey: '',
+        codexAuthJson: '',
+        codexModel: '',
+        customEnv: {},
+        updatedAt: '',
+      },
+      customEnv: {},
+    };
+  }
 
   const provider = state.providers.find((p) => p.id === providerId);
   if (!provider) {
@@ -1484,15 +1681,17 @@ export function resolveProviderById(providerId: string): {
     );
     const fallback =
       state.providers.find((p) => p.enabled) || state.providers[0];
-    if (!fallback) return { config: defaultsFromEnv(), customEnv: {} };
+    if (!fallback) {
+      throw new Error('No providers configured');
+    }
     return {
-      config: providerToConfig(fallback),
+      provider: fallback,
       customEnv: fallback.customEnv,
     };
   }
 
   return {
-    config: providerToConfig(provider),
+    provider,
     customEnv: provider.customEnv,
   };
 }
@@ -1580,6 +1779,16 @@ function defaultsFromEnv(): ClaudeProviderConfig {
       updatedAt: null,
     };
   }
+}
+
+function codexDefaultsFromEnv(): CodexProviderConfig {
+  return {
+    openaiBaseUrl: (process.env.OPENAI_BASE_URL || '').trim(),
+    openaiApiKey: (process.env.OPENAI_API_KEY || '').trim(),
+    codexAuthJson: '',
+    codexModel: (process.env.HAPPYCLAW_CODEX_MODEL || '').trim(),
+    updatedAt: null,
+  };
 }
 
 function readStoredFeishuConfig(): FeishuProviderConfig | null {
@@ -1822,18 +2031,61 @@ export function validateClaudeProviderConfig(
   return errors;
 }
 
+export function validateCodexProviderConfig(
+  config: CodexProviderConfig,
+): string[] {
+  const errors: string[] = [];
+
+  if (config.openaiBaseUrl) {
+    try {
+      const parsed = new URL(config.openaiBaseUrl);
+      if (!['http:', 'https:'].includes(parsed.protocol)) {
+        errors.push('OPENAI_BASE_URL 必须是 http 或 https 地址');
+      }
+    } catch {
+      errors.push('OPENAI_BASE_URL 格式不正确');
+    }
+  }
+
+  if (config.codexAuthJson) {
+    try {
+      JSON.parse(config.codexAuthJson);
+    } catch {
+      errors.push('Codex auth.json 格式不正确');
+    }
+  }
+
+  return errors;
+}
+
 export function getClaudeProviderConfig(): ClaudeProviderConfig {
   try {
     const state = readStoredStateV4();
     if (state) {
       const enabled =
-        state.providers.find((p) => p.enabled) || state.providers[0];
+        state.providers.find((p) => p.enabled && p.runtime === 'claude') ||
+        state.providers.find((p) => p.runtime === 'claude');
       if (enabled) return providerToConfig(enabled);
     }
   } catch {
     // ignore corrupted file and use env fallback
   }
   return defaultsFromEnv();
+}
+
+export function getCodexProviderConfig(): CodexProviderConfig {
+  try {
+    const state = readStoredStateV4();
+    if (state) {
+      const enabled =
+        state.providers.find((p) => p.enabled && p.runtime === 'codex') ||
+        state.providers.find((p) => p.runtime === 'codex');
+      if (enabled) return providerToCodexConfig(enabled);
+    }
+  } catch {
+    // ignore corrupted file and use env fallback
+  }
+  return codexDefaultsFromEnv();
 }
 
 export function saveClaudeProviderConfig(
@@ -1874,6 +2126,8 @@ export function saveClaudeProviderConfig(
       anthropicAuthToken: '',
       anthropicApiKey: '',
       claudeCodeOauthToken: '',
+      openaiApiKey: '',
+      codexAuthJson: '',
       claudeOAuthCredentials: null,
     },
     officialUpdatedAt: normalized.updatedAt,
@@ -1885,6 +2139,8 @@ export function saveClaudeProviderConfig(
       anthropicAuthToken: '',
       anthropicApiKey: normalized.anthropicApiKey,
       claudeCodeOauthToken: normalized.claudeCodeOauthToken,
+      openaiApiKey: '',
+      codexAuthJson: '',
       claudeOAuthCredentials: normalized.claudeOAuthCredentials,
     });
 
@@ -1934,6 +2190,8 @@ export function saveClaudeProviderConfig(
       anthropicAuthToken: '',
       anthropicApiKey: normalized.anthropicApiKey,
       claudeCodeOauthToken: normalized.claudeCodeOauthToken,
+      openaiApiKey: '',
+      codexAuthJson: '',
       claudeOAuthCredentials: normalized.claudeOAuthCredentials,
     }),
     officialUpdatedAt: normalized.updatedAt,
@@ -1955,6 +2213,8 @@ export function saveClaudeOfficialProviderSecrets(
     anthropicAuthToken: '',
     anthropicApiKey: next.anthropicApiKey,
     claudeCodeOauthToken: next.claudeCodeOauthToken,
+    openaiApiKey: '',
+    codexAuthJson: '',
     claudeOAuthCredentials: next.claudeOAuthCredentials,
   });
 
@@ -1966,6 +2226,8 @@ export function saveClaudeOfficialProviderSecrets(
       anthropicAuthToken: '',
       anthropicApiKey: '',
       claudeCodeOauthToken: '',
+      openaiApiKey: '',
+      codexAuthJson: '',
       claudeOAuthCredentials: null,
     },
     officialUpdatedAt: null,
@@ -2037,6 +2299,8 @@ export function createClaudeThirdPartyProfile(input: {
       anthropicAuthToken: '',
       anthropicApiKey: '',
       claudeCodeOauthToken: '',
+      openaiApiKey: '',
+      codexAuthJson: '',
       claudeOAuthCredentials: null,
     },
     officialUpdatedAt: null,
@@ -2284,7 +2548,7 @@ export function buildClaudeEnvLines(
   config: ClaudeProviderConfig,
   profileCustomEnv?: Record<string, string>,
 ): string[] {
-  const lines: string[] = [];
+  const lines: string[] = ['HAPPYCLAW_RUNTIME=claude'];
 
   // When full OAuth credentials exist, authentication is handled by .credentials.json file.
   // Only fall back to CLAUDE_CODE_OAUTH_TOKEN env var for legacy single-token mode.
@@ -2414,7 +2678,11 @@ export function resolveProfileFull(profileId: string): {
   config: ClaudeProviderConfig;
   customEnv: Record<string, string>;
 } {
-  return resolveProviderById(profileId);
+  const resolved = resolveProviderById(profileId);
+  return {
+    config: providerToConfig(resolved.provider),
+    customEnv: resolved.customEnv,
+  };
 }
 
 export function saveOfficialCustomEnv(
@@ -2458,6 +2726,7 @@ export function appendClaudeConfigAudit(
 const CONTAINER_ENV_DIR = path.join(DATA_DIR, 'config', 'container-env');
 
 export interface ContainerEnvConfig {
+  runtime?: AgentRuntime;
   /** Claude provider overrides — empty string means "use global" */
   anthropicBaseUrl?: string;
   anthropicAuthToken?: string;
@@ -2465,11 +2734,15 @@ export interface ContainerEnvConfig {
   claudeCodeOauthToken?: string;
   claudeOAuthCredentials?: ClaudeOAuthCredentials | null;
   anthropicModel?: string;
+  openaiBaseUrl?: string;
+  openaiApiKey?: string;
+  codexModel?: string;
   /** Arbitrary extra env vars injected into the container */
   customEnv?: Record<string, string>;
 }
 
 export interface ContainerEnvPublicConfig {
+  runtime: AgentRuntime | null;
   anthropicBaseUrl: string;
   anthropicAuthTokenMasked: string | null;
   anthropicApiKeyMasked: string | null;
@@ -2478,6 +2751,10 @@ export interface ContainerEnvPublicConfig {
   hasAnthropicApiKey: boolean;
   hasClaudeCodeOauthToken: boolean;
   anthropicModel: string;
+  openaiBaseUrl: string;
+  openaiApiKeyMasked: string | null;
+  hasOpenAIApiKey: boolean;
+  codexModel: string;
   customEnv: Record<string, string>;
 }
 
@@ -2503,6 +2780,9 @@ export function getContainerEnvConfig(folder: string): ContainerEnvConfig {
         stored.anthropicModel = stored.happyclawModel;
         delete stored.happyclawModel;
       }
+      if (stored.runtime !== undefined) {
+        stored.runtime = normalizeRuntime(stored.runtime);
+      }
       return stored;
     }
   } catch (err) {
@@ -2520,6 +2800,9 @@ export function saveContainerEnvConfig(
 ): void {
   // Sanitize all string fields to prevent env injection
   const sanitized: ContainerEnvConfig = { ...config };
+  if (sanitized.runtime !== undefined) {
+    sanitized.runtime = normalizeRuntime(sanitized.runtime);
+  }
   if (sanitized.anthropicBaseUrl)
     sanitized.anthropicBaseUrl = sanitizeEnvValue(sanitized.anthropicBaseUrl);
   if (sanitized.anthropicAuthToken)
@@ -2534,6 +2817,12 @@ export function saveContainerEnvConfig(
     );
   if (sanitized.anthropicModel)
     sanitized.anthropicModel = sanitizeEnvValue(sanitized.anthropicModel);
+  if (sanitized.openaiBaseUrl)
+    sanitized.openaiBaseUrl = sanitizeEnvValue(sanitized.openaiBaseUrl);
+  if (sanitized.openaiApiKey)
+    sanitized.openaiApiKey = sanitizeEnvValue(sanitized.openaiApiKey);
+  if (sanitized.codexModel)
+    sanitized.codexModel = sanitizeEnvValue(sanitized.codexModel);
   if (sanitized.customEnv) {
     const cleanEnv: Record<string, string> = {};
     for (const [k, v] of Object.entries(sanitized.customEnv)) {
@@ -2568,6 +2857,7 @@ export function toPublicContainerEnvConfig(
   config: ContainerEnvConfig,
 ): ContainerEnvPublicConfig {
   return {
+    runtime: config.runtime ?? null,
     anthropicBaseUrl: config.anthropicBaseUrl || '',
     hasAnthropicAuthToken: !!config.anthropicAuthToken,
     hasAnthropicApiKey: !!config.anthropicApiKey,
@@ -2576,6 +2866,10 @@ export function toPublicContainerEnvConfig(
     anthropicApiKeyMasked: maskSecret(config.anthropicApiKey || ''),
     claudeCodeOauthTokenMasked: maskSecret(config.claudeCodeOauthToken || ''),
     anthropicModel: config.anthropicModel || '',
+    openaiBaseUrl: config.openaiBaseUrl || '',
+    hasOpenAIApiKey: !!config.openaiApiKey,
+    openaiApiKeyMasked: maskSecret(config.openaiApiKey || ''),
+    codexModel: config.codexModel || '',
     customEnv: config.customEnv || {},
   };
 }
@@ -2598,6 +2892,19 @@ export function mergeClaudeEnvConfig(
     claudeOAuthCredentials:
       override.claudeOAuthCredentials ?? global.claudeOAuthCredentials,
     anthropicModel: override.anthropicModel || global.anthropicModel,
+    updatedAt: global.updatedAt,
+  };
+}
+
+export function mergeCodexEnvConfig(
+  global: CodexProviderConfig,
+  override: ContainerEnvConfig,
+): CodexProviderConfig {
+  return {
+    openaiBaseUrl: override.openaiBaseUrl || global.openaiBaseUrl,
+    openaiApiKey: override.openaiApiKey || global.openaiApiKey,
+    codexAuthJson: global.codexAuthJson,
+    codexModel: override.codexModel || global.codexModel,
     updatedAt: global.updatedAt,
   };
 }
@@ -2703,6 +3010,49 @@ export function buildContainerEnvLines(
   return lines;
 }
 
+export function buildCodexEnvLines(
+  config: CodexProviderConfig,
+  profileCustomEnv?: Record<string, string>,
+): string[] {
+  const lines: string[] = ['HAPPYCLAW_RUNTIME=codex'];
+  if (config.openaiApiKey) {
+    lines.push(`OPENAI_API_KEY=${sanitizeEnvValue(config.openaiApiKey)}`);
+  }
+  if (config.openaiBaseUrl) {
+    lines.push(`OPENAI_BASE_URL=${sanitizeEnvValue(config.openaiBaseUrl)}`);
+  }
+  if (config.codexModel) {
+    lines.push(`HAPPYCLAW_CODEX_MODEL=${sanitizeEnvValue(config.codexModel)}`);
+  }
+
+  const customEnv = profileCustomEnv ?? {};
+  for (const [key, value] of Object.entries(customEnv)) {
+    if (RESERVED_CLAUDE_ENV_KEYS.has(key)) continue;
+    lines.push(`${key}=${sanitizeEnvValue(value)}`);
+  }
+
+  return lines;
+}
+
+export function buildCodexContainerEnvLines(
+  global: CodexProviderConfig,
+  override: ContainerEnvConfig,
+  profileCustomEnv?: Record<string, string>,
+): string[] {
+  const merged = mergeCodexEnvConfig(global, override);
+  const lines = buildCodexEnvLines(merged, profileCustomEnv);
+
+  if (override.customEnv) {
+    for (const [key, value] of Object.entries(override.customEnv)) {
+      if (!key || value === undefined) continue;
+      if (!ENV_KEY_RE.test(key) || DANGEROUS_ENV_VARS.has(key)) continue;
+      lines.push(`${key}=${value.replace(/[\r\n\0]/g, '')}`);
+    }
+  }
+
+  return lines;
+}
+
 // ─── OAuth credentials file management ────────────────────────────
 
 /**
@@ -2746,6 +3096,21 @@ export function writeCredentialsFile(
   fs.writeFileSync(tmp, JSON.stringify(credentialsData, null, 2) + '\n', {
     encoding: 'utf-8',
     mode: 0o644,
+  });
+  fs.renameSync(tmp, filePath);
+}
+
+export function writeCodexAuthFile(
+  codexDir: string,
+  config: CodexProviderConfig,
+): void {
+  if (!config.codexAuthJson) return;
+  fs.mkdirSync(codexDir, { recursive: true });
+  const filePath = path.join(codexDir, 'auth.json');
+  const tmp = `${filePath}.tmp`;
+  fs.writeFileSync(tmp, config.codexAuthJson.trim() + '\n', {
+    encoding: 'utf-8',
+    mode: 0o600,
   });
   fs.renameSync(tmp, filePath);
 }

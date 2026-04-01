@@ -427,11 +427,15 @@ export const ClaudeCustomEnvSchema = z.object({
 });
 
 export const ContainerEnvSchema = z.object({
+  runtime: z.enum(['claude', 'codex']).optional(),
   anthropicBaseUrl: z.string().max(2000).optional(),
   anthropicAuthToken: z.string().max(2000).optional(),
   anthropicApiKey: z.string().max(2000).optional(),
   claudeCodeOauthToken: z.string().max(2000).optional(),
   anthropicModel: z.string().max(128).optional(),
+  openaiBaseUrl: z.string().max(2000).optional(),
+  openaiApiKey: z.string().max(2000).optional(),
+  codexModel: z.string().max(128).optional(),
   customEnv: z
     .record(z.string().max(256), z.string().max(4096))
     .optional()
@@ -620,6 +624,7 @@ export const BugReportSubmitSchema = z.object({
 export const UnifiedProviderCreateSchema = z
   .object({
     name: z.string().min(1).max(64),
+    runtime: z.enum(['claude', 'codex']).default('claude'),
     type: z.enum(['official', 'third_party']),
     anthropicBaseUrl: z.string().max(2000).optional(),
     anthropicAuthToken: z.string().max(2000).optional(),
@@ -627,20 +632,50 @@ export const UnifiedProviderCreateSchema = z
     anthropicApiKey: z.string().max(2000).optional(),
     claudeCodeOauthToken: z.string().max(2000).optional(),
     claudeOAuthCredentials: ClaudeOAuthCredentialsSchema.optional(),
+    openaiBaseUrl: z.string().max(2000).optional(),
+    openaiApiKey: z.string().max(2000).optional(),
+    codexAuthJson: z.string().max(100000).optional(),
+    codexModel: z.string().max(128).optional(),
     customEnv: z.record(z.string().max(256), z.string().max(4096)).optional(),
     weight: z.number().int().min(1).max(100).optional(),
     enabled: z.boolean().optional(),
   })
   .superRefine((data, ctx) => {
+    if (data.runtime === 'claude') {
+      if (
+        data.type === 'third_party' &&
+        !data.anthropicBaseUrl?.trim() &&
+        !data.anthropicAuthToken?.trim()
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['anthropicBaseUrl'],
+          message: '第三方 Claude 供应商需要提供 Base URL 或 Auth Token',
+        });
+      }
+      return;
+    }
+
     if (
-      data.type === 'third_party' &&
-      !data.anthropicBaseUrl?.trim() &&
-      !data.anthropicAuthToken?.trim()
+      data.type === 'official' &&
+      !data.openaiApiKey?.trim() &&
+      !data.codexAuthJson?.trim()
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['anthropicBaseUrl'],
-        message: '第三方供应商需要提供 Base URL 或 Auth Token',
+        path: ['codexAuthJson'],
+        message: 'Codex 官方供应商需要 OpenAI API Key 或 auth.json 登录态',
+      });
+    }
+
+    if (
+      data.type === 'third_party' &&
+      (!data.openaiBaseUrl?.trim() || !data.openaiApiKey?.trim())
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['openaiBaseUrl'],
+        message: '第三方 Codex 供应商需要 Base URL 和 OpenAI API Key',
       });
     }
   });
@@ -650,6 +685,8 @@ export const UnifiedProviderPatchSchema = z
     name: z.string().min(1).max(64).optional(),
     anthropicBaseUrl: z.string().max(2000).optional(),
     anthropicModel: z.string().max(128).optional(),
+    openaiBaseUrl: z.string().max(2000).optional(),
+    codexModel: z.string().max(128).optional(),
     customEnv: z.record(z.string().max(256), z.string().max(4096)).optional(),
     weight: z.number().int().min(1).max(100).optional(),
   })
@@ -658,6 +695,8 @@ export const UnifiedProviderPatchSchema = z
       data.name !== undefined ||
       data.anthropicBaseUrl !== undefined ||
       data.anthropicModel !== undefined ||
+      data.openaiBaseUrl !== undefined ||
+      data.codexModel !== undefined ||
       data.customEnv !== undefined ||
       data.weight !== undefined,
     { message: 'At least one field must be provided' },
@@ -673,6 +712,10 @@ export const UnifiedProviderSecretsSchema = z
     clearClaudeCodeOauthToken: z.boolean().optional(),
     claudeOAuthCredentials: ClaudeOAuthCredentialsSchema.optional(),
     clearClaudeOAuthCredentials: z.boolean().optional(),
+    openaiApiKey: z.string().max(2000).optional(),
+    clearOpenAIApiKey: z.boolean().optional(),
+    codexAuthJson: z.string().max(100000).optional(),
+    clearCodexAuthJson: z.boolean().optional(),
   })
   .refine(
     (data) => {
@@ -684,7 +727,11 @@ export const UnifiedProviderSecretsSchema = z
         typeof data.claudeCodeOauthToken === 'string' ||
         data.clearClaudeCodeOauthToken === true ||
         data.claudeOAuthCredentials !== undefined ||
-        data.clearClaudeOAuthCredentials === true
+        data.clearClaudeOAuthCredentials === true ||
+        typeof data.openaiApiKey === 'string' ||
+        data.clearOpenAIApiKey === true ||
+        typeof data.codexAuthJson === 'string' ||
+        data.clearCodexAuthJson === true
       );
     },
     { message: 'At least one secret field must be provided' },
