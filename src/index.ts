@@ -483,6 +483,7 @@ const activeImReplyRoutes = new Map<string, string | null>();
 // Track consecutive IM send failures per JID for auto-unbind
 const imSendFailCounts = new Map<string, number>();
 const IM_SEND_FAIL_THRESHOLD = 3;
+const HEAVY_ROUTE_WINDOW_MS = 30 * 60 * 1000;
 
 // Groups whose pending messages were recovered after a restart.
 // processGroupMessages injects recent conversation history for these groups
@@ -519,6 +520,50 @@ function unbindImGroup(jid: string, reason: string): void {
   imSendFailCounts.delete(jid);
   imHealthCheckFailCounts.delete(jid);
   logger.info({ jid, agentId, targetMainJid }, reason);
+}
+
+function getTempRouteKey(chatJid: string): string {
+  return `im_temp_route:${chatJid}`;
+}
+
+function clearTemporaryMainRoute(chatJid: string): void {
+  deleteRouterState(getTempRouteKey(chatJid));
+}
+
+function setTemporaryMainRoute(
+  chatJid: string,
+  targetMainJid: string,
+  durationMs = HEAVY_ROUTE_WINDOW_MS,
+): number {
+  const expiresAt = Date.now() + durationMs;
+  setRouterState(
+    getTempRouteKey(chatJid),
+    JSON.stringify({ targetMainJid, expiresAt }),
+  );
+  return expiresAt;
+}
+
+function getTemporaryMainRoute(chatJid: string): string | null {
+  const raw = getRouterState(getTempRouteKey(chatJid));
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as {
+      targetMainJid?: unknown;
+      expiresAt?: unknown;
+    };
+    const targetMainJid =
+      typeof parsed.targetMainJid === 'string' ? parsed.targetMainJid : '';
+    const expiresAt =
+      typeof parsed.expiresAt === 'number' ? parsed.expiresAt : 0;
+    if (!targetMainJid || !expiresAt || Date.now() >= expiresAt) {
+      clearTemporaryMainRoute(chatJid);
+      return null;
+    }
+    return targetMainJid;
+  } catch {
+    clearTemporaryMainRoute(chatJid);
+    return null;
+  }
 }
 
 /**
@@ -1000,6 +1045,11 @@ async function handleCommand(
       return handleRecallCommand(chatJid);
     case 'where':
       return handleWhereCommand(chatJid);
+    case 'main':
+      return handleMainWorkspaceCommand(chatJid);
+    case 'heavy':
+    case 'work':
+      return handleHeavyWorkspaceCommand(chatJid);
     case 'unbind':
       return handleUnbindCommand(chatJid);
     case 'bind':
@@ -1302,6 +1352,102 @@ function handleBindCommand(chatJid: string, rawSpec: string): string {
   return `已切换到 ${resolved.display}\n🔁 回复策略: source_only`;
 }
 
+function bindImGroupToMainConversation(
+  chatJid: string,
+  group: RegisteredGroup,
+  targetMainJid: string,
+): void {
+  const updated: RegisteredGroup = {
+    ...group,
+    target_agent_id: undefined,
+    target_main_jid: targetMainJid,
+    reply_policy: 'source_only',
+  };
+  setRegisteredGroup(chatJid, updated);
+  registeredGroups[chatJid] = updated;
+  imSendFailCounts.delete(chatJid);
+  imHealthCheckFailCounts.delete(chatJid);
+}
+
+function findWorkspaceByExactName(
+  userId: string,
+  name: string,
+): WorkspaceInfo | undefined {
+  const target = name.trim().toLowerCase();
+  return collectWorkspaces(userId).find(
+    (workspace) => workspace.name.trim().toLowerCase() === target,
+  );
+}
+
+async function ensureWorkspaceForUser(
+  userId: string,
+  name: string,
+): Promise<{ jid: string; group: RegisteredGroup }> {
+  const existing = findWorkspaceByExactName(userId, name);
+  if (existing) {
+    const existingJid = findWebJidForFolder(existing.folder);
+    const existingGroup =
+      (existingJid &&
+        (registeredGroups[existingJid] ?? getRegisteredGroup(existingJid))) ||
+      undefined;
+    if (existingJid && existingGroup) {
+      return { jid: existingJid, group: existingGroup };
+    }
+  }
+
+  const newJid = `web:${crypto.randomUUID()}`;
+  const folder = `flow-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 6)}`;
+  const now = new Date().toISOString();
+  const newGroup: RegisteredGroup = {
+    name,
+    folder,
+    added_at: now,
+    executionMode: (await isDockerAvailable()) ? 'container' : 'host',
+    created_by: userId,
+  };
+
+  registerGroup(newJid, newGroup);
+  ensureChatExists(newJid);
+  updateChatName(newJid, name);
+  addGroupMember(folder, userId, 'owner', userId);
+  return { jid: newJid, group: newGroup };
+}
+
+function handleMainWorkspaceCommand(chatJid: string): string {
+  const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
+  if (!group) return '当前 IM 未绑定工作区';
+  const userId = group.created_by;
+  if (!userId) return '无法确定当前聊天所属用户';
+
+  const homeGroup = getUserHomeGroup(userId);
+  if (!homeGroup) return '未找到你的主工作区';
+
+  clearTemporaryMainRoute(chatJid);
+  bindImGroupToMainConversation(chatJid, group, homeGroup.jid);
+  return `已切回 ${homeGroup.name} / 主对话\n💬 适合日常聊天、轻量问答`;
+}
+
+async function handleHeavyWorkspaceCommand(chatJid: string): Promise<string> {
+  const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
+  if (!group) return '当前 IM 未绑定工作区';
+  const userId = group.created_by;
+  if (!userId) return '无法确定当前聊天所属用户';
+
+  const created = !findWorkspaceByExactName(userId, '重任务');
+  const { jid: targetMainJid } = await ensureWorkspaceForUser(userId, '重任务');
+  const expiresAt = setTemporaryMainRoute(chatJid, targetMainJid);
+  const expiresAtText = new Date(expiresAt).toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
+  return created
+    ? `已创建重任务工作区，并开启 30 分钟重任务窗口\n🛠 现在到 ${expiresAtText} 前，你后续消息都会进入 重任务 / 主对话`
+    : `已开启 30 分钟重任务窗口\n🛠 现在到 ${expiresAtText} 前，你后续消息都会进入 重任务 / 主对话`;
+}
+
 async function handleNewCommand(
   chatJid: string,
   rawName: string,
@@ -1335,16 +1481,7 @@ async function handleNewCommand(
   addGroupMember(folder, userId, 'owner', userId);
 
   // Bind the current IM group to the new workspace's main conversation
-  const updated: RegisteredGroup = {
-    ...group,
-    target_main_jid: newJid,
-    target_agent_id: undefined,
-    reply_policy: 'source_only',
-  };
-  setRegisteredGroup(chatJid, updated);
-  registeredGroups[chatJid] = updated;
-  imSendFailCounts.delete(chatJid);
-  imHealthCheckFailCounts.delete(chatJid);
+  bindImGroupToMainConversation(chatJid, group, newJid);
 
   return `工作区「${name}」已创建并绑定\n📁 ${folder}\n🔁 回复策略: source_only\n\n发送 /unbind 可解绑回默认工作区`;
 }
@@ -6267,6 +6404,8 @@ function buildTelegramBotAddedHandler(
     onNewChat(chatJid, chatName);
     const welcome =
       `已加入「${chatName}」！当前绑定到默认工作区。\n\n` +
+      `/main — 切回主工作区（日常聊天）\n` +
+      `/heavy — 开启 30 分钟重任务窗口（代码/浏览器/长流程）\n` +
       `/new <名称> — 新建工作区并绑定此群\n` +
       `/bind <工作区> — 绑定到已有工作区\n` +
       `/list — 查看所有工作区\n\n` +
@@ -6315,6 +6454,20 @@ function buildResolveEffectiveChatJid(): (
   return (chatJid: string) => {
     const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
     if (!group) return null;
+
+    const temporaryMainJid = getTemporaryMainRoute(chatJid);
+    if (temporaryMainJid) {
+      let effectiveJid = temporaryMainJid;
+      if (
+        !registeredGroups[effectiveJid] &&
+        effectiveJid.startsWith('web:')
+      ) {
+        const folder = effectiveJid.slice(4);
+        const actual = findWebJidForFolder(folder);
+        if (actual) effectiveJid = actual;
+      }
+      return { effectiveJid, agentId: null };
+    }
 
     // Agent binding takes priority
     if (group.target_agent_id) {
