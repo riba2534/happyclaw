@@ -13,7 +13,7 @@ import {
   canAccessGroup,
   getWebDeps,
 } from '../web-context.js';
-import { getRegisteredGroup, getRouterState, hasContainerModeGroups } from '../db.js';
+import { getRegisteredGroup, getRouterState, getUserById, hasContainerModeGroups } from '../db.js';
 import { CONTAINER_IMAGE } from '../config.js';
 import { getSystemSettings, getProviders } from '../runtime-config.js';
 import { setProviderOverride } from '../container-runner.js';
@@ -269,15 +269,30 @@ monitorRoutes.get('/status', authMiddleware, async (c) => {
     }).length;
   }
 
-  // Enrich groups with provider name
+  // Enrich groups with provider name and owner username
   const providers = getProviders();
   const providerNameMap = new Map(providers.map((p) => [p.id, p.name]));
-  const enrichedGroups = filteredGroups.map((g) => ({
-    ...g,
-    selectedProviderName: g.selectedProviderId
-      ? providerNameMap.get(g.selectedProviderId) ?? null
-      : null,
-  }));
+  const userNameCache = new Map<string, string>();
+  const enrichedGroups = filteredGroups.map((g) => {
+    const reg = getRegisteredGroup(g.jid);
+    let ownerUsername: string | null = null;
+    if (reg?.created_by) {
+      if (userNameCache.has(reg.created_by)) {
+        ownerUsername = userNameCache.get(reg.created_by)!;
+      } else {
+        const user = getUserById(reg.created_by);
+        ownerUsername = user?.username ?? null;
+        if (ownerUsername) userNameCache.set(reg.created_by, ownerUsername);
+      }
+    }
+    return {
+      ...g,
+      ownerUsername,
+      selectedProviderName: g.selectedProviderId
+        ? providerNameMap.get(g.selectedProviderId) ?? null
+        : null,
+    };
+  });
 
   return c.json({
     activeContainers,

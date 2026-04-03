@@ -22,6 +22,7 @@ export interface SystemStatus {
     containerName: string | null;
     displayName: string | null;
     groupFolder: string | null;
+    ownerUsername: string | null;
     selectedProviderId: string | null;
     selectedProviderName: string | null;
   }>;

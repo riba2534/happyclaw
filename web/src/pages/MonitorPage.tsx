@@ -184,6 +184,9 @@ export function MonitorPage() {
                           群组
                         </th>
                         <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase">
+                          账号
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase">
                           队列
                         </th>
                         <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase">
@@ -202,6 +205,9 @@ export function MonitorPage() {
                         <tr key={group.jid} className="hover:bg-muted/50">
                           <td className="px-4 py-3 text-sm font-medium text-foreground">
                             {group.jid}
+                          </td>
+                          <td className="px-4 py-3 text-sm text-muted-foreground">
+                            {group.ownerUsername || '-'}
                           </td>
                           <td className="px-4 py-3 text-sm text-muted-foreground">
                             {group.pendingTasks} 个任务 / {group.pendingMessages ? '有新消息' : '无新消息'}
