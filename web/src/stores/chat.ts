@@ -236,6 +236,33 @@ const DEFAULT_STREAMING_STATE: StreamingState = {
 };
 
 /**
+ * Freeze a streaming state for interrupted display: clear active indicators,
+ * keep accumulated text/events, mark as interrupted. Returns null if no data
+ * worth preserving (caller should delete the entry).
+ */
+function freezeStreamingState(state: StreamingState | undefined): StreamingState | null {
+  if (!state) return null;
+  const hasData =
+    state.partialText ||
+    state.thinkingText ||
+    state.activeTools.length > 0 ||
+    state.activeHook ||
+    state.systemStatus ||
+    state.recentEvents.length > 0 ||
+    (state.todos && state.todos.length > 0);
+  if (!hasData) return null;
+  return {
+    ...state,
+    isThinking: false,
+    activeTools: [],
+    activeHook: null,
+    systemStatus: null,
+    interrupted: true,
+  };
+}
+
+
+/**
  * Resolve the previous StreamingState for a new event, resetting if turnId changed.
  */
 function resolveStreamingPrev(current: StreamingState | undefined, event: StreamEvent): StreamingState {
@@ -984,13 +1011,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
         `/api/groups/${encodeURIComponent(jid)}/interrupt`,
       );
       if (!data.interrupted) {
-        set({ error: 'No active query to interrupt' });
+        // Agent 已完成，无活跃查询可中断。
+        // 解析虚拟 JID 判断是 agent 还是主会话，清除卡住的状态。
+        const agentSep = jid.indexOf('#agent:');
+        if (agentSep >= 0) {
+          const agentId = jid.slice(agentSep + 7);
+          set((s) => {
+            const nextStreaming = { ...s.agentStreaming };
+            delete nextStreaming[agentId];
+            return {
+              agentStreaming: nextStreaming,
+              agentWaiting: { ...s.agentWaiting, [agentId]: false },
+            };
+          });
+        } else {
+          get().clearStreaming(jid);
+        }
         return false;
       }
 
-      // 不主动清理流式状态和 waiting 标志。
-      // 后端的 status:interrupted 事件会冻结 UI（保留已输出文本），
-      // 随后的 new_message 事件完成最终清理（流式 → 正式消息）。
+      // 中断已发出，后端 status:interrupted 事件会驱动 UI 冻结。
       return true;
     } catch (err) {
       set({ error: err instanceof Error ? err.message : String(err) });
@@ -1243,16 +1283,42 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return;
     }
 
-    // ① conversation agent（DB 持久化的）— 已有逻辑不变
+    // ① conversation agent（DB 持久化的）
     if (agentId) {
       if (event.eventType === 'status' && event.statusText === 'interrupted') {
+        // 与主会话一致的两阶段处理：先冻结（保留已输出内容），
+        // 等 new_message (interrupt_partial) 到达后完成最终清理。
+        const key = `agent:${agentId}`;
+        const pendingEntry = pendingDeltas.get(key);
+        if (pendingEntry) {
+          cancelAnimationFrame(pendingEntry.raf);
+          flushPendingDelta(key, chatJid, agentId, set);
+        }
         set((s) => {
+          const frozen = freezeStreamingState(s.agentStreaming[agentId]);
           const nextStreaming = { ...s.agentStreaming };
-          delete nextStreaming[agentId];
-          const nextWaiting = { ...s.agentWaiting };
-          delete nextWaiting[agentId];
-          return { agentStreaming: nextStreaming, agentWaiting: nextWaiting };
+          if (frozen) {
+            nextStreaming[agentId] = frozen;
+          } else {
+            delete nextStreaming[agentId];
+          }
+          return {
+            agentStreaming: nextStreaming,
+            agentWaiting: { ...s.agentWaiting, [agentId]: false },
+          };
         });
+
+        // Fallback：10s 后如果 new_message 未到达，强制清除冻结状态
+        setTimeout(() => {
+          const state = get();
+          if (state.agentStreaming[agentId]?.interrupted && !state.agentWaiting[agentId]) {
+            set((s) => {
+              const next = { ...s.agentStreaming };
+              delete next[agentId];
+              return { agentStreaming: next };
+            });
+          }
+        }, 10_000);
         return;
       }
       set((s) => {
@@ -1414,38 +1480,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
         flushPendingDelta(mainKey, chatJid, undefined, set);
       }
       set((s) => {
-        const streamState = s.streaming[chatJid];
+        const frozen = freezeStreamingState(s.streaming[chatJid]);
         const nextStreaming = { ...s.streaming };
-
-        const hasData = streamState && (
-          streamState.partialText ||
-          streamState.thinkingText ||
-          streamState.activeTools.length > 0 ||
-          streamState.activeHook ||
-          streamState.systemStatus ||
-          streamState.recentEvents.length > 0 ||
-          (streamState.todos && streamState.todos.length > 0)
-        );
-
-        if (hasData) {
-          // 冻结：保留所有已输出内容（文本、Reasoning、事件轨迹），
-          // 清除活跃动画指示器，标记已中断
-          nextStreaming[chatJid] = {
-            ...streamState,
-            isThinking: false,
-            activeTools: [],
-            activeHook: null,
-            systemStatus: null,
-            interrupted: true,
-          };
+        if (frozen) {
+          nextStreaming[chatJid] = frozen;
         } else {
-          // 完全无输出，直接清除
           delete nextStreaming[chatJid];
         }
-
         const nextPendingThinking = { ...s.pendingThinking };
         delete nextPendingThinking[chatJid];
-
         return {
           waiting: { ...s.waiting, [chatJid]: false },
           streaming: nextStreaming,
@@ -1456,7 +1499,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Fallback：10s 后如果 new_message 未到达，强制清除冻结状态
       setTimeout(() => {
         const state = get();
-        if (state.streaming[chatJid] && !state.waiting[chatJid]) {
+        if (state.streaming[chatJid]?.interrupted && !state.waiting[chatJid]) {
           set((s) => {
             const next = { ...s.streaming };
             delete next[chatJid];
@@ -1574,7 +1617,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
           msg.sender !== '__system__' &&
           msg.source_kind !== 'sdk_send_message';
 
-        const nextAgentStreaming = isAgentReply
+        // interrupt_partial 到达时，如果流式卡片已冻结（interrupted=true），
+        // 不清除 agentStreaming——保留冻结的富内容，10s 兜底计时器做最终清理。
+        const isFrozen = !!s.agentStreaming[agentId]?.interrupted;
+        const interruptPartialWhileFrozen =
+          msg.source_kind === 'interrupt_partial' && isFrozen;
+
+        const nextAgentStreaming = (isAgentReply && !interruptPartialWhileFrozen)
           ? (() => { const n = { ...s.agentStreaming }; delete n[agentId]; return n; })()
           : s.agentStreaming;
 
@@ -1650,15 +1699,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     // query_interrupted 仅作为视觉分隔线，不清理流式状态。
     // 流式状态由 status:interrupted（冻结）→ interrupt_partial（转正）两阶段处理。
-    // 兜底：20s 后若两个事件均未到达（如 agent runner 异常），强制清理。
+    // 兜底：20s 后若流式状态仍未清理（如 status:interrupted 或 interrupt_partial 丢失），
+    // 强制清理 streaming 和 waiting，防止 UI 永久卡死。
     if (isInterruptSystemMessage(msg) && get().streaming[chatJid]) {
       setTimeout(() => {
         const state = get();
-        if (state.streaming[chatJid] && !state.waiting[chatJid]) {
+        // 只清除仍处于中断冻结的状态；如果已被清理或已被新查询覆盖则跳过
+        if (state.streaming[chatJid]?.interrupted) {
           set((s) => {
+            if (!s.streaming[chatJid]?.interrupted) return s;
             const next = { ...s.streaming };
             delete next[chatJid];
-            return { streaming: next };
+            return {
+              streaming: next,
+              waiting: { ...s.waiting, [chatJid]: false },
+            };
           });
         }
       }, 20_000);

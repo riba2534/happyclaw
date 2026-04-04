@@ -86,6 +86,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const group = useChatStore(s => s.groups[groupJid]);
   const groupMessages = useChatStore(s => s.messages[groupJid]);
   const isWaiting = useChatStore(s => !!s.waiting[groupJid]);
+  const mainInterrupted = useChatStore(s => !!s.streaming[groupJid]?.interrupted);
   const hasMoreMessages = useChatStore(s => !!s.hasMore[groupJid]);
   const loading = useChatStore(s => s.loading);
   const loadMessages = useChatStore(s => s.loadMessages);
@@ -549,7 +550,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                 scrollTrigger={scrollTrigger}
                 groupJid={groupJid}
                 isWaiting={!!agentWaiting[activeAgentTab] || !!agentStreaming[activeAgentTab]}
-                onInterrupt={() => interruptQuery(`${groupJid}#agent:${activeAgentTab}`)}
+                onInterrupt={agentStreaming[activeAgentTab]?.interrupted ? undefined : () => interruptQuery(`${groupJid}#agent:${activeAgentTab}`)}
                 agentId={activeAgentTab}
               />
               <MessageInput
@@ -573,7 +574,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                 scrollTrigger={scrollTrigger}
                 groupJid={groupJid}
                 isWaiting={isWaiting}
-                onInterrupt={() => interruptQuery(groupJid)}
+                onInterrupt={mainInterrupted ? undefined : () => interruptQuery(groupJid)}
                 onSend={(content) => handleSend(content)}
               />
               <MessageInput
