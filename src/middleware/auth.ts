@@ -12,7 +12,7 @@ import {
   updateSessionLastActive,
   deleteUserSession,
 } from '../db.js';
-import { isSessionExpired } from '../auth.js';
+import { isSessionExpired, verifySessionToken } from '../auth.js';
 import type { AuthUser, Permission } from '../types.js';
 import { hasPermission } from '../permissions.js';
 import {
@@ -23,8 +23,14 @@ import {
 export const authMiddleware = async (c: any, next: any) => {
   const cookies = parseCookie(c.req.header('cookie'));
   // Accept either cookie name — the browser will send whichever was set
-  const token =
+  const rawCookie =
     cookies[SESSION_COOKIE_NAME_SECURE] || cookies[SESSION_COOKIE_NAME_PLAIN];
+  if (!rawCookie) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+
+  // Verify HMAC signature (also accepts legacy unsigned tokens for migration)
+  const token = verifySessionToken(rawCookie);
   if (!token) {
     return c.json({ error: 'Unauthorized' }, 401);
   }

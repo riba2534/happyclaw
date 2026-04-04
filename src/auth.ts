@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
+import { WEB_SESSION_SECRET } from './config.js';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -16,10 +17,42 @@ export async function verifyPassword(
   return bcrypt.compare(password, hash);
 }
 
-// --- Session token generation ---
+// --- Session token generation & HMAC signing ---
 
 export function generateSessionToken(): string {
   return crypto.randomBytes(32).toString('hex');
+}
+
+/** Sign a session token with HMAC-SHA256. Returns `token.signature`. */
+export function signSessionToken(token: string): string {
+  const sig = crypto
+    .createHmac('sha256', WEB_SESSION_SECRET)
+    .update(token)
+    .digest('hex');
+  return `${token}.${sig}`;
+}
+
+/** Verify and extract the raw token from a signed cookie value. Returns null if invalid. */
+export function verifySessionToken(signedValue: string): string | null {
+  const dotIndex = signedValue.lastIndexOf('.');
+  if (dotIndex === -1) {
+    // Legacy unsigned token — accept for backward compatibility
+    return signedValue;
+  }
+  const token = signedValue.substring(0, dotIndex);
+  const sig = signedValue.substring(dotIndex + 1);
+  // HMAC-SHA256 hex digest is always 64 characters
+  if (sig.length !== 64) return null;
+  const expected = crypto
+    .createHmac('sha256', WEB_SESSION_SECRET)
+    .update(token)
+    .digest('hex');
+  const sigBuf = Buffer.from(sig, 'hex');
+  const expectedBuf = Buffer.from(expected, 'hex');
+  if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+    return null;
+  }
+  return token;
 }
 
 export function generateUserId(): string {
@@ -61,6 +94,11 @@ interface AttemptRecord {
 
 const loginAttempts = new Map<string, AttemptRecord>();
 
+// Per-username global rate limit (防分布式暴力破解)
+// 阈值为 per-ip 限制的 4 倍，窗口为 1 小时
+const GLOBAL_USERNAME_MULTIPLIER = 4;
+const GLOBAL_USERNAME_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
 // Sliding window: clean old entries every 10 minutes
 setInterval(
   () => {
@@ -75,20 +113,15 @@ setInterval(
   10 * 60 * 1000,
 );
 
-export function checkLoginRateLimit(
-  username: string,
-  ip: string,
+function checkAttemptRecord(
+  key: string,
   maxAttempts: number,
-  lockoutMinutes: number,
+  windowMs: number,
 ): { allowed: boolean; retryAfterSeconds?: number } {
-  const key = `${username}:${ip}`;
   const now = Date.now();
-  const windowMs = lockoutMinutes * 60 * 1000;
-
   const record = loginAttempts.get(key);
   if (!record) return { allowed: true };
 
-  // Reset if window has passed since first attempt
   if (now - record.firstAttempt > windowMs) {
     loginAttempts.delete(key);
     return { allowed: true };
@@ -102,21 +135,53 @@ export function checkLoginRateLimit(
   return { allowed: true };
 }
 
-export function recordLoginAttempt(username: string, ip: string): void {
-  const key = `${username}:${ip}`;
-  const now = Date.now();
-  const record = loginAttempts.get(key);
+export function checkLoginRateLimit(
+  username: string,
+  ip: string,
+  maxAttempts: number,
+  lockoutMinutes: number,
+): { allowed: boolean; retryAfterSeconds?: number } {
+  const windowMs = lockoutMinutes * 60 * 1000;
 
-  if (record) {
-    record.count += 1;
-    record.lastAttempt = now;
+  // Check per-username:ip limit
+  const ipCheck = checkAttemptRecord(`${username}:${ip}`, maxAttempts, windowMs);
+  if (!ipCheck.allowed) return ipCheck;
+
+  // Check per-username global limit (higher threshold, longer window)
+  const globalMax = maxAttempts * GLOBAL_USERNAME_MULTIPLIER;
+  const globalCheck = checkAttemptRecord(`user:${username}`, globalMax, GLOBAL_USERNAME_WINDOW_MS);
+  if (!globalCheck.allowed) return globalCheck;
+
+  return { allowed: true };
+}
+
+export function recordLoginAttempt(username: string, ip: string): void {
+  const now = Date.now();
+
+  // Record per-username:ip
+  const ipKey = `${username}:${ip}`;
+  const ipRecord = loginAttempts.get(ipKey);
+  if (ipRecord) {
+    ipRecord.count += 1;
+    ipRecord.lastAttempt = now;
   } else {
-    loginAttempts.set(key, { count: 1, firstAttempt: now, lastAttempt: now });
+    loginAttempts.set(ipKey, { count: 1, firstAttempt: now, lastAttempt: now });
+  }
+
+  // Record per-username global
+  const userKey = `user:${username}`;
+  const userRecord = loginAttempts.get(userKey);
+  if (userRecord) {
+    userRecord.count += 1;
+    userRecord.lastAttempt = now;
+  } else {
+    loginAttempts.set(userKey, { count: 1, firstAttempt: now, lastAttempt: now });
   }
 }
 
 export function clearLoginAttempts(username: string, ip: string): void {
   loginAttempts.delete(`${username}:${ip}`);
+  loginAttempts.delete(`user:${username}`);
 }
 
 // --- Session expiry ---

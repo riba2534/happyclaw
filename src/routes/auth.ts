@@ -41,6 +41,7 @@ import {
   verifyPassword,
   hashPassword,
   generateSessionToken,
+  signSessionToken,
   sessionExpiresAt,
   checkLoginRateLimit,
   recordLoginAttempt,
@@ -87,7 +88,8 @@ export function setSessionCookie(c: any, token: string): string {
   const secure = isSecureRequest(c);
   const name = getSessionCookieName(secure);
   const secureSuffix = secure ? '; Secure' : '';
-  return `${name}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${30 * 24 * 60 * 60}${secureSuffix}`;
+  const signedToken = signSessionToken(token);
+  return `${name}=${signedToken}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${30 * 24 * 60 * 60}${secureSuffix}`;
 }
 
 export function clearSessionCookie(c: any): string {

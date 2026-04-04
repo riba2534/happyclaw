@@ -2,6 +2,18 @@ import pino from 'pino';
 
 export const logger = pino({
   level: process.env.LOG_LEVEL || 'info',
+  redact: {
+    paths: [
+      'token', 'password', 'secret', 'apiKey', 'api_key',
+      'authorization', 'cookie', 'sessionId',
+      '*.token', '*.password', '*.secret', '*.apiKey', '*.api_key',
+      '*.authorization', '*.cookie', '*.sessionId',
+      '*.appSecret', '*.app_secret', '*.appId',
+      '*.anthropicApiKey', '*.anthropicAuthToken',
+      '*.botToken', '*.bot_token',
+    ],
+    censor: '[REDACTED]',
+  },
   transport: {
     target: 'pino-pretty',
     options: {
