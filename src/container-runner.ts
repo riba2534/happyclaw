@@ -1046,11 +1046,81 @@ export async function runHostAgent(
 
     // 项目级 skills
     const projectRoot = process.cwd();
+
+    // 外部 Claude Code 目录 skills（最低优先级，先链接）
+    const { externalClaudeDir } = getSystemSettings();
+    const resolvedExternalClaudeDir = externalClaudeDir
+      ? externalClaudeDir.startsWith('~')
+        ? path.join(
+            process.env.HOME || '/root',
+            externalClaudeDir.slice(externalClaudeDir.startsWith('~/') ? 2 : 1),
+          )
+        : externalClaudeDir
+      : null;
+
+    if (resolvedExternalClaudeDir) {
+      linkSkillEntries(path.join(resolvedExternalClaudeDir, 'skills'));
+    }
+
     linkSkillEntries(path.join(projectRoot, 'container', 'skills'));
     // 用户级 skills（覆盖同名项目级）
     const ownerId = group.created_by;
     if (ownerId) {
       linkSkillEntries(path.join(DATA_DIR, 'skills', ownerId));
+    }
+
+    // 链接外部 Agents（最低优先级：只链接在 session agents/ 中不存在的 .md 文件）
+    if (resolvedExternalClaudeDir) {
+      const externalAgentsDir = path.join(resolvedExternalClaudeDir, 'agents');
+      if (fs.existsSync(externalAgentsDir)) {
+        const sessionAgentsDir = path.join(groupSessionsDir, 'agents');
+        fs.mkdirSync(sessionAgentsDir, { recursive: true });
+        try {
+          for (const entry of fs.readdirSync(externalAgentsDir, {
+            withFileTypes: true,
+          })) {
+            if (
+              !entry.isFile() && !entry.isSymbolicLink()
+            ) continue;
+            if (!entry.name.endsWith('.md')) continue;
+            const linkPath = path.join(sessionAgentsDir, entry.name);
+            // Only link if not already present (lowest priority — don't override HappyClaw agents)
+            if (!fs.existsSync(linkPath)) {
+              try {
+                fs.symlinkSync(
+                  path.join(externalAgentsDir, entry.name),
+                  linkPath,
+                );
+              } catch {
+                /* ignore */
+              }
+            }
+          }
+        } catch (agentErr) {
+          logger.warn(
+            { folder: group.folder, err: agentErr },
+            '宿主机模式外部 agents 符号链接失败',
+          );
+        }
+      }
+    }
+
+    // 链接外部 Rules（最低优先级：只在 session rules/ 不存在时链接）
+    if (resolvedExternalClaudeDir) {
+      const externalRulesDir = path.join(resolvedExternalClaudeDir, 'rules');
+      if (fs.existsSync(externalRulesDir)) {
+        const sessionRulesDir = path.join(groupSessionsDir, 'rules');
+        if (!fs.existsSync(sessionRulesDir)) {
+          try {
+            fs.symlinkSync(externalRulesDir, sessionRulesDir);
+          } catch (rulesErr) {
+            logger.warn(
+              { folder: group.folder, err: rulesErr },
+              '宿主机模式外部 rules 符号链接失败',
+            );
+          }
+        }
+      }
     }
   } catch (err) {
     logger.warn(

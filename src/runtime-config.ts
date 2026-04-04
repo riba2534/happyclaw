@@ -3386,6 +3386,10 @@ export interface SystemSettings {
   billingMinStartBalanceUsd: number;
   billingCurrency: string;
   billingCurrencyRate: number;
+  // External Claude Code directory (host mode): optional path to ~/.claude or custom dir.
+  // When set, Skills/Agents/Rules from this directory are symlinked into the session at
+  // lowest priority (HappyClaw-native resources always win). Empty/unset = no change.
+  externalClaudeDir?: string;
 }
 
 const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
@@ -3496,6 +3500,10 @@ function readSystemSettingsFromFile(): SystemSettings | null {
       typeof raw.billingCurrencyRate === 'number' && raw.billingCurrencyRate > 0
         ? raw.billingCurrencyRate
         : DEFAULT_SYSTEM_SETTINGS.billingCurrencyRate,
+    externalClaudeDir:
+      typeof raw.externalClaudeDir === 'string' && raw.externalClaudeDir
+        ? raw.externalClaudeDir
+        : undefined,
   };
 }
 
@@ -3558,6 +3566,7 @@ function buildEnvFallbackSettings(): SystemSettings {
       process.env.BILLING_CURRENCY_RATE,
       DEFAULT_SYSTEM_SETTINGS.billingCurrencyRate,
     ),
+    externalClaudeDir: process.env.EXTERNAL_CLAUDE_DIR || undefined,
   };
 }
 
@@ -3640,6 +3649,10 @@ export function saveSystemSettings(
       DEFAULT_SYSTEM_SETTINGS.billingMinStartBalanceUsd;
   if (merged.billingMinStartBalanceUsd > 1000000)
     merged.billingMinStartBalanceUsd = 1000000;
+  // externalClaudeDir: keep as-is (empty string → normalize to undefined)
+  if (merged.externalClaudeDir !== undefined && merged.externalClaudeDir.trim() === '') {
+    merged.externalClaudeDir = undefined;
+  }
 
   fs.mkdirSync(CLAUDE_CONFIG_DIR, { recursive: true });
   const tmp = `${SYSTEM_SETTINGS_FILE}.tmp`;
