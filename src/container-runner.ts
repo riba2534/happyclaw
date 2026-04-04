@@ -52,6 +52,44 @@ import {
  * Required env flags for settings.json — 每次容器/进程启动时强制写入，不可被用户覆盖。
  * 合并模式：仅覆盖这些 key，保留用户自定义的其他 key。
  */
+/**
+ * 宿主机的 ~/.claude.json 路径。
+ * 所有工作区共享此文件，确保 deviceId (userID) 一致。
+ * 即使 HappyClaw 项目删除重建，此文件始终存在于宿主机上。
+ */
+function getHostClaudeJsonPath(): string {
+  return path.join(os.homedir(), '.claude.json');
+}
+
+/**
+ * 确保宿主机 ~/.claude.json 存在。
+ * 如不存在则创建空 JSON，Claude Code 首次运行时会自动生成 userID。
+ */
+function ensureHostClaudeJson(): string {
+  const p = getHostClaudeJsonPath();
+  if (!fs.existsSync(p)) {
+    fs.writeFileSync(p, '{}', { mode: 0o600 });
+  }
+  return p;
+}
+
+/**
+ * 确保 localPath 是指向 targetPath 的 symlink。
+ * 如果 localPath 是普通文件或指向错误目标的 symlink，替换它。
+ */
+function ensureSymlinkTo(localPath: string, targetPath: string): void {
+  try {
+    const st = fs.lstatSync(localPath);
+    if (st.isSymbolicLink() && fs.readlinkSync(localPath) === targetPath) {
+      return; // 已经是正确的 symlink
+    }
+    fs.unlinkSync(localPath); // 普通文件或错误 symlink，删除
+  } catch {
+    // 文件不存在，继续创建
+  }
+  fs.symlinkSync(targetPath, localPath);
+}
+
 const REQUIRED_SETTINGS_ENV: Record<string, string> = {
   CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '0',
   CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
@@ -278,6 +316,14 @@ function buildVolumeMounts(
   mounts.push({
     hostPath: groupSessionsDir,
     containerPath: '/home/node/.claude',
+    readonly: false,
+  });
+
+  // Bind mount 宿主机 ~/.claude.json，所有容器共享同一个 deviceId
+  const hostJson = ensureHostClaudeJson();
+  mounts.push({
+    hostPath: hostJson,
+    containerPath: '/home/node/.claude.json',
     readonly: false,
   });
 
@@ -900,6 +946,10 @@ export async function runHostAgent(
       )
     : path.join(DATA_DIR, 'sessions', group.folder, '.claude');
   fs.mkdirSync(groupSessionsDir, { recursive: true });
+
+  // Symlink .claude.json 到宿主机 ~/.claude.json，确保 deviceId 一致
+  const localJson = path.join(groupSessionsDir, '.claude.json');
+  ensureSymlinkTo(localJson, ensureHostClaudeJson());
 
   // 3. 写入 settings.json（合并模式，不覆盖已有用户配置）
   // Load user's global MCP servers (same logic as Docker mode).
