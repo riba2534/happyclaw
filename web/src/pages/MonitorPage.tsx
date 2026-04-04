@@ -1,22 +1,24 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMonitorStore } from '../stores/monitor';
 import { useAuthStore } from '../stores/auth';
 import { ContainerStatus } from '../components/monitor/ContainerStatus';
 import { QueueStatus } from '../components/monitor/QueueStatus';
 import { SystemInfo } from '../components/monitor/SystemInfo';
 import { GroupStatusCard } from '../components/monitor/GroupStatusCard';
-import { ProviderSwitcher } from '../components/monitor/ProviderSwitcher';
+import { ProviderSwitcher, type SimpleProvider } from '../components/monitor/ProviderSwitcher';
 import { RefreshCw, AlertTriangle, CheckCircle, Hammer, Loader2 } from 'lucide-react';
 import { PageHeader } from '@/components/common/PageHeader';
 import { SkeletonStatCards } from '@/components/common/Skeletons';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { wsManager } from '../api/ws';
+import { api } from '@/api/client';
 
 export function MonitorPage() {
   const { status, loading, loadStatus, building, buildLogs, buildResult, buildDockerImage, clearBuildResult } = useMonitorStore();
   const isAdmin = useAuthStore((s) => s.user?.role === 'admin');
   const logEndRef = useRef<HTMLDivElement>(null);
+  const [providers, setProviders] = useState<SimpleProvider[]>([]);
 
   useEffect(() => {
     loadStatus();
@@ -48,6 +50,14 @@ export function MonitorPage() {
       unsubComplete();
     };
   }, [loadStatus]);
+
+  // Fetch providers once for all ProviderSwitcher instances
+  useEffect(() => {
+    api
+      .get<{ providers: Array<{ id: string; name: string; enabled: boolean }> }>('/api/config/claude/providers')
+      .then((data) => setProviders(data.providers.filter((p) => p.enabled).map(({ id, name }) => ({ id, name }))))
+      .catch(() => {});
+  }, []);
 
   // Auto-scroll build logs to bottom
   useEffect(() => {
@@ -171,7 +181,7 @@ export function MonitorPage() {
                 {/* 移动端：卡片列表 */}
                 <div className="lg:hidden space-y-3">
                   {status.groups.map((group) => (
-                    <GroupStatusCard key={group.jid} group={group} />
+                    <GroupStatusCard key={group.jid} group={group} providers={providers} />
                   ))}
                 </div>
 
@@ -232,6 +242,7 @@ export function MonitorPage() {
                                 groupFolder={group.groupFolder}
                                 currentProviderId={group.selectedProviderId}
                                 currentProviderName={group.selectedProviderName}
+                                providers={providers}
                               />
                             ) : (
                               <span className="text-muted-foreground">-</span>

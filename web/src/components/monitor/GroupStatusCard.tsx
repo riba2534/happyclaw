@@ -1,6 +1,6 @@
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
-import { ProviderSwitcher } from './ProviderSwitcher';
+import { ProviderSwitcher, type SimpleProvider } from './ProviderSwitcher';
 
 interface GroupStatusCardProps {
   group: {
@@ -15,9 +15,10 @@ interface GroupStatusCardProps {
     selectedProviderId: string | null;
     selectedProviderName: string | null;
   };
+  providers: SimpleProvider[];
 }
 
-export function GroupStatusCard({ group }: GroupStatusCardProps) {
+export function GroupStatusCard({ group, providers }: GroupStatusCardProps) {
   return (
     <Card>
       <CardContent>
@@ -62,6 +63,7 @@ export function GroupStatusCard({ group }: GroupStatusCardProps) {
               groupFolder={group.groupFolder}
               currentProviderId={group.selectedProviderId}
               currentProviderName={group.selectedProviderName}
+              providers={providers}
             />
           </div>
         )}

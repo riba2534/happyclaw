@@ -207,7 +207,9 @@ export function setProviderOverride(groupFolder: string, providerId: string): vo
 
 /**
  * Try to select a provider from the pool. Returns profileId + resolved config,
- * or null if pool mode is off (≤1 enabled) / group has provider override / selection fails.
+ * or null if no providers are enabled / group has env-level provider override / selection fails.
+ * For single-provider setups, returns the provider for display without pool balancing.
+ * One-time overrides (from switchProvider) are consumed on use.
  */
 function trySelectPoolProvider(
   groupFolder: string,
@@ -244,10 +246,11 @@ function trySelectPoolProvider(
   const enabledProviders = getEnabledProviders();
   if (enabledProviders.length === 0) return null;
 
-  // Single provider: return its ID for display, but skip pool logic
+  // Single provider: return its ID for display, acquire session for consistency
   if (enabledProviders.length === 1) {
     try {
       const resolved = resolveProviderById(enabledProviders[0].id);
+      providerPool.acquireSession(enabledProviders[0].id);
       return {
         profileId: enabledProviders[0].id,
         resolved: { config: resolved.config, customEnv: resolved.customEnv },
