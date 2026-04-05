@@ -114,6 +114,8 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const agentWaiting = useChatStore(s => s.agentWaiting);
   const agentHasMore = useChatStore(s => s.agentHasMore);
 
+  const markChatRead = useChatStore(s => s.markChatRead);
+
   const currentUser = useAuthStore(s => s.user);
   const canUseTerminal = group?.execution_mode !== 'host';
   const pollRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -147,6 +149,14 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     const timer = setInterval(fetchStatus, 30_000); // refresh every 30s
     return () => { active = false; clearInterval(timer); };
   }, [isOwnHome]);
+
+  // 进入对话时清除未读计数
+  useEffect(() => {
+    markChatRead(groupJid);
+    const onFocus = () => markChatRead(groupJid);
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [groupJid, markChatRead]);
 
   // Load messages on group select
   const hasMessages = !!groupMessages;

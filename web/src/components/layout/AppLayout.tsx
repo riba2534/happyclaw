@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { UnifiedSidebar } from './UnifiedSidebar';
 import { BottomTabBar } from './BottomTabBar';
@@ -8,6 +8,7 @@ import { useTheme } from '../../hooks/useTheme';
 import { useBillingStore } from '../../stores/billing';
 import { useGroupsStore } from '../../stores/groups';
 import { useChatStore } from '../../stores/chat';
+import { useAuthStore } from '../../stores/auth';
 
 export function AppLayout() {
   const location = useLocation();
@@ -72,6 +73,17 @@ export function AppLayout() {
     });
     return () => { unsub(); };
   }, []);
+
+  // 更新 document.title，显示未读回复数
+  const unreadReplies = useChatStore((s) => s.unreadReplies);
+  const appearance = useAuthStore((s) => s.appearance);
+  const baseTitleRef = useRef(document.title);
+  useEffect(() => {
+    const appName = appearance?.appName || 'HappyClaw';
+    const total = Object.values(unreadReplies).reduce((sum, n) => sum + n, 0);
+    document.title = total > 0 ? `(${total}) ${appName}` : appName;
+    baseTitleRef.current = appName;
+  }, [unreadReplies, appearance?.appName]);
 
   // 全局监听 agent_status，确保不在 ChatView 页面时也能更新 sub-agent 状态
   useEffect(() => {
