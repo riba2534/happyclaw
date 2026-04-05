@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import { ASSISTANT_NAME, DATA_DIR } from './config.js';
@@ -3386,6 +3387,8 @@ export interface SystemSettings {
   billingMinStartBalanceUsd: number;
   billingCurrency: string;
   billingCurrencyRate: number;
+  // External Claude Code config directory (host mode only)
+  externalClaudeDir: string;
 }
 
 const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
@@ -3405,6 +3408,7 @@ const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
   billingMinStartBalanceUsd: 0.01,
   billingCurrency: 'USD',
   billingCurrencyRate: 1,
+  externalClaudeDir: '',
 };
 
 function parseIntEnv(envVar: string | undefined, fallback: number): number {
@@ -3496,6 +3500,10 @@ function readSystemSettingsFromFile(): SystemSettings | null {
       typeof raw.billingCurrencyRate === 'number' && raw.billingCurrencyRate > 0
         ? raw.billingCurrencyRate
         : DEFAULT_SYSTEM_SETTINGS.billingCurrencyRate,
+    externalClaudeDir:
+      typeof raw.externalClaudeDir === 'string'
+        ? raw.externalClaudeDir
+        : DEFAULT_SYSTEM_SETTINGS.externalClaudeDir,
   };
 }
 
@@ -3558,6 +3566,8 @@ function buildEnvFallbackSettings(): SystemSettings {
       process.env.BILLING_CURRENCY_RATE,
       DEFAULT_SYSTEM_SETTINGS.billingCurrencyRate,
     ),
+    externalClaudeDir:
+      process.env.EXTERNAL_CLAUDE_DIR || DEFAULT_SYSTEM_SETTINGS.externalClaudeDir,
   };
 }
 
@@ -3635,6 +3645,14 @@ export function saveSystemSettings(
   if (merged.skillAutoSyncIntervalMinutes > 1440)
     merged.skillAutoSyncIntervalMinutes = 1440; // max 24h
   merged.billingMode = 'wallet_first';
+  // Normalize externalClaudeDir: trim whitespace, resolve ~ to homedir
+  if (merged.externalClaudeDir) {
+    let dir = merged.externalClaudeDir.trim();
+    if (dir.startsWith('~/')) {
+      dir = path.join(os.homedir(), dir.slice(2));
+    }
+    merged.externalClaudeDir = dir;
+  }
   if (merged.billingMinStartBalanceUsd < 0)
     merged.billingMinStartBalanceUsd =
       DEFAULT_SYSTEM_SETTINGS.billingMinStartBalanceUsd;

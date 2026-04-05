@@ -104,6 +104,7 @@ export interface SystemSettings {
   billingMinStartBalanceUsd: number;
   billingCurrency: string;
   billingCurrencyRate: number;
+  externalClaudeDir: string;
 }
 
 // ─── OAuth Usage ────────────────────────────────────────────

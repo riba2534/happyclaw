@@ -1009,9 +1009,9 @@ export async function runHostAgent(
   const hostMcpServers = group.created_by ? loadUserMcpServers(group.created_by) : {};
   ensureSettingsJson(settingsFile, hostMcpServers);
 
-  // 4. Skills 自动链接到 session 目录
-  // 链接顺序：项目级 → 用户级(覆盖同名项目级)
-  // 用户的所有 skills 在所有工作区中生效
+  // 4. Skills/Agents/Rules 自动链接到 session 目录
+  // 链接顺序：外部(最低) → 项目级 → 用户级(最高，覆盖同名)
+  const { externalClaudeDir: extClaudeDir } = getSystemSettings();
   try {
     const skillsDir = path.join(groupSessionsDir, 'skills');
     fs.mkdirSync(skillsDir, { recursive: true });
@@ -1044,6 +1044,10 @@ export async function runHostAgent(
       }
     };
 
+    // 外部 Claude Code skills（最低优先级）
+    if (extClaudeDir) {
+      linkSkillEntries(path.join(extClaudeDir, 'skills'));
+    }
     // 项目级 skills
     const projectRoot = process.cwd();
     linkSkillEntries(path.join(projectRoot, 'container', 'skills'));
@@ -1057,6 +1061,70 @@ export async function runHostAgent(
       { folder: group.folder, err },
       '宿主机模式 skills 符号链接失败',
     );
+  }
+
+  // 4b. 外部 Agents 自动链接到 session 目录
+  // 将 externalClaudeDir/agents/ 下的文件 symlink 到 session agents/ 目录
+  // 不覆盖 HappyClaw 内置的 agent（由 SDK agents 选项注册）
+  if (extClaudeDir) {
+    try {
+      const externalAgentsDir = path.join(extClaudeDir, 'agents');
+      if (fs.existsSync(externalAgentsDir)) {
+        const agentsDir = path.join(groupSessionsDir, 'agents');
+        fs.mkdirSync(agentsDir, { recursive: true });
+        for (const entry of fs.readdirSync(externalAgentsDir, {
+          withFileTypes: true,
+        })) {
+          if (!entry.isFile() && !entry.isSymbolicLink()) continue;
+          const linkPath = path.join(agentsDir, entry.name);
+          try {
+            if (!fs.existsSync(linkPath)) {
+              fs.symlinkSync(
+                path.join(externalAgentsDir, entry.name),
+                linkPath,
+              );
+            }
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn(
+        { folder: group.folder, err },
+        '宿主机模式外部 agents 符号链接失败',
+      );
+    }
+
+    // 4c. 外部 Rules 自动链接到 session 目录
+    try {
+      const externalRulesDir = path.join(extClaudeDir, 'rules');
+      if (fs.existsSync(externalRulesDir)) {
+        const rulesDir = path.join(groupSessionsDir, 'rules');
+        fs.mkdirSync(rulesDir, { recursive: true });
+        for (const entry of fs.readdirSync(externalRulesDir, {
+          withFileTypes: true,
+        })) {
+          if (!entry.isFile() && !entry.isSymbolicLink()) continue;
+          const linkPath = path.join(rulesDir, entry.name);
+          try {
+            if (!fs.existsSync(linkPath)) {
+              fs.symlinkSync(
+                path.join(externalRulesDir, entry.name),
+                linkPath,
+              );
+            }
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn(
+        { folder: group.folder, err },
+        '宿主机模式外部 rules 符号链接失败',
+      );
+    }
   }
 
   // 5. 构建环境变量
