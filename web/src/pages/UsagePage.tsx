@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   RefreshCw, Zap, ArrowUpRight, ArrowDownRight, DollarSign,
   MessageSquare, Database, Filter, Info,
@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip,
-  ResponsiveContainer, CartesianGrid, Legend, PieChart, Pie, Cell,
+  ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell,
 } from 'recharts';
 
 const PERIOD_OPTIONS = [
@@ -68,24 +68,30 @@ export function UsagePage() {
     return `过去 ${days} 天的 Token 用量和费用`;
   }, [dataRange, days]);
 
+  // Token chart filter
+  const [tokenFilter, setTokenFilter] = useState<'total' | 'input' | 'output' | 'cached'>('total');
+
   // Aggregate daily data for chart — fill all dates in the selected period
   const dailyData = useMemo(() => {
-    // Aggregate breakdown by date
-    const byDate = new Map<string, { date: string; input: number; output: number; cacheRead: number; cost: number; messages: number }>();
+    // Aggregate breakdown by date, keeping all token categories
+    const byDate = new Map<string, { date: string; total: number; input: number; output: number; cached: number; cost: number; messages: number }>();
     for (const row of breakdown) {
+      const input = row.input_tokens + row.cache_creation_tokens;
+      const cached = row.cache_read_tokens;
+      const output = row.output_tokens;
+      const total = input + cached + output;
       const existing = byDate.get(row.date);
       if (existing) {
-        existing.input += row.input_tokens;
-        existing.output += row.output_tokens;
-        existing.cacheRead += row.cache_read_tokens;
+        existing.total += total;
+        existing.input += input;
+        existing.output += output;
+        existing.cached += cached;
         existing.cost += row.cost_usd;
         existing.messages += row.request_count;
       } else {
         byDate.set(row.date, {
           date: row.date,
-          input: row.input_tokens,
-          output: row.output_tokens,
-          cacheRead: row.cache_read_tokens,
+          total, input, output, cached,
           cost: row.cost_usd,
           messages: row.request_count,
         });
@@ -104,9 +110,7 @@ export function UsagePage() {
       const dateStr = `${yyyy}-${mm}-${dd}`;
       result.push(byDate.get(dateStr) || {
         date: dateStr,
-        input: 0,
-        output: 0,
-        cacheRead: 0,
+        total: 0, input: 0, output: 0, cached: 0,
         cost: 0,
         messages: 0,
       });
@@ -121,12 +125,12 @@ export function UsagePage() {
       const existing = byModel.get(row.model);
       if (existing) {
         existing.cost += row.cost_usd;
-        existing.tokens += row.input_tokens + row.output_tokens;
+        existing.tokens += row.input_tokens + row.cache_read_tokens + row.cache_creation_tokens + row.output_tokens;
       } else {
         byModel.set(row.model, {
           model: row.model,
           cost: row.cost_usd,
-          tokens: row.input_tokens + row.output_tokens,
+          tokens: row.input_tokens + row.cache_read_tokens + row.cache_creation_tokens + row.output_tokens,
         });
       }
     }
@@ -221,7 +225,7 @@ export function UsagePage() {
               <StatCard
                 icon={<ArrowDownRight className="w-5 h-5" />}
                 label="输入 Token"
-                value={formatTokens(summary.totalInputTokens)}
+                value={formatTokens(summary.totalInputTokens + summary.totalCacheReadTokens + summary.totalCacheCreationTokens)}
                 color="text-blue-600 dark:text-blue-400"
                 bgColor="bg-blue-50 dark:bg-blue-950"
               />
@@ -281,7 +285,19 @@ export function UsagePage() {
             {dailyData.length > 0 && (
               <Card>
                 <CardContent>
-                  <h2 className="text-lg font-semibold text-foreground mb-4">每日 Token 用量</h2>
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-lg font-semibold text-foreground">每日 Token 用量</h2>
+                    <select
+                      value={tokenFilter}
+                      onChange={(e) => setTokenFilter(e.target.value as typeof tokenFilter)}
+                      className="h-8 px-2 rounded-lg border border-border bg-card text-sm text-foreground"
+                    >
+                      <option value="total">Total</option>
+                      <option value="input">Input</option>
+                      <option value="output">Output</option>
+                      <option value="cached">Cached</option>
+                    </select>
+                  </div>
                   <div className="h-64 lg:h-80">
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart data={dailyData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
@@ -289,7 +305,7 @@ export function UsagePage() {
                         <XAxis
                           dataKey="date"
                           tick={{ fontSize: 12, fill: 'var(--muted-foreground)' }}
-                          tickFormatter={(v: string) => v.slice(5)} // MM-DD
+                          tickFormatter={(v: string) => v.slice(5)}
                         />
                         <YAxis
                           tick={{ fontSize: 12, fill: 'var(--muted-foreground)' }}
@@ -303,12 +319,10 @@ export function UsagePage() {
                             color: 'var(--foreground)',
                           }}
                           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                          formatter={(value: any, name: any) => [formatTokens(Number(value) || 0), String(name)]}
+                          formatter={(value: any) => [formatTokens(Number(value) || 0), { total: 'Total', input: 'Input', output: 'Output', cached: 'Cached' }[tokenFilter]]}
                           labelFormatter={(label) => `日期: ${label}`}
                         />
-                        <Legend />
-                        <Bar dataKey="input" name="输入" stackId="tokens" fill="var(--color-primary)" radius={[0, 0, 0, 0]} />
-                        <Bar dataKey="output" name="输出" stackId="tokens" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+                        <Bar dataKey={tokenFilter} fill="var(--color-primary)" radius={[4, 4, 0, 0]} />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>

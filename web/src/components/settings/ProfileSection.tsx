@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Loader2, Upload, Trash2, User, Bot, Lock, Palette, Sun, Moon, Monitor } from 'lucide-react';
+import { Loader2, Upload, Trash2, User, Bot, Lock, Palette, Sun, Moon, Monitor, Bell, BellOff, CheckCircle2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { useAuthStore } from '../../stores/auth';
@@ -49,6 +49,57 @@ function OptionButton({ active, onClick, children, className = '' }: {
     >
       {children}
     </button>
+  );
+}
+
+/* ── Desktop Notification Section ─────────────────────────── */
+
+function DesktopNotificationSection() {
+  const supported = typeof Notification !== 'undefined';
+  const [permission, setPermission] = useState<NotificationPermission>(
+    supported ? Notification.permission : 'denied',
+  );
+
+  const handleRequest = async () => {
+    if (!supported) return;
+    const result = await Notification.requestPermission();
+    setPermission(result);
+  };
+
+  return (
+    <Section icon={Bell} title="桌面通知" desc="对话任务完成时通过浏览器弹窗提醒你">
+      {!supported ? (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <BellOff className="size-4 flex-shrink-0" />
+          当前浏览器不支持桌面通知
+        </div>
+      ) : permission === 'granted' ? (
+        <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
+          <CheckCircle2 className="size-4 flex-shrink-0" />
+          桌面通知已开启，对话完成时将弹窗提醒
+        </div>
+      ) : permission === 'denied' ? (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 text-sm text-amber-600 dark:text-amber-400">
+            <BellOff className="size-4 flex-shrink-0" />
+            浏览器已拒绝通知权限
+          </div>
+          <p className="text-xs text-muted-foreground">
+            请点击地址栏左侧的锁图标，将「通知」权限改为「允许」，然后刷新页面。
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <p className="text-sm text-muted-foreground">
+            开启后，当页面切到后台或切换到其他对话时，任务完成会弹出系统通知。
+          </p>
+          <Button type="button" size="sm" variant="outline" onClick={handleRequest}>
+            <Bell className="size-3.5" />
+            开启桌面通知
+          </Button>
+        </div>
+      )}
+    </Section>
   );
 }
 
@@ -257,7 +308,10 @@ export function ProfileSection() {
         </div>
       </Section>
 
-      {/* ── 2. Account Info ── */}
+      {/* ── 2. Desktop Notifications ── */}
+      <DesktopNotificationSection />
+
+      {/* ── 3. Account Info ── */}
       <Section icon={User} title="账户信息">
         <div className="flex items-center gap-4">
           <EmojiAvatar imageUrl={avatarUrl} emoji={avatarEmoji} color={avatarColor} fallbackChar={displayName || username} size="lg" />

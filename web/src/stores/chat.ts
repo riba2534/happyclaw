@@ -3,7 +3,7 @@ import { api } from '../api/client';
 import { wsManager } from '../api/ws';
 import { useFileStore } from './files';
 import { useAuthStore } from './auth';
-import { showToast, notifyIfHidden, shouldEmitBackgroundTaskNotice } from '../utils/toast';
+import { showToast, notifyIfHidden, shouldEmitBackgroundTaskNotice, showNotificationPromptToast } from '../utils/toast';
 import type { GroupInfo, AgentInfo, AvailableImGroup } from '../types';
 
 export type { GroupInfo, AgentInfo };
@@ -226,6 +226,9 @@ interface ChatState {
   drafts: Record<string, string>;
   saveDraft: (jid: string, text: string) => void;
   clearDraft: (jid: string) => void;
+  // Unread agent replies (incremented when page is hidden or a different chat is active)
+  unreadReplies: Record<string, number>;
+  markChatRead: (chatJid: string) => void;
 }
 
 const DEFAULT_STREAMING_STATE: StreamingState = {
@@ -782,6 +785,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   agentWaiting: {},
   agentHasMore: {},
   drafts: {},
+  unreadReplies: {},
 
   loadGroups: async () => {
     set({ loading: true });
@@ -1701,11 +1705,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const nextPending = { ...s.pendingThinking };
         delete nextPending[chatJid];
 
+        // 未读计数：页面隐藏或不在当前对话时增加
+        const isHidden = typeof document !== 'undefined' && document.hidden;
+        const isOtherChat = s.currentGroup !== chatJid;
+        const nextUnread = (isHidden || isOtherChat) && shouldFinalizeAssistant
+          ? { ...s.unreadReplies, [chatJid]: (s.unreadReplies[chatJid] || 0) + 1 }
+          : s.unreadReplies;
+
         return {
           messages: { ...s.messages, [chatJid]: updated },
           waiting: { ...s.waiting, [chatJid]: false },
           streaming: nextStreaming,
           pendingThinking: nextPending,
+          unreadReplies: nextUnread,
           ...(thinkingText ? { thinkingCache: capThinkingCache({ ...s.thinkingCache, [msg.id]: thinkingText }) } : {}),
         };
       }
@@ -1715,6 +1727,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
         messages: { ...s.messages, [chatJid]: updated },
       };
     });
+
+    // 对话完成通知：浏览器通知（页面隐藏时）+ 首次引导开启权限
+    const isAgentReplyFinal =
+      msg.is_from_me &&
+      msg.sender !== '__system__' &&
+      source !== 'scheduled_task' &&
+      msg.source_kind !== 'sdk_send_message' &&
+      (msg.source_kind === 'sdk_final'
+        || msg.source_kind === 'interrupt_partial'
+        || msg.source_kind === null
+        || msg.source_kind === undefined
+        || msg.source_kind === 'legacy');
+
+    if (isAgentReplyFinal) {
+      const groupName = get().groups[chatJid]?.name || '对话';
+      const preview = msg.content ? msg.content.slice(0, 80) : '';
+      notifyIfHidden(groupName, preview || '收到新回复');
+      if (typeof document !== 'undefined' && !document.hidden) {
+        showNotificationPromptToast();
+      }
+    }
 
     // query_interrupted 仅作为视觉分隔线，不清理流式状态。
     // 流式状态由 status:interrupted（冻结）→ interrupt_partial（转正）两阶段处理。
@@ -2397,6 +2430,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const next = { ...s.drafts };
       delete next[jid];
       return { drafts: next };
+    });
+  },
+
+  markChatRead: (chatJid) => {
+    set((s) => {
+      if (!s.unreadReplies[chatJid]) return s;
+      const next = { ...s.unreadReplies };
+      delete next[chatJid];
+      return { unreadReplies: next };
     });
   },
 }));
