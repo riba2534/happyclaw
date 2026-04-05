@@ -358,9 +358,11 @@ monitorRoutes.post(
       (g) => g.groupFolder === folder && g.active,
     );
 
+    // Set one-time override (consumed on next container start)
+    setProviderOverride(folder, providerId);
+
     if (!activeGroup) {
       return c.json({
-        error: 'No active container for this group. Override will apply on next run.',
         ok: true,
         providerId,
         providerName: target.name,
@@ -369,8 +371,6 @@ monitorRoutes.post(
       });
     }
 
-    // Set one-time override (consumed on next container start)
-    setProviderOverride(folder, providerId);
     const restarted = deps.queue.requestGracefulRestart(activeGroup.jid);
 
     logger.info(

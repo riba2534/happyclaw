@@ -72,6 +72,30 @@ function ensureHostClaudeJson(): string {
 }
 
 /**
+ * 为 Docker 容器生成精简版 .claude.json。
+ * 宿主机 ~/.claude.json 中的 cachedGrowthBookFeatures 含 tengu_bridge_repl_v2 等
+ * feature flags，SDK 初始化时会据此尝试建立 bridge 连接，在容器网络环境中无法完成
+ * 导致进程挂起。剥离该字段后其余内容原样保留（oauthAccount、userID 等）。
+ */
+function getContainerClaudeJsonPath(): string {
+  const containerJsonDir = path.join(DATA_DIR, 'config');
+  fs.mkdirSync(containerJsonDir, { recursive: true });
+  const containerJsonPath = path.join(containerJsonDir, 'container-claude-json.json');
+
+  try {
+    const hostJson = JSON.parse(fs.readFileSync(getHostClaudeJsonPath(), 'utf-8'));
+    const stripped = { ...hostJson };
+    delete stripped.cachedGrowthBookFeatures;
+    stripped.autoUpdates = false;
+    fs.writeFileSync(containerJsonPath, JSON.stringify(stripped, null, 2) + '\n', { mode: 0o644 });
+  } catch {
+    fs.writeFileSync(containerJsonPath, '{"hasCompletedOnboarding":true,"autoUpdates":false}\n', { mode: 0o644 });
+  }
+
+  return containerJsonPath;
+}
+
+/**
  * 确保 localPath 是指向 targetPath 的 symlink。
  * 如果 localPath 是普通文件或指向错误目标的 symlink，替换它。
  */
@@ -371,10 +395,21 @@ function buildVolumeMounts(
     readonly: false,
   });
 
-  // Bind mount 宿主机 ~/.claude.json，所有容器共享同一个 deviceId
-  const hostJson = ensureHostClaudeJson();
+  // 清理 session 目录中 SDK 遗留的 .claude.json（含 cachedGrowthBookFeatures，会导致初始化挂起）
+  const sessionClaudeJson = path.join(groupSessionsDir, '.claude.json');
+  try {
+    const st = fs.lstatSync(sessionClaudeJson);
+    // 500B 阈值：精简版 .claude.json（不含 feature flags）约 200-400B，
+    // SDK 写回的完整版含 cachedGrowthBookFeatures 通常 > 10KB。
+    if (!st.isSymbolicLink() && st.size > 500) {
+      fs.unlinkSync(sessionClaudeJson);
+    }
+  } catch { /* not found, ok */ }
+
+  // 挂载精简版 .claude.json（剥离 cachedGrowthBookFeatures），保留 deviceId 一致性
+  const containerJson = getContainerClaudeJsonPath();
   mounts.push({
-    hostPath: hostJson,
+    hostPath: containerJson,
     containerPath: '/home/node/.claude.json',
     readonly: true,
   });

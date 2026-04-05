@@ -56,17 +56,15 @@ export function GroupStatusCard({ group, providers }: GroupStatusCardProps) {
             {group.displayName || group.containerName || '-'}
           </span>
         </div>
-        {group.active && (
-          <div className="flex items-center justify-between">
-            <span>Provider</span>
-            <ProviderSwitcher
-              groupFolder={group.groupFolder}
-              currentProviderId={group.selectedProviderId}
-              currentProviderName={group.selectedProviderName}
-              providers={providers}
-            />
-          </div>
-        )}
+        <div className="flex items-center justify-between">
+          <span>Provider</span>
+          <ProviderSwitcher
+            groupFolder={group.groupFolder}
+            currentProviderId={group.selectedProviderId}
+            currentProviderName={group.selectedProviderName}
+            providers={providers}
+          />
+        </div>
         </div>
       </CardContent>
     </Card>
