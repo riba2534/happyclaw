@@ -5,6 +5,7 @@ import { ScheduledTask, TaskRunLog, useTasksStore } from '../../stores/tasks';
 import { showToast } from '../../utils/toast';
 import { INTERVAL_UNITS, formatInterval, decomposeInterval, toggleNotifyChannel } from '../../utils/task-utils';
 import { useConnectedChannels } from '../../hooks/useConnectedChannels';
+import { ChannelBadge, CHANNEL_LABEL } from '../settings/channel-meta';
 
 const CHANNEL_LABELS: Record<string, string> = {
   feishu: '飞书',
@@ -446,14 +447,19 @@ export function TaskDetail({ task }: TaskDetailProps) {
               }
               className="w-full text-sm text-foreground bg-card px-2 py-1 rounded border border-border focus:outline-none focus:ring-1 focus:ring-primary"
             >
-              {Object.entries(groupNames).map(([jid, name]) => (
-                <option key={jid} value={jid}>
-                  {name} ({jid})
-                </option>
-              ))}
+              {Object.entries(groupNames).map(([jid, name]) => {
+                const channelType = jid.split(':')[0];
+                const channelLabel = CHANNEL_LABEL[channelType] || (channelType === 'web' ? 'Web' : channelType);
+                return (
+                  <option key={jid} value={jid}>
+                    [{channelLabel}] {name}
+                  </option>
+                );
+              })}
             </select>
           ) : (
-            <div className="text-sm text-foreground">
+            <div className="text-sm text-foreground inline-flex items-center gap-1.5">
+              <ChannelBadge channelType={task.chat_jid.split(':')[0]} />
               {groupNames[task.chat_jid] || task.chat_jid}
             </div>
           )}
