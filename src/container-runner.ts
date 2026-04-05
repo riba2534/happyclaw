@@ -100,6 +100,11 @@ const REQUIRED_SETTINGS_ENV: Record<string, string> = {
   CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '0',
   CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
   CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
+  // 禁用 SDK 附件注入（token_usage, changed_files, todo_reminders 等 20+ 种动态消息）。
+  // 这些附件在每次 query() 时动态生成但不持久化到 JSONL，导致跨进程的消息数组
+  // 前缀不匹配，prompt cache 永远失效（cache_read 始终 = 11224 静态 system prompt）。
+  // 禁用后历史消息的缓存前缀跨 query() 保持一致，实现 1M 上下文下的增量缓存。
+  CLAUDE_CODE_DISABLE_ATTACHMENTS: '1',
 };
 
 /** Read existing settings.json, deep-merge required env keys and mcpServers, write only if changed */
