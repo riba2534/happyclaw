@@ -107,6 +107,8 @@ COPY agent-runner/package.json ./
 # CACHEBUST after COPY ensures both global and local npm install are cache-busted
 # (COPY caches on file content hash, which blocks ARG invalidation propagation)
 ARG CACHEBUST=1
+
+RUN npm config set registry https://registry.npmmirror.com
 RUN npm install -g agent-browser
 RUN npm install
 
