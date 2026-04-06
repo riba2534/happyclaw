@@ -137,6 +137,8 @@ export function SystemSettingsSection() {
   const [billingMinStartBalanceUsd, setBillingMinStartBalanceUsd] = useState(0.01);
   const [billingCurrency, setBillingCurrency] = useState('USD');
   const [billingCurrencyRate, setBillingCurrencyRate] = useState(1);
+  const [containerHttpProxy, setContainerHttpProxy] = useState('');
+  const [containerHttpsProxy, setContainerHttpsProxy] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -161,6 +163,8 @@ export function SystemSettingsSection() {
         setBillingMinStartBalanceUsd(data.billingMinStartBalanceUsd ?? 0.01);
         setBillingCurrency(data.billingCurrency ?? 'USD');
         setBillingCurrencyRate(data.billingCurrencyRate ?? 1);
+        setContainerHttpProxy(data.containerHttpProxy ?? '');
+        setContainerHttpsProxy(data.containerHttpsProxy ?? '');
       } catch (err) {
         toast.error(getErrorMessage(err, '加载系统参数失败'));
       } finally {
@@ -205,6 +209,8 @@ export function SystemSettingsSection() {
         billingMinStartBalanceUsd,
         billingCurrency,
         billingCurrencyRate,
+        containerHttpProxy: containerHttpProxy.trim(),
+        containerHttpsProxy: containerHttpsProxy.trim(),
       };
       for (const f of fields) {
         const val = displayValues[f.key];
@@ -223,6 +229,8 @@ export function SystemSettingsSection() {
       setBillingMinStartBalanceUsd(data.billingMinStartBalanceUsd ?? 0.01);
       setBillingCurrency(data.billingCurrency ?? 'USD');
       setBillingCurrencyRate(data.billingCurrencyRate ?? 1);
+      setContainerHttpProxy(data.containerHttpProxy ?? '');
+      setContainerHttpsProxy(data.containerHttpsProxy ?? '');
       // 刷新计费状态，更新导航栏可见性
       loadBillingStatus();
       toast.success('系统参数已保存，新参数将对后续启动的容器/进程生效');
@@ -282,6 +290,34 @@ export function SystemSettingsSection() {
             </p>
           </div>
         ))}
+      </div>
+
+      {/* 容器代理设置 */}
+      <div className="border-t border-border pt-6 space-y-5">
+        <h3 className="text-sm font-semibold text-foreground">容器代理设置</h3>
+        <p className="text-xs text-muted-foreground">
+          仅对 Docker 容器模式的工作区生效，宿主机模式不会注入这些环境变量。
+        </p>
+        <div>
+          <Label className="mb-1">HTTP_PROXY</Label>
+          <Input
+            type="text"
+            value={containerHttpProxy}
+            onChange={(e) => setContainerHttpProxy(e.target.value)}
+            placeholder="http://host.docker.internal:7897"
+            className="max-w-md"
+          />
+        </div>
+        <div>
+          <Label className="mb-1">HTTPS_PROXY</Label>
+          <Input
+            type="text"
+            value={containerHttpsProxy}
+            onChange={(e) => setContainerHttpsProxy(e.target.value)}
+            placeholder="http://host.docker.internal:7897"
+            className="max-w-md"
+          />
+        </div>
       </div>
 
       {/* 计费设置 */}

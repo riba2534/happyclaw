@@ -446,6 +446,18 @@ function buildVolumeMounts(
     containerOverride,
     resolvedProvider?.customEnv,
   );
+
+  // Inject container-only proxy env vars (not applied to host-mode processes)
+  const sysSettings = getSystemSettings();
+  if (sysSettings.containerHttpProxy) {
+    envLines.push(`HTTP_PROXY=${sysSettings.containerHttpProxy}`);
+    envLines.push(`http_proxy=${sysSettings.containerHttpProxy}`);
+  }
+  if (sysSettings.containerHttpsProxy) {
+    envLines.push(`HTTPS_PROXY=${sysSettings.containerHttpsProxy}`);
+    envLines.push(`https_proxy=${sysSettings.containerHttpsProxy}`);
+  }
+
   if (envLines.length > 0) {
     const envFilePath = path.join(envDir, 'env');
     const quotedLines = shellQuoteEnvLines(envLines);

@@ -3386,6 +3386,9 @@ export interface SystemSettings {
   billingMinStartBalanceUsd: number;
   billingCurrency: string;
   billingCurrencyRate: number;
+  // Container-only proxy (not injected into host-mode processes)
+  containerHttpProxy: string;
+  containerHttpsProxy: string;
 }
 
 const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
@@ -3405,6 +3408,8 @@ const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
   billingMinStartBalanceUsd: 0.01,
   billingCurrency: 'USD',
   billingCurrencyRate: 1,
+  containerHttpProxy: '',
+  containerHttpsProxy: '',
 };
 
 function parseIntEnv(envVar: string | undefined, fallback: number): number {
@@ -3496,6 +3501,14 @@ function readSystemSettingsFromFile(): SystemSettings | null {
       typeof raw.billingCurrencyRate === 'number' && raw.billingCurrencyRate > 0
         ? raw.billingCurrencyRate
         : DEFAULT_SYSTEM_SETTINGS.billingCurrencyRate,
+    containerHttpProxy:
+      typeof raw.containerHttpProxy === 'string'
+        ? raw.containerHttpProxy
+        : DEFAULT_SYSTEM_SETTINGS.containerHttpProxy,
+    containerHttpsProxy:
+      typeof raw.containerHttpsProxy === 'string'
+        ? raw.containerHttpsProxy
+        : DEFAULT_SYSTEM_SETTINGS.containerHttpsProxy,
   };
 }
 
@@ -3558,6 +3571,10 @@ function buildEnvFallbackSettings(): SystemSettings {
       process.env.BILLING_CURRENCY_RATE,
       DEFAULT_SYSTEM_SETTINGS.billingCurrencyRate,
     ),
+    containerHttpProxy:
+      process.env.CONTAINER_HTTP_PROXY || DEFAULT_SYSTEM_SETTINGS.containerHttpProxy,
+    containerHttpsProxy:
+      process.env.CONTAINER_HTTPS_PROXY || DEFAULT_SYSTEM_SETTINGS.containerHttpsProxy,
   };
 }
 

@@ -104,6 +104,8 @@ export interface SystemSettings {
   billingMinStartBalanceUsd: number;
   billingCurrency: string;
   billingCurrencyRate: number;
+  containerHttpProxy: string;
+  containerHttpsProxy: string;
 }
 
 // ─── OAuth Usage ────────────────────────────────────────────
