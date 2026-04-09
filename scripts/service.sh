@@ -66,7 +66,7 @@ get_pid_from_port() {
   elif command -v ss >/dev/null 2>&1; then
     pid=$(ss -tlnp "sport = :$PORT" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | head -1)
   elif command -v netstat >/dev/null 2>&1; then
-    pid=$(netstat -tlnp 2>/dev/null | grep ":$PORT " | grep -oP 'LISTENING\s+\K[0-9]+' | head -1)
+    pid=$(netstat -tlnp 2>/dev/null | grep ":$PORT " | grep -oP '\d+(?=/)' | tail -1)
   fi
   # 验证进程身份，防止误杀其他服务
   if [ -n "$pid" ] && verify_pid_is_happyclaw "$pid"; then
