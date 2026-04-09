@@ -439,6 +439,23 @@ export function createQQChannel(config: QQConnectionConfig): IMChannel {
       await inner.sendMessage(chatId, text);
     },
 
+    async sendImage(
+      chatId: string,
+      imageBuffer: Buffer,
+      mimeType: string,
+      caption?: string,
+      fileName?: string,
+    ): Promise<void> {
+      if (!inner) {
+        logger.warn(
+          { chatId },
+          'QQ channel not connected, skip sending image',
+        );
+        return;
+      }
+      await inner.sendImage(chatId, imageBuffer, mimeType, caption, fileName);
+    },
+
     async setTyping(_chatId: string, _isTyping: boolean): Promise<void> {
       // QQ Bot API v2 does not support typing indicators
     },
