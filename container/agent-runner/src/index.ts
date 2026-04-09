@@ -106,16 +106,8 @@ const SECURITY_RULES_PATH = path.join(
 );
 const SECURITY_RULES = fs.readFileSync(SECURITY_RULES_PATH, 'utf-8');
 
-// globalClaudeMd 截断保护：防止用户 CLAUDE.md 过大导致系统提示词膨胀
-const GLOBAL_CLAUDE_MD_MAX_CHARS = 8000;
-
-/** Head+Tail 截断：保留头 75% + 尾 25%，中间标记已截断 */
-function truncateWithHeadTail(content: string, maxChars: number): string {
-  if (content.length <= maxChars) return content;
-  const headSize = Math.floor(maxChars * 0.75);
-  const tailSize = Math.max(0, maxChars - headSize - 30);
-  return content.slice(0, headSize) + '\n\n[...内容过长，已截断...]\n\n' + content.slice(-tailSize);
-}
+// HEARTBEAT.md 截断上限（仅作用于 fresh session 的近期工作提示）
+const HEARTBEAT_MAX_CHARS = 2048;
 
 /** 按渠道生成格式指南（仅 IM 渠道需要，Web 前端原生支持 Markdown + Mermaid） */
 function buildChannelGuidelines(channel: string): string {
@@ -1060,19 +1052,17 @@ async function runQuery(
 
   const processor = new StreamEventProcessor(emit, log);
 
-  // Build system prompt: memory recall guidance + global CLAUDE.md (for non-admin-home)
+  // Build system prompt: memory recall guidance + guidelines.
+  //
+  // NOTE: Global CLAUDE.md (at WORKSPACE_GLOBAL/CLAUDE.md) is NOT manually injected
+  // into systemPromptAppend. Home containers expose WORKSPACE_GLOBAL via
+  // `additionalDirectories`, which triggers the SDK's CLAUDE.md auto-discovery.
+  // Manually wrapping it in <user-profile> caused the same content to appear
+  // twice in the prompt — once from auto-discovery and once from the wrapper.
+  // Non-home containers intentionally exclude WORKSPACE_GLOBAL from
+  // `additionalDirectories` so the global CLAUDE.md is not loaded at all,
+  // preventing context pollution across isolated tasks.
   const { isHome, isAdminHome } = normalizeHomeFlags(containerInput);
-  const globalClaudeMdPath = path.join(WORKSPACE_GLOBAL, 'CLAUDE.md');
-
-  // Home containers: inject full global CLAUDE.md for immediate context.
-  // Non-home containers: global CLAUDE.md is accessible via filesystem (mounted readonly)
-  // but NOT injected into system prompt to avoid context pollution that causes
-  // the agent to "continue" unrelated previous work.
-  let globalClaudeMd = '';
-  if (isHome && fs.existsSync(globalClaudeMdPath)) {
-    globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
-    globalClaudeMd = truncateWithHeadTail(globalClaudeMd, GLOBAL_CLAUDE_MD_MAX_CHARS);
-  }
   const outputGuidelines = [
     '',
     '## 输出格式',
@@ -1097,17 +1087,19 @@ async function runQuery(
     '且 agent-browser 可用，立即改用 agent-browser 通过真实浏览器访问。不要反复重试 WebFetch。',
   ].join('\n');
 
-  // Read HEARTBEAT.md (recent work summary) — only for home containers.
-  // Non-home containers are task-isolated and should not see unrelated work history,
-  // which can mislead the agent into "continuing" previous tasks instead of
-  // focusing on the user's current message.
+  // Read HEARTBEAT.md (recent work summary) — only for home containers on a FRESH
+  // session. Resumed sessions already carry the prior conversation history, so the
+  // heartbeat summary is redundant and wastes cache tokens on every turn.
+  // Non-home containers are task-isolated and should not see unrelated work history.
   let heartbeatContent = '';
-  if (isHome) {
+  if (isHome && !sessionId) {
     const heartbeatPath = path.join(WORKSPACE_GLOBAL, 'HEARTBEAT.md');
     if (fs.existsSync(heartbeatPath)) {
       try {
         const raw = fs.readFileSync(heartbeatPath, 'utf-8');
-        const truncated = raw.length > 2048 ? raw.slice(0, 2048) + '\n\n[...截断]' : raw;
+        const truncated = raw.length > HEARTBEAT_MAX_CHARS
+          ? raw.slice(0, HEARTBEAT_MAX_CHARS) + '\n\n[...截断]'
+          : raw;
         heartbeatContent = [
           '',
           '## 近期工作参考（仅供背景了解）',
@@ -1174,22 +1166,21 @@ async function runQuery(
   const channel = getChannelFromJid(containerInput.chatJid);
   const channelGuidelines = buildChannelGuidelines(channel);
 
+  // NOTE: user-level global CLAUDE.md used to be injected here as a <user-profile>
+  // block. It is intentionally no longer included — the SDK already auto-discovers
+  // it via `additionalDirectories: [WORKSPACE_GLOBAL, ...]` on home containers.
+  // See the comment above normalizeHomeFlags() for details.
   const systemPromptAppend = [
-    // L1: Identity — 用户身份与偏好（仅主容器注入）
-    globalClaudeMd && `<user-profile>\n${globalClaudeMd}\n</user-profile>`,
-
-    // L2: Behavior — 核心行为约束（始终注入所有容器）
+    // L1: Behavior — 核心行为约束（始终注入所有容器）
     `<behavior>\n${interactionGuidelines}\n</behavior>`,
     `<security>\n${SECURITY_RULES}\n</security>`,
 
-    // L3: Context — 记忆系统与工作背景
+    // L2: Context — 记忆系统与近期工作背景（<recent-work> 仅在 fresh session 注入）
     `<memory-system>\n${memoryRecall}\n</memory-system>`,
     heartbeatContent && `<recent-work>\n${heartbeatContent}\n</recent-work>`,
 
-    // L4: Reference — 输出格式与工具使用指南
-    `<output-format>\n${outputGuidelines}\n</output-format>`,
-    `<web-access>\n${webFetchGuidelines}\n</web-access>`,
-    `<background-tasks>\n${backgroundTaskGuidelines}\n</background-tasks>`,
+    // L3: Operation guidelines — 合并输出 / 网页访问 / 后台任务为单个 block，降低结构开销
+    `<guidelines>\n${outputGuidelines}\n${webFetchGuidelines}\n${backgroundTaskGuidelines}\n</guidelines>`,
     channelGuidelines && `<channel-format>\n${channelGuidelines}\n</channel-format>`,
 
     // Override: Sub-Agent 行为覆盖
