@@ -1,4 +1,4 @@
-.PHONY: dev dev-backend dev-web build build-backend build-web start \
+.PHONY: dev dev-backend dev-web build build-backend build-web start start-bg stop restart status logs \
        typecheck typecheck-backend typecheck-web typecheck-agent-runner \
        format format-check install clean reset-init update-sdk ensure-latest-sdk sync-types \
        backup restore help _ensure-docker-image
@@ -50,7 +50,6 @@ build-web: ## 仅编译前端
 
 start: ensure-latest-sdk ## 一键启动生产环境
 	@if [ ! -d node_modules ] || [ package.json -nt node_modules ] || [ web/package.json -nt web/node_modules ] || [ container/agent-runner/package.json -nt container/agent-runner/node_modules ]; then echo "📦 依赖有更新，安装依赖..."; $(MAKE) install; fi
-	@$(MAKE) _ensure-docker-image
 	@NEED_SYNC=0; \
 	for target in src/stream-event.types.ts web/src/stream-event.types.ts container/agent-runner/src/stream-event.types.ts src/image-detector.ts container/agent-runner/src/image-detector.ts src/channel-prefixes.ts container/agent-runner/src/channel-prefixes.ts; do \
 	  if [ ! -f "$$target" ] || [ -n "$$(find shared/ -newer "$$target" -name '*.ts' 2>/dev/null | head -1)" ]; then NEED_SYNC=1; break; fi; \
@@ -112,6 +111,57 @@ else
 	if [ "$$NEED_AR" = "1" ]; then echo "🔨 检测到 agent-runner 变更，重新编译..."; cd container/agent-runner && npm run build; else echo "✅ agent-runner 无变更，跳过编译"; fi
 	node dist/index.js
 endif
+
+start-bg: ensure-latest-sdk ## 后台启动（日志写入文件，支持 make stop）
+	@if bash scripts/service.sh stop; then \
+		echo "   旧实例已停止"; \
+	else \
+		echo "   无旧实例运行"; \
+	fi
+	@if [ ! -d node_modules ] || [ package.json -nt node_modules ] || [ web/package.json -nt web/node_modules ] || [ container/agent-runner/package.json -nt container/agent-runner/node_modules ]; then echo "📦 依赖有更新，安装依赖..."; $(MAKE) install; fi
+	@$(MAKE) sync-types
+	@if command -v bun >/dev/null 2>&1; then \
+		CMD="bun src/index.ts"; \
+	else \
+		npm run build || { echo "❌ 后端编译失败"; exit 1; }; \
+		if [ ! -f dist/index.js ]; then echo "❌ dist/index.js 不存在"; exit 1; fi; \
+		CMD="node dist/index.js"; \
+	fi; \
+	if [ -f data/happyclaw.pid ] && kill -0 "$$(cat data/happyclaw.pid)" 2>/dev/null; then \
+		echo "❌ HappyClaw 已在运行 (PID $$(cat data/happyclaw.pid))，请先 make stop"; \
+		exit 1; \
+	fi; \
+	mkdir -p data/logs; \
+	echo "🚀 后台启动 HappyClaw (日志: data/logs/happyclaw.log)..."; \
+	nohup $$CMD >> data/logs/happyclaw.log 2>&1 & PID=$$!; \
+	echo "$$PID" > data/happyclaw.pid.tmp && mv data/happyclaw.pid.tmp data/happyclaw.pid; \
+	sleep 1; \
+	if kill -0 "$$PID" 2>/dev/null; then \
+		echo "✅ PID: $$PID"; \
+		echo "   make status  查看状态"; \
+		echo "   make logs    查看日志"; \
+		echo "   make stop    停止服务"; \
+	else \
+		echo "❌ 进程启动失败，检查日志:"; \
+		tail -20 data/logs/happyclaw.log; \
+		rm -f data/happyclaw.pid; \
+		exit 1; \
+	fi
+
+stop: ## 优雅停止服务
+	@bash scripts/service.sh stop
+
+restart: stop ## 停止服务（需手动 make start 或 make start-bg 重启）
+	@echo ""
+	@echo "已停止。启动服务:"
+	@echo "  make start     前台启动"
+	@echo "  make start-bg  后台启动"
+
+status: ## 查看服务运行状态
+	@bash scripts/service.sh status
+
+logs: ## 查看日志（make logs f 实时跟踪）
+	@bash scripts/service.sh logs f
 
 # ─── Quality ─────────────────────────────────────────────────
 
