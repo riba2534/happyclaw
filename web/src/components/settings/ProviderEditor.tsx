@@ -14,8 +14,39 @@ import { api } from '../../api/client';
 import type { ProviderWithHealth, EnvRow } from './types';
 import { getErrorMessage } from './types';
 
-type ProviderType = 'official' | 'third_party';
+type ProviderType = 'official' | 'third_party' | 'openai_compatible';
 type OfficialAuthTab = 'oauth' | 'setup_token' | 'api_key';
+
+/** Popular OpenAI-compatible service presets */
+const OPENAI_PRESETS = [
+  {
+    id: 'github-models',
+    label: 'GitHub Models',
+    baseUrl: 'https://models.inference.ai.azure.com',
+    modelHint: 'openai/gpt-4o',
+    nameSuggestion: 'GitHub Models (Copilot)',
+    tokenHint: 'GitHub Personal Access Token (models:read 权限)',
+    docsUrl: 'https://github.com/marketplace/models',
+  },
+  {
+    id: 'openai',
+    label: 'OpenAI 官方',
+    baseUrl: 'https://api.openai.com/v1',
+    modelHint: 'gpt-4o',
+    nameSuggestion: 'OpenAI',
+    tokenHint: 'OpenAI API Key (sk-...)',
+    docsUrl: 'https://platform.openai.com/api-keys',
+  },
+  {
+    id: 'azure-openai',
+    label: 'Azure OpenAI',
+    baseUrl: 'https://<your-resource>.openai.azure.com/openai/deployments/<deployment>',
+    modelHint: 'gpt-4o',
+    nameSuggestion: 'Azure OpenAI',
+    tokenHint: 'Azure OpenAI API Key',
+    docsUrl: 'https://learn.microsoft.com/azure/ai-services/openai/',
+  },
+] as const;
 
 const RESERVED_ENV_KEYS = new Set([
   'ANTHROPIC_BASE_URL',
@@ -227,16 +258,16 @@ export function ProviderEditor({
           weight,
         };
 
-        if (providerType === 'third_party') {
+        if (providerType === 'third_party' || providerType === 'openai_compatible') {
           const trimmedBaseUrl = baseUrl.trim();
           const trimmedToken = authToken.trim();
           if (!trimmedBaseUrl) {
-            setError('请填写 ANTHROPIC_BASE_URL');
+            setError(providerType === 'openai_compatible' ? '请填写 OpenAI 入口 URL' : '请填写 ANTHROPIC_BASE_URL');
             setSaving(false);
             return;
           }
           if (!trimmedToken) {
-            setError('新建第三方提供商时必须填写 ANTHROPIC_AUTH_TOKEN');
+            setError(providerType === 'openai_compatible' ? '新建提供商时必须填写 API Key' : '新建第三方提供商时必须填写 ANTHROPIC_AUTH_TOKEN');
             setSaving(false);
             return;
           }
@@ -300,7 +331,7 @@ export function ProviderEditor({
           weight,
         };
 
-        if (providerType === 'third_party') {
+        if (providerType === 'third_party' || providerType === 'openai_compatible') {
           patchBody.anthropicBaseUrl = baseUrl.trim();
         }
         if (model.trim()) {
@@ -418,6 +449,17 @@ export function ProviderEditor({
                   }`}
                 >
                   第三方
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setProviderType('openai_compatible')}
+                  className={`px-3 py-1.5 text-sm rounded-md transition-colors cursor-pointer ${
+                    providerType === 'openai_compatible'
+                      ? 'bg-background text-primary shadow-sm'
+                      : 'text-muted-foreground'
+                  }`}
+                >
+                  OpenAI 入口
                 </button>
               </div>
             </div>
@@ -651,10 +693,86 @@ export function ProviderEditor({
             </div>
           )}
 
+          {/* ─── OpenAI 入口模式 ─── */}
+          {providerType === 'openai_compatible' && (
+            <div className="space-y-4">
+              {/* 快速预设 */}
+              <div>
+                <label className="block text-xs text-muted-foreground mb-2">快速预设</label>
+                <div className="flex flex-wrap gap-2">
+                  {OPENAI_PRESETS.map((preset) => (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => {
+                        setBaseUrl(preset.baseUrl);
+                        if (!name || name === '新提供商' || OPENAI_PRESETS.some(p => p.nameSuggestion === name)) {
+                          setName(preset.nameSuggestion);
+                        }
+                        if (!model) setModel(preset.modelHint);
+                      }}
+                      disabled={saving}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border bg-muted text-xs text-muted-foreground hover:border-primary hover:text-primary transition-colors cursor-pointer"
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-950/30 p-3 text-xs text-blue-700 dark:text-blue-300">
+                本模式通过内置适配层将 Anthropic 格式请求转发到 OpenAI 兼容 API（如 GitHub Models、Azure OpenAI 等）。
+                仅支持宿主机模式（Host mode）的 agent 工作组。
+              </div>
+
+              <div>
+                <label className="block text-xs text-muted-foreground mb-1">OpenAI 入口 URL（必填）</label>
+                <Input
+                  type="text"
+                  value={baseUrl}
+                  onChange={(e) => setBaseUrl(e.target.value)}
+                  disabled={saving}
+                  placeholder="https://models.inference.ai.azure.com"
+                  className="font-mono"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  不需要加 <code>/chat/completions</code>——适配层会自动拼接路径。
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs text-muted-foreground mb-1">
+                  API Key{' '}
+                  {!isCreate && provider?.hasAnthropicAuthToken
+                    ? `(${provider.anthropicAuthTokenMasked})`
+                    : ''}
+                </label>
+                <Input
+                  type="password"
+                  value={authToken}
+                  onChange={(e) => {
+                    setAuthToken(e.target.value);
+                    setAuthTokenDirty(true);
+                    setClearTokenOnSave(false);
+                  }}
+                  disabled={saving || clearTokenOnSave}
+                  placeholder={
+                    isCreate
+                      ? 'GitHub PAT / OpenAI sk-… / Azure API Key'
+                      : provider?.hasAnthropicAuthToken
+                        ? '留空不变；输入新值覆盖'
+                        : 'API Key'
+                  }
+                  className="font-mono"
+                />
+              </div>
+            </div>
+          )}
+
           {/* ─── 模型选择 ─── */}
           <div>
             <label className="block text-xs text-muted-foreground mb-1">
-              {providerType === 'official' ? '模型' : 'ANTHROPIC_MODEL'}
+              {providerType === 'official' ? '模型' : providerType === 'openai_compatible' ? '模型名称' : 'ANTHROPIC_MODEL'}
             </label>
             {providerType === 'official' ? (
               <>
@@ -679,11 +797,13 @@ export function ProviderEditor({
                   value={model}
                   onChange={(e) => setModel(e.target.value)}
                   disabled={saving}
-                  placeholder="第三方 API 的模型名称"
+                  placeholder={providerType === 'openai_compatible' ? 'openai/gpt-4o' : '第三方 API 的模型名称'}
                   className="font-mono"
                 />
                 <p className="text-xs text-muted-foreground mt-1">
-                  注入为 ANTHROPIC_MODEL 环境变量，值取决于第三方 API 支持的模型。
+                  {providerType === 'openai_compatible'
+                    ? '传给 OpenAI 兼容 API 的模型名称，需与服务商支持的名称一致。'
+                    : '注入为 ANTHROPIC_MODEL 环境变量，值取决于第三方 API 支持的模型。'}
                 </p>
               </>
             )}

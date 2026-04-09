@@ -310,7 +310,7 @@ const DEFAULT_BALANCING_CONFIG: BalancingConfig = {
 interface StoredProviderV4 {
   id: string;
   name: string;
-  type: 'official' | 'third_party';
+  type: 'official' | 'third_party' | 'openai_compatible';
   enabled: boolean;
   weight: number;
   anthropicBaseUrl: string;
@@ -331,7 +331,7 @@ interface StoredClaudeProviderConfigV4 {
 export interface UnifiedProvider {
   id: string;
   name: string;
-  type: 'official' | 'third_party';
+  type: 'official' | 'third_party' | 'openai_compatible';
   enabled: boolean;
   weight: number;
   anthropicBaseUrl: string;
@@ -348,7 +348,7 @@ export interface UnifiedProvider {
 export interface UnifiedProviderPublic {
   id: string;
   name: string;
-  type: 'official' | 'third_party';
+  type: 'official' | 'third_party' | 'openai_compatible';
   enabled: boolean;
   weight: number;
   anthropicBaseUrl: string;
@@ -1232,7 +1232,7 @@ export function saveBalancingConfig(
 
 export function createProvider(input: {
   name: string;
-  type: 'official' | 'third_party';
+  type: 'official' | 'third_party' | 'openai_compatible';
   anthropicBaseUrl?: string;
   anthropicAuthToken?: string;
   anthropicModel?: string;

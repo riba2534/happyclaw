@@ -24,6 +24,7 @@ import {
   getClaudeProviderConfig,
   getContainerEnvConfig,
   getEnabledProviders,
+  getProviders,
   getBalancingConfig,
   getSystemSettings,
   getEffectiveExternalDir,
@@ -32,6 +33,7 @@ import {
   shellQuoteEnvLines,
   writeCredentialsFile,
 } from './runtime-config.js';
+import { getOrStartOpenAIProxy } from './openai-compat-proxy.js';
 import { providerPool } from './provider-pool.js';
 import { isApiError } from './agent-output-parser.js';
 import type { ClaudeProviderConfig } from './runtime-config.js';
@@ -1205,6 +1207,41 @@ export async function runHostAgent(
       const eqIdx = line.indexOf('=');
       if (eqIdx > 0) {
         hostEnv[line.slice(0, eqIdx)] = line.slice(eqIdx + 1);
+      }
+    }
+
+    // For openai_compatible providers, intercept ANTHROPIC_BASE_URL and route
+    // through a local Anthropic→OpenAI format adapter proxy.
+    if (hostPoolResult?.profileId) {
+      const selectedProvider = getProviders().find(
+        (p) => p.id === hostPoolResult.profileId,
+      );
+      if (
+        selectedProvider?.type === 'openai_compatible' &&
+        selectedProvider.anthropicBaseUrl
+      ) {
+        try {
+          const proxyPort = await getOrStartOpenAIProxy({
+            providerId: selectedProvider.id,
+            baseUrl: selectedProvider.anthropicBaseUrl,
+            apiKey: selectedProvider.anthropicAuthToken,
+            model: selectedProvider.anthropicModel || undefined,
+          });
+          hostEnv['ANTHROPIC_BASE_URL'] = `http://127.0.0.1:${proxyPort}`;
+          // A non-empty token is required by the Claude SDK even when the
+          // actual auth is handled by the proxy.
+          hostEnv['ANTHROPIC_AUTH_TOKEN'] = 'openai-compat-proxy';
+          delete hostEnv['ANTHROPIC_API_KEY'];
+          logger.debug(
+            { providerId: selectedProvider.id, proxyPort, group: group.name },
+            'Injecting OpenAI-compat proxy URL for host agent',
+          );
+        } catch (err) {
+          logger.warn(
+            { err, group: group.name, providerId: hostPoolResult.profileId },
+            'Failed to start OpenAI-compat proxy; falling back to original config',
+          );
+        }
       }
     }
 

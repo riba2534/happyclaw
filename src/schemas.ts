@@ -620,7 +620,7 @@ export const BugReportSubmitSchema = z.object({
 export const UnifiedProviderCreateSchema = z
   .object({
     name: z.string().min(1).max(64),
-    type: z.enum(['official', 'third_party']),
+    type: z.enum(['official', 'third_party', 'openai_compatible']),
     anthropicBaseUrl: z.string().max(2000).optional(),
     anthropicAuthToken: z.string().max(2000).optional(),
     anthropicModel: z.string().max(128).optional(),
@@ -641,6 +641,13 @@ export const UnifiedProviderCreateSchema = z
         code: z.ZodIssueCode.custom,
         path: ['anthropicBaseUrl'],
         message: '第三方供应商需要提供 Base URL 或 Auth Token',
+      });
+    }
+    if (data.type === 'openai_compatible' && !data.anthropicBaseUrl?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['anthropicBaseUrl'],
+        message: 'OpenAI 兼容接口需要提供 Base URL（如 https://models.inference.ai.azure.com）',
       });
     }
   });

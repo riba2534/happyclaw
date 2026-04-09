@@ -12,7 +12,31 @@ import type {
 import { getErrorMessage } from '../components/settings/types';
 import { useAuthStore } from '../stores/auth';
 
-type ProviderMode = 'official' | 'third_party';
+type ProviderMode = 'official' | 'third_party' | 'openai_compatible';
+
+const OPENAI_PRESETS = [
+  {
+    id: 'github-models',
+    label: 'GitHub Models',
+    baseUrl: 'https://models.inference.ai.azure.com',
+    modelHint: 'openai/gpt-4o',
+    nameSuggestion: 'GitHub Models (Copilot)',
+  },
+  {
+    id: 'openai',
+    label: 'OpenAI 官方',
+    baseUrl: 'https://api.openai.com/v1',
+    modelHint: 'gpt-4o',
+    nameSuggestion: 'OpenAI',
+  },
+  {
+    id: 'azure-openai',
+    label: 'Azure OpenAI',
+    baseUrl: 'https://<resource>.openai.azure.com/openai/deployments/<deployment>',
+    modelHint: 'gpt-4o',
+    nameSuggestion: 'Azure OpenAI',
+  },
+] as const;
 
 const RESERVED_ENV_KEYS = new Set([
   'ANTHROPIC_BASE_URL',
@@ -163,6 +187,15 @@ export function SetupProvidersPage() {
         return;
       }
       customEnv = envResult.customEnv;
+    } else if (providerMode === 'openai_compatible') {
+      if (!baseUrl.trim()) {
+        setError('OpenAI 兼容入口必须填写 Base URL');
+        return;
+      }
+      if (!authToken.trim()) {
+        setError('OpenAI 兼容入口必须填写 API Key');
+        return;
+      }
     } else if (!officialToken.trim() && !apiKey.trim() && !oauthDone) {
       setError('官方渠道请通过一键登录、填写 API Key 或手动填写 setup-token / .credentials.json');
       return;
@@ -226,6 +259,18 @@ export function SetupProvidersPage() {
             });
           }
         }
+      } else if (providerMode === 'openai_compatible') {
+        await api.post<UnifiedProviderPublic>(
+          '/api/config/claude/providers',
+          {
+            name: '默认 OpenAI 兼容',
+            type: 'openai_compatible',
+            anthropicBaseUrl: baseUrl.trim(),
+            anthropicAuthToken: authToken.trim(),
+            anthropicModel: model.trim(),
+            enabled: true,
+          },
+        );
       } else {
         await api.post<UnifiedProviderPublic>(
           '/api/config/claude/providers',
@@ -324,6 +369,15 @@ export function SetupProvidersPage() {
               }`}
             >
               第三方渠道
+            </button>
+            <button
+              type="button"
+              onClick={() => setProviderMode('openai_compatible')}
+              className={`px-3 py-1.5 text-sm rounded-md transition-colors cursor-pointer ${
+                providerMode === 'openai_compatible' ? 'bg-background text-primary shadow-sm' : 'text-muted-foreground'
+              }`}
+            >
+              OpenAI 入口
             </button>
           </div>
 
@@ -478,7 +532,7 @@ export function SetupProvidersPage() {
                 </>
               )}
             </div>
-          ) : (
+          ) : providerMode === 'third_party' ? (
             <div className="space-y-4">
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <Server className="w-4 h-4 text-primary" />
@@ -566,6 +620,71 @@ export function SetupProvidersPage() {
                     ))}
                   </div>
                 )}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Server className="w-4 h-4 text-primary" />
+                OpenAI 入口模式：内置适配层将 Anthropic 格式转发到 OpenAI 兼容 API。仅支持宿主机模式（Host mode）工作组。
+              </div>
+
+              {/* Presets */}
+              <div>
+                <label className="block text-xs text-muted-foreground mb-2">快速预设</label>
+                <div className="flex flex-wrap gap-2">
+                  {OPENAI_PRESETS.map((preset) => (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => {
+                        setBaseUrl(preset.baseUrl);
+                        if (!model) setModel(preset.modelHint);
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border bg-muted text-xs text-muted-foreground hover:border-primary hover:text-primary transition-colors cursor-pointer"
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">OpenAI 入口 URL（必填）</label>
+                  <Input
+                    type="text"
+                    value={baseUrl}
+                    onChange={(e) => setBaseUrl(e.target.value)}
+                    placeholder="https://models.inference.ai.azure.com"
+                    className="font-mono"
+                  />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    适配层会自动补全 <code>/chat/completions</code> 路径。
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">模型名称（可选）</label>
+                  <Input
+                    type="text"
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                    placeholder="openai/gpt-4o"
+                    className="font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1">API Key（必填）</label>
+                  <Input
+                    type="password"
+                    value={authToken}
+                    onChange={(e) => setAuthToken(e.target.value)}
+                    placeholder="GitHub PAT / OpenAI sk-… / Azure API Key"
+                    className="font-mono"
+                  />
+                </div>
               </div>
             </div>
           )}
