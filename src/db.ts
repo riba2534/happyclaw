@@ -147,7 +147,7 @@ function getNewMessagesStmt(jidCount: number): any {
        WHERE (timestamp > ? OR (timestamp = ? AND id > ?))
          AND chat_jid IN (${placeholders})
          AND is_from_me = 0
-         AND COALESCE(source_kind, '') != 'user_command'
+         AND COALESCE(source_kind, '') NOT IN ('user_command', 'scheduled_task_prompt')
        ORDER BY timestamp ASC, id ASC`,
     );
     _newMsgStmtCache.set(jidCount, s);
