@@ -3048,6 +3048,25 @@ interface DingTalkSecretPayload {
   clientSecret: string;
 }
 
+export interface UserDiscordConfig {
+  botToken: string;
+  enabled?: boolean;
+  streamingMode?: 'edit' | 'off';
+  updatedAt: string | null;
+}
+
+interface StoredDiscordProviderConfigV1 {
+  version: 1;
+  enabled?: boolean;
+  streamingMode?: 'edit' | 'off';
+  updatedAt: string;
+  secret: EncryptedSecrets;
+}
+
+interface DiscordSecretPayload {
+  botToken: string;
+}
+
 interface StoredQQProviderConfigV1 {
   version: 1;
   appId: string;
@@ -3376,6 +3395,62 @@ export function saveUserDingTalkConfig(
   const dir = userImDir(userId);
   fs.mkdirSync(dir, { recursive: true });
   const filePath = path.join(dir, 'dingtalk.json');
+  const tmp = `${filePath}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
+  fs.renameSync(tmp, filePath);
+  return normalized;
+}
+
+// ========== Discord User IM Config ==========
+
+export function getUserDiscordConfig(
+  userId: string,
+): UserDiscordConfig | null {
+  const filePath = path.join(userImDir(userId), 'discord.json');
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    if (parsed.version !== 1) return null;
+
+    const stored = parsed as unknown as StoredDiscordProviderConfigV1;
+    const secret = decryptChannelSecret<DiscordSecretPayload>(stored.secret);
+    return {
+      botToken: secret.botToken,
+      enabled: stored.enabled,
+      streamingMode: stored.streamingMode === 'edit' ? 'edit' : 'off',
+      updatedAt: stored.updatedAt || null,
+    };
+  } catch (err) {
+    logger.warn({ err, userId }, 'Failed to read user Discord config');
+    return null;
+  }
+}
+
+export function saveUserDiscordConfig(
+  userId: string,
+  next: Omit<UserDiscordConfig, 'updatedAt'>,
+): UserDiscordConfig {
+  const normalized: UserDiscordConfig = {
+    botToken: normalizeSecret(next.botToken, 'botToken'),
+    enabled: next.enabled,
+    streamingMode: next.streamingMode === 'edit' ? 'edit' : 'off',
+    updatedAt: new Date().toISOString(),
+  };
+
+  const payload: StoredDiscordProviderConfigV1 = {
+    version: 1,
+    enabled: normalized.enabled,
+    streamingMode: normalized.streamingMode,
+    updatedAt: normalized.updatedAt || new Date().toISOString(),
+    secret: encryptChannelSecret<DiscordSecretPayload>({
+      botToken: normalized.botToken,
+    }),
+  };
+
+  const dir = userImDir(userId);
+  fs.mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, 'discord.json');
   const tmp = `${filePath}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
   fs.renameSync(tmp, filePath);

@@ -10,7 +10,7 @@ import { BindingTargetDialog } from './BindingTargetDialog';
 import type { AvailableImGroup } from '../../types';
 import type { BindingTarget } from './hooks/useImBindings';
 
-type ChannelFilter = 'all' | 'feishu' | 'telegram' | 'qq' | 'wechat';
+type ChannelFilter = 'all' | 'feishu' | 'telegram' | 'qq' | 'wechat' | 'dingtalk' | 'discord';
 
 export function BindingsSection() {
   const { bindings, loading, targets, targetsLoading, reload, rebind, error: hookError, clearError: clearHookError } = useImBindings();
@@ -32,6 +32,8 @@ export function BindingsSection() {
     if (types.has('telegram')) all.push({ key: 'telegram', label: 'Telegram' });
     if (types.has('qq')) all.push({ key: 'qq', label: 'QQ' });
     if (types.has('wechat')) all.push({ key: 'wechat', label: '微信' });
+    if (types.has('dingtalk')) all.push({ key: 'dingtalk', label: '钉钉' });
+    if (types.has('discord')) all.push({ key: 'discord', label: 'Discord' });
     return all;
   }, [bindings]);
 
@@ -192,7 +194,7 @@ export function BindingsSection() {
             <CardContent className="text-center">
             <MessageSquare className="w-10 h-10 mx-auto text-muted-foreground mb-3" />
             <p className="text-sm text-muted-foreground">
-              暂无 IM 渠道。在飞书、Telegram、QQ 或微信中向 Bot 发送消息后，渠道会自动出现在这里。
+              暂无 IM 渠道。在飞书、Telegram、QQ、微信、钉钉或 Discord 中向 Bot 发送消息后，渠道会自动出现在这里。
             </p>
             </CardContent>
           </Card>

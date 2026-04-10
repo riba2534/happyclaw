@@ -15,12 +15,14 @@ import {
   createQQChannel,
   createWeChatChannel,
   createDingTalkChannel,
+  createDiscordChannel,
 } from './im-channel.js';
 import { parseFeishuRouteTarget, type FeishuConnectionConfig } from './feishu.js';
 import type { TelegramConnectionConfig } from './telegram.js';
 import type { QQConnectionConfig } from './qq.js';
 import type { WeChatConnectionConfig } from './wechat.js';
 import type { DingTalkConnectionConfig } from './dingtalk.js';
+import type { DiscordConnectionConfig } from './discord.js';
 import type { StreamingSession } from './im-channel.js';
 import { getRegisteredGroup, getJidsByFolder } from './db.js';
 import { getUserDingTalkConfig } from './runtime-config.js';
@@ -63,6 +65,12 @@ export interface DingTalkConnectConfig {
   clientId: string;
   clientSecret: string;
   enabled?: boolean;
+}
+
+export interface DiscordConnectConfig {
+  botToken: string;
+  enabled?: boolean;
+  streamingMode?: 'edit' | 'off';
 }
 
 export interface ConnectFeishuOptions {
@@ -252,7 +260,7 @@ class IMConnectionManager {
     onCardCreated?: (messageId: string) => void,
   ): Promise<StreamingSession | undefined> {
     const channelType = getChannelType(jid);
-    if (channelType !== 'feishu' && channelType !== 'dingtalk')
+    if (channelType !== 'feishu' && channelType !== 'dingtalk' && channelType !== 'discord')
       return undefined;
 
     // Check DingTalk streaming mode: if text mode, skip streaming session creation
@@ -588,6 +596,51 @@ class IMConnectionManager {
   }
 
   /**
+   * Connect a Discord instance for a specific user.
+   */
+  async connectUserDiscord(
+    userId: string,
+    config: DiscordConnectConfig,
+    onNewChat: (chatJid: string, chatName: string) => void,
+    options?: {
+      ignoreMessagesBefore?: number;
+      isChatAuthorized?: (jid: string) => boolean;
+      onCommand?: (chatJid: string, command: string) => Promise<string | null>;
+      resolveGroupFolder?: (jid: string) => string | undefined;
+      resolveEffectiveChatJid?: (chatJid: string) => { effectiveJid: string; agentId: string | null } | null;
+      onAgentMessage?: (baseChatJid: string, agentId: string) => void;
+      onBotAddedToGroup?: (chatJid: string, chatName: string) => void;
+      onBotRemovedFromGroup?: (chatJid: string) => void;
+      shouldProcessGroupMessage?: (chatJid: string, senderImId?: string) => boolean;
+      isGroupOwnerMessage?: (chatJid: string, senderImId?: string) => boolean;
+    },
+  ): Promise<boolean> {
+    if (!config.botToken) return false;
+    const channel = createDiscordChannel(
+      { botToken: config.botToken },
+      { streamingMode: config.streamingMode ?? 'off' },
+    );
+    return this.connectChannel(userId, 'discord', channel, {
+      onReady: () => logger.info({ userId }, 'User Discord bot connected'),
+      onNewChat,
+      ignoreMessagesBefore: options?.ignoreMessagesBefore,
+      isChatAuthorized: options?.isChatAuthorized,
+      onCommand: options?.onCommand,
+      resolveGroupFolder: options?.resolveGroupFolder,
+      resolveEffectiveChatJid: options?.resolveEffectiveChatJid,
+      onAgentMessage: options?.onAgentMessage,
+      onBotAddedToGroup: options?.onBotAddedToGroup,
+      onBotRemovedFromGroup: options?.onBotRemovedFromGroup,
+      shouldProcessGroupMessage: options?.shouldProcessGroupMessage,
+      isGroupOwnerMessage: options?.isGroupOwnerMessage,
+    });
+  }
+
+  async disconnectUserDiscord(userId: string): Promise<void> {
+    await this.disconnectChannel(userId, 'discord');
+  }
+
+  /**
    * Send a message to a Feishu chat.
    * @deprecated Use sendMessage(jid, text) which auto-routes.
    */
@@ -700,6 +753,11 @@ class IMConnectionManager {
   isDingTalkConnected(userId: string): boolean {
     const conn = this.connections.get(userId);
     return conn?.channels.get('dingtalk')?.isConnected() ?? false;
+  }
+
+  isDiscordConnected(userId: string): boolean {
+    const conn = this.connections.get(userId);
+    return conn?.channels.get('discord')?.isConnected() ?? false;
   }
 
   /** Get the Feishu channel for a user (for direct access like syncGroups) */

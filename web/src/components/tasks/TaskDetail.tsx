@@ -13,6 +13,7 @@ const CHANNEL_LABELS: Record<string, string> = {
   qq: 'QQ',
   wechat: '微信',
   dingtalk: '钉钉',
+  discord: 'Discord',
 };
 
 interface TaskDetailProps {

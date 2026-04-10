@@ -3,6 +3,7 @@ import { TelegramChannelCard } from './TelegramChannelCard';
 import { QQChannelCard } from './QQChannelCard';
 import { WeChatChannelCard } from './WeChatChannelCard';
 import { DingTalkChannelCard } from './DingTalkChannelCard';
+import { DiscordChannelCard } from './DiscordChannelCard';
 
 export function UserChannelsSection() {
   return (
@@ -15,6 +16,7 @@ export function UserChannelsSection() {
       <QQChannelCard />
       <WeChatChannelCard />
       <DingTalkChannelCard />
+      <DiscordChannelCard />
     </div>
   );
 }
