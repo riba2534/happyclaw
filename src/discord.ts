@@ -892,29 +892,7 @@ export function createDiscordConnection(
       | import('./discord-streaming-edit.js').DiscordStreamingEditController
       | undefined
     > {
-      const parsed = parseChatId(chatId);
-      if (!parsed || !discordClient) return undefined;
-
-      const channel =
-        parsed.type === 'dm'
-          ? await (async () => {
-              try {
-                const user = await discordClient!.users.fetch(parsed.id);
-                return await user.createDM();
-              } catch {
-                return null;
-              }
-            })()
-          : await (async () => {
-              try {
-                const ch = await discordClient!.channels.fetch(parsed.id);
-                if (ch?.isTextBased()) return ch as TextChannel | NewsChannel;
-                return null;
-              } catch {
-                return null;
-              }
-            })();
-
+      const channel = await resolveChannel(chatId);
       if (!channel) return undefined;
 
       const { DiscordStreamingEditController } = await import(

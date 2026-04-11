@@ -109,19 +109,33 @@ export function listFiles(
     for (const entry of entries) {
       if (entry.name.startsWith('.')) continue;
       const fullPath = path.join(dir, entry.name);
-      try {
-        // Use statSync (follows symlinks) so that symlinks pointing to
-        // directories are correctly classified as 'directory' instead of
-        // 'file'. Dangling or circular symlinks throw and are skipped.
-        const stats = fs.statSync(fullPath);
-        const isDirectory = stats.isDirectory();
-        result.push({
-          name: entry.name,
-          type: isDirectory ? 'directory' : 'file',
-          size: isDirectory ? 0 : stats.size,
-        });
-      } catch {
-        // Skip dangling symlinks or unreadable entries
+
+      // 对 symlink 走 statSync 以穿透到目标类型；普通目录/文件直接用 Dirent，避免双 stat。
+      if (entry.isSymbolicLink()) {
+        try {
+          const stats = fs.statSync(fullPath);
+          const isDirectory = stats.isDirectory();
+          result.push({
+            name: entry.name,
+            type: isDirectory ? 'directory' : 'file',
+            size: isDirectory ? 0 : stats.size,
+          });
+        } catch {
+          // dangling / unreadable
+        }
+        continue;
+      }
+
+      if (entry.isDirectory()) {
+        result.push({ name: entry.name, type: 'directory', size: 0 });
+      } else if (entry.isFile()) {
+        let size = 0;
+        try {
+          size = fs.statSync(fullPath).size;
+        } catch {
+          // treat as size 0 on permission error
+        }
+        result.push({ name: entry.name, type: 'file', size });
       }
     }
     return result;

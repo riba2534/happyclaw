@@ -24,20 +24,10 @@ import { AgentTabBar } from './AgentTabBar';
 import { ImBindingDialog } from './ImBindingDialog';
 import { TopicSidebar } from './TopicSidebar';
 import { showToast } from '../../utils/toast';
+import { CHANNEL_LABEL } from '../settings/channel-meta';
 
 /** Sentinel value for binding the main conversation (vs. a specific agent) */
 const MAIN_BINDING = '__main__' as const;
-
-// IM channel display labels — used by the data-driven ChannelBadge renderer in the
-// chat header. Add new channels here when extending IM connection support.
-const IM_CHANNEL_LABELS: Record<string, string> = {
-  feishu: '飞书',
-  telegram: 'Telegram',
-  discord: 'Discord',
-  qq: 'QQ',
-  wechat: '微信',
-  dingtalk: '钉钉',
-};
 
 const SIDEBAR_TABS = [
   { id: 'files' as const, icon: FolderOpen, label: '文件管理' },
@@ -523,7 +513,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                   .map(([channel]) => (
                     <span key={channel} className="inline-flex items-center gap-0.5">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                      {IM_CHANNEL_LABELS[channel] ?? channel}
+                      {CHANNEL_LABEL[channel] ?? channel}
                     </span>
                   ))}
               </>
