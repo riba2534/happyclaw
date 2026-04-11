@@ -6891,148 +6891,125 @@ async function connectUserIMChannels(
   const onBotAddedToGroup = buildOnNewChat(userId, homeFolder); // reuse same logic: auto-register
   const onBotRemovedFromGroup = buildOnBotRemovedFromGroup();
 
-  let feishu = false;
-  let telegram = false;
-  let qq = false;
-  let wechat = false;
-  let dingtalk = false;
-  let discord = false;
-
-  if (
+  // 各渠道互相独立，并发连接避免启动时延 N×M 累加
+  const feishuTask =
     feishuConfig &&
     feishuConfig.enabled !== false &&
     feishuConfig.appId &&
     feishuConfig.appSecret
-  ) {
-    feishu = await imManager.connectUserFeishu(
-      userId,
-      feishuConfig,
-      onNewChat,
-      {
-        ignoreMessagesBefore,
-        onCommand: handleCommand,
-        resolveGroupFolder,
-        resolveEffectiveChatJid,
-        onAgentMessage,
-        onBotAddedToGroup,
-        onBotRemovedFromGroup,
-        shouldProcessGroupMessage,
-        isGroupOwnerMessage,
-        onCardInterrupt: handleCardInterrupt,
-      },
-    );
-  }
+      ? imManager.connectUserFeishu(userId, feishuConfig, onNewChat, {
+          ignoreMessagesBefore,
+          onCommand: handleCommand,
+          resolveGroupFolder,
+          resolveEffectiveChatJid,
+          onAgentMessage,
+          onBotAddedToGroup,
+          onBotRemovedFromGroup,
+          shouldProcessGroupMessage,
+          isGroupOwnerMessage,
+          onCardInterrupt: handleCardInterrupt,
+        })
+      : Promise.resolve(false);
 
-  if (
+  const telegramTask =
     telegramConfig &&
     telegramConfig.enabled !== false &&
     telegramConfig.botToken
-  ) {
-    telegram = await imManager.connectUserTelegram(
-      userId,
-      telegramConfig,
-      onNewChat,
-      buildIsChatAuthorized(userId),
-      buildOnPairAttempt(userId),
-      {
-        onCommand: handleCommand,
-        ignoreMessagesBefore,
-        resolveGroupFolder,
-        resolveEffectiveChatJid,
-        onAgentMessage,
-        onBotAddedToGroup: buildTelegramBotAddedHandler(userId, homeFolder),
-        onBotRemovedFromGroup,
-      },
-    );
-  }
+      ? imManager.connectUserTelegram(
+          userId,
+          telegramConfig,
+          onNewChat,
+          buildIsChatAuthorized(userId),
+          buildOnPairAttempt(userId),
+          {
+            onCommand: handleCommand,
+            ignoreMessagesBefore,
+            resolveGroupFolder,
+            resolveEffectiveChatJid,
+            onAgentMessage,
+            onBotAddedToGroup: buildTelegramBotAddedHandler(userId, homeFolder),
+            onBotRemovedFromGroup,
+          },
+        )
+      : Promise.resolve(false);
 
-  if (
+  const qqTask =
     qqConfig &&
     qqConfig.enabled !== false &&
     qqConfig.appId &&
     qqConfig.appSecret
-  ) {
-    qq = await imManager.connectUserQQ(
-      userId,
-      qqConfig,
-      onNewChat,
-      buildIsChatAuthorized(userId),
-      buildOnPairAttempt(userId),
-      {
-        onCommand: handleCommand,
-        resolveGroupFolder,
-        resolveEffectiveChatJid,
-        onAgentMessage,
-      },
-    );
-  }
+      ? imManager.connectUserQQ(
+          userId,
+          qqConfig,
+          onNewChat,
+          buildIsChatAuthorized(userId),
+          buildOnPairAttempt(userId),
+          {
+            onCommand: handleCommand,
+            resolveGroupFolder,
+            resolveEffectiveChatJid,
+            onAgentMessage,
+          },
+        )
+      : Promise.resolve(false);
 
-  if (
+  const wechatTask =
     wechatConfig &&
     wechatConfig.enabled !== false &&
     wechatConfig.botToken &&
     wechatConfig.ilinkBotId
-  ) {
-    wechat = await imManager.connectUserWeChat(
-      userId,
-      wechatConfig,
-      onNewChat,
-      {
-        ignoreMessagesBefore,
-        onCommand: handleCommand,
-        resolveGroupFolder,
-        resolveEffectiveChatJid,
-        onAgentMessage,
-      },
-    );
-  }
+      ? imManager.connectUserWeChat(userId, wechatConfig, onNewChat, {
+          ignoreMessagesBefore,
+          onCommand: handleCommand,
+          resolveGroupFolder,
+          resolveEffectiveChatJid,
+          onAgentMessage,
+        })
+      : Promise.resolve(false);
 
-  if (
+  const dingtalkTask =
     dingtalkConfig &&
     dingtalkConfig.enabled !== false &&
     dingtalkConfig.clientId &&
     dingtalkConfig.clientSecret
-  ) {
-    dingtalk = await imManager.connectUserDingTalk(
-      userId,
-      dingtalkConfig,
-      onNewChat,
-      {
-        ignoreMessagesBefore,
-        onCommand: handleCommand,
-        resolveGroupFolder,
-        resolveEffectiveChatJid,
-        onAgentMessage,
-        onBotAddedToGroup,
-        onBotRemovedFromGroup,
-        shouldProcessGroupMessage,
-        isGroupOwnerMessage,
-      },
-    );
-  }
+      ? imManager.connectUserDingTalk(userId, dingtalkConfig, onNewChat, {
+          ignoreMessagesBefore,
+          onCommand: handleCommand,
+          resolveGroupFolder,
+          resolveEffectiveChatJid,
+          onAgentMessage,
+          onBotAddedToGroup,
+          onBotRemovedFromGroup,
+          shouldProcessGroupMessage,
+          isGroupOwnerMessage,
+        })
+      : Promise.resolve(false);
 
-  if (
+  const discordTask =
     discordConfig &&
     discordConfig.enabled !== false &&
     discordConfig.botToken
-  ) {
-    discord = await imManager.connectUserDiscord(
-      userId,
-      discordConfig,
-      onNewChat,
-      {
-        ignoreMessagesBefore,
-        onCommand: handleCommand,
-        resolveGroupFolder,
-        resolveEffectiveChatJid,
-        onAgentMessage,
-        onBotAddedToGroup,
-        onBotRemovedFromGroup,
-        shouldProcessGroupMessage,
-        isGroupOwnerMessage,
-      },
-    );
-  }
+      ? imManager.connectUserDiscord(userId, discordConfig, onNewChat, {
+          ignoreMessagesBefore,
+          onCommand: handleCommand,
+          resolveGroupFolder,
+          resolveEffectiveChatJid,
+          onAgentMessage,
+          onBotAddedToGroup,
+          onBotRemovedFromGroup,
+          shouldProcessGroupMessage,
+          isGroupOwnerMessage,
+        })
+      : Promise.resolve(false);
+
+  const [feishu, telegram, qq, wechat, dingtalk, discord] = await Promise.all([
+    feishuTask,
+    telegramTask,
+    qqTask,
+    wechatTask,
+    dingtalkTask,
+    discordTask,
+  ]);
 
   return { feishu, telegram, qq, wechat, dingtalk, discord };
 }

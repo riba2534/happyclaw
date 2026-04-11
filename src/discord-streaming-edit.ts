@@ -79,6 +79,9 @@ export class DiscordStreamingEditController {
   private fallbackUsed = false;
   // Creation guard
   private messageCreationPromise: Promise<void> | null = null;
+  // 上次已推送到 Discord 的完整 content（含 aux prefix），用于跳过 no-op edit，
+  // 避免在文本/工具状态未变化时仍占用 Discord 的 5/5s edit 配额。
+  private lastPushedContent: string | null = null;
 
   constructor(
     channel: TextChannel | DMChannel | NewsChannel,
@@ -525,9 +528,12 @@ export class DiscordStreamingEditController {
    */
   private async editLastMessage(content: string): Promise<void> {
     if (this.messages.length === 0) return;
+    const payload = content || '\u200b'; // Zero-width space if empty
+    if (payload === this.lastPushedContent) return;
     const lastMsg = this.messages[this.messages.length - 1];
     try {
-      await lastMsg.edit(content || '\u200b'); // Zero-width space if empty
+      await lastMsg.edit(payload);
+      this.lastPushedContent = payload;
     } catch (err: any) {
       logger.debug(
         { err: err.message, messageId: lastMsg.id },
