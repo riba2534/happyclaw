@@ -1824,8 +1824,14 @@ export function createFeishuConnection(
           throw new Error('文件上传失败：未返回 file_key');
         }
 
-        // Send file message
-        await sendToFeishu(chatId, 'file', JSON.stringify({ file_key: fileKey }));
+        // Send file message — msg_type must match upload file_type
+        const msgType =
+          fileType === 'mp4' ? 'media' : fileType === 'opus' ? 'audio' : 'file';
+        await sendToFeishu(
+          chatId,
+          msgType,
+          JSON.stringify({ file_key: fileKey }),
+        );
 
         logger.info(
           { chatId, fileName, fileSize: buffer.length },
