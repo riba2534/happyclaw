@@ -530,6 +530,23 @@ export function createWeChatChannel(config: WeChatConnectionConfig): IMChannel {
       await inner.sendMessage(chatId, text);
     },
 
+    async sendImage(
+      chatId: string,
+      imageBuffer: Buffer,
+      mimeType: string,
+      caption?: string,
+      fileName?: string,
+    ): Promise<void> {
+      if (!inner) {
+        logger.warn(
+          { chatId },
+          'WeChat channel not connected, skip sending image',
+        );
+        return;
+      }
+      await inner.sendImage(chatId, imageBuffer, mimeType, caption, fileName);
+    },
+
     async setTyping(chatId: string, isTyping: boolean): Promise<void> {
       if (!inner) return;
       await inner.sendTyping(chatId, isTyping);

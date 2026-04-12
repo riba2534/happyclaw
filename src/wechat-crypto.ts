@@ -45,26 +45,25 @@ export function buildCdnUploadUrl(params: {
 }
 
 /**
- * 解析 aes_key（base64）为 16 字节 Buffer
- * 两种编码：
- *   - base64(raw 16 bytes) → 图片
- *   - base64(hex string of 16 bytes) → 文件/语音/视频
+ * Parse aes_key (base64) to 16-byte Buffer.
+ * Canonical encoding for both inbound and outbound is base64(hex-string ASCII
+ * bytes): raw 16 bytes → 32-char hex → ASCII bytes → base64 (~44 chars).
+ * Legacy raw 16-byte decode path is kept as a fallback for any inbound
+ * messages that may not follow the convention.
  */
 function parseAesKey(aesKeyBase64: string): Buffer {
   const decoded = Buffer.from(aesKeyBase64, 'base64');
-  if (decoded.length === 16) {
-    // Raw 16 bytes — used for images
-    return decoded;
+  // Canonical path: decoded is a 32-char hex string
+  if (decoded.length === 32) {
+    const hexStr = decoded.toString('utf-8');
+    const keyBuf = Buffer.from(hexStr, 'hex');
+    if (keyBuf.length === 16) return keyBuf;
   }
-  // Decoded is a hex string (32 chars representing 16 bytes) — used for files/voice/video
-  const hexStr = decoded.toString('utf-8');
-  const keyBuf = Buffer.from(hexStr, 'hex');
-  if (keyBuf.length !== 16) {
-    throw new Error(
-      `Invalid AES key: expected 16 bytes, got ${keyBuf.length} after hex decode`,
-    );
-  }
-  return keyBuf;
+  // Fallback: raw 16 bytes
+  if (decoded.length === 16) return decoded;
+  throw new Error(
+    `Invalid AES key: decoded length ${decoded.length}, expected 16 or 32`,
+  );
 }
 
 /** 从 CDN 下载并 AES-128-ECB 解密 */
@@ -204,40 +203,34 @@ export async function getUploadUrl(params: {
   return { uploadParam };
 }
 
-/** 完整的媒体上传流程：读文件 → 哈希 → 加密 → 获取URL → 上传 */
-export async function uploadMediaFile(params: {
-  filePath: string;
+export interface UploadMediaResult {
+  filekey: string;
+  downloadEncryptedQueryParam: string;
+  /** AES key as base64(hex-string ASCII bytes) — ~44 chars, same for all media types. */
+  aeskey: string;
+  fileSize: number;
+  fileSizeCiphertext: number;
+}
+
+/** 上传 Buffer：生成 AES key → 获取预签名 URL → 加密并上传到 CDN */
+export async function uploadMediaBuffer(params: {
+  buf: Buffer;
+  fileName: string;
   toUserId: string;
   baseUrl: string;
   token: string;
   cdnBaseUrl?: string;
   mediaType: number;
-}): Promise<{
-  filekey: string;
-  downloadEncryptedQueryParam: string;
-  aeskey: string;
-  fileSize: number;
-  fileSizeCiphertext: number;
-}> {
-  // Read file (async to avoid blocking event loop on large files)
-  const buf = await fs.promises.readFile(params.filePath);
+}): Promise<UploadMediaResult> {
+  const { buf } = params;
   const rawsize = buf.length;
-
-  // Compute MD5 hash
   const rawfilemd5 = crypto.createHash('md5').update(buf).digest('hex');
 
-  // Generate AES key (16 random bytes)
-  const aeskey = crypto.randomBytes(16);
-  const aeskeyHex = aeskey.toString('hex');
-
-  // Compute ciphertext size
+  const aeskeyBuf = crypto.randomBytes(16);
+  const aeskeyHex = aeskeyBuf.toString('hex');
   const filesize = aesEcbPaddedSize(rawsize);
+  const filekey = `${Date.now()}_${params.fileName}`;
 
-  // Generate filekey from filename + timestamp
-  const basename = path.basename(params.filePath);
-  const filekey = `${Date.now()}_${basename}`;
-
-  // Get upload URL
   const { uploadParam } = await getUploadUrl({
     baseUrl: params.baseUrl,
     token: params.token,
@@ -250,20 +243,44 @@ export async function uploadMediaFile(params: {
     aeskey: aeskeyHex,
   });
 
-  // Encrypt and upload
   const { downloadParam } = await uploadBufferToCdn({
     buf,
     uploadParam,
     filekey,
     cdnBaseUrl: params.cdnBaseUrl,
-    aeskey,
+    aeskey: aeskeyBuf,
   });
+
+  // All media types (image/file/voice/video) use base64(hex-string ASCII
+  // bytes) — matches nightsailer/wechat-clawbot reference implementation.
+  const aeskeyEncoded = Buffer.from(aeskeyHex, 'utf-8').toString('base64');
 
   return {
     filekey,
     downloadEncryptedQueryParam: downloadParam,
-    aeskey: aeskeyHex,
+    aeskey: aeskeyEncoded,
     fileSize: rawsize,
     fileSizeCiphertext: filesize,
   };
+}
+
+/** 完整的媒体上传流程：读文件 → 哈希 → 加密 → 获取URL → 上传 */
+export async function uploadMediaFile(params: {
+  filePath: string;
+  toUserId: string;
+  baseUrl: string;
+  token: string;
+  cdnBaseUrl?: string;
+  mediaType: number;
+}): Promise<UploadMediaResult> {
+  const buf = await fs.promises.readFile(params.filePath);
+  return uploadMediaBuffer({
+    buf,
+    fileName: path.basename(params.filePath),
+    toUserId: params.toUserId,
+    baseUrl: params.baseUrl,
+    token: params.token,
+    cdnBaseUrl: params.cdnBaseUrl,
+    mediaType: params.mediaType,
+  });
 }
