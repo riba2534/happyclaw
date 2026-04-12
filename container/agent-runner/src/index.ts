@@ -32,6 +32,10 @@ import type {
 export type { StreamEventType, StreamEvent } from './types.js';
 
 import { sanitizeFilename, generateFallbackName } from './utils.js';
+import {
+  extractSessionHistory as extractSessionHistoryImpl,
+  parseTranscript,
+} from './session-history.js';
 import { StreamEventProcessor } from './stream-processor.js';
 import { PREDEFINED_AGENTS } from './agent-definitions.js';
 import { createMcpTools } from './mcp-tools.js';
@@ -106,47 +110,114 @@ const SECURITY_RULES_PATH = path.join(
 );
 const SECURITY_RULES = fs.readFileSync(SECURITY_RULES_PATH, 'utf-8');
 
-// globalClaudeMd 截断保护：防止用户 CLAUDE.md 过大导致系统提示词膨胀
-const GLOBAL_CLAUDE_MD_MAX_CHARS = 8000;
+// HEARTBEAT.md 截断上限（仅作用于 fresh session 的近期工作提示）
+const HEARTBEAT_MAX_CHARS = 2048;
 
-/** Head+Tail 截断：保留头 75% + 尾 25%，中间标记已截断 */
-function truncateWithHeadTail(content: string, maxChars: number): string {
-  if (content.length <= maxChars) return content;
-  const headSize = Math.floor(maxChars * 0.75);
-  const tailSize = Math.max(0, maxChars - headSize - 30);
-  return content.slice(0, headSize) + '\n\n[...内容过长，已截断...]\n\n' + content.slice(-tailSize);
-}
+const OUTPUT_GUIDELINES = [
+  '',
+  '## 输出格式',
+  '',
+  '### 图片引用',
+  '当你生成了图片文件并需要在回复中展示时，使用 Markdown 图片语法引用**相对路径**（相对于当前工作目录）：',
+  '`![描述](filename.png)`',
+  '',
+  '**禁止使用绝对路径**（如 `/workspace/group/filename.png`）。Web 界面会自动将相对路径解析为正确的文件下载地址。',
+  '',
+  '### 技术图表',
+  '需要输出技术图表（流程图、时序图、架构图、ER 图、类图、状态图、甘特图等）时，**使用 Mermaid 语法**，用 ```mermaid 代码块包裹。',
+  'Web 界面会自动将 Mermaid 代码渲染为可视化图表。',
+].join('\n');
 
-/** 按渠道生成格式指南（仅 IM 渠道需要，Web 前端原生支持 Markdown + Mermaid） */
-function buildChannelGuidelines(channel: string): string {
-  switch (channel) {
-    case 'feishu':
-      return [
-        '## 飞书消息格式',
-        '',
-        '当前消息来自飞书。飞书卡片支持的 Markdown：**加粗**、_斜体_、`行内代码`、代码块、标题、列表、链接。',
-        '用户同时可以在 Web 端查看你的回复，Web 端支持完整 Markdown + Mermaid 图表渲染，因此**不要因为来源是飞书就限制输出格式**。',
-        '可使用 `send_image` 和 `send_file` 工具直接发送文件到飞书。',
-      ].join('\n');
-    case 'telegram':
-      return [
-        '## Telegram 消息格式',
-        '',
-        '当前消息来自 Telegram。Markdown 自动转换为 Telegram HTML，长消息自动分片（3800 字符）。',
-        '用户同时可以在 Web 端查看你的回复，Web 端支持完整 Markdown + Mermaid 图表渲染，因此**不要因为来源是 Telegram 就限制输出格式**。',
-        '可使用 `send_image` 和 `send_file` 工具直接发送文件到 Telegram。',
-      ].join('\n');
-    case 'qq':
-      return [
-        '## QQ 消息格式',
-        '',
-        '当前消息来自 QQ。Markdown 自动转换为纯文本，长消息自动分片（5000 字符）。',
-        '用户同时可以在 Web 端查看你的回复，Web 端支持完整 Markdown + Mermaid 图表渲染，因此**不要因为来源是 QQ 就限制输出格式**。',
-      ].join('\n');
-    default:
-      return '';
-  }
-}
+const INTERACTION_GUIDELINES = [
+  '',
+  '## 交互原则',
+  '',
+  '**始终专注于用户当前的实际消息。**',
+  '',
+  '- 你可能拥有多种 MCP 工具和 Skills，这些是你的辅助能力，**不是用户发送的内容**。',
+  '- **不要主动介绍、列举或描述你的可用工具**，除非用户明确询问「你能做什么」或「你有什么功能」。',
+  '- 当用户需要某个功能时，直接使用对应工具完成任务即可，无需事先解释工具的存在。',
+  '- 如果用户的消息很简短（如打招呼），简洁回应即可，不要用工具列表填充回复。',
+].join('\n');
+
+const SKILL_ROUTING_GUIDELINES = [
+  '',
+  '## 技能路由',
+  '',
+  '响应前检查 <system-reminder> 中列出的已安装 skills，将用户意图与 skill description 做匹配：',
+  '- 有明确匹配 → 使用 Skill 工具调用',
+  '- 不确定是否匹配 → 用 ToolSearch 搜索确认',
+  '- 无匹配 → 使用基础工具或直接回答',
+].join('\n');
+
+const WEB_FETCH_GUIDELINES = [
+  '',
+  '## 网页访问策略',
+  '',
+  '访问外部网页时优先使用 WebFetch（速度快）。',
+  '如果 WebFetch 失败（403、被拦截、内容为空或需要 JavaScript 渲染），',
+  '且 agent-browser 可用，立即改用 agent-browser 通过真实浏览器访问。不要反复重试 WebFetch。',
+].join('\n');
+
+const BACKGROUND_TASK_GUIDELINES = [
+  '',
+  '## 后台任务',
+  '',
+  '当用户要求执行耗时较长的批量任务（如批量文件处理、大规模数据操作等），',
+  '你应该使用 Task 工具并设置 `run_in_background: true`，让任务在后台运行。',
+  '这样用户无需等待，可以继续与你交流其他事项。',
+  '任务结束时你会自动收到通知，届时在对话中向用户汇报即可。',
+  '告知用户：「已为您在后台启动该任务，完成后我会第一时间反馈。现在有其他问题也可以随时问我。」',
+  '',
+  '### 任务通知处理（重要）',
+  '',
+  '当你收到多条后台任务的完成或失败通知时：',
+  '- **禁止逐条回复**。不要对每条通知都调用 `send_message`，这会导致 IM 群刷屏。',
+  '- **等待所有通知到齐后，汇总为一条消息回复用户**，例如：「N 个任务完成，M 个失败，失败原因：...」',
+  '- 对于已知的无害失败（如浏览器进程被回收、临时资源超时），**不需要通知用户**，静默忽略即可。',
+].join('\n');
+
+const GUIDELINES_BLOCK = `<guidelines>\n${OUTPUT_GUIDELINES}\n${WEB_FETCH_GUIDELINES}\n${BACKGROUND_TASK_GUIDELINES}\n</guidelines>`;
+
+const CONVERSATION_AGENT_GUIDELINES = [
+  '',
+  '## 子会话行为规则（最高优先级，覆盖其他冲突指令）',
+  '',
+  '你正在一个**子会话**中运行，不是主会话。以下规则覆盖全局记忆中的"响应行为准则"：',
+  '',
+  '1. **不要用 `send_message` 发送"收到"之类的确认消息** — 你的正常文本输出就是回复，不需要额外发消息',
+  '2. **每次回复只产生一条消息** — 把分析、结论、建议整合到一条回复中，不要拆成多条',
+  '3. **只在以下情况使用 `send_message`**：',
+  '   - 执行超过 2 分钟的长任务时，发送一次进度更新（不是确认收到）',
+  '   - 用户明确要求你"先回复一下"时',
+  '4. **你的正常文本输出会自动发送给用户**，不需要通过 `send_message` 转发',
+  '5. **回复语言使用简体中文**，除非用户用其他语言提问',
+].join('\n');
+
+const CONVERSATION_AGENT_BLOCK = `<agent-override>\n${CONVERSATION_AGENT_GUIDELINES}\n</agent-override>`;
+
+const CHANNEL_GUIDELINES: Record<string, string> = {
+  feishu: [
+    '## 飞书消息格式',
+    '',
+    '当前消息来自飞书。飞书卡片支持的 Markdown：**加粗**、_斜体_、`行内代码`、代码块、标题、列表、链接。',
+    '用户同时可以在 Web 端查看你的回复，Web 端支持完整 Markdown + Mermaid 图表渲染，因此**不要因为来源是飞书就限制输出格式**。',
+    '可使用 `send_image` 和 `send_file` 工具直接发送文件到飞书。',
+  ].join('\n'),
+  telegram: [
+    '## Telegram 消息格式',
+    '',
+    '当前消息来自 Telegram。Markdown 自动转换为 Telegram HTML，长消息自动分片（3800 字符）。',
+    '用户同时可以在 Web 端查看你的回复，Web 端支持完整 Markdown + Mermaid 图表渲染，因此**不要因为来源是 Telegram 就限制输出格式**。',
+    '可使用 `send_image` 和 `send_file` 工具直接发送文件到 Telegram。',
+  ].join('\n'),
+  qq: [
+    '## QQ 消息格式',
+    '',
+    '当前消息来自 QQ。Markdown 自动转换为纯文本，长消息自动分片（5000 字符）。',
+    '用户同时可以在 Web 端查看你的回复，Web 端支持完整 Markdown + Mermaid 图表渲染，因此**不要因为来源是 QQ 就限制输出格式**。',
+  ].join('\n'),
+};
 
 /**
  * 规范化图片 MIME：
@@ -253,10 +324,14 @@ class MessageStream {
   private done = false;
 
   push(text: string, images?: Array<{ data: string; mimeType?: string }>): string[] {
+    // stream.done=true 后禁止写入已关闭的 SDK transport，否则触发 "ProcessTransport is not ready for writing"
+    if (this.done) {
+      return ['Stream already ended, message will be processed in the next query'];
+    }
+
     const rejectedReasons: string[] = [];
     let filteredImages = images;
 
-    // 过滤超限图片，在发送给 SDK 之前拦截
     if (filteredImages && filteredImages.length > 0) {
       const { valid, rejected } = filterOversizedImages(filteredImages);
       rejectedReasons.push(...rejected);
@@ -293,6 +368,10 @@ class MessageStream {
     });
     this.waiting?.();
     return rejectedReasons;
+  }
+
+  get ended(): boolean {
+    return this.done;
   }
 
   end(): void {
@@ -563,30 +642,24 @@ function createPreCompactHook(
   };
 }
 
-function parseTranscript(content: string): ParsedMessage[] {
-  const messages: ParsedMessage[] = [];
-
-  for (const line of content.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const entry = JSON.parse(line);
-      if (entry.type === 'user' && entry.message?.content) {
-        const text = typeof entry.message.content === 'string'
-          ? entry.message.content
-          : entry.message.content.map((c: { text?: string }) => c.text || '').join('');
-        if (text) messages.push({ role: 'user', content: text });
-      } else if (entry.type === 'assistant' && entry.message?.content) {
-        const textParts = entry.message.content
-          .filter((c: { type: string }) => c.type === 'text')
-          .map((c: { text: string }) => c.text);
-        const text = textParts.join('');
-        if (text) messages.push({ role: 'assistant', content: text });
-      }
-    } catch {
-    }
-  }
-
-  return messages;
+/**
+ * Wrapper around the pure extractSessionHistory implementation in
+ * session-history.ts. Resolves the SDK transcript directory using the
+ * runtime CLAUDE_CONFIG_DIR + WORKSPACE_GROUP layout, then delegates.
+ */
+function extractSessionHistory(oldSessionId: string): string | null {
+  const configDir =
+    process.env.CLAUDE_CONFIG_DIR ||
+    path.join(process.env.HOME || '/home/node', '.claude');
+  // SDK stores transcripts at: <configDir>/projects/<encoded-cwd>/<sessionId>.jsonl
+  // where encoded-cwd replaces '/' with '-'
+  const encodedCwd = WORKSPACE_GROUP.replace(/\//g, '-');
+  const transcriptDir = path.join(configDir, 'projects', encodedCwd);
+  return extractSessionHistoryImpl({
+    transcriptDir,
+    sessionId: oldSessionId,
+    log,
+  });
 }
 
 function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | null): string {
@@ -1040,6 +1113,17 @@ async function runQuery(
       return; // No setTimeout needed — watcher will trigger next check on file change
     }
 
+    // 预防性 invariant：当前所有 stream.end() 路径（sentinel handlers / interrupt-before-query
+    // / immediate-interrupt）都在同一同步 tick 把 ipcPolling=false，理论上 !ipcPolling 早退
+    // 已覆盖 stream.ended=true 的情况；此守护保留作为未来重构时的 invariant 断言，
+    // 避免后续改动引入"流已关闭但 polling 未停"的竞态窗口（消息会被 drain 后又被 stream.push 拒绝丢失）。
+    if (stream.ended) {
+      log('Stream already ended, skipping IPC drain (messages will be picked up by waitForIpcMessage)');
+      ipcPolling = false;
+      ipcQueryWatcher.close();
+      return;
+    }
+
     const { messages } = drainIpcInput();
     for (const msg of messages) {
       log(`Piping IPC message into active query (${msg.text.length} chars, ${msg.images?.length || 0} images)`);
@@ -1060,54 +1144,18 @@ async function runQuery(
 
   const processor = new StreamEventProcessor(emit, log);
 
-  // Build system prompt: memory recall guidance + global CLAUDE.md (for non-admin-home)
   const { isHome, isAdminHome } = normalizeHomeFlags(containerInput);
-  const globalClaudeMdPath = path.join(WORKSPACE_GLOBAL, 'CLAUDE.md');
 
-  // Home containers: inject full global CLAUDE.md for immediate context.
-  // Non-home containers: global CLAUDE.md is accessible via filesystem (mounted readonly)
-  // but NOT injected into system prompt to avoid context pollution that causes
-  // the agent to "continue" unrelated previous work.
-  let globalClaudeMd = '';
-  if (isHome && fs.existsSync(globalClaudeMdPath)) {
-    globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
-    globalClaudeMd = truncateWithHeadTail(globalClaudeMd, GLOBAL_CLAUDE_MD_MAX_CHARS);
-  }
-  const outputGuidelines = [
-    '',
-    '## 输出格式',
-    '',
-    '### 图片引用',
-    '当你生成了图片文件并需要在回复中展示时，使用 Markdown 图片语法引用**相对路径**（相对于当前工作目录）：',
-    '`![描述](filename.png)`',
-    '',
-    '**禁止使用绝对路径**（如 `/workspace/group/filename.png`）。Web 界面会自动将相对路径解析为正确的文件下载地址。',
-    '',
-    '### 技术图表',
-    '需要输出技术图表（流程图、时序图、架构图、ER 图、类图、状态图、甘特图等）时，**使用 Mermaid 语法**，用 ```mermaid 代码块包裹。',
-    'Web 界面会自动将 Mermaid 代码渲染为可视化图表。',
-  ].join('\n');
-
-  const webFetchGuidelines = [
-    '',
-    '## 网页访问策略',
-    '',
-    '访问外部网页时优先使用 WebFetch（速度快）。',
-    '如果 WebFetch 失败（403、被拦截、内容为空或需要 JavaScript 渲染），',
-    '且 agent-browser 可用，立即改用 agent-browser 通过真实浏览器访问。不要反复重试 WebFetch。',
-  ].join('\n');
-
-  // Read HEARTBEAT.md (recent work summary) — only for home containers.
-  // Non-home containers are task-isolated and should not see unrelated work history,
-  // which can mislead the agent into "continuing" previous tasks instead of
-  // focusing on the user's current message.
+  // Resumed sessions carry prior history — skip re-injecting HEARTBEAT.md to save cache tokens.
   let heartbeatContent = '';
-  if (isHome) {
+  if (isHome && !sessionId) {
     const heartbeatPath = path.join(WORKSPACE_GLOBAL, 'HEARTBEAT.md');
     if (fs.existsSync(heartbeatPath)) {
       try {
         const raw = fs.readFileSync(heartbeatPath, 'utf-8');
-        const truncated = raw.length > 2048 ? raw.slice(0, 2048) + '\n\n[...截断]' : raw;
+        const truncated = raw.length > HEARTBEAT_MAX_CHARS
+          ? raw.slice(0, HEARTBEAT_MAX_CHARS) + '\n\n[...截断]'
+          : raw;
         heartbeatContent = [
           '',
           '## 近期工作参考（仅供背景了解）',
@@ -1122,78 +1170,20 @@ async function runQuery(
     }
   }
 
-  const backgroundTaskGuidelines = [
-    '',
-    '## 后台任务',
-    '',
-    '当用户要求执行耗时较长的批量任务（如批量文件处理、大规模数据操作等），',
-    '你应该使用 Task 工具并设置 `run_in_background: true`，让任务在后台运行。',
-    '这样用户无需等待，可以继续与你交流其他事项。',
-    '任务结束时你会自动收到通知，届时在对话中向用户汇报即可。',
-    '告知用户：「已为您在后台启动该任务，完成后我会第一时间反馈。现在有其他问题也可以随时问我。」',
-    '',
-    '### 任务通知处理（重要）',
-    '',
-    '当你收到多条后台任务的完成或失败通知时：',
-    '- **禁止逐条回复**。不要对每条通知都调用 `send_message`，这会导致 IM 群刷屏。',
-    '- **等待所有通知到齐后，汇总为一条消息回复用户**，例如：「N 个任务完成，M 个失败，失败原因：...」',
-    '- 对于已知的无害失败（如浏览器进程被回收、临时资源超时），**不需要通知用户**，静默忽略即可。',
-  ].join('\n');
-
-  // Interaction guidelines to prevent the agent from confusing MCP tool
-  // descriptions with user input, or proactively describing available tools.
-  const interactionGuidelines = [
-    '',
-    '## 交互原则',
-    '',
-    '**始终专注于用户当前的实际消息。**',
-    '',
-    '- 你可能拥有多种 MCP 工具（如外卖点餐、优惠券查询等），这些是你的辅助能力，**不是用户发送的内容**。',
-    '- **不要主动介绍、列举或描述你的可用工具**，除非用户明确询问「你能做什么」或「你有什么功能」。',
-    '- 当用户需要某个功能时，直接使用对应工具完成任务即可，无需事先解释工具的存在。',
-    '- 如果用户的消息很简短（如打招呼），简洁回应即可，不要用工具列表填充回复。',
-  ].join('\n');
-
-  // Conversation agents (sub-conversations with agentId) get special behavioral guidelines
-  // to prevent excessive send_message usage and duplicate responses.
-  const conversationAgentGuidelines = containerInput.agentId ? [
-    '',
-    '## 子会话行为规则（最高优先级，覆盖其他冲突指令）',
-    '',
-    '你正在一个**子会话**中运行，不是主会话。以下规则覆盖全局记忆中的"响应行为准则"：',
-    '',
-    '1. **不要用 `send_message` 发送"收到"之类的确认消息** — 你的正常文本输出就是回复，不需要额外发消息',
-    '2. **每次回复只产生一条消息** — 把分析、结论、建议整合到一条回复中，不要拆成多条',
-    '3. **只在以下情况使用 `send_message`**：',
-    '   - 执行超过 2 分钟的长任务时，发送一次进度更新（不是确认收到）',
-    '   - 用户明确要求你"先回复一下"时',
-    '4. **你的正常文本输出会自动发送给用户**，不需要通过 `send_message` 转发',
-    '5. **回复语言使用简体中文**，除非用户用其他语言提问',
-  ].join('\n') : '';
-
   const channel = getChannelFromJid(containerInput.chatJid);
-  const channelGuidelines = buildChannelGuidelines(channel);
+  const channelGuidelines = CHANNEL_GUIDELINES[channel] ?? '';
 
+  // SDK settingSources 只加载 ~/.claude/CLAUDE.md 本体，不递归加载 rules/；
+  // 容器模式下 $HOME 指向会话目录，宿主机 CLAUDE.md 也读不到。因此 guidelines 必须 inline 注入。
   const systemPromptAppend = [
-    // L1: Identity — 用户身份与偏好（仅主容器注入）
-    globalClaudeMd && `<user-profile>\n${globalClaudeMd}\n</user-profile>`,
-
-    // L2: Behavior — 核心行为约束（始终注入所有容器）
-    `<behavior>\n${interactionGuidelines}\n</behavior>`,
+    `<behavior>\n${INTERACTION_GUIDELINES}\n</behavior>`,
+    `<skill-routing>\n${SKILL_ROUTING_GUIDELINES}\n</skill-routing>`,
     `<security>\n${SECURITY_RULES}\n</security>`,
-
-    // L3: Context — 记忆系统与工作背景
     `<memory-system>\n${memoryRecall}\n</memory-system>`,
     heartbeatContent && `<recent-work>\n${heartbeatContent}\n</recent-work>`,
-
-    // L4: Reference — 输出格式与工具使用指南
-    `<output-format>\n${outputGuidelines}\n</output-format>`,
-    `<web-access>\n${webFetchGuidelines}\n</web-access>`,
-    `<background-tasks>\n${backgroundTaskGuidelines}\n</background-tasks>`,
+    GUIDELINES_BLOCK,
     channelGuidelines && `<channel-format>\n${channelGuidelines}\n</channel-format>`,
-
-    // Override: Sub-Agent 行为覆盖
-    conversationAgentGuidelines && `<agent-override>\n${conversationAgentGuidelines}\n</agent-override>`,
+    containerInput.agentId && CONVERSATION_AGENT_BLOCK,
   ].filter(Boolean).join('\n');
 
   // Home containers (admin & member) can access global and memory directories.
@@ -1210,6 +1200,14 @@ async function runQuery(
     ipcPolling = false;
     stream.end();
     return { newSessionId, lastAssistantUuid, closedDuringQuery, interruptedDuringQuery };
+  }
+
+  // SystemSettings.autoCompactWindow（通过 AUTO_COMPACT_WINDOW 环境变量注入）
+  // 0 = SDK 默认（约 1M）；>0 = 通过 settings flag-layer 提前触发对话压缩
+  const autoCompactWindow = parseInt(process.env.AUTO_COMPACT_WINDOW ?? '0', 10);
+  const flagSettings: Record<string, unknown> = {};
+  if (Number.isFinite(autoCompactWindow) && autoCompactWindow > 0) {
+    flagSettings.autoCompactWindow = autoCompactWindow;
   }
 
   try {
@@ -1230,6 +1228,7 @@ async function runQuery(
       agentProgressSummaries: true,
       settingSources: ['project', 'user'],
       includePartialMessages: true,
+      ...(Object.keys(flagSettings).length > 0 ? { settings: flagSettings as any } : {}),
       mcpServers: {
         ...loadUserMcpServers(),     // 用户配置的 MCP（stdio/http/sse），SDK 原生支持
         happyclaw: mcpServerConfig,  // 内置 SDK MCP 放最后，确保不被同名覆盖
@@ -1361,6 +1360,27 @@ async function runQuery(
     if (message.type === 'system' && message.subtype === 'init') {
       newSessionId = message.session_id;
       log(`Session initialized: ${newSessionId}`);
+
+      // Log skills and context usage for observability.
+      // getContextUsage() is a newer SDK API; feature-detect to avoid spamming
+      // error logs on older SDK versions where the method is absent.
+      const getCtxUsage = (q as unknown as { getContextUsage?: () => Promise<{
+        skills?: { includedSkills: number; totalSkills: number; tokens: number };
+        totalTokens: number;
+        maxTokens: number;
+        percentage: number;
+      }> }).getContextUsage;
+      if (typeof getCtxUsage === 'function') {
+        try {
+          const ctxUsage = await getCtxUsage.call(q);
+          if (ctxUsage.skills) {
+            log(`Skills: ${ctxUsage.skills.includedSkills}/${ctxUsage.skills.totalSkills} loaded, ${ctxUsage.skills.tokens} tokens`);
+          }
+          log(`Context: ${ctxUsage.totalTokens}/${ctxUsage.maxTokens} tokens (${ctxUsage.percentage.toFixed(1)}%)`);
+        } catch (ctxErr) {
+          log(`[debug] getContextUsage failed: ${ctxErr instanceof Error ? ctxErr.message : String(ctxErr)}`);
+        }
+      }
     }
 
     if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
@@ -1647,6 +1667,10 @@ async function main(): Promise<void> {
   const MAX_OVERFLOW_RETRIES = 3;
   let consecutiveCompactions = 0;
   const MAX_CONSECUTIVE_COMPACTIONS = 3;
+  // 暂存的会话历史上下文：当 auto-continue 阶段发生 sessionResumeFailed 时，
+  // 历史无法直接拼到 auto-continue prompt（因为 fall-through 等下一条 IPC 消息后才重启 query），
+  // 需要在下一轮主循环 query 之前消费它，避免新会话完全丢失上下文。
+  let pendingHistoryContext: string | null = null;
   try {
     while (true) {
       // 清理残留的 _interrupt sentinel（空闲期间写入的中断信号不应影响下一次 query）。
@@ -1654,6 +1678,16 @@ async function main(): Promise<void> {
       // pollIpcDuringQuery 会在查询结果后检测到并正确退出容器。
       try { fs.unlinkSync(IPC_INPUT_INTERRUPT_SENTINEL); } catch { /* ignore */ }
       clearInterruptRequested();
+
+      // 消费 auto-continue 阶段暂存的 history context（如果存在）。
+      // 对应 sessionResumeFailed 在 auto-continue 路径上的镜像处理：
+      // 此时 sessionId 已被清空，pendingHistoryContext 是从旧 JSONL 转录中
+      // 提取的最近对话历史，需在 fresh session 启动前注入到 prompt 前面。
+      if (pendingHistoryContext) {
+        prompt = pendingHistoryContext + prompt;
+        log('Injected pending session history context (from auto-continue resume failure) into prompt');
+        pendingHistoryContext = null;
+      }
 
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
 
@@ -1678,8 +1712,18 @@ async function main(): Promise<void> {
       }
 
       // Session resume 失败（SDK 无法恢复旧会话）：清除 session，以新会话重试
+      // 同时从旧会话的 JSONL 转录中提取最近对话历史，注入到 prompt 中，
+      // 避免新会话完全丢失上下文（类似 recoveryGroups 机制）。
       if (queryResult.sessionResumeFailed) {
         log(`Session resume failed, retrying with fresh session (old: ${sessionId})`);
+        // Extract recent history from the old session transcript before clearing
+        if (sessionId) {
+          const historyContext = extractSessionHistory(sessionId);
+          if (historyContext) {
+            prompt = historyContext + prompt;
+            log(`Injected session history context into prompt for fresh session retry`);
+          }
+        }
         sessionId = undefined;
         latestSessionId = undefined;
         resumeAt = undefined;
@@ -1864,16 +1908,19 @@ async function main(): Promise<void> {
             writeOutput({ status: 'closed', result: null });
             break;
           }
-          // Handle abnormal states from auto-continue runQuery (these were
-          // previously handled by the main loop's `continue` re-entry; now that
-          // auto-continue is a standalone call we must check them explicitly).
           if (autoContResult.sessionResumeFailed) {
             log('WARN: Session resume failed during auto-continue, clearing session');
+            if (sessionId) {
+              const historyContext = extractSessionHistory(sessionId);
+              if (historyContext) {
+                pendingHistoryContext = historyContext;
+                log('Stashed session history context for next user-initiated query');
+              }
+            }
             sessionId = undefined;
             latestSessionId = undefined;
             resumeAt = undefined;
             mcpServerConfig = buildMcpServerConfig();
-            // Fall through to wait for next IPC message with a fresh session.
           }
           if (autoContResult.unrecoverableTranscriptError) {
             log('WARN: Unrecoverable transcript error during auto-continue, signaling reset');

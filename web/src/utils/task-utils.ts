@@ -15,6 +15,7 @@ export const CHANNEL_OPTIONS = [
   { key: 'qq', label: 'QQ' },
   { key: 'wechat', label: '微信' },
   { key: 'dingtalk', label: '钉钉' },
+  { key: 'discord', label: 'Discord' },
 ] as const;
 
 /** Format interval milliseconds to human-readable string (e.g. "5 分钟"). */

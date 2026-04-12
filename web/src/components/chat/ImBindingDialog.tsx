@@ -241,7 +241,7 @@ export function ImBindingDialog({ open, groupJid, agentId, agent, onClose }: ImB
 
           {!loading && imGroups.length === 0 && (
             <div className="text-center py-8 text-muted-foreground text-sm">
-              暂无群聊可绑定。请先在飞书/Telegram 群中向 Bot 发送消息，群聊会自动出现在此列表中。
+              暂无群聊可绑定。请先在飞书/Telegram/Discord 群中向 Bot 发送消息，群聊会自动出现在此列表中。
               <br />
               <span className="text-xs opacity-70">私聊不支持绑定到子对话。</span>
             </div>

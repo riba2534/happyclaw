@@ -29,6 +29,9 @@ export function SetupChannelsPage() {
   const [qqAppId, setQqAppId] = useState('');
   const [qqAppSecret, setQqAppSecret] = useState('');
 
+  // Discord
+  const [discordBotToken, setDiscordBotToken] = useState('');
+
   // WeChat
   const [wechatQROpen, setWechatQROpen] = useState(false);
   const [wechatConnected, setWechatConnected] = useState(false);
@@ -49,8 +52,9 @@ export function SetupChannelsPage() {
     const hasFeishu = feishuAppId.trim() || feishuAppSecret.trim();
     const hasTelegram = telegramBotToken.trim();
     const hasQQ = qqAppId.trim() || qqAppSecret.trim();
+    const hasDiscord = discordBotToken.trim();
 
-    if (!hasFeishu && !hasTelegram && !hasQQ) {
+    if (!hasFeishu && !hasTelegram && !hasQQ && !hasDiscord) {
       navigate('/chat', { replace: true });
       return;
     }
@@ -92,6 +96,13 @@ export function SetupChannelsPage() {
         await api.put('/api/config/user-im/qq', {
           appId: qqAppId.trim(),
           appSecret: qqAppSecret.trim(),
+          enabled: true,
+        });
+      }
+
+      if (hasDiscord) {
+        await api.put('/api/config/user-im/discord', {
+          botToken: discordBotToken.trim(),
           enabled: true,
         });
       }
@@ -196,6 +207,25 @@ export function SetupChannelsPage() {
                   placeholder="输入 QQ Bot App Secret"
                 />
               </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Discord */}
+        <Card className="shadow-sm">
+          <CardContent>
+            <h2 className="text-base font-semibold text-foreground mb-3">Discord</h2>
+            <p className="text-xs text-muted-foreground mb-3">
+              填写 Discord Bot Token，绑定后即可在 Discord 中与 AI 对话。
+            </p>
+            <div>
+              <Label className="mb-1">Bot Token</Label>
+              <Input
+                type="password"
+                value={discordBotToken}
+                onChange={(e) => setDiscordBotToken(e.target.value)}
+                placeholder="输入 Discord Bot Token"
+              />
             </div>
           </CardContent>
         </Card>

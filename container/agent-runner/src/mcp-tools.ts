@@ -183,7 +183,7 @@ export function createMcpTools(ctx: McpContext): SdkMcpToolDefinition<any>[] {
     // --- send_image ---
     tool(
       'send_image',
-      "Send an image file from the workspace to the user or group via IM (Feishu/Telegram/DingTalk). The file must be an image (PNG, JPEG, GIF, WebP, etc.) and must exist in the workspace. Use this when you've generated or downloaded an image and want to share it with the user. Optionally include a caption.",
+      'Send an image file from the workspace to the user via IM. Supports PNG/JPEG/GIF/WebP. Optional caption.',
       {
         file_path: z
           .string()

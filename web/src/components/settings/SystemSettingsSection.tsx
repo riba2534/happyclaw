@@ -126,6 +126,20 @@ const fields: FieldConfig[] = [
     max: 600,
     step: 5,
   },
+  {
+    key: 'autoCompactWindow',
+    label: '对话自动压缩阈值',
+    description:
+      '达到该 token 数时主动触发 SDK 对话压缩。0 = 保留 SDK 默认（约 1M）。'
+      + '经验值：Opus 1M 建议 300-500，Sonnet/Haiku 200K 建议 80-120。'
+      + '压缩前会通过 PreCompact hook 归档对话',
+    unit: 'K tokens',
+    toDisplay: (v) => Math.round(v / 1000),
+    toStored: (v) => v * 1000,
+    min: 0,
+    max: 2000,
+    step: 10,
+  },
 ];
 
 export function SystemSettingsSection() {

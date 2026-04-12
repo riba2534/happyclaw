@@ -122,6 +122,7 @@ import {
   getUserQQConfig,
   getUserWeChatConfig,
   getUserDingTalkConfig,
+  getUserDiscordConfig,
   getSystemSettings,
   saveUserFeishuConfig,
   saveUserTelegramConfig,
@@ -133,6 +134,7 @@ import type {
   QQConnectConfig,
   WeChatConnectConfig,
   DingTalkConnectConfig,
+  DiscordConnectConfig,
 } from './im-manager.js';
 import { GroupQueue } from './group-queue.js';
 import { startSchedulerLoop, triggerTaskNow } from './task-scheduler.js';
@@ -2315,8 +2317,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         const role = m.is_from_me ? 'assistant' : m.sender_name;
         const truncated =
           m.content.length > 500 ? m.content.slice(0, 500) + '…' : m.content;
-        // Strip lone surrogates to avoid API JSON errors
-        const cleaned = truncated.replace(/[\uD800-\uDFFF]/g, '');
+        // Strip lone (unpaired) surrogates while preserving valid surrogate pairs
+        // such as emoji. Must stay byte-for-byte aligned with the matching regex
+        // in container/agent-runner/src/index.ts:extractSessionHistory — both
+        // sides feed the same Anthropic API and must produce identical strings.
+        const cleaned = truncated.replace(
+          /(?:[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF])/g,
+          '',
+        );
         return `[${role}] ${cleaned}`;
       });
       prompt =
@@ -6864,6 +6872,7 @@ async function connectUserIMChannels(
   qqConfig?: QQConnectConfig | null,
   wechatConfig?: WeChatConnectConfig | null,
   dingtalkConfig?: DingTalkConnectConfig | null,
+  discordConfig?: DiscordConnectConfig | null,
   ignoreMessagesBefore?: number,
 ): Promise<{
   feishu: boolean;
@@ -6871,6 +6880,7 @@ async function connectUserIMChannels(
   qq: boolean;
   wechat: boolean;
   dingtalk: boolean;
+  discord: boolean;
 }> {
   const onNewChat = buildOnNewChat(userId, homeFolder);
   const resolveGroupFolder = (chatJid: string): string | undefined => {
@@ -6881,126 +6891,127 @@ async function connectUserIMChannels(
   const onBotAddedToGroup = buildOnNewChat(userId, homeFolder); // reuse same logic: auto-register
   const onBotRemovedFromGroup = buildOnBotRemovedFromGroup();
 
-  let feishu = false;
-  let telegram = false;
-  let qq = false;
-  let wechat = false;
-  let dingtalk = false;
-
-  if (
+  // 各渠道互相独立，并发连接避免启动时延 N×M 累加
+  const feishuTask =
     feishuConfig &&
     feishuConfig.enabled !== false &&
     feishuConfig.appId &&
     feishuConfig.appSecret
-  ) {
-    feishu = await imManager.connectUserFeishu(
-      userId,
-      feishuConfig,
-      onNewChat,
-      {
-        ignoreMessagesBefore,
-        onCommand: handleCommand,
-        resolveGroupFolder,
-        resolveEffectiveChatJid,
-        onAgentMessage,
-        onBotAddedToGroup,
-        onBotRemovedFromGroup,
-        shouldProcessGroupMessage,
-        isGroupOwnerMessage,
-        onCardInterrupt: handleCardInterrupt,
-      },
-    );
-  }
+      ? imManager.connectUserFeishu(userId, feishuConfig, onNewChat, {
+          ignoreMessagesBefore,
+          onCommand: handleCommand,
+          resolveGroupFolder,
+          resolveEffectiveChatJid,
+          onAgentMessage,
+          onBotAddedToGroup,
+          onBotRemovedFromGroup,
+          shouldProcessGroupMessage,
+          isGroupOwnerMessage,
+          onCardInterrupt: handleCardInterrupt,
+        })
+      : Promise.resolve(false);
 
-  if (
+  const telegramTask =
     telegramConfig &&
     telegramConfig.enabled !== false &&
     telegramConfig.botToken
-  ) {
-    telegram = await imManager.connectUserTelegram(
-      userId,
-      telegramConfig,
-      onNewChat,
-      buildIsChatAuthorized(userId),
-      buildOnPairAttempt(userId),
-      {
-        onCommand: handleCommand,
-        ignoreMessagesBefore,
-        resolveGroupFolder,
-        resolveEffectiveChatJid,
-        onAgentMessage,
-        onBotAddedToGroup: buildTelegramBotAddedHandler(userId, homeFolder),
-        onBotRemovedFromGroup,
-      },
-    );
-  }
+      ? imManager.connectUserTelegram(
+          userId,
+          telegramConfig,
+          onNewChat,
+          buildIsChatAuthorized(userId),
+          buildOnPairAttempt(userId),
+          {
+            onCommand: handleCommand,
+            ignoreMessagesBefore,
+            resolveGroupFolder,
+            resolveEffectiveChatJid,
+            onAgentMessage,
+            onBotAddedToGroup: buildTelegramBotAddedHandler(userId, homeFolder),
+            onBotRemovedFromGroup,
+          },
+        )
+      : Promise.resolve(false);
 
-  if (
+  const qqTask =
     qqConfig &&
     qqConfig.enabled !== false &&
     qqConfig.appId &&
     qqConfig.appSecret
-  ) {
-    qq = await imManager.connectUserQQ(
-      userId,
-      qqConfig,
-      onNewChat,
-      buildIsChatAuthorized(userId),
-      buildOnPairAttempt(userId),
-      {
-        onCommand: handleCommand,
-        resolveGroupFolder,
-        resolveEffectiveChatJid,
-        onAgentMessage,
-      },
-    );
-  }
+      ? imManager.connectUserQQ(
+          userId,
+          qqConfig,
+          onNewChat,
+          buildIsChatAuthorized(userId),
+          buildOnPairAttempt(userId),
+          {
+            onCommand: handleCommand,
+            resolveGroupFolder,
+            resolveEffectiveChatJid,
+            onAgentMessage,
+          },
+        )
+      : Promise.resolve(false);
 
-  if (
+  const wechatTask =
     wechatConfig &&
     wechatConfig.enabled !== false &&
     wechatConfig.botToken &&
     wechatConfig.ilinkBotId
-  ) {
-    wechat = await imManager.connectUserWeChat(
-      userId,
-      wechatConfig,
-      onNewChat,
-      {
-        ignoreMessagesBefore,
-        onCommand: handleCommand,
-        resolveGroupFolder,
-        resolveEffectiveChatJid,
-        onAgentMessage,
-      },
-    );
-  }
+      ? imManager.connectUserWeChat(userId, wechatConfig, onNewChat, {
+          ignoreMessagesBefore,
+          onCommand: handleCommand,
+          resolveGroupFolder,
+          resolveEffectiveChatJid,
+          onAgentMessage,
+        })
+      : Promise.resolve(false);
 
-  if (
+  const dingtalkTask =
     dingtalkConfig &&
     dingtalkConfig.enabled !== false &&
     dingtalkConfig.clientId &&
     dingtalkConfig.clientSecret
-  ) {
-    dingtalk = await imManager.connectUserDingTalk(
-      userId,
-      dingtalkConfig,
-      onNewChat,
-      {
-        ignoreMessagesBefore,
-        onCommand: handleCommand,
-        resolveGroupFolder,
-        resolveEffectiveChatJid,
-        onAgentMessage,
-        onBotAddedToGroup,
-        onBotRemovedFromGroup,
-        shouldProcessGroupMessage,
-        isGroupOwnerMessage,
-      },
-    );
-  }
+      ? imManager.connectUserDingTalk(userId, dingtalkConfig, onNewChat, {
+          ignoreMessagesBefore,
+          onCommand: handleCommand,
+          resolveGroupFolder,
+          resolveEffectiveChatJid,
+          onAgentMessage,
+          onBotAddedToGroup,
+          onBotRemovedFromGroup,
+          shouldProcessGroupMessage,
+          isGroupOwnerMessage,
+        })
+      : Promise.resolve(false);
 
-  return { feishu, telegram, qq, wechat, dingtalk };
+  const discordTask =
+    discordConfig &&
+    discordConfig.enabled !== false &&
+    discordConfig.botToken
+      ? imManager.connectUserDiscord(userId, discordConfig, onNewChat, {
+          ignoreMessagesBefore,
+          onCommand: handleCommand,
+          resolveGroupFolder,
+          resolveEffectiveChatJid,
+          onAgentMessage,
+          onBotAddedToGroup,
+          onBotRemovedFromGroup,
+          shouldProcessGroupMessage,
+          isGroupOwnerMessage,
+        })
+      : Promise.resolve(false);
+
+  const [feishu, telegram, qq, wechat, dingtalk, discord] = await Promise.all([
+    feishuTask,
+    telegramTask,
+    qqTask,
+    wechatTask,
+    dingtalkTask,
+    discordTask,
+  ]);
+
+  return { feishu, telegram, qq, wechat, dingtalk, discord };
 }
 
 function movePathWithFallback(src: string, dst: string): void {
@@ -7406,7 +7417,7 @@ async function main(): Promise<void> {
   // Reload a per-user IM channel (hot-reload on user-im config save)
   const reloadUserIMConfig = async (
     userId: string,
-    channel: 'feishu' | 'telegram' | 'qq' | 'wechat' | 'dingtalk',
+    channel: 'feishu' | 'telegram' | 'qq' | 'wechat' | 'dingtalk' | 'discord',
   ): Promise<boolean> => {
     const homeGroup = getUserHomeGroup(userId);
     if (!homeGroup) {
@@ -7546,6 +7557,35 @@ async function main(): Promise<void> {
       }
       logger.info({ userId }, 'User DingTalk channel disabled via hot-reload');
       return false;
+    } else if (channel === 'discord') {
+      await imManager.disconnectUserDiscord(userId);
+      const config = getUserDiscordConfig(userId);
+      if (config && config.enabled !== false && config.botToken) {
+        const connected = await imManager.connectUserDiscord(
+          userId,
+          config,
+          onNewChat,
+          {
+            ignoreMessagesBefore,
+            onCommand: handleCommand,
+            resolveGroupFolder: (chatJid: string) =>
+              resolveEffectiveFolder(chatJid),
+            resolveEffectiveChatJid: buildResolveEffectiveChatJid(),
+            onAgentMessage: buildOnAgentMessage(),
+            onBotAddedToGroup: buildOnNewChat(userId, homeFolder),
+            onBotRemovedFromGroup: buildOnBotRemovedFromGroup(),
+            shouldProcessGroupMessage,
+            isGroupOwnerMessage,
+          },
+        );
+        logger.info(
+          { userId, connected },
+          'User Discord connection hot-reloaded',
+        );
+        return connected;
+      }
+      logger.info({ userId }, 'User Discord channel disabled via hot-reload');
+      return false;
     } else {
       // WeChat
       await imManager.disconnectUserWeChat(userId);
@@ -7616,6 +7656,8 @@ async function main(): Promise<void> {
       imManager.isWeChatConnected(userId),
     isUserDingTalkConnected: (userId: string) =>
       imManager.isDingTalkConnected(userId),
+    isUserDiscordConnected: (userId: string) =>
+      imManager.isDiscordConnected(userId),
     processAgentConversation,
     getFeishuChatInfo: (userId: string, chatId: string) =>
       imManager.getFeishuChatInfo(userId, chatId),
@@ -7937,6 +7979,7 @@ async function main(): Promise<void> {
     const userQQ = getUserQQConfig(user.id);
     const userWeChat = getUserWeChatConfig(user.id);
     const userDingTalk = getUserDingTalkConfig(user.id);
+    const userDiscord = getUserDiscordConfig(user.id);
 
     // Determine effective Feishu config: per-user > global (admin only)
     let effectiveFeishu: FeishuConnectConfig | null = null;
@@ -8008,12 +8051,23 @@ async function main(): Promise<void> {
       };
     }
 
+    // Determine effective Discord config: per-user only (no global fallback)
+    let effectiveDiscord: DiscordConnectConfig | null = null;
+    if (userDiscord && userDiscord.botToken) {
+      effectiveDiscord = {
+        botToken: userDiscord.botToken,
+        enabled: userDiscord.enabled,
+        streamingMode: userDiscord.streamingMode,
+      };
+    }
+
     if (
       !effectiveFeishu &&
       !effectiveTelegram &&
       !effectiveQQ &&
       !effectiveWeChat &&
-      !effectiveDingTalk
+      !effectiveDingTalk &&
+      !effectiveDiscord
     )
       continue;
 
@@ -8026,6 +8080,7 @@ async function main(): Promise<void> {
         effectiveQQ,
         effectiveWeChat,
         effectiveDingTalk,
+        effectiveDiscord,
         Date.now(),
       );
       if (result.feishu) anyFeishuConnected = true;
@@ -8037,6 +8092,7 @@ async function main(): Promise<void> {
           qq: result.qq,
           wechat: result.wechat,
           dingtalk: result.dingtalk,
+          discord: result.discord,
         },
         'User IM channels connected',
       );

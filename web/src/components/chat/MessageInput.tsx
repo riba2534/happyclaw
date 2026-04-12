@@ -15,6 +15,7 @@ import {
 import { useFileStore } from '../../stores/files';
 import { useChatStore } from '../../stores/chat';
 import { useDisplayMode } from '../../hooks/useDisplayMode';
+import { useMediaQuery } from '../../hooks/useMediaQuery';
 
 interface PendingFile {
   /** Display name: relative path for folder uploads, file name otherwise */
@@ -63,6 +64,7 @@ export function MessageInput({
   const { drafts, saveDraft, clearDraft } = useChatStore();
   const { mode: displayMode } = useDisplayMode();
   const isCompact = displayMode === 'compact';
+  const isMobile = useMediaQuery('(max-width: 1023px)');
 
   // iOS keyboard adaptation
   useKeyboardHeight();
@@ -141,7 +143,7 @@ export function MessageInput({
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (composingRef.current || e.nativeEvent.isComposing) return;
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
       if (Date.now() - compositionEndTimeRef.current < 100) return;
       e.preventDefault();
       handleSend();

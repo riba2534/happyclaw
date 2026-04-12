@@ -390,81 +390,26 @@ scripts/                      # 构建辅助脚本
 
 ## 7. Web API
 
-### 认证
-- `GET /api/auth/status` — 系统初始化状态（`initialized`、是否有用户）
-- `POST /api/auth/setup` — 创建首个管理员（仅用户表为空时可用）
-- `POST /api/auth/login` · `POST /api/auth/logout` · `GET /api/auth/me`（含 `setupStatus`）
-- `POST /api/auth/register` · `PUT /api/auth/profile` · `PUT /api/auth/change-password`
+> **完整 API 端点列表见 [`docs/API.md`](docs/API.md)**。新增或修改 Web 路由前请先阅读该文档。
+> 拆分原因：原 §7 整段约 3.5 KB / ~900 tokens 是只在新增/修改 API 时才需要的参考清单，
+> 强制每请求加载到 cache_read 不划算。详细清单按需 Read，下表保留路由文件入口作为快速锚点。
 
-### 群组
-- `GET /api/groups` · `POST /api/groups`（创建 Web 会话）
-- `PATCH /api/groups/:jid`（重命名） · `DELETE /api/groups/:jid`
-- `POST /api/groups/:jid/reset-session`（重建工作区）
-- `GET /api/groups/:jid/messages`（分页 + 轮询，支持多 JID 查询）
-- `GET|PUT /api/groups/:jid/env`（群组级容器环境变量）
+| 模块 | 入口文件 |
+|------|---------|
+| 认证 | `src/routes/auth.ts` |
+| 群组 | `src/routes/groups.ts` |
+| 文件 | `src/routes/files.ts` |
+| 记忆 | `src/routes/memory.ts` |
+| 配置（Claude / IM / 系统设置） | `src/routes/config.ts` |
+| 任务 | `src/routes/tasks.ts` |
+| 管理（用户 / 邀请码 / 审计） | `src/routes/admin.ts` |
+| Sub-Agent | `src/routes/agents.ts` |
+| 目录浏览 | `src/routes/browse.ts` |
+| MCP Servers | `src/routes/mcp-servers.ts` |
+| 用量统计 | `src/routes/usage.ts` |
+| 监控 / 健康检查 | `src/routes/monitor.ts`（`GET /api/health` 无需认证） |
 
-### 文件
-- `GET /api/groups/:jid/files` · `POST /api/groups/:jid/files`（上传，50MB 限制）
-- `GET /api/groups/:jid/files/download/:path` · `DELETE /api/groups/:jid/files/:path`
-- `POST /api/groups/:jid/directories`
-
-### 记忆
-- `GET /api/memory/sources` · `GET /api/memory/search`（全文检索）
-- `GET|PUT /api/memory/file`
-
-### 配置
-- `GET|PUT /api/config/claude` · `PUT /api/config/claude/secrets`
-- `GET|PUT /api/config/claude/custom-env`
-- `POST /api/config/claude/test`（连通性测试） · `POST /api/config/claude/apply`（应用到所有容器）
-- `GET|PUT /api/config/feishu`（**deprecated**，使用 `/api/config/user-im/feishu` 代替）
-- `GET|PUT /api/config/telegram` · `POST /api/config/telegram/test`（**deprecated**，使用 `/api/config/user-im/telegram` 代替）
-- `GET|PUT /api/config/appearance` · `GET /api/config/appearance/public`（外观配置，public 端点无需认证）
-- `GET|PUT /api/config/system` — 系统运行参数（容器超时、并发限制等），需要 `manage_system_config` 权限
-- `GET /api/config/user-im/status`（所有渠道连接状态，含 QQ）
-- `GET|PUT /api/config/user-im/feishu`（用户级飞书 IM 配置，GET 返回 `connected` 字段）
-- `GET|PUT /api/config/user-im/telegram`（用户级 Telegram IM 配置，GET 返回 `connected`、`effectiveProxyUrl`、`proxySource`，PUT 支持 `proxyUrl`/`clearProxyUrl`）
-- `POST /api/config/user-im/telegram/test`（Telegram Bot Token 连通性测试，使用 per-user proxyUrl）
-- `GET|PUT /api/config/user-im/qq`（用户级 QQ IM 配置，GET 返回 `connected` 字段）
-- `POST /api/config/user-im/qq/test`（QQ 凭据连通性测试）
-- `POST /api/config/user-im/qq/pairing-code`（生成 QQ 配对码）
-- `GET /api/config/user-im/qq/paired-chats`（已配对的 QQ 聊天列表）
-- `DELETE /api/config/user-im/qq/paired-chats/:jid`（移除 QQ 配对）
-- `GET|PUT /api/config/user-im/dingtalk`（用户级钉钉 IM 配置，GET 返回 `connected` 字段）
-
-### 任务
-- `GET /api/tasks` · `POST /api/tasks` · `PATCH /api/tasks/:id` · `DELETE /api/tasks/:id`
-- `GET /api/tasks/:id/logs`
-
-### 管理
-- `GET /api/admin/users` · `POST /api/admin/users` · `PATCH /api/admin/users/:id`
-- `DELETE /api/admin/users/:id` · `POST /api/admin/users/:id/restore`
-- `POST /api/admin/invites` · `GET /api/admin/invites` · `DELETE /api/admin/invites/:code`
-- `GET /api/admin/audit-log`
-- `GET|PUT /api/admin/settings/registration`
-
-### Sub-Agent
-- `GET /api/groups/:jid/agents` · `POST /api/groups/:jid/agents`（创建 Sub-Agent）
-- `DELETE /api/groups/:jid/agents/:agentId`
-
-### 目录浏览
-- `GET /api/browse/directories`（列出可选目录，受挂载白名单约束）
-- `POST /api/browse/directories`（创建自定义工作目录）
-
-### MCP Servers
-- `GET /api/mcp-servers` · `POST /api/mcp-servers`（CRUD，per-user）
-- `PATCH /api/mcp-servers/:id` · `DELETE /api/mcp-servers/:id`
-- `POST /api/mcp-servers/sync-host`（从宿主机同步 MCP Server 配置）
-
-### 用量统计
-- `GET /api/usage/stats?days=7&userId=&model=`（从 `usage_daily_summary` 查询，支持用户/模型筛选）
-- `GET /api/usage/models`（去重模型列表）
-- `GET /api/usage/users`（有用量数据的用户列表，admin 可见全部）
-
-### 监控
-- `GET /api/status` · `GET /api/health`（无需认证）
-
-### WebSocket
-- `/ws`（详见 §3.6 WebSocket 协议）
+WebSocket：`/ws`（协议详见 §3.6）。
 
 ## 8. 关键行为
 
@@ -584,6 +529,7 @@ scripts/                      # 构建辅助脚本
 | `MAX_CONCURRENT_HOST_PROCESSES` | `5` | 宿主机模式并发上限（可通过设置页覆盖） |
 | `MAX_LOGIN_ATTEMPTS` | `5` | 登录失败锁定阈值（可通过设置页覆盖） |
 | `LOGIN_LOCKOUT_MINUTES` | `15` | 锁定持续时间（分钟）（可通过设置页覆盖） |
+| `AUTO_COMPACT_WINDOW` | `0`（禁用，使用 SDK 默认 ~1M） | Claude Agent SDK 自动对话压缩触发点（tokens），0 = 关闭，>0 范围 [10000, 2000000]（可通过设置页覆盖） |
 | `TRUST_PROXY` | `false` | 信任反向代理的 `X-Forwarded-For` 头（启用后从代理头获取客户端 IP） |
 | `TZ` | 系统时区 | 定时任务时区 |
 
@@ -597,7 +543,10 @@ scripts/                      # 构建辅助脚本
 - **Issue / PR 规范**见下方 §10.1
 - 系统路径不可通过文件 API 操作：`logs/`、`CLAUDE.md`、`.claude/`、`conversations/`
 - StreamEvent 类型以 `shared/stream-event.ts` 为单一真相源，修改后运行 `make sync-types` 同步（`make build` 自动触发，`make typecheck` 校验一致性）
-- Claude SDK 和 CLI 始终使用最新版本（agent-runner `package.json` 中 `"*"`，通过 `make update-sdk` 更新）
+- Claude SDK / CLI 和容器内置的第三方工具始终使用最新版本：
+  - `@anthropic-ai/claude-agent-sdk` 在 `agent-runner/package.json` 用 `"*"` + 无 lock file + `CACHEBUST` 触发每次 `npm install` 重跑
+  - `feishu-cli` 在 `container/Dockerfile` 通过 `github.com/riba2534/feishu-cli/releases/latest` 的 **302 redirect Location header** 提取 tag 动态下载（不走 `api.github.com` 规避 rate limit），binary 和 skills 共享同一 `$VERSION` 确保一致
+  - 通过 `make update-sdk` 手动触发一次更新
 - 容器内以 `node` 非 root 用户运行，需注意文件权限
 - **关闭服务时禁止 `lsof -ti:PORT | xargs kill`**，该命令会杀掉所有连接到该端口的进程（包括 OrbStack/Docker 网络代理），导致 Docker daemon 崩溃。正确做法：`lsof -ti:PORT -sTCP:LISTEN | xargs kill`（仅杀监听进程）
 

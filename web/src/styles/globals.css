@@ -724,3 +724,270 @@ pre code.hljs {
     @apply font-sans;
   }
 }
+
+/* =====================================================
+   Landing Page — Hero, Glass Cards, Animations
+   Scoped orange theme: override tokens inside .landing-page
+   so buttons, links, badges, icons all render orange
+   regardless of the global theme setting.
+
+   注意：登录页作为品牌入口固定使用橙色配色，不随用户主题
+   偏好切换。这是产品决策，不要将这些 token 改回依赖 :root。
+   ===================================================== */
+
+/* Landing-page scoped orange tokens (light mode) */
+.landing-page {
+  --background: #FFFBF5;
+  --foreground: #1C1210;
+  --primary: #f97316;
+  --primary-foreground: #ffffff;
+  --ring: #f97316;
+  --muted: #F5EDE4;
+  --muted-foreground: #8b7b6b;
+  --border: #EDE3D8;
+  --input: #EDE3D8;
+  --brand-50: #fff7ed;
+  --brand-100: #ffedd5;
+  --brand-200: #fed7aa;
+  --brand-300: #fdba74;
+  --brand-400: #fb923c;
+  --brand-500: #f97316;
+  --brand-600: #ea580c;
+  --brand-700: #c2410c;
+  --glass-bg: rgba(255, 251, 245, 0.60);
+  --glass-bg-heavy: rgba(255, 251, 245, 0.80);
+  --glass-border: rgba(237, 227, 216, 0.60);
+  --glass-shadow: 0 8px 32px rgba(180, 120, 60, 0.06);
+  --glass-inner-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.7);
+  --glass-blur: 20px;
+  --glass-saturate: 1.8;
+  --error: #dc2626;
+  --error-bg: #fee2e2;
+}
+
+/* Landing-page scoped orange tokens (dark mode) */
+.dark .landing-page {
+  --background: #1A1210;
+  --foreground: #F5EDE4;
+  --primary: #fb923c;
+  --primary-foreground: #1A1210;
+  --ring: #fb923c;
+  --muted: #2A2018;
+  --muted-foreground: #A08B7A;
+  --border: #3A2A1E;
+  --input: #3A2A1E;
+  --brand-50: #431407;
+  --brand-100: #7c2d12;
+  --brand-200: #9a3412;
+  --brand-300: #c2410c;
+  --brand-400: #ea580c;
+  --brand-500: #f97316;
+  --brand-600: #fb923c;
+  --brand-700: #fdba74;
+  --glass-bg: rgba(26, 18, 16, 0.60);
+  --glass-bg-heavy: rgba(26, 18, 16, 0.80);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  --glass-inner-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.06);
+  --error: #f87171;
+  --error-bg: #450a0a;
+}
+
+/* Aurora mesh background — organic blobs with noise overlay */
+.landing-gradient-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+}
+
+/* Noise grain overlay — coarse texture */
+.landing-gradient-bg::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0.06;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 256px 256px;
+  pointer-events: none;
+}
+
+.dark .landing-gradient-bg::after {
+  opacity: 0.08;
+}
+
+/* Aurora blobs container */
+.landing-aurora {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  overflow: hidden;
+  filter: blur(100px) saturate(1.6);
+}
+
+.dark .landing-aurora {
+  filter: blur(100px) saturate(1.3);
+}
+
+.landing-aurora-blob {
+  position: absolute;
+  /* border-radius 保持静态值，避免 keyframes 中 animate border-radius
+     触发 paint —— 配合 100px blur + 大尺寸元素会在低端设备掉帧。
+     每个 blob 的具体 border-radius 在下面的 .landing-aurora-blob-N 中设置 */
+}
+
+/* Blob 1: warm peach-orange — top left */
+.landing-aurora-blob-1 {
+  width: 70vw; height: 65vh;
+  top: -20%; left: -15%;
+  background: rgba(251, 146, 60, 0.12);
+  border-radius: 30% 70% 70% 30% / 30% 30% 70% 70%;
+  animation: aurora-morph-1 20s ease-in-out infinite;
+}
+
+/* Blob 2: soft violet — bottom right */
+.landing-aurora-blob-2 {
+  width: 60vw; height: 55vh;
+  bottom: -15%; right: -10%;
+  background: rgba(167, 139, 250, 0.10);
+  border-radius: 50% 50% 30% 70% / 40% 60% 40% 60%;
+  animation: aurora-morph-2 25s ease-in-out infinite;
+}
+
+/* Blob 3: sky blue — center */
+.landing-aurora-blob-3 {
+  width: 50vw; height: 45vh;
+  top: 35%; left: 25%;
+  background: rgba(56, 189, 248, 0.08);
+  border-radius: 40% 60% 50% 50% / 60% 40% 60% 40%;
+  animation: aurora-morph-3 22s ease-in-out infinite;
+}
+
+/* Blob 4: rose pink — top right */
+.landing-aurora-blob-4 {
+  width: 45vw; height: 40vh;
+  top: -10%; right: 5%;
+  background: rgba(251, 113, 133, 0.08);
+  border-radius: 50% 50% 30% 70% / 40% 60% 40% 60%;
+  animation: aurora-morph-2 28s ease-in-out infinite reverse;
+}
+
+.dark .landing-aurora-blob-1 {
+  background: rgba(251, 146, 60, 0.08);
+}
+.dark .landing-aurora-blob-2 {
+  background: rgba(167, 139, 250, 0.07);
+}
+.dark .landing-aurora-blob-3 {
+  background: rgba(56, 189, 248, 0.05);
+}
+.dark .landing-aurora-blob-4 {
+  background: rgba(251, 113, 133, 0.05);
+}
+
+/* Mobile: scale blobs to cover small screens */
+@media (max-width: 640px) {
+  .landing-aurora-blob-1 {
+    width: 120vw; height: 50vh;
+    top: -10%; left: -30%;
+  }
+  .landing-aurora-blob-2 {
+    width: 100vw; height: 45vh;
+    bottom: -5%; right: -20%;
+  }
+  .landing-aurora-blob-3 {
+    width: 80vw; height: 40vh;
+    top: 30%; left: 10%;
+  }
+  .landing-aurora-blob-4 {
+    width: 90vw; height: 35vh;
+    top: -5%; right: -15%;
+  }
+}
+
+/* Aurora keyframes 只 animate transform（composite layer），
+   border-radius 保持静态，避免触发 paint。 */
+@keyframes aurora-morph-1 {
+  0%, 100% {
+    transform: translate(0, 0) rotate(0deg) scale(1);
+  }
+  33% {
+    transform: translate(5%, 8%) rotate(60deg) scale(1.1);
+  }
+  66% {
+    transform: translate(-3%, -5%) rotate(120deg) scale(0.95);
+  }
+}
+
+@keyframes aurora-morph-2 {
+  0%, 100% {
+    transform: translate(0, 0) rotate(0deg) scale(1);
+  }
+  33% {
+    transform: translate(-6%, 4%) rotate(-90deg) scale(1.05);
+  }
+  66% {
+    transform: translate(4%, -6%) rotate(-180deg) scale(0.9);
+  }
+}
+
+@keyframes aurora-morph-3 {
+  0%, 100% {
+    transform: translate(0, 0) rotate(0deg) scale(1);
+  }
+  50% {
+    transform: translate(3%, -4%) rotate(45deg) scale(1.08);
+  }
+}
+
+/* Badge */
+.landing-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 14px;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--primary);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* Gradient text — orange spectrum */
+.landing-gradient-text {
+  background: linear-gradient(135deg, #ea580c 0%, #fb923c 50%, #f97316 100%);
+  background-size: 200% 200%;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: landing-text-shimmer 6s ease-in-out infinite;
+}
+
+@keyframes landing-text-shimmer {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+/* Glass login card */
+.landing-glass-card {
+  padding: 2rem;
+  border-radius: 1.25rem;
+  background: var(--glass-bg-heavy);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow), var(--glass-inner-shadow);
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .landing-gradient-bg,
+  .landing-aurora-blob,
+  .landing-gradient-text {
+    animation: none !important;
+  }
+}

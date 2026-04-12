@@ -103,6 +103,7 @@ export interface SystemSettings {
   billingCurrency: string;
   billingCurrencyRate: number;
   externalClaudeDir: string;
+  autoCompactWindow: number;
 }
 
 // ─── OAuth Usage ────────────────────────────────────────────

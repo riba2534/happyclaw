@@ -109,26 +109,28 @@ ARG CACHEBUST=1
 RUN npm install -g agent-browser
 RUN npm install
 
-# Install feishu-cli (pre-compiled binary from GitHub Releases)
-# Non-fatal: GitHub API rate limits may cause transient failures
+# Install feishu-cli (binary + builtin skills), 始终跟踪 latest release。
+# 通过 302 redirect 从 github.com/releases/latest 的 Location header 提取 tag
+# （和 install.sh 作者自己用的技巧一致），不经 api.github.com 规避 rate limit。
+# CACHEBUST 已在此前触发，每次构建都会重新解析 latest。
 ARG TARGETARCH
-RUN ARCH="${TARGETARCH:-$(dpkg --print-architecture)}"; \
-    VERSION=$(curl -fsSL https://api.github.com/repos/riba2534/feishu-cli/releases/latest 2>/dev/null | jq -r .tag_name 2>/dev/null); \
-    if [ -n "$VERSION" ] && [ "$VERSION" != "null" ]; then \
-      curl -fsSL "https://github.com/riba2534/feishu-cli/releases/download/${VERSION}/feishu-cli_${VERSION}_linux-${ARCH}.tar.gz" \
-        | tar -xz --strip-components=1 -C /usr/local/bin && \
-      feishu-cli --version; \
-    else \
-      echo "WARNING: Failed to fetch feishu-cli version (GitHub API rate limit?), skipping installation"; \
-    fi
-
-# Install feishu-cli skills (builtin, lowest priority in discovery)
-# Non-fatal: GitHub API rate limits may cause transient failures
-RUN mkdir -p /opt/builtin-skills; \
-    curl -fsSL https://api.github.com/repos/riba2534/feishu-cli/tarball/main 2>/dev/null \
-      | tar -xz --strip-components=2 -C /opt/builtin-skills --wildcards '*/skills/*' 2>/dev/null \
-    && ls /opt/builtin-skills/ \
-    || echo "WARNING: Failed to fetch feishu-cli skills, skipping"
+RUN set -e && \
+    ARCH="${TARGETARCH:-$(dpkg --print-architecture)}" && \
+    VERSION=$(curl -sI "https://github.com/riba2534/feishu-cli/releases/latest" \
+      | grep -i '^location:' | head -1 \
+      | sed 's|.*/tag/\([^[:space:]]*\).*|\1|' | tr -d '\r\n') && \
+    if [ -z "$VERSION" ]; then echo "ERROR: 无法从 github.com 302 redirect 解析 feishu-cli 最新版本"; exit 1; fi && \
+    echo "Installing feishu-cli $VERSION for $ARCH" && \
+    curl -fsSL "https://github.com/riba2534/feishu-cli/releases/download/${VERSION}/feishu-cli_${VERSION}_linux-${ARCH}.tar.gz" \
+      | tar -xz --strip-components=1 -C /usr/local/bin && \
+    feishu-cli --version && \
+    mkdir -p /opt/builtin-skills && \
+    SKILLS_TMP=$(mktemp -d) && \
+    curl -fsSL "https://github.com/riba2534/feishu-cli/archive/refs/tags/${VERSION}.tar.gz" \
+      | tar -xz -C "$SKILLS_TMP" && \
+    cp -r "$SKILLS_TMP"/*/skills/. /opt/builtin-skills/ && \
+    rm -rf "$SKILLS_TMP" && \
+    ls /opt/builtin-skills/
 
 # Copy source code
 COPY agent-runner/ ./

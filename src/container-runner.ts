@@ -487,6 +487,11 @@ function buildVolumeMounts(
     containerOverride,
     resolvedProvider?.customEnv,
   );
+  // SystemSettings.autoCompactWindow > 0 时注入到容器，让 agent-runner 通过 query() settings 传给 SDK
+  const sysAutoCompact = getSystemSettings().autoCompactWindow;
+  if (sysAutoCompact > 0) {
+    envLines.push(`AUTO_COMPACT_WINDOW=${sysAutoCompact}`);
+  }
   if (envLines.length > 0) {
     const envFilePath = path.join(envDir, 'env');
     const quotedLines = shellQuoteEnvLines(envLines);
@@ -1219,6 +1224,12 @@ export async function runHostAgent(
           'Failed to write .credentials.json for host agent',
         );
       }
+    }
+
+    // SystemSettings.autoCompactWindow > 0 时注入到 host 进程，agent-runner 通过 query() settings 传给 SDK
+    const hostAutoCompact = getSystemSettings().autoCompactWindow;
+    if (hostAutoCompact > 0) {
+      hostEnv['AUTO_COMPACT_WINDOW'] = String(hostAutoCompact);
     }
 
     // 路径映射

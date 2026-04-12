@@ -29,6 +29,11 @@ import {
   type DingTalkConnection,
   type DingTalkConnectionConfig,
 } from './dingtalk.js';
+import {
+  createDiscordConnection,
+  type DiscordConnection,
+  type DiscordConnectionConfig,
+} from './discord.js';
 import { logger } from './logger.js';
 import type { FeishuMessageMeta } from './types.js';
 import {
@@ -36,12 +41,14 @@ import {
   type StreamingCardOptions,
 } from './feishu-streaming-card.js';
 import type { DingTalkStreamingCardController } from './dingtalk-streaming-card.js';
+import type { DiscordStreamingEditController } from './discord-streaming-edit.js';
 import { CHANNEL_PREFIXES } from './channel-prefixes.js';
 
-/** Union type for any streaming card controller (Feishu or DingTalk) */
+/** Union type for any streaming card controller (Feishu, DingTalk, or Discord) */
 export type StreamingSession =
   | StreamingCardController
-  | DingTalkStreamingCardController;
+  | DingTalkStreamingCardController
+  | DiscordStreamingEditController;
 
 // ─── Unified Interface ──────────────────────────────────────────
 
@@ -56,8 +63,14 @@ export interface IMChannelConnectOpts {
     chatName: string,
     code: string,
   ) => Promise<boolean>;
-  /** Slash command callback (e.g. /clear). Returns reply text or null. */
-  onCommand?: (chatJid: string, command: string) => Promise<string | null>;
+  /** Slash command callback (e.g. /clear). Returns reply text or null.
+   *  senderImId is the channel-specific user ID (e.g. Discord user.id, Telegram from.id);
+   *  channels that don't have a stable per-user ID may pass undefined. */
+  onCommand?: (
+    chatJid: string,
+    command: string,
+    senderImId?: string,
+  ) => Promise<string | null>;
   /** 根据 jid 解析群组 folder，用于下载文件/图片到工作区 */
   resolveGroupFolder?: (jid: string) => string | undefined;
   /** 将 IM chatJid 解析为绑定目标 JID（conversation agent 或工作区主对话） */
@@ -644,5 +657,105 @@ export function createDingTalkChannel(
     },
   };
 
+  return channel;
+}
+
+// ─── Discord Adapter ────────────────────────────────────────────
+
+export function createDiscordChannel(
+  config: DiscordConnectionConfig,
+  opts?: { streamingMode?: 'edit' | 'off' },
+): IMChannel {
+  const streamingEnabled = opts?.streamingMode === 'edit';
+  let inner: DiscordConnection | null = null;
+  let typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
+
+  const channel: IMChannel = {
+    channelType: 'discord',
+
+    async connect(opts: IMChannelConnectOpts): Promise<boolean> {
+      inner = createDiscordConnection(config);
+      try {
+        const ok = await inner.connect({
+          onReady: opts.onReady,
+          onNewChat: opts.onNewChat,
+          isChatAuthorized: opts.isChatAuthorized,
+          ignoreMessagesBefore: opts.ignoreMessagesBefore,
+          onCommand: opts.onCommand,
+          resolveGroupFolder: opts.resolveGroupFolder,
+          resolveEffectiveChatJid: opts.resolveEffectiveChatJid,
+          onAgentMessage: opts.onAgentMessage,
+          onBotAddedToGroup: opts.onBotAddedToGroup,
+          onBotRemovedFromGroup: opts.onBotRemovedFromGroup,
+          shouldProcessGroupMessage: opts.shouldProcessGroupMessage,
+          isGroupOwnerMessage: opts.isGroupOwnerMessage,
+        });
+        return ok;
+      } catch (err) {
+        logger.warn({ err }, 'Discord channel connect failed');
+        inner = null;
+        return false;
+      }
+    },
+
+    async disconnect(): Promise<void> {
+      // Clear all typing intervals
+      for (const [, interval] of typingIntervals) clearInterval(interval);
+      typingIntervals.clear();
+      if (inner) {
+        await inner.disconnect();
+        inner = null;
+      }
+    },
+
+    async sendMessage(chatId, text, localImagePaths?) {
+      if (!inner) return;
+      await inner.sendMessage(chatId, text, localImagePaths);
+    },
+
+    async sendFile(chatId, filePath, fileName) {
+      if (!inner) return;
+      await inner.sendFile(chatId, filePath, fileName);
+    },
+
+    async sendImage(chatId, imageBuffer, mimeType, caption?, fileName?) {
+      if (!inner) return;
+      await inner.sendImage(chatId, imageBuffer, mimeType, caption, fileName);
+    },
+
+    async setTyping(chatId, isTyping) {
+      if (!inner) return;
+      if (isTyping) {
+        // Discord typing indicator lasts 10s, repeat every 9s
+        if (!typingIntervals.has(chatId)) {
+          await inner.setTyping(chatId, true);
+          const interval = setInterval(async () => {
+            try { if (inner) await inner.setTyping(chatId, true); } catch {}
+          }, 9000);
+          typingIntervals.set(chatId, interval);
+        }
+      } else {
+        const interval = typingIntervals.get(chatId);
+        if (interval) {
+          clearInterval(interval);
+          typingIntervals.delete(chatId);
+        }
+      }
+    },
+
+    clearAckReaction(chatId) {
+      inner?.clearAckReaction(chatId);
+    },
+
+    isConnected() {
+      return inner?.isConnected() ?? false;
+    },
+
+    async createStreamingSession(chatId, onCardCreated?) {
+      if (!streamingEnabled) return undefined;
+      if (!inner?.createStreamingSession) return undefined;
+      return inner.createStreamingSession(chatId, onCardCreated);
+    },
+  };
   return channel;
 }

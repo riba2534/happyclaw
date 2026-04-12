@@ -7,14 +7,6 @@ import { INTERVAL_UNITS, formatInterval, decomposeInterval, toggleNotifyChannel 
 import { useConnectedChannels } from '../../hooks/useConnectedChannels';
 import { ChannelBadge, CHANNEL_LABEL } from '../settings/channel-meta';
 
-const CHANNEL_LABELS: Record<string, string> = {
-  feishu: '飞书',
-  telegram: 'Telegram',
-  qq: 'QQ',
-  wechat: '微信',
-  dingtalk: '钉钉',
-};
-
 interface TaskDetailProps {
   task: ScheduledTask;
 }
@@ -212,7 +204,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
               key={key}
               className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-primary"
             >
-              {CHANNEL_LABELS[key] || key}
+              {CHANNEL_LABEL[key] || key}
             </span>
           ))}
         </div>
@@ -235,7 +227,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
             key={ch}
             className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-primary"
           >
-            {CHANNEL_LABELS[ch] || ch}
+            {CHANNEL_LABEL[ch] || ch}
           </span>
         ))}
       </div>
@@ -495,7 +487,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
                 <input type="checkbox" checked disabled className="rounded" />
                 Web
               </label>
-              {Object.entries(CHANNEL_LABELS)
+              {Object.entries(CHANNEL_LABEL)
                 .filter(([key]) => connectedChannels[key])
                 .map(([key, label]) => (
                   <label

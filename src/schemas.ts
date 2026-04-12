@@ -17,7 +17,7 @@ export const TaskPatchSchema = z.object({
   status: z.enum(['active', 'paused']).optional(),
   next_run: z.string().optional(),
   notify_channels: z
-    .array(z.enum(['feishu', 'telegram', 'qq', 'wechat', 'dingtalk']))
+    .array(z.enum(['feishu', 'telegram', 'qq', 'wechat', 'dingtalk', 'discord']))
     .nullable()
     .optional(),
 });
@@ -39,7 +39,7 @@ export const TaskCreateSchema = z
     execution_mode: z.enum(['host', 'container']).optional(),
     script_command: z.string().max(4096).optional(),
     notify_channels: z
-      .array(z.enum(['feishu', 'telegram', 'qq', 'wechat', 'dingtalk']))
+      .array(z.enum(['feishu', 'telegram', 'qq', 'wechat', 'dingtalk', 'discord']))
       .nullable()
       .optional(),
   })
@@ -236,6 +236,14 @@ export const SystemSettingsSchema = z.object({
   billingCurrency: z.string().min(1).max(10).optional(),
   billingCurrencyRate: z.number().min(0.0001).max(1000000).optional(),
   externalClaudeDir: z.string().max(512).optional(),
+  autoCompactWindow: z
+    .number()
+    .int()
+    .refine(
+      (v) => v === 0 || (v >= 10000 && v <= 2000000),
+      'autoCompactWindow must be 0 (disabled) or between 10000 and 2000000',
+    )
+    .optional(),
 });
 
 export const AppearanceConfigSchema = z.object({
@@ -717,6 +725,22 @@ export const DingTalkConfigSchema = z
       typeof data.clientId === 'string' ||
       typeof data.clientSecret === 'string' ||
       data.clearClientSecret === true ||
+      typeof data.enabled === 'boolean' ||
+      typeof data.streamingMode === 'string',
+    { message: 'At least one config field must be provided' },
+  );
+
+export const DiscordConfigSchema = z
+  .object({
+    botToken: z.string().max(2000).optional(),
+    clearBotToken: z.boolean().optional(),
+    enabled: z.boolean().optional(),
+    streamingMode: z.enum(['edit', 'off']).optional(),
+  })
+  .refine(
+    (data) =>
+      typeof data.botToken === 'string' ||
+      data.clearBotToken === true ||
       typeof data.enabled === 'boolean' ||
       typeof data.streamingMode === 'string',
     { message: 'At least one config field must be provided' },

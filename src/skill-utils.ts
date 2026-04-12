@@ -101,17 +101,44 @@ export function listFiles(
 ): Array<{ name: string; type: 'file' | 'directory'; size: number }> {
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
-    return entries
-      .filter((entry) => !entry.name.startsWith('.'))
-      .map((entry) => {
-        const fullPath = path.join(dir, entry.name);
-        const stats = fs.statSync(fullPath);
-        return {
-          name: entry.name,
-          type: entry.isDirectory() ? 'directory' : 'file',
-          size: entry.isDirectory() ? 0 : stats.size,
-        };
-      });
+    const result: Array<{
+      name: string;
+      type: 'file' | 'directory';
+      size: number;
+    }> = [];
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue;
+      const fullPath = path.join(dir, entry.name);
+
+      // 对 symlink 走 statSync 以穿透到目标类型；普通目录/文件直接用 Dirent，避免双 stat。
+      if (entry.isSymbolicLink()) {
+        try {
+          const stats = fs.statSync(fullPath);
+          const isDirectory = stats.isDirectory();
+          result.push({
+            name: entry.name,
+            type: isDirectory ? 'directory' : 'file',
+            size: isDirectory ? 0 : stats.size,
+          });
+        } catch {
+          // dangling / unreadable
+        }
+        continue;
+      }
+
+      if (entry.isDirectory()) {
+        result.push({ name: entry.name, type: 'directory', size: 0 });
+      } else if (entry.isFile()) {
+        let size = 0;
+        try {
+          size = fs.statSync(fullPath).size;
+        } catch {
+          // treat as size 0 on permission error
+        }
+        result.push({ name: entry.name, type: 'file', size });
+      }
+    }
+    return result;
   } catch {
     return [];
   }
@@ -127,9 +154,17 @@ export function scanSkillDirectory(
   try {
     const entries = fs.readdirSync(rootDir, { withFileTypes: true });
     for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
 
       const skillDir = path.join(rootDir, entry.name);
+      // Symlink must resolve to a directory
+      if (entry.isSymbolicLink()) {
+        try {
+          if (!fs.statSync(skillDir).isDirectory()) continue;
+        } catch {
+          continue; // dangling symlink
+        }
+      }
       const skillMdPath = path.join(skillDir, 'SKILL.md');
       const skillMdDisabledPath = path.join(skillDir, 'SKILL.md.disabled');
 
