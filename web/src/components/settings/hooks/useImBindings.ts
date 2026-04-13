@@ -127,6 +127,8 @@ export function useImBindings() {
         unbind?: boolean;
         force?: boolean;
         reply_policy?: 'source_only' | 'mirror';
+        activation_mode?: 'auto' | 'always' | 'when_mentioned' | 'owner_mentioned' | 'disabled';
+        owner_im_id?: string;
       },
     ): Promise<string | null> => {
       setError(null);

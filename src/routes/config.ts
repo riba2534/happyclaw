@@ -2583,6 +2583,29 @@ configRoutes.put('/user-im/bindings/:imJid', authMiddleware, async (c) => {
     return c.json({ success: true });
   }
 
+  // Parse activation_mode for activation-only update
+  const validActivationModes = [
+    'always',
+    'when_mentioned',
+    'owner_mentioned',
+    'auto',
+    'disabled',
+  ] as const;
+  const rawActivationMode = body.activation_mode;
+  const activationMode =
+    typeof rawActivationMode === 'string' &&
+    validActivationModes.includes(
+      rawActivationMode as (typeof validActivationModes)[number],
+    )
+      ? (rawActivationMode as (typeof validActivationModes)[number])
+      : undefined;
+
+  // Parse owner_im_id for owner_mentioned mode
+  const ownerImId =
+    typeof body.owner_im_id === 'string' && body.owner_im_id.trim()
+      ? body.owner_im_id.trim()
+      : undefined;
+
   // Bind to workspace main conversation
   if (typeof body.target_main_jid === 'string' && body.target_main_jid.trim()) {
     const targetMainJid = body.target_main_jid.trim();
@@ -2618,6 +2641,8 @@ configRoutes.put('/user-im/bindings/:imJid', authMiddleware, async (c) => {
       target_main_jid: targetMainJid,
       target_agent_id: undefined,
       reply_policy: replyPolicy,
+      ...(activationMode !== undefined ? { activation_mode: activationMode } : {}),
+      ...(ownerImId !== undefined ? { owner_im_id: ownerImId } : {}),
     };
     applyBindingUpdate(imJid, updated);
     logger.info(
@@ -2627,8 +2652,23 @@ configRoutes.put('/user-im/bindings/:imJid', authMiddleware, async (c) => {
     return c.json({ success: true });
   }
 
+  // Activation-only update (no target, just update activation_mode and/or owner_im_id)
+  if (activationMode !== undefined || ownerImId !== undefined) {
+    const updated: RegisteredGroup = {
+      ...imGroup,
+      ...(activationMode !== undefined ? { activation_mode: activationMode } : {}),
+      ...(ownerImId !== undefined ? { owner_im_id: ownerImId } : {}),
+    };
+    applyBindingUpdate(imJid, updated);
+    logger.info(
+      { imJid, activationMode, ownerImId, userId: user.id },
+      'IM group activation_mode updated (bindings page)',
+    );
+    return c.json({ success: true });
+  }
+
   return c.json(
-    { error: 'Must provide target_main_jid, target_agent_id, or unbind' },
+    { error: 'Must provide target_main_jid, target_agent_id, activation_mode, or unbind' },
     400,
   );
 });

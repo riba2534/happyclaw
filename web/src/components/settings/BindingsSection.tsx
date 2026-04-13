@@ -62,6 +62,14 @@ export function BindingsSection() {
     setUnbindGroup(group);
   }, []);
 
+  const handleActivationModeChange = useCallback(async (jid: string, mode: string) => {
+    setActioningJid(jid);
+    setLocalError(null);
+    const err = await rebind(jid, { activation_mode: mode as 'auto' | 'always' | 'when_mentioned' | 'owner_mentioned' | 'disabled' });
+    setActioningJid(null);
+    if (err) setLocalError(err);
+  }, [rebind]);
+
   const confirmUnbind = useCallback(async () => {
     if (!unbindGroup) return;
     const jid = unbindGroup.jid;
@@ -211,6 +219,7 @@ export function BindingsSection() {
                 isActioning={actioningJid === group.jid}
                 onRebind={handleRebind}
                 onUnbind={handleUnbind}
+                onActivationModeChange={handleActivationModeChange}
               />
             ))}
           </div>

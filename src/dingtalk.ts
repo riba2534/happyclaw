@@ -1501,6 +1501,13 @@ export function createDingTalkConnection(
         return;
       }
 
+      // ── Auto-register new group first (same as Feishu) ──
+      // This ensures the group exists before authorization/mention checks,
+      // so new groups can be auto-registered on first message
+      storeChatMetadata(jid, new Date().toISOString());
+      updateChatName(jid, chatName);
+      opts.onNewChat(jid, chatName);
+
       // ── Authorization check ──
       if (opts.isChatAuthorized && !opts.isChatAuthorized(jid)) {
         logger.debug({ jid }, 'DingTalk chat not authorized');
@@ -1513,35 +1520,18 @@ export function createDingTalkConnection(
       // 它返回 false，会在 Gate 1 误丢所有群消息，导致 isGroupOwnerMessage 永远
       // 不会执行。修复：当 shouldProcessGroupMessage 返回 false 且
       // isGroupOwnerMessage 回调存在时，不立即丢弃，让 Gate 2 做 sender 过滤。
-      if (
-        isGroup &&
-        opts.shouldProcessGroupMessage &&
-        !opts.shouldProcessGroupMessage(jid, data.senderId) &&
-        !opts.isGroupOwnerMessage
-      ) {
-        logger.debug(
-          { jid },
-          'DingTalk group message dropped (mention required)',
-        );
+      if (isGroup && opts.shouldProcessGroupMessage && !opts.shouldProcessGroupMessage(jid, data.senderId)) {
+        // Gate 1: when_mentioned 模式，bot 未被 @mention 时丢弃
+        logger.debug({ jid }, 'DingTalk group message dropped (mention required)');
         return;
       }
-      // owner_mentioned 模式：即使被 @mention，非 owner 的消息也丢弃
-      if (
-        isGroup &&
-        opts.isGroupOwnerMessage &&
-        !opts.isGroupOwnerMessage(jid, data.senderId)
-      ) {
-        logger.debug(
-          { jid, senderId: data.senderId },
-          'DingTalk group message dropped (owner_mentioned mode)',
-        );
+      // owner_mentioned 模式：bot 被 @mention 但发送者不是 owner 时丢弃
+      if (isGroup && opts.isGroupOwnerMessage && !opts.isGroupOwnerMessage(jid, data.senderId)) {
+        logger.debug({ jid, senderId: data.senderId }, 'DingTalk group message dropped (owner_mentioned mode)');
         return;
       }
 
       // ── Authorized: process message ──
-      storeChatMetadata(jid, new Date().toISOString());
-      updateChatName(jid, chatName);
-      opts.onNewChat(jid, chatName);
 
       // Handle slash commands
       const slashMatch = content.match(/^\/(\S+)(?:\s+(.*))?$/i);
