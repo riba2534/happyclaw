@@ -20,7 +20,7 @@ import {
   type DWClientDownStream,
   EventAck,
 } from 'dingtalk-stream';
-import { storeChatMetadata, storeMessageDirect, updateChatName } from './db.js';
+import { storeChatMetadata, storeMessageDirect, updateChatName, updateRegisteredGroupName } from './db.js';
 import { notifyNewImMessage } from './message-notifier.js';
 import { broadcastNewMessage } from './web.js';
 import { logger } from './logger.js';
@@ -66,6 +66,8 @@ export interface DingTalkConnectOpts {
   onBotRemovedFromGroup?: (chatJid: string) => void;
   shouldProcessGroupMessage?: (chatJid: string, senderImId?: string) => boolean;
   isGroupOwnerMessage?: (chatJid: string, senderImId?: string) => boolean;
+  /** Resolve registered group for a jid (should return { activation_mode?: string }) */
+  resolveRegisteredGroup?: (jid: string) => { activation_mode?: string } | undefined;
 }
 
 export interface DingTalkConnection {
@@ -235,6 +237,14 @@ export function createDingTalkConnection(
   // Sender staff ID per chat (enterprise staff ID for batchSend API)
   const lastSenderStaffIds = new Map<string, string>();
 
+  // Group name cache: openConversationId → { name, expiresAt }
+  // TTL: 1 hour to avoid hitting API on every message
+  const groupNameCache = new Map<
+    string,
+    { name: string; expiresAt: number }
+  >();
+  const GROUP_NAME_CACHE_TTL = 60 * 60 * 1000;
+
   // Ack reaction per chat (emoji reaction on user's message to confirm receipt)
   const ackReactionByChat = new Map<
     string,
@@ -374,6 +384,46 @@ export function createDingTalkConnection(
       if (bodyStr) req.write(bodyStr);
       req.end();
     });
+  }
+
+  /**
+   * Fetch real group name by openConversationId via sceneGroups/query API.
+   * Caches result for GROUP_NAME_CACHE_TTL (1 hour) to avoid repeated API calls.
+   * @returns group title (name), or null on failure
+   */
+  async function fetchGroupNameByOpenConversationId(
+    openConversationId: string,
+  ): Promise<string | null> {
+    // Check cache first
+    const now = Date.now();
+    const cached = groupNameCache.get(openConversationId);
+    if (cached && now < cached.expiresAt) {
+      return cached.name;
+    }
+
+    try {
+      const data = await apiRequest<{
+        title?: string;
+      }>('POST', '/v1.0/im/sceneGroups/query', {
+        openConversationId,
+      });
+
+      const title = data?.title?.trim();
+      if (title) {
+        groupNameCache.set(openConversationId, {
+          name: title,
+          expiresAt: now + GROUP_NAME_CACHE_TTL,
+        });
+        return title;
+      }
+    } catch (err) {
+      logger.warn(
+        { err, openConversationId },
+        'DingTalk fetchGroupNameByOpenConversationId failed',
+      );
+    }
+
+    return null;
   }
 
   // ─── Ack Reaction (Emoji on user's message) ───────────────
@@ -1263,7 +1313,8 @@ export function createDingTalkConnection(
         : `dingtalk:c2c:${data.senderId}`;
       const senderName = data.senderNick || '钉钉用户';
       const chatName = isGroup
-        ? `钉钉群 ${conversationId.slice(0, 8)}`
+        ? (await fetchGroupNameByOpenConversationId(conversationId)) ||
+          `钉钉群 ${conversationId.slice(0, 8)}`
         : senderName;
 
       // Store last message ID for reply context
@@ -1505,7 +1556,7 @@ export function createDingTalkConnection(
       // This ensures the group exists before authorization/mention checks,
       // so new groups can be auto-registered on first message
       storeChatMetadata(jid, new Date().toISOString());
-      updateChatName(jid, chatName);
+      updateRegisteredGroupName(jid, chatName);
       opts.onNewChat(jid, chatName);
 
       // ── Authorization check ──
@@ -1522,7 +1573,7 @@ export function createDingTalkConnection(
         if (!shouldProcess) {
           // 非 owner_mentioned 模式：直接丢弃（Gate 1）
           // owner_mentioned 模式：交给 Gate 2 检查 owner
-          const group = getRegisteredGroup(jid);
+          const group = opts.resolveRegisteredGroup?.(jid);
           const mode = group?.activation_mode ?? 'auto';
           if (mode !== 'owner_mentioned') {
             logger.debug({ jid }, 'DingTalk group message dropped (mention required)');

@@ -562,6 +562,7 @@ class IMConnectionManager {
       onBotRemovedFromGroup?: (chatJid: string) => void;
       shouldProcessGroupMessage?: (chatJid: string, senderImId?: string) => boolean;
       isGroupOwnerMessage?: (chatJid: string, senderImId?: string) => boolean;
+      resolveRegisteredGroup?: (jid: string) => { activation_mode?: string } | undefined;
     },
   ): Promise<boolean> {
     if (!config.clientId || !config.clientSecret) {
@@ -588,6 +589,7 @@ class IMConnectionManager {
       onBotRemovedFromGroup: options?.onBotRemovedFromGroup,
       shouldProcessGroupMessage: options?.shouldProcessGroupMessage,
       isGroupOwnerMessage: options?.isGroupOwnerMessage,
+      resolveRegisteredGroup: options?.resolveRegisteredGroup,
     });
   }
 

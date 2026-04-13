@@ -88,6 +88,8 @@ export interface IMChannelConnectOpts {
   shouldProcessGroupMessage?: (chatJid: string, senderImId?: string) => boolean;
   /** owner_mentioned 模式下检查发送者是否为 owner */
   isGroupOwnerMessage?: (chatJid: string, senderImId?: string) => boolean;
+  /** Resolve registered group for a jid */
+  resolveRegisteredGroup?: (jid: string) => { activation_mode?: string } | undefined;
   /** 飞书流式卡片按钮中断回调 */
   onCardInterrupt?: (chatJid: string) => void;
 }
@@ -627,6 +629,7 @@ export function createDingTalkChannel(
           onBotRemovedFromGroup: opts.onBotRemovedFromGroup,
           shouldProcessGroupMessage: opts.shouldProcessGroupMessage,
           isGroupOwnerMessage: opts.isGroupOwnerMessage,
+          resolveRegisteredGroup: opts.resolveRegisteredGroup,
         });
         return inner.isConnected();
       } catch (err) {

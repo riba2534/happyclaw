@@ -6435,8 +6435,16 @@ function buildOnNewChat(
   return (chatJid, chatName) => {
     const existing = registeredGroups[chatJid];
     if (existing) {
-      // Already owned by this user — nothing to do
-      if (existing.created_by === userId) return;
+      // Already owned by this user — update name if changed (IM channel may now have real group name)
+      if (existing.created_by === userId) {
+        if (existing.name !== chatName) {
+          existing.name = chatName;
+          setRegisteredGroup(chatJid, existing);
+          registeredGroups[chatJid] = existing;
+          logger.debug({ chatJid, chatName }, 'Updated IM group name (buildOnNewChat)');
+        }
+        return;
+      }
 
       // Don't override groups with explicit IM routing configured.
       if (existing.target_agent_id || existing.target_main_jid) return;
@@ -7085,6 +7093,7 @@ async function connectUserIMChannels(
           onBotRemovedFromGroup,
           shouldProcessGroupMessage,
           isGroupOwnerMessage,
+          resolveRegisteredGroup: getRegisteredGroup,
         })
       : Promise.resolve(false);
 
@@ -7650,6 +7659,7 @@ async function main(): Promise<void> {
             onBotRemovedFromGroup: buildOnBotRemovedFromGroup(),
             shouldProcessGroupMessage,
             isGroupOwnerMessage,
+            resolveRegisteredGroup: getRegisteredGroup,
           },
         );
         logger.info(

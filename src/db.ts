@@ -1284,6 +1284,24 @@ export function updateChatName(chatJid: string, name: string): void {
   ).run(chatJid, name, new Date().toISOString());
 }
 
+/**
+ * Update the display name of a registered group (both chats table and registered_groups table).
+ * This is called when an IM channel provides a real group name (e.g., DingTalk sceneGroups/query).
+ */
+export function updateRegisteredGroupName(jid: string, name: string): void {
+  db.prepare(
+    `
+    INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)
+    ON CONFLICT(jid) DO UPDATE SET name = excluded.name
+  `,
+  ).run(jid, name, new Date().toISOString());
+  db.prepare(
+    `
+    UPDATE registered_groups SET name = ? WHERE jid = ?
+  `,
+  ).run(name, jid);
+}
+
 export interface ChatInfo {
   jid: string;
   name: string;
