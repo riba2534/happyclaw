@@ -70,7 +70,6 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
   // null = dialog closed; MAIN_BINDING = main conversation; other = agent id
   const [bindingAgentId, setBindingAgentId] = useState<string | null>(null);
-  const [showNewConversation, setShowNewConversation] = useState(false);
   const [renameTarget, setRenameTarget] = useState<{ agentId: string; name: string } | null>(null);
   const [topicFilter, setTopicFilter] = useState('');
   const [isDesktop, setIsDesktop] = useState(() =>
@@ -600,7 +599,11 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
             deleteAgentAction(groupJid, id);
           }}
           onRenameAgent={(id, currentName) => setRenameTarget({ agentId: id, name: currentName })}
-          onCreateConversation={() => setShowNewConversation(true)}
+          onCreateConversation={() => {
+            createConversation(groupJid, '').then((agent) => {
+              if (agent) setActiveAgentTab(groupJid, agent.id);
+            });
+          }}
           onBindIm={setBindingAgentId}
           onBindMainIm={!isHome ? () => setBindingAgentId(MAIN_BINDING) : undefined}
           onReorder={(orderedIds) => reorderConversations(groupJid, orderedIds)}
@@ -979,19 +982,6 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
           onClose={() => setBindingAgentId(null)}
         />
       )}
-
-      <PromptDialog
-        open={showNewConversation}
-        title="新建对话"
-        label="对话名称"
-        placeholder="输入对话名称"
-        onConfirm={(name) => {
-          createConversation(groupJid, name).then((agent) => {
-            if (agent) setActiveAgentTab(groupJid, agent.id);
-          });
-        }}
-        onClose={() => setShowNewConversation(false)}
-      />
 
       <PromptDialog
         open={renameTarget !== null}

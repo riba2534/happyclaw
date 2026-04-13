@@ -22,6 +22,7 @@ import {
   getJidsByFolder,
   updateAgentLastImJid,
   updateAgentInfo,
+  updateAgentContextInfo,
   updateChatName,
   getMessagesPageMulti,
   deleteImContextBindingsByWorkspace,
@@ -167,10 +168,12 @@ router.post('/:jid/agents', authMiddleware, async (c) => {
   }
 
   const body = await c.req.json().catch(() => ({}));
-  const name = typeof body.name === 'string' ? body.name.trim() : '';
-  if (!name || name.length > 40) {
-    return c.json({ error: 'Name is required (max 40 chars)' }, 400);
+  let name = typeof body.name === 'string' ? body.name.trim() : '';
+  if (name.length > 40) {
+    return c.json({ error: 'Name too long (max 40 chars)' }, 400);
   }
+  const isAutoTitle = !name;
+  if (!name) name = '新对话';
   const description =
     typeof body.description === 'string' ? body.description.trim() : '';
 
@@ -191,6 +194,7 @@ router.post('/:jid/agents', authMiddleware, async (c) => {
     result_summary: null,
     last_im_jid: null,
     spawned_from_jid: null,
+    title_source: isAutoTitle ? 'auto_pending' : 'manual',
   };
 
   createAgent(agent);
@@ -262,6 +266,7 @@ router.patch('/:jid/agents/:agentId', authMiddleware, async (c) => {
 
   // Update agent name in DB
   updateAgentInfo(agentId, name, agent.prompt);
+  updateAgentContextInfo(agentId, { title_source: 'manual' });
 
   // Update virtual chat name
   const virtualChatJid = `${jid}#agent:${agentId}`;

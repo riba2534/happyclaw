@@ -72,6 +72,7 @@ import {
   isGroupShared,
   getUserById,
   updateAgentContextInfo,
+  updateChatName,
 } from './db.js';
 import { isSessionExpired, verifySessionToken } from './auth.js';
 import type {
@@ -375,6 +376,33 @@ async function handleWebUserMessage(
   return { ok: true, messageId, timestamp };
 }
 
+// --- Auto-title for conversations ---
+
+/** Extract a short title from the first user message content. */
+function generateAutoTitle(content: string): string | null {
+  let text = content.trim();
+  if (!text || text.startsWith('/')) return null;
+
+  // Strip markdown formatting
+  text = text
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`[^`]+`/g, (m) => m.slice(1, -1))
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/[#*_~>|]/g, '')
+    .replace(/\n+/g, ' ')
+    .trim();
+
+  if (!text) return null;
+
+  // Take first line
+  const firstLine = text.split('\n')[0].trim();
+  if (!firstLine) return null;
+
+  if (firstLine.length <= 20) return firstLine;
+  return firstLine.slice(0, 20) + '…';
+}
+
 // --- Agent Conversation Message Handler ---
 
 async function handleAgentConversationMessage(
@@ -426,6 +454,16 @@ async function handleAgentConversationMessage(
     { attachments: attachmentsStr },
   );
   updateAgentContextInfo(agentId, { last_active_at: timestamp });
+
+  // Auto-title: generate title from first user message
+  if (agent.title_source === 'auto_pending') {
+    const autoTitle = generateAutoTitle(content);
+    if (autoTitle) {
+      updateAgentContextInfo(agentId, { name: autoTitle, title_source: 'auto' });
+      updateChatName(virtualChatJid, autoTitle);
+      broadcastAgentStatus(chatJid, agentId, agent.status as import('./types.js').AgentStatus, autoTitle, agent.prompt);
+    }
+  }
 
   // Broadcast new_message with agentId so frontend routes to agent tab
   broadcastNewMessage(

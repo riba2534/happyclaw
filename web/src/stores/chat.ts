@@ -209,7 +209,7 @@ interface ChatState {
   setActiveAgentTab: (jid: string, agentId: string | null) => void;
   // Conversation agent actions
   reorderConversations: (jid: string, orderedIds: string[]) => void;
-  createConversation: (jid: string, name: string, description?: string) => Promise<AgentInfo | null>;
+  createConversation: (jid: string, name?: string, description?: string) => Promise<AgentInfo | null>;
   renameConversation: (jid: string, agentId: string, name: string) => Promise<boolean>;
   loadAgentMessages: (jid: string, agentId: string, loadMore?: boolean) => Promise<void>;
   sendAgentMessage: (jid: string, agentId: string, content: string, attachments?: Array<{ data: string; mimeType: string }>) => void;
