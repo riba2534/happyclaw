@@ -4181,7 +4181,11 @@ function mapAgentRow(row: Record<string, unknown>): SubAgent {
       typeof row.root_message_id === 'string' ? row.root_message_id : null,
     title_source:
       typeof row.title_source === 'string'
-        ? (row.title_source as 'manual' | 'feishu_root')
+        ? (row.title_source as
+            | 'manual'
+            | 'feishu_root'
+            | 'auto'
+            | 'auto_pending')
         : null,
     last_active_at:
       typeof row.last_active_at === 'string' ? row.last_active_at : null,
