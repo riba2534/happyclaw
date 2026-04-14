@@ -20,7 +20,7 @@ import {
   type DWClientDownStream,
   EventAck,
 } from 'dingtalk-stream';
-import { storeChatMetadata, storeMessageDirect, updateChatName, updateRegisteredGroupName } from './db.js';
+import { storeChatMetadata, storeMessageDirect, updateChatName } from './db.js';
 import { notifyNewImMessage } from './message-notifier.js';
 import { broadcastNewMessage } from './web.js';
 import { logger } from './logger.js';
@@ -1552,18 +1552,19 @@ export function createDingTalkConnection(
         return;
       }
 
-      // ── Auto-register new group first (same as Feishu) ──
-      // This ensures the group exists before authorization/mention checks,
-      // so new groups can be auto-registered on first message
+      // ── Store metadata early (chats table only — no user isolation concern) ──
       storeChatMetadata(jid, new Date().toISOString());
-      updateRegisteredGroupName(jid, chatName);
-      opts.onNewChat(jid, chatName);
 
       // ── Authorization check ──
       if (opts.isChatAuthorized && !opts.isChatAuthorized(jid)) {
         logger.debug({ jid }, 'DingTalk chat not authorized');
         return;
       }
+
+      // ── Auto-register / update group name after authorization ──
+      // buildOnNewChat handles both new group registration AND existing group
+      // name updates (with proper created_by guard — no cross-user pollution)
+      opts.onNewChat(jid, chatName);
 
       // ── Group mention check ──
       // Gate 1: 非 owner_mentioned 模式下，根据 shouldProcessGroupMessage 决定是否放行
