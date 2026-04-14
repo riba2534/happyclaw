@@ -1,6 +1,6 @@
 .PHONY: dev dev-backend dev-web build build-backend build-web start \
        typecheck typecheck-backend typecheck-web typecheck-agent-runner \
-       format format-check install clean reset-init update-sdk ensure-latest-sdk sync-types \
+       format format-check install install-host-tools clean reset-init update-sdk ensure-latest-sdk sync-types \
        backup restore help _ensure-docker-image
 
 # ─── Runtime Detection ──────────────────────────────────────
@@ -193,6 +193,9 @@ ensure-latest-sdk: ## 启动前自动检测并更新 SDK（有新版才更新）
 	fi
 
 # ─── Setup ───────────────────────────────────────────────────
+
+install-host-tools: ## 安装宿主机模式所需的外部工具（feishu-cli、agent-browser、uv）+ 刷新 builtin-skills 缓存
+	@./scripts/install-host-tools.sh
 
 install: ## 安装全部依赖并编译 agent-runner
 	$(PKG) install

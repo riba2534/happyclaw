@@ -36,6 +36,10 @@ import { providerPool } from './provider-pool.js';
 import { isApiError } from './agent-output-parser.js';
 import type { ClaudeProviderConfig } from './runtime-config.js';
 import { loadUserMcpServers } from './mcp-utils.js';
+import {
+  checkHostCapabilities,
+  logCapabilityPreflight,
+} from './agent-capabilities.js';
 import { MessageSourceKind, RegisteredGroup, StreamEvent } from './types.js';
 import {
   attachStderrHandler,
@@ -1128,6 +1132,9 @@ export async function runHostAgent(
 
     // 外部 skills（最低优先级）
     // 宿主机 skills（最低优先级）
+    // Builtin skills (lowest priority, e.g. feishu-cli builtin — mirrors /opt/builtin-skills in container)
+    const builtinSkillsDir = path.join(DATA_DIR, 'builtin-skills');
+    linkSkillEntries(builtinSkillsDir);
     linkSkillEntries(path.join(effectiveExtDir, 'skills'));
     // 项目级 skills
     const projectRoot = process.cwd();
@@ -1263,6 +1270,13 @@ export async function runHostAgent(
     // 通过 IS_SANDBOX 标记告知 CLI 当前运行在受控环境中以绕过此限制
     if (typeof process.getuid === 'function' && process.getuid() === 0) {
       hostEnv['IS_SANDBOX'] = '1';
+    }
+
+    // 5b. Host capability preflight — detect external tools & inject env vars
+    const capResult = checkHostCapabilities();
+    logCapabilityPreflight(group.name, capResult);
+    for (const [key, value] of Object.entries(capResult.envVars)) {
+      if (!hostEnv[key]) hostEnv[key] = value;
     }
 
     // 6. 编译检查
