@@ -190,7 +190,7 @@ import { sdkQuery } from './sdk-query.js';
 import { executeSessionReset } from './commands.js';
 
 // Set timezone so all child processes (host agents, containers) inherit it
-process.env.TZ = TIMEZONE;
+process.env.TZ = process.env.TZ || TIMEZONE;
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const execFileAsync = promisify(execFile);

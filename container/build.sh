@@ -13,7 +13,6 @@ echo "Building HappyClaw agent container image..."
 echo "Image: ${IMAGE_NAME}:${TAG}"
 
 # Build with Docker (CACHEBUST ensures claude-code is always latest)
-# --progress=plain ensures clean line-based output for piped log capture (WebSocket streaming)
 docker build --build-arg CACHEBUST="$(date +%s)" -t "${IMAGE_NAME}:${TAG}" .
 
 echo ""
