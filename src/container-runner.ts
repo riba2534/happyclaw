@@ -13,7 +13,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { CONTAINER_IMAGE, DATA_DIR, GROUPS_DIR } from './config.js';
+import { CONTAINER_IMAGE, DATA_DIR, GROUPS_DIR, TIMEZONE } from './config.js';
 import { logger } from './logger.js';
 import {
   loadMountAllowlist,
@@ -614,8 +614,12 @@ function buildVolumeMounts(
 function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
+  tz: string,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
+
+  // Set timezone so container Node.js processes use local time (Asia/Shanghai)
+  args.push('-e', `TZ=${tz}`);
 
   // Docker: -v with :ro suffix for readonly
   for (const mount of mounts) {
@@ -667,7 +671,7 @@ export async function runContainerAgent(
       ? `-${input.agentId.replace(/[^a-zA-Z0-9-]/g, '-')}`
       : '';
     const containerName = `happyclaw-${safeName}${agentSuffix}-${Date.now()}`;
-    const containerArgs = buildContainerArgs(mounts, containerName);
+    const containerArgs = buildContainerArgs(mounts, containerName, TIMEZONE);
 
     logger.debug(
       {
