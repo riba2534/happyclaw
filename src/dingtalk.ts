@@ -202,7 +202,46 @@ function parseDingTalkChatId(
   if (chatId.startsWith('cid')) {
     return { type: 'group', conversationId: chatId };
   }
-  return null;
+return null;
+}
+
+/**
+ * Create a DingTalk streaming card session for proactive messaging.
+ * This is a standalone function that can be called from sendMessage when
+ * senderStaffId is not available for C2C chats.
+ */
+async function createDingTalkStreamingCardForChat(
+  config: DingTalkConnectionConfig,
+  lastSenderStaffIds: Map<string, string>,
+  chatId: string,
+  onCardCreated?: (messageId: string) => void,
+): Promise<import('./dingtalk-streaming-card.js').DingTalkStreamingCardController | undefined> {
+  const parsed = parseDingTalkChatId(chatId);
+  if (!parsed) return undefined;
+
+  const { DingTalkStreamingCardController } =
+    await import('./dingtalk-streaming-card.js');
+
+  const jidKey =
+    parsed.type === 'c2c'
+      ? `dingtalk:c2c:${parsed.conversationId}`
+      : `dingtalk:group:${parsed.conversationId}`;
+
+  const target =
+    parsed.type === 'c2c'
+      ? {
+          type: 'user' as const,
+          userId: lastSenderStaffIds.get(jidKey) ?? parsed.conversationId,
+        }
+      : {
+          type: 'group' as const,
+          openConversationId: parsed.conversationId,
+        };
+
+  return new DingTalkStreamingCardController(config, target, {
+    onCardCreated,
+    // No fallbackSend - we're using this for proactive sends without incoming message context
+  });
 }
 
 // ─── Factory Function ───────────────────────────────────────────
@@ -1819,10 +1858,33 @@ export function createDingTalkConnection(
       if (parsed.type === 'c2c') {
         const senderStaffId = lastSenderStaffIds.get(jidKey);
         if (!senderStaffId) {
-          logger.error(
+          // No senderStaffId available (e.g. proactive notification without prior
+          // incoming message). Fall back to AI Card which uses conversationId directly.
+          logger.warn(
             { chatId, jidKey },
-            'DingTalk sendMessage: no senderStaffId found for C2C chat',
+            'DingTalk sendMessage: no senderStaffId for C2C, trying AI Card',
           );
+          try {
+            const card = await createDingTalkStreamingCardForChat(
+              config,
+              lastSenderStaffIds,
+              chatId,
+            );
+            if (card) {
+              card.append(text);
+              await card.complete(text);
+              logger.info(
+                { chatId },
+                'DingTalk C2C message sent via AI Card fallback',
+              );
+              return;
+            }
+          } catch (cardErr) {
+            logger.error(
+              { chatId, cardErr },
+              'DingTalk sendMessage: AI Card fallback also failed',
+            );
+          }
           return;
         }
         const plainText = markdownToPlainText(text);
