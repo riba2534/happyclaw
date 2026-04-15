@@ -1890,9 +1890,13 @@ configRoutes.put('/user-im/qq/paired-chats/:jid', authMiddleware, async (c) => {
   if (!name) {
     return c.json({ error: 'Name is required' }, 400);
   }
+  if (name.length > 100) {
+    return c.json({ error: 'Name too long (max 100 characters)' }, 400);
+  }
 
-  group.name = name;
-  setRegisteredGroup(jid, group);
+  const updated = { ...group, name };
+  setRegisteredGroup(jid, updated);
+  if (groups[jid]) groups[jid] = updated;
   updateChatName(jid, name);
   logger.info({ jid, name, userId: user.id }, 'QQ chat renamed');
   return c.json({ success: true });
