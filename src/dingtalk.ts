@@ -1871,8 +1871,10 @@ export function createDingTalkConnection(
               chatId,
             );
             if (card) {
-              card.append(text);
-              await card.complete(text);
+              // AI Card doesn't render markdown, convert to plain text
+              const plainText = markdownToPlainText(text);
+              card.append(plainText);
+              await card.complete(plainText);
               logger.info(
                 { chatId },
                 'DingTalk C2C message sent via AI Card fallback',
