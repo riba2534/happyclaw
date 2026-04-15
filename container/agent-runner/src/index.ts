@@ -1820,6 +1820,10 @@ async function main(): Promise<void> {
         });
         // 清理可能残留的 _interrupt 文件
         try { fs.unlinkSync(IPC_INPUT_INTERRUPT_SENTINEL); } catch { /* ignore */ }
+        // 清理可能残留的 _drain 文件：中断后应继续处理排队的 IPC 消息，
+        // 而非因 _drain 导致 waitForIpcMessage() 立即返回 null 而退出。
+        // _drain 是消息到达时 enqueueMessageCheck() 写入的，此时已过时。
+        try { fs.unlinkSync(IPC_INPUT_DRAIN_SENTINEL); } catch { /* ignore */ }
         // 不 break，等待下一条消息
         const nextMessage = await waitForIpcMessage();
         if (nextMessage === null) {

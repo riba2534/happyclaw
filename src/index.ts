@@ -299,11 +299,17 @@ let lastAgentTimestamp: Record<string, MessageCursor> = {};
 // Recovery-safe cursor: only advances when an agent actually finishes processing.
 // recoverPendingMessages() uses this to detect IPC-injected but unprocessed messages.
 let lastCommittedCursor: Record<string, MessageCursor> = {};
+// Tracks cursor position before IPC injection, for rollback on interrupt.
+// When messages are IPC-injected into an active query and the query is interrupted,
+// the injected messages are lost.  Rolling back lastAgentTimestamp allows the
+// message loop to re-discover them on the next poll.
+let preIpcCursor: Record<string, MessageCursor> = {};
 
 /** Set both cursors directly (no max-merge) and persist. */
 function setCursors(jid: string, cursor: MessageCursor): void {
   lastAgentTimestamp[jid] = cursor;
   lastCommittedCursor[jid] = cursor;
+  delete preIpcCursor[jid];
   saveState();
 }
 
@@ -314,6 +320,19 @@ function advanceCursors(jid: string, candidate: MessageCursor): void {
     current && current.timestamp > candidate.timestamp ? current : candidate;
   lastAgentTimestamp[jid] = target;
   lastCommittedCursor[jid] = target;
+  saveState();
+}
+
+/**
+ * Roll back lastAgentTimestamp to the position before IPC-injected messages.
+ * Called on interrupt so the message loop re-discovers messages that were
+ * consumed by the aborted query.
+ */
+function rollbackIpcCursors(jid: string): void {
+  const saved = preIpcCursor[jid];
+  if (!saved) return;
+  lastAgentTimestamp[jid] = saved;
+  delete preIpcCursor[jid];
   saveState();
 }
 let messageLoopRunning = false;
@@ -2512,6 +2531,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       id: lastProcessed.id,
     });
     cursorCommitted = true;
+    // Cursor committed — IPC-injected messages are considered processed.
+    delete preIpcCursor[chatJid];
   };
 
   if (effectiveGroup.created_by) {
@@ -2643,6 +2664,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                   clearStreamingSnapshot(chatJid);
                   streamingAccumulatedText = '';
                   streamingAccumulatedThinking = '';
+                  // Roll back cursor before commit so IPC-injected messages
+                  // are re-discovered by the next message loop poll (#421).
+                  rollbackIpcCursors(chatJid);
                   commitCursor();
                 } catch (err) {
                   logger.warn(
@@ -3153,6 +3177,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           },
         });
         sentReply = true;
+        rollbackIpcCursors(chatJid);
         commitCursor();
       } catch (err) {
         logger.warn({ err, chatJid }, 'Failed to save interrupted text');
@@ -6114,6 +6139,12 @@ async function startMessageLoop(): Promise<void> {
               'Piped messages to active container',
             );
             const lastProcessed = messagesToSend[messagesToSend.length - 1];
+            // Save pre-injection cursor for rollback on interrupt (#421).
+            // Only the first injection per agent run needs saving — subsequent
+            // injections extend the same rollback window.
+            if (!preIpcCursor[chatJid] && lastAgentTimestamp[chatJid]) {
+              preIpcCursor[chatJid] = { ...lastAgentTimestamp[chatJid] };
+            }
             lastAgentTimestamp[chatJid] = {
               timestamp: lastProcessed.timestamp,
               id: lastProcessed.id,
