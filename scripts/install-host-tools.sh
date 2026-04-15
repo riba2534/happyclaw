@@ -53,9 +53,11 @@ install_feishu_cli() {
       warn "Failed to detect feishu-cli latest version"
       return 1
     fi
-    curl -fsSL "https://github.com/riba2534/feishu-cli/releases/download/${VERSION}/feishu-cli_${VERSION}_${OS_GO}-${ARCH_GO}.tar.gz" \
-      | tar -xz --strip-components=1 -C /usr/local/bin 2>/dev/null \
-      || tar -xzf <(curl -fsSL "https://github.com/riba2534/feishu-cli/releases/download/${VERSION}/feishu-cli_${VERSION}_${OS_GO}-${ARCH_GO}.tar.gz") -C /usr/local/bin
+    local tmp_tar
+    tmp_tar=$(mktemp)
+    curl -fsSL "https://github.com/riba2534/feishu-cli/releases/download/${VERSION}/feishu-cli_${VERSION}_${OS_GO}-${ARCH_GO}.tar.gz" -o "$tmp_tar"
+    tar -xz --strip-components=1 -C /usr/local/bin < "$tmp_tar"
+    rm -f "$tmp_tar"
     ok "feishu-cli $VERSION installed"
   fi
 }
@@ -77,10 +79,12 @@ refresh_builtin_skills() {
   curl -fsSL "https://github.com/riba2534/feishu-cli/archive/refs/tags/${VERSION}.tar.gz" \
     | tar -xz -C "$TMP"
 
-  # Clear old cache and copy fresh skills
+  # Clear old cache and copy fresh skills atomically
+  local staging="$TMP/staging"
+  mkdir -p "$staging"
+  cp -r "$TMP"/*/skills/. "$staging"/
   rm -rf "$BUILTIN_SKILLS_DIR"
-  mkdir -p "$BUILTIN_SKILLS_DIR"
-  cp -r "$TMP"/*/skills/. "$BUILTIN_SKILLS_DIR"/
+  mv "$staging" "$BUILTIN_SKILLS_DIR"
   ok "Cached $(ls -d "$BUILTIN_SKILLS_DIR"/*/ 2>/dev/null | wc -l | tr -d ' ') builtin skills (feishu-cli $VERSION)"
 }
 
@@ -103,6 +107,7 @@ install_uv() {
     skip "uv already installed ($(uv --version 2>/dev/null || echo 'unknown'))"
   else
     info "Installing uv..."
+    info "Running: curl -LsSf https://astral.sh/uv/install.sh | sh"
     curl -LsSf https://astral.sh/uv/install.sh | sh
     ok "uv installed"
   fi
