@@ -1,4 +1,5 @@
-import { Loader2, Copy, Check, Link, X } from 'lucide-react';
+import { useState } from 'react';
+import { Loader2, Copy, Check, Link, X, Pencil } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import type { PairedChat } from './hooks/usePairedChats';
 
@@ -16,8 +17,10 @@ interface PairingSectionProps {
     chats: PairedChat[];
     loading: boolean;
     removingJid: string | null;
+    renamingJid?: string | null;
     load: () => void;
     remove: (jid: string) => void;
+    rename?: (jid: string, name: string) => void;
   };
 }
 
@@ -85,27 +88,92 @@ export function PairingSection({ channelName, pairing, paired }: PairingSectionP
         ) : (
           <div className="space-y-1.5">
             {paired.chats.map((chat) => (
-              <div key={chat.jid} className="flex items-center justify-between px-3 py-2 rounded-lg bg-muted group">
-                <div className="min-w-0">
-                  <div className="text-sm text-foreground truncate">{chat.name}</div>
-                  <div className="text-xs text-muted-foreground">{new Date(chat.addedAt).toLocaleString('zh-CN')}</div>
-                </div>
-                <button
-                  onClick={() => paired.remove(chat.jid)}
-                  disabled={paired.removingJid === chat.jid}
-                  className="ml-2 p-1 rounded text-muted-foreground hover:text-error hover:bg-error-bg opacity-0 group-hover:opacity-100 transition-all disabled:opacity-50"
-                  title="移除配对"
-                >
-                  {paired.removingJid === chat.jid ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <X className="w-3.5 h-3.5" />
-                  )}
-                </button>
-              </div>
+              <PairedChatRow
+                key={chat.jid}
+                chat={chat}
+                paired={paired}
+              />
             ))}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function PairedChatRow({
+  chat,
+  paired,
+}: {
+  chat: PairedChat;
+  paired: PairingSectionProps['paired'];
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(chat.name);
+
+  const handleSave = async () => {
+    const trimmed = draft.trim();
+    if (!trimmed || trimmed === chat.name) {
+      setEditing(false);
+      setDraft(chat.name);
+      return;
+    }
+    await paired.rename?.(chat.jid, trimmed);
+    setEditing(false);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') handleSave();
+    if (e.key === 'Escape') {
+      setEditing(false);
+      setDraft(chat.name);
+    }
+  };
+
+  return (
+    <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-muted group">
+      <div className="min-w-0 flex-1">
+        {editing ? (
+          <input
+            className="text-sm text-foreground bg-background border border-border rounded px-2 py-0.5 w-full outline-none focus:ring-1 focus:ring-primary"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={handleSave}
+            onKeyDown={handleKeyDown}
+            autoFocus
+          />
+        ) : (
+          <div className="text-sm text-foreground truncate">{chat.name}</div>
+        )}
+        <div className="text-xs text-muted-foreground">{new Date(chat.addedAt).toLocaleString('zh-CN')}</div>
+      </div>
+      <div className="flex items-center ml-2 gap-0.5">
+        {paired.rename && !editing && (
+          <button
+            onClick={() => { setDraft(chat.name); setEditing(true); }}
+            disabled={paired.renamingJid === chat.jid}
+            className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted-foreground/10 opacity-0 group-hover:opacity-100 transition-all disabled:opacity-50"
+            title="重命名"
+          >
+            {paired.renamingJid === chat.jid ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Pencil className="w-3.5 h-3.5" />
+            )}
+          </button>
+        )}
+        <button
+          onClick={() => paired.remove(chat.jid)}
+          disabled={paired.removingJid === chat.jid}
+          className="p-1 rounded text-muted-foreground hover:text-error hover:bg-error-bg opacity-0 group-hover:opacity-100 transition-all disabled:opacity-50"
+          title="移除配对"
+        >
+          {paired.removingJid === chat.jid ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <X className="w-3.5 h-3.5" />
+          )}
+        </button>
       </div>
     </div>
   );

@@ -18,6 +18,7 @@ export function usePairedChats({ endpoint }: UsePairedChatsOptions) {
   const [chats, setChats] = useState<PairedChat[]>([]);
   const [loading, setLoading] = useState(false);
   const [removingJid, setRemovingJid] = useState<string | null>(null);
+  const [renamingJid, setRenamingJid] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -47,5 +48,23 @@ export function usePairedChats({ endpoint }: UsePairedChatsOptions) {
     [endpoint],
   );
 
-  return { chats, loading, removingJid, load, remove };
+  const rename = useCallback(
+    async (jid: string, name: string) => {
+      setRenamingJid(jid);
+      try {
+        await api.put(`${endpoint}/${encodeURIComponent(jid)}`, { name });
+        setChats((prev) =>
+          prev.map((c) => (c.jid === jid ? { ...c, name } : c)),
+        );
+        toast.success('已重命名');
+      } catch (err) {
+        toast.error(getErrorMessage(err, '重命名失败'));
+      } finally {
+        setRenamingJid(null);
+      }
+    },
+    [endpoint],
+  );
+
+  return { chats, loading, removingJid, renamingJid, load, remove, rename };
 }

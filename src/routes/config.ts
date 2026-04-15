@@ -14,6 +14,7 @@ import {
   deleteChatHistory,
   getRegisteredGroup,
   setRegisteredGroup,
+  updateChatName,
   getAgent,
 } from '../db.js';
 import { authMiddleware, systemConfigMiddleware } from '../middleware/auth.js';
@@ -1864,6 +1865,37 @@ configRoutes.get('/user-im/qq/paired-chats', authMiddleware, (c) => {
     }
   }
   return c.json({ chats });
+});
+
+// Rename a QQ paired chat
+configRoutes.put('/user-im/qq/paired-chats/:jid', authMiddleware, async (c) => {
+  const user = c.get('user') as AuthUser;
+  const jid = decodeURIComponent(c.req.param('jid'));
+
+  if (!jid.startsWith('qq:')) {
+    return c.json({ error: 'Invalid QQ chat JID' }, 400);
+  }
+
+  const groups = deps?.getRegisteredGroups() ?? {};
+  const group = groups[jid];
+  if (!group) {
+    return c.json({ error: 'Chat not found' }, 404);
+  }
+  if (group.created_by !== user.id) {
+    return c.json({ error: 'Not authorized to rename this chat' }, 403);
+  }
+
+  const body = await c.req.json<{ name?: string }>();
+  const name = (body.name ?? '').trim();
+  if (!name) {
+    return c.json({ error: 'Name is required' }, 400);
+  }
+
+  group.name = name;
+  setRegisteredGroup(jid, group);
+  updateChatName(jid, name);
+  logger.info({ jid, name, userId: user.id }, 'QQ chat renamed');
+  return c.json({ success: true });
 });
 
 // Remove (unpair) a QQ chat
