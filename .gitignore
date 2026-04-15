@@ -29,6 +29,7 @@ dist/
 *.sqlite
 
 # Lockfiles（子项目的 package-lock 由构建生成，不需要跟踪）
+package-lock.json
 container/agent-runner/package-lock.json
 web/package-lock.json
 bun.lock
@@ -50,6 +51,7 @@ bun.lockb
 skills-lock.json
 --connect
 log/
+.playwright-mcp/
 
 # OS
 .DS_Store
