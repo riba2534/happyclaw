@@ -1,7 +1,7 @@
 .PHONY: dev dev-backend dev-web build build-backend build-web start \
        typecheck typecheck-backend typecheck-web typecheck-agent-runner \
        format format-check install clean reset-init update-sdk ensure-latest-sdk sync-types \
-       backup restore help _ensure-docker-image
+       backup restore help _ensure-docker-image logs status stop
 
 # ─── Runtime Detection ──────────────────────────────────────
 # 优先使用 bun（跳过编译、启动更快），fallback 到 npm + tsx + node
@@ -48,7 +48,13 @@ build-web: ## 仅编译前端
 
 # ─── Production ──────────────────────────────────────────────
 
-start: ensure-latest-sdk ## 一键启动生产环境
+start: ensure-latest-sdk ## 一键启动生产环境（后台运行，日志写入 /tmp/happyclaw.log）
+	@# 检查端口是否被占用
+	@if lsof -ti:3000 -sTCP:LISTEN >/dev/null 2>&1; then \
+	  echo "❌ 端口 3000 已被占用，请先停掉旧进程：make stop"; \
+	  lsof -ti:3000 -sTCP:LISTEN | xargs ps -fp 2>/dev/null | tail -1; \
+	  exit 1; \
+	fi
 	@if [ ! -d node_modules ] || [ package.json -nt node_modules ] || [ web/package.json -nt web/node_modules ] || [ container/agent-runner/package.json -nt container/agent-runner/node_modules ]; then echo "📦 依赖有更新，安装依赖..."; $(MAKE) install; fi
 	@$(MAKE) _ensure-docker-image
 	@NEED_SYNC=0; \
@@ -75,8 +81,13 @@ ifeq ($(HAS_BUN),1)
 	  if [ "$$NEED_AR" = "0" ] && [ -n "$$(find container/agent-runner/src/ -newer container/agent-runner/dist/.tsbuildinfo -name '*.ts' 2>/dev/null | head -1)" ]; then NEED_AR=1; fi; \
 	fi; \
 	if [ "$$NEED_AR" = "1" ]; then echo "🔨 检测到 agent-runner 变更，重新编译..."; cd container/agent-runner && bun run build; else echo "✅ agent-runner 无变更，跳过编译"; fi
-	@echo "⚡ Bun 模式：直接运行 TypeScript，跳过后端编译"
-	bun src/index.ts
+	@echo "⚡ 启动中（Bun 模式），日志: /tmp/happyclaw.log"
+	@(bun src/index.ts > /tmp/happyclaw.log 2>&1 &) && sleep 1 && \
+	  if lsof -ti:3000 -sTCP:LISTEN >/dev/null 2>&1; then \
+	    echo "✅ 服务已启动，日志: /tmp/happyclaw.log"; \
+	  else \
+	    echo "❌ 服务启动失败，请查看 /tmp/happyclaw.log"; \
+	  fi
 else
 	@NEED_SYNC=0; \
 	for target in src/stream-event.types.ts web/src/stream-event.types.ts container/agent-runner/src/stream-event.types.ts src/image-detector.ts container/agent-runner/src/image-detector.ts src/channel-prefixes.ts container/agent-runner/src/channel-prefixes.ts; do \
@@ -110,8 +121,41 @@ else
 	  if [ "$$NEED_AR" = "0" ] && [ -n "$$(find container/agent-runner/src/ -newer container/agent-runner/dist/.tsbuildinfo -name '*.ts' 2>/dev/null | head -1)" ]; then NEED_AR=1; fi; \
 	fi; \
 	if [ "$$NEED_AR" = "1" ]; then echo "🔨 检测到 agent-runner 变更，重新编译..."; cd container/agent-runner && npm run build; else echo "✅ agent-runner 无变更，跳过编译"; fi
-	node dist/index.js
+	@echo "⚡ 启动中（Node 模式），日志: /tmp/happyclaw.log"
+	@(node dist/index.js > /tmp/happyclaw.log 2>&1 &) && sleep 1 && \
+	  if lsof -ti:3000 -sTCP:LISTEN >/dev/null 2>&1; then \
+	    echo "✅ 服务已启动，日志: /tmp/happyclaw.log"; \
+	  else \
+	    echo "❌ 服务启动失败，请查看 /tmp/happyclaw.log"; \
+	  fi
 endif
+
+logs: ## 实时查看日志
+	@tail -f /tmp/happyclaw.log
+
+stop: ## 停止后台服务
+	@-lsof -ti:3000 -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null && echo "✅ 已停止 HappyClaw (端口 3000)" || echo "⚠️  端口 3000 未被占用，无需停止"
+
+status: ## 查看服务运行状态
+	@echo "=== HappyClaw 服务状态 ==="
+	@if lsof -ti:3000 >/dev/null 2>&1; then \
+	  echo "✅ 后端进程: 运行中 (端口 3000)"; \
+	  curl -s http://localhost:3000/api/health 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(f\"   健康状态: {d.get('status','unknown')}\")" 2>/dev/null || echo "   健康状态: 无法获取"; \
+	else \
+	  echo "❌ 后端进程: 未运行 (端口 3000 未占用)"; \
+	fi
+	@echo ""
+	@echo "=== 日志文件 ==="
+	@if [ -f /tmp/happyclaw.log ]; then \
+	  echo "✅ /tmp/happyclaw.log 存在 ($(wc -l < /tmp/happyclaw.log) 行)"; \
+	  echo "   最近 3 行:"; \
+	  tail -3 /tmp/happyclaw.log | sed 's/^/   /'; \
+	else \
+	  echo "⚠️  /tmp/happyclaw.log 不存在（未用 start-log 启动）"; \
+	fi
+	@echo ""
+	@echo "=== Docker 容器 ==="
+	@docker ps --filter "name=happyclaw" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || echo "   Docker 未运行或无 HappyClaw 容器"
 
 # ─── Quality ─────────────────────────────────────────────────
 

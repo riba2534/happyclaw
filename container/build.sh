@@ -14,7 +14,7 @@ echo "Image: ${IMAGE_NAME}:${TAG}"
 
 # Build with Docker (CACHEBUST ensures claude-code is always latest)
 # --progress=plain ensures clean line-based output for piped log capture (WebSocket streaming)
-docker build --progress=plain --build-arg CACHEBUST="$(date +%s)" -t "${IMAGE_NAME}:${TAG}" .
+docker build --build-arg CACHEBUST="$(date +%s)" -t "${IMAGE_NAME}:${TAG}" .
 
 echo ""
 echo "Build complete!"
