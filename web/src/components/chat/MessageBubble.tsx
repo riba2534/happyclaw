@@ -305,6 +305,16 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
           >
             {copied ? <Check className="w-3 h-3 text-primary" /> : <Copy className="w-3 h-3" />}
           </button>
+          {isAI && (
+            <button
+              onClick={() => setShowShareDialog(true)}
+              className="w-5 h-5 rounded flex items-center justify-center text-muted-foreground/50 hover:text-foreground/70 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+              title="导出为长图"
+              aria-label="导出为长图"
+            >
+              <ImageDown className="w-3 h-3" />
+            </button>
+          )}
         </div>
 
         {/* Reasoning */}
@@ -345,7 +355,22 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
           <ImageLightbox images={lightboxState.images} initialIndex={lightboxState.index} onClose={() => setLightboxState(null)} />
         )}
         {contextMenu && (
-          <MessageContextMenu content={message.content} position={contextMenu} onClose={() => setContextMenu(null)} chatJid={message.chat_jid} messageId={message.id} />
+          <MessageContextMenu
+            content={message.content}
+            position={contextMenu}
+            onClose={() => setContextMenu(null)}
+            chatJid={message.chat_jid}
+            messageId={message.id}
+            onShareImage={isAI ? () => setShowShareDialog(true) : undefined}
+          />
+        )}
+        {showShareDialog && (
+          <Suspense>
+            <ShareImageDialog
+              onClose={() => setShowShareDialog(false)}
+              message={message}
+            />
+          </Suspense>
         )}
       </div>
     );
