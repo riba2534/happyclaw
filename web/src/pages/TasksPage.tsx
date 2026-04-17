@@ -36,6 +36,8 @@ export function TasksPage() {
     executionMode?: 'host' | 'container';
     scriptCommand: string;
     notifyChannels: string[] | null;
+    chatJid?: string;
+    contextMode?: 'group' | 'isolated';
   }) => {
     await createTask(
       data.prompt,
@@ -45,8 +47,14 @@ export function TasksPage() {
       data.executionMode,
       data.scriptCommand,
       data.notifyChannels,
+      data.chatJid,
+      data.contextMode,
     );
-    setShowCreateForm(false);
+    // Only close the form when the store reports no error — failures surface
+    // as a toast inside CreateTaskForm and the form stays open for retry.
+    if (!useTasksStore.getState().error) {
+      setShowCreateForm(false);
+    }
   };
 
   const handlePause = async (id: string) => {

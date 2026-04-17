@@ -59,12 +59,17 @@ tasksRoutes.get('/', authMiddleware, async (c) => {
   const visibleTaskIds = new Set(tasks.map((t) => t.id));
   const filteredRunningIds = getRunningTaskIds().filter((id) => visibleTaskIds.has(id));
 
-  // Build jid → name mapping for all registered groups (including IM channels)
+  // Build jid → name mapping for all registered groups (including IM channels).
+  // Mirror the visibility rule used by GET /api/groups (src/routes/groups.ts:190-192):
+  // non-admins must not see host workspaces in the task-target dropdown, even
+  // though POST /api/tasks would reject them with 403 — rendering them here
+  // would be a misleading UI affordance. Authorization is still enforced on
+  // write; this filter is purely for surface consistency.
   const groupNames: Record<string, string> = {};
   for (const [jid, group] of Object.entries(allGroups)) {
-    if (canAccessGroup({ id: authUser.id, role: authUser.role }, { ...group, jid })) {
-      groupNames[jid] = group.name || jid;
-    }
+    if (!canAccessGroup({ id: authUser.id, role: authUser.role }, { ...group, jid })) continue;
+    if (isHostExecutionGroup(group) && !hasHostExecutionPermission(authUser)) continue;
+    groupNames[jid] = group.name || jid;
   }
 
   // Enrich Feishu group names with real chat names from API.
@@ -149,15 +154,26 @@ tasksRoutes.post('/', authMiddleware, async (c) => {
     return c.json({ error: '只有管理员可以创建脚本类型任务' }, 403);
   }
 
-  // Determine execution_mode
+  // Determine execution_mode by inheriting from the source workspace.
+  // - Source is host: default host (admin-only via hasHostExecutionPermission
+  //   check above), allow explicit container downgrade.
+  // - Source is container: default container; explicit host request rejected
+  //   even for admins, to keep task execution consistent with its workspace.
+  const sourceIsHost = isHostExecutionGroup(group);
   let taskExecutionMode: 'host' | 'container';
-  if (authUser.role === 'admin') {
-    taskExecutionMode = validation.data.execution_mode || 'host';
-  } else {
-    if (validation.data.execution_mode === 'host') {
-      return c.json({ error: '只有管理员可以创建宿主机任务' }, 403);
+  if (validation.data.execution_mode === 'host') {
+    if (!sourceIsHost) {
+      return c.json(
+        { error: '当前工作区运行在容器模式，任务不能使用宿主机执行模式' },
+        400,
+      );
     }
+    // Non-admin already blocked above by isHostExecutionGroup + hasHostExecutionPermission check
+    taskExecutionMode = 'host';
+  } else if (validation.data.execution_mode === 'container') {
     taskExecutionMode = 'container';
+  } else {
+    taskExecutionMode = sourceIsHost ? 'host' : 'container';
   }
 
   const taskId = crypto.randomUUID();
@@ -250,6 +266,7 @@ tasksRoutes.patch('/:id', authMiddleware, async (c) => {
 
   // Validate chat_jid if being changed
   const patchData = { ...validation.data } as typeof validation.data & { group_folder?: string };
+  let effectiveTargetGroup: ReturnType<typeof getRegisteredGroup> = group;
   if (validation.data.chat_jid !== undefined) {
     const targetGroup = getRegisteredGroup(validation.data.chat_jid);
     if (!targetGroup) {
@@ -260,6 +277,27 @@ tasksRoutes.patch('/:id', authMiddleware, async (c) => {
     }
     // Keep group_folder in sync with chat_jid
     patchData.group_folder = targetGroup.folder;
+    effectiveTargetGroup = targetGroup;
+  }
+
+  // Final-state consistency: after the patch, if the task runs as 'host', the
+  // target workspace must itself be a host workspace. Container workspaces
+  // reject host execution for ALL roles (including admin) — execution mode
+  // must match the source workspace's capabilities.
+  const finalExecutionMode =
+    patchData.execution_mode ?? existing.execution_mode;
+  if (
+    finalExecutionMode === 'host' &&
+    effectiveTargetGroup &&
+    !isHostExecutionGroup(effectiveTargetGroup)
+  ) {
+    return c.json(
+      {
+        error:
+          '目标工作区运行在容器模式，任务不能使用宿主机执行模式。请同时把执行模式改为 container。',
+      },
+      400,
+    );
   }
 
   // Auto-recalculate next_run when schedule changes (avoid pulling cron-parser into frontend)
@@ -485,25 +523,65 @@ tasksRoutes.post('/ai', authMiddleware, async (c) => {
   }
   const notifyChannels: string[] | null = body.notify_channels ?? null;
 
-  // Resolve home group
-  const homeGroup = getUserHomeGroup(authUser.id);
-  if (!homeGroup) return c.json({ error: 'Home group not found' }, 400);
+  // Optional user-supplied target workspace. If absent, fall back to the
+  // user's home group for backward compatibility.
+  const requestedChatJid =
+    typeof body.chat_jid === 'string' && body.chat_jid ? body.chat_jid : null;
+  const requestedContextMode =
+    body.context_mode === 'group' || body.context_mode === 'isolated'
+      ? (body.context_mode as 'group' | 'isolated')
+      : null;
+
+  let groupFolder: string;
+  let chatJid: string;
+  let sourceIsHost: boolean;
+
+  if (requestedChatJid) {
+    // User-selected workspace: run the same validation chain as POST /api/tasks
+    // so the AI path cannot be used to bypass group-access / host-exec checks.
+    const group = getRegisteredGroup(requestedChatJid);
+    if (!group) return c.json({ error: 'Group not found' }, 404);
+    if (!canAccessGroup({ id: authUser.id, role: authUser.role }, group)) {
+      return c.json({ error: 'Group not found' }, 404);
+    }
+    if (isHostExecutionGroup(group) && !hasHostExecutionPermission(authUser)) {
+      return c.json(
+        { error: 'Insufficient permissions for host execution mode' },
+        403,
+      );
+    }
+    groupFolder = group.folder;
+    chatJid = requestedChatJid;
+    sourceIsHost = isHostExecutionGroup(group);
+  } else {
+    const homeGroup = getUserHomeGroup(authUser.id);
+    if (!homeGroup) return c.json({ error: 'Home group not found' }, 400);
+    groupFolder = homeGroup.folder;
+    chatJid = homeGroup.jid;
+    const registered = getRegisteredGroup(homeGroup.jid);
+    sourceIsHost = registered ? isHostExecutionGroup(registered) : false;
+  }
 
   const taskId = crypto.randomUUID();
   const now = new Date().toISOString();
 
-  // Determine execution_mode
-  const taskExecutionMode = authUser.role === 'admin' ? 'host' : 'container';
+  // Inherit execution_mode from the resolved source workspace (same rule as
+  // POST /api/tasks). Previously hard-coded to admin=host / member=container,
+  // which would misattribute tasks whose target workspace is container-mode
+  // even for admin, or vice-versa.
+  const taskExecutionMode: 'host' | 'container' = sourceIsHost
+    ? 'host'
+    : 'container';
 
   // Create task immediately with 'parsing' status and description as prompt
   createTask({
     id: taskId,
-    group_folder: homeGroup.folder,
-    chat_jid: homeGroup.jid,
+    group_folder: groupFolder,
+    chat_jid: chatJid,
     prompt: description,
     schedule_type: 'cron',
     schedule_value: '0 0 * * *', // placeholder, will be updated after parsing
-    context_mode: 'group',
+    context_mode: requestedContextMode ?? 'group',
     execution_type: 'agent',
     execution_mode: taskExecutionMode,
     script_command: null,

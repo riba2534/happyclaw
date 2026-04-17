@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Loader2, Sparkles, X, SlidersHorizontal } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -15,6 +15,9 @@ import { api } from '../../api/client';
 import { showToast } from '../../utils/toast';
 import { INTERVAL_UNITS, CHANNEL_OPTIONS, toggleNotifyChannel } from '../../utils/task-utils';
 import { useConnectedChannels } from '../../hooks/useConnectedChannels';
+import { useTasksStore } from '../../stores/tasks';
+import { useGroupsStore } from '../../stores/groups';
+import { CHANNEL_LABEL } from '../settings/channel-meta';
 
 interface CreateTaskFormProps {
   onSubmit: (data: {
@@ -25,6 +28,8 @@ interface CreateTaskFormProps {
     executionMode?: 'host' | 'container';
     scriptCommand: string;
     notifyChannels: string[] | null;
+    chatJid?: string;
+    contextMode?: 'group' | 'isolated';
   }) => Promise<void>;
   onClose: () => void;
   isAdmin?: boolean;
@@ -56,9 +61,98 @@ export function CreateTaskForm({ onSubmit, onClose, isAdmin }: CreateTaskFormPro
 
   // --- Shared state ---
   const [notifyChannels, setNotifyChannels] = useState<string[] | null>(null);
+  const [chatJid, setChatJid] = useState<string>('');
+  const [contextMode, setContextMode] = useState<'group' | 'isolated'>('group');
+  const [executionModeExplicit, setExecutionModeExplicit] = useState<boolean>(false);
   const connectedChannels = useConnectedChannels();
 
+  const groupNames = useTasksStore((s) => s.groupNames);
+  const loadTasks = useTasksStore((s) => s.loadTasks);
+  const groups = useGroupsStore((s) => s.groups);
+  const loadGroups = useGroupsStore((s) => s.loadGroups);
+
+  useEffect(() => {
+    if (Object.keys(groupNames).length === 0) {
+      loadTasks();
+    }
+    if (Object.keys(groups).length === 0) {
+      loadGroups();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Sync executionMode from selected workspace when user hasn't manually overridden.
+  // For the "default" option (empty chatJid), fall back to a role-based placeholder
+  // that matches what the backend infers for the user's own home workspace.
+  useEffect(() => {
+    if (executionModeExplicit) return;
+    const sourceMode = chatJid ? groups[chatJid]?.execution_mode : undefined;
+    const next = sourceMode ?? (isAdmin ? 'host' : 'container');
+    setFormData((prev) =>
+      prev.executionMode === next ? prev : { ...prev, executionMode: next },
+    );
+  }, [chatJid, groups, executionModeExplicit, isAdmin]);
+
   const isScript = formData.executionType === 'script';
+
+  const sortedGroupEntries = Object.entries(groupNames).sort(([a], [b]) => {
+    const aWeb = a.startsWith('web:') ? 0 : 1;
+    const bWeb = b.startsWith('web:') ? 0 : 1;
+    if (aWeb !== bWeb) return aWeb - bWeb;
+    return a.localeCompare(b);
+  });
+
+  const formatGroupLabel = (jid: string, name: string) => {
+    const channelType = jid.split(':')[0];
+    const channelLabel = CHANNEL_LABEL[channelType] || (channelType === 'web' ? 'Web' : channelType);
+    const shortId = jid.split(':').slice(1).join(':');
+    return `[${channelLabel}] ${name} (${shortId})`;
+  };
+
+  const renderTargetWorkspace = () => (
+    <div>
+      <label className="block text-sm font-medium text-foreground mb-2">消息目标</label>
+      <Select
+        value={chatJid || '__default__'}
+        onValueChange={(value) => setChatJid(value === '__default__' ? '' : value)}
+      >
+        <SelectTrigger className="w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="__default__">默认（我的主工作区）</SelectItem>
+          {sortedGroupEntries.map(([jid, name]) => (
+            <SelectItem key={jid} value={jid}>
+              {formatGroupLabel(jid, name)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <p className="mt-1 text-xs text-muted-foreground">
+        选择任务结果投递的目标工作区；默认落到你的主工作区
+      </p>
+    </div>
+  );
+
+  const renderContextMode = () => (
+    <div>
+      <label className="block text-sm font-medium text-foreground mb-2">上下文模式</label>
+      <Select value={contextMode} onValueChange={(value) => setContextMode(value as 'group' | 'isolated')}>
+        <SelectTrigger className="w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="group">复用源工作区（group）</SelectItem>
+          <SelectItem value="isolated">独立临时工作区（isolated）</SelectItem>
+        </SelectContent>
+      </Select>
+      <p className="mt-1 text-xs text-muted-foreground">
+        {contextMode === 'group'
+          ? '任务复用源工作区的会话、记忆和 skills，prompt 作为新消息注入'
+          : '每次执行创建新的 task-xxxx 工作区，fresh session，与源工作区隔离'}
+      </p>
+    </div>
+  );
 
   const connectedKeys = CHANNEL_OPTIONS.filter((c) => connectedChannels[c.key]).map((c) => c.key);
 
@@ -76,10 +170,18 @@ export function CreateTaskForm({ onSubmit, onClose, isAdmin }: CreateTaskFormPro
     if (!aiDescription.trim()) return;
     setAiSubmitting(true);
     try {
-      await api.post('/api/tasks/ai', {
+      // AI mode always sends context_mode — the execution_type (agent/script)
+      // is decided by the backend parser, not the client. If the parser
+      // resolves to script, the backend ignores context_mode server-side.
+      const body: Record<string, unknown> = {
         description: aiDescription.trim(),
         notify_channels: notifyChannels,
-      });
+        context_mode: contextMode,
+      };
+      if (chatJid) {
+        body.chat_jid = chatJid;
+      }
+      await api.post('/api/tasks/ai', body);
       showToast('任务已创建', 'AI 正在后台解析调度参数，稍后自动激活');
       onClose();
     } catch (error) {
@@ -134,16 +236,27 @@ export function CreateTaskForm({ onSubmit, onClose, isAdmin }: CreateTaskFormPro
       finalScheduleValue = new Date(onceDateTime).toISOString();
     }
     setSubmitting(true);
+    // Clear any lingering store error so we can detect whether this submit failed.
+    useTasksStore.setState({ error: null });
     try {
       await onSubmit({
         prompt: formData.prompt,
         scheduleType: formData.scheduleType,
         scheduleValue: finalScheduleValue,
         executionType: formData.executionType,
-        executionMode: formData.executionMode,
+        executionMode: executionModeExplicit ? formData.executionMode : undefined,
         scriptCommand: formData.scriptCommand,
         notifyChannels,
+        chatJid: chatJid || undefined,
+        contextMode: !isScript ? contextMode : undefined,
       });
+      // The store swallows API errors into state.error; surface it as a toast
+      // so the user sees why the submit failed. TasksPage keeps the form open
+      // whenever state.error is set.
+      const storeError = useTasksStore.getState().error;
+      if (storeError) {
+        showToast('创建失败', storeError);
+      }
     } catch (error) {
       console.error('Failed to create task:', error);
     } finally {
@@ -252,6 +365,9 @@ export function CreateTaskForm({ onSubmit, onClose, isAdmin }: CreateTaskFormPro
               </p>
             </div>
 
+            {renderTargetWorkspace()}
+            {renderContextMode()}
+
             {renderNotifyChannels()}
 
             {/* Actions */}
@@ -318,9 +434,10 @@ export function CreateTaskForm({ onSubmit, onClose, isAdmin }: CreateTaskFormPro
                 </label>
                 <Select
                   value={formData.executionMode}
-                  onValueChange={(value) =>
-                    setFormData({ ...formData, executionMode: value as 'host' | 'container' })
-                  }
+                  onValueChange={(value) => {
+                    setExecutionModeExplicit(true);
+                    setFormData({ ...formData, executionMode: value as 'host' | 'container' });
+                  }}
                 >
                   <SelectTrigger className="w-full">
                     <SelectValue />
@@ -331,10 +448,15 @@ export function CreateTaskForm({ onSubmit, onClose, isAdmin }: CreateTaskFormPro
                   </SelectContent>
                 </Select>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  宿主机模式直接在服务器上运行，Docker 容器模式在隔离环境中运行
+                  {executionModeExplicit
+                    ? '已手动指定执行模式，不再跟随源工作区'
+                    : '默认继承源工作区的执行模式，选择后将锁定不再自动同步'}
                 </p>
               </div>
             )}
+
+            {renderTargetWorkspace()}
+            {!isScript && renderContextMode()}
 
             {/* Script Command */}
             {isScript && (

@@ -774,7 +774,7 @@ function shouldDrain(): boolean {
  * Returns messages found (with optional images), or empty array.
  */
 interface IpcDrainResult {
-  messages: Array<{ text: string; images?: Array<{ data: string; mimeType?: string }> }>;
+  messages: Array<{ text: string; images?: Array<{ data: string; mimeType?: string }>; taskId?: string }>;
 }
 
 function drainIpcInput(): IpcDrainResult {
@@ -793,6 +793,7 @@ function drainIpcInput(): IpcDrainResult {
           result.messages.push({
             text: data.text,
             images: data.images,
+            taskId: typeof data.taskId === 'string' ? data.taskId : undefined,
           });
         }
       } catch (err) {
@@ -864,7 +865,7 @@ function createIpcWatcher(onFileDetected: () => void): { close: () => void } {
  * Wait for a new IPC message or _close sentinel.
  * Returns the messages (with optional images), or null if _close.
  */
-function waitForIpcMessage(): Promise<{ text: string; images?: Array<{ data: string; mimeType?: string }> } | null> {
+function waitForIpcMessage(): Promise<{ text: string; images?: Array<{ data: string; mimeType?: string }>; taskId?: string } | null> {
   return new Promise((resolve) => {
     let resolved = false;
     const tryDrain = () => {
@@ -895,9 +896,19 @@ function waitForIpcMessage(): Promise<{ text: string; images?: Array<{ data: str
       if (messages.length > 0) {
         const combinedText = messages.map((m) => m.text).join('\n');
         const allImages = messages.flatMap((m) => m.images || []);
+        // If any drained message carries a taskId, attribute the combined turn
+        // to it (take the last one — later messages supersede earlier in a batch).
+        let combinedTaskId: string | undefined;
+        for (let i = messages.length - 1; i >= 0; i--) {
+          if (messages[i].taskId) { combinedTaskId = messages[i].taskId; break; }
+        }
         resolved = true;
         ipcWatcher?.close();
-        resolve({ text: combinedText, images: allImages.length > 0 ? allImages : undefined });
+        resolve({
+          text: combinedText,
+          images: allImages.length > 0 ? allImages : undefined,
+          taskId: combinedTaskId,
+        });
         return;
       }
     };
@@ -1631,12 +1642,16 @@ async function main(): Promise<void> {
   const { isHome, isAdminHome } = normalizeHomeFlags(containerInput);
 
   // Create in-process SDK MCP server (replaces the stdio subprocess)
+  // NOTE: currentTaskId is mutated in-place by the main loop below so that
+  // createMcpTools() closures observe updates via ctx reference. See the
+  // clear-before-next-turn logic at the bottom of the query loop.
   const mcpToolsConfig = {
     chatJid: containerInput.chatJid,
     groupFolder: containerInput.groupFolder,
     isHome,
     isAdminHome,
     isScheduledTask: containerInput.isScheduledTask || false,
+    currentTaskId: containerInput.messageTaskId ?? null,
     workspaceIpc: WORKSPACE_IPC,
     workspaceGroup: WORKSPACE_GROUP,
     workspaceGlobal: WORKSPACE_GLOBAL,
@@ -1860,6 +1875,8 @@ async function main(): Promise<void> {
         prompt = nextMessage.text;
         promptImages = nextMessage.images;
         containerInput.turnId = generateTurnId();
+        // See main-loop comment: reset task attribution for this new turn.
+        mcpToolsConfig.currentTaskId = nextMessage.taskId ?? null;
         // Rebuild MCP server to avoid "Already connected to a transport" error
         // when the previous query was aborted mid-stream (#421).
         mcpServerConfig = buildMcpServerConfig();
@@ -2015,6 +2032,12 @@ async function main(): Promise<void> {
       prompt = nextMessage.text;
       promptImages = nextMessage.images;
       containerInput.turnId = generateTurnId();
+      // Clear per-turn task attribution: the previous query may have been a
+      // scheduled-task turn, but this new IPC message is a regular follow-up
+      // unless it explicitly carried a taskId (see nextMessage.taskId below).
+      // Forgetting to clear would cause regular user replies to be broadcast
+      // to the task's notify channels, hijacking later conversation.
+      mcpToolsConfig.currentTaskId = nextMessage.taskId ?? null;
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);

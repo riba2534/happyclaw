@@ -21,6 +21,10 @@ export interface ContainerInput {
   /** Whether this is the admin's home container (full privileges). */
   isAdminHome?: boolean;
   isScheduledTask?: boolean;
+  /** If the last unprocessed message was emitted by a scheduled task prompt,
+   * this is that task's ID; used to tag MCP send_message outputs so the host
+   * routes results to the task's configured chat_jid / notify channels. */
+  messageTaskId?: string;
   images?: Array<{ data: string; mimeType?: string }>;
   agentId?: string;
   agentName?: string;

@@ -188,6 +188,10 @@ export interface ContainerInput {
   isScheduledTask?: boolean;
   /** Isolated task run ID — determines IPC namespace (tasks-run/{taskRunId}/) */
   taskRunId?: string;
+  /** If the last unprocessed message was emitted by a scheduled task prompt,
+   * this is that task's ID; propagated into agent-runner so MCP send_message
+   * outputs can be attributed back to the task record. */
+  messageTaskId?: string;
   images?: Array<{ data: string; mimeType?: string }>;
   agentId?: string;
   agentName?: string;

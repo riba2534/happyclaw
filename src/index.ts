@@ -113,6 +113,12 @@ import {
   resolveLocationInfo,
   type WorkspaceInfo,
 } from './im-command-utils.js';
+import {
+  extractLastTaskId,
+  broadcastToOwnerIMChannels as broadcastToOwnerIMChannelsPure,
+  resolveBroadcastFolder,
+  resolveTaskRoutingDecision,
+} from './task-routing.js';
 import { invalidateSessionCache, getWebDeps } from './web-context.js';
 import {
   getFeishuProviderConfigWithSource,
@@ -2377,6 +2383,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const images = collectMessageImages(chatJid, missedMessages);
   const imagesForAgent = images.length > 0 ? images : undefined;
 
+  // Extract task_id from the most recent task-prompt message (if any).
+  // See extractLastTaskId() for semantics; see §C of the routing fix plan for
+  // why getMessagesSince (not getNewMessages) surfaces task-prompt rows here.
+  const messageTaskId = extractLastTaskId(missedMessages);
+
   logger.info(
     {
       group: group.name,
@@ -2385,6 +2396,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       imageCount: images.length,
       shared,
       isRecovery,
+      messageTaskId,
     },
     'Processing messages',
   );
@@ -3100,6 +3112,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         }
       },
       imagesForAgent,
+      messageTaskId,
     );
   } finally {
     await setTyping(chatJid, false);
@@ -3530,6 +3543,7 @@ async function runAgent(
   turnId?: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
   images?: Array<{ data: string; mimeType?: string }>,
+  messageTaskId?: string,
 ): Promise<{ status: 'success' | 'error' | 'closed'; error?: string }> {
   const isHome = !!group.is_home;
   // For the agent-runner: isMain means this is an admin home container (full privileges)
@@ -3619,6 +3633,7 @@ async function runAgent(
           isHome,
           isAdminHome,
           images,
+          messageTaskId,
         },
         onProcessCb,
         wrappedOnOutput,
@@ -3637,6 +3652,7 @@ async function runAgent(
           isHome,
           isAdminHome,
           images,
+          messageTaskId,
         },
         onProcessCb,
         wrappedOnOutput,
@@ -3994,10 +4010,11 @@ export function canSendCrossGroupMessage(
   return false;
 }
 
-/**
- * Broadcast a message to all connected IM channels of a user that haven't
- * already received it. Used by scheduled tasks to fan out to all IM channels.
- */
+// Thin production wrapper around the pure helper in ./task-routing.ts so the
+// internal call sites keep their short signature (deps inferred from the
+// runtime IM manager + DB). Tests should import `broadcastToOwnerIMChannels`
+// from ./task-routing.js directly and pass their own deps — that file has no
+// side effects, unlike this one (which runs main() at module load).
 function broadcastToOwnerIMChannels(
   userId: string,
   sourceFolder: string,
@@ -4005,24 +4022,18 @@ function broadcastToOwnerIMChannels(
   sendFn: (jid: string) => void,
   notifyChannels?: string[] | null,
 ): void {
-  const sentChannelTypes = new Set<string>();
-  for (const jid of alreadySentJids) {
-    const ct = getChannelType(jid);
-    if (ct) sentChannelTypes.add(ct);
-  }
-  const connectedTypes = imManager.getConnectedChannelTypes(userId);
-  const ownerGroups = getGroupsByOwner(userId);
-  for (const channelType of connectedTypes) {
-    if (sentChannelTypes.has(channelType)) continue;
-    if (notifyChannels && !notifyChannels.includes(channelType)) continue;
-    const target = ownerGroups.find(
-      (g) => getChannelType(g.jid) === channelType && g.folder === sourceFolder,
-    );
-    if (target) {
-      sendFn(target.jid);
-      sentChannelTypes.add(channelType);
-    }
-  }
+  broadcastToOwnerIMChannelsPure(
+    userId,
+    sourceFolder,
+    alreadySentJids,
+    sendFn,
+    notifyChannels,
+    {
+      getConnectedChannelTypes: imManager.getConnectedChannelTypes.bind(imManager),
+      getGroupsByOwner,
+      getChannelType,
+    },
+  );
 }
 
 function startIpcWatcher(): void {
@@ -4091,10 +4102,22 @@ function startIpcWatcher(): void {
       /* tasks-run dir may not exist */
     }
 
-    // Pre-resolve owner's home folder once per group (avoid repeated DB queries in the message loop)
-    const ownerHomeFolderForIm = sourceGroupEntry?.created_by
-      ? getUserHomeGroup(sourceGroupEntry.created_by)?.folder || sourceGroup
-      : sourceGroup;
+    // Broadcast folder: the workspace folder whose IPC message we are
+    // processing. Fix F: use sourceGroup (the emitting workspace's folder),
+    // NOT the owner's home folder — non-home workspaces bind to their own
+    // IM groups and must route replies to those bindings.
+    //
+    // Go through resolveBroadcastFolder so the choice between sourceGroup
+    // and ownerHome is locked by a unit test. Reverting this line to
+    // `ownerHome?.folder || sourceGroup` (the pre-fix F behavior) must
+    // break the helper's test, not silently pass CI.
+    const ownerHomeFolderCandidate = sourceGroupEntry?.created_by
+      ? getUserHomeGroup(sourceGroupEntry.created_by)?.folder
+      : null;
+    const broadcastFolder = resolveBroadcastFolder(
+      sourceGroup,
+      ownerHomeFolderCandidate,
+    );
 
     for (const {
       path: ipcRoot,
@@ -4155,29 +4178,32 @@ function startIpcWatcher(): void {
                     sendImWithFailTracking(ipcImRoute, data.text, localImages);
                   }
 
-                  // Scheduled task: route to the task's configured chat_jid,
-                  // or broadcast to all connected IM channels of the owner
-                  if (data.isScheduledTask && sourceGroupEntry?.created_by) {
+                  // Scheduled-task output routing. Decision logic is in
+                  // resolveTaskRoutingDecision() (src/task-routing.ts) so it
+                  // can be unit-tested without booting this module.
+                  const routingDecision = resolveTaskRoutingDecision(
+                    data,
+                    ipcTaskId,
+                    !!sourceGroupEntry?.created_by,
+                    { getTaskById, getChannelType },
+                  );
+                  if (
+                    routingDecision.mode !== 'none' &&
+                    sourceGroupEntry?.created_by
+                  ) {
                     const taskLocalImages = extractLocalImImagePaths(
                       data.text,
                       sourceGroup,
                     );
-                    let taskNotifyChannels: string[] | null | undefined;
-                    let taskChatJid: string | undefined;
-                    if (ipcTaskId) {
-                      const taskRecord = getTaskById(ipcTaskId);
-                      taskNotifyChannels = taskRecord?.notify_channels;
-                      taskChatJid = taskRecord?.chat_jid;
-                    }
-                    // If the task targets a specific IM group, send directly to it
-                    // (skip if already sent via data.chatJid or ipcImRoute above)
-                    if (taskChatJid && getChannelType(taskChatJid)) {
+                    if (routingDecision.mode === 'direct') {
+                      // Task targets a specific IM group; send there unless
+                      // the prior branches already delivered to the same jid.
                       if (
-                        taskChatJid !== data.chatJid &&
-                        taskChatJid !== ipcImRoute
+                        routingDecision.taskChatJid !== data.chatJid &&
+                        routingDecision.taskChatJid !== ipcImRoute
                       ) {
                         sendImWithFailTracking(
-                          taskChatJid,
+                          routingDecision.taskChatJid,
                           data.text,
                           taskLocalImages,
                         );
@@ -4189,7 +4215,7 @@ function startIpcWatcher(): void {
                       );
                       broadcastToOwnerIMChannels(
                         sourceGroupEntry.created_by,
-                        ownerHomeFolderForIm,
+                        broadcastFolder,
                         alreadySent,
                         (jid) =>
                           sendImWithFailTracking(
@@ -4197,7 +4223,7 @@ function startIpcWatcher(): void {
                             data.text,
                             taskLocalImages,
                           ),
-                        taskNotifyChannels,
+                        routingDecision.notifyChannels,
                       );
                     }
                   }
@@ -4311,24 +4337,28 @@ function startIpcWatcher(): void {
                   });
                   broadcastToWebClients(imgChatJid, displayText);
 
-                  // Scheduled task: broadcast image to all connected IM channels
-                  // (not applicable for agent IPC)
+                  // Scheduled-task image routing. Same decision function as the
+                  // message branch; image IPC has no direct-to-chat_jid mode
+                  // (images only ever fan out), so we ignore 'direct' and
+                  // broadcast on either 'direct' or 'broadcast'.
+                  const imgRoutingDecision = ipcAgentId
+                    ? { mode: 'none' as const }
+                    : resolveTaskRoutingDecision(
+                        data,
+                        ipcTaskId,
+                        !!sourceGroupEntry?.created_by,
+                        { getTaskById, getChannelType },
+                      );
                   if (
-                    !ipcAgentId &&
-                    data.isScheduledTask &&
+                    imgRoutingDecision.mode !== 'none' &&
                     sourceGroupEntry?.created_by
                   ) {
                     const alreadySent = new Set<string>(
                       [data.chatJid, imgImRoute].filter(Boolean) as string[],
                     );
-                    let imgTaskNotifyChannels: string[] | null | undefined;
-                    if (ipcTaskId) {
-                      const imgTaskRecord = getTaskById(ipcTaskId);
-                      imgTaskNotifyChannels = imgTaskRecord?.notify_channels;
-                    }
                     broadcastToOwnerIMChannels(
                       sourceGroupEntry.created_by,
-                      ownerHomeFolderForIm,
+                      broadcastFolder,
                       alreadySent,
                       (jid) =>
                         imManager
@@ -4345,7 +4375,7 @@ function startIpcWatcher(): void {
                               'Failed to broadcast task image to IM',
                             ),
                           ),
-                      imgTaskNotifyChannels,
+                      imgRoutingDecision.notifyChannels,
                     );
                   }
 
@@ -4662,12 +4692,30 @@ async function processTaskIpc(
           data.context_mode === 'group' || data.context_mode === 'isolated'
             ? data.context_mode
             : 'isolated';
-        const executionMode =
-          data.execution_mode === 'host' && isAdminHome
-            ? 'host'
-            : data.execution_mode === 'container'
-              ? 'container'
-              : null;
+        // Inherit execution_mode from the source workspace.
+        // - Source is host: default host, allow explicit container downgrade.
+        // - Source is container: default container, REJECT explicit host
+        //   (prevents container-bound agents from escaping isolation; security).
+        // This matches the user-facing semantics: "a task created from a
+        // docker workspace runs in docker; a task created from a host workspace
+        // runs on host unless explicitly overridden to docker."
+        const sourceIsHost = sourceGroupEntry?.executionMode === 'host';
+        let executionMode: 'host' | 'container';
+        if (data.execution_mode === 'host') {
+          if (!sourceIsHost) {
+            logger.warn(
+              { sourceGroup, targetJid },
+              'schedule_task: host mode requested from container source — forcing container',
+            );
+            executionMode = 'container';
+          } else {
+            executionMode = 'host';
+          }
+        } else if (data.execution_mode === 'container') {
+          executionMode = 'container';
+        } else {
+          executionMode = sourceIsHost ? 'host' : 'container';
+        }
         const taskCreatedBy = resolveTaskOwner(
           {},
           sourceGroupEntry,
@@ -7985,7 +8033,7 @@ async function main(): Promise<void> {
     sendMessage,
     broadcastStreamEvent,
     onWorkspaceCreated: broadcastGroupCreated,
-    storePromptMessage: (chatJid, senderId, senderName, text) => {
+    storePromptMessage: (chatJid, senderId, senderName, text, taskId) => {
       const msgId = crypto.randomUUID();
       const now = new Date().toISOString();
       ensureChatExists(chatJid);
@@ -7998,7 +8046,7 @@ async function main(): Promise<void> {
         now,
         false,
         {
-          meta: { sourceKind: 'scheduled_task_prompt' },
+          meta: { sourceKind: 'scheduled_task_prompt', taskId },
         },
       );
       broadcastNewMessage(chatJid, {
@@ -8024,11 +8072,12 @@ async function main(): Promise<void> {
 
       if (options.ownerId) {
         const ownerHome = getUserHomeGroup(options.ownerId);
-        if (ownerHome?.folder) {
-          const localImages = extractLocalImImagePaths(text, ownerHome.folder);
+        const broadcastFolder = options.workspaceFolder ?? ownerHome?.folder;
+        if (broadcastFolder) {
+          const localImages = extractLocalImImagePaths(text, broadcastFolder);
           broadcastToOwnerIMChannels(
             options.ownerId,
-            ownerHome.folder,
+            broadcastFolder,
             new Set<string>(),
             (jid) => sendImWithFailTracking(jid, text, localImages),
             options.notifyChannels,

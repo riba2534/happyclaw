@@ -49,6 +49,8 @@ interface TasksState {
     executionMode?: 'host' | 'container',
     scriptCommand?: string,
     notifyChannels?: string[] | null,
+    chatJid?: string,
+    contextMode?: 'group' | 'isolated',
   ) => Promise<void>;
   updateTaskStatus: (id: string, status: 'active' | 'paused') => Promise<void>;
   updateTask: (id: string, fields: Record<string, unknown>) => Promise<void>;
@@ -98,6 +100,8 @@ export const useTasksStore = create<TasksState>((set, get) => ({
     executionMode?: 'host' | 'container',
     scriptCommand?: string,
     notifyChannels?: string[] | null,
+    chatJid?: string,
+    contextMode?: 'group' | 'isolated',
   ) => {
     try {
       const normalizedScheduleValue =
@@ -121,6 +125,12 @@ export const useTasksStore = create<TasksState>((set, get) => ({
       }
       if (notifyChannels !== undefined) {
         body.notify_channels = notifyChannels;
+      }
+      if (chatJid) {
+        body.chat_jid = chatJid;
+      }
+      if (contextMode) {
+        body.context_mode = contextMode;
       }
       await api.post('/api/tasks', body);
       set({ error: null });

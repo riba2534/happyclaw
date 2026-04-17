@@ -95,6 +95,7 @@ export interface NewMessage {
   sdk_message_uuid?: string | null;
   source_kind?: MessageSourceKind | null;
   finalization_reason?: MessageFinalizationReason | null;
+  task_id?: string | null;
 }
 
 export type MessageSourceKind =
