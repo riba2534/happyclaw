@@ -210,6 +210,7 @@ StreamEvent 类型以 `shared/stream-event.ts` 为单一真相源，构建时通
 | 项目级 Skills `container/skills/` | `/workspace/project-skills` | 只读 | 只读 |
 | 用户级 Skills `~/.claude/skills/` | `/workspace/user-skills` | 只读 | admin 创建的会话可读 |
 | 环境变量 `data/env/{folder}/env` | `/workspace/env-dir/env` | 只读 | 只读 |
+| 持久 extra 目录 `data/extra/{folder}/` | `/workspace/extra` | 读写 | 读写（仅自己） |
 | 额外挂载（白名单内） | `/workspace/extra/{name}` | 按白名单 | 按白名单（`nonMainReadOnly` 时强制只读） |
 
 ### 3.5 配置优先级
@@ -369,6 +370,7 @@ data/
   config/registration.json                 # 注册设置（开关、邀请码要求）
   config/session-secret.key                # 会话签名密钥（0600 权限）
   config/system-settings.json              # 系统运行参数（容器超时、并发限制等）
+  extra/{folder}/                            # 容器持久 extra 目录（bind-mount 到 /workspace/extra/）
   streaming-buffer/                         # 流式文本磁盘缓冲（崩溃恢复用，自动清理）
   skills/{userId}/                         # 用户级 Skills 数据
   mcp-servers/{userId}/servers.json        # 用户 MCP Servers 配置

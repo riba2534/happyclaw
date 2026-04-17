@@ -602,6 +602,17 @@ function buildVolumeMounts(
     }
   }
 
+  // Per-group persistent extra directory: provides a durable /workspace/extra/ even when
+  // no additionalMounts are configured. User-configured additionalMounts from the allowlist
+  // are mounted as subdirectories (/workspace/extra/{name}) and overlay on top.
+  const extraDir = path.join(DATA_DIR, 'extra', group.folder);
+  mkdirForContainer(extraDir);
+  mounts.push({
+    hostPath: extraDir,
+    containerPath: '/workspace/extra',
+    readonly: false,
+  });
+
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
