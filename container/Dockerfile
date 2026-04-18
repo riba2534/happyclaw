@@ -109,15 +109,6 @@ ARG CACHEBUST=1
 RUN npm install -g agent-browser
 RUN npm install
 
-# Workaround: Claude Agent SDK 在 glibc 系统上可能错误选择 musl 变体的 native binary
-# （0.2.113 触发，SDK 报 "native binary not found"）。base image node:22-slim 是 Debian glibc，
-# 无法执行 musl binary。让 musl 路径 symlink 到 glibc binary 作为兜底，等 SDK 修复后可移除。
-RUN if [ -d /app/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64 ] \
-    && [ -d /app/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64-musl ]; then \
-      ln -sf ../claude-agent-sdk-linux-x64/claude \
-        /app/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64-musl/claude; \
-    fi
-
 # Install feishu-cli (binary + builtin skills), 始终跟踪 latest release。
 # 通过 302 redirect 从 github.com/releases/latest 的 Location header 提取 tag
 # （和 install.sh 作者自己用的技巧一致），不经 api.github.com 规避 rate limit。
