@@ -19,6 +19,7 @@ import {
   MAX_FILE_SIZE,
   getGroupStorageUsage,
   invalidateGroupStorageUsage,
+  getFileRoot,
 } from '../file-manager.js';
 import { checkStorageLimit, isBillingEnabled } from '../billing.js';
 import { execFile } from 'node:child_process';
@@ -138,6 +139,24 @@ function getFileRootOverride(group: RegisteredGroup): string | undefined {
     : undefined;
 }
 
+/**
+ * 计算 Agent 视角的绝对路径（供前端"复制路径"功能使用）。
+ * - container 模式：容器内挂载路径 /workspace/group/<relative>
+ * - host 模式：宿主机绝对路径（customCwd 或 data/groups/{folder}）+ relative
+ */
+function getAgentAbsolutePath(
+  group: RegisteredGroup,
+  relativePath: string,
+): string {
+  if (group.executionMode === 'host') {
+    const base = getFileRoot(group.folder, getFileRootOverride(group));
+    return relativePath ? path.join(base, relativePath) : base;
+  }
+  return relativePath
+    ? path.posix.join('/workspace/group', relativePath)
+    : '/workspace/group';
+}
+
 function buildAttachmentContentDisposition(fileName: string): string {
   const sanitized = fileName.replace(/["\\\r\n]/g, '_');
   const asciiFallback = sanitized.replace(/[^\x20-\x7E]/g, '_') || 'download';
@@ -238,7 +257,11 @@ fileRoutes.get('/:jid/files', authMiddleware, (c) => {
 
   try {
     const result = listFiles(group.folder, subPath, getFileRootOverride(group));
-    return c.json(result);
+    const files = result.files.map((entry) => ({
+      ...entry,
+      absolutePath: getAgentAbsolutePath(group, entry.path),
+    }));
+    return c.json({ ...result, files });
   } catch (error) {
     logger.error({ err: error }, `Failed to list files for ${jid}`);
     return c.json({ error: 'Failed to list files' }, 500);

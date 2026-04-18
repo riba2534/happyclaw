@@ -8,6 +8,7 @@ export interface FileEntry {
   size: number;
   modifiedAt: string;
   isSystem: boolean;
+  absolutePath?: string;
 }
 
 export interface UploadProgress {

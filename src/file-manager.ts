@@ -20,6 +20,7 @@ export interface FileEntry {
   size: number;
   modifiedAt: string;
   isSystem: boolean;
+  absolutePath?: string; // Agent 视角的绝对路径（container 模式为 /workspace/group/...，host 模式为宿主机路径）
 }
 
 // 常量

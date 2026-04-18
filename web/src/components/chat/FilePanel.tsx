@@ -22,6 +22,7 @@ import {
   Film,
   Music,
   AlertCircle,
+  Copy,
 } from 'lucide-react';
 import { useFileStore, FileEntry, toBase64Url } from '../../stores/files';
 import { useChatStore } from '../../stores/chat';
@@ -31,6 +32,7 @@ import { api } from '../../api/client';
 import { withBasePath } from '../../utils/url';
 import { downloadFromUrl } from '../../utils/download';
 import { showToast } from '../../utils/toast';
+import { copyToClipboard } from '../../utils/clipboard';
 import {
   Dialog,
   DialogContent,
@@ -904,6 +906,19 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
     });
   };
 
+  const handleCopyPath = (item: FileEntry) => {
+    const target = item.absolutePath || item.path;
+    copyToClipboard(target)
+      .then(() => showToast('已复制', target))
+      .catch((err) => {
+        console.error('Copy failed:', err);
+        showToast(
+          '复制失败',
+          err instanceof Error ? err.message : '无法写入剪贴板',
+        );
+      });
+  };
+
   const handleDeleteClick = (item: FileEntry) => {
     setDeleteModal({
       open: true,
@@ -1100,52 +1115,40 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
                   </div>
 
                   {/* Actions */}
-                  {!item.isSystem && (
-                    <div className="flex-shrink-0 flex items-center gap-0.5">
-                      {/* Edit button for text files */}
-                      {item.type === 'file' &&
-                        TEXT_EXTENSIONS.has(getFileExt(item.name)) && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setPreview({ kind: 'edit', file: item });
-                            }}
-                            className="p-2.5 rounded hover:bg-brand-100 text-muted-foreground hover:text-primary transition-colors cursor-pointer"
-                            title="编辑"
-                            aria-label="编辑文件"
-                          >
-                            <Pencil className="w-3.5 h-3.5" />
-                          </button>
-                        )}
-                      {item.type === 'file' && (
+                  <div className="flex-shrink-0 flex items-center gap-0.5">
+                    {/* Copy absolute path (always available) */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleCopyPath(item);
+                      }}
+                      className="p-2.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                      title={
+                        item.absolutePath
+                          ? `复制路径：${item.absolutePath}`
+                          : '复制路径'
+                      }
+                      aria-label="复制绝对路径"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                    {/* Edit button for non-system text files */}
+                    {!item.isSystem &&
+                      item.type === 'file' &&
+                      TEXT_EXTENSIONS.has(getFileExt(item.name)) && (
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleDownload(item);
+                            setPreview({ kind: 'edit', file: item });
                           }}
-                          className="p-2.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-                          title="下载"
-                          aria-label="下载文件"
+                          className="p-2.5 rounded hover:bg-brand-100 text-muted-foreground hover:text-primary transition-colors cursor-pointer"
+                          title="编辑"
+                          aria-label="编辑文件"
                         >
-                          <Download className="w-3.5 h-3.5" />
+                          <Pencil className="w-3.5 h-3.5" />
                         </button>
                       )}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteClick(item);
-                        }}
-                        className="p-2.5 rounded hover:bg-red-100 dark:hover:bg-red-950/40 text-muted-foreground hover:text-red-600 dark:hover:text-red-400 transition-colors cursor-pointer"
-                        title="删除"
-                        aria-label="删除文件"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  )}
-                  {/* System files: download only */}
-                  {item.isSystem && item.type === 'file' && (
-                    <div className="flex-shrink-0">
+                    {item.type === 'file' && (
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -1157,8 +1160,21 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
                       >
                         <Download className="w-3.5 h-3.5" />
                       </button>
-                    </div>
-                  )}
+                    )}
+                    {!item.isSystem && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteClick(item);
+                        }}
+                        className="p-2.5 rounded hover:bg-red-100 dark:hover:bg-red-950/40 text-muted-foreground hover:text-red-600 dark:hover:text-red-400 transition-colors cursor-pointer"
+                        title="删除"
+                        aria-label="删除文件"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
                 </div>
               );
             })}
