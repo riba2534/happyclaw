@@ -31,6 +31,13 @@ export interface AgentCapability {
 
 export const AGENT_CAPABILITIES: AgentCapability[] = [
   {
+    name: 'claude-code',
+    binary: 'claude',
+    required: true,
+    installHint:
+      'See https://docs.claude.com/claude-code/install.html or: curl -fsSL https://claude.ai/install.sh | bash',
+  },
+  {
     name: 'feishu-cli',
     binary: 'feishu-cli',
     required: false,
@@ -69,11 +76,29 @@ async function isBinaryAvailable(binary: string): Promise<boolean> {
   }
 }
 
+/**
+ * Resolve the actual path of a binary using `which`.
+ * This is needed because `node_modules/.bin/` may contain stubs that shadow
+ * the actual working binary.
+ */
+async function resolveBinaryPath(binary: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync('which', [binary], {
+      timeout: 5_000,
+    });
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 export interface CapabilityCheckResult {
   available: AgentCapability[];
   missing: AgentCapability[];
   /** Env vars to inject into the host process (only for available tools) */
   envVars: Record<string, string>;
+  /** Resolved paths for specific binaries (keyed by binary name) */
+  resolvedPaths: Record<string, string>;
 }
 
 /** Detect which agent capabilities are present on the host. */
@@ -88,6 +113,7 @@ export async function checkHostCapabilities(): Promise<CapabilityCheckResult> {
   const available: AgentCapability[] = [];
   const missing: AgentCapability[] = [];
   const envVars: Record<string, string> = {};
+  const resolvedPaths: Record<string, string> = {};
 
   for (const { cap, available: ok } of results) {
     if (ok) {
@@ -95,12 +121,20 @@ export async function checkHostCapabilities(): Promise<CapabilityCheckResult> {
       if (cap.envVars) Object.assign(envVars, cap.envVars);
       const platformVars = cap.platformEnvVars?.[os.platform()];
       if (platformVars) Object.assign(envVars, platformVars);
+
+      // Resolve the actual path for claude specifically
+      if (cap.binary === 'claude') {
+        const resolvedPath = await resolveBinaryPath(cap.binary);
+        if (resolvedPath) {
+          resolvedPaths[cap.binary] = resolvedPath;
+        }
+      }
     } else {
       missing.push(cap);
     }
   }
 
-  return { available, missing, envVars };
+  return { available, missing, envVars, resolvedPaths };
 }
 
 /** Log preflight results — warnings for missing, nothing for available. */
