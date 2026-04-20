@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "*",
+    "@anthropic-ai/claude-code": "*",
     "cron-parser": "^5.0.0",
     "zod": "^4.0.0"
   },
