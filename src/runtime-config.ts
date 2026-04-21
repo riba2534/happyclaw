@@ -230,6 +230,7 @@ interface StoredFeishuProviderConfigV1 {
   appId: string;
   enabled?: boolean;
   updatedAt: string;
+  ownerOpenId?: string;
   secret: EncryptedSecrets;
 }
 
@@ -3011,6 +3012,7 @@ export interface UserFeishuConfig {
   appSecret: string;
   enabled?: boolean;
   updatedAt: string | null;
+  ownerOpenId?: string; // auto-detected from first DM; used as sender_allowlist seed for new groups
 }
 
 export interface UserTelegramConfig {
@@ -3101,6 +3103,7 @@ export function getUserFeishuConfig(userId: string): UserFeishuConfig | null {
       appSecret: secret.appSecret,
       enabled: stored.enabled,
       updatedAt: stored.updatedAt || null,
+      ownerOpenId: stored.ownerOpenId || undefined,
     };
   } catch (err) {
     logger.warn({ err, userId }, 'Failed to read user Feishu config');
@@ -3117,6 +3120,7 @@ export function saveUserFeishuConfig(
     appSecret: normalizeSecret(next.appSecret, 'appSecret'),
     enabled: next.enabled,
     updatedAt: new Date().toISOString(),
+    ownerOpenId: next.ownerOpenId,
   };
 
   const payload: StoredFeishuProviderConfigV1 = {
@@ -3124,6 +3128,7 @@ export function saveUserFeishuConfig(
     appId: normalized.appId,
     enabled: normalized.enabled,
     updatedAt: normalized.updatedAt || new Date().toISOString(),
+    ownerOpenId: normalized.ownerOpenId,
     secret: encryptChannelSecret<FeishuSecretPayload>({
       appSecret: normalized.appSecret,
     }),
@@ -3136,6 +3141,24 @@ export function saveUserFeishuConfig(
   fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
   fs.renameSync(tmp, filePath);
   return normalized;
+}
+
+/**
+ * Update only the ownerOpenId in an existing Feishu config file, preserving the encrypted secret.
+ */
+export function saveFeishuOwnerOpenId(userId: string, openId: string): void {
+  const filePath = path.join(userImDir(userId), 'feishu.json');
+  try {
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    parsed.ownerOpenId = openId;
+    const tmp = `${filePath}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(parsed, null, 2) + '\n', 'utf-8');
+    fs.renameSync(tmp, filePath);
+    logger.info({ userId, openId }, 'Feishu owner open_id saved');
+  } catch (err) {
+    logger.warn({ err, userId }, 'Failed to save Feishu owner open_id');
+  }
 }
 
 export function getUserTelegramConfig(

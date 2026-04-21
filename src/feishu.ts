@@ -67,6 +67,8 @@ export interface ConnectOptions {
   isSenderAllowedInGroup?: (chatJid: string, senderImId?: string) => boolean;
   /** 飞书流式卡片按钮中断回调 */
   onCardInterrupt?: (chatJid: string) => void;
+  /** P2P（私聊）消息到达时调用，用于自动检测 bot owner 的 open_id */
+  onP2pSender?: (senderOpenId: string) => void;
 }
 
 export interface FeishuChatInfo {
@@ -801,6 +803,7 @@ export function createFeishuConnection(
       shouldProcessGroupMessage,
       isGroupOwnerMessage,
       isSenderAllowedInGroup,
+      onP2pSender,
     } = connectOptions || {};
     const {
       chatId,
@@ -868,6 +871,11 @@ export function createFeishuConnection(
 
     // 先注册会话，确保 resolveGroupFolder 能正确解析 folder（含首条文件消息场景）
     onNewChat?.(chatJid, resolvedChatName);
+
+    // P2P 消息：通知调用方用于自动检测 owner open_id
+    if (chatType === 'p2p' && senderOpenId && onP2pSender) {
+      onP2pSender(senderOpenId);
+    }
 
     let attachmentsJson: string | undefined;
 
