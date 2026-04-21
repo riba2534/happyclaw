@@ -25,6 +25,14 @@ if [ -f /workspace/env-dir/env ]; then
   set +a
 fi
 
+# Prepend agent-runner 的本地 node_modules/.bin 到 PATH。
+# agent-runner/package.json 声明了 @anthropic-ai/claude-code 依赖，npm install
+# 会在 /app/node_modules/.bin/claude 生成 shim。但若不把该目录加入 PATH，
+# agent-runner 内 `which claude` 找不到 CLI，SDK 会 fallback 到空的 native
+# binary optionalDependency（@anthropic-ai/claude-agent-sdk-linux-x64 等）
+# 导致 "Native CLI binary for linux-x64 not found" 启动失败。
+export PATH="/app/node_modules/.bin:${PATH}"
+
 # Discover and link skills (builtin → project → user, higher priority overwrites)
 # Only remove entries that conflict with mounted skills (non-symlink with same name),
 # preserving any skills the agent created directly in .claude/skills/.

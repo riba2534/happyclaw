@@ -1332,6 +1332,20 @@ export async function runHostAgent(
       if (!hostEnv[key]) hostEnv[key] = value;
     }
 
+    // Ensure the resolved claude binary path takes precedence over any stub in node_modules/.bin/
+    // 新版本 SDK (0.2.114+) 内部使用 which 查找 claude CLI，但 node_modules/.bin/claude
+    // 可能是 stub。通过 which 找到的实际路径应该优先被找到。
+    if (capResult.resolvedPaths['claude']) {
+      const resolvedClaudeDir = path.dirname(capResult.resolvedPaths['claude']);
+      // 将 resolved claude 所在目录放到 PATH 最前面，确保优先找到
+      const currentPath = hostEnv['PATH'] || process.env.PATH || '';
+      hostEnv['PATH'] = `${resolvedClaudeDir}:${currentPath}`;
+      logger.info(
+        { group: group.name, resolvedClaudeDir, resolvedPath: capResult.resolvedPaths['claude'] },
+        'Host preflight: using resolved claude from which',
+      );
+    }
+
     // 6. 编译检查
     const projectRoot = process.cwd();
     const agentRunnerRoot = path.join(projectRoot, 'container', 'agent-runner');

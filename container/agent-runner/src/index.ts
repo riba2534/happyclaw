@@ -16,6 +16,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { execFileSync } from 'child_process';
 import { query, HookCallback, PreCompactHookInput, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { detectImageMimeTypeFromBase64Strict } from './image-detector.js';
 import { pruneProcessedHistoryImagesInTranscript as pruneProcessedHistoryImagesInTranscriptFile } from './history-image-prune.js';
@@ -1277,10 +1278,37 @@ async function runQuery(
     flagSettings.autoCompactWindow = autoCompactWindow;
   }
 
+  // Resolve the actual claude CLI path using `which`.
+  // SDK 的 optionalDependencies（@anthropic-ai/claude-agent-sdk-linux-x64 等）在 npm 上是空包，
+  // 无法通过 node_modules/.bin/ 找到 working binary。通过 which 找到实际路径后传给 SDK。
+  let pathToClaudeCodeExecutable: string | undefined;
+  try {
+    const resolvedPath = execFileSync('which', ['claude'], { timeout: 5_000, encoding: 'utf-8' }).trim();
+    if (resolvedPath) {
+      pathToClaudeCodeExecutable = resolvedPath;
+    }
+  } catch {
+    // Fallback: try to find it in common locations
+    const commonPaths = [
+      '/usr/local/bin/claude',
+      '/usr/bin/claude',
+      path.join(process.env.HOME || '/root', '.local/bin/claude'),
+      // 容器内 agent-runner 的本地依赖（package.json 声明了 @anthropic-ai/claude-code）
+      '/app/node_modules/.bin/claude',
+    ];
+    for (const p of commonPaths) {
+      if (fs.existsSync(p)) {
+        pathToClaudeCodeExecutable = p;
+        break;
+      }
+    }
+  }
+
   try {
     const q = query({
     prompt: stream,
     options: {
+      ...(pathToClaudeCodeExecutable && { pathToClaudeCodeExecutable }),
       model: CLAUDE_MODEL,
       cwd: WORKSPACE_GROUP,
       additionalDirectories: extraDirs,
