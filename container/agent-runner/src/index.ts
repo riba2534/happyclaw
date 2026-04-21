@@ -1107,6 +1107,9 @@ async function runQuery(
   let queryRef: { interrupt(): Promise<void> } | null = null;
   let messageCount = 0;
   let resultCount = 0;
+  // SDK transport is not ready until system/init is received. Piping user messages
+  // before init causes "ProcessTransport is not ready for writing" unhandled rejection.
+  let sdkTransportReady = false;
 
   const pollIpcDuringQuery = () => {
     if (!ipcPolling) return;
@@ -1171,6 +1174,13 @@ async function runQuery(
       log('Stream already ended, skipping IPC drain (messages will be picked up by waitForIpcMessage)');
       ipcPolling = false;
       ipcQueryWatcher.close();
+      return;
+    }
+
+    // Don't pipe user messages before system/init — the SDK ProcessTransport is not
+    // ready yet and streamInput() will throw "ProcessTransport is not ready for writing".
+    // IPC files remain on disk; we'll drain them once sdkTransportReady is set.
+    if (!sdkTransportReady) {
       return;
     }
 
@@ -1417,6 +1427,9 @@ async function runQuery(
     if (message.type === 'system' && message.subtype === 'init') {
       newSessionId = message.session_id;
       log(`Session initialized: ${newSessionId}`);
+      // Mark transport ready and drain any IPC messages that arrived before init.
+      sdkTransportReady = true;
+      pollIpcDuringQuery();
 
       // Log skills and context usage for observability.
       // getContextUsage() is a newer SDK API; feature-detect to avoid spamming
@@ -2153,6 +2166,14 @@ process.on('unhandledRejection', (reason: unknown) => {
   }
   if (isWithinInterruptGraceWindow()) {
     console.error('Unhandled rejection during interrupt (non-fatal):', reason);
+    return;
+  }
+  // SDK throws this when streamInput() is called before the ProcessTransport is ready.
+  // The sdkTransportReady guard in pollIpcDuringQuery should prevent this, but catch
+  // it here as a safety net to avoid crashing the agent on any residual race windows.
+  const msg = reason instanceof Error ? reason.message : String(reason);
+  if (msg.includes('ProcessTransport is not ready for writing')) {
+    console.error('Suppressing ProcessTransport race (non-fatal):', reason);
     return;
   }
   console.error('Unhandled rejection:', reason);
