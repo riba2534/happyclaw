@@ -14,7 +14,12 @@ import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
 import WebSocket from 'ws';
-import { storeChatMetadata, storeMessageDirect, updateChatName } from './db.js';
+import {
+  getRegisteredGroup,
+  storeChatMetadata,
+  storeMessageDirect,
+  updateChatName,
+} from './db.js';
 import { notifyNewImMessage } from './message-notifier.js';
 import { broadcastNewMessage } from './web.js';
 import { logger } from './logger.js';
@@ -1324,7 +1329,8 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
       if (!userOpenId) return;
 
       const jid = `qq:c2c:${userOpenId}`;
-      const senderName = data.author?.username || `QQ用户`;
+      const realName = (data.author?.username || '').trim();
+      const senderName = realName || `QQ用户`;
       const chatName = senderName;
 
       // Strip bot mention from content
@@ -1365,8 +1371,21 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
 
       // ── Authorized: process message ──
       storeChatMetadata(jid, new Date().toISOString());
-      updateChatName(jid, chatName);
-      opts.onNewChat(jid, chatName);
+
+      // QQ C2C payloads usually omit author.username, so naively writing
+      // chatName here would clobber user-set names (the rename API writes
+      // to both chats.name and registered_groups.name).  Only persist when
+      // the platform gave us a real username; otherwise pass the existing
+      // registered name through so buildOnNewChat's diff guard leaves it
+      // untouched, and fall back to the placeholder only for first-time
+      // registration.
+      if (realName) {
+        updateChatName(jid, realName);
+        opts.onNewChat(jid, realName);
+      } else {
+        const existing = getRegisteredGroup(jid);
+        opts.onNewChat(jid, existing?.name ?? chatName);
+      }
 
       // Handle slash commands
       const slashMatch = content.match(/^\/(\S+)(?:\s+(.*))?$/i);
@@ -1517,8 +1536,17 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
 
       // ── Authorized: process message ──
       storeChatMetadata(jid, new Date().toISOString());
-      updateChatName(jid, chatName);
-      opts.onNewChat(jid, chatName);
+
+      // QQ group payloads don't carry a group name; chatName is always a
+      // placeholder derived from groupOpenId.  Only write it on first-time
+      // registration — otherwise we'd clobber user-set names (rename API).
+      const existing = getRegisteredGroup(jid);
+      if (!existing) {
+        updateChatName(jid, chatName);
+        opts.onNewChat(jid, chatName);
+      } else {
+        opts.onNewChat(jid, existing.name ?? chatName);
+      }
 
       // Handle slash commands
       const slashMatch = content.match(/^\/(\S+)(?:\s+(.*))?$/i);
