@@ -16,6 +16,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { createRequire } from 'module';
 import { query, HookCallback, PreCompactHookInput, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { detectImageMimeTypeFromBase64Strict } from './image-detector.js';
 import { pruneProcessedHistoryImagesInTranscript as pruneProcessedHistoryImagesInTranscriptFile } from './history-image-prune.js';
@@ -55,6 +56,23 @@ const CLAUDE_MODEL = process.env.ANTHROPIC_MODEL || 'opus[1m]';
 const IPC_INPUT_DIR = path.join(WORKSPACE_IPC, 'input');
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_FALLBACK_POLL_MS = 5000; // 后备轮询间隔（仅防止 inotify 事件丢失）
+
+// SDK 0.2.116 在 linux 上优先解析 musl 变体（sdk.mjs:W7），只检查包存在、不验证 binary
+// 能执行；glibc 系统上 musl binary 缺 ld-musl 会 ENOENT。显式指向当前 libc 的变体。
+// 上游修复 libc 检测后可移除。
+const agentRunnerRequire = createRequire(import.meta.url);
+function resolveClaudeBinary(): string | undefined {
+  if (process.platform !== 'linux') return undefined;
+  const report = (process as { report?: { getReport?: () => { header?: { glibcVersionRuntime?: string } } } }).report?.getReport?.();
+  const isMusl = !report?.header?.glibcVersionRuntime;
+  const variant = isMusl ? `linux-${process.arch}-musl` : `linux-${process.arch}`;
+  try {
+    return agentRunnerRequire.resolve(`@anthropic-ai/claude-agent-sdk-${variant}/claude`);
+  } catch {
+    return undefined;
+  }
+}
+const CLAUDE_BINARY_PATH = resolveClaudeBinary();
 
 
 let needsMemoryFlush = false;
@@ -1271,6 +1289,7 @@ async function runQuery(
     const q = query({
     prompt: stream,
     options: {
+      ...(CLAUDE_BINARY_PATH && { pathToClaudeCodeExecutable: CLAUDE_BINARY_PATH }),
       model: CLAUDE_MODEL,
       cwd: WORKSPACE_GROUP,
       additionalDirectories: extraDirs,
