@@ -12,6 +12,7 @@ import { EmojiPicker } from '@/components/common/EmojiPicker';
 import { ColorPicker } from '@/components/common/ColorPicker';
 import { getErrorMessage } from './types';
 import { SettingsCard as Section } from './SettingsCard';
+import { SshKeySection } from './SshKeySection';
 
 /* ── Theme / Appearance selectors ─────────────────────────── */
 
@@ -419,7 +420,10 @@ export function ProfileSection() {
         </Button>
       </Section>
 
-      {/* ── 4. Password ── */}
+      {/* ── 4. SSH Key ── */}
+      <SshKeySection />
+
+      {/* ── 5. Password ── */}
       <Section icon={Lock} title="修改密码">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>

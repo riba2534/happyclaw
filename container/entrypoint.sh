@@ -33,6 +33,13 @@ fi
 # 导致 "Native CLI binary for linux-x64 not found" 启动失败。
 export PATH="/app/node_modules/.bin:${PATH}"
 
+# SSH key setup: if .ssh is mounted (read-only), configure git to use it.
+# The mount is read-only so we can't chown; use GIT_SSH_COMMAND to bypass
+# OpenSSH's strict permission checks on the key file.
+if [ -d /home/node/.ssh ] && ls /home/node/.ssh/id_* >/dev/null 2>&1; then
+  export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/home/node/.ssh/known_hosts -o IdentitiesOnly=yes"
+fi
+
 # Discover and link skills (builtin → project → user, higher priority overwrites)
 # Only remove entries that conflict with mounted skills (non-symlink with same name),
 # preserving any skills the agent created directly in .claude/skills/.

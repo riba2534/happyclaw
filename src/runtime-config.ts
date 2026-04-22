@@ -3510,6 +3510,8 @@ export interface SystemSettings {
   // 关闭 admin host 模式下 HappyClaw 自带的 memory 注入层（MCP 工具、模板 CLAUDE.md、WORKSPACE_GLOBAL/MEMORY env）
   // 启用后 admin 可以在 host 模式下完全按原生 Claude Code 的 Playbook 使用 ~/.claude/ 下的 memory/skills/rules
   disableMemoryLayerForAdminHost: boolean;
+  // Docker 容器网络模式：'bridge'（默认隔离网络）| 'host'（共享宿主机网络栈，容器内 localhost 即宿主机）
+  containerNetworkMode: 'bridge' | 'host';
 }
 
 const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
@@ -3530,6 +3532,7 @@ const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
   externalClaudeDir: '',
   autoCompactWindow: 0,
   disableMemoryLayerForAdminHost: false,
+  containerNetworkMode: 'bridge',
 };
 
 function parseIntEnv(envVar: string | undefined, fallback: number): number {
@@ -3624,6 +3627,10 @@ function readSystemSettingsFromFile(): SystemSettings | null {
       typeof raw.disableMemoryLayerForAdminHost === 'boolean'
         ? raw.disableMemoryLayerForAdminHost
         : DEFAULT_SYSTEM_SETTINGS.disableMemoryLayerForAdminHost,
+    containerNetworkMode:
+      raw.containerNetworkMode === 'host'
+        ? 'host'
+        : DEFAULT_SYSTEM_SETTINGS.containerNetworkMode,
   };
 }
 
@@ -3688,6 +3695,10 @@ function buildEnvFallbackSettings(): SystemSettings {
     disableMemoryLayerForAdminHost:
       process.env.DISABLE_MEMORY_LAYER_FOR_ADMIN_HOST === 'true' ||
       DEFAULT_SYSTEM_SETTINGS.disableMemoryLayerForAdminHost,
+    containerNetworkMode:
+      process.env.CONTAINER_NETWORK_MODE === 'host'
+        ? 'host'
+        : DEFAULT_SYSTEM_SETTINGS.containerNetworkMode,
   };
 }
 
@@ -3782,6 +3793,11 @@ export function saveSystemSettings(
   } else if (merged.autoCompactWindow > 0) {
     if (merged.autoCompactWindow < 10000) merged.autoCompactWindow = 10000;
     if (merged.autoCompactWindow > 2000000) merged.autoCompactWindow = 2000000;
+  }
+
+  // Validate containerNetworkMode
+  if (merged.containerNetworkMode !== 'host') {
+    merged.containerNetworkMode = 'bridge';
   }
 
   // Validate externalClaudeDir: must be empty or an absolute directory path

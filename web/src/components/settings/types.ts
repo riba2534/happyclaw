@@ -105,6 +105,7 @@ export interface SystemSettings {
   externalClaudeDir: string;
   autoCompactWindow: number;
   disableMemoryLayerForAdminHost: boolean;
+  containerNetworkMode: 'bridge' | 'host';
 }
 
 // ─── OAuth Usage ────────────────────────────────────────────

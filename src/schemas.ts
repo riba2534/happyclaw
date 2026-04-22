@@ -245,6 +245,7 @@ export const SystemSettingsSchema = z.object({
     )
     .optional(),
   disableMemoryLayerForAdminHost: z.boolean().optional(),
+  containerNetworkMode: z.enum(['bridge', 'host']).optional(),
 });
 
 export const AppearanceConfigSchema = z.object({

@@ -484,6 +484,20 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // Per-user SSH keys: mount user's SSH directory (read-only) for git clone via SSH
+  if (ownerId) {
+    const userSshDir = path.join(DATA_DIR, 'config', 'user-ssh', ownerId);
+    if (fs.existsSync(userSshDir) && fs.readdirSync(userSshDir).some(
+      (f) => f.startsWith('id_'),
+    )) {
+      mounts.push({
+        hostPath: userSshDir,
+        containerPath: '/home/node/.ssh',
+        readonly: true,
+      });
+    }
+  }
+
   // Per-container environment file (keeps credentials out of process listings)
   // Global config merged with per-container overrides.
   const envDir = path.join(DATA_DIR, 'env', group.folder);
@@ -636,6 +650,14 @@ function buildContainerArgs(
   tz: string,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
+
+  const networkMode = getSystemSettings().containerNetworkMode;
+  if (networkMode === 'host') {
+    args.push('--network', 'host');
+  } else {
+    // bridge 模式下添加 host.docker.internal 映射（Linux 原生 Docker 无此内置别名）
+    args.push('--add-host', 'host.docker.internal:host-gateway');
+  }
 
   // Set timezone so container Node.js processes use local time (Asia/Shanghai)
   args.push('-e', `TZ=${tz}`);

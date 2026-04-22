@@ -153,6 +153,7 @@ export function SystemSettingsSection() {
   const [billingCurrencyRate, setBillingCurrencyRate] = useState(1);
   const [externalClaudeDir, setExternalClaudeDir] = useState('');
   const [disableMemoryLayerForAdminHost, setDisableMemoryLayerForAdminHost] = useState(false);
+  const [containerNetworkMode, setContainerNetworkMode] = useState<'bridge' | 'host'>('bridge');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -179,6 +180,7 @@ export function SystemSettingsSection() {
         setBillingCurrencyRate(data.billingCurrencyRate ?? 1);
         setExternalClaudeDir(data.externalClaudeDir ?? '');
         setDisableMemoryLayerForAdminHost(data.disableMemoryLayerForAdminHost ?? false);
+        setContainerNetworkMode(data.containerNetworkMode ?? 'bridge');
       } catch (err) {
         toast.error(getErrorMessage(err, '加载系统参数失败'));
       } finally {
@@ -225,6 +227,7 @@ export function SystemSettingsSection() {
         billingCurrencyRate,
         externalClaudeDir,
         disableMemoryLayerForAdminHost,
+        containerNetworkMode,
       };
       for (const f of fields) {
         const val = displayValues[f.key];
@@ -245,6 +248,7 @@ export function SystemSettingsSection() {
       setBillingCurrencyRate(data.billingCurrencyRate ?? 1);
       setExternalClaudeDir(data.externalClaudeDir ?? '');
       setDisableMemoryLayerForAdminHost(data.disableMemoryLayerForAdminHost ?? false);
+      setContainerNetworkMode(data.containerNetworkMode ?? 'bridge');
       // 刷新计费状态，更新导航栏可见性
       loadBillingStatus();
       toast.success('系统参数已保存，新参数将对后续启动的容器/进程生效');
@@ -421,6 +425,28 @@ export function SystemSettingsSection() {
             </div>
           </>
         )}
+      </div>
+
+      {/* Docker 容器网络模式 */}
+      <div className="border-t border-border pt-6 space-y-5">
+        <h3 className="text-sm font-semibold text-foreground">Docker 容器网络</h3>
+        <div className="flex items-center justify-between">
+          <div className="flex-1 pr-4">
+            <Label>容器网络模式</Label>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              bridge（默认）：容器使用独立网络，通过 host.docker.internal 访问宿主机。
+              host：容器直接共享宿主机网络栈，容器内 localhost 即宿主机，可直接使用宿主机代理。
+            </p>
+          </div>
+          <select
+            className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+            value={containerNetworkMode}
+            onChange={(e) => setContainerNetworkMode(e.target.value as 'bridge' | 'host')}
+          >
+            <option value="bridge">bridge（默认）</option>
+            <option value="host">host</option>
+          </select>
+        </div>
       </div>
 
       {/* 禁用 HappyClaw 记忆层（admin 主容器专用） */}
