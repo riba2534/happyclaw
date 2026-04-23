@@ -97,7 +97,7 @@ async function getContainerClaudeCodeVersion(): Promise<string | null> {
     const { stdout } = await execFileAsync(
       'docker',
       [
-        'run', '--rm', '--entrypoint', 'claude',
+        'run', '--rm', '--entrypoint', '/app/node_modules/.bin/claude',
         CONTAINER_IMAGE, '--version',
       ],
       { timeout: 30000 },
