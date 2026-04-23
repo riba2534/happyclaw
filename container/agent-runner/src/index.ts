@@ -17,6 +17,7 @@
 import fs from 'fs';
 import path from 'path';
 import { execFileSync } from 'child_process';
+import { createRequire } from 'module';
 import { query, HookCallback, PreCompactHookInput, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { detectImageMimeTypeFromBase64Strict } from './image-detector.js';
 import { pruneProcessedHistoryImagesInTranscript as pruneProcessedHistoryImagesInTranscriptFile } from './history-image-prune.js';
@@ -52,6 +53,42 @@ const WORKSPACE_IPC = process.env.HAPPYCLAW_WORKSPACE_IPC || '/workspace/ipc';
 // 别名自动解析为最新版本，如 opus → Opus 4.6
 // [1m] 后缀启用 1M 上下文窗口（CLI 内部 jG() 识别后缀，sM() 返回 1M 窗口）
 const CLAUDE_MODEL = process.env.ANTHROPIC_MODEL || 'opus[1m]';
+const require = createRequire(import.meta.url);
+
+function resolveClaudeExecutable(): string | undefined {
+  const explicit = process.env.CLAUDE_CODE_EXECUTABLE?.trim();
+  if (explicit) return explicit;
+
+  if (process.platform !== 'linux' || process.arch !== 'x64') {
+    return undefined;
+  }
+
+  const report = process.report?.getReport?.() as {
+    header?: { glibcVersionRuntime?: string };
+  } | undefined;
+
+  const candidates = report?.header?.glibcVersionRuntime
+    ? [
+        '@anthropic-ai/claude-agent-sdk-linux-x64/claude',
+        '@anthropic-ai/claude-agent-sdk-linux-x64-musl/claude',
+      ]
+    : [
+        '@anthropic-ai/claude-agent-sdk-linux-x64-musl/claude',
+        '@anthropic-ai/claude-agent-sdk-linux-x64/claude',
+      ];
+
+  for (const candidate of candidates) {
+    try {
+      return require.resolve(candidate);
+    } catch {
+      // try next candidate
+    }
+  }
+
+  return undefined;
+}
+
+const CLAUDE_CODE_EXECUTABLE = resolveClaudeExecutable();
 
 const IPC_INPUT_DIR = path.join(WORKSPACE_IPC, 'input');
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
@@ -1180,7 +1217,7 @@ async function runQuery(
     const q = query({
     prompt: stream,
     options: {
-      ...(pathToClaudeCodeExecutable && { pathToClaudeCodeExecutable }),
+      ...(CLAUDE_CODE_EXECUTABLE ? { pathToClaudeCodeExecutable: CLAUDE_CODE_EXECUTABLE } : {}),
       model: CLAUDE_MODEL,
       cwd: WORKSPACE_GROUP,
       additionalDirectories: extraDirs,

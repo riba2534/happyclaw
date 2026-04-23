@@ -36,6 +36,7 @@ import {
   getEnabledProviders,
   getFeishuProviderConfigWithSource,
   getAppearanceConfig,
+  providerToConfig,
 } from '../runtime-config.js';
 import {
   verifyPassword,
@@ -100,13 +101,14 @@ function buildSetupStatus() {
   // causing getClaudeProviderConfig() (first-match) to return an unconfigured provider.
   const providers = getEnabledProviders();
   const claudeConfigured = providers.some((p) => {
+    const resolved = providerToConfig(p);
     const hasOfficial =
-      !!p.claudeCodeOauthToken?.trim() ||
-      !!p.claudeOAuthCredentials ||
-      !!p.anthropicApiKey?.trim();
+      !!resolved.claudeCodeOauthToken?.trim() ||
+      !!resolved.claudeOAuthCredentials ||
+      !!resolved.anthropicApiKey?.trim();
     const hasThirdParty = !!(
-      p.anthropicBaseUrl?.trim() &&
-      p.anthropicAuthToken?.trim()
+      resolved.anthropicBaseUrl?.trim() &&
+      resolved.anthropicAuthToken?.trim()
     );
     return hasOfficial || hasThirdParty;
   });

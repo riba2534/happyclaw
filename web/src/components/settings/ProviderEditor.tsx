@@ -10,6 +10,7 @@ import {
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
 import { api } from '../../api/client';
 import type { ProviderWithHealth, EnvRow } from './types';
 import { getErrorMessage } from './types';
@@ -84,6 +85,8 @@ export function ProviderEditor({
   const [baseUrl, setBaseUrl] = useState('');
   const [model, setModel] = useState('');
   const [weight, setWeight] = useState(1);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [useGlobalSettings, setUseGlobalSettings] = useState(false);
 
   // 官方认证
   const [authTab, setAuthTab] = useState<OfficialAuthTab>('oauth');
@@ -117,6 +120,8 @@ export function ProviderEditor({
       setBaseUrl('');
       setModel('');
       setWeight(1);
+      setShowAdvanced(false);
+      setUseGlobalSettings(false);
       setAuthTab('oauth');
       setSetupToken('');
       setApiKey('');
@@ -132,6 +137,8 @@ export function ProviderEditor({
       setBaseUrl(provider.anthropicBaseUrl || '');
       setModel(provider.anthropicModel || '');
       setWeight(provider.weight);
+      setShowAdvanced(provider.weight !== 1);
+      setUseGlobalSettings(provider.useGlobalSettings);
       setAuthTab('oauth');
       setSetupToken('');
       setApiKey('');
@@ -223,6 +230,7 @@ export function ProviderEditor({
         const createBody: Record<string, unknown> = {
           name: trimmedName,
           type: providerType,
+          useGlobalSettings,
           customEnv: envResult.customEnv,
           weight,
         };
@@ -230,29 +238,31 @@ export function ProviderEditor({
         if (providerType === 'third_party') {
           const trimmedBaseUrl = baseUrl.trim();
           const trimmedToken = authToken.trim();
-          if (!trimmedBaseUrl) {
+          if (!useGlobalSettings && !trimmedBaseUrl) {
             setError('请填写 ANTHROPIC_BASE_URL');
             setSaving(false);
             return;
           }
-          if (!trimmedToken) {
+          if (!useGlobalSettings && !trimmedToken) {
             setError('新建第三方提供商时必须填写 ANTHROPIC_AUTH_TOKEN');
             setSaving(false);
             return;
           }
-          createBody.anthropicBaseUrl = trimmedBaseUrl;
-          createBody.anthropicAuthToken = trimmedToken;
+          if (trimmedBaseUrl) createBody.anthropicBaseUrl = trimmedBaseUrl;
+          if (trimmedToken) createBody.anthropicAuthToken = trimmedToken;
         } else {
           // 官方模式 — 根据认证方式设置凭据
           if (authTab === 'setup_token') {
             const trimmed = setupToken.trim();
-            if (!trimmed) {
+            if (!trimmed && !useGlobalSettings) {
               setError('请填写 setup-token 或粘贴 .credentials.json 内容');
               setSaving(false);
               return;
             }
-            // 检测是否为 .credentials.json
-            if (trimmed.startsWith('{')) {
+            if (!trimmed) {
+              // 留空时完全继承全局 settings
+            } else if (trimmed.startsWith('{')) {
+              // 检测是否为 .credentials.json
               try {
                 const parsed = JSON.parse(trimmed) as Record<string, unknown>;
                 const oauth = parsed.claudeAiOauth as Record<string, unknown> | undefined;
@@ -276,12 +286,12 @@ export function ProviderEditor({
             }
           } else if (authTab === 'api_key') {
             const trimmed = apiKey.trim();
-            if (!trimmed) {
+            if (!trimmed && !useGlobalSettings) {
               setError('请填写 Anthropic API Key');
               setSaving(false);
               return;
             }
-            createBody.anthropicApiKey = trimmed;
+            if (trimmed) createBody.anthropicApiKey = trimmed;
           } else {
             // OAuth 模式 — 不需要凭据，通过 OAuth 流程设置
             // 允许不带凭据创建，用户之后通过 OAuth 流程补充
@@ -296,6 +306,7 @@ export function ProviderEditor({
         // ── 编辑模式 ──
         const patchBody: Record<string, unknown> = {
           name: trimmedName,
+          useGlobalSettings,
           customEnv: envResult.customEnv,
           weight,
         };
@@ -303,9 +314,7 @@ export function ProviderEditor({
         if (providerType === 'third_party') {
           patchBody.anthropicBaseUrl = baseUrl.trim();
         }
-        if (model.trim()) {
-          patchBody.anthropicModel = model.trim();
-        }
+        patchBody.anthropicModel = model.trim();
 
         await api.patch(`/api/config/claude/providers/${provider!.id}`, patchBody);
 
@@ -435,6 +444,23 @@ export function ProviderEditor({
             />
           </div>
 
+          <div className="rounded-lg border border-border p-3 space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium text-foreground">读取宿主机全局 settings</div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  从 ~/.claude/settings.json 读取基础配置；当前表单中非空字段会覆盖全局值，留空则继承全局值。
+                </p>
+              </div>
+              <Switch
+                checked={useGlobalSettings}
+                onCheckedChange={setUseGlobalSettings}
+                disabled={saving || oauthExchanging}
+                aria-label="读取宿主机全局 settings"
+              />
+            </div>
+          </div>
+
           {/* ─── 官方模式 ─── */}
           {providerType === 'official' && (
             <div className="space-y-4">
@@ -541,7 +567,9 @@ export function ProviderEditor({
                     placeholder={
                       !isCreate && (provider?.hasClaudeCodeOauthToken || provider?.hasClaudeOAuthCredentials)
                         ? '输入新值覆盖'
-                        : '粘贴 setup-token 或 cat ~/.claude/.credentials.json 输出'
+                        : useGlobalSettings
+                          ? '留空继承全局 settings，或粘贴 setup-token / .credentials.json 覆盖'
+                          : '粘贴 setup-token 或 cat ~/.claude/.credentials.json 输出'
                     }
                   />
                   <p className="text-xs text-muted-foreground">
@@ -571,7 +599,9 @@ export function ProviderEditor({
                     placeholder={
                       !isCreate && provider?.hasAnthropicApiKey
                         ? '输入新值覆盖'
-                        : 'sk-ant-api03-...'
+                        : useGlobalSettings
+                          ? '留空继承全局 settings'
+                          : 'sk-ant-api03-...'
                     }
                     className="font-mono"
                   />
@@ -602,7 +632,7 @@ export function ProviderEditor({
                   value={baseUrl}
                   onChange={(e) => setBaseUrl(e.target.value)}
                   disabled={saving}
-                  placeholder="https://your-relay.example.com/v1"
+                  placeholder={useGlobalSettings ? '留空继承全局 settings' : 'https://your-relay.example.com/v1'}
                 />
               </div>
 
@@ -624,10 +654,14 @@ export function ProviderEditor({
                   disabled={saving || clearTokenOnSave}
                   placeholder={
                     isCreate
-                      ? '输入 Token（必填）'
+                      ? useGlobalSettings
+                        ? '留空继承全局 settings；输入新值可覆盖'
+                        : '输入 Token（必填）'
                       : provider?.hasAnthropicAuthToken
                         ? '留空不变；输入新值覆盖'
-                        : '输入 Token（可选）'
+                        : useGlobalSettings
+                          ? '留空继承全局 settings'
+                          : '输入 Token（可选）'
                   }
                 />
                 {!isCreate && provider?.hasAnthropicAuthToken && (
@@ -679,7 +713,7 @@ export function ProviderEditor({
                   value={model}
                   onChange={(e) => setModel(e.target.value)}
                   disabled={saving}
-                  placeholder="第三方 API 的模型名称"
+                  placeholder={useGlobalSettings ? '留空继承全局 settings' : '第三方 API 的模型名称'}
                   className="font-mono"
                 />
                 <p className="text-xs text-muted-foreground mt-1">

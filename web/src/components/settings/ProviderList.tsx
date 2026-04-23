@@ -167,6 +167,11 @@ export function ProviderList({
                           权重 {provider.weight}
                         </span>
                       )}
+                      {provider.useGlobalSettings && (
+                        <span className="text-[11px] px-1.5 py-0.5 rounded shrink-0 bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-300">
+                          全局 settings
+                        </span>
+                      )}
                     </div>
 
                     <div className="flex items-center gap-1.5 shrink-0">

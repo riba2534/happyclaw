@@ -313,6 +313,7 @@ interface StoredProviderV4 {
   id: string;
   name: string;
   type: 'official' | 'third_party';
+  useGlobalSettings?: boolean;
   enabled: boolean;
   weight: number;
   anthropicBaseUrl: string;
@@ -334,6 +335,7 @@ export interface UnifiedProvider {
   id: string;
   name: string;
   type: 'official' | 'third_party';
+  useGlobalSettings: boolean;
   enabled: boolean;
   weight: number;
   anthropicBaseUrl: string;
@@ -351,6 +353,7 @@ export interface UnifiedProviderPublic {
   id: string;
   name: string;
   type: 'official' | 'third_party';
+  useGlobalSettings: boolean;
   enabled: boolean;
   weight: number;
   anthropicBaseUrl: string;
@@ -1001,6 +1004,7 @@ function toStoredProviderV4(provider: UnifiedProvider): StoredProviderV4 {
     id: provider.id,
     name: provider.name,
     type: provider.type,
+    useGlobalSettings: provider.useGlobalSettings,
     enabled: provider.enabled,
     weight: Math.max(1, Math.min(100, provider.weight || 1)),
     anthropicBaseUrl: provider.anthropicBaseUrl || '',
@@ -1019,6 +1023,7 @@ function fromStoredProviderV4(stored: StoredProviderV4): UnifiedProvider {
     id: stored.id,
     name: stored.name,
     type: stored.type,
+    useGlobalSettings: stored.useGlobalSettings === true,
     enabled: stored.enabled,
     weight: Math.max(1, Math.min(100, stored.weight || 1)),
     anthropicBaseUrl: stored.anthropicBaseUrl || '',
@@ -1052,6 +1057,7 @@ function migrateV3toV4(v3: ClaudeStoredStateV3Resolved): {
       id: OFFICIAL_CLAUDE_PROFILE_ID,
       name: '官方 Claude',
       type: 'official',
+      useGlobalSettings: false,
       enabled: isOfficialClaudeMode(v3.activeProfileId),
       weight: 1,
       anthropicBaseUrl: '',
@@ -1072,6 +1078,7 @@ function migrateV3toV4(v3: ClaudeStoredStateV3Resolved): {
       id: profile.id,
       name: profile.name,
       type: 'third_party',
+      useGlobalSettings: false,
       enabled: profile.id === v3.activeProfileId,
       weight: 1,
       anthropicBaseUrl: profile.anthropicBaseUrl,
@@ -1235,6 +1242,7 @@ export function saveBalancingConfig(
 export function createProvider(input: {
   name: string;
   type: 'official' | 'third_party';
+  useGlobalSettings?: boolean;
   anthropicBaseUrl?: string;
   anthropicAuthToken?: string;
   anthropicModel?: string;
@@ -1259,6 +1267,7 @@ export function createProvider(input: {
     id: crypto.randomBytes(8).toString('hex'),
     name: normalizeProfileName(input.name),
     type: input.type,
+    useGlobalSettings: input.useGlobalSettings === true,
     enabled: input.enabled ?? state.providers.length === 0,
     weight: Math.max(1, Math.min(100, input.weight ?? 1)),
     anthropicBaseUrl: input.anthropicBaseUrl
@@ -1292,6 +1301,7 @@ export function updateProvider(
   id: string,
   patch: {
     name?: string;
+    useGlobalSettings?: boolean;
     anthropicBaseUrl?: string;
     anthropicModel?: string;
     customEnv?: Record<string, string>;
@@ -1309,6 +1319,9 @@ export function updateProvider(
     ...current,
     ...(patch.name !== undefined
       ? { name: normalizeProfileName(patch.name) }
+      : {}),
+    ...(patch.useGlobalSettings !== undefined
+      ? { useGlobalSettings: patch.useGlobalSettings === true }
       : {}),
     ...(patch.anthropicBaseUrl !== undefined
       ? { anthropicBaseUrl: normalizeBaseUrl(patch.anthropicBaseUrl) }
@@ -1446,13 +1459,19 @@ export function deleteProvider(id: string): void {
 export function providerToConfig(
   provider: UnifiedProvider,
 ): ClaudeProviderConfig {
+  const global = provider.useGlobalSettings
+    ? getClaudeGlobalSettingsConfig()
+    : null;
   return {
-    anthropicBaseUrl: provider.anthropicBaseUrl,
-    anthropicAuthToken: provider.anthropicAuthToken,
-    anthropicApiKey: provider.anthropicApiKey,
-    claudeCodeOauthToken: provider.claudeCodeOauthToken,
-    claudeOAuthCredentials: provider.claudeOAuthCredentials,
-    anthropicModel: provider.anthropicModel,
+    anthropicBaseUrl: provider.anthropicBaseUrl || global?.anthropicBaseUrl || '',
+    anthropicAuthToken:
+      provider.anthropicAuthToken || global?.anthropicAuthToken || '',
+    anthropicApiKey: provider.anthropicApiKey || global?.anthropicApiKey || '',
+    claudeCodeOauthToken:
+      provider.claudeCodeOauthToken || global?.claudeCodeOauthToken || '',
+    claudeOAuthCredentials:
+      provider.claudeOAuthCredentials ?? global?.claudeOAuthCredentials ?? null,
+    anthropicModel: provider.anthropicModel || global?.anthropicModel || '',
     updatedAt: provider.updatedAt,
   };
 }
@@ -1465,6 +1484,7 @@ export function toPublicProvider(
     id: provider.id,
     name: provider.name,
     type: provider.type,
+    useGlobalSettings: provider.useGlobalSettings,
     enabled: provider.enabled,
     weight: provider.weight,
     anthropicBaseUrl: provider.anthropicBaseUrl,
@@ -1516,6 +1536,62 @@ export function resolveProviderById(providerId: string): {
     config: providerToConfig(provider),
     customEnv: provider.customEnv,
   };
+}
+
+function getClaudeGlobalSettingsConfig(): ClaudeProviderConfig | null {
+  const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+  try {
+    if (!fs.existsSync(settingsPath)) return null;
+    const parsed = JSON.parse(
+      fs.readFileSync(settingsPath, 'utf-8'),
+    ) as Record<string, unknown>;
+    const env =
+      parsed.env && typeof parsed.env === 'object'
+        ? (parsed.env as Record<string, unknown>)
+        : {};
+
+    const anthropicBaseUrl =
+      typeof env.ANTHROPIC_BASE_URL === 'string'
+        ? env.ANTHROPIC_BASE_URL
+        : typeof env.ANTHROPIC_FOUNDRY_BASE_URL === 'string'
+          ? env.ANTHROPIC_FOUNDRY_BASE_URL
+          : '';
+    const anthropicApiKey =
+      typeof env.ANTHROPIC_API_KEY === 'string'
+        ? env.ANTHROPIC_API_KEY
+        : typeof env.ANTHROPIC_FOUNDRY_API_KEY === 'string'
+          ? env.ANTHROPIC_FOUNDRY_API_KEY
+          : typeof parsed.apiKeyHelper === 'string' && parsed.apiKeyHelper.trim()
+            ? '__GLOBAL_API_KEY_HELPER__'
+            : '';
+    const anthropicModel =
+      typeof parsed.model === 'string'
+        ? parsed.model
+        : typeof env.ANTHROPIC_MODEL === 'string'
+          ? env.ANTHROPIC_MODEL
+          : typeof env.ANTHROPIC_DEFAULT_SONNET_MODEL === 'string'
+            ? env.ANTHROPIC_DEFAULT_SONNET_MODEL
+            : '';
+
+    const raw = {
+      anthropicBaseUrl,
+      anthropicAuthToken:
+        typeof env.ANTHROPIC_AUTH_TOKEN === 'string'
+          ? env.ANTHROPIC_AUTH_TOKEN
+          : '',
+      anthropicApiKey,
+      claudeCodeOauthToken:
+        typeof env.CLAUDE_CODE_OAUTH_TOKEN === 'string'
+          ? env.CLAUDE_CODE_OAUTH_TOKEN
+          : '',
+      claudeOAuthCredentials: null,
+      anthropicModel,
+    };
+    return buildConfig(raw, null);
+  } catch (err) {
+    logger.warn({ err, settingsPath }, 'Failed to read global Claude settings');
+    return null;
+  }
 }
 
 // ─── V3 compat layer (used by remaining V3 code paths) ───────────
@@ -2119,6 +2195,7 @@ export function updateClaudeThirdPartyProfile(
   profileId: string,
   patch: {
     name?: string;
+    useGlobalSettings?: boolean;
     anthropicBaseUrl?: string;
     anthropicModel?: string;
     customEnv?: Record<string, string>;

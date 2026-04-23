@@ -164,6 +164,7 @@ export const ClaudeThirdPartyProfileCreateSchema = z.object({
 export const ClaudeThirdPartyProfilePatchSchema = z
   .object({
     name: z.string().min(1).max(64).optional(),
+    useGlobalSettings: z.boolean().optional(),
     anthropicBaseUrl: z.string().max(2000).optional(),
     anthropicModel: z.string().max(128).optional(),
     customEnv: z.record(z.string().max(256), z.string().max(4096)).optional(),
@@ -640,6 +641,7 @@ export const UnifiedProviderCreateSchema = z
   .object({
     name: z.string().min(1).max(64),
     type: z.enum(['official', 'third_party']),
+    useGlobalSettings: z.boolean().optional(),
     anthropicBaseUrl: z.string().max(2000).optional(),
     anthropicAuthToken: z.string().max(2000).optional(),
     anthropicModel: z.string().max(128).optional(),
@@ -653,6 +655,7 @@ export const UnifiedProviderCreateSchema = z
   .superRefine((data, ctx) => {
     if (
       data.type === 'third_party' &&
+      !data.useGlobalSettings &&
       !data.anthropicBaseUrl?.trim() &&
       !data.anthropicAuthToken?.trim()
     ) {
@@ -667,6 +670,7 @@ export const UnifiedProviderCreateSchema = z
 export const UnifiedProviderPatchSchema = z
   .object({
     name: z.string().min(1).max(64).optional(),
+    useGlobalSettings: z.boolean().optional(),
     anthropicBaseUrl: z.string().max(2000).optional(),
     anthropicModel: z.string().max(128).optional(),
     customEnv: z.record(z.string().max(256), z.string().max(4096)).optional(),
@@ -675,6 +679,7 @@ export const UnifiedProviderPatchSchema = z
   .refine(
     (data) =>
       data.name !== undefined ||
+      data.useGlobalSettings !== undefined ||
       data.anthropicBaseUrl !== undefined ||
       data.anthropicModel !== undefined ||
       data.customEnv !== undefined ||

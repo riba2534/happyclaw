@@ -26,16 +26,16 @@ function buildCustomEnv(rows: EnvRow[]): { customEnv: Record<string, string>; er
   const customEnv: Record<string, string> = {};
   for (const [idx, row] of rows.entries()) {
     const key = row.key.trim();
-    const value = row.value.trim();
-    if (!key && !value) continue;
-    if (!key || !value) {
-      return { customEnv: {}, error: `第 ${idx + 1} 行环境变量的 Key 和 Value 都要填写` };
+    const value = row.value;
+    if (!key && !value.trim()) continue;
+    if (!key) {
+      return { customEnv: {}, error: `第 ${idx + 1} 行环境变量 Key 不能为空` };
     }
-    if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) {
-      return { customEnv: {}, error: `环境变量 Key "${key}" 格式无效（仅允许大写字母/数字/下划线，且不能数字开头）` };
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      return { customEnv: {}, error: `环境变量 Key "${key}" 格式无效（需匹配 [A-Za-z_][A-Za-z0-9_]*）` };
     }
     if (RESERVED_ENV_KEYS.has(key)) {
-      return { customEnv: {}, error: `${key} 属于系统保留字段，请在必填区域填写` };
+      return { customEnv: {}, error: `${key} 属于系统保留字段，请在配置表单中填写` };
     }
     if (customEnv[key] !== undefined) {
       return { customEnv: {}, error: `环境变量 Key "${key}" 重复` };
@@ -76,6 +76,7 @@ export function SetupProvidersPage() {
   const [authToken, setAuthToken] = useState('');
   const [model, setModel] = useState('');
   const [customEnvRows, setCustomEnvRows] = useState<EnvRow[]>([]);
+  const [useGlobalSettings, setUseGlobalSettings] = useState(false);
 
   useEffect(() => {
     if (user === null && initialized === true) {
@@ -148,23 +149,24 @@ export function SetupProvidersPage() {
     }
 
     let customEnv: Record<string, string> = {};
+    const envResult = buildCustomEnv(customEnvRows);
+    if (envResult.error) {
+      setError(envResult.error);
+      return;
+    }
+    customEnv = envResult.customEnv;
+
     if (providerMode === 'third_party') {
-      if (!baseUrl.trim()) {
-        setError('第三方渠道必须填写 ANTHROPIC_BASE_URL');
+      if (!useGlobalSettings && !baseUrl.trim()) {
+        setError('第三方渠道必须填写 ANTHROPIC_BASE_URL，或开启“读取宿主机全局 settings”');
         return;
       }
-      if (!authToken.trim()) {
-        setError('第三方渠道必须填写 ANTHROPIC_AUTH_TOKEN');
+      if (!useGlobalSettings && !authToken.trim()) {
+        setError('第三方渠道必须填写 ANTHROPIC_AUTH_TOKEN，或开启“读取宿主机全局 settings”');
         return;
       }
-      const envResult = buildCustomEnv(customEnvRows);
-      if (envResult.error) {
-        setError(envResult.error);
-        return;
-      }
-      customEnv = envResult.customEnv;
-    } else if (!officialToken.trim() && !apiKey.trim() && !oauthDone) {
-      setError('官方渠道请通过一键登录、填写 API Key 或手动填写 setup-token / .credentials.json');
+    } else if (!useGlobalSettings && !officialToken.trim() && !apiKey.trim() && !oauthDone) {
+      setError('官方渠道请通过一键登录、填写 API Key / setup-token，或开启“读取宿主机全局 settings”');
       return;
     }
 
@@ -186,6 +188,14 @@ export function SetupProvidersPage() {
             name: '官方 Claude (API Key)',
             type: 'official',
             anthropicApiKey: apiKey.trim(),
+            useGlobalSettings,
+            enabled: true,
+          });
+        } else if (useGlobalSettings) {
+          await api.post('/api/config/claude/providers', {
+            name: '官方 Claude (继承全局 settings)',
+            type: 'official',
+            useGlobalSettings: true,
             enabled: true,
           });
         } else {
@@ -201,6 +211,7 @@ export function SetupProvidersPage() {
                 await api.post('/api/config/claude/providers', {
                   name: '官方 Claude (OAuth)',
                   type: 'official',
+                  useGlobalSettings,
                   claudeOAuthCredentials: {
                     accessToken: oauth.accessToken,
                     refreshToken: oauth.refreshToken,
@@ -222,6 +233,7 @@ export function SetupProvidersPage() {
               name: '官方 Claude (Setup Token)',
               type: 'official',
               claudeCodeOauthToken: trimmed,
+              useGlobalSettings,
               enabled: true,
             });
           }
@@ -235,6 +247,7 @@ export function SetupProvidersPage() {
             anthropicBaseUrl: baseUrl.trim(),
             anthropicAuthToken: authToken.trim(),
             anthropicModel: model.trim(),
+            useGlobalSettings,
             customEnv,
             enabled: true,
           },
@@ -304,6 +317,33 @@ export function SetupProvidersPage() {
           <div className="flex items-center gap-2 mb-3">
             <KeyRound className="w-4 h-4 text-primary" />
             <h2 className="text-base font-semibold text-foreground">Claude Code 配置（二选一）</h2>
+          </div>
+
+          <div className="rounded-lg border border-border p-3 space-y-2 mb-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium text-foreground">读取宿主机全局 settings</div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  从 ~/.claude/settings.json 读取基础配置；当前表单中非空字段会覆盖全局值，留空则继承全局值。
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={useGlobalSettings}
+                onClick={() => setUseGlobalSettings((prev) => !prev)}
+                disabled={saving || oauthExchanging}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  useGlobalSettings ? 'bg-primary' : 'bg-muted-foreground/30'
+                } ${(saving || oauthExchanging) ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+              >
+                <span
+                  className={`inline-block h-5 w-5 transform rounded-full bg-background transition-transform ${
+                    useGlobalSettings ? 'translate-x-5' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
           </div>
 
           <div className="inline-flex rounded-lg border border-border p-1 bg-muted mb-4">
@@ -430,7 +470,7 @@ export function SetupProvidersPage() {
                       type="password"
                       value={officialToken}
                       onChange={(e) => setOfficialToken(e.target.value)}
-                      placeholder="粘贴 setup-token 或 cat ~/.claude/.credentials.json 输出"
+                      placeholder={useGlobalSettings ? '留空继承全局 settings，或粘贴 setup-token / .credentials.json 覆盖' : '粘贴 setup-token 或 cat ~/.claude/.credentials.json 输出'}
                     />
                     <p className="text-xs text-muted-foreground mt-1">
                       支持粘贴 <code className="bg-muted px-1 rounded">cat ~/.claude/.credentials.json</code> 的 JSON 内容
@@ -468,7 +508,7 @@ export function SetupProvidersPage() {
                       type="password"
                       value={apiKey}
                       onChange={(e) => setApiKey(e.target.value)}
-                      placeholder="sk-ant-api03-..."
+                      placeholder={useGlobalSettings ? '留空继承全局 settings' : 'sk-ant-api03-...'}
                       className="font-mono"
                     />
                     <p className="text-xs text-muted-foreground mt-1">
@@ -482,17 +522,17 @@ export function SetupProvidersPage() {
             <div className="space-y-4">
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <Server className="w-4 h-4 text-primary" />
-                第三方渠道会写入系统全局默认环境变量。必填项为 ANTHROPIC_BASE_URL 和 ANTHROPIC_AUTH_TOKEN。
+                第三方渠道会写入系统全局默认环境变量。开启全局 settings 后，ANTHROPIC_BASE_URL 和 ANTHROPIC_AUTH_TOKEN 可留空。
               </div>
 
               <div className="grid grid-cols-1 gap-3">
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-1">ANTHROPIC_BASE_URL（必填）</label>
+                  <label className="block text-sm font-medium text-foreground mb-1">ANTHROPIC_BASE_URL{useGlobalSettings ? '' : '（必填）'}</label>
                   <Input
                     type="text"
                     value={baseUrl}
                     onChange={(e) => setBaseUrl(e.target.value)}
-                    placeholder="https://your-relay.example.com/v1"
+                    placeholder={useGlobalSettings ? '留空继承全局 settings' : 'https://your-relay.example.com/v1'}
                   />
                 </div>
 
@@ -502,18 +542,18 @@ export function SetupProvidersPage() {
                     type="text"
                     value={model}
                     onChange={(e) => setModel(e.target.value)}
-                    placeholder="opus[1m] / opus / sonnet[1m] / sonnet / haiku"
+                    placeholder={useGlobalSettings ? '留空继承全局 settings' : 'opus[1m] / opus / sonnet[1m] / sonnet / haiku'}
                     className="font-mono"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-1">ANTHROPIC_AUTH_TOKEN（必填）</label>
+                  <label className="block text-sm font-medium text-foreground mb-1">ANTHROPIC_AUTH_TOKEN{useGlobalSettings ? '' : '（必填）'}</label>
                   <Input
                     type="password"
                     value={authToken}
                     onChange={(e) => setAuthToken(e.target.value)}
-                    placeholder="输入第三方网关 Token"
+                    placeholder={useGlobalSettings ? '留空继承全局 settings；输入新值可覆盖' : '输入第三方网关 Token'}
                   />
                 </div>
               </div>

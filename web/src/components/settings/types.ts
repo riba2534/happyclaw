@@ -4,6 +4,7 @@ export interface UnifiedProviderPublic {
   id: string;
   name: string;
   type: 'official' | 'third_party';
+  useGlobalSettings: boolean;
   enabled: boolean;
   weight: number;
   anthropicBaseUrl: string;
