@@ -16,6 +16,7 @@ import {
   setRegisteredGroup,
   updateChatName,
   getAgent,
+  deleteAllSessionsForFolder,
   VALID_ACTIVATION_MODES,
 } from '../db.js';
 import { authMiddleware, systemConfigMiddleware } from '../middleware/auth.js';
@@ -164,6 +165,15 @@ async function applyClaudeConfigToAllGroups(
   );
   const failedCount = results.filter((r) => r.status === 'rejected').length;
   const stoppedCount = groupJids.length - failedCount;
+
+  // 清除所有 session 记录，确保配置变更后下次启动创建全新 session
+  const registeredGroups = deps.getRegisteredGroups();
+  for (const [_, group] of Object.entries(registeredGroups) as [string, RegisteredGroup][]) {
+    if (group.folder) {
+      deleteAllSessionsForFolder(group.folder);
+      delete deps.sessions[group.folder];
+    }
+  }
 
   appendClaudeConfigAudit(actor, 'apply_to_all_flows', ['queue.stopGroup'], {
     stoppedCount,

@@ -2325,9 +2325,19 @@ export function buildClaudeEnvLines(
     );
   }
   if (config.anthropicAuthToken) {
-    lines.push(
-      `ANTHROPIC_AUTH_TOKEN=${sanitizeEnvValue(config.anthropicAuthToken)}`,
-    );
+    if (config.anthropicBaseUrl) {
+      // Third-party provider: the SDK treats ANTHROPIC_AUTH_TOKEN as an OAuth
+      // legacy token and skips the standard Bearer header, causing 404 on
+      // non-Anthropic endpoints. Use ANTHROPIC_API_KEY instead so the SDK
+      // sends the correct Authorization header.
+      lines.push(
+        `ANTHROPIC_API_KEY=${sanitizeEnvValue(config.anthropicAuthToken)}`,
+      );
+    } else {
+      lines.push(
+        `ANTHROPIC_AUTH_TOKEN=${sanitizeEnvValue(config.anthropicAuthToken)}`,
+      );
+    }
   }
   if (config.anthropicModel) {
     lines.push(`ANTHROPIC_MODEL=${sanitizeEnvValue(config.anthropicModel)}`);
@@ -2611,7 +2621,7 @@ export function mergeClaudeEnvConfig(
   global: ClaudeProviderConfig,
   override: ContainerEnvConfig,
 ): ClaudeProviderConfig {
-  return {
+  const merged: ClaudeProviderConfig = {
     anthropicBaseUrl: override.anthropicBaseUrl || global.anthropicBaseUrl,
     anthropicAuthToken:
       override.anthropicAuthToken || global.anthropicAuthToken,
@@ -2623,6 +2633,16 @@ export function mergeClaudeEnvConfig(
     anthropicModel: override.anthropicModel || global.anthropicModel,
     updatedAt: global.updatedAt,
   };
+
+  // Third-party provider: strip OAuth credentials so the SDK does not try
+  // the OAuth auth path (which skips the standard Bearer header and causes
+  // 404 on non-Anthropic endpoints like Kimi).
+  if (merged.anthropicBaseUrl) {
+    merged.claudeOAuthCredentials = null;
+    merged.claudeCodeOauthToken = '';
+  }
+
+  return merged;
 }
 
 // ─── Registration config (plain JSON, no encryption) ─────────────

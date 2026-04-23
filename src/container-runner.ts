@@ -80,7 +80,10 @@ function ensureHostClaudeJson(): string {
  * 为 Docker 容器生成精简版 .claude.json。
  * 宿主机 ~/.claude.json 中的 cachedGrowthBookFeatures 含 tengu_bridge_repl_v2 等
  * feature flags，SDK 初始化时会据此尝试建立 bridge 连接，在容器网络环境中无法完成
- * 导致进程挂起。剥离该字段后其余内容原样保留（oauthAccount、userID 等）。
+ * 导致进程挂起。剥离该字段后其余内容原样保留（userID 等）。
+ * 同时剥离 oauthAccount：容器内不走宿主机的 OAuth 登录态，认证完全由
+ * ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY 环境变量控制，避免 SDK 误检
+ * OAuth 凭据后跳过标准 Bearer header（第三方 provider 返回 404）。
  */
 function getContainerClaudeJsonPath(): string {
   const containerJsonDir = path.join(DATA_DIR, 'config');
@@ -91,6 +94,7 @@ function getContainerClaudeJsonPath(): string {
     const hostJson = JSON.parse(fs.readFileSync(getHostClaudeJsonPath(), 'utf-8'));
     const stripped = { ...hostJson };
     delete stripped.cachedGrowthBookFeatures;
+    delete stripped.oauthAccount;
     stripped.autoUpdates = false;
     fs.writeFileSync(containerJsonPath, JSON.stringify(stripped, null, 2) + '\n', { mode: 0o644 });
   } catch {
@@ -532,6 +536,15 @@ function buildVolumeMounts(
         'Failed to write .credentials.json',
       );
     }
+  }
+
+  // Third-party provider: remove any stale .credentials.json so the SDK
+  // does not detect OAuth credentials from a previous official-provider run.
+  if (mergedConfig.anthropicBaseUrl) {
+    try {
+      const staleCreds = path.join(groupSessionsDir, '.credentials.json');
+      if (fs.existsSync(staleCreds)) fs.unlinkSync(staleCreds);
+    } catch { /* ignore */ }
   }
 
   // Mount agent-runner source from host — recompiled on container startup.
@@ -1238,6 +1251,47 @@ export async function runHostAgent(
       const eqIdx = line.indexOf('=');
       if (eqIdx > 0) {
         hostEnv[line.slice(0, eqIdx)] = line.slice(eqIdx + 1);
+      }
+    }
+
+    // Third-party provider: ANTHROPIC_AUTH_TOKEN inherited from the host
+    // (~/.claude/settings.json) forces the SDK down the OAuth code path,
+    // which skips the standard Bearer header and causes 404 on non-Anthropic
+    // endpoints. Unset it so the injected ANTHROPIC_API_KEY takes effect.
+    if (hostEnv['ANTHROPIC_BASE_URL']) {
+      delete hostEnv['ANTHROPIC_AUTH_TOKEN'];
+
+      // Also strip oauthAccount from session .claude.json: the SDK detects
+      // OAuth credentials in .claude.json and takes the OAuth code path even
+      // when ANTHROPIC_AUTH_TOKEN is absent. This causes the same 404 on
+      // third-party endpoints. Remove the symlink and write a standalone
+      // .claude.json without oauthAccount so the SDK falls back to API key mode.
+      try {
+        const sessionClaudeJson = path.join(groupSessionsDir, '.claude.json');
+        try { fs.unlinkSync(sessionClaudeJson); } catch { /* ignore */ }
+        let claudeJson: Record<string, unknown> = {};
+        try {
+          claudeJson = JSON.parse(fs.readFileSync(getHostClaudeJsonPath(), 'utf-8'));
+        } catch { /* ignore */ }
+        delete claudeJson.oauthAccount;
+        fs.writeFileSync(sessionClaudeJson, JSON.stringify(claudeJson, null, 2) + '\n', { mode: 0o600 });
+      } catch (err) {
+        logger.warn(
+          { folder: group.folder, err },
+          'Failed to strip oauthAccount from session .claude.json',
+        );
+      }
+
+      // Also remove .credentials.json: it contains valid OAuth tokens that the
+      // SDK uses regardless of env vars, forcing the OAuth auth path.
+      try {
+        const credsPath = path.join(groupSessionsDir, '.credentials.json');
+        if (fs.existsSync(credsPath)) fs.unlinkSync(credsPath);
+      } catch (err) {
+        logger.warn(
+          { folder: group.folder, err },
+          'Failed to remove .credentials.json for third-party provider',
+        );
       }
     }
 

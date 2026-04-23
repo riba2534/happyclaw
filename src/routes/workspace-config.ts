@@ -187,7 +187,7 @@ function resolveGroup(
   const jid = c.req.param('jid');
   const authUser = c.get('user') as AuthUser;
 
-  const group = getRegisteredGroup(jid);
+  const group = getRegisteredGroup(jid!);
   if (!group) {
     return null;
   }
