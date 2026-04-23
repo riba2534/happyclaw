@@ -413,23 +413,22 @@ function buildVolumeMounts(
     readonly: false,
   });
 
-  // 清理 session 目录中 SDK 遗留的 .claude.json（含 cachedGrowthBookFeatures，会导致初始化挂起）。
-  // 精简版（不含 feature flags）约 200-400B，SDK 写回的完整版通常 > 10KB。
-  const STRIPPED_CLAUDE_JSON_MAX_SIZE = 500;
+  // 每次启动时将精简版 .claude.json 写入 session 目录（per-group 隔离，可写）。
+  // SDK / Skill 框架可能需要写入此文件（如记录 skill 使用状态）。
+  // 精简版剥离 cachedGrowthBookFeatures（含 feature flags，会导致容器内 bridge 连接挂起）。
   const sessionClaudeJson = path.join(groupSessionsDir, '.claude.json');
+  const containerJsonSource = getContainerClaudeJsonPath();
   try {
-    const st = fs.lstatSync(sessionClaudeJson);
-    if (!st.isSymbolicLink() && st.size > STRIPPED_CLAUDE_JSON_MAX_SIZE) {
-      fs.unlinkSync(sessionClaudeJson);
-    }
-  } catch { /* not found, ok */ }
+    fs.copyFileSync(containerJsonSource, sessionClaudeJson);
+    fs.chmodSync(sessionClaudeJson, 0o644);
+  } catch { /* source missing, create minimal */
+    try { fs.writeFileSync(sessionClaudeJson, '{"hasCompletedOnboarding":true,"autoUpdates":false}\n', { mode: 0o644 }); } catch { /* ignore */ }
+  }
 
-  // 挂载精简版 .claude.json（剥离 cachedGrowthBookFeatures），保留 deviceId 一致性
-  const containerJson = getContainerClaudeJsonPath();
   mounts.push({
-    hostPath: containerJson,
+    hostPath: sessionClaudeJson,
     containerPath: '/home/node/.claude.json',
-    readonly: true,
+    readonly: false,
   });
 
   // Skills：以只读卷挂载宿主机目录（由 entrypoint 创建符号链接）

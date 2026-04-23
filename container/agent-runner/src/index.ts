@@ -49,9 +49,9 @@ const WORKSPACE_MEMORY = process.env.HAPPYCLAW_WORKSPACE_MEMORY || '/workspace/m
 const WORKSPACE_IPC = process.env.HAPPYCLAW_WORKSPACE_IPC || '/workspace/ipc';
 
 // 模型配置：支持别名（opus/sonnet/haiku）或完整模型 ID
-// 别名自动解析为最新版本，如 opus → Opus 4.6
+// 注意：SDK 0.2.112 的 opus 别名指向 Opus 4.7；显式 pin 回 4.6 以保持行为稳定
 // [1m] 后缀启用 1M 上下文窗口（CLI 内部 jG() 识别后缀，sM() 返回 1M 窗口）
-const CLAUDE_MODEL = process.env.ANTHROPIC_MODEL || 'opus[1m]';
+const CLAUDE_MODEL = process.env.ANTHROPIC_MODEL || 'claude-opus-4-6[1m]';
 
 const IPC_INPUT_DIR = path.join(WORKSPACE_IPC, 'input');
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
