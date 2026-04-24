@@ -6720,18 +6720,37 @@ function buildOnNewChat(
   userId: string,
   homeFolder: string,
   getOwnerOpenId?: () => string | undefined,
+  autoContextMode?: 'shared' | 'per_chat',
 ): (chatJid: string, chatName: string) => void {
   return (chatJid, chatName) => {
     const existing = registeredGroups[chatJid];
     if (existing) {
       // Already owned by this user — update name if changed (IM channel may now have real group name)
       if (existing.created_by === userId) {
+        let changed = false;
         const trimmed = chatName.trim();
         if (trimmed && existing.name !== trimmed) {
           existing.name = trimmed;
+          changed = true;
+        }
+        // Upgrade to chat_map if per_chat mode is active and group has no explicit binding
+        if (
+          autoContextMode === 'per_chat' &&
+          existing.binding_mode !== 'chat_map' &&
+          !existing.target_agent_id &&
+          !existing.target_main_jid
+        ) {
+          existing.target_main_jid = `web:${homeFolder}`;
+          existing.binding_mode = 'chat_map';
+          changed = true;
+          logger.info(
+            { chatJid, userId, homeFolder },
+            'Upgraded existing IM chat to chat_map (per_chat mode)',
+          );
+        }
+        if (changed) {
           setRegisteredGroup(chatJid, existing);
           registeredGroups[chatJid] = existing;
-          logger.debug({ chatJid, chatName: trimmed }, 'Updated IM group name (buildOnNewChat)');
         }
         return;
       }
@@ -6810,6 +6829,7 @@ function buildOnNewChat(
       return;
     }
     const ownerOpenId = getOwnerOpenId?.();
+    const perChat = autoContextMode === 'per_chat';
     registerGroup(chatJid, {
       name: chatName,
       folder: homeFolder,
@@ -6821,9 +6841,15 @@ function buildOnNewChat(
       sender_allowlist: getOwnerOpenId
         ? (ownerOpenId ? [ownerOpenId] : [])
         : undefined,
+      ...(perChat
+        ? {
+            target_main_jid: `web:${homeFolder}`,
+            binding_mode: 'chat_map' as const,
+          }
+        : {}),
     });
     logger.info(
-      { chatJid, chatName, userId, homeFolder },
+      { chatJid, chatName, userId, homeFolder, autoContextMode },
       'Auto-registered IM chat',
     );
   };
@@ -6880,8 +6906,9 @@ function buildFeishuBotAddedHandler(
   userId: string,
   homeFolder: string,
   getOwnerOpenId?: () => string | undefined,
+  autoContextMode?: 'shared' | 'per_chat',
 ): (chatJid: string, chatName: string) => void {
-  const onNewChat = buildOnNewChat(userId, homeFolder, getOwnerOpenId);
+  const onNewChat = buildOnNewChat(userId, homeFolder, getOwnerOpenId, autoContextMode);
   return (chatJid: string, chatName: string) => {
     const isNew = !registeredGroups[chatJid] && !getRegisteredGroup(chatJid);
     onNewChat(chatJid, chatName);
@@ -7070,6 +7097,106 @@ function resolveOrCreateThreadAgent(
 }
 
 /**
+ * Resolve or create a conversation agent for a Feishu chat (group or P2P).
+ * Each unique chatJid gets its own SubAgent under the target workspace.
+ * Creates the agent + binding on first message; updates activity on subsequent messages.
+ */
+function resolveOrCreateChatAgent(
+  chatJid: string,
+  workspaceJid: string,
+  workspace: RegisteredGroup,
+  group: RegisteredGroup,
+): { effectiveJid: string; agentId: string } {
+  const now = new Date().toISOString();
+  const chatId = extractChatId(chatJid);
+  // Build a distinguishable name: group name + short chatId suffix
+  const shortId = chatId.length > 6 ? chatId.slice(-6) : chatId;
+  const baseName = group.name || '飞书聊天';
+  const agentName = `${baseName} (${shortId})`;
+
+  let binding = getImContextBinding(chatJid, 'chat', chatId);
+  let agent = binding?.agent_id != null ? getAgent(binding.agent_id) : undefined;
+
+  if (!binding || !agent || agent.chat_jid !== workspaceJid) {
+    const agentId = crypto.randomUUID();
+    const name = binding?.title || agentName;
+    const newAgent: SubAgent = {
+      id: agentId,
+      group_folder: workspace.folder,
+      chat_jid: workspaceJid,
+      name,
+      prompt: '',
+      status: 'idle',
+      kind: 'conversation',
+      created_by: workspace.created_by || group.created_by || null,
+      created_at: now,
+      completed_at: null,
+      result_summary: null,
+      last_im_jid: chatJid,
+      spawned_from_jid: null,
+      source_kind: 'feishu_chat',
+      thread_id: null,
+      root_message_id: null,
+      title_source: 'manual',
+      last_active_at: now,
+    };
+    createAgent(newAgent);
+    ensureAgentDirectories(workspace.folder, agentId);
+    const virtualChatJid = `${workspaceJid}#agent:${agentId}`;
+    ensureChatExists(virtualChatJid);
+    updateChatName(virtualChatJid, name);
+    updateAgentLastImJid(agentId, chatJid);
+    broadcastAgentStatus(
+      workspaceJid,
+      agentId,
+      'idle',
+      name,
+      '',
+      undefined,
+      'conversation',
+    );
+    binding = {
+      source_jid: chatJid,
+      context_type: 'chat',
+      context_id: chatId,
+      workspace_jid: workspaceJid,
+      agent_id: agentId,
+      root_message_id: null,
+      title: name,
+      last_active_at: now,
+      created_at: now,
+      updated_at: now,
+    };
+    upsertImContextBinding(binding);
+    agent = newAgent;
+  }
+
+  // Update activity & title if group name changed
+  const resolvedTitle = group.name || binding.title || agentName;
+  if (resolvedTitle !== binding.title) {
+    upsertImContextBinding({
+      ...binding,
+      title: resolvedTitle,
+      last_active_at: now,
+      updated_at: now,
+    });
+    updateAgentContextInfo(binding.agent_id, {
+      name: resolvedTitle,
+      last_active_at: now,
+    });
+    updateChatName(`${workspaceJid}#agent:${binding.agent_id}`, resolvedTitle);
+  } else {
+    touchImContextBindingActivity(chatJid, 'chat', chatId, now);
+    updateAgentContextInfo(binding.agent_id, { last_active_at: now });
+  }
+  updateAgentLastImJid(binding.agent_id, chatJid);
+  return {
+    effectiveJid: `${workspaceJid}#agent:${binding.agent_id}`,
+    agentId: binding.agent_id,
+  };
+}
+
+/**
  * Build callback that resolves an IM chatJid to a bound target JID.
  * Supports both conversation agent binding (target_agent_id) and
  * workspace main conversation binding (target_main_jid).
@@ -7092,6 +7219,23 @@ function buildResolveEffectiveChatJid(): (
       // doesn't match any registered group for non-main workspaces (folder ≠ JID).
       const effectiveJid = `${agent.chat_jid}#agent:${group.target_agent_id}`;
       return { effectiveJid, agentId: group.target_agent_id };
+    }
+
+    // chat_map: each IM chat (group or P2P) gets its own SubAgent
+    if (group.binding_mode === 'chat_map' && group.target_main_jid) {
+      const workspaceJid = resolveWorkspaceJid(group.target_main_jid);
+      if (!workspaceJid) {
+        logger.warn(
+          { chatJid, targetMainJid: group.target_main_jid },
+          'chat_map resolveWorkspaceJid returned null — stale target_main_jid',
+        );
+        return null;
+      }
+      const workspace =
+        registeredGroups[workspaceJid] ?? getRegisteredGroup(workspaceJid);
+      if (!workspace) return null;
+
+      return resolveOrCreateChatAgent(chatJid, workspaceJid, workspace, group);
     }
 
     if (
@@ -7348,13 +7492,14 @@ async function connectUserIMChannels(
     }
   };
 
-  const onNewChat = buildOnNewChat(userId, homeFolder, getFeishuOwnerOpenId);
+  const feishuAutoContext = feishuConfig ? getUserFeishuConfig(userId)?.autoContextMode : undefined;
+  const onNewChat = buildOnNewChat(userId, homeFolder, getFeishuOwnerOpenId, feishuAutoContext);
   const resolveGroupFolder = (chatJid: string): string | undefined => {
     return resolveEffectiveFolder(chatJid);
   };
   const resolveEffectiveChatJid = buildResolveEffectiveChatJid();
   const onAgentMessage = buildOnAgentMessage();
-  const onBotAddedToGroup = buildFeishuBotAddedHandler(userId, homeFolder, getFeishuOwnerOpenId);
+  const onBotAddedToGroup = buildFeishuBotAddedHandler(userId, homeFolder, getFeishuOwnerOpenId, feishuAutoContext);
   const onBotRemovedFromGroup = buildOnBotRemovedFromGroup();
 
   // 各渠道互相独立，并发连接避免启动时延 N×M 累加
@@ -7812,7 +7957,8 @@ async function main(): Promise<void> {
           logger.info({ userId: adminUser.id, senderOpenId }, 'Feishu owner open_id auto-detected from P2P message');
         }
       };
-      const onNewChat = buildOnNewChat(adminUser.id, homeFolder, getAdminOwnerOpenId);
+      const adminFeishuAutoContext = getUserFeishuConfig(adminUser.id)?.autoContextMode;
+      const onNewChat = buildOnNewChat(adminUser.id, homeFolder, getAdminOwnerOpenId, adminFeishuAutoContext);
       const connected = await imManager.connectUserFeishu(
         adminUser.id,
         config,
@@ -7820,7 +7966,7 @@ async function main(): Promise<void> {
         {
           ignoreMessagesBefore: Date.now(),
           onCommand: handleCommand,
-          onBotAddedToGroup: buildFeishuBotAddedHandler(adminUser.id, homeFolder, getAdminOwnerOpenId),
+          onBotAddedToGroup: buildFeishuBotAddedHandler(adminUser.id, homeFolder, getAdminOwnerOpenId, adminFeishuAutoContext),
           onBotRemovedFromGroup: buildOnBotRemovedFromGroup(),
           shouldProcessGroupMessage,
           isGroupOwnerMessage,
@@ -7929,7 +8075,7 @@ async function main(): Promise<void> {
             logger.info({ userId, senderOpenId }, 'Feishu owner open_id auto-detected from P2P message');
           }
         };
-        const onNewChat = buildOnNewChat(userId, homeFolder, getReloadOwnerOpenId);
+        const onNewChat = buildOnNewChat(userId, homeFolder, getReloadOwnerOpenId, config.autoContextMode);
         const connected = await imManager.connectUserFeishu(
           userId,
           config,
@@ -7937,7 +8083,7 @@ async function main(): Promise<void> {
           {
             ignoreMessagesBefore,
             onCommand: handleCommand,
-            onBotAddedToGroup: buildFeishuBotAddedHandler(userId, homeFolder, getReloadOwnerOpenId),
+            onBotAddedToGroup: buildFeishuBotAddedHandler(userId, homeFolder, getReloadOwnerOpenId, config.autoContextMode),
             onBotRemovedFromGroup: buildOnBotRemovedFromGroup(),
             shouldProcessGroupMessage,
             isGroupOwnerMessage,

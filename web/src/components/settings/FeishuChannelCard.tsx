@@ -16,15 +16,18 @@ interface UserFeishuConfig {
   enabled: boolean;
   connected: boolean;
   updatedAt: string | null;
+  autoContextMode?: 'shared' | 'per_chat';
 }
 
 export function FeishuChannelCard() {
   const [config, setConfig] = useState<UserFeishuConfig | null>(null);
   const [appId, setAppId] = useState('');
   const [appSecret, setAppSecret] = useState('');
+  const [autoContextMode, setAutoContextMode] = useState<'shared' | 'per_chat'>('shared');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [toggling, setToggling] = useState(false);
+  const [savingContext, setSavingContext] = useState(false);
 
   const enabled = config?.enabled ?? false;
 
@@ -35,6 +38,7 @@ export function FeishuChannelCard() {
       setConfig(data);
       setAppId(data.appId || '');
       setAppSecret('');
+      setAutoContextMode(data.autoContextMode || 'shared');
     } catch {
       setConfig(null);
     } finally {
@@ -95,6 +99,21 @@ export function FeishuChannelCard() {
     }
   };
 
+  const handleContextModeChange = async (mode: 'shared' | 'per_chat') => {
+    setAutoContextMode(mode);
+    setSavingContext(true);
+    try {
+      const data = await api.put<UserFeishuConfig>('/api/config/user-im/feishu', { autoContextMode: mode });
+      setConfig(data);
+      toast.success(mode === 'per_chat' ? '已启用每聊天独立上下文' : '已切换为共享上下文');
+    } catch (err) {
+      toast.error(getErrorMessage(err, '保存上下文模式失败'));
+      setAutoContextMode(config?.autoContextMode || 'shared');
+    } finally {
+      setSavingContext(false);
+    }
+  };
+
   return (
     <div className="rounded-xl border border-border bg-card overflow-hidden">
       <div className="flex items-center justify-between px-5 py-4 border-b border-border bg-muted/50">
@@ -145,6 +164,24 @@ export function FeishuChannelCard() {
                 保存飞书配置
               </Button>
             </div>
+
+            {config?.hasAppSecret && (
+              <div className="border-t border-border pt-4 space-y-2">
+                <Label className="text-xs font-medium">上下文隔离模式</Label>
+                <p className="text-xs text-muted-foreground">
+                  控制同一个 Bot 在不同群聊、不同用户私聊时是否共享对话上下文。切换后对新加入的群/私聊生效。
+                </p>
+                <select
+                  className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+                  value={autoContextMode}
+                  onChange={(e) => handleContextModeChange(e.target.value as 'shared' | 'per_chat')}
+                  disabled={savingContext}
+                >
+                  <option value="shared">共享（默认）— 所有聊天共用一个上下文</option>
+                  <option value="per_chat">每聊天独立 — 每个群聊/私聊自动创建独立上下文</option>
+                </select>
+              </div>
+            )}
           </>
         )}
       </div>

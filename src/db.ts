@@ -2308,7 +2308,11 @@ function parseGroupRow(
         ? 'vertical_threads'
         : 'horizontal',
     binding_mode:
-      row.binding_mode === 'thread_map' ? 'thread_map' : 'single_context',
+      row.binding_mode === 'thread_map'
+        ? 'thread_map'
+        : row.binding_mode === 'chat_map'
+          ? 'chat_map'
+          : 'single_context',
     feishu_chat_mode: row.feishu_chat_mode ?? undefined,
     feishu_group_message_type: row.feishu_group_message_type ?? undefined,
     sender_allowlist: row.sender_allowlist != null
@@ -2438,9 +2442,10 @@ export function getGroupsByTargetMainJid(
 function mapImContextBindingRow(
   row: Record<string, unknown>,
 ): ImContextBinding {
+  const ct = String(row.context_type);
   return {
     source_jid: String(row.source_jid),
-    context_type: 'thread',
+    context_type: ct === 'chat' ? 'chat' : 'thread',
     context_id: String(row.context_id),
     workspace_jid: String(row.workspace_jid),
     agent_id: String(row.agent_id),
@@ -2455,7 +2460,7 @@ function mapImContextBindingRow(
 
 export function getImContextBinding(
   sourceJid: string,
-  contextType: 'thread',
+  contextType: 'thread' | 'chat',
   contextId: string,
 ): ImContextBinding | undefined {
   const row = db
@@ -2518,7 +2523,7 @@ export function deleteImContextBindingsByAgent(agentId: string): void {
 /** Lightweight update: only touch last_active_at + updated_at on an existing binding. */
 export function touchImContextBindingActivity(
   sourceJid: string,
-  contextType: 'thread',
+  contextType: 'thread' | 'chat',
   contextId: string,
   lastActiveAt: string,
 ): void {
@@ -2532,6 +2537,16 @@ export function listFeishuThreadAgentIds(workspaceJid: string): string[] {
   const rows = db
     .prepare(
       "SELECT id FROM agents WHERE chat_jid = ? AND source_kind = 'feishu_thread'",
+    )
+    .all(workspaceJid) as { id: string }[];
+  return rows.map((r) => r.id);
+}
+
+/** List feishu_chat agent IDs for a workspace JID (for cleanup on unbind). */
+export function listFeishuChatAgentIds(workspaceJid: string): string[] {
+  const rows = db
+    .prepare(
+      "SELECT id FROM agents WHERE chat_jid = ? AND source_kind = 'feishu_chat'",
     )
     .all(workspaceJid) as { id: string }[];
   return rows.map((r) => r.id);

@@ -34,9 +34,9 @@ export interface ContainerConfig {
 }
 
 export type ExecutionMode = 'container' | 'host';
-export type ConversationSource = 'manual' | 'feishu_thread';
+export type ConversationSource = 'manual' | 'feishu_thread' | 'feishu_chat';
 export type ConversationNavMode = 'horizontal' | 'vertical_threads';
-export type ImBindingMode = 'single_context' | 'thread_map';
+export type ImBindingMode = 'single_context' | 'thread_map' | 'chat_map';
 
 /** 飞书消息的话题/线程元数据，用于 thread_map 路由 */
 export interface FeishuMessageMeta {
@@ -321,7 +321,7 @@ export interface SubAgent {
   last_im_jid: string | null;
   /** 发起 /spawn 命令的源会话 JID，用于完成后结果回注 */
   spawned_from_jid: string | null;
-  source_kind?: 'manual' | 'feishu_thread' | null;
+  source_kind?: 'manual' | 'feishu_thread' | 'feishu_chat' | null;
   thread_id?: string | null;
   root_message_id?: string | null;
   title_source?: 'manual' | 'feishu_root' | 'auto' | 'auto_pending' | null;
@@ -330,7 +330,7 @@ export interface SubAgent {
 
 export interface ImContextBinding {
   source_jid: string;
-  context_type: 'thread';
+  context_type: 'thread' | 'chat';
   context_id: string;
   workspace_jid: string;
   agent_id: string;

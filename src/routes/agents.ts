@@ -27,6 +27,7 @@ import {
   getMessagesPageMulti,
   deleteImContextBindingsByWorkspace,
   listFeishuThreadAgentIds,
+  listFeishuChatAgentIds,
 } from '../db.js';
 import { DATA_DIR } from '../config.js';
 import type { RegisteredGroup, SubAgent } from '../types.js';
@@ -160,9 +161,9 @@ router.post('/:jid/agents', authMiddleware, async (c) => {
   if (!canAccessGroup(user, { ...group, jid })) {
     return c.json({ error: 'Forbidden' }, 403);
   }
-  if (group.conversation_source === 'feishu_thread') {
+  if (group.conversation_source === 'feishu_thread' || group.conversation_source === 'feishu_chat') {
     return c.json(
-      { error: 'Feishu topic workspaces do not support manual conversations' },
+      { error: 'IM-driven workspaces do not support manual conversations' },
       400,
     );
   }
@@ -437,7 +438,7 @@ router.get('/:jid/im-groups', authMiddleware, async (c) => {
     name: string;
     bound_agent_id: string | null;
     bound_main_jid: string | null;
-    binding_mode: 'single_context' | 'thread_map';
+    binding_mode: 'single_context' | 'thread_map' | 'chat_map';
     reply_policy: 'source_only' | 'mirror';
     bound_target_name: string | null;
     bound_workspace_name: string | null;
@@ -850,7 +851,6 @@ router.delete('/:jid/im-binding/:imJid', authMiddleware, async (c) => {
     if (groups[imJid]) groups[imJid] = updated;
   }
   if (imGroup.binding_mode === 'thread_map') {
-    // Clean up feishu_thread agents and their bindings
     const threadAgentIds = listFeishuThreadAgentIds(jid);
     for (const agentId of threadAgentIds) {
       deleteAgent(agentId);
@@ -861,6 +861,13 @@ router.delete('/:jid/im-binding/:imJid', authMiddleware, async (c) => {
       conversation_source: 'manual',
       conversation_nav_mode: 'horizontal',
     });
+  }
+  if (imGroup.binding_mode === 'chat_map') {
+    const chatAgentIds = listFeishuChatAgentIds(jid);
+    for (const agentId of chatAgentIds) {
+      deleteAgent(agentId);
+    }
+    deleteImContextBindingsByWorkspace(jid);
   }
 
   logger.info(

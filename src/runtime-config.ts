@@ -231,6 +231,7 @@ interface StoredFeishuProviderConfigV1 {
   enabled?: boolean;
   updatedAt: string;
   ownerOpenId?: string;
+  autoContextMode?: 'shared' | 'per_chat';
   secret: EncryptedSecrets;
 }
 
@@ -3033,6 +3034,7 @@ export interface UserFeishuConfig {
   enabled?: boolean;
   updatedAt: string | null;
   ownerOpenId?: string; // auto-detected from first DM; used as sender_allowlist seed for new groups
+  autoContextMode?: 'shared' | 'per_chat'; // 'shared'（默认）= 所有聊天共享上下文；'per_chat' = 每个群聊/私聊独立 SubAgent
 }
 
 export interface UserTelegramConfig {
@@ -3124,6 +3126,7 @@ export function getUserFeishuConfig(userId: string): UserFeishuConfig | null {
       enabled: stored.enabled,
       updatedAt: stored.updatedAt || null,
       ownerOpenId: stored.ownerOpenId || undefined,
+      autoContextMode: stored.autoContextMode === 'per_chat' ? 'per_chat' : undefined,
     };
   } catch (err) {
     logger.warn({ err, userId }, 'Failed to read user Feishu config');
@@ -3141,6 +3144,7 @@ export function saveUserFeishuConfig(
     enabled: next.enabled,
     updatedAt: new Date().toISOString(),
     ownerOpenId: next.ownerOpenId,
+    autoContextMode: next.autoContextMode === 'per_chat' ? 'per_chat' : undefined,
   };
 
   const payload: StoredFeishuProviderConfigV1 = {
@@ -3149,6 +3153,7 @@ export function saveUserFeishuConfig(
     enabled: normalized.enabled,
     updatedAt: normalized.updatedAt || new Date().toISOString(),
     ownerOpenId: normalized.ownerOpenId,
+    autoContextMode: normalized.autoContextMode,
     secret: encryptChannelSecret<FeishuSecretPayload>({
       appSecret: normalized.appSecret,
     }),

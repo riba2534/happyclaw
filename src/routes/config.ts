@@ -1347,11 +1347,13 @@ configRoutes.get('/user-im/feishu', authMiddleware, (c) => {
         enabled: false,
         updatedAt: null,
         connected,
+        autoContextMode: 'shared',
       });
     }
     return c.json({
       ...toPublicFeishuProviderConfig(config, 'runtime'),
       connected,
+      autoContextMode: config.autoContextMode || 'shared',
     });
   } catch (err) {
     logger.error({ err }, 'Failed to load user Feishu config');
@@ -1386,11 +1388,18 @@ configRoutes.put('/user-im/feishu', authMiddleware, async (c) => {
   }
 
   const current = getUserFeishuConfig(user.id);
-  const next = {
+  const next: {
+    appId: string;
+    appSecret: string;
+    enabled: boolean;
+    updatedAt: string | null;
+    autoContextMode?: 'shared' | 'per_chat';
+  } = {
     appId: current?.appId || '',
     appSecret: current?.appSecret || '',
     enabled: current?.enabled ?? true,
     updatedAt: current?.updatedAt || null,
+    autoContextMode: current?.autoContextMode,
   };
   if (typeof validation.data.appId === 'string') {
     const appId = validation.data.appId.trim();
@@ -1408,12 +1417,17 @@ configRoutes.put('/user-im/feishu', authMiddleware, async (c) => {
     // First-time config with credentials should connect immediately.
     next.enabled = true;
   }
+  if (typeof validation.data.autoContextMode === 'string') {
+    next.autoContextMode =
+      validation.data.autoContextMode === 'per_chat' ? 'per_chat' : 'shared';
+  }
 
   try {
     const saved = saveUserFeishuConfig(user.id, {
       appId: next.appId,
       appSecret: next.appSecret,
       enabled: next.enabled,
+      autoContextMode: next.autoContextMode,
     });
 
     // Hot-reload: reconnect user's Feishu channel
@@ -1432,6 +1446,7 @@ configRoutes.put('/user-im/feishu', authMiddleware, async (c) => {
     return c.json({
       ...toPublicFeishuProviderConfig(saved, 'runtime'),
       connected,
+      autoContextMode: saved.autoContextMode || 'shared',
     });
   } catch (err) {
     const message =
