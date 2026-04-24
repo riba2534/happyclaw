@@ -38,6 +38,11 @@ import { isApiError } from './agent-output-parser.js';
 import type { ClaudeProviderConfig } from './runtime-config.js';
 import { loadUserMcpServers } from './mcp-utils.js';
 import {
+  getUserPluginsCacheDir,
+  loadUserPlugins,
+  CONTAINER_PLUGINS_PATH,
+} from './plugin-utils.js';
+import {
   checkHostCapabilities,
   logCapabilityPreflight,
 } from './agent-capabilities.js';
@@ -200,6 +205,12 @@ export interface ContainerInput {
   images?: Array<{ data: string; mimeType?: string }>;
   agentId?: string;
   agentName?: string;
+  /**
+   * Claude Code plugins to inject into the SDK query (via `options.plugins`).
+   * Populated just-in-time by runContainerAgent/runHostAgent from the owner's
+   * plugins.json; never set by the caller.
+   */
+  plugins?: Array<{ type: 'local'; path: string }>;
 }
 
 export interface ContainerOutput {
@@ -507,6 +518,20 @@ function buildVolumeMounts(
     });
   }
 
+  // Claude Code plugins (per-user cache): read-only mount so the CLI inside
+  // the container can load the same plugin directories referenced by
+  // ContainerInput.plugins. Path stays in sync with CONTAINER_PLUGINS_PATH.
+  if (ownerId) {
+    const userPluginsCacheDir = getUserPluginsCacheDir(ownerId);
+    if (fs.existsSync(userPluginsCacheDir)) {
+      mounts.push({
+        hostPath: userPluginsCacheDir,
+        containerPath: CONTAINER_PLUGINS_PATH,
+        readonly: true,
+      });
+    }
+  }
+
   // Per-group IPC namespace: each group gets its own IPC directory
   // Sub-agents get their own IPC subdirectory under agents/{agentId}/
   // Isolated tasks get their own IPC subdirectory under tasks-run/{taskRunId}/
@@ -795,7 +820,15 @@ export async function runContainerAgent(
         );
         container.kill();
       });
-      container.stdin.write(JSON.stringify(input));
+      // Derive a new input with docker-runtime plugins injected; never mutate
+      // the caller's `input` object (queue/log/retry paths reuse the same ref).
+      const dockerInput: ContainerInput = {
+        ...input,
+        plugins: group.created_by
+          ? loadUserPlugins(group.created_by, { runtime: 'docker' })
+          : [],
+      };
+      container.stdin.write(JSON.stringify(dockerInput));
       container.stdin.end();
 
       let timedOut = false;
@@ -1553,7 +1586,15 @@ export async function runHostAgent(
         );
         killProcessTree(proc);
       });
-      proc.stdin.write(JSON.stringify(input));
+      // Derive a new input with host-runtime plugins injected; never mutate
+      // the caller's `input` object (queue/log/retry paths reuse the same ref).
+      const hostInput: ContainerInput = {
+        ...input,
+        plugins: group.created_by
+          ? loadUserPlugins(group.created_by, { runtime: 'host' })
+          : [],
+      };
+      proc.stdin.write(JSON.stringify(hostInput));
       proc.stdin.end();
 
       // 9. 超时管理
