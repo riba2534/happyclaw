@@ -321,7 +321,7 @@ export interface SubAgent {
   last_im_jid: string | null;
   /** 发起 /spawn 命令的源会话 JID，用于完成后结果回注 */
   spawned_from_jid: string | null;
-  source_kind?: 'manual' | 'feishu_thread' | null;
+  source_kind?: 'manual' | 'feishu_thread' | 'auto_im' | null;
   thread_id?: string | null;
   root_message_id?: string | null;
   title_source?: 'manual' | 'feishu_root' | 'auto' | 'auto_pending' | null;

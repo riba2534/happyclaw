@@ -231,6 +231,7 @@ interface StoredFeishuProviderConfigV1 {
   enabled?: boolean;
   updatedAt: string;
   ownerOpenId?: string;
+  autoIsolateContext?: boolean;
   secret: EncryptedSecrets;
 }
 
@@ -3033,6 +3034,7 @@ export interface UserFeishuConfig {
   enabled?: boolean;
   updatedAt: string | null;
   ownerOpenId?: string; // auto-detected from first DM; used as sender_allowlist seed for new groups
+  autoIsolateContext?: boolean; // auto-create isolated conversation for each new IM chat
 }
 
 export interface UserTelegramConfig {
@@ -3124,6 +3126,7 @@ export function getUserFeishuConfig(userId: string): UserFeishuConfig | null {
       enabled: stored.enabled,
       updatedAt: stored.updatedAt || null,
       ownerOpenId: stored.ownerOpenId || undefined,
+      autoIsolateContext: stored.autoIsolateContext ?? false,
     };
   } catch (err) {
     logger.warn({ err, userId }, 'Failed to read user Feishu config');
@@ -3141,6 +3144,7 @@ export function saveUserFeishuConfig(
     enabled: next.enabled,
     updatedAt: new Date().toISOString(),
     ownerOpenId: next.ownerOpenId,
+    autoIsolateContext: next.autoIsolateContext,
   };
 
   const payload: StoredFeishuProviderConfigV1 = {
@@ -3149,6 +3153,7 @@ export function saveUserFeishuConfig(
     enabled: normalized.enabled,
     updatedAt: normalized.updatedAt || new Date().toISOString(),
     ownerOpenId: normalized.ownerOpenId,
+    autoIsolateContext: normalized.autoIsolateContext,
     secret: encryptChannelSecret<FeishuSecretPayload>({
       appSecret: normalized.appSecret,
     }),

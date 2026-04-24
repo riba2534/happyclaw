@@ -5522,8 +5522,9 @@ async function processAgentConversation(
   // Persist the IM routing target so it survives service restarts.
   if (replySourceImJid) {
     updateAgentLastImJid(agentId, replySourceImJid);
-    // Also publish to activeImReplyRoutes so send_file/send_image IPC can route to IM.
-    activeImReplyRoutes.set(effectiveGroup.folder, replySourceImJid);
+    // Publish to activeImReplyRoutes so send_file/send_image IPC can route to IM.
+    // Only use virtualChatJid key (per-agent) — folder-level key would collide
+    // when multiple auto_im agents share the same workspace folder.
     activeImReplyRoutes.set(virtualChatJid, replySourceImJid);
   }
 
@@ -6732,6 +6733,13 @@ function buildOnNewChat(
           setRegisteredGroup(chatJid, existing);
           registeredGroups[chatJid] = existing;
           logger.debug({ chatJid, chatName: trimmed }, 'Updated IM group name (buildOnNewChat)');
+          if (existing.target_agent_id) {
+            const agent = getAgent(existing.target_agent_id);
+            if (agent?.source_kind === 'auto_im') {
+              updateAgentContextInfo(existing.target_agent_id, { name: trimmed });
+              updateChatName(`${agent.chat_jid}#agent:${existing.target_agent_id}`, trimmed);
+            }
+          }
         }
         return;
       }
@@ -6826,7 +6834,138 @@ function buildOnNewChat(
       { chatJid, chatName, userId, homeFolder },
       'Auto-registered IM chat',
     );
+
+    if (getChannelType(chatJid) === 'feishu') {
+      const feishuConfig = getUserFeishuConfig(userId);
+      if (feishuConfig?.autoIsolateContext) {
+        const registered = registeredGroups[chatJid]!;
+        ensureAutoImConversationBinding(chatJid, registered, userId, chatName);
+      }
+    }
   };
+}
+
+function resolveAutoImWorkspace(userId: string, folder: string): { jid: string; folder: string } | null {
+  const jids = getJidsByFolder(folder);
+  for (const jid of jids) {
+    if (!jid.startsWith('web:')) continue;
+    const group = registeredGroups[jid] ?? getRegisteredGroup(jid);
+    if (group) return { jid, folder: group.folder };
+  }
+  const homeGroup = getUserHomeGroup(userId);
+  return homeGroup ? { jid: homeGroup.jid, folder: homeGroup.folder } : null;
+}
+
+function createAutoImConversationAgent(input: {
+  userId: string;
+  sourceJid: string;
+  groupFolder: string;
+  name: string;
+}): { agentId: string; workspaceJid: string; workspaceFolder: string } | null {
+  const workspace = resolveAutoImWorkspace(input.userId, input.groupFolder);
+  if (!workspace) {
+    logger.warn(
+      { userId: input.userId, sourceJid: input.sourceJid, groupFolder: input.groupFolder },
+      'Cannot create auto IM conversation agent: workspace not found',
+    );
+    return null;
+  }
+
+  const agentId = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const agentName = input.name || input.sourceJid;
+  createAgent({
+    id: agentId,
+    group_folder: workspace.folder,
+    chat_jid: workspace.jid,
+    name: agentName,
+    prompt: '',
+    status: 'idle',
+    kind: 'conversation',
+    created_by: input.userId,
+    created_at: now,
+    completed_at: null,
+    result_summary: null,
+    last_im_jid: input.sourceJid,
+    spawned_from_jid: null,
+    source_kind: 'auto_im',
+    last_active_at: now,
+  });
+  ensureAgentDirectories(workspace.folder, agentId);
+  const virtualChatJid = `${workspace.jid}#agent:${agentId}`;
+  ensureChatExists(virtualChatJid);
+  updateChatName(virtualChatJid, agentName);
+  updateAgentLastImJid(agentId, input.sourceJid);
+  broadcastAgentStatus(workspace.jid, agentId, 'idle', agentName, '', undefined, 'conversation');
+
+  logger.info(
+    { sourceJid: input.sourceJid, agentId, userId: input.userId },
+    'Auto-created isolated conversation agent for Feishu IM chat',
+  );
+  return { agentId, workspaceJid: workspace.jid, workspaceFolder: workspace.folder };
+}
+
+function ensureAutoImConversationBinding(
+  jid: string,
+  group: RegisteredGroup,
+  userId: string,
+  name: string,
+): boolean {
+  if (group.target_main_jid) return false;
+  if (group.target_agent_id) {
+    const existingAgent = getAgent(group.target_agent_id);
+    if (existingAgent?.source_kind === 'auto_im') {
+      ensureAgentDirectories(existingAgent.group_folder, existingAgent.id);
+      updateAgentLastImJid(existingAgent.id, jid);
+      return false;
+    }
+    return false;
+  }
+
+  const created = createAutoImConversationAgent({
+    userId,
+    sourceJid: jid,
+    groupFolder: group.folder,
+    name: name || group.name || jid,
+  });
+  if (!created) return false;
+
+  group.target_agent_id = created.agentId;
+  setRegisteredGroup(jid, group);
+  registeredGroups[jid] = group;
+  return true;
+}
+
+/**
+ * Batch-apply autoIsolateContext toggle for a user's existing Feishu IM chats.
+ * enable=true:  create conversation agents for unbound Feishu chats
+ * enable=false: remove auto_im agent bindings (manual bindings untouched)
+ */
+function applyAutoIsolateContext(userId: string, enable: boolean): number {
+  let count = 0;
+  const groups = getAllRegisteredGroups();
+
+  for (const [jid, group] of Object.entries(groups)) {
+    if (getChannelType(jid) !== 'feishu') continue;
+    if (group.created_by !== userId) continue;
+
+    if (enable) {
+      if (group.target_agent_id || group.target_main_jid) continue;
+      if (ensureAutoImConversationBinding(jid, group, userId, group.name || jid)) count++;
+    } else {
+      if (!group.target_agent_id) continue;
+      const agentToRemove = getAgent(group.target_agent_id);
+      if (agentToRemove?.source_kind !== 'auto_im') continue;
+
+      broadcastAgentStatus(agentToRemove.chat_jid, group.target_agent_id, 'idle', agentToRemove.name, '', '__removed__', 'conversation');
+
+      group.target_agent_id = undefined;
+      setRegisteredGroup(jid, group);
+      registeredGroups[jid] = group;
+      count++;
+    }
+  }
+  return count;
 }
 
 /**
@@ -7081,12 +7220,18 @@ function buildResolveEffectiveChatJid(): (
 ) => { effectiveJid: string; agentId: string | null } | null {
   return (chatJid: string, messageMeta) => {
     const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
-    if (!group) return null;
+    if (!group) {
+      logger.debug({ chatJid }, 'resolveEffectiveChatJid: group not found');
+      return null;
+    }
 
     // Agent binding takes priority
     if (group.target_agent_id) {
       const agent = getAgent(group.target_agent_id);
-      if (!agent) return null;
+      if (!agent) {
+        logger.warn({ chatJid, targetAgentId: group.target_agent_id }, 'resolveEffectiveChatJid: agent not found for target_agent_id');
+        return null;
+      }
       // Use the agent's actual chat_jid (the workspace's registered JID) as the
       // base for the virtual JID.  Previously we constructed web:${folder} which
       // doesn't match any registered group for non-main workspaces (folder ≠ JID).
@@ -7134,6 +7279,10 @@ function buildResolveEffectiveChatJid(): (
       return { effectiveJid, agentId: null };
     }
 
+    logger.debug(
+      { chatJid, targetAgentId: group.target_agent_id, targetMainJid: group.target_main_jid },
+      'resolveEffectiveChatJid: no binding found',
+    );
     return null;
   };
 }
@@ -7937,6 +8086,10 @@ async function main(): Promise<void> {
           {
             ignoreMessagesBefore,
             onCommand: handleCommand,
+            resolveGroupFolder: (chatJid: string) =>
+              resolveEffectiveFolder(chatJid),
+            resolveEffectiveChatJid: buildResolveEffectiveChatJid(),
+            onAgentMessage: buildOnAgentMessage(),
             onBotAddedToGroup: buildFeishuBotAddedHandler(userId, homeFolder, getReloadOwnerOpenId),
             onBotRemovedFromGroup: buildOnBotRemovedFromGroup(),
             shouldProcessGroupMessage,
@@ -8162,6 +8315,8 @@ async function main(): Promise<void> {
       activeRouteUpdaters.get(folder)?.(sourceJid);
     },
     handleSpawnCommand,
+    applyAutoIsolateContext: (userId: string, enable: boolean) =>
+      applyAutoIsolateContext(userId, enable),
   });
 
   // Clean expired sessions every hour
@@ -8619,7 +8774,28 @@ async function main(): Promise<void> {
   }
 
   // Run health check once on startup to clean up orphaned bindings, then periodically
-  void checkImBindingsHealth();
+  void checkImBindingsHealth().then(() => {
+    // After health check, ensure auto_im agents exist for users with autoIsolateContext enabled
+    const groups = getAllRegisteredGroups();
+    const userIds = new Set<string>();
+    for (const [jid, group] of Object.entries(groups)) {
+      if (getChannelType(jid) === 'feishu' && group.created_by) {
+        userIds.add(group.created_by);
+      }
+    }
+    for (const uid of userIds) {
+      const cfg = getUserFeishuConfig(uid);
+      if (cfg?.autoIsolateContext) {
+        const migrated = applyAutoIsolateContext(uid, true);
+        if (migrated > 0) {
+          logger.info(
+            { userId: uid, migrated },
+            'Startup: restored auto_im agents for user with autoIsolateContext enabled',
+          );
+        }
+      }
+    }
+  });
   const IM_BINDING_HEALTH_CHECK_INTERVAL = 30 * 60 * 1000; // 30 min
   setInterval(() => {
     void checkImBindingsHealth();
@@ -8659,6 +8835,21 @@ async function checkImBindingsHealth(): Promise<void> {
     if (group.target_agent_id) {
       const agent = getAgent(group.target_agent_id);
       if (!agent) {
+        // For auto_im agents, re-create instead of unbinding if toggle is still on
+        const userId = group.created_by;
+        if (userId && getChannelType(jid) === 'feishu') {
+          const feishuConfig = getUserFeishuConfig(userId);
+          if (feishuConfig?.autoIsolateContext) {
+            const unbound: RegisteredGroup = { ...group, target_agent_id: undefined };
+            if (ensureAutoImConversationBinding(jid, unbound, userId, group.name || jid)) {
+              logger.info(
+                { jid, userId },
+                'Health check: re-created auto_im agent (previous agent lost)',
+              );
+              continue;
+            }
+          }
+        }
         unbindImGroup(
           jid,
           `Orphaned agent binding: agent ${group.target_agent_id} no longer exists`,

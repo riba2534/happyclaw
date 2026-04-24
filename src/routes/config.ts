@@ -1347,11 +1347,13 @@ configRoutes.get('/user-im/feishu', authMiddleware, (c) => {
         enabled: false,
         updatedAt: null,
         connected,
+        autoIsolateContext: false,
       });
     }
     return c.json({
       ...toPublicFeishuProviderConfig(config, 'runtime'),
       connected,
+      autoIsolateContext: config.autoIsolateContext ?? false,
     });
   } catch (err) {
     logger.error({ err }, 'Failed to load user Feishu config');
@@ -1386,11 +1388,12 @@ configRoutes.put('/user-im/feishu', authMiddleware, async (c) => {
   }
 
   const current = getUserFeishuConfig(user.id);
-  const next = {
+  const next: Record<string, unknown> = {
     appId: current?.appId || '',
     appSecret: current?.appSecret || '',
     enabled: current?.enabled ?? true,
     updatedAt: current?.updatedAt || null,
+    autoIsolateContext: current?.autoIsolateContext ?? false,
   };
   if (typeof validation.data.appId === 'string') {
     const appId = validation.data.appId.trim();
@@ -1408,13 +1411,28 @@ configRoutes.put('/user-im/feishu', authMiddleware, async (c) => {
     // First-time config with credentials should connect immediately.
     next.enabled = true;
   }
+  if (typeof validation.data.autoIsolateContext === 'boolean') {
+    next.autoIsolateContext = validation.data.autoIsolateContext;
+  }
 
   try {
     const saved = saveUserFeishuConfig(user.id, {
-      appId: next.appId,
-      appSecret: next.appSecret,
-      enabled: next.enabled,
+      appId: next.appId as string,
+      appSecret: next.appSecret as string,
+      enabled: next.enabled as boolean | undefined,
+      autoIsolateContext: next.autoIsolateContext as boolean | undefined,
     });
+
+    // Migrate existing Feishu chats when autoIsolateContext toggle changes
+    const oldAutoIsolate = current?.autoIsolateContext ?? false;
+    const newAutoIsolate = saved.autoIsolateContext ?? false;
+    if (oldAutoIsolate !== newAutoIsolate && deps?.applyAutoIsolateContext) {
+      const migrated = deps.applyAutoIsolateContext(user.id, newAutoIsolate);
+      logger.info(
+        { userId: user.id, enable: newAutoIsolate, migrated },
+        'Applied autoIsolateContext to existing Feishu chats',
+      );
+    }
 
     // Hot-reload: reconnect user's Feishu channel
     if (deps?.reloadUserIMConfig) {
@@ -1432,6 +1450,7 @@ configRoutes.put('/user-im/feishu', authMiddleware, async (c) => {
     return c.json({
       ...toPublicFeishuProviderConfig(saved, 'runtime'),
       connected,
+      autoIsolateContext: saved.autoIsolateContext ?? false,
     });
   } catch (err) {
     const message =

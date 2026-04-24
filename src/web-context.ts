@@ -77,6 +77,7 @@ export interface WebDeps {
     message: string,
     sourceImJid?: string,
   ) => Promise<string>;
+  applyAutoIsolateContext?: (userId: string, enable: boolean) => number;
 }
 
 export type Variables = {

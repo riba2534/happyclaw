@@ -16,6 +16,7 @@ interface UserFeishuConfig {
   enabled: boolean;
   connected: boolean;
   updatedAt: string | null;
+  autoIsolateContext?: boolean;
 }
 
 export function FeishuChannelCard() {
@@ -54,6 +55,19 @@ export function FeishuChannelCard() {
       toast.success(`飞书渠道已${newEnabled ? '启用' : '停用'}`);
     } catch (err) {
       toast.error(getErrorMessage(err, '切换飞书渠道状态失败'));
+    } finally {
+      setToggling(false);
+    }
+  };
+
+  const handleAutoIsolateToggle = async (newValue: boolean) => {
+    setToggling(true);
+    try {
+      const data = await api.put<UserFeishuConfig>('/api/config/user-im/feishu', { autoIsolateContext: newValue });
+      setConfig(data);
+      toast.success(`自动隔离上下文已${newValue ? '开启' : '关闭'}`);
+    } catch (err) {
+      toast.error(getErrorMessage(err, '切换自动隔离上下文失败'));
     } finally {
       setToggling(false);
     }
@@ -144,6 +158,17 @@ export function FeishuChannelCard() {
                 {saving && <Loader2 className="size-4 animate-spin" />}
                 保存飞书配置
               </Button>
+            </div>
+            <div className="border-t border-border pt-3 flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-foreground">自动隔离上下文</p>
+                <p className="text-xs text-muted-foreground">不同私聊和群聊自动绑定独立对话，上下文互不干扰</p>
+              </div>
+              <Switch
+                checked={config?.autoIsolateContext ?? false}
+                disabled={toggling}
+                onCheckedChange={handleAutoIsolateToggle}
+              />
             </div>
           </>
         )}
