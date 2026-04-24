@@ -204,7 +204,7 @@ interface ChatState {
   restoreActiveState: () => Promise<void>;
   handleStreamSnapshot: (chatJid: string, snapshot: StreamSnapshotData, agentId?: string) => void;
   // Sub-agent actions
-  loadAgents: (jid: string) => Promise<void>;
+  loadAgents: (jid: string, opts?: { force?: boolean }) => Promise<void>;
   deleteAgentAction: (jid: string, agentId: string) => Promise<boolean>;
   setActiveAgentTab: (jid: string, agentId: string | null) => void;
   // Conversation agent actions
@@ -1952,7 +1952,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   // 加载子 Agent 列表
-  loadAgents: async (jid) => {
+  loadAgents: async (jid, opts) => {
+    // Skip network call if agents are already cached.  WebSocket events
+    // (agent_status, agent created/deleted) keep the cache fresh after the
+    // first load.  Pass { force: true } to bypass (e.g. after manual refresh).
+    if (!opts?.force && get().agents[jid]) {
+      return;
+    }
     try {
       const data = await api.get<{ agents: AgentInfo[] }>(
         `/api/groups/${encodeURIComponent(jid)}/agents`,

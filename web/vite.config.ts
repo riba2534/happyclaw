@@ -109,7 +109,11 @@ export default defineConfig(({ command }) => {
             ],
           },
           workbox: {
-            navigateFallback: null,
+            // 离线化：导航请求（如从桌面图标/刷新进入）回退到 index.html，
+            // 让 SPA 在无网络时也能加载、路由依然工作。
+            // 排除 /api/ 和 /ws，这些不是 SPA 路由。
+            navigateFallback: `${APP_BASE}index.html`,
+            navigateFallbackDenylist: [/^\/api\//, /^\/ws/],
             manifestTransforms: [async (entries) => ({
               manifest: entries.filter((entry) => !isMermaidRuntimeChunk(entry.url)),
               warnings: [],
@@ -162,6 +166,43 @@ export default defineConfig(({ command }) => {
                     maxEntries: 64,
                     maxAgeSeconds: 60 * 60 * 24 * 30,
                   },
+                },
+              },
+              // 离线化：关键 GET API 走 stale-while-revalidate。
+              // UI 立即从缓存出内容，后台刷新。WebSocket 推送和 2s 轮询仍拉
+              // 最新数据，SW 缓存用于加速首屏/支持离线。
+              //
+              // 消息 + agent 列表（子对话消息用同一 endpoint + agentId query）
+              {
+                urlPattern: ({ url, request }) => {
+                  if (request.method !== 'GET') return false;
+                  return /^\/api\/groups\/[^/]+\/(messages|agents)(\?.*)?$/.test(url.pathname + url.search);
+                },
+                handler: 'StaleWhileRevalidate',
+                options: {
+                  cacheName: 'api-groups-cache',
+                  expiration: {
+                    maxEntries: 100,
+                    maxAgeSeconds: 60 * 60 * 24, // 1 day
+                  },
+                  cacheableResponse: { statuses: [200] },
+                },
+              },
+              // 登录态 + 侧边栏对话列表：离线启动时能识别用户、展示列表
+              {
+                urlPattern: ({ url, request }) => {
+                  if (request.method !== 'GET') return false;
+                  return url.pathname === '/api/auth/me'
+                    || url.pathname === '/api/groups';
+                },
+                handler: 'StaleWhileRevalidate',
+                options: {
+                  cacheName: 'api-core-cache',
+                  expiration: {
+                    maxEntries: 10,
+                    maxAgeSeconds: 60 * 60 * 24 * 7, // 7 days
+                  },
+                  cacheableResponse: { statuses: [200] },
                 },
               },
             ],
