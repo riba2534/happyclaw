@@ -1,0 +1,6 @@
+{
+  "codex@openai-codex": {
+    "requires": ["codex"],
+    "note": "Needs OpenAI codex CLI (binary 'codex' must be on PATH). Docker 模式容器内默认没有此 binary。"
+  }
+}
