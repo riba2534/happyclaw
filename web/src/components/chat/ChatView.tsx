@@ -24,6 +24,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { AgentTabBar } from './AgentTabBar';
 import { ImBindingDialog } from './ImBindingDialog';
 import { TopicSidebar } from './TopicSidebar';
+import { WorkspaceModelSelector } from './WorkspaceModelSelector';
 import { showToast } from '../../utils/toast';
 import { CHANNEL_LABEL } from '../settings/channel-meta';
 
@@ -525,6 +526,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
             )}
           </div>
         </div>
+        <WorkspaceModelSelector groupJid={groupJid} agentId={activeAgentTab} />
         {/* Desktop: toggle theme (light → dark → system) */}
         <button
           onClick={toggleTheme}

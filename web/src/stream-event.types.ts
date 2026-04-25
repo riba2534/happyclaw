@@ -22,6 +22,8 @@ export type StreamEventType =
 
 export interface StreamEvent {
   eventType: StreamEventType;
+  /** Runtime that produced this event. Used for runtime-specific presentation. */
+  runtime?: 'claude' | 'codex';
   /** Correlates all stream events for a single user turn. */
   turnId?: string;
   /** SDK session identifier if known. */

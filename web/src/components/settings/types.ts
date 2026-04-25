@@ -4,6 +4,11 @@ export interface UnifiedProviderPublic {
   id: string;
   name: string;
   type: 'official' | 'third_party';
+  runtime: 'claude' | 'codex';
+  providerFamily: 'claude' | 'gpt';
+  providerPoolId: string;
+  authMode: 'api_key' | 'oauth' | 'setup_token' | 'third_party' | 'chatgpt_oauth';
+  authProfileGeneration: number;
   enabled: boolean;
   weight: number;
   anthropicBaseUrl: string;
@@ -17,6 +22,9 @@ export interface UnifiedProviderPublic {
   hasClaudeOAuthCredentials: boolean;
   claudeOAuthCredentialsExpiresAt: number | null;
   claudeOAuthCredentialsAccessTokenMasked: string | null;
+  hasOpenaiApiKey: boolean;
+  openaiApiKeyMasked: string | null;
+  hasCodexAuthJson: boolean;
   customEnv: Record<string, string>;
   updatedAt: string;
 }
@@ -127,7 +135,36 @@ export interface CachedOAuthUsage {
   error?: string;
 }
 
-export type SettingsTab = 'claude' | 'registration' | 'appearance' | 'system' | 'profile' | 'my-channels' | 'security' | 'groups' | 'memory' | 'skills' | 'mcp-servers' | 'agent-definitions' | 'users' | 'about' | 'bindings' | 'usage' | 'monitor';
+export interface ProviderPoolModelOption {
+  runtime: 'claude' | 'codex';
+  provider_family: 'claude' | 'gpt';
+  provider_pool_id: string;
+  model_id: string;
+  model_kind: 'provider_default' | 'runtime_default' | 'alias' | 'explicit_version' | 'custom';
+  display_name: string | null;
+  source: string;
+  status: 'available' | 'unverified' | 'unsupported' | 'stale' | 'hidden';
+  updated_at: string;
+}
+
+export interface ProviderPool {
+  provider_pool_id: string;
+  runtime: 'claude' | 'codex';
+  provider_family: 'claude' | 'gpt';
+  display_name: string;
+  enabled: boolean;
+}
+
+export interface ConversationRuntimeState {
+  runtime: 'claude' | 'codex';
+  provider_pool_id: string;
+  selected_model: string | null;
+  model_kind: ProviderPoolModelOption['model_kind'];
+  resolved_model: string | null;
+  binding_source: 'system_default' | 'workspace_default' | 'copied_workspace_default' | 'user_pinned';
+}
+
+export type SettingsTab = 'models' | 'claude' | 'gpt' | 'registration' | 'appearance' | 'system' | 'profile' | 'my-channels' | 'security' | 'groups' | 'memory' | 'skills' | 'mcp-servers' | 'agent-definitions' | 'users' | 'about' | 'bindings' | 'usage' | 'monitor';
 
 export function getErrorMessage(err: unknown, fallback: string): string {
   if (typeof err === 'object' && err !== null && 'message' in err) {

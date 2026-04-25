@@ -959,7 +959,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         body.attachments = attachments.map(att => ({ type: 'image', ...att }));
       }
 
-      const data = await api.post<{ success: boolean; messageId: string; timestamp: string }>('/api/messages', body);
+      const data = await api.post<{ success: boolean; messageId: string; timestamp: string; handledCommand?: boolean }>('/api/messages', body);
       if (!data.success) {
         // Server returned non-success payload — surface as a send failure so caller can retain input.
         const msg = '服务器返回失败，请重试';
@@ -993,7 +993,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const shouldWait =
           !!latest &&
           latest.is_from_me === false &&
-          !isTerminalSystemMessage(latest);
+          !isTerminalSystemMessage(latest) &&
+          !data.handledCommand;
         return {
           messages: {
             ...s.messages,
