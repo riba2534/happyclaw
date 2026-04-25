@@ -100,7 +100,7 @@ ENV PATH="/home/node/.local/bin:${PATH}"
 # Create app directory
 WORKDIR /app
 
-# Copy package.json only — no lock file so "*" always resolves to latest SDK
+# Copy package.json only — no lock file so "*" always resolves to latest agent SDKs
 COPY agent-runner/package.json ./
 
 # CACHEBUST after COPY ensures both global and local npm install are cache-busted

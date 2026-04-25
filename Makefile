@@ -1,6 +1,6 @@
 .PHONY: dev dev-backend dev-web build build-backend build-web start \
        typecheck typecheck-backend typecheck-web typecheck-agent-runner \
-       format format-check install install-host-tools clean reset-init update-sdk ensure-latest-sdk sync-types \
+       format format-check install install-host-tools clean reset-init update-sdk update-codex-sdk ensure-latest-sdk ensure-latest-codex-sdk sync-types \
        backup restore help _ensure-docker-image logs status stop \
        _check-sync _build-web-if-stale _build-ar-if-stale _build-backend-if-stale \
        _start-pm2 _start-direct
@@ -60,7 +60,7 @@ build-web: ## 仅编译前端
 
 # ─── Production ──────────────────────────────────────────────
 
-start: ensure-latest-sdk ## 一键启动生产环境（pm2 托管时自动走 pm2 restart；否则前台阻塞）
+start: ensure-latest-sdk ensure-latest-codex-sdk ## 一键启动生产环境（pm2 托管时自动走 pm2 restart；否则前台阻塞）
 	@# pm2 注册过 happyclaw 就路由到 pm2，避免裸跑和 pm2 抢端口
 	@if command -v pm2 >/dev/null 2>&1 && pm2 describe happyclaw >/dev/null 2>&1; then \
 	  $(MAKE) --no-print-directory _start-pm2; \
@@ -205,7 +205,7 @@ format-check: ## 检查代码格式
 # ─── Docker Image ─────────────────────────────────────────────
 
 # Docker 镜像源文件：Dockerfile、entrypoint.sh、agent-runner 源码
-DOCKER_SRC := container/Dockerfile container/entrypoint.sh $(wildcard container/agent-runner/src/*.ts) $(wildcard container/agent-runner/prompts/*)
+DOCKER_SRC := container/Dockerfile container/entrypoint.sh container/agent-runner/package.json $(wildcard container/agent-runner/src/*.ts) $(wildcard container/agent-runner/prompts/*)
 
 _ensure-docker-image: ## (内部) 检测 Docker 镜像是否需要构建/重建
 	@if command -v docker >/dev/null 2>&1; then \
@@ -242,6 +242,14 @@ update-sdk: ## 更新 agent-runner 的 Claude Agent SDK 到最新版本
 	@sed -i '' 's/"@anthropic-ai\/claude-agent-sdk": "[^"]*"/"@anthropic-ai\/claude-agent-sdk": "*"/' container/agent-runner/package.json
 	@echo "SDK updated. Run 'make typecheck' to verify."
 
+update-codex-sdk: ## 更新宿主服务与 agent-runner 的 Codex SDK 到最新版本
+	$(PKG) update @openai/codex-sdk
+	cd container/agent-runner && $(PKG) update @openai/codex-sdk && $(PKG) run build
+	@# npm/bun update 会将 "*" 回写为具体版本，还原它
+	@sed -i '' 's/"@openai\/codex-sdk": "[^"]*"/"@openai\/codex-sdk": "*"/' package.json
+	@sed -i '' 's/"@openai\/codex-sdk": "[^"]*"/"@openai\/codex-sdk": "*"/' container/agent-runner/package.json
+	@echo "Codex SDK updated. Run 'make typecheck' to verify."
+
 ensure-latest-sdk: ## 启动前自动检测并更新 SDK（有新版才更新）
 	@LOCAL=$$(node -p "require('./container/agent-runner/node_modules/@anthropic-ai/claude-agent-sdk/package.json').version" 2>/dev/null || echo "0.0.0"); \
 	LATEST=$$(npm view @anthropic-ai/claude-agent-sdk version --fetch-timeout=5000 2>/dev/null || echo "$$LOCAL"); \
@@ -252,6 +260,23 @@ ensure-latest-sdk: ## 启动前自动检测并更新 SDK（有新版才更新）
 		echo "✅ SDK 更新完成（内置 Claude Code 版本随之更新）"; \
 	else \
 		echo "✅ Claude Agent SDK 已是最新 ($$LOCAL)"; \
+	fi
+
+ensure-latest-codex-sdk: ## 启动前自动检测并更新 Codex SDK（有新版才更新）
+	@HOST_LOCAL=$$(node -p "require('./node_modules/@openai/codex-sdk/package.json').version" 2>/dev/null || echo "0.0.0"); \
+	RUNNER_LOCAL=$$(node -p "require('./container/agent-runner/node_modules/@openai/codex-sdk/package.json').version" 2>/dev/null || echo "0.0.0"); \
+	LOCAL="$$HOST_LOCAL"; \
+	if [ "$$RUNNER_LOCAL" = "0.0.0" ]; then LOCAL="0.0.0"; fi; \
+	LATEST=$$(npm view @openai/codex-sdk version --fetch-timeout=5000 2>/dev/null || echo "$$LOCAL"); \
+	if [ "$$LOCAL" != "$$LATEST" ]; then \
+		echo "🔄 Codex SDK 有新版本或未安装: host=$$HOST_LOCAL, runner=$$RUNNER_LOCAL → $$LATEST，正在更新..."; \
+		$(PKG) update @openai/codex-sdk; \
+		(cd container/agent-runner && $(PKG) update @openai/codex-sdk && $(PKG) run build); \
+		sed -i '' 's/"@openai\/codex-sdk": "[^"]*"/"@openai\/codex-sdk": "*"/' package.json; \
+		sed -i '' 's/"@openai\/codex-sdk": "[^"]*"/"@openai\/codex-sdk": "*"/' container/agent-runner/package.json; \
+		echo "✅ Codex SDK 更新完成"; \
+	else \
+		echo "✅ Codex SDK 已是最新 ($$LOCAL)"; \
 	fi
 
 # ─── Setup ───────────────────────────────────────────────────
