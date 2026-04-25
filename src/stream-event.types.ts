@@ -11,6 +11,8 @@
 
 export type StreamEventType =
   | 'text_delta' | 'thinking_delta'
+  | 'assistant_text_boundary'
+  | 'sub_agent_result'
   | 'tool_use_start' | 'tool_use_end' | 'tool_progress'
   | 'hook_started' | 'hook_progress' | 'hook_response'
   | 'task_start' | 'task_notification'
@@ -20,6 +22,8 @@ export type StreamEventType =
 
 export interface StreamEvent {
   eventType: StreamEventType;
+  /** Runtime that produced this event. Used for runtime-specific presentation. */
+  runtime?: 'claude' | 'codex';
   /** Correlates all stream events for a single user turn. */
   turnId?: string;
   /** SDK session identifier if known. */
@@ -64,5 +68,14 @@ export interface StreamEvent {
       cacheCreationInputTokens: number;
       costUSD: number;
     }>;
+  };
+  /** Previous assistant text segment (before a new top-level assistant message). */
+  segmentText?: string;
+  /** Sub-agent (Task/Agent tool) execution result extracted from tool_result block. */
+  subAgentResult?: {
+    toolUseId: string;
+    description: string;
+    summary: string;
+    text: string;
   };
 }

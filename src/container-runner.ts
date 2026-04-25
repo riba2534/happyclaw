@@ -23,24 +23,31 @@ import {
   buildContainerEnvLines,
   getClaudeProviderConfig,
   getContainerEnvConfig,
-  getEnabledProviders,
+  getEnabledProvidersForPool,
   getBalancingConfig,
+  getProviderById,
   getSystemSettings,
   getEffectiveExternalDir,
   mergeClaudeEnvConfig,
   resolveProviderById,
   shellQuoteEnvLines,
+  writeCodexProviderAuthMaterial,
   writeCredentialsFile,
 } from './runtime-config.js';
-import { providerPool } from './provider-pool.js';
+import { providerPool, providerPoolManager } from './provider-pool.js';
 import { isApiError } from './agent-output-parser.js';
-import type { ClaudeProviderConfig } from './runtime-config.js';
+import type {
+  ClaudeProviderConfig,
+  CodexProviderAuthMaterial,
+  UnifiedProvider,
+} from './runtime-config.js';
 import { loadUserMcpServers } from './mcp-utils.js';
 import {
   checkHostCapabilities,
   logCapabilityPreflight,
 } from './agent-capabilities.js';
 import { MessageSourceKind, RegisteredGroup, StreamEvent } from './types.js';
+import type { AgentRuntime, ModelSelectionKind } from './types.js';
 import {
   attachStderrHandler,
   attachStdoutHandler,
@@ -199,6 +206,24 @@ export interface ContainerInput {
   images?: Array<{ data: string; mimeType?: string }>;
   agentId?: string;
   agentName?: string;
+  runtime?: AgentRuntime;
+  providerPoolId?: string;
+  providerId?: string | null;
+  authProfileGeneration?: number;
+  authProfileFingerprint?: string | null;
+  selectedModel?: string | null;
+  modelKind?: ModelSelectionKind;
+  resolvedModel?: string | null;
+  modelKey?: string;
+  modelOverride?: string | null;
+  resumeMode?: 'resume' | 'fresh' | 'soft_inject';
+  inputContextHash?: string | null;
+  workspaceInstructionHash?: string | null;
+  softInjectionReason?: string | null;
+  resumeFailureFallbackPrompt?: string | null;
+  resumeFailureFallbackInputContextHash?: string | null;
+  resumeFailureFallbackWorkspaceInstructionHash?: string | null;
+  resumeFailureFallbackSoftInjectionReason?: string | null;
 }
 
 export interface ContainerOutput {
@@ -212,6 +237,12 @@ export interface ContainerOutput {
   sdkMessageUuid?: string;
   sourceKind?: Exclude<MessageSourceKind, 'user_command'>;
   finalizationReason?: 'completed' | 'interrupted' | 'error';
+  runtimeContext?: {
+    resumeMode?: 'resume' | 'fresh' | 'soft_inject';
+    inputContextHash?: string | null;
+    workspaceInstructionHash?: string | null;
+    softInjectionReason?: string | null;
+  };
 }
 
 interface VolumeMount {
@@ -257,6 +288,7 @@ export function setProviderOverride(groupFolder: string, providerId: string): vo
  */
 function trySelectPoolProvider(
   groupFolder: string,
+  requestedProviderId?: string | null,
 ): { profileId: string; resolved: ResolvedProvider } | null {
   const override = getContainerEnvConfig(groupFolder);
   const hasOverride = !!(
@@ -265,6 +297,30 @@ function trySelectPoolProvider(
     override.anthropicBaseUrl
   );
   if (hasOverride) return null;
+
+  if (requestedProviderId) {
+    try {
+      const provider = getProviderById(requestedProviderId);
+      if (
+        provider &&
+        provider.enabled &&
+        provider.runtime === 'claude' &&
+        provider.providerPoolId === 'claude'
+      ) {
+        const resolved = resolveProviderById(requestedProviderId);
+        providerPool.acquireSession(requestedProviderId);
+        return {
+          profileId: requestedProviderId,
+          resolved: { config: resolved.config, customEnv: resolved.customEnv },
+        };
+      }
+    } catch (err) {
+      logger.warn(
+        { err, providerId: requestedProviderId },
+        'Requested Claude provider failed, falling back to pool',
+      );
+    }
+  }
 
   // Check one-time override (consumed on use)
   const overrideProviderId = providerOverrides.get(groupFolder);
@@ -287,7 +343,7 @@ function trySelectPoolProvider(
   }
 
   // Refresh pool state from V4 config
-  const enabledProviders = getEnabledProviders();
+  const enabledProviders = getEnabledProvidersForPool('claude');
   if (enabledProviders.length === 0) return null;
 
   // Single provider: return its ID for display, acquire session for consistency
@@ -321,6 +377,50 @@ function trySelectPoolProvider(
   }
 }
 
+function selectCodexProviderForInput(input: ContainerInput): UnifiedProvider | null {
+  const providerPoolId = input.providerPoolId || 'gpt';
+
+  if (input.providerId) {
+    const explicit = getProviderById(input.providerId);
+    if (
+      explicit &&
+      explicit.enabled &&
+      explicit.runtime === 'codex' &&
+      explicit.providerPoolId === providerPoolId
+    ) {
+      providerPoolManager.acquireSession(providerPoolId, explicit.id);
+      return explicit;
+    }
+    logger.warn(
+      { providerId: input.providerId, providerPoolId },
+      'Pinned Codex provider is unavailable, falling back to provider pool',
+    );
+  }
+
+  const enabledProviders = getEnabledProvidersForPool(providerPoolId).filter(
+    (provider) =>
+      provider.runtime === 'codex' && provider.providerFamily === 'gpt',
+  );
+  if (enabledProviders.length === 0) return null;
+
+  if (enabledProviders.length === 1) {
+    providerPoolManager.acquireSession(providerPoolId, enabledProviders[0].id);
+    return enabledProviders[0];
+  }
+
+  providerPoolManager.refreshPoolFromConfig(
+    providerPoolId,
+    enabledProviders,
+    getBalancingConfig(),
+  );
+  const selectedProviderId = providerPoolManager.selectProvider(providerPoolId);
+  const selectedProvider =
+    enabledProviders.find((provider) => provider.id === selectedProviderId) ??
+    enabledProviders[0];
+  providerPoolManager.acquireSession(providerPoolId, selectedProvider.id);
+  return selectedProvider;
+}
+
 function buildVolumeMounts(
   group: RegisteredGroup,
   isAdminHome: boolean,
@@ -329,6 +429,8 @@ function buildVolumeMounts(
   ownerHomeFolder?: string,
   taskRunId?: string,
   resolvedProvider?: ResolvedProvider,
+  modelOverride?: string | null,
+  codexAuthMaterial?: CodexProviderAuthMaterial | null,
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
@@ -494,11 +596,38 @@ function buildVolumeMounts(
   fs.mkdirSync(envDir, { recursive: true });
   const globalConfig = resolvedProvider?.config ?? getClaudeProviderConfig();
   const containerOverride = getContainerEnvConfig(group.folder);
-  const envLines = buildContainerEnvLines(
-    globalConfig,
-    containerOverride,
-    resolvedProvider?.customEnv,
-  );
+  const mergedConfig = mergeClaudeEnvConfig(globalConfig, containerOverride);
+  if (modelOverride) {
+    mergedConfig.anthropicModel = modelOverride;
+  }
+  const envLines = codexAuthMaterial
+    ? Object.entries(codexAuthMaterial.env).map(([key, value]) => `${key}=${value}`)
+    : buildContainerEnvLines(
+        globalConfig,
+        containerOverride,
+        resolvedProvider?.customEnv,
+      );
+  if (codexAuthMaterial?.codexHomeDir) {
+    mounts.push({
+      hostPath: codexAuthMaterial.codexHomeDir,
+      containerPath: '/workspace/codex-home',
+      readonly: false,
+    });
+    const codeHomeIndex = envLines.findIndex((line) =>
+      line.startsWith('CODEX_HOME='),
+    );
+    if (codeHomeIndex >= 0) {
+      envLines[codeHomeIndex] = 'CODEX_HOME=/workspace/codex-home';
+    } else {
+      envLines.push('CODEX_HOME=/workspace/codex-home');
+    }
+  }
+  if (codexAuthMaterial) {
+    envLines.push('HAPPYCLAW_CODEX_CLI_PATH=/app/node_modules/.bin/codex');
+  }
+  if (!codexAuthMaterial && modelOverride) {
+    envLines.push(`ANTHROPIC_MODEL=${modelOverride}`);
+  }
   // SystemSettings.autoCompactWindow > 0 时注入到容器，让 agent-runner 通过 query() settings 传给 SDK
   const sysAutoCompact = getSystemSettings().autoCompactWindow;
   if (sysAutoCompact > 0) {
@@ -526,15 +655,16 @@ function buildVolumeMounts(
   }
 
   // Write .credentials.json for OAuth credentials (session dir is already mounted)
-  const mergedConfig = mergeClaudeEnvConfig(globalConfig, containerOverride);
-  if (mergedConfig.claudeOAuthCredentials) {
-    try {
-      writeCredentialsFile(groupSessionsDir, mergedConfig);
-    } catch (err) {
-      logger.warn(
-        { group: group.name, err },
-        'Failed to write .credentials.json',
-      );
+  if (!codexAuthMaterial) {
+    if (mergedConfig.claudeOAuthCredentials) {
+      try {
+        writeCredentialsFile(groupSessionsDir, mergedConfig);
+      } catch (err) {
+        logger.warn(
+          { group: group.name, err },
+          'Failed to write .credentials.json',
+        );
+      }
     }
   }
 
@@ -680,11 +810,41 @@ export async function runContainerAgent(
   mkdirForContainer(groupDir);
 
   // ─── Provider Pool selection ───
-  const poolResult = trySelectPoolProvider(group.folder);
-  const selectedProfileId = poolResult?.profileId ?? null;
+  const isCodexRuntime = input.runtime === 'codex';
+  const selectedProviderPoolId =
+    input.providerPoolId || (isCodexRuntime ? 'gpt' : 'claude');
+  const codexProvider = isCodexRuntime ? selectCodexProviderForInput(input) : null;
+  if (isCodexRuntime && !codexProvider) {
+    return {
+      status: 'error',
+      result: null,
+      error: 'GPT/Codex 模型池没有启用的官方供应商',
+    };
+  }
+  const poolResult = isCodexRuntime
+    ? null
+    : trySelectPoolProvider(group.folder, input.providerId);
+  const selectedProfileId = isCodexRuntime
+    ? codexProvider?.id ?? null
+    : poolResult?.profileId ?? null;
   const resolvedProvider = poolResult?.resolved;
+  let codexAuthMaterial: CodexProviderAuthMaterial | null = null;
 
   try {
+    if (isCodexRuntime) {
+      codexAuthMaterial = writeCodexProviderAuthMaterial(codexProvider!);
+      if (
+        !codexAuthMaterial.env.OPENAI_API_KEY &&
+        !codexAuthMaterial.env.CODEX_HOME
+      ) {
+        return {
+          status: 'error',
+          result: null,
+          error: 'Codex 供应商缺少 API key 或 OAuth auth.json',
+        };
+      }
+    }
+
     // Determine if this is an admin home container (full privileges)
     const isAdminHome = !!group.is_home && group.folder === 'main';
     // Per-user skills: always mount if the group has an owner
@@ -697,6 +857,8 @@ export async function runContainerAgent(
       ownerHomeFolder,
       input.taskRunId,
       resolvedProvider,
+      input.runtime === 'claude' ? input.modelOverride : null,
+      codexAuthMaterial,
     );
     const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
     const agentSuffix = input.agentId
@@ -858,9 +1020,23 @@ export async function runContainerAgent(
     // ─── Provider Pool health reporting ───
     if (selectedProfileId) {
       if (result.status === 'success' || result.status === 'closed') {
-        providerPool.reportSuccess(selectedProfileId);
+        if (isCodexRuntime) {
+          providerPoolManager.reportSuccess(
+            selectedProviderPoolId,
+            selectedProfileId,
+          );
+        } else {
+          providerPool.reportSuccess(selectedProfileId);
+        }
       } else if (result.status === 'error' && isApiError(result.error || '')) {
-        providerPool.reportFailure(selectedProfileId);
+        if (isCodexRuntime) {
+          providerPoolManager.reportFailure(
+            selectedProviderPoolId,
+            selectedProfileId,
+          );
+        } else {
+          providerPool.reportFailure(selectedProfileId);
+        }
       }
     }
 
@@ -868,7 +1044,14 @@ export async function runContainerAgent(
   } finally {
     // Guarantee session release even if buildVolumeMounts/spawn throws
     if (selectedProfileId) {
-      providerPool.releaseSession(selectedProfileId);
+      if (isCodexRuntime) {
+        providerPoolManager.releaseSession(
+          selectedProviderPoolId,
+          selectedProfileId,
+        );
+      } else {
+        providerPool.releaseSession(selectedProfileId);
+      }
     }
   }
 }
@@ -1235,22 +1418,48 @@ export async function runHostAgent(
   };
 
   // ─── Provider Pool selection (host mode) ───
+  const isCodexRuntime = input.runtime === 'codex';
   const containerOverride = getContainerEnvConfig(group.folder);
-  const hostPoolResult = trySelectPoolProvider(group.folder);
-  const hostSelectedProfileId = hostPoolResult?.profileId ?? null;
+  const codexProvider = isCodexRuntime
+    ? selectCodexProviderForInput(input)
+    : null;
+  if (isCodexRuntime && !codexProvider) {
+    return hostModeSetupError('GPT/Codex 模型池没有启用的官方供应商');
+  }
+  const hostPoolResult = isCodexRuntime
+    ? null
+    : trySelectPoolProvider(group.folder, input.providerId);
+  const hostSelectedProfileId = isCodexRuntime
+    ? codexProvider?.id ?? null
+    : hostPoolResult?.profileId ?? null;
+  const hostProviderPoolId =
+    input.providerPoolId || (isCodexRuntime ? 'gpt' : 'claude');
   const globalConfig = hostPoolResult?.resolved.config ?? getClaudeProviderConfig();
 
   try {
     // 配置层环境变量
-    const envLines = buildContainerEnvLines(
-      globalConfig,
-      containerOverride,
-      hostPoolResult?.resolved.customEnv,
-    );
-    for (const line of envLines) {
-      const eqIdx = line.indexOf('=');
-      if (eqIdx > 0) {
-        hostEnv[line.slice(0, eqIdx)] = line.slice(eqIdx + 1);
+    if (isCodexRuntime) {
+      const authMaterial = writeCodexProviderAuthMaterial(codexProvider!);
+      Object.assign(hostEnv, authMaterial.env);
+      if (!hostEnv.OPENAI_API_KEY && !hostEnv.CODEX_HOME) {
+        return hostModeSetupError(
+          'Codex 供应商缺少 API key 或 OAuth auth.json',
+        );
+      }
+    } else {
+      const envLines = buildContainerEnvLines(
+        globalConfig,
+        containerOverride,
+        hostPoolResult?.resolved.customEnv,
+      );
+      for (const line of envLines) {
+        const eqIdx = line.indexOf('=');
+        if (eqIdx > 0) {
+          hostEnv[line.slice(0, eqIdx)] = line.slice(eqIdx + 1);
+        }
+      }
+      if (input.runtime === 'claude' && input.modelOverride) {
+        hostEnv['ANTHROPIC_MODEL'] = input.modelOverride;
       }
     }
 
@@ -1296,15 +1505,20 @@ export async function runHostAgent(
     }
 
     // Write .credentials.json for OAuth credentials
-    const mergedConfig = mergeClaudeEnvConfig(globalConfig, containerOverride);
-    if (mergedConfig.claudeOAuthCredentials) {
-      try {
-        writeCredentialsFile(groupSessionsDir, mergedConfig);
-      } catch (err) {
-        logger.warn(
-          { folder: group.folder, err },
-          'Failed to write .credentials.json for host agent',
-        );
+    if (!isCodexRuntime) {
+      const mergedConfig = mergeClaudeEnvConfig(globalConfig, containerOverride);
+      if (input.runtime === 'claude' && input.modelOverride) {
+        mergedConfig.anthropicModel = input.modelOverride;
+      }
+      if (mergedConfig.claudeOAuthCredentials) {
+        try {
+          writeCredentialsFile(groupSessionsDir, mergedConfig);
+        } catch (err) {
+          logger.warn(
+            { folder: group.folder, err },
+            'Failed to write .credentials.json for host agent',
+          );
+        }
       }
     }
 
@@ -1405,7 +1619,11 @@ export async function runHostAgent(
     const agentRunnerRoot = path.join(projectRoot, 'container', 'agent-runner');
     const agentRunnerNodeModules = path.join(agentRunnerRoot, 'node_modules');
     const agentRunnerDist = path.join(agentRunnerRoot, 'dist', 'index.js');
-    const requiredDeps = ['@anthropic-ai/claude-agent-sdk'];
+    const requiredDeps = [
+      '@anthropic-ai/claude-agent-sdk',
+      '@openai/codex',
+      '@openai/codex-sdk',
+    ];
     const missingDeps = requiredDeps.filter((dep) => {
       const depJson = path.join(
         agentRunnerNodeModules,
@@ -1607,12 +1825,18 @@ export async function runHostAgent(
     // ─── Provider Pool health reporting (host mode) ───
     if (hostSelectedProfileId) {
       if (hostResult.status === 'success' || hostResult.status === 'closed') {
-        providerPool.reportSuccess(hostSelectedProfileId);
+        providerPoolManager.reportSuccess(
+          hostProviderPoolId,
+          hostSelectedProfileId,
+        );
       } else if (
         hostResult.status === 'error' &&
         isApiError(hostResult.error || '')
       ) {
-        providerPool.reportFailure(hostSelectedProfileId);
+        providerPoolManager.reportFailure(
+          hostProviderPoolId,
+          hostSelectedProfileId,
+        );
       }
     }
 
@@ -1620,7 +1844,10 @@ export async function runHostAgent(
   } finally {
     // Guarantee session release even if spawn/setup throws
     if (hostSelectedProfileId) {
-      providerPool.releaseSession(hostSelectedProfileId);
+      providerPoolManager.releaseSession(
+        hostProviderPoolId,
+        hostSelectedProfileId,
+      );
     }
   }
 }

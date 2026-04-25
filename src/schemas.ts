@@ -630,12 +630,20 @@ export const UnifiedProviderCreateSchema = z
   .object({
     name: z.string().min(1).max(64),
     type: z.enum(['official', 'third_party']),
+    runtime: z.enum(['claude', 'codex']).optional(),
+    providerFamily: z.enum(['claude', 'gpt']).optional(),
+    providerPoolId: z.string().min(1).max(64).optional(),
+    authMode: z
+      .enum(['api_key', 'oauth', 'setup_token', 'third_party', 'chatgpt_oauth'])
+      .optional(),
     anthropicBaseUrl: z.string().max(2000).optional(),
     anthropicAuthToken: z.string().max(2000).optional(),
     anthropicModel: z.string().max(128).optional(),
     anthropicApiKey: z.string().max(2000).optional(),
     claudeCodeOauthToken: z.string().max(2000).optional(),
     claudeOAuthCredentials: ClaudeOAuthCredentialsSchema.optional(),
+    openaiApiKey: z.string().max(2000).optional(),
+    codexAuthJson: z.string().max(200000).optional(),
     customEnv: z.record(z.string().max(256), z.string().max(4096)).optional(),
     weight: z.number().int().min(1).max(100).optional(),
     enabled: z.boolean().optional(),
@@ -682,6 +690,10 @@ export const UnifiedProviderSecretsSchema = z
     clearClaudeCodeOauthToken: z.boolean().optional(),
     claudeOAuthCredentials: ClaudeOAuthCredentialsSchema.optional(),
     clearClaudeOAuthCredentials: z.boolean().optional(),
+    openaiApiKey: z.string().max(2000).optional(),
+    clearOpenaiApiKey: z.boolean().optional(),
+    codexAuthJson: z.string().max(200000).optional(),
+    clearCodexAuthJson: z.boolean().optional(),
   })
   .refine(
     (data) => {
@@ -693,7 +705,11 @@ export const UnifiedProviderSecretsSchema = z
         typeof data.claudeCodeOauthToken === 'string' ||
         data.clearClaudeCodeOauthToken === true ||
         data.claudeOAuthCredentials !== undefined ||
-        data.clearClaudeOAuthCredentials === true
+        data.clearClaudeOAuthCredentials === true ||
+        typeof data.openaiApiKey === 'string' ||
+        data.clearOpenaiApiKey === true ||
+        typeof data.codexAuthJson === 'string' ||
+        data.clearCodexAuthJson === true
       );
     },
     { message: 'At least one secret field must be provided' },

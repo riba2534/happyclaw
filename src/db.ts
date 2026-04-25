@@ -7,6 +7,7 @@ import { STORE_DIR, GROUPS_DIR } from './config.js';
 import { logger } from './logger.js';
 import {
   AgentKind,
+  AgentRuntime,
   AgentStatus,
   AuthAuditLog,
   AuthEventType,
@@ -15,9 +16,11 @@ import {
   BalanceTransaction,
   BalanceTransactionSource,
   BalanceTransactionType,
+  BindingSource,
   BillingAuditEventType,
   BillingAuditLog,
   BillingPlan,
+  ConversationRuntimeState,
   DailyUsage,
   ExecutionMode,
   GroupMember,
@@ -28,10 +31,18 @@ import {
   NewMessage,
   MessageCursor,
   MessageSourceKind,
+  ModelBinding,
+  ModelSelectionKind,
   ImContextBinding,
+  ProviderFamily,
+  ProviderPool,
+  ProviderPoolModelOption,
   RedeemCode,
   RegisteredGroup,
+  RuntimeNativeSession,
+  RuntimeSessionKey,
   ScheduledTask,
+  SystemModelDefault,
   SubAgent,
   TaskRunLog,
   User,
@@ -44,10 +55,13 @@ import {
   UserSessionWithUser,
   Permission,
   PermissionTemplateKey,
+  WorkspaceModelDefault,
 } from './types.js';
 import { getDefaultPermissions, normalizePermissions } from './permissions.js';
 
 let db: InstanceType<typeof Database>;
+const SCHEMA_VERSION = '37';
+const DB_BACKUP_ENV_OVERRIDE = 'HAPPYCLAW_ALLOW_DB_MIGRATION_WITHOUT_BACKUP';
 
 // Prepared statement cache — lazy-initialized on first use after initDatabase()
 let _stmts: {
@@ -66,6 +80,72 @@ let _stmts: {
 
 const _newMsgStmtCache = new Map<number, any>();
 
+function safeTimestampForFilename(): string {
+  return new Date().toISOString().replace(/[:.]/g, '-');
+}
+
+function copyIfExists(src: string, dest: string): boolean {
+  if (!fs.existsSync(src)) return false;
+  fs.copyFileSync(src, dest);
+  return true;
+}
+
+function backupDatabaseBeforeMigration(dbPath: string): void {
+  if (!fs.existsSync(dbPath)) return;
+
+  const backupDir = path.join(path.dirname(dbPath), 'backups');
+  const markerPath = path.join(backupDir, `.schema-v${SCHEMA_VERSION}.done`);
+  if (fs.existsSync(markerPath)) return;
+
+  try {
+    fs.mkdirSync(backupDir, { recursive: true });
+    const stamp = safeTimestampForFilename();
+    const base = path.join(
+      backupDir,
+      `messages-schema-v${SCHEMA_VERSION}-${stamp}`,
+    );
+    const copied = [
+      copyIfExists(dbPath, `${base}.db`),
+      copyIfExists(`${dbPath}-wal`, `${base}.db-wal`),
+      copyIfExists(`${dbPath}-shm`, `${base}.db-shm`),
+    ];
+    if (!copied.some(Boolean)) {
+      throw new Error(`No database files copied from ${dbPath}`);
+    }
+    fs.writeFileSync(
+      markerPath,
+      JSON.stringify(
+        {
+          schemaVersion: SCHEMA_VERSION,
+          createdAt: new Date().toISOString(),
+          basePath: base,
+          files: copied,
+        },
+        null,
+        2,
+      ),
+      { encoding: 'utf-8', mode: 0o600 },
+    );
+    logger.info(
+      { backupBase: base, schemaVersion: SCHEMA_VERSION },
+      'Created SQLite backup before schema migration',
+    );
+  } catch (err) {
+    if (process.env[DB_BACKUP_ENV_OVERRIDE] === 'true') {
+      logger.error(
+        { err, dbPath, envOverride: DB_BACKUP_ENV_OVERRIDE },
+        'Failed to create SQLite migration backup; continuing due to explicit override',
+      );
+      return;
+    }
+    throw new Error(
+      `Failed to create SQLite migration backup before schema v${SCHEMA_VERSION}. ` +
+        `Set ${DB_BACKUP_ENV_OVERRIDE}=true only for disposable development data. ` +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
+}
+
 function stmts() {
   if (!_stmts) {
     _stmts = {
@@ -83,8 +163,11 @@ function stmts() {
       insertUsageInsert: db.prepare(
         `INSERT INTO usage_records (id, user_id, group_folder, agent_id, message_id, model,
           input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens,
-          cost_usd, duration_ms, num_turns, source, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          cost_usd, duration_ms, num_turns, source, created_at,
+          runtime, provider_family, provider_pool_id, provider_id,
+          auth_profile_generation, selected_model, resolved_model,
+          billing_scope, cost_status, cost_source, usage_metadata_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ),
       insertUsageUpsert: db.prepare(
         `INSERT INTO usage_daily_summary (user_id, model, date,
@@ -218,6 +301,7 @@ function getRouterStateInternal(key: string): string | undefined {
 export function initDatabase(): void {
   const dbPath = path.join(STORE_DIR, 'messages.db');
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  backupDatabaseBeforeMigration(dbPath);
 
   db = new Database(dbPath);
 
@@ -629,6 +713,154 @@ export function initDatabase(): void {
     );
   `);
 
+  // Runtime/model switching control-plane tables.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS provider_pools (
+      provider_pool_id TEXT PRIMARY KEY,
+      runtime TEXT NOT NULL,
+      provider_family TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      balancing_strategy TEXT NOT NULL DEFAULT 'round_robin',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      unhealthy_threshold INTEGER NOT NULL DEFAULT 3,
+      recovery_interval_ms INTEGER NOT NULL DEFAULT 60000,
+      metadata_json TEXT,
+      updated_by TEXT,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS system_model_default (
+      id TEXT PRIMARY KEY DEFAULT 'global',
+      runtime TEXT NOT NULL,
+      provider_family TEXT NOT NULL,
+      provider_pool_id TEXT NOT NULL,
+      selected_model TEXT,
+      model_kind TEXT NOT NULL,
+      resolved_model TEXT,
+      updated_by TEXT,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS workspace_model_defaults (
+      group_folder TEXT PRIMARY KEY,
+      runtime TEXT NOT NULL,
+      provider_family TEXT NOT NULL,
+      provider_pool_id TEXT NOT NULL,
+      selected_model TEXT,
+      model_kind TEXT NOT NULL,
+      resolved_model TEXT,
+      updated_by TEXT,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS conversation_runtime_state (
+      group_folder TEXT NOT NULL,
+      agent_id TEXT NOT NULL DEFAULT '',
+      runtime TEXT NOT NULL,
+      provider_family TEXT NOT NULL,
+      provider_pool_id TEXT NOT NULL,
+      selected_model TEXT,
+      model_kind TEXT NOT NULL,
+      resolved_model TEXT,
+      binding_source TEXT NOT NULL,
+      binding_revision INTEGER NOT NULL DEFAULT 1,
+      active_runtime TEXT,
+      active_provider_family TEXT,
+      active_provider_pool_id TEXT,
+      active_selected_model TEXT,
+      active_model_kind TEXT,
+      active_resolved_model TEXT,
+      pending_runtime TEXT,
+      pending_provider_family TEXT,
+      pending_provider_pool_id TEXT,
+      pending_selected_model TEXT,
+      pending_model_kind TEXT,
+      pending_resolved_model TEXT,
+      updated_by TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (group_folder, agent_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_crs_pool ON conversation_runtime_state(provider_pool_id);
+
+    CREATE TABLE IF NOT EXISTS conversation_runtime_sessions (
+      group_folder TEXT NOT NULL,
+      agent_id TEXT NOT NULL DEFAULT '',
+      runtime TEXT NOT NULL,
+      provider_family TEXT NOT NULL,
+      provider_pool_id TEXT NOT NULL,
+      provider_id TEXT NOT NULL,
+      auth_profile_generation INTEGER NOT NULL DEFAULT 0,
+      auth_profile_fingerprint TEXT,
+      model_key TEXT NOT NULL,
+      selected_model TEXT,
+      model_kind TEXT NOT NULL,
+      resolved_model TEXT,
+      native_session_id TEXT NOT NULL,
+      native_resume_at TEXT,
+      based_on_message_id TEXT,
+      based_on_message_timestamp TEXT,
+      based_on_turn_id TEXT,
+      input_context_hash TEXT,
+      workspace_instruction_hash TEXT,
+      summary_id TEXT,
+      metadata_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (
+        group_folder,
+        agent_id,
+        runtime,
+        provider_id,
+        auth_profile_generation,
+        model_key
+      )
+    );
+    CREATE INDEX IF NOT EXISTS idx_crs_provider
+      ON conversation_runtime_sessions(provider_id, auth_profile_generation);
+    CREATE INDEX IF NOT EXISTS idx_crs_scope
+      ON conversation_runtime_sessions(group_folder, agent_id);
+
+    CREATE TABLE IF NOT EXISTS provider_pool_model_options (
+      runtime TEXT NOT NULL,
+      provider_family TEXT NOT NULL,
+      provider_pool_id TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      model_kind TEXT NOT NULL,
+      display_name TEXT,
+      source TEXT NOT NULL,
+      status TEXT NOT NULL,
+      metadata_json TEXT,
+      updated_by TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (provider_pool_id, model_id, model_kind)
+    );
+    CREATE INDEX IF NOT EXISTS idx_ppmo_status
+      ON provider_pool_model_options(provider_pool_id, status);
+
+    CREATE TABLE IF NOT EXISTS provider_model_options (
+      runtime TEXT NOT NULL,
+      provider_family TEXT NOT NULL,
+      provider_pool_id TEXT NOT NULL,
+      provider_id TEXT NOT NULL,
+      auth_profile_generation INTEGER NOT NULL DEFAULT 0,
+      auth_kind TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      model_kind TEXT NOT NULL,
+      display_name TEXT,
+      source TEXT NOT NULL,
+      status TEXT NOT NULL,
+      resolved_model TEXT,
+      metadata_json TEXT,
+      last_verified_at TEXT,
+      last_error TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (provider_id, auth_profile_generation, model_id, model_kind)
+    );
+    CREATE INDEX IF NOT EXISTS idx_pmo_pool_model
+      ON provider_model_options(provider_pool_id, model_id, status);
+
+  `);
+
   // Lightweight migrations for existing DBs
   ensureColumn('users', 'permissions', "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn('users', 'must_change_password', 'INTEGER NOT NULL DEFAULT 0');
@@ -703,6 +935,32 @@ export function initDatabase(): void {
   ensureColumn('messages', 'source_kind', 'TEXT');
   ensureColumn('messages', 'finalization_reason', 'TEXT');
   ensureColumn('messages', 'task_id', 'TEXT');
+  ensureColumn('usage_records', 'runtime', 'TEXT');
+  ensureColumn('usage_records', 'provider_family', 'TEXT');
+  ensureColumn('usage_records', 'provider_pool_id', 'TEXT');
+  ensureColumn('usage_records', 'provider_id', 'TEXT');
+  ensureColumn('usage_records', 'auth_profile_generation', 'INTEGER');
+  ensureColumn('usage_records', 'selected_model', 'TEXT');
+  ensureColumn('usage_records', 'resolved_model', 'TEXT');
+  ensureColumn('usage_records', 'billing_scope', 'TEXT');
+  ensureColumn('usage_records', 'cost_status', 'TEXT');
+  ensureColumn('usage_records', 'cost_source', 'TEXT');
+  ensureColumn('usage_records', 'usage_metadata_json', 'TEXT');
+  ensureColumn('conversation_runtime_sessions', 'based_on_message_id', 'TEXT');
+  ensureColumn(
+    'conversation_runtime_sessions',
+    'based_on_message_timestamp',
+    'TEXT',
+  );
+  ensureColumn('conversation_runtime_sessions', 'based_on_turn_id', 'TEXT');
+  ensureColumn('conversation_runtime_sessions', 'input_context_hash', 'TEXT');
+  ensureColumn(
+    'conversation_runtime_sessions',
+    'workspace_instruction_hash',
+    'TEXT',
+  );
+  ensureColumn('conversation_runtime_sessions', 'summary_id', 'TEXT');
+  migrateLegacySessionsToRuntimeSessions();
   ensureColumn('agents', 'source_kind', 'TEXT');
   ensureColumn('agents', 'thread_id', 'TEXT');
   ensureColumn('agents', 'root_message_id', 'TEXT');
@@ -997,19 +1255,7 @@ export function initDatabase(): void {
         db.prepare(
           `INSERT OR IGNORE INTO billing_plans (id, name, description, tier, monthly_cost_usd, allow_overage, features, is_default, is_active, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).run(
-          'free',
-          '免费版',
-          '基础免费套餐',
-          0,
-          0,
-          0,
-          '[]',
-          1,
-          1,
-          now,
-          now,
-        );
+        ).run('free', '免费版', '基础免费套餐', 0, 0, 0, '[]', 1, 1, now, now);
       }
 
       // Initialize balances for all existing users
@@ -1077,7 +1323,9 @@ export function initDatabase(): void {
   );
   ensureColumn('balance_transactions', 'notes', 'TEXT');
   // Create unique index only if it doesn't exist
-  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_bal_tx_idempotency ON balance_transactions(idempotency_key) WHERE idempotency_key IS NOT NULL`);
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_bal_tx_idempotency ON balance_transactions(idempotency_key) WHERE idempotency_key IS NOT NULL`,
+  );
 
   // v26→v27 migration: wallet-first commercialization baseline
   const v27Ver = getRouterStateInternal('schema_version');
@@ -1236,10 +1484,286 @@ export function initDatabase(): void {
     db.exec('ALTER TABLE agents ADD COLUMN spawned_from_jid TEXT');
   }
 
-  const SCHEMA_VERSION = '36';
+  // v35 → v36: Privacy mode for registered groups
+  ensureColumn('registered_groups', 'privacy_mode', 'INTEGER DEFAULT 0');
+
+  initializeModelSwitchingDefaults();
+
   db.prepare(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', SCHEMA_VERSION);
+
+  // Initialize privacy cache after schema is ready
+  refreshPrivacyCache();
+}
+
+function initializeModelSwitchingDefaults(): void {
+  const now = new Date().toISOString();
+  const insertPool = db.prepare(
+    `INSERT OR IGNORE INTO provider_pools (
+      provider_pool_id, runtime, provider_family, display_name,
+      balancing_strategy, enabled, unhealthy_threshold, recovery_interval_ms,
+      metadata_json, updated_by, updated_at
+    ) VALUES (?, ?, ?, ?, 'round_robin', 1, 3, 60000, NULL, 'migration', ?)`,
+  );
+  insertPool.run('claude', 'claude', 'claude', 'Claude', now);
+  insertPool.run('gpt', 'codex', 'gpt', 'GPT', now);
+
+  db.prepare(
+    `INSERT OR IGNORE INTO system_model_default (
+      id, runtime, provider_family, provider_pool_id, selected_model,
+      model_kind, resolved_model, updated_by, updated_at
+    ) VALUES ('global', 'claude', 'claude', 'claude', NULL,
+      'provider_default', NULL, 'migration', ?)`,
+  ).run(now);
+
+  const insertOption = db.prepare(
+    `INSERT OR IGNORE INTO provider_pool_model_options (
+      runtime, provider_family, provider_pool_id, model_id, model_kind,
+      display_name, source, status, metadata_json, updated_by, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'migration', ?)`,
+  );
+  const modelOptionSeeds = [
+    {
+      runtime: 'claude',
+      providerFamily: 'claude',
+      poolId: 'claude',
+      modelId: 'default',
+      modelKind: 'provider_default',
+      displayName: 'Claude default',
+      source: 'runtime_default',
+      status: 'available',
+      metadata: null,
+    },
+    {
+      runtime: 'claude',
+      providerFamily: 'claude',
+      poolId: 'claude',
+      modelId: 'opus',
+      modelKind: 'alias',
+      displayName: 'Claude Opus',
+      source: 'admin_configured',
+      status: 'unverified',
+      metadata: null,
+    },
+    {
+      runtime: 'claude',
+      providerFamily: 'claude',
+      poolId: 'claude',
+      modelId: 'opus[1m]',
+      modelKind: 'alias',
+      displayName: 'Claude Opus 1M',
+      source: 'admin_configured',
+      status: 'unverified',
+      metadata: null,
+    },
+    {
+      runtime: 'claude',
+      providerFamily: 'claude',
+      poolId: 'claude',
+      modelId: 'sonnet',
+      modelKind: 'alias',
+      displayName: 'Claude Sonnet',
+      source: 'admin_configured',
+      status: 'unverified',
+      metadata: null,
+    },
+    {
+      runtime: 'claude',
+      providerFamily: 'claude',
+      poolId: 'claude',
+      modelId: 'haiku',
+      modelKind: 'alias',
+      displayName: 'Claude Haiku',
+      source: 'admin_configured',
+      status: 'unverified',
+      metadata: null,
+    },
+    {
+      runtime: 'claude',
+      providerFamily: 'claude',
+      poolId: 'claude',
+      modelId: 'claude-opus-4-7',
+      modelKind: 'explicit_version',
+      displayName: 'Claude Opus 4.7',
+      source: 'admin_configured',
+      status: 'unverified',
+      metadata: { resolved_model: 'claude-opus-4-7' },
+    },
+    {
+      runtime: 'claude',
+      providerFamily: 'claude',
+      poolId: 'claude',
+      modelId: 'claude-opus-4-6',
+      modelKind: 'explicit_version',
+      displayName: 'Claude Opus 4.6',
+      source: 'admin_configured',
+      status: 'unverified',
+      metadata: { resolved_model: 'claude-opus-4-6' },
+    },
+    {
+      runtime: 'claude',
+      providerFamily: 'claude',
+      poolId: 'claude',
+      modelId: 'claude-sonnet-4-6',
+      modelKind: 'explicit_version',
+      displayName: 'Claude Sonnet 4.6',
+      source: 'admin_configured',
+      status: 'unverified',
+      metadata: { resolved_model: 'claude-sonnet-4-6' },
+    },
+    {
+      runtime: 'claude',
+      providerFamily: 'claude',
+      poolId: 'claude',
+      modelId: 'claude-haiku-4-5',
+      modelKind: 'explicit_version',
+      displayName: 'Claude Haiku 4.5',
+      source: 'admin_configured',
+      status: 'unverified',
+      metadata: { resolved_model: 'claude-haiku-4-5' },
+    },
+    {
+      runtime: 'codex',
+      providerFamily: 'gpt',
+      poolId: 'gpt',
+      modelId: 'default',
+      modelKind: 'provider_default',
+      displayName: 'GPT default',
+      source: 'runtime_default',
+      status: 'available',
+      metadata: null,
+    },
+    {
+      runtime: 'codex',
+      providerFamily: 'gpt',
+      poolId: 'gpt',
+      modelId: 'gpt-5.5',
+      modelKind: 'explicit_version',
+      displayName: 'GPT-5.5',
+      source: 'admin_configured',
+      status: 'unverified',
+      metadata: { resolved_model: 'gpt-5.5' },
+    },
+    {
+      runtime: 'codex',
+      providerFamily: 'gpt',
+      poolId: 'gpt',
+      modelId: 'gpt-5.4',
+      modelKind: 'explicit_version',
+      displayName: 'GPT-5.4',
+      source: 'admin_configured',
+      status: 'unverified',
+      metadata: { resolved_model: 'gpt-5.4' },
+    },
+    {
+      runtime: 'codex',
+      providerFamily: 'gpt',
+      poolId: 'gpt',
+      modelId: 'gpt-5.4-mini',
+      modelKind: 'explicit_version',
+      displayName: 'GPT-5.4 Mini',
+      source: 'admin_configured',
+      status: 'unverified',
+      metadata: { resolved_model: 'gpt-5.4-mini' },
+    },
+    {
+      runtime: 'codex',
+      providerFamily: 'gpt',
+      poolId: 'gpt',
+      modelId: 'gpt-5.3-codex',
+      modelKind: 'explicit_version',
+      displayName: 'GPT-5.3 Codex',
+      source: 'admin_configured',
+      status: 'unverified',
+      metadata: { resolved_model: 'gpt-5.3-codex' },
+    },
+    {
+      runtime: 'codex',
+      providerFamily: 'gpt',
+      poolId: 'gpt',
+      modelId: 'gpt-5.2',
+      modelKind: 'explicit_version',
+      displayName: 'GPT-5.2',
+      source: 'admin_configured',
+      status: 'unverified',
+      metadata: { resolved_model: 'gpt-5.2' },
+    },
+  ];
+
+  for (const option of modelOptionSeeds) {
+    insertOption.run(
+      option.runtime,
+      option.providerFamily,
+      option.poolId,
+      option.modelId,
+      option.modelKind,
+      option.displayName,
+      option.source,
+      option.status,
+      option.metadata ? JSON.stringify(option.metadata) : null,
+      now,
+    );
+  }
+}
+
+// ─── Privacy Mode Cache ────────────────────────────────────────
+// In-memory cache of JIDs and folders with privacy_mode=1.
+// storeMessageDirect() checks this set to silently skip message storage.
+// Refreshed on initDb(), setRegisteredGroup(), deleteRegisteredGroup().
+const privacyJids = new Set<string>();
+const privacyFolders = new Set<string>();
+
+export function refreshPrivacyCache(): void {
+  privacyJids.clear();
+  privacyFolders.clear();
+  try {
+    const rows = db
+      .prepare(
+        'SELECT jid, folder FROM registered_groups WHERE privacy_mode = 1',
+      )
+      .all() as Array<{ jid: string; folder: string }>;
+    for (const row of rows) {
+      privacyJids.add(row.jid);
+      privacyFolders.add(row.folder);
+    }
+  } catch {
+    // DB not ready yet (e.g. called during init before table exists)
+  }
+}
+
+/** Check if a folder has privacy mode enabled. */
+export function isPrivacyFolder(folder: string): boolean {
+  return privacyFolders.has(folder);
+}
+
+/** Check if a JID has privacy mode enabled. */
+export function isPrivacyJid(jid: string): boolean {
+  return privacyJids.has(jid);
+}
+
+/**
+ * Delete all messages for a privacy-mode JID.
+ * Called after the agent finishes processing to remove ephemeral messages from DB.
+ */
+export function deletePrivacyMessages(chatJid: string): number {
+  return db.prepare('DELETE FROM messages WHERE chat_jid = ?').run(chatJid)
+    .changes;
+}
+
+/**
+ * Cleanup all privacy-mode messages on startup.
+ * Handles crash recovery: if the process died before cleanup, orphaned messages
+ * from privacy JIDs are removed here.
+ */
+export function cleanupAllPrivacyMessages(): number {
+  let total = 0;
+  for (const jid of privacyJids) {
+    total += db
+      .prepare('DELETE FROM messages WHERE chat_jid = ?')
+      .run(jid).changes;
+  }
+  return total;
 }
 
 /**
@@ -1360,7 +1884,9 @@ export function storeMessageDirect(
   const { attachments, tokenUsage, sourceJid, meta } = opts ?? {};
   const existingFinalRow =
     meta?.sourceKind === 'sdk_final' && meta.turnId
-      ? (stmts().storeMessageSelect.get(chatJid, meta.turnId) as { id: string } | undefined)
+      ? (stmts().storeMessageSelect.get(chatJid, meta.turnId) as
+          | { id: string }
+          | undefined)
       : undefined;
   const effectiveMsgId = existingFinalRow?.id || msgId;
   stmts().storeMessageInsert.run(
@@ -1397,7 +1923,12 @@ export function updateLatestMessageTokenUsage(
   costUsd?: number,
 ): void {
   if (msgId) {
-    stmts().updateTokenUsageById.run(tokenUsage, costUsd ?? null, msgId, chatJid);
+    stmts().updateTokenUsageById.run(
+      tokenUsage,
+      costUsd ?? null,
+      msgId,
+      chatJid,
+    );
   } else {
     stmts().updateTokenUsageLatest.run(tokenUsage, costUsd ?? null, chatJid);
   }
@@ -1640,6 +2171,17 @@ export function insertUsageRecord(record: {
   durationMs?: number;
   numTurns?: number;
   source?: string;
+  runtime?: AgentRuntime | null;
+  providerFamily?: ProviderFamily | null;
+  providerPoolId?: string | null;
+  providerId?: string | null;
+  authProfileGeneration?: number | null;
+  selectedModel?: string | null;
+  resolvedModel?: string | null;
+  billingScope?: 'workspace_owner' | 'system' | null;
+  costStatus?: 'exact' | 'estimated' | 'unavailable' | null;
+  costSource?: 'runtime' | 'pricing_table' | 'zero_fallback' | 'legacy' | null;
+  usageMetadataJson?: string | null;
 }): void {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
@@ -1662,6 +2204,17 @@ export function insertUsageRecord(record: {
       record.numTurns ?? 0,
       record.source ?? 'agent',
       now,
+      record.runtime ?? null,
+      record.providerFamily ?? null,
+      record.providerPoolId ?? null,
+      record.providerId ?? null,
+      record.authProfileGeneration ?? null,
+      record.selectedModel ?? null,
+      record.resolvedModel ?? null,
+      record.billingScope ?? null,
+      record.costStatus ?? (record.costUSD > 0 ? 'exact' : null),
+      record.costSource ?? null,
+      record.usageMetadataJson ?? null,
     );
     stmts().insertUsageUpsert.run(
       record.userId,
@@ -1988,7 +2541,11 @@ export function updateTask(
   }
   if (updates.notify_channels !== undefined) {
     fields.push('notify_channels = ?');
-    values.push(updates.notify_channels != null ? JSON.stringify(updates.notify_channels) : null);
+    values.push(
+      updates.notify_channels != null
+        ? JSON.stringify(updates.notify_channels)
+        : null,
+    );
   }
   if (updates.chat_jid !== undefined) {
     fields.push('chat_jid = ?');
@@ -2099,7 +2656,12 @@ export function logTaskRunStart(taskId: string): number {
 
 export function updateTaskRunLog(
   id: number,
-  updates: { duration_ms: number; status: 'success' | 'error'; result: string | null; error: string | null },
+  updates: {
+    duration_ms: number;
+    status: 'success' | 'error';
+    result: string | null;
+    error: string | null;
+  },
 ): void {
   db.prepare(
     `
@@ -2132,9 +2694,9 @@ export function cleanupOldTaskRunLogs(retentionDays = 30): number {
 }
 
 export function cleanupOldDailyUsage(retentionDays = 90): number {
-  const cutoff = new Date(
-    Date.now() - retentionDays * 24 * 60 * 60 * 1000,
-  ).toISOString().slice(0, 10);
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
   const result = db
     .prepare('DELETE FROM daily_usage WHERE date < ?')
     .run(cutoff);
@@ -2180,6 +2742,53 @@ export function getRouterStateByPrefix(
 
 // --- Session accessors ---
 
+function migrateLegacySessionsToRuntimeSessions(): void {
+  const rows = db
+    .prepare(
+      `SELECT group_folder, agent_id, session_id
+       FROM sessions
+       WHERE session_id IS NOT NULL AND session_id <> ''`,
+    )
+    .all() as Array<{
+    group_folder: string;
+    agent_id: string | null;
+    session_id: string;
+  }>;
+  if (rows.length === 0) return;
+
+  const now = new Date().toISOString();
+  const stmt = db.prepare(
+    `INSERT OR IGNORE INTO conversation_runtime_sessions (
+      group_folder, agent_id, runtime, provider_family, provider_pool_id,
+      provider_id, auth_profile_generation, auth_profile_fingerprint,
+      model_key, selected_model, model_kind, resolved_model,
+      native_session_id, native_resume_at, based_on_message_id,
+      based_on_message_timestamp, based_on_turn_id, input_context_hash,
+      workspace_instruction_hash, summary_id, metadata_json, created_at,
+      updated_at
+    ) VALUES (?, ?, 'claude', 'claude', 'claude', ?, ?, NULL, ?, NULL,
+      'provider_default', NULL, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+      ?, ?, ?)`,
+  );
+
+  const migrate = db.transaction(() => {
+    for (const row of rows) {
+      stmt.run(
+        row.group_folder,
+        row.agent_id || '',
+        LEGACY_CLAUDE_PROVIDER_ID,
+        LEGACY_CLAUDE_AUTH_GENERATION,
+        LEGACY_CLAUDE_MODEL_KEY,
+        row.session_id,
+        JSON.stringify({ source: 'legacy_sessions_table_migration' }),
+        now,
+        now,
+      );
+    }
+  });
+  migrate();
+}
+
 export function getSession(
   groupFolder: string,
   agentId?: string | null,
@@ -2203,6 +2812,23 @@ export function setSession(
     `INSERT INTO sessions (group_folder, session_id, agent_id) VALUES (?, ?, ?)
      ON CONFLICT(group_folder, agent_id) DO UPDATE SET session_id = excluded.session_id`,
   ).run(groupFolder, sessionId, effectiveAgentId);
+  setRuntimeNativeSession({
+    group_folder: groupFolder,
+    agent_id: effectiveAgentId,
+    runtime: 'claude',
+    provider_family: 'claude',
+    provider_pool_id: 'claude',
+    provider_id: LEGACY_CLAUDE_PROVIDER_ID,
+    auth_profile_generation: LEGACY_CLAUDE_AUTH_GENERATION,
+    auth_profile_fingerprint: null,
+    model_key: LEGACY_CLAUDE_MODEL_KEY,
+    selected_model: null,
+    model_kind: 'provider_default',
+    resolved_model: null,
+    native_session_id: sessionId,
+    native_resume_at: null,
+    metadata_json: JSON.stringify({ source: 'legacy_sessions_table' }),
+  });
 }
 
 export function deleteSession(
@@ -2213,10 +2839,12 @@ export function deleteSession(
   db.prepare(
     'DELETE FROM sessions WHERE group_folder = ? AND agent_id = ?',
   ).run(groupFolder, effectiveAgentId);
+  deleteRuntimeNativeSessionsForScope(groupFolder, effectiveAgentId);
 }
 
 export function deleteAllSessionsForFolder(groupFolder: string): void {
   db.prepare('DELETE FROM sessions WHERE group_folder = ?').run(groupFolder);
+  deleteRuntimeNativeSessionsForFolder(groupFolder);
 }
 
 export function getAllSessions(): Record<string, string> {
@@ -2230,6 +2858,646 @@ export function getAllSessions(): Record<string, string> {
     result[row.group_folder] = row.session_id;
   }
   return result;
+}
+
+// --- Runtime/model switching accessors ---
+
+export const LEGACY_CLAUDE_PROVIDER_ID = '__legacy_claude__';
+export const LEGACY_CLAUDE_AUTH_GENERATION = 0;
+export const LEGACY_CLAUDE_MODEL_KEY = 'provider_default';
+
+export function modelKeyForBinding(binding: ModelBinding): string {
+  return (
+    binding.resolved_model ||
+    binding.selected_model ||
+    binding.model_kind ||
+    LEGACY_CLAUDE_MODEL_KEY
+  );
+}
+
+function toBool(value: unknown): boolean {
+  return value === 1 || value === true;
+}
+
+function normalizeModelBinding(input: ModelBinding): ModelBinding {
+  return {
+    runtime: input.runtime,
+    provider_family: input.provider_family,
+    provider_pool_id: input.provider_pool_id,
+    selected_model: input.selected_model || null,
+    model_kind: input.model_kind,
+    resolved_model: input.resolved_model || null,
+  };
+}
+
+function mapProviderPool(row: Record<string, unknown>): ProviderPool {
+  return {
+    provider_pool_id: String(row.provider_pool_id),
+    runtime: row.runtime as AgentRuntime,
+    provider_family: row.provider_family as ProviderFamily,
+    display_name: String(row.display_name),
+    balancing_strategy: String(row.balancing_strategy),
+    enabled: toBool(row.enabled),
+    unhealthy_threshold: Number(row.unhealthy_threshold ?? 3),
+    recovery_interval_ms: Number(row.recovery_interval_ms ?? 60000),
+    metadata_json: (row.metadata_json as string | null) ?? null,
+    updated_by: (row.updated_by as string | null) ?? null,
+    updated_at: String(row.updated_at),
+  };
+}
+
+function mapSystemDefault(row: Record<string, unknown>): SystemModelDefault {
+  return {
+    id: 'global',
+    runtime: row.runtime as AgentRuntime,
+    provider_family: row.provider_family as ProviderFamily,
+    provider_pool_id: String(row.provider_pool_id),
+    selected_model: (row.selected_model as string | null) ?? null,
+    model_kind: row.model_kind as ModelSelectionKind,
+    resolved_model: (row.resolved_model as string | null) ?? null,
+    updated_by: (row.updated_by as string | null) ?? null,
+    updated_at: String(row.updated_at),
+  };
+}
+
+function mapWorkspaceDefault(
+  row: Record<string, unknown>,
+): WorkspaceModelDefault {
+  return {
+    group_folder: String(row.group_folder),
+    runtime: row.runtime as AgentRuntime,
+    provider_family: row.provider_family as ProviderFamily,
+    provider_pool_id: String(row.provider_pool_id),
+    selected_model: (row.selected_model as string | null) ?? null,
+    model_kind: row.model_kind as ModelSelectionKind,
+    resolved_model: (row.resolved_model as string | null) ?? null,
+    updated_by: (row.updated_by as string | null) ?? null,
+    updated_at: String(row.updated_at),
+  };
+}
+
+function mapConversationRuntimeState(
+  row: Record<string, unknown>,
+): ConversationRuntimeState {
+  return {
+    group_folder: String(row.group_folder),
+    agent_id: String(row.agent_id ?? ''),
+    runtime: row.runtime as AgentRuntime,
+    provider_family: row.provider_family as ProviderFamily,
+    provider_pool_id: String(row.provider_pool_id),
+    selected_model: (row.selected_model as string | null) ?? null,
+    model_kind: row.model_kind as ModelSelectionKind,
+    resolved_model: (row.resolved_model as string | null) ?? null,
+    binding_source: row.binding_source as BindingSource,
+    binding_revision: Number(row.binding_revision ?? 1),
+    active_runtime: (row.active_runtime as AgentRuntime | null) ?? null,
+    active_provider_family:
+      (row.active_provider_family as ProviderFamily | null) ?? null,
+    active_provider_pool_id:
+      (row.active_provider_pool_id as string | null) ?? null,
+    active_selected_model: (row.active_selected_model as string | null) ?? null,
+    active_model_kind:
+      (row.active_model_kind as ModelSelectionKind | null) ?? null,
+    active_resolved_model: (row.active_resolved_model as string | null) ?? null,
+    pending_runtime: (row.pending_runtime as AgentRuntime | null) ?? null,
+    pending_provider_family:
+      (row.pending_provider_family as ProviderFamily | null) ?? null,
+    pending_provider_pool_id:
+      (row.pending_provider_pool_id as string | null) ?? null,
+    pending_selected_model:
+      (row.pending_selected_model as string | null) ?? null,
+    pending_model_kind:
+      (row.pending_model_kind as ModelSelectionKind | null) ?? null,
+    pending_resolved_model:
+      (row.pending_resolved_model as string | null) ?? null,
+    updated_by: (row.updated_by as string | null) ?? null,
+    updated_at: String(row.updated_at),
+  };
+}
+
+function mapRuntimeNativeSession(
+  row: Record<string, unknown>,
+): RuntimeNativeSession {
+  return {
+    group_folder: String(row.group_folder),
+    agent_id: String(row.agent_id ?? ''),
+    runtime: row.runtime as AgentRuntime,
+    provider_family: row.provider_family as ProviderFamily,
+    provider_pool_id: String(row.provider_pool_id),
+    provider_id: String(row.provider_id || LEGACY_CLAUDE_PROVIDER_ID),
+    auth_profile_generation: Number(row.auth_profile_generation ?? 0),
+    auth_profile_fingerprint:
+      (row.auth_profile_fingerprint as string | null) ?? null,
+    model_key: String(row.model_key || LEGACY_CLAUDE_MODEL_KEY),
+    selected_model: (row.selected_model as string | null) ?? null,
+    model_kind: row.model_kind as ModelSelectionKind,
+    resolved_model: (row.resolved_model as string | null) ?? null,
+    native_session_id: String(row.native_session_id),
+    native_resume_at: (row.native_resume_at as string | null) ?? null,
+    based_on_message_id: (row.based_on_message_id as string | null) ?? null,
+    based_on_message_timestamp:
+      (row.based_on_message_timestamp as string | null) ?? null,
+    based_on_turn_id: (row.based_on_turn_id as string | null) ?? null,
+    input_context_hash: (row.input_context_hash as string | null) ?? null,
+    workspace_instruction_hash:
+      (row.workspace_instruction_hash as string | null) ?? null,
+    summary_id: (row.summary_id as string | null) ?? null,
+    metadata_json: (row.metadata_json as string | null) ?? null,
+    created_at: String(row.created_at),
+    updated_at: String(row.updated_at),
+  };
+}
+
+function mapProviderPoolModelOption(
+  row: Record<string, unknown>,
+): ProviderPoolModelOption {
+  return {
+    runtime: row.runtime as AgentRuntime,
+    provider_family: row.provider_family as ProviderFamily,
+    provider_pool_id: String(row.provider_pool_id),
+    model_id: String(row.model_id),
+    model_kind: row.model_kind as ModelSelectionKind,
+    display_name: (row.display_name as string | null) ?? null,
+    source: row.source as ProviderPoolModelOption['source'],
+    status: row.status as ProviderPoolModelOption['status'],
+    metadata_json: (row.metadata_json as string | null) ?? null,
+    updated_by: (row.updated_by as string | null) ?? null,
+    updated_at: String(row.updated_at),
+  };
+}
+
+export function getProviderPools(): ProviderPool[] {
+  return db
+    .prepare('SELECT * FROM provider_pools ORDER BY provider_pool_id')
+    .all()
+    .map((row: unknown) => mapProviderPool(row as Record<string, unknown>));
+}
+
+export function getProviderPool(
+  providerPoolId: string,
+): ProviderPool | undefined {
+  const row = db
+    .prepare('SELECT * FROM provider_pools WHERE provider_pool_id = ?')
+    .get(providerPoolId) as Record<string, unknown> | undefined;
+  return row ? mapProviderPool(row) : undefined;
+}
+
+export function getSystemModelDefault(): SystemModelDefault {
+  const row = db
+    .prepare("SELECT * FROM system_model_default WHERE id = 'global'")
+    .get() as Record<string, unknown> | undefined;
+  if (row) return mapSystemDefault(row);
+  initializeModelSwitchingDefaults();
+  const inserted = db
+    .prepare("SELECT * FROM system_model_default WHERE id = 'global'")
+    .get() as Record<string, unknown> | undefined;
+  if (!inserted) throw new Error('system_model_default row missing');
+  return mapSystemDefault(inserted);
+}
+
+export function setSystemModelDefault(
+  binding: ModelBinding,
+  updatedBy?: string | null,
+): SystemModelDefault {
+  const normalized = normalizeModelBinding(binding);
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO system_model_default (
+      id, runtime, provider_family, provider_pool_id, selected_model,
+      model_kind, resolved_model, updated_by, updated_at
+    ) VALUES ('global', ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      runtime = excluded.runtime,
+      provider_family = excluded.provider_family,
+      provider_pool_id = excluded.provider_pool_id,
+      selected_model = excluded.selected_model,
+      model_kind = excluded.model_kind,
+      resolved_model = excluded.resolved_model,
+      updated_by = excluded.updated_by,
+      updated_at = excluded.updated_at`,
+  ).run(
+    normalized.runtime,
+    normalized.provider_family,
+    normalized.provider_pool_id,
+    normalized.selected_model,
+    normalized.model_kind,
+    normalized.resolved_model,
+    updatedBy ?? null,
+    now,
+  );
+  return getSystemModelDefault();
+}
+
+export function getWorkspaceModelDefault(
+  groupFolder: string,
+): WorkspaceModelDefault | undefined {
+  const row = db
+    .prepare('SELECT * FROM workspace_model_defaults WHERE group_folder = ?')
+    .get(groupFolder) as Record<string, unknown> | undefined;
+  return row ? mapWorkspaceDefault(row) : undefined;
+}
+
+export function ensureWorkspaceModelDefault(
+  groupFolder: string,
+  updatedBy?: string | null,
+): WorkspaceModelDefault {
+  const existing = getWorkspaceModelDefault(groupFolder);
+  if (existing) return existing;
+  const systemDefault = getSystemModelDefault();
+  return setWorkspaceModelDefault(
+    groupFolder,
+    {
+      runtime: systemDefault.runtime,
+      provider_family: systemDefault.provider_family,
+      provider_pool_id: systemDefault.provider_pool_id,
+      selected_model: systemDefault.selected_model,
+      model_kind: systemDefault.model_kind,
+      resolved_model: systemDefault.resolved_model,
+    },
+    updatedBy ?? 'system_default',
+  );
+}
+
+export function setWorkspaceModelDefault(
+  groupFolder: string,
+  binding: ModelBinding,
+  updatedBy?: string | null,
+): WorkspaceModelDefault {
+  const normalized = normalizeModelBinding(binding);
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO workspace_model_defaults (
+      group_folder, runtime, provider_family, provider_pool_id, selected_model,
+      model_kind, resolved_model, updated_by, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(group_folder) DO UPDATE SET
+      runtime = excluded.runtime,
+      provider_family = excluded.provider_family,
+      provider_pool_id = excluded.provider_pool_id,
+      selected_model = excluded.selected_model,
+      model_kind = excluded.model_kind,
+      resolved_model = excluded.resolved_model,
+      updated_by = excluded.updated_by,
+      updated_at = excluded.updated_at`,
+  ).run(
+    groupFolder,
+    normalized.runtime,
+    normalized.provider_family,
+    normalized.provider_pool_id,
+    normalized.selected_model,
+    normalized.model_kind,
+    normalized.resolved_model,
+    updatedBy ?? null,
+    now,
+  );
+  const row = getWorkspaceModelDefault(groupFolder);
+  if (!row) throw new Error('workspace_model_defaults write failed');
+  return row;
+}
+
+export function getConversationRuntimeState(
+  groupFolder: string,
+  agentId?: string | null,
+): ConversationRuntimeState | undefined {
+  const row = db
+    .prepare(
+      'SELECT * FROM conversation_runtime_state WHERE group_folder = ? AND agent_id = ?',
+    )
+    .get(groupFolder, agentId || '') as Record<string, unknown> | undefined;
+  return row ? mapConversationRuntimeState(row) : undefined;
+}
+
+export function ensureConversationRuntimeState(
+  groupFolder: string,
+  agentId?: string | null,
+  updatedBy?: string | null,
+): ConversationRuntimeState {
+  const effectiveAgentId = agentId || '';
+  const existing = getConversationRuntimeState(groupFolder, effectiveAgentId);
+  if (existing) return existing;
+
+  const workspaceDefault = ensureWorkspaceModelDefault(groupFolder, updatedBy);
+  const bindingSource: BindingSource = effectiveAgentId
+    ? 'copied_workspace_default'
+    : 'workspace_default';
+  return setConversationRuntimeBinding(
+    groupFolder,
+    effectiveAgentId,
+    {
+      runtime: workspaceDefault.runtime,
+      provider_family: workspaceDefault.provider_family,
+      provider_pool_id: workspaceDefault.provider_pool_id,
+      selected_model: workspaceDefault.selected_model,
+      model_kind: workspaceDefault.model_kind,
+      resolved_model: workspaceDefault.resolved_model,
+    },
+    bindingSource,
+    updatedBy ?? 'workspace_default',
+  );
+}
+
+export function setConversationRuntimeBinding(
+  groupFolder: string,
+  agentId: string | null | undefined,
+  binding: ModelBinding,
+  bindingSource: BindingSource,
+  updatedBy?: string | null,
+  options?: { markPending?: boolean },
+): ConversationRuntimeState {
+  const effectiveAgentId = agentId || '';
+  const normalized = normalizeModelBinding(binding);
+  const now = new Date().toISOString();
+  const markPending = options?.markPending === true;
+  db.prepare(
+    `INSERT INTO conversation_runtime_state (
+      group_folder, agent_id, runtime, provider_family, provider_pool_id,
+      selected_model, model_kind, resolved_model, binding_source,
+      binding_revision, pending_runtime, pending_provider_family,
+      pending_provider_pool_id, pending_selected_model, pending_model_kind,
+      pending_resolved_model, updated_by, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(group_folder, agent_id) DO UPDATE SET
+      runtime = excluded.runtime,
+      provider_family = excluded.provider_family,
+      provider_pool_id = excluded.provider_pool_id,
+      selected_model = excluded.selected_model,
+      model_kind = excluded.model_kind,
+      resolved_model = excluded.resolved_model,
+      binding_source = excluded.binding_source,
+      binding_revision = conversation_runtime_state.binding_revision + 1,
+      pending_runtime = excluded.pending_runtime,
+      pending_provider_family = excluded.pending_provider_family,
+      pending_provider_pool_id = excluded.pending_provider_pool_id,
+      pending_selected_model = excluded.pending_selected_model,
+      pending_model_kind = excluded.pending_model_kind,
+      pending_resolved_model = excluded.pending_resolved_model,
+      updated_by = excluded.updated_by,
+      updated_at = excluded.updated_at`,
+  ).run(
+    groupFolder,
+    effectiveAgentId,
+    normalized.runtime,
+    normalized.provider_family,
+    normalized.provider_pool_id,
+    normalized.selected_model,
+    normalized.model_kind,
+    normalized.resolved_model,
+    bindingSource,
+    markPending ? normalized.runtime : null,
+    markPending ? normalized.provider_family : null,
+    markPending ? normalized.provider_pool_id : null,
+    markPending ? normalized.selected_model : null,
+    markPending ? normalized.model_kind : null,
+    markPending ? normalized.resolved_model : null,
+    updatedBy ?? null,
+    now,
+  );
+  const row = getConversationRuntimeState(groupFolder, effectiveAgentId);
+  if (!row) throw new Error('conversation_runtime_state write failed');
+  return row;
+}
+
+export function hasPendingConversationRuntimeBinding(
+  groupFolder: string,
+  agentId?: string | null,
+): boolean {
+  const row = db
+    .prepare(
+      `SELECT 1 FROM conversation_runtime_state
+       WHERE group_folder = ? AND agent_id = ? AND pending_runtime IS NOT NULL
+       LIMIT 1`,
+    )
+    .get(groupFolder, agentId || '') as { 1: number } | undefined;
+  return !!row;
+}
+
+export function promotePendingConversationRuntimeBinding(
+  groupFolder: string,
+  agentId?: string | null,
+): number {
+  return db
+    .prepare(
+      `UPDATE conversation_runtime_state
+       SET active_runtime = COALESCE(pending_runtime, runtime),
+           active_provider_family = COALESCE(pending_provider_family, provider_family),
+           active_provider_pool_id = COALESCE(pending_provider_pool_id, provider_pool_id),
+           active_selected_model = pending_selected_model,
+           active_model_kind = COALESCE(pending_model_kind, model_kind),
+           active_resolved_model = pending_resolved_model,
+           pending_runtime = NULL,
+           pending_provider_family = NULL,
+           pending_provider_pool_id = NULL,
+           pending_selected_model = NULL,
+           pending_model_kind = NULL,
+           pending_resolved_model = NULL
+       WHERE group_folder = ? AND agent_id = ?`,
+    )
+    .run(groupFolder, agentId || '').changes;
+}
+
+export function getRuntimeNativeSession(
+  key: Pick<
+    RuntimeSessionKey,
+    | 'group_folder'
+    | 'agent_id'
+    | 'runtime'
+    | 'provider_id'
+    | 'auth_profile_generation'
+    | 'model_key'
+  >,
+): RuntimeNativeSession | undefined {
+  const row = db
+    .prepare(
+      `SELECT * FROM conversation_runtime_sessions
+       WHERE group_folder = ?
+         AND agent_id = ?
+         AND runtime = ?
+         AND provider_id = ?
+         AND auth_profile_generation = ?
+         AND model_key = ?`,
+    )
+    .get(
+      key.group_folder,
+      key.agent_id || '',
+      key.runtime,
+      key.provider_id || LEGACY_CLAUDE_PROVIDER_ID,
+      key.auth_profile_generation ?? LEGACY_CLAUDE_AUTH_GENERATION,
+      key.model_key || LEGACY_CLAUDE_MODEL_KEY,
+    ) as Record<string, unknown> | undefined;
+  return row ? mapRuntimeNativeSession(row) : undefined;
+}
+
+export function setRuntimeNativeSession(
+  session: RuntimeSessionKey & {
+    native_session_id: string;
+    native_resume_at?: string | null;
+    based_on_message_id?: string | null;
+    based_on_message_timestamp?: string | null;
+    based_on_turn_id?: string | null;
+    input_context_hash?: string | null;
+    workspace_instruction_hash?: string | null;
+    summary_id?: string | null;
+    metadata_json?: string | null;
+  },
+): RuntimeNativeSession {
+  const normalized = normalizeModelBinding(session);
+  const now = new Date().toISOString();
+  const providerId = session.provider_id || LEGACY_CLAUDE_PROVIDER_ID;
+  const generation =
+    session.auth_profile_generation ?? LEGACY_CLAUDE_AUTH_GENERATION;
+  const modelKey = session.model_key || modelKeyForBinding(normalized);
+  db.prepare(
+    `INSERT INTO conversation_runtime_sessions (
+      group_folder, agent_id, runtime, provider_family, provider_pool_id,
+      provider_id, auth_profile_generation, auth_profile_fingerprint,
+      model_key, selected_model, model_kind, resolved_model,
+      native_session_id, native_resume_at, based_on_message_id,
+      based_on_message_timestamp, based_on_turn_id, input_context_hash,
+      workspace_instruction_hash, summary_id, metadata_json, created_at,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(
+      group_folder, agent_id, runtime, provider_id, auth_profile_generation, model_key
+    ) DO UPDATE SET
+      provider_family = excluded.provider_family,
+      provider_pool_id = excluded.provider_pool_id,
+      auth_profile_fingerprint = excluded.auth_profile_fingerprint,
+      selected_model = excluded.selected_model,
+      model_kind = excluded.model_kind,
+      resolved_model = excluded.resolved_model,
+      native_session_id = excluded.native_session_id,
+      native_resume_at = excluded.native_resume_at,
+      based_on_message_id = COALESCE(excluded.based_on_message_id, conversation_runtime_sessions.based_on_message_id),
+      based_on_message_timestamp = COALESCE(excluded.based_on_message_timestamp, conversation_runtime_sessions.based_on_message_timestamp),
+      based_on_turn_id = COALESCE(excluded.based_on_turn_id, conversation_runtime_sessions.based_on_turn_id),
+      input_context_hash = COALESCE(excluded.input_context_hash, conversation_runtime_sessions.input_context_hash),
+      workspace_instruction_hash = COALESCE(excluded.workspace_instruction_hash, conversation_runtime_sessions.workspace_instruction_hash),
+      summary_id = COALESCE(excluded.summary_id, conversation_runtime_sessions.summary_id),
+      metadata_json = excluded.metadata_json,
+      updated_at = excluded.updated_at`,
+  ).run(
+    session.group_folder,
+    session.agent_id || '',
+    normalized.runtime,
+    normalized.provider_family,
+    normalized.provider_pool_id,
+    providerId,
+    generation,
+    session.auth_profile_fingerprint ?? null,
+    modelKey,
+    normalized.selected_model,
+    normalized.model_kind,
+    normalized.resolved_model,
+    session.native_session_id,
+    session.native_resume_at ?? null,
+    session.based_on_message_id ?? null,
+    session.based_on_message_timestamp ?? null,
+    session.based_on_turn_id ?? null,
+    session.input_context_hash ?? null,
+    session.workspace_instruction_hash ?? null,
+    session.summary_id ?? null,
+    session.metadata_json ?? null,
+    now,
+    now,
+  );
+  const row = getRuntimeNativeSession({
+    group_folder: session.group_folder,
+    agent_id: session.agent_id || '',
+    runtime: normalized.runtime,
+    provider_id: providerId,
+    auth_profile_generation: generation,
+    model_key: modelKey,
+  });
+  if (!row) throw new Error('conversation_runtime_sessions write failed');
+  return row;
+}
+
+export function deleteRuntimeNativeSessionsForScope(
+  groupFolder: string,
+  agentId?: string | null,
+): number {
+  return db
+    .prepare(
+      `DELETE FROM conversation_runtime_sessions
+       WHERE group_folder = ? AND agent_id = ?`,
+    )
+    .run(groupFolder, agentId || '').changes;
+}
+
+export function deleteRuntimeNativeSessionsForFolder(
+  groupFolder: string,
+): number {
+  return db
+    .prepare('DELETE FROM conversation_runtime_sessions WHERE group_folder = ?')
+    .run(groupFolder).changes;
+}
+
+export function listProviderPoolModelOptions(
+  providerPoolId?: string,
+  includeAll = false,
+): ProviderPoolModelOption[] {
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+  if (providerPoolId) {
+    clauses.push('provider_pool_id = ?');
+    params.push(providerPoolId);
+  }
+  if (!includeAll) {
+    clauses.push("status != 'hidden'");
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  return db
+    .prepare(
+      `SELECT * FROM provider_pool_model_options ${where}
+       ORDER BY provider_pool_id, model_kind, model_id`,
+    )
+    .all(...params)
+    .map((row: unknown) =>
+      mapProviderPoolModelOption(row as Record<string, unknown>),
+    );
+}
+
+export function upsertProviderPoolModelOption(
+  option: ProviderPoolModelOption,
+): ProviderPoolModelOption {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO provider_pool_model_options (
+      runtime, provider_family, provider_pool_id, model_id, model_kind,
+      display_name, source, status, metadata_json, updated_by, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(provider_pool_id, model_id, model_kind) DO UPDATE SET
+      runtime = excluded.runtime,
+      provider_family = excluded.provider_family,
+      display_name = excluded.display_name,
+      source = excluded.source,
+      status = excluded.status,
+      metadata_json = excluded.metadata_json,
+      updated_by = excluded.updated_by,
+      updated_at = excluded.updated_at`,
+  ).run(
+    option.runtime,
+    option.provider_family,
+    option.provider_pool_id,
+    option.model_id,
+    option.model_kind,
+    option.display_name,
+    option.source,
+    option.status,
+    option.metadata_json,
+    option.updated_by,
+    now,
+  );
+  const row = db
+    .prepare(
+      `SELECT * FROM provider_pool_model_options
+       WHERE provider_pool_id = ? AND model_id = ? AND model_kind = ?`,
+    )
+    .get(option.provider_pool_id, option.model_id, option.model_kind) as
+    | Record<string, unknown>
+    | undefined;
+  if (!row) throw new Error('provider_pool_model_options write failed');
+  return mapProviderPoolModelOption(row);
 }
 
 // --- Registered group accessors ---
@@ -2275,6 +3543,7 @@ type RegisteredGroupRow = {
   feishu_chat_mode: string | null;
   feishu_group_message_type: string | null;
   sender_allowlist: string | null;
+  privacy_mode: number;
 };
 
 /** Convert a raw DB row into a RegisteredGroup domain object. */
@@ -2314,6 +3583,7 @@ function parseGroupRow(
     sender_allowlist: row.sender_allowlist != null
       ? (JSON.parse(row.sender_allowlist) as string[])
       : undefined,
+    privacy_mode: row.privacy_mode === 1,
   };
 }
 
@@ -2329,7 +3599,12 @@ function parseActivationMode(
   raw: string | null,
 ): 'auto' | 'always' | 'when_mentioned' | 'owner_mentioned' | 'disabled' {
   if (raw && VALID_ACTIVATION_MODES.has(raw))
-    return raw as 'auto' | 'always' | 'when_mentioned' | 'owner_mentioned' | 'disabled';
+    return raw as
+      | 'auto'
+      | 'always'
+      | 'when_mentioned'
+      | 'owner_mentioned'
+      | 'disabled';
   return 'auto';
 }
 
@@ -2462,7 +3737,9 @@ export function getImContextBinding(
     .prepare(
       'SELECT * FROM im_context_bindings WHERE source_jid = ? AND context_type = ? AND context_id = ?',
     )
-    .get(sourceJid, contextType, contextId) as Record<string, unknown> | undefined;
+    .get(sourceJid, contextType, contextId) as
+    | Record<string, unknown>
+    | undefined;
   return row ? mapImContextBindingRow(row) : undefined;
 }
 
@@ -2683,6 +3960,12 @@ export function deleteGroupData(jid: string, folder: string): void {
     db.prepare('DELETE FROM registered_groups WHERE jid = ?').run(jid);
     // 4. 删除会话
     db.prepare('DELETE FROM sessions WHERE group_folder = ?').run(folder);
+    db.prepare(
+      'DELETE FROM conversation_runtime_sessions WHERE group_folder = ?',
+    ).run(folder);
+    db.prepare(
+      'DELETE FROM conversation_runtime_state WHERE group_folder = ?',
+    ).run(folder);
     // 5. 删除聊天记录
     db.prepare('DELETE FROM messages WHERE chat_jid = ?').run(jid);
     db.prepare('DELETE FROM chats WHERE jid = ?').run(jid);
@@ -3003,8 +4286,7 @@ function mapUserRow(row: Record<string, unknown>): User {
       typeof row.avatar_emoji === 'string' ? row.avatar_emoji : null,
     avatar_color:
       typeof row.avatar_color === 'string' ? row.avatar_color : null,
-    avatar_url:
-      typeof row.avatar_url === 'string' ? row.avatar_url : null,
+    avatar_url: typeof row.avatar_url === 'string' ? row.avatar_url : null,
     ai_name: typeof row.ai_name === 'string' ? row.ai_name : null,
     ai_avatar_emoji:
       typeof row.ai_avatar_emoji === 'string' ? row.ai_avatar_emoji : null,
@@ -3457,7 +4739,9 @@ export function createUserSession(session: UserSession): void {
 export function getSessionWithUser(
   sessionId: string,
 ): UserSessionWithUser | undefined {
-  const row = stmts().getSessionWithUser.get(sessionId) as Record<string, unknown> | undefined;
+  const row = stmts().getSessionWithUser.get(sessionId) as
+    | Record<string, unknown>
+    | undefined;
   if (!row) return undefined;
   const role = parseUserRole(row.role);
   return {
@@ -4164,6 +5448,9 @@ export function listActiveConversationAgents(): SubAgent[] {
 export function deleteAgent(id: string): void {
   // Delete associated session
   db.prepare('DELETE FROM sessions WHERE agent_id = ?').run(id);
+  db.prepare('DELETE FROM conversation_runtime_sessions WHERE agent_id = ?').run(
+    id,
+  );
   deleteImContextBindingsByAgent(id);
   db.prepare('DELETE FROM agents WHERE id = ?').run(id);
 }
@@ -4183,8 +5470,7 @@ function mapAgentRow(row: Record<string, unknown>): SubAgent {
       typeof row.completed_at === 'string' ? row.completed_at : null,
     result_summary:
       typeof row.result_summary === 'string' ? row.result_summary : null,
-    last_im_jid:
-      typeof row.last_im_jid === 'string' ? row.last_im_jid : null,
+    last_im_jid: typeof row.last_im_jid === 'string' ? row.last_im_jid : null,
     spawned_from_jid:
       typeof row.spawned_from_jid === 'string' ? row.spawned_from_jid : null,
     source_kind:
@@ -4444,9 +5730,9 @@ export function updateBillingPlan(
   db.transaction(() => {
     // Clear old default BEFORE setting new one to avoid brief dual-default state
     if (updates.is_default) {
-      db.prepare(
-        'UPDATE billing_plans SET is_default = 0 WHERE id != ?',
-      ).run(id);
+      db.prepare('UPDATE billing_plans SET is_default = 0 WHERE id != ?').run(
+        id,
+      );
     }
     db.prepare(
       `UPDATE billing_plans SET ${fields.join(', ')} WHERE id = ?`,
@@ -4486,8 +5772,7 @@ function mapBillingPlanRow(row: Record<string, unknown>): BillingPlan {
     weekly_token_quota:
       row.weekly_token_quota != null ? Number(row.weekly_token_quota) : null,
     rate_multiplier: Number(row.rate_multiplier) || 1.0,
-    trial_days:
-      row.trial_days != null ? Number(row.trial_days) : null,
+    trial_days: row.trial_days != null ? Number(row.trial_days) : null,
     sort_order: Number(row.sort_order) || 0,
     display_price:
       typeof row.display_price === 'string' ? row.display_price : null,
@@ -4576,9 +5861,9 @@ export function cancelUserSubscription(userId: string): void {
   db.prepare(
     "UPDATE user_subscriptions SET status = 'cancelled', cancelled_at = ? WHERE user_id = ? AND status = 'active'",
   ).run(now, userId);
-  db.prepare(
-    'UPDATE users SET subscription_plan_id = NULL WHERE id = ?',
-  ).run(userId);
+  db.prepare('UPDATE users SET subscription_plan_id = NULL WHERE id = ?').run(
+    userId,
+  );
 }
 
 export function expireSubscriptions(): number {
@@ -4674,9 +5959,17 @@ export function expireSubscriptions(): number {
         `INSERT INTO user_subscriptions (id, user_id, plan_id, status, started_at, expires_at, cancelled_at, trial_ends_at, notes, auto_renew, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
-        newSub.id, newSub.user_id, newSub.plan_id, newSub.status,
-        newSub.started_at, newSub.expires_at, newSub.cancelled_at,
-        newSub.trial_ends_at, newSub.notes, newSub.auto_renew, newSub.created_at,
+        newSub.id,
+        newSub.user_id,
+        newSub.plan_id,
+        newSub.status,
+        newSub.started_at,
+        newSub.expires_at,
+        newSub.cancelled_at,
+        newSub.trial_ends_at,
+        newSub.notes,
+        newSub.auto_renew,
+        newSub.created_at,
       );
 
       logBillingAudit('subscription_assigned', userId, null, {
@@ -4792,9 +6085,7 @@ export function adjustUserBalance(
   // Idempotency check: if key already used, return the existing transaction
   if (idempotencyKey) {
     const existing = db
-      .prepare(
-        'SELECT * FROM balance_transactions WHERE idempotency_key = ?',
-      )
+      .prepare('SELECT * FROM balance_transactions WHERE idempotency_key = ?')
       .get(idempotencyKey) as Record<string, unknown> | undefined;
     if (existing) {
       return {
@@ -4803,10 +6094,20 @@ export function adjustUserBalance(
         type: String(existing.type) as BalanceTransactionType,
         amount_usd: Number(existing.amount_usd),
         balance_after: Number(existing.balance_after),
-        description: typeof existing.description === 'string' ? existing.description : null,
-        reference_type: typeof existing.reference_type === 'string' ? existing.reference_type as BalanceReferenceType : null,
-        reference_id: typeof existing.reference_id === 'string' ? existing.reference_id : null,
-        actor_id: typeof existing.actor_id === 'string' ? existing.actor_id : null,
+        description:
+          typeof existing.description === 'string'
+            ? existing.description
+            : null,
+        reference_type:
+          typeof existing.reference_type === 'string'
+            ? (existing.reference_type as BalanceReferenceType)
+            : null,
+        reference_id:
+          typeof existing.reference_id === 'string'
+            ? existing.reference_id
+            : null,
+        actor_id:
+          typeof existing.actor_id === 'string' ? existing.actor_id : null,
         source:
           typeof existing.source === 'string'
             ? (existing.source as BalanceTransactionSource)
@@ -4863,26 +6164,28 @@ export function adjustUserBalance(
     const balanceAfter = Number(newRow.balance_usd);
 
     // Record transaction
-    const result = db.prepare(
-      `INSERT INTO balance_transactions (
+    const result = db
+      .prepare(
+        `INSERT INTO balance_transactions (
         user_id, type, amount_usd, balance_after, description, reference_type,
         reference_id, actor_id, source, operator_type, notes, created_at, idempotency_key
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      userId,
-      type,
-      amount,
-      balanceAfter,
-      description,
-      referenceType,
-      referenceId,
-      actorId,
-      source,
-      operatorType,
-      notes,
-      now,
-      idempotencyKey ?? null,
-    );
+      )
+      .run(
+        userId,
+        type,
+        amount,
+        balanceAfter,
+        description,
+        referenceType,
+        referenceId,
+        actorId,
+        source,
+        operatorType,
+        notes,
+        now,
+        idempotencyKey ?? null,
+      );
 
     return {
       id: Number(result.lastInsertRowid),
@@ -4937,11 +6240,11 @@ export function getBalanceTransactions(
       amount_usd: Number(r.amount_usd),
       balance_after: Number(r.balance_after),
       description: typeof r.description === 'string' ? r.description : null,
-      reference_type: typeof r.reference_type === 'string'
-        ? (r.reference_type as BalanceReferenceType)
-        : null,
-      reference_id:
-        typeof r.reference_id === 'string' ? r.reference_id : null,
+      reference_type:
+        typeof r.reference_type === 'string'
+          ? (r.reference_type as BalanceReferenceType)
+          : null,
+      reference_id: typeof r.reference_id === 'string' ? r.reference_id : null,
       actor_id: typeof r.actor_id === 'string' ? r.actor_id : null,
       source:
         typeof r.source === 'string'
@@ -4979,9 +6282,7 @@ export function getMonthlyUsage(
   month: string,
 ): MonthlyUsage | undefined {
   const row = db
-    .prepare(
-      'SELECT * FROM monthly_usage WHERE user_id = ? AND month = ?',
-    )
+    .prepare('SELECT * FROM monthly_usage WHERE user_id = ? AND month = ?')
     .get(userId, month) as Record<string, unknown> | undefined;
   if (!row) return undefined;
   return mapMonthlyUsageRow(row);
@@ -5023,9 +6324,9 @@ export function getUserMonthlyUsageHistory(
 // --- Redeem Codes ---
 
 export function getRedeemCode(code: string): RedeemCode | undefined {
-  const row = db.prepare('SELECT * FROM redeem_codes WHERE code = ?').get(code) as
-    | Record<string, unknown>
-    | undefined;
+  const row = db
+    .prepare('SELECT * FROM redeem_codes WHERE code = ?')
+    .get(code) as Record<string, unknown> | undefined;
   if (!row) return undefined;
   return mapRedeemCodeRow(row);
 }
@@ -5069,14 +6370,13 @@ export function incrementRedeemCodeUsage(code: string, userId: string): void {
 }
 
 export function deleteRedeemCode(code: string): boolean {
-  const result = db.prepare('DELETE FROM redeem_codes WHERE code = ?').run(code);
+  const result = db
+    .prepare('DELETE FROM redeem_codes WHERE code = ?')
+    .run(code);
   return result.changes > 0;
 }
 
-export function hasUserRedeemedCode(
-  userId: string,
-  code: string,
-): boolean {
+export function hasUserRedeemedCode(userId: string, code: string): boolean {
   const row = db
     .prepare(
       'SELECT COUNT(*) as cnt FROM redeem_code_usage WHERE user_id = ? AND code = ?',
@@ -5091,8 +6391,7 @@ function mapRedeemCodeRow(row: Record<string, unknown>): RedeemCode {
     type: String(row.type) as RedeemCode['type'],
     value_usd: row.value_usd != null ? Number(row.value_usd) : null,
     plan_id: typeof row.plan_id === 'string' ? row.plan_id : null,
-    duration_days:
-      row.duration_days != null ? Number(row.duration_days) : null,
+    duration_days: row.duration_days != null ? Number(row.duration_days) : null,
     max_uses: Number(row.max_uses) || 1,
     used_count: Number(row.used_count) || 0,
     expires_at: typeof row.expires_at === 'string' ? row.expires_at : null,
@@ -5138,7 +6437,8 @@ export function getBillingAuditLog(
     conditions.push('event_type = ?');
     params.push(eventType);
   }
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const where =
+    conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
   const total = (
     db
@@ -5158,9 +6458,10 @@ export function getBillingAuditLog(
       event_type: String(r.event_type) as BillingAuditEventType,
       user_id: String(r.user_id),
       actor_id: typeof r.actor_id === 'string' ? r.actor_id : null,
-      details: typeof r.details === 'string'
-        ? (JSON.parse(r.details) as Record<string, unknown>)
-        : null,
+      details:
+        typeof r.details === 'string'
+          ? (JSON.parse(r.details) as Record<string, unknown>)
+          : null,
       created_at: String(r.created_at),
     })),
     total,
@@ -5300,9 +6601,10 @@ export function getDailyUsage(
   return mapDailyUsageRow(row);
 }
 
-export function getWeeklyUsageSummary(
-  userId: string,
-): { totalCost: number; totalTokens: number } {
+export function getWeeklyUsageSummary(userId: string): {
+  totalCost: number;
+  totalTokens: number;
+} {
   // Align to calendar week (Monday–Sunday) to match checkQuota() reset logic
   const now = new Date();
   const dayOfWeek = now.getDay(); // 0=Sun, 1=Mon, ...
@@ -5337,11 +6639,17 @@ export function getUserDailyUsageHistory(
 export function getDailyUsageSumForMonth(
   userId: string,
   month: string,
-): { totalInputTokens: number; totalOutputTokens: number; totalCost: number; messageCount: number } {
+): {
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCost: number;
+  messageCount: number;
+} {
   const startDate = `${month}-01`;
   // End date: first day of next month
   const [y, m] = month.split('-').map(Number);
-  const nextMonth = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
+  const nextMonth =
+    m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
   const endDate = `${nextMonth}-01`;
 
   const row = db
@@ -5430,14 +6738,17 @@ export function getDashboardStats(): {
   const month = new Date().toISOString().slice(0, 7);
 
   const totalUsers = (
-    db.prepare("SELECT COUNT(*) as cnt FROM users WHERE status != 'deleted'")
+    db
+      .prepare("SELECT COUNT(*) as cnt FROM users WHERE status != 'deleted'")
       .get() as { cnt: number }
   ).cnt;
 
   const activeUsers = (
-    db.prepare(
-      "SELECT COUNT(DISTINCT user_id) as cnt FROM daily_usage WHERE date = ?",
-    ).get(today) as { cnt: number }
+    db
+      .prepare(
+        'SELECT COUNT(DISTINCT user_id) as cnt FROM daily_usage WHERE date = ?',
+      )
+      .get(today) as { cnt: number }
   ).cnt;
 
   const planDistribution = db
@@ -5453,21 +6764,27 @@ export function getDashboardStats(): {
     .all() as Array<{ plan_name: string; count: number }>;
 
   const todayCost = (
-    db.prepare(
-      'SELECT COALESCE(SUM(total_cost_usd), 0) as total FROM daily_usage WHERE date = ?',
-    ).get(today) as { total: number }
+    db
+      .prepare(
+        'SELECT COALESCE(SUM(total_cost_usd), 0) as total FROM daily_usage WHERE date = ?',
+      )
+      .get(today) as { total: number }
   ).total;
 
   const monthCost = (
-    db.prepare(
-      'SELECT COALESCE(SUM(total_cost_usd), 0) as total FROM monthly_usage WHERE month = ?',
-    ).get(month) as { total: number }
+    db
+      .prepare(
+        'SELECT COALESCE(SUM(total_cost_usd), 0) as total FROM monthly_usage WHERE month = ?',
+      )
+      .get(month) as { total: number }
   ).total;
 
   const activeSubscriptions = (
-    db.prepare(
-      "SELECT COUNT(*) as cnt FROM user_subscriptions WHERE status = 'active'",
-    ).get() as { cnt: number }
+    db
+      .prepare(
+        "SELECT COUNT(*) as cnt FROM user_subscriptions WHERE status = 'active'",
+      )
+      .get() as { cnt: number }
   ).cnt;
 
   return {
@@ -5520,7 +6837,14 @@ export function batchAssignPlan(
       db.prepare(
         `INSERT INTO user_subscriptions (id, user_id, plan_id, status, started_at, expires_at, auto_renew, created_at)
          VALUES (?, ?, ?, 'active', ?, ?, 0, ?)`,
-      ).run(subId, userId, planId, now.toISOString(), expiresAt, now.toISOString());
+      ).run(
+        subId,
+        userId,
+        planId,
+        now.toISOString(),
+        expiresAt,
+        now.toISOString(),
+      );
 
       db.prepare('UPDATE users SET subscription_plan_id = ? WHERE id = ?').run(
         planId,
@@ -5561,7 +6885,6 @@ export function getAllPlanSubscriberCounts(): Record<string, number> {
   }
   return result;
 }
-
 
 /**
  * Atomically increment redeem code usage with optimistic locking.

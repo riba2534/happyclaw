@@ -21,6 +21,10 @@ export interface CardMeta {
   durationMs?: number;
   inputTokens?: number;
   outputTokens?: number;
+  /** Tokens read from prompt cache this turn (charged at cache-read rate). */
+  cacheReadInputTokens?: number;
+  /** Tokens written to prompt cache this turn (charged at cache-write rate). */
+  cacheCreationInputTokens?: number;
   costUSD?: number;
   numTurns?: number;
   /** Per-tool aggregated counts. Takes precedence over `toolCount`. */
@@ -52,6 +56,35 @@ export interface AgentCardInput {
    * timezone. Omit (or 0) to skip the timestamp.
    */
   completedAtMs?: number;
+  /**
+   * Prior assistant text segments (before the final one).
+   * When an agent produces N top-level assistant messages in a single query
+   * (e.g. "analyze → call tool → report"), the last one becomes the Body text,
+   * the first N-1 render as individual collapsible panels before the Body.
+   */
+  priorTextSegments?: string[];
+  /**
+   * Sub-agent (Task/Agent tool) execution results.
+   * Each rendered as a collapsible panel with description as title.
+   */
+  subAgentResults?: Array<{
+    toolUseId: string;
+    description: string;
+    summary: string;
+    text: string;
+  }>;
+  /**
+   * Codex final card process artifacts. Unlike Claude's Task/sub-agent panels,
+   * these come from Codex SDK todo/tool/status events and are shown only when
+   * the turn actually produced them.
+   */
+  codexTodos?: Array<{
+    content: string;
+    status: 'pending' | 'in_progress' | 'completed';
+  }>;
+  codexOperations?: Array<{
+    text: string;
+  }>;
 }
 
 /** Opaque JSON shape for a Feishu v2 card. Consumers stringify it for the SDK. */

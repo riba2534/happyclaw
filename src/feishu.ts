@@ -45,7 +45,13 @@ export interface ConnectOptions {
   /** 热重连时设置：丢弃 create_time 早于此时间戳（epoch ms）的消息，避免处理渠道关闭期间的堆积消息 */
   ignoreMessagesBefore?: number;
   /** 斜杠指令回调（如 /clear），返回回复文本或 null；mentions 仅飞书渠道传入，用于 /allow 等命令 */
-  onCommand?: (chatJid: string, command: string, senderImId?: string, mentions?: FeishuMentionLike[]) => Promise<string | null>;
+  onCommand?: (
+    chatJid: string,
+    command: string,
+    senderImId?: string,
+    mentions?: FeishuMentionLike[],
+    messageMeta?: FeishuMessageMeta,
+  ) => Promise<string | null>;
   /** 根据 chatJid 解析群组 folder，用于下载文件/图片到工作区 */
   resolveGroupFolder?: (chatJid: string) => string | undefined;
   /** 将 IM chatJid 解析为绑定目标 JID（conversation agent 或工作区主对话） */
@@ -1013,7 +1019,12 @@ export function createFeishuConnection(
         'Feishu slash command detected',
       );
       try {
-        const reply = await onCommand(chatJid, cmdBody, senderOpenId, mentions);
+        const reply = await onCommand(chatJid, cmdBody, senderOpenId, mentions, {
+          threadId,
+          rootId: rootId || messageId,
+          parentId,
+          text,
+        });
         logger.info(
           {
             chatJid,

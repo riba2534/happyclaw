@@ -45,6 +45,8 @@ function makeHealthStatus(profileId: string): ProviderHealthStatus {
 // ─── ProviderPool 类 ──────────────────────────────────────
 
 export class ProviderPool {
+  constructor(private readonly providerPoolId = 'claude') {}
+
   private members: ProviderPoolMember[] = [];
   private strategy: BalancingConfig['strategy'] = 'round-robin';
   private unhealthyThreshold = DEFAULT_UNHEALTHY_THRESHOLD;
@@ -102,7 +104,7 @@ export class ProviderPool {
         health.consecutiveErrors = 0;
         health.unhealthySince = null;
         logger.info(
-          { profileId: member.profileId },
+          { providerPoolId: this.providerPoolId, profileId: member.profileId },
           'Provider auto-recovered after recovery interval',
         );
       }
@@ -121,7 +123,11 @@ export class ProviderPool {
       const fallback = firstEnabled || members[0];
       if (fallback) {
         logger.warn(
-          { profileId: fallback.profileId, strategy },
+          {
+            providerPoolId: this.providerPoolId,
+            profileId: fallback.profileId,
+            strategy,
+          },
           'All providers unhealthy, falling back to first available',
         );
         return fallback.profileId;
@@ -171,7 +177,11 @@ export class ProviderPool {
     }
 
     logger.debug(
-      { profileId: selected.profileId, strategy },
+      {
+        providerPoolId: this.providerPoolId,
+        profileId: selected.profileId,
+        strategy,
+      },
       'Selected provider for session',
     );
     return selected.profileId;
@@ -186,7 +196,10 @@ export class ProviderPool {
     if (!health.healthy) {
       health.healthy = true;
       health.unhealthySince = null;
-      logger.info({ profileId }, 'Provider recovered after success report');
+      logger.info(
+        { providerPoolId: this.providerPoolId, profileId },
+        'Provider recovered after success report',
+      );
     }
   }
 
@@ -203,6 +216,7 @@ export class ProviderPool {
       health.unhealthySince = Date.now();
       logger.warn(
         {
+          providerPoolId: this.providerPoolId,
           profileId,
           consecutiveErrors: health.consecutiveErrors,
           threshold: this.unhealthyThreshold,
@@ -257,6 +271,58 @@ export class ProviderPool {
   }
 }
 
-// ─── 单例 ──────────────────────────────────────────────────
+// ─── Multi-pool manager ────────────────────────────────────
 
-export const providerPool = new ProviderPool();
+export class ProviderPoolManager {
+  private pools = new Map<string, ProviderPool>();
+
+  getPool(providerPoolId = 'claude'): ProviderPool {
+    let pool = this.pools.get(providerPoolId);
+    if (!pool) {
+      pool = new ProviderPool(providerPoolId);
+      this.pools.set(providerPoolId, pool);
+    }
+    return pool;
+  }
+
+  refreshPoolFromConfig(
+    providerPoolId: string,
+    providers: Array<{ id: string; enabled: boolean; weight: number }>,
+    balancing: BalancingConfig,
+  ): void {
+    this.getPool(providerPoolId).refreshFromConfig(providers, balancing);
+  }
+
+  selectProvider(providerPoolId: string): string {
+    return this.getPool(providerPoolId).selectProvider();
+  }
+
+  reportSuccess(providerPoolId: string, profileId: string): void {
+    this.getPool(providerPoolId).reportSuccess(profileId);
+  }
+
+  reportFailure(providerPoolId: string, profileId: string): void {
+    this.getPool(providerPoolId).reportFailure(profileId);
+  }
+
+  acquireSession(providerPoolId: string, profileId: string): void {
+    this.getPool(providerPoolId).acquireSession(profileId);
+  }
+
+  releaseSession(providerPoolId: string, profileId: string): void {
+    this.getPool(providerPoolId).releaseSession(profileId);
+  }
+
+  resetHealth(providerPoolId: string, profileId: string): void {
+    this.getPool(providerPoolId).resetHealth(profileId);
+  }
+
+  getHealthStatuses(providerPoolId: string): ProviderHealthStatus[] {
+    return this.getPool(providerPoolId).getHealthStatuses();
+  }
+}
+
+// ─── Backward-compatible Claude singleton ──────────────────
+
+export const providerPoolManager = new ProviderPoolManager();
+export const providerPool = providerPoolManager.getPool('claude');

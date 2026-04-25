@@ -33,6 +33,7 @@ import {
   buildAskQuestionText,
   collectAskQuestions,
   buildTimelineText,
+  type StreamingCardRuntimeProfile,
   type StreamingPhase,
   type TodoItemView,
   type ToolCallView,
@@ -59,6 +60,8 @@ export interface StreamingCardOptions {
   onFallback?: () => void;
   /** Called when the initial card is created and messageId is available */
   onCardCreated?: (messageId: string) => void;
+  /** Runtime profile for card wording. Defaults to Claude-compatible. */
+  runtimeProfile?: StreamingCardRuntimeProfile;
 }
 
 // ─── Code-Block-Safe Splitting ───────────────────────────────
@@ -304,6 +307,7 @@ function formatElapsed(ms: number): string {
 
 const MAX_THINKING_CHARS = 800;
 const MAX_RECENT_EVENTS = 5;
+const MAX_OPERATION_HISTORY = 30;
 const MAX_TOOL_DISPLAY = 5;
 const MAX_TODO_DISPLAY = 10;
 const MAX_TOOL_SUMMARY_CHARS = 60;
@@ -318,6 +322,7 @@ export interface AuxiliaryState {
   activeHook: { hookName: string; hookEvent: string } | null;
   todos: Array<{ id: string; content: string; status: string }> | null;
   recentEvents: Array<{ text: string }>;
+  runtimeProfile?: StreamingCardRuntimeProfile;
 }
 
 /**
@@ -330,6 +335,8 @@ function buildAuxiliaryElements(aux: AuxiliaryState): {
 } {
   const before: Array<Record<string, unknown>> = [];
   const after: Array<Record<string, unknown>> = [];
+  const runtimeProfile = aux.runtimeProfile ?? 'claude';
+  const isCodex = runtimeProfile === 'codex';
 
   // ① System Status
   if (aux.systemStatus) {
@@ -354,7 +361,7 @@ function buildAuxiliaryElements(aux: AuxiliaryState): {
     before.push({
       tag: 'markdown',
       content:
-        `<text_tag color='blue'>思考中</text_tag> 🧠 <font color='grey'>正在推理…</font>\n${quoted}`.slice(
+        `<text_tag color='blue'>${isCodex ? '推理中' : '思考中'}</text_tag> 🧠 <font color='grey'>正在推理…</font>\n${quoted}`.slice(
           0,
           MAX_ELEMENT_CHARS,
         ),
@@ -364,7 +371,7 @@ function buildAuxiliaryElements(aux: AuxiliaryState): {
     before.push({
       tag: 'markdown',
       content:
-        "<text_tag color='blue'>思考中</text_tag> 🧠 <font color='grey'>正在推理…</font>",
+        `<text_tag color='blue'>${isCodex ? '推理中' : '思考中'}</text_tag> 🧠 <font color='grey'>正在推理…</font>`,
       text_size: 'notation',
     });
   }
@@ -419,7 +426,9 @@ function buildAuxiliaryElements(aux: AuxiliaryState): {
     const total = aux.todos.length;
     const done = aux.todos.filter((t) => t.status === 'completed').length;
     const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-    const header = `📋 **${done}/${total} (${pct}%)**`;
+    const header = isCodex
+      ? `📋 **计划 / Todo · ${done}/${total} (${pct}%)**`
+      : `📋 **${done}/${total} (${pct}%)**`;
     const items = aux.todos.slice(0, MAX_TODO_DISPLAY).map((t) => {
       const icon =
         t.status === 'completed'
@@ -446,7 +455,7 @@ function buildAuxiliaryElements(aux: AuxiliaryState): {
     const lines = aux.recentEvents.map((e) => `- ${e.text}`);
     after.push({
       tag: 'markdown',
-      content: `📝 **调用轨迹**\n${lines.join('\n')}`.slice(
+      content: `📝 **${isCodex ? '运行日志' : '调用轨迹'}**\n${lines.join('\n')}`.slice(
         0,
         MAX_ELEMENT_CHARS,
       ),
@@ -630,12 +639,19 @@ function formatUsageNote(usage: {
 
 // ─── Streaming Mode Card Builder ──────────────────────────────
 
-function buildStreamingModeCard(initialText: string): object {
+function buildStreamingModeCard(
+  initialText: string,
+  runtimeProfile: StreamingCardRuntimeProfile,
+): object {
   // Delegate to the shared rich skeleton: STATUS_BANNER + PROGRESS / TOOLS /
   // THINKING collapsible_panels + MAIN_CONTENT (typewriter) + INTERRUPT button
   // + FOOTER_NOTE. Each panel wraps a markdown element with its own element_id
   // so the controller can patch slots independently.
-  return buildStreamingAgentCard({ initialText, rich: true });
+  return buildStreamingAgentCard({
+    initialText,
+    rich: runtimeProfile !== 'codex',
+    runtimeProfile,
+  });
 }
 
 /**
@@ -1295,6 +1311,7 @@ export class StreamingCardController {
   private readonly replyToMsgId?: string;
   private readonly onFallback?: () => void;
   private readonly onCardCreated?: (messageId: string) => void;
+  private runtimeProfile: StreamingCardRuntimeProfile;
 
   // CardKit mode
   private useCardKit = false;
@@ -1318,7 +1335,37 @@ export class StreamingCardController {
   private todos: Array<{ id: string; content: string; status: string }> | null =
     null;
   private recentEvents: Array<{ text: string }> = [];
+  private operationHistory: Array<{ text: string }> = [];
   private stateVersion = 0;
+  private firstTextFlushLogged = false;
+  private firstAuxFlushLogged = false;
+
+  /**
+   * Final-only thinking text (accumulated via appendThinking, NEVER cleared
+   * by append()). `thinkingText` is cleared when text arrives so the streaming
+   * card hides thinking once the real reply begins; the final card still
+   * needs the full thinking trace, so we keep a separate accumulator.
+   */
+  private finalThinkingText = '';
+
+  /**
+   * Prior assistant text segments (accumulated via assistant_text_boundary).
+   * Rendered as collapsed panels ONLY in the final card — does NOT affect
+   * streaming rendering.
+   */
+  private priorTextSegments: string[] = [];
+
+  /**
+   * Sub-agent execution results (accumulated via sub_agent_result).
+   * Rendered as collapsed panels ONLY in the final card — does NOT affect
+   * streaming rendering.
+   */
+  private subAgentResults: Array<{
+    toolUseId: string;
+    description: string;
+    summary: string;
+    text: string;
+  }> = [];
 
   constructor(opts: StreamingCardOptions) {
     this.client = opts.client;
@@ -1326,6 +1373,7 @@ export class StreamingCardController {
     this.replyToMsgId = opts.replyToMsgId;
     this.onFallback = opts.onFallback;
     this.onCardCreated = opts.onCardCreated;
+    this.runtimeProfile = opts.runtimeProfile ?? 'claude';
     this.flushCtrl = new FlushController();
   }
 
@@ -1341,6 +1389,17 @@ export class StreamingCardController {
 
   isActive(): boolean {
     return this.state === 'streaming' || this.state === 'creating';
+  }
+
+  setRuntimeProfile(runtime: StreamingCardRuntimeProfile): void {
+    if (this.runtimeProfile === runtime) return;
+    this.runtimeProfile = runtime;
+    this.stateVersion++;
+    if (this.state === 'streaming') {
+      this.backendMode === 'streaming'
+        ? this.scheduleAuxFlush()
+        : this.schedulePatch();
+    }
   }
 
   /**
@@ -1446,6 +1505,9 @@ export class StreamingCardController {
       this.thinkingText =
         '...' + this.thinkingText.slice(-(MAX_THINKING_CHARS - 3));
     }
+    // Final-only copy: accumulated without rolling truncation, NEVER cleared
+    // by append(). Used to populate the thinking panel in the final card.
+    this.finalThinkingText += text;
     this.thinking = true;
     this.stateVersion++;
     if (this.state === 'idle') {
@@ -1463,6 +1525,56 @@ export class StreamingCardController {
         ? this.scheduleAuxFlush()
         : this.schedulePatch();
     }
+  }
+
+  /**
+   * Append a prior assistant text segment. Called when SDK produces a new
+   * top-level assistant message, indicating the previous text was a discrete
+   * segment (e.g. "analyze" before tool call, "report" after).
+   *
+   * Does NOT affect streaming rendering — only appears in the final card as
+   * a collapsed panel before the Body.
+   */
+  addPriorTextSegment(text: string): void {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    this.priorTextSegments.push(trimmed);
+  }
+
+  /**
+   * Register a sub-agent (Task/Agent) execution result. Dedupe by toolUseId
+   * in case the same event fires twice.
+   *
+   * Does NOT affect streaming rendering — only appears in the final card.
+   */
+  addSubAgentResult(result: {
+    toolUseId: string;
+    description: string;
+    summary: string;
+    text: string;
+  }): void {
+    const existing = this.subAgentResults.findIndex(
+      (r) => r.toolUseId === result.toolUseId,
+    );
+    if (existing >= 0) {
+      this.subAgentResults[existing] = result;
+    } else {
+      this.subAgentResults.push(result);
+    }
+  }
+
+  /**
+   * Reset non-streaming accumulator state at query boundaries (e.g. when an
+   * IPC-injected message triggers a new query). Must be called in the same
+   * place `streamingAccumulatedText` is reset in the main process.
+   */
+  resetNonStreamingState(): void {
+    this.priorTextSegments = [];
+    this.subAgentResults = [];
+    this.finalThinkingText = '';
+    this.operationHistory = [];
+    this.recentEvents = [];
+    this.todos = null;
   }
 
   /**
@@ -1511,9 +1623,14 @@ export class StreamingCardController {
    * Does NOT trigger schedulePatch — piggybacks on other events.
    */
   pushRecentEvent(text: string): void {
-    this.recentEvents.push({ text });
+    const event = { text };
+    this.recentEvents.push(event);
     if (this.recentEvents.length > MAX_RECENT_EVENTS) {
       this.recentEvents = this.recentEvents.slice(-MAX_RECENT_EVENTS);
+    }
+    this.operationHistory.push(event);
+    if (this.operationHistory.length > MAX_OPERATION_HISTORY) {
+      this.operationHistory = this.operationHistory.slice(-MAX_OPERATION_HISTORY);
     }
   }
 
@@ -1604,9 +1721,18 @@ export class StreamingCardController {
   async patchUsageNote(usage: {
     inputTokens: number;
     outputTokens: number;
+    cacheReadInputTokens: number;
+    cacheCreationInputTokens: number;
     costUSD: number;
     durationMs: number;
     numTurns: number;
+    modelUsage?: Record<string, {
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadInputTokens: number;
+      cacheCreationInputTokens: number;
+      costUSD: number;
+    }>;
   }): Promise<void> {
     if (this.state !== 'completed') return;
 
@@ -1619,12 +1745,25 @@ export class StreamingCardController {
         const cardSize = Buffer.byteLength(JSON.stringify(cardJson), 'utf-8');
         if (cardSize > CARD_SIZE_LIMIT) return;
         await this.streamingBackend.updateCardFull(cardJson);
-      } else if (this.messageId || this.multiCard) {
-        // For CardKit v1 / legacy: skip if multiCard has split content
+      } else if (this.messageId) {
+        // Legacy / CardKit v1: rebuild the full structured card (same shape as
+        // streaming mode) so the metaRow shows model/tokens/cost. Previously
+        // we only patched a footer note, which didn't populate the metaRow.
         if (this.multiCard && this.multiCard.getCardCount() > 1) return;
-        const note = formatUsageNote(usage);
-        if (!note) return;
-        await this.patchCard('completed', note);
+        const cardJson = this.buildStructuredFinalCard('completed', usage);
+        const content = JSON.stringify(cardJson);
+        const cardSize = Buffer.byteLength(content, 'utf-8');
+        if (cardSize > CARD_SIZE_LIMIT) {
+          // Card too large — fall back to the text-note patch to preserve some
+          // info rather than silently drop it.
+          const note = formatUsageNote(usage);
+          if (note) await this.patchCard('completed', note);
+          return;
+        }
+        await this.client.im.v1.message.patch({
+          path: { message_id: this.messageId },
+          data: { content },
+        });
       }
     } catch (err) {
       logger.debug(
@@ -1689,7 +1828,10 @@ export class StreamingCardController {
     // ── Level 0: Try streaming mode (cardElement.content typewriter) ──
     try {
       const backend = new StreamingModeBackend(this.client);
-      const cardJson = buildStreamingModeCard(initialText);
+      const cardJson = buildStreamingModeCard(
+        initialText,
+        this.runtimeProfile,
+      );
       await backend.createCard(cardJson);
       const messageId = await backend.sendCard(this.chatId, this.replyToMsgId);
 
@@ -1703,8 +1845,14 @@ export class StreamingCardController {
       this.auxFlushCtrl = new FlushController(800, 0);
       this.maxPatchFailures = 3;
 
-      logger.debug(
-        { chatId: this.chatId, messageId, mode: 'streaming' },
+      logger.info(
+        {
+          chatId: this.chatId,
+          messageId,
+          mode: 'streaming',
+          runtimeProfile: this.runtimeProfile,
+          initialTextLength: initialText.length,
+        },
         'Streaming card created via streaming mode',
       );
 
@@ -1737,8 +1885,14 @@ export class StreamingCardController {
       this.flushCtrl = new FlushController(1000, 50);
       this.maxPatchFailures = 3;
 
-      logger.debug(
-        { chatId: this.chatId, messageId, mode: 'cardkit-v1' },
+      logger.info(
+        {
+          chatId: this.chatId,
+          messageId,
+          mode: 'cardkit-v1',
+          runtimeProfile: this.runtimeProfile,
+          initialTextLength: initialText.length,
+        },
         'Streaming card created via CardKit v1',
       );
     } catch (v1Err) {
@@ -1788,8 +1942,14 @@ export class StreamingCardController {
         throw new Error('No message_id in response');
       }
 
-      logger.debug(
-        { chatId: this.chatId, messageId: this.messageId, mode: 'legacy' },
+      logger.info(
+        {
+          chatId: this.chatId,
+          messageId: this.messageId,
+          mode: 'legacy',
+          runtimeProfile: this.runtimeProfile,
+          initialTextLength: initialText.length,
+        },
         'Streaming card created via legacy path',
       );
 
@@ -1804,20 +1964,20 @@ export class StreamingCardController {
     // Check if state changed while we were awaiting the API call.
     if (this.state !== 'creating') {
       const finalState = this.state as 'completed' | 'aborted';
-      logger.debug(
+      logger.info(
         { chatId: this.chatId, messageId: this.messageId, finalState },
         'Streaming card created but state already changed, patching to final',
       );
       if (this.backendMode === 'streaming' && this.streamingBackend) {
         this.finalizeStreamingCard(finalState).catch((err) => {
-          logger.debug(
+          logger.warn(
             { err, chatId: this.chatId },
             'Failed to finalize streaming card after late creation',
           );
         });
       } else {
         this.patchCard(finalState).catch((err) => {
-          logger.debug(
+          logger.warn(
             { err, chatId: this.chatId },
             'Failed to patch to final state after late creation',
           );
@@ -1833,8 +1993,35 @@ export class StreamingCardController {
 
     // If text accumulated while creating, schedule a flush/patch
     if (this.accumulatedText.length > 3) {
+      if (this.backendMode === 'streaming') {
+        this.pushStreamingText('initial').catch((err) => {
+          logger.warn(
+            {
+              err,
+              chatId: this.chatId,
+              messageId: this.messageId,
+              runtimeProfile: this.runtimeProfile,
+              textLength: this.accumulatedText.length,
+            },
+            'Streaming card initial text push failed',
+          );
+        });
+      } else {
+        this.schedulePatch();
+      }
+    }
+
+    const hasAuxiliaryContent =
+      Boolean(this.systemStatus) ||
+      this.thinking ||
+      this.thinkingText.length > 0 ||
+      this.toolCalls.size > 0 ||
+      Boolean(this.activeHook) ||
+      Boolean(this.todos?.length) ||
+      this.recentEvents.length > 0;
+    if (hasAuxiliaryContent) {
       this.backendMode === 'streaming'
-        ? this.scheduleTextFlush()
+        ? this.scheduleAuxFlush()
         : this.schedulePatch();
     }
   }
@@ -1869,6 +2056,7 @@ export class StreamingCardController {
       activeHook: this.activeHook,
       todos: this.todos,
       recentEvents: this.recentEvents,
+      runtimeProfile: this.runtimeProfile,
     };
   }
 
@@ -1885,26 +2073,55 @@ export class StreamingCardController {
     }
 
     this.textFlushCtrl.schedule(this.accumulatedText.length, async () => {
-      try {
-        await this.streamingBackend!.streamContent(this.accumulatedText);
-        this.textFlushCtrl!.markFlushed(this.accumulatedText.length);
-        this.patchFailCount = 0;
-      } catch (err) {
-        this.patchFailCount++;
-        logger.debug(
-          {
-            err,
-            chatId: this.chatId,
-            failCount: this.patchFailCount,
-            mode: 'streaming',
-          },
-          'Streaming content push failed',
-        );
-        if (this.patchFailCount >= this.maxPatchFailures) {
-          this.degradeToV1();
-        }
-      }
+      await this.pushStreamingText('scheduled');
     });
+  }
+
+  private async pushStreamingText(reason: 'initial' | 'scheduled'): Promise<void> {
+    if (!this.streamingBackend || !this.textFlushCtrl) {
+      this.schedulePatch();
+      return;
+    }
+
+    try {
+      await this.streamingBackend.streamContent(this.accumulatedText);
+      this.textFlushCtrl.markFlushed(this.accumulatedText.length);
+      this.patchFailCount = 0;
+      if (!this.firstTextFlushLogged || reason === 'initial') {
+        this.firstTextFlushLogged = true;
+        logger.info(
+          {
+            chatId: this.chatId,
+            messageId: this.messageId,
+            mode: 'streaming',
+            runtimeProfile: this.runtimeProfile,
+            reason,
+            textLength: this.accumulatedText.length,
+          },
+          'Streaming card text pushed',
+        );
+      }
+    } catch (err) {
+      this.patchFailCount++;
+      logger.warn(
+        {
+          err,
+          chatId: this.chatId,
+          messageId: this.messageId,
+          failCount: this.patchFailCount,
+          mode: 'streaming',
+          runtimeProfile: this.runtimeProfile,
+          reason,
+          textLength: this.accumulatedText.length,
+        },
+        'Streaming content push failed',
+      );
+      if (this.patchFailCount >= this.maxPatchFailures) {
+        this.degradeToV1();
+      } else if (reason === 'initial') {
+        this.scheduleTextFlush();
+      }
+    }
   }
 
   /**
@@ -1971,6 +2188,7 @@ export class StreamingCardController {
       phase,
       detail: this.deriveBannerDetail(phase),
       elapsedMs,
+      runtimeProfile: this.runtimeProfile,
     });
     // Footer is the short status echo only — recent events have their own panel.
     const footerNote = `<font color='grey'>${statusBanner.replace(/<[^>]+>/g, '').trim()}</font>`;
@@ -1997,7 +2215,12 @@ export class StreamingCardController {
         skillName: tc.skillName,
         isNested: tc.isNested,
       }));
-    const toolsContent = buildToolsTimelineText(toolViews);
+    const toolsContent =
+      toolViews.length > 0
+        ? buildToolsTimelineText(toolViews)
+        : this.runtimeProfile === 'codex'
+          ? '<font color=\'grey\'>尚未执行操作</font>'
+          : buildToolsTimelineText(toolViews);
 
     const thinkingContent = this.thinkingText
       ? buildThinkingBlockquote(this.thinkingText)
@@ -2036,6 +2259,47 @@ export class StreamingCardController {
     }
 
     this.auxFlushCtrl.schedule(this.stateVersion * 1000, async () => {
+      if (this.runtimeProfile === 'codex') {
+        try {
+          const auxState = this.getAuxiliaryState();
+          const { before, after } = buildAuxiliaryElements(auxState);
+          await this.streamingBackend!.updateAuxiliary(
+            ELEMENT_IDS.AUX_BEFORE,
+            serializeAuxContent(before),
+          );
+          await this.streamingBackend!.updateAuxiliary(
+            ELEMENT_IDS.AUX_AFTER,
+            serializeAuxContent(after),
+          );
+          if (!this.firstAuxFlushLogged) {
+            this.firstAuxFlushLogged = true;
+            logger.info(
+              {
+                chatId: this.chatId,
+                messageId: this.messageId,
+                mode: 'streaming',
+                runtimeProfile: this.runtimeProfile,
+                beforeLength: serializeAuxContent(before).length,
+                afterLength: serializeAuxContent(after).length,
+              },
+              'Streaming card auxiliary pushed',
+            );
+          }
+        } catch (err) {
+          logger.warn(
+            {
+              err,
+              chatId: this.chatId,
+              messageId: this.messageId,
+              mode: 'streaming',
+              runtimeProfile: this.runtimeProfile,
+            },
+            'Codex compact aux patch failed',
+          );
+        }
+        return;
+      }
+
       const patches = this.buildRichPanelPatches();
 
       // Every flush goes through cardElement.content() to update the inner
@@ -2083,8 +2347,14 @@ export class StreamingCardController {
       } catch (err) {
         // Rich slot updates may fail if CardKit rejects deep element_id targeting.
         // Fall back to legacy AUX_BEFORE/AFTER aggregation in that case.
-        logger.debug(
-          { err, chatId: this.chatId, mode: 'streaming' },
+        logger.warn(
+          {
+            err,
+            chatId: this.chatId,
+            messageId: this.messageId,
+            mode: 'streaming',
+            runtimeProfile: this.runtimeProfile,
+          },
           'Rich panel patch failed, falling back to legacy aux update',
         );
         try {
@@ -2159,9 +2429,18 @@ export class StreamingCardController {
     usage?: {
       inputTokens: number;
       outputTokens: number;
+      cacheReadInputTokens: number;
+      cacheCreationInputTokens: number;
       costUSD: number;
       durationMs: number;
       numTurns: number;
+      modelUsage?: Record<string, {
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadInputTokens: number;
+        cacheCreationInputTokens: number;
+        costUSD: number;
+      }>;
     },
   ): object {
     const status: CardStatus = finalState === 'aborted' ? 'warning' : 'done';
@@ -2173,20 +2452,84 @@ export class StreamingCardController {
       toolCounts,
       ([name, count]) => ({ name, count }),
     );
-    const thinking = this.thinkingText.trim() || undefined;
+    // Primary model name: pick the most-used model from modelUsage breakdown
+    // (by output tokens). Usage events from agent-runner populate this map;
+    // patchUsageNote is where model info actually arrives.
+    let primaryModel: string | undefined;
+    if (usage?.modelUsage) {
+      const entries = Object.entries(usage.modelUsage);
+      if (entries.length > 0) {
+        entries.sort((a, b) => (b[1].outputTokens || 0) - (a[1].outputTokens || 0));
+        primaryModel = entries[0][0];
+      }
+    }
+    // Use finalThinkingText (never cleared by append()) so the final card
+    // shows the full thinking trace even after the real reply has arrived.
+    // Cap to prevent unbounded card size (Feishu markdown limit ~4000 chars).
+    const MAX_FINAL_THINKING = 3800;
+    let thinking: string | undefined = this.finalThinkingText.trim() || undefined;
+    if (thinking && thinking.length > MAX_FINAL_THINKING) {
+      thinking = '...' + thinking.slice(-(MAX_FINAL_THINKING - 3));
+    }
+    const dedupedPriorSegments = this.dedupePriorSegments();
+    const codexTodos =
+      this.runtimeProfile === 'codex' && this.todos && this.todos.length > 0
+        ? this.todos.map((todo) => ({
+            content: todo.content,
+            status: this.normalizeTodoStatus(todo.status),
+          }))
+        : undefined;
+    const codexOperations =
+      this.runtimeProfile === 'codex' && this.operationHistory.length > 0
+        ? [...this.operationHistory]
+        : undefined;
     return buildAgentReplyCard({
       status,
       text: this.accumulatedText || '...',
+      title: this.runtimeProfile === 'codex' ? 'Codex 回复' : undefined,
       thinking,
       meta: {
+        model: primaryModel,
         toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
         durationMs: usage?.durationMs,
         inputTokens: usage?.inputTokens,
         outputTokens: usage?.outputTokens,
+        cacheReadInputTokens: usage?.cacheReadInputTokens,
+        cacheCreationInputTokens: usage?.cacheCreationInputTokens,
         costUSD: usage?.costUSD,
         numTurns: usage?.numTurns,
       },
+      completedAtMs: Date.now(),
+      priorTextSegments:
+        dedupedPriorSegments.length > 0 ? dedupedPriorSegments : undefined,
+      subAgentResults:
+        this.subAgentResults.length > 0 ? this.subAgentResults : undefined,
+      codexTodos,
+      codexOperations,
     });
+  }
+
+  private normalizeTodoStatus(status: string): TodoItemView['status'] {
+    return status === 'completed' || status === 'in_progress'
+      ? status
+      : 'pending';
+  }
+
+  /**
+   * Dedupe prior segments to avoid the last segment being shown both as a
+   * prior panel AND as the Body text — happens when the final assistant
+   * message's text equals what was recorded as the last boundary.
+   */
+  private dedupePriorSegments(): string[] {
+    if (this.priorTextSegments.length === 0) return [];
+    const body = (this.accumulatedText || '').trim();
+    if (!body) return [...this.priorTextSegments];
+    const last =
+      this.priorTextSegments[this.priorTextSegments.length - 1]?.trim();
+    if (last === body) {
+      return this.priorTextSegments.slice(0, -1);
+    }
+    return [...this.priorTextSegments];
   }
 
   /**
@@ -2212,9 +2555,28 @@ export class StreamingCardController {
         // 3b. Too large for single card — split on finalize
         await this.splitOnFinalize(finalState);
       }
+      logger.info(
+        {
+          chatId: this.chatId,
+          messageId: this.messageId,
+          mode: 'streaming',
+          runtimeProfile: this.runtimeProfile,
+          finalState,
+          textLength: this.accumulatedText.length,
+          cardSize,
+        },
+        'Streaming card finalized',
+      );
     } catch (err) {
-      logger.debug(
-        { err, chatId: this.chatId },
+      logger.warn(
+        {
+          err,
+          chatId: this.chatId,
+          messageId: this.messageId,
+          runtimeProfile: this.runtimeProfile,
+          finalState,
+          textLength: this.accumulatedText.length,
+        },
         'Streaming finalize failed, trying truncated fallback',
       );
       // Fallback: truncate and try once more
@@ -2225,9 +2587,25 @@ export class StreamingCardController {
           finalState,
         );
         await backend.updateCardFull(fallbackCard);
+        logger.info(
+          {
+            chatId: this.chatId,
+            messageId: this.messageId,
+            runtimeProfile: this.runtimeProfile,
+            finalState,
+            textLength: truncated.length,
+          },
+          'Streaming card finalized with truncated fallback',
+        );
       } catch (fallbackErr) {
-        logger.debug(
-          { err: fallbackErr, chatId: this.chatId },
+        logger.warn(
+          {
+            err: fallbackErr,
+            chatId: this.chatId,
+            messageId: this.messageId,
+            runtimeProfile: this.runtimeProfile,
+            finalState,
+          },
           'Streaming finalize truncated fallback also failed',
         );
       }

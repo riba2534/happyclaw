@@ -1,7 +1,8 @@
 /**
  * MCP Tool Definitions for HappyClaw Agent Runner.
  *
- * Uses SDK's `tool()` helper to define in-process MCP tools.
+ * Defines a runtime-neutral catalog, then adapts it to Claude SDK in-process
+ * tools or a standalone MCP server for Codex.
  * These tools communicate with the host process via IPC files.
  *
  * Context (chatJid, groupFolder, etc.) is passed via McpContext
@@ -30,9 +31,35 @@ export interface McpContext {
   workspaceGroup: string;
   workspaceGlobal: string;
   workspaceMemory: string;
+  resumeMode?: 'resume' | 'fresh' | 'soft_inject' | null;
+  inputContextHash?: string | null;
+  workspaceInstructionHash?: string | null;
+  softInjectionReason?: string | null;
   // 禁用 HappyClaw 的 memory MCP 工具（memory_append/search/get），
   // 让 Agent 完全按用户本机 ~/.claude/ 下的 Playbook 约定管理记忆
   disableMemoryLayer?: boolean;
+}
+
+type ToolInputSchema = Record<string, z.ZodTypeAny>;
+
+export interface RuntimeNeutralMcpToolDefinition<
+  TArgs extends Record<string, any> = any,
+> {
+  name: string;
+  description: string;
+  inputSchema: ToolInputSchema;
+  handler: (args: TArgs) => Promise<unknown>;
+  annotations?: Record<string, unknown>;
+  _meta?: Record<string, unknown>;
+}
+
+function defineTool<TArgs extends Record<string, any> = any>(
+  name: string,
+  description: string,
+  inputSchema: ToolInputSchema,
+  handler: (args: TArgs) => Promise<unknown>,
+): RuntimeNeutralMcpToolDefinition<TArgs> {
+  return { name, description, inputSchema, handler };
 }
 
 function writeIpcFile(dir: string, data: object): string {
@@ -188,17 +215,22 @@ export function buildSendMessageData(
 }
 
 /**
- * Create all HappyClaw MCP tool definitions for in-process SDK MCP server.
+ * Create runtime-neutral HappyClaw MCP tool definitions.
+ *
+ * Claude SDK and the standalone MCP server both adapt from this catalog so the
+ * built-in tool surface cannot drift between runtimes.
  */
-export function createMcpTools(ctx: McpContext): SdkMcpToolDefinition<any>[] {
+export function createMcpToolCatalog(
+  ctx: McpContext,
+): RuntimeNeutralMcpToolDefinition<any>[] {
   const MESSAGES_DIR = path.join(ctx.workspaceIpc, 'messages');
   const TASKS_DIR = path.join(ctx.workspaceIpc, 'tasks');
   const hasCrossGroupAccess = ctx.isAdminHome;
   const toRelativePath = createToRelativePath(ctx);
 
-  const tools: SdkMcpToolDefinition<any>[] = [
+  const tools: RuntimeNeutralMcpToolDefinition<any>[] = [
     // --- send_message ---
-    tool(
+    defineTool(
       'send_message',
       "Send a message to the user or group immediately while you're still running. Use this for progress updates or to send multiple messages. You can call this multiple times. Note: when running as a scheduled task, your final output is NOT sent to the user — use this tool if you need to communicate with the user or group.",
       { text: z.string().describe('The message text to send') },
@@ -213,7 +245,7 @@ export function createMcpTools(ctx: McpContext): SdkMcpToolDefinition<any>[] {
     ),
 
     // --- send_image ---
-    tool(
+    defineTool(
       'send_image',
       'Send an image file from the workspace to the user via IM. Supports PNG/JPEG/GIF/WebP. Optional caption.',
       {
@@ -330,7 +362,7 @@ export function createMcpTools(ctx: McpContext): SdkMcpToolDefinition<any>[] {
     ),
 
     // --- send_file ---
-    tool(
+    defineTool(
       'send_file',
       `Send a file to the current chat (the user you're talking to) via IM (Feishu/Telegram/DingTalk/QQ). The file path is relative to the workspace/group directory.
 Supports: PDF, DOC, XLS, PPT, MP4, ZIP, SO, etc. Max file size: 30MB.`,
@@ -432,7 +464,7 @@ Supports: PDF, DOC, XLS, PPT, MP4, ZIP, SO, etc. Max file size: 30MB.`,
     ),
 
     // --- schedule_task ---
-    tool(
+    defineTool(
       'schedule_task',
       `Schedule a recurring or one-time task.
 
@@ -623,7 +655,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
     ),
 
     // --- list_tasks ---
-    tool(
+    defineTool(
       'list_tasks',
       "List all scheduled tasks. From admin home: shows all tasks. From other groups: shows only that group's tasks.",
       {},
@@ -693,7 +725,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
     ),
 
     // --- pause_task ---
-    tool(
+    defineTool(
       'pause_task',
       'Pause a scheduled task. It will not run until resumed.',
       { task_id: z.string().describe('The task ID to pause') },
@@ -718,7 +750,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
     ),
 
     // --- resume_task ---
-    tool(
+    defineTool(
       'resume_task',
       'Resume a paused task.',
       { task_id: z.string().describe('The task ID to resume') },
@@ -743,7 +775,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
     ),
 
     // --- cancel_task ---
-    tool(
+    defineTool(
       'cancel_task',
       'Cancel and delete a scheduled task.',
       { task_id: z.string().describe('The task ID to cancel') },
@@ -768,7 +800,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
     ),
 
     // --- register_group ---
-    tool(
+    defineTool(
       'register_group',
       `Register a new group so the agent can respond to messages there. Admin home only.
 
@@ -826,7 +858,7 @@ You can optionally specify execution_mode: "container" (default, isolated Docker
   if (ctx.isHome) {
     tools.push(
       // --- install_skill ---
-      tool(
+      defineTool(
         'install_skill',
         `Install a skill from the skills registry (skills.sh). The skill will be available in future conversations.
 Example packages: "anthropic/memory", "anthropic/think", "owner/repo", "owner/repo@skill-name".`,
@@ -905,7 +937,7 @@ Example packages: "anthropic/memory", "anthropic/think", "owner/repo", "owner/re
       ),
 
       // --- uninstall_skill ---
-      tool(
+      defineTool(
         'uninstall_skill',
         `Uninstall a user-level skill by its ID. Project-level skills cannot be uninstalled.
 Use the skills panel in the UI to find the skill ID (directory name, e.g. "memory", "think").`,
@@ -982,14 +1014,14 @@ Use the skills panel in the UI to find the skill ID (directory name, e.g. "memor
   // --- memory_append --- (only available for home containers, skipped in native Claude mode)
   if (ctx.isHome && !ctx.disableMemoryLayer) {
     tools.push(
-      tool(
+      defineTool(
         'memory_append',
         `\u5c06**\u65f6\u6548\u6027\u8bb0\u5fc6**\u8ffd\u52a0\u5230 memory/YYYY-MM-DD.md\uff08\u72ec\u7acb\u8bb0\u5fc6\u76ee\u5f55\uff0c\u4e0d\u5728\u5de5\u4f5c\u533a\u5185\uff09\u3002
 \u4ec5\u8ffd\u52a0\u5199\u5165\uff0c\u4e0d\u4f1a\u8986\u76d6\u5df2\u6709\u5185\u5bb9\u3002
 
 \u4ec5\u7528\u4e8e\u660e\u786e\u53ea\u8ddf\u5f53\u5929/\u77ed\u671f\u6709\u5173\u7684\u4fe1\u606f\uff1a\u4eca\u65e5\u9879\u76ee\u8fdb\u5c55\u3001\u4e34\u65f6\u6280\u672f\u51b3\u7b56\u3001\u5f85\u529e\u4e8b\u9879\u3001\u4f1a\u8bae\u8981\u70b9\u7b49\u3002
 
-**\u91cd\u8981**\uff1a\u4e0b\u6b21\u5bf9\u8bdd\u4ecd\u53ef\u80fd\u7528\u5230\u7684\u4fe1\u606f\uff08\u7528\u6237\u8eab\u4efd\u3001\u504f\u597d\u3001\u5e38\u7528\u9879\u76ee\u3001\u7528\u6237\u8bf4\u201c\u8bb0\u4f4f\u201d\u7684\u5185\u5bb9\uff09\u5e94\u76f4\u63a5\u7528 Edit \u5de5\u5177\u7f16\u8f91 /workspace/global/CLAUDE.md\uff0c\u4e0d\u8981\u7528\u6b64\u5de5\u5177\u3002`,
+**\u91cd\u8981**\uff1a\u4e0b\u6b21\u5bf9\u8bdd\u4ecd\u53ef\u80fd\u7528\u5230\u7684\u4fe1\u606f\uff08\u7528\u6237\u8eab\u4efd\u3001\u504f\u597d\u3001\u5e38\u7528\u9879\u76ee\u3001\u7528\u6237\u8bf4\u201c\u8bb0\u4f4f\u201d\u7684\u5185\u5bb9\uff09\u5e94\u76f4\u63a5\u7528 Edit \u5de5\u5177\u7f16\u8f91 ${path.join(ctx.workspaceGlobal, 'CLAUDE.md')}\uff0c\u4e0d\u8981\u7528\u6b64\u5de5\u5177\u3002`,
         {
           content: z
             .string()
@@ -1103,7 +1135,7 @@ Use the skills panel in the UI to find the skill ID (directory name, e.g. "memor
   // --- memory_search + memory_get --- (skipped in native Claude mode)
   if (!ctx.disableMemoryLayer) {
     tools.push(
-    tool(
+    defineTool(
       'memory_search',
       `\u5728\u5de5\u4f5c\u533a\u7684\u8bb0\u5fc6\u6587\u4ef6\u4e2d\u641c\u7d22\uff08CLAUDE.md\u3001memory/\u3001conversations/ \u53ca\u5176\u4ed6 .md/.txt \u6587\u4ef6\uff09\u3002
 \u8fd4\u56de\u6587\u4ef6\u8def\u5f84\u3001\u884c\u53f7\u548c\u4e0a\u4e0b\u6587\u7247\u6bb5\u3002\u8d85\u8fc7 512KB \u7684\u6587\u4ef6\u4f1a\u88ab\u8df3\u8fc7\u3002
@@ -1207,7 +1239,7 @@ Use the skills panel in the UI to find the skill ID (directory name, e.g. "memor
     ),
 
     // --- memory_get ---
-    tool(
+    defineTool(
       'memory_get',
       `\u8bfb\u53d6\u8bb0\u5fc6\u6587\u4ef6\u6216\u6307\u5b9a\u884c\u8303\u56f4\u3002\u5728 memory_search \u4e4b\u540e\u4f7f\u7528\u4ee5\u83b7\u53d6\u5b8c\u6574\u4e0a\u4e0b\u6587\u3002`,
       {
@@ -1312,4 +1344,18 @@ Use the skills panel in the UI to find the skill ID (directory name, e.g. "memor
   }
 
   return tools;
+}
+
+/**
+ * Create Claude SDK tool definitions from the runtime-neutral catalog.
+ */
+export function createMcpTools(ctx: McpContext): SdkMcpToolDefinition<any>[] {
+  return createMcpToolCatalog(ctx).map((definition) =>
+    tool(
+      definition.name,
+      definition.description,
+      definition.inputSchema,
+      async (args) => (await definition.handler(args)) as any,
+    ),
+  );
 }

@@ -20,13 +20,16 @@ import {
   buildMetaRow,
   buildBodyChunks,
   buildThinkingPanel,
-  buildToolsPanel,
-  buildFooter,
+  buildPriorSegmentsPanels,
+  buildSubAgentPanels,
+  buildCodexTodoPanel,
+  buildCodexOperationsPanel,
   buildStreamingPanels,
   buildStatusBannerText,
   extractTitle,
   stripTitleFromBody,
   CARD_ELEMENT_IDS,
+  type StreamingCardRuntimeProfile,
   type StreamingPanelsInit,
 } from './sections.js';
 
@@ -55,27 +58,52 @@ export function buildAgentReplyCard(input: AgentCardInput): FeishuCardV2 {
   };
 
   const header = buildHeader(normalizedInput);
-  const elements: Array<Record<string, unknown>> = [];
-  elements.push(...buildBodyChunks(body || optimizedText.trim()));
 
-  const metaRow = buildMetaRow(input.meta);
+  // New layout: Header → process panels (collapsed) → hr → Body → metaRow.
+  //
+  // Process-area panels in order of "abstract → concrete → prelude":
+  //   1. codex todos/operations (Codex SDK process artifacts, when present)
+  //   2. thinking     (what the agent was reasoning about)
+  //   3. sub-agents   (discrete sub-tasks delegated to Task/Agent tools)
+  //   4. prior text   (earlier assistant segments, closest to final Body)
+  //
+  // Note: tools panel intentionally omitted — per-tool stats clutter the
+  //       final card; users care about sub-agent results, not tool counts.
   const thinkingPanel = buildThinkingPanel(optimizedThinking);
-  const toolsPanel = buildToolsPanel(input.meta?.toolCalls);
-  const footer = buildFooter(input.footer, input.completedAtMs);
+  const codexTodoPanel = buildCodexTodoPanel(input.codexTodos);
+  const codexOperationsPanel = buildCodexOperationsPanel(input.codexOperations);
+  const subAgentPanels = buildSubAgentPanels(input.subAgentResults);
+  const priorSegmentsPanels = buildPriorSegmentsPanels(input.priorTextSegments);
+  const metaRow = buildMetaRow(input.meta, input.completedAtMs);
 
-  const hasFooterArea =
-    metaRow.length + thinkingPanel.length + toolsPanel.length + footer.length >
-    0;
-  if (hasFooterArea) {
+  const elements: Array<Record<string, unknown>> = [];
+
+  // ── Process area (all collapsed by default) ──
+  elements.push(...codexTodoPanel);
+  elements.push(...codexOperationsPanel);
+  elements.push(...thinkingPanel);
+  elements.push(...subAgentPanels);
+  elements.push(...priorSegmentsPanels);
+
+  const hasProcessArea =
+    codexTodoPanel.length +
+    codexOperationsPanel.length +
+    thinkingPanel.length +
+    subAgentPanels.length +
+    priorSegmentsPanels.length > 0;
+
+  // ── Divider between process area and main content ──
+  if (hasProcessArea) {
     // Native v2 hr — components.md §hr confirms it's a valid component outside
     // of CardKit's live-streaming patch surface.
     elements.push({ tag: 'hr' });
   }
 
+  // ── Main content (Body) ──
+  elements.push(...buildBodyChunks(body || optimizedText.trim()));
+
+  // ── Footer: metaRow carries timestamp (replaces the old standalone footer) ──
   elements.push(...metaRow);
-  elements.push(...thinkingPanel);
-  elements.push(...toolsPanel);
-  elements.push(...footer);
 
   return {
     schema: '2.0',
@@ -105,6 +133,8 @@ export interface StreamingCardBuildOptions {
   subtitle?: string;
   /** Optional meta (currently only `model` is used for the header tag). */
   meta?: Pick<CardMeta, 'model'>;
+  /** Runtime profile controls streaming panel labels/placeholders. */
+  runtimeProfile?: StreamingCardRuntimeProfile;
   /** Initial content for structured runtime panels. */
   panels?: StreamingPanelsInit;
   /**
@@ -146,7 +176,10 @@ export function buildStreamingAgentCard(
   };
   const footerNote = {
     tag: 'markdown',
-    content: `<font color='grey'>${buildStatusBannerText({ phase: 'streaming' })}</font>`,
+    content: `<font color='grey'>${buildStatusBannerText({
+      phase: 'streaming',
+      runtimeProfile: opts.runtimeProfile,
+    })}</font>`,
     element_id: CARD_ELEMENT_IDS.FOOTER_NOTE,
     text_size: 'notation',
   };
@@ -161,6 +194,8 @@ export function buildStreamingAgentCard(
   };
 
   if (!useRich) {
+    const statusNote =
+      opts.runtimeProfile === 'codex' ? '⏳ Codex 处理中...' : '⏳ 生成中...';
     return {
       schema: '2.0',
       config: baseConfig,
@@ -185,7 +220,7 @@ export function buildStreamingAgentCard(
           interruptBtn,
           {
             tag: 'markdown',
-            content: '⏳ 生成中...',
+            content: statusNote,
             element_id: CARD_ELEMENT_IDS.STATUS_NOTE,
             text_size: 'notation',
           },
@@ -199,6 +234,7 @@ export function buildStreamingAgentCard(
   //   tools / progress → folded to keep the card compact; STATUS_BANNER still
   //                       surfaces the active tool / todo count at the top.
   const panelsInit: StreamingPanelsInit = {
+    runtimeProfile: opts.runtimeProfile,
     expandThinking: true,
     expandTools: false,
     expandProgress: false,

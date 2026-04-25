@@ -209,6 +209,8 @@ interface SecretPayload {
   anthropicApiKey: string;
   claudeCodeOauthToken: string;
   claudeOAuthCredentials?: ClaudeOAuthCredentials | null;
+  openaiApiKey?: string;
+  codexAuthJson?: string;
 }
 
 interface EncryptedSecrets {
@@ -312,6 +314,11 @@ interface StoredProviderV4 {
   id: string;
   name: string;
   type: 'official' | 'third_party';
+  runtime?: 'claude' | 'codex';
+  providerFamily?: 'claude' | 'gpt';
+  providerPoolId?: string;
+  authMode?: 'api_key' | 'oauth' | 'setup_token' | 'third_party' | 'chatgpt_oauth';
+  authProfileGeneration?: number;
   enabled: boolean;
   weight: number;
   anthropicBaseUrl: string;
@@ -333,6 +340,11 @@ export interface UnifiedProvider {
   id: string;
   name: string;
   type: 'official' | 'third_party';
+  runtime: 'claude' | 'codex';
+  providerFamily: 'claude' | 'gpt';
+  providerPoolId: string;
+  authMode: 'api_key' | 'oauth' | 'setup_token' | 'third_party' | 'chatgpt_oauth';
+  authProfileGeneration: number;
   enabled: boolean;
   weight: number;
   anthropicBaseUrl: string;
@@ -341,6 +353,8 @@ export interface UnifiedProvider {
   anthropicApiKey: string;
   claudeCodeOauthToken: string;
   claudeOAuthCredentials: ClaudeOAuthCredentials | null;
+  openaiApiKey: string;
+  codexAuthJson: string;
   customEnv: Record<string, string>;
   updatedAt: string;
 }
@@ -350,6 +364,11 @@ export interface UnifiedProviderPublic {
   id: string;
   name: string;
   type: 'official' | 'third_party';
+  runtime: 'claude' | 'codex';
+  providerFamily: 'claude' | 'gpt';
+  providerPoolId: string;
+  authMode: 'api_key' | 'oauth' | 'setup_token' | 'third_party' | 'chatgpt_oauth';
+  authProfileGeneration: number;
   enabled: boolean;
   weight: number;
   anthropicBaseUrl: string;
@@ -363,6 +382,9 @@ export interface UnifiedProviderPublic {
   hasClaudeOAuthCredentials: boolean;
   claudeOAuthCredentialsExpiresAt: number | null;
   claudeOAuthCredentialsAccessTokenMasked: string | null;
+  hasOpenaiApiKey: boolean;
+  openaiApiKeyMasked: string | null;
+  hasCodexAuthJson: boolean;
   customEnv: Record<string, string>;
   updatedAt: string;
 }
@@ -604,6 +626,11 @@ function decryptSecrets(secrets: EncryptedSecrets): SecretPayload {
       parsed.claudeCodeOauthToken ?? '',
       'claudeCodeOauthToken',
     ),
+    openaiApiKey: normalizeSecret(parsed.openaiApiKey ?? '', 'openaiApiKey'),
+    codexAuthJson:
+      typeof parsed.codexAuthJson === 'string'
+        ? parsed.codexAuthJson.slice(0, 200_000)
+        : '',
   };
   // Restore OAuth credentials if present
   if (
@@ -992,6 +1019,8 @@ function toStoredProviderV4(provider: UnifiedProvider): StoredProviderV4 {
     anthropicApiKey: provider.anthropicApiKey || '',
     claudeCodeOauthToken: provider.claudeCodeOauthToken || '',
     claudeOAuthCredentials: provider.claudeOAuthCredentials ?? null,
+    openaiApiKey: provider.openaiApiKey || '',
+    codexAuthJson: provider.codexAuthJson || '',
   };
   const sanitizedEnv = sanitizeCustomEnvMap(provider.customEnv || {}, {
     skipReservedClaudeKeys: true,
@@ -1000,6 +1029,11 @@ function toStoredProviderV4(provider: UnifiedProvider): StoredProviderV4 {
     id: provider.id,
     name: provider.name,
     type: provider.type,
+    runtime: provider.runtime,
+    providerFamily: provider.providerFamily,
+    providerPoolId: provider.providerPoolId,
+    authMode: provider.authMode,
+    authProfileGeneration: provider.authProfileGeneration,
     enabled: provider.enabled,
     weight: Math.max(1, Math.min(100, provider.weight || 1)),
     anthropicBaseUrl: provider.anthropicBaseUrl || '',
@@ -1014,10 +1048,23 @@ function toStoredProviderV4(provider: UnifiedProvider): StoredProviderV4 {
 
 function fromStoredProviderV4(stored: StoredProviderV4): UnifiedProvider {
   const secrets = decryptSecrets(stored.secrets);
+  const providerFamily = stored.providerFamily ?? 'claude';
+  const runtime = stored.runtime ?? (providerFamily === 'gpt' ? 'codex' : 'claude');
   return {
     id: stored.id,
     name: stored.name,
     type: stored.type,
+    runtime,
+    providerFamily,
+    providerPoolId: stored.providerPoolId || providerFamily,
+    authMode:
+      stored.authMode ||
+      (stored.type === 'third_party'
+        ? 'third_party'
+        : providerFamily === 'gpt'
+          ? 'chatgpt_oauth'
+          : 'oauth'),
+    authProfileGeneration: Math.max(0, stored.authProfileGeneration ?? 0),
     enabled: stored.enabled,
     weight: Math.max(1, Math.min(100, stored.weight || 1)),
     anthropicBaseUrl: stored.anthropicBaseUrl || '',
@@ -1026,6 +1073,8 @@ function fromStoredProviderV4(stored: StoredProviderV4): UnifiedProvider {
     anthropicApiKey: secrets.anthropicApiKey || '',
     claudeCodeOauthToken: secrets.claudeCodeOauthToken || '',
     claudeOAuthCredentials: secrets.claudeOAuthCredentials ?? null,
+    openaiApiKey: secrets.openaiApiKey || '',
+    codexAuthJson: secrets.codexAuthJson || '',
     customEnv: sanitizeCustomEnvMap(stored.customEnv || {}, {
       skipReservedClaudeKeys: true,
     }),
@@ -1051,6 +1100,11 @@ function migrateV3toV4(v3: ClaudeStoredStateV3Resolved): {
       id: OFFICIAL_CLAUDE_PROFILE_ID,
       name: '官方 Claude',
       type: 'official',
+      runtime: 'claude',
+      providerFamily: 'claude',
+      providerPoolId: 'claude',
+      authMode: 'oauth',
+      authProfileGeneration: 0,
       enabled: isOfficialClaudeMode(v3.activeProfileId),
       weight: 1,
       anthropicBaseUrl: '',
@@ -1059,6 +1113,8 @@ function migrateV3toV4(v3: ClaudeStoredStateV3Resolved): {
       anthropicApiKey: v3.officialSecrets.anthropicApiKey,
       claudeCodeOauthToken: v3.officialSecrets.claudeCodeOauthToken,
       claudeOAuthCredentials: v3.officialSecrets.claudeOAuthCredentials ?? null,
+      openaiApiKey: '',
+      codexAuthJson: '',
       customEnv: v3.officialCustomEnv || {},
       updatedAt: v3.officialUpdatedAt || now,
     });
@@ -1071,6 +1127,11 @@ function migrateV3toV4(v3: ClaudeStoredStateV3Resolved): {
       id: profile.id,
       name: profile.name,
       type: 'third_party',
+      runtime: 'claude',
+      providerFamily: 'claude',
+      providerPoolId: 'claude',
+      authMode: 'third_party',
+      authProfileGeneration: 0,
       enabled: profile.id === v3.activeProfileId,
       weight: 1,
       anthropicBaseUrl: profile.anthropicBaseUrl,
@@ -1079,6 +1140,8 @@ function migrateV3toV4(v3: ClaudeStoredStateV3Resolved): {
       anthropicApiKey: '',
       claudeCodeOauthToken: '',
       claudeOAuthCredentials: null,
+      openaiApiKey: '',
+      codexAuthJson: '',
       customEnv: profile.customEnv || {},
       updatedAt: profile.updatedAt || now,
     });
@@ -1211,6 +1274,22 @@ export function getEnabledProviders(): UnifiedProvider[] {
   return getProviders().filter((p) => p.enabled);
 }
 
+export function getProvidersForPool(providerPoolId: string): UnifiedProvider[] {
+  return getProviders().filter(
+    (p) => (p.providerPoolId || p.providerFamily || 'claude') === providerPoolId,
+  );
+}
+
+export function getEnabledProvidersForPool(
+  providerPoolId: string,
+): UnifiedProvider[] {
+  return getProvidersForPool(providerPoolId).filter((p) => p.enabled);
+}
+
+export function getProviderById(providerId: string): UnifiedProvider | null {
+  return getProviders().find((p) => p.id === providerId) ?? null;
+}
+
 export function getBalancingConfig(): BalancingConfig {
   const state = readStoredStateV4();
   return state?.balancing ?? { ...DEFAULT_BALANCING_CONFIG };
@@ -1234,12 +1313,18 @@ export function saveBalancingConfig(
 export function createProvider(input: {
   name: string;
   type: 'official' | 'third_party';
+  runtime?: 'claude' | 'codex';
+  providerFamily?: 'claude' | 'gpt';
+  providerPoolId?: string;
+  authMode?: 'api_key' | 'oauth' | 'setup_token' | 'third_party' | 'chatgpt_oauth';
   anthropicBaseUrl?: string;
   anthropicAuthToken?: string;
   anthropicModel?: string;
   anthropicApiKey?: string;
   claudeCodeOauthToken?: string;
   claudeOAuthCredentials?: ClaudeOAuthCredentials | null;
+  openaiApiKey?: string;
+  codexAuthJson?: string;
   customEnv?: Record<string, string>;
   weight?: number;
   enabled?: boolean;
@@ -1254,11 +1339,29 @@ export function createProvider(input: {
   }
 
   const now = new Date().toISOString();
+  const providerFamily = input.providerFamily ?? 'claude';
+  const runtime = input.runtime ?? (providerFamily === 'gpt' ? 'codex' : 'claude');
+  const authMode =
+    input.authMode ??
+    (input.type === 'third_party'
+      ? 'third_party'
+      : providerFamily === 'gpt'
+        ? 'chatgpt_oauth'
+        : 'oauth');
   const provider: UnifiedProvider = {
     id: crypto.randomBytes(8).toString('hex'),
     name: normalizeProfileName(input.name),
     type: input.type,
-    enabled: input.enabled ?? state.providers.length === 0,
+    runtime,
+    providerFamily,
+    providerPoolId: input.providerPoolId || providerFamily,
+    authMode,
+    authProfileGeneration: 1,
+    enabled:
+      input.enabled ??
+      !state.providers.some(
+        (p) => (p.providerPoolId || p.providerFamily || 'claude') === (input.providerPoolId || providerFamily),
+      ),
     weight: Math.max(1, Math.min(100, input.weight ?? 1)),
     anthropicBaseUrl: input.anthropicBaseUrl
       ? normalizeBaseUrl(input.anthropicBaseUrl)
@@ -1276,6 +1379,10 @@ export function createProvider(input: {
       ? normalizeSecret(input.claudeCodeOauthToken, 'claudeCodeOauthToken')
       : '',
     claudeOAuthCredentials: input.claudeOAuthCredentials ?? null,
+    openaiApiKey: input.openaiApiKey
+      ? normalizeSecret(input.openaiApiKey, 'openaiApiKey')
+      : '',
+    codexAuthJson: input.codexAuthJson || '',
     customEnv: sanitizeCustomEnvMap(input.customEnv || {}, {
       skipReservedClaudeKeys: true,
     }),
@@ -1344,6 +1451,11 @@ export function updateProviderSecrets(
     clearClaudeCodeOauthToken?: boolean;
     claudeOAuthCredentials?: ClaudeOAuthCredentials;
     clearClaudeOAuthCredentials?: boolean;
+    openaiApiKey?: string;
+    clearOpenaiApiKey?: boolean;
+    codexAuthJson?: string;
+    clearCodexAuthJson?: boolean;
+    authMode?: UnifiedProvider['authMode'];
   },
 ): UnifiedProvider {
   const state = readStoredStateV4();
@@ -1354,14 +1466,22 @@ export function updateProviderSecrets(
 
   const current = state.providers[idx];
   const updated = { ...current, updatedAt: new Date().toISOString() };
+  let credentialsChanged = false;
+
+  if (secrets.authMode && secrets.authMode !== updated.authMode) {
+    updated.authMode = secrets.authMode;
+    credentialsChanged = true;
+  }
 
   if (typeof secrets.anthropicAuthToken === 'string') {
     updated.anthropicAuthToken = normalizeSecret(
       secrets.anthropicAuthToken,
       'anthropicAuthToken',
     );
+    credentialsChanged = true;
   } else if (secrets.clearAnthropicAuthToken) {
     updated.anthropicAuthToken = '';
+    credentialsChanged = true;
   }
 
   if (typeof secrets.anthropicApiKey === 'string') {
@@ -1369,8 +1489,10 @@ export function updateProviderSecrets(
       secrets.anthropicApiKey,
       'anthropicApiKey',
     );
+    credentialsChanged = true;
   } else if (secrets.clearAnthropicApiKey) {
     updated.anthropicApiKey = '';
+    credentialsChanged = true;
   }
 
   if (typeof secrets.claudeCodeOauthToken === 'string') {
@@ -1378,16 +1500,42 @@ export function updateProviderSecrets(
       secrets.claudeCodeOauthToken,
       'claudeCodeOauthToken',
     );
+    credentialsChanged = true;
   } else if (secrets.clearClaudeCodeOauthToken) {
     updated.claudeCodeOauthToken = '';
+    credentialsChanged = true;
   }
 
   if (secrets.claudeOAuthCredentials) {
     updated.claudeOAuthCredentials = secrets.claudeOAuthCredentials;
     // When full OAuth creds set, clear legacy single token
     updated.claudeCodeOauthToken = '';
+    credentialsChanged = true;
   } else if (secrets.clearClaudeOAuthCredentials) {
     updated.claudeOAuthCredentials = null;
+    credentialsChanged = true;
+  }
+
+  if (typeof secrets.openaiApiKey === 'string') {
+    updated.openaiApiKey = normalizeSecret(secrets.openaiApiKey, 'openaiApiKey');
+    updated.authMode = 'api_key';
+    credentialsChanged = true;
+  } else if (secrets.clearOpenaiApiKey) {
+    updated.openaiApiKey = '';
+    credentialsChanged = true;
+  }
+
+  if (typeof secrets.codexAuthJson === 'string') {
+    updated.codexAuthJson = secrets.codexAuthJson;
+    updated.authMode = 'chatgpt_oauth';
+    credentialsChanged = true;
+  } else if (secrets.clearCodexAuthJson) {
+    updated.codexAuthJson = '';
+    credentialsChanged = true;
+  }
+
+  if (credentialsChanged) {
+    updated.authProfileGeneration = (updated.authProfileGeneration || 0) + 1;
   }
 
   state.providers[idx] = updated;
@@ -1405,8 +1553,15 @@ export function toggleProvider(id: string): UnifiedProvider {
   const provider = state.providers[idx];
   const newEnabled = !provider.enabled;
 
-  // Prevent disabling the last enabled provider
-  if (!newEnabled && state.providers.filter((p) => p.enabled).length <= 1) {
+  // Prevent disabling the last enabled provider in the same pool.
+  const poolId = provider.providerPoolId || provider.providerFamily || 'claude';
+  if (
+    poolId === 'claude' &&
+    !newEnabled &&
+    state.providers.filter(
+      (p) => p.enabled && (p.providerPoolId || p.providerFamily || 'claude') === poolId,
+    ).length <= 1
+  ) {
     throw new Error('至少需要保留一个启用的供应商');
   }
 
@@ -1426,16 +1581,32 @@ export function deleteProvider(id: string): void {
   const idx = state.providers.findIndex((p) => p.id === id);
   if (idx < 0) throw new Error('未找到指定供应商');
 
-  if (state.providers.length <= 1) {
+  const provider = state.providers[idx];
+  const poolId = provider.providerPoolId || provider.providerFamily || 'claude';
+  if (
+    poolId === 'claude' &&
+    state.providers.filter(
+      (p) => (p.providerPoolId || p.providerFamily || 'claude') === poolId,
+    ).length <= 1
+  ) {
     throw new Error('至少需要保留一个供应商');
   }
 
   const wasEnabled = state.providers[idx].enabled;
   state.providers.splice(idx, 1);
 
-  // If deleted provider was the only enabled one, enable the first remaining
-  if (wasEnabled && !state.providers.some((p) => p.enabled)) {
-    state.providers[0].enabled = true;
+  // If deleted provider was the only enabled one in its pool, enable the first remaining in that pool.
+  if (
+    wasEnabled &&
+    !state.providers.some(
+      (p) =>
+        p.enabled && (p.providerPoolId || p.providerFamily || 'claude') === poolId,
+    )
+  ) {
+    const fallback = state.providers.find(
+      (p) => (p.providerPoolId || p.providerFamily || 'claude') === poolId,
+    );
+    if (fallback) fallback.enabled = true;
   }
 
   writeStoredStateV4(state.providers, state.balancing);
@@ -1456,6 +1627,62 @@ export function providerToConfig(
   };
 }
 
+export interface CodexProviderAuthMaterial {
+  providerId: string;
+  authMode: UnifiedProvider['authMode'];
+  authProfileGeneration: number;
+  env: Record<string, string>;
+  codexHomeDir: string | null;
+}
+
+export function getCodexProviders(): UnifiedProvider[] {
+  return getProvidersForPool('gpt').filter((p) => p.runtime === 'codex');
+}
+
+export function getEnabledCodexProviders(): UnifiedProvider[] {
+  return getEnabledProvidersForPool('gpt').filter((p) => p.runtime === 'codex');
+}
+
+export function writeCodexProviderAuthMaterial(
+  provider: UnifiedProvider,
+): CodexProviderAuthMaterial {
+  const env: Record<string, string> = {};
+  const codexHomeDir = path.join(CLAUDE_CONFIG_DIR, 'codex', provider.id);
+  fs.mkdirSync(codexHomeDir, { recursive: true, mode: 0o700 });
+  const configLines = ['project_doc_fallback_filenames = ["CLAUDE.md"]'];
+
+  if (provider.openaiApiKey) {
+    env.OPENAI_API_KEY = provider.openaiApiKey;
+  }
+
+  if (provider.codexAuthJson) {
+    configLines.unshift('forced_login_method = "chatgpt"');
+    configLines.unshift('cli_auth_credentials_store = "file"');
+    fs.writeFileSync(
+      path.join(codexHomeDir, 'auth.json'),
+      provider.codexAuthJson.trim() + '\n',
+      { encoding: 'utf-8', mode: 0o600 },
+    );
+  }
+  fs.writeFileSync(
+    path.join(codexHomeDir, 'config.toml'),
+    `${configLines.join('\n')}\n`,
+    {
+      encoding: 'utf-8',
+      mode: 0o600,
+    },
+  );
+  env.CODEX_HOME = codexHomeDir;
+
+  return {
+    providerId: provider.id,
+    authMode: provider.authMode,
+    authProfileGeneration: provider.authProfileGeneration,
+    env,
+    codexHomeDir,
+  };
+}
+
 /** Convert UnifiedProvider to public (masked) representation */
 export function toPublicProvider(
   provider: UnifiedProvider,
@@ -1464,6 +1691,11 @@ export function toPublicProvider(
     id: provider.id,
     name: provider.name,
     type: provider.type,
+    runtime: provider.runtime,
+    providerFamily: provider.providerFamily,
+    providerPoolId: provider.providerPoolId,
+    authMode: provider.authMode,
+    authProfileGeneration: provider.authProfileGeneration,
     enabled: provider.enabled,
     weight: provider.weight,
     anthropicBaseUrl: provider.anthropicBaseUrl,
@@ -1480,6 +1712,9 @@ export function toPublicProvider(
     claudeOAuthCredentialsAccessTokenMasked: provider.claudeOAuthCredentials
       ? maskSecret(provider.claudeOAuthCredentials.accessToken)
       : null,
+    hasOpenaiApiKey: !!provider.openaiApiKey,
+    openaiApiKeyMasked: maskSecret(provider.openaiApiKey),
+    hasCodexAuthJson: !!provider.codexAuthJson,
     customEnv: provider.customEnv || {},
     updatedAt: provider.updatedAt,
   };

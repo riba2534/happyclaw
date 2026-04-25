@@ -11,6 +11,9 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "*",
     "@anthropic-ai/claude-code": "*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@openai/codex": "^0.125.0",
+    "@openai/codex-sdk": "*",
     "cron-parser": "^5.0.0",
     "zod": "^4.0.0"
   },

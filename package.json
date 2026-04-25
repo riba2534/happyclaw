@@ -23,6 +23,8 @@
     "@anthropic-ai/claude-agent-sdk": "^0.2.85",
     "@hono/node-server": "^1.19.9",
     "@larksuiteoapi/node-sdk": "^1.58.0",
+    "@openai/codex": "^0.125.0",
+    "@openai/codex-sdk": "*",
     "@types/qrcode": "^1.5.6",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^11.8.1",

@@ -20,6 +20,7 @@ import {
   isHostExecutionGroup,
   hasHostExecutionPermission,
   canAccessGroup,
+  canModifyGroup,
   getCachedSessionWithUser,
   invalidateSessionCache,
 } from './web-context.js';
@@ -58,6 +59,7 @@ import agentDefinitionsRoutes from './routes/agent-definitions.js';
 import { usage as usageRoutes } from './routes/usage.js';
 import billingRoutes from './routes/billing.js';
 import bugReportRoutes from './routes/bug-report.js';
+import modelRoutes from './routes/model.js';
 import {
   checkBillingAccess,
   formatBillingAccessDeniedMessage,
@@ -77,6 +79,9 @@ import {
   getUserById,
   updateAgentContextInfo,
   updateChatName,
+  ensureConversationRuntimeState,
+  getProviderPool,
+  setConversationRuntimeBinding,
 } from './db.js';
 import { markdownToPlainText } from './im-utils.js';
 import { isSessionExpired } from './auth.js';
@@ -101,6 +106,13 @@ import {
   normalizeImageAttachments,
   toAgentImages,
 } from './message-attachments.js';
+import {
+  commandParts,
+  formatModelLabel,
+  formatModelList,
+  parseModelBindingFromArgs,
+  shouldIncludeAllModelOptions,
+} from './model-command.js';
 
 // --- App Setup ---
 
@@ -129,6 +141,65 @@ function releaseTerminalOwnership(ws: WebSocket, groupJid: string): void {
   if (terminalOwners.get(groupJid) === ws) {
     terminalOwners.delete(groupJid);
   }
+}
+
+function handleWebModelCommand(input: {
+  baseChatJid: string;
+  group: ReturnType<typeof getRegisteredGroup>;
+  agentId?: string | null;
+  content: string;
+  user: { id: string; role: UserRole };
+}): string | null {
+  const trimmed = input.content.trim();
+  if (!/^\/model(?:\s|$)/i.test(trimmed)) return null;
+  if (!input.group) return '当前工作区不存在。';
+
+  const parts = commandParts(trimmed);
+  const subcommand = (parts[1] || '').toLowerCase();
+  const currentState = ensureConversationRuntimeState(
+    input.group.folder,
+    input.agentId || '',
+    input.user.id,
+  );
+
+  if (!subcommand) {
+    const pool = getProviderPool(currentState.provider_pool_id);
+    return [
+      `当前模型：${formatModelLabel(currentState.selected_model)}`,
+      `模型池：${pool?.display_name || currentState.provider_pool_id} (${currentState.provider_pool_id})`,
+      `运行时：${currentState.runtime}`,
+      `选择类型：${currentState.model_kind}`,
+      `作用域：${input.agentId ? `conversation agent ${input.agentId}` : 'workspace main'}`,
+      `来源：${currentState.binding_source}`,
+    ].join('\n');
+  }
+
+  if (subcommand === 'list' || subcommand === 'ls') {
+    return formatModelList(shouldIncludeAllModelOptions(parts.slice(2)));
+  }
+
+  if (subcommand !== 'use') {
+    return '可用命令：/model、/model list、/model use <claude|gpt> [model]';
+  }
+
+  const groupWithJid = { ...input.group, jid: input.baseChatJid };
+  if (!canModifyGroup(input.user, groupWithJid)) {
+    return '只有工作区 owner 可以切换模型。';
+  }
+
+  const parsed = parseModelBindingFromArgs(parts.slice(2));
+  if (!parsed.binding) return parsed.error || '模型切换失败。';
+
+  const state = setConversationRuntimeBinding(
+    input.group.folder,
+    input.agentId || '',
+    parsed.binding,
+    'user_pinned',
+    input.user.id,
+    { markPending: true },
+  );
+  broadcastModelChanged(input.baseChatJid, input.agentId || undefined);
+  return `已切换当前${input.agentId ? ' conversation agent' : '主对话'}模型为 ${state.provider_pool_id} ${formatModelLabel(state.selected_model)}，下一条消息开始生效。`;
 }
 
 // --- CORS Middleware ---
@@ -188,6 +259,7 @@ app.route('/api', monitorRoutes);
 app.route('/api/usage', usageRoutes);
 app.route('/api/billing', billingRoutes);
 app.route('/api/bug-report', bugReportRoutes);
+app.route('/api/model', modelRoutes);
 
 // --- POST /api/messages ---
 
@@ -228,8 +300,41 @@ app.post('/api/messages', authMiddleware, async (c) => {
     success: true,
     messageId: result.messageId,
     timestamp: result.timestamp,
+    handledCommand: result.handledCommand ?? false,
   });
 });
+
+function storeAndBroadcastCommandReply(
+  chatJid: string,
+  content: string,
+  agentId?: string | null,
+): void {
+  const msgId = crypto.randomUUID();
+  const timestamp = new Date().toISOString();
+  ensureChatExists(chatJid);
+  storeMessageDirect(
+    msgId,
+    chatJid,
+    ASSISTANT_NAME,
+    ASSISTANT_NAME,
+    content,
+    timestamp,
+    true,
+  );
+  broadcastNewMessage(
+    chatJid,
+    {
+      id: msgId,
+      chat_jid: chatJid,
+      sender: ASSISTANT_NAME,
+      sender_name: ASSISTANT_NAME,
+      content,
+      timestamp,
+      is_from_me: true,
+    },
+    agentId || undefined,
+  );
+}
 
 // --- handleWebUserMessage ---
 
@@ -244,6 +349,7 @@ async function handleWebUserMessage(
       ok: true;
       messageId: string;
       timestamp: string;
+      handledCommand?: boolean;
     }
   | {
       ok: false;
@@ -298,6 +404,19 @@ async function handleWebUserMessage(
     is_from_me: false,
     attachments: attachmentsStr,
   });
+
+  const modelCommandReply = handleWebModelCommand({
+    baseChatJid: chatJid,
+    group: { ...group, jid: chatJid },
+    content,
+    user: { id: userId, role: getUserById(userId)?.role || 'member' },
+  });
+  if (modelCommandReply !== null) {
+    storeAndBroadcastCommandReply(chatJid, modelCommandReply);
+    deps.setLastAgentTimestamp(chatJid, { timestamp, id: messageId });
+    deps.advanceGlobalCursor({ timestamp, id: messageId });
+    return { ok: true, messageId, timestamp, handledCommand: true };
+  }
 
   if (group.created_by) {
     const owner = getUserById(group.created_by);
@@ -481,6 +600,19 @@ async function handleAgentConversationMessage(
     },
     agentId,
   );
+
+  const modelCommandReply = handleWebModelCommand({
+    baseChatJid: chatJid,
+    group: getRegisteredGroup(chatJid),
+    agentId,
+    content,
+    user: { id: userId, role: getUserById(userId)?.role || 'member' },
+  });
+  if (modelCommandReply !== null) {
+    storeAndBroadcastCommandReply(virtualChatJid, modelCommandReply, agentId);
+    deps.setLastAgentTimestamp(virtualChatJid, { timestamp, id: messageId });
+    return;
+  }
 
   // Format for agent
   const shared = false; // agent conversations are not shared
@@ -846,7 +978,6 @@ function setupWebSocket(server: any): WebSocketServer {
               try {
                 await executeSessionReset(chatJid, targetGroup.folder, {
                   queue: deps.queue,
-                  sessions: deps.getSessions(),
                   broadcast: broadcastNewMessage,
                   setLastAgentTimestamp: deps.setLastAgentTimestamp,
                 });
@@ -1385,6 +1516,16 @@ export function broadcastNewMessage(
     ...(source ? { source } : {}),
   };
   safeBroadcast(wsMsg, isHostGroupJid(baseChatJid), allowedUserIds);
+}
+
+export function broadcastModelChanged(chatJid: string, agentId?: string): void {
+  const jid = normalizeHomeJid(chatJid);
+  const allowedUserIds = getGroupAllowedUserIds(chatJid);
+  safeBroadcast(
+    { type: 'model_changed', chatJid: jid, ...(agentId ? { agentId } : {}) },
+    isHostGroupJid(chatJid),
+    allowedUserIds,
+  );
 }
 
 export function broadcastTyping(chatJid: string, isTyping: boolean): void {

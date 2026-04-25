@@ -866,7 +866,6 @@ groupRoutes.delete('/:jid', authMiddleware, async (c) => {
   removeFlowArtifacts(existing.folder);
 
   delete deps.getRegisteredGroups()[jid];
-  delete deps.getSessions()[existing.folder];
   deps.setLastAgentTimestamp(jid, { timestamp: '', id: '' });
 
   return c.json({ success: true });
@@ -1035,9 +1034,6 @@ groupRoutes.post('/:jid/reset-session', authMiddleware, async (c) => {
   // 3. Delete session from DB (and in-memory cache for main session).
   try {
     deleteSession(group.folder, agentId);
-    if (!agentId) {
-      delete deps.getSessions()[group.folder];
-    }
   } catch (err) {
     logger.error(
       { jid, folder: group.folder, agentId, err },
@@ -1172,7 +1168,6 @@ groupRoutes.post('/:jid/clear-history', authMiddleware, async (c) => {
   // 3. Clear session state and message history for ALL sibling JIDs.
   try {
     deleteSession(group.folder);
-    delete deps.getSessions()[group.folder];
     for (const siblingJid of siblingJids) {
       deleteChatHistory(siblingJid);
       // Re-create the chats row so subsequent messages work properly

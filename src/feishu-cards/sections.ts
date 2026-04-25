@@ -53,6 +53,8 @@ export const CARD_ELEMENT_IDS = {
   THINKING_PANEL_FINAL: 'thinking_final',
   THINKING_CONTENT_FINAL: 'thinking_fin_md',
   TOOLS_PANEL_FINAL: 'tools_final',
+  CODEX_TODOS_FINAL: 'codex_todos_fin',
+  CODEX_OPS_FINAL: 'codex_ops_fin',
   FOOTER: 'footer',
 } as const;
 
@@ -157,30 +159,40 @@ export function buildHeader(input: AgentCardInput): El {
   return header;
 }
 
-/** 2×2 metadata row via div.fields. Returns [] when no meta is useful. */
-export function buildMetaRow(meta: CardMeta | undefined): El[] {
+/** Compact metadata row. Returns [] when no meta is useful. */
+export function buildMetaRow(
+  meta: CardMeta | undefined,
+  _completedAtMs?: number,  // accepted for compat; no longer rendered
+): El[] {
   if (!meta) return [];
-  const fields: El[] = [];
-  const push = (title: string, value: string): void => {
-    fields.push({
-      is_short: true,
-      text: { tag: 'lark_md', content: `**${title}**\n${value}` },
-    });
-  };
-  if (meta.durationMs !== undefined) push('⏱ 耗时', formatDuration(meta.durationMs));
-  if (meta.model) push('🤖 模型', `\`${shortModel(meta.model)}\``);
-  if (meta.inputTokens !== undefined || meta.outputTokens !== undefined) {
-    push(
-      '💡 Token',
-      `${formatTokens(meta.inputTokens)} / ${formatTokens(meta.outputTokens)}`,
-    );
+  // Single compact line: model · duration · new · cached · out · cost.
+  // Token display is split into three categories to match Anthropic's usage
+  // breakdown and avoid hiding prompt-cache activity behind a single input number.
+  const parts: string[] = [];
+  if (meta.model) parts.push(`🤖 ${shortModel(meta.model)}`);
+  if (meta.durationMs !== undefined) parts.push(`⏱ ${formatDuration(meta.durationMs)}`);
+  const newInput = (meta.inputTokens ?? 0) + (meta.cacheCreationInputTokens ?? 0);
+  const cachedInput = meta.cacheReadInputTokens ?? 0;
+  const output = meta.outputTokens ?? 0;
+  if (newInput > 0) parts.push(`🆕 ${formatTokens(newInput)} new`);
+  if (cachedInput > 0) parts.push(`🗂 ${formatTokens(cachedInput)} cached`);
+  if (output > 0) parts.push(`💡 ${formatTokens(output)} out`);
+  if (meta.costUSD !== undefined && meta.costUSD > 0) {
+    parts.push(`💰 $${meta.costUSD.toFixed(4)}`);
   }
   const toolCount = meta.toolCalls?.length
     ? meta.toolCalls.reduce((s, t) => s + t.count, 0)
     : meta.toolCount;
-  if (toolCount !== undefined && toolCount > 0) push('🛠 工具', `${toolCount} 次`);
-  if (fields.length === 0) return [];
-  return [{ tag: 'div', fields, element_id: CARD_ELEMENT_IDS.META_ROW }];
+  if (toolCount !== undefined && toolCount > 0) parts.push(`🛠 ${toolCount} tools`);
+  if (parts.length === 0) return [];
+  return [
+    {
+      tag: 'markdown',
+      text_size: 'notation',
+      content: `<font color='grey'>${parts.join(' · ')}</font>`,
+      element_id: CARD_ELEMENT_IDS.META_ROW,
+    },
+  ];
 }
 
 /** Main content + collapsible "continue reading" sections for overflow. */
@@ -222,6 +234,104 @@ export function buildThinkingPanel(thinking: string | undefined): El[] {
           tag: 'markdown',
           content: trimmed,
           element_id: CARD_ELEMENT_IDS.THINKING_CONTENT_FINAL,
+        },
+      ],
+    }),
+  ];
+}
+
+/**
+ * Render prior assistant text segments (N-1 segments before the final one).
+ * Each segment becomes a collapsed panel with its position indicator.
+ *
+ * Used when the agent produces multiple top-level assistant messages in a
+ * single query (e.g. "analyze → call tool → report"). Only the last segment
+ * is the Body text; earlier segments are preserved here as collapsed panels.
+ */
+export function buildPriorSegmentsPanels(
+  segments: string[] | undefined,
+): El[] {
+  if (!segments || segments.length === 0) return [];
+  const total = segments.length;
+  const MAX_SEGMENT_CHARS = 4000;
+  return segments.map((text, i) => {
+    const trimmed = text.trim();
+    const display = trimmed.length > MAX_SEGMENT_CHARS
+      ? trimmed.slice(0, MAX_SEGMENT_CHARS) + '\n\n_…（已截断）_'
+      : trimmed;
+    return collapsiblePanel({
+      title: `**📝 前置输出 · 第 ${i + 1}/${total} 段**`,
+      expanded: false,
+      elements: [{ tag: 'markdown', content: display }],
+    });
+  });
+}
+
+/**
+ * Render sub-agent (Task/Agent) execution results as collapsed panels.
+ * Title fallback chain: description → summary → "子任务"
+ * Content fallback: text → summary → "(无输出)"
+ */
+export function buildSubAgentPanels(
+  results:
+    | Array<{ description: string; summary: string; text: string }>
+    | undefined,
+): El[] {
+  if (!results || results.length === 0) return [];
+  const MAX_TITLE_LEN = 40;
+  const MAX_CONTENT_CHARS = 6000;
+  return results.map((r) => {
+    const rawTitle = r.description.trim() || r.summary.trim() || '子任务';
+    const title =
+      rawTitle.length > MAX_TITLE_LEN
+        ? rawTitle.slice(0, MAX_TITLE_LEN) + '…'
+        : rawTitle;
+    const rawContent = (r.text || r.summary || '').trim();
+    const content = !rawContent
+      ? '_(无输出)_'
+      : rawContent.length > MAX_CONTENT_CHARS
+        ? rawContent.slice(0, MAX_CONTENT_CHARS) + '\n\n_…（已截断）_'
+        : rawContent;
+    return collapsiblePanel({
+      title: `**🤖 子任务：${title}**`,
+      expanded: false,
+      elements: [{ tag: 'markdown', content }],
+    });
+  });
+}
+
+export function buildCodexTodoPanel(
+  todos: AgentCardInput['codexTodos'],
+): El[] {
+  if (!todos || todos.length === 0) return [];
+  return [
+    collapsiblePanel({
+      title: '**📋 计划 / Todo**',
+      expanded: false,
+      elementId: CARD_ELEMENT_IDS.CODEX_TODOS_FINAL,
+      elements: [
+        {
+          tag: 'markdown',
+          content: buildProgressListText(todos),
+        },
+      ],
+    }),
+  ];
+}
+
+export function buildCodexOperationsPanel(
+  operations: AgentCardInput['codexOperations'],
+): El[] {
+  if (!operations || operations.length === 0) return [];
+  return [
+    collapsiblePanel({
+      title: '**🛠 操作记录**',
+      expanded: false,
+      elementId: CARD_ELEMENT_IDS.CODEX_OPS_FINAL,
+      elements: [
+        {
+          tag: 'markdown',
+          content: buildTimelineText(operations),
         },
       ],
     }),
@@ -307,13 +417,24 @@ export type StreamingPhase =
   | 'aborted'
   | 'error';
 
+export type StreamingCardRuntimeProfile = 'claude' | 'codex';
+
+function runtimeLabel(
+  profile: StreamingCardRuntimeProfile | undefined,
+  claude: string,
+  codex: string,
+): string {
+  return profile === 'codex' ? codex : claude;
+}
+
 /** Single-line banner summarising what the agent is doing right now. */
 export function buildStatusBannerText(input: {
   phase: StreamingPhase;
   detail?: string;
   elapsedMs?: number;
+  runtimeProfile?: StreamingCardRuntimeProfile;
 }): string {
-  const { phase, detail, elapsedMs } = input;
+  const { phase, detail, elapsedMs, runtimeProfile } = input;
   const elapsed =
     elapsedMs !== undefined && elapsedMs > 0
       ? ` <font color='grey'>· 已用 ${formatDuration(elapsedMs)}</font>`
@@ -323,11 +444,11 @@ export function buildStatusBannerText(input: {
   const detailPart = detail ? ` <font color='grey'>${detail}</font>` : '';
   switch (phase) {
     case 'thinking':
-      return `${tag('思考中', 'blue')} 🧠${detailPart}${elapsed}`;
+      return `${tag(runtimeLabel(runtimeProfile, '思考中', '推理中'), 'blue')} 🧠${detailPart}${elapsed}`;
     case 'working':
-      return `${tag('执行中', 'turquoise')} ⚙️${detailPart}${elapsed}`;
+      return `${tag(runtimeLabel(runtimeProfile, '执行中', 'Codex 处理中'), 'turquoise')} ⚙️${detailPart}${elapsed}`;
     case 'tooling':
-      return `${tag('调用工具', 'turquoise')} 🛠${detailPart}${elapsed}`;
+      return `${tag(runtimeLabel(runtimeProfile, '调用工具', '执行操作'), 'turquoise')} 🛠${detailPart}${elapsed}`;
     case 'hook':
       return `${tag('运行 Hook', 'indigo')} 🔗${detailPart}${elapsed}`;
     case 'streaming':
@@ -342,7 +463,7 @@ export function buildStatusBannerText(input: {
       return `${tag('出错', 'red')} ❌${detailPart}`;
     case 'idle':
     default:
-      return `${tag('准备中', 'grey')} ⏳`;
+      return `${tag(runtimeLabel(runtimeProfile, '准备中', 'Codex 准备中'), 'grey')} ⏳`;
   }
 }
 
@@ -554,6 +675,7 @@ export interface StreamingPanelsInit {
   expandThinking?: boolean;
   expandAsk?: boolean;
   expandTimeline?: boolean;
+  runtimeProfile?: StreamingCardRuntimeProfile;
 }
 
 /**
@@ -565,48 +687,75 @@ export interface StreamingPanelsInit {
  * patch it via cardElement.content() without touching the panel structure.
  */
 export function buildStreamingPanels(init: StreamingPanelsInit): El[] {
+  const profile = init.runtimeProfile ?? 'claude';
+  const askTitle = runtimeLabel(profile, '**❓ 等待你的回复**', '**❓ 需要你的输入**');
+  const progressTitle = runtimeLabel(profile, '**📋 任务进度**', '**📋 计划 / Todo**');
+  const toolsTitle = runtimeLabel(profile, '**🛠 工具时间轴**', '**🛠 操作时间轴**');
+  const thinkingTitle = runtimeLabel(profile, '**💭 思考过程**', '**💭 推理过程**');
+  const timelineTitle = runtimeLabel(profile, '**📝 调用轨迹**', '**📝 运行日志**');
+  const progressPlaceholder = runtimeLabel(
+    profile,
+    '<font color=\'grey\'>等待任务规划…</font>',
+    '<font color=\'grey\'>暂无计划</font>',
+  );
+  const toolsPlaceholder = runtimeLabel(
+    profile,
+    '<font color=\'grey\'>尚未调用工具…</font>',
+    '<font color=\'grey\'>尚未执行操作</font>',
+  );
+  const thinkingPlaceholder = runtimeLabel(
+    profile,
+    '<font color=\'grey\'>尚未开始思考…</font>',
+    '<font color=\'grey\'>等待推理事件</font>',
+  );
+  const timelinePlaceholder = runtimeLabel(
+    profile,
+    "<font color='grey'>暂无调用记录</font>",
+    "<font color='grey'>暂无运行日志</font>",
+  );
   return [
     {
       tag: 'markdown',
       element_id: CARD_ELEMENT_IDS.STATUS_BANNER,
-      content: init.statusBanner ?? buildStatusBannerText({ phase: 'idle' }),
+      content:
+        init.statusBanner ??
+        buildStatusBannerText({ phase: 'idle', runtimeProfile: profile }),
     },
     buildRuntimePanel({
       elementId: CARD_ELEMENT_IDS.ASK_PANEL,
       contentElementId: CARD_ELEMENT_IDS.ASK_CONTENT,
-      title: '**❓ 等待你的回复**',
-      expanded: init.expandAsk ?? true,
+      title: askTitle,
+      expanded: init.expandAsk ?? profile === 'claude',
       content:
         init.askContent ?? "<font color='grey'>暂无提问</font>",
     }),
     buildRuntimePanel({
       elementId: CARD_ELEMENT_IDS.PROGRESS_PANEL,
       contentElementId: CARD_ELEMENT_IDS.PROGRESS_CONTENT,
-      title: '**📋 任务进度**',
+      title: progressTitle,
       expanded: init.expandProgress ?? false,
-      content: init.progressContent ?? '<font color=\'grey\'>等待任务规划…</font>',
+      content: init.progressContent ?? progressPlaceholder,
     }),
     buildRuntimePanel({
       elementId: CARD_ELEMENT_IDS.TOOLS_PANEL,
       contentElementId: CARD_ELEMENT_IDS.TOOLS_CONTENT,
-      title: '**🛠 工具时间轴**',
+      title: toolsTitle,
       expanded: init.expandTools ?? false,
-      content: init.toolsContent ?? '<font color=\'grey\'>尚未调用工具…</font>',
+      content: init.toolsContent ?? toolsPlaceholder,
     }),
     buildRuntimePanel({
       elementId: CARD_ELEMENT_IDS.THINKING_PANEL,
       contentElementId: CARD_ELEMENT_IDS.THINKING_CONTENT,
-      title: '**💭 思考过程**',
+      title: thinkingTitle,
       expanded: init.expandThinking ?? false,
-      content: init.thinkingContent ?? '<font color=\'grey\'>尚未开始思考…</font>',
+      content: init.thinkingContent ?? thinkingPlaceholder,
     }),
     buildRuntimePanel({
       elementId: CARD_ELEMENT_IDS.TIMELINE_PANEL,
       contentElementId: CARD_ELEMENT_IDS.TIMELINE_CONTENT,
-      title: '**📝 调用轨迹**',
+      title: timelineTitle,
       expanded: init.expandTimeline ?? false,
-      content:
-        init.timelineContent ?? "<font color='grey'>暂无调用记录</font>",
+      content: init.timelineContent ?? timelinePlaceholder,
     }),
   ];
 }

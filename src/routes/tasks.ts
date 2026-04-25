@@ -373,7 +373,6 @@ tasksRoutes.delete('/:id', authMiddleware, (c) => {
     const deps = getWebDeps();
     if (deps) {
       delete deps.getRegisteredGroups()[existing.workspace_jid];
-      delete deps.getSessions()[existing.workspace_folder];
     }
     logger.info(
       {

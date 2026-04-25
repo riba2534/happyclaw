@@ -269,6 +269,7 @@ describe('buildAgentReplyCard', () => {
     const header = card.header as Record<string, unknown>;
     expect(header.template).toBe('violet');
     // header.icon removed — standard_icon tokens are not supported on all clients
+    expect(header.icon).toBeUndefined();
 
     const tags = header.text_tag_list as Array<Record<string, unknown>>;
     expect(tags.length).toBeGreaterThan(0);
@@ -279,7 +280,7 @@ describe('buildAgentReplyCard', () => {
     expect(body.direction).toBe('vertical');
   });
 
-  test('header.template reflects CardStatus', () => {
+  test('header.template reflects CardStatus and omits icon', () => {
     const cases: Array<[
       'running' | 'done' | 'warning' | 'error',
       string,
@@ -340,7 +341,7 @@ describe('buildAgentReplyCard', () => {
     expect(countTag(card, 'collapsible_panel')).toBe(0);
   });
 
-  test('meta renders a 2×2 div.fields row', () => {
+  test('meta renders a compact metadata markdown row', () => {
     const card = buildAgentReplyCard({
       status: 'done',
       text: 'reply',
@@ -352,10 +353,11 @@ describe('buildAgentReplyCard', () => {
         toolCount: 3,
       },
     });
-    expect(countTag(card, 'div')).toBe(1);
+    const ids = collectElementIds(card);
+    expect(ids).toContain(CARD_ELEMENT_IDS.META_ROW);
   });
 
-  test('thinking + toolCalls render dedicated collapsible panels', () => {
+  test('thinking renders a dedicated collapsible panel and final card omits tool stats', () => {
     const card = buildAgentReplyCard({
       status: 'done',
       text: 'reply',
@@ -369,20 +371,20 @@ describe('buildAgentReplyCard', () => {
     });
     const ids = collectElementIds(card);
     expect(ids).toContain(CARD_ELEMENT_IDS.THINKING_PANEL_FINAL);
-    expect(ids).toContain(CARD_ELEMENT_IDS.TOOLS_PANEL_FINAL);
+    expect(ids).not.toContain(CARD_ELEMENT_IDS.TOOLS_PANEL_FINAL);
   });
 
-  test('footer renders as grey notation markdown', () => {
+  test('footer is folded into the compact metadata row and not rendered standalone', () => {
     const card = buildAgentReplyCard({
       status: 'done',
       text: 'reply',
       footer: '来源：Web',
     });
     const ids = collectElementIds(card);
-    expect(ids).toContain(CARD_ELEMENT_IDS.FOOTER);
+    expect(ids).not.toContain(CARD_ELEMENT_IDS.FOOTER);
   });
 
-  test('completedAtMs appends <local_datetime> tag to the footer', () => {
+  test('completedAtMs does not create a standalone footer', () => {
     const card = buildAgentReplyCard({
       status: 'done',
       text: 'reply',
@@ -402,11 +404,10 @@ describe('buildAgentReplyCard', () => {
       return null;
     };
     const footerContent = findFooter(card);
-    expect(footerContent).toContain('local_datetime');
-    expect(footerContent).toContain("millisecond='1700000000000'");
+    expect(footerContent).toBeNull();
   });
 
-  test('tools panel title carries a number_tag badge', () => {
+  test('toolCalls do not render a final tools panel', () => {
     const card = buildAgentReplyCard({
       status: 'done',
       text: 'reply',
@@ -423,20 +424,16 @@ describe('buildAgentReplyCard', () => {
       return null;
     };
     const panel = findPanel(card);
-    expect(panel).not.toBeNull();
-    const header = panel!.header as Record<string, unknown>;
-    const title = header.title as Record<string, unknown>;
-    expect(title.content).toContain('<number_tag');
+    expect(panel).toBeNull();
   });
 
-  test('uses native hr component (not markdown ---)', () => {
+  test('meta-only card does not add a divider', () => {
     const card = buildAgentReplyCard({
       status: 'done',
       text: 'reply',
       meta: { durationMs: 100 },
     });
-    // Ensure at least one real { tag: 'hr' } divider exists
-    expect(countTag(card, 'hr')).toBeGreaterThanOrEqual(1);
+    expect(countTag(card, 'hr')).toBe(0);
     // And that we're NOT using markdown "---" as a divider anymore
     const body = card.body as { elements: Array<Record<string, unknown>> };
     const mdDividers = body.elements.filter(
@@ -475,7 +472,7 @@ describe('buildAgentReplyCard', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  test('tool breakdown compresses tail into a single "… 其余" line', () => {
+  test('tool breakdown is not included in final card body', () => {
     const toolCalls = Array.from({ length: 15 }, (_, i) => ({
       name: `tool_${i}`,
       count: 1,
@@ -501,7 +498,45 @@ describe('buildAgentReplyCard', () => {
       return null;
     };
     const content = findContent(card);
-    expect(content).toContain('其余');
+    expect(content).toBeNull();
+  });
+
+  test('codex final card renders only real process artifacts', () => {
+    const card = buildAgentReplyCard({
+      status: 'done',
+      title: 'Codex 回复',
+      text: '最终回答',
+      codexTodos: [
+        { content: '检查状态', status: 'completed' },
+        { content: '汇总结果', status: 'pending' },
+      ],
+      codexOperations: [
+        { text: '🔄 Bash' },
+        { text: '✅ Bash' },
+        { text: '状态: Codex SDK 正在处理...' },
+      ],
+    });
+    const json = JSON.stringify(card);
+    expect(json).toContain('计划 / Todo');
+    expect(json).toContain('操作记录');
+    expect(json).toContain('检查状态');
+    expect(json).toContain('Codex SDK 正在处理');
+    expect(collectElementIds(card)).toContain(CARD_ELEMENT_IDS.CODEX_TODOS_FINAL);
+    expect(collectElementIds(card)).toContain(CARD_ELEMENT_IDS.CODEX_OPS_FINAL);
+    expect(validateV2Shape(card)).toEqual([]);
+  });
+
+  test('codex final card omits empty process placeholders', () => {
+    const card = buildAgentReplyCard({
+      status: 'done',
+      title: 'Codex 回复',
+      text: '最终回答',
+    });
+    const json = JSON.stringify(card);
+    expect(json).not.toContain('计划 / Todo');
+    expect(json).not.toContain('操作记录');
+    expect(json).not.toContain('暂无计划');
+    expect(json).not.toContain('暂无调用记录');
   });
 });
 
@@ -539,6 +574,48 @@ describe('buildStreamingAgentCard', () => {
   test('rich streaming card contains 5 collapsible panels (Phase F adds ask + timeline)', () => {
     const card = buildStreamingAgentCard({ initialText: 'x' });
     expect(countTag(card, 'collapsible_panel')).toBe(5);
+  });
+
+  test('codex streaming card uses Codex-native panel wording', () => {
+    const card = buildStreamingAgentCard({
+      initialText: '',
+      runtimeProfile: 'codex',
+    });
+    const json = JSON.stringify(card);
+    expect(json).toContain('Codex 准备中');
+    expect(json).toContain('计划 / Todo');
+    expect(json).toContain('操作时间轴');
+    expect(json).toContain('推理过程');
+    expect(json).toContain('运行日志');
+    expect(json).toContain('暂无计划');
+    expect(json).toContain('尚未执行操作');
+    expect(json).not.toContain('等待任务规划');
+    expect(json).not.toContain('尚未调用工具');
+  });
+
+  test('codex compact streaming card omits empty rich placeholder panels', () => {
+    const card = buildStreamingAgentCard({
+      initialText: '',
+      runtimeProfile: 'codex',
+      rich: false,
+    });
+    const json = JSON.stringify(card);
+    expect(countTag(card, 'collapsible_panel')).toBe(0);
+    expect(json).toContain('Codex 处理中');
+    expect(json).not.toContain('计划 / Todo');
+    expect(json).not.toContain('等待任务规划');
+    expect(json).not.toContain('尚未调用工具');
+  });
+
+  test('claude rich streaming card keeps agent lifecycle placeholders', () => {
+    const card = buildStreamingAgentCard({
+      initialText: '',
+      runtimeProfile: 'claude',
+    });
+    const json = JSON.stringify(card);
+    expect(countTag(card, 'collapsible_panel')).toBe(5);
+    expect(json).toContain('任务进度');
+    expect(json).toContain('等待任务规划');
   });
 
   test('legacy (rich:false) streaming card keeps 5-slot flat layout', () => {
@@ -623,6 +700,15 @@ describe('buildStatusBannerText', () => {
       detail: '`Read` src/foo.ts',
     });
     expect(text).toContain('Read');
+  });
+
+  test('codex profile uses Codex status labels', () => {
+    expect(
+      buildStatusBannerText({ phase: 'working', runtimeProfile: 'codex' }),
+    ).toContain('Codex 处理中');
+    expect(
+      buildStatusBannerText({ phase: 'tooling', runtimeProfile: 'codex' }),
+    ).toContain('执行操作');
   });
 });
 

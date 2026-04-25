@@ -4,9 +4,10 @@ import path from 'path';
 
 import { DATA_DIR } from './config.js';
 import { killProcessTree } from './container-runner.js';
-import { getTaskById } from './db.js';
+import { getTaskById, hasPendingConversationRuntimeBinding } from './db.js';
 import { getSystemSettings } from './runtime-config.js';
 import { logger } from './logger.js';
+import type { AgentRuntime } from './types.js';
 export type SendMessageResult = 'sent' | 'no_active';
 
 interface QueuedTask {
@@ -40,6 +41,8 @@ interface GroupState {
   restarting: boolean;
   /** Provider profile ID selected for the current active runner (null = default/override). */
   selectedProviderId: string | null;
+  /** Runtime selected for the active runner. Legacy runners default to Claude semantics. */
+  runtime: AgentRuntime | null;
   /** True when a _drain sentinel has been written for the current active runner. */
   drainSentinelWritten: boolean;
   /** True when messages have been IPC-injected into the running agent via sendMessage().
@@ -97,6 +100,7 @@ export class GroupQueue {
         retryTimer: null,
         restarting: false,
         selectedProviderId: null,
+        runtime: null,
         drainSentinelWritten: false,
         hasIpcInjectedMessages: false,
       };
@@ -443,6 +447,7 @@ export class GroupQueue {
       agentId?: string;
       taskRunId?: string;
       selectedProviderId?: string | null;
+      runtime?: AgentRuntime | null;
     },
   ): void {
     const state = this.getGroup(groupJid);
@@ -453,6 +458,7 @@ export class GroupQueue {
     state.agentId = opts.agentId || null;
     state.taskRunId = opts.taskRunId || null;
     state.selectedProviderId = opts.selectedProviderId ?? null;
+    state.runtime = opts.runtime ?? null;
   }
 
   /**
@@ -515,6 +521,26 @@ export class GroupQueue {
       logger.debug(
         { groupJid },
         'Active runner is a scheduled task; deferring user message until task completes',
+      );
+      return 'no_active';
+    }
+
+    if (
+      state.groupFolder &&
+      hasPendingConversationRuntimeBinding(state.groupFolder, state.agentId)
+    ) {
+      this.requestDrainForActiveRunner(
+        groupJid,
+        'Active runner has stale model binding; draining before next message',
+      );
+      return 'no_active';
+    }
+
+    const runtime = state.runtime ?? 'claude';
+    if (runtime !== 'claude') {
+      this.requestDrainForActiveRunner(
+        groupJid,
+        'Active runner does not support live IPC input; deferring next message',
       );
       return 'no_active';
     }
@@ -1028,6 +1054,8 @@ export class GroupQueue {
       state.groupFolder = null;
       state.agentId = null;
       state.taskRunId = null;
+      state.selectedProviderId = null;
+      state.runtime = null;
       this.activeCount--;
       if (isHostMode) {
         this.activeHostProcessCount--;
@@ -1108,6 +1136,8 @@ export class GroupQueue {
       state.groupFolder = null;
       state.agentId = null;
       state.taskRunId = null;
+      state.selectedProviderId = null;
+      state.runtime = null;
       this.activeCount--;
       if (isHostMode) {
         this.activeHostProcessCount--;
@@ -1288,6 +1318,7 @@ export class GroupQueue {
       displayName: string | null;
       groupFolder: string | null;
       selectedProviderId: string | null;
+      runtime: AgentRuntime | null;
     }>;
   } {
     const groups: Array<{
@@ -1299,6 +1330,7 @@ export class GroupQueue {
       displayName: string | null;
       groupFolder: string | null;
       selectedProviderId: string | null;
+      runtime: AgentRuntime | null;
     }> = [];
 
     for (const [jid, state] of this.groups) {
@@ -1311,6 +1343,7 @@ export class GroupQueue {
         displayName: state.displayName,
         groupFolder: state.groupFolder,
         selectedProviderId: state.selectedProviderId,
+        runtime: state.runtime,
       });
     }
 

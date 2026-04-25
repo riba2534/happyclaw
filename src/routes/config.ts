@@ -1,11 +1,13 @@
 // Configuration management routes
 
 import { randomBytes, createHash } from 'node:crypto';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { Agent as HttpsAgent } from 'node:https';
 import { ProxyAgent } from 'proxy-agent';
 import QRCode from 'qrcode';
 import { Hono } from 'hono';
-import { updateWeChatNoProxy } from '../config.js';
+import { z } from 'zod';
+import { DATA_DIR, updateWeChatNoProxy } from '../config.js';
 import type { Variables } from '../web-context.js';
 import { canAccessGroup, getWebDeps } from '../web-context.js';
 import { getChannelType } from '../im-channel.js';
@@ -41,7 +43,8 @@ import {
   toPublicClaudeProviderConfig,
   appendClaudeConfigAudit,
   getProviders,
-  getEnabledProviders,
+  getEnabledProvidersForPool,
+  getCodexProviders,
   getBalancingConfig,
   saveBalancingConfig,
   createProvider,
@@ -80,6 +83,7 @@ import {
   saveUserDiscordConfig,
   updateAllSessionCredentials,
 } from '../runtime-config.js';
+import { findCodexCli, probeCodexDependencies } from '../codex-runtime.js';
 import type {
   ClaudeOAuthCredentials,
   CachedOAuthUsage,
@@ -150,6 +154,205 @@ interface ClaudeApplyResultPayload {
   failedCount: number;
   error?: string;
 }
+
+const CodexProviderCreateSchema = z
+  .object({
+    name: z.string().min(1).max(64).default('官方 GPT'),
+    authMode: z.enum(['api_key', 'chatgpt_oauth']),
+    openaiApiKey: z.string().max(2000).optional(),
+    codexAuthJson: z.string().max(200000).optional(),
+    enabled: z.boolean().optional(),
+    weight: z.number().int().min(1).max(100).optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.authMode === 'api_key' && !data.openaiApiKey?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['openaiApiKey'],
+        message: 'API key is required',
+      });
+    }
+    if (data.authMode === 'chatgpt_oauth') {
+      if (!data.codexAuthJson?.trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['codexAuthJson'],
+          message: 'Codex auth.json content is required',
+        });
+      } else {
+        try {
+          JSON.parse(data.codexAuthJson);
+        } catch {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['codexAuthJson'],
+            message: 'Codex auth.json must be valid JSON',
+          });
+        }
+      }
+    }
+  });
+
+const CodexProviderPatchSchema = z
+  .object({
+    name: z.string().min(1).max(64).optional(),
+    enabled: z.boolean().optional(),
+    weight: z.number().int().min(1).max(100).optional(),
+  })
+  .refine(
+    (data) =>
+      data.name !== undefined ||
+      data.enabled !== undefined ||
+      data.weight !== undefined,
+    { message: 'At least one field must be provided' },
+  );
+
+const CodexProviderSecretsSchema = z
+  .object({
+    authMode: z.enum(['api_key', 'chatgpt_oauth']).optional(),
+    openaiApiKey: z.string().max(2000).optional(),
+    clearOpenaiApiKey: z.boolean().optional(),
+    codexAuthJson: z.string().max(200000).optional(),
+    clearCodexAuthJson: z.boolean().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (
+      data.openaiApiKey === undefined &&
+      data.clearOpenaiApiKey !== true &&
+      data.codexAuthJson === undefined &&
+      data.clearCodexAuthJson !== true &&
+      data.authMode === undefined
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'At least one secret field must be provided',
+      });
+    }
+    if (data.codexAuthJson !== undefined) {
+      try {
+        JSON.parse(data.codexAuthJson);
+      } catch {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['codexAuthJson'],
+          message: 'Codex auth.json must be valid JSON',
+        });
+      }
+    }
+  });
+
+const CodexOAuthStartSchema = z.object({
+  targetProviderId: z.string().min(1).max(128).optional(),
+  name: z.string().min(1).max(64).optional(),
+  weight: z.number().int().min(1).max(100).optional(),
+});
+
+const CodexOAuthStateSchema = z.object({
+  state: z.string().min(16).max(128),
+});
+
+interface CodexOAuthFlow {
+  child: ChildProcess;
+  codexHome: string;
+  createdAt: number;
+  expiresAt: number;
+  stdout: string;
+  stderr: string;
+  authorizeUrl: string | null;
+  deviceCode: string | null;
+  exitCode: number | null;
+  exitSignal: NodeJS.Signals | null;
+  targetProviderId?: string;
+  name: string;
+  weight: number;
+}
+
+const CODEX_OAUTH_FLOW_TTL_MS = 15 * 60 * 1000;
+const CODEX_OAUTH_ROOT = path.join(DATA_DIR, 'config', 'codex-oauth');
+const codexOAuthFlows = new Map<string, CodexOAuthFlow>();
+
+function stripAnsi(input: string): string {
+  return input.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
+}
+
+function parseCodexDeviceLoginOutput(output: string): {
+  authorizeUrl: string | null;
+  deviceCode: string | null;
+} {
+  const plain = stripAnsi(output);
+  const authorizeUrl =
+    plain.match(/https:\/\/auth\.openai\.com\/codex\/device\b[^\s]*/)?.[0] ??
+    plain.match(/https:\/\/\S+/)?.[0] ??
+    null;
+  const deviceCode = plain.match(/\b[A-Z0-9]{4}-[A-Z0-9]{5}\b/)?.[0] ?? null;
+  return { authorizeUrl, deviceCode };
+}
+
+function cleanupCodexOAuthFlow(state: string, flow: CodexOAuthFlow): void {
+  if (flow.exitCode === null && flow.exitSignal === null) {
+    try {
+      flow.child.kill('SIGTERM');
+    } catch {
+      // best effort
+    }
+  }
+  codexOAuthFlows.delete(state);
+  fs.rmSync(flow.codexHome, { recursive: true, force: true });
+}
+
+function findCodexAuthJson(codexHome: string): string | null {
+  const candidates = [
+    path.join(codexHome, 'auth.json'),
+    path.join(codexHome, '.codex', 'auth.json'),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+function writeCodexOAuthHomeConfig(codexHome: string): void {
+  fs.writeFileSync(
+    path.join(codexHome, 'config.toml'),
+    [
+      'cli_auth_credentials_store = "file"',
+      'forced_login_method = "chatgpt"',
+      'project_doc_fallback_filenames = ["CLAUDE.md"]',
+      '',
+    ].join('\n'),
+    { encoding: 'utf-8', mode: 0o600 },
+  );
+}
+
+async function waitForCodexDeviceCode(
+  flow: CodexOAuthFlow,
+  timeoutMs = 5000,
+): Promise<void> {
+  if (flow.authorizeUrl && flow.deviceCode) return;
+  if (flow.exitCode !== null || flow.exitSignal !== null) return;
+
+  await new Promise<void>((resolve) => {
+    const started = Date.now();
+    const timer = setInterval(() => {
+      if (
+        (flow.authorizeUrl && flow.deviceCode) ||
+        flow.exitCode !== null ||
+        flow.exitSignal !== null ||
+        Date.now() - started >= timeoutMs
+      ) {
+        clearInterval(timer);
+        resolve();
+      }
+    }, 100);
+  });
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [state, flow] of codexOAuthFlows) {
+    if (flow.expiresAt < now) cleanupCodexOAuthFlow(state, flow);
+  }
+}, 60_000);
 
 async function applyClaudeConfigToAllGroups(
   actor: string,
@@ -317,9 +520,9 @@ configRoutes.get(
   systemConfigMiddleware,
   (c) => {
     try {
-      const providers = getProviders();
+      const providers = getProviders().filter((p) => p.providerPoolId === 'claude');
       const balancing = getBalancingConfig();
-      const enabledProviders = getEnabledProviders();
+      const enabledProviders = getEnabledProvidersForPool('claude');
 
       // Refresh pool state for health info
       providerPool.refreshFromConfig(enabledProviders, balancing);
@@ -358,7 +561,20 @@ configRoutes.post(
     const actor = (c.get('user') as AuthUser).username;
 
     try {
-      const provider = createProvider(validation.data);
+      const provider = createProvider({
+        ...validation.data,
+        runtime: 'claude',
+        providerFamily: 'claude',
+        providerPoolId: 'claude',
+        authMode:
+          validation.data.type === 'third_party'
+            ? 'third_party'
+            : validation.data.anthropicApiKey
+              ? 'api_key'
+              : 'oauth',
+        openaiApiKey: '',
+        codexAuthJson: '',
+      });
       appendClaudeConfigAudit(actor, 'create_provider', [
         `id:${provider.id}`,
         `type:${provider.type}`,
@@ -393,6 +609,10 @@ configRoutes.patch(
     const actor = (c.get('user') as AuthUser).username;
 
     try {
+      const current = getProviders().find((p) => p.id === id);
+      if (!current || current.providerPoolId !== 'claude') {
+        return c.json({ error: 'Claude provider not found' }, 404);
+      }
       const updated = updateProvider(id, validation.data);
       const changedFields = Object.keys(validation.data).map(
         (k) => `${k}:updated`,
@@ -443,6 +663,10 @@ configRoutes.put(
     const actor = (c.get('user') as AuthUser).username;
 
     try {
+      const current = getProviders().find((p) => p.id === id);
+      if (!current || current.providerPoolId !== 'claude') {
+        return c.json({ error: 'Claude provider not found' }, 404);
+      }
       const updated = updateProviderSecrets(id, validation.data);
 
       const changedFields: string[] = [];
@@ -506,6 +730,10 @@ configRoutes.delete(
     const actor = (c.get('user') as AuthUser).username;
 
     try {
+      const current = getProviders().find((p) => p.id === id);
+      if (!current || current.providerPoolId !== 'claude') {
+        return c.json({ error: 'Claude provider not found' }, 404);
+      }
       deleteProvider(id);
       appendClaudeConfigAudit(actor, 'delete_provider', [`id:${id}`]);
       return c.json({ ok: true });
@@ -528,6 +756,10 @@ configRoutes.post(
     const actor = (c.get('user') as AuthUser).username;
 
     try {
+      const current = getProviders().find((p) => p.id === id);
+      if (!current || current.providerPoolId !== 'claude') {
+        return c.json({ error: 'Claude provider not found' }, 404);
+      }
       const updated = toggleProvider(id);
       appendClaudeConfigAudit(actor, 'toggle_provider', [
         `id:${id}`,
@@ -571,10 +803,376 @@ configRoutes.get(
   systemConfigMiddleware,
   (c) => {
     // Refresh pool state
-    const enabledProviders = getEnabledProviders();
+    const enabledProviders = getEnabledProvidersForPool('claude');
     const balancing = getBalancingConfig();
     providerPool.refreshFromConfig(enabledProviders, balancing);
     return c.json({ statuses: providerPool.getHealthStatuses() });
+  },
+);
+
+// ─── Codex / GPT official providers ───────────────────────────────
+
+configRoutes.get(
+  '/codex/dependencies',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    return c.json(await probeCodexDependencies());
+  },
+);
+
+configRoutes.post(
+  '/codex/oauth/start',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const validation = CodexOAuthStartSchema.safeParse(body);
+    if (!validation.success) {
+      return c.json(
+        { error: 'Invalid request body', details: validation.error.format() },
+        400,
+      );
+    }
+
+    if (validation.data.targetProviderId) {
+      const target = getCodexProviders().find(
+        (p) => p.id === validation.data.targetProviderId,
+      );
+      if (!target) return c.json({ error: 'Codex provider not found' }, 404);
+    }
+
+    const cliPath = await findCodexCli();
+    if (!cliPath) {
+      return c.json({ error: 'Codex CLI executable not found' }, 400);
+    }
+
+    const state = randomBytes(24).toString('base64url');
+    const codexHome = path.join(CODEX_OAUTH_ROOT, state);
+    fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+    writeCodexOAuthHomeConfig(codexHome);
+
+    const child = spawn(cliPath, ['login', '--device-auth'], {
+      cwd: codexHome,
+      env: {
+        ...process.env,
+        CODEX_HOME: codexHome,
+        HOME: codexHome,
+        NO_COLOR: '1',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const now = Date.now();
+    const flow: CodexOAuthFlow = {
+      child,
+      codexHome,
+      createdAt: now,
+      expiresAt: now + CODEX_OAUTH_FLOW_TTL_MS,
+      stdout: '',
+      stderr: '',
+      authorizeUrl: null,
+      deviceCode: null,
+      exitCode: null,
+      exitSignal: null,
+      targetProviderId: validation.data.targetProviderId,
+      name: validation.data.name?.trim() || '官方 GPT',
+      weight: validation.data.weight || 1,
+    };
+
+    const handleOutput = (chunk: Buffer) => {
+      flow.stdout += chunk.toString('utf-8');
+      const parsed = parseCodexDeviceLoginOutput(flow.stdout);
+      flow.authorizeUrl = parsed.authorizeUrl;
+      flow.deviceCode = parsed.deviceCode;
+    };
+
+    child.stdout.on('data', handleOutput);
+    child.stderr.on('data', (chunk: Buffer) => {
+      flow.stderr += chunk.toString('utf-8');
+      const parsed = parseCodexDeviceLoginOutput(flow.stderr);
+      flow.authorizeUrl = flow.authorizeUrl || parsed.authorizeUrl;
+      flow.deviceCode = flow.deviceCode || parsed.deviceCode;
+    });
+    child.on('close', (code, signal) => {
+      flow.exitCode = code;
+      flow.exitSignal = signal;
+    });
+    child.on('error', (err) => {
+      flow.stderr += err instanceof Error ? err.message : String(err);
+    });
+
+    codexOAuthFlows.set(state, flow);
+    await waitForCodexDeviceCode(flow);
+
+    if (!flow.authorizeUrl || !flow.deviceCode) {
+      cleanupCodexOAuthFlow(state, flow);
+      const detail = stripAnsi(flow.stderr || flow.stdout).trim();
+      return c.json(
+        {
+          error:
+            detail ||
+            'Codex login did not produce a device authorization URL',
+        },
+        400,
+      );
+    }
+
+    return c.json({
+      state,
+      authorizeUrl: flow.authorizeUrl,
+      deviceCode: flow.deviceCode,
+      expiresAt: flow.expiresAt,
+    });
+  },
+);
+
+configRoutes.post(
+  '/codex/oauth/complete',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const validation = CodexOAuthStateSchema.safeParse(body);
+    if (!validation.success) {
+      return c.json(
+        { error: 'Invalid request body', details: validation.error.format() },
+        400,
+      );
+    }
+
+    const flow = codexOAuthFlows.get(validation.data.state);
+    if (!flow) return c.json({ error: 'Codex OAuth flow not found or expired' }, 404);
+
+    await waitForCodexDeviceCode(flow, 1500);
+    const authPath = findCodexAuthJson(flow.codexHome);
+    if (!authPath && flow.exitCode === null && flow.exitSignal === null) {
+      return c.json({ error: '授权尚未完成，请在浏览器中完成登录后再确认。' }, 409);
+    }
+
+    if (!authPath) {
+      const detail = stripAnsi(flow.stderr || flow.stdout).trim();
+      cleanupCodexOAuthFlow(validation.data.state, flow);
+      return c.json(
+        { error: detail || 'Codex OAuth login failed before auth.json was created' },
+        400,
+      );
+    }
+
+    const codexAuthJson = fs.readFileSync(authPath, 'utf-8').trim();
+    try {
+      JSON.parse(codexAuthJson);
+    } catch {
+      cleanupCodexOAuthFlow(validation.data.state, flow);
+      return c.json({ error: 'Codex auth.json is not valid JSON' }, 400);
+    }
+
+    const actor = (c.get('user') as AuthUser).username;
+    try {
+      const provider = flow.targetProviderId
+        ? updateProviderSecrets(flow.targetProviderId, {
+            authMode: 'chatgpt_oauth',
+            codexAuthJson,
+            clearOpenaiApiKey: true,
+          })
+        : createProvider({
+            name: flow.name,
+            type: 'official',
+            runtime: 'codex',
+            providerFamily: 'gpt',
+            providerPoolId: 'gpt',
+            authMode: 'chatgpt_oauth',
+            openaiApiKey: '',
+            codexAuthJson,
+            enabled: true,
+            weight: flow.weight,
+          });
+
+      appendClaudeConfigAudit(actor, 'codex_oauth_complete', [
+        `providerId:${provider.id}`,
+        flow.targetProviderId ? 'mode:update' : 'mode:create',
+      ]);
+
+      cleanupCodexOAuthFlow(validation.data.state, flow);
+      return c.json({ provider: toPublicProvider(provider) });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Failed to save Codex OAuth credentials';
+      logger.warn({ err }, 'Failed to save Codex OAuth credentials');
+      return c.json({ error: message }, 400);
+    }
+  },
+);
+
+configRoutes.post(
+  '/codex/oauth/cancel',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const validation = CodexOAuthStateSchema.safeParse(body);
+    if (!validation.success) {
+      return c.json(
+        { error: 'Invalid request body', details: validation.error.format() },
+        400,
+      );
+    }
+
+    const flow = codexOAuthFlows.get(validation.data.state);
+    if (flow) cleanupCodexOAuthFlow(validation.data.state, flow);
+    return c.json({ ok: true });
+  },
+);
+
+configRoutes.get(
+  '/codex/providers',
+  authMiddleware,
+  systemConfigMiddleware,
+  (c) => {
+    try {
+      return c.json({
+        providers: getCodexProviders().map(toPublicProvider),
+        dependencies: null,
+      });
+    } catch (err) {
+      logger.error({ err }, 'Failed to list Codex providers');
+      return c.json({ error: 'Failed to list Codex providers' }, 500);
+    }
+  },
+);
+
+configRoutes.post(
+  '/codex/providers',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const validation = CodexProviderCreateSchema.safeParse(body);
+    if (!validation.success) {
+      return c.json(
+        { error: 'Invalid request body', details: validation.error.format() },
+        400,
+      );
+    }
+    const actor = (c.get('user') as AuthUser).username;
+    try {
+      const provider = createProvider({
+        name: validation.data.name,
+        type: 'official',
+        runtime: 'codex',
+        providerFamily: 'gpt',
+        providerPoolId: 'gpt',
+        authMode: validation.data.authMode,
+        openaiApiKey:
+          validation.data.authMode === 'api_key'
+            ? validation.data.openaiApiKey
+            : '',
+        codexAuthJson:
+          validation.data.authMode === 'chatgpt_oauth'
+            ? validation.data.codexAuthJson
+            : '',
+        enabled: validation.data.enabled,
+        weight: validation.data.weight,
+      });
+      appendClaudeConfigAudit(actor, 'codex_provider_create', [
+        `providerId:${provider.id}`,
+        `authMode:${provider.authMode}`,
+      ]);
+      return c.json({ provider: toPublicProvider(provider) }, 201);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Failed to create Codex provider';
+      logger.warn({ err }, 'Failed to create Codex provider');
+      return c.json({ error: message }, 400);
+    }
+  },
+);
+
+configRoutes.patch(
+  '/codex/providers/:id',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const { id } = c.req.param();
+    const body = await c.req.json().catch(() => ({}));
+    const validation = CodexProviderPatchSchema.safeParse(body);
+    if (!validation.success) {
+      return c.json(
+        { error: 'Invalid request body', details: validation.error.format() },
+        400,
+      );
+    }
+    const current = getCodexProviders().find((p) => p.id === id);
+    if (!current) return c.json({ error: 'Codex provider not found' }, 404);
+    try {
+      let provider = updateProvider(id, {
+        name: validation.data.name,
+        weight: validation.data.weight,
+      });
+      if (validation.data.enabled !== undefined && provider.enabled !== validation.data.enabled) {
+        provider = toggleProvider(id);
+      }
+      return c.json({ provider: toPublicProvider(provider) });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Failed to update Codex provider';
+      logger.warn({ err, providerId: id }, 'Failed to update Codex provider');
+      return c.json({ error: message }, 400);
+    }
+  },
+);
+
+configRoutes.put(
+  '/codex/providers/:id/secrets',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const { id } = c.req.param();
+    const body = await c.req.json().catch(() => ({}));
+    const validation = CodexProviderSecretsSchema.safeParse(body);
+    if (!validation.success) {
+      return c.json(
+        { error: 'Invalid request body', details: validation.error.format() },
+        400,
+      );
+    }
+    const providers = getCodexProviders();
+    const current = providers.find((p) => p.id === id);
+    if (!current) return c.json({ error: 'Codex provider not found' }, 404);
+    try {
+      const provider = updateProviderSecrets(id, {
+        authMode: validation.data.authMode,
+        openaiApiKey: validation.data.openaiApiKey,
+        clearOpenaiApiKey: validation.data.clearOpenaiApiKey,
+        codexAuthJson: validation.data.codexAuthJson,
+        clearCodexAuthJson: validation.data.clearCodexAuthJson,
+      });
+      return c.json({ provider: toPublicProvider(provider) });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Failed to update Codex secrets';
+      logger.warn({ err, providerId: id }, 'Failed to update Codex secrets');
+      return c.json({ error: message }, 400);
+    }
+  },
+);
+
+configRoutes.delete(
+  '/codex/providers/:id',
+  authMiddleware,
+  systemConfigMiddleware,
+  (c) => {
+    const { id } = c.req.param();
+    const current = getCodexProviders().find((p) => p.id === id);
+    if (!current) return c.json({ error: 'Codex provider not found' }, 404);
+    try {
+      deleteProvider(id);
+      return c.json({ ok: true });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Failed to delete Codex provider';
+      return c.json({ error: message }, 400);
+    }
   },
 );
 
@@ -835,7 +1433,7 @@ configRoutes.put(
 
     try {
       // Find first enabled provider and update its customEnv
-      const enabled = getEnabledProviders();
+      const enabled = getEnabledProvidersForPool('claude');
       if (enabled.length === 0) {
         return c.json({ error: '没有启用的供应商' }, 400);
       }

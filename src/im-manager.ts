@@ -75,7 +75,13 @@ export interface DiscordConnectConfig {
 
 export interface ConnectFeishuOptions {
   ignoreMessagesBefore?: number;
-  onCommand?: (chatJid: string, command: string, senderImId?: string, mentions?: Array<{ key?: string; name?: string; id?: { open_id?: string } }>) => Promise<string | null>;
+  onCommand?: (
+    chatJid: string,
+    command: string,
+    senderImId?: string,
+    mentions?: Array<{ key?: string; name?: string; id?: { open_id?: string } }>,
+    messageMeta?: FeishuMessageMeta,
+  ) => Promise<string | null>;
   resolveGroupFolder?: (chatJid: string) => string | undefined;
   resolveEffectiveChatJid?: (
     chatJid: string,

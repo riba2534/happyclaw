@@ -17,7 +17,6 @@ import type { NewMessage, MessageCursor } from './types.js';
 
 export interface CommandDeps {
   queue: { stopGroup(jid: string, opts?: { force?: boolean }): Promise<void> };
-  sessions: Record<string, string>;
   broadcast: (jid: string, msg: NewMessage & { is_from_me: boolean }) => void;
   setLastAgentTimestamp: (jid: string, cursor: MessageCursor) => void;
 }
@@ -48,11 +47,8 @@ export async function executeSessionReset(
   // 2. Clear .claude/ session files (preserve settings.json)
   clearSessionFiles(folder, agentId);
 
-  // 3. Delete session from DB (+ in-memory cache for main session)
+  // 3. Delete runtime-aware native session state from DB.
   deleteSession(folder, agentId);
-  if (!agentId) {
-    delete deps.sessions[folder];
-  }
 
   // 4. Insert context_reset divider message into the correct JID
   const dividerMessageId = crypto.randomUUID();

@@ -13,6 +13,11 @@ import {
 import { DailySummaryDeps, runDailySummaryIfNeeded } from './daily-summary.js';
 import { getSystemSettings } from './runtime-config.js';
 import {
+  persistRuntimeNativeSession,
+  resolveRuntimeForSourceScope,
+} from './model-runtime.js';
+import { buildRuntimePrompt } from './runtime-input-builder.js';
+import {
   ContainerOutput,
   runContainerAgent,
   runHostAgent,
@@ -29,8 +34,10 @@ import {
   getTaskById,
   getUserById,
   getUserHomeGroup,
+  getConversationRuntimeState,
   logTaskRun,
   logTaskRunStart,
+  promotePendingConversationRuntimeBinding,
   updateTaskRunLog,
   setRegisteredGroup,
   updateChatName,
@@ -43,7 +50,12 @@ import { resolveTaskOwner } from './task-utils.js';
 import { removeFlowArtifacts } from './file-manager.js';
 import { hasScriptCapacity, runScript } from './script-runner.js';
 import type { StreamEvent } from './stream-event.types.js';
-import { ExecutionMode, RegisteredGroup, ScheduledTask } from './types.js';
+import {
+  ExecutionMode,
+  RegisteredGroup,
+  ScheduledTask,
+  type AgentRuntime,
+} from './types.js';
 import { checkBillingAccessFresh, isBillingEnabled } from './billing.js';
 import { stripAgentInternalTags } from './utils.js';
 
@@ -161,7 +173,6 @@ function ensureTaskWorkspace(
 
 export interface SchedulerDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
-  getSessions: () => Record<string, string>;
   queue: GroupQueue;
   onProcess: (
     groupJid: string,
@@ -171,6 +182,7 @@ export interface SchedulerDependencies {
     displayName?: string,
     taskRunId?: string,
     selectedProviderId?: string | null,
+    runtime?: AgentRuntime | null,
   ) => void;
   sendMessage: (
     jid: string,
@@ -378,8 +390,55 @@ async function runTask(
   };
 
   // Use persistent session for task workspace
-  const sessions = deps.getSessions();
-  const sessionId = sessions[workspace.folder];
+  const hadPendingModelBinding = !!getConversationRuntimeState(task.group_folder)
+    ?.pending_runtime;
+  if (hadPendingModelBinding) {
+    promotePendingConversationRuntimeBinding(task.group_folder);
+  }
+  const runtimeResolution = resolveRuntimeForSourceScope(
+    task.group_folder,
+    workspace.folder,
+  );
+  if (!runtimeResolution.availability.ok) {
+    error = runtimeResolution.availability.message;
+    updateTaskRunLog(runLogId, {
+      duration_ms: Date.now() - startTime,
+      status: 'error',
+      result: null,
+      error,
+    });
+    runningTaskIds.delete(task.id);
+    const nextRun = options?.manualRun ? task.next_run : computeNextRun(task);
+    updateTaskAfterRun(task.id, nextRun, `Error: ${error}`);
+    return;
+  }
+  const sessionId = runtimeResolution.nativeSession?.native_session_id;
+  const runtimeContext = buildRuntimePrompt({
+    runtime: runtimeResolution.binding.runtime,
+    groupFolder: task.group_folder,
+    chatJid: workspace.jid,
+    turnId: options?.taskRunId || task.id,
+    basePrompt: task.prompt,
+    sessionId,
+    nativeSession: runtimeResolution.nativeSession,
+    privacyMode: !!workspaceGroup.privacy_mode,
+    recentMessages: [],
+    forceSoftInjectionReason: hadPendingModelBinding
+      ? 'model_binding_changed'
+      : null,
+  });
+  const resumeFailureFallbackContext = buildRuntimePrompt({
+    runtime: runtimeResolution.binding.runtime,
+    groupFolder: task.group_folder,
+    chatJid: workspace.jid,
+    turnId: options?.taskRunId || task.id,
+    basePrompt: task.prompt,
+    sessionId: null,
+    nativeSession: undefined,
+    privacyMode: !!workspaceGroup.privacy_mode,
+    recentMessages: [],
+    forceSoftInjectionReason: 'native_resume_failed',
+  });
 
   // Idle timer: writes _close sentinel after idleTimeout of no output,
   // so the container exits instead of hanging at waitForIpcMessage forever.
@@ -409,7 +468,7 @@ async function runTask(
     const output = await runAgent(
       workspaceGroup,
       {
-        prompt: task.prompt,
+        prompt: runtimeContext.prompt,
         sessionId,
         groupFolder: workspace.folder,
         chatJid: workspace.jid,
@@ -418,6 +477,27 @@ async function runTask(
         isAdminHome,
         isScheduledTask: true,
         taskRunId: options?.taskRunId,
+        runtime: runtimeResolution.binding.runtime,
+        providerPoolId: runtimeResolution.binding.provider_pool_id,
+        providerId: runtimeResolution.providerId,
+        authProfileGeneration: runtimeResolution.authProfileGeneration,
+        authProfileFingerprint: runtimeResolution.authProfileFingerprint,
+        selectedModel: runtimeResolution.binding.selected_model,
+        modelKind: runtimeResolution.binding.model_kind,
+        resolvedModel: runtimeResolution.binding.resolved_model,
+        modelKey: runtimeResolution.modelKey,
+        modelOverride: runtimeResolution.modelOverride,
+        resumeMode: runtimeContext.resumeMode,
+        inputContextHash: runtimeContext.inputContextHash,
+        workspaceInstructionHash: runtimeContext.workspaceInstructionHash,
+        softInjectionReason: runtimeContext.softInjectionReason,
+        resumeFailureFallbackPrompt: resumeFailureFallbackContext.prompt,
+        resumeFailureFallbackInputContextHash:
+          resumeFailureFallbackContext.inputContextHash,
+        resumeFailureFallbackWorkspaceInstructionHash:
+          resumeFailureFallbackContext.workspaceInstructionHash,
+        resumeFailureFallbackSoftInjectionReason:
+          resumeFailureFallbackContext.softInjectionReason,
       },
       (proc, identifier, selectedProviderId) =>
         deps.onProcess(
@@ -428,8 +508,45 @@ async function runTask(
           identifier,
           options?.taskRunId,
           selectedProviderId,
+          runtimeResolution.binding.runtime,
         ),
       async (streamedOutput: ContainerOutput) => {
+        if (streamedOutput.streamEvent) {
+          streamedOutput = {
+            ...streamedOutput,
+            streamEvent: {
+              ...streamedOutput.streamEvent,
+              runtime:
+                streamedOutput.streamEvent.runtime ||
+                runtimeResolution.binding.runtime,
+            },
+          };
+        }
+        if (streamedOutput.newSessionId && streamedOutput.status !== 'error') {
+          persistRuntimeNativeSession(
+            runtimeResolution,
+            streamedOutput.newSessionId,
+            {
+              source: 'scheduled_task',
+              resumeMode:
+                streamedOutput.runtimeContext?.resumeMode ??
+                runtimeContext.resumeMode,
+              softInjectionReason:
+                streamedOutput.runtimeContext?.softInjectionReason ??
+                runtimeContext.softInjectionReason,
+            },
+            {
+              basedOnTurnId: options?.taskRunId || task.id,
+              inputContextHash:
+                streamedOutput.runtimeContext?.inputContextHash ??
+                runtimeContext.inputContextHash,
+              workspaceInstructionHash:
+                streamedOutput.runtimeContext?.workspaceInstructionHash ??
+                runtimeContext.workspaceInstructionHash,
+              summaryId: runtimeContext.summaryId,
+            },
+          );
+        }
         // Broadcast stream events to WebSocket clients viewing the task workspace
         if (streamedOutput.status === 'stream' && streamedOutput.streamEvent) {
           deps.broadcastStreamEvent?.(workspace.jid, streamedOutput.streamEvent);
@@ -461,6 +578,30 @@ async function runTask(
       // Messages are sent via MCP tool (IPC), result text is just logged
       result = output.result;
       lastOutputTime = Date.now();
+    }
+    if (output.newSessionId && output.status !== 'error') {
+      persistRuntimeNativeSession(
+        runtimeResolution,
+        output.newSessionId,
+        {
+          source: 'scheduled_task',
+          resumeMode:
+            output.runtimeContext?.resumeMode ?? runtimeContext.resumeMode,
+          softInjectionReason:
+            output.runtimeContext?.softInjectionReason ??
+            runtimeContext.softInjectionReason,
+        },
+        {
+          basedOnTurnId: options?.taskRunId || task.id,
+          inputContextHash:
+            output.runtimeContext?.inputContextHash ??
+            runtimeContext.inputContextHash,
+          workspaceInstructionHash:
+            output.runtimeContext?.workspaceInstructionHash ??
+            runtimeContext.workspaceInstructionHash,
+          summaryId: runtimeContext.summaryId,
+        },
+      );
     }
 
     // Finalize if not already done by onOutput callback

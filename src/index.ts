@@ -39,7 +39,6 @@ import {
   ensureUserHomeGroup,
   getAllChats,
   getAllRegisteredGroups,
-  getAllSessions,
   hasContainerModeGroups,
   getAllTasks,
   getJidsByFolder,
@@ -59,7 +58,6 @@ import {
   setLastGroupSync,
   setRegisteredGroup,
   setRouterState,
-  setSession,
   deleteSession,
   storeMessageDirect,
   updateLatestMessageTokenUsage,
@@ -76,7 +74,6 @@ import {
   markAllRunningTaskAgentsAsError,
   markStaleSpawnAgentsAsError,
   listActiveConversationAgents,
-  getSession,
   listAgentsByJid,
   getGroupsByOwner,
   getMessagesPage,
@@ -88,6 +85,13 @@ import {
   upsertImContextBinding,
   touchImContextBindingActivity,
   updateAgentContextInfo,
+  isPrivacyJid,
+  deletePrivacyMessages,
+  cleanupAllPrivacyMessages,
+  ensureConversationRuntimeState,
+  getConversationRuntimeState,
+  promotePendingConversationRuntimeBinding,
+  setConversationRuntimeBinding,
 } from './db.js';
 // feishu.js deprecated exports are no longer needed; imManager handles all connections
 import { imManager } from './im-manager.js';
@@ -120,6 +124,18 @@ import {
   resolveTaskRoutingDecision,
 } from './task-routing.js';
 import { invalidateSessionCache, getWebDeps } from './web-context.js';
+import {
+  persistRuntimeNativeSession,
+  resolveRuntimeForScope,
+  type RuntimeResolution,
+} from './model-runtime.js';
+import {
+  buildRuntimePrompt,
+  type RuntimeContextBuildResult,
+  type RuntimeContextMessage,
+} from './runtime-input-builder.js';
+import { formatModelList, shouldIncludeAllModelOptions } from './model-command.js';
+import { handleModelCommandForTarget } from './im-model-command.js';
 import {
   getFeishuProviderConfigWithSource,
   getTelegramProviderConfig,
@@ -177,6 +193,7 @@ import { normalizeImageAttachments } from './message-attachments.js';
 import {
   startWebServer,
   broadcastToWebClients,
+  broadcastModelChanged,
   broadcastNewMessage,
   broadcastTyping,
   broadcastStreamEvent,
@@ -216,6 +233,13 @@ export function feedStreamEventToCard(
   se: StreamEvent,
   accumulatedText: string,
 ): void {
+  if (
+    se.runtime &&
+    session instanceof StreamingCardController &&
+    (se.runtime === 'claude' || se.runtime === 'codex')
+  ) {
+    session.setRuntimeProfile(se.runtime);
+  }
   switch (se.eventType) {
     case 'text_delta':
       if (se.text) session.append(accumulatedText);
@@ -264,6 +288,9 @@ export function feedStreamEventToCard(
     case 'status':
       if (se.statusText && se.statusText !== 'interrupted') {
         session.setSystemStatus(se.statusText);
+        if (se.runtime === 'codex') {
+          session.pushRecentEvent(`状态: ${se.statusText}`);
+        }
       }
       break;
     case 'hook_started':
@@ -300,6 +327,26 @@ export function feedStreamEventToCard(
         session.pushRecentEvent(`✅ ${label}`);
       }
       break;
+    case 'assistant_text_boundary':
+      // New top-level assistant message arrived; previous text is a discrete
+      // prior segment. Only the Feishu card renders these as collapsed panels.
+      if (
+        se.segmentText &&
+        session instanceof StreamingCardController
+      ) {
+        session.addPriorTextSegment(se.segmentText);
+      }
+      break;
+    case 'sub_agent_result':
+      // Sub-agent (Task/Agent tool) completed; its tool_result text is
+      // extracted and rendered as a collapsed panel in the final card.
+      if (
+        se.subAgentResult &&
+        session instanceof StreamingCardController
+      ) {
+        session.addSubAgentResult(se.subAgentResult);
+      }
+      break;
     case 'hook_progress':
       // Update hook state (no card push needed — card already shows hook indicator)
       session.setHook({
@@ -317,12 +364,72 @@ export function feedStreamEventToCard(
 }
 
 let globalMessageCursor: MessageCursor = { timestamp: '', id: '' };
+// Legacy in-memory session cache kept for routes that clear stale Claude
+// sessions after provider changes. Runtime-aware session state now lives in DB.
 let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, MessageCursor> = {};
 // Recovery-safe cursor: only advances when an agent actually finishes processing.
 // recoverPendingMessages() uses this to detect IPC-injected but unprocessed messages.
 let lastCommittedCursor: Record<string, MessageCursor> = {};
+
+function getNativeSessionIdForResolution(
+  resolution: RuntimeResolution,
+): string | undefined {
+  if (resolution.nativeSession?.native_session_id) {
+    return resolution.nativeSession.native_session_id;
+  }
+  return undefined;
+}
+
+function persistNativeSessionForResolution(
+  resolution: RuntimeResolution,
+  nativeSessionId: string,
+  anchor?: {
+    basedOnMessageId?: string | null;
+    basedOnMessageTimestamp?: string | null;
+    basedOnTurnId?: string | null;
+    runtimeContext?: RuntimeContextBuildResult | null;
+  },
+): void {
+  persistRuntimeNativeSession(
+    resolution,
+    nativeSessionId,
+    {
+      source: 'agent_runner',
+      resumeMode: anchor?.runtimeContext?.resumeMode,
+      softInjectionReason: anchor?.runtimeContext?.softInjectionReason,
+      injectedBlockKinds: anchor?.runtimeContext?.injectedBlockKinds,
+    },
+    {
+      basedOnMessageId: anchor?.basedOnMessageId ?? null,
+      basedOnMessageTimestamp: anchor?.basedOnMessageTimestamp ?? null,
+      basedOnTurnId: anchor?.basedOnTurnId ?? null,
+      inputContextHash: anchor?.runtimeContext?.inputContextHash ?? null,
+      workspaceInstructionHash:
+        anchor?.runtimeContext?.workspaceInstructionHash ?? null,
+      summaryId: anchor?.runtimeContext?.summaryId ?? null,
+    },
+  );
+}
+
+function runtimeContextForOutput(
+  base: RuntimeContextBuildResult,
+  output: Pick<ContainerOutput, 'runtimeContext'>,
+): RuntimeContextBuildResult {
+  if (!output.runtimeContext) return base;
+  return {
+    ...base,
+    resumeMode: output.runtimeContext.resumeMode || base.resumeMode,
+    softInjectionReason:
+      output.runtimeContext.softInjectionReason ?? base.softInjectionReason,
+    inputContextHash:
+      output.runtimeContext.inputContextHash ?? base.inputContextHash,
+    workspaceInstructionHash:
+      output.runtimeContext.workspaceInstructionHash ??
+      base.workspaceInstructionHash,
+  };
+}
 
 /** Set both cursors directly (no max-merge) and persist. */
 function setCursors(jid: string, cursor: MessageCursor): void {
@@ -720,13 +827,19 @@ function writeUsageRecords(opts: {
     outputTokens: number;
     cacheReadInputTokens: number;
     cacheCreationInputTokens: number;
-    costUSD: number;
     durationMs: number;
     numTurns: number;
     modelUsage?: Record<
       string,
-      { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number; costUSD: number }
+      {
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadInputTokens: number;
+        cacheCreationInputTokens: number;
+        costUSD?: number;
+      }
     >;
+    costUSD?: number;
   };
 }): void {
   const { userId, groupFolder, messageId, agentId, usage } = opts;
@@ -743,10 +856,12 @@ function writeUsageRecords(opts: {
         outputTokens: mu.outputTokens,
         cacheReadInputTokens: mu.cacheReadInputTokens || 0,
         cacheCreationInputTokens: mu.cacheCreationInputTokens || 0,
-        costUSD: mu.costUSD,
+        costUSD: mu.costUSD ?? 0,
         durationMs: usage.durationMs,
         numTurns: usage.numTurns,
         source: 'agent',
+        costStatus: mu.costUSD === undefined ? 'unavailable' : 'exact',
+        costSource: mu.costUSD === undefined ? 'zero_fallback' : 'runtime',
       });
     }
   } else {
@@ -760,10 +875,12 @@ function writeUsageRecords(opts: {
       outputTokens: usage.outputTokens,
       cacheReadInputTokens: usage.cacheReadInputTokens,
       cacheCreationInputTokens: usage.cacheCreationInputTokens,
-      costUSD: usage.costUSD,
+      costUSD: usage.costUSD ?? 0,
       durationMs: usage.durationMs,
       numTurns: usage.numTurns,
       source: 'agent',
+      costStatus: usage.costUSD === undefined ? 'unavailable' : 'exact',
+      costSource: usage.costUSD === undefined ? 'zero_fallback' : 'runtime',
     });
   }
 }
@@ -1073,6 +1190,7 @@ async function handleCommand(
   command: string,
   senderImId?: string,
   mentions?: Array<{ key?: string; name?: string; id?: { open_id?: string } }>,
+  messageMeta?: FeishuMessageMeta,
 ): Promise<string | null> {
   const parts = command.split(/\s+/);
   const cmd = parts[0].toLowerCase();
@@ -1110,9 +1228,104 @@ async function handleCommand(
       return handleDisallowCommand(chatJid, senderImId, mentions);
     case 'allowlist':
       return handleAllowlistCommand(chatJid);
+    case 'model':
+      return handleModelCommand(chatJid, rawArgs, senderImId, messageMeta);
     default:
       return null;
   }
+}
+
+function resolveModelCommandTarget(
+  chatJid: string,
+  group: RegisteredGroup,
+  messageMeta?: FeishuMessageMeta,
+) {
+  if (
+    group.binding_mode === 'thread_map' &&
+    group.target_main_jid &&
+    getChannelType(chatJid) === 'feishu' &&
+    messageMeta?.threadId
+  ) {
+    const workspaceJid = resolveWorkspaceJid(group.target_main_jid);
+    const workspace = workspaceJid
+      ? registeredGroups[workspaceJid] ?? getRegisteredGroup(workspaceJid)
+      : undefined;
+    if (workspace && workspaceJid) {
+      const routed = resolveOrCreateThreadAgent(
+        chatJid,
+        workspaceJid,
+        workspace,
+        group,
+        { ...messageMeta, threadId: messageMeta.threadId },
+      );
+      const agent = getAgent(routed.agentId);
+      return {
+        ...routed,
+        baseChatJid: workspaceJid,
+        targetChatJid: routed.effectiveJid,
+        folder: workspace.folder,
+        agentId: routed.agentId,
+        locationLine: `${workspace.name || workspaceJid} / ${agent?.name || routed.agentId}`,
+      };
+    }
+  }
+
+  return resolveBoundChatTarget(
+    chatJid,
+    group,
+    (jid) => registeredGroups[jid] ?? getRegisteredGroup(jid),
+    getAgent,
+    findGroupNameByFolder,
+  );
+}
+
+function handleModelCommand(
+  chatJid: string,
+  rawArgs: string,
+  senderImId?: string,
+  messageMeta?: FeishuMessageMeta,
+): string {
+  const args = rawArgs.trim().split(/\s+/).filter(Boolean);
+  const subcommand = (args[0] || '').toLowerCase();
+
+  if (subcommand === 'list' || subcommand === 'ls') {
+    return formatModelList(shouldIncludeAllModelOptions(args.slice(1)));
+  }
+
+  const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
+  if (!group) return '当前 IM 未绑定工作区';
+
+  const target = resolveModelCommandTarget(chatJid, group, messageMeta);
+
+  if (subcommand === 'use') {
+    return handleModelCommandForTarget({
+      rawArgs,
+      target,
+      actor: senderImId ? `im:${senderImId}` : `im:${chatJid}`,
+      defaultUpdatedBy: group.created_by ?? null,
+      deps: {
+        ensureConversationRuntimeState,
+        setConversationRuntimeBinding,
+        broadcastModelChanged,
+      },
+    });
+  }
+
+  if (subcommand) {
+    return '可用命令：/model、/model list、/model use <claude|gpt> [model]';
+  }
+
+  return handleModelCommandForTarget({
+    rawArgs,
+    target,
+    actor: senderImId ? `im:${senderImId}` : `im:${chatJid}`,
+    defaultUpdatedBy: group.created_by ?? null,
+    deps: {
+      ensureConversationRuntimeState,
+      setConversationRuntimeBinding,
+      broadcastModelChanged,
+    },
+  });
 }
 
 async function handleClearCommand(chatJid: string): Promise<string> {
@@ -1133,7 +1346,6 @@ async function handleClearCommand(chatJid: string): Promise<string> {
       target.folder,
       {
         queue,
-        sessions,
         broadcast: broadcastNewMessage,
         setLastAgentTimestamp: setCursors,
       },
@@ -2192,7 +2404,6 @@ function loadState(): void {
     }
   }
 
-  sessions = getAllSessions();
   registeredGroups = getAllRegisteredGroups();
 
   // Restore persisted OOM counters
@@ -2284,14 +2495,11 @@ function loadState(): void {
       setRegisteredGroup(jid, group);
       registeredGroups[jid] = group;
       // 清除旧 session，避免恢复不兼容的 session
-      if (sessions[group.folder]) {
-        logger.info(
-          { folder: group.folder, expectedMode },
-          'Clearing stale session during execution mode migration',
-        );
-        delete sessions[group.folder];
-        deleteSession(group.folder);
-      }
+      logger.info(
+        { folder: group.folder, expectedMode },
+        'Clearing stale session during execution mode migration',
+      );
+      deleteSession(group.folder);
     }
   }
 
@@ -2471,6 +2679,25 @@ export function collectMessageImages(
     }
   }
   return images;
+}
+
+function collectRecentMessagesForRuntimeContext(
+  chatJid: string,
+  excludeMessageIds: Set<string>,
+  limit = 20,
+): RuntimeContextMessage[] {
+  const rows = getMessagesPage(chatJid, undefined, limit + excludeMessageIds.size)
+    .reverse()
+    .filter((message) => !excludeMessageIds.has(message.id))
+    .filter((message) => !!message.content?.trim())
+    .slice(-limit);
+  return rows.map((message) => ({
+    id: message.id,
+    sender_name: message.sender_name,
+    content: message.content,
+    timestamp: message.timestamp,
+    is_from_me: message.is_from_me,
+  }));
 }
 
 /**
@@ -2774,7 +3001,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let output:
     | { status: 'success' | 'error' | 'closed'; error?: string }
     | undefined;
-  let activeSessionId = getSession(effectiveGroup.folder) || undefined;
+  let activeSessionId: string | undefined;
+  let activeRuntimeResolution: RuntimeResolution | null = null;
+  let activeRuntimeContext: RuntimeContextBuildResult | null = null;
   try {
     output = await runAgent(
       effectiveGroup,
@@ -3271,6 +3500,27 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                 },
               });
               lastSavedTurnId = effectiveTurnId;
+              const persistedSessionId = result.sessionId || activeSessionId;
+              if (
+                persistedSessionId &&
+                result.status !== 'error' &&
+                activeRuntimeResolution &&
+                activeRuntimeContext
+              ) {
+                persistNativeSessionForResolution(
+                  activeRuntimeResolution,
+                  persistedSessionId,
+                  {
+                    basedOnMessageId: lastReplyMsgId,
+                    basedOnMessageTimestamp: new Date().toISOString(),
+                    basedOnTurnId: effectiveTurnId,
+                    runtimeContext: runtimeContextForOutput(
+                      activeRuntimeContext,
+                      result,
+                    ),
+                  },
+                );
+              }
 
               // For routed IM (web JID with IM source), only send the FIRST
               // substantive reply to IM. Subsequent results (e.g., SDK Task
@@ -3329,6 +3579,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       },
       imagesForAgent,
       messageTaskId,
+      {
+        excludeMessageIds: missedMessages.map((message) => message.id),
+        suppressRecentHistory: isRecovery,
+        onRuntimePrepared: (resolution, context) => {
+          activeRuntimeResolution = resolution;
+          activeRuntimeContext = context;
+          activeSessionId = getNativeSessionIdForResolution(resolution);
+        },
+      },
     );
   } finally {
     await setTyping(chatJid, false);
@@ -3453,7 +3712,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     // 清除当前主会话（保留同 folder 下独立 agent 会话）
     try {
       deleteSession(group.folder);
-      delete sessions[group.folder];
     } catch (err) {
       logger.error(
         { folder: group.folder, err },
@@ -3609,7 +3867,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         }
         try {
           deleteSession(folder);
-          delete sessions[folder];
         } catch (err) {
           logger.error(
             { folder, err },
@@ -3760,11 +4017,80 @@ async function runAgent(
   onOutput?: (output: ContainerOutput) => Promise<void>,
   images?: Array<{ data: string; mimeType?: string }>,
   messageTaskId?: string,
+  contextOptions?: {
+    excludeMessageIds?: string[];
+    suppressRecentHistory?: boolean;
+    onRuntimePrepared?: (
+      resolution: RuntimeResolution,
+      context: RuntimeContextBuildResult,
+    ) => void;
+  },
 ): Promise<{ status: 'success' | 'error' | 'closed'; error?: string }> {
   const isHome = !!group.is_home;
   // For the agent-runner: isMain means this is an admin home container (full privileges)
   const isAdminHome = isHome && group.folder === MAIN_GROUP_FOLDER;
-  const sessionId = sessions[group.folder];
+  const hadPendingModelBinding = !!getConversationRuntimeState(group.folder)
+    ?.pending_runtime;
+  promotePendingConversationRuntimeBinding(group.folder);
+  const runtimeResolution = resolveRuntimeForScope(group.folder);
+  if (!runtimeResolution.availability.ok) {
+    const unavailable = runtimeResolution.availability.message;
+    if (onOutput) {
+      await onOutput({
+        status: 'error',
+        result: unavailable,
+        error: runtimeResolution.availability.code,
+      });
+    }
+    return { status: 'error', error: unavailable };
+  }
+  const sessionId = getNativeSessionIdForResolution(runtimeResolution);
+  const recentRuntimeMessages = collectRecentMessagesForRuntimeContext(
+    chatJid,
+    new Set(contextOptions?.excludeMessageIds || []),
+  );
+  const runtimeContext = buildRuntimePrompt({
+    runtime: runtimeResolution.binding.runtime,
+    groupFolder: group.folder,
+    chatJid,
+    turnId,
+    basePrompt: prompt,
+    sessionId,
+    nativeSession: runtimeResolution.nativeSession,
+    privacyMode: !!group.privacy_mode,
+    recentMessages: recentRuntimeMessages,
+    suppressRecentHistory: contextOptions?.suppressRecentHistory,
+    forceSoftInjectionReason: hadPendingModelBinding
+      ? 'model_binding_changed'
+      : null,
+  });
+  const resumeFailureFallbackContext = buildRuntimePrompt({
+    runtime: runtimeResolution.binding.runtime,
+    groupFolder: group.folder,
+    chatJid,
+    turnId,
+    basePrompt: prompt,
+    sessionId: null,
+    nativeSession: undefined,
+    privacyMode: !!group.privacy_mode,
+    recentMessages: recentRuntimeMessages,
+    suppressRecentHistory: contextOptions?.suppressRecentHistory,
+    forceSoftInjectionReason: 'native_resume_failed',
+  });
+  prompt = runtimeContext.prompt;
+  contextOptions?.onRuntimePrepared?.(runtimeResolution, runtimeContext);
+  logger.info(
+    {
+      chatJid,
+      groupFolder: group.folder,
+      runtime: runtimeResolution.binding.runtime,
+      resumeMode: runtimeContext.resumeMode,
+      softInjectionReason: runtimeContext.softInjectionReason,
+      injectedBlockKinds: runtimeContext.injectedBlockKinds,
+      inputContextHash: runtimeContext.inputContextHash,
+    },
+    'Runtime input context prepared',
+  );
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
@@ -3806,8 +4132,22 @@ async function runAgent(
         // 仅从成功的输出中更新 session ID；
         // error 输出可能携带 stale ID，会覆盖流式传递的有效 session
         if (output.newSessionId && output.status !== 'error') {
-          sessions[group.folder] = output.newSessionId;
-          setSession(group.folder, output.newSessionId);
+          persistNativeSessionForResolution(
+            runtimeResolution,
+            output.newSessionId,
+            { runtimeContext: runtimeContextForOutput(runtimeContext, output) },
+          );
+        }
+        if (output.streamEvent) {
+          output = {
+            ...output,
+            streamEvent: {
+              ...output.streamEvent,
+              runtime:
+                output.streamEvent.runtime ||
+                runtimeResolution.binding.runtime,
+            },
+          };
         }
         await onOutput(output);
       }
@@ -3829,6 +4169,7 @@ async function runAgent(
         groupFolder: group.folder,
         displayName: identifier,
         selectedProviderId,
+        runtime: runtimeResolution.binding.runtime,
       });
     };
 
@@ -3850,6 +4191,27 @@ async function runAgent(
           isAdminHome,
           images,
           messageTaskId,
+          runtime: runtimeResolution.binding.runtime,
+          providerPoolId: runtimeResolution.binding.provider_pool_id,
+          providerId: runtimeResolution.providerId,
+          authProfileGeneration: runtimeResolution.authProfileGeneration,
+          authProfileFingerprint: runtimeResolution.authProfileFingerprint,
+          selectedModel: runtimeResolution.binding.selected_model,
+          modelKind: runtimeResolution.binding.model_kind,
+          resolvedModel: runtimeResolution.binding.resolved_model,
+          modelKey: runtimeResolution.modelKey,
+          modelOverride: runtimeResolution.modelOverride,
+          resumeMode: runtimeContext.resumeMode,
+          inputContextHash: runtimeContext.inputContextHash,
+          workspaceInstructionHash: runtimeContext.workspaceInstructionHash,
+          softInjectionReason: runtimeContext.softInjectionReason,
+          resumeFailureFallbackPrompt: resumeFailureFallbackContext.prompt,
+          resumeFailureFallbackInputContextHash:
+            resumeFailureFallbackContext.inputContextHash,
+          resumeFailureFallbackWorkspaceInstructionHash:
+            resumeFailureFallbackContext.workspaceInstructionHash,
+          resumeFailureFallbackSoftInjectionReason:
+            resumeFailureFallbackContext.softInjectionReason,
         },
         onProcessCb,
         wrappedOnOutput,
@@ -3869,6 +4231,27 @@ async function runAgent(
           isAdminHome,
           images,
           messageTaskId,
+          runtime: runtimeResolution.binding.runtime,
+          providerPoolId: runtimeResolution.binding.provider_pool_id,
+          providerId: runtimeResolution.providerId,
+          authProfileGeneration: runtimeResolution.authProfileGeneration,
+          authProfileFingerprint: runtimeResolution.authProfileFingerprint,
+          selectedModel: runtimeResolution.binding.selected_model,
+          modelKind: runtimeResolution.binding.model_kind,
+          resolvedModel: runtimeResolution.binding.resolved_model,
+          modelKey: runtimeResolution.modelKey,
+          modelOverride: runtimeResolution.modelOverride,
+          resumeMode: runtimeContext.resumeMode,
+          inputContextHash: runtimeContext.inputContextHash,
+          workspaceInstructionHash: runtimeContext.workspaceInstructionHash,
+          softInjectionReason: runtimeContext.softInjectionReason,
+          resumeFailureFallbackPrompt: resumeFailureFallbackContext.prompt,
+          resumeFailureFallbackInputContextHash:
+            resumeFailureFallbackContext.inputContextHash,
+          resumeFailureFallbackWorkspaceInstructionHash:
+            resumeFailureFallbackContext.workspaceInstructionHash,
+          resumeFailureFallbackSoftInjectionReason:
+            resumeFailureFallbackContext.softInjectionReason,
         },
         onProcessCb,
         wrappedOnOutput,
@@ -3879,8 +4262,9 @@ async function runAgent(
     // 仅从成功的最终输出中更新 session ID；
     // error 状态的输出可能携带 stale ID，覆盖流式阶段已写入的有效 session
     if (output.newSessionId && output.status !== 'error') {
-      sessions[group.folder] = output.newSessionId;
-      setSession(group.folder, output.newSessionId);
+      persistNativeSessionForResolution(runtimeResolution, output.newSessionId, {
+        runtimeContext: runtimeContextForOutput(runtimeContext, output),
+      });
     }
 
     // Agent was interrupted by _close sentinel (home folder drain).
@@ -5481,7 +5865,7 @@ async function processAgentConversation(
   updateAgentStatus(agentId, 'running');
   broadcastAgentStatus(chatJid, agentId, 'running', agent.name, agent.prompt);
 
-  const prompt = formatMessages(missedMessages, false);
+  let prompt = formatMessages(missedMessages, false);
   const images = collectMessageImages(virtualChatJid, missedMessages);
   const imagesForAgent = images.length > 0 ? images : undefined;
   // For agent conversations, route reply to IM based on the most recent
@@ -5584,14 +5968,96 @@ async function processAgentConversation(
     cursorCommitted = true;
   };
 
+  const hadPendingModelBinding = !!getConversationRuntimeState(
+    effectiveGroup.folder,
+    agentId,
+  )?.pending_runtime;
+  promotePendingConversationRuntimeBinding(effectiveGroup.folder, agentId);
+  const runtimeResolution = resolveRuntimeForScope(
+    effectiveGroup.folder,
+    agentId,
+  );
+  if (!runtimeResolution.availability.ok) {
+    const unavailable = runtimeResolution.availability.message;
+    await sendMessage(chatJid, unavailable, {
+      sendToIM: true,
+      source: virtualChatJid,
+      messageMeta: {
+        turnId: lastProcessed.id,
+        sourceKind: 'legacy',
+        finalizationReason: 'error',
+      },
+    });
+    commitCursor();
+    return;
+  }
+
   // Get or use agent-specific session
-  const sessionId = getSession(effectiveGroup.folder, agentId) || undefined;
+  const sessionId = getNativeSessionIdForResolution(runtimeResolution);
   let currentAgentSessionId = sessionId;
+  const recentAgentRuntimeMessages = collectRecentMessagesForRuntimeContext(
+    virtualChatJid,
+    new Set(missedMessages.map((message) => message.id)),
+  );
+  const runtimeContext = buildRuntimePrompt({
+    runtime: runtimeResolution.binding.runtime,
+    groupFolder: effectiveGroup.folder,
+    agentId,
+    chatJid: virtualChatJid,
+    turnId: lastProcessed.id,
+    basePrompt: prompt,
+    sessionId,
+    nativeSession: runtimeResolution.nativeSession,
+    privacyMode: !!effectiveGroup.privacy_mode,
+    recentMessages: recentAgentRuntimeMessages,
+    forceSoftInjectionReason: hadPendingModelBinding
+      ? 'model_binding_changed'
+      : null,
+  });
+  const resumeFailureFallbackContext = buildRuntimePrompt({
+    runtime: runtimeResolution.binding.runtime,
+    groupFolder: effectiveGroup.folder,
+    agentId,
+    chatJid: virtualChatJid,
+    turnId: lastProcessed.id,
+    basePrompt: prompt,
+    sessionId: null,
+    nativeSession: undefined,
+    privacyMode: !!effectiveGroup.privacy_mode,
+    recentMessages: recentAgentRuntimeMessages,
+    forceSoftInjectionReason: 'native_resume_failed',
+  });
+  prompt = runtimeContext.prompt;
+  logger.info(
+    {
+      chatJid,
+      agentId,
+      groupFolder: effectiveGroup.folder,
+      runtime: runtimeResolution.binding.runtime,
+      resumeMode: runtimeContext.resumeMode,
+      softInjectionReason: runtimeContext.softInjectionReason,
+      injectedBlockKinds: runtimeContext.injectedBlockKinds,
+      inputContextHash: runtimeContext.inputContextHash,
+    },
+    'Agent runtime input context prepared',
+  );
 
   const wrappedOnOutput = async (output: ContainerOutput) => {
+    if (output.streamEvent) {
+      output = {
+        ...output,
+        streamEvent: {
+          ...output.streamEvent,
+          runtime:
+            output.streamEvent.runtime || runtimeResolution.binding.runtime,
+        },
+      };
+    }
     // Track session
     if (output.newSessionId && output.status !== 'error') {
-      setSession(effectiveGroup.folder, output.newSessionId, agentId);
+      persistNativeSessionForResolution(runtimeResolution, output.newSessionId, {
+        runtimeContext: runtimeContextForOutput(runtimeContext, output),
+      });
       currentAgentSessionId = output.newSessionId;
     }
 
@@ -5772,6 +6238,19 @@ async function processAgentConversation(
             },
           },
         );
+        const persistedSessionId = output.sessionId || currentAgentSessionId;
+        if (persistedSessionId && output.status !== 'error') {
+          persistNativeSessionForResolution(
+            runtimeResolution,
+            persistedSessionId,
+            {
+              basedOnMessageId: persistedMsgId,
+              basedOnMessageTimestamp: timestamp,
+              basedOnTurnId: output.turnId || lastProcessed.id,
+              runtimeContext: runtimeContextForOutput(runtimeContext, output),
+            },
+          );
+        }
         broadcastNewMessage(
           virtualChatJid,
           {
@@ -5938,6 +6417,7 @@ async function processAgentConversation(
         displayName: identifier,
         agentId,
         selectedProviderId,
+        runtime: runtimeResolution.binding.runtime,
       });
     };
 
@@ -5953,6 +6433,27 @@ async function processAgentConversation(
       agentId,
       agentName: agent.name,
       images: imagesForAgent,
+      runtime: runtimeResolution.binding.runtime,
+      providerPoolId: runtimeResolution.binding.provider_pool_id,
+      providerId: runtimeResolution.providerId,
+      authProfileGeneration: runtimeResolution.authProfileGeneration,
+      authProfileFingerprint: runtimeResolution.authProfileFingerprint,
+      selectedModel: runtimeResolution.binding.selected_model,
+      modelKind: runtimeResolution.binding.model_kind,
+      resolvedModel: runtimeResolution.binding.resolved_model,
+      modelKey: runtimeResolution.modelKey,
+      modelOverride: runtimeResolution.modelOverride,
+      resumeMode: runtimeContext.resumeMode,
+      inputContextHash: runtimeContext.inputContextHash,
+      workspaceInstructionHash: runtimeContext.workspaceInstructionHash,
+      softInjectionReason: runtimeContext.softInjectionReason,
+      resumeFailureFallbackPrompt: resumeFailureFallbackContext.prompt,
+      resumeFailureFallbackInputContextHash:
+        resumeFailureFallbackContext.inputContextHash,
+      resumeFailureFallbackWorkspaceInstructionHash:
+        resumeFailureFallbackContext.workspaceInstructionHash,
+      resumeFailureFallbackSoftInjectionReason:
+        resumeFailureFallbackContext.softInjectionReason,
     };
 
     // Write tasks/groups snapshots
@@ -6001,7 +6502,9 @@ async function processAgentConversation(
 
     // Finalize session
     if (output.newSessionId && output.status !== 'error') {
-      setSession(effectiveGroup.folder, output.newSessionId, agentId);
+      persistNativeSessionForResolution(runtimeResolution, output.newSessionId, {
+        runtimeContext: runtimeContextForOutput(runtimeContext, output),
+      });
     }
 
     // 不可恢复的转录错误（如超大图片/MIME 错配被固化在会话历史中）
@@ -6526,14 +7029,11 @@ function recoverPendingMessages(): void {
     if (pending.length > 0) {
       // Clear stale session to avoid "session ghost" — the agent will start
       // a fresh conversation and process the pending messages cleanly.
-      if (sessions[group.folder]) {
-        logger.info(
-          { group: group.name, folder: group.folder },
-          'Recovery: clearing stale session to prevent session ghost',
-        );
-        delete sessions[group.folder];
-        deleteSession(group.folder);
-      }
+      logger.info(
+        { group: group.name, folder: group.folder },
+        'Recovery: clearing stale session to prevent session ghost',
+      );
+      deleteSession(group.folder);
 
       logger.info(
         { group: group.name, pendingCount: pending.length },
@@ -8341,7 +8841,6 @@ async function main(): Promise<void> {
   });
   const schedulerDeps: import('./task-scheduler.js').SchedulerDependencies = {
     registeredGroups: () => registeredGroups,
-    getSessions: () => sessions,
     queue,
     onProcess: (
       groupJid,
@@ -8351,6 +8850,7 @@ async function main(): Promise<void> {
       displayName,
       taskRunId,
       selectedProviderId,
+      runtime,
     ) =>
       queue.registerProcess(groupJid, proc, {
         containerName,
@@ -8358,6 +8858,7 @@ async function main(): Promise<void> {
         displayName,
         taskRunId,
         selectedProviderId,
+        runtime,
       }),
     sendMessage,
     broadcastStreamEvent,
