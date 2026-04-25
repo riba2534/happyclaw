@@ -128,6 +128,7 @@ function deps() {
       }),
     ),
     broadcastModelChanged: vi.fn(),
+    startModelSwitch: vi.fn(),
   };
 }
 
@@ -144,6 +145,7 @@ describe('IM model command target execution', () => {
       rawArgs: 'use gpt gpt-5.5',
       target: {
         baseChatJid: 'web:flow',
+        targetChatJid: 'web:flow',
         folder: 'flow',
         agentId: '',
         locationLine: 'Flow',
@@ -153,23 +155,22 @@ describe('IM model command target execution', () => {
       deps: d,
     });
 
-    expect(reply).toContain('已切换 Flow 的模型为 gpt gpt-5.5');
-    expect(d.setConversationRuntimeBinding).toHaveBeenCalledWith(
-      'flow',
-      '',
-      expect.objectContaining({
+    expect(reply).toContain('正在切换 Flow 的模型为 gpt gpt-5.5');
+    expect(d.startModelSwitch).toHaveBeenCalledWith({
+      target: expect.objectContaining({
+        baseChatJid: 'web:flow',
+        targetChatJid: 'web:flow',
+        folder: 'flow',
+        agentId: '',
+      }),
+      actor: 'im:ou-test',
+      binding: expect.objectContaining({
         runtime: 'codex',
         provider_pool_id: 'gpt',
         selected_model: 'gpt-5.5',
       }),
-      'user_pinned',
-      'im:ou-test',
-      { markPending: true },
-    );
-    expect(d.broadcastModelChanged).toHaveBeenCalledWith(
-      'web:flow',
-      undefined,
-    );
+    });
+    expect(d.setConversationRuntimeBinding).not.toHaveBeenCalled();
   });
 
   it('switches a thread-map conversation agent target', () => {
@@ -178,6 +179,7 @@ describe('IM model command target execution', () => {
       rawArgs: 'use claude opus',
       target: {
         baseChatJid: 'web:flow',
+        targetChatJid: 'web:flow#agent:agent-thread-1',
         folder: 'flow',
         agentId: 'agent-thread-1',
         locationLine: 'Flow / Thread Agent',
@@ -188,22 +190,20 @@ describe('IM model command target execution', () => {
     });
 
     expect(reply).toContain('Flow / Thread Agent');
-    expect(d.setConversationRuntimeBinding).toHaveBeenCalledWith(
-      'flow',
-      'agent-thread-1',
-      expect.objectContaining({
+    expect(d.startModelSwitch).toHaveBeenCalledWith({
+      target: expect.objectContaining({
+        baseChatJid: 'web:flow',
+        targetChatJid: 'web:flow#agent:agent-thread-1',
+        folder: 'flow',
+        agentId: 'agent-thread-1',
+      }),
+      actor: 'im:ou-test',
+      binding: expect.objectContaining({
         runtime: 'claude',
         provider_pool_id: 'claude',
         selected_model: 'opus',
       }),
-      'user_pinned',
-      'im:ou-test',
-      { markPending: true },
-    );
-    expect(d.broadcastModelChanged).toHaveBeenCalledWith(
-      'web:flow',
-      'agent-thread-1',
-    );
+    });
   });
 
   it('reports the target state for /model without mutating bindings', () => {
@@ -212,6 +212,7 @@ describe('IM model command target execution', () => {
       rawArgs: '',
       target: {
         baseChatJid: 'web:flow',
+        targetChatJid: 'web:flow',
         folder: 'flow',
         agentId: '',
         locationLine: 'Flow',

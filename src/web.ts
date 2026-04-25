@@ -113,6 +113,7 @@ import {
   parseModelBindingFromArgs,
   shouldIncludeAllModelOptions,
 } from './model-command.js';
+import { createModelSwitchHandoffSummary } from './model-switch-handoff.js';
 
 // --- App Setup ---
 
@@ -143,12 +144,73 @@ function releaseTerminalOwnership(ws: WebSocket, groupJid: string): void {
   }
 }
 
+function startWebModelSwitch(input: {
+  baseChatJid: string;
+  targetChatJid: string;
+  folder: string;
+  agentId?: string | null;
+  binding: NonNullable<ReturnType<typeof parseModelBindingFromArgs>['binding']>;
+  userId: string;
+  excludeMessageIds?: Set<string>;
+  privacyMode?: boolean;
+}): void {
+  void (async () => {
+    try {
+      const summary = input.privacyMode
+        ? null
+        : await createModelSwitchHandoffSummary({
+            groupFolder: input.folder,
+            agentId: input.agentId || '',
+            chatJid: input.targetChatJid,
+            reason: 'model_binding_changed',
+            createdBy: input.userId,
+            excludeMessageIds: input.excludeMessageIds,
+          });
+      const state = setConversationRuntimeBinding(
+        input.folder,
+        input.agentId || '',
+        input.binding,
+        'user_pinned',
+        input.userId,
+        { markPending: true, handoffSummaryId: summary?.id ?? null },
+      );
+      broadcastModelChanged(input.baseChatJid, input.agentId || undefined);
+      const summaryNote = input.privacyMode
+        ? '当前会话启用了隐私模式，未生成持久上下文摘要。'
+        : summary?.fallback_used
+          ? `已生成兜底上下文摘要（${summary.source_message_count} 条消息）。`
+          : `已生成上下文摘要（${summary?.source_message_count ?? 0} 条消息）。`;
+      storeAndBroadcastCommandReply(
+        input.targetChatJid,
+        `已切换当前${input.agentId ? ' conversation agent' : '主对话'}模型为 ${state.provider_pool_id} ${formatModelLabel(state.selected_model)}。\n${summaryNote}\n下一条消息开始生效。`,
+        input.agentId || undefined,
+      );
+    } catch (err) {
+      logger.error(
+        {
+          err,
+          folder: input.folder,
+          agentId: input.agentId || '',
+          targetChatJid: input.targetChatJid,
+        },
+        'Web model switch handoff failed',
+      );
+      storeAndBroadcastCommandReply(
+        input.targetChatJid,
+        '模型切换失败：无法生成上下文摘要，当前模型未改变。请稍后重试。',
+        input.agentId || undefined,
+      );
+    }
+  })();
+}
+
 function handleWebModelCommand(input: {
   baseChatJid: string;
   group: ReturnType<typeof getRegisteredGroup>;
   agentId?: string | null;
   content: string;
   user: { id: string; role: UserRole };
+  excludeMessageIds?: Set<string>;
 }): string | null {
   const trimmed = input.content.trim();
   if (!/^\/model(?:\s|$)/i.test(trimmed)) return null;
@@ -190,16 +252,22 @@ function handleWebModelCommand(input: {
   const parsed = parseModelBindingFromArgs(parts.slice(2));
   if (!parsed.binding) return parsed.error || '模型切换失败。';
 
-  const state = setConversationRuntimeBinding(
-    input.group.folder,
-    input.agentId || '',
-    parsed.binding,
-    'user_pinned',
-    input.user.id,
-    { markPending: true },
-  );
-  broadcastModelChanged(input.baseChatJid, input.agentId || undefined);
-  return `已切换当前${input.agentId ? ' conversation agent' : '主对话'}模型为 ${state.provider_pool_id} ${formatModelLabel(state.selected_model)}，下一条消息开始生效。`;
+  startWebModelSwitch({
+    baseChatJid: input.baseChatJid,
+    targetChatJid: input.agentId
+      ? `${input.baseChatJid}#agent:${input.agentId}`
+      : input.baseChatJid,
+    folder: input.group.folder,
+    agentId: input.agentId || '',
+    binding: parsed.binding,
+    userId: input.user.id,
+    excludeMessageIds: input.excludeMessageIds,
+    privacyMode: !!input.group.privacy_mode,
+  });
+  const handoffText = input.group.privacy_mode
+    ? '当前为隐私模式，不生成持久上下文摘要。'
+    : '正在生成上下文摘要。';
+  return `正在切换当前${input.agentId ? ' conversation agent' : '主对话'}模型为 ${parsed.binding.provider_pool_id} ${formatModelLabel(parsed.binding.selected_model)}，${handoffText}完成后下一条消息开始生效。`;
 }
 
 // --- CORS Middleware ---
@@ -410,6 +478,7 @@ async function handleWebUserMessage(
     group: { ...group, jid: chatJid },
     content,
     user: { id: userId, role: getUserById(userId)?.role || 'member' },
+    excludeMessageIds: new Set([messageId]),
   });
   if (modelCommandReply !== null) {
     storeAndBroadcastCommandReply(chatJid, modelCommandReply);
@@ -607,6 +676,7 @@ async function handleAgentConversationMessage(
     agentId,
     content,
     user: { id: userId, role: getUserById(userId)?.role || 'member' },
+    excludeMessageIds: new Set([messageId]),
   });
   if (modelCommandReply !== null) {
     storeAndBroadcastCommandReply(virtualChatJid, modelCommandReply, agentId);

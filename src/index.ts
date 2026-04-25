@@ -89,6 +89,7 @@ import {
   deletePrivacyMessages,
   cleanupAllPrivacyMessages,
   ensureConversationRuntimeState,
+  getConversationHandoffSummary,
   getConversationRuntimeState,
   promotePendingConversationRuntimeBinding,
   setConversationRuntimeBinding,
@@ -135,7 +136,11 @@ import {
   type RuntimeContextMessage,
 } from './runtime-input-builder.js';
 import { formatModelList, shouldIncludeAllModelOptions } from './model-command.js';
-import { handleModelCommandForTarget } from './im-model-command.js';
+import {
+  handleModelCommandForTarget,
+  type ModelSwitchStartInput,
+} from './im-model-command.js';
+import { createModelSwitchHandoffSummary } from './model-switch-handoff.js';
 import {
   getFeishuProviderConfigWithSource,
   getTelegramProviderConfig,
@@ -223,6 +228,8 @@ const DEFAULT_MAIN_JID = 'web:main';
 const DEFAULT_MAIN_NAME = 'Main';
 const SAFE_REQUEST_ID_RE = /^[A-Za-z0-9_-]+$/;
 const OOM_EXIT_RE = /code 137/;
+
+type RuntimeUsage = NonNullable<StreamEvent['usage']>;
 
 /**
  * Feed a stream event into a Feishu streaming card controller.
@@ -822,6 +829,7 @@ function writeUsageRecords(opts: {
   groupFolder: string;
   messageId?: string;
   agentId?: string;
+  runtimeResolution?: RuntimeResolution | null;
   usage: {
     inputTokens: number;
     outputTokens: number;
@@ -842,7 +850,30 @@ function writeUsageRecords(opts: {
     costUSD?: number;
   };
 }): void {
-  const { userId, groupFolder, messageId, agentId, usage } = opts;
+  const { userId, groupFolder, messageId, agentId, runtimeResolution, usage } =
+    opts;
+  const runtimeMetadata = runtimeResolution
+    ? {
+        runtime: runtimeResolution.binding.runtime,
+        providerFamily: runtimeResolution.binding.provider_family,
+        providerPoolId: runtimeResolution.binding.provider_pool_id,
+        providerId: runtimeResolution.providerId,
+        authProfileGeneration: runtimeResolution.authProfileGeneration,
+        selectedModel: runtimeResolution.binding.selected_model ?? null,
+        resolvedModel:
+          runtimeResolution.binding.resolved_model ??
+          runtimeResolution.modelOverride ??
+          null,
+        usageMetadataJson: JSON.stringify({
+          modelKey: runtimeResolution.modelKey,
+          modelKind: runtimeResolution.binding.model_kind,
+          authProfileFingerprint: runtimeResolution.authProfileFingerprint,
+        }),
+      }
+    : {};
+  const fallbackModel = runtimeResolution
+    ? `${runtimeResolution.binding.runtime}:${runtimeResolution.modelOverride || runtimeResolution.binding.resolved_model || runtimeResolution.binding.selected_model || runtimeResolution.modelKey}`
+    : 'unknown';
   if (usage.modelUsage) {
     const models = Object.entries(usage.modelUsage);
     for (const [model, mu] of models) {
@@ -860,6 +891,7 @@ function writeUsageRecords(opts: {
         durationMs: usage.durationMs,
         numTurns: usage.numTurns,
         source: 'agent',
+        ...runtimeMetadata,
         costStatus: mu.costUSD === undefined ? 'unavailable' : 'exact',
         costSource: mu.costUSD === undefined ? 'zero_fallback' : 'runtime',
       });
@@ -870,7 +902,7 @@ function writeUsageRecords(opts: {
       groupFolder,
       agentId,
       messageId,
-      model: 'unknown',
+      model: fallbackModel,
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       cacheReadInputTokens: usage.cacheReadInputTokens,
@@ -879,6 +911,7 @@ function writeUsageRecords(opts: {
       durationMs: usage.durationMs,
       numTurns: usage.numTurns,
       source: 'agent',
+      ...runtimeMetadata,
       costStatus: usage.costUSD === undefined ? 'unavailable' : 'exact',
       costSource: usage.costUSD === undefined ? 'zero_fallback' : 'runtime',
     });
@@ -1279,6 +1312,81 @@ function resolveModelCommandTarget(
   );
 }
 
+function formatModelSwitchDoneMessage(
+  target: ModelSwitchStartInput['target'],
+  state: ReturnType<typeof setConversationRuntimeBinding>,
+  summaryMessageCount: number | null,
+  fallbackUsed: boolean,
+  privacyMode: boolean,
+): string {
+  const summaryNote = privacyMode
+    ? '当前会话启用了隐私模式，未生成持久上下文摘要。'
+    : fallbackUsed
+      ? `已生成兜底上下文摘要（${summaryMessageCount ?? 0} 条消息）。`
+      : `已生成上下文摘要（${summaryMessageCount ?? 0} 条消息）。`;
+  return `已切换 ${target.locationLine} 的模型为 ${state.provider_pool_id} ${state.selected_model || 'default'}。\n${summaryNote}\n下一条消息开始生效。`;
+}
+
+function startModelSwitchWithHandoff(
+  input: ModelSwitchStartInput & {
+    notify: (message: string) => Promise<void>;
+    excludeMessageIds?: Set<string>;
+  },
+): void {
+  void (async () => {
+    try {
+      const targetGroup =
+        registeredGroups[input.target.baseChatJid] ??
+        getRegisteredGroup(input.target.baseChatJid);
+      const privacyMode = !!targetGroup?.privacy_mode;
+      const summary = privacyMode
+        ? null
+        : await createModelSwitchHandoffSummary({
+            groupFolder: input.target.folder,
+            agentId: input.target.agentId || '',
+            chatJid: input.target.targetChatJid,
+            reason: 'model_binding_changed',
+            createdBy: input.actor,
+            excludeMessageIds: input.excludeMessageIds,
+          });
+      const state = setConversationRuntimeBinding(
+        input.target.folder,
+        input.target.agentId ?? '',
+        input.binding,
+        'user_pinned',
+        input.actor,
+        { markPending: true, handoffSummaryId: summary?.id ?? null },
+      );
+      broadcastModelChanged(
+        input.target.baseChatJid,
+        input.target.agentId || undefined,
+      );
+      await input.notify(
+        formatModelSwitchDoneMessage(
+          input.target,
+          state,
+          summary?.source_message_count ?? null,
+          summary?.fallback_used ?? false,
+          privacyMode,
+        ),
+      );
+    } catch (err) {
+      logger.error(
+        {
+          err,
+          folder: input.target.folder,
+          agentId: input.target.agentId || '',
+          targetChatJid: input.target.targetChatJid,
+        },
+        'Model switch handoff failed',
+      );
+      await input.notify(
+        `模型切换失败：无法生成上下文摘要，当前模型未改变。请稍后重试。`,
+      );
+    }
+  })();
+}
+
 function handleModelCommand(
   chatJid: string,
   rawArgs: string,
@@ -1307,6 +1415,16 @@ function handleModelCommand(
         ensureConversationRuntimeState,
         setConversationRuntimeBinding,
         broadcastModelChanged,
+        startModelSwitch: (request) =>
+          startModelSwitchWithHandoff({
+            ...request,
+            notify: async (message) => {
+              await sendMessage(chatJid, message, {
+                sendToIM: true,
+                source: request.target.targetChatJid,
+              });
+            },
+          }),
       },
     });
   }
@@ -1324,6 +1442,16 @@ function handleModelCommand(
       ensureConversationRuntimeState,
       setConversationRuntimeBinding,
       broadcastModelChanged,
+      startModelSwitch: (request) =>
+        startModelSwitchWithHandoff({
+          ...request,
+          notify: async (message) => {
+            await sendMessage(chatJid, message, {
+              sendToIM: true,
+              source: request.target.targetChatJid,
+            });
+          },
+        }),
     },
   });
 }
@@ -2865,8 +2993,97 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let cursorCommitted = false;
   let lastReplyMsgId: string | undefined;
   let lastSavedTurnId: string | undefined; // tracks last turnId saved to DB, prevents UPSERT overwrite
+  let activeSessionId: string | undefined;
+  let activeRuntimeResolution: RuntimeResolution | null = null;
+  let activeRuntimeContext: RuntimeContextBuildResult | null = null;
+  let pendingUsage: RuntimeUsage | null = null;
+  let completedStreamingSessionForUsage: StreamingSession | null = null;
   const queryTaskIds = new Set<string>();
   const lastProcessed = missedMessages[missedMessages.length - 1];
+
+  const patchCompletedStreamingSessionUsage = async (
+    usage: RuntimeUsage,
+  ): Promise<void> => {
+    if (!completedStreamingSessionForUsage) return;
+    const session = completedStreamingSessionForUsage;
+    completedStreamingSessionForUsage = null;
+    try {
+      await session.patchUsageNote(usage);
+    } catch (err) {
+      logger.warn({ err, chatJid }, 'Failed to patch streaming card usage');
+    }
+  };
+
+  const persistUsageForReply = async (
+    usage: RuntimeUsage,
+    messageId: string,
+  ): Promise<void> => {
+    updateLatestMessageTokenUsage(
+      chatJid,
+      JSON.stringify(usage),
+      messageId,
+      usage.costUSD,
+    );
+
+    writeUsageRecords({
+      userId: effectiveGroup.created_by || 'system',
+      groupFolder: effectiveGroup.folder,
+      messageId,
+      runtimeResolution: activeRuntimeResolution,
+      usage,
+    });
+
+    logger.debug(
+      {
+        chatJid,
+        msgId: messageId,
+        costUSD: usage.costUSD,
+        inputTokens: usage.inputTokens,
+      },
+      'Token usage persisted',
+    );
+
+    const ownerGroup = registeredGroups[chatJid];
+    if (ownerGroup?.created_by && usage.costUSD) {
+      try {
+        const effective = updateUsage(
+          ownerGroup.created_by,
+          usage.costUSD,
+          usage.inputTokens || 0,
+          usage.outputTokens || 0,
+        );
+        deductUsageCost(ownerGroup.created_by, usage.costUSD, messageId, effective);
+        const owner = getUserById(ownerGroup.created_by);
+        if (owner && owner.role !== 'admin') {
+          const freshAccess = checkBillingAccessFresh(
+            ownerGroup.created_by,
+            owner.role,
+          );
+          if (freshAccess.usage) {
+            broadcastBillingUpdate(ownerGroup.created_by, {
+              ...freshAccess,
+            });
+          }
+        }
+      } catch (billingErr) {
+        logger.warn({ err: billingErr, chatJid }, 'Failed to update billing usage');
+      }
+    }
+  };
+
+  const flushPendingUsageForReply = async (
+    messageId: string | undefined,
+  ): Promise<void> => {
+    if (!pendingUsage || !messageId) return;
+    const usage = pendingUsage;
+    pendingUsage = null;
+    try {
+      await persistUsageForReply(usage, messageId);
+      await patchCompletedStreamingSessionUsage(usage);
+    } catch (err) {
+      logger.warn({ err, chatJid }, 'Failed to persist deferred token usage');
+    }
+  };
 
   // ── Feishu Streaming Card ──
   // Create a streaming session for Feishu channels (typing-machine effect).
@@ -3001,9 +3218,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let output:
     | { status: 'success' | 'error' | 'closed'; error?: string }
     | undefined;
-  let activeSessionId: string | undefined;
-  let activeRuntimeResolution: RuntimeResolution | null = null;
-  let activeRuntimeContext: RuntimeContextBuildResult | null = null;
   try {
     output = await runAgent(
       effectiveGroup,
@@ -3099,6 +3313,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                       finalizationReason: 'interrupted',
                     },
                   });
+                  await flushPendingUsageForReply(lastReplyMsgId);
                   sentReply = true;
                   clearStreamingSnapshot(chatJid);
                   streamingAccumulatedText = '';
@@ -3266,70 +3481,22 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
             // Persist token usage to the latest agent message + usage_records
             if (se.eventType === 'usage' && se.usage) {
-              try {
-                updateLatestMessageTokenUsage(
-                  chatJid,
-                  JSON.stringify(se.usage),
-                  lastReplyMsgId,
-                  se.usage.costUSD,
-                );
-
-                // Write to usage_records + usage_daily_summary
-                writeUsageRecords({
-                  userId: effectiveGroup.created_by || 'system',
-                  groupFolder: effectiveGroup.folder,
-                  messageId: lastReplyMsgId,
-                  usage: se.usage,
-                });
-
+              if (!lastReplyMsgId) {
+                pendingUsage = se.usage;
                 logger.debug(
-                  {
-                    chatJid,
-                    msgId: lastReplyMsgId,
-                    costUSD: se.usage.costUSD,
-                    inputTokens: se.usage.inputTokens,
-                  },
-                  'Token usage persisted',
+                  { chatJid, inputTokens: se.usage.inputTokens },
+                  'Token usage deferred until reply message exists',
                 );
-
-                // Update billing monthly usage
-                const ownerGroup = registeredGroups[chatJid];
-                if (ownerGroup?.created_by && se.usage.costUSD) {
-                  try {
-                    const effective = updateUsage(
-                      ownerGroup.created_by,
-                      se.usage.costUSD,
-                      se.usage.inputTokens || 0,
-                      se.usage.outputTokens || 0,
-                    );
-                    deductUsageCost(
-                      ownerGroup.created_by,
-                      se.usage.costUSD,
-                      lastReplyMsgId || chatJid,
-                      effective,
-                    );
-                    // Broadcast real-time billing update to the user
-                    const owner = getUserById(ownerGroup.created_by);
-                    if (owner && owner.role !== 'admin') {
-                      const freshAccess = checkBillingAccessFresh(
-                        ownerGroup.created_by,
-                        owner.role,
-                      );
-                      if (freshAccess.usage) {
-                        broadcastBillingUpdate(ownerGroup.created_by, {
-                          ...freshAccess,
-                        });
-                      }
-                    }
-                  } catch (billingErr) {
-                    logger.warn(
-                      { err: billingErr, chatJid },
-                      'Failed to update billing usage',
-                    );
-                  }
+              } else {
+                try {
+                  await persistUsageForReply(se.usage, lastReplyMsgId);
+                  await patchCompletedStreamingSessionUsage(se.usage);
+                } catch (err) {
+                  logger.warn(
+                    { err, chatJid },
+                    'Failed to persist token usage',
+                  );
                 }
-              } catch (err) {
-                logger.warn({ err, chatJid }, 'Failed to persist token usage');
               }
             }
 
@@ -3390,6 +3557,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               if (streamingSession?.isActive()) {
                 try {
                   await streamingSession.complete(text);
+                  completedStreamingSessionForUsage = streamingSession;
                   streamingCardHandledIM = true;
                   // Streaming card replaced the normal sendMessage path,
                   // so clear the ack reaction that would normally be cleared in sendMessage.
@@ -3499,6 +3667,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                   finalizationReason: result.finalizationReason || 'completed',
                 },
               });
+              await flushPendingUsageForReply(lastReplyMsgId);
               lastSavedTurnId = effectiveTurnId;
               const persistedSessionId = result.sessionId || activeSessionId;
               if (
@@ -4029,8 +4198,13 @@ async function runAgent(
   const isHome = !!group.is_home;
   // For the agent-runner: isMain means this is an admin home container (full privileges)
   const isAdminHome = isHome && group.folder === MAIN_GROUP_FOLDER;
-  const hadPendingModelBinding = !!getConversationRuntimeState(group.folder)
-    ?.pending_runtime;
+  const runtimeStateBeforePromotion = getConversationRuntimeState(group.folder);
+  const hadPendingModelBinding = !!runtimeStateBeforePromotion?.pending_runtime;
+  const handoffSummary = hadPendingModelBinding
+    ? getConversationHandoffSummary(
+        runtimeStateBeforePromotion?.pending_handoff_summary_id,
+      )
+    : undefined;
   promotePendingConversationRuntimeBinding(group.folder);
   const runtimeResolution = resolveRuntimeForScope(group.folder);
   if (!runtimeResolution.availability.ok) {
@@ -4059,6 +4233,9 @@ async function runAgent(
     nativeSession: runtimeResolution.nativeSession,
     privacyMode: !!group.privacy_mode,
     recentMessages: recentRuntimeMessages,
+    handoffSummary: handoffSummary
+      ? { id: handoffSummary.id, text: handoffSummary.summary_text }
+      : null,
     suppressRecentHistory: contextOptions?.suppressRecentHistory,
     forceSoftInjectionReason: hadPendingModelBinding
       ? 'model_binding_changed'
@@ -5958,7 +6135,67 @@ async function processAgentConversation(
   let lastError = '';
   let lastAgentReplyMsgId: string | undefined;
   let lastAgentReplyText: string | undefined;
+  let pendingAgentUsage: RuntimeUsage | null = null;
+  let completedAgentStreamingSessionForUsage: StreamingSession | null = null;
+  let activeAgentRuntimeResolution: RuntimeResolution | null = null;
   const lastProcessed = missedMessages[missedMessages.length - 1];
+
+  const patchCompletedAgentStreamingSessionUsage = async (
+    usage: RuntimeUsage,
+  ): Promise<void> => {
+    if (!completedAgentStreamingSessionForUsage) return;
+    const session = completedAgentStreamingSessionForUsage;
+    completedAgentStreamingSessionForUsage = null;
+    try {
+      await session.patchUsageNote(usage);
+    } catch (err) {
+      logger.warn(
+        { err, chatJid, agentId },
+        'Failed to patch agent streaming card usage',
+      );
+    }
+  };
+
+  const persistAgentUsageForReply = async (
+    usage: RuntimeUsage,
+    messageId: string,
+  ): Promise<void> => {
+    updateLatestMessageTokenUsage(
+      virtualChatJid,
+      JSON.stringify(usage),
+      messageId,
+      usage.costUSD,
+    );
+
+    writeUsageRecords({
+      userId:
+        effectiveGroup.created_by ||
+        registeredGroups[chatJid]?.created_by ||
+        'system',
+      groupFolder: effectiveGroup.folder,
+      agentId,
+      messageId,
+      runtimeResolution: activeAgentRuntimeResolution,
+      usage,
+    });
+  };
+
+  const flushPendingAgentUsageForReply = async (
+    messageId: string | undefined,
+  ): Promise<void> => {
+    if (!pendingAgentUsage || !messageId) return;
+    const usage = pendingAgentUsage;
+    pendingAgentUsage = null;
+    try {
+      await persistAgentUsageForReply(usage, messageId);
+      await patchCompletedAgentStreamingSessionUsage(usage);
+    } catch (err) {
+      logger.warn(
+        { err, chatJid, agentId },
+        'Failed to persist deferred agent token usage',
+      );
+    }
+  };
   const commitCursor = (): void => {
     if (cursorCommitted) return;
     advanceCursors(virtualChatJid, {
@@ -5972,11 +6209,21 @@ async function processAgentConversation(
     effectiveGroup.folder,
     agentId,
   )?.pending_runtime;
+  const runtimeStateBeforePromotion = getConversationRuntimeState(
+    effectiveGroup.folder,
+    agentId,
+  );
+  const handoffSummary = runtimeStateBeforePromotion?.pending_runtime
+    ? getConversationHandoffSummary(
+        runtimeStateBeforePromotion.pending_handoff_summary_id,
+      )
+    : undefined;
   promotePendingConversationRuntimeBinding(effectiveGroup.folder, agentId);
   const runtimeResolution = resolveRuntimeForScope(
     effectiveGroup.folder,
     agentId,
   );
+  activeAgentRuntimeResolution = runtimeResolution;
   if (!runtimeResolution.availability.ok) {
     const unavailable = runtimeResolution.availability.message;
     await sendMessage(chatJid, unavailable, {
@@ -6010,6 +6257,9 @@ async function processAgentConversation(
     nativeSession: runtimeResolution.nativeSession,
     privacyMode: !!effectiveGroup.privacy_mode,
     recentMessages: recentAgentRuntimeMessages,
+    handoffSummary: handoffSummary
+      ? { id: handoffSummary.id, text: handoffSummary.summary_text }
+      : null,
     forceSoftInjectionReason: hadPendingModelBinding
       ? 'model_binding_changed'
       : null,
@@ -6115,6 +6365,7 @@ async function processAgentConversation(
                 },
               },
             );
+            await flushPendingAgentUsageForReply(persistedMsgId);
             broadcastNewMessage(
               virtualChatJid,
               {
@@ -6149,30 +6400,27 @@ async function processAgentConversation(
         output.streamEvent.eventType === 'usage' &&
         output.streamEvent.usage
       ) {
-        try {
-          updateLatestMessageTokenUsage(
-            virtualChatJid,
-            JSON.stringify(output.streamEvent.usage),
-            lastAgentReplyMsgId,
+        if (!lastAgentReplyMsgId) {
+          pendingAgentUsage = output.streamEvent.usage;
+          logger.debug(
+            { chatJid, agentId, inputTokens: output.streamEvent.usage.inputTokens },
+            'Agent token usage deferred until reply message exists',
           );
-
-          // Write to usage_records + usage_daily_summary
-          // Sub-Agent 的 effectiveGroup 可能没有 created_by，从父群组继承
-          writeUsageRecords({
-            userId:
-              effectiveGroup.created_by ||
-              registeredGroups[chatJid]?.created_by ||
-              'system',
-            groupFolder: effectiveGroup.folder,
-            agentId,
-            messageId: lastAgentReplyMsgId,
-            usage: output.streamEvent.usage,
-          });
-        } catch (err) {
-          logger.warn(
-            { err, chatJid, agentId },
-            'Failed to persist agent conversation token usage',
-          );
+        } else {
+          try {
+            await persistAgentUsageForReply(
+              output.streamEvent.usage,
+              lastAgentReplyMsgId,
+            );
+            await patchCompletedAgentStreamingSessionUsage(
+              output.streamEvent.usage,
+            );
+          } catch (err) {
+            logger.warn(
+              { err, chatJid, agentId },
+              'Failed to persist agent conversation token usage',
+            );
+          }
         }
       }
 
@@ -6238,6 +6486,7 @@ async function processAgentConversation(
             },
           },
         );
+        await flushPendingAgentUsageForReply(persistedMsgId);
         const persistedSessionId = output.sessionId || currentAgentSessionId;
         if (persistedSessionId && output.status !== 'error') {
           persistNativeSessionForResolution(
@@ -6288,6 +6537,7 @@ async function processAgentConversation(
         if (agentStreamingSession?.isActive()) {
           try {
             await agentStreamingSession.complete(text);
+            completedAgentStreamingSessionForUsage = agentStreamingSession;
             streamingCardHandledIM = true;
           } catch (err) {
             logger.warn(

@@ -21,5 +21,7 @@ Merged topics include:
 
 Current decision: HappyClaw does not implement a complete cross-runtime memory
 authority for model switching. `CLAUDE.md` is loaded by each SDK's native
-project-instruction mechanism; soft injection only carries recent messages and
-minimal handoff context.
+project-instruction mechanism. `/model use` first creates a bounded handoff
+summary from recent HappyClaw DB messages, then the next turn injects that
+summary only. Non-switch resume/recovery fallback may still use bounded recent
+messages.

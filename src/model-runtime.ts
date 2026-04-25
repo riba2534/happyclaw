@@ -1,5 +1,6 @@
 import {
   ensureConversationRuntimeState,
+  getLatestSessionTokenUsage,
   getProviderPool,
   getRuntimeNativeSession,
   LEGACY_CLAUDE_AUTH_GENERATION,
@@ -22,6 +23,41 @@ import {
   getEnabledProvidersForPool,
   type UnifiedProvider,
 } from './runtime-config.js';
+import { logger } from './logger.js';
+
+const DEFAULT_CODEX_NATIVE_RESUME_MAX_INPUT_TOKENS = 800_000;
+
+function codexNativeResumeMaxInputTokens(): number {
+  const raw = process.env.HAPPYCLAW_CODEX_NATIVE_RESUME_MAX_INPUT_TOKENS;
+  if (!raw) return DEFAULT_CODEX_NATIVE_RESUME_MAX_INPUT_TOKENS;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0
+    ? value
+    : DEFAULT_CODEX_NATIVE_RESUME_MAX_INPUT_TOKENS;
+}
+
+function shouldUseNativeSession(
+  binding: ModelBinding,
+  nativeSession: RuntimeNativeSession | undefined,
+): boolean {
+  if (!nativeSession?.native_session_id) return false;
+  if (binding.runtime !== 'codex') return true;
+
+  const maxInputTokens = codexNativeResumeMaxInputTokens();
+  const usage = getLatestSessionTokenUsage(nativeSession.native_session_id);
+  if (!usage || usage.inputTokens <= maxInputTokens) return true;
+
+  logger.warn(
+    {
+      sessionId: nativeSession.native_session_id,
+      inputTokens: usage.inputTokens,
+      maxInputTokens,
+      messageId: usage.message_id,
+    },
+    'Skipping Codex native resume because session context is too large',
+  );
+  return false;
+}
 
 export interface RuntimeResolution {
   state: ConversationRuntimeState;
@@ -190,7 +226,10 @@ export function resolveRuntimeForScope(
     auth_profile_fingerprint: authProfileFingerprint,
     model_key: modelKey,
   };
-  const nativeSession = getRuntimeNativeSession(sessionKey);
+  const storedNativeSession = getRuntimeNativeSession(sessionKey);
+  const nativeSession = shouldUseNativeSession(binding, storedNativeSession)
+    ? storedNativeSession
+    : undefined;
 
   return {
     state,
@@ -217,10 +256,17 @@ export function resolveRuntimeForSourceScope(
     ...resolved.sessionKey,
     group_folder: sessionGroupFolder,
   };
+  const storedNativeSession = getRuntimeNativeSession(sessionKey);
+  const nativeSession = shouldUseNativeSession(
+    resolved.binding,
+    storedNativeSession,
+  )
+    ? storedNativeSession
+    : undefined;
   return {
     ...resolved,
     sessionKey,
-    nativeSession: getRuntimeNativeSession(sessionKey),
+    nativeSession,
   };
 }
 

@@ -38,6 +38,24 @@ vi.mock('../src/logger.js', () => ({
   },
 }));
 
+vi.mock('../src/model-switch-handoff.js', () => ({
+  createModelSwitchHandoffSummary: vi.fn(async (input) => ({
+    id: 'handoff-summary-1',
+    group_folder: input.groupFolder,
+    agent_id: input.agentId || '',
+    chat_jid: input.chatJid,
+    reason: input.reason || 'model_binding_changed',
+    summary_text: '切换摘要',
+    source_message_count: 3,
+    source_first_message_id: 'm1',
+    source_last_message_id: 'm3',
+    source_last_message_timestamp: '2026-04-25T00:00:00.000Z',
+    fallback_used: false,
+    created_by: input.createdBy || null,
+    created_at: '2026-04-25T00:00:00.000Z',
+  })),
+}));
+
 vi.mock('../src/db.js', () => ({
   getProviderPools: () => [
     {
@@ -246,7 +264,7 @@ describe('model routes', () => {
       }),
       'workspace_default',
       'owner-user',
-      { markPending: true },
+      { markPending: true, handoffSummaryId: 'handoff-summary-1' },
     );
   });
 
@@ -269,7 +287,7 @@ describe('model routes', () => {
       }),
       'user_pinned',
       'owner-user',
-      { markPending: true },
+      { markPending: true, handoffSummaryId: 'handoff-summary-1' },
     );
   });
 

@@ -10,9 +10,16 @@ import type { ConversationRuntimeState, ModelBinding } from './types.js';
 
 export interface ModelCommandTarget {
   baseChatJid: string;
+  targetChatJid: string;
   folder: string;
   agentId?: string | null;
   locationLine: string;
+}
+
+export interface ModelSwitchStartInput {
+  target: ModelCommandTarget;
+  binding: ModelBinding;
+  actor: string;
 }
 
 export interface ModelCommandTargetDeps {
@@ -27,9 +34,10 @@ export interface ModelCommandTargetDeps {
     binding: ModelBinding,
     bindingSource: 'user_pinned',
     updatedBy?: string | null,
-    options?: { markPending?: boolean },
+    options?: { markPending?: boolean; handoffSummaryId?: string | null },
   ) => ConversationRuntimeState;
   broadcastModelChanged: (baseChatJid: string, agentId?: string) => void;
+  startModelSwitch?: (input: ModelSwitchStartInput) => void;
 }
 
 export function handleModelCommandForTarget(input: {
@@ -50,19 +58,12 @@ export function handleModelCommandForTarget(input: {
     const parsed = parseModelBindingFromArgs(args.slice(1));
     if (!parsed.binding) return parsed.error || '模型切换失败。';
 
-    const state = input.deps.setConversationRuntimeBinding(
-      input.target.folder,
-      input.target.agentId ?? '',
-      parsed.binding,
-      'user_pinned',
-      input.actor,
-      { markPending: true },
-    );
-    input.deps.broadcastModelChanged(
-      input.target.baseChatJid,
-      input.target.agentId || undefined,
-    );
-    return `已切换 ${input.target.locationLine} 的模型为 ${state.provider_pool_id} ${formatModelLabel(state.selected_model)}，下一条消息开始生效。`;
+    input.deps.startModelSwitch?.({
+      target: input.target,
+      binding: parsed.binding,
+      actor: input.actor,
+    });
+    return `正在切换 ${input.target.locationLine} 的模型为 ${parsed.binding.provider_pool_id} ${formatModelLabel(parsed.binding.selected_model)}，正在生成上下文摘要。完成后下一条消息开始生效。`;
   }
 
   if (subcommand) {

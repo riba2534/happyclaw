@@ -27,6 +27,7 @@ import {
 import { canAccessGroup, canModifyGroup } from '../web-context.js';
 import { logger } from '../logger.js';
 import type { Variables } from '../web-context.js';
+import { createModelSwitchHandoffSummary } from '../model-switch-handoff.js';
 
 const modelRoutes = new Hono<{ Variables: Variables }>();
 
@@ -319,18 +320,29 @@ modelRoutes.put(
     );
     const mainState = getConversationRuntimeState(workspace.folder, '');
     let updatedMain = mainState;
+    let handoffSummary = null;
     if (!mainState || mainState.binding_source === 'workspace_default') {
+      const summary = workspace.group.privacy_mode
+        ? null
+        : await createModelSwitchHandoffSummary({
+            groupFolder: workspace.folder,
+            agentId: '',
+            chatJid: workspace.jid,
+            reason: 'model_binding_changed',
+            createdBy: user.id,
+          });
+      handoffSummary = summary;
       updatedMain = setConversationRuntimeBinding(
         workspace.folder,
         '',
-      parsed.binding,
-      'workspace_default',
-      user.id,
-      { markPending: true },
-    );
-  }
+        parsed.binding,
+        'workspace_default',
+        user.id,
+        { markPending: true, handoffSummaryId: summary?.id ?? null },
+      );
+    }
 
-    return c.json({ workspaceDefault, mainScope: updatedMain });
+    return c.json({ workspaceDefault, mainScope: updatedMain, handoffSummary });
   },
 );
 
@@ -357,15 +369,27 @@ async function setScopeBindingForWorkspace(
   const parsed = parseBindingInput(validation.data);
   if (!parsed.binding) return c.json({ error: parsed.error }, 400);
 
+  const targetChatJid = agentId
+    ? `${workspace.jid}#agent:${agentId}`
+    : workspace.jid;
+  const summary = workspace.group.privacy_mode
+    ? null
+    : await createModelSwitchHandoffSummary({
+        groupFolder: workspace.folder,
+        agentId,
+        chatJid: targetChatJid,
+        reason: 'model_binding_changed',
+        createdBy: user.id,
+      });
   const scope = setConversationRuntimeBinding(
     workspace.folder,
     agentId,
     parsed.binding,
     'user_pinned',
     user.id,
-    { markPending: true },
+    { markPending: true, handoffSummaryId: summary?.id ?? null },
   );
-  return c.json({ scope });
+  return c.json({ scope, handoffSummary: summary });
 }
 
 modelRoutes.put('/workspaces/:workspaceJid/scopes/main', authMiddleware, (c) =>

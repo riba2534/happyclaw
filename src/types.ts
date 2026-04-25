@@ -108,8 +108,25 @@ export interface ConversationRuntimeState extends ModelBinding {
   pending_selected_model: string | null;
   pending_model_kind: ModelSelectionKind | null;
   pending_resolved_model: string | null;
+  pending_handoff_summary_id: string | null;
   updated_by: string | null;
   updated_at: string;
+}
+
+export interface ConversationHandoffSummary {
+  id: string;
+  group_folder: string;
+  agent_id: string;
+  chat_jid: string;
+  reason: string;
+  summary_text: string;
+  source_message_count: number;
+  source_first_message_id: string | null;
+  source_last_message_id: string | null;
+  source_last_message_timestamp: string | null;
+  fallback_used: boolean;
+  created_by: string | null;
+  created_at: string;
 }
 
 export interface ProviderPool {

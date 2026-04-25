@@ -14,6 +14,11 @@ export interface RuntimeContextMessage {
   is_from_me?: boolean;
 }
 
+export interface RuntimeHandoffSummary {
+  id: string;
+  text: string;
+}
+
 export interface RuntimeContextBuildInput {
   runtime: AgentRuntime | undefined;
   groupFolder: string;
@@ -26,6 +31,7 @@ export interface RuntimeContextBuildInput {
   privacyMode?: boolean;
   workspaceInstructions?: string | null;
   recentMessages?: RuntimeContextMessage[];
+  handoffSummary?: RuntimeHandoffSummary | null;
   suppressRecentHistory?: boolean;
   forceSoftInjectionReason?: string | null;
 }
@@ -110,6 +116,10 @@ function renderRecentMessages(messages: RuntimeContextMessage[]): string {
     return `  <message id="${escapeXml(message.id)}" role="${escapeXml(role)}" time="${escapeXml(message.timestamp)}">${escapeXml(content)}</message>`;
   });
   return `<recent-messages>\n${lines.join('\n')}\n</recent-messages>`;
+}
+
+function renderHandoffSummary(summary: RuntimeHandoffSummary): string {
+  return `<handoff-summary id="${escapeXml(summary.id)}">\n${escapeXml(summary.text)}\n</handoff-summary>`;
 }
 
 function renderContext(
@@ -198,8 +208,23 @@ export function buildRuntimePrompt(
   }
 
   const recentMessages = input.recentMessages || [];
+  const handoffSummary = !input.privacyMode && input.handoffSummary?.text.trim()
+    ? input.handoffSummary
+    : null;
+  if (handoffSummary && softInjectionReason) {
+    const rendered = renderHandoffSummary(handoffSummary);
+    blocks.push({
+      kind: 'handoff_summary',
+      content: rendered,
+      hash: sha256(rendered),
+    });
+  }
+  const modelSwitchWithoutSummary =
+    softInjectionReason === 'model_binding_changed' && !handoffSummary;
   if (
     !input.suppressRecentHistory &&
+    !handoffSummary &&
+    !modelSwitchWithoutSummary &&
     !input.privacyMode &&
     recentMessages.length > 0 &&
     shouldInjectRecentHistory(runtime, softInjectionReason, !!input.sessionId)
@@ -230,7 +255,7 @@ export function buildRuntimePrompt(
     softInjectionReason,
     inputContextHash,
     workspaceInstructionHash,
-    summaryId: null,
+    summaryId: handoffSummary?.id ?? null,
     injectedBlockKinds: blocks.map((block) => block.kind),
   };
   writeDebugDump(input, result, contextText);

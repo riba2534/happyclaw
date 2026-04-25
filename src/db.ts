@@ -20,6 +20,7 @@ import {
   BillingAuditEventType,
   BillingAuditLog,
   BillingPlan,
+  ConversationHandoffSummary,
   ConversationRuntimeState,
   DailyUsage,
   ExecutionMode,
@@ -60,7 +61,7 @@ import {
 import { getDefaultPermissions, normalizePermissions } from './permissions.js';
 
 let db: InstanceType<typeof Database>;
-const SCHEMA_VERSION = '37';
+const SCHEMA_VERSION = '38';
 const DB_BACKUP_ENV_OVERRIDE = 'HAPPYCLAW_ALLOW_DB_MIGRATION_WITHOUT_BACKUP';
 
 // Prepared statement cache — lazy-initialized on first use after initDatabase()
@@ -776,11 +777,30 @@ export function initDatabase(): void {
       pending_selected_model TEXT,
       pending_model_kind TEXT,
       pending_resolved_model TEXT,
+      pending_handoff_summary_id TEXT,
       updated_by TEXT,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (group_folder, agent_id)
     );
     CREATE INDEX IF NOT EXISTS idx_crs_pool ON conversation_runtime_state(provider_pool_id);
+
+    CREATE TABLE IF NOT EXISTS conversation_handoff_summaries (
+      id TEXT PRIMARY KEY,
+      group_folder TEXT NOT NULL,
+      agent_id TEXT NOT NULL DEFAULT '',
+      chat_jid TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      summary_text TEXT NOT NULL,
+      source_message_count INTEGER NOT NULL DEFAULT 0,
+      source_first_message_id TEXT,
+      source_last_message_id TEXT,
+      source_last_message_timestamp TEXT,
+      fallback_used INTEGER NOT NULL DEFAULT 0,
+      created_by TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_handoff_scope
+      ON conversation_handoff_summaries(group_folder, agent_id, created_at);
 
     CREATE TABLE IF NOT EXISTS conversation_runtime_sessions (
       group_folder TEXT NOT NULL,
@@ -960,6 +980,7 @@ export function initDatabase(): void {
     'TEXT',
   );
   ensureColumn('conversation_runtime_sessions', 'summary_id', 'TEXT');
+  ensureColumn('conversation_runtime_state', 'pending_handoff_summary_id', 'TEXT');
   migrateLegacySessionsToRuntimeSessions();
   ensureColumn('agents', 'source_kind', 'TEXT');
   ensureColumn('agents', 'thread_id', 'TEXT');
@@ -2970,8 +2991,33 @@ function mapConversationRuntimeState(
       (row.pending_model_kind as ModelSelectionKind | null) ?? null,
     pending_resolved_model:
       (row.pending_resolved_model as string | null) ?? null,
+    pending_handoff_summary_id:
+      (row.pending_handoff_summary_id as string | null) ?? null,
     updated_by: (row.updated_by as string | null) ?? null,
     updated_at: String(row.updated_at),
+  };
+}
+
+function mapConversationHandoffSummary(
+  row: Record<string, unknown>,
+): ConversationHandoffSummary {
+  return {
+    id: String(row.id),
+    group_folder: String(row.group_folder),
+    agent_id: String(row.agent_id ?? ''),
+    chat_jid: String(row.chat_jid),
+    reason: String(row.reason),
+    summary_text: String(row.summary_text),
+    source_message_count: Number(row.source_message_count ?? 0),
+    source_first_message_id:
+      (row.source_first_message_id as string | null) ?? null,
+    source_last_message_id:
+      (row.source_last_message_id as string | null) ?? null,
+    source_last_message_timestamp:
+      (row.source_last_message_timestamp as string | null) ?? null,
+    fallback_used: toBool(row.fallback_used),
+    created_by: (row.created_by as string | null) ?? null,
+    created_at: String(row.created_at),
   };
 }
 
@@ -3202,7 +3248,7 @@ export function setConversationRuntimeBinding(
   binding: ModelBinding,
   bindingSource: BindingSource,
   updatedBy?: string | null,
-  options?: { markPending?: boolean },
+  options?: { markPending?: boolean; handoffSummaryId?: string | null },
 ): ConversationRuntimeState {
   const effectiveAgentId = agentId || '';
   const normalized = normalizeModelBinding(binding);
@@ -3214,8 +3260,8 @@ export function setConversationRuntimeBinding(
       selected_model, model_kind, resolved_model, binding_source,
       binding_revision, pending_runtime, pending_provider_family,
       pending_provider_pool_id, pending_selected_model, pending_model_kind,
-      pending_resolved_model, updated_by, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+      pending_resolved_model, pending_handoff_summary_id, updated_by, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(group_folder, agent_id) DO UPDATE SET
       runtime = excluded.runtime,
       provider_family = excluded.provider_family,
@@ -3231,6 +3277,7 @@ export function setConversationRuntimeBinding(
       pending_selected_model = excluded.pending_selected_model,
       pending_model_kind = excluded.pending_model_kind,
       pending_resolved_model = excluded.pending_resolved_model,
+      pending_handoff_summary_id = excluded.pending_handoff_summary_id,
       updated_by = excluded.updated_by,
       updated_at = excluded.updated_at`,
   ).run(
@@ -3249,6 +3296,7 @@ export function setConversationRuntimeBinding(
     markPending ? normalized.selected_model : null,
     markPending ? normalized.model_kind : null,
     markPending ? normalized.resolved_model : null,
+    markPending ? options?.handoffSummaryId ?? null : null,
     updatedBy ?? null,
     now,
   );
@@ -3289,10 +3337,63 @@ export function promotePendingConversationRuntimeBinding(
            pending_provider_pool_id = NULL,
            pending_selected_model = NULL,
            pending_model_kind = NULL,
-           pending_resolved_model = NULL
+           pending_resolved_model = NULL,
+           pending_handoff_summary_id = NULL
        WHERE group_folder = ? AND agent_id = ?`,
     )
     .run(groupFolder, agentId || '').changes;
+}
+
+export function createConversationHandoffSummary(input: {
+  id?: string;
+  groupFolder: string;
+  agentId?: string | null;
+  chatJid: string;
+  reason: string;
+  summaryText: string;
+  sourceMessageCount: number;
+  sourceFirstMessageId?: string | null;
+  sourceLastMessageId?: string | null;
+  sourceLastMessageTimestamp?: string | null;
+  fallbackUsed?: boolean;
+  createdBy?: string | null;
+}): ConversationHandoffSummary {
+  const id = input.id || crypto.randomUUID();
+  const createdAt = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO conversation_handoff_summaries (
+      id, group_folder, agent_id, chat_jid, reason, summary_text,
+      source_message_count, source_first_message_id, source_last_message_id,
+      source_last_message_timestamp, fallback_used, created_by, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    input.groupFolder,
+    input.agentId || '',
+    input.chatJid,
+    input.reason,
+    input.summaryText,
+    input.sourceMessageCount,
+    input.sourceFirstMessageId ?? null,
+    input.sourceLastMessageId ?? null,
+    input.sourceLastMessageTimestamp ?? null,
+    input.fallbackUsed ? 1 : 0,
+    input.createdBy ?? null,
+    createdAt,
+  );
+  const row = getConversationHandoffSummary(id);
+  if (!row) throw new Error('conversation_handoff_summaries write failed');
+  return row;
+}
+
+export function getConversationHandoffSummary(
+  id: string | null | undefined,
+): ConversationHandoffSummary | undefined {
+  if (!id) return undefined;
+  const row = db
+    .prepare('SELECT * FROM conversation_handoff_summaries WHERE id = ?')
+    .get(id) as Record<string, unknown> | undefined;
+  return row ? mapConversationHandoffSummary(row) : undefined;
 }
 
 export function getRuntimeNativeSession(
@@ -4068,6 +4169,83 @@ export function getMessagesAfter(
     ...row,
     is_from_me: row.is_from_me === 1,
   }));
+}
+
+export interface SessionTokenUsageSnapshot {
+  message_id: string;
+  chat_jid: string;
+  timestamp: string;
+  inputTokens: number;
+  outputTokens: number;
+  costUSD: number;
+}
+
+function parseTokenUsageNumber(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function summarizeTokenUsage(raw: string | null): Omit<
+  SessionTokenUsageSnapshot,
+  'message_id' | 'chat_jid' | 'timestamp'
+> | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const modelUsage = parsed.modelUsage;
+    if (modelUsage && typeof modelUsage === 'object') {
+      let inputTokens = 0;
+      let outputTokens = 0;
+      let costUSD = 0;
+      for (const value of Object.values(
+        modelUsage as Record<string, Record<string, unknown>>,
+      )) {
+        inputTokens += parseTokenUsageNumber(value.inputTokens);
+        outputTokens += parseTokenUsageNumber(value.outputTokens);
+        costUSD += parseTokenUsageNumber(value.costUSD);
+      }
+      return { inputTokens, outputTokens, costUSD };
+    }
+    return {
+      inputTokens: parseTokenUsageNumber(parsed.inputTokens),
+      outputTokens: parseTokenUsageNumber(parsed.outputTokens),
+      costUSD: parseTokenUsageNumber(parsed.costUSD),
+    };
+  } catch (err) {
+    logger.warn({ err }, 'Failed to parse session token usage');
+    return null;
+  }
+}
+
+export function getLatestSessionTokenUsage(
+  sessionId: string,
+): SessionTokenUsageSnapshot | null {
+  const row = db
+    .prepare(
+      `SELECT id, chat_jid, timestamp, token_usage
+       FROM messages
+       WHERE session_id = ?
+         AND is_from_me = 1
+         AND token_usage IS NOT NULL
+       ORDER BY timestamp DESC
+       LIMIT 1`,
+    )
+    .get(sessionId) as
+    | {
+        id: string;
+        chat_jid: string;
+        timestamp: string;
+        token_usage: string | null;
+      }
+    | undefined;
+  if (!row) return null;
+  const usage = summarizeTokenUsage(row.token_usage);
+  if (!usage) return null;
+  return {
+    message_id: row.id,
+    chat_jid: row.chat_jid,
+    timestamp: row.timestamp,
+    ...usage,
+  };
 }
 
 /**
