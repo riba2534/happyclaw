@@ -461,6 +461,25 @@ function buildVolumeMounts(
     });
   }
 
+  // Per-user feishu-cli OAuth state (token.json + config.yaml).
+  // Without this mount, every container restart loses the user's feishu OAuth
+  // authorization, forcing re-auth every IDLE_TIMEOUT (#477).
+  if (ownerId) {
+    const userFeishuCliDir = path.join(
+      DATA_DIR,
+      'config',
+      'user-cli',
+      ownerId,
+      'feishu-cli',
+    );
+    mkdirForContainer(userFeishuCliDir);
+    mounts.push({
+      hostPath: userFeishuCliDir,
+      containerPath: '/home/node/.feishu-cli',
+      readonly: false,
+    });
+  }
+
   // Per-group IPC namespace: each group gets its own IPC directory
   // Sub-agents get their own IPC subdirectory under agents/{agentId}/
   // Isolated tasks get their own IPC subdirectory under tasks-run/{taskRunId}/
@@ -648,10 +667,33 @@ function buildContainerArgs(
   containerName: string,
   tz: string,
 ): string[] {
-  const args: string[] = ['run', '-i', '--rm', '--name', containerName];
+  const args: string[] = ['run', '-i', '--rm', '--init', '--name', containerName];
+
+  // Resource limits: prevent one container (e.g. chromium via hyperframes) from exhausting host RAM.
+  // Override via env for beefier hosts.
+  const memLimit = process.env.CONTAINER_MEMORY || '1500m';
+  const memSwap = process.env.CONTAINER_MEMORY_SWAP || '2g';
+  const cpus = process.env.CONTAINER_CPUS || '1.5';
+  const shmSize = process.env.CONTAINER_SHM_SIZE || '512m';
+  args.push(
+    '--memory', memLimit,
+    '--memory-swap', memSwap,
+    '--cpus', cpus,
+    '--shm-size', shmSize,
+  );
 
   // Set timezone so container Node.js processes use local time (Asia/Shanghai)
   args.push('-e', `TZ=${tz}`);
+
+  // Cap V8 heap inside container to leave RAM for chromium and misc processes.
+  const nodeOpts = process.env.CONTAINER_NODE_OPTIONS || '--max-old-space-size=512';
+  args.push('-e', `NODE_OPTIONS=${nodeOpts}`);
+
+  // Memory-friendly chromium flags for agent-browser (read via AGENT_BROWSER_ARGS).
+  const browserArgs =
+    process.env.CONTAINER_BROWSER_ARGS ||
+    '--disable-dev-shm-usage,--disable-gpu,--disable-extensions,--disable-background-networking,--no-first-run,--no-sandbox,--memory-pressure-off,--renderer-process-limit=2';
+  args.push('-e', `AGENT_BROWSER_ARGS=${browserArgs}`);
 
   // Docker: -v with :ro suffix for readonly
   for (const mount of mounts) {

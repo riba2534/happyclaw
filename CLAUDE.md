@@ -209,6 +209,7 @@ StreamEvent 类型以 `shared/stream-event.ts` 为单一真相源，构建时通
 | IPC 通道 `data/ipc/{folder}/` | `/workspace/ipc` | 读写 | 读写（仅自己） |
 | 项目级 Skills `container/skills/` | `/workspace/project-skills` | 只读 | 只读 |
 | 用户级 Skills `~/.claude/skills/` | `/workspace/user-skills` | 只读 | admin 创建的会话可读 |
+| feishu-cli OAuth 状态 `data/config/user-cli/{userId}/feishu-cli/` | `/home/node/.feishu-cli` | 读写 | 读写（仅自己） |
 | 环境变量 `data/env/{folder}/env` | `/workspace/env-dir/env` | 只读 | 只读 |
 | 持久 extra 目录 `data/extra/{folder}/` | `/workspace/extra` | 读写 | 读写（仅自己） |
 | 额外挂载（白名单内） | `/workspace/extra/{name}` | 按白名单 | 按白名单（`nonMainReadOnly` 时强制只读） |
