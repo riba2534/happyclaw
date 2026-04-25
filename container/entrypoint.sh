@@ -33,6 +33,16 @@ fi
 # 导致 "Native CLI binary for linux-x64 not found" 启动失败。
 export PATH="/app/node_modules/.bin:${PATH}"
 
+# CLAUDE_CONFIG_DIR: CLI 默认用 $HOME/.claude.json 作为身份文件，但该文件被
+# readonly 挂载（避免容器篡改宿主机配置）。CLI 启动时尝试写入（更新 numStartups
+# 等计数器），readonly 导致静默失败 → query() 返回 0 messages。
+# 显式设 CLAUDE_CONFIG_DIR 让 CLI 改读写 /home/node/.claude/.claude.json（session
+# 目录，可写），与宿主机模式的 hostEnv['CLAUDE_CONFIG_DIR'] 保持一致。
+export CLAUDE_CONFIG_DIR=/home/node/.claude
+
+# IS_SANDBOX: Claude Code 2.1.114+ 要求 IS_SANDBOX=1 才允许 --dangerously-skip-permissions。
+# 与宿主机模式的 hostEnv['IS_SANDBOX'] = '1' 保持一致。
+export IS_SANDBOX=1
 # Discover and link skills (builtin → project → user, higher priority overwrites)
 # Only remove entries that conflict with mounted skills (non-symlink with same name),
 # preserving any skills the agent created directly in .claude/skills/.
