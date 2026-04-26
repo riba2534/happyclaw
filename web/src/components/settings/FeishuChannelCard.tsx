@@ -162,7 +162,7 @@ export function FeishuChannelCard() {
             <div className="border-t border-border pt-3 flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-foreground">自动隔离上下文</p>
-                <p className="text-xs text-muted-foreground">不同私聊和群聊自动绑定独立对话，上下文互不干扰</p>
+                <p className="text-xs text-muted-foreground">飞书不同私聊和群聊会自动绑定独立对话，上下文互不干扰</p>
               </div>
               <Switch
                 checked={config?.autoIsolateContext ?? false}

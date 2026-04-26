@@ -70,6 +70,7 @@ import {
   updateAgentStatus,
   updateAgentLastImJid,
   updateAgentInfo,
+  deleteAgent,
   deleteCompletedAgents,
   getRunningTaskAgentsByChat,
   markRunningTaskAgentsAsError,
@@ -119,6 +120,10 @@ import {
   resolveBroadcastFolder,
   resolveTaskRoutingDecision,
 } from './task-routing.js';
+import {
+  applyAutoIsolateContextForGroups,
+  getUserContextIsolationConfig,
+} from './im-context-isolation.js';
 import { invalidateSessionCache, getWebDeps } from './web-context.js';
 import {
   getFeishuProviderConfigWithSource,
@@ -181,6 +186,7 @@ import {
   broadcastTyping,
   broadcastStreamEvent,
   broadcastAgentStatus,
+  broadcastAgentRemoved,
   broadcastTitleGenerating,
   broadcastGroupCreated,
   broadcastBillingUpdate,
@@ -559,11 +565,7 @@ function resolveImRoute(opts: {
 }): string | null {
   const { ipcAgentId, isHome, chatJid, sourceGroup } = opts;
   if (ipcAgentId) {
-    return (
-      activeImReplyRoutes.get(`${chatJid}#agent:${ipcAgentId}`) ??
-      activeImReplyRoutes.get(sourceGroup) ??
-      null
-    );
+    return activeImReplyRoutes.get(`${chatJid}#agent:${ipcAgentId}`) ?? null;
   }
   const imFromJid = getChannelType(chatJid) !== null ? chatJid : null;
   const imFromGroup = activeImReplyRoutes.get(sourceGroup) ?? null;
@@ -5344,12 +5346,12 @@ async function processTaskIpc(
               const warnMsg = `⚠️ 文件 "${data.fileName}" 未找到（路径 "${data.filePath}" 不存在）。请引导用户确认正确的文件路径，或使用 'send_file' 时提供正确的相对路径。`;
               broadcastToWebClients(sourceGroup, warnMsg);
               // Also notify via DingTalk for conversation agents bound to IM
-              const imRoute =
-                (ipcAgentId && data.chatJid
-                  ? activeImReplyRoutes.get(
-                      `${data.chatJid}#agent:${ipcAgentId}`,
-                    )
-                  : null) ?? activeImReplyRoutes.get(sourceGroup);
+              const imRoute = resolveImRoute({
+                ipcAgentId,
+                isHome,
+                chatJid: data.chatJid,
+                sourceGroup,
+              });
               if (imRoute) {
                 try {
                   await imManager.sendMessage(imRoute, warnMsg);
@@ -6835,25 +6837,25 @@ function buildOnNewChat(
       'Auto-registered IM chat',
     );
 
-    if (getChannelType(chatJid) === 'feishu') {
-      const feishuConfig = getUserFeishuConfig(userId);
-      if (feishuConfig?.autoIsolateContext) {
-        const registered = registeredGroups[chatJid]!;
-        ensureAutoImConversationBinding(chatJid, registered, userId, chatName);
-      }
+    const channelType = getChannelType(chatJid);
+    const isolationConfig = getUserContextIsolationConfig(userId, channelType, {
+      getUserFeishuConfig,
+    });
+    if (isolationConfig.enabled) {
+      const registered = registeredGroups[chatJid]!;
+      ensureAutoImConversationBinding(chatJid, registered, userId, chatName);
     }
   };
 }
 
-function resolveAutoImWorkspace(userId: string, folder: string): { jid: string; folder: string } | null {
+function resolveAutoImWorkspace(folder: string): { jid: string; folder: string } | null {
   const jids = getJidsByFolder(folder);
   for (const jid of jids) {
     if (!jid.startsWith('web:')) continue;
     const group = registeredGroups[jid] ?? getRegisteredGroup(jid);
     if (group) return { jid, folder: group.folder };
   }
-  const homeGroup = getUserHomeGroup(userId);
-  return homeGroup ? { jid: homeGroup.jid, folder: homeGroup.folder } : null;
+  return null;
 }
 
 function createAutoImConversationAgent(input: {
@@ -6862,7 +6864,7 @@ function createAutoImConversationAgent(input: {
   groupFolder: string;
   name: string;
 }): { agentId: string; workspaceJid: string; workspaceFolder: string } | null {
-  const workspace = resolveAutoImWorkspace(input.userId, input.groupFolder);
+  const workspace = resolveAutoImWorkspace(input.groupFolder);
   if (!workspace) {
     logger.warn(
       { userId: input.userId, sourceJid: input.sourceJid, groupFolder: input.groupFolder },
@@ -6942,30 +6944,19 @@ function ensureAutoImConversationBinding(
  * enable=false: remove auto_im agent bindings (manual bindings untouched)
  */
 function applyAutoIsolateContext(userId: string, enable: boolean): number {
-  let count = 0;
-  const groups = getAllRegisteredGroups();
-
-  for (const [jid, group] of Object.entries(groups)) {
-    if (getChannelType(jid) !== 'feishu') continue;
-    if (group.created_by !== userId) continue;
-
-    if (enable) {
-      if (group.target_agent_id || group.target_main_jid) continue;
-      if (ensureAutoImConversationBinding(jid, group, userId, group.name || jid)) count++;
-    } else {
-      if (!group.target_agent_id) continue;
-      const agentToRemove = getAgent(group.target_agent_id);
-      if (agentToRemove?.source_kind !== 'auto_im') continue;
-
-      broadcastAgentStatus(agentToRemove.chat_jid, group.target_agent_id, 'idle', agentToRemove.name, '', '__removed__', 'conversation');
-
-      group.target_agent_id = undefined;
+  return applyAutoIsolateContextForGroups(userId, enable, {
+    groups: getAllRegisteredGroups(),
+    channelType: 'feishu',
+    getChannelType,
+    getAgent,
+    ensureBinding: ensureAutoImConversationBinding,
+    setGroup: (jid, group) => {
       setRegisteredGroup(jid, group);
       registeredGroups[jid] = group;
-      count++;
-    }
-  }
-  return count;
+    },
+    deleteAgent,
+    broadcastAgentRemoved,
+  });
 }
 
 /**
@@ -8784,8 +8775,10 @@ async function main(): Promise<void> {
       }
     }
     for (const uid of userIds) {
-      const cfg = getUserFeishuConfig(uid);
-      if (cfg?.autoIsolateContext) {
+      const isolationConfig = getUserContextIsolationConfig(uid, 'feishu', {
+        getUserFeishuConfig,
+      });
+      if (isolationConfig.enabled) {
         const migrated = applyAutoIsolateContext(uid, true);
         if (migrated > 0) {
           logger.info(
@@ -8837,9 +8830,12 @@ async function checkImBindingsHealth(): Promise<void> {
       if (!agent) {
         // For auto_im agents, re-create instead of unbinding if toggle is still on
         const userId = group.created_by;
-        if (userId && getChannelType(jid) === 'feishu') {
-          const feishuConfig = getUserFeishuConfig(userId);
-          if (feishuConfig?.autoIsolateContext) {
+        const channelType = getChannelType(jid);
+        if (userId && channelType) {
+          const isolationConfig = getUserContextIsolationConfig(userId, channelType, {
+            getUserFeishuConfig,
+          });
+          if (isolationConfig.enabled) {
             const unbound: RegisteredGroup = { ...group, target_agent_id: undefined };
             if (ensureAutoImConversationBinding(jid, unbound, userId, group.name || jid)) {
               logger.info(

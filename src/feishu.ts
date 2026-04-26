@@ -867,9 +867,7 @@ export function createFeishuConnection(
 
     const chatJid = `feishu:${chatId}`;
     const resolvedSenderName = senderName || getSenderName(senderOpenId);
-    const resolvedChatName = chatType === 'p2p'
-      ? (resolvedSenderName ? `飞书 · ${resolvedSenderName}` : '飞书私聊')
-      : '飞书群聊';
+    const resolvedChatName = chatType === 'p2p' ? '飞书私聊' : '飞书群聊';
 
     // 先注册会话，确保 resolveGroupFolder 能正确解析 folder（含首条文件消息场景）
     onNewChat?.(chatJid, resolvedChatName);

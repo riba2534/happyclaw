@@ -377,15 +377,8 @@ router.delete('/:jid/agents/:agentId', authMiddleware, async (c) => {
   deleteAgent(agentId);
 
   // Broadcast removal
-  const { broadcastAgentStatus } = await import('../web.js');
-  broadcastAgentStatus(
-    jid,
-    agentId,
-    'error',
-    agent.name,
-    agent.prompt,
-    '__removed__',
-  );
+  const { broadcastAgentRemoved } = await import('../web.js');
+  broadcastAgentRemoved(jid, agentId, agent.name);
 
   logger.info({ agentId, jid, userId: user.id }, 'Agent deleted by user');
   return c.json({ success: true });
