@@ -1627,6 +1627,14 @@ export function broadcastAgentStatus(
   safeBroadcast(msg, isHostGroupJid(chatJid), allowedUserIds);
 }
 
+export function broadcastAgentRemoved(
+  chatJid: string,
+  agentId: string,
+  name: string,
+): void {
+  broadcastAgentStatus(chatJid, agentId, 'error', name, '', '__removed__', 'conversation');
+}
+
 /**
  * Broadcast an `agent_status` message that only flips the `titleGenerating`
  * loading flag — reads `agent.status`/`name`/`prompt` fresh from DB. Used by

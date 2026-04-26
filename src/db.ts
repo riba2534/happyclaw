@@ -4017,8 +4017,8 @@ export function getUserMemberFolders(
 
 export function createAgent(agent: SubAgent): void {
   db.prepare(
-    `INSERT INTO agents (id, group_folder, chat_jid, name, prompt, status, kind, created_by, created_at, completed_at, result_summary, spawned_from_jid, source_kind, thread_id, root_message_id, title_source, last_active_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO agents (id, group_folder, chat_jid, name, prompt, status, kind, created_by, created_at, completed_at, result_summary, spawned_from_jid, source_kind, thread_id, root_message_id, title_source, last_active_at, last_im_jid)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     agent.id,
     agent.group_folder,
@@ -4037,6 +4037,7 @@ export function createAgent(agent: SubAgent): void {
     agent.root_message_id ?? null,
     agent.title_source ?? null,
     agent.last_active_at ?? null,
+    agent.last_im_jid ?? null,
   );
 }
 
@@ -4241,7 +4242,7 @@ function mapAgentRow(row: Record<string, unknown>): SubAgent {
       typeof row.spawned_from_jid === 'string' ? row.spawned_from_jid : null,
     source_kind:
       typeof row.source_kind === 'string'
-        ? (row.source_kind as 'manual' | 'feishu_thread')
+        ? (row.source_kind as 'manual' | 'feishu_thread' | 'auto_im')
         : null,
     thread_id: typeof row.thread_id === 'string' ? row.thread_id : null,
     root_message_id:

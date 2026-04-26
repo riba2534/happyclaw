@@ -61,6 +61,7 @@ import {
   saveContainerEnvConfig,
   toPublicContainerEnvConfig,
 } from '../runtime-config.js';
+import { clearTargetAgentBindingsForDeletedAgents } from '../im-context-isolation.js';
 import {
   loadMountAllowlist,
   findAllowedRoot,
@@ -1187,15 +1188,43 @@ groupRoutes.post('/:jid/clear-history', authMiddleware, async (c) => {
     return c.json({ error: 'Failed to clear history' }, 500);
   }
 
-  // 4. Clear conversation agents and their messages.
+  // 4. Clear conversation agents and their messages, then unbind IM groups
+  // pointing at those deleted agents. Main-conversation bindings stay valid.
   try {
-    const agents = listAgentsByJid(jid);
+    const agentsById = new Map<
+      string,
+      ReturnType<typeof listAgentsByJid>[number]
+    >();
+    for (const siblingJid of siblingJids) {
+      if (!siblingJid.startsWith('web:')) continue;
+      for (const agent of listAgentsByJid(siblingJid)) {
+        agentsById.set(agent.id, agent);
+      }
+    }
+    const deletedAgentIds = new Set<string>();
+    const agents = Array.from(agentsById.values());
     for (const agent of agents) {
-      const virtualJid = `${jid}#agent:${agent.id}`;
+      const virtualJid = `${agent.chat_jid}#agent:${agent.id}`;
       deleteChatHistory(virtualJid);
       deleteAgent(agent.id);
+      deletedAgentIds.add(agent.id);
     }
+    const unboundCount = clearTargetAgentBindingsForDeletedAgents(
+      deps.getRegisteredGroups(),
+      deletedAgentIds,
+      (targetJid, updated) => {
+        setRegisteredGroup(targetJid, updated);
+        deps.getRegisteredGroups()[targetJid] = updated;
+        deps.clearImFailCounts?.(targetJid);
+      },
+    );
     deleteImContextBindingsByWorkspace(jid);
+    if (unboundCount > 0) {
+      logger.info(
+        { jid, folder: group.folder, unboundCount },
+        'Cleared IM agent bindings for rebuilt workspace',
+      );
+    }
   } catch (err) {
     logger.warn(
       { jid, err },
