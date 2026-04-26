@@ -34,6 +34,11 @@ import {
   type DiscordConnection,
   type DiscordConnectionConfig,
 } from './discord.js';
+import {
+  createWhatsAppConnection,
+  type WhatsAppConnection,
+  type WhatsAppConnectionConfig,
+} from './whatsapp.js';
 import { logger } from './logger.js';
 import type { FeishuMessageMeta } from './types.js';
 import {
@@ -853,5 +858,104 @@ export function createDiscordChannel(
       return inner.createStreamingSession(chatId, onCardCreated);
     },
   };
+  return channel;
+}
+
+// ─── WhatsApp Adapter ───────────────────────────────────────────
+
+export function createWhatsAppChannel(
+  config: WhatsAppConnectionConfig,
+): IMChannel {
+  let inner: WhatsAppConnection | null = null;
+
+  const channel: IMChannel = {
+    channelType: 'whatsapp',
+
+    async connect(opts: IMChannelConnectOpts): Promise<boolean> {
+      inner = createWhatsAppConnection(config);
+      try {
+        await inner.connect({
+          onReady: opts.onReady,
+          onNewChat: opts.onNewChat,
+          onCommand: opts.onCommand,
+          ignoreMessagesBefore: opts.ignoreMessagesBefore,
+          resolveGroupFolder: opts.resolveGroupFolder,
+          resolveEffectiveChatJid: opts.resolveEffectiveChatJid,
+          onAgentMessage: opts.onAgentMessage,
+        });
+        return inner.isConnected();
+      } catch (err) {
+        // Skeleton always throws — log at info level so it doesn't spam error
+        // channel until Baileys integration lands.
+        logger.info({ err }, 'WhatsApp channel skeleton connect rejected');
+        inner = null;
+        return false;
+      }
+    },
+
+    async disconnect(): Promise<void> {
+      if (inner) {
+        await inner.disconnect();
+        inner = null;
+      }
+    },
+
+    async sendMessage(
+      chatId: string,
+      text: string,
+      localImagePaths?: string[],
+    ): Promise<void> {
+      if (!inner) {
+        logger.warn(
+          { chatId },
+          'WhatsApp channel not connected, skip sending message',
+        );
+        return;
+      }
+      await inner.sendMessage(chatId, text, localImagePaths);
+    },
+
+    async sendImage(
+      chatId: string,
+      imageBuffer: Buffer,
+      mimeType: string,
+      caption?: string,
+      fileName?: string,
+    ): Promise<void> {
+      if (!inner) {
+        logger.warn(
+          { chatId },
+          'WhatsApp channel not connected, skip sending image',
+        );
+        return;
+      }
+      await inner.sendImage(chatId, imageBuffer, mimeType, caption, fileName);
+    },
+
+    async sendFile(
+      chatId: string,
+      filePath: string,
+      fileName: string,
+    ): Promise<void> {
+      if (!inner) {
+        logger.warn(
+          { chatId },
+          'WhatsApp channel not connected, skip sending file',
+        );
+        return;
+      }
+      await inner.sendFile(chatId, filePath, fileName);
+    },
+
+    async setTyping(chatId: string, isTyping: boolean): Promise<void> {
+      if (!inner) return;
+      await inner.sendTyping(chatId, isTyping);
+    },
+
+    isConnected(): boolean {
+      return inner?.isConnected() ?? false;
+    },
+  };
+
   return channel;
 }

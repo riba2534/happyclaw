@@ -16,6 +16,7 @@ import {
   createWeChatChannel,
   createDingTalkChannel,
   createDiscordChannel,
+  createWhatsAppChannel,
 } from './im-channel.js';
 import { parseFeishuRouteTarget, type FeishuConnectionConfig } from './feishu.js';
 import type { TelegramConnectionConfig } from './telegram.js';
@@ -23,6 +24,7 @@ import type { QQConnectionConfig } from './qq.js';
 import type { WeChatConnectionConfig } from './wechat.js';
 import type { DingTalkConnectionConfig } from './dingtalk.js';
 import type { DiscordConnectionConfig } from './discord.js';
+import type { WhatsAppConnectionConfig } from './whatsapp.js';
 import type { StreamingSession } from './im-channel.js';
 import { getRegisteredGroup, getJidsByFolder } from './db.js';
 import { getUserDingTalkConfig } from './runtime-config.js';
@@ -71,6 +73,14 @@ export interface DiscordConnectConfig {
   botToken: string;
   enabled?: boolean;
   streamingMode?: 'edit' | 'off';
+}
+
+export interface WhatsAppConnectConfig {
+  /** PR 1 占位：WhatsApp 通道骨架尚未接入 Baileys，连接永远失败 */
+  accountId?: string;
+  phoneNumber?: string;
+  authDir?: string;
+  enabled?: boolean;
 }
 
 export interface ConnectFeishuOptions {
@@ -548,6 +558,50 @@ class IMConnectionManager {
   }
 
   /**
+   * Connect a WhatsApp instance for a specific user.
+   *
+   * PR 1 阶段为骨架占位：始终返回 false，因 WhatsApp channel 尚未接入 Baileys。
+   * 接入路径已铺好，下一个 PR 替换 createWhatsAppChannel/createWhatsAppConnection
+   * 内部即可，无需改动本方法的签名或调用链。
+   */
+  async connectUserWhatsApp(
+    userId: string,
+    config: WhatsAppConnectConfig,
+    onNewChat: (chatJid: string, chatName: string) => void,
+    options?: {
+      ignoreMessagesBefore?: number;
+      onCommand?: (chatJid: string, command: string) => Promise<string | null>;
+      resolveGroupFolder?: (jid: string) => string | undefined;
+      resolveEffectiveChatJid?: (
+        chatJid: string,
+      ) => { effectiveJid: string; agentId: string | null } | null;
+      onAgentMessage?: (baseChatJid: string, agentId: string) => void;
+    },
+  ): Promise<boolean> {
+    const channel = createWhatsAppChannel({
+      accountId: config.accountId,
+      phoneNumber: config.phoneNumber,
+      authDir: config.authDir,
+    });
+
+    return this.connectChannel(userId, 'whatsapp', channel, {
+      onReady: () => {
+        logger.info({ userId }, 'User WhatsApp channel ready');
+      },
+      onNewChat,
+      ignoreMessagesBefore: options?.ignoreMessagesBefore,
+      onCommand: options?.onCommand,
+      resolveGroupFolder: options?.resolveGroupFolder,
+      resolveEffectiveChatJid: options?.resolveEffectiveChatJid,
+      onAgentMessage: options?.onAgentMessage,
+    });
+  }
+
+  async disconnectUserWhatsApp(userId: string): Promise<void> {
+    await this.disconnectChannel(userId, 'whatsapp');
+  }
+
+  /**
    * Connect a DingTalk Stream instance for a specific user.
    */
   async connectUserDingTalk(
@@ -764,6 +818,11 @@ class IMConnectionManager {
   isDiscordConnected(userId: string): boolean {
     const conn = this.connections.get(userId);
     return conn?.channels.get('discord')?.isConnected() ?? false;
+  }
+
+  isWhatsAppConnected(userId: string): boolean {
+    const conn = this.connections.get(userId);
+    return conn?.channels.get('whatsapp')?.isConnected() ?? false;
   }
 
   /** Get the Feishu channel for a user (for direct access like syncGroups) */
