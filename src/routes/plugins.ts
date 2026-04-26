@@ -1,190 +1,215 @@
 // Claude Code Plugins management routes (per-user)
 //
 // Plugins are loaded by the agent-runner via SDK `options.plugins`, populated
-// from data/plugins/{userId}/plugins.json at spawn time. This route module
-// only mutates the per-user config + cache; the spawn path reads it.
+// from the user's v2 plugins.json + the shared catalog at spawn time. This
+// route module mutates the per-user v2 config and triggers materialize; the
+// spawn path reads the runtime tree.
 //
 // See plan v3 and src/plugin-utils.ts for the data model.
 
 import { Hono } from 'hono';
 import fs from 'fs/promises';
-import fsSync from 'fs';
 import path from 'path';
-import os from 'os';
 
 import type { Variables } from '../web-context.js';
 import type { AuthUser } from '../types.js';
 import { authMiddleware } from '../middleware/auth.js';
 import {
-  getUserPluginsCacheDir,
-  getUserPluginsFile,
-  getPluginCacheDir,
-  readUserPluginsFile,
-  writeUserPluginsFile,
+  getUserPluginRuntimePath,
+  readUserPluginsV2,
+  writeUserPluginsV2,
   parsePluginFullId,
-  type UserPluginConfig,
+  type UserPluginsV2,
 } from '../plugin-utils.js';
 import { checkPluginDependencies } from '../plugin-dependency-check.js';
-import { getEffectiveExternalDir } from '../runtime-config.js';
-
-interface HostPluginInfo {
-  name: string;
-  version?: string;
-  description?: string;
-  sourcePath: string; // absolute path on host
-}
-
-interface HostMarketplaceInfo {
-  name: string;
-  sourcePath: string;
-  plugins: HostPluginInfo[];
-  /** true if this marketplace has been synced to the current user's cache. */
-  synced: boolean;
-}
+import {
+  scanHostMarketplaces,
+  isScanInFlight,
+} from '../plugin-importer.js';
+import {
+  readCatalogIndex,
+  type CatalogIndex,
+  type CatalogPluginEntry,
+  type SnapshotMeta,
+} from '../plugin-catalog.js';
+import { materializeUserRuntime } from '../plugin-materializer.js';
 
 const pluginsRoutes = new Hono<{ Variables: Variables }>();
 
 // --- Helpers ---
-
-/**
- * Resolve the host-side marketplaces directory. Defaults to ~/.claude/plugins/
- * marketplaces but can be redirected via SystemSettings.externalClaudeDir, so
- * HappyClaw deployments that don't use the process user's home directory still
- * find the right catalog.
- */
-function hostMarketplacesRoot(): string {
-  return path.join(getEffectiveExternalDir(), 'plugins', 'marketplaces');
-}
 
 /** Sanity-check a marketplace / plugin name to prevent path traversal. */
 function validateNameSegment(name: string): boolean {
   return /^[\w.-]+$/.test(name) && name !== '.' && name !== '..';
 }
 
-/** Read plugin.json metadata. Returns null for missing/malformed. */
-async function readPluginManifest(
-  pluginDir: string,
-): Promise<HostPluginInfo | null> {
-  const manifestPath = path.join(pluginDir, '.claude-plugin', 'plugin.json');
-  try {
-    const raw = await fs.readFile(manifestPath, 'utf-8');
-    const parsed = JSON.parse(raw);
-    const name = typeof parsed.name === 'string' ? parsed.name : null;
-    if (!name) return null;
-    return {
-      name,
-      version: typeof parsed.version === 'string' ? parsed.version : undefined,
-      description:
-        typeof parsed.description === 'string' ? parsed.description : undefined,
-      sourcePath: pluginDir,
-    };
-  } catch {
-    return null;
-  }
-}
-
-/** List plugins under a marketplace directory (looks in plugins/ subdir). */
-async function listMarketplacePlugins(
-  marketplaceDir: string,
-): Promise<HostPluginInfo[]> {
-  const pluginsRoot = path.join(marketplaceDir, 'plugins');
-  let entries: string[];
-  try {
-    entries = await fs.readdir(pluginsRoot);
-  } catch {
-    return [];
-  }
-
-  const result: HostPluginInfo[] = [];
-  for (const entry of entries) {
-    if (!validateNameSegment(entry)) continue;
-    const pluginDir = path.join(pluginsRoot, entry);
-    const stat = await fs.stat(pluginDir).catch(() => null);
-    if (!stat || !stat.isDirectory()) continue;
-    const info = await readPluginManifest(pluginDir);
-    if (info) result.push(info);
-  }
-  return result;
-}
-
 // --- Routes ---
 
-// GET / — return current user's plugin config + synced marketplace summary.
+// GET / — return the catalog's full plugin set, annotated with the current
+// user's enabled state per plugin (mcp-style projection). The UI's list +
+// toggle flow needs to see plugins even when not yet enabled, and disabled
+// refs must remain visible so users can re-enable them. v2 entries that
+// reference plugins no longer in the catalog (after a marketplace removal /
+// before a scan) are still listed with a `missing from catalog` warning so
+// users can clean them up.
 pluginsRoutes.get('/', authMiddleware, async (c) => {
   const authUser = c.get('user') as AuthUser;
   const isAdmin = authUser.role === 'admin';
-  const config = readUserPluginsFile(authUser.id);
+  const v2 = readUserPluginsV2(authUser.id);
+  const catalog = readCatalogIndex();
   // Dependency warnings are workspace-agnostic in this view — a user's plugin
   // is shared across all their workspaces (admin home container, docker sub-
   // workspaces, etc). Reporting `host` just because the viewer is admin would
   // mask real missing-binary risk in their docker workspaces. Stay conservative:
-  // always report Docker-runtime warnings here; v4 will move to per-workspace
-  // accuracy once the UI has workspace context.
+  // always report Docker-runtime warnings here; a future change will move to
+  // per-workspace accuracy once the UI has workspace context.
   const depCheckRuntime: 'docker' | 'host' = 'docker';
 
-  // Enrich with a resolved `plugins` list per marketplace (from cache manifests).
-  // hostSourcePath is an absolute path on the server and a potential info leak
-  // for non-admin roles; expose it only to admins.
-  const marketplaces: Array<{
+  type PluginRow = {
+    name: string;
+    fullId: string;
+    enabled: boolean;
+    snapshot?: string;
+    activeSnapshot?: string;
+    version?: string;
+    description?: string;
+    warnings: { missing: string[]; note: string };
+  };
+  type MarketplaceRow = {
     name: string;
     syncedAt: string;
     version?: string;
     hostSourcePath?: string;
-    plugins: Array<{
-      name: string;
-      fullId: string;
-      enabled: boolean;
-      version?: string;
-      description?: string;
-      warnings: { missing: string[]; note: string };
-    }>;
-  }> = [];
+    plugins: PluginRow[];
+  };
 
-  for (const [mpName, meta] of Object.entries(config.marketplaces)) {
-    if (!validateNameSegment(mpName)) continue;
-    const cacheMpDir = path.join(getUserPluginsCacheDir(authUser.id), mpName);
-    let pluginEntries: string[] = [];
-    try {
-      pluginEntries = await fs.readdir(cacheMpDir);
-    } catch {
-      // cache dir missing → treat as empty
-    }
+  const byMarketplace = new Map<string, MarketplaceRow>();
 
-    const plugins: (typeof marketplaces)[0]['plugins'] = [];
-    for (const pluginName of pluginEntries) {
-      if (!validateNameSegment(pluginName)) continue;
-      const pluginDir = path.join(cacheMpDir, pluginName);
-      const stat = await fs.stat(pluginDir).catch(() => null);
-      if (!stat || !stat.isDirectory()) continue;
-      const manifest = await readPluginManifest(pluginDir);
-      if (!manifest) continue;
-      const fullId = `${pluginName}@${mpName}`;
-      const deps = checkPluginDependencies(pluginDir, fullId, {
-        runtime: depCheckRuntime,
-      });
-      plugins.push({
-        name: pluginName,
-        fullId,
-        enabled: config.enabled[fullId] === true,
-        version: manifest.version,
-        description: manifest.description,
-        warnings: deps,
-      });
-    }
-
-    marketplaces.push({
-      name: mpName,
-      syncedAt: meta.syncedAt,
-      version: meta.version,
-      ...(isAdmin ? { hostSourcePath: meta.hostSourcePath } : {}),
-      plugins,
-    });
+  function ensureMarketplaceRow(name: string, fallbackSyncedAt: string): MarketplaceRow {
+    const existing = byMarketplace.get(name);
+    if (existing) return existing;
+    const mpCat = catalog.marketplaces[name];
+    const row: MarketplaceRow = {
+      name,
+      syncedAt: mpCat?.lastImportedAt ?? fallbackSyncedAt,
+      version: mpCat?.version,
+      ...(isAdmin && mpCat?.sourcePath
+        ? { hostSourcePath: mpCat.sourcePath }
+        : {}),
+      plugins: [],
+    };
+    byMarketplace.set(name, row);
+    return row;
   }
+
+  // 1. Walk catalog: every plugin in the shared catalog must appear, regardless
+  //    of whether the user has enabled it. Annotate with the user's enabled
+  //    state if a v2 ref exists.
+  for (const [fullId, catEntry] of Object.entries(catalog.plugins)) {
+    if (
+      !validateNameSegment(catEntry.marketplace) ||
+      !validateNameSegment(catEntry.plugin)
+    ) {
+      continue;
+    }
+    const userRef = v2?.enabled[fullId];
+    const isEnabled = userRef?.enabled === true;
+    // Snapshot to display: user pin if they have a ref (enabled or not),
+    // otherwise the catalog's active snapshot (the default the toggle would
+    // pin).
+    const refSnapshot =
+      userRef && validateNameSegment(userRef.snapshot)
+        ? userRef.snapshot
+        : catEntry.activeSnapshot;
+    const snapMeta = catEntry.snapshots[refSnapshot];
+
+    // Dependency check looks at the user's materialized runtime tree if it
+    // exists (i.e. the plugin has been enabled at least once). Catalog-only
+    // plugins skip the check — there is nothing to load until the user enables.
+    let deps: { missing: string[]; note: string } = { missing: [], note: '' };
+    if (
+      isEnabled &&
+      userRef &&
+      validateNameSegment(userRef.snapshot) &&
+      validateNameSegment(userRef.marketplace) &&
+      validateNameSegment(userRef.plugin)
+    ) {
+      const runtimeDir = getUserPluginRuntimePath(
+        authUser.id,
+        userRef.snapshot,
+        userRef.marketplace,
+        userRef.plugin,
+      );
+      try {
+        if ((await fs.stat(runtimeDir)).isDirectory()) {
+          deps = checkPluginDependencies(runtimeDir, fullId, {
+            runtime: depCheckRuntime,
+          });
+        }
+      } catch {
+        /* missing runtime tree, no deps to report */
+      }
+    }
+
+    const pluginRow: PluginRow = {
+      name: catEntry.plugin,
+      fullId,
+      enabled: isEnabled,
+      snapshot: refSnapshot,
+      activeSnapshot: catEntry.activeSnapshot,
+      version: snapMeta?.version,
+      description: snapMeta?.description,
+      warnings: deps,
+    };
+    const mpRow = ensureMarketplaceRow(
+      catEntry.marketplace,
+      userRef?.enabledAt ?? new Date(0).toISOString(),
+    );
+    mpRow.plugins.push(pluginRow);
+  }
+
+  // 2. Surface v2 refs whose catalog entry has vanished (catalog scan dropped
+  //    the marketplace, or the user enabled it via a stale path). These must
+  //    remain visible so the user can disable / clean them up.
+  if (v2) {
+    for (const [fullId, ref] of Object.entries(v2.enabled)) {
+      if (catalog.plugins[fullId]) continue;
+      if (
+        !validateNameSegment(ref.marketplace) ||
+        !validateNameSegment(ref.plugin) ||
+        !validateNameSegment(ref.snapshot)
+      ) {
+        continue;
+      }
+      const pluginRow: PluginRow = {
+        name: ref.plugin,
+        fullId,
+        enabled: ref.enabled === true,
+        snapshot: ref.snapshot,
+        warnings: {
+          missing: [],
+          note: 'missing from catalog; please scan or remove',
+        },
+      };
+      const mpRow = ensureMarketplaceRow(ref.marketplace, ref.enabledAt);
+      mpRow.plugins.push(pluginRow);
+    }
+  }
+
+  const marketplaces = Array.from(byMarketplace.values());
 
   return c.json({ marketplaces });
 });
 
-// PATCH /enabled/:pluginFullId — toggle a plugin on/off
+// PATCH /enabled/:pluginFullId — toggle a plugin on/off.
+//
+// Read-modify-write the v2 plugins.json (mcp pattern), then trigger
+// materialize so the runtime tree exists before the next agent spawn.
+// Body: { enabled: boolean, snapshot?: string }
+//
+// snapshot omitted → take catalog's activeSnapshot for the plugin. Snapshot
+// must already exist in the catalog (importer must have imported it once);
+// otherwise we 404 rather than write a dangling reference.
 pluginsRoutes.patch('/enabled/:pluginFullId', authMiddleware, async (c) => {
   const authUser = c.get('user') as AuthUser;
   const fullId = c.req.param('pluginFullId');
@@ -204,183 +229,112 @@ pluginsRoutes.patch('/enabled/:pluginFullId', authMiddleware, async (c) => {
 
   const body = await c.req.json().catch(() => ({}));
   const enabled = (body as { enabled?: unknown }).enabled;
+  const explicitSnapshot = (body as { snapshot?: unknown }).snapshot;
   if (typeof enabled !== 'boolean') {
     return c.json({ error: '`enabled` must be boolean' }, 400);
   }
+  if (
+    explicitSnapshot !== undefined &&
+    (typeof explicitSnapshot !== 'string' ||
+      !validateNameSegment(explicitSnapshot))
+  ) {
+    return c.json({ error: 'Invalid `snapshot` id' }, 400);
+  }
 
-  const config = readUserPluginsFile(authUser.id);
+  const v2 =
+    readUserPluginsV2(authUser.id) ??
+    ({ schemaVersion: 1, enabled: {} } as UserPluginsV2);
 
-  // Validate plugin exists in cache before enabling; disabling is always OK
   if (enabled) {
-    const manifestPath = path.join(
-      getPluginCacheDir(authUser.id, parsed.marketplaceName, parsed.pluginName),
-      '.claude-plugin',
-      'plugin.json',
-    );
-    if (!fsSync.existsSync(manifestPath)) {
+    const catalog = readCatalogIndex();
+    const catalogEntry = catalog.plugins[fullId];
+    if (!catalogEntry) {
       return c.json(
         {
-          error: `Plugin not found in cache; sync marketplace "${parsed.marketplaceName}" first`,
+          error: `Plugin "${fullId}" not in catalog; run a host scan first`,
         },
         404,
       );
     }
-  }
+    const snapshotId = explicitSnapshot ?? catalogEntry.activeSnapshot;
+    if (!snapshotId || !catalogEntry.snapshots[snapshotId]) {
+      return c.json(
+        {
+          error: `Snapshot "${snapshotId}" not found in catalog for ${fullId}`,
+        },
+        404,
+      );
+    }
+    v2.enabled[fullId] = {
+      enabled: true,
+      marketplace: parsed.marketplaceName,
+      plugin: parsed.pluginName,
+      snapshot: snapshotId,
+      enabledAt: new Date().toISOString(),
+    };
+    writeUserPluginsV2(authUser.id, v2);
 
-  config.enabled[fullId] = enabled;
-  writeUserPluginsFile(authUser.id, config);
+    let materializeWarnings: string[] = [];
+    try {
+      const report = materializeUserRuntime(authUser.id);
+      materializeWarnings = report.warnings;
+    } catch (err) {
+      materializeWarnings = [err instanceof Error ? err.message : String(err)];
+    }
 
-  return c.json({ success: true, fullId, enabled });
-});
-
-// GET /available-on-host — list marketplaces + plugins present on host fs.
-// Admin-only: exposes absolute host paths and the set of plugins installed
-// on the server machine, both of which member roles shouldn't see.
-pluginsRoutes.get('/available-on-host', authMiddleware, async (c) => {
-  const authUser = c.get('user') as AuthUser;
-  if (authUser.role !== 'admin') {
-    return c.json({ error: 'Only admin can browse host plugin marketplaces' }, 403);
-  }
-  const config = readUserPluginsFile(authUser.id);
-  const syncedSet = new Set(Object.keys(config.marketplaces));
-
-  const root = hostMarketplacesRoot();
-  let mpDirs: string[] = [];
-  try {
-    mpDirs = await fs.readdir(root);
-  } catch {
-    return c.json({ marketplaces: [], hostRoot: root });
-  }
-
-  const marketplaces: HostMarketplaceInfo[] = [];
-  for (const name of mpDirs) {
-    if (!validateNameSegment(name)) continue;
-    const mpDir = path.join(root, name);
-    const stat = await fs.stat(mpDir).catch(() => null);
-    if (!stat || !stat.isDirectory()) continue;
-
-    const plugins = await listMarketplacePlugins(mpDir);
-    if (plugins.length === 0) continue;
-
-    marketplaces.push({
-      name,
-      sourcePath: mpDir,
-      plugins,
-      synced: syncedSet.has(name),
+    return c.json({
+      success: true,
+      fullId,
+      enabled,
+      snapshot: snapshotId,
+      materializeWarnings,
     });
   }
 
-  return c.json({ marketplaces, hostRoot: root });
-});
+  // Disable: drop the entry rather than leaving it as `enabled: false` so the
+  // mapping stays small + the materializer/cleanup don't reason about
+  // tombstones.
+  delete v2.enabled[fullId];
+  writeUserPluginsV2(authUser.id, v2);
 
-// POST /sync-host — copy a marketplace's plugins to the per-user cache.
-// Admin-only: copying arbitrary host plugins (which can include executable
-// hooks / MCP servers / scripts) is a supply-chain surface that must not be
-// open to members. See src/routes/mcp-servers.ts:305 for the analogous gate.
-pluginsRoutes.post('/sync-host', authMiddleware, async (c) => {
-  const authUser = c.get('user') as AuthUser;
-  if (authUser.role !== 'admin') {
-    return c.json({ error: 'Only admin can sync host plugin marketplaces' }, 403);
-  }
-  const body = await c.req.json().catch(() => ({}));
-  const marketplace = (body as { marketplace?: unknown }).marketplace;
-  if (typeof marketplace !== 'string' || !validateNameSegment(marketplace)) {
-    return c.json({ error: '`marketplace` must be a valid name segment' }, 400);
-  }
-
-  const hostMpDir = path.join(hostMarketplacesRoot(), marketplace);
-  const stat = await fs.stat(hostMpDir).catch(() => null);
-  if (!stat || !stat.isDirectory()) {
-    return c.json(
-      { error: `Host marketplace "${marketplace}" not found` },
-      404,
-    );
-  }
-
-  const plugins = await listMarketplacePlugins(hostMpDir);
-  if (plugins.length === 0) {
-    return c.json(
-      { error: 'No plugins with valid .claude-plugin/plugin.json found' },
-      400,
-    );
-  }
-
-  const cacheMpDir = path.join(
-    getUserPluginsCacheDir(authUser.id),
-    marketplace,
-  );
-
-  const stats = { copied: [] as string[], skipped: [] as string[], warnings: [] as string[] };
-
-  // Rebuild from scratch to match host state (drop removed plugins)
+  let materializeWarnings: string[] = [];
   try {
-    await fs.rm(cacheMpDir, { recursive: true, force: true });
-  } catch {
-    /* not found, ok */
+    const report = materializeUserRuntime(authUser.id);
+    materializeWarnings = report.warnings;
+  } catch (err) {
+    materializeWarnings = [err instanceof Error ? err.message : String(err)];
   }
-  await fs.mkdir(cacheMpDir, { recursive: true });
-
-  for (const plugin of plugins) {
-    const pluginDirName = path.basename(plugin.sourcePath);
-
-    // Self-containment validation (corresponds to plan P1.2)
-    if (plugin.name !== pluginDirName) {
-      stats.warnings.push(
-        `Plugin "${pluginDirName}" has name mismatch (plugin.json.name="${plugin.name}"); using directory name`,
-      );
-    }
-
-    const dstDir = path.join(cacheMpDir, pluginDirName);
-    try {
-      await fs.cp(plugin.sourcePath, dstDir, {
-        recursive: true,
-        preserveTimestamps: false,
-        errorOnExist: false,
-        force: true,
-      });
-      stats.copied.push(pluginDirName);
-    } catch (err) {
-      stats.skipped.push(pluginDirName);
-      stats.warnings.push(
-        `Failed to copy "${pluginDirName}": ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  }
-
-  // Update plugins.json metadata (do not auto-enable; user opts in per plugin)
-  const config = readUserPluginsFile(authUser.id);
-  // Pick a reasonable version (from marketplace.json metadata, if any)
-  let marketplaceVersion: string | undefined;
-  try {
-    const mpManifest = JSON.parse(
-      await fs.readFile(
-        path.join(hostMpDir, '.claude-plugin', 'marketplace.json'),
-        'utf-8',
-      ),
-    );
-    if (mpManifest?.metadata?.version) {
-      marketplaceVersion = String(mpManifest.metadata.version);
-    }
-  } catch {
-    /* marketplace.json missing / malformed, ok */
-  }
-
-  config.marketplaces[marketplace] = {
-    hostSourcePath: hostMpDir,
-    syncedAt: new Date().toISOString(),
-    ...(marketplaceVersion ? { version: marketplaceVersion } : {}),
-  };
-  writeUserPluginsFile(authUser.id, config);
 
   return c.json({
-    marketplace,
-    copied: stats.copied,
-    skipped: stats.skipped,
-    warnings: stats.warnings,
+    success: true,
+    fullId,
+    enabled,
+    materializeWarnings,
   });
 });
 
-// DELETE /marketplaces/:name — remove cache + cascade-clear enabled[*@name]
+// POST /materialize — full re-materialize for the current user. Manual
+// recovery path for the UI when the runtime tree is suspected drifted (rare,
+// but cheap because materialize is idempotent on no-op).
+pluginsRoutes.post('/materialize', authMiddleware, async (c) => {
+  const authUser = c.get('user') as AuthUser;
+  try {
+    const report = materializeUserRuntime(authUser.id);
+    return c.json({ success: true, report });
+  } catch (err) {
+    return c.json(
+      {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      },
+      500,
+    );
+  }
+});
+
+// DELETE /marketplaces/:name — cascade-clear all enabled[*@name] from v2
+// plugins.json. Re-materialize so orphan runtime trees can be cleaned up by
+// the next GC pass.
 pluginsRoutes.delete('/marketplaces/:name', authMiddleware, async (c) => {
   const authUser = c.get('user') as AuthUser;
   const name = c.req.param('name');
@@ -388,41 +342,124 @@ pluginsRoutes.delete('/marketplaces/:name', authMiddleware, async (c) => {
     return c.json({ error: 'Invalid marketplace name' }, 400);
   }
 
-  const config = readUserPluginsFile(authUser.id);
-  const hadMarketplace = !!config.marketplaces[name];
-
-  // Cascade: drop all enabled entries whose marketplace matches
+  const v2 = readUserPluginsV2(authUser.id);
   const removedEnabled: string[] = [];
-  const newEnabled: UserPluginConfig['enabled'] = {};
-  for (const [id, flag] of Object.entries(config.enabled)) {
-    const parsed = parsePluginFullId(id);
-    if (parsed && parsed.marketplaceName === name) {
-      removedEnabled.push(id);
-    } else {
-      newEnabled[id] = flag;
+  if (v2) {
+    for (const [id, ref] of Object.entries(v2.enabled)) {
+      if (ref.marketplace === name) {
+        removedEnabled.push(id);
+        delete v2.enabled[id];
+      }
     }
-  }
-
-  delete config.marketplaces[name];
-  config.enabled = newEnabled;
-  writeUserPluginsFile(authUser.id, config);
-
-  // Delete cache directory on disk
-  const cacheMpDir = path.join(getUserPluginsCacheDir(authUser.id), name);
-  try {
-    await fs.rm(cacheMpDir, { recursive: true, force: true });
-  } catch {
-    /* already gone, ok */
+    if (removedEnabled.length > 0) {
+      writeUserPluginsV2(authUser.id, v2);
+      try {
+        materializeUserRuntime(authUser.id);
+      } catch {
+        // best-effort; user can hit POST /materialize manually
+      }
+    }
   }
 
   return c.json({
     success: true,
     marketplace: name,
-    hadMarketplace,
     removedEnabled,
   });
 });
 
+// --- Catalog routes ---
+//
+// The catalog is a host-wide immutable snapshot store fed by `scanHostMarketplaces()`.
+// Read access is open to any logged-in user (UI shows what's available to enable);
+// scan triggers and snapshot source paths are admin-only because both expose host
+// filesystem layout / supply-chain surface.
+
+/** Strip `sourcePath` from snapshots when the viewer isn't admin. */
+function projectSnapshotForRole(
+  meta: SnapshotMeta,
+  isAdmin: boolean,
+): Omit<SnapshotMeta, 'sourcePath'> & { sourcePath?: string } {
+  if (isAdmin) return meta;
+  const { sourcePath: _omitted, ...rest } = meta;
+  return rest;
+}
+
+function projectPluginForRole(
+  entry: CatalogPluginEntry,
+  isAdmin: boolean,
+): CatalogPluginEntry {
+  const snapshots: CatalogPluginEntry['snapshots'] = {};
+  for (const [id, meta] of Object.entries(entry.snapshots)) {
+    snapshots[id] = projectSnapshotForRole(meta, isAdmin) as SnapshotMeta;
+  }
+  return { ...entry, snapshots };
+}
+
+function projectIndexForRole(
+  idx: CatalogIndex,
+  isAdmin: boolean,
+): CatalogIndex {
+  if (isAdmin) return idx;
+  const marketplaces: CatalogIndex['marketplaces'] = {};
+  for (const [name, mp] of Object.entries(idx.marketplaces)) {
+    const { sourcePath: _omitted, ...rest } = mp;
+    marketplaces[name] = rest as CatalogIndex['marketplaces'][string];
+  }
+  const plugins: CatalogIndex['plugins'] = {};
+  for (const [id, plugin] of Object.entries(idx.plugins)) {
+    plugins[id] = projectPluginForRole(plugin, false);
+  }
+  return { ...idx, marketplaces, plugins };
+}
+
+// GET /catalog — list all imported marketplaces + plugins from the catalog index
+pluginsRoutes.get('/catalog', authMiddleware, async (c) => {
+  const authUser = c.get('user') as AuthUser;
+  const isAdmin = authUser.role === 'admin';
+  const idx = readCatalogIndex();
+  return c.json({
+    catalog: projectIndexForRole(idx, isAdmin),
+    scanning: isScanInFlight(),
+  });
+});
+
+// GET /catalog/marketplaces/:mp — single marketplace + its plugins
+pluginsRoutes.get('/catalog/marketplaces/:mp', authMiddleware, async (c) => {
+  const authUser = c.get('user') as AuthUser;
+  const isAdmin = authUser.role === 'admin';
+  const mp = c.req.param('mp');
+  if (!validateNameSegment(mp)) {
+    return c.json({ error: 'Invalid marketplace name' }, 400);
+  }
+  const idx = readCatalogIndex();
+  const meta = idx.marketplaces[mp];
+  if (!meta) {
+    return c.json({ error: `Marketplace "${mp}" not in catalog` }, 404);
+  }
+  const projected = projectIndexForRole(idx, isAdmin);
+  const plugins = Object.values(projected.plugins).filter(
+    (p) => p.marketplace === mp,
+  );
+  return c.json({
+    marketplace: projected.marketplaces[mp],
+    plugins,
+  });
+});
+
+// POST /catalog/scan — trigger an immediate host scan + import. Admin-only:
+// scanning hits arbitrary host paths under `getEffectiveExternalDir()/plugins/
+// marketplaces/*` and copies them into the shared catalog. Member roles must
+// not influence what plugins become available system-wide.
+pluginsRoutes.post('/catalog/scan', authMiddleware, async (c) => {
+  const authUser = c.get('user') as AuthUser;
+  if (authUser.role !== 'admin') {
+    return c.json({ error: 'Only admin can trigger catalog scan' }, 403);
+  }
+  // Concurrent callers (UI button, hourly timer, startup) all share the same
+  // in-flight Promise via the importer's mutex; this just surfaces it.
+  const report = await scanHostMarketplaces();
+  return c.json({ report });
+});
+
 export default pluginsRoutes;
-// Re-export helpers for tests
-export { getUserPluginsFile, getUserPluginsCacheDir };

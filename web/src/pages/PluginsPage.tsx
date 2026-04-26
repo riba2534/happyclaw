@@ -23,11 +23,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog';
 import { toast } from 'sonner';
-import {
-  usePluginsStore,
-  type HostMarketplaceInfo,
-  type PluginEntry,
-} from '../stores/plugins';
+import { usePluginsStore, type PluginEntry } from '../stores/plugins';
 import { useAuthStore } from '../stores/auth';
 
 function WarningBadge({
@@ -50,119 +46,6 @@ function WarningBadge({
   );
 }
 
-function SyncHostDialog({
-  open,
-  onClose,
-  onSynced,
-}: {
-  open: boolean;
-  onClose: () => void;
-  onSynced: () => void;
-}) {
-  const { fetchAvailableOnHost, syncMarketplace, syncing } = usePluginsStore();
-  const [available, setAvailable] = useState<HostMarketplaceInfo[] | null>(null);
-  const [hostRoot, setHostRoot] = useState<string>('');
-  const [loading, setLoading] = useState(false);
-  const [working, setWorking] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    setLoading(true);
-    fetchAvailableOnHost()
-      .then((data) => {
-        if (cancelled) return;
-        setAvailable(data.marketplaces);
-        setHostRoot(data.hostRoot);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        toast.error(`扫描宿主机失败：${err instanceof Error ? err.message : String(err)}`);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, fetchAvailableOnHost]);
-
-  const handleSync = async (mp: HostMarketplaceInfo) => {
-    setWorking(mp.name);
-    try {
-      const result = await syncMarketplace(mp.name);
-      toast.success(
-        `同步 ${mp.name}：复制 ${result.copied.length} 个插件${
-          result.warnings.length > 0 ? `（${result.warnings.length} 条警告）` : ''
-        }`,
-      );
-      onSynced();
-    } catch (err) {
-      toast.error(`同步失败：${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setWorking(null);
-    }
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>从宿主机同步 plugin marketplace</DialogTitle>
-          <DialogDescription>
-            扫描本机 <code className="text-xs">{hostRoot || '~/.claude/plugins/marketplaces/'}</code>{' '}
-            下已安装的 marketplace。选中后会把该 marketplace 下所有 plugin 复制到你专属的 cache 目录（只读挂载到容器），**不自动启用**——同步后再去列表里逐个启用。
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="max-h-[60vh] overflow-y-auto space-y-3">
-          {loading && <SkeletonCardList count={2} />}
-          {!loading && available && available.length === 0 && (
-            <EmptyState
-              icon={Puzzle}
-              title="宿主机上没有可同步的 marketplace"
-              description={`请先在本机安装 Claude Code plugins（放到 ${hostRoot}）`}
-            />
-          )}
-          {available?.map((mp) => (
-            <Card key={mp.name}>
-              <CardContent className="p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="font-semibold">{mp.name}</span>
-                      {mp.synced && (
-                        <span className="text-xs text-muted-foreground">（已同步）</span>
-                      )}
-                    </div>
-                    <div className="text-xs text-muted-foreground mt-0.5">
-                      {mp.plugins.length} 个 plugin ·{' '}
-                      {mp.plugins.map((p) => p.name).join(', ')}
-                    </div>
-                  </div>
-                  <Button
-                    size="sm"
-                    onClick={() => handleSync(mp)}
-                    disabled={syncing || working !== null}
-                  >
-                    {working === mp.name ? '同步中...' : mp.synced ? '重新同步' : '同步'}
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose} disabled={working !== null}>
-            关闭
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 export function PluginsPage() {
   const {
     marketplaces,
@@ -174,7 +57,6 @@ export function PluginsPage() {
   } = usePluginsStore();
 
   const isAdmin = useAuthStore((s) => s.user?.role === 'admin');
-  const [showSyncDialog, setShowSyncDialog] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ name: string; enabledCount: number } | null>(
     null,
   );
@@ -228,9 +110,13 @@ export function PluginsPage() {
             actions={
               <div className="flex items-center gap-3">
                 {isAdmin && (
-                  <Button variant="outline" onClick={() => setShowSyncDialog(true)}>
+                  <Button
+                    variant="outline"
+                    disabled
+                    title="PR3: catalog 浏览即将上线"
+                  >
                     <Download size={18} />
-                    从宿主机同步
+                    从宿主机同步（PR3 即将上线）
                   </Button>
                 )}
                 <Button variant="outline" onClick={loadPlugins} disabled={loading}>
@@ -263,7 +149,7 @@ export function PluginsPage() {
             <EmptyState
               icon={Puzzle}
               title="还没有 plugin"
-              description='点击"从宿主机同步"从本机 ~/.claude/plugins/marketplaces/ 导入 marketplace'
+              description="catalog 浏览 UI 即将在 PR3 上线；当前可通过后端 API 同步 marketplace"
             />
           ) : (
             marketplaces.map((mp) => (
@@ -345,29 +231,21 @@ export function PluginsPage() {
         </div>
       </div>
 
-      <SyncHostDialog
-        open={showSyncDialog}
-        onClose={() => setShowSyncDialog(false)}
-        onSynced={() => {
-          /* store auto-refreshed via syncMarketplace */
-        }}
-      />
-
       <Dialog
         open={deleteTarget !== null}
         onOpenChange={(o) => !o && setDeleteTarget(null)}
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>删除 marketplace 本地副本</DialogTitle>
+            <DialogTitle>清除 marketplace 启用项</DialogTitle>
             <DialogDescription>
-              将删除 <strong>{deleteTarget?.name}</strong> 的本地 cache 目录和相关配置。
+              将清除你账户下所有属于 <strong>{deleteTarget?.name}</strong> 的启用项。
               {deleteTarget && deleteTarget.enabledCount > 0 && (
                 <>
-                  {' '}会同时清除 <strong>{deleteTarget.enabledCount}</strong> 个已启用的 plugin。
+                  {' '}会一次性禁用 <strong>{deleteTarget.enabledCount}</strong> 个 plugin。
                 </>
               )}
-              宿主机原始 marketplace 目录不受影响。
+              宿主机 marketplace 目录与 catalog 快照不受影响。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

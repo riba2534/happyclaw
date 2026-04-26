@@ -10,6 +10,10 @@ export interface PluginEntry {
   name: string;
   fullId: string;
   enabled: boolean;
+  /** Snapshot the user has pinned (if any) or catalog's active snapshot. */
+  snapshot?: string;
+  /** Catalog's current default snapshot — the one a fresh enable would pin. */
+  activeSnapshot?: string;
   version?: string;
   description?: string;
   warnings: PluginWarnings;
@@ -24,37 +28,13 @@ export interface MarketplaceEntry {
   plugins: PluginEntry[];
 }
 
-export interface HostPluginInfo {
-  name: string;
-  version?: string;
-  description?: string;
-  sourcePath: string;
-}
-
-export interface HostMarketplaceInfo {
-  name: string;
-  sourcePath: string;
-  plugins: HostPluginInfo[];
-  synced: boolean;
-}
-
-export interface SyncHostResult {
-  marketplace: string;
-  copied: string[];
-  skipped: string[];
-  warnings: string[];
-}
-
 interface PluginsState {
   marketplaces: MarketplaceEntry[];
   loading: boolean;
   error: string | null;
-  syncing: boolean;
 
   loadPlugins: () => Promise<void>;
   toggleEnabled: (pluginFullId: string, enabled: boolean) => Promise<void>;
-  syncMarketplace: (marketplace: string) => Promise<SyncHostResult>;
-  fetchAvailableOnHost: () => Promise<{ marketplaces: HostMarketplaceInfo[]; hostRoot: string }>;
   deleteMarketplace: (name: string) => Promise<{ removedEnabled: string[] }>;
 }
 
@@ -62,7 +42,6 @@ export const usePluginsStore = create<PluginsState>((set, get) => ({
   marketplaces: [],
   loading: false,
   error: null,
-  syncing: false,
 
   loadPlugins: async () => {
     set({ loading: true });
@@ -88,34 +67,11 @@ export const usePluginsStore = create<PluginsState>((set, get) => ({
     }
   },
 
-  syncMarketplace: async (marketplace) => {
-    set({ syncing: true, error: null });
-    try {
-      const result = await api.post<SyncHostResult>('/api/plugins/sync-host', {
-        marketplace,
-      });
-      await get().loadPlugins();
-      return result;
-    } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err) });
-      throw err;
-    } finally {
-      set({ syncing: false });
-    }
-  },
-
-  fetchAvailableOnHost: async () => {
-    return api.get<{ marketplaces: HostMarketplaceInfo[]; hostRoot: string }>(
-      '/api/plugins/available-on-host',
-    );
-  },
-
   deleteMarketplace: async (name) => {
     try {
       const result = await api.delete<{
         success: boolean;
         marketplace: string;
-        hadMarketplace: boolean;
         removedEnabled: string[];
       }>(`/api/plugins/marketplaces/${encodeURIComponent(name)}`);
       await get().loadPlugins();
