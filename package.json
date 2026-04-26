@@ -37,6 +37,7 @@
     "proxy-agent": "^6.5.0",
     "qrcode": "^1.5.4",
     "ws": "^8.19.0",
+    "yaml": "^2.8.3",
     "zod": "^4.3.6"
   },
   "devDependencies": {
