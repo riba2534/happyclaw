@@ -21,6 +21,8 @@ interface MarkdownRendererProps {
   variant?: 'chat' | 'docs';
   /** When true, skip expensive plugins (KaTeX, sanitize) for faster streaming render */
   streaming?: boolean;
+  /** When true, force images to load eagerly. Required for offscreen render contexts (e.g. share-image export) where lazy-loaded images would otherwise never start fetching. */
+  eagerImages?: boolean;
 }
 
 /** Resolve relative image paths to the file download API */
@@ -185,7 +187,7 @@ function CodeBlock({
   );
 }
 
-export const MarkdownRenderer = memo(function MarkdownRenderer({ content, groupJid, variant = 'chat', streaming = false }: MarkdownRendererProps) {
+export const MarkdownRenderer = memo(function MarkdownRenderer({ content, groupJid, variant = 'chat', streaming = false, eagerImages = false }: MarkdownRendererProps) {
   const textSizeClass = variant === 'chat'
     ? 'text-base leading-[1.65] text-foreground'
     : 'text-sm leading-6 text-foreground';
@@ -215,7 +217,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, groupJ
         rehypePlugins={rehypePluginsList as any}
         components={{
           code: (props) => <CodeBlock {...props} variant={variant} />,
-          img: ({ src, alt }) => <MarkdownImage src={src ? resolveImageSrc(src, groupJid) : undefined} alt={alt} loading="lazy" />,
+          img: ({ src, alt }) => <MarkdownImage src={src ? resolveImageSrc(src, groupJid) : undefined} alt={alt} loading={eagerImages ? 'eager' : 'lazy'} />,
           a: ({ href, children }) => (
             <a
               href={href}

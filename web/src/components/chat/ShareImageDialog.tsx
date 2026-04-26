@@ -22,25 +22,43 @@ type GenerateState = 'generating' | 'preview' | 'error';
 
 /**
  * Wait for Mermaid diagrams and images inside the container to finish rendering.
+ * Uses MutationObserver for DOM-based loaders (Mermaid placeholders) and explicit
+ * load/error event listeners for images (since image loading does not produce DOM mutations).
  */
 function waitForRenderComplete(container: HTMLElement): Promise<void> {
   return new Promise((resolve) => {
-    const observer = new MutationObserver(check);
-    const timeout = setTimeout(() => {
+    let resolved = false;
+    const finish = () => {
+      if (resolved) return;
+      resolved = true;
       observer.disconnect();
-      resolve();
-    }, 5000);
+      clearTimeout(timeout);
+      // Small extra delay to let SVG painting settle
+      setTimeout(resolve, 300);
+    };
+
+    const observer = new MutationObserver(check);
+    const timeout = setTimeout(finish, 5000);
+    const watched = new WeakSet<HTMLImageElement>();
+
+    function watchImage(img: HTMLImageElement) {
+      if (watched.has(img) || img.complete) return;
+      watched.add(img);
+      const handler = () => check();
+      img.addEventListener('load', handler, { once: true });
+      img.addEventListener('error', handler, { once: true });
+    }
 
     function check() {
       // Mermaid loading placeholders use animate-pulse
       const loading = container.querySelectorAll('.animate-pulse');
       const images = container.querySelectorAll('img');
-      const allImagesLoaded = Array.from(images).every((img) => img.complete);
+      images.forEach(watchImage);
+      const allImagesLoaded = Array.from(images).every(
+        (img) => img.complete && (img.naturalWidth > 0 || img.src === ''),
+      );
       if (loading.length === 0 && allImagesLoaded) {
-        clearTimeout(timeout);
-        observer.disconnect();
-        // Small extra delay to let SVG painting settle
-        setTimeout(resolve, 300);
+        finish();
       }
     }
 

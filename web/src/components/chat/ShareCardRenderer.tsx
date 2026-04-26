@@ -157,7 +157,7 @@ export const ShareCardRenderer = forwardRef<HTMLDivElement, ShareCardRendererPro
           }}
         >
           <div className="share-card-content max-w-none">
-            <MarkdownRenderer content={content} groupJid={groupJid} variant="chat" />
+            <MarkdownRenderer content={content} groupJid={groupJid} variant="chat" eagerImages />
           </div>
           {/* Gradient fade for extremely long content */}
           {content.length > 30000 && (
