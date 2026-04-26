@@ -16,26 +16,27 @@ vi.mock('../src/config.js', () => ({
 const pluginUtils = await import('../src/plugin-utils.js');
 const {
   loadUserPlugins,
-  readUserPluginsFile,
-  writeUserPluginsFile,
+  readUserPluginsV2,
+  writeUserPluginsV2,
   parsePluginFullId,
-  getUserPluginsCacheDir,
-  getPluginCacheDir,
+  getUserPluginRuntimePath,
+  getUserPluginsFileV2,
   CONTAINER_PLUGINS_PATH,
 } = pluginUtils;
 
-function seedFakePlugin(
+function seedRuntimeManifest(
   userId: string,
+  snapshotId: string,
   marketplace: string,
   pluginName: string,
 ): string {
-  const pluginDir = getPluginCacheDir(userId, marketplace, pluginName);
-  fs.mkdirSync(path.join(pluginDir, '.claude-plugin'), { recursive: true });
+  const dir = getUserPluginRuntimePath(userId, snapshotId, marketplace, pluginName);
+  fs.mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true });
   fs.writeFileSync(
-    path.join(pluginDir, '.claude-plugin', 'plugin.json'),
+    path.join(dir, '.claude-plugin', 'plugin.json'),
     JSON.stringify({ name: pluginName, version: '1.0.0' }),
   );
-  return pluginDir;
+  return dir;
 }
 
 beforeEach(() => {
@@ -82,32 +83,46 @@ describe('parsePluginFullId', () => {
   });
 });
 
-describe('readUserPluginsFile', () => {
-  test('returns empty config when plugins.json is missing', () => {
-    const config = readUserPluginsFile('alice');
-    expect(config).toEqual({ marketplaces: {}, enabled: {} });
+describe('readUserPluginsV2 / writeUserPluginsV2', () => {
+  test('returns null when v2 plugins.json is missing', () => {
+    expect(readUserPluginsV2('alice')).toBeNull();
   });
 
-  test('round-trips via writeUserPluginsFile', () => {
+  test('round-trips via writeUserPluginsV2', () => {
     const input = {
-      marketplaces: {
-        'openai-codex': {
-          hostSourcePath: '/host/path',
-          syncedAt: '2026-04-24T00:00:00Z',
-          version: '1.0.3',
+      schemaVersion: 1 as const,
+      enabled: {
+        'codex@openai-codex': {
+          enabled: true,
+          marketplace: 'openai-codex',
+          plugin: 'codex',
+          snapshot: 'sha256-aaa',
+          enabledAt: '2026-04-26T00:00:00.000Z',
         },
       },
-      enabled: { 'codex@openai-codex': true },
     };
-    writeUserPluginsFile('alice', input);
-    expect(readUserPluginsFile('alice')).toEqual(input);
+    writeUserPluginsV2('alice', input);
+    expect(readUserPluginsV2('alice')).toEqual(input);
   });
 
-  test('tolerates corrupt JSON (returns empty config)', () => {
-    const file = path.join(tmpDataDir, 'plugins', 'alice', 'plugins.json');
+  test('tolerates corrupt JSON (returns empty enabled map)', () => {
+    const file = getUserPluginsFileV2('alice');
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, 'this is not json');
-    expect(readUserPluginsFile('alice')).toEqual({ marketplaces: {}, enabled: {} });
+    expect(readUserPluginsV2('alice')).toEqual({
+      schemaVersion: 1,
+      enabled: {},
+    });
+  });
+
+  test('returns null for unknown schemaVersion (no auto-overwrite)', () => {
+    const file = getUserPluginsFileV2('alice');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ schemaVersion: 99, enabled: {} }),
+    );
+    expect(readUserPluginsV2('alice')).toBeNull();
   });
 });
 
@@ -117,65 +132,98 @@ describe('loadUserPlugins', () => {
     expect(loadUserPlugins('', { runtime: 'host' })).toEqual([]);
   });
 
-  test('returns [] when no plugins.json exists', () => {
+  test('returns [] when no v2 plugins.json exists', () => {
     expect(loadUserPlugins('alice', { runtime: 'docker' })).toEqual([]);
   });
 
   test('returns [] when no plugins are enabled', () => {
-    writeUserPluginsFile('alice', {
-      marketplaces: {},
-      enabled: { 'codex@openai-codex': false },
-    });
+    writeUserPluginsV2('alice', { schemaVersion: 1, enabled: {} });
     expect(loadUserPlugins('alice', { runtime: 'docker' })).toEqual([]);
   });
 
-  test('skips enabled plugins whose cache dir is missing (stale config)', () => {
-    writeUserPluginsFile('alice', {
-      marketplaces: {},
-      enabled: { 'codex@openai-codex': true },
+  test('skips enabled plugins whose runtime dir is missing (stale config)', () => {
+    writeUserPluginsV2('alice', {
+      schemaVersion: 1,
+      enabled: {
+        'codex@openai-codex': {
+          enabled: true,
+          marketplace: 'openai-codex',
+          plugin: 'codex',
+          snapshot: 'sha256-aaa',
+          enabledAt: '2026-04-26T00:00:00.000Z',
+        },
+      },
     });
-    // No seedFakePlugin call → manifest missing → should skip
+    // No seedRuntimeManifest call → manifest missing → should skip
     expect(loadUserPlugins('alice', { runtime: 'host' })).toEqual([]);
   });
 
   test('docker mode returns container-internal paths', () => {
-    seedFakePlugin('alice', 'openai-codex', 'codex');
-    writeUserPluginsFile('alice', {
-      marketplaces: {},
-      enabled: { 'codex@openai-codex': true },
+    seedRuntimeManifest('alice', 'sha256-aaa', 'openai-codex', 'codex');
+    writeUserPluginsV2('alice', {
+      schemaVersion: 1,
+      enabled: {
+        'codex@openai-codex': {
+          enabled: true,
+          marketplace: 'openai-codex',
+          plugin: 'codex',
+          snapshot: 'sha256-aaa',
+          enabledAt: '2026-04-26T00:00:00.000Z',
+        },
+      },
     });
     const result = loadUserPlugins('alice', { runtime: 'docker' });
     expect(result).toEqual([
       {
         type: 'local',
-        path: `${CONTAINER_PLUGINS_PATH}/openai-codex/codex`,
+        path: `${CONTAINER_PLUGINS_PATH}/snapshots/sha256-aaa/openai-codex/codex`,
       },
     ]);
   });
 
   test('host mode returns absolute DATA_DIR paths', () => {
-    seedFakePlugin('alice', 'openai-codex', 'codex');
-    writeUserPluginsFile('alice', {
-      marketplaces: {},
-      enabled: { 'codex@openai-codex': true },
+    seedRuntimeManifest('alice', 'sha256-aaa', 'openai-codex', 'codex');
+    writeUserPluginsV2('alice', {
+      schemaVersion: 1,
+      enabled: {
+        'codex@openai-codex': {
+          enabled: true,
+          marketplace: 'openai-codex',
+          plugin: 'codex',
+          snapshot: 'sha256-aaa',
+          enabledAt: '2026-04-26T00:00:00.000Z',
+        },
+      },
     });
     const result = loadUserPlugins('alice', { runtime: 'host' });
     expect(result).toHaveLength(1);
     expect(result[0].type).toBe('local');
     expect(result[0].path).toBe(
-      path.join(getUserPluginsCacheDir('alice'), 'openai-codex', 'codex'),
+      getUserPluginRuntimePath('alice', 'sha256-aaa', 'openai-codex', 'codex'),
     );
     expect(path.isAbsolute(result[0].path)).toBe(true);
   });
 
   test('mixes enabled/disabled plugins correctly', () => {
-    seedFakePlugin('alice', 'openai-codex', 'codex');
-    seedFakePlugin('alice', 'anthropic-tools', 'formatter');
-    writeUserPluginsFile('alice', {
-      marketplaces: {},
+    seedRuntimeManifest('alice', 'sha256-aaa', 'openai-codex', 'codex');
+    seedRuntimeManifest('alice', 'sha256-bbb', 'anthropic-tools', 'formatter');
+    writeUserPluginsV2('alice', {
+      schemaVersion: 1,
       enabled: {
-        'codex@openai-codex': true,
-        'formatter@anthropic-tools': false,
+        'codex@openai-codex': {
+          enabled: true,
+          marketplace: 'openai-codex',
+          plugin: 'codex',
+          snapshot: 'sha256-aaa',
+          enabledAt: '2026-04-26T00:00:00.000Z',
+        },
+        'formatter@anthropic-tools': {
+          enabled: false,
+          marketplace: 'anthropic-tools',
+          plugin: 'formatter',
+          snapshot: 'sha256-bbb',
+          enabledAt: '2026-04-26T00:00:00.000Z',
+        },
       },
     });
     const result = loadUserPlugins('alice', { runtime: 'docker' });
@@ -184,22 +232,34 @@ describe('loadUserPlugins', () => {
   });
 
   test('per-user isolation: alice config does not leak to bob', () => {
-    seedFakePlugin('alice', 'openai-codex', 'codex');
-    writeUserPluginsFile('alice', {
-      marketplaces: {},
-      enabled: { 'codex@openai-codex': true },
+    seedRuntimeManifest('alice', 'sha256-aaa', 'openai-codex', 'codex');
+    writeUserPluginsV2('alice', {
+      schemaVersion: 1,
+      enabled: {
+        'codex@openai-codex': {
+          enabled: true,
+          marketplace: 'openai-codex',
+          plugin: 'codex',
+          snapshot: 'sha256-aaa',
+          enabledAt: '2026-04-26T00:00:00.000Z',
+        },
+      },
     });
     expect(loadUserPlugins('alice', { runtime: 'host' })).toHaveLength(1);
     expect(loadUserPlugins('bob', { runtime: 'host' })).toHaveLength(0);
   });
 
-  test('skips malformed plugin ids', () => {
-    writeUserPluginsFile('alice', {
-      marketplaces: {},
+  test('skips refs with invalid name segments', () => {
+    writeUserPluginsV2('alice', {
+      schemaVersion: 1,
       enabled: {
-        'malformed-no-at-sign': true,
-        '@bad-empty-plugin': true,
-        'empty-marketplace@': true,
+        'p@mp': {
+          enabled: true,
+          marketplace: '..',
+          plugin: 'p',
+          snapshot: 'sha256-aaa',
+          enabledAt: '2026-04-26T00:00:00.000Z',
+        },
       },
     });
     expect(loadUserPlugins('alice', { runtime: 'docker' })).toEqual([]);

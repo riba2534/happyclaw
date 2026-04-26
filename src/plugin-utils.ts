@@ -1,111 +1,146 @@
 /**
  * Shared plugin loading utilities for Claude Code plugins.
  *
- * Plugins are loaded via SDK `options.plugins: SdkPluginConfig[]`, which the
- * SDK converts into `--plugin-dir <path>` arguments passed to the spawned
- * claude CLI. Per-user plugin configs live in data/plugins/{userId}/plugins.json
- * and plugin directories are copied (not symlinked) into
- * data/plugins/{userId}/cache/{marketplace}/{plugin}/.
+ * Single on-disk schema (v2):
+ *   data/plugins/users/{userId}/plugins.json    — { schemaVersion: 1, enabled: {...} }
+ *   data/plugins/runtime/{userId}/snapshots/{snapshotId}/{mp}/{plugin}/...
+ *   data/plugins/catalog/...                    — immutable shared snapshots
  *
- * See: plan v3 — HappyClaw 支持 Claude Code Plugins
+ * `loadUserPlugins` reads the v2 plugins.json and validates each enabled ref
+ * against the user's runtime tree. Missing v2 file → empty result.
+ *
+ * SDK ingestion: results feed `options.plugins: SdkPluginConfig[]`, which the
+ * SDK turns into `--plugin-dir <abs-path>` for the spawned claude CLI.
  */
 import fs from 'fs';
 import path from 'path';
 
 import { DATA_DIR } from './config.js';
 import { logger } from './logger.js';
+import { isValidNameSegment } from './plugin-manifest.js';
 
-/**
- * Name-segment whitelist for marketplace / plugin names. Enforced in
- * parsePluginFullId so downstream `path.join()` can never receive `..` or
- * slashes that would escape the per-user cache directory.
- */
-const NAME_SEGMENT_RE = /^[\w.-]+$/;
+// --- v2 types ----------------------------------------------------------------
 
-function isValidNameSegment(s: string): boolean {
-  return NAME_SEGMENT_RE.test(s) && s !== '.' && s !== '..';
+export interface UserPluginEnableRefV2 {
+  enabled: boolean;
+  marketplace: string;
+  plugin: string;
+  /** Catalog snapshot id this user pinned (== contentHash from importer). */
+  snapshot: string;
+  /** ISO timestamp of last enable toggle. Informational. */
+  enabledAt: string;
 }
 
-export interface UserPluginConfig {
-  /** Synced marketplace records (metadata only; actual files in cache dir). */
-  marketplaces: Record<string, PluginMarketplaceEntry>;
-  /** Plugin full id ("plugin-name@marketplace-name") → enabled flag. */
-  enabled: Record<string, boolean>;
-}
-
-export interface PluginMarketplaceEntry {
-  /** Absolute path on the host this was copied from, for sync staleness detection. */
-  hostSourcePath: string;
-  /** ISO timestamp of last sync-host operation. */
-  syncedAt: string;
-  /** Marketplace version (from metadata.version), informational only. */
-  version?: string;
+export interface UserPluginsV2 {
+  schemaVersion: 1;
+  enabled: Record<string, UserPluginEnableRefV2>;
 }
 
 /** SDK's SdkPluginConfig shape (duplicated to avoid importing SDK in non-runner code). */
 export type SdkPluginConfig = { type: 'local'; path: string };
 
-/** Container-internal path where plugins cache is mounted in Docker mode. */
+/** Container-internal path where the user runtime tree is mounted in Docker mode. */
 export const CONTAINER_PLUGINS_PATH = '/workspace/plugins';
 
-export function getUserPluginsFile(userId: string): string {
-  return path.join(DATA_DIR, 'plugins', userId, 'plugins.json');
+// --- v2 paths ----------------------------------------------------------------
+
+export function getUserPluginsFileV2(userId: string): string {
+  return path.join(DATA_DIR, 'plugins', 'users', userId, 'plugins.json');
 }
 
-export function getUserPluginsCacheDir(userId: string): string {
-  return path.join(DATA_DIR, 'plugins', userId, 'cache');
+export function getUserRuntimeRoot(userId: string): string {
+  return path.join(DATA_DIR, 'plugins', 'runtime', userId);
 }
 
-export function getPluginCacheDir(
+export function getUserPluginRuntimePath(
   userId: string,
-  marketplaceName: string,
-  pluginName: string,
+  snapshotId: string,
+  marketplace: string,
+  plugin: string,
 ): string {
-  return path.join(getUserPluginsCacheDir(userId), marketplaceName, pluginName);
+  return path.join(
+    getUserRuntimeRoot(userId),
+    'snapshots',
+    snapshotId,
+    marketplace,
+    plugin,
+  );
 }
 
-export function readUserPluginsFile(userId: string): UserPluginConfig {
-  const file = getUserPluginsFile(userId);
+// --- v2 read/write -----------------------------------------------------------
+
+/**
+ * Read the v2 plugins.json. Returns null when:
+ *   - file is missing (caller treats as no enabled plugins)
+ *   - file exists but isn't recognizable v2 (caller should NOT migrate; we
+ *     don't auto-overwrite an unknown future schema)
+ *
+ * Malformed JSON inside an existing v2 file degrades to an empty enabled map
+ * and a warning — same convention as readCatalogIndex.
+ */
+export function readUserPluginsV2(userId: string): UserPluginsV2 | null {
+  if (!isValidNameSegment(userId)) return null;
+  const file = getUserPluginsFileV2(userId);
   let raw: string;
   try {
     raw = fs.readFileSync(file, 'utf-8');
   } catch (err) {
-    // Missing file is the normal "user has no plugins yet" path; anything else
-    // is worth logging so disk/permission issues don't vanish silently.
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      logger.warn({ userId, file, err }, 'readUserPluginsFile: read failed');
+      logger.warn({ userId, file, err }, 'readUserPluginsV2: read failed');
     }
-    return { marketplaces: {}, enabled: {} };
+    return null;
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    logger.warn({ userId, file, err }, 'readUserPluginsFile: JSON parse failed, returning empty config');
-    return { marketplaces: {}, enabled: {} };
+    logger.warn({ userId, file, err }, 'readUserPluginsV2: JSON parse failed');
+    return { schemaVersion: 1, enabled: {} };
+  }
+  const rec = (parsed && typeof parsed === 'object' ? parsed : {}) as Record<
+    string,
+    unknown
+  >;
+  if (rec.schemaVersion !== 1) {
+    return null;
   }
 
-  const record = (parsed && typeof parsed === 'object' ? parsed : {}) as Record<string, unknown>;
+  const out: UserPluginsV2 = { schemaVersion: 1, enabled: {} };
+  if (rec.enabled && typeof rec.enabled === 'object') {
+    for (const [fullId, value] of Object.entries(
+      rec.enabled as Record<string, unknown>,
+    )) {
+      const ref = coerceEnableRef(value);
+      if (ref) out.enabled[fullId] = ref;
+    }
+  }
+  return out;
+}
+
+function coerceEnableRef(value: unknown): UserPluginEnableRefV2 | null {
+  if (!value || typeof value !== 'object') return null;
+  const r = value as Record<string, unknown>;
+  if (typeof r.marketplace !== 'string' || typeof r.plugin !== 'string') {
+    return null;
+  }
+  if (typeof r.snapshot !== 'string') return null;
+  if (typeof r.enabled !== 'boolean') return null;
   return {
-    marketplaces:
-      record.marketplaces && typeof record.marketplaces === 'object'
-        ? (record.marketplaces as UserPluginConfig['marketplaces'])
-        : {},
-    enabled:
-      record.enabled && typeof record.enabled === 'object'
-        ? (record.enabled as UserPluginConfig['enabled'])
-        : {},
+    enabled: r.enabled,
+    marketplace: r.marketplace,
+    plugin: r.plugin,
+    snapshot: r.snapshot,
+    enabledAt:
+      typeof r.enabledAt === 'string' ? r.enabledAt : new Date(0).toISOString(),
   };
 }
 
-/**
- * Atomic write: serialize to a `.tmp` sibling, then rename into place.
- * rename(2) is atomic on the same filesystem, so readers never observe a
- * half-written plugins.json even under concurrent writes or a crash.
- */
-export function writeUserPluginsFile(userId: string, config: UserPluginConfig): void {
-  const file = getUserPluginsFile(userId);
+export function writeUserPluginsV2(userId: string, config: UserPluginsV2): void {
+  if (!isValidNameSegment(userId)) {
+    throw new Error(`Invalid userId: ${userId}`);
+  }
+  const file = getUserPluginsFileV2(userId);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
   const content = JSON.stringify(config, null, 2) + '\n';
@@ -117,6 +152,8 @@ export function writeUserPluginsFile(userId: string, config: UserPluginConfig): 
     throw err;
   }
 }
+
+// --- shared utilities --------------------------------------------------------
 
 /**
  * Parse a plugin full id "<plugin-name>@<marketplace-name>" into parts.
@@ -135,21 +172,20 @@ export function parsePluginFullId(
   return { pluginName, marketplaceName };
 }
 
+// --- SDK plugin loader -------------------------------------------------------
+
 /**
  * Load enabled plugins for a user, returning SdkPluginConfig[] ready to pass
  * to SDK `options.plugins`.
  *
- * Runtime-specific path conversion:
- *   - Docker: '/workspace/plugins/<marketplace>/<plugin>' (container-internal;
- *     container-runner must mount DATA_DIR/plugins/{userId}/cache → /workspace/plugins)
- *   - Host:   absolute DATA_DIR path
+ * Reads v2 plugins.json. Missing file → []. Each enabled ref must have a
+ * materialized runtime tree (`.claude-plugin/plugin.json` on disk) or it is
+ * skipped — stale configs never inject dangling paths into the SDK call.
  *
- * A plugin is included only if:
- *   - enabled[fullId] === true
- *   - the plugin directory exists on disk with .claude-plugin/plugin.json
- *     (so stale configs don't inject dangling paths)
- *
- * Returns [] for missing userId, missing config, or zero enabled plugins.
+ * Runtime path conventions:
+ *   - Docker: `/workspace/plugins/snapshots/{snapshotId}/{mp}/{plugin}` —
+ *     the user's whole runtime root is mounted at /workspace/plugins.
+ *   - Host:   absolute DATA_DIR path under runtime/ snapshots.
  */
 export function loadUserPlugins(
   userId: string,
@@ -157,38 +193,46 @@ export function loadUserPlugins(
 ): SdkPluginConfig[] {
   if (!userId) return [];
 
-  const config = readUserPluginsFile(userId);
-  const enabledIds = Object.keys(config.enabled).filter(
-    (id) => config.enabled[id] === true,
-  );
-  if (enabledIds.length === 0) return [];
-
-  const cacheDir = getUserPluginsCacheDir(userId);
-  const basePath = options.runtime === 'docker' ? CONTAINER_PLUGINS_PATH : cacheDir;
+  const v2 = readUserPluginsV2(userId);
+  if (!v2) return [];
 
   const result: SdkPluginConfig[] = [];
-  for (const fullId of enabledIds) {
-    const parsed = parsePluginFullId(fullId);
-    if (!parsed) continue;
+  for (const [fullId, ref] of Object.entries(v2.enabled)) {
+    if (!ref || ref.enabled !== true) continue;
+    if (
+      !isValidNameSegment(ref.marketplace) ||
+      !isValidNameSegment(ref.plugin) ||
+      !isValidNameSegment(ref.snapshot)
+    ) {
+      logger.warn(
+        { userId, fullId, ref },
+        'loadUserPlugins: skipping enable ref with invalid name segment',
+      );
+      continue;
+    }
 
-    // Validate against host cache (plugin.json must exist) even for docker
-    // mode, because the host copy is what container mounts from.
-    const manifestPath = path.join(
-      cacheDir,
-      parsed.marketplaceName,
-      parsed.pluginName,
-      '.claude-plugin',
-      'plugin.json',
+    // Validate against the host-side runtime dir; if the materialize step
+    // hasn't run yet (or got cleaned up), there's nothing to inject.
+    const hostDir = getUserPluginRuntimePath(
+      userId,
+      ref.snapshot,
+      ref.marketplace,
+      ref.plugin,
     );
-    if (!fs.existsSync(manifestPath)) continue;
+    const manifest = path.join(hostDir, '.claude-plugin', 'plugin.json');
+    if (!fs.existsSync(manifest)) {
+      logger.warn(
+        { userId, fullId, hostDir },
+        'loadUserPlugins: runtime dir missing or unmaterialized, skipping',
+      );
+      continue;
+    }
 
-    const pluginPath = path.join(
-      basePath,
-      parsed.marketplaceName,
-      parsed.pluginName,
-    );
-    result.push({ type: 'local' as const, path: pluginPath });
+    const finalPath =
+      options.runtime === 'docker'
+        ? `${CONTAINER_PLUGINS_PATH}/snapshots/${ref.snapshot}/${ref.marketplace}/${ref.plugin}`
+        : hostDir;
+    result.push({ type: 'local', path: finalPath });
   }
-
   return result;
 }
