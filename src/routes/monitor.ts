@@ -68,18 +68,10 @@ async function getLatestClaudeCodeVersion(): Promise<string | null> {
   }
 }
 
-/** Get host Claude Code version by running SDK's built-in cli.js --version */
+/** Get host Claude Code version via global `claude --version` CLI */
 async function getHostClaudeCodeVersion(): Promise<string | null> {
   try {
-    const cliPath = path.resolve(
-      process.cwd(),
-      'container/agent-runner/node_modules/@anthropic-ai/claude-agent-sdk/cli.js',
-    );
-    const { stdout } = await execFileAsync(
-      'node',
-      ['-e', `process.argv = ['node', 'claude', '--version']; require('${cliPath}')`],
-      { timeout: 10000 },
-    );
+    const { stdout } = await execFileAsync('claude', ['--version'], { timeout: 10000 });
     return stdout.trim() || null;
   } catch {
     return null;
@@ -99,15 +91,14 @@ async function getDockerImageId(): Promise<string | null> {
   }
 }
 
-/** Get container Claude Code version from SDK's cli.js inside Docker image */
+/** Get container Claude Code version from Docker image */
 async function getContainerClaudeCodeVersion(): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync(
       'docker',
       [
-        'run', '--rm', '--entrypoint', 'node',
-        CONTAINER_IMAGE, '-e',
-        `process.argv = ['node', 'claude', '--version']; require('/app/node_modules/@anthropic-ai/claude-agent-sdk/cli.js')`,
+        'run', '--rm', '--entrypoint', '/app/node_modules/.bin/claude',
+        CONTAINER_IMAGE, '--version',
       ],
       { timeout: 30000 },
     );
