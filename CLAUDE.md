@@ -6,7 +6,7 @@
 
 HappyClaw 是一个自托管的多用户 AI Agent 系统：
 
-- **输入**：飞书 / Telegram / QQ / 钉钉 / Web 界面消息（每个用户可独立配置 IM 通道）
+- **输入**：飞书 / Telegram / QQ / 钉钉 / WhatsApp（骨架，待接入 Baileys）/ Web 界面消息（每个用户可独立配置 IM 通道）
 - **执行**：Docker 容器或宿主机进程中运行 Claude Agent（基于 Claude Agent SDK），每个用户拥有独立主容器
 - **输出**：飞书富文本卡片 / Telegram HTML / QQ 纯文本 / Web 实时流式推送
 - **记忆**：Agent 自主维护 `CLAUDE.md` 和工作区文件，实现跨会话持久记忆
@@ -22,7 +22,7 @@ HappyClaw 是一个自托管的多用户 AI Agent 系统：
 | `src/routes/auth.ts` | 认证：登录 / 登出 / 注册、`GET /api/auth/me`（含 `setupStatus`）、设置向导、RBAC、邀请码 |
 | `src/routes/groups.ts` | 群组 CRUD、消息分页、会话重置（重建工作区）、群组级容器环境变量 |
 | `src/routes/files.ts` | 文件上传（50MB 限制）/ 下载 / 删除、目录管理、路径遍历防护 |
-| `src/routes/config.ts` | Claude / 飞书配置（AES-256-GCM 加密存储）、连通性测试、批量应用到所有容器、per-user IM 通道配置（`/api/config/user-im/feishu`、`/api/config/user-im/telegram`、`/api/config/user-im/qq`、`/api/config/user-im/dingtalk`） |
+| `src/routes/config.ts` | Claude / 飞书配置（AES-256-GCM 加密存储）、连通性测试、批量应用到所有容器、per-user IM 通道配置（`/api/config/user-im/feishu`、`/api/config/user-im/telegram`、`/api/config/user-im/qq`、`/api/config/user-im/dingtalk`、`/api/config/user-im/whatsapp` 骨架） |
 | `src/routes/monitor.ts` | 系统状态：容器列表、队列状态、健康检查（`GET /api/health` 无需认证） |
 | `src/routes/memory.ts` | 记忆文件读写（`groups/global/` + `groups/{folder}/`）、全文检索 |
 | `src/routes/tasks.ts` | 定时任务 CRUD + 执行日志查询 |
@@ -35,9 +35,10 @@ HappyClaw 是一个自托管的多用户 AI Agent 系统：
 | `src/telegram.ts` | Telegram 连接工厂（`createTelegramConnection`）：Bot API Long Polling、Markdown → HTML 转换、长消息分片（3800 字符）；`message:photo` 下载为 base64 供 Vision；`message:document` 下载文件到工作区 |
 | `src/qq.ts` | QQ 连接工厂（`createQQConnection`）：Bot API v2 WebSocket 长连接、OAuth Token 管理、C2C 私聊 + 群聊 @Bot、消息去重（LRU 1000 条 / 30min TTL）、Markdown → 纯文本、长消息分片（5000 字符）、图片下载为 base64 供 Vision |
 | `src/dingtalk.ts` | 钉钉连接工厂（`createDingTalkConnection`）：Stream 协议长连接、消息去重（LRU 1000 条 / 30min TTL）；支持 `text`、`picture`（通过 downloadCode 下载）和 `image`（通过 contentUrl 下载）；图片超过 5MB 不发 base64，仅保存到 `downloads/dingtalk/` |
+| `src/whatsapp.ts` | **WhatsApp 通道骨架（PR 1/N）** —— 仅暴露与其他通道一致的工厂签名 `createWhatsAppConnection()`，所有方法抛 `NOT_IMPLEMENTED`。后续 PR 接入 `@whiskeysockets/baileys` 实现 WhatsApp Web 协议、QR 扫码登录、消息收发与媒体下载。详见 §8.13 |
 | `src/dingtalk-streaming-card.ts` | 钉钉 AI Card 流式响应控制器（打字机效果） |
 | `src/im-downloader.ts` | IM 文件下载工具：`saveDownloadedFile()` 将 Buffer 写入 `downloads/{channel}/{YYYY-MM-DD}/`，支持 `feishu`/`telegram`/`qq`/`dingtalk` 通道，处理路径安全、文件名冲突和 50MB 限制 |
-| `src/im-manager.ts` | IM 连接池管理器（`IMConnectionManager`）：per-user 飞书/Telegram/QQ/钉钉连接管理、热重连、批量断开 |
+| `src/im-manager.ts` | IM 连接池管理器（`IMConnectionManager`）：per-user 飞书/Telegram/QQ/钉钉/Discord/WhatsApp（骨架）连接管理、热重连、批量断开 |
 | `src/container-runner.ts` | 容器生命周期：Docker run + 宿主机进程模式、卷挂载构建（isAdminHome 区分权限）、环境变量注入 |
 | `src/agent-output-parser.ts` | Agent 输出解析：OUTPUT_MARKER 流式输出解析、stdout/stderr 处理、进程生命周期回调（从 container-runner.ts 提取的共享逻辑） |
 | `src/group-queue.ts` | 并发控制：最大 20 容器 + 最大 5 宿主机进程、会话级队列、任务优先于消息、指数退避重试 |
@@ -481,7 +482,7 @@ WebSocket：`/ws`（协议详见 §3.6）。
 
 ### 8.10 IM 通道热管理
 
-通过 `PUT /api/config/user-im/feishu`、`PUT /api/config/user-im/telegram`、`PUT /api/config/user-im/qq` 或 `PUT /api/config/user-im/dingtalk` 更新 IM 配置后：
+通过 `PUT /api/config/user-im/feishu`、`PUT /api/config/user-im/telegram`、`PUT /api/config/user-im/qq`、`PUT /api/config/user-im/dingtalk` 或 `PUT /api/config/user-im/whatsapp`（骨架）更新 IM 配置后：
 - 保存配置到 `data/config/user-im/{userId}/` 目录（AES-256-GCM 加密）
 - 断开该用户的旧连接
 - 如果新配置有效（`enabled=true` 且凭据非空），立即建立新连接
@@ -513,6 +514,17 @@ WebSocket：`/ws`（协议详见 §3.6）。
 **实现原理**：连接飞书时通过 Bot Info API 获取 bot 的 `open_id`，收到群消息后检查 `mentions[].id.open_id` 是否包含 bot。如果 bot 未被 @mention 且该群 `require_mention=true`，则静默丢弃该消息。
 
 **前置条件**：飞书应用需要 `im:message.group_msg` 敏感权限（实时接收群里所有消息）。`im:message:readonly` 仅控制 REST API 读取历史消息，不影响 WebSocket 实时推送。没有 `im:message.group_msg` 权限时，平台层只推送 @消息，`require_mention=false` 无法生效。
+
+### 8.13 WhatsApp 通道（骨架，多步骤 PR）
+
+为响应海外用户使用 WhatsApp 的需求，新增 WhatsApp IM 通道。考虑到完整集成涉及大量代码（参考 OpenClaw extensions/whatsapp/ 约 16K 行非测试代码 + 14K 行测试），分多个 PR 推进：
+
+- **PR 1（当前）**：脚手架。`src/whatsapp.ts` 提供与其他通道一致的 `createWhatsAppConnection()` 工厂，但所有方法抛 `NOT_IMPLEMENTED`。打通 `channel-prefixes` / `im-channel`（适配器）/ `im-manager`（连接池方法）/ `runtime-config`（per-user 配置加密落盘）/ `schemas`（zod 校验）/ `routes/config`（GET / PUT `/api/config/user-im/whatsapp`）/ 前端占位卡（`WhatsAppChannelCard.tsx` 标 "骨架开发中"）/ `loadState` 与 `reloadUserIMConfig` 联动。Typecheck 通过，配置可保存，但启用后 connect 永远返回 false。
+- **PR 2**：接入 `@whiskeysockets/baileys`。实现 multi-file auth state、QR 码生成 + WebSocket 推流、扫码登录状态机、消息收发、文件下载到 `downloads/whatsapp/{YYYY-MM-DD}/`、长消息分片。
+- **PR 3**：群组策略、白名单、媒体矩阵（图/视频/语音/文档/位置/反应/引用）、心跳与掉线重连。
+- **PR 4**：测试 + 文档完善。
+
+**风险提示**：Baileys 是社区逆向工程的 WhatsApp Web 协议库，Meta 在 2025-2026 收紧识别（握手时序、加密时序），封号率显著上升。同 OpenClaw / Wechaty puppet 等同类逆向方案共享相同风险。商用场景应使用 Meta 官方 Cloud API（需要 Facebook Business 验证、按模板消息计费）。
 
 ## 9. 环境变量
 

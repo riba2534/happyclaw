@@ -130,6 +130,7 @@ import {
   getUserWeChatConfig,
   getUserDingTalkConfig,
   getUserDiscordConfig,
+  getUserWhatsAppConfig,
   getSystemSettings,
   saveUserFeishuConfig,
   saveFeishuOwnerOpenId,
@@ -143,6 +144,7 @@ import type {
   WeChatConnectConfig,
   DingTalkConnectConfig,
   DiscordConnectConfig,
+  WhatsAppConnectConfig,
 } from './im-manager.js';
 import { GroupQueue } from './group-queue.js';
 import { startSchedulerLoop, triggerTaskNow } from './task-scheduler.js';
@@ -7328,6 +7330,7 @@ async function connectUserIMChannels(
   wechatConfig?: WeChatConnectConfig | null,
   dingtalkConfig?: DingTalkConnectConfig | null,
   discordConfig?: DiscordConnectConfig | null,
+  whatsappConfig?: WhatsAppConnectConfig | null,
   ignoreMessagesBefore?: number,
 ): Promise<{
   feishu: boolean;
@@ -7336,6 +7339,7 @@ async function connectUserIMChannels(
   wechat: boolean;
   dingtalk: boolean;
   discord: boolean;
+  whatsapp: boolean;
 }> {
   // Per-user mutable ref for Feishu owner open_id auto-detection via P2P messages
   const feishuOwnerRef = { value: feishuConfig ? (getUserFeishuConfig(userId)?.ownerOpenId ?? undefined) : undefined };
@@ -7471,16 +7475,29 @@ async function connectUserIMChannels(
         })
       : Promise.resolve(false);
 
-  const [feishu, telegram, qq, wechat, dingtalk, discord] = await Promise.all([
-    feishuTask,
-    telegramTask,
-    qqTask,
-    wechatTask,
-    dingtalkTask,
-    discordTask,
-  ]);
+  const whatsappTask =
+    whatsappConfig && whatsappConfig.enabled !== false
+      ? imManager.connectUserWhatsApp(userId, whatsappConfig, onNewChat, {
+          ignoreMessagesBefore,
+          onCommand: handleCommand,
+          resolveGroupFolder,
+          resolveEffectiveChatJid,
+          onAgentMessage,
+        })
+      : Promise.resolve(false);
 
-  return { feishu, telegram, qq, wechat, dingtalk, discord };
+  const [feishu, telegram, qq, wechat, dingtalk, discord, whatsapp] =
+    await Promise.all([
+      feishuTask,
+      telegramTask,
+      qqTask,
+      wechatTask,
+      dingtalkTask,
+      discordTask,
+      whatsappTask,
+    ]);
+
+  return { feishu, telegram, qq, wechat, dingtalk, discord, whatsapp };
 }
 
 function movePathWithFallback(src: string, dst: string): void {
@@ -7897,7 +7914,14 @@ async function main(): Promise<void> {
   // Reload a per-user IM channel (hot-reload on user-im config save)
   const reloadUserIMConfig = async (
     userId: string,
-    channel: 'feishu' | 'telegram' | 'qq' | 'wechat' | 'dingtalk' | 'discord',
+    channel:
+      | 'feishu'
+      | 'telegram'
+      | 'qq'
+      | 'wechat'
+      | 'dingtalk'
+      | 'discord'
+      | 'whatsapp',
   ): Promise<boolean> => {
     const homeGroup = getUserHomeGroup(userId);
     if (!homeGroup) {
@@ -8079,8 +8103,7 @@ async function main(): Promise<void> {
       }
       logger.info({ userId }, 'User Discord channel disabled via hot-reload');
       return false;
-    } else {
-      // WeChat
+    } else if (channel === 'wechat') {
       await imManager.disconnectUserWeChat(userId);
       const config = getUserWeChatConfig(userId);
       if (
@@ -8115,6 +8138,39 @@ async function main(): Promise<void> {
         return connected;
       }
       logger.info({ userId }, 'User WeChat channel disabled via hot-reload');
+      return false;
+    } else {
+      // WhatsApp (skeleton — Baileys integration pending in next PR)
+      await imManager.disconnectUserWhatsApp(userId);
+      const config = getUserWhatsAppConfig(userId);
+      if (config && config.enabled !== false) {
+        const connected = await imManager.connectUserWhatsApp(
+          userId,
+          {
+            accountId: config.accountId,
+            phoneNumber: config.phoneNumber,
+            enabled: config.enabled,
+          },
+          onNewChat,
+          {
+            ignoreMessagesBefore: Date.now(),
+            onCommand: handleCommand,
+            resolveGroupFolder: (chatJid: string) =>
+              resolveEffectiveFolder(chatJid),
+            resolveEffectiveChatJid: buildResolveEffectiveChatJid(),
+            onAgentMessage: buildOnAgentMessage(),
+          },
+        );
+        logger.info(
+          { userId, connected },
+          'User WhatsApp connection hot-reloaded (skeleton)',
+        );
+        return connected;
+      }
+      logger.info(
+        { userId },
+        'User WhatsApp channel disabled via hot-reload',
+      );
       return false;
     }
   };
@@ -8152,6 +8208,8 @@ async function main(): Promise<void> {
       imManager.isDingTalkConnected(userId),
     isUserDiscordConnected: (userId: string) =>
       imManager.isDiscordConnected(userId),
+    isUserWhatsAppConnected: (userId: string) =>
+      imManager.isWhatsAppConnected(userId),
     processAgentConversation,
     getFeishuChatInfo: (userId: string, chatId: string) =>
       imManager.getFeishuChatInfo(userId, chatId),
@@ -8475,6 +8533,7 @@ async function main(): Promise<void> {
     const userWeChat = getUserWeChatConfig(user.id);
     const userDingTalk = getUserDingTalkConfig(user.id);
     const userDiscord = getUserDiscordConfig(user.id);
+    const userWhatsApp = getUserWhatsAppConfig(user.id);
 
     // Determine effective Feishu config: per-user > global (admin only)
     let effectiveFeishu: FeishuConnectConfig | null = null;
@@ -8556,13 +8615,24 @@ async function main(): Promise<void> {
       };
     }
 
+    // Determine effective WhatsApp config: per-user only, skeleton always disabled by default
+    let effectiveWhatsApp: WhatsAppConnectConfig | null = null;
+    if (userWhatsApp && userWhatsApp.enabled) {
+      effectiveWhatsApp = {
+        accountId: userWhatsApp.accountId,
+        phoneNumber: userWhatsApp.phoneNumber,
+        enabled: userWhatsApp.enabled,
+      };
+    }
+
     if (
       !effectiveFeishu &&
       !effectiveTelegram &&
       !effectiveQQ &&
       !effectiveWeChat &&
       !effectiveDingTalk &&
-      !effectiveDiscord
+      !effectiveDiscord &&
+      !effectiveWhatsApp
     )
       continue;
 
@@ -8576,6 +8646,7 @@ async function main(): Promise<void> {
         effectiveWeChat,
         effectiveDingTalk,
         effectiveDiscord,
+        effectiveWhatsApp,
         Date.now(),
       );
       if (result.feishu) anyFeishuConnected = true;
@@ -8588,6 +8659,7 @@ async function main(): Promise<void> {
           wechat: result.wechat,
           dingtalk: result.dingtalk,
           discord: result.discord,
+          whatsapp: result.whatsapp,
         },
         'User IM channels connected',
       );

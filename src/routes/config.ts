@@ -28,6 +28,7 @@ import {
   WeChatConfigSchema,
   DingTalkConfigSchema,
   DiscordConfigSchema,
+  WhatsAppConfigSchema,
   RegistrationConfigSchema,
   AppearanceConfigSchema,
   SystemSettingsSchema,
@@ -78,6 +79,8 @@ import {
   saveUserDingTalkConfig,
   getUserDiscordConfig,
   saveUserDiscordConfig,
+  getUserWhatsAppConfig,
+  saveUserWhatsAppConfig,
   updateAllSessionCredentials,
 } from '../runtime-config.js';
 import type {
@@ -107,7 +110,14 @@ const configRoutes = new Hono<{ Variables: Variables }>();
  */
 function countOtherEnabledImChannels(
   userId: string,
-  excludeChannel: 'feishu' | 'telegram' | 'qq' | 'wechat' | 'dingtalk' | 'discord',
+  excludeChannel:
+    | 'feishu'
+    | 'telegram'
+    | 'qq'
+    | 'wechat'
+    | 'dingtalk'
+    | 'discord'
+    | 'whatsapp',
 ): number {
   let count = 0;
   if (excludeChannel !== 'feishu' && getUserFeishuConfig(userId)?.enabled)
@@ -120,6 +130,8 @@ function countOtherEnabledImChannels(
   if (excludeChannel !== 'dingtalk' && getUserDingTalkConfig(userId)?.enabled)
     count++;
   if (excludeChannel !== 'discord' && getUserDiscordConfig(userId)?.enabled)
+    count++;
+  if (excludeChannel !== 'whatsapp' && getUserWhatsAppConfig(userId)?.enabled)
     count++;
   return count;
 }
@@ -2559,6 +2571,119 @@ configRoutes.post('/user-im/wechat/disconnect', authMiddleware, async (c) => {
       err instanceof Error ? err.message : 'Failed to disconnect WeChat';
     logger.error({ err }, 'WeChat disconnect failed');
     return c.json({ error: message }, 500);
+  }
+});
+
+// ─── WhatsApp (Skeleton — Baileys integration in next PR) ───────
+
+configRoutes.get('/user-im/whatsapp', authMiddleware, (c) => {
+  const user = c.get('user') as AuthUser;
+  try {
+    const config = getUserWhatsAppConfig(user.id);
+    const connected = deps?.isUserWhatsAppConnected?.(user.id) ?? false;
+    if (!config) {
+      return c.json({
+        accountId: 'default',
+        phoneNumber: '',
+        enabled: false,
+        paired: false,
+        updatedAt: null,
+        connected,
+        skeleton: true,
+      });
+    }
+    return c.json({
+      accountId: config.accountId || 'default',
+      phoneNumber: config.phoneNumber || '',
+      enabled: config.enabled ?? false,
+      paired: config.paired ?? false,
+      updatedAt: config.updatedAt,
+      connected,
+      skeleton: true,
+    });
+  } catch (err) {
+    logger.error({ err }, 'Failed to load user WhatsApp config');
+    return c.json({ error: 'Failed to load user WhatsApp config' }, 500);
+  }
+});
+
+configRoutes.put('/user-im/whatsapp', authMiddleware, async (c) => {
+  const user = c.get('user') as AuthUser;
+  const body = await c.req.json().catch(() => ({}));
+  const validation = WhatsAppConfigSchema.safeParse(body);
+  if (!validation.success) {
+    return c.json(
+      { error: 'Invalid request body', details: validation.error.format() },
+      400,
+    );
+  }
+
+  // Billing: check IM channel limit when enabling
+  if (validation.data.enabled === true && isBillingEnabled()) {
+    const currentWa = getUserWhatsAppConfig(user.id);
+    if (!currentWa?.enabled) {
+      const limit = checkImChannelLimit(
+        user.id,
+        user.role,
+        countOtherEnabledImChannels(user.id, 'whatsapp'),
+      );
+      if (!limit.allowed) {
+        return c.json({ error: limit.reason }, 403);
+      }
+    }
+  }
+
+  const current = getUserWhatsAppConfig(user.id);
+  const next = {
+    accountId: current?.accountId || 'default',
+    phoneNumber: current?.phoneNumber || '',
+    enabled: current?.enabled ?? false,
+    paired: current?.paired ?? false,
+  };
+
+  if (typeof validation.data.accountId === 'string') {
+    next.accountId = validation.data.accountId.trim() || 'default';
+  }
+  if (typeof validation.data.phoneNumber === 'string') {
+    next.phoneNumber = validation.data.phoneNumber.trim();
+  }
+  if (typeof validation.data.enabled === 'boolean') {
+    next.enabled = validation.data.enabled;
+  }
+  if (typeof validation.data.paired === 'boolean') {
+    next.paired = validation.data.paired;
+  }
+
+  try {
+    const saved = saveUserWhatsAppConfig(user.id, next);
+
+    // Hot-reload: reconnect user's WhatsApp channel (skeleton always returns false)
+    if (deps?.reloadUserIMConfig) {
+      try {
+        await deps.reloadUserIMConfig(user.id, 'whatsapp');
+      } catch (err) {
+        logger.warn(
+          { err, userId: user.id },
+          'Failed to hot-reload user WhatsApp connection',
+        );
+      }
+    }
+
+    const connected = deps?.isUserWhatsAppConnected?.(user.id) ?? false;
+    return c.json({
+      accountId: saved.accountId,
+      phoneNumber: saved.phoneNumber,
+      enabled: saved.enabled ?? false,
+      paired: saved.paired ?? false,
+      updatedAt: saved.updatedAt,
+      connected,
+      skeleton: true,
+    });
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : 'Invalid WhatsApp config payload';
+    logger.warn({ err }, 'Invalid WhatsApp config');
+    return c.json({ error: message }, 400);
   }
 });
 

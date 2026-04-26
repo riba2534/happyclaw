@@ -44,7 +44,14 @@ export interface WebDeps {
   }) => Promise<boolean>;
   reloadUserIMConfig?: (
     userId: string,
-    channel: 'feishu' | 'telegram' | 'qq' | 'wechat' | 'dingtalk' | 'discord',
+    channel:
+      | 'feishu'
+      | 'telegram'
+      | 'qq'
+      | 'wechat'
+      | 'dingtalk'
+      | 'discord'
+      | 'whatsapp',
   ) => Promise<boolean>;
   isFeishuConnected?: () => boolean;
   isTelegramConnected?: () => boolean;
@@ -54,6 +61,7 @@ export interface WebDeps {
   isUserWeChatConnected?: (userId: string) => boolean;
   isUserDingTalkConnected?: (userId: string) => boolean;
   isUserDiscordConnected?: (userId: string) => boolean;
+  isUserWhatsAppConnected?: (userId: string) => boolean;
   processAgentConversation?: (
     chatJid: string,
     agentId: string,
