@@ -756,3 +756,20 @@ export const DiscordConfigSchema = z
       typeof data.streamingMode === 'string',
     { message: 'At least one config field must be provided' },
   );
+
+export const WhatsAppConfigSchema = z
+  .object({
+    accountId: z.string().max(64).optional(),
+    phoneNumber: z.string().max(32).optional(),
+    enabled: z.boolean().optional(),
+    /** 标记 Baileys 扫码完成 — 由后续 PR 在登录回调中写入，前端不应直接发 true */
+    paired: z.boolean().optional(),
+  })
+  .refine(
+    (data) =>
+      typeof data.accountId === 'string' ||
+      typeof data.phoneNumber === 'string' ||
+      typeof data.enabled === 'boolean' ||
+      typeof data.paired === 'boolean',
+    { message: 'At least one config field must be provided' },
+  );

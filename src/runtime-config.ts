@@ -3390,6 +3390,80 @@ export function saveUserWeChatConfig(
   return normalized;
 }
 
+// ========== WhatsApp User IM Config ==========
+
+export interface UserWhatsAppConfig {
+  accountId: string;
+  phoneNumber: string;
+  enabled?: boolean;
+  /** Whether the user has completed Baileys QR pairing (set by future PR) */
+  paired?: boolean;
+  updatedAt: string | null;
+}
+
+interface StoredWhatsAppProviderConfigV1 {
+  version: 1;
+  accountId: string;
+  phoneNumber: string;
+  enabled?: boolean;
+  paired?: boolean;
+  updatedAt: string;
+}
+
+export function getUserWhatsAppConfig(
+  userId: string,
+): UserWhatsAppConfig | null {
+  const filePath = path.join(userImDir(userId), 'whatsapp.json');
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    if (parsed.version !== 1) return null;
+
+    const stored = parsed as unknown as StoredWhatsAppProviderConfigV1;
+    return {
+      accountId: ((stored.accountId as string) ?? 'default').trim(),
+      phoneNumber: ((stored.phoneNumber as string) ?? '').trim(),
+      enabled: stored.enabled,
+      paired: stored.paired,
+      updatedAt: stored.updatedAt || null,
+    };
+  } catch (err) {
+    logger.warn({ err, userId }, 'Failed to read user WhatsApp config');
+    return null;
+  }
+}
+
+export function saveUserWhatsAppConfig(
+  userId: string,
+  next: Omit<UserWhatsAppConfig, 'updatedAt'>,
+): UserWhatsAppConfig {
+  const normalized: UserWhatsAppConfig = {
+    accountId: (next.accountId ?? 'default').trim() || 'default',
+    phoneNumber: (next.phoneNumber ?? '').trim(),
+    enabled: next.enabled,
+    paired: next.paired,
+    updatedAt: new Date().toISOString(),
+  };
+
+  const payload: StoredWhatsAppProviderConfigV1 = {
+    version: 1,
+    accountId: normalized.accountId,
+    phoneNumber: normalized.phoneNumber,
+    enabled: normalized.enabled,
+    paired: normalized.paired,
+    updatedAt: normalized.updatedAt || new Date().toISOString(),
+  };
+
+  const dir = userImDir(userId);
+  fs.mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, 'whatsapp.json');
+  const tmp = `${filePath}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
+  fs.renameSync(tmp, filePath);
+  return normalized;
+}
+
 // ========== DingTalk User IM Config ==========
 
 export function getUserDingTalkConfig(
