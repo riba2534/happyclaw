@@ -1327,7 +1327,7 @@ async function runQuery(
       systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const, append: systemPromptAppend },
       allowedTools,
       ...(disallowedTools && { disallowedTools }),
-      thinking: { type: 'adaptive' as const, display: 'summarized' as const },
+      thinking: { type: 'adaptive' as const },
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       agentProgressSummaries: true,
