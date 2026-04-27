@@ -30,13 +30,18 @@ export function isValidNameSegment(s: string): boolean {
 
 /**
  * A plugin's `source` in marketplace.json is either:
- *   - a relative string like `"./plugins/foo"` → inline (lives in this repo)
+ *   - a relative string like `"./plugins/foo"` → inline (declared to live in
+ *     this marketplace repo)
  *   - `{source: "url", ...}` / `{source: "git-subdir", ...}` → remote ref
  *
- * Remote refs intentionally have no local `.claude-plugin/plugin.json` until
- * the user runs `/plugin install`; inline refs always do. The importer uses
- * this distinction to decide whether a missing manifest is an error worth
- * surfacing (inline) or expected (remote, ignored).
+ * Source kind is exposed here as metadata only. The importer does NOT use
+ * it to decide whether a missing local manifest is an error: in practice
+ * Claude Code's CLI lays out a placeholder dir (LICENSE/README) for every
+ * declared plugin regardless of source kind, and only writes
+ * `.claude-plugin/plugin.json` after `/plugin install`. So "declared but
+ * not yet installed" is a normal pre-install state for both inline and
+ * remote — the importer's actual signal is presence/absence of a
+ * marketplace.json declaration, not the source kind.
  */
 export type PluginEntrySource = 'inline' | 'remote';
 
@@ -45,7 +50,11 @@ export interface MarketplaceManifest {
   version?: string;
   description?: string;
   owner?: string;
-  /** Map from plugin name → declared source kind from the manifest's `plugins[]`. */
+  /**
+   * Map from plugin name → declared source kind from the manifest's
+   * `plugins[]`. Exposed for surfacing in UI / catalog metadata; importer
+   * decisions key off whether the name is declared at all, not its kind.
+   */
   pluginSources: Record<string, PluginEntrySource>;
 }
 
