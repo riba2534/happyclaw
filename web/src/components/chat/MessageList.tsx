@@ -60,11 +60,15 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
   const aiColor = currentUser?.ai_avatar_color || appearance?.aiAvatarColor;
   const aiImageUrl = currentUser?.ai_avatar_url;
   const parentRef = useRef<HTMLDivElement>(null);
-  const sentinelRef = useRef<HTMLDivElement>(null);
   const scrollStateRef = useRef({ autoScroll: true, atTop: false });
   const [autoScroll, setAutoScroll] = useState(true);
   const [atTop, setAtTop] = useState(false);
   const prevMessageCount = useRef(messages.length);
+  // Window during which the scroll handler ignores updates and the streaming
+  // RAF skips its catch-up scroll, so a user-initiated smooth scroll can run
+  // uninterrupted (≈500ms browser default + 100ms slack).
+  const smoothScrollUntilRef = useRef(0);
+  const SMOOTH_SCROLL_LOCK_MS = 600;
 
   // Compute flatMessages (with date headers) before virtualizer
   const flatMessages = useMemo<FlatItem[]>(() => {
@@ -148,39 +152,30 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
     overscan: window.innerWidth < 1024 ? 12 : 8,
   });
 
-  // IntersectionObserver detects when the sentinel element (at the very bottom of
-  // content) enters or leaves the viewport. This replaces the manual isAtBottom
-  // threshold and eliminates the race condition where setInterval fires before
-  // React state has propagated setAutoScroll(false).
-  useEffect(() => {
-    const sentinel = sentinelRef.current;
-    const parent = parentRef.current;
-    if (!sentinel || !parent) return;
-
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        const isVisible = entry.isIntersecting;
-        if (scrollStateRef.current.autoScroll !== isVisible) {
-          scrollStateRef.current.autoScroll = isVisible;
-          setAutoScroll(isVisible);
-        }
-      },
-      { root: parent, threshold: 0 },
-    );
-
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // 检测向上滚动触发 loadMore + 检测到顶
+  // Detect at-bottom (autoScroll) and at-top (loadMore) via the scroll event.
+  // Critically, this fires only on actual scroll events — not when scrollHeight
+  // grows during streaming with scrollTop unchanged. So content growth never
+  // spuriously flips autoScroll off (the failure mode of the IntersectionObserver
+  // approach in PR #455). The ref is updated synchronously to avoid races with
+  // the streaming RAF catch-up.
   useEffect(() => {
     const parent = parentRef.current;
     if (!parent) return;
 
     const handleScroll = () => {
-      const { scrollTop } = parent;
+      // While a programmatic smooth scroll is animating, ignore intermediate
+      // scroll events — they would briefly set autoScroll=false mid-animation
+      // and flicker the floating "scroll to bottom" button.
+      if (Date.now() < smoothScrollUntilRef.current) return;
+
+      const { scrollTop, scrollHeight, clientHeight } = parent;
+      const isAtBottom = scrollHeight - scrollTop - clientHeight < 10;
       const isAtTop = scrollTop < 50;
 
+      if (scrollStateRef.current.autoScroll !== isAtBottom) {
+        scrollStateRef.current.autoScroll = isAtBottom;
+        setAutoScroll(isAtBottom);
+      }
       if (scrollStateRef.current.atTop !== isAtTop) {
         scrollStateRef.current.atTop = isAtTop;
         setAtTop(isAtTop);
@@ -199,7 +194,10 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
   useEffect(() => {
     if (autoScroll && messages.length > prevMessageCount.current) {
       requestAnimationFrame(() => {
-        sentinelRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
+        const parent = parentRef.current;
+        if (!parent) return;
+        smoothScrollUntilRef.current = Date.now() + SMOOTH_SCROLL_LOCK_MS;
+        parent.scrollTo({ top: parent.scrollHeight, behavior: 'smooth' });
       });
     }
     prevMessageCount.current = messages.length;
@@ -211,7 +209,10 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
       scrollStateRef.current.autoScroll = true;
       setAutoScroll(true);
       requestAnimationFrame(() => {
-        sentinelRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
+        const parent = parentRef.current;
+        if (!parent) return;
+        smoothScrollUntilRef.current = Date.now() + SMOOTH_SCROLL_LOCK_MS;
+        parent.scrollTo({ top: parent.scrollHeight, behavior: 'smooth' });
       });
     }
   }, [scrollTrigger]);
@@ -264,23 +265,54 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flatMessages.length]);
 
-  // Auto-scroll when streaming content is active — poll-based to avoid
-  // re-rendering on every text_delta (the streaming object changes very frequently).
-  // Checks scrollStateRef (updated synchronously by IntersectionObserver) instead
-  // of the autoScroll state to eliminate the race condition where the interval
-  // fires before React has propagated setAutoScroll(false) after user scrolls up.
+  // Auto-scroll when streaming content is active. Subscribes directly to the
+  // chat store (no React re-render) and schedules a single rAF-coalesced
+  // scrollTo per animation frame, regardless of how many text_delta /
+  // thinking_delta updates land. This replaces the 100ms setInterval poll
+  // (PR #455 era) which competed with smooth scrolls and caused 3-4 visible
+  // jumps when the user scrolled to the bottom mid-stream.
   const hasStreaming = useChatStore(s =>
     agentId ? !!s.agentStreaming[agentId] : !!s.streaming[groupJid ?? '']
   );
   useEffect(() => {
     if (!hasStreaming) return;
-    const id = setInterval(() => {
-      if (scrollStateRef.current.autoScroll) {
-        sentinelRef.current?.scrollIntoView({ block: 'end' });
+
+    let raf = 0;
+    const schedule = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        // Yield to any in-progress smooth scroll so we don't snap-interrupt it.
+        if (Date.now() < smoothScrollUntilRef.current) return;
+        if (!scrollStateRef.current.autoScroll) return;
+        const parent = parentRef.current;
+        if (!parent) return;
+        parent.scrollTo({ top: parent.scrollHeight });
+      });
+    };
+
+    const readStreaming = (state: ReturnType<typeof useChatStore.getState>) =>
+      agentId ? state.agentStreaming[agentId] : state.streaming[groupJid ?? ''];
+
+    let prevText = readStreaming(useChatStore.getState())?.partialText ?? '';
+    let prevThinking = readStreaming(useChatStore.getState())?.thinkingText ?? '';
+
+    const unsubscribe = useChatStore.subscribe((state) => {
+      const cur = readStreaming(state);
+      const curText = cur?.partialText ?? '';
+      const curThinking = cur?.thinkingText ?? '';
+      if (curText !== prevText || curThinking !== prevThinking) {
+        prevText = curText;
+        prevThinking = curThinking;
+        schedule();
       }
-    }, 100);
-    return () => clearInterval(id);
-  }, [hasStreaming]);
+    });
+
+    return () => {
+      unsubscribe();
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [hasStreaming, agentId, groupJid]);
 
   const scrollToTop = useCallback(() => {
     parentRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
@@ -289,7 +321,10 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
   const scrollToBottom = useCallback(() => {
     scrollStateRef.current.autoScroll = true;
     setAutoScroll(true);
-    sentinelRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
+    smoothScrollUntilRef.current = Date.now() + SMOOTH_SCROLL_LOCK_MS;
+    const parent = parentRef.current;
+    if (!parent) return;
+    parent.scrollTo({ top: parent.scrollHeight, behavior: 'smooth' });
   }, []);
 
   const showScrollButtons = messages.length > 0;
@@ -501,10 +536,6 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
         {groupJid && !agentId && spawnAgents.map(a => (
           <StreamingDisplay key={a.id} groupJid={groupJid} isWaiting={true} agentId={a.id} senderName={a.name} />
         ))}
-
-        {/* Sentinel element observed by IntersectionObserver to detect whether the
-            user is at the bottom. Visible → autoScroll=true; off-screen → false. */}
-        <div ref={sentinelRef} style={{ height: 1 }} aria-hidden="true" />
 
         </div>
       </div>
