@@ -9,6 +9,7 @@ import type {
   MessageCursor,
   UserSessionWithUser,
 } from './types.js';
+import type { RuntimeOwnerCandidateUser } from './runtime-owner.js';
 import {
   getJidsByFolder,
   getRegisteredGroup,
@@ -32,7 +33,46 @@ export interface WebDeps {
   formatMessages: (messages: NewMessage[], isShared?: boolean) => string;
   getLastAgentTimestamp: () => Record<string, MessageCursor>;
   setLastAgentTimestamp: (jid: string, cursor: MessageCursor) => void;
+  /**
+   * Lex-max-merge advance for BOTH cursors (lastAgentTimestamp +
+   * lastCommittedCursor). Comparison uses lexicographic (timestamp, id) so a
+   * later candidate never regresses the cursor below the current value.
+   *
+   * Use for plugin-expander reply fast-paths that fully commit when no
+   * earlier pending exists — direct overwrite (`setLastAgentTimestamp`) on
+   * same-millisecond batches with a smaller-UUID candidate would regress
+   * the cursor and re-fire the reply on the next poll (#27 round-17 P2-2).
+   */
+  advanceCursors: (jid: string, cursor: MessageCursor) => void;
+  /**
+   * Advance only the next-pull cursor (lastAgentTimestamp). lastCommittedCursor
+   * stays put so a crash before earlier same-batch messages reach the agent
+   * still surfaces them on recovery.
+   *
+   * Use for plugin-expander system replies that are delivered out-of-band
+   * (no agent involvement) — the user message itself has not been processed
+   * yet, so the recovery cursor must not advance past it.
+   */
+  advanceNextPullCursorOnly: (jid: string, cursor: MessageCursor) => void;
   advanceGlobalCursor: (cursor: MessageCursor) => void;
+  /**
+   * Returns true iff there exists at least one unprocessed (`is_from_me=0`)
+   * message strictly **before** `candidate` in the lexicographic
+   * (timestamp, id) ordering, relative to `lastCommittedCursor[chatJid]`.
+   *
+   * Used by the web plugin-expander reply fast-path (P2 round-14) to mirror
+   * the cold-start cursor logic: when the reply is the only outstanding
+   * work, fully commit; when an earlier user message is still queued, hold
+   * the recovery cursor and only advance the next-pull cursor.
+   *
+   * Without this gate the fast-path always held the recovery cursor —
+   * which means a clean restart after a no-earlier-pending reply would
+   * replay the reply on recovery (the same DB row is still <= the cursor).
+   */
+  hasEarlierPendingMessages: (
+    jid: string,
+    candidate: MessageCursor,
+  ) => boolean;
   reloadFeishuConnection?: (config: {
     appId: string;
     appSecret: string;
@@ -77,6 +117,27 @@ export interface WebDeps {
     message: string,
     sourceImJid?: string,
   ) => Promise<string>;
+  /**
+   * Resolve a registered group to its effective sibling-aware form. For non-home
+   * groups bound (or auto-mapped) to a home sibling, returns the merged group
+   * with executionMode/customCwd/created_by inherited from the home — without
+   * this, web.ts plugin expansion on sibling JIDs (e.g. an IM group bound to a
+   * home workspace) would build an ExpandContext from incomplete fields and
+   * either return null (no plugins resolved) or pipe the literal `/foo` to the
+   * active runner instead of the expanded prompt (#21 round-13 P2-3).
+   */
+  resolveEffectiveGroup?: (group: RegisteredGroup) => {
+    effectiveGroup: RegisteredGroup;
+    isHome: boolean;
+  };
+  /**
+   * User-by-id lookup used by plugin-runtime owner resolution. Web eager-expand
+   * delegates to `resolvePerMessageRuntimeOwner` (#24 round-16 P2-1) so the
+   * web fast-path applies the same admin-gating as the cold-start path —
+   * non-admin / disabled / unknown senders on `web:main + isHome` fall back
+   * to `created_by` instead of being treated as the runtime owner.
+   */
+  getUserById?: (id: string) => RuntimeOwnerCandidateUser | null | undefined;
 }
 
 export type Variables = {

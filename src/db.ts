@@ -1397,6 +1397,41 @@ export function storeMessageDirect(
 }
 
 /**
+ * Overwrite the `attachments` JSON column for a single message row.
+ *
+ * Used by the plugin-command expander to persist the expanded-prompt
+ * sentinel after inline `!` commands run successfully (P1 round-14
+ * crash-safety): the next recovery pass reads the sentinel and reuses
+ * the stored prompt instead of re-executing inline.
+ */
+export function updateMessageAttachments(
+  chatJid: string,
+  msgId: string,
+  attachmentsJson: string,
+): void {
+  db.prepare(
+    `UPDATE messages SET attachments = ? WHERE id = ? AND chat_jid = ?`,
+  ).run(attachmentsJson, msgId, chatJid);
+}
+
+/**
+ * Read the `attachments` JSON column for a single message row, or null
+ * if the row is missing (caller treats null as "no persisted state").
+ */
+export function getMessageAttachments(
+  chatJid: string,
+  msgId: string,
+): string | null {
+  const row = db
+    .prepare(
+      `SELECT attachments FROM messages WHERE id = ? AND chat_jid = ? LIMIT 1`,
+    )
+    .get(msgId, chatJid) as { attachments: string | null } | undefined;
+  if (!row) return null;
+  return row.attachments ?? null;
+}
+
+/**
  * Update the token_usage field on a specific agent message, or fall back to
  * the most recent agent message without token_usage for the given chat.
  * When msgId is provided, uses precise `WHERE id = ? AND chat_jid = ?` match

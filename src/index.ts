@@ -167,6 +167,7 @@ import {
 } from './types.js';
 import { logger } from './logger.js';
 import { resolveTaskOwner } from './task-utils.js';
+import { resolvePerMessageRuntimeOwner } from './runtime-owner.js';
 import {
   ensureAgentDirectories,
   isSystemMaintenanceNoise,
@@ -197,6 +198,12 @@ import { verifyPairingCode } from './telegram-pairing.js';
 import { sdkQuery } from './sdk-query.js';
 import { executeSessionReset } from './commands.js';
 import { scanHostMarketplaces } from './plugin-importer.js';
+import {
+  expandMessagesIfNeeded,
+  ExpandContext,
+  makeExpandContext,
+} from './plugin-command-expander.js';
+import { persistPluginExpansion } from './plugin-expansion-store.js';
 
 // Set timezone so all child processes (host agents, containers) inherit it
 process.env.TZ = process.env.TZ || TIMEZONE;
@@ -332,11 +339,46 @@ function setCursors(jid: string, cursor: MessageCursor): void {
   saveState();
 }
 
-/** Advance cursors to `candidate`, never regressing behind existing position. */
+/**
+ * Advance only the next-pull cursor (lastAgentTimestamp) so the next poll
+ * skips this message; lastCommittedCursor stays put so recovery still
+ * detects unprocessed earlier messages on crash.
+ *
+ * Use for plugin-expander system replies that are delivered out-of-band
+ * (no agent involvement) when the same batch still has earlier user
+ * messages destined for the agent. Without this, a crash between the
+ * reply commit and the agent finishing processing of the earlier
+ * messages would lose them (#18 P2-bug-2).
+ *
+ * Comparison uses lexicographic (timestamp, id) via `isCursorAfter` —
+ * `getMessagesSince` sorts by `(timestamp, id)` so two messages with the
+ * same timestamp must be ordered by id. Comparing on timestamp alone
+ * could regress the cursor to an earlier id when the later id has
+ * already been processed (#20 P2-3, #24 round-16 P2-2).
+ */
+function advanceNextPullCursorOnly(
+  jid: string,
+  candidate: MessageCursor,
+): void {
+  const current = lastAgentTimestamp[jid];
+  const target = current && isCursorAfter(current, candidate) ? current : candidate;
+  lastAgentTimestamp[jid] = target;
+  saveState();
+}
+
+/**
+ * Advance cursors to `candidate`, never regressing behind existing position.
+ *
+ * Comparison uses lexicographic (timestamp, id) via `isCursorAfter` so
+ * mixed batches with same-timestamp ids cannot regress the cursor (#24
+ * round-16 P2-2). Pre-fix, only timestamps were compared, so a `/cmd`
+ * reply that ran `setCursors` to (T,m2) followed by the agent processing
+ * a plain m1 with the same timestamp T would call `advanceCursors(T,m1)`
+ * → cursor regressed to m1 → next poll re-read m2 and reply re-fired.
+ */
 function advanceCursors(jid: string, candidate: MessageCursor): void {
   const current = lastAgentTimestamp[jid];
-  const target =
-    current && current.timestamp > candidate.timestamp ? current : candidate;
+  const target = current && isCursorAfter(current, candidate) ? current : candidate;
   lastAgentTimestamp[jid] = target;
   lastCommittedCursor[jid] = target;
   saveState();
@@ -1012,6 +1054,54 @@ function sendBillingDeniedMessage(jid: string, content: string): string {
     timestamp,
     is_from_me: true,
   });
+  return msgId;
+}
+
+/**
+ * Persist + broadcast a plugin-expander system reply (e.g. command conflict,
+ * docker container offline). Mirrors `sendBillingDeniedMessage` but uses the
+ * `__plugin__` synthetic sender so audits can distinguish the two paths.
+ *
+ * When `imRouteJid` is a connected IM channel, also fan the reply out to that
+ * channel so users on Feishu / Telegram / QQ / DingTalk see the response —
+ * without this, plugin-expander system replies (conflict / offline-runner /
+ * etc.) would silently drop on IM and the slash command appears to no-op
+ * (#20 P1-1).
+ */
+function sendPluginExpanderReply(
+  jid: string,
+  content: string,
+  imRouteJid?: string | null,
+): string {
+  const msgId = `sys_plugin_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const timestamp = new Date().toISOString();
+  ensureChatExists(jid);
+  storeMessageDirect(
+    msgId,
+    jid,
+    '__plugin__',
+    ASSISTANT_NAME,
+    content,
+    timestamp,
+    true,
+  );
+  broadcastNewMessage(jid, {
+    id: msgId,
+    chat_jid: jid,
+    sender: '__plugin__',
+    sender_name: ASSISTANT_NAME,
+    content,
+    timestamp,
+    is_from_me: true,
+  });
+  if (imRouteJid && getChannelType(imRouteJid)) {
+    imManager.sendMessage(imRouteJid, content).catch((err) => {
+      logger.warn(
+        { err, jid: imRouteJid },
+        'Failed to send plugin-expander reply to IM',
+      );
+    });
+  }
   return msgId;
 }
 
@@ -2426,6 +2516,34 @@ export function escapeXml(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
+/**
+ * Build an ExpandContext for plugin slash-command expansion. Resolves the
+ * runtime owner / cwd / executionMode / active container name.
+ *
+ * Returns null when the group has no resolvable owner — in that case callers
+ * skip expansion and fall through to the raw message. Plugin commands require
+ * a per-user runtime so an ownerless group simply has no plugins to expand.
+ *
+ * `ownerOverride` lets callers pin a specific owner (e.g. message sender for
+ * the admin-shared web:main workspace where `group.created_by` is just the
+ * first admin who ever materialised the group, #18 P2-bug-5).
+ */
+function buildExpandContext(
+  chatJid: string,
+  group: RegisteredGroup,
+  ownerOverride?: string | null,
+): ExpandContext | null {
+  return makeExpandContext({
+    chatJid,
+    groupFolder: group.folder,
+    ownerId: ownerOverride ?? group.created_by,
+    executionMode: group.executionMode,
+    customCwd: group.customCwd,
+    groupsDir: GROUPS_DIR,
+    containerName: queue.getActiveContainerName(chatJid),
+  });
+}
+
 export function formatMessages(
   messages: NewMessage[],
   isShared = false,
@@ -2503,7 +2621,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   // Get all messages since last agent interaction
   const sinceCursor = lastAgentTimestamp[chatJid] || EMPTY_CURSOR;
-  const missedMessages = getMessagesSince(chatJid, sinceCursor);
+  let missedMessages = getMessagesSince(chatJid, sinceCursor);
 
   if (missedMessages.length === 0) return true;
 
@@ -2549,6 +2667,81 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Publish the current IM reply route so the IPC watcher can forward
   // send_message outputs to the correct IM channel.
   activeImReplyRoutes.set(effectiveGroup.folder, replySourceImJid);
+
+  // Plugin command expander (DMI commands): replace `/foo` slash-commands
+  // contributed by enabled plugins with their fully-rendered prompt body
+  // before the agent ever sees them. Conflicts / offline-container errors
+  // become in-band system replies that advance the cursor without spawning
+  // a runner.
+  {
+    // Admin-shared web:main: plugin runtime is per-sender, so resolve it
+    // per-message rather than pinning one owner for the whole batch
+    // (#23 round-15 P2-2). Pre-fix logic walked missedMessages once,
+    // picked the latest admin sender, and expanded every message under
+    // that one runtime — mixed-admin batches expanded admin-A's slash
+    // commands under admin-B's plugins.
+    //
+    // We still need a non-null sentinel ExpandContext to gate the block
+    // (some workspaces have no resolvable owner at all → skip expansion).
+    // Build one with the batch fallback to decide whether to enter the
+    // expansion path; the per-message resolver wins inside the loop.
+    const fallbackExpandCtx = buildExpandContext(
+      chatJid,
+      effectiveGroup,
+      effectiveGroup.created_by,
+    );
+    if (fallbackExpandCtx) {
+      const resolveCtxForMsg = (msg: typeof missedMessages[number]) => {
+        const owner = resolvePerMessageRuntimeOwner({
+          chatJid,
+          isHome: !!effectiveGroup.is_home,
+          fallbackOwner: effectiveGroup.created_by,
+          message: msg,
+          getUserById,
+        });
+        return buildExpandContext(chatJid, effectiveGroup, owner);
+      };
+      const { toSend, replies } = await expandMessagesIfNeeded(
+        missedMessages,
+        resolveCtxForMsg,
+        undefined,
+        persistPluginExpansion,
+      );
+      // When toSend still has unprocessed messages, only the next-pull cursor
+      // advances for replies — committing the recovery cursor past a reply
+      // could lose earlier toSend messages on crash before the agent runs
+      // (#18 P2-bug-2). When toSend is empty we fully commit.
+      const advanceReplyCursor =
+        toSend.length === 0 ? setCursors : advanceNextPullCursorOnly;
+      for (const r of replies) {
+        // Per-reply IM target: prefer the originating message's source_jid
+        // (so individual replies route back to whoever sent the slash command,
+        // even in mixed batches), falling back to the batch's IM source
+        // computed earlier.
+        const perMsgImJid =
+          r.originalMsg.source_jid && getChannelType(r.originalMsg.source_jid)
+            ? r.originalMsg.source_jid
+            : replySourceImJid;
+        sendPluginExpanderReply(chatJid, r.text, perMsgImJid);
+        // Advance cursor to the original user message timestamp so the next
+        // poll skips it. setCursors (not advance) bypasses any stale future
+        // cursor when the reply is the only output of this batch.
+        advanceReplyCursor(chatJid, {
+          timestamp: r.originalMsg.timestamp,
+          id: r.originalMsg.id,
+        });
+      }
+      if (toSend.length === 0) {
+        // Reply-only batch never spawns a runner — the normal completion
+        // path's finally block (line ~3532) is skipped, so clear the IM
+        // route here. Otherwise a stale entry leaks across batches and the
+        // next IPC send_message/send_file mirrors to the wrong IM chat.
+        activeImReplyRoutes.delete(effectiveGroup.folder);
+        return true;
+      }
+      missedMessages = toSend;
+    }
+  }
 
   const shared = isGroupShared(group.folder);
   let prompt = formatMessages(missedMessages, shared);
@@ -5453,7 +5646,7 @@ async function processAgentConversation(
 
   // Get pending messages
   const sinceCursor = lastAgentTimestamp[virtualChatJid] || EMPTY_CURSOR;
-  const missedMessages = getMessagesSince(virtualChatJid, sinceCursor);
+  let missedMessages = getMessagesSince(virtualChatJid, sinceCursor);
   if (missedMessages.length === 0) {
     // Spawn agents are fire-and-forget: if no messages are found (race condition
     // or cursor already advanced), mark as error so they don't stay idle forever.
@@ -5477,6 +5670,88 @@ async function processAgentConversation(
 
   const isHome = !!effectiveGroup.is_home;
   const isAdminHome = isHome && effectiveGroup.folder === MAIN_GROUP_FOLDER;
+
+  // Plugin command expander (DMI commands) — agent conversation cold start.
+  // Replies go to virtualChatJid so the agent UI tab routes them correctly;
+  // cursor advancement also uses the virtual JID since that's the read key.
+  {
+    // Admin-shared web:main: plugin runtime is per-sender (each admin's
+    // own plugins). Resolve the runtime per-message instead of pinning one
+    // owner for the whole batch (#23 round-15 P2-2). The per-message
+    // resolver strips the `#agent:` suffix from the virtual JID before
+    // the `web:main` gate so virtual JIDs still get the per-sender
+    // semantics (matches `resolvePluginRuntimeOwner`).
+    const fallbackExpandCtx = buildExpandContext(
+      virtualChatJid,
+      effectiveGroup,
+      effectiveGroup.created_by,
+    );
+    if (fallbackExpandCtx) {
+      const resolveCtxForMsg = (msg: typeof missedMessages[number]) => {
+        const owner = resolvePerMessageRuntimeOwner({
+          chatJid: virtualChatJid,
+          isHome: !!effectiveGroup.is_home,
+          fallbackOwner: effectiveGroup.created_by,
+          message: msg,
+          getUserById,
+        });
+        return buildExpandContext(virtualChatJid, effectiveGroup, owner);
+      };
+      const { toSend, replies } = await expandMessagesIfNeeded(
+        missedMessages,
+        resolveCtxForMsg,
+        undefined,
+        persistPluginExpansion,
+      );
+      // Same crash-safe split as processGroupMessages (#18 P2-bug-2):
+      // hold the recovery cursor when toSend still has work pending.
+      const advanceReplyCursor =
+        toSend.length === 0 ? setCursors : advanceNextPullCursorOnly;
+      // Resolve IM target so plugin replies fan out to the originating IM
+      // channel (#20 P1-1). Per-reply: prefer that message's source_jid;
+      // otherwise fall back to the agent's last_im_jid, but only if its
+      // channel is currently connected (stale jids would just retry-fail).
+      const persistedAgentImJid = (() => {
+        const agentRow = getAgent(agentId);
+        const candidate = agentRow?.last_im_jid;
+        if (
+          candidate &&
+          getChannelType(candidate) &&
+          imManager.isChannelAvailableForJid(candidate)
+        ) {
+          return candidate;
+        }
+        return null;
+      })();
+      for (const r of replies) {
+        const perMsgImJid =
+          r.originalMsg.source_jid && getChannelType(r.originalMsg.source_jid)
+            ? r.originalMsg.source_jid
+            : persistedAgentImJid;
+        sendPluginExpanderReply(virtualChatJid, r.text, perMsgImJid);
+        advanceReplyCursor(virtualChatJid, {
+          timestamp: r.originalMsg.timestamp,
+          id: r.originalMsg.id,
+        });
+      }
+      if (toSend.length === 0) {
+        // Spawn agents are fire-and-forget: if expansion consumed all
+        // messages with replies, mark as completed so the agent slot is freed.
+        if (agent.kind === 'spawn' && agent.status === 'idle') {
+          updateAgentStatus(agentId, 'completed');
+          broadcastAgentStatus(
+            chatJid,
+            agentId,
+            'completed',
+            agent.name,
+            agent.prompt,
+          );
+        }
+        return;
+      }
+      missedMessages = toSend;
+    }
+  }
 
   // Update agent status → running
   updateAgentStatus(agentId, 'running');
@@ -6366,8 +6641,83 @@ async function startMessageLoop(): Promise<void> {
             chatJid,
             lastAgentTimestamp[chatJid] || EMPTY_CURSOR,
           );
-          const messagesToSend =
+          let messagesToSend =
             allPending.length > 0 ? allPending : groupMessages;
+
+          // Plugin command expander (DMI commands) — same as cold-start path.
+          // Active-runner IPC injection: replies advance the cursor without
+          // touching the running agent; full-reply batches skip sendMessage().
+          //
+          // Resolve effectiveGroup so sibling-JID groups (home main + non-home
+          // child sharing a folder) inherit executionMode / customCwd /
+          // created_by from the home sibling — without this, plugin expansion
+          // returns null on the non-home sibling and DMI commands stop working
+          // once a runner is up (#18 P2-bug-3).
+          {
+            const { effectiveGroup: activeEffectiveGroup } =
+              resolveEffectiveGroup(group);
+            // Admin-shared web:main: plugin runtime is per-sender. Resolve
+            // per-message so each admin's slash command expands under their
+            // own enabled plugins, not whichever admin happened to be the
+            // latest sender for the active-IPC batch (#23 round-15 P2-2).
+            const fallbackExpandCtx = buildExpandContext(
+              chatJid,
+              activeEffectiveGroup,
+              activeEffectiveGroup.created_by,
+            );
+            if (fallbackExpandCtx) {
+              const resolveCtxForMsg = (
+                msg: typeof messagesToSend[number],
+              ) => {
+                const owner = resolvePerMessageRuntimeOwner({
+                  chatJid,
+                  isHome: !!activeEffectiveGroup.is_home,
+                  fallbackOwner: activeEffectiveGroup.created_by,
+                  message: msg,
+                  getUserById,
+                });
+                return buildExpandContext(
+                  chatJid,
+                  activeEffectiveGroup,
+                  owner,
+                );
+              };
+              const { toSend, replies } = await expandMessagesIfNeeded(
+                messagesToSend,
+                resolveCtxForMsg,
+                undefined,
+                persistPluginExpansion,
+              );
+              // Hold the recovery cursor while toSend still has work pending
+              // (#18 P2-bug-2 also applies on the active path).
+              const advanceReplyCursor =
+                toSend.length === 0 ? setCursors : advanceNextPullCursorOnly;
+              // IM fan-out (#20 P1-1): if chatJid itself is an IM channel
+              // we route to itself; otherwise prefer the originating message's
+              // source_jid (mixed batches retain individual user routing).
+              const directImReply = getChannelType(chatJid) !== null;
+              for (const r of replies) {
+                let imRouteJid: string | null = null;
+                if (directImReply) {
+                  imRouteJid = chatJid;
+                } else if (
+                  r.originalMsg.source_jid &&
+                  getChannelType(r.originalMsg.source_jid)
+                ) {
+                  imRouteJid = r.originalMsg.source_jid;
+                }
+                sendPluginExpanderReply(chatJid, r.text, imRouteJid);
+                advanceReplyCursor(chatJid, {
+                  timestamp: r.originalMsg.timestamp,
+                  id: r.originalMsg.id,
+                });
+              }
+              if (toSend.length === 0) {
+                continue;
+              }
+              messagesToSend = toSend;
+            }
+          }
 
           // Home and non-home groups now share the same IPC injection path.
           // Reply routing is dynamically updated via activeRouteUpdaters when
@@ -6403,11 +6753,14 @@ async function startMessageLoop(): Promise<void> {
               'Piped messages to active container',
             );
             const lastProcessed = messagesToSend[messagesToSend.length - 1];
-            lastAgentTimestamp[chatJid] = {
+            // advanceNextPullCursorOnly (not direct assignment) so an earlier
+            // reply already pushed past lastProcessed isn't regressed back
+            // to a plain-text timestamp, which would cause the reply to be
+            // re-pulled and replayed on the next poll (#18 P1-bug-1).
+            advanceNextPullCursorOnly(chatJid, {
               timestamp: lastProcessed.timestamp,
               id: lastProcessed.id,
-            };
-            saveState();
+            });
           } else {
             // no_active — enqueue for a new one
             queue.enqueueMessageCheck(chatJid);
@@ -8152,11 +8505,28 @@ async function main(): Promise<void> {
     formatMessages,
     getLastAgentTimestamp: () => lastAgentTimestamp,
     setLastAgentTimestamp: setCursors,
+    advanceCursors,
+    advanceNextPullCursorOnly,
     advanceGlobalCursor: (cursor: MessageCursor) => {
       if (isCursorAfter(cursor, globalMessageCursor)) {
         globalMessageCursor = cursor;
         saveState();
       }
+    },
+    hasEarlierPendingMessages: (jid, candidate) => {
+      // Compare against lastCommittedCursor (recovery anchor) so the
+      // semantic is "would a recovery pass surface anything earlier than
+      // this candidate?". Lexicographic (timestamp, id) — same ordering
+      // used by getMessagesSince's ORDER BY.
+      const sinceCursor = lastCommittedCursor[jid] || EMPTY_CURSOR;
+      const pending = getMessagesSince(jid, sinceCursor);
+      for (const m of pending) {
+        if (m.timestamp < candidate.timestamp) return true;
+        if (m.timestamp === candidate.timestamp && m.id < candidate.id) {
+          return true;
+        }
+      }
+      return false;
     },
     reloadFeishuConnection,
     reloadTelegramConnection,
@@ -8184,6 +8554,12 @@ async function main(): Promise<void> {
       activeRouteUpdaters.get(folder)?.(sourceJid);
     },
     handleSpawnCommand,
+    resolveEffectiveGroup,
+    getUserById: (id: string) => {
+      const user = getUserById(id);
+      if (!user) return null;
+      return { id: user.id, status: user.status, role: user.role };
+    },
   });
 
   // Clean expired sessions every hour
