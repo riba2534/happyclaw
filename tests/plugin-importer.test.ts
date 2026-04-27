@@ -255,7 +255,8 @@ describe('scanHostMarketplaces', () => {
     );
     fs.mkdirSync(path.join(badMpDir, 'plugins', 'x'), { recursive: true });
 
-    // Valid marketplace, but plugin without manifest
+    // Valid marketplace, but plugin without manifest. No marketplace.json
+    // entry classifying the plugin → treated as orphan inline → warns.
     seedHostPlugin({
       marketplace: 'mp1',
       plugin: 'noManifest',
@@ -282,6 +283,76 @@ describe('scanHostMarketplaces', () => {
     expect(
       r.warnings.some((w) =>
         w.includes('noManifest') && w.includes('plugin.json'),
+      ),
+    ).toBe(true);
+  });
+
+  test('silently skips placeholder dirs declared in marketplace.json (any source kind)', async () => {
+    // Claude Code's CLI lays out one host dir per declared plugin
+    // (LICENSE/README) and only populates `.claude-plugin/plugin.json`
+    // after `/plugin install`. Until then the dir is a placeholder — not a
+    // broken plugin. Importer must skip silently for all source kinds
+    // (inline / url / git-subdir) when the entry is declared in
+    // marketplace.json.
+    seedHostPlugin({
+      marketplace: 'mp1',
+      plugin: 'inline-ok',
+      pluginManifest: { name: 'inline-ok', version: '1.0.0' },
+      marketplaceManifest: {
+        name: 'mp1',
+        plugins: [
+          { name: 'inline-ok', source: './plugins/inline-ok' },
+          { name: 'inline-placeholder', source: './plugins/inline-placeholder' },
+          { name: 'remote-url', source: { source: 'url', url: 'https://x' } },
+          {
+            name: 'remote-subdir',
+            source: { source: 'git-subdir', url: 'https://x', path: 'a' },
+          },
+        ],
+      },
+    });
+    for (const name of ['inline-placeholder', 'remote-url', 'remote-subdir']) {
+      fs.mkdirSync(
+        path.join(tmpHostDir, 'plugins', 'marketplaces', 'mp1', 'plugins', name),
+        { recursive: true },
+      );
+    }
+
+    const r = await scanHostMarketplaces();
+
+    expect(r.pluginsScanned).toBe(1);
+    for (const name of ['inline-placeholder', 'remote-url', 'remote-subdir']) {
+      expect(
+        r.warnings.some((w) => w.includes(name)),
+      ).toBe(false);
+    }
+
+    const idx = readCatalogIndex();
+    expect(Object.keys(idx.plugins)).toEqual(['inline-ok@mp1']);
+  });
+
+  test('warns on undeclared orphan dirs (no marketplace.json entry)', async () => {
+    // Plugin dir present on disk but missing from marketplace.json's
+    // plugins[]. This is a real authoring/cleanup bug worth surfacing.
+    seedHostPlugin({
+      marketplace: 'mp1',
+      plugin: 'declared-ok',
+      pluginManifest: { name: 'declared-ok', version: '1.0.0' },
+      marketplaceManifest: {
+        name: 'mp1',
+        plugins: [{ name: 'declared-ok', source: './plugins/declared-ok' }],
+      },
+    });
+    // Orphan dir
+    fs.mkdirSync(
+      path.join(tmpHostDir, 'plugins', 'marketplaces', 'mp1', 'plugins', 'orphan'),
+      { recursive: true },
+    );
+
+    const r = await scanHostMarketplaces();
+    expect(
+      r.warnings.some(
+        (w) => w.includes('orphan') && w.includes('plugin.json'),
       ),
     ).toBe(true);
   });

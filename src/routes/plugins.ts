@@ -22,6 +22,7 @@ import {
   type UserPluginsV2,
 } from '../plugin-utils.js';
 import { checkPluginDependencies } from '../plugin-dependency-check.js';
+import { getUserHomeGroup } from '../db.js';
 import {
   scanHostMarketplaces,
   isScanInFlight,
@@ -61,13 +62,22 @@ pluginsRoutes.get('/', authMiddleware, async (c) => {
   const isAdmin = authUser.role === 'admin';
   const v2 = readUserPluginsV2(authUser.id);
   const catalog = readCatalogIndex();
-  // Dependency warnings are workspace-agnostic in this view — a user's plugin
-  // is shared across all their workspaces (admin home container, docker sub-
-  // workspaces, etc). Reporting `host` just because the viewer is admin would
-  // mask real missing-binary risk in their docker workspaces. Stay conservative:
-  // always report Docker-runtime warnings here; a future change will move to
-  // per-workspace accuracy once the UI has workspace context.
-  const depCheckRuntime: 'docker' | 'host' = 'docker';
+  // Choose dep-check runtime based on the viewer's home group executionMode:
+  //   admin (host home, folder=main)        → check host PATH
+  //   member (container home, home-{userId}) → check docker image PATH
+  // The home is where the plugin will run in the common path; reporting the
+  // wrong runtime produces false "缺少 X" badges (admin sees docker missing
+  // even though the binary exists on host, or vice versa). Sub-workspaces
+  // with a divergent execution mode are a future per-workspace concern once
+  // the UI carries workspace context.
+  let homeExecutionMode: 'host' | 'container' | undefined;
+  try {
+    homeExecutionMode = getUserHomeGroup(authUser.id)?.executionMode;
+  } catch {
+    /* db lookup failure → fall back to conservative docker view */
+  }
+  const depCheckRuntime: 'docker' | 'host' =
+    homeExecutionMode === 'host' ? 'host' : 'docker';
 
   type PluginRow = {
     name: string;

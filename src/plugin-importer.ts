@@ -186,9 +186,28 @@ async function runScan(opts: ScanOptions): Promise<ImportReport> {
 
       const manifest = readPluginManifest(pluginDir);
       if (!manifest) {
-        report.warnings.push(
-          `Plugin "${pluginName}" in "${mpName}" missing valid .claude-plugin/plugin.json`,
-        );
+        // A directory without `.claude-plugin/plugin.json` is a placeholder,
+        // not a broken plugin. Claude Code's CLI lays out one host dir per
+        // entry in marketplace.json (with LICENSE/README) regardless of
+        // source kind, and only populates the manifest on `/plugin install`.
+        //
+        // - Declared in marketplace.json (any source: inline / url / git-
+        //   subdir): expected pre-install state → silent skip.
+        // - Not declared: orphan dir from a marketplace.json edit / partial
+        //   uninstall → warn so the user can clean up.
+        // - No marketplace.json at all (in-development marketplace): we
+        //   can't tell, so fall back to warning (the historical behaviour).
+        const declared = mpManifest?.pluginSources?.[pluginName];
+        if (declared !== undefined) {
+          logger.debug(
+            { marketplace: mpName, plugin: pluginName, declared },
+            'plugin-importer: skipping placeholder dir (declared in marketplace.json, no local manifest)',
+          );
+        } else {
+          report.warnings.push(
+            `Plugin "${pluginName}" in "${mpName}" missing valid .claude-plugin/plugin.json`,
+          );
+        }
         continue;
       }
       if (manifest.name !== pluginName) {

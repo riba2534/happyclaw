@@ -28,11 +28,25 @@ export function isValidNameSegment(s: string): boolean {
   return typeof s === 'string' && NAME_SEGMENT_RE.test(s) && s !== '.' && s !== '..';
 }
 
+/**
+ * A plugin's `source` in marketplace.json is either:
+ *   - a relative string like `"./plugins/foo"` → inline (lives in this repo)
+ *   - `{source: "url", ...}` / `{source: "git-subdir", ...}` → remote ref
+ *
+ * Remote refs intentionally have no local `.claude-plugin/plugin.json` until
+ * the user runs `/plugin install`; inline refs always do. The importer uses
+ * this distinction to decide whether a missing manifest is an error worth
+ * surfacing (inline) or expected (remote, ignored).
+ */
+export type PluginEntrySource = 'inline' | 'remote';
+
 export interface MarketplaceManifest {
   name: string;
   version?: string;
   description?: string;
   owner?: string;
+  /** Map from plugin name → declared source kind from the manifest's `plugins[]`. */
+  pluginSources: Record<string, PluginEntrySource>;
 }
 
 export interface PluginManifest {
@@ -84,12 +98,34 @@ export function readMarketplaceManifest(
     ? (rec.owner as Record<string, unknown>)
     : null);
 
+  // marketplace.json `plugins[]` declares each plugin's source. Inline sources
+  // are shipped in the same repo and must have a local `.claude-plugin/plugin
+  // .json`; remote sources (url / git-subdir) deliberately don't until the
+  // user installs them through Claude Code's CLI. We classify each entry up
+  // front so the importer can skip "remote without manifest" silently while
+  // still warning on "inline without manifest" (a real authoring bug).
+  const pluginSources: Record<string, PluginEntrySource> = {};
+  const pluginsArr = Array.isArray(rec.plugins) ? rec.plugins : [];
+  for (const raw of pluginsArr) {
+    if (!raw || typeof raw !== 'object') continue;
+    const entry = raw as Record<string, unknown>;
+    const pName = typeof entry.name === 'string' ? entry.name : null;
+    if (!pName || !isValidNameSegment(pName)) continue;
+    const src = entry.source;
+    // String form `"./plugins/foo"` → inline; missing field also treated as
+    // inline (the local-dir convention). Anything else (objects with `source`,
+    // `url`, `git-subdir`) → remote.
+    pluginSources[pName] =
+      typeof src === 'string' || src === undefined ? 'inline' : 'remote';
+  }
+
   return {
     name,
     version: typeof meta.version === 'string' ? meta.version : undefined,
     description:
       typeof meta.description === 'string' ? meta.description : undefined,
     owner: owner && typeof owner.name === 'string' ? owner.name : undefined,
+    pluginSources,
   };
 }
 

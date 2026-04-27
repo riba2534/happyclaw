@@ -57,6 +57,31 @@ describe('readMarketplaceManifest', () => {
       version: '1.0.3',
       description: 'desc here',
       owner: 'OpenAI',
+      pluginSources: {},
+    });
+  });
+
+  test('classifies plugin sources from plugins[]', () => {
+    writeJson(path.join(tmp, '.claude-plugin', 'marketplace.json'), {
+      name: 'mixed',
+      plugins: [
+        { name: 'inline-str', source: './plugins/inline-str' },
+        { name: 'inline-default' }, // no source field → inline by convention
+        { name: 'remote-url', source: { source: 'url', url: 'https://x' } },
+        {
+          name: 'remote-subdir',
+          source: { source: 'git-subdir', url: 'https://x', path: 'a' },
+        },
+        { name: 'bad name' }, // invalid → skipped
+        'malformed', // non-object → skipped
+      ],
+    });
+    const m = readMarketplaceManifest(tmp);
+    expect(m?.pluginSources).toEqual({
+      'inline-str': 'inline',
+      'inline-default': 'inline',
+      'remote-url': 'remote',
+      'remote-subdir': 'remote',
     });
   });
 
