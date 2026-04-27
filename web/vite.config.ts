@@ -109,7 +109,11 @@ export default defineConfig(({ command }) => {
             ],
           },
           workbox: {
-            navigateFallback: null,
+            // 离线化：导航请求（如从桌面图标/刷新进入）回退到 index.html，
+            // 让 SPA 在无网络时也能加载、路由依然工作。
+            // navigateFallbackDenylist 排除非 SPA 路由（API、WebSocket）。
+            navigateFallback: `${APP_BASE}index.html`,
+            navigateFallbackDenylist: [/^\/api\//, /^\/ws/],
             manifestTransforms: [async (entries) => ({
               manifest: entries.filter((entry) => !isMermaidRuntimeChunk(entry.url)),
               warnings: [],
@@ -162,6 +166,69 @@ export default defineConfig(({ command }) => {
                     maxEntries: 64,
                     maxAgeSeconds: 60 * 60 * 24 * 30,
                   },
+                },
+              },
+              // ─── 消息历史（IM 体验：local-first + 实时推送对账）───
+              // SWR 而非 NetworkFirst：对齐 IM 应用切对话 0ms 出本地缓存的体验。
+              // 一致性靠以下机制保证：
+              //   1. WebSocket new_message / stream_event 实时推送
+              //   2. 2s 轮询拉增量（refreshMessages）
+              //   3. clearHistory / deleteMessage 后调用 invalidateGroupCache(jid)
+              //      主动清掉对应 SW cache 条目，杜绝"幽灵消息"
+              //   4. login/logout 调 clearApiCaches() 阻止跨用户串号
+              // `?after=` 增量轮询（每 2s）排除以免占用 maxEntries 配额。
+              // agents 列表不在此处理：store 层已 memoize，SW 介入只会增加
+              // 双层缓存失效协调的复杂度。
+              {
+                urlPattern: ({ url, request }) => {
+                  if (request.method !== 'GET') return false;
+                  if (url.searchParams.has('after')) return false; // 排除轮询
+                  return /^\/api\/groups\/[^/]+\/messages$/.test(url.pathname);
+                },
+                handler: 'StaleWhileRevalidate',
+                options: {
+                  cacheName: 'api-groups-cache',
+                  expiration: {
+                    maxEntries: 50,
+                    maxAgeSeconds: 60 * 60 * 24, // 1 day
+                  },
+                  cacheableResponse: { statuses: [200] },
+                },
+              },
+              // ─── 用户身份（高敏感、需强一致）───
+              // NetworkFirst + 短超时：登录态切换后必须立刻反映新用户。
+              // 配合 auth store 在 login/logout 主动 caches.delete() 兜底。
+              {
+                urlPattern: ({ url, request }) => {
+                  if (request.method !== 'GET') return false;
+                  return url.pathname === '/api/auth/me';
+                },
+                handler: 'NetworkFirst',
+                options: {
+                  cacheName: 'api-core-cache',
+                  networkTimeoutSeconds: 2,
+                  expiration: {
+                    maxEntries: 5,
+                    maxAgeSeconds: 60 * 60 * 24, // 1 day（不再是 7 天）
+                  },
+                  cacheableResponse: { statuses: [200] },
+                },
+              },
+              // ─── 群组列表（中频变化）───
+              // SWR 即可：侧边栏列表，离线启动时立即出，后台刷新即可。
+              {
+                urlPattern: ({ url, request }) => {
+                  if (request.method !== 'GET') return false;
+                  return url.pathname === '/api/groups';
+                },
+                handler: 'StaleWhileRevalidate',
+                options: {
+                  cacheName: 'api-core-cache',
+                  expiration: {
+                    maxEntries: 5,
+                    maxAgeSeconds: 60 * 60 * 24, // 1 day
+                  },
+                  cacheableResponse: { statuses: [200] },
                 },
               },
             ],
