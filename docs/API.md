@@ -80,6 +80,22 @@
 - `PATCH /api/mcp-servers/:id` · `DELETE /api/mcp-servers/:id`
 - `POST /api/mcp-servers/sync-host`（从宿主机同步 MCP Server 配置）
 
+## Claude Code Plugins
+
+数据模型：admin 共享导入的 catalog（immutable，按内容 hash 寻址） + per-user enable refs + per-user versioned runtime snapshot。详见 `docs/claude-code-plugin-automation-design.md` 与 `CLAUDE.md` §10。
+
+| Method | Path | Auth | 用途 |
+|--------|------|------|------|
+| `GET` | `/api/plugins` | 登录 | 返回 catalog 全集 + 当前用户 enabled 状态投影（一次取齐前端列表所需数据） |
+| `GET` | `/api/plugins/catalog` | 登录 | catalog 索引（`marketplaces[].plugins[].versions[]` 元数据） |
+| `GET` | `/api/plugins/catalog/marketplaces/:mp` | 登录 | 单个 marketplace 详情 |
+| `POST` | `/api/plugins/catalog/scan` | admin (`manage_system_config`) | 触发宿主机 `~/.claude/plugins/marketplaces/` 扫描并入 catalog；返回 `ImportReport`（`marketplaces` / `plugins` / `created` / `skipped`）。主进程启动 5s 后 + 每小时自动调用同一逻辑 |
+| `PATCH` | `/api/plugins/enabled/:fullId` | 登录 | body `{ enabled: boolean }`，read-modify-write `users/{userId}/plugins.json`；启用时自动 `materializeUserRuntime` 写入 `runtime/{userId}/snapshots/{snapshotId}/`；UI 必须提示"下次新会话生效" |
+| `POST` | `/api/plugins/materialize` | 登录 | 手动重建当前用户的 runtime snapshot（用于 catalog 更新后强制刷新） |
+| `DELETE` | `/api/plugins/marketplaces/:name` | 登录 | 仅清除调用者自己的 `enabled.*@{name}` 引用，**不删** catalog（catalog 是共享只读集合） |
+
+**已废弃**（PR1 删除，新代码不要引用）：~~`POST /api/plugins/sync-host`~~、~~`GET /api/plugins/available-on-host`~~。
+
 ## 用量统计
 
 - `GET /api/usage/stats?days=7&userId=&model=`（从 `usage_daily_summary` 查询，支持用户/模型筛选）
