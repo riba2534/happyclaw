@@ -33,6 +33,10 @@ import {
   type SnapshotMeta,
 } from '../plugin-catalog.js';
 import { materializeUserRuntime } from '../plugin-materializer.js';
+import {
+  buildCommandIndex,
+  invalidateUserCommandIndex,
+} from '../plugin-command-index.js';
 
 const pluginsRoutes = new Hono<{ Variables: Variables }>();
 
@@ -274,6 +278,9 @@ pluginsRoutes.patch('/enabled/:pluginFullId', authMiddleware, async (c) => {
     };
     writeUserPluginsV2(authUser.id, v2);
 
+    // Invalidate AFTER materialize so a concurrent GET /commands cannot
+    // pin an empty index built between writeUserPluginsV2 and the runtime
+    // tree being created (codex review #8).
     let materializeWarnings: string[] = [];
     try {
       const report = materializeUserRuntime(authUser.id);
@@ -281,6 +288,7 @@ pluginsRoutes.patch('/enabled/:pluginFullId', authMiddleware, async (c) => {
     } catch (err) {
       materializeWarnings = [err instanceof Error ? err.message : String(err)];
     }
+    invalidateUserCommandIndex(authUser.id);
 
     return c.json({
       success: true,
@@ -297,6 +305,7 @@ pluginsRoutes.patch('/enabled/:pluginFullId', authMiddleware, async (c) => {
   delete v2.enabled[fullId];
   writeUserPluginsV2(authUser.id, v2);
 
+  // Invalidate AFTER materialize for the same race-window reason as enable.
   let materializeWarnings: string[] = [];
   try {
     const report = materializeUserRuntime(authUser.id);
@@ -304,6 +313,7 @@ pluginsRoutes.patch('/enabled/:pluginFullId', authMiddleware, async (c) => {
   } catch (err) {
     materializeWarnings = [err instanceof Error ? err.message : String(err)];
   }
+  invalidateUserCommandIndex(authUser.id);
 
   return c.json({
     success: true,
@@ -320,6 +330,11 @@ pluginsRoutes.post('/materialize', authMiddleware, async (c) => {
   const authUser = c.get('user') as AuthUser;
   try {
     const report = materializeUserRuntime(authUser.id);
+    // The command index can hold an empty result cached from a build that ran
+    // while the runtime tree was missing (first enable before materialize, or
+    // post-GC). Drop it so the next /commands fetch re-reads the freshly
+    // materialized tree. Mirrors PATCH /enabled and DELETE /marketplaces.
+    invalidateUserCommandIndex(authUser.id);
     return c.json({ success: true, report });
   } catch (err) {
     return c.json(
@@ -353,11 +368,16 @@ pluginsRoutes.delete('/marketplaces/:name', authMiddleware, async (c) => {
     }
     if (removedEnabled.length > 0) {
       writeUserPluginsV2(authUser.id, v2);
+      // Invalidate AFTER materialize for the same race-window reason as
+      // PATCH /enabled (codex review #8): a concurrent GET /commands
+      // could otherwise pin an empty index between writeUserPluginsV2
+      // and the cascade materialize completing.
       try {
         materializeUserRuntime(authUser.id);
       } catch {
         // best-effort; user can hit POST /materialize manually
       }
+      invalidateUserCommandIndex(authUser.id);
     }
   }
 
@@ -366,6 +386,27 @@ pluginsRoutes.delete('/marketplaces/:name', authMiddleware, async (c) => {
     marketplace: name,
     removedEnabled,
   });
+});
+
+// GET /commands — list slash commands contributed by the user's enabled
+// plugins. Drops `body` (full markdown can be megabytes for some plugins)
+// and `frontmatter` (raw map) — UI only needs description / argument hint /
+// DMI flag for display. The full entry is reachable via the index in-process
+// (PR2.b expander).
+pluginsRoutes.get('/commands', authMiddleware, async (c) => {
+  const authUser = c.get('user') as AuthUser;
+  const idx = await buildCommandIndex(authUser.id);
+  const commands = idx.entries.map((e) => ({
+    fullId: e.fullId,
+    marketplace: e.marketplace,
+    plugin: e.plugin,
+    snapshot: e.snapshot,
+    commandName: e.commandName,
+    description: e.description,
+    argumentHint: e.argumentHint,
+    disableModelInvocation: e.disableModelInvocation,
+  }));
+  return c.json({ commands, conflicts: idx.conflicts });
 });
 
 // --- Catalog routes ---
