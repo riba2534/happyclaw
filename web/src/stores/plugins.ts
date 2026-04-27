@@ -28,12 +28,22 @@ export interface MarketplaceEntry {
   plugins: PluginEntry[];
 }
 
+export interface ImportReport {
+  marketplacesScanned: number;
+  pluginsScanned: number;
+  snapshotsCreated: number;
+  snapshotsSkipped: number;
+  warnings: string[];
+}
+
 interface PluginsState {
   marketplaces: MarketplaceEntry[];
   loading: boolean;
+  scanning: boolean;
   error: string | null;
 
   loadPlugins: () => Promise<void>;
+  scanCatalog: () => Promise<ImportReport>;
   toggleEnabled: (pluginFullId: string, enabled: boolean) => Promise<void>;
   deleteMarketplace: (name: string) => Promise<{ removedEnabled: string[] }>;
 }
@@ -41,6 +51,7 @@ interface PluginsState {
 export const usePluginsStore = create<PluginsState>((set, get) => ({
   marketplaces: [],
   loading: false,
+  scanning: false,
   error: null,
 
   loadPlugins: async () => {
@@ -53,6 +64,24 @@ export const usePluginsStore = create<PluginsState>((set, get) => ({
         loading: false,
         error: err instanceof Error ? err.message : String(err),
       });
+    }
+  },
+
+  scanCatalog: async () => {
+    set({ scanning: true });
+    try {
+      const data = await api.post<{ report: ImportReport }>(
+        '/api/plugins/catalog/scan',
+      );
+      set({ scanning: false, error: null });
+      await get().loadPlugins();
+      return data.report;
+    } catch (err) {
+      set({
+        scanning: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
     }
   },
 

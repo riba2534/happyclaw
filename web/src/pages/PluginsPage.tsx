@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import {
-  Download,
   RefreshCw,
   Trash2,
   Puzzle,
@@ -50,8 +49,10 @@ export function PluginsPage() {
   const {
     marketplaces,
     loading,
+    scanning,
     error,
     loadPlugins,
+    scanCatalog,
     toggleEnabled,
     deleteMarketplace,
   } = usePluginsStore();
@@ -87,6 +88,20 @@ export function PluginsPage() {
     }
   };
 
+  const handleScan = async () => {
+    try {
+      const report = await scanCatalog();
+      toast.success(
+        `Scanned: marketplaces=${report.marketplacesScanned}, plugins=${report.pluginsScanned}, created=${report.snapshotsCreated}, skipped=${report.snapshotsSkipped}`,
+      );
+      if (report.warnings.length > 0) {
+        toast.warning(`扫描告警:\n${report.warnings.join('\n')}`);
+      }
+    } catch (err) {
+      toast.error(`扫描失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
   const handleDelete = async () => {
     if (!deleteTarget) return;
     try {
@@ -112,11 +127,12 @@ export function PluginsPage() {
                 {isAdmin && (
                   <Button
                     variant="outline"
-                    disabled
-                    title="PR3: catalog 浏览即将上线"
+                    onClick={handleScan}
+                    disabled={scanning}
+                    title="扫描宿主机 ~/.claude/plugins/marketplaces/ 并导入 catalog"
                   >
-                    <Download size={18} />
-                    从宿主机同步（PR3 即将上线）
+                    <RefreshCw size={18} className={scanning ? 'animate-spin' : ''} />
+                    扫描宿主机
                   </Button>
                 )}
                 <Button variant="outline" onClick={loadPlugins} disabled={loading}>
@@ -136,6 +152,18 @@ export function PluginsPage() {
           </div>
         </div>
 
+        {!loading && !error && marketplaces.length === 0 && (
+          <div className="mx-6 mt-4 p-3 bg-info-bg border border-info/20 rounded-lg text-xs text-info flex gap-2">
+            <Info size={16} className="flex-shrink-0 mt-0.5" />
+            <div>
+              v3 升级用户首次访问看到 0 plugin 是预期。
+              {isAdmin
+                ? '请点击右上 "扫描宿主机" 触发 catalog 导入；'
+                : '等 admin 完成导入后即可启用。'}
+            </div>
+          </div>
+        )}
+
         <div className="p-6 space-y-6">
           {loading && marketplaces.length === 0 ? (
             <SkeletonCardList count={3} />
@@ -149,7 +177,11 @@ export function PluginsPage() {
             <EmptyState
               icon={Puzzle}
               title="还没有 plugin"
-              description="catalog 浏览 UI 即将在 PR3 上线；当前可通过后端 API 同步 marketplace"
+              description={
+                isAdmin
+                  ? '尚未导入任何 marketplace。点击右上 "扫描宿主机" 触发 catalog 导入。'
+                  : 'admin 还未导入任何 marketplace，请稍后再来。'
+              }
             />
           ) : (
             marketplaces.map((mp) => (

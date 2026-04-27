@@ -196,6 +196,7 @@ import {
 import { verifyPairingCode } from './telegram-pairing.js';
 import { sdkQuery } from './sdk-query.js';
 import { executeSessionReset } from './commands.js';
+import { scanHostMarketplaces } from './plugin-importer.js';
 
 // Set timezone so all child processes (host agents, containers) inherit it
 process.env.TZ = process.env.TZ || TIMEZONE;
@@ -7690,6 +7691,24 @@ async function main(): Promise<void> {
 
   loadState();
 
+  // Plugin catalog scan: one shot 5s after startup + every 1h thereafter.
+  // scanHostMarketplaces has an in-flight Promise mutex, so UI button /
+  // startup / periodic timer can overlap safely.
+  const startupPluginScanTimer = setTimeout(() => {
+    scanHostMarketplaces().catch((err) =>
+      logger.warn({ err }, 'startup plugin catalog scan failed'),
+    );
+  }, 5000);
+
+  const periodicPluginScanInterval = setInterval(
+    () => {
+      scanHostMarketplaces().catch((err) =>
+        logger.warn({ err }, 'periodic plugin catalog scan failed'),
+      );
+    },
+    60 * 60 * 1000,
+  );
+
   // --- Channel reload helpers (hot-reload on config save) ---
 
   let feishuSyncInterval: ReturnType<typeof setInterval> | null = null;
@@ -7719,6 +7738,9 @@ async function main(): Promise<void> {
       clearInterval(feishuSyncInterval);
       feishuSyncInterval = null;
     }
+
+    clearTimeout(startupPluginScanTimer);
+    clearInterval(periodicPluginScanInterval);
 
     try {
       ipcWatcherManager?.closeAll();
