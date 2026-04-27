@@ -532,6 +532,11 @@ authRoutes.get('/me', authMiddleware, (c) => {
   const userPublic = toUserPublic(fullUser);
   const appearance = getAppearanceConfig();
 
+  // Per-user identity must never be cached by intermediaries (proxies, CDNs)
+  // or browser HTTP cache.  PWA service worker explicitly opts in via its
+  // own cache strategy (NetworkFirst + auth-store delete on login/logout).
+  c.header('Cache-Control', 'private, no-store');
+
   // Admin users get setup status for the onboarding wizard
   if (fullUser.role === 'admin') {
     return c.json({
