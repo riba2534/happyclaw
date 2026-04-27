@@ -278,22 +278,29 @@ async function paintImageOverlays(canvas: HTMLCanvasElement, root: HTMLElement, 
   const scaleX = canvas.width / Math.max(rootRect.width, 1);
   const scaleY = canvas.height / Math.max(rootRect.height, 1);
 
-  await Promise.all(
-    overlays.map(async (overlay) => {
-      try {
-        const img = await loadOverlayImage(overlay.src);
-        ctx.drawImage(
-          img,
-          overlay.x * scaleX,
-          overlay.y * scaleY,
-          overlay.width * scaleX,
-          overlay.height * scaleY,
-        );
-      } catch {
-        // Best effort: the underlying html-to-image render remains in place.
-      }
-    }),
+  // Load concurrently for speed, but draw sequentially in overlays order so
+  // that any future case with positionally-overlapping images preserves DOM
+  // paint order (later in the list = drawn last = visually on top). Today's
+  // chat markdown is block flow with no overlaps; this is defence in depth.
+  const loaded = await Promise.all(
+    overlays.map((overlay) =>
+      loadOverlayImage(overlay.src).then(
+        (img) => ({ overlay, img }) as const,
+        () => null,
+      ),
+    ),
   );
+  for (const entry of loaded) {
+    if (!entry) continue; // load failed — leave the html-to-image render in place
+    const { overlay, img } = entry;
+    ctx.drawImage(
+      img,
+      overlay.x * scaleX,
+      overlay.y * scaleY,
+      overlay.width * scaleX,
+      overlay.height * scaleY,
+    );
+  }
 }
 
 export function ShareImageDialog({ onClose, message }: ShareImageDialogProps) {
