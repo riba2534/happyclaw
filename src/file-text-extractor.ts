@@ -15,11 +15,13 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { logger } from './logger.js';
 
 const execFileP = promisify(execFile);
 
 export const EXTRACT_MAX_BYTES = 20 * 1024; // 20 KB
 const EXEC_TIMEOUT_MS = 15_000;
+const EXEC_MAX_BUFFER = 10 * 1024 * 1024; // 10 MB
 const TRUNCATION_NOTE = '\n\n[...内容过长已截断，完整文件见原路径]';
 
 const TEXT_EXTS = new Set([
@@ -53,10 +55,21 @@ function truncate(text: string): { text: string; truncated: boolean } {
   if (buf.length <= EXTRACT_MAX_BYTES) {
     return { text, truncated: false };
   }
-  // Cut on a character boundary by slicing utf8 then decoding loosely.
-  const sliced = buf.subarray(0, EXTRACT_MAX_BYTES).toString('utf8');
-  // Drop the trailing possibly-broken char.
-  const safe = sliced.slice(0, Math.max(0, sliced.length - 1));
+  // Walk the byte before the cut point backward to a valid UTF-8 char
+  // boundary so we don't leave a mid-codepoint byte that decodes to U+FFFD.
+  // A UTF-8 continuation byte is 0x80–0xBF; a multi-byte start is >= 0xC0.
+  let end = EXTRACT_MAX_BYTES;
+  while (end > 0) {
+    const b = buf[end - 1]!;
+    if (b < 0x80) break; // ASCII — safe boundary
+    if (b >= 0xc0) {
+      // Start byte of an incomplete multi-byte char at the boundary — drop it.
+      end -= 1;
+      break;
+    }
+    end -= 1; // continuation — keep walking back
+  }
+  const safe = buf.subarray(0, end).toString('utf8');
   return { text: safe + TRUNCATION_NOTE, truncated: true };
 }
 
@@ -74,7 +87,7 @@ export async function extractFileText(
       const { stdout } = await execFileP(
         'pdftotext',
         ['-layout', filePath, '-'],
-        { timeout: EXEC_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 },
+        { timeout: EXEC_TIMEOUT_MS, maxBuffer: EXEC_MAX_BUFFER },
       );
       const { text, truncated } = truncate(stdout);
       return { text, truncated, method: 'pdftotext' };
@@ -85,7 +98,7 @@ export async function extractFileText(
       const { stdout } = await execFileP(
         'textutil',
         ['-convert', 'txt', '-stdout', filePath],
-        { timeout: EXEC_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 },
+        { timeout: EXEC_TIMEOUT_MS, maxBuffer: EXEC_MAX_BUFFER },
       );
       const { text, truncated } = truncate(stdout);
       return { text, truncated, method: 'textutil' };
@@ -98,9 +111,15 @@ export async function extractFileText(
     }
 
     return null;
-  } catch {
-    // Any extraction failure (missing binary, timeout, bad file) → let the
-    // caller fall back to "just reference the file path".
+  } catch (err) {
+    // Missing binary, timeout, maxBuffer exceeded, unreadable file, etc. Log
+    // so operators can diagnose; caller falls back to just referencing the
+    // file path.
+    const reason = err instanceof Error ? err.message : String(err);
+    logger.warn(
+      { filePath, ext, reason },
+      'extractFileText failed, falling back to path-only reference',
+    );
     return null;
   }
 }

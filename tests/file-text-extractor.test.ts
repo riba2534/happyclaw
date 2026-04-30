@@ -86,4 +86,23 @@ describe('extractFileText', () => {
       fs.rmSync(p, { force: true });
     }
   });
+
+  test('truncation preserves UTF-8 boundary for CJK content', async () => {
+    // Pad with ASCII so the boundary falls inside a CJK (3-byte) char.
+    // "你" is 3 bytes in UTF-8. With a 20 KB cap, straddling the boundary
+    // means naive byte-slicing could split mid-codepoint.
+    const p = tmp('.txt');
+    const padding = 'a'.repeat(EXTRACT_MAX_BYTES - 1); // one byte short of cap
+    const body = padding + '你好世界';
+    fs.writeFileSync(p, body);
+    try {
+      const out = await extractFileText(p);
+      expect(out?.truncated).toBe(true);
+      // Must not contain U+FFFD (replacement char) — means the slice cut
+      // cleanly on a char boundary.
+      expect(out?.text.includes('�')).toBe(false);
+    } finally {
+      fs.rmSync(p, { force: true });
+    }
+  });
 });

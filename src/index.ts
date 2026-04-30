@@ -2577,10 +2577,13 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         // such as emoji. Must stay byte-for-byte aligned with the matching regex
         // in container/agent-runner/src/index.ts:extractSessionHistory — both
         // sides feed the same Anthropic API and must produce identical strings.
-        const cleaned = truncated.replace(
+        let cleaned = truncated.replace(
           /(?:[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF])/g,
           '',
         );
+        // Defense in depth: strip the closing tag we use to fence this block
+        // so a user message containing "</system_context>" can't escape early.
+        cleaned = cleaned.replace(/<\/system_context>/gi, '</system_context_>');
         return `[${role}] ${cleaned}`;
       });
       prompt =
