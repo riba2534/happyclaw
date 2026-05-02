@@ -56,7 +56,11 @@ export function buildAgentReplyCard(input: AgentCardInput): FeishuCardV2 {
 
   const header = buildHeader(normalizedInput);
   const elements: Array<Record<string, unknown>> = [];
-  elements.push(...buildBodyChunks(body || optimizedText.trim()));
+  // When the title was auto-extracted from the first line, body may be empty.
+  // Hiding the body area avoids the header/first-line duplication (issue #488).
+  if (body) {
+    elements.push(...buildBodyChunks(body));
+  }
 
   const metaRow = buildMetaRow(input.meta);
   const thinkingPanel = buildThinkingPanel(optimizedThinking);
