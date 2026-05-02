@@ -2433,6 +2433,54 @@ export function deleteRegisteredGroup(jid: string): void {
   db.prepare('DELETE FROM registered_groups WHERE jid = ?').run(jid);
 }
 
+/**
+ * Find groups owned by `userId` whose sender_allowlist is the empty array `[]` —
+ * the "owner-locked trap" state where no one (not even the owner) can trigger
+ * the bot. Created by buildOnNewChat when a Feishu group is auto-registered
+ * before the owner has DM'd the bot. Used by Feishu owner backfill.
+ */
+export function findEmptyAllowlistFeishuGroupsForUser(userId: string): string[] {
+  const rows = db
+    .prepare(
+      "SELECT jid FROM registered_groups WHERE created_by = ? AND jid LIKE 'feishu:%' AND sender_allowlist = '[]'",
+    )
+    .all(userId) as Array<{ jid: string }>;
+  return rows.map((r) => r.jid);
+}
+
+/**
+ * Replace empty `sender_allowlist=[]` with `[ownerOpenId]` for the user's
+ * Feishu groups. Returns the JIDs that were updated. Run once when the
+ * Feishu owner is first identified via P2P DM, to unstick groups that were
+ * registered before the owner was known.
+ */
+export function backfillEmptyAllowlistsForUser(
+  userId: string,
+  ownerOpenId: string,
+): string[] {
+  const jids = findEmptyAllowlistFeishuGroupsForUser(userId);
+  if (jids.length === 0) return [];
+  const allowlistJson = JSON.stringify([ownerOpenId]);
+  const stmt = db.prepare(
+    'UPDATE registered_groups SET sender_allowlist = ? WHERE jid = ?',
+  );
+  const tx = db.transaction((targets: string[]) => {
+    for (const jid of targets) stmt.run(allowlistJson, jid);
+  });
+  tx(jids);
+  return jids;
+}
+
+/**
+ * Clear `sender_allowlist` for a single group (set to NULL = unrestricted).
+ * Used as a manual escape hatch from the owner-locked trap.
+ */
+export function clearSenderAllowlist(jid: string): void {
+  db.prepare(
+    'UPDATE registered_groups SET sender_allowlist = NULL WHERE jid = ?',
+  ).run(jid);
+}
+
 /** Get all JIDs that share the same folder (e.g., all JIDs with folder='main'). */
 export function getJidsByFolder(folder: string): string[] {
   const rows = db

@@ -17,6 +17,7 @@ import {
   updateChatName,
   getAgent,
   deleteAllSessionsForFolder,
+  clearSenderAllowlist,
   VALID_ACTIVATION_MODES,
 } from '../db.js';
 import { authMiddleware, systemConfigMiddleware } from '../middleware/auth.js';
@@ -2723,5 +2724,46 @@ configRoutes.put('/user-im/bindings/:imJid', authMiddleware, async (c) => {
     400,
   );
 });
+
+// Reset sender_allowlist to NULL (unrestricted) — escape hatch for the
+// "owner-locked trap" where buildOnNewChat registered the group with `[]`
+// because the Feishu owner had not DM'd the bot yet. After reset, anyone
+// in the group can trigger the bot.
+configRoutes.post(
+  '/user-im/bindings/:imJid/reset-allowlist',
+  authMiddleware,
+  (c) => {
+    const imJid = decodeURIComponent(c.req.param('imJid'));
+    const user = c.get('user') as AuthUser;
+
+    const channelType = getChannelType(imJid);
+    if (!channelType) {
+      return c.json({ error: 'Invalid IM JID' }, 400);
+    }
+
+    const imGroup = getRegisteredGroup(imJid);
+    if (!imGroup) {
+      return c.json({ error: 'IM group not found' }, 404);
+    }
+    if (!canAccessGroup(user, { ...imGroup, jid: imJid })) {
+      return c.json({ error: 'Forbidden' }, 403);
+    }
+
+    clearSenderAllowlist(imJid);
+
+    const updated = { ...imGroup, sender_allowlist: undefined };
+    const webDeps = getWebDeps();
+    if (webDeps) {
+      const groups = webDeps.getRegisteredGroups();
+      if (groups[imJid]) groups[imJid] = updated;
+    }
+
+    logger.info(
+      { imJid, userId: user.id },
+      'Sender allowlist cleared (manual reset from bindings page)',
+    );
+    return c.json({ success: true });
+  },
+);
 
 export default configRoutes;

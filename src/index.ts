@@ -88,6 +88,7 @@ import {
   upsertImContextBinding,
   touchImContextBindingActivity,
   updateAgentContextInfo,
+  backfillEmptyAllowlistsForUser,
 } from './db.js';
 // feishu.js deprecated exports are no longer needed; imManager handles all connections
 import { imManager } from './im-manager.js';
@@ -6830,6 +6831,32 @@ function buildOnNewChat(
 }
 
 /**
+ * Record the Feishu owner's open_id (auto-detected from a P2P DM) and
+ * unstick any of this user's groups whose `sender_allowlist=[]` —
+ * the "owner-locked trap" that buildOnNewChat creates when a group is
+ * registered before the owner has DM'd the bot. Idempotent: only acts
+ * the first time `ownerRef.value` is set.
+ */
+function learnFeishuOwner(
+  userId: string,
+  senderOpenId: string,
+  ownerRef: { value: string | undefined },
+): void {
+  if (ownerRef.value) return;
+  ownerRef.value = senderOpenId;
+  saveFeishuOwnerOpenId(userId, senderOpenId);
+  const backfilled = backfillEmptyAllowlistsForUser(userId, senderOpenId);
+  for (const jid of backfilled) {
+    const fresh = getRegisteredGroup(jid);
+    if (fresh) registeredGroups[jid] = fresh;
+  }
+  logger.info(
+    { userId, senderOpenId, backfilledCount: backfilled.length },
+    'Feishu owner open_id auto-detected from P2P message',
+  );
+}
+
+/**
  * Build the onBotRemovedFromGroup callback.
  * When bot is removed from a Feishu group or the group is disbanded,
  * clear any IM binding (agent or main conversation).
@@ -7340,13 +7367,8 @@ async function connectUserIMChannels(
   // Per-user mutable ref for Feishu owner open_id auto-detection via P2P messages
   const feishuOwnerRef = { value: feishuConfig ? (getUserFeishuConfig(userId)?.ownerOpenId ?? undefined) : undefined };
   const getFeishuOwnerOpenId = () => feishuOwnerRef.value;
-  const onFeishuP2pSender = (senderOpenId: string) => {
-    if (!feishuOwnerRef.value) {
-      feishuOwnerRef.value = senderOpenId;
-      saveFeishuOwnerOpenId(userId, senderOpenId);
-      logger.info({ userId, senderOpenId }, 'Feishu owner open_id auto-detected from P2P message');
-    }
-  };
+  const onFeishuP2pSender = (senderOpenId: string) =>
+    learnFeishuOwner(userId, senderOpenId, feishuOwnerRef);
 
   const onNewChat = buildOnNewChat(userId, homeFolder, getFeishuOwnerOpenId);
   const resolveGroupFolder = (chatJid: string): string | undefined => {
@@ -7805,13 +7827,8 @@ async function main(): Promise<void> {
       const homeFolder = homeGroup?.folder || MAIN_GROUP_FOLDER;
       const adminOwnerRef = { value: getUserFeishuConfig(adminUser.id)?.ownerOpenId ?? undefined };
       const getAdminOwnerOpenId = () => adminOwnerRef.value;
-      const onAdminP2pSender = (senderOpenId: string) => {
-        if (!adminOwnerRef.value) {
-          adminOwnerRef.value = senderOpenId;
-          saveFeishuOwnerOpenId(adminUser.id, senderOpenId);
-          logger.info({ userId: adminUser.id, senderOpenId }, 'Feishu owner open_id auto-detected from P2P message');
-        }
-      };
+      const onAdminP2pSender = (senderOpenId: string) =>
+        learnFeishuOwner(adminUser.id, senderOpenId, adminOwnerRef);
       const onNewChat = buildOnNewChat(adminUser.id, homeFolder, getAdminOwnerOpenId);
       const connected = await imManager.connectUserFeishu(
         adminUser.id,
@@ -7922,13 +7939,8 @@ async function main(): Promise<void> {
       ) {
         const reloadOwnerRef = { value: config.ownerOpenId ?? undefined };
         const getReloadOwnerOpenId = () => reloadOwnerRef.value;
-        const onReloadP2pSender = (senderOpenId: string) => {
-          if (!reloadOwnerRef.value) {
-            reloadOwnerRef.value = senderOpenId;
-            saveFeishuOwnerOpenId(userId, senderOpenId);
-            logger.info({ userId, senderOpenId }, 'Feishu owner open_id auto-detected from P2P message');
-          }
-        };
+        const onReloadP2pSender = (senderOpenId: string) =>
+          learnFeishuOwner(userId, senderOpenId, reloadOwnerRef);
         const onNewChat = buildOnNewChat(userId, homeFolder, getReloadOwnerOpenId);
         const connected = await imManager.connectUserFeishu(
           userId,

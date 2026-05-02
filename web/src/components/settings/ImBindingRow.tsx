@@ -1,4 +1,4 @@
-import { Loader2, MessageSquare, Users, ArrowRightLeft, Unlink } from 'lucide-react';
+import { Loader2, MessageSquare, Users, ArrowRightLeft, Unlink, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import type { AvailableImGroup } from '../../types';
 import { ChannelBadge } from './channel-meta';
@@ -9,11 +9,17 @@ interface ImBindingRowProps {
   isActioning: boolean;
   onRebind: (group: AvailableImGroup) => void;
   onUnbind: (group: AvailableImGroup) => void;
+  onResetAllowlist: (group: AvailableImGroup) => void;
   onActivationModeChange: (jid: string, mode: string) => void;
 }
 
-export function ImBindingRow({ group, isActioning, onRebind, onUnbind, onActivationModeChange }: ImBindingRowProps) {
+export function ImBindingRow({ group, isActioning, onRebind, onUnbind, onResetAllowlist, onActivationModeChange }: ImBindingRowProps) {
   const hasBound = !!group.bound_agent_id || !!group.bound_main_jid;
+  // Empty array = "owner-locked trap": bot was added before Feishu owner DM'd it,
+  // so nobody (not even the owner) can trigger the bot until allowlist is reset
+  // or owner sends a DM (which auto-backfills via learnFeishuOwner).
+  const isAllowlistLocked =
+    Array.isArray(group.sender_allowlist) && group.sender_allowlist.length === 0;
 
   const bindingLabel = (): string => {
     if (group.bound_agent_id && group.bound_target_name) {
@@ -29,9 +35,11 @@ export function ImBindingRow({ group, isActioning, onRebind, onUnbind, onActivat
 
   return (
     <div className={`flex items-center gap-3 p-3 rounded-lg border transition-colors ${
-      hasBound
-        ? 'border-brand-200 bg-brand-50/50 dark:border-brand-700/30 dark:bg-brand-700/10'
-        : 'border-border'
+      isAllowlistLocked
+        ? 'border-amber-300 bg-amber-50/50 dark:border-amber-700/40 dark:bg-amber-900/10'
+        : hasBound
+          ? 'border-brand-200 bg-brand-50/50 dark:border-brand-700/30 dark:bg-brand-700/10'
+          : 'border-border'
     }`}>
       {/* Avatar */}
       {group.avatar ? (
@@ -63,10 +71,34 @@ export function ImBindingRow({ group, isActioning, onRebind, onUnbind, onActivat
             → {bindingLabel()}
           </span>
         </div>
+        {isAllowlistLocked && (
+          <div className="flex items-start gap-1 mt-1 text-xs text-amber-700 dark:text-amber-400">
+            <AlertTriangle className="w-3 h-3 mt-0.5 flex-shrink-0" />
+            <span>
+              发言者白名单为空，bot 无法响应任何人。请向 bot 发条私聊以认领群聊，或点击右侧「重置」清空白名单。
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Actions */}
       <div className="flex items-center gap-2 flex-shrink-0">
+        {isAllowlistLocked && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => onResetAllowlist(group)}
+            disabled={isActioning}
+            className="text-amber-700 border-amber-300 hover:bg-amber-100 dark:text-amber-400 dark:border-amber-700 dark:hover:bg-amber-900/30"
+          >
+            {isActioning ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : (
+              <AlertTriangle className="w-3 h-3 mr-1" />
+            )}
+            重置白名单
+          </Button>
+        )}
         {hasBound && (
           <div className="flex items-center gap-1.5">
             <select

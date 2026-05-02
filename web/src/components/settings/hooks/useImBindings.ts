@@ -154,7 +154,25 @@ export function useImBindings() {
     loadTargets();
   }, [loadBindings, loadTargets]);
 
+  const resetAllowlist = useCallback(
+    async (imJid: string): Promise<string | null> => {
+      setError(null);
+      try {
+        await api.post(
+          `/api/config/user-im/bindings/${encodeURIComponent(imJid)}/reset-allowlist`,
+        );
+        await loadBindings();
+        return null;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : '重置白名单失败';
+        setError(msg);
+        return msg;
+      }
+    },
+    [loadBindings],
+  );
+
   const clearError = useCallback(() => setError(null), []);
 
-  return { bindings, loading, targets, targetsLoading, reload, rebind, error, clearError };
+  return { bindings, loading, targets, targetsLoading, reload, rebind, resetAllowlist, error, clearError };
 }
