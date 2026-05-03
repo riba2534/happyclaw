@@ -45,6 +45,7 @@ const featureItems: NavItem[] = [
   { key: 'memory', label: '记忆管理', icon: <BookOpen className="w-4 h-4" />, group: 'features' },
   { key: 'skills', label: '技能(Skill)管理', icon: <Puzzle className="w-4 h-4" />, group: 'features' },
   { key: 'mcp-servers', label: 'MCP 服务器', icon: <Server className="w-4 h-4" />, group: 'features' },
+  { key: 'plugins', label: '插件 (Plugins)', icon: <Puzzle className="w-4 h-4" />, group: 'features' },
   { key: 'agent-definitions', label: 'Agent', icon: <Bot className="w-4 h-4" />, group: 'features' },
   { key: 'bindings', label: 'IM 绑定', icon: <Link2 className="w-4 h-4" />, group: 'features' },
   { key: 'usage', label: '用量统计', icon: <PieChart className="w-4 h-4" />, group: 'features' },

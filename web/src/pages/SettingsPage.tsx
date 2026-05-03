@@ -16,6 +16,7 @@ import { GroupsPage } from './GroupsPage';
 import { MemoryPage } from './MemoryPage';
 import { SkillsPage } from './SkillsPage';
 import { McpServersPage } from './McpServersPage';
+import { PluginsPage } from './PluginsPage';
 import { AgentDefinitionsPage } from './AgentDefinitionsPage';
 import { UsersPage } from './UsersPage';
 import { BindingsSection } from '../components/settings/BindingsSection';
@@ -24,9 +25,9 @@ import { MonitorPage } from './MonitorPage';
 import { Card, CardContent } from '@/components/ui/card';
 import type { SettingsTab } from '../components/settings/types';
 
-const VALID_TABS: SettingsTab[] = ['claude', 'registration', 'appearance', 'system', 'profile', 'my-channels', 'security', 'groups', 'memory', 'skills', 'mcp-servers', 'agent-definitions', 'users', 'about', 'bindings', 'usage', 'monitor'];
+const VALID_TABS: SettingsTab[] = ['claude', 'registration', 'appearance', 'system', 'profile', 'my-channels', 'security', 'groups', 'memory', 'skills', 'mcp-servers', 'plugins', 'agent-definitions', 'users', 'about', 'bindings', 'usage', 'monitor'];
 const SYSTEM_TABS: SettingsTab[] = ['claude', 'registration', 'appearance', 'system'];
-const FULLPAGE_TABS: SettingsTab[] = ['groups', 'memory', 'skills', 'mcp-servers', 'agent-definitions', 'users', 'bindings', 'usage', 'monitor'];
+const FULLPAGE_TABS: SettingsTab[] = ['groups', 'memory', 'skills', 'mcp-servers', 'plugins', 'agent-definitions', 'users', 'bindings', 'usage', 'monitor'];
 
 export function SettingsPage() {
   const { user: currentUser } = useAuthStore();
@@ -114,6 +115,7 @@ export function SettingsPage() {
     memory: '记忆管理',
     skills: '技能(Skill)管理',
     'mcp-servers': 'MCP 服务器',
+    plugins: '插件 (Plugins)',
     'agent-definitions': 'Agent 管理',
     users: '用户管理',
     about: '关于',
@@ -184,6 +186,7 @@ export function SettingsPage() {
             {activeTab === 'memory' && <MemoryPage />}
             {activeTab === 'skills' && <SkillsPage />}
             {activeTab === 'mcp-servers' && <McpServersPage />}
+            {activeTab === 'plugins' && <PluginsPage />}
             {activeTab === 'agent-definitions' && <AgentDefinitionsPage />}
             {activeTab === 'users' && <UsersPage />}
             {activeTab === 'bindings' && <BindingsSection />}

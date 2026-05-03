@@ -28,6 +28,13 @@ export interface ContainerInput {
   images?: Array<{ data: string; mimeType?: string }>;
   agentId?: string;
   agentName?: string;
+  /**
+   * Claude Code plugins to load for this session, passed straight to
+   * SDK `options.plugins`. Each `path` must be an absolute path (already
+   * runtime-translated by container-runner: container-internal for Docker,
+   * host absolute path for host mode).
+   */
+  plugins?: Array<{ type: 'local'; path: string }>;
 }
 
 export interface ContainerOutput {

@@ -31,6 +31,9 @@ HappyClaw 是一个自托管的多用户 AI Agent 系统：
 | `src/routes/browse.ts` | 目录浏览 API（`GET/POST /api/browse/directories`，受挂载白名单约束） |
 | `src/routes/agents.ts` | Sub-Agent CRUD（`GET/POST/DELETE /api/groups/:jid/agents`） |
 | `src/routes/mcp-servers.ts` | MCP Servers 管理（CRUD + `POST /api/mcp-servers/sync-host`，per-user） |
+| `src/routes/plugins.ts` | Claude Code Plugins 管理（catalog + per-user enable + versioned runtime）：admin 通过 `POST /api/plugins/catalog/scan` 触发宿主机扫描共享导入 catalog；用户从 catalog enable（`PATCH /api/plugins/enabled/:fullId`，自动 materialize runtime）；`DELETE /api/plugins/marketplaces/:name` 仅清除调用者自己的 enabled refs，不删 catalog |
+| `src/plugin-utils.ts` | Plugin 加载工具：`loadUserPlugins(userId, {runtime})` → `SdkPluginConfig[]`；per-user enable refs 在 `data/plugins/users/{userId}/plugins.json`，runtime materialize 到 `data/plugins/runtime/{userId}/snapshots/{snapshotId}/{marketplace}/{plugin}/` |
+| `src/plugin-dependency-check.ts` | Plugin 依赖 best-effort 预检：扫描 plugin 目录下 `commands/*.md` frontmatter 的 `allowed-tools: Bash()` + `hooks/hooks.json` 的 command 第一 token；`config/plugin-deps-override.json` 人工覆盖表优先级最高 |
 | `src/feishu.ts` | 飞书连接工厂（`createFeishuConnection`）：WebSocket 长连接、消息去重（LRU 1000 条 / 30min TTL）、富文本卡片、Reaction；`file` 消息下载到工作区；`post` 图文消息仅提取文字 |
 | `src/telegram.ts` | Telegram 连接工厂（`createTelegramConnection`）：Bot API Long Polling、Markdown → HTML 转换、长消息分片（3800 字符）；`message:photo` 下载为 base64 供 Vision；`message:document` 下载文件到工作区 |
 | `src/qq.ts` | QQ 连接工厂（`createQQConnection`）：Bot API v2 WebSocket 长连接、OAuth Token 管理、C2C 私聊 + 群聊 @Bot、消息去重（LRU 1000 条 / 30min TTL）、Markdown → 纯文本、长消息分片（5000 字符）、图片下载为 base64 供 Vision |
@@ -373,6 +376,10 @@ data/
   streaming-buffer/                         # 流式文本磁盘缓冲（崩溃恢复用，自动清理）
   skills/{userId}/                         # 用户级 Skills 数据
   mcp-servers/{userId}/servers.json        # 用户 MCP Servers 配置
+  plugins/catalog/index.json                                            # 共享 catalog 索引（admin 扫描后所有用户可见）
+  plugins/catalog/marketplaces/{mp}/plugins/{plugin}/versions/{contentHash}/   # admin 共享 catalog 的 immutable snapshot（内容 hash 寻址）
+  plugins/users/{userId}/plugins.json                                   # per-user enable refs（only-v2 schemaVersion=1）
+  plugins/runtime/{userId}/snapshots/{snapshotId}/{mp}/{plugin}/        # per-user materialized runtime（versioned；Docker 只读挂载到 /workspace/plugins/）
 
 config/default-groups.json                 # 预注册群组配置
 config/mount-allowlist.json                # 容器挂载白名单
@@ -407,6 +414,7 @@ scripts/                      # 构建辅助脚本
 | Sub-Agent | `src/routes/agents.ts` |
 | 目录浏览 | `src/routes/browse.ts` |
 | MCP Servers | `src/routes/mcp-servers.ts` |
+| Claude Code Plugins | `src/routes/plugins.ts` |
 | 用量统计 | `src/routes/usage.ts` |
 | 监控 / 健康检查 | `src/routes/monitor.ts`（`GET /api/health` 无需认证） |
 
@@ -550,6 +558,19 @@ WebSocket：`/ws`（协议详见 §3.6）。
   - 通过 `make update-sdk` 手动触发一次更新
 - 容器内以 `node` 非 root 用户运行，需注意文件权限
 - **关闭服务时禁止 `lsof -ti:PORT | xargs kill`**，该命令会杀掉所有连接到该端口的进程（包括 OrbStack/Docker 网络代理），导致 Docker daemon 崩溃。正确做法：`lsof -ti:PORT -sTCP:LISTEN | xargs kill`（仅杀监听进程）
+- **Claude Code Plugin 接入**：
+  - Plugin 通过 SDK `options.plugins`（`SdkPluginConfig[]`）注入，SDK 内部转成 `--plugin-dir <path>` 传给 spawn 的 claude CLI。**不要**走 settings.json 的 `enabledPlugins` 或 `CLAUDE_CODE_PLUGIN_SEED_DIR`（v2 方案已废弃）
+  - `ContainerInput.plugins` 由 `container-runner.ts` 的两处 spawn 处就地派生新 input（`{ ...input, plugins: loadUserPlugins(ownerId, {runtime}) }`），**禁止原地 mutate** —— 队列/日志/重试路径共享同一 input 引用
+  - Plugin 目录路径必须是已展开的绝对路径。Docker 模式：`/workspace/plugins/snapshots/{snapshotId}/{mp}/{plugin}`（runtime/{userId} 整个目录只读挂到 /workspace/plugins/，所以容器内一定带 snapshots/ 前缀）；Host 模式：`path.join(DATA_DIR, 'plugins', 'runtime', userId, 'snapshots', snapshotId, mp, plugin)`。**不允许**含 `~` 字面量（SDK/CLI 不保证展开）
+  - 依赖检测是 **best-effort 警告**，不作为启用门槛。修正扫描遗漏请改 `config/plugin-deps-override.json` 覆盖表
+  - 删除 marketplace（`DELETE /api/plugins/marketplaces/:name`）只清除**调用者自己**的 enabled refs，**不删** catalog（catalog 是 admin 共享导入的全局只读集合）
+  - 运行中 agent 进程**不热加载** plugin 变化——启用/禁用后 UI 必须提示"下次新会话生效"。第一版仅支持 plugin 内的 commands/agents/hooks/skills/scripts；插件持久数据（`~/.claude/plugins/data/`）与凭据不自动迁移
+  - **Catalog snapshot immutable**：catalog 按内容 hash 寻址（`versions/{contentHash}/`），同一 plugin 的不同版本独立留存；rollback 自动跟随用户 enable refs 命中的实际 hash，不需要"反向复制"
+  - **Runtime versioned snapshot**：`runtime/{userId}/snapshots/{snapshotId}/...` 是用户视角的版本化只读视图。启用新版本只切用户配置（`users/{userId}/plugins.json`），旧会话继续读旧 snapshot 直到 GC，避免运行中读到半写入目录
+  - **`PATCH /enabled` 走 mcp 范式**：read-modify-write 单 schema，无 v1→v2 接管路径（v1 cache 布局已删除，存量用户首次访问 enabled 列表为空属预期）
+  - **container-runner 双路径预构建**：host / docker spawn 之前都先 `materializeUserRuntime(ownerId)`；`prepareHostPlugins` helper 与 `buildVolumeMounts` 内联 materialize **必须对称**，否则两条路径会出现 runtime 不一致
+  - **自动 scan 是系统行为**：admin 在宿主机安装 / 更新的 plugin marketplace 会在主进程启动 5s 后 + 每小时自动入 catalog（`POST /api/plugins/catalog/scan` 也手动触发同一逻辑），对所有 member 可见可启用。如未来需"admin 点按钮才确认入 catalog"，可加 `plugins.autoImportEnabled` 系统设置项；本期默认开启
+  - **v3 时代 endpoint 已废**：`POST /api/plugins/sync-host` 与 `GET /api/plugins/available-on-host` 已在 PR1 删除，新代码不要再引用
 
 ### 10.1 Issue / PR 规范
 

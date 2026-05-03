@@ -347,6 +347,50 @@ export class GroupQueue {
     return state?.process?.pid;
   }
 
+  /**
+   * Resolve the active docker container name for a group, honoring the same
+   * sibling-JID / serialization-key rules as `sendMessage()`. Returns null
+   * when there is no active runner *or* the active runner is a host process.
+   *
+   * Used by the plugin-command-expander to decide whether an inline `!` bash
+   * template can run inside the user's container.
+   */
+  getActiveContainerName(groupJid: string): string | null {
+    const state = this.resolveActiveState(groupJid);
+    return state?.containerName ?? null;
+  }
+
+  /**
+   * Returns true iff `sendMessage(groupJid, ...)` would return 'sent' right
+   * now — i.e. there is an active runner and it is compatible with piping a
+   * user message in. Specifically:
+   *   - `resolveActiveState(groupJid)` returns non-null (active state, own
+   *     or via serialization sibling), AND
+   *   - the active runner is NOT a scheduled-task runner unless the caller
+   *     IS a `#agent:` conversation virtual JID (those are user-message
+   *     handlers started via `enqueueTask`).
+   *
+   * This predicate exists ONLY to gate web.ts eager plugin-command expansion
+   * against the same compatibility rules `sendMessage` uses internally.
+   * Returning `true` when `sendMessage` would actually return `no_active`
+   * causes a double-fire: eager expand runs inline `!` here, sendMessage
+   * rejects, cold-start re-reads the original DB row, expands a SECOND time,
+   * and inline `!` runs again under the wrong runner context (#21 round-13
+   * P1-1). The name is deliberately specific to discourage accidental reuse
+   * for "is a runner up at all?" semantics — that's `resolveActiveState() !==
+   * null`, which doesn't match `sendMessage`'s acceptance set.
+   */
+  hasActiveMainRunnerForMessage(groupJid: string): boolean {
+    const state = this.resolveActiveState(groupJid);
+    if (!state) return false;
+    // Task-runner exclusion mirrors sendMessage(). Conversation agents
+    // (`#agent:` virtual JIDs) DO accept IPC messages — exempt them.
+    if (state.activeRunnerIsTask && !groupJid.includes('#agent:')) {
+      return false;
+    }
+    return true;
+  }
+
   enqueueMessageCheck(groupJid: string): void {
     if (this.shuttingDown) return;
 
