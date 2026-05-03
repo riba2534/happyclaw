@@ -2740,6 +2740,9 @@ configRoutes.post(
     if (!channelType) {
       return c.json({ error: 'Invalid IM JID' }, 400);
     }
+    if (channelType !== 'feishu') {
+      return c.json({ error: 'Only Feishu groups are supported' }, 400);
+    }
 
     const imGroup = getRegisteredGroup(imJid);
     if (!imGroup) {
@@ -2747,6 +2750,15 @@ configRoutes.post(
     }
     if (!canAccessGroup(user, { ...imGroup, jid: imJid })) {
       return c.json({ error: 'Forbidden' }, 403);
+    }
+    if (imGroup.created_by !== user.id) {
+      return c.json({ error: 'Forbidden' }, 403);
+    }
+    if (
+      !Array.isArray(imGroup.sender_allowlist) ||
+      imGroup.sender_allowlist.length !== 0
+    ) {
+      return c.json({ error: 'Group is not in locked allowlist state' }, 400);
     }
 
     clearSenderAllowlist(imJid);

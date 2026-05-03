@@ -57,7 +57,7 @@ export interface AvailableImGroup {
   chat_mode?: string;
   group_message_type?: string;
   is_thread_capable?: boolean;
-  sender_allowlist?: string[] | null;
+  sender_allowlist_locked?: boolean;
 }
 
 export interface GroupMember {

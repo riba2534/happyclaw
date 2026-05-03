@@ -6834,24 +6834,25 @@ function buildOnNewChat(
  * Record the Feishu owner's open_id (auto-detected from a P2P DM) and
  * unstick any of this user's groups whose `sender_allowlist=[]` —
  * the "owner-locked trap" that buildOnNewChat creates when a group is
- * registered before the owner has DM'd the bot. Idempotent: only acts
- * the first time `ownerRef.value` is set.
+ * registered before the owner has DM'd the bot.
  */
 function learnFeishuOwner(
   userId: string,
   senderOpenId: string,
   ownerRef: { value: string | undefined },
 ): void {
-  if (ownerRef.value) return;
-  ownerRef.value = senderOpenId;
-  saveFeishuOwnerOpenId(userId, senderOpenId);
-  const backfilled = backfillEmptyAllowlistsForUser(userId, senderOpenId);
+  const ownerOpenId = ownerRef.value ?? senderOpenId;
+  if (!ownerRef.value) {
+    ownerRef.value = senderOpenId;
+    saveFeishuOwnerOpenId(userId, senderOpenId);
+  }
+  const backfilled = backfillEmptyAllowlistsForUser(userId, ownerOpenId);
   for (const jid of backfilled) {
     const fresh = getRegisteredGroup(jid);
     if (fresh) registeredGroups[jid] = fresh;
   }
   logger.info(
-    { userId, senderOpenId, backfilledCount: backfilled.length },
+    { userId, senderOpenId, ownerOpenId, backfilledCount: backfilled.length },
     'Feishu owner open_id auto-detected from P2P message',
   );
 }

@@ -18,8 +18,7 @@ export function ImBindingRow({ group, isActioning, onRebind, onUnbind, onResetAl
   // Empty array = "owner-locked trap": bot was added before Feishu owner DM'd it,
   // so nobody (not even the owner) can trigger the bot until allowlist is reset
   // or owner sends a DM (which auto-backfills via learnFeishuOwner).
-  const isAllowlistLocked =
-    Array.isArray(group.sender_allowlist) && group.sender_allowlist.length === 0;
+  const isAllowlistLocked = group.sender_allowlist_locked === true;
 
   const bindingLabel = (): string => {
     if (group.bound_agent_id && group.bound_target_name) {
