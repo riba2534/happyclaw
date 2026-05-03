@@ -253,11 +253,24 @@ function getImageContentRect(img: HTMLImageElement, rootRect: DOMRect): ImageOve
   };
 }
 
+function isSafeOverlayImageSrc(src: string): boolean {
+  if (src.startsWith('data:') || src.startsWith('blob:')) return true;
+  try {
+    return new URL(src, window.location.href).origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
+function isSafeImageOverlay(overlay: ImageOverlay | null): overlay is ImageOverlay {
+  return overlay !== null && isSafeOverlayImageSrc(overlay.src);
+}
+
 function collectImageOverlays(container: HTMLElement): ImageOverlay[] {
   const rootRect = container.getBoundingClientRect();
   return Array.from(container.querySelectorAll('img'))
     .map((img) => getImageContentRect(img, rootRect))
-    .filter((overlay): overlay is ImageOverlay => Boolean(overlay));
+    .filter(isSafeImageOverlay);
 }
 
 function loadOverlayImage(src: string): Promise<HTMLImageElement> {
