@@ -125,6 +125,7 @@ import {
   applyAutoIsolateContextForGroups,
   getUserContextIsolationConfig,
 } from './im-context-isolation.js';
+import { canSendCrossGroupMessage as canSendCrossGroupMessagePure } from './cross-group-acl.js';
 import { invalidateSessionCache, getWebDeps } from './web-context.js';
 import {
   getFeishuProviderConfigWithSource,
@@ -4218,39 +4219,23 @@ function stopStreamingBuffer(): void {
   }
 }
 
-/**
- * Check if a source group is authorized to send IPC messages to a target group.
- * - Admin home can send to any group.
- * - Non-home groups can only send to groups sharing the same folder.
- * - Member home groups can send to groups created by the same user.
- * - IM channels bound (target_main_jid) to the source workspace are reachable
- *   from that workspace — without this, after agent-runner started rewriting
- *   ctx.chatJid to the IM source, send_file/send_image/send_message from
- *   non-home sub-workspaces got rejected.
- */
-export function canSendCrossGroupMessage(
+// Thin production wrapper around the pure helper in ./cross-group-acl.ts so
+// the helper can be unit-tested without booting all of index.ts.
+function canSendCrossGroupMessage(
   isAdminHome: boolean,
   isHome: boolean,
   sourceFolder: string,
   sourceGroupEntry: RegisteredGroup | undefined,
   targetGroup: RegisteredGroup | undefined,
 ): boolean {
-  if (isAdminHome) return true;
-  if (targetGroup && targetGroup.folder === sourceFolder) return true;
-  if (
-    isHome &&
-    targetGroup &&
-    sourceGroupEntry?.created_by != null &&
-    targetGroup.created_by === sourceGroupEntry.created_by
-  )
-    return true;
-  if (targetGroup?.target_main_jid) {
-    const bound =
-      registeredGroups[targetGroup.target_main_jid] ??
-      getRegisteredGroup(targetGroup.target_main_jid);
-    if (bound?.folder === sourceFolder) return true;
-  }
-  return false;
+  return canSendCrossGroupMessagePure(
+    isAdminHome,
+    isHome,
+    sourceFolder,
+    sourceGroupEntry,
+    targetGroup,
+    (jid) => registeredGroups[jid] ?? getRegisteredGroup(jid),
+  );
 }
 
 // Thin production wrapper around the pure helper in ./task-routing.ts so the
@@ -5549,7 +5534,12 @@ async function handleDiscordIpcRequest(
         limit: data.limit,
         before: data.before,
       });
-      writeResult({ success: true, messages });
+      // Strip authorId (Discord user Snowflake) before sending to agent.
+      // authorId + authorName uniquely identifies a user even after rename;
+      // letting it reach the agent risks cross-channel forwarding into 3rd-
+      // party LLM logs. Formatted output already only shows authorName.
+      const sanitized = messages.map(({ authorId: _id, ...rest }) => rest);
+      writeResult({ success: true, messages: sanitized });
     } else if (data.type === 'discord_get_channel_info') {
       const channel = await imManager.getDiscordChannelInfo(chatJid);
       writeResult({ success: true, channel });
