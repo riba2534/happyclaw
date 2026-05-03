@@ -7817,6 +7817,11 @@ async function main(): Promise<void> {
         }
       };
       const onNewChat = buildOnNewChat(adminUser.id, homeFolder, getAdminOwnerOpenId);
+      const resolveGroupFolder = (chatJid: string): string | undefined => {
+        return resolveEffectiveFolder(chatJid);
+      };
+      const resolveEffectiveChatJid = buildResolveEffectiveChatJid();
+      const onAgentMessage = buildOnAgentMessage();
       const connected = await imManager.connectUserFeishu(
         adminUser.id,
         config,
@@ -7824,6 +7829,9 @@ async function main(): Promise<void> {
         {
           ignoreMessagesBefore: Date.now(),
           onCommand: handleCommand,
+          resolveGroupFolder,
+          resolveEffectiveChatJid,
+          onAgentMessage,
           onBotAddedToGroup: buildFeishuBotAddedHandler(adminUser.id, homeFolder, getAdminOwnerOpenId),
           onBotRemovedFromGroup: buildOnBotRemovedFromGroup(),
           shouldProcessGroupMessage,
@@ -7934,6 +7942,11 @@ async function main(): Promise<void> {
           }
         };
         const onNewChat = buildOnNewChat(userId, homeFolder, getReloadOwnerOpenId);
+        const resolveGroupFolder = (chatJid: string): string | undefined => {
+          return resolveEffectiveFolder(chatJid);
+        };
+        const resolveEffectiveChatJid = buildResolveEffectiveChatJid();
+        const onAgentMessage = buildOnAgentMessage();
         const connected = await imManager.connectUserFeishu(
           userId,
           config,
@@ -7941,6 +7954,9 @@ async function main(): Promise<void> {
           {
             ignoreMessagesBefore,
             onCommand: handleCommand,
+            resolveGroupFolder,
+            resolveEffectiveChatJid,
+            onAgentMessage,
             onBotAddedToGroup: buildFeishuBotAddedHandler(userId, homeFolder, getReloadOwnerOpenId),
             onBotRemovedFromGroup: buildOnBotRemovedFromGroup(),
             shouldProcessGroupMessage,
