@@ -14,7 +14,7 @@ const RECOVERY_MESSAGE_TRUNCATE = 500;
 // in src/index.ts (recoveryGroups path) — both sides feed the same Anthropic
 // API and must produce identical strings to keep behavior consistent across
 // the agent-runner-side and main-process-side recovery codepaths.
-const LONE_SURROGATE_RE =
+export const LONE_SURROGATE_RE =
   /(?:[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF])/g;
 
 export function parseTranscript(content: string): ParsedMessage[] {
@@ -115,7 +115,9 @@ export function extractSessionHistory(
   }
 }
 
-// Test-only re-exports for assertions on internal constants.
+// Re-exports private constants for tests. LONE_SURROGATE_RE is also exported
+// above as a named export for any consumer that truncates strings going to
+// the Anthropic API (slice() can split surrogate pairs and break JSON).
 export const __test__ = {
   RECOVERY_HISTORY_LIMIT,
   RECOVERY_MESSAGE_TRUNCATE,

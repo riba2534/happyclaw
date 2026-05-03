@@ -8415,10 +8415,6 @@ async function main(): Promise<void> {
       }
     },
     assistantName: ASSISTANT_NAME,
-    dailySummaryDeps: {
-      logger,
-      dataDir: DATA_DIR,
-    },
   };
   startSchedulerLoop(schedulerDeps);
 

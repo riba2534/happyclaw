@@ -102,124 +102,45 @@ const MEMORY_FLUSH_DISALLOWED_TOOLS = [
 
 const IMAGE_MAX_DIMENSION = 8000; // Anthropic API 限制
 
-// ── 系统提示词优化：安全守则（从独立 Markdown 文件加载，始终注入所有容器） ──
+// ── 系统提示词从独立 Markdown 文件加载（启动期一次性 readFileSync 缓存到模块级常量）──
+// 文件位于 container/agent-runner/prompts/，便于改提示词无需重编译 + CR 友好。
 
-const SECURITY_RULES_PATH = path.join(
+const PROMPTS_DIR = path.join(
   path.dirname(new URL(import.meta.url).pathname),
   '..',
   'prompts',
-  'security-rules.md',
 );
-const SECURITY_RULES = fs.readFileSync(SECURITY_RULES_PATH, 'utf-8');
 
-// HEARTBEAT.md 截断上限（仅作用于 fresh session 的近期工作提示）
-const HEARTBEAT_MAX_CHARS = 2048;
+function loadPrompt(...segments: string[]): string {
+  return fs.readFileSync(path.join(PROMPTS_DIR, ...segments), 'utf-8').trimEnd();
+}
 
-const OUTPUT_GUIDELINES = [
-  '',
-  '## 输出格式',
-  '',
-  '### 图片引用',
-  '当你生成了图片文件并需要在回复中展示时，使用 Markdown 图片语法引用**相对路径**（相对于当前工作目录）：',
-  '`![描述](filename.png)`',
-  '',
-  '**禁止使用绝对路径**（如 `/workspace/group/filename.png`）。Web 界面会自动将相对路径解析为正确的文件下载地址。',
-  '',
-  '### 技术图表',
-  '需要输出技术图表（流程图、时序图、架构图、ER 图、类图、状态图、甘特图等）时，**使用 Mermaid 语法**，用 ```mermaid 代码块包裹。',
-  'Web 界面会自动将 Mermaid 代码渲染为可视化图表。',
-].join('\n');
-
-const INTERACTION_GUIDELINES = [
-  '',
-  '## 交互原则',
-  '',
-  '**始终专注于用户当前的实际消息。**',
-  '',
-  '- 你可能拥有多种 MCP 工具和 Skills，这些是你的辅助能力，**不是用户发送的内容**。',
-  '- **不要主动介绍、列举或描述你的可用工具**，除非用户明确询问「你能做什么」或「你有什么功能」。',
-  '- 当用户需要某个功能时，直接使用对应工具完成任务即可，无需事先解释工具的存在。',
-  '- 如果用户的消息很简短（如打招呼），简洁回应即可，不要用工具列表填充回复。',
-].join('\n');
-
-const SKILL_ROUTING_GUIDELINES = [
-  '',
-  '## 技能路由',
-  '',
-  '响应前检查 <system-reminder> 中列出的已安装 skills，将用户意图与 skill description 做匹配：',
-  '- 有明确匹配 → 使用 Skill 工具调用',
-  '- 不确定是否匹配 → 用 ToolSearch 搜索确认',
-  '- 无匹配 → 使用基础工具或直接回答',
-].join('\n');
-
-const WEB_FETCH_GUIDELINES = [
-  '',
-  '## 网页访问策略',
-  '',
-  '访问外部网页时优先使用 WebFetch（速度快）。',
-  '如果 WebFetch 失败（403、被拦截、内容为空或需要 JavaScript 渲染），',
-  '且 agent-browser 可用，立即改用 agent-browser 通过真实浏览器访问。不要反复重试 WebFetch。',
-].join('\n');
-
-const BACKGROUND_TASK_GUIDELINES = [
-  '',
-  '## 后台任务',
-  '',
-  '当用户要求执行耗时较长的批量任务（如批量文件处理、大规模数据操作等），',
-  '你应该使用 Task 工具并设置 `run_in_background: true`，让任务在后台运行。',
-  '这样用户无需等待，可以继续与你交流其他事项。',
-  '任务结束时你会自动收到通知，届时在对话中向用户汇报即可。',
-  '告知用户：「已为您在后台启动该任务，完成后我会第一时间反馈。现在有其他问题也可以随时问我。」',
-  '',
-  '### 任务通知处理（重要）',
-  '',
-  '当你收到多条后台任务的完成或失败通知时：',
-  '- **禁止逐条回复**。不要对每条通知都调用 `send_message`，这会导致 IM 群刷屏。',
-  '- **等待所有通知到齐后，汇总为一条消息回复用户**，例如：「N 个任务完成，M 个失败，失败原因：...」',
-  '- 对于已知的无害失败（如浏览器进程被回收、临时资源超时），**不需要通知用户**，静默忽略即可。',
-].join('\n');
+const SECURITY_RULES = loadPrompt('security-rules.md');
+const INTERACTION_GUIDELINES = loadPrompt('interaction.md');
+const SKILL_ROUTING_GUIDELINES = loadPrompt('skill-routing.md');
+const OUTPUT_GUIDELINES = loadPrompt('output.md');
+const WEB_FETCH_GUIDELINES = loadPrompt('web-fetch.md');
+const BACKGROUND_TASK_GUIDELINES = loadPrompt('background-tasks.md');
+const CONVERSATION_AGENT_GUIDELINES = loadPrompt('agent-override.md');
+const MEMORY_SYSTEM_HOME = loadPrompt('memory-system.home.md');
+const MEMORY_SYSTEM_GUEST = loadPrompt('memory-system.guest.md');
 
 const GUIDELINES_BLOCK = `<guidelines>\n${OUTPUT_GUIDELINES}\n${WEB_FETCH_GUIDELINES}\n${BACKGROUND_TASK_GUIDELINES}\n</guidelines>`;
-
-const CONVERSATION_AGENT_GUIDELINES = [
-  '',
-  '## 子会话行为规则（最高优先级，覆盖其他冲突指令）',
-  '',
-  '你正在一个**子会话**中运行，不是主会话。以下规则覆盖全局记忆中的"响应行为准则"：',
-  '',
-  '1. **不要用 `send_message` 发送"收到"之类的确认消息** — 你的正常文本输出就是回复，不需要额外发消息',
-  '2. **每次回复只产生一条消息** — 把分析、结论、建议整合到一条回复中，不要拆成多条',
-  '3. **只在以下情况使用 `send_message`**：',
-  '   - 执行超过 2 分钟的长任务时，发送一次进度更新（不是确认收到）',
-  '   - 用户明确要求你"先回复一下"时',
-  '4. **你的正常文本输出会自动发送给用户**，不需要通过 `send_message` 转发',
-  '5. **回复语言使用简体中文**，除非用户用其他语言提问',
-].join('\n');
-
 const CONVERSATION_AGENT_BLOCK = `<agent-override>\n${CONVERSATION_AGENT_GUIDELINES}\n</agent-override>`;
 
-const CHANNEL_GUIDELINES: Record<string, string> = {
-  feishu: [
-    '## 飞书消息格式',
-    '',
-    '当前消息来自飞书。飞书卡片支持的 Markdown：**加粗**、_斜体_、`行内代码`、代码块、标题、列表、链接。',
-    '用户同时可以在 Web 端查看你的回复，Web 端支持完整 Markdown + Mermaid 图表渲染，因此**不要因为来源是飞书就限制输出格式**。',
-    '可使用 `send_image` 和 `send_file` 工具直接发送文件到飞书。',
-  ].join('\n'),
-  telegram: [
-    '## Telegram 消息格式',
-    '',
-    '当前消息来自 Telegram。Markdown 自动转换为 Telegram HTML，长消息自动分片（3800 字符）。',
-    '用户同时可以在 Web 端查看你的回复，Web 端支持完整 Markdown + Mermaid 图表渲染，因此**不要因为来源是 Telegram 就限制输出格式**。',
-    '可使用 `send_image` 和 `send_file` 工具直接发送文件到 Telegram。',
-  ].join('\n'),
-  qq: [
-    '## QQ 消息格式',
-    '',
-    '当前消息来自 QQ。Markdown 自动转换为纯文本，长消息自动分片（5000 字符）。',
-    '用户同时可以在 Web 端查看你的回复，Web 端支持完整 Markdown + Mermaid 图表渲染，因此**不要因为来源是 QQ 就限制输出格式**。',
-  ].join('\n'),
-};
+// 启动期扫描 prompts/channels/*.md，文件名（去 .md 后缀）= channel key（feishu / telegram / qq / dingtalk / ...）
+// 新增渠道时只需在 channels/ 下加一个 .md 文件，无需改代码。
+const CHANNEL_GUIDELINES: Record<string, string> = (() => {
+  const channelsDir = path.join(PROMPTS_DIR, 'channels');
+  const result: Record<string, string> = {};
+  if (!fs.existsSync(channelsDir)) return result;
+  for (const file of fs.readdirSync(channelsDir)) {
+    if (!file.endsWith('.md')) continue;
+    const channelKey = file.slice(0, -'.md'.length);
+    result[channelKey] = fs.readFileSync(path.join(channelsDir, file), 'utf-8').trimEnd();
+  }
+  return result;
+})();
 
 /**
  * 规范化图片 MIME：
@@ -932,75 +853,10 @@ function waitForIpcMessage(): Promise<{ text: string; images?: Array<{ data: str
   });
 }
 
-function buildMemoryRecallPrompt(isHome: boolean, isAdminHome: boolean, disableMemoryLayer: boolean): string {
+function buildMemoryRecallPrompt(isHome: boolean, disableMemoryLayer: boolean): string {
   // 禁用记忆层：完全跳过 HappyClaw 的记忆系统提示，让用户本机 ~/.claude/ Playbook 接管
-  if (disableMemoryLayer) {
-    return '';
-  }
-  if (isHome) {
-    // Home container (admin or member): full memory system with read/write access to user's global CLAUDE.md
-    return [
-      '',
-      '## 记忆系统',
-      '',
-      '你拥有跨会话的持久记忆能力，请积极使用。',
-      '',
-      '### 回忆',
-      '在回答关于过去的工作、决策、日期、偏好或待办事项之前：',
-      '先用 `memory_search` 搜索，再用 `memory_get` 获取完整上下文。',
-      '',
-      '### 存储——两层记忆架构',
-      '',
-      '获知重要信息后**必须立即保存**，不要等到上下文压缩。',
-      '根据信息的**时效性**选择存储位置：',
-      '',
-      '#### 全局记忆（永久）→ 直接编辑 `/workspace/global/CLAUDE.md`',
-      '',
-      '**优先使用全局记忆。** 适用于所有**跨会话仍然有用**的信息：',
-      '- 用户身份：姓名、生日、联系方式、地址、工作单位',
-      '- 长期偏好：沟通风格、称呼方式、喜好厌恶、技术栈偏好',
-      '- 身份配置：你的名字、角色设定、行为准则',
-      '- 常用项目与上下文：反复提到的仓库、服务、架构信息',
-      '- 用户明确要求「记住」的任何内容',
-      '',
-      '使用 `Read` 工具读取当前内容，再用 `Edit` 工具**原地更新对应字段**。',
-      '文件中标记「待记录」的字段发现信息后**必须立即填写**。',
-      '不要追加重复信息，保持文件简洁有序。',
-      '',
-      '#### 日期记忆（时效性）→ 调用 `memory_append`',
-      '',
-      '适用于**过一段时间会过时**的信息：',
-      '- 项目进展：今天做了什么、决定了什么、遇到了什么问题',
-      '- 临时技术决策：选型理由、架构方案、变更记录',
-      '- 待办与承诺：约定事项、截止日期、后续跟进',
-      '- 会议/讨论要点：关键结论、行动项',
-      '',
-      '`memory_append` 自动保存到独立的记忆目录（不在工作区内）。',
-      '',
-      '#### 判断标准',
-      '> **默认优先全局记忆。** 问自己：这条信息下次对话还可能用到吗？',
-      '> - 是 / 可能 → **全局记忆**（编辑 `/workspace/global/CLAUDE.md`）',
-      '> - 明确只跟今天有关 → 日期记忆（`memory_append`）',
-      '> - 用户说「记住这个」→ **一定写全局记忆**',
-      '',
-      '系统也会在上下文压缩前提示你保存记忆。',
-    ].join('\n');
-  }
-  // Non-home group container: read-only access to home memory, use Claude auto memory
-  return [
-    '',
-    '## 记忆',
-    '',
-    '### 查询主工作区记忆',
-    '可使用 `memory_search` 和 `memory_get` 工具搜索主工作区的记忆（全局记忆和日期记忆）。',
-    '需要回忆过去的决策、偏好或项目上下文时使用这些工具。',
-    '',
-    '### 本地记忆',
-    '重要信息直接记录在当前工作区的 CLAUDE.md 或其他文件中。',
-    'Claude 会自动维护你的会话记忆，无需额外操作。',
-    '',
-    '全局记忆（`/workspace/global/CLAUDE.md`）为只读参考。',
-  ].join('\n');
+  if (disableMemoryLayer) return '';
+  return isHome ? MEMORY_SYSTEM_HOME : MEMORY_SYSTEM_GUEST;
 }
 
 /** 读取用户配置的 MCP servers（stdio/http/sse 类型） */
@@ -1219,31 +1075,6 @@ async function runQuery(
   const { isHome, isAdminHome } = normalizeHomeFlags(containerInput);
   const disableMemoryLayer = process.env.HAPPYCLAW_DISABLE_MEMORY_LAYER === 'true';
 
-  // Resumed sessions carry prior history — skip re-injecting HEARTBEAT.md to save cache tokens.
-  // HEARTBEAT.md 住在 HappyClaw 记忆层（WORKSPACE_GLOBAL），禁用该层时不读取。
-  let heartbeatContent = '';
-  if (isHome && !sessionId && !disableMemoryLayer) {
-    const heartbeatPath = path.join(WORKSPACE_GLOBAL, 'HEARTBEAT.md');
-    if (fs.existsSync(heartbeatPath)) {
-      try {
-        const raw = fs.readFileSync(heartbeatPath, 'utf-8');
-        const truncated = raw.length > HEARTBEAT_MAX_CHARS
-          ? raw.slice(0, HEARTBEAT_MAX_CHARS) + '\n\n[...截断]'
-          : raw;
-        heartbeatContent = [
-          '',
-          '## 近期工作参考（仅供背景了解）',
-          '',
-          '> 以下是系统自动生成的近期工作摘要，仅供参考。',
-          '> **不要主动继续这些工作**，除非用户明确要求「继续」或主动提到相关话题。',
-          '> 请专注于用户当前的消息。',
-          '',
-          truncated,
-        ].join('\n');
-      } catch { /* skip */ }
-    }
-  }
-
   const channel = getChannelFromJid(containerInput.chatJid);
   const channelGuidelines = CHANNEL_GUIDELINES[channel] ?? '';
 
@@ -1254,11 +1085,16 @@ async function runQuery(
     `<skill-routing>\n${SKILL_ROUTING_GUIDELINES}\n</skill-routing>`,
     `<security>\n${SECURITY_RULES}\n</security>`,
     memoryRecall && `<memory-system>\n${memoryRecall}\n</memory-system>`,
-    heartbeatContent && `<recent-work>\n${heartbeatContent}\n</recent-work>`,
     GUIDELINES_BLOCK,
     channelGuidelines && `<channel-format>\n${channelGuidelines}\n</channel-format>`,
     containerInput.agentId && CONVERSATION_AGENT_BLOCK,
   ].filter(Boolean).join('\n');
+
+  // 调试观察：HAPPYCLAW_DUMP_PROMPT=true 时把最终 system prompt 输出到 stderr
+  // host 已通过 logs/ 捕获 stderr，方便对比改 prompts/*.md 前后的差异
+  if (process.env.HAPPYCLAW_DUMP_PROMPT === 'true') {
+    log(`PROMPT DUMP (${systemPromptAppend.length} chars):\n${systemPromptAppend}\n--- END PROMPT DUMP ---`);
+  }
 
   // Home containers (admin & member) can access global and memory directories.
   // Non-home containers only access memory directory; global CLAUDE.md is NOT
@@ -1741,7 +1577,7 @@ async function main(): Promise<void> {
     tools: createMcpTools(mcpToolsConfig),
   });
   let mcpServerConfig = buildMcpServerConfig();
-  const memoryRecallPrompt = buildMemoryRecallPrompt(isHome, isAdminHome, disableMemoryLayer);
+  const memoryRecallPrompt = buildMemoryRecallPrompt(isHome, disableMemoryLayer);
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
 
   // Clean up stale sentinels from previous container runs.

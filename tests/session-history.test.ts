@@ -220,4 +220,23 @@ describe('LONE_SURROGATE_RE invariant', () => {
   test('preserves ASCII text', () => {
     expect('hello world'.replace(LONE_SURROGATE_RE, '')).toBe('hello world');
   });
+
+  // 任何 String#slice(N) 都可能切到 emoji 中间：UTF-16 code-unit 边界落在高代理项
+  // 后面时（例如 🦅 = U+D83E U+DD85），slice 只保留高代理项，丢掉低代理项，
+  // 产生孤立代理项。这个孤立代理项被 SDK JSON.stringify 后会让 Anthropic API 返回
+  // 400 invalid_request_error: "no low surrogate in string"。
+  // 任何把字符串截断后送进 Anthropic API 的代码路径都必须用 LONE_SURROGATE_RE 清理。
+  test('strips lone high surrogate produced by slice() splitting an emoji', () => {
+    const prefix = 'a'.repeat(2046);
+    const eagle = '🦅'; // 🦅
+    const text = `${prefix} ${eagle}xx`;
+    // slice 切到 emoji 中间，留下孤立 U+D83E
+    const truncated = text.slice(0, 2048);
+    expect(truncated.charCodeAt(2047)).toBe(0xd83e);
+    expect(truncated.endsWith('\uD83E')).toBe(true);
+    const cleaned = truncated.replace(LONE_SURROGATE_RE, '');
+    expect(cleaned).toBe(`${prefix} `);
+    // 清洗后再 JSON.stringify 不再产生 lone surrogate escape
+    expect(JSON.stringify(cleaned)).not.toMatch(/\\ud[89ab][0-9a-f]{2}(?!\\ud[c-f])/i);
+  });
 });

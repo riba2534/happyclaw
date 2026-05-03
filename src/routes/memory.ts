@@ -146,13 +146,6 @@ function classifyMemorySource(
     const owner = getUserById(userId);
     const ownerLabel = owner ? owner.display_name || owner.username : userId;
 
-    if (name === 'HEARTBEAT.md') {
-      return {
-        type: 'heartbeat',
-        label: `${ownerLabel} / 每日心跳`,
-        ownerName: ownerLabel,
-      };
-    }
     return {
       type: 'global',
       label: `${ownerLabel} / 全局记忆 / ${name}`,
@@ -262,9 +255,6 @@ function writeMemoryFile(
   if (isBlockedMemoryPath(normalized)) {
     throw new Error('Cannot write to system path');
   }
-  if (normalized.includes('user-global/') && normalized.endsWith('/HEARTBEAT.md')) {
-    throw new Error('HEARTBEAT.md is read-only (auto-generated)');
-  }
   if (Buffer.byteLength(content, 'utf-8') > MAX_MEMORY_FILE_LENGTH) {
     throw new Error('Memory file is too large');
   }
@@ -337,12 +327,8 @@ function listMemorySources(user: AuthUser): MemorySource[] {
     }
   }
 
-  // 1. User-global memory + heartbeat
+  // 1. User-global memory
   files.add(path.join(USER_GLOBAL_DIR, user.id, 'CLAUDE.md'));
-  const heartbeatPath = path.join(USER_GLOBAL_DIR, user.id, 'HEARTBEAT.md');
-  if (fs.existsSync(heartbeatPath)) {
-    files.add(heartbeatPath);
-  }
 
   // 2. Group CLAUDE.md files
   for (const folder of accessibleFolders) {
@@ -412,7 +398,7 @@ function listMemorySources(user: AuthUser): MemorySource[] {
     }
 
     const classified = classifyMemorySource(relativePath);
-    const writable = classified.type !== 'heartbeat' && classified.type !== 'conversation';
+    const writable = classified.type !== 'conversation';
     sources.push({
       path: relativePath,
       writable,
@@ -425,10 +411,9 @@ function listMemorySources(user: AuthUser): MemorySource[] {
 
   const typeRank: Record<MemorySource['type'], number> = {
     global: 0,
-    heartbeat: 1,
-    session: 2,
-    date: 3,
-    conversation: 4,
+    session: 1,
+    date: 2,
+    conversation: 3,
   };
 
   sources.sort((a, b) => {

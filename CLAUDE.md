@@ -60,7 +60,6 @@ HappyClaw 是一个自托管的多用户 AI Agent 系统：
 | `src/terminal-manager.ts` | Docker 容器终端管理（node-pty + pipe fallback，WebSocket 双向通信） |
 | `src/message-attachments.ts` | 图片附件规范化（MIME 检测、Data URL 解析） |
 | `src/image-detector.ts` | 图片 MIME 检测（magic bytes），由 `shared/image-detector.ts` 同步 |
-| `src/daily-summary.ts` | 每日对话汇总（凌晨 2-3 点，per-user，写入 HEARTBEAT.md） |
 | `src/script-runner.ts` | 脚本任务执行器（`exec()` + 并发限制 + 超时 + 1MB 输出缓冲） |
 | `src/reset-admin.ts` | 管理员密码重置脚本入口 |
 | `src/config.ts` | 常量：路径、超时、并发限制、会话密钥（优先级：环境变量 > 文件 > 生成，0600 权限） |
