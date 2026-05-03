@@ -105,4 +105,28 @@ describe('extractFileText', () => {
       fs.rmSync(p, { force: true });
     }
   });
+
+  test('office file returns placeholder text when no extractor available', async () => {
+    // On CI or Linux without textutil, .doc falls through to pandoc then
+    // placeholder. On macOS textutil will succeed — this test checks the
+    // structure either way: the result must not be null.
+    const p = tmp('.doc');
+    fs.writeFileSync(p, Buffer.from([0xd0, 0xcf, 0x11, 0xe0])); // OLE2 header
+    try {
+      const out = await extractFileText(p);
+      // Should never be null for office formats — always returns either
+      // extracted text or a placeholder telling the user to convert.
+      expect(out).not.toBeNull();
+      if (out!.method === 'textutil' && !out!.text.startsWith('[无法提取')) {
+        // macOS textutil succeeded — that's fine
+        expect(out!.truncated).toBe(false);
+      } else {
+        // textutil and pandoc both failed — must return helpful placeholder
+        expect(out!.text).toContain('无法提取');
+        expect(out!.text).toContain('PDF');
+      }
+    } finally {
+      fs.rmSync(p, { force: true });
+    }
+  });
 });

@@ -5,10 +5,16 @@
  * session cache. Feeding extracted text directly into the prompt bypasses the
  * unreliable tool-use round-trip.
  *
- * Supported on macOS:
- * - PDF           → `pdftotext -layout`
- * - DOC/DOCX/RTF  → `textutil -convert txt -stdout`
- * - TXT/MD/CSV/JSON → direct fs read
+ * Supported everywhere (macOS + Linux container):
+ * - PDF           → `pdftotext -layout` (poppler-utils)
+ *
+ * Platform-specific for DOC/DOCX/RTF:
+ * - macOS         → `textutil -convert txt -stdout`
+ * - Linux (container) → `pandoc --to=plain`
+ * - Fallback      → placeholder text so Agent can inform user to convert format
+ *
+ * Direct read:
+ * - TXT/MD/CSV/JSON/YAML/HTML → fs.readFile
  * - Other         → returns null (caller keeps the original file path)
  */
 import { execFile } from 'node:child_process';
@@ -21,7 +27,7 @@ const execFileP = promisify(execFile);
 
 export const EXTRACT_MAX_BYTES = 20 * 1024; // 20 KB
 const EXEC_TIMEOUT_MS = 15_000;
-const EXEC_MAX_BUFFER = 10 * 1024 * 1024; // 10 MB
+const EXEC_MAX_BUFFER = 512 * 1024; // 512 KB — far exceeds EXTRACT_MAX_BYTES, avoids memory bloat from large PDFs
 const TRUNCATION_NOTE = '\n\n[...内容过长已截断，完整文件见原路径]';
 
 const TEXT_EXTS = new Set([
@@ -47,7 +53,7 @@ export interface ExtractResult {
   /** True when extracted text exceeded the cap and was truncated. */
   truncated: boolean;
   /** Extractor that produced the text. */
-  method: 'pdftotext' | 'textutil' | 'fs';
+  method: 'pdftotext' | 'textutil' | 'pandoc' | 'fs';
 }
 
 function truncate(text: string): { text: string; truncated: boolean } {
@@ -94,14 +100,35 @@ export async function extractFileText(
     }
 
     if (OFFICE_EXTS.has(ext)) {
-      // macOS built-in; fails silently on other platforms.
-      const { stdout } = await execFileP(
-        'textutil',
-        ['-convert', 'txt', '-stdout', filePath],
-        { timeout: EXEC_TIMEOUT_MS, maxBuffer: EXEC_MAX_BUFFER },
+      // Try textutil first (macOS), then pandoc (Linux container).
+      for (const [bin, args, label] of [
+        ['textutil', ['-convert', 'txt', '-stdout'], 'textutil'] as const,
+        ['pandoc', ['--to=plain', filePath], 'pandoc'] as const,
+      ]) {
+        try {
+          const { stdout } = await execFileP(bin, args, {
+            timeout: EXEC_TIMEOUT_MS,
+            maxBuffer: EXEC_MAX_BUFFER,
+          });
+          if (stdout.trim().length > 0) {
+            const { text, truncated } = truncate(stdout);
+            return { text, truncated, method: label };
+          }
+        } catch {
+          // This binary not available or failed — try next.
+        }
+      }
+      // Both textutil and pandoc missing or failed — return placeholder so
+      // the Agent can inform the user to convert to PDF / Markdown.
+      logger.warn(
+        { filePath, ext },
+        'extractFileText: no office extractor available (textutil/pandoc both missing)',
       );
-      const { text, truncated } = truncate(stdout);
-      return { text, truncated, method: 'textutil' };
+      return {
+        text: `[无法提取 .${ext} 文件内容：当前环境不支持此格式。请将文件转为 PDF 或 Markdown 格式后重新发送。]`,
+        truncated: false,
+        method: 'textutil',
+      };
     }
 
     if (TEXT_EXTS.has(ext)) {
