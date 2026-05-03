@@ -250,6 +250,44 @@ describe('formatters', () => {
     const text = 'Just some plain text that has no markdown heading at all';
     const { title, bodyStartIndex } = extractTitle(text);
     expect(title.length).toBeLessThanOrEqual(40);
+    // First line was consumed as the title — bodyStartIndex must skip past it
+    // so the body doesn't echo the same line back (issue #488).
+    expect(bodyStartIndex).toBe(1);
+  });
+
+  test('extractTitle: single-line input yields empty body to avoid duplication', () => {
+    const text = '~/.claude 同步完成：远端已是最新，无本地变更需要推送。';
+    const { title, bodyStartIndex } = extractTitle(text);
+    expect(title).toBe(text);
+    expect(bodyStartIndex).toBe(1);
+    // Stripping past line 1 of a single-line input gives empty body
+    expect(text.split('\n').slice(bodyStartIndex).join('\n').trim()).toBe('');
+  });
+
+  test('extractTitle: long single-line input gets truncated and body still empty', () => {
+    const text =
+      'a'.repeat(60) + ' end of long single line that exceeds the 40 char title cap';
+    const { title, bodyStartIndex } = extractTitle(text);
+    expect(title.length).toBeLessThanOrEqual(40);
+    expect(title.endsWith('...')).toBe(true);
+    expect(bodyStartIndex).toBe(1);
+    expect(text.split('\n').slice(bodyStartIndex).join('\n').trim()).toBe('');
+  });
+
+  test('extractTitle: multi-line fallback strips only the first non-empty line', () => {
+    const text = '\n\nFirst line summary\nSecond line detail\nThird line';
+    const { title, bodyStartIndex } = extractTitle(text);
+    expect(title).toBe('First line summary');
+    // Two leading blank lines + the first content line → bodyStartIndex = 3
+    expect(bodyStartIndex).toBe(3);
+    expect(text.split('\n').slice(bodyStartIndex).join('\n').trim()).toBe(
+      'Second line detail\nThird line',
+    );
+  });
+
+  test('extractTitle: empty input returns default title with no body', () => {
+    const { title, bodyStartIndex } = extractTitle('');
+    expect(title).toBe('Reply');
     expect(bodyStartIndex).toBe(0);
   });
 });
@@ -310,13 +348,38 @@ describe('buildAgentReplyCard', () => {
   });
 
   test('short body → single main_content element, no collapsible overflow', () => {
-    const card = buildAgentReplyCard({ status: 'done', text: 'short reply' });
+    // Multi-line input so body has content after the title is consumed
+    const card = buildAgentReplyCard({
+      status: 'done',
+      text: 'Summary line\nDetail body text',
+    });
     const body = card.body as { elements: Array<Record<string, unknown>> };
     const mainCount = body.elements.filter(
       (e) => e.element_id === CARD_ELEMENT_IDS.MAIN_CONTENT,
     ).length;
     expect(mainCount).toBe(1);
     expect(countTag(card, 'collapsible_panel')).toBe(0);
+  });
+
+  test('single-line reply → no body markdown to avoid header/body duplication (issue #488)', () => {
+    const card = buildAgentReplyCard({ status: 'done', text: 'short reply' });
+    const body = card.body as { elements: Array<Record<string, unknown>> };
+    // Header carries the title; body must not echo the same line back
+    const header = card.header as Record<string, unknown>;
+    const title = (header.title as Record<string, unknown>).content as string;
+    expect(title).toBe('short reply');
+    const mainCount = body.elements.filter(
+      (e) => e.element_id === CARD_ELEMENT_IDS.MAIN_CONTENT,
+    ).length;
+    expect(mainCount).toBe(0);
+    // No markdown element should contain the title text either
+    const markdownEchoesTitle = body.elements.some(
+      (e) =>
+        e.tag === 'markdown' &&
+        typeof e.content === 'string' &&
+        (e.content as string).includes('short reply'),
+    );
+    expect(markdownEchoesTitle).toBe(false);
   });
 
   test('long body → multiple flat markdown chunks, no "继续阅读" panels', () => {

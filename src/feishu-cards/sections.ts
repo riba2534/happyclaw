@@ -107,14 +107,14 @@ export function extractTitle(text: string): TitleExtractResult {
         bodyStartIndex: i + 1,
       };
     }
-    break;
+    const firstLine = lines[i].replace(/[*_`#\[\]]/g, '').trim();
+    const title =
+      firstLine.length > 40
+        ? firstLine.slice(0, 37) + '...'
+        : firstLine || 'Reply';
+    return { title, bodyStartIndex: i + 1 };
   }
-  const firstLine = (lines.find((l) => l.trim()) || '')
-    .replace(/[*_`#\[\]]/g, '')
-    .trim();
-  const title =
-    firstLine.length > 40 ? firstLine.slice(0, 37) + '...' : firstLine || 'Reply';
-  return { title, bodyStartIndex: 0 };
+  return { title: 'Reply', bodyStartIndex: 0 };
 }
 
 export function stripTitleFromBody(text: string, bodyStartIndex: number): string {

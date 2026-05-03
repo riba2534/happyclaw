@@ -193,7 +193,6 @@ Agent 自主维护跨会话的持久记忆：
 - **会话记忆** — `data/groups/{folder}/CLAUDE.md`，会话私有
 - **日期记忆** — `memory/YYYY-MM-DD.md`，时效性信息
 - **对话归档** — PreCompact Hook 在上下文压缩前自动归档到 `conversations/`
-- **每日汇总** — 凌晨 2-3 点自动生成对话摘要，写入 HEARTBEAT.md（保留最近 3 天）
 - **全文检索** — Web 界面在线编辑 + 搜索
 
 
@@ -588,7 +587,6 @@ happyclaw/
 │   ├── billing.ts                #   计费引擎（计划、钱包、配额）
 │   ├── runtime-config.ts         #   AES-256-GCM 加密配置
 │   ├── task-scheduler.ts         #   定时任务调度
-│   ├── daily-summary.ts          #   每日对话汇总
 │   ├── script-runner.ts          #   脚本任务执行器
 │   ├── file-manager.ts           #   文件安全（路径遍历防护）
 │   ├── mount-security.ts         #   挂载白名单 / 黑名单

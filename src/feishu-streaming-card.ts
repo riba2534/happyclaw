@@ -171,7 +171,10 @@ function splitCodeBlockSafe(text: string, maxLen: number): string[] {
 const CARD_MD_LIMIT = 4000;
 const CARD_SIZE_LIMIT = 25 * 1024; // Feishu limit ~30KB, 5KB safety margin
 
-function extractTitleAndBody(text: string): { title: string; body: string } {
+export function extractTitleAndBody(text: string): {
+  title: string;
+  body: string;
+} {
   const lines = text.split('\n');
   let title = '';
   let bodyStartIdx = 0;
@@ -180,22 +183,18 @@ function extractTitleAndBody(text: string): { title: string; body: string } {
     if (!lines[i].trim()) continue;
     if (/^#{1,3}\s+/.test(lines[i])) {
       title = lines[i].replace(/^#+\s*/, '').trim();
-      bodyStartIdx = i + 1;
+    } else {
+      const firstLine = lines[i].replace(/[*_`#\[\]]/g, '').trim();
+      title =
+        firstLine.length > 40 ? firstLine.slice(0, 37) + '...' : firstLine;
     }
+    bodyStartIdx = i + 1;
     break;
   }
 
   const body = lines.slice(bodyStartIdx).join('\n').trim();
 
-  if (!title) {
-    const firstLine = (lines.find((l) => l.trim()) || '')
-      .replace(/[*_`#\[\]]/g, '')
-      .trim();
-    title =
-      firstLine.length > 40
-        ? firstLine.slice(0, 37) + '...'
-        : firstLine || 'Reply';
-  }
+  if (!title) title = 'Reply';
 
   return { title, body };
 }
@@ -219,9 +218,9 @@ function buildCardContent(
 ): CardContentResult {
   const { title: extractedTitle, body } = extractTitleAndBody(text);
   const title = overrideTitle || extractedTitle;
-  // Apply Markdown optimization for Feishu card rendering
-  const rawContent = body || text.trim();
-  const contentToRender = optimizeMarkdownStyle(rawContent, 2);
+  // When the auto-extracted title is the first line, body excludes that line so
+  // we don't echo it back into the content area (issue #488).
+  const contentToRender = body ? optimizeMarkdownStyle(body, 2) : '';
   const elements: Array<Record<string, unknown>> = [];
 
   if (contentToRender.length > CARD_MD_LIMIT) {
@@ -232,10 +231,6 @@ function buildCardContent(
     // Keep --- as markdown content instead of using { tag: 'hr' }
     // because Schema 2.0 (CardKit) does not support the hr tag.
     elements.push({ tag: 'markdown', content: contentToRender });
-  }
-
-  if (elements.length === 0) {
-    elements.push({ tag: 'markdown', content: text.trim() || '...' });
   }
 
   return { title, contentElements: elements };
@@ -491,12 +486,15 @@ function buildStreamingCard(
 
   // Streaming state — flat v2 layout for cheap full-card patches.
   const optimized = optimizeMarkdownStyle(text || '...', 2);
-  const { title } = extractTitleAndBody(optimized);
+  const { title, body } = extractTitleAndBody(optimized);
   const displayTitle = title || '...';
+  // When the title was extracted from the first line, body is empty — keep the
+  // MAIN_CONTENT slot so streaming patches still target it, but avoid echoing
+  // the title back into the body (issue #488).
   const elements: Array<Record<string, unknown>> = [
     {
       tag: 'markdown',
-      content: optimized,
+      content: body,
       element_id: CARD_ELEMENT_IDS.MAIN_CONTENT,
     },
     { ...INTERRUPT_BUTTON_V2, element_id: CARD_ELEMENT_IDS.INTERRUPT_BTN },

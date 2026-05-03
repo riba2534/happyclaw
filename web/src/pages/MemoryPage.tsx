@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 
-type MemoryType = 'global' | 'heartbeat' | 'session' | 'date' | 'conversation';
+type MemoryType = 'global' | 'session' | 'date' | 'conversation';
 
 interface MemorySource {
   path: string;
@@ -39,7 +39,7 @@ interface MemorySearchHit {
   snippet: string;
 }
 
-const MEMORY_TYPES: MemoryType[] = ['global', 'heartbeat', 'session', 'date', 'conversation'];
+const MEMORY_TYPES: MemoryType[] = ['global', 'session', 'date', 'conversation'];
 const FOLDER_SUB_GROUPED: Set<MemoryType> = new Set(['session', 'date', 'conversation']);
 
 function getErrorMessage(err: unknown, fallback: string): string {
@@ -54,7 +54,6 @@ function getErrorMessage(err: unknown, fallback: string): string {
 function typeLabel(type: MemoryType): string {
   switch (type) {
     case 'global': return '全局记忆';
-    case 'heartbeat': return '每日心跳';
     case 'session': return '会话记忆';
     case 'date': return '日期记忆';
     case 'conversation': return '对话归档';
@@ -170,7 +169,6 @@ export function MemoryPage() {
   const groupedSources = useMemo(() => {
     const groups: Record<MemoryType, MemorySource[]> = {
       global: [],
-      heartbeat: [],
       session: [],
       date: [],
       conversation: [],
@@ -185,7 +183,6 @@ export function MemoryPage() {
   // Collapsed state: type-level and folder sub-group level
   const [collapsedTypes, setCollapsedTypes] = useState<Record<string, boolean>>({
     global: true,
-    heartbeat: true,
     session: true,
     date: true,
     conversation: true,
