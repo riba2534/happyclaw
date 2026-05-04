@@ -23,6 +23,7 @@ const {
   getSessionProviderId,
   setSessionProviderId,
   deleteSession,
+  deleteSessionsByProviderId,
 } = await import('../src/db.js');
 
 beforeAll(() => {
@@ -76,5 +77,58 @@ describe('session→provider sticky binding', () => {
     setSessionProviderId('folder-5', '', 'provider-E');
     deleteSession('folder-5', '');
     expect(getSessionProviderId('folder-5')).toBeUndefined();
+  });
+});
+
+describe('deleteSessionsByProviderId — narrowed cleanup (issue #476)', () => {
+  test('only removes rows bound to the target provider', () => {
+    setSession('folder-narrow-1', 'sess-1', '');
+    setSessionProviderId('folder-narrow-1', '', 'provider-target');
+    setSession('folder-narrow-2', 'sess-2', '');
+    setSessionProviderId('folder-narrow-2', '', 'provider-other');
+
+    const result = deleteSessionsByProviderId('provider-target');
+
+    expect(result.deletedCount).toBe(1);
+    expect(result.affectedFolders).toEqual(['folder-narrow-1']);
+    expect(getSessionProviderId('folder-narrow-1')).toBeUndefined();
+    // Unrelated provider's binding survives — this is the core fix.
+    expect(getSessionProviderId('folder-narrow-2')).toBe('provider-other');
+  });
+
+  test('removes per-agent bindings to the same provider in one folder', () => {
+    setSessionProviderId('folder-narrow-3', '', 'provider-shared');
+    setSessionProviderId('folder-narrow-3', 'agent-a', 'provider-shared');
+    setSessionProviderId('folder-narrow-3', 'agent-b', 'provider-other');
+
+    const result = deleteSessionsByProviderId('provider-shared');
+
+    expect(result.deletedCount).toBe(2);
+    expect(result.affectedFolders).toEqual(['folder-narrow-3']);
+    expect(getSessionProviderId('folder-narrow-3')).toBeUndefined();
+    expect(getSessionProviderId('folder-narrow-3', 'agent-a')).toBeUndefined();
+    expect(getSessionProviderId('folder-narrow-3', 'agent-b')).toBe(
+      'provider-other',
+    );
+  });
+
+  test('returns empty result when no sessions match', () => {
+    const result = deleteSessionsByProviderId('provider-does-not-exist');
+    expect(result.deletedCount).toBe(0);
+    expect(result.affectedFolders).toEqual([]);
+  });
+
+  test('deduplicates affected folders across multiple agent rows', () => {
+    setSessionProviderId('folder-narrow-4', '', 'provider-multi');
+    setSessionProviderId('folder-narrow-4', 'agent-x', 'provider-multi');
+    setSessionProviderId('folder-narrow-5', '', 'provider-multi');
+
+    const result = deleteSessionsByProviderId('provider-multi');
+
+    expect(result.deletedCount).toBe(3);
+    expect(result.affectedFolders.sort()).toEqual([
+      'folder-narrow-4',
+      'folder-narrow-5',
+    ]);
   });
 });

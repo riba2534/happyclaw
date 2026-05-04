@@ -2271,6 +2271,42 @@ export function deleteAllSessionsForFolder(groupFolder: string): void {
   db.prepare('DELETE FROM sessions WHERE group_folder = ?').run(groupFolder);
 }
 
+/**
+ * Delete all session rows bound to the given provider_id.
+ *
+ * Used when a provider's protocol-level fields (anthropicBaseUrl /
+ * anthropicModel) change: any session whose history contains thinking blocks /
+ * model-specific framing produced by this provider must restart fresh,
+ * otherwise resuming under the new config can fail with "Invalid signature in
+ * thinking block" or "model mismatch" errors. Sessions bound to *other*
+ * providers are left intact so unrelated sticky bindings survive a partial
+ * config update — see issue #476.
+ *
+ * Returns the affected `group_folder` values so callers can also evict the
+ * in-memory sessions cache and the row count for telemetry.
+ */
+export function deleteSessionsByProviderId(providerId: string): {
+  deletedCount: number;
+  affectedFolders: string[];
+} {
+  const tx = db.transaction((id: string) => {
+    const rows = db
+      .prepare(
+        'SELECT DISTINCT group_folder FROM sessions WHERE provider_id = ?',
+      )
+      .all(id) as Array<{ group_folder: string }>;
+    const affectedFolders = rows.map((r) => r.group_folder);
+    const result = db
+      .prepare('DELETE FROM sessions WHERE provider_id = ?')
+      .run(id);
+    return {
+      deletedCount: result.changes,
+      affectedFolders,
+    };
+  });
+  return tx(providerId);
+}
+
 export function getAllSessions(): Record<string, string> {
   const rows = db
     .prepare(
