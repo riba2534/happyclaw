@@ -86,38 +86,14 @@ describe('routeRestore', () => {
     });
   });
 
-  describe('expiry', () => {
-    it('returns null and clears when expired', () => {
-      saveLastRoute('/chat/main');
-      // Backdate the timestamp by 8 days (exceeds 7-day expiry).
-      const eightDaysAgo = Date.now() - 8 * 24 * 60 * 60 * 1000;
-      memoryStorage.setItem('happyclaw-pwa-last-route-ts', String(eightDaysAgo));
-
-      expect(getLastRoute()).toBeNull();
-      // Subsequent reads should also be null (storage cleared).
-      expect(memoryStorage.getItem('happyclaw-pwa-last-route')).toBeNull();
-    });
-
-    it('returns route when within expiry window', () => {
-      saveLastRoute('/chat/main');
-      const sixDaysAgo = Date.now() - 6 * 24 * 60 * 60 * 1000;
-      memoryStorage.setItem('happyclaw-pwa-last-route-ts', String(sixDaysAgo));
-
-      expect(getLastRoute()).toBe('/chat/main');
-    });
-
-    it('returns null on missing or invalid timestamp', () => {
-      memoryStorage.setItem('happyclaw-pwa-last-route', '/chat/main');
-      // No timestamp set.
-      expect(getLastRoute()).toBeNull();
-
-      memoryStorage.setItem('happyclaw-pwa-last-route-ts', 'not-a-number');
-      expect(getLastRoute()).toBeNull();
-    });
-  });
-
   describe('edge cases', () => {
     it('returns null when no route was saved', () => {
+      expect(getLastRoute()).toBeNull();
+    });
+
+    it('rejects a previously-saved route that became blacklisted', () => {
+      // Manually inject a blacklisted route to simulate stale storage.
+      memoryStorage.setItem('happyclaw-pwa-last-route', '/login');
       expect(getLastRoute()).toBeNull();
     });
   });

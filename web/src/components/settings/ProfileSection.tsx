@@ -119,7 +119,7 @@ function PwaRouteRestoreSection() {
     <Section
       icon={RotateCcw}
       title="重启时恢复上次页面"
-      desc="安装为 PWA 后，从后台被系统回收再次打开时回到上次访问的页面，而非默认主页（保留 7 天）"
+      desc="安装为 PWA 后，从后台被系统回收再次打开时回到上次访问的页面，而非默认主页"
     >
       <div className="flex items-center justify-between">
         <Label className="text-sm text-foreground">启用恢复</Label>
