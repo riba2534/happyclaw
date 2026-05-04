@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Loader2, Upload, Trash2, User, Bot, Lock, Palette, Sun, Moon, Monitor, Bell, BellOff, CheckCircle2 } from 'lucide-react';
+import { Loader2, Upload, Trash2, User, Bot, Lock, Palette, Sun, Moon, Monitor, Bell, BellOff, CheckCircle2, RotateCcw } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { useAuthStore } from '../../stores/auth';
@@ -7,9 +7,11 @@ import { useTheme, type Theme, type ColorScheme, type FontStyle } from '../../ho
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
 import { EmojiAvatar } from '@/components/common/EmojiAvatar';
 import { EmojiPicker } from '@/components/common/EmojiPicker';
 import { ColorPicker } from '@/components/common/ColorPicker';
+import { isRouteRestoreEnabled, setRouteRestoreEnabled } from '../../utils/routeRestore';
 import { getErrorMessage } from './types';
 import { SettingsCard as Section } from './SettingsCard';
 
@@ -99,6 +101,30 @@ function DesktopNotificationSection() {
           </Button>
         </div>
       )}
+    </Section>
+  );
+}
+
+/* ── PWA Route Restore Section ────────────────────────────── */
+
+function PwaRouteRestoreSection() {
+  const [enabled, setEnabled] = useState(() => isRouteRestoreEnabled());
+
+  const handleChange = (next: boolean) => {
+    setEnabled(next);
+    setRouteRestoreEnabled(next);
+  };
+
+  return (
+    <Section
+      icon={RotateCcw}
+      title="重启时恢复上次页面"
+      desc="安装为 PWA 后，从后台被系统回收再次打开时回到上次访问的页面，而非默认主页（保留 7 天）"
+    >
+      <div className="flex items-center justify-between">
+        <Label className="text-sm text-foreground">启用恢复</Label>
+        <Switch checked={enabled} onCheckedChange={handleChange} aria-label="启用 PWA 重启路由恢复" />
+      </div>
     </Section>
   );
 }
@@ -310,6 +336,9 @@ export function ProfileSection() {
 
       {/* ── 2. Desktop Notifications ── */}
       <DesktopNotificationSection />
+
+      {/* ── 2.5 PWA Route Restore ── */}
+      <PwaRouteRestoreSection />
 
       {/* ── 3. Account Info ── */}
       <Section icon={User} title="账户信息">
