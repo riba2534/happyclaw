@@ -2289,19 +2289,22 @@ export function deleteSessionsByProviderId(providerId: string): {
   deletedCount: number;
   affectedFolders: string[];
 } {
-  const rows = db
-    .prepare(
-      'SELECT DISTINCT group_folder FROM sessions WHERE provider_id = ?',
-    )
-    .all(providerId) as Array<{ group_folder: string }>;
-  const affectedFolders = rows.map((r) => r.group_folder);
-  const result = db
-    .prepare('DELETE FROM sessions WHERE provider_id = ?')
-    .run(providerId);
-  return {
-    deletedCount: Number(result.changes ?? 0),
-    affectedFolders,
-  };
+  const tx = db.transaction((id: string) => {
+    const rows = db
+      .prepare(
+        'SELECT DISTINCT group_folder FROM sessions WHERE provider_id = ?',
+      )
+      .all(id) as Array<{ group_folder: string }>;
+    const affectedFolders = rows.map((r) => r.group_folder);
+    const result = db
+      .prepare('DELETE FROM sessions WHERE provider_id = ?')
+      .run(id);
+    return {
+      deletedCount: result.changes,
+      affectedFolders,
+    };
+  });
+  return tx(providerId);
 }
 
 export function getAllSessions(): Record<string, string> {
