@@ -59,7 +59,8 @@ cat > /home/node/.npmrc <<EOF
 prefix=$NPM_GLOBAL_DIR
 EOF
 chown node:node /home/node/.npmrc 2>/dev/null || true
-export PATH="$NPM_GLOBAL_DIR/bin:$PATH"
+# 注意：append 而非 prepend，避免持久化的 npm shim 屏蔽 /app/node_modules/.bin 中 SDK 自带的 claude CLI（见上方第 28-33 行注释）
+export PATH="$PATH:$NPM_GLOBAL_DIR/bin"
 
 # Discover and link skills (builtin → project → user, higher priority overwrites)
 # Only remove entries that conflict with mounted skills (non-symlink with same name),
