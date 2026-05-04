@@ -185,6 +185,7 @@ function resolveGroup(
   c: Context<{ Variables: Variables }>,
 ): (RegisteredGroup & { jid: string }) | null {
   const jid = c.req.param('jid');
+  if (!jid) return null;
   const authUser = c.get('user') as AuthUser;
 
   const group = getRegisteredGroup(jid!);

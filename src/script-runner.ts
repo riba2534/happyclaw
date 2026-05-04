@@ -51,7 +51,7 @@ export async function runScript(
               process.env.TZ ||
               Intl.DateTimeFormat().resolvedOptions().timeZone,
             GROUP_FOLDER: groupFolder,
-            HOME: cwd,
+            HOME: process.env.HOME || cwd,
           },
           shell: '/bin/sh',
         },
