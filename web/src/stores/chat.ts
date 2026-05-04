@@ -4,6 +4,7 @@ import { wsManager } from '../api/ws';
 import { useFileStore } from './files';
 import { useAuthStore } from './auth';
 import { showToast, notifyIfHidden, shouldEmitBackgroundTaskNotice, showNotificationPromptToast } from '../utils/toast';
+import { invalidateGroupCache } from '../utils/pwaCache';
 import type { GroupInfo, AgentInfo, AvailableImGroup } from '../types';
 
 export type { GroupInfo, AgentInfo };
@@ -228,7 +229,7 @@ interface ChatState {
   restoreActiveState: () => Promise<void>;
   handleStreamSnapshot: (chatJid: string, snapshot: StreamSnapshotData, agentId?: string) => void;
   // Sub-agent actions
-  loadAgents: (jid: string) => Promise<void>;
+  loadAgents: (jid: string, opts?: { force?: boolean }) => Promise<void>;
   deleteAgentAction: (jid: string, agentId: string) => Promise<boolean>;
   setActiveAgentTab: (jid: string, agentId: string | null) => void;
   // Conversation agent actions
@@ -1177,6 +1178,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         `/api/groups/${encodeURIComponent(jid)}/clear-history`,
       );
 
+      // Invalidate SW cache for this group so the next page load doesn't
+      // serve a stale messages/agents response from before the clear (#467).
+      void invalidateGroupCache(jid);
+
       set((s) => {
         // Delete the key entirely (not []==[]) so selectGroup/ChatView effect
         // will trigger loadMessages on re-entry
@@ -1250,7 +1255,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
 
       await get().loadGroups();
-      await get().loadAgents(jid);
+      await get().loadAgents(jid, { force: true });
       // 重建工作区后刷新文件列表（工作目录已被清空）
       useFileStore.getState().loadFiles(jid);
       return true;
@@ -1267,6 +1272,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   deleteMessage: async (jid: string, messageId: string) => {
     try {
       await api.delete(`/api/groups/${encodeURIComponent(jid)}/messages/${encodeURIComponent(messageId)}`);
+      // Invalidate SW cache so paginated message responses don't keep serving
+      // the deleted message for up to 24h after deletion (#467).
+      void invalidateGroupCache(jid);
       set((s) => ({
         messages: {
           ...s.messages,
@@ -2017,7 +2025,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   // 加载子 Agent 列表
-  loadAgents: async (jid) => {
+  loadAgents: async (jid, opts) => {
+    // Skip network call if agents are already cached.  WebSocket events
+    // (agent_status, agent created/deleted) keep the cache fresh after the
+    // first load.  Pass { force: true } to bypass (e.g. WS reconnect).
+    if (!opts?.force && get().agents[jid]) {
+      return;
+    }
     try {
       const data = await api.get<{ agents: AgentInfo[] }>(
         `/api/groups/${encodeURIComponent(jid)}/agents`,
@@ -2313,7 +2327,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         { im_jid: imJid, ...(force ? { force: true } : {}) },
       );
       // Refresh agents to get updated linked_im_groups
-      get().loadAgents(jid);
+      get().loadAgents(jid, { force: true });
       return true;
     } catch {
       return false;
@@ -2325,7 +2339,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       await api.delete(
         `/api/groups/${encodeURIComponent(jid)}/agents/${agentId}/im-binding/${encodeURIComponent(imJid)}`,
       );
-      get().loadAgents(jid);
+      get().loadAgents(jid, { force: true });
       return true;
     } catch {
       return false;

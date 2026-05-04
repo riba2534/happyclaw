@@ -1241,6 +1241,11 @@ groupRoutes.post('/:jid/clear-history', authMiddleware, async (c) => {
 
 // GET /api/groups/:jid/messages - 获取消息历史
 groupRoutes.get('/:jid/messages', authMiddleware, async (c) => {
+  // Messages are per-user sensitive content.  Block intermediary caches and
+  // browser HTTP cache; PWA service worker handles its own caching policy
+  // explicitly (NetworkFirst with explicit invalidation on clear/delete).
+  c.header('Cache-Control', 'private, no-store');
+
   const jid = c.req.param('jid');
   const group = getRegisteredGroup(jid);
   if (!group) {
