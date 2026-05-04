@@ -595,6 +595,13 @@ WebSocket：`/ws`（协议详见 §3.6）。
 
 **Issue 正文**（Feature）：自由格式，说清需求背景和预期行为即可。
 
+**PR 分支干净性**：目标是 PR 只含本次要提的 commit，不夹带其它本地 commit。
+
+提 PR 前先 `git fetch upstream`，再用 `git log upstream/main..HEAD` 自查——输出应只含本次要提的 commit。
+
+- 若本地 `main` 与 `upstream/main` 对齐，从本地 `main` 切分支没问题；
+- 若本地 `main` 有未合并到上游的 commit（之前提的 PR 未 merge / 被关闭等），从它切会把这些 commit 一并带进新 PR。这种情况要么直接从 `upstream/main` 切（`git fetch upstream && git checkout -b fix/xxx upstream/main`），要么修正：`git checkout -B <branch> upstream/main && git cherry-pick <你的 commit>` 后 `git push --force-with-lease fork <branch>`（force push 自己的功能分支需用户确认，但属于必要清理）。
+
 **PR 标题**：与 commit message 一致，`类型: 简要描述`（如 `修复: 定时任务运行时用户消息被吞掉的问题 (#151)`）。关联 Issue 时在末尾加 `(#issue号)`。
 
 **PR 正文**：
