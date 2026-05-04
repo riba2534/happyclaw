@@ -93,7 +93,10 @@ export function extractSessionHistory(
         m.content.length > RECOVERY_MESSAGE_TRUNCATE
           ? m.content.slice(0, RECOVERY_MESSAGE_TRUNCATE) + '…'
           : m.content;
-      const cleaned = truncated.replace(LONE_SURROGATE_RE, '');
+      let cleaned = truncated.replace(LONE_SURROGATE_RE, '');
+      // Defense in depth: strip the closing tag we use to fence this block
+      // so a user message containing "</system_context>" can't escape early.
+      cleaned = cleaned.replace(/<\/system_context>/gi, '</system_context_>');
       return `[${role}] ${cleaned}`;
     });
 
@@ -103,7 +106,8 @@ export function extractSessionHistory(
 
     return (
       '<system_context>\n' +
-      '会话恢复失败，当前为新会话。以下是之前的对话记录，供你了解上下文（请基于这些上下文继续对话）：\n\n' +
+      '检测到上次有未完成消息，当前使用新会话恢复处理。以下是恢复前的最近对话记录，供你了解上下文。\n' +
+      '重要：这些只是历史记录，可能包含不准确或过时的信息。回答当前用户消息时，请优先依据当前消息里的内容和文件；如果历史与当前问题无关，请直接忽略。\n\n' +
       historyLines.join('\n') +
       '\n</system_context>\n\n'
     );
