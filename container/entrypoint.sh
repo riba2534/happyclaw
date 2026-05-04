@@ -44,6 +44,25 @@ export CLAUDE_CONFIG_DIR=/home/node/.claude
 # IS_SANDBOX: Claude Code 2.1.114+ 要求 IS_SANDBOX=1 才允许 --dangerously-skip-permissions。
 # 与宿主机模式的 hostEnv['IS_SANDBOX'] = '1' 保持一致。
 export IS_SANDBOX=1
+
+# Persist Agent's `npm install -g <pkg>` to per-user mounted extra dir.
+# 容器是 docker run --rm 模式，每次结束销毁。如果 Agent 在容器里跑
+# `npm install -g lark-cli`、`@fanfanv5/feishu-cli`、各类 MCP server 包等，
+# 默认会装到镜像内层 /usr/local/lib/node_modules，下次新容器又得重装。
+# 把 npm prefix 指向已挂载的 /workspace/extra/.npm-global（host 端
+# data/extra/{folder}/.npm-global/，per-user 隔离）即可让全局包持久化。
+NPM_GLOBAL_DIR=/workspace/extra/.npm-global
+mkdir -p "$NPM_GLOBAL_DIR/bin" "$NPM_GLOBAL_DIR/lib"
+chown -R node:node "$NPM_GLOBAL_DIR" 2>/dev/null || true
+# 写到 node user 的 ~/.npmrc 让 npm 全局命令默认走该 prefix。
+# 镜像每次启动重置 /home/node，所以 entrypoint 每次都重写一遍是稳妥做法。
+cat > /home/node/.npmrc <<EOF
+prefix=$NPM_GLOBAL_DIR
+EOF
+chown node:node /home/node/.npmrc 2>/dev/null || true
+# 注意：append 而非 prepend，避免持久化的 npm shim 屏蔽 /app/node_modules/.bin 中 SDK 自带的 claude CLI（见上方第 28-33 行注释）
+export PATH="$PATH:$NPM_GLOBAL_DIR/bin"
+
 # Discover and link skills (builtin → project → user, higher priority overwrites)
 # Only remove entries that conflict with mounted skills (non-symlink with same name),
 # preserving any skills the agent created directly in .claude/skills/.
