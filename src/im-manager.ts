@@ -31,7 +31,8 @@ import type { QQConnectionConfig } from './qq.js';
 import type { WeChatConnectionConfig } from './wechat.js';
 import type { DingTalkConnectionConfig } from './dingtalk.js';
 import type { DiscordConnectionConfig } from './discord.js';
-import type { WhatsAppConnectionConfig } from './whatsapp.js';
+import { getWhatsAppAuthDir, type WhatsAppConnectionConfig } from './whatsapp.js';
+import { DATA_DIR } from './config.js';
 import type { StreamingSession } from './im-channel.js';
 import { getRegisteredGroup, getJidsByFolder } from './db.js';
 import { getUserDingTalkConfig } from './runtime-config.js';
@@ -83,12 +84,20 @@ export interface DiscordConnectConfig {
 }
 
 export interface WhatsAppConnectConfig {
-  /** PR 1 占位：WhatsApp 通道骨架尚未接入 Baileys，连接永远失败 */
   accountId?: string;
   phoneNumber?: string;
   authDir?: string;
   enabled?: boolean;
 }
+
+export type WhatsAppConnectionStateSnapshot = {
+  status: 'connecting' | 'qr' | 'connected' | 'disconnected' | 'logged_out';
+  qr?: string;
+  qrDataUrl?: string;
+  error?: string;
+  meJid?: string;
+  meName?: string;
+};
 
 export interface ConnectFeishuOptions {
   ignoreMessagesBefore?: number;
@@ -111,6 +120,7 @@ export interface ConnectFeishuOptions {
 class IMConnectionManager {
   private connections = new Map<string, UserIMConnection>();
   private adminUserIds = new Set<string>();
+  private lastWhatsAppState = new Map<string, WhatsAppConnectionStateSnapshot>();
 
   /** Register a user ID as admin (for fallback routing) */
   registerAdminUser(userId: string): void {
@@ -611,9 +621,8 @@ class IMConnectionManager {
   /**
    * Connect a WhatsApp instance for a specific user.
    *
-   * PR 1 阶段为骨架占位：始终返回 false，因 WhatsApp channel 尚未接入 Baileys。
-   * 接入路径已铺好，下一个 PR 替换 createWhatsAppChannel/createWhatsAppConnection
-   * 内部即可，无需改动本方法的签名或调用链。
+   * M1：接入 Baileys，QR 状态通过 onConnectionUpdate 推到上层（最终经 WS 推前端）。
+   * 缓存最近一次 state 到 lastWhatsAppState，前端刷新页面时通过 GET 接口拿到。
    */
   async connectUserWhatsApp(
     userId: string,
@@ -627,13 +636,25 @@ class IMConnectionManager {
         chatJid: string,
       ) => { effectiveJid: string; agentId: string | null } | null;
       onAgentMessage?: (baseChatJid: string, agentId: string) => void;
+      onConnectionUpdate?: (
+        userId: string,
+        state: WhatsAppConnectionStateSnapshot,
+      ) => void;
     },
   ): Promise<boolean> {
-    const channel = createWhatsAppChannel({
-      accountId: config.accountId,
-      phoneNumber: config.phoneNumber,
-      authDir: config.authDir,
-    });
+    const channel = createWhatsAppChannel(
+      {
+        accountId: config.accountId,
+        phoneNumber: config.phoneNumber,
+        authDir:
+          config.authDir ??
+          getWhatsAppAuthDir(DATA_DIR, userId, config.accountId),
+      },
+      (state) => {
+        this.lastWhatsAppState.set(userId, state);
+        options?.onConnectionUpdate?.(userId, state);
+      },
+    );
 
     return this.connectChannel(userId, 'whatsapp', channel, {
       onReady: () => {
@@ -646,6 +667,12 @@ class IMConnectionManager {
       resolveEffectiveChatJid: options?.resolveEffectiveChatJid,
       onAgentMessage: options?.onAgentMessage,
     });
+  }
+
+  getUserWhatsAppState(userId: string): WhatsAppConnectionStateSnapshot {
+    return (
+      this.lastWhatsAppState.get(userId) ?? { status: 'disconnected' as const }
+    );
   }
 
   async disconnectUserWhatsApp(userId: string): Promise<void> {

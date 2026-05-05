@@ -1986,6 +1986,26 @@ export function broadcastBillingUpdate(
   safeBroadcast(msg, false, allowedUserIds);
 }
 
+export function broadcastWhatsAppStatus(
+  userId: string,
+  state: {
+    status: 'connecting' | 'qr' | 'connected' | 'disconnected' | 'logged_out';
+    qr?: string;
+    qrDataUrl?: string;
+    error?: string;
+    meJid?: string;
+    meName?: string;
+  },
+): void {
+  const msg: WsMessageOut = {
+    type: 'whatsapp_status',
+    userId,
+    ...state,
+  };
+  const allowedUserIds = new Set([userId]);
+  safeBroadcast(msg, false, allowedUserIds);
+}
+
 export function broadcastAgentStatus(
   chatJid: string,
   agentId: string,

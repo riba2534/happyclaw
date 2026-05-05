@@ -2634,13 +2634,16 @@ configRoutes.post('/user-im/wechat/disconnect', authMiddleware, async (c) => {
   }
 });
 
-// ─── WhatsApp (Skeleton — Baileys integration in next PR) ───────
+// ─── WhatsApp (Baileys-based, M1: QR login + connection state) ──
 
 configRoutes.get('/user-im/whatsapp', authMiddleware, (c) => {
   const user = c.get('user') as AuthUser;
   try {
     const config = getUserWhatsAppConfig(user.id);
     const connected = deps?.isUserWhatsAppConnected?.(user.id) ?? false;
+    const state = deps?.getUserWhatsAppState?.(user.id) ?? {
+      status: 'disconnected' as const,
+    };
     if (!config) {
       return c.json({
         accountId: 'default',
@@ -2649,7 +2652,7 @@ configRoutes.get('/user-im/whatsapp', authMiddleware, (c) => {
         paired: false,
         updatedAt: null,
         connected,
-        skeleton: true,
+        state,
       });
     }
     return c.json({
@@ -2659,7 +2662,7 @@ configRoutes.get('/user-im/whatsapp', authMiddleware, (c) => {
       paired: config.paired ?? false,
       updatedAt: config.updatedAt,
       connected,
-      skeleton: true,
+      state,
     });
   } catch (err) {
     logger.error({ err }, 'Failed to load user WhatsApp config');
@@ -2730,6 +2733,9 @@ configRoutes.put('/user-im/whatsapp', authMiddleware, async (c) => {
     }
 
     const connected = deps?.isUserWhatsAppConnected?.(user.id) ?? false;
+    const state = deps?.getUserWhatsAppState?.(user.id) ?? {
+      status: 'disconnected' as const,
+    };
     return c.json({
       accountId: saved.accountId,
       phoneNumber: saved.phoneNumber,
@@ -2737,7 +2743,7 @@ configRoutes.put('/user-im/whatsapp', authMiddleware, async (c) => {
       paired: saved.paired ?? false,
       updatedAt: saved.updatedAt,
       connected,
-      skeleton: true,
+      state,
     });
   } catch (err) {
     const message =

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Loader2, LogOut, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Input } from '@/components/ui/input';
@@ -7,7 +7,24 @@ import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { api } from '../../api/client';
+import { wsManager } from '../../api/ws';
 import { getErrorMessage } from './types';
+
+type WhatsAppStatus =
+  | 'connecting'
+  | 'qr'
+  | 'connected'
+  | 'disconnected'
+  | 'logged_out';
+
+interface WhatsAppConnectionState {
+  status: WhatsAppStatus;
+  qr?: string;
+  qrDataUrl?: string;
+  error?: string;
+  meJid?: string;
+  meName?: string;
+}
 
 interface UserWhatsAppConfig {
   accountId: string;
@@ -16,9 +33,29 @@ interface UserWhatsAppConfig {
   paired: boolean;
   connected: boolean;
   updatedAt: string | null;
-  /** Server-side flag: backend is in skeleton phase, connect always fails */
-  skeleton?: boolean;
+  state?: WhatsAppConnectionState;
 }
+
+interface WhatsAppStatusEvent extends WhatsAppConnectionState {
+  type: 'whatsapp_status';
+  userId: string;
+}
+
+const STATUS_LABEL: Record<WhatsAppStatus, string> = {
+  connecting: '连接中...',
+  qr: '等待扫码',
+  connected: '已连接',
+  disconnected: '已断开',
+  logged_out: '已登出',
+};
+
+const STATUS_COLOR: Record<WhatsAppStatus, string> = {
+  connecting: 'bg-amber-500',
+  qr: 'bg-blue-500',
+  connected: 'bg-success',
+  disconnected: 'bg-muted-foreground/40',
+  logged_out: 'bg-muted-foreground/40',
+};
 
 export function WhatsAppChannelCard() {
   const [config, setConfig] = useState<UserWhatsAppConfig | null>(null);
@@ -26,9 +63,11 @@ export function WhatsAppChannelCard() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [toggling, setToggling] = useState(false);
+  const [state, setState] = useState<WhatsAppConnectionState>({
+    status: 'disconnected',
+  });
 
   const enabled = config?.enabled ?? false;
-  const isSkeleton = config?.skeleton ?? true;
 
   const loadConfig = useCallback(async () => {
     setLoading(true);
@@ -38,6 +77,7 @@ export function WhatsAppChannelCard() {
       );
       setConfig(data);
       setPhoneNumber('');
+      if (data.state) setState(data.state);
     } catch {
       setConfig(null);
     } finally {
@@ -49,6 +89,30 @@ export function WhatsAppChannelCard() {
     loadConfig();
   }, [loadConfig]);
 
+  // Subscribe to live whatsapp_status WS events for the current user
+  useEffect(() => {
+    const unsubscribe = wsManager.on(
+      'whatsapp_status',
+      (data: WhatsAppStatusEvent) => {
+        setState({
+          status: data.status,
+          qr: data.qr,
+          qrDataUrl: data.qrDataUrl,
+          error: data.error,
+          meJid: data.meJid,
+          meName: data.meName,
+        });
+        // Refresh config card-level connected/paired flags when status changes
+        if (data.status === 'connected' || data.status === 'logged_out') {
+          loadConfig();
+        }
+      },
+    );
+    return () => {
+      unsubscribe();
+    };
+  }, [loadConfig]);
+
   const handleToggle = async (newEnabled: boolean) => {
     setToggling(true);
     try {
@@ -57,6 +121,7 @@ export function WhatsAppChannelCard() {
         { enabled: newEnabled },
       );
       setConfig(data);
+      if (data.state) setState(data.state);
       toast.success(`WhatsApp 渠道已${newEnabled ? '启用' : '停用'}`);
     } catch (err) {
       toast.error(getErrorMessage(err, '切换 WhatsApp 渠道状态失败'));
@@ -90,26 +155,49 @@ export function WhatsAppChannelCard() {
     }
   };
 
+  // Re-trigger connect by toggling enable off then on (forces fresh QR)
+  const handleReconnect = async () => {
+    if (!enabled) {
+      await handleToggle(true);
+      return;
+    }
+    setToggling(true);
+    try {
+      await api.put<UserWhatsAppConfig>('/api/config/user-im/whatsapp', {
+        enabled: false,
+      });
+      const data = await api.put<UserWhatsAppConfig>(
+        '/api/config/user-im/whatsapp',
+        { enabled: true },
+      );
+      setConfig(data);
+      if (data.state) setState(data.state);
+      toast.success('已重新发起连接，请等待新二维码');
+    } catch (err) {
+      toast.error(getErrorMessage(err, '重连失败'));
+    } finally {
+      setToggling(false);
+    }
+  };
+
   return (
     <div className="rounded-xl border border-border bg-card overflow-hidden">
       <div className="flex items-center justify-between px-5 py-4 border-b border-border bg-muted/50">
         <div className="flex items-center gap-2">
           <span
-            className={`inline-block w-2 h-2 rounded-full ${
-              config?.connected
-                ? 'bg-success'
-                : 'bg-muted-foreground/40'
-            }`}
+            className={`inline-block w-2 h-2 rounded-full ${STATUS_COLOR[state.status]}`}
           />
           <div>
             <h3 className="text-sm font-semibold text-foreground">
               WhatsApp
-              <span className="ml-2 px-1.5 py-0.5 text-[10px] rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 align-middle">
-                骨架开发中
+              <span className="ml-2 text-xs font-normal text-muted-foreground">
+                {STATUS_LABEL[state.status]}
               </span>
             </h3>
             <p className="text-xs text-muted-foreground mt-0.5">
-              基于 Baileys 通过 WhatsApp Web 协议扫码登录（待接入）
+              {state.status === 'connected' && state.meName
+                ? `已登录：${state.meName}`
+                : '基于 Baileys 通过 WhatsApp Web 协议扫码登录'}
             </p>
           </div>
         </div>
@@ -130,15 +218,60 @@ export function WhatsAppChannelCard() {
         ) : (
           <>
             <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-              此渠道为多步骤 PR 的第 1 步——仅完成配置层和路由骨架。
-              QR 码扫码登录、消息收发、媒体处理将在后续 PR 接入 Baileys
-              （<code>@whiskeysockets/baileys</code>）后启用。
-              当前启用状态下后端会保存配置但不会建立真正的连接。
+              ⚠️ Baileys 是逆向 WhatsApp Web 协议的社区方案，
+              Meta 在 2025-2026 收紧了对非官方客户端的封禁，存在封号风险。
+              **商用场景建议使用 Meta 官方 Cloud API。**
             </div>
+
+            {state.status === 'qr' && state.qrDataUrl && (
+              <div className="rounded-lg border border-border p-4 flex flex-col items-center gap-3 bg-muted/20">
+                <img
+                  src={state.qrDataUrl}
+                  alt="WhatsApp 登录二维码"
+                  className="w-64 h-64 rounded bg-white p-2"
+                />
+                <div className="text-xs text-center text-muted-foreground">
+                  打开手机 WhatsApp → 点右上角菜单 → 已关联设备 → 关联设备
+                  <br />
+                  扫描以上二维码完成登录（30 秒内有效，过期会自动刷新）
+                </div>
+              </div>
+            )}
+
+            {state.status === 'connecting' && (
+              <div className="rounded-lg border border-border bg-muted/20 px-3 py-4 text-sm text-muted-foreground flex items-center justify-center gap-2">
+                <Loader2 className="size-4 animate-spin" />
+                正在连接 WhatsApp 服务器...
+              </div>
+            )}
+
+            {state.status === 'connected' && (
+              <div className="rounded-lg border border-success/20 bg-success/5 px-3 py-3 text-sm">
+                <div className="font-medium text-success">已成功登录</div>
+                {state.meName && (
+                  <div className="text-xs text-muted-foreground mt-1">
+                    账号：{state.meName}
+                  </div>
+                )}
+                {state.meJid && (
+                  <div className="text-xs text-muted-foreground">
+                    JID：{state.meJid}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {(state.status === 'disconnected' ||
+              state.status === 'logged_out') &&
+              state.error && (
+                <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                  断线原因：{state.error}
+                </div>
+              )}
 
             {config?.phoneNumber && (
               <div className="text-xs text-muted-foreground">
-                当前手机号: {config.phoneNumber}
+                已记录手机号：{config.phoneNumber}
               </div>
             )}
 
@@ -162,25 +295,37 @@ export function WhatsAppChannelCard() {
             <div className="flex flex-wrap items-center gap-3">
               <Button onClick={handleSave} disabled={saving}>
                 {saving && <Loader2 className="size-4 animate-spin" />}
-                保存 WhatsApp 配置
+                保存配置
               </Button>
-              <Button variant="outline" disabled title="待接入 Baileys 后启用">
-                扫码登录（敬请期待）
+              <Button
+                variant="outline"
+                onClick={handleReconnect}
+                disabled={toggling}
+              >
+                {toggling ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="size-4" />
+                )}
+                重新连接
               </Button>
+              {state.status === 'connected' && (
+                <Button
+                  variant="outline"
+                  onClick={() => handleToggle(false)}
+                  disabled={toggling}
+                >
+                  <LogOut className="size-4" />
+                  停用并断开
+                </Button>
+              )}
             </div>
 
             <div className="text-xs text-muted-foreground mt-2 space-y-1">
               <p>
-                注意：WhatsApp Web 协议（Baileys）属于第三方逆向方案，
-                Meta 在 2025-2026 收紧了对非官方客户端的封禁，
-                同 OpenClaw 等其他基于 Baileys 的项目共享相同的封号风险。
-                商用场景建议使用 Meta 官方 Cloud API。
+                M1 阶段范围：QR 扫码登录、连接状态显示、自动重连。M2/M3 后续 PR 接入：
+                收发消息、文件下载、群组、Reaction 等。
               </p>
-              {isSkeleton && (
-                <p className="text-amber-600 dark:text-amber-400">
-                  当前为骨架占位实现（PR 1/N），后续 PR 才会接入 Baileys。
-                </p>
-              )}
             </div>
           </>
         )}

@@ -102,6 +102,14 @@ export interface WebDeps {
   isUserDingTalkConnected?: (userId: string) => boolean;
   isUserDiscordConnected?: (userId: string) => boolean;
   isUserWhatsAppConnected?: (userId: string) => boolean;
+  getUserWhatsAppState?: (userId: string) => {
+    status: 'connecting' | 'qr' | 'connected' | 'disconnected' | 'logged_out';
+    qr?: string;
+    qrDataUrl?: string;
+    error?: string;
+    meJid?: string;
+    meName?: string;
+  };
   processAgentConversation?: (
     chatJid: string,
     agentId: string,

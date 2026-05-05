@@ -405,6 +405,21 @@ export type WsMessageOut =
   | { type: 'docker_build_log'; line: string }
   | { type: 'docker_build_complete'; success: boolean; error?: string }
   | {
+      type: 'whatsapp_status';
+      userId: string;
+      status:
+        | 'connecting'
+        | 'qr'
+        | 'connected'
+        | 'disconnected'
+        | 'logged_out';
+      qr?: string;
+      qrDataUrl?: string;
+      error?: string;
+      meJid?: string;
+      meName?: string;
+    }
+  | {
       type: 'billing_update';
       userId: string;
       usage: BillingAccessResult;

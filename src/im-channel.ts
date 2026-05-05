@@ -42,6 +42,7 @@ import {
   createWhatsAppConnection,
   type WhatsAppConnection,
   type WhatsAppConnectionConfig,
+  type WhatsAppConnectionState,
 } from './whatsapp.js';
 import { logger } from './logger.js';
 import type { FeishuMessageMeta } from './types.js';
@@ -914,10 +915,13 @@ export function createDiscordChannel(
 
 export function createWhatsAppChannel(
   config: WhatsAppConnectionConfig,
-): IMChannel {
+  onConnectionUpdate?: (state: WhatsAppConnectionState) => void,
+): IMChannel & { getWhatsAppState?: () => WhatsAppConnectionState } {
   let inner: WhatsAppConnection | null = null;
 
-  const channel: IMChannel = {
+  const channel: IMChannel & {
+    getWhatsAppState?: () => WhatsAppConnectionState;
+  } = {
     channelType: 'whatsapp',
 
     async connect(opts: IMChannelConnectOpts): Promise<boolean> {
@@ -931,12 +935,14 @@ export function createWhatsAppChannel(
           resolveGroupFolder: opts.resolveGroupFolder,
           resolveEffectiveChatJid: opts.resolveEffectiveChatJid,
           onAgentMessage: opts.onAgentMessage,
+          onConnectionUpdate,
         });
-        return inner.isConnected();
+        // Baileys connect 是 async fire-and-forget：socket 建好后立刻返回，
+        // 真实的 connected 状态要等 connection.update -> 'open' 才到。
+        // 这里我们返回 true 表示 socket 启动成功，连接状态由 onConnectionUpdate 推送。
+        return true;
       } catch (err) {
-        // Skeleton always throws — log at info level so it doesn't spam error
-        // channel until Baileys integration lands.
-        logger.info({ err }, 'WhatsApp channel skeleton connect rejected');
+        logger.warn({ err }, 'WhatsApp channel connect failed');
         inner = null;
         return false;
       }
@@ -1003,6 +1009,10 @@ export function createWhatsAppChannel(
 
     isConnected(): boolean {
       return inner?.isConnected() ?? false;
+    },
+
+    getWhatsAppState(): WhatsAppConnectionState {
+      return inner?.getState() ?? { status: 'disconnected' };
     },
   };
 
