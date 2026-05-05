@@ -24,6 +24,7 @@ import qrcode from 'qrcode';
 import {
   makeWASocket,
   DisconnectReason,
+  downloadMediaMessage,
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   type WASocket,
@@ -31,12 +32,19 @@ import {
   type proto,
 } from '@whiskeysockets/baileys';
 import type { Boom } from '@hapi/boom';
+import { readFile } from 'node:fs/promises';
 import { logger } from './logger.js';
 import { storeChatMetadata, storeMessageDirect, updateChatName } from './db.js';
 import { notifyNewImMessage } from './message-notifier.js';
 import { broadcastNewMessage } from './web.js';
+import { markdownToPlainText, splitTextChunks } from './im-utils.js';
+import { saveDownloadedFile, FileTooLargeError } from './im-downloader.js';
 
 const CHANNEL_PREFIX = 'whatsapp:';
+/** WhatsApp text message safe limit. Baileys allows up to 64KB but UX clamps far below. */
+const TEXT_CHUNK_LIMIT = 4096;
+/** Inline image as base64 attachment (for Vision API) only when ≤ 5MB. */
+const IMAGE_MAX_BASE64_SIZE = 5 * 1024 * 1024;
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -111,9 +119,6 @@ export interface WhatsAppConnection {
   /** Current connection state snapshot (latest seen) */
   getState(): WhatsAppConnectionState;
 }
-
-const NOT_IMPLEMENTED_M3 =
-  'WhatsApp send path not implemented yet (M3 scope: sendMessage/sendImage/sendFile)';
 
 const RECONNECT_DELAY_MS = 3_000;
 
@@ -254,6 +259,87 @@ export function createWhatsAppConnection(
     });
   }
 
+  /**
+   * Detect and download a media message (image/video/audio/document).
+   * Returns null if `content` has no supported media node.
+   * Returns { content, attachmentsJson } shaped like dingtalk's normalize result.
+   */
+  async function tryHandleMediaMessage(
+    msg: WAMessage,
+    content: proto.IMessage,
+    groupFolder: string | undefined,
+  ): Promise<{ content: string; attachmentsJson?: string } | null> {
+    const detected = detectMedia(content);
+    if (!detected) return null;
+    const { kind, label, node, defaultExt } = detected;
+
+    let buffer: Buffer;
+    try {
+      buffer = await downloadMediaMessage(
+        msg,
+        'buffer',
+        {},
+        {
+          logger: logger.child({ feature: 'whatsapp-media' }) as never,
+          reuploadRequest: sock?.updateMediaMessage as never,
+        },
+      );
+    } catch (err) {
+      logger.warn(
+        { err, kind, msgId: msg.key?.id },
+        'WhatsApp media download failed',
+      );
+      const cap = node.caption ? `: ${node.caption}` : '';
+      return { content: `[${label} 下载失败${cap}]` };
+    }
+
+    const captionLine = node.caption ? `\n${node.caption}` : '';
+
+    if (!groupFolder) {
+      // No workspace mapping for this chat — skip disk save, just signal what arrived
+      return { content: `[${label}（未关联工作区）${captionLine}]` };
+    }
+
+    const fileName =
+      (node as { fileName?: string }).fileName ||
+      `wa_${kind}_${Date.now()}${extFromMime(node.mimetype) || defaultExt}`;
+
+    let savedPath: string;
+    try {
+      savedPath = await saveDownloadedFile(
+        groupFolder,
+        'whatsapp',
+        fileName,
+        buffer,
+      );
+    } catch (err) {
+      if (err instanceof FileTooLargeError) {
+        return {
+          content: `[${label}: 文件过大未保存 ${(buffer.length / 1024 / 1024).toFixed(1)}MB${captionLine}]`,
+        };
+      }
+      logger.warn({ err, kind, fileName }, 'WhatsApp media save failed');
+      return { content: `[${label} 保存失败${captionLine}]` };
+    }
+
+    // Inline base64 for Vision when image fits
+    let attachmentsJson: string | undefined;
+    if (kind === 'image' && buffer.length <= IMAGE_MAX_BASE64_SIZE) {
+      attachmentsJson = JSON.stringify([
+        {
+          type: 'image',
+          data: buffer.toString('base64'),
+          mimeType: node.mimetype || 'image/jpeg',
+        },
+      ]);
+    }
+
+    return {
+      content: `[${label}: ${savedPath}]${captionLine}`,
+      attachmentsJson,
+    };
+  }
+
   /** Convert one baileys WAMessage into our IM pipeline (storeMessageDirect + broadcast). */
   async function handleIncomingMessage(msg: WAMessage): Promise<void> {
     if (!opts) return;
@@ -280,15 +366,6 @@ export function createWhatsAppConnection(
     }
 
     const text = extractMessageText(content);
-    if (!text) {
-      // M3 will handle media (image/audio/document/video). For now log and skip.
-      logger.debug(
-        { remoteJid, msgId: key.id, types: Object.keys(content) },
-        'WhatsApp non-text message ignored (M3 scope)',
-      );
-      return;
-    }
-
     const chatJid = `${CHANNEL_PREFIX}${remoteJid}`;
     const isGroup = remoteJid.endsWith('@g.us');
     const senderRaw = isGroup ? key.participant || remoteJid : remoteJid;
@@ -297,12 +374,33 @@ export function createWhatsAppConnection(
     const chatName = isGroup ? remoteJid : senderName;
     const timestampISO = new Date(tsMs > 0 ? tsMs : Date.now()).toISOString();
 
+    // If no text, try to handle media (image/video/audio/document)
+    let finalContent = text;
+    let attachmentsJson: string | undefined;
+    if (!finalContent) {
+      const groupFolder = opts.resolveGroupFolder?.(chatJid);
+      const media = await tryHandleMediaMessage(
+        msg,
+        content,
+        groupFolder,
+      );
+      if (!media) {
+        logger.debug(
+          { remoteJid, msgId: key.id, types: Object.keys(content) },
+          'WhatsApp message has neither text nor supported media',
+        );
+        return;
+      }
+      finalContent = media.content;
+      attachmentsJson = media.attachmentsJson;
+    }
+
     storeChatMetadata(chatJid, timestampISO);
     updateChatName(chatJid, chatName);
     opts.onNewChat(chatJid, chatName);
 
     // Slash command interception (matches Telegram pattern: `/cmd args`)
-    const trimmed = text.trim();
+    const trimmed = finalContent.trim();
     const slashMatch = trimmed.match(/^\/(\S+)(?:\s+(.*))?$/s);
     if (slashMatch && opts.onCommand) {
       const cmdBody = (
@@ -311,8 +409,6 @@ export function createWhatsAppConnection(
       try {
         const reply = await opts.onCommand(chatJid, cmdBody);
         if (reply !== null && reply !== undefined) {
-          // Known command handled — best-effort send back. Until M3 sendMessage
-          // is implemented, fall back to logging.
           if (sock) {
             try {
               await sock.sendMessage(remoteJid, { text: reply });
@@ -338,10 +434,10 @@ export function createWhatsAppConnection(
       targetJid,
       senderId,
       senderName,
-      text,
+      finalContent,
       timestampISO,
       false,
-      { sourceJid: chatJid },
+      { attachments: attachmentsJson, sourceJid: chatJid },
     );
 
     broadcastNewMessage(
@@ -352,8 +448,9 @@ export function createWhatsAppConnection(
         source_jid: chatJid,
         sender: senderId,
         sender_name: senderName,
-        content: text,
+        content: finalContent,
         timestamp: timestampISO,
+        attachments: attachmentsJson,
         is_from_me: false,
       },
       routing?.agentId ?? undefined,
@@ -422,14 +519,6 @@ export function createWhatsAppConnection(
       text: string,
       localImagePaths?: string[],
     ): Promise<void> {
-      // M2 minimal impl: plain text only, no Markdown stripping, no chunking,
-      // no image attach. M3 will wrap with chunking + Markdown→plain + image.
-      if (localImagePaths && localImagePaths.length > 0) {
-        logger.warn(
-          { feature: 'whatsapp', chatId, count: localImagePaths.length },
-          'WhatsApp local image attach not implemented yet (M3)',
-        );
-      }
       if (!sock) {
         logger.warn(
           { feature: 'whatsapp', chatId },
@@ -437,11 +526,38 @@ export function createWhatsAppConnection(
         );
         return;
       }
-      const jid = chatId.startsWith(CHANNEL_PREFIX)
-        ? chatId.slice(CHANNEL_PREFIX.length)
-        : chatId;
+      const jid = stripChannelPrefix(chatId);
+
+      // Strip markdown to WhatsApp plain text (matches dingtalk/wechat/qq pattern).
+      // WhatsApp DOES support its own markdown subset (*bold*/_italic_/~strike~)
+      // but Claude output uses standard markdown — converting in-place is fragile,
+      // so we pick the safe option: drop formatting, send plain text.
+      const plain = markdownToPlainText(text);
+      const chunks = splitTextChunks(plain, TEXT_CHUNK_LIMIT);
+
       try {
-        await sock.sendMessage(jid, { text });
+        for (let i = 0; i < chunks.length; i++) {
+          const chunk =
+            chunks.length > 1
+              ? `${chunks[i]}\n\n(${i + 1}/${chunks.length})`
+              : chunks[i];
+          await sock.sendMessage(jid, { text: chunk });
+        }
+
+        if (localImagePaths && localImagePaths.length > 0) {
+          for (const imgPath of localImagePaths) {
+            try {
+              const buf = await readFile(imgPath);
+              const mime = guessMimeType(imgPath) || 'image/jpeg';
+              await sock.sendMessage(jid, { image: buf, mimetype: mime });
+            } catch (err) {
+              logger.warn(
+                { err, imgPath, chatId },
+                'WhatsApp local image attach failed',
+              );
+            }
+          }
+        }
       } catch (err) {
         logger.error(
           { err, feature: 'whatsapp', chatId },
@@ -453,40 +569,73 @@ export function createWhatsAppConnection(
 
     async sendImage(
       chatId: string,
-      _imageBuffer: Buffer,
-      _mimeType: string,
-      _caption?: string,
-      _fileName?: string,
+      imageBuffer: Buffer,
+      mimeType: string,
+      caption?: string,
+      fileName?: string,
     ): Promise<void> {
-      void _imageBuffer;
-      void _mimeType;
-      void _caption;
-      void _fileName;
-      logger.warn(
-        { feature: 'whatsapp', chatId },
-        'sendImage called — M3 not implemented yet',
-      );
-      throw new Error(NOT_IMPLEMENTED_M3);
+      if (!sock) {
+        logger.warn(
+          { feature: 'whatsapp', chatId },
+          'WhatsApp sendImage skipped: socket not connected',
+        );
+        return;
+      }
+      const jid = stripChannelPrefix(chatId);
+      try {
+        await sock.sendMessage(jid, {
+          image: imageBuffer,
+          mimetype: mimeType,
+          caption: caption ? markdownToPlainText(caption) : undefined,
+          fileName,
+        });
+      } catch (err) {
+        logger.error(
+          { err, feature: 'whatsapp', chatId },
+          'WhatsApp sendImage failed',
+        );
+        throw err;
+      }
     },
 
     async sendFile(
       chatId: string,
-      _filePath: string,
-      _fileName: string,
+      filePath: string,
+      fileName: string,
     ): Promise<void> {
-      void _filePath;
-      void _fileName;
-      logger.warn(
-        { feature: 'whatsapp', chatId },
-        'sendFile called — M3 not implemented yet',
-      );
-      throw new Error(NOT_IMPLEMENTED_M3);
+      if (!sock) {
+        logger.warn(
+          { feature: 'whatsapp', chatId },
+          'WhatsApp sendFile skipped: socket not connected',
+        );
+        return;
+      }
+      const jid = stripChannelPrefix(chatId);
+      try {
+        const buf = await readFile(filePath);
+        const mime = guessMimeType(fileName) || 'application/octet-stream';
+        await sock.sendMessage(jid, {
+          document: buf,
+          mimetype: mime,
+          fileName,
+        });
+      } catch (err) {
+        logger.error(
+          { err, feature: 'whatsapp', chatId, filePath },
+          'WhatsApp sendFile failed',
+        );
+        throw err;
+      }
     },
 
-    async sendTyping(_chatId: string, _isTyping: boolean): Promise<void> {
-      void _chatId;
-      void _isTyping;
-      // M3 will use sock.sendPresenceUpdate('composing'|'paused', chatId)
+    async sendTyping(chatId: string, isTyping: boolean): Promise<void> {
+      if (!sock) return;
+      const jid = stripChannelPrefix(chatId);
+      try {
+        await sock.sendPresenceUpdate(isTyping ? 'composing' : 'paused', jid);
+      } catch (err) {
+        logger.debug({ err, chatId }, 'WhatsApp sendPresenceUpdate failed');
+      }
     },
 
     isConnected(): boolean {
@@ -547,4 +696,117 @@ function normalizeTimestamp(
     return (ts as { toNumber: () => number }).toNumber() * 1000;
   }
   return 0;
+}
+
+interface DetectedMedia {
+  kind: 'image' | 'video' | 'audio' | 'document';
+  label: string;
+  defaultExt: string;
+  node: {
+    mimetype?: string | null;
+    caption?: string | null;
+    fileName?: string | null;
+  };
+}
+
+function detectMedia(content: proto.IMessage): DetectedMedia | null {
+  if (content.imageMessage) {
+    return {
+      kind: 'image',
+      label: '图片',
+      defaultExt: '.jpg',
+      node: content.imageMessage as DetectedMedia['node'],
+    };
+  }
+  if (content.videoMessage) {
+    return {
+      kind: 'video',
+      label: '视频',
+      defaultExt: '.mp4',
+      node: content.videoMessage as DetectedMedia['node'],
+    };
+  }
+  if (content.audioMessage) {
+    const isPtt = (content.audioMessage as { ptt?: boolean | null }).ptt;
+    return {
+      kind: 'audio',
+      label: isPtt ? '语音' : '音频',
+      defaultExt: '.ogg',
+      node: content.audioMessage as DetectedMedia['node'],
+    };
+  }
+  if (content.documentMessage) {
+    return {
+      kind: 'document',
+      label: '文档',
+      defaultExt: '',
+      node: content.documentMessage as DetectedMedia['node'],
+    };
+  }
+  return null;
+}
+
+function extFromMime(mime: string | null | undefined): string | null {
+  if (!mime) return null;
+  const m = mime.toLowerCase();
+  if (m.includes('jpeg')) return '.jpg';
+  if (m.includes('png')) return '.png';
+  if (m.includes('gif')) return '.gif';
+  if (m.includes('webp')) return '.webp';
+  if (m.includes('mp4')) return '.mp4';
+  if (m.includes('quicktime')) return '.mov';
+  if (m.includes('webm')) return '.webm';
+  if (m.includes('mpeg') && m.startsWith('audio')) return '.mp3';
+  if (m.includes('ogg')) return '.ogg';
+  if (m.includes('aac')) return '.aac';
+  if (m.includes('wav')) return '.wav';
+  if (m.includes('pdf')) return '.pdf';
+  return null;
+}
+
+function stripChannelPrefix(chatId: string): string {
+  return chatId.startsWith(CHANNEL_PREFIX)
+    ? chatId.slice(CHANNEL_PREFIX.length)
+    : chatId;
+}
+
+/**
+ * Tiny mime type lookup based on file extension.
+ * Covers WhatsApp-relevant types: image/video/audio/document.
+ * Returns null when unknown so caller can fall back to a sensible default.
+ */
+function guessMimeType(fileName: string): string | null {
+  const m = fileName.toLowerCase().match(/\.([a-z0-9]+)$/);
+  if (!m) return null;
+  const ext = m[1];
+  // Image
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+  if (ext === 'png') return 'image/png';
+  if (ext === 'gif') return 'image/gif';
+  if (ext === 'webp') return 'image/webp';
+  // Video
+  if (ext === 'mp4') return 'video/mp4';
+  if (ext === 'mov') return 'video/quicktime';
+  if (ext === 'webm') return 'video/webm';
+  // Audio
+  if (ext === 'mp3') return 'audio/mpeg';
+  if (ext === 'ogg' || ext === 'opus') return 'audio/ogg';
+  if (ext === 'm4a' || ext === 'aac') return 'audio/aac';
+  if (ext === 'wav') return 'audio/wav';
+  // Document
+  if (ext === 'pdf') return 'application/pdf';
+  if (ext === 'doc') return 'application/msword';
+  if (ext === 'docx')
+    return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  if (ext === 'xls') return 'application/vnd.ms-excel';
+  if (ext === 'xlsx')
+    return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  if (ext === 'ppt') return 'application/vnd.ms-powerpoint';
+  if (ext === 'pptx')
+    return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+  if (ext === 'zip') return 'application/zip';
+  if (ext === 'txt') return 'text/plain';
+  if (ext === 'json') return 'application/json';
+  if (ext === 'csv') return 'text/csv';
+  return null;
 }
