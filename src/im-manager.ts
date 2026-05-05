@@ -636,6 +636,20 @@ class IMConnectionManager {
         chatJid: string,
       ) => { effectiveJid: string; agentId: string | null } | null;
       onAgentMessage?: (baseChatJid: string, agentId: string) => void;
+      onBotAddedToGroup?: (chatJid: string, chatName: string) => void;
+      onBotRemovedFromGroup?: (chatJid: string) => void;
+      shouldProcessGroupMessage?: (
+        chatJid: string,
+        senderImId?: string,
+      ) => boolean;
+      isGroupOwnerMessage?: (
+        chatJid: string,
+        senderImId?: string,
+      ) => boolean;
+      isSenderAllowedInGroup?: (
+        chatJid: string,
+        senderImId?: string,
+      ) => boolean;
       onConnectionUpdate?: (
         userId: string,
         state: WhatsAppConnectionStateSnapshot,
@@ -666,6 +680,11 @@ class IMConnectionManager {
       resolveGroupFolder: options?.resolveGroupFolder,
       resolveEffectiveChatJid: options?.resolveEffectiveChatJid,
       onAgentMessage: options?.onAgentMessage,
+      onBotAddedToGroup: options?.onBotAddedToGroup,
+      onBotRemovedFromGroup: options?.onBotRemovedFromGroup,
+      shouldProcessGroupMessage: options?.shouldProcessGroupMessage,
+      isGroupOwnerMessage: options?.isGroupOwnerMessage,
+      isSenderAllowedInGroup: options?.isSenderAllowedInGroup,
     });
   }
 

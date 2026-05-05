@@ -8153,6 +8153,10 @@ async function connectUserIMChannels(
           resolveGroupFolder,
           resolveEffectiveChatJid,
           onAgentMessage,
+          onBotAddedToGroup,
+          onBotRemovedFromGroup,
+          shouldProcessGroupMessage,
+          isGroupOwnerMessage,
           onConnectionUpdate: (uid, state) => {
             broadcastWhatsAppStatus(uid, state);
           },
@@ -8860,6 +8864,10 @@ async function main(): Promise<void> {
               resolveEffectiveFolder(chatJid),
             resolveEffectiveChatJid: buildResolveEffectiveChatJid(),
             onAgentMessage: buildOnAgentMessage(),
+            onBotAddedToGroup: buildOnNewChat(userId, homeFolder),
+            onBotRemovedFromGroup: buildOnBotRemovedFromGroup(),
+            shouldProcessGroupMessage,
+            isGroupOwnerMessage,
             onConnectionUpdate: (uid, state) => {
               broadcastWhatsAppStatus(uid, state);
             },

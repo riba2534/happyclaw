@@ -25,6 +25,7 @@ import {
   makeWASocket,
   DisconnectReason,
   downloadMediaMessage,
+  jidNormalizedUser,
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   type WASocket,
@@ -88,6 +89,16 @@ export interface WhatsAppConnectOpts {
     chatJid: string,
   ) => { effectiveJid: string; agentId: string | null } | null;
   onAgentMessage?: (baseChatJid: string, agentId: string) => void;
+  /** Bot added to a new group */
+  onBotAddedToGroup?: (chatJid: string, chatName: string) => void;
+  /** Bot removed from a group / group dissolved */
+  onBotRemovedFromGroup?: (chatJid: string) => void;
+  /** Group msg gate: bot not mentioned + this returns false → drop */
+  shouldProcessGroupMessage?: (chatJid: string, senderImId?: string) => boolean;
+  /** owner_mentioned mode: bot @mentioned but sender not group owner → drop */
+  isGroupOwnerMessage?: (chatJid: string, senderImId?: string) => boolean;
+  /** Sender allowlist: false → drop before any further processing */
+  isSenderAllowedInGroup?: (chatJid: string, senderImId?: string) => boolean;
   /** WhatsApp 专属：连接状态变化回调（QR 出现、connected、断线等） */
   onConnectionUpdate?: (state: WhatsAppConnectionState) => void;
 }
@@ -132,6 +143,27 @@ export function createWhatsAppConnection(
   let opts: WhatsAppConnectOpts | null = null;
   let intentionalDisconnect = false;
   let reconnectTimer: NodeJS.Timeout | null = null;
+  // Cache real group display names (jid → name); fetched lazily per group on
+  // first message arrival to avoid blowing up reconnect.
+  const groupNameCache = new Map<string, string>();
+
+  async function resolveGroupName(remoteJid: string): Promise<void> {
+    if (!sock) return;
+    try {
+      const meta = await sock.groupMetadata(remoteJid);
+      const subject = meta?.subject;
+      if (subject) {
+        groupNameCache.set(remoteJid, subject);
+        try {
+          updateChatName(`${CHANNEL_PREFIX}${remoteJid}`, subject);
+        } catch (err) {
+          logger.debug({ err, remoteJid }, 'Failed to persist group name');
+        }
+      }
+    } catch (err) {
+      logger.debug({ err, remoteJid }, 'WhatsApp groupMetadata failed');
+    }
+  }
 
   function setState(next: WhatsAppConnectionState): void {
     currentState = next;
@@ -257,6 +289,40 @@ export function createWhatsAppConnection(
         }
       }
     });
+
+    // Group membership events: bot added/removed from groups
+    sock.ev.on('group-participants.update', async (update) => {
+      try {
+        const selfJid = sock?.user?.id ? jidNormalizedUser(sock.user.id) : null;
+        if (!selfJid) return;
+        const involvesSelf = update.participants.some(
+          (p) => jidNormalizedUser(p) === selfJid,
+        );
+        if (!involvesSelf) return;
+
+        const chatJid = `${CHANNEL_PREFIX}${update.id}`;
+        if (update.action === 'add') {
+          let chatName = update.id;
+          try {
+            const meta = await sock?.groupMetadata(update.id);
+            if (meta?.subject) {
+              chatName = meta.subject;
+              groupNameCache.set(update.id, meta.subject);
+            }
+          } catch (err) {
+            logger.debug({ err, jid: update.id }, 'group meta fetch failed on add');
+          }
+          opts?.onBotAddedToGroup?.(chatJid, chatName);
+          logger.info({ chatJid, chatName }, 'WhatsApp bot added to group');
+        } else if (update.action === 'remove') {
+          opts?.onBotRemovedFromGroup?.(chatJid);
+          groupNameCache.delete(update.id);
+          logger.info({ chatJid }, 'WhatsApp bot removed from group');
+        }
+      } catch (err) {
+        logger.warn({ err }, 'WhatsApp group-participants.update handler threw');
+      }
+    });
   }
 
   /**
@@ -369,10 +435,55 @@ export function createWhatsAppConnection(
     const chatJid = `${CHANNEL_PREFIX}${remoteJid}`;
     const isGroup = remoteJid.endsWith('@g.us');
     const senderRaw = isGroup ? key.participant || remoteJid : remoteJid;
+    const senderImId = jidNormalizedUser(senderRaw);
     const senderId = `${CHANNEL_PREFIX}${senderRaw}`;
     const senderName = pushName || (isGroup ? '群成员' : remoteJid);
-    const chatName = isGroup ? remoteJid : senderName;
+    const chatName = groupNameCache.get(remoteJid) || (isGroup ? remoteJid : senderName);
     const timestampISO = new Date(tsMs > 0 ? tsMs : Date.now()).toISOString();
+
+    // ── Group gates: sender allowlist → mention required → owner check ──
+    if (isGroup) {
+      if (
+        opts.isSenderAllowedInGroup &&
+        !opts.isSenderAllowedInGroup(chatJid, senderImId)
+      ) {
+        logger.debug(
+          { chatJid, senderImId },
+          'WhatsApp dropped: sender not allowlisted',
+        );
+        return;
+      }
+
+      const isBotMentioned = isMentioningBot(content, sock?.user?.id);
+      if (
+        opts.shouldProcessGroupMessage &&
+        !isBotMentioned &&
+        !opts.shouldProcessGroupMessage(chatJid, senderImId)
+      ) {
+        logger.debug(
+          { chatJid, senderImId },
+          'WhatsApp dropped: mention required but bot not @mentioned',
+        );
+        return;
+      }
+      if (
+        isBotMentioned &&
+        opts.isGroupOwnerMessage &&
+        !opts.isGroupOwnerMessage(chatJid, senderImId)
+      ) {
+        logger.debug(
+          { chatJid, senderImId },
+          'WhatsApp dropped: owner_mentioned mode, sender is not group owner',
+        );
+        return;
+      }
+
+      // Lazy-fetch real group name and update DB out-of-band
+      if (!groupNameCache.has(remoteJid)) {
+        groupNameCache.set(remoteJid, remoteJid); // tentative, prevents repeat fetches
+        void resolveGroupName(remoteJid);
+      }
+    }
 
     // If no text, try to handle media (image/video/audio/document)
     let finalContent = text;
@@ -661,7 +772,7 @@ export function getWhatsAppAuthDir(
  * Extract human-readable text from a baileys IMessage payload.
  * Returns null for unsupported message types (image/audio/video/document — M3 scope).
  */
-function extractMessageText(content: proto.IMessage): string | null {
+export function extractMessageText(content: proto.IMessage): string | null {
   if (content.conversation) return content.conversation;
   if (content.extendedTextMessage?.text) return content.extendedTextMessage.text;
   // Sometimes ephemeral / view-once wrap the inner content
@@ -686,7 +797,7 @@ function extractMessageText(content: proto.IMessage): string | null {
  * Baileys `messageTimestamp` may be number, Long, or undefined. Convert to ms.
  * Returns 0 if not a usable value (caller falls back to Date.now()).
  */
-function normalizeTimestamp(
+export function normalizeTimestamp(
   ts: number | Long.Long | null | undefined,
 ): number {
   if (ts === null || ts === undefined) return 0;
@@ -746,7 +857,7 @@ function detectMedia(content: proto.IMessage): DetectedMedia | null {
   return null;
 }
 
-function extFromMime(mime: string | null | undefined): string | null {
+export function extFromMime(mime: string | null | undefined): string | null {
   if (!mime) return null;
   const m = mime.toLowerCase();
   if (m.includes('jpeg')) return '.jpg';
@@ -764,10 +875,34 @@ function extFromMime(mime: string | null | undefined): string | null {
   return null;
 }
 
-function stripChannelPrefix(chatId: string): string {
+export function stripChannelPrefix(chatId: string): string {
   return chatId.startsWith(CHANNEL_PREFIX)
     ? chatId.slice(CHANNEL_PREFIX.length)
     : chatId;
+}
+
+/**
+ * Check if a baileys message @mentions the bot itself.
+ *
+ * Mentioning lives in `extendedTextMessage.contextInfo.mentionedJid` (string[]).
+ * Self jid format from sock.user.id includes a device suffix
+ * (e.g. `15551234567:42@s.whatsapp.net`) — normalize both sides before compare.
+ */
+export function isMentioningBot(
+  content: proto.IMessage,
+  selfJid: string | null | undefined,
+): boolean {
+  if (!selfJid) return true; // Safety degrade: no self-id known → don't gate
+  const selfNorm = jidNormalizedUser(selfJid);
+  const ctx =
+    content.extendedTextMessage?.contextInfo ||
+    content.imageMessage?.contextInfo ||
+    content.videoMessage?.contextInfo ||
+    content.documentMessage?.contextInfo ||
+    content.audioMessage?.contextInfo;
+  const mentioned = ctx?.mentionedJid;
+  if (!mentioned || mentioned.length === 0) return false;
+  return mentioned.some((m) => jidNormalizedUser(m) === selfNorm);
 }
 
 /**
@@ -775,7 +910,7 @@ function stripChannelPrefix(chatId: string): string {
  * Covers WhatsApp-relevant types: image/video/audio/document.
  * Returns null when unknown so caller can fall back to a sensible default.
  */
-function guessMimeType(fileName: string): string | null {
+export function guessMimeType(fileName: string): string | null {
   const m = fileName.toLowerCase().match(/\.([a-z0-9]+)$/);
   if (!m) return null;
   const ext = m[1];
