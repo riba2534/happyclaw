@@ -19,6 +19,7 @@
  */
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import qrcode from 'qrcode';
 import {
   makeWASocket,
@@ -26,9 +27,16 @@ import {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   type WASocket,
+  type WAMessage,
+  type proto,
 } from '@whiskeysockets/baileys';
 import type { Boom } from '@hapi/boom';
 import { logger } from './logger.js';
+import { storeChatMetadata, storeMessageDirect, updateChatName } from './db.js';
+import { notifyNewImMessage } from './message-notifier.js';
+import { broadcastNewMessage } from './web.js';
+
+const CHANNEL_PREFIX = 'whatsapp:';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -230,8 +238,140 @@ export function createWhatsAppConnection(
       }
     });
 
-    // M2 范围：messages.upsert 转发到 onMessage（占位，下次会话实现）
-    // sock.ev.on('messages.upsert', async ({ messages, type }) => { ... });
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      // 'notify' = real-time incoming, 'append' = history sync (skip)
+      if (type !== 'notify') return;
+      for (const msg of messages) {
+        try {
+          await handleIncomingMessage(msg);
+        } catch (err) {
+          logger.error(
+            { err, msgId: msg.key?.id },
+            'WhatsApp message handler threw',
+          );
+        }
+      }
+    });
+  }
+
+  /** Convert one baileys WAMessage into our IM pipeline (storeMessageDirect + broadcast). */
+  async function handleIncomingMessage(msg: WAMessage): Promise<void> {
+    if (!opts) return;
+    const { key, message: content, pushName, messageTimestamp } = msg;
+    if (!key || !content) return;
+    if (key.fromMe) return; // 自己发的消息不回流
+
+    const remoteJid = key.remoteJid;
+    if (!remoteJid) return;
+
+    // newsletter / status broadcasts and unrelated system jids — skip
+    if (remoteJid === 'status@broadcast' || remoteJid.endsWith('@newsletter')) {
+      return;
+    }
+
+    // Filter old messages (heat-up after reconnect, history sync stragglers)
+    const tsMs = normalizeTimestamp(messageTimestamp);
+    if (
+      tsMs > 0 &&
+      opts.ignoreMessagesBefore &&
+      tsMs < opts.ignoreMessagesBefore
+    ) {
+      return;
+    }
+
+    const text = extractMessageText(content);
+    if (!text) {
+      // M3 will handle media (image/audio/document/video). For now log and skip.
+      logger.debug(
+        { remoteJid, msgId: key.id, types: Object.keys(content) },
+        'WhatsApp non-text message ignored (M3 scope)',
+      );
+      return;
+    }
+
+    const chatJid = `${CHANNEL_PREFIX}${remoteJid}`;
+    const isGroup = remoteJid.endsWith('@g.us');
+    const senderRaw = isGroup ? key.participant || remoteJid : remoteJid;
+    const senderId = `${CHANNEL_PREFIX}${senderRaw}`;
+    const senderName = pushName || (isGroup ? '群成员' : remoteJid);
+    const chatName = isGroup ? remoteJid : senderName;
+    const timestampISO = new Date(tsMs > 0 ? tsMs : Date.now()).toISOString();
+
+    storeChatMetadata(chatJid, timestampISO);
+    updateChatName(chatJid, chatName);
+    opts.onNewChat(chatJid, chatName);
+
+    // Slash command interception (matches Telegram pattern: `/cmd args`)
+    const trimmed = text.trim();
+    const slashMatch = trimmed.match(/^\/(\S+)(?:\s+(.*))?$/s);
+    if (slashMatch && opts.onCommand) {
+      const cmdBody = (
+        slashMatch[1] + (slashMatch[2] ? ' ' + slashMatch[2] : '')
+      ).trim();
+      try {
+        const reply = await opts.onCommand(chatJid, cmdBody);
+        if (reply !== null && reply !== undefined) {
+          // Known command handled — best-effort send back. Until M3 sendMessage
+          // is implemented, fall back to logging.
+          if (sock) {
+            try {
+              await sock.sendMessage(remoteJid, { text: reply });
+            } catch (err) {
+              logger.warn({ err, chatJid }, 'WhatsApp slash reply send failed');
+            }
+          }
+          return;
+        }
+      } catch (err) {
+        logger.error({ err, chatJid, cmd: slashMatch[1] }, 'WhatsApp slash command failed');
+      }
+    }
+
+    // Resolve agent routing (binding to a sub-agent inside a workspace)
+    const routing = opts.resolveEffectiveChatJid?.(chatJid);
+    const targetJid = routing?.effectiveJid ?? chatJid;
+    const id = crypto.randomUUID();
+
+    storeChatMetadata(targetJid, timestampISO);
+    storeMessageDirect(
+      id,
+      targetJid,
+      senderId,
+      senderName,
+      text,
+      timestampISO,
+      false,
+      { sourceJid: chatJid },
+    );
+
+    broadcastNewMessage(
+      targetJid,
+      {
+        id,
+        chat_jid: targetJid,
+        source_jid: chatJid,
+        sender: senderId,
+        sender_name: senderName,
+        content: text,
+        timestamp: timestampISO,
+        is_from_me: false,
+      },
+      routing?.agentId ?? undefined,
+    );
+    notifyNewImMessage();
+
+    if (routing?.agentId) {
+      opts.onAgentMessage?.(chatJid, routing.agentId);
+      logger.info(
+        { chatJid, effectiveJid: targetJid, agentId: routing.agentId },
+        'WhatsApp message routed to conversation agent',
+      );
+    } else {
+      logger.info(
+        { chatJid, sender: senderName, msgId: key.id, isGroup },
+        'WhatsApp message stored',
+      );
+    }
   }
 
   return {
@@ -279,16 +419,36 @@ export function createWhatsAppConnection(
 
     async sendMessage(
       chatId: string,
-      _text: string,
-      _localImagePaths?: string[],
+      text: string,
+      localImagePaths?: string[],
     ): Promise<void> {
-      void _text;
-      void _localImagePaths;
-      logger.warn(
-        { feature: 'whatsapp', chatId },
-        'sendMessage called — M3 not implemented yet',
-      );
-      throw new Error(NOT_IMPLEMENTED_M3);
+      // M2 minimal impl: plain text only, no Markdown stripping, no chunking,
+      // no image attach. M3 will wrap with chunking + Markdown→plain + image.
+      if (localImagePaths && localImagePaths.length > 0) {
+        logger.warn(
+          { feature: 'whatsapp', chatId, count: localImagePaths.length },
+          'WhatsApp local image attach not implemented yet (M3)',
+        );
+      }
+      if (!sock) {
+        logger.warn(
+          { feature: 'whatsapp', chatId },
+          'WhatsApp sendMessage skipped: socket not connected',
+        );
+        return;
+      }
+      const jid = chatId.startsWith(CHANNEL_PREFIX)
+        ? chatId.slice(CHANNEL_PREFIX.length)
+        : chatId;
+      try {
+        await sock.sendMessage(jid, { text });
+      } catch (err) {
+        logger.error(
+          { err, feature: 'whatsapp', chatId },
+          'WhatsApp sendMessage failed',
+        );
+        throw err;
+      }
     },
 
     async sendImage(
@@ -346,4 +506,45 @@ export function getWhatsAppAuthDir(
   accountId = 'default',
 ): string {
   return path.join(dataDir, 'config', 'user-im', userId, 'whatsapp-auth', accountId);
+}
+
+/**
+ * Extract human-readable text from a baileys IMessage payload.
+ * Returns null for unsupported message types (image/audio/video/document — M3 scope).
+ */
+function extractMessageText(content: proto.IMessage): string | null {
+  if (content.conversation) return content.conversation;
+  if (content.extendedTextMessage?.text) return content.extendedTextMessage.text;
+  // Sometimes ephemeral / view-once wrap the inner content
+  if (content.ephemeralMessage?.message) {
+    return extractMessageText(content.ephemeralMessage.message);
+  }
+  if (content.viewOnceMessage?.message) {
+    return extractMessageText(content.viewOnceMessage.message);
+  }
+  if (content.viewOnceMessageV2?.message) {
+    return extractMessageText(content.viewOnceMessageV2.message);
+  }
+  // Image / video / document with caption — treat caption as the message text
+  // so the user at least sees what was sent. Media binary download is M3.
+  if (content.imageMessage?.caption) return content.imageMessage.caption;
+  if (content.videoMessage?.caption) return content.videoMessage.caption;
+  if (content.documentMessage?.caption) return content.documentMessage.caption;
+  return null;
+}
+
+/**
+ * Baileys `messageTimestamp` may be number, Long, or undefined. Convert to ms.
+ * Returns 0 if not a usable value (caller falls back to Date.now()).
+ */
+function normalizeTimestamp(
+  ts: number | Long.Long | null | undefined,
+): number {
+  if (ts === null || ts === undefined) return 0;
+  if (typeof ts === 'number') return ts * 1000;
+  // Long.js-like object exposes toNumber()
+  if (typeof (ts as { toNumber?: () => number }).toNumber === 'function') {
+    return (ts as { toNumber: () => number }).toNumber() * 1000;
+  }
+  return 0;
 }
