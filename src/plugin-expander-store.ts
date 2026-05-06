@@ -1,6 +1,9 @@
 /**
- * persistPluginExpansion — shared helper for writing the plugin-expansion
- * sentinel back onto a message row's `attachments` JSON.
+ * plugin-expander-store.ts
+ *
+ * DB-level persist helper for plugin-expansion sentinels. Renamed from
+ * (former) plugin-expansion-store.ts so the four expander modules share
+ * a unified naming scheme (#487 follow-up #6).
  *
  * Lives outside `index.ts` so the web fast-path (`handleWebUserMessage` and
  * `handleAgentConversationMessage` in `src/web.ts`) can call it directly
@@ -14,10 +17,8 @@
  */
 
 import { getMessageAttachments, updateMessageAttachments } from './db.js';
-import {
-  writePluginExpansionToAttachments,
-  type PluginExpansionSentinel,
-} from './plugin-command-expander.js';
+import { writePluginExpansionToAttachments } from './plugin-expander-sentinel.js';
+import type { PluginExpansionSentinel } from './plugin-expander-sentinel.js';
 
 export function persistPluginExpansion(
   msgId: string,

@@ -1,5 +1,5 @@
 /**
- * plugin-command-expander.ts
+ * plugin-expander-core.ts
  *
  * Expands DMI (`disable-model-invocation: true`) plugin slash-commands typed by
  * a user before they reach the SDK / agent runner. Non-DMI commands are left
@@ -23,6 +23,10 @@
  * web.ts state. Callers wire it in via `expandMessagesIfNeeded()` (batch) or
  * `expandPluginSlashCommandIfNeeded()` (single) and pass an `ExpandContext`
  * built from request/queue state.
+ *
+ * Split out of (former) plugin-command-expander.ts (#487 follow-up #6).
+ * Strictly does NOT import plugin-expander-store.ts — keeps the core
+ * load-surface free of db.ts.
  */
 
 import path from 'path';
@@ -32,27 +36,28 @@ import { logger } from './logger.js';
 import {
   buildCommandIndex,
   resolveCommand,
+} from './plugin-command-index.js';
+import type {
   PluginCommandIndexEntry,
   Resolution,
 } from './plugin-command-index.js';
 import {
   executeInlineBashDocker,
   executeInlineBashHost,
-  InlineExecResult,
 } from './plugin-inline-bash.js';
-
-export type ExecutionMode = 'host' | 'container';
-
-export interface ExpandContext {
-  userId: string;
-  groupJid: string;
-  groupFolder: string;
-  /** host: absolute path; container: '/workspace/group'. */
-  cwd: string;
-  executionMode: ExecutionMode;
-  /** Active container name (docker mode only). null when no runner is up. */
-  containerName: string | null;
-}
+import type { InlineExecResult } from './plugin-inline-bash.js';
+import type {
+  ExpandContext,
+  ExecutionMode,
+} from './plugin-expander-context.js';
+import {
+  PLUGIN_EXPANSION_ATTACHMENT_TYPE,
+  readPluginExpansionFromAttachments,
+} from './plugin-expander-sentinel.js';
+import type {
+  PluginExpansionSentinel,
+  PersistExpansionFn,
+} from './plugin-expander-sentinel.js';
 
 export type ExpansionResult =
   | { kind: 'miss' }
@@ -92,151 +97,11 @@ export interface BatchExpansionOutcome<M extends ExpandableMessage> {
   replies: Array<{ originalMsg: M; text: string }>;
 }
 
-/**
- * Plugin-expansion sentinel persisted into a message's `attachments` JSON
- * after inline `!` commands run successfully. Recovery detects this and
- * skips re-running the inline (P1 round-14 crash-safety). Stored as an
- * extra item in the existing attachments array — `type !== 'image'` so all
- * image readers (frontend MessageBubble, normalizeImageAttachments,
- * agent collectMessageImages) ignore it naturally.
- */
-export const PLUGIN_EXPANSION_ATTACHMENT_TYPE = 'plugin_expansion';
-
-export interface PluginExpansionSentinel {
-  type: typeof PLUGIN_EXPANSION_ATTACHMENT_TYPE;
-  expanded: true;
-  prompt: string;
-  expandedAt: string;
-}
-
-/**
- * Parse the `attachments` JSON string and return a previously-persisted
- * plugin-expansion sentinel, or null if none / malformed. Tolerant of:
- *   - undefined / empty / non-array JSON (returns null silently)
- *   - extra unknown items (ignored, image entries co-exist)
- *   - missing fields on the sentinel (returns null — recovery re-expands)
- */
-export function readPluginExpansionFromAttachments(
-  attachmentsJson: string | undefined | null,
-): PluginExpansionSentinel | null {
-  if (!attachmentsJson) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(attachmentsJson);
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(parsed)) return null;
-  for (const item of parsed) {
-    if (!item || typeof item !== 'object') continue;
-    const obj = item as Record<string, unknown>;
-    if (obj.type !== PLUGIN_EXPANSION_ATTACHMENT_TYPE) continue;
-    if (obj.expanded !== true) continue;
-    if (typeof obj.prompt !== 'string' || obj.prompt.length === 0) continue;
-    const expandedAt =
-      typeof obj.expandedAt === 'string' ? obj.expandedAt : '';
-    return {
-      type: PLUGIN_EXPANSION_ATTACHMENT_TYPE,
-      expanded: true,
-      prompt: obj.prompt,
-      expandedAt,
-    };
-  }
-  return null;
-}
-
-/**
- * Append (or replace) the plugin-expansion sentinel inside the existing
- * attachments JSON, preserving any image entries. Returns the new JSON
- * string; caller persists it back to the messages row (one DB write per
- * successful expansion).
- *
- * The replace path is defensive: re-running the writer with the same msg
- * id (e.g. an in-flight retry) yields the latest prompt without ever
- * accumulating duplicate sentinels.
- */
-export function writePluginExpansionToAttachments(
-  attachmentsJson: string | undefined | null,
-  sentinel: PluginExpansionSentinel,
-): string {
-  let arr: unknown[] = [];
-  if (attachmentsJson) {
-    try {
-      const parsed = JSON.parse(attachmentsJson);
-      if (Array.isArray(parsed)) arr = parsed;
-    } catch {
-      // fall through with empty arr — original payload was non-JSON / corrupt
-    }
-  }
-  const filtered = arr.filter((item) => {
-    if (!item || typeof item !== 'object') return true;
-    return (
-      (item as Record<string, unknown>).type !==
-      PLUGIN_EXPANSION_ATTACHMENT_TYPE
-    );
-  });
-  filtered.push(sentinel);
-  return JSON.stringify(filtered);
-}
-
 /** Override seam for tests. Production callers must not pass this. */
 export interface ExpandOverrides {
   buildIndex?: typeof buildCommandIndex;
   execHost?: typeof executeInlineBashHost;
   execDocker?: typeof executeInlineBashDocker;
-}
-
-/**
- * Persist a successfully-expanded prompt back to the message row.
- *
- * Crash-safety contract (P1 round-14): MUST be invoked synchronously after
- * inline execution succeeds, BEFORE the cursor advances past the message.
- * Otherwise a crash between exec and persist would re-execute on recovery.
- * The batch helper enforces ordering by writing inside the for-loop before
- * pushing the expanded message into `toSend`.
- */
-export type PersistExpansionFn = (
-  msgId: string,
-  chatJid: string,
-  expansion: PluginExpansionSentinel,
-) => void;
-
-/**
- * Pure helper that assembles an ExpandContext from already-resolved inputs.
- *
- * Host mode honors `customCwd` (when present) so inline `!` commands run
- * against the user's real repo rather than the synthetic data/groups path
- * (#18 P2-bug-4). Returns null when there is no resolvable owner — plugins
- * are per-user config so an ownerless group has no plugins to expand.
- */
-export function makeExpandContext(args: {
-  chatJid: string;
-  groupFolder: string;
-  ownerId: string | null | undefined;
-  executionMode: 'host' | 'container' | string | null | undefined;
-  customCwd?: string | null;
-  groupsDir: string;
-  containerName: string | null;
-}): ExpandContext | null {
-  if (!args.ownerId) return null;
-  const executionMode: ExecutionMode =
-    (args.executionMode || 'container') === 'host' ? 'host' : 'container';
-  let cwd: string;
-  if (executionMode === 'host') {
-    cwd = args.customCwd
-      ? path.resolve(args.customCwd)
-      : path.resolve(args.groupsDir, args.groupFolder);
-  } else {
-    cwd = '/workspace/group';
-  }
-  return {
-    userId: args.ownerId,
-    groupJid: args.chatJid,
-    groupFolder: args.groupFolder,
-    cwd,
-    executionMode,
-    containerName: args.containerName,
-  };
 }
 
 // --- Plugin runtime path resolution ----------------------------------------

@@ -17,7 +17,7 @@
  *         Fix: in both web.ts handlers, after `kind === 'expanded'` AND
  *         `inlineExecuted === true`, call the same `persistPluginExpansion`
  *         helper used by the cold-start paths. The shared helper lives in
- *         `src/plugin-expansion-store.ts` so web.ts can import it without
+ *         `src/plugin-expander-store.ts` so web.ts can import it without
  *         dragging in index.ts.
  *
  *   P2-2: index.ts cold-start / active-IPC paths resolved `runtimeOwner`
@@ -72,17 +72,18 @@ vi.mock('../src/logger.js', () => ({
 
 const pluginUtils = await import('../src/plugin-utils.js');
 const cmdIndex = await import('../src/plugin-command-index.js');
-const expander = await import('../src/plugin-command-expander.js');
+const core = await import('../src/plugin-expander-core.js');
+const sentinel = await import('../src/plugin-expander-sentinel.js');
 const runtimeOwner = await import('../src/runtime-owner.js');
 
 const { writeUserPluginsV2, getUserPluginRuntimePath } = pluginUtils;
 const { _resetCommandIndexCacheForTests } = cmdIndex;
+const { expandMessagesIfNeeded } = core;
 const {
-  expandMessagesIfNeeded,
   PLUGIN_EXPANSION_ATTACHMENT_TYPE,
   readPluginExpansionFromAttachments,
   writePluginExpansionToAttachments,
-} = expander;
+} = sentinel;
 const { resolvePerMessageRuntimeOwner } = runtimeOwner;
 type RuntimeOwnerCandidateUser = runtimeOwner.RuntimeOwnerCandidateUser;
 
@@ -166,7 +167,7 @@ const ctxHostFor = (userId: string) => ({
  * dynamic-import boundaries, we test the round-trip through their real
  * implementations against a temp better-sqlite3 db.
  */
-describe('plugin-expansion-store: persistPluginExpansion — #23 round-15 P1-1', () => {
+describe('plugin-expander-store: persistPluginExpansion — #23 round-15 P1-1', () => {
   test('round-trip: persist a sentinel and read it back via getMessageAttachments', async () => {
     // Use a separate temp dir to avoid colliding with the plugin runtime dir.
     const dbTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'happyclaw-r15-db-'));
@@ -258,7 +259,7 @@ describe('plugin-expansion-store: persistPluginExpansion — #23 round-15 P1-1',
   });
 
   test('shared helper module shape: persistPluginExpansion is exported and is a function', async () => {
-    const mod = await import('../src/plugin-expansion-store.js');
+    const mod = await import('../src/plugin-expander-store.js');
     expect(typeof mod.persistPluginExpansion).toBe('function');
   });
 });
@@ -311,7 +312,7 @@ describe('web fast-path ordering — #23 round-15 P1-1', () => {
       signal: null,
       timedOut: false,
     }));
-    const r = await expander.expandPluginSlashCommandIfNeeded(
+    const r = await core.expandPluginSlashCommandIfNeeded(
       ctxHostFor('alice'),
       '/commit',
       { execHost: execHost as any, execDocker: (() => {}) as any },
@@ -390,7 +391,7 @@ describe('web fast-path ordering — #23 round-15 P1-1', () => {
       signal: null,
       timedOut: false,
     }));
-    const r = await expander.expandPluginSlashCommandIfNeeded(
+    const r = await core.expandPluginSlashCommandIfNeeded(
       ctxHostFor('alice'),
       '/commit',
       { execHost: execHost as any, execDocker: (() => {}) as any },

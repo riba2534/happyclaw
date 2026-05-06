@@ -27,7 +27,7 @@
  *         hold lastCommittedCursor (advanceNextPullCursorOnly).
  *
  * Coverage:
- *   - Direct unit on the new persistence helpers in plugin-command-expander.ts
+ *   - Direct unit on the persistence helpers in plugin-expander-sentinel.ts
  *   - Behavioral test of expandMessagesIfNeeded recovery short-circuit
  *   - Failure-path test asserting persist callback is NOT invoked when any
  *     inline fails
@@ -61,19 +61,19 @@ vi.mock('../src/logger.js', () => ({
 
 const pluginUtils = await import('../src/plugin-utils.js');
 const cmdIndex = await import('../src/plugin-command-index.js');
-const expander = await import('../src/plugin-command-expander.js');
+const core = await import('../src/plugin-expander-core.js');
+const sentinel = await import('../src/plugin-expander-sentinel.js');
 
 const { writeUserPluginsV2, getUserPluginRuntimePath } = pluginUtils;
 const { _resetCommandIndexCacheForTests } = cmdIndex;
+const { expandPluginSlashCommandIfNeeded, expandMessagesIfNeeded } = core;
 const {
-  expandPluginSlashCommandIfNeeded,
-  expandMessagesIfNeeded,
   readPluginExpansionFromAttachments,
   writePluginExpansionToAttachments,
   PLUGIN_EXPANSION_ATTACHMENT_TYPE,
-} = expander;
+} = sentinel;
 
-// --- Test seam helpers (cribbed from plugin-command-expander.test.ts) ------
+// --- Test seam helpers (cribbed from plugin-expander-core.test.ts) ---------
 
 interface SeedCmd {
   name: string;

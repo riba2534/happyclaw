@@ -1,7 +1,7 @@
 /**
- * plugin-command-expander.test.ts
+ * plugin-expander-core.test.ts
  *
- * Behavior coverage for src/plugin-command-expander.ts:
+ * Behavior coverage for src/plugin-expander-core.ts:
  *   - Slash detection / non-plugin commands → miss
  *   - DMI=false → miss (SDK handles)
  *   - Conflict → reply with namespaced suggestions
@@ -40,7 +40,7 @@ vi.mock('../src/logger.js', () => ({
 
 const pluginUtils = await import('../src/plugin-utils.js');
 const cmdIndex = await import('../src/plugin-command-index.js');
-const expander = await import('../src/plugin-command-expander.js');
+const core = await import('../src/plugin-expander-core.js');
 
 const { writeUserPluginsV2, getUserPluginRuntimePath } = pluginUtils;
 const { _resetCommandIndexCacheForTests } = cmdIndex;
@@ -48,7 +48,7 @@ const {
   expandPluginSlashCommandIfNeeded,
   expandMessagesIfNeeded,
   whitespaceSplit,
-} = expander;
+} = core;
 
 // --- Test seam helpers -----------------------------------------------------
 

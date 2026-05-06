@@ -352,7 +352,7 @@ export class GroupQueue {
    * sibling-JID / serialization-key rules as `sendMessage()`. Returns null
    * when there is no active runner *or* the active runner is a host process.
    *
-   * Used by the plugin-command-expander to decide whether an inline `!` bash
+   * Used by the plugin-expander-core to decide whether an inline `!` bash
    * template can run inside the user's container.
    */
   getActiveContainerName(groupJid: string): string | null {

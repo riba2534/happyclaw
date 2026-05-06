@@ -206,12 +206,10 @@ import { verifyPairingCode } from './telegram-pairing.js';
 import { sdkQuery } from './sdk-query.js';
 import { executeSessionReset } from './commands.js';
 import { scanHostMarketplaces } from './plugin-importer.js';
-import {
-  expandMessagesIfNeeded,
-  ExpandContext,
-  makeExpandContext,
-} from './plugin-command-expander.js';
-import { persistPluginExpansion } from './plugin-expansion-store.js';
+import { expandMessagesIfNeeded } from './plugin-expander-core.js';
+import { makeExpandContext } from './plugin-expander-context.js';
+import type { ExpandContext } from './plugin-expander-context.js';
+import { persistPluginExpansion } from './plugin-expander-store.js';
 
 // Set timezone so all child processes (host agents, containers) inherit it
 process.env.TZ = process.env.TZ || TIMEZONE;

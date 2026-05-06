@@ -97,14 +97,12 @@ import {
   ASSISTANT_NAME,
   GROUPS_DIR,
 } from './config.js';
-import {
-  expandPluginSlashCommandIfNeeded,
-  ExpandContext,
-  makeExpandContext,
-  PLUGIN_EXPANSION_ATTACHMENT_TYPE,
-} from './plugin-command-expander.js';
+import { expandPluginSlashCommandIfNeeded } from './plugin-expander-core.js';
+import { makeExpandContext } from './plugin-expander-context.js';
+import type { ExpandContext } from './plugin-expander-context.js';
+import { PLUGIN_EXPANSION_ATTACHMENT_TYPE } from './plugin-expander-sentinel.js';
 import { resolvePerMessageRuntimeOwner } from './runtime-owner.js';
-import { persistPluginExpansion } from './plugin-expansion-store.js';
+import { persistPluginExpansion } from './plugin-expander-store.js';
 import { logger } from './logger.js';
 import {
   executeSessionReset,

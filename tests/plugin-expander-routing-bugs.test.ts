@@ -27,14 +27,14 @@
  *             and the message sender is the correct owner (not whichever
  *             admin first materialised the group).
  *
- * The tests directly exercise the pure helpers in plugin-command-expander.ts
+ * The tests directly exercise the pure helpers in plugin-expander-context.ts
  * (makeExpandContext, resolvePluginRuntimeOwner) plus a faithful shadow of
  * the cursor-advance algorithm wired into src/index.ts.
  */
 
 import { describe, expect, test } from 'vitest';
 
-import { makeExpandContext } from '../src/plugin-command-expander.js';
+import { makeExpandContext } from '../src/plugin-expander-context.js';
 import { resolvePluginRuntimeOwner } from './helpers/legacy-runtime-owner.js';
 
 // ─── P2-bug-4: makeExpandContext customCwd in host mode ─────────────────────
