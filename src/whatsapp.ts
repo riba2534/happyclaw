@@ -132,6 +132,9 @@ export interface WhatsAppConnection {
 }
 
 const RECONNECT_DELAY_MS = 3_000;
+/** Message dedup cache: matches feishu/qq/dingtalk (1000 entries, 30min TTL). */
+const MSG_DEDUP_MAX = 1000;
+const MSG_DEDUP_TTL_MS = 30 * 60 * 1000;
 
 // ─── Factory ────────────────────────────────────────────────────
 
@@ -146,6 +149,32 @@ export function createWhatsAppConnection(
   // Cache real group display names (jid → name); fetched lazily per group on
   // first message arrival to avoid blowing up reconnect.
   const groupNameCache = new Map<string, string>();
+  // LRU dedup cache: key = `${remoteJid}|${msgId}`, value = insertion timestamp.
+  // Baileys can re-emit the same key.id at reconnect boundaries or when
+  // history/notify streams overlap; without this cache the Agent responds twice.
+  const msgCache = new Map<string, number>();
+
+  function isDuplicate(msgKey: string): boolean {
+    const now = Date.now();
+    // Map preserves insertion order; expire from the head until first fresh entry.
+    for (const [k, ts] of msgCache.entries()) {
+      if (now - ts > MSG_DEDUP_TTL_MS) {
+        msgCache.delete(k);
+      } else {
+        break;
+      }
+    }
+    return msgCache.has(msgKey);
+  }
+
+  function markSeen(msgKey: string): void {
+    if (msgCache.size >= MSG_DEDUP_MAX) {
+      const firstKey = msgCache.keys().next().value;
+      if (firstKey) msgCache.delete(firstKey);
+    }
+    msgCache.delete(msgKey);
+    msgCache.set(msgKey, Date.now());
+  }
 
   async function resolveGroupName(remoteJid: string): Promise<void> {
     if (!sock) return;
@@ -419,6 +448,18 @@ export function createWhatsAppConnection(
     // newsletter / status broadcasts and unrelated system jids — skip
     if (remoteJid === 'status@broadcast' || remoteJid.endsWith('@newsletter')) {
       return;
+    }
+
+    // LRU dedup: skip duplicates that re-arrive at reconnect / stream-switch
+    // boundaries. Keyed by (remoteJid, key.id) because Baileys reuses key.id
+    // across chats. fromMe is already filtered above, so left out of the key.
+    if (key.id) {
+      const dedupKey = `${remoteJid}|${key.id}`;
+      if (isDuplicate(dedupKey)) {
+        logger.debug({ msgId: key.id, remoteJid }, 'WhatsApp duplicate dropped');
+        return;
+      }
+      markSeen(dedupKey);
     }
 
     // Filter old messages (heat-up after reconnect, history sync stragglers)
