@@ -135,6 +135,19 @@ const RECONNECT_DELAY_MS = 3_000;
 /** Message dedup cache: matches feishu/qq/dingtalk (1000 entries, 30min TTL). */
 const MSG_DEDUP_MAX = 1000;
 const MSG_DEDUP_TTL_MS = 30 * 60 * 1000;
+/**
+ * Delay between WhatsApp text chunks. WhatsApp Web's anti-spam will rate-limit
+ * (and at the high end, contribute to bans) bursts of messages from the same
+ * sender. 300ms keeps small replies fast while throttling long chunked replies.
+ */
+const CHUNK_SEND_DELAY_MS = 300;
+
+/**
+ * Cached Baileys protocol version. fetchLatestBaileysVersion() hits the network
+ * on every reconnect — if the box is offline it blocks the socket. We hit the
+ * network the first time we successfully connect, then reuse across reconnects.
+ */
+let cachedBaileysVersion: [number, number, number] | null = null;
 
 // ─── Factory ────────────────────────────────────────────────────
 
@@ -211,14 +224,33 @@ export function createWhatsAppConnection(
 
     await mkdir(config.authDir, { recursive: true });
     const { state, saveCreds } = await useMultiFileAuthState(config.authDir);
-    const { version, isLatest } = await fetchLatestBaileysVersion();
+
+    // Reuse cached version across reconnects to avoid blocking the socket
+    // when the network is flaky. First connect still hits the network so
+    // we pick up Baileys protocol bumps within the same process lifetime.
+    let version: [number, number, number] | null = cachedBaileysVersion;
+    let isLatest = true;
+    if (!version) {
+      try {
+        const fetched = await fetchLatestBaileysVersion();
+        version = fetched.version;
+        isLatest = fetched.isLatest;
+        cachedBaileysVersion = version;
+      } catch (err) {
+        logger.warn(
+          { err },
+          'fetchLatestBaileysVersion failed; Baileys will use its bundled default version',
+        );
+      }
+    }
     logger.info(
       { feature: 'whatsapp', version, isLatest, authDir: config.authDir },
       'Initialising WhatsApp socket',
     );
 
     sock = makeWASocket({
-      version,
+      // Skip version when unavailable so Baileys uses its bundled default
+      ...(version ? { version } : {}),
       auth: state,
       printQRInTerminal: false,
       // 用 pino 兼容的 logger（baileys 期望 pino 接口）
@@ -694,6 +726,13 @@ export function createWhatsAppConnection(
               ? `${chunks[i]}\n\n(${i + 1}/${chunks.length})`
               : chunks[i];
           await sock.sendMessage(jid, { text: chunk });
+          // Throttle between chunks to stay under WhatsApp Web's anti-spam
+          // burst threshold; same reason qq/dingtalk soft-throttle bulk sends.
+          if (i < chunks.length - 1) {
+            await new Promise((resolve) =>
+              setTimeout(resolve, CHUNK_SEND_DELAY_MS),
+            );
+          }
         }
 
         if (localImagePaths && localImagePaths.length > 0) {
