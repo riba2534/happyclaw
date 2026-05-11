@@ -1507,7 +1507,18 @@ export async function runHostAgent(
     // 禁用记忆层且配置了 customCwd 时不覆盖 CLAUDE_CONFIG_DIR，让 SDK 使用用户真实 $HOME/.claude/
     // 未配 customCwd 时保留 override，避免 HappyClaw 的 cwd 污染 ~/.claude/projects/
     if (!disableMemoryLayer || !group.customCwd) {
-      hostEnv['CLAUDE_CONFIG_DIR'] = groupSessionsDir;
+      // Resolve symlinks so CLAUDE_CONFIG_DIR ends up as the real on-disk path.
+      // Some external layer (suspected backend rate-limiter) has been observed to
+      // pin failure state to specific CLAUDE_CONFIG_DIR path strings; allowing
+      // operators to redirect the literal path via a symlink (e.g. mv main main-v2
+      // && ln -s main-v2 main) is a cheap escape hatch when a path gets "tainted".
+      let resolvedSessionsDir = groupSessionsDir;
+      try {
+        resolvedSessionsDir = fs.realpathSync(groupSessionsDir);
+      } catch {
+        // Path may not exist yet on first spawn; fall back to the literal path.
+      }
+      hostEnv['CLAUDE_CONFIG_DIR'] = resolvedSessionsDir;
     }
 
     if (disableMemoryLayer) {
