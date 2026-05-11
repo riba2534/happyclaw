@@ -36,6 +36,9 @@ export function SetupChannelsPage() {
   const [wechatQROpen, setWechatQROpen] = useState(false);
   const [wechatConnected, setWechatConnected] = useState(false);
 
+  // WhatsApp (Baileys) — opt-in toggle; QR appears later in settings page
+  const [whatsappEnable, setWhatsappEnable] = useState(false);
+
   useEffect(() => {
     if (user === null && initialized === true) {
       navigate('/login', { replace: true });
@@ -53,8 +56,9 @@ export function SetupChannelsPage() {
     const hasTelegram = telegramBotToken.trim();
     const hasQQ = qqAppId.trim() || qqAppSecret.trim();
     const hasDiscord = discordBotToken.trim();
+    const hasWhatsApp = whatsappEnable;
 
-    if (!hasFeishu && !hasTelegram && !hasQQ && !hasDiscord) {
+    if (!hasFeishu && !hasTelegram && !hasQQ && !hasDiscord && !hasWhatsApp) {
       navigate('/chat', { replace: true });
       return;
     }
@@ -107,6 +111,13 @@ export function SetupChannelsPage() {
         });
       }
 
+      if (hasWhatsApp) {
+        // Setup wizard only flips the channel on. The QR is shown in the
+        // settings page (WhatsAppChannelCard subscribes to whatsapp_status WS
+        // events), since the setup flow has no live WS context.
+        await api.put('/api/config/user-im/whatsapp', { enabled: true });
+      }
+
       navigate('/chat', { replace: true });
     } catch (err) {
       setError(getErrorMessage(err, '保存消息通道配置失败'));
@@ -124,7 +135,7 @@ export function SetupChannelsPage() {
           </div>
           <h1 className="text-2xl font-bold text-foreground mb-2">配置消息通道（可选）</h1>
           <p className="text-sm text-muted-foreground">
-            绑定飞书或 Telegram，即可通过 IM 与 AI 对话。跳过后也可在设置中随时配置。
+            绑定飞书 / Telegram / QQ / Discord / WhatsApp / 微信，即可通过 IM 与 AI 对话。跳过后也可在设置中随时配置。
           </p>
         </div>
 
@@ -226,6 +237,34 @@ export function SetupChannelsPage() {
                 onChange={(e) => setDiscordBotToken(e.target.value)}
                 placeholder="输入 Discord Bot Token"
               />
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* WhatsApp (Baileys) */}
+        <Card className="shadow-sm">
+          <CardContent>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-base font-semibold text-foreground mb-1">
+                  WhatsApp
+                </h2>
+                <p className="text-xs text-muted-foreground">
+                  基于 Baileys 协议扫码登录。启用后，请到「设置 → 消息通道」扫码完成绑定。
+                </p>
+              </div>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground shrink-0">
+                <input
+                  type="checkbox"
+                  checked={whatsappEnable}
+                  onChange={(e) => setWhatsappEnable(e.target.checked)}
+                  className="w-4 h-4 rounded border-border"
+                />
+                启用
+              </label>
+            </div>
+            <div className="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+              ⚠️ Baileys 是逆向 WhatsApp Web 协议的社区方案，存在封号风险；商用场景建议改用 Meta 官方 Cloud API。
             </div>
           </CardContent>
         </Card>
