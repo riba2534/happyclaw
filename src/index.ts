@@ -8845,7 +8845,7 @@ async function main(): Promise<void> {
       logger.info({ userId }, 'User WeChat channel disabled via hot-reload');
       return false;
     } else {
-      // WhatsApp (skeleton — Baileys integration pending in next PR)
+      // WhatsApp (Baileys)
       await imManager.disconnectUserWhatsApp(userId);
       const config = getUserWhatsAppConfig(userId);
       if (config && config.enabled !== false) {
@@ -8941,6 +8941,8 @@ async function main(): Promise<void> {
       imManager.isWhatsAppConnected(userId),
     getUserWhatsAppState: (userId: string) =>
       imManager.getUserWhatsAppState(userId),
+    logoutUserWhatsApp: (userId: string, accountId?: string) =>
+      imManager.logoutUserWhatsApp(userId, accountId),
     processAgentConversation,
     getFeishuChatInfo: (userId: string, chatId: string) =>
       imManager.getFeishuChatInfo(userId, chatId),

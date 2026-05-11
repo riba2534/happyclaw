@@ -2753,6 +2753,54 @@ configRoutes.put('/user-im/whatsapp', authMiddleware, async (c) => {
   }
 });
 
+/**
+ * Hard logout: tell WhatsApp servers, drop the socket, wipe local auth state,
+ * and persist `enabled=false`/`paired=false`. Next enable forces a fresh QR.
+ *
+ * Distinct from PUT /user-im/whatsapp { enabled: false }, which only stops the
+ * socket but keeps the noise/Signal pre-keys on disk for silent reconnect.
+ */
+configRoutes.post('/user-im/whatsapp/logout', authMiddleware, async (c) => {
+  const user = c.get('user') as AuthUser;
+  const current = getUserWhatsAppConfig(user.id);
+  const accountId = current?.accountId || 'default';
+
+  if (deps?.logoutUserWhatsApp) {
+    try {
+      await deps.logoutUserWhatsApp(user.id, accountId);
+    } catch (err) {
+      logger.warn(
+        { err, userId: user.id },
+        'WhatsApp logout deps call failed',
+      );
+    }
+  }
+
+  try {
+    const saved = saveUserWhatsAppConfig(user.id, {
+      accountId,
+      phoneNumber: current?.phoneNumber || '',
+      enabled: false,
+      paired: false,
+    });
+    const state = deps?.getUserWhatsAppState?.(user.id) ?? {
+      status: 'logged_out' as const,
+    };
+    return c.json({
+      accountId: saved.accountId,
+      phoneNumber: saved.phoneNumber,
+      enabled: saved.enabled ?? false,
+      paired: saved.paired ?? false,
+      updatedAt: saved.updatedAt,
+      connected: false,
+      state,
+    });
+  } catch (err) {
+    logger.error({ err }, 'Failed to persist WhatsApp logout state');
+    return c.json({ error: 'Failed to save logout state' }, 500);
+  }
+});
+
 // ─── IM Binding management (bindings panoramic page) ────────────
 
 configRoutes.put('/user-im/bindings/:imJid', authMiddleware, async (c) => {

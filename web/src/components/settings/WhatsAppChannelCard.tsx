@@ -63,6 +63,7 @@ export function WhatsAppChannelCard() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [toggling, setToggling] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const [state, setState] = useState<WhatsAppConnectionState>({
     status: 'disconnected',
   });
@@ -152,6 +153,31 @@ export function WhatsAppChannelCard() {
       toast.error(getErrorMessage(err, '保存 WhatsApp 配置失败'));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    if (
+      !window.confirm(
+        '退出 WhatsApp 登录会清除本地凭据，下次启用需要重新扫码绑定。继续？',
+      )
+    ) {
+      return;
+    }
+    setLoggingOut(true);
+    try {
+      const data = await api.post<UserWhatsAppConfig>(
+        '/api/config/user-im/whatsapp/logout',
+        {},
+      );
+      setConfig(data);
+      if (data.state) setState(data.state);
+      else setState({ status: 'logged_out' });
+      toast.success('已退出 WhatsApp 登录，本地凭据已清除');
+    } catch (err) {
+      toast.error(getErrorMessage(err, '退出登录失败'));
+    } finally {
+      setLoggingOut(false);
     }
   };
 
@@ -317,6 +343,21 @@ export function WhatsAppChannelCard() {
                 >
                   <LogOut className="size-4" />
                   停用并断开
+                </Button>
+              )}
+              {(state.status === 'connected' || config?.paired) && (
+                <Button
+                  variant="outline"
+                  onClick={handleLogout}
+                  disabled={loggingOut}
+                  title="清除本地凭据，下次启用需重新扫码"
+                >
+                  {loggingOut ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <LogOut className="size-4" />
+                  )}
+                  退出登录
                 </Button>
               )}
             </div>

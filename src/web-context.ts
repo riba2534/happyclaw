@@ -16,6 +16,7 @@ import {
   getGroupMemberRole,
   getSessionWithUser,
 } from './db.js';
+import type { WhatsAppConnectionState } from './whatsapp.js';
 
 export interface WsClientInfo {
   sessionId: string;
@@ -102,14 +103,9 @@ export interface WebDeps {
   isUserDingTalkConnected?: (userId: string) => boolean;
   isUserDiscordConnected?: (userId: string) => boolean;
   isUserWhatsAppConnected?: (userId: string) => boolean;
-  getUserWhatsAppState?: (userId: string) => {
-    status: 'connecting' | 'qr' | 'connected' | 'disconnected' | 'logged_out';
-    qr?: string;
-    qrDataUrl?: string;
-    error?: string;
-    meJid?: string;
-    meName?: string;
-  };
+  getUserWhatsAppState?: (userId: string) => WhatsAppConnectionState;
+  /** Hard logout: clears WhatsApp auth state on disk so next enable starts fresh. */
+  logoutUserWhatsApp?: (userId: string, accountId?: string) => Promise<void>;
   processAgentConversation?: (
     chatJid: string,
     agentId: string,

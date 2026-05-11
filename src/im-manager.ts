@@ -31,7 +31,12 @@ import type { QQConnectionConfig } from './qq.js';
 import type { WeChatConnectionConfig } from './wechat.js';
 import type { DingTalkConnectionConfig } from './dingtalk.js';
 import type { DiscordConnectionConfig } from './discord.js';
-import { getWhatsAppAuthDir, type WhatsAppConnectionConfig } from './whatsapp.js';
+import {
+  getWhatsAppAuthDir,
+  type WhatsAppConnectionConfig,
+  type WhatsAppConnectionState,
+} from './whatsapp.js';
+import { rm } from 'fs/promises';
 import { DATA_DIR } from './config.js';
 import type { StreamingSession } from './im-channel.js';
 import { getRegisteredGroup, getJidsByFolder } from './db.js';
@@ -90,14 +95,11 @@ export interface WhatsAppConnectConfig {
   enabled?: boolean;
 }
 
-export type WhatsAppConnectionStateSnapshot = {
-  status: 'connecting' | 'qr' | 'connected' | 'disconnected' | 'logged_out';
-  qr?: string;
-  qrDataUrl?: string;
-  error?: string;
-  meJid?: string;
-  meName?: string;
-};
+/**
+ * Re-export from src/whatsapp.ts as the canonical state shape.
+ * Kept as a type alias so existing imports from im-manager continue to work.
+ */
+export type WhatsAppConnectionStateSnapshot = WhatsAppConnectionState;
 
 export interface ConnectFeishuOptions {
   ignoreMessagesBefore?: number;
@@ -696,6 +698,48 @@ class IMConnectionManager {
 
   async disconnectUserWhatsApp(userId: string): Promise<void> {
     await this.disconnectChannel(userId, 'whatsapp');
+  }
+
+  /**
+   * Full logout for WhatsApp: send logout to WhatsApp servers, drop the socket,
+   * and wipe the local auth state directory so the next enable starts fresh
+   * (forces a new QR scan, possibly a different account).
+   *
+   * Distinct from disconnectUserWhatsApp, which only closes the socket but
+   * keeps the noise/Signal pre-keys on disk for silent reconnect.
+   */
+  async logoutUserWhatsApp(userId: string, accountId?: string): Promise<void> {
+    const conn = this.connections.get(userId);
+    const channel = conn?.channels.get('whatsapp');
+    // Best-effort: ask Baileys to send the logout to WhatsApp servers before
+    // we tear the socket down. If we already disconnected, the disk wipe below
+    // still clears the persisted credentials, so the user can rescan.
+    const maybeLogout = (
+      channel as unknown as { logout?: () => Promise<void> } | undefined
+    )?.logout;
+    if (typeof maybeLogout === 'function') {
+      try {
+        await maybeLogout.call(channel);
+      } catch (err) {
+        logger.warn(
+          { err, userId },
+          'WhatsApp channel.logout() threw, continuing with auth wipe',
+        );
+      }
+    }
+    await this.disconnectChannel(userId, 'whatsapp');
+    this.lastWhatsAppState.delete(userId);
+
+    const authDir = getWhatsAppAuthDir(DATA_DIR, userId, accountId || 'default');
+    try {
+      await rm(authDir, { recursive: true, force: true });
+      logger.info({ userId, authDir }, 'WhatsApp auth state wiped');
+    } catch (err) {
+      logger.warn(
+        { err, userId, authDir },
+        'WhatsApp authDir wipe failed (state already gone or perms)',
+      );
+    }
   }
 
   /**
