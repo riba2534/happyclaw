@@ -2938,6 +2938,10 @@ export function deleteImGroupRecord(jid: string): void {
     db.prepare('DELETE FROM messages WHERE chat_jid = ?').run(jid);
     db.prepare('DELETE FROM chats WHERE jid = ?').run(jid);
     db.prepare('DELETE FROM user_pinned_groups WHERE jid = ?').run(jid);
+    // Feishu thread agents (source_kind='feishu_thread') and other chat-scoped
+    // agents reference this jid via agents.chat_jid — without this, deleting
+    // an IM group leaves orphan agent rows visible in the agents list.
+    db.prepare('DELETE FROM agents WHERE chat_jid = ?').run(jid);
     db.prepare(
       'UPDATE scheduled_tasks SET workspace_jid = NULL, workspace_folder = NULL WHERE workspace_jid = ?',
     ).run(jid);

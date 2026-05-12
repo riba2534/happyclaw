@@ -805,8 +805,15 @@ groupRoutes.delete('/:jid', authMiddleware, async (c) => {
     if (!getChannelType(jid)) {
       return c.json({ error: 'This group cannot be deleted' }, 403);
     }
-    deleteImGroupRecord(jid);
-    delete deps.getRegisteredGroups()[jid];
+    // Reuse the shared helper so the manual delete path also resets
+    // imSendFailCounts / imHealthCheckFailCounts, matching the auto-cleanup
+    // paths (bot removed / health check / send fail).
+    if (deps.removeImGroupRecord) {
+      deps.removeImGroupRecord(jid, 'Manually deleted via API');
+    } else {
+      deleteImGroupRecord(jid);
+      delete deps.getRegisteredGroups()[jid];
+    }
     deps.setLastAgentTimestamp(jid, { timestamp: '', id: '' });
     return c.json({ success: true });
   }

@@ -643,7 +643,7 @@ function unbindImGroup(jid: string, reason: string): void {
  * Differs from unbindImGroup() which only clears target_* fields (used for
  * user-initiated soft unbind where the IM group itself is still alive).
  */
-function removeImGroupRecord(jid: string, reason: string): void {
+export function removeImGroupRecord(jid: string, reason: string): void {
   const group = registeredGroups[jid] ?? getRegisteredGroup(jid);
   if (!group) return;
   deleteImGroupRecord(jid);
@@ -8898,6 +8898,7 @@ async function main(): Promise<void> {
     clearImFailCounts: (jid: string) => {
       imHealthCheckFailCounts.delete(jid);
     },
+    removeImGroupRecord,
     updateReplyRoute: (folder: string, sourceJid: string | null) => {
       activeRouteUpdaters.get(folder)?.(sourceJid);
     },
