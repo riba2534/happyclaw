@@ -17,7 +17,7 @@
  * 风险：Baileys 是逆向 WhatsApp Web 协议的社区方案，封号率随 Meta 风控收紧上升。
  * 商用场景应使用官方 Cloud API。
  */
-import { mkdir } from 'node:fs/promises';
+import { mkdir, chmod } from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import qrcode from 'qrcode';
@@ -223,6 +223,18 @@ export function createWhatsAppConnection(
     }
 
     await mkdir(config.authDir, { recursive: true });
+    // Baileys MultiFileAuthState holds the full WhatsApp login session
+    // (noise keys, Signal pre-keys, etc.) — equivalent to a permanent
+    // login credential. Tighten perms to 0700 to match session-secret.key's
+    // 0600 posture on multi-user machines.
+    try {
+      await chmod(config.authDir, 0o700);
+    } catch (err) {
+      logger.warn(
+        { err, authDir: config.authDir },
+        'Failed to chmod WhatsApp auth dir to 0700 — proceeding with umask default',
+      );
+    }
     const { state, saveCreds } = await useMultiFileAuthState(config.authDir);
 
     // Reuse cached version across reconnects to avoid blocking the socket
