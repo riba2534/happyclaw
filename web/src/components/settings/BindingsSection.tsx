@@ -7,6 +7,7 @@ import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { useImBindings } from './hooks/useImBindings';
 import { ImBindingRow } from './ImBindingRow';
 import { BindingTargetDialog } from './BindingTargetDialog';
+import { api } from '../../api/client';
 import type { AvailableImGroup } from '../../types';
 import type { BindingTarget } from './hooks/useImBindings';
 
@@ -25,6 +26,7 @@ export function BindingsSection() {
   const [rebindGroup, setRebindGroup] = useState<AvailableImGroup | null>(null);
   const [unbindGroup, setUnbindGroup] = useState<AvailableImGroup | null>(null);
   const [resetAllowlistGroup, setResetAllowlistGroup] = useState<AvailableImGroup | null>(null);
+  const [deleteGroup, setDeleteGroup] = useState<AvailableImGroup | null>(null);
 
   const channels: { key: ChannelFilter; label: string }[] = useMemo(() => {
     const types = new Set(bindings.map((b) => b.channel_type));
@@ -66,6 +68,26 @@ export function BindingsSection() {
   const handleResetAllowlist = useCallback((group: AvailableImGroup) => {
     setResetAllowlistGroup(group);
   }, []);
+
+  const handleDelete = useCallback((group: AvailableImGroup) => {
+    setDeleteGroup(group);
+  }, []);
+
+  const confirmDelete = useCallback(async () => {
+    if (!deleteGroup) return;
+    const jid = deleteGroup.jid;
+    setDeleteGroup(null);
+    setActioningJid(jid);
+    setLocalError(null);
+    try {
+      await api.delete(`/api/groups/${encodeURIComponent(jid)}`);
+      reload();
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : '删除失败');
+    } finally {
+      setActioningJid(null);
+    }
+  }, [deleteGroup, reload]);
 
   const confirmResetAllowlist = useCallback(async () => {
     if (!resetAllowlistGroup) return;
@@ -237,6 +259,7 @@ export function BindingsSection() {
                 onUnbind={handleUnbind}
                 onResetAllowlist={handleResetAllowlist}
                 onActivationModeChange={handleActivationModeChange}
+                onDelete={handleDelete}
               />
             ))}
           </div>
@@ -287,6 +310,20 @@ export function BindingsSection() {
             : ''
         }
         confirmText="重置白名单"
+      />
+
+      {/* Delete IM group confirm dialog */}
+      <ConfirmDialog
+        open={!!deleteGroup}
+        onClose={() => setDeleteGroup(null)}
+        onConfirm={confirmDelete}
+        title="删除 IM 渠道"
+        message={
+          deleteGroup
+            ? `确认从 HappyClaw 中删除「${deleteGroup.name}」的注册记录？此操作仅清理本机绑定，不会影响该 IM 群本身。如果 bot 之后再次收到该群消息，会自动重新注册。`
+            : ''
+        }
+        confirmText="删除"
       />
     </div>
   );

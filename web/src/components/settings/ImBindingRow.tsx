@@ -1,4 +1,4 @@
-import { Loader2, MessageSquare, Users, ArrowRightLeft, Unlink, AlertTriangle } from 'lucide-react';
+import { Loader2, MessageSquare, Users, ArrowRightLeft, Unlink, AlertTriangle, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import type { AvailableImGroup } from '../../types';
 import { ChannelBadge } from './channel-meta';
@@ -11,9 +11,10 @@ interface ImBindingRowProps {
   onUnbind: (group: AvailableImGroup) => void;
   onResetAllowlist: (group: AvailableImGroup) => void;
   onActivationModeChange: (jid: string, mode: string) => void;
+  onDelete: (group: AvailableImGroup) => void;
 }
 
-export function ImBindingRow({ group, isActioning, onRebind, onUnbind, onResetAllowlist, onActivationModeChange }: ImBindingRowProps) {
+export function ImBindingRow({ group, isActioning, onRebind, onUnbind, onResetAllowlist, onActivationModeChange, onDelete }: ImBindingRowProps) {
   const hasBound = !!group.bound_agent_id || !!group.bound_main_jid;
   // Empty array = "owner-locked trap": bot was added before Feishu owner DM'd it,
   // so nobody (not even the owner) can trigger the bot until allowlist is reset
@@ -139,6 +140,20 @@ export function ImBindingRow({ group, isActioning, onRebind, onUnbind, onResetAl
             <ArrowRightLeft className="w-3 h-3 mr-1" />
           )}
           换绑
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => onDelete(group)}
+          disabled={isActioning}
+          className="text-muted-foreground hover:text-error"
+          title="删除（群已不存在/bot 已被踢时使用）"
+        >
+          {isActioning ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <Trash2 className="w-3.5 h-3.5" />
+          )}
         </Button>
       </div>
     </div>

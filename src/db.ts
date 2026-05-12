@@ -2922,6 +2922,29 @@ export function deleteChatHistory(chatJid: string): void {
   tx(chatJid);
 }
 
+/**
+ * Delete an IM group's registered_groups entry and all jid-scoped data
+ * (messages, chat record, pinned references). Does NOT touch folder-scoped
+ * data (sessions, scheduled_tasks, group_members) because IM groups typically
+ * share their folder with the owner's home workspace.
+ *
+ * Used when an IM group is detected as dead (bot removed, group disbanded,
+ * health-check unreachable, or repeated send failures) and for the manual
+ * "delete this IM binding" UI button.
+ */
+export function deleteImGroupRecord(jid: string): void {
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM registered_groups WHERE jid = ?').run(jid);
+    db.prepare('DELETE FROM messages WHERE chat_jid = ?').run(jid);
+    db.prepare('DELETE FROM chats WHERE jid = ?').run(jid);
+    db.prepare('DELETE FROM user_pinned_groups WHERE jid = ?').run(jid);
+    db.prepare(
+      'UPDATE scheduled_tasks SET workspace_jid = NULL, workspace_folder = NULL WHERE workspace_jid = ?',
+    ).run(jid);
+  });
+  tx();
+}
+
 export function deleteGroupData(jid: string, folder: string): void {
   const tx = db.transaction(() => {
     // 1. 删除定时任务运行日志 + 定时任务

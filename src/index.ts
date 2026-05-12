@@ -72,6 +72,7 @@ import {
   updateAgentInfo,
   deleteAgent,
   deleteCompletedAgents,
+  deleteImGroupRecord,
   getRunningTaskAgentsByChat,
   markRunningTaskAgentsAsError,
   markAllRunningTaskAgentsAsError,
@@ -635,6 +636,31 @@ function unbindImGroup(jid: string, reason: string): void {
 }
 
 /**
+ * Remove an IM group entirely (jid record + chat history + pinned refs + send/health counters).
+ * Use this when the group is detected as dead — bot kicked, group disbanded,
+ * health-check repeatedly unreachable, or consecutive send failures.
+ *
+ * Differs from unbindImGroup() which only clears target_* fields (used for
+ * user-initiated soft unbind where the IM group itself is still alive).
+ */
+function removeImGroupRecord(jid: string, reason: string): void {
+  const group = registeredGroups[jid] ?? getRegisteredGroup(jid);
+  if (!group) return;
+  deleteImGroupRecord(jid);
+  delete registeredGroups[jid];
+  imSendFailCounts.delete(jid);
+  imHealthCheckFailCounts.delete(jid);
+  logger.info(
+    {
+      jid,
+      hadTargetAgent: !!group.target_agent_id,
+      hadTargetMain: !!group.target_main_jid,
+    },
+    reason,
+  );
+}
+
+/**
  * Resolve the workspace folder an IM chat should use for file downloads and
  * execution context. Bound targets take precedence over the source IM folder.
  */
@@ -963,12 +989,12 @@ async function sendImWithRetry(
   imSendFailCounts.set(imJid, count);
   if (count >= IM_SEND_FAIL_THRESHOLD) {
     try {
-      unbindImGroup(
+      removeImGroupRecord(
         imJid,
-        'Auto-unbound IM group after consecutive send failures',
+        'Auto-removed IM group after consecutive send failures',
       );
     } catch (unbindErr) {
-      logger.error({ imJid, unbindErr }, 'Failed to auto-unbind IM group');
+      logger.error({ imJid, unbindErr }, 'Failed to auto-remove IM group');
     }
   }
   return false;
@@ -7497,9 +7523,9 @@ function learnFeishuOwner(
  */
 function buildOnBotRemovedFromGroup(): (chatJid: string) => void {
   return (chatJid: string) => {
-    unbindImGroup(
+    removeImGroupRecord(
       chatJid,
-      'Auto-unbound IM group: bot removed or group disbanded',
+      'Auto-removed IM group: bot removed or group disbanded',
     );
   };
 }
@@ -9442,9 +9468,9 @@ async function checkImBindingsHealth(): Promise<void> {
         const count = (imHealthCheckFailCounts.get(jid) ?? 0) + 1;
         imHealthCheckFailCounts.set(jid, count);
         if (count >= IM_HEALTH_CHECK_FAIL_THRESHOLD) {
-          unbindImGroup(
+          removeImGroupRecord(
             jid,
-            'IM group not reachable after multiple checks, auto-unbinding',
+            'IM group not reachable after multiple checks, auto-removing',
           );
         } else {
           logger.debug(

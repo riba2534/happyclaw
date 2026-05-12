@@ -31,6 +31,7 @@ import {
   deleteSession,
   deleteChatHistory,
   deleteGroupData,
+  deleteImGroupRecord,
   ensureChatExists,
   storeMessageDirect,
   getMessagesPage,
@@ -62,6 +63,7 @@ import {
   toPublicContainerEnvConfig,
 } from '../runtime-config.js';
 import { clearTargetAgentBindingsForDeletedAgents } from '../im-context-isolation.js';
+import { getChannelType } from '../im-channel.js';
 import {
   loadMountAllowlist,
   findAllowedRoot,
@@ -795,8 +797,18 @@ groupRoutes.delete('/:jid', authMiddleware, async (c) => {
     return c.json({ error: 'Group not found' }, 404);
   }
 
+  // IM-prefixed groups (feishu:, telegram:, qq:, etc.) follow a separate
+  // cleanup path. They share their folder with the owner's home workspace,
+  // so we must NOT touch folder-scoped data (sessions, scheduled_tasks,
+  // group_members) or the workspace directory.
   if (!jid.startsWith('web:')) {
-    return c.json({ error: 'This group cannot be deleted' }, 403);
+    if (!getChannelType(jid)) {
+      return c.json({ error: 'This group cannot be deleted' }, 403);
+    }
+    deleteImGroupRecord(jid);
+    delete deps.getRegisteredGroups()[jid];
+    deps.setLastAgentTimestamp(jid, { timestamp: '', id: '' });
+    return c.json({ success: true });
   }
 
   if (isHostExecutionGroup(existing) && !hasHostExecutionPermission(authUser)) {
