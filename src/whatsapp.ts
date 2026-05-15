@@ -890,7 +890,7 @@ export function extractMessageText(content: proto.IMessage): string | null {
  * Returns 0 if not a usable value (caller falls back to Date.now()).
  */
 export function normalizeTimestamp(
-  ts: number | Long.Long | null | undefined,
+  ts: number | { toNumber(): number } | null | undefined,
 ): number {
   if (ts === null || ts === undefined) return 0;
   if (typeof ts === 'number') return ts * 1000;
