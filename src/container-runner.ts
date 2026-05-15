@@ -188,6 +188,64 @@ function ensureSettingsJson(
   fs.writeFileSync(settingsFile, newContent, { mode: 0o644 });
 }
 
+function isExecutableFile(
+  filePath: string | undefined | null,
+): filePath is string {
+  if (!filePath) return false;
+  try {
+    fs.accessSync(filePath, fs.constants.X_OK);
+    return fs.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function resolveBinaryOnPath(
+  binary: string,
+  envPath: string | undefined,
+): string | null {
+  if (!envPath) return null;
+  for (const dir of envPath.split(path.delimiter)) {
+    if (!dir) continue;
+    const candidate = path.join(dir, binary);
+    if (isExecutableFile(candidate)) return candidate;
+  }
+  return null;
+}
+
+function resolveHostNodeBinary(env: Record<string, string>): string {
+  const homeDir = env.HOME || os.homedir();
+  const candidates = [
+    process.execPath,
+    process.argv[0],
+    env.npm_node_execpath,
+    env.NVM_BIN ? path.join(env.NVM_BIN, 'node') : null,
+    env.FNM_MULTISHELL_PATH ? path.join(env.FNM_MULTISHELL_PATH, 'node') : null,
+    env.VOLTA_HOME ? path.join(env.VOLTA_HOME, 'bin', 'node') : null,
+    resolveBinaryOnPath('node', env.PATH),
+    path.join(
+      homeDir,
+      '.local',
+      'share',
+      'fnm',
+      'aliases',
+      'default',
+      'bin',
+      'node',
+    ),
+    path.join(homeDir, '.nvm', 'versions', 'node', 'current', 'bin', 'node'),
+    '/opt/homebrew/bin/node',
+    '/usr/local/bin/node',
+    '/usr/bin/node',
+  ];
+
+  for (const candidate of candidates) {
+    if (isExecutableFile(candidate)) return candidate;
+  }
+
+  return 'node';
+}
+
 export interface ContainerInput {
   prompt: string;
   sessionId?: string;
@@ -1641,6 +1699,7 @@ export async function runHostAgent(
     );
 
     const logsDir = logsBaseDir;
+    const hostNodeBinary = resolveHostNodeBinary(hostEnv);
 
     const hostResult = await new Promise<ContainerOutput>((resolve) => {
       let settled = false;
@@ -1651,7 +1710,7 @@ export async function runHostAgent(
       };
 
       // 7. 启动进程
-      const proc = spawn('node', [agentRunnerDist], {
+      const proc = spawn(hostNodeBinary, [agentRunnerDist], {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: hostEnv,
         cwd: groupDir,
