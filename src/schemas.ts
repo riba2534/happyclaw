@@ -709,12 +709,36 @@ export const UnifiedProviderSecretsSchema = z
     { message: 'At least one secret field must be provided' },
   );
 
+export const ContentConditionSchema = z.object({
+  type: z.enum(['keyword', 'regex', 'length_gt', 'length_lt', 'starts_with']),
+  value: z.string().min(1).max(500),
+  caseInsensitive: z.boolean().optional(),
+});
+
+export const ContentRoutingRuleSchema = z.object({
+  id: z.string().min(1).max(64),
+  name: z.string().min(1).max(100),
+  conditions: z.array(ContentConditionSchema).min(1).max(20),
+  targetProviderId: z.string().min(1).max(64),
+  priority: z.number().int().min(0).max(1000),
+  enabled: z.boolean(),
+});
+
 export const BalancingConfigSchema = z.object({
   strategy: z
-    .enum(['round-robin', 'weighted-round-robin', 'failover'])
+    .enum([
+      'round-robin',
+      'weighted-round-robin',
+      'failover',
+      'content-based',
+    ])
     .optional(),
   unhealthyThreshold: z.number().int().min(1).max(20).optional(),
   recoveryIntervalMs: z.number().int().min(30000).max(3600000).optional(),
+  routingRules: z.array(ContentRoutingRuleSchema).max(50).optional(),
+  fallbackStrategy: z
+    .enum(['round-robin', 'weighted-round-robin', 'failover'])
+    .optional(),
 });
 
 export const WeChatConfigSchema = z.object({

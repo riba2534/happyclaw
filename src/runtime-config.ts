@@ -296,10 +296,33 @@ interface ClaudeStoredProfileResolved {
 
 // ─── V4 统一供应商模型 ────────────────────────────────────────
 
+// ─── 内容路由规则 ────────────────────────────────────────
+
+export interface ContentCondition {
+  type: 'keyword' | 'regex' | 'length_gt' | 'length_lt' | 'starts_with';
+  value: string;
+  caseInsensitive?: boolean;
+}
+
+export interface ContentRoutingRule {
+  id: string;
+  name: string;
+  conditions: ContentCondition[];
+  targetProviderId: string;
+  priority: number;
+  enabled: boolean;
+}
+
 export interface BalancingConfig {
-  strategy: 'round-robin' | 'weighted-round-robin' | 'failover';
+  strategy:
+    | 'round-robin'
+    | 'weighted-round-robin'
+    | 'failover'
+    | 'content-based';
   unhealthyThreshold: number;
   recoveryIntervalMs: number;
+  routingRules?: ContentRoutingRule[];
+  fallbackStrategy?: 'round-robin' | 'weighted-round-robin' | 'failover';
 }
 
 const DEFAULT_BALANCING_CONFIG: BalancingConfig = {

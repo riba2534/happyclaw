@@ -216,6 +216,11 @@ export interface QueueStatusInfo {
   waitingGroupJids: string[];
 }
 
+export interface ProviderStatusInfo {
+  providers: Array<{ name: string; model: string; enabled: boolean }>;
+  strategy: string;
+}
+
 /**
  * Format system status output for /status command.
  */
@@ -224,6 +229,7 @@ export function formatSystemStatus(
   queueStatus: QueueStatusInfo,
   isActive: boolean,
   queuePosition: number | null,
+  providerStatus?: ProviderStatusInfo,
 ): string {
   const statusText = isActive
     ? '运行中'
@@ -237,9 +243,17 @@ export function formatSystemStatus(
     `📍 位置: ${location.locationLine}`,
     `⚡ 状态: ${statusText}`,
     `📦 负载: ${queueStatus.activeContainerCount}/${queueStatus.maxContainers} 容器, ${queueStatus.activeHostProcessCount}/${queueStatus.maxHostProcesses} 进程`,
-    '',
-    '💡 /sw <消息> 并行任务 · /where 绑定 · /list 全部',
   ];
+
+  if (providerStatus) {
+    lines.push(`🔀 策略: ${providerStatus.strategy}`);
+    for (const p of providerStatus.providers) {
+      const flag = p.enabled ? '✅' : '⏸️';
+      lines.push(`  ${flag} ${p.name} (${p.model})`);
+    }
+  }
+
+  lines.push('', '💡 /sw <消息> 并行任务 · /where 绑定 · /list 全部');
 
   return lines.join('\n');
 }

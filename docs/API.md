@@ -37,6 +37,12 @@
 - `GET|PUT /api/config/claude` · `PUT /api/config/claude/secrets`
 - `GET|PUT /api/config/claude/custom-env`
 - `POST /api/config/claude/test`（连通性测试） · `POST /api/config/claude/apply`（应用到所有容器）
+- `GET /api/config/claude/providers`（列出所有供应商 + 健康状态 + 负载均衡配置）
+- `POST /api/config/claude/providers`（创建供应商） · `PATCH /api/config/claude/providers/:id`（更新供应商） · `DELETE /api/config/claude/providers/:id`
+- `PUT /api/config/claude/providers/:id/secrets`（更新密钥） · `POST /api/config/claude/providers/:id/toggle`（切换 enabled） · `POST /api/config/claude/providers/:id/reset-health`（重置健康状态）
+- `GET /api/config/claude/providers/health`（健康状态轮询） · `GET /api/config/claude/providers/:id/usage`（OAuth 用量数据）
+- `PUT /api/config/claude/balancing`（更新负载均衡配置，支持 `content-based` 策略及 `routingRules`）
+- `POST /api/config/claude/routing-rules/test`（测试内容路由规则，传入 `prompt` 返回匹配的规则和目标提供商）
 - `GET|PUT /api/config/feishu`（**deprecated**，使用 `/api/config/user-im/feishu` 代替）
 - `GET|PUT /api/config/telegram` · `POST /api/config/telegram/test`（**deprecated**，使用 `/api/config/user-im/telegram` 代替）
 - `GET|PUT /api/config/appearance` · `GET /api/config/appearance/public`（外观配置，public 端点无需认证）

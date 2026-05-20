@@ -285,6 +285,7 @@ export function setProviderOverride(groupFolder: string, providerId: string): vo
 function trySelectPoolProvider(
   groupFolder: string,
   agentId?: string | null,
+  prompt?: string,
 ): { profileId: string; resolved: ResolvedProvider } | null {
   const override = getContainerEnvConfig(groupFolder);
   const hasOverride = !!(
@@ -371,7 +372,7 @@ function trySelectPoolProvider(
   providerPool.refreshFromConfig(enabledProviders, balancing);
 
   try {
-    const profileId = providerPool.selectProvider();
+    const profileId = providerPool.selectProvider(prompt);
     const resolved = resolveProviderById(profileId);
     providerPool.acquireSession(profileId);
     setSessionProviderId(groupFolder, agentId, profileId);
@@ -826,7 +827,7 @@ export async function runContainerAgent(
   mkdirForContainer(groupDir);
 
   // ─── Provider Pool selection ───
-  const poolResult = trySelectPoolProvider(group.folder, input.agentId);
+  const poolResult = trySelectPoolProvider(group.folder, input.agentId, input.prompt);
   const selectedProfileId = poolResult?.profileId ?? null;
   const resolvedProvider = poolResult?.resolved;
 
@@ -1390,7 +1391,7 @@ export async function runHostAgent(
 
   // ─── Provider Pool selection (host mode) ───
   const containerOverride = getContainerEnvConfig(group.folder);
-  const hostPoolResult = trySelectPoolProvider(group.folder, input.agentId);
+  const hostPoolResult = trySelectPoolProvider(group.folder, input.agentId, input.prompt);
   const hostSelectedProfileId = hostPoolResult?.profileId ?? null;
   const globalConfig = hostPoolResult?.resolved.config ?? getClaudeProviderConfig();
 

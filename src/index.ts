@@ -143,6 +143,8 @@ import {
   saveFeishuOwnerOpenId,
   saveUserTelegramConfig,
   updateAllSessionCredentials,
+  getEnabledProviders,
+  getBalancingConfig,
 } from './runtime-config.js';
 import type {
   FeishuConnectConfig,
@@ -1450,6 +1452,14 @@ function handleStatusCommand(chatJid: string): string {
     },
     isActive,
     queuePosition,
+    {
+      providers: getEnabledProviders().map((p) => ({
+        name: p.name,
+        model: p.anthropicModel,
+        enabled: p.enabled,
+      })),
+      strategy: getBalancingConfig().strategy,
+    },
   );
 }
 

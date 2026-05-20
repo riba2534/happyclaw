@@ -86,9 +86,11 @@ HappyClaw 是一个基于 [Claude Agent SDK](https://github.com/anthropics/claud
 
 支持配置多个 Claude API 提供商（Anthropic 官方、各类中转服务、Coding Plan），实现高可用部署：
 
-- **三种负载均衡策略** — Round-Robin（轮询）、Weighted（加权）、Failover（主备切换）
+- **四种负载均衡策略** — Round-Robin（轮询）、Weighted（加权）、Failover（主备切换）、Content-Based（智能路由）
+- **智能路由（Content-Based）** — 根据用户输入内容自动选择不同模型，支持关键词、正则、文本长度等条件匹配，未命中时降级到 fallback 策略
 - **自动健康检测** — 连续错误追踪（默认 3 次标记不健康），5 分钟自动恢复探测
 - **Per-group 提供商切换** — 在监控页面可为每个工作区指定使用哪个提供商
+- **Sticky Session** — 同一会话自动绑定首次选中的提供商，避免 thinking block 签名错误
 - **OAuth 凭据支持** — 支持 Claude Code OAuth Token，兼容各类认证方式
 - **活跃会话计数** — 实时显示每个提供商的并发使用量
 
@@ -428,7 +430,7 @@ admin 用户默认使用宿主机模式（无需 Docker），开箱即用。如�
 | 命令 | 缩写 | 用途 |
 |------|------|------|
 | `/list` | `/ls` | 查看所有工作区和对话列表 |
-| `/status` | - | 查看当前工作区/对话状态 |
+| `/status` | - | 查看当前工作区/对话状态及提供商/模型信息 |
 | `/where` | - | 查看当前绑定位置和回复策略 |
 | `/bind <target>` | - | 绑定到指定工作区或 Agent（如 `/bind myws` 或 `/bind myws/a3b`） |
 | `/unbind` | - | 解绑回默认工作区 |

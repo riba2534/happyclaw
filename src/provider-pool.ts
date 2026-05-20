@@ -1,11 +1,15 @@
 /**
  * Provider Pool — 多提供商负载均衡
  *
- * 支持三种策略：round-robin、weighted-round-robin、failover
+ * 支持四种策略：round-robin、weighted-round-robin、failover、content-based
  * 健康状态纯内存管理，配置由 runtime-config V4 注入（不再自行管理配置文件）
  */
 import { logger } from './logger.js';
-import type { BalancingConfig } from './runtime-config.js';
+import type {
+  BalancingConfig,
+  ContentCondition,
+  ContentRoutingRule,
+} from './runtime-config.js';
 
 // ─── 类型定义 ──────────────────────────────────────────────
 
@@ -51,6 +55,9 @@ export class ProviderPool {
   private recoveryIntervalMs = DEFAULT_RECOVERY_INTERVAL_MS;
   private healthMap: Map<string, ProviderHealthStatus> = new Map();
   private roundRobinIndex = 0;
+  private routingRules: ContentRoutingRule[] = [];
+  private fallbackStrategy: 'round-robin' | 'weighted-round-robin' | 'failover' =
+    'round-robin';
 
   /**
    * Refresh internal state from V4 provider config.
@@ -68,6 +75,8 @@ export class ProviderPool {
     this.strategy = balancing.strategy;
     this.unhealthyThreshold = balancing.unhealthyThreshold;
     this.recoveryIntervalMs = balancing.recoveryIntervalMs;
+    this.routingRules = balancing.routingRules || [];
+    this.fallbackStrategy = balancing.fallbackStrategy || 'round-robin';
 
     // Clean up health entries for removed members
     const memberIds = new Set(this.members.map((m) => m.profileId));
@@ -84,7 +93,7 @@ export class ProviderPool {
   // ─── 选择算法 ────────────────────────────────────────────
 
   /** 选择一个提供商，返回 profileId */
-  selectProvider(): string {
+  selectProvider(prompt?: string): string {
     const { strategy, members, recoveryIntervalMs } = this;
     const now = Date.now();
 
@@ -130,6 +139,86 @@ export class ProviderPool {
       throw new Error('Provider pool has no members configured');
     }
 
+    // Content-based strategy: classify prompt then fallback
+    if (strategy === 'content-based') {
+      if (prompt) {
+        const targetId = this.classifyContent(prompt);
+        if (targetId) {
+          const target = candidates.find((c) => c.profileId === targetId);
+          if (target) {
+            logger.info(
+              { targetId, strategy },
+              'Content-based routing matched provider',
+            );
+            return target.profileId;
+          }
+          logger.info(
+            { targetId },
+            'Content-routed provider unhealthy or disabled, falling back',
+          );
+        }
+      }
+      return this.selectByStrategy(this.fallbackStrategy, candidates);
+    }
+
+    return this.selectByStrategy(strategy, candidates);
+  }
+
+  /** Classify prompt against routing rules, return matched provider ID or null */
+  classifyContent(
+    prompt: string,
+    rules?: ContentRoutingRule[],
+  ): string | null {
+    const effectiveRules = (rules || this.routingRules)
+      .filter((r) => r.enabled)
+      .sort((a, b) => a.priority - b.priority);
+
+    for (const rule of effectiveRules) {
+      const matched = rule.conditions.some((cond) =>
+        this.evalCondition(prompt, cond),
+      );
+      if (matched) return rule.targetProviderId;
+    }
+    return null;
+  }
+
+  private evalCondition(prompt: string, cond: ContentCondition): boolean {
+    switch (cond.type) {
+      case 'keyword': {
+        const text = cond.caseInsensitive ? prompt.toLowerCase() : prompt;
+        const kw = cond.caseInsensitive
+          ? cond.value.toLowerCase()
+          : cond.value;
+        return text.includes(kw);
+      }
+      case 'regex': {
+        try {
+          const flags = cond.caseInsensitive ? 'is' : 's';
+          return new RegExp(cond.value, flags).test(prompt);
+        } catch {
+          return false;
+        }
+      }
+      case 'length_gt':
+        return prompt.length > parseInt(cond.value, 10);
+      case 'length_lt':
+        return prompt.length < parseInt(cond.value, 10);
+      case 'starts_with': {
+        const text = cond.caseInsensitive ? prompt.toLowerCase() : prompt;
+        const prefix = cond.caseInsensitive
+          ? cond.value.toLowerCase()
+          : cond.value;
+        return text.startsWith(prefix);
+      }
+      default:
+        return false;
+    }
+  }
+
+  private selectByStrategy(
+    strategy: string,
+    candidates: ProviderPoolMember[],
+  ): string {
     let selected: ProviderPoolMember;
 
     switch (strategy) {

@@ -680,6 +680,30 @@ configRoutes.put(
   },
 );
 
+// ─── POST /claude/routing-rules/test — 测试内容路由规则 ─────
+configRoutes.post(
+  '/claude/routing-rules/test',
+  authMiddleware,
+  async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const prompt = body?.prompt;
+    if (!prompt || typeof prompt !== 'string') {
+      return c.json({ error: 'Missing or invalid "prompt" field' }, 400);
+    }
+
+    const balancing = getBalancingConfig();
+    const enabledProviders = getEnabledProviders();
+    providerPool.refreshFromConfig(enabledProviders, balancing);
+
+    const matchedId = providerPool.classifyContent(prompt);
+    const matchedRule =
+      balancing.routingRules?.find((r) => r.targetProviderId === matchedId) ||
+      null;
+
+    return c.json({ matchedRule, targetProviderId: matchedId });
+  },
+);
+
 // ─── POST /claude/apply — 应用配置到所有容器 ─────
 configRoutes.post(
   '/claude/apply',
