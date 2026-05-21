@@ -37,6 +37,7 @@ const RESERVED_CLAUDE_ENV_KEYS = new Set([
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_AUTH_TOKEN',
   'ANTHROPIC_MODEL',
+  'ANTHROPIC_CUSTOM_MODEL_OPTION',
 ]);
 const DANGEROUS_ENV_VARS = new Set([
   // Code execution / preload attacks
@@ -2343,6 +2344,9 @@ export function buildClaudeEnvLines(
   }
   if (config.anthropicModel) {
     lines.push(`ANTHROPIC_MODEL=${sanitizeEnvValue(config.anthropicModel)}`);
+    lines.push(
+      `ANTHROPIC_CUSTOM_MODEL_OPTION=${sanitizeEnvValue(config.anthropicModel)}`,
+    );
   }
 
   // Use explicit profileCustomEnv if provided (pool mode), otherwise active profile
