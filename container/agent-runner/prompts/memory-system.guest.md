@@ -8,4 +8,4 @@
 重要信息直接记录在当前工作区的 CLAUDE.md 或其他文件中。
 Claude 会自动维护你的会话记忆，无需额外操作。
 
-全局记忆（`/workspace/global/CLAUDE.md`）为只读参考。
+HappyClaw 全局记忆（`/workspace/global/CLAUDE.md`）为只读参考；它不等同于用户原生 `~/.claude/CLAUDE.md` playbook。

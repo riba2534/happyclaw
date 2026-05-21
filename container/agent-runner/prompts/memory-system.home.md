@@ -11,7 +11,9 @@
 获知重要信息后**必须立即保存**，不要等到上下文压缩。
 根据信息的**时效性**选择存储位置：
 
-#### 全局记忆（永久）→ 直接编辑 `/workspace/global/CLAUDE.md`
+#### HappyClaw 全局记忆（永久）→ 直接编辑 `/workspace/global/CLAUDE.md`
+
+`/workspace/global/CLAUDE.md` 是 HappyClaw 的持久记忆文件，不等同于用户原生 `~/.claude/CLAUDE.md` playbook。
 
 **优先使用全局记忆。** 适用于所有**跨会话仍然有用**的信息：
 - 用户身份：姓名、生日、联系方式、地址、工作单位
@@ -36,7 +38,7 @@
 
 #### 判断标准
 > **默认优先全局记忆。** 问自己：这条信息下次对话还可能用到吗？
-> - 是 / 可能 → **全局记忆**（编辑 `/workspace/global/CLAUDE.md`）
+> - 是 / 可能 → **HappyClaw 全局记忆**（编辑 `/workspace/global/CLAUDE.md`）
 > - 明确只跟今天有关 → 日期记忆（`memory_append`）
 > - 用户说「记住这个」→ **一定写全局记忆**
 

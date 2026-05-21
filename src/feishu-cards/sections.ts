@@ -31,9 +31,11 @@ export const CARD_ELEMENT_IDS = {
 
   // Rich streaming slots (Phase C)
   STATUS_BANNER: 'status_banner',
-  PROGRESS_PANEL: 'progress_panel',
-  PROGRESS_CONTENT: 'progress_md',
-  TOOLS_PANEL: 'tools_live',
+    PROGRESS_PANEL: 'progress_panel',
+    PROGRESS_CONTENT: 'progress_md',
+    TASK_PANEL: 'task_live',
+    TASK_CONTENT: 'task_live_md',
+    TOOLS_PANEL: 'tools_live',
   TOOLS_CONTENT: 'tools_live_md',
   THINKING_PANEL: 'thinking_live',
   THINKING_CONTENT: 'thinking_live_md',
@@ -544,6 +546,7 @@ export interface StreamingPanelsInit {
   /** Initial markdown content for each slot — empty strings get placeholder text. */
   statusBanner?: string;
   progressContent?: string;
+  taskContent?: string;
   toolsContent?: string;
   thinkingContent?: string;
   askContent?: string;
@@ -560,7 +563,7 @@ export interface StreamingPanelsInit {
  * Build the full runtime panel column for the streaming skeleton (ordered).
  *
  * Panel order aligns with the web StreamingDisplay component:
- *   status banner → ask (if any) → progress → tools → thinking → timeline
+ *   status banner → ask (if any) → progress → tasks → tools → thinking → timeline
  * Each panel's inner markdown has its own element_id so the controller can
  * patch it via cardElement.content() without touching the panel structure.
  */
@@ -585,6 +588,13 @@ export function buildStreamingPanels(init: StreamingPanelsInit): El[] {
       title: '**📋 任务进度**',
       expanded: init.expandProgress ?? false,
       content: init.progressContent ?? '<font color=\'grey\'>等待任务规划…</font>',
+    }),
+    buildRuntimePanel({
+      elementId: CARD_ELEMENT_IDS.TASK_PANEL,
+      contentElementId: CARD_ELEMENT_IDS.TASK_CONTENT,
+      title: '**🤖 子 Agent / Task**',
+      expanded: init.expandProgress ?? false,
+      content: init.taskContent ?? '<font color=\'grey\'>暂无子任务…</font>',
     }),
     buildRuntimePanel({
       elementId: CARD_ELEMENT_IDS.TOOLS_PANEL,

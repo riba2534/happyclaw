@@ -6,7 +6,7 @@
 
 // Streaming event types (canonical source: shared/stream-event.ts)
 export type { StreamEventType, StreamEvent } from './stream-event.types.js';
-import type { StreamEvent } from './stream-event.types.js';
+import type { ClaudeContextAudit, StreamEvent } from './stream-event.types.js';
 
 export interface ContainerInput {
   prompt: string;
@@ -39,6 +39,8 @@ export interface ContainerInput {
    * host absolute path for host mode).
    */
   plugins?: Array<{ type: 'local'; path: string }>;
+  /** Runtime context audit bootstrap from the host/container launcher. */
+  contextAudit?: ClaudeContextAudit;
 }
 
 export interface ContainerOutput {

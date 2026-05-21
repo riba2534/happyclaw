@@ -15,6 +15,7 @@ import path from 'path';
 
 import { CONTAINER_IMAGE, DATA_DIR, GROUPS_DIR, TIMEZONE } from './config.js';
 import { logger } from './logger.js';
+import { resolveHostNodeBinary } from './node-resolver.js';
 import {
   loadMountAllowlist,
   validateAdditionalMounts,
@@ -49,7 +50,12 @@ import {
   checkHostCapabilities,
   logCapabilityPreflight,
 } from './agent-capabilities.js';
+import {
+  buildClaudeContextPlan,
+  syncHostClaudeContext,
+} from './claude-context-resolver.js';
 import { MessageSourceKind, RegisteredGroup, StreamEvent } from './types.js';
+import type { ClaudeContextAudit } from './stream-event.types.js';
 import {
   attachStderrHandler,
   attachStdoutHandler,
@@ -218,6 +224,8 @@ export interface ContainerInput {
    * plugins.json; never set by the caller.
    */
   plugins?: Array<{ type: 'local'; path: string }>;
+  /** Runtime context audit bootstrap; agent-runner enriches it with SDK usage. */
+  contextAudit?: ClaudeContextAudit;
 }
 
 export interface ContainerOutput {
@@ -495,6 +503,16 @@ export function buildVolumeMounts(
       )
     : path.join(DATA_DIR, 'sessions', group.folder, '.claude');
   mkdirForContainer(groupSessionsDir);
+  const claudeContextPlan = buildClaudeContextPlan({
+    executionMode: 'container',
+    group,
+    ownerHomeFolder,
+    externalClaudeDir: getEffectiveExternalDir(),
+    projectRoot,
+    dataDir: DATA_DIR,
+    groupSessionsDir,
+    mountUserSkills,
+  });
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
   const mcpServers = ownerId ? loadUserMcpServers(ownerId) : {};
   ensureSettingsJson(settingsFile, mcpServers);
@@ -526,9 +544,8 @@ export function buildVolumeMounts(
 
   // Skills：以只读卷挂载宿主机目录（由 entrypoint 创建符号链接）
   // 用户的所有 skills 在其所有工作区中全量生效
-  const projectSkillsDir = path.join(projectRoot, 'container', 'skills');
-  const userSkillsDir =
-    mountUserSkills && ownerId ? path.join(DATA_DIR, 'skills', ownerId) : null;
+  const projectSkillsDir = claudeContextPlan.projectSkillsDir;
+  const userSkillsDir = claudeContextPlan.userSkillsDir ?? null;
 
   // Ensure user skills directory exists so it can always be mounted.
   // Skills may be installed after the group is created; without pre-creating,
@@ -708,61 +725,30 @@ export function buildVolumeMounts(
     readonly: true,
   });
 
-  // Admin's ~/.claude/ config: mount CLAUDE.md and rules/ into /workspace/
+  // Admin's effective Claude config: mount CLAUDE.md and rules/ into /workspace/
   // so the SDK's directory traversal (cwd → root) discovers them at /workspace/ level.
-  // Only for admin-created workspaces (ownerHomeFolder === 'main').
-  const isCreatorAdmin = ownerHomeFolder === 'main';
-  if (isCreatorAdmin) {
-    const hostClaudeDir = path.join(os.homedir(), '.claude');
-    const hostClaudeMd = path.join(hostClaudeDir, 'CLAUDE.md');
-    const hostRulesDir = path.join(hostClaudeDir, 'rules');
-
-    if (fs.existsSync(hostClaudeMd)) {
+  // Only for admin-created workspaces; ordinary users must not inherit host-global config.
+  if (claudeContextPlan.isAdminOwned) {
+    if (claudeContextPlan.claudeMdSource && fs.existsSync(claudeContextPlan.claudeMdSource)) {
       mounts.push({
-        hostPath: hostClaudeMd,
+        hostPath: claudeContextPlan.claudeMdSource,
         containerPath: '/workspace/CLAUDE.md',
         readonly: true,
       });
     }
-    if (fs.existsSync(hostRulesDir)) {
+    if (claudeContextPlan.rulesSourceDir && fs.existsSync(claudeContextPlan.rulesSourceDir)) {
       mounts.push({
-        hostPath: hostRulesDir,
+        hostPath: claudeContextPlan.rulesSourceDir,
         containerPath: '/workspace/.claude/rules',
         readonly: true,
       });
     }
-
-    // External Claude dir: mount skills (admin only, fallback to ~/.claude)
-    const effectiveExtDir = getEffectiveExternalDir();
-    {
-      const extSkillsDir = path.join(effectiveExtDir, 'skills');
-      if (fs.existsSync(extSkillsDir)) {
-        mounts.push({
-          hostPath: extSkillsDir,
-          containerPath: '/workspace/external-skills',
-          readonly: true,
-        });
-      }
-      // rules 和 CLAUDE.md 已在上方通过 hostRulesDir/hostClaudeMd 挂载（当 effectiveExtDir === hostClaudeDir 时）
-      // 仅在 externalClaudeDir 显式设置且不同于 ~/.claude 时才额外挂载
-      if (effectiveExtDir !== hostClaudeDir) {
-        const extRulesDir = path.join(effectiveExtDir, 'rules');
-        if (fs.existsSync(extRulesDir) && !fs.existsSync(hostRulesDir)) {
-          mounts.push({
-            hostPath: extRulesDir,
-            containerPath: '/workspace/.claude/rules',
-            readonly: true,
-          });
-        }
-        const extClaudeMd = path.join(effectiveExtDir, 'CLAUDE.md');
-        if (fs.existsSync(extClaudeMd) && !fs.existsSync(hostClaudeMd)) {
-          mounts.push({
-            hostPath: extClaudeMd,
-            containerPath: '/workspace/CLAUDE.md',
-            readonly: true,
-          });
-        }
-      }
+    if (claudeContextPlan.externalSkillsDir && fs.existsSync(claudeContextPlan.externalSkillsDir)) {
+      mounts.push({
+        hostPath: claudeContextPlan.externalSkillsDir,
+        containerPath: '/workspace/external-skills',
+        readonly: true,
+      });
     }
   }
 
@@ -903,6 +889,18 @@ export async function runContainerAgent(
         plugins: group.created_by
           ? loadUserPlugins(group.created_by, { runtime: 'docker' })
           : [],
+        contextAudit: buildClaudeContextPlan({
+          executionMode: 'container',
+          group,
+          ownerHomeFolder,
+          externalClaudeDir: getEffectiveExternalDir(),
+          projectRoot: process.cwd(),
+          dataDir: DATA_DIR,
+          groupSessionsDir: input.agentId
+            ? path.join(DATA_DIR, 'sessions', group.folder, 'agents', input.agentId, '.claude')
+            : path.join(DATA_DIR, 'sessions', group.folder, '.claude'),
+          mountUserSkills: shouldMountUserSkills,
+        }).audit,
       };
       container.stdin.write(JSON.stringify(dockerInput));
       container.stdin.end();
@@ -1282,107 +1280,21 @@ export async function runHostAgent(
   ensureSettingsJson(settingsFile, hostMcpServers);
 
   // 4. Skills / Rules / CLAUDE.md 自动链接到 session 目录
-  const effectiveExtDir = getEffectiveExternalDir();
-
-  // 4a. Skills 链接（外部→项目级→用户级，后者覆盖前者）
-  try {
-    const skillsDir = path.join(groupSessionsDir, 'skills');
-    fs.mkdirSync(skillsDir, { recursive: true });
-    // 清空已有符号链接
-    for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
-      const entryPath = path.join(skillsDir, entry.name);
-      try {
-        if (entry.isSymbolicLink() || entry.isDirectory()) {
-          fs.rmSync(entryPath, { recursive: true, force: true });
-        }
-      } catch {
-        /* ignore */
-      }
-    }
-
-    const linkSkillEntries = (sourceDir: string) => {
-      if (!fs.existsSync(sourceDir)) return;
-      for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
-        if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-        const linkPath = path.join(skillsDir, entry.name);
-        try {
-          // 移除已有符号链接（高优先级覆盖低优先级）
-          if (fs.existsSync(linkPath)) {
-            fs.rmSync(linkPath, { recursive: true, force: true });
-          }
-          fs.symlinkSync(path.join(sourceDir, entry.name), linkPath);
-        } catch {
-          /* ignore */
-        }
-      }
-    };
-
-    // 外部 skills（最低优先级）
-    // 宿主机 skills（最低优先级）
-    // Builtin skills (lowest priority, e.g. feishu-cli builtin — mirrors /opt/builtin-skills in container)
-    const builtinSkillsDir = path.join(DATA_DIR, 'builtin-skills');
-    linkSkillEntries(builtinSkillsDir);
-    linkSkillEntries(path.join(effectiveExtDir, 'skills'));
-    // 项目级 skills
-    const projectRoot = process.cwd();
-    linkSkillEntries(path.join(projectRoot, 'container', 'skills'));
-    // 用户级 skills（覆盖同名项目级）
-    const ownerId = group.created_by;
-    if (ownerId) {
-      linkSkillEntries(path.join(DATA_DIR, 'skills', ownerId));
-    }
-  } catch (err) {
-    logger.warn(
-      { folder: group.folder, err },
-      '宿主机模式 skills 符号链接失败',
-    );
-  }
-
-  // 4b. Rules 自动链接到 session 目录
-  try {
-    const rulesDir = path.join(groupSessionsDir, 'rules');
-    fs.mkdirSync(rulesDir, { recursive: true });
-    // 清空已有符号链接
-    for (const entry of fs.readdirSync(rulesDir, { withFileTypes: true })) {
-      const p = path.join(rulesDir, entry.name);
-      try {
-        if (entry.isSymbolicLink() || entry.isFile()) {
-          fs.rmSync(p, { force: true });
-        }
-      } catch { /* ignore */ }
-    }
-    const linkRuleEntries = (sourceDir: string) => {
-      if (!fs.existsSync(sourceDir)) return;
-      for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
-        if (!entry.isFile() && !entry.isDirectory() && !entry.isSymbolicLink()) continue;
-        const linkPath = path.join(rulesDir, entry.name);
-        try {
-          if (fs.existsSync(linkPath)) {
-            fs.rmSync(linkPath, { recursive: true, force: true });
-          }
-          fs.symlinkSync(path.join(sourceDir, entry.name), linkPath);
-        } catch { /* ignore */ }
-      }
-    };
-    // 外部 rules（最低优先级）
-    linkRuleEntries(path.join(effectiveExtDir, 'rules'));
-  } catch (err) {
-    logger.warn(
-      { folder: group.folder, err },
-      '宿主机模式 rules 符号链接失败',
-    );
-  }
-
-  // 4c. 全局 CLAUDE.md ���接（用户级，不覆盖已有文件）
-  {
-    const extClaudeMd = path.join(effectiveExtDir, 'CLAUDE.md');
-    const sessionClaudeMd = path.join(groupSessionsDir, 'CLAUDE.md');
-    try {
-      if (fs.existsSync(extClaudeMd) && !fs.existsSync(sessionClaudeMd)) {
-        fs.symlinkSync(extClaudeMd, sessionClaudeMd);
-      }
-    } catch { /* ignore */ }
-  }
+  const hostClaudeContextPlan = buildClaudeContextPlan({
+    executionMode: 'host',
+    group,
+    ownerHomeFolder,
+    externalClaudeDir: getEffectiveExternalDir(),
+    projectRoot: process.cwd(),
+    dataDir: DATA_DIR,
+    groupSessionsDir,
+  });
+  const hostClaudeContextSync = syncHostClaudeContext(
+    hostClaudeContextPlan,
+    groupSessionsDir,
+  );
+  hostClaudeContextPlan.audit.claudeMd.status = hostClaudeContextSync.claudeMdStatus;
+  hostClaudeContextPlan.audit.warnings = hostClaudeContextSync.warnings;
 
   // 5. 构建环境变量
   const hostEnv: Record<string, string> = {
@@ -1471,7 +1383,7 @@ export async function runHostAgent(
 
     // admin 主容器 + 系统设置 disableMemoryLayerForAdminHost 时禁用 HappyClaw 记忆层：
     // 不注入 memory MCP 工具 / WORKSPACE_GLOBAL/MEMORY env / 记忆提示，
-    // 让 Agent 完全按用户本机 ~/.claude/ 的 Playbook 工作。
+    // 三件套仍通过同步后的 session .claude 生效，避免 externalClaudeDir 漂移。
     // 仅作用于 admin 主容器（is_home=1, folder=main），不影响 admin 创建的其他子群组。
     const isCreatorAdmin = ownerHomeFolder === 'main';
     const disableMemoryLayer =
@@ -1505,33 +1417,24 @@ export async function runHostAgent(
       );
     }
 
-    // 禁用记忆层且配置了 customCwd 时不覆盖 CLAUDE_CONFIG_DIR，让 SDK 使用用户真实 $HOME/.claude/
-    // 未配 customCwd 时保留 override，避免 HappyClaw 的 cwd 污染 ~/.claude/projects/
-    if (!disableMemoryLayer || !group.customCwd) {
-      // Resolve symlinks so CLAUDE_CONFIG_DIR ends up as the real on-disk path.
-      // Some external layer (suspected backend rate-limiter) has been observed to
-      // pin failure state to specific CLAUDE_CONFIG_DIR path strings; allowing
-      // operators to redirect the literal path via a symlink (e.g. mv main main-v2
-      // && ln -s main-v2 main) is a cheap escape hatch when a path gets "tainted".
-      let resolvedSessionsDir = groupSessionsDir;
-      try {
-        resolvedSessionsDir = fs.realpathSync(groupSessionsDir);
-      } catch {
-        // Path may not exist yet on first spawn; fall back to the literal path.
-      }
-      hostEnv['CLAUDE_CONFIG_DIR'] = resolvedSessionsDir;
+    // Resolve symlinks so CLAUDE_CONFIG_DIR ends up as the real on-disk path.
+    // Host mode also goes through the synchronized session .claude directory so
+    // explicit externalClaudeDir is authoritative for CLAUDE.md/rules/skills.
+    let resolvedSessionsDir = groupSessionsDir;
+    try {
+      resolvedSessionsDir = fs.realpathSync(groupSessionsDir);
+    } catch {
+      // Path may not exist yet on first spawn; fall back to the literal path.
     }
+    hostEnv['CLAUDE_CONFIG_DIR'] = resolvedSessionsDir;
 
     if (disableMemoryLayer) {
       hostEnv['HAPPYCLAW_DISABLE_MEMORY_LAYER'] = 'true';
-      // SDK 读的是 $CLAUDE_CONFIG_DIR/settings.json（此时指向 ~/.claude/），
-      // HappyClaw 写在 groupSessionsDir/settings.json 的 REQUIRED_SETTINGS_ENV 会丢。
-      // 直接注入到进程 env，SDK 按 process.env 读，绕开 settings.json 路径。
+      // 直接注入到进程 env，SDK 按 process.env 读，避免 settings.json 合并差异影响必需项。
       for (const [key, value] of Object.entries(REQUIRED_SETTINGS_ENV)) {
         hostEnv[key] = value;
       }
-      // 同样，per-user MCP servers 在 ~/.claude/settings.json 里没有，
-      // 通过 env 透传，agent-runner 合并进 SDK mcpServers 参数。
+      // 同样，per-user MCP servers 通过 env 透传，agent-runner 合并进 SDK mcpServers 参数。
       if (hostMcpServers && Object.keys(hostMcpServers).length > 0) {
         hostEnv['HAPPYCLAW_USER_MCP_SERVERS_JSON'] =
           JSON.stringify(hostMcpServers);
@@ -1652,7 +1555,10 @@ export async function runHostAgent(
       };
 
       // 7. 启动进程
-      const proc = spawn('node', [agentRunnerDist], {
+      // Resolve absolute node path: bare 'node' fails with ENOENT under
+      // PM2 / launchd / GUI launchers where PATH lacks nvm/fnm dirs.
+      const hostNodeBinary = resolveHostNodeBinary(hostEnv);
+      const proc = spawn(hostNodeBinary, [agentRunnerDist], {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: hostEnv,
         cwd: groupDir,
@@ -1681,6 +1587,7 @@ export async function runHostAgent(
       const hostInput: ContainerInput = {
         ...input,
         plugins: prepareHostPlugins(group.created_by),
+        contextAudit: hostClaudeContextPlan.audit,
       };
       proc.stdin.write(JSON.stringify(hostInput));
       proc.stdin.end();

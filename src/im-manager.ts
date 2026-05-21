@@ -108,7 +108,7 @@ export interface ConnectFeishuOptions {
   resolveEffectiveChatJid?: (
     chatJid: string,
     messageMeta?: FeishuMessageMeta,
-  ) => { effectiveJid: string; agentId: string | null } | null;
+  ) => { effectiveJid: string; agentId: string | null; sourceJid?: string } | null;
   onAgentMessage?: (baseChatJid: string, agentId: string) => void;
   onBotAddedToGroup?: (chatJid: string, chatName: string) => void;
   onBotRemovedFromGroup?: (chatJid: string) => void;
@@ -482,7 +482,7 @@ class IMConnectionManager {
       resolveGroupFolder?: (jid: string) => string | undefined;
       resolveEffectiveChatJid?: (
         chatJid: string,
-      ) => { effectiveJid: string; agentId: string | null } | null;
+      ) => { effectiveJid: string; agentId: string | null; sourceJid?: string } | null;
       onAgentMessage?: (baseChatJid: string, agentId: string) => void;
       onBotAddedToGroup?: (chatJid: string, chatName: string) => void;
       onBotRemovedFromGroup?: (chatJid: string) => void;
@@ -533,7 +533,7 @@ class IMConnectionManager {
       resolveGroupFolder?: (jid: string) => string | undefined;
       resolveEffectiveChatJid?: (
         chatJid: string,
-      ) => { effectiveJid: string; agentId: string | null } | null;
+      ) => { effectiveJid: string; agentId: string | null; sourceJid?: string } | null;
       onAgentMessage?: (baseChatJid: string, agentId: string) => void;
     },
   ): Promise<boolean> {
@@ -586,7 +586,7 @@ class IMConnectionManager {
       resolveGroupFolder?: (jid: string) => string | undefined;
       resolveEffectiveChatJid?: (
         chatJid: string,
-      ) => { effectiveJid: string; agentId: string | null } | null;
+      ) => { effectiveJid: string; agentId: string | null; sourceJid?: string } | null;
       onAgentMessage?: (baseChatJid: string, agentId: string) => void;
     },
   ): Promise<boolean> {
@@ -636,7 +636,7 @@ class IMConnectionManager {
       resolveGroupFolder?: (jid: string) => string | undefined;
       resolveEffectiveChatJid?: (
         chatJid: string,
-      ) => { effectiveJid: string; agentId: string | null } | null;
+      ) => { effectiveJid: string; agentId: string | null; sourceJid?: string } | null;
       onAgentMessage?: (baseChatJid: string, agentId: string) => void;
       onBotAddedToGroup?: (chatJid: string, chatName: string) => void;
       onBotRemovedFromGroup?: (chatJid: string) => void;
@@ -755,7 +755,7 @@ class IMConnectionManager {
       resolveGroupFolder?: (jid: string) => string | undefined;
       resolveEffectiveChatJid?: (
         chatJid: string,
-      ) => { effectiveJid: string; agentId: string | null } | null;
+      ) => { effectiveJid: string; agentId: string | null; sourceJid?: string } | null;
       onAgentMessage?: (baseChatJid: string, agentId: string) => void;
       onBotAddedToGroup?: (chatJid: string, chatName: string) => void;
       onBotRemovedFromGroup?: (chatJid: string) => void;
@@ -808,7 +808,7 @@ class IMConnectionManager {
       isChatAuthorized?: (jid: string) => boolean;
       onCommand?: (chatJid: string, command: string) => Promise<string | null>;
       resolveGroupFolder?: (jid: string) => string | undefined;
-      resolveEffectiveChatJid?: (chatJid: string) => { effectiveJid: string; agentId: string | null } | null;
+      resolveEffectiveChatJid?: (chatJid: string) => { effectiveJid: string; agentId: string | null; sourceJid?: string } | null;
       onAgentMessage?: (baseChatJid: string, agentId: string) => void;
       onBotAddedToGroup?: (chatJid: string, chatName: string) => void;
       onBotRemovedFromGroup?: (chatJid: string) => void;

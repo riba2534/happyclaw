@@ -72,6 +72,7 @@ import {
   updateAgentInfo,
   deleteAgent,
   deleteCompletedAgents,
+  deleteImGroupRecord,
   getRunningTaskAgentsByChat,
   markRunningTaskAgentsAsError,
   markAllRunningTaskAgentsAsError,
@@ -121,6 +122,7 @@ import {
   resolveBroadcastFolder,
   resolveTaskRoutingDecision,
 } from './task-routing.js';
+import { resolveImGroupDefaults } from './im-group-defaults.js';
 import {
   applyAutoIsolateContextForGroups,
   getUserContextIsolationConfig,
@@ -226,6 +228,15 @@ const DEFAULT_MAIN_NAME = 'Main';
 const SAFE_REQUEST_ID_RE = /^[A-Za-z0-9_-]+$/;
 const OOM_EXIT_RE = /code 137/;
 
+function buildWebTraceUrl(folder: string | undefined, turnId?: string): string | null {
+  const base = process.env.HAPPYCLAW_WEB_URL || process.env.PUBLIC_BASE_URL || process.env.WEB_BASE_URL;
+  if (!base || !folder) return null;
+  const url = new URL(`/chat/${encodeURIComponent(folder)}`, base);
+  if (turnId) url.searchParams.set('turn', turnId);
+  url.searchParams.set('trace', '1');
+  return url.toString();
+}
+
 /**
  * Feed a stream event into a Feishu streaming card controller.
  * Centralizes the event → card mapping for both main and sub-agent handlers.
@@ -234,7 +245,11 @@ export function feedStreamEventToCard(
   session: StreamingSession,
   se: StreamEvent,
   accumulatedText: string,
+  traceUrl?: string | null,
 ): void {
+  if (traceUrl && session instanceof StreamingCardController) {
+    session.setTraceUrl(traceUrl);
+  }
   switch (se.eventType) {
     case 'text_delta':
       if (se.text) session.append(accumulatedText);
@@ -305,13 +320,58 @@ export function feedStreamEventToCard(
         const label = se.taskDescription
           ? `Task: ${se.taskDescription.slice(0, 40)}`
           : 'Task';
+        if (session instanceof StreamingCardController) {
+          session.updateTask(se.toolUseId, {
+            title: se.taskDescription || se.toolInputSummary || 'Task',
+            status: 'running',
+            subagentType: se.subagentType,
+            summary: se.summary,
+          });
+        }
         session.startTool(se.toolUseId, label);
         session.pushRecentEvent(`🚀 ${label}`);
       }
       break;
+    case 'task_progress': {
+      const id = se.toolUseId || se.taskId;
+      if (id && session instanceof StreamingCardController) {
+        session.updateTask(id, {
+          title: se.taskDescription || 'Task',
+          status: 'running',
+          subagentType: se.subagentType,
+          lastToolName: se.lastToolName,
+          summary: se.summary || se.taskSummary,
+        });
+      }
+      if (se.summary) session.pushRecentEvent(`🔄 Task: ${se.summary.slice(0, 60)}`);
+      break;
+    }
+    case 'task_updated': {
+      const id = se.toolUseId || se.taskId;
+      if (id && session instanceof StreamingCardController) {
+        const patchStatus = se.taskPatch?.status;
+        session.updateTask(id, {
+          status: patchStatus === 'completed'
+            ? 'completed'
+            : patchStatus === 'failed' || patchStatus === 'killed'
+              ? 'error'
+              : se.taskPatch?.is_backgrounded
+                ? 'backgrounded'
+                : 'running',
+          summary: se.summary || se.taskPatch?.description || se.taskPatch?.error,
+        });
+      }
+      break;
+    }
     case 'task_notification':
       if (se.toolUseId || se.taskId) {
         const id = se.toolUseId || se.taskId || '';
+        if (session instanceof StreamingCardController) {
+          session.updateTask(id, {
+            status: se.taskStatus === 'completed' ? 'completed' : 'error',
+            summary: se.taskSummary || se.summary,
+          });
+        }
         session.endTool(id, false);
         const label = se.taskSummary
           ? `Task: ${se.taskSummary.slice(0, 40)}`
@@ -328,6 +388,28 @@ export function feedStreamEventToCard(
       break;
     case 'usage':
       if (se.usage) session.patchUsageNote(se.usage);
+      break;
+    case 'permission_denied':
+    case 'memory_recall':
+    case 'compact_boundary':
+    case 'notification':
+    case 'prompt_suggestion':
+      if (se.summary || se.title) {
+        session.pushRecentEvent(`${se.title || se.eventType}: ${(se.summary || '').slice(0, 80)}`);
+      }
+      if (se.eventType === 'compact_boundary') {
+        session.setSystemStatus(se.summary || '上下文已压缩');
+      }
+      break;
+    case 'context_audit':
+      if (se.contextAudit?.warnings?.length) {
+        session.pushRecentEvent(`Agent Context: ${se.contextAudit.warnings[0].slice(0, 80)}`);
+      }
+      break;
+    case 'raw_sdk_event':
+      if (se.displayLevel === 'primary') {
+        session.pushRecentEvent(`${se.title || se.rawType || 'SDK'}: ${(se.summary || '').slice(0, 80)}`);
+      }
       break;
     case 'init':
       // Internal signal, no card display needed
@@ -637,6 +719,31 @@ function unbindImGroup(jid: string, reason: string): void {
   imSendFailCounts.delete(jid);
   imHealthCheckFailCounts.delete(jid);
   logger.info({ jid, agentId, targetMainJid }, reason);
+}
+
+/**
+ * Remove an IM group entirely (jid record + chat history + pinned refs + send/health counters).
+ * Use this when the group is detected as dead — bot kicked, group disbanded,
+ * health-check repeatedly unreachable, or consecutive send failures.
+ *
+ * Differs from unbindImGroup() which only clears target_* fields (used for
+ * user-initiated soft unbind where the IM group itself is still alive).
+ */
+export function removeImGroupRecord(jid: string, reason: string): void {
+  const group = registeredGroups[jid] ?? getRegisteredGroup(jid);
+  if (!group) return;
+  deleteImGroupRecord(jid);
+  delete registeredGroups[jid];
+  imSendFailCounts.delete(jid);
+  imHealthCheckFailCounts.delete(jid);
+  logger.info(
+    {
+      jid,
+      hadTargetAgent: !!group.target_agent_id,
+      hadTargetMain: !!group.target_main_jid,
+    },
+    reason,
+  );
 }
 
 /**
@@ -968,12 +1075,12 @@ async function sendImWithRetry(
   imSendFailCounts.set(imJid, count);
   if (count >= IM_SEND_FAIL_THRESHOLD) {
     try {
-      unbindImGroup(
+      removeImGroupRecord(
         imJid,
-        'Auto-unbound IM group after consecutive send failures',
+        'Auto-removed IM group after consecutive send failures',
       );
     } catch (unbindErr) {
-      logger.error({ imJid, unbindErr }, 'Failed to auto-unbind IM group');
+      logger.error({ imJid, unbindErr }, 'Failed to auto-remove IM group');
     }
   }
   return false;
@@ -3049,10 +3156,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             }
             if (streamingSession) {
               feedStreamEventToCard(
-                streamingSession,
-                result.streamEvent,
-                streamingAccumulatedText,
-              );
+                  streamingSession,
+                  result.streamEvent,
+                  streamingAccumulatedText,
+                  buildWebTraceUrl(effectiveGroup.folder, result.streamEvent.turnId || lastProcessed.id),
+                );
             }
 
             // ── 中断时立即保存已输出内容 ──
@@ -6037,10 +6145,11 @@ async function processAgentConversation(
       // ── Feed stream events into Feishu streaming card ──
       if (agentStreamingSession) {
         feedStreamEventToCard(
-          agentStreamingSession,
-          output.streamEvent,
-          agentStreamingAccText,
-        );
+            agentStreamingSession,
+            output.streamEvent,
+            agentStreamingAccText,
+            buildWebTraceUrl(effectiveGroup.folder, output.streamEvent.turnId || lastProcessed.id),
+          );
       }
 
       // ── 中断时立即保存已输出内容 ──
@@ -6237,6 +6346,9 @@ async function processAgentConversation(
           try {
             await agentStreamingSession.complete(text);
             streamingCardHandledIM = true;
+            if (replySourceImJid) {
+              imManager.clearAckReaction(replySourceImJid);
+            }
           } catch (err) {
             logger.warn(
               { err, chatJid, agentId },
@@ -6285,6 +6397,7 @@ async function processAgentConversation(
             localImagePaths,
           );
           if (imSent) {
+            imManager.clearAckReaction(replySourceImJid);
             logger.info(
               {
                 chatJid,
@@ -6610,6 +6723,9 @@ async function processAgentConversation(
             partialReply,
             localImagePaths,
           );
+          if (imSent) {
+            imManager.clearAckReaction(replySourceImJid);
+          }
           logger.info({ replySourceImJid, imSent }, 'agent IM reply sent');
         } else {
           logger.warn(
@@ -7337,6 +7453,10 @@ function buildOnNewChat(
       return;
     }
     const ownerOpenId = getOwnerOpenId?.();
+    const ownerUser = getUserById(userId);
+    const groupDefaults = resolveImGroupDefaults({
+      ownerDefaultRequireMention: ownerUser?.default_require_mention,
+    });
     registerGroup(chatJid, {
       name: chatName,
       folder: homeFolder,
@@ -7348,9 +7468,16 @@ function buildOnNewChat(
       sender_allowlist: getOwnerOpenId
         ? (ownerOpenId ? [ownerOpenId] : [])
         : undefined,
+      require_mention: groupDefaults.requireMention,
     });
     logger.info(
-      { chatJid, chatName, userId, homeFolder },
+      {
+        chatJid,
+        chatName,
+        userId,
+        homeFolder,
+        requireMention: groupDefaults.requireMention,
+      },
       'Auto-registered IM chat',
     );
 
@@ -7510,9 +7637,9 @@ function learnFeishuOwner(
  */
 function buildOnBotRemovedFromGroup(): (chatJid: string) => void {
   return (chatJid: string) => {
-    unbindImGroup(
+    removeImGroupRecord(
       chatJid,
-      'Auto-unbound IM group: bot removed or group disbanded',
+      'Auto-removed IM group: bot removed or group disbanded',
     );
   };
 }
@@ -7650,7 +7777,7 @@ function resolveOrCreateThreadAgent(
   workspace: RegisteredGroup,
   group: RegisteredGroup,
   messageMeta: FeishuMessageMeta & { threadId: string },
-): { effectiveJid: string; agentId: string } {
+): { effectiveJid: string; agentId: string; sourceJid: string } {
   const now = new Date().toISOString();
   const threadId = messageMeta.threadId;
   const rootMessageId = messageMeta.rootId || threadId;
@@ -7740,6 +7867,7 @@ function resolveOrCreateThreadAgent(
   return {
     effectiveJid: `${workspaceJid}#agent:${binding.agent_id}`,
     agentId: binding.agent_id,
+    sourceJid: routeJid,
   };
 }
 
@@ -7752,7 +7880,7 @@ function resolveOrCreateThreadAgent(
 function buildResolveEffectiveChatJid(): (
   chatJid: string,
   messageMeta?: FeishuMessageMeta,
-) => { effectiveJid: string; agentId: string | null } | null {
+) => { effectiveJid: string; agentId: string | null; sourceJid?: string } | null {
   return (chatJid: string, messageMeta) => {
     const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
     if (!group) {
@@ -7778,8 +7906,12 @@ function buildResolveEffectiveChatJid(): (
       group.binding_mode === 'thread_map' &&
       group.target_main_jid &&
       getChannelType(chatJid) === 'feishu' &&
-      messageMeta?.threadId
+      messageMeta &&
+      (messageMeta?.threadId || messageMeta?.rootId || messageMeta?.messageId)
     ) {
+      const threadContextId =
+        messageMeta.threadId || messageMeta.rootId || messageMeta.messageId;
+      if (!threadContextId) return null;
       const workspaceJid = resolveWorkspaceJid(group.target_main_jid);
       if (!workspaceJid) {
         logger.warn(
@@ -7797,7 +7929,7 @@ function buildResolveEffectiveChatJid(): (
         workspaceJid,
         workspace,
         group,
-        { ...messageMeta, threadId: messageMeta.threadId },
+        { ...messageMeta, threadId: threadContextId },
       );
     }
 
@@ -8959,6 +9091,7 @@ async function main(): Promise<void> {
     clearImFailCounts: (jid: string) => {
       imHealthCheckFailCounts.delete(jid);
     },
+    removeImGroupRecord,
     updateReplyRoute: (folder: string, sourceJid: string | null) => {
       activeRouteUpdaters.get(folder)?.(sourceJid);
     },
@@ -9213,10 +9346,19 @@ async function main(): Promise<void> {
         const broadcastFolder = options.workspaceFolder ?? ownerHome?.folder;
         if (broadcastFolder) {
           const localImages = extractLocalImImagePaths(text, broadcastFolder);
+          // chatJid 指向任务关联的源 workspace。当它本身是 IM channel（如 feishu:），
+          // 说明源群已通过上游 `sendMessage(chatJid, ...)` 直发收到本消息（见
+          // runScriptTask 在 task-scheduler.ts:~671 的 step 1）。把它加入 alreadySentJids
+          // 让 broadcast 跳过同 channel 的 fallback 群，避免同一条消息被重复推到 owner
+          // 注册的另一个飞书/Telegram 群。isolated agent 任务的 workspace.jid 是
+          // ephemeral `web:task-xxx`，getChannelType 返回 null，自然不会加入此集合，
+          // 行为与修复前保持一致。
+          const alreadySent = new Set<string>();
+          if (getChannelType(chatJid)) alreadySent.add(chatJid);
           broadcastToOwnerIMChannels(
             options.ownerId,
             broadcastFolder,
-            new Set<string>(),
+            alreadySent,
             (jid) => sendImWithFailTracking(jid, text, localImages),
             options.notifyChannels,
           );
@@ -9543,9 +9685,9 @@ async function checkImBindingsHealth(): Promise<void> {
         const count = (imHealthCheckFailCounts.get(jid) ?? 0) + 1;
         imHealthCheckFailCounts.set(jid, count);
         if (count >= IM_HEALTH_CHECK_FAIL_THRESHOLD) {
-          unbindImGroup(
+          removeImGroupRecord(
             jid,
-            'IM group not reachable after multiple checks, auto-unbinding',
+            'IM group not reachable after multiple checks, auto-removing',
           );
         } else {
           logger.debug(

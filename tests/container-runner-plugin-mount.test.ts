@@ -121,6 +121,15 @@ function fakeGroup(folder: string, ownerId: string) {
   };
 }
 
+function writeSystemSettings(partial: Record<string, unknown>): void {
+  const dir = path.join(tmpDataDir, 'config');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, 'system-settings.json'),
+    JSON.stringify(partial),
+  );
+}
+
 beforeEach(() => {
   // tmpDataDir is fixed for the file (top-level captures in runtime-config
   // can't be relocated mid-run). Wipe its contents between tests so each
@@ -190,6 +199,62 @@ describe('buildVolumeMounts — Claude Code plugins runtime mount', () => {
     expect(pluginMount).toBeTruthy();
     expect(pluginMount!.hostPath).toBe(getUserRuntimeRoot(USER));
     expect(fs.existsSync(getUserRuntimeRoot(USER))).toBe(true);
+  });
+});
+
+describe('buildVolumeMounts — Claude triad inheritance', () => {
+  test('admin-owned container mounts external CLAUDE.md, rules, and skills', () => {
+    const external = path.join(tmpDataDir, 'external-claude');
+    fs.mkdirSync(path.join(external, 'rules'), { recursive: true });
+    fs.mkdirSync(path.join(external, 'skills', 'admin-skill'), { recursive: true });
+    fs.writeFileSync(path.join(external, 'CLAUDE.md'), '# admin');
+    fs.writeFileSync(path.join(external, 'rules', 'r.md'), '# rule');
+    fs.writeFileSync(path.join(external, 'skills', 'admin-skill', 'SKILL.md'), '# skill');
+    writeSystemSettings({ externalClaudeDir: external });
+
+    const mounts = buildVolumeMounts(
+      fakeGroup('admin-workspace', 'admin') as any,
+      false,
+      true,
+      undefined,
+      'main',
+    );
+
+    expect(mounts).toContainEqual({
+      hostPath: path.join(external, 'CLAUDE.md'),
+      containerPath: '/workspace/CLAUDE.md',
+      readonly: true,
+    });
+    expect(mounts).toContainEqual({
+      hostPath: path.join(external, 'rules'),
+      containerPath: '/workspace/.claude/rules',
+      readonly: true,
+    });
+    expect(mounts).toContainEqual({
+      hostPath: path.join(external, 'skills'),
+      containerPath: '/workspace/external-skills',
+      readonly: true,
+    });
+  });
+
+  test('ordinary user container does not mount admin external triad', () => {
+    const external = path.join(tmpDataDir, 'external-claude');
+    fs.mkdirSync(path.join(external, 'rules'), { recursive: true });
+    fs.mkdirSync(path.join(external, 'skills', 'admin-skill'), { recursive: true });
+    fs.writeFileSync(path.join(external, 'CLAUDE.md'), '# admin');
+    writeSystemSettings({ externalClaudeDir: external });
+
+    const mounts = buildVolumeMounts(
+      fakeGroup('alice-home', 'alice') as any,
+      false,
+      true,
+      undefined,
+      'alice-home',
+    );
+
+    expect(mounts.some((m) => m.containerPath === '/workspace/CLAUDE.md')).toBe(false);
+    expect(mounts.some((m) => m.containerPath === '/workspace/.claude/rules')).toBe(false);
+    expect(mounts.some((m) => m.containerPath === '/workspace/external-skills')).toBe(false);
   });
 });
 

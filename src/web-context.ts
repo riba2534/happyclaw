@@ -122,6 +122,14 @@ export interface WebDeps {
     group_message_type?: string;
   } | null>;
   clearImFailCounts?: (jid: string) => void;
+  /**
+   * Fully remove an IM group's registered_groups entry (plus jid-scoped data
+   * and fail counters). Used by DELETE /api/groups/:jid for IM-prefixed JIDs
+   * — shared with the auto-cleanup paths (bot removed / health check / send
+   * fail) so the manual delete path also resets imSendFailCounts /
+   * imHealthCheckFailCounts.
+   */
+  removeImGroupRecord?: (jid: string, reason: string) => void;
   updateReplyRoute?: (folder: string, sourceJid: string | null) => void;
   triggerTaskRun?: (taskId: string) => { success: boolean; error?: string };
   handleSpawnCommand?: (

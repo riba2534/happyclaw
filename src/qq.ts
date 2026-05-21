@@ -27,6 +27,12 @@ import { saveDownloadedFile, MAX_FILE_SIZE } from './im-downloader.js';
 import { detectImageMimeTypeStrict } from './image-detector.js';
 import path from 'node:path';
 import { markdownToPlainText, splitTextChunks } from './im-utils.js';
+import { ProcessingLock, isStale } from './im-safety/index.js';
+import {
+  isTransientError,
+  getReconnectDelay,
+  classifyCloseCode,
+} from './qq-reconnect.js';
 // ─── Constants ──────────────────────────────────────────────────
 
 const QQ_TOKEN_URL = 'https://bots.qq.com/app/getAppAccessToken';
@@ -35,8 +41,16 @@ const TOKEN_REFRESH_BUFFER_MS = 300_000; // refresh 5min before expiry
 const MSG_DEDUP_MAX = 1000;
 const MSG_DEDUP_TTL = 30 * 60 * 1000; // 30min
 const MSG_SPLIT_LIMIT = 5000;
-const RECONNECT_DELAY_MS = 5000;
-const MAX_RECONNECT_ATTEMPTS = 10;
+const MAX_RECONNECT_ATTEMPTS = 100;
+const RATE_LIMIT_DELAY_MS = 60_000;
+const QUICK_DISCONNECT_THRESHOLD_MS = 5_000;
+const MAX_QUICK_DISCONNECT_COUNT = 3;
+// After exhausting MAX_RECONNECT_ATTEMPTS we don't give up; we fall back to a
+// long-tail keepalive so a multi-hour outage eventually self-recovers.
+const KEEPALIVE_INTERVAL_MS = 5 * 60 * 1000;
+// Safety net: if we ever end up disconnected with no reconnect pending,
+// the watchdog kicks a fresh attempt instead of leaving the bot dead.
+const WATCHDOG_INTERVAL_MS = 60_000;
 
 const IMAGE_EXT_MAP: Record<string, string> = {
   'image/jpeg': '.jpg',
@@ -350,6 +364,7 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
   let ws: WebSocket | null = null;
   let heartbeatTimer: NodeJS.Timeout | null = null;
   let reconnectTimer: NodeJS.Timeout | null = null;
+  let watchdogTimer: NodeJS.Timeout | null = null;
   let reconnectAttempts = 0;
   let lastSequence: number | null = null;
   let sessionId: string | null = null;
@@ -357,8 +372,16 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
   let stopping = false;
   let readyFired = false;
 
+  // Reconnect control state. Mutated by ws lifecycle handlers and the
+  // reconnect timer; read by scheduleReconnect to pick the next strategy.
+  let quickDisconnectCount = 0;
+  let lastConnectTime = 0;
+  let keepaliveMode = false;
+  let lastErrorIsTransient = false;
+
   // Message deduplication
   const msgCache = new Map<string, number>();
+  const processingLock = new ProcessingLock();
 
   // Per-chat msg_seq counter for active messages
   const msgSeqCounters = new Map<string, number>();
@@ -1132,6 +1155,34 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
     }
   }
 
+  function stopWatchdog(): void {
+    if (watchdogTimer) {
+      clearInterval(watchdogTimer);
+      watchdogTimer = null;
+    }
+  }
+
+  function startWatchdog(opts: QQConnectOpts): void {
+    stopWatchdog();
+    watchdogTimer = setInterval(() => {
+      if (stopping) return;
+      if (connection.isConnected()) return;
+      // A reconnect is already in flight (including keepalive ticks).
+      if (reconnectTimer) return;
+      // Invariant violation: disconnected, not stopping, no retry pending.
+      // Reset the budget and kick a fresh attempt — this is the safety net
+      // that prevents the bot from staying permanently dead.
+      logger.warn(
+        { reconnectAttempts, keepaliveMode },
+        'QQ watchdog detected stale disconnected state, kicking fresh reconnect',
+      );
+      reconnectAttempts = 0;
+      keepaliveMode = false;
+      lastErrorIsTransient = false;
+      scheduleReconnect(opts);
+    }, WATCHDOG_INTERVAL_MS);
+  }
+
   function sendWs(payload: QQWsPayload): void {
     if (ws?.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(payload));
@@ -1154,12 +1205,19 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
 
     return new Promise<void>((resolve, reject) => {
       let settled = false;
+      // True only once READY/RESUMED dispatched. Distinguishes a real
+      // mid-session disconnect from a connect-time error so the close handler
+      // doesn't double-schedule a reconnect that the rejection's catch path
+      // is already handling.
+      let connectionEstablished = false;
 
       ws = new WebSocket(gatewayUrl);
 
-      // Resolve once when session is ready (READY/RESUMED dispatched)
       const onSessionReady = (): void => {
+        connectionEstablished = true;
+        lastConnectTime = Date.now();
         reconnectAttempts = 0;
+        keepaliveMode = false;
         if (!settled) {
           settled = true;
           resolve();
@@ -1190,13 +1248,61 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
         if (!settled) {
           settled = true;
           reject(new Error(`QQ WebSocket closed before ready: ${code}`));
-        } else if (!stopping) {
-          scheduleReconnect(opts);
+          return;
+        }
+        // settled but not established → ws.on('error') already rejected;
+        // let the rejection's catch path handle the reconnect (avoids the
+        // double-increment that drained the old budget in ~3 minutes).
+        if (!connectionEstablished) return;
+        if (stopping) return;
+
+        // Quick-disconnect detection: server flapping us right after READY
+        // usually signals a permission / auth issue. Back off harder.
+        if (
+          lastConnectTime > 0 &&
+          Date.now() - lastConnectTime < QUICK_DISCONNECT_THRESHOLD_MS
+        ) {
+          quickDisconnectCount++;
+          if (quickDisconnectCount >= MAX_QUICK_DISCONNECT_COUNT) {
+            logger.error(
+              { quickDisconnectCount, code },
+              'QQ too many quick disconnects, backing off (check appId/secret/permissions)',
+            );
+            quickDisconnectCount = 0;
+            scheduleReconnect(opts, RATE_LIMIT_DELAY_MS);
+            return;
+          }
+        } else {
+          quickDisconnectCount = 0;
+        }
+
+        const action = classifyCloseCode(code);
+        switch (action.kind) {
+          case 'refresh-token':
+            logger.info({ code }, 'QQ invalid token close, forcing token refresh');
+            tokenInfo = null;
+            sessionId = null;
+            lastSequence = null;
+            scheduleReconnect(opts);
+            break;
+          case 'rate-limit':
+            logger.warn({ code }, 'QQ rate limited, applying long delay');
+            scheduleReconnect(opts, RATE_LIMIT_DELAY_MS);
+            break;
+          case 'reset-session':
+            logger.info({ code }, 'QQ server internal error, dropping session');
+            sessionId = null;
+            lastSequence = null;
+            scheduleReconnect(opts);
+            break;
+          default:
+            scheduleReconnect(opts);
         }
       });
 
       ws.on('error', (err) => {
         logger.error({ err }, 'QQ WebSocket error');
+        lastErrorIsTransient = isTransientError(err);
         if (!settled) {
           settled = true;
           reject(err);
@@ -1294,21 +1400,45 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
     }
   }
 
-  function scheduleReconnect(opts: QQConnectOpts): void {
+  function scheduleReconnect(opts: QQConnectOpts, customDelay?: number): void {
     if (stopping) return;
-    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-      logger.error('QQ max reconnect attempts reached, giving up');
-      return;
+    // Idempotent: if a reconnect is already pending, don't double-schedule
+    // (the close handler and the connect-failure catch can both fire for the
+    // same disconnect event).
+    if (reconnectTimer) return;
+
+    // Transition to keepalive mode once we exhaust the regular budget.
+    // We never hard-stop trying — a long network outage should self-recover.
+    if (
+      !keepaliveMode &&
+      !lastErrorIsTransient &&
+      reconnectAttempts >= MAX_RECONNECT_ATTEMPTS
+    ) {
+      keepaliveMode = true;
+      logger.error(
+        { attempts: reconnectAttempts },
+        'QQ max reconnect attempts reached, falling back to keepalive mode',
+      );
     }
 
-    const delay = Math.min(
-      RECONNECT_DELAY_MS * Math.pow(2, reconnectAttempts),
-      60000,
-    );
-    reconnectAttempts++;
+    let delay: number;
+    if (customDelay !== undefined) {
+      delay = customDelay;
+    } else if (keepaliveMode) {
+      delay = KEEPALIVE_INTERVAL_MS;
+    } else {
+      delay = getReconnectDelay(reconnectAttempts);
+      // Transient errors (DNS hiccups, brief TCP resets) shouldn't burn our
+      // attempt budget — otherwise a 3-minute network blip kills the bot.
+      if (!lastErrorIsTransient) {
+        reconnectAttempts++;
+      }
+    }
+    const wasTransient = lastErrorIsTransient;
+    lastErrorIsTransient = false;
 
     logger.info(
-      { delay, attempt: reconnectAttempts },
+      { delay, attempt: reconnectAttempts, keepaliveMode, wasTransient },
       'QQ scheduling reconnect',
     );
     reconnectTimer = setTimeout(async () => {
@@ -1326,6 +1456,7 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
         }
       } catch (err) {
         logger.error({ err }, 'QQ reconnect failed');
+        lastErrorIsTransient = isTransientError(err);
         scheduleReconnect(opts);
       }
     }, delay);
@@ -1339,9 +1470,19 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
   ): Promise<void> {
     try {
       const msgId = data.id;
-      if (!msgId || isDuplicate(msgId)) return;
+      if (!msgId) return;
+      const msgTimeMs = data.timestamp ? new Date(data.timestamp).getTime() : 0;
+      if (isStale(msgTimeMs)) {
+        logger.debug({ msgId, msgTimeMs }, 'Stale QQ C2C message (>30min), dropping');
+        return;
+      }
+      if (isDuplicate(msgId)) return;
+      if (!processingLock.acquire(msgId)) {
+        logger.debug({ msgId }, 'QQ C2C message already in-flight, skipping');
+        return;
+      }
       markSeen(msgId);
-
+      try {
       // Skip stale messages from before connection (hot-reload scenario)
       if (opts.ignoreMessagesBefore && data.timestamp) {
         const msgTime = new Date(data.timestamp).getTime();
@@ -1498,6 +1639,9 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
           'QQ C2C message stored',
         );
       }
+      } finally {
+        processingLock.release(msgId);
+      }
     } catch (err) {
       logger.error({ err }, 'Error handling QQ C2C message');
     }
@@ -1509,9 +1653,19 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
   ): Promise<void> {
     try {
       const msgId = data.id;
-      if (!msgId || isDuplicate(msgId)) return;
+      if (!msgId) return;
+      const msgTimeMs = data.timestamp ? new Date(data.timestamp).getTime() : 0;
+      if (isStale(msgTimeMs)) {
+        logger.debug({ msgId, msgTimeMs }, 'Stale QQ group message (>30min), dropping');
+        return;
+      }
+      if (isDuplicate(msgId)) return;
+      if (!processingLock.acquire(msgId)) {
+        logger.debug({ msgId }, 'QQ group message already in-flight, skipping');
+        return;
+      }
       markSeen(msgId);
-
+      try {
       // Skip stale messages from before connection (hot-reload scenario)
       if (opts.ignoreMessagesBefore && data.timestamp) {
         const msgTime = new Date(data.timestamp).getTime();
@@ -1659,6 +1813,9 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
         { jid, sender: senderName, msgId },
         'QQ group message stored',
       );
+      } finally {
+        processingLock.release(msgId);
+      }
     } catch (err) {
       logger.error({ err }, 'Error handling QQ group message');
     }
@@ -1678,6 +1835,12 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
       reconnectAttempts = 0;
       sessionId = null;
       lastSequence = null;
+      quickDisconnectCount = 0;
+      lastConnectTime = 0;
+      keepaliveMode = false;
+      lastErrorIsTransient = false;
+
+      startWatchdog(opts);
 
       try {
         // Validate token first
@@ -1688,12 +1851,14 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
         await connectWs(opts, gatewayUrl, false);
       } catch (err) {
         logger.error({ err }, 'QQ initial connection failed');
+        lastErrorIsTransient = isTransientError(err);
         scheduleReconnect(opts);
       }
     },
 
     async disconnect(): Promise<void> {
       stopping = true;
+      stopWatchdog();
       clearTimers();
 
       if (ws) {
@@ -1709,6 +1874,11 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
       sessionId = null;
       lastSequence = null;
       resumeGatewayUrl = null;
+      reconnectAttempts = 0;
+      quickDisconnectCount = 0;
+      lastConnectTime = 0;
+      keepaliveMode = false;
+      lastErrorIsTransient = false;
       msgCache.clear();
       msgSeqCounters.clear();
       rejectTimestamps.clear();

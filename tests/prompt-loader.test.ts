@@ -70,4 +70,18 @@ describe('prompts/ files', () => {
       expect(matches, `${path.relative(PROMPTS_DIR, file)} contains lone surrogates`).toBeNull();
     }
   });
+
+  test('platform prompt patches do not duplicate user rules or skill bodies', () => {
+    const skillRouting = fs.readFileSync(path.join(PROMPTS_DIR, 'skill-routing.md'), 'utf-8');
+    const webFetch = fs.readFileSync(path.join(PROMPTS_DIR, 'web-fetch.md'), 'utf-8');
+    const homeMemory = fs.readFileSync(path.join(PROMPTS_DIR, 'memory-system.home.md'), 'utf-8');
+    const guestMemory = fs.readFileSync(path.join(PROMPTS_DIR, 'memory-system.guest.md'), 'utf-8');
+
+    expect(skillRouting).not.toContain('ToolSearch');
+    expect(skillRouting).not.toContain('SKILL.md');
+    expect(webFetch).not.toContain('WebFetch');
+    expect(webFetch).not.toContain('web-content-fetcher');
+    expect(homeMemory).toContain('不等同于用户原生 `~/.claude/CLAUDE.md` playbook');
+    expect(guestMemory).toContain('不等同于用户原生 `~/.claude/CLAUDE.md` playbook');
+  });
 });

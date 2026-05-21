@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { logger } from './logger.js';
+import { resolveHostNodeBinary } from './node-resolver.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -75,7 +76,8 @@ export class TerminalManager {
           rows,
         });
 
-        const proc = spawn('node', [PTY_WORKER_PATH, workerArgs], {
+        const hostNodeBinary = resolveHostNodeBinary(process.env);
+        const proc = spawn(hostNodeBinary, [PTY_WORKER_PATH, workerArgs], {
           stdio: ['pipe', 'pipe', 'pipe'],
           env: process.env as Record<string, string>,
         });

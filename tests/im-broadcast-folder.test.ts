@@ -127,6 +127,38 @@ describe('broadcastToOwnerIMChannels — folder-precise routing (fix F regressio
     expect(sendFn).toHaveBeenCalledWith('tg:T1');
   });
 
+  test('source IM jid in alreadySent prevents same-channel fallback duplicate', () => {
+    // Reproduces the bug fixed in storeResultAndNotify: a script task
+    // bound to feishu:source has already sent its IM message via the upstream
+    // sendMessage call. The subsequent broadcast must NOT pick a different
+    // feishu group (fallback) just because both share the same folder, or
+    // the task result lands in a wrong feishu group as well.
+    const sendFn = vi.fn<(jid: string) => void>();
+    const deps: BroadcastToOwnerIMChannelsDeps = {
+      getConnectedChannelTypes: () => ['feishu'],
+      getGroupsByOwner: () => [
+        // Note ordering: the fallback group is listed first, mimicking the
+        // production case where the wrongly-picked group happens to be the
+        // earliest-registered feishu group for the owner.
+        { jid: 'feishu:fallback', folder: 'ws-main' },
+        { jid: 'feishu:source', folder: 'ws-main' },
+      ],
+      getChannelType: fakeGetChannelType,
+      resolveJidFolder: () => null,
+    };
+
+    broadcastToOwnerIMChannels(
+      'user-1',
+      'ws-main',
+      new Set(['feishu:source']),
+      sendFn,
+      undefined,
+      deps,
+    );
+
+    expect(sendFn).not.toHaveBeenCalled();
+  });
+
   test('notifyChannels filter restricts output to allowed channel types', () => {
     // Both feishu and telegram bind to ws-x, but notifyChannels=['telegram']
     // means only telegram should receive.

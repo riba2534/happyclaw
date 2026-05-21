@@ -583,11 +583,13 @@ describe('buildStreamingAgentCard', () => {
 
     // Rich skeleton: STATUS_BANNER + 3 collapsible panels + MAIN_CONTENT + BUTTON + FOOTER_NOTE
     const ids = new Set(collectElementIds(card));
-    for (const required of [
-      CARD_ELEMENT_IDS.STATUS_BANNER,
-      CARD_ELEMENT_IDS.PROGRESS_PANEL,
-      CARD_ELEMENT_IDS.PROGRESS_CONTENT,
-      CARD_ELEMENT_IDS.TOOLS_PANEL,
+      for (const required of [
+        CARD_ELEMENT_IDS.STATUS_BANNER,
+        CARD_ELEMENT_IDS.PROGRESS_PANEL,
+        CARD_ELEMENT_IDS.PROGRESS_CONTENT,
+        CARD_ELEMENT_IDS.TASK_PANEL,
+        CARD_ELEMENT_IDS.TASK_CONTENT,
+        CARD_ELEMENT_IDS.TOOLS_PANEL,
       CARD_ELEMENT_IDS.TOOLS_CONTENT,
       CARD_ELEMENT_IDS.THINKING_PANEL,
       CARD_ELEMENT_IDS.THINKING_CONTENT,
@@ -599,9 +601,9 @@ describe('buildStreamingAgentCard', () => {
     }
   });
 
-  test('rich streaming card contains 5 collapsible panels (Phase F adds ask + timeline)', () => {
-    const card = buildStreamingAgentCard({ initialText: 'x' });
-    expect(countTag(card, 'collapsible_panel')).toBe(5);
+    test('rich streaming card contains 6 collapsible panels (ask/task/timeline included)', () => {
+      const card = buildStreamingAgentCard({ initialText: 'x' });
+      expect(countTag(card, 'collapsible_panel')).toBe(6);
   });
 
   test('legacy (rich:false) streaming card keeps 5-slot flat layout', () => {
@@ -921,10 +923,10 @@ describe('buildStreamingAgentCard rich skeleton (Phase F)', () => {
     expect(ids.has(CARD_ELEMENT_IDS.TIMELINE_CONTENT)).toBe(true);
   });
 
-  test('rich skeleton now has 5 collapsible panels', () => {
-    const card = buildStreamingAgentCard({ initialText: 'x' });
-    expect(countTag(card, 'collapsible_panel')).toBe(5);
-  });
+    test('rich skeleton now has 6 collapsible panels', () => {
+      const card = buildStreamingAgentCard({ initialText: 'x' });
+      expect(countTag(card, 'collapsible_panel')).toBe(6);
+    });
 });
 
 // ─── feishu.ts:buildInteractiveCard backward-compat ─────────────

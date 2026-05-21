@@ -40,6 +40,7 @@ import { notifyNewImMessage } from './message-notifier.js';
 import { broadcastNewMessage } from './web.js';
 import { markdownToPlainText, splitTextChunks } from './im-utils.js';
 import { saveDownloadedFile, FileTooLargeError } from './im-downloader.js';
+import { ProcessingLock, isStale } from './im-safety/index.js';
 
 const CHANNEL_PREFIX = 'whatsapp:';
 /** WhatsApp text message safe limit. Baileys allows up to 64KB but UX clamps far below. */
@@ -166,6 +167,7 @@ export function createWhatsAppConnection(
   // Baileys can re-emit the same key.id at reconnect boundaries or when
   // history/notify streams overlap; without this cache the Agent responds twice.
   const msgCache = new Map<string, number>();
+  const processingLock = new ProcessingLock();
 
   function isDuplicate(msgKey: string): boolean {
     const now = Date.now();
@@ -494,20 +496,39 @@ export function createWhatsAppConnection(
       return;
     }
 
-    // LRU dedup: skip duplicates that re-arrive at reconnect / stream-switch
-    // boundaries. Keyed by (remoteJid, key.id) because Baileys reuses key.id
-    // across chats. fromMe is already filtered above, so left out of the key.
-    if (key.id) {
-      const dedupKey = `${remoteJid}|${key.id}`;
+    // Global stale-message drop (>30min). Independent of reconnect filter
+    // below; handles edge cases like webhook retries delivering an hour late.
+    const tsMs = normalizeTimestamp(messageTimestamp);
+    if (isStale(tsMs)) {
+      logger.debug(
+        { msgId: key.id, remoteJid, tsMs },
+        'Stale WhatsApp message (>30min), dropping',
+      );
+      return;
+    }
+
+    // LRU dedup + in-flight lock: skip duplicates that re-arrive at reconnect
+    // / stream-switch boundaries. Keyed by (remoteJid, key.id) because Baileys
+    // reuses key.id across chats. Messages without key.id bypass both checks
+    // (no way to address them reliably).
+    const dedupKey = key.id ? `${remoteJid}|${key.id}` : '';
+    if (dedupKey) {
       if (isDuplicate(dedupKey)) {
         logger.debug({ msgId: key.id, remoteJid }, 'WhatsApp duplicate dropped');
         return;
       }
+      if (!processingLock.acquire(dedupKey)) {
+        logger.debug(
+          { msgId: key.id, remoteJid },
+          'WhatsApp message already in-flight, skipping',
+        );
+        return;
+      }
       markSeen(dedupKey);
     }
+    try {
 
     // Filter old messages (heat-up after reconnect, history sync stragglers)
-    const tsMs = normalizeTimestamp(messageTimestamp);
     if (
       tsMs > 0 &&
       opts.ignoreMessagesBefore &&
@@ -664,6 +685,9 @@ export function createWhatsAppConnection(
         { chatJid, sender: senderName, msgId: key.id, isGroup },
         'WhatsApp message stored',
       );
+    }
+    } finally {
+      if (dedupKey) processingLock.release(dedupKey);
     }
   }
 
@@ -890,7 +914,7 @@ export function extractMessageText(content: proto.IMessage): string | null {
  * Returns 0 if not a usable value (caller falls back to Date.now()).
  */
 export function normalizeTimestamp(
-  ts: number | Long | null | undefined,
+  ts: number | { toNumber(): number } | null | undefined,
 ): number {
   if (ts === null || ts === undefined) return 0;
   if (typeof ts === 'number') return ts * 1000;

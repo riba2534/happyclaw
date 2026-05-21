@@ -343,6 +343,7 @@ export function initDatabase(): void {
       ai_avatar_emoji TEXT,
       ai_avatar_color TEXT,
       ai_avatar_url TEXT,
+      default_require_mention INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       last_login_at TEXT,
@@ -656,6 +657,11 @@ export function initDatabase(): void {
   ensureColumn('users', 'ai_avatar_emoji', 'TEXT');
   ensureColumn('users', 'ai_avatar_color', 'TEXT');
   ensureColumn('users', 'ai_avatar_url', 'TEXT');
+  ensureColumn(
+    'users',
+    'default_require_mention',
+    'INTEGER NOT NULL DEFAULT 0',
+  );
   ensureColumn('scheduled_tasks', 'created_by', 'TEXT');
   ensureColumn('scheduled_tasks', 'execution_type', "TEXT DEFAULT 'agent'");
   ensureColumn('scheduled_tasks', 'script_command', 'TEXT');
@@ -823,6 +829,7 @@ export function initDatabase(): void {
     'ai_avatar_emoji',
     'ai_avatar_color',
     'ai_avatar_url',
+    'default_require_mention',
     'created_at',
     'updated_at',
     'last_login_at',
@@ -1248,7 +1255,13 @@ export function initDatabase(): void {
     db.exec('ALTER TABLE sessions ADD COLUMN provider_id TEXT');
   }
 
-  const SCHEMA_VERSION = '37';
+  // v37 → v38: Added users.default_require_mention column (per-user default
+  // for require_mention on auto-registered IM group chats). The actual
+  // ensureColumn migration runs above with the other users.* additions —
+  // its position before assertSchema('users', …) matters because the
+  // schema check would otherwise reject pre-v38 databases on startup.
+
+  const SCHEMA_VERSION = '38';
   db.prepare(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', SCHEMA_VERSION);
@@ -2922,6 +2935,33 @@ export function deleteChatHistory(chatJid: string): void {
   tx(chatJid);
 }
 
+/**
+ * Delete an IM group's registered_groups entry and all jid-scoped data
+ * (messages, chat record, pinned references). Does NOT touch folder-scoped
+ * data (sessions, scheduled_tasks, group_members) because IM groups typically
+ * share their folder with the owner's home workspace.
+ *
+ * Used when an IM group is detected as dead (bot removed, group disbanded,
+ * health-check unreachable, or repeated send failures) and for the manual
+ * "delete this IM binding" UI button.
+ */
+export function deleteImGroupRecord(jid: string): void {
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM registered_groups WHERE jid = ?').run(jid);
+    db.prepare('DELETE FROM messages WHERE chat_jid = ?').run(jid);
+    db.prepare('DELETE FROM chats WHERE jid = ?').run(jid);
+    db.prepare('DELETE FROM user_pinned_groups WHERE jid = ?').run(jid);
+    // Feishu thread agents (source_kind='feishu_thread') and other chat-scoped
+    // agents reference this jid via agents.chat_jid — without this, deleting
+    // an IM group leaves orphan agent rows visible in the agents list.
+    db.prepare('DELETE FROM agents WHERE chat_jid = ?').run(jid);
+    db.prepare(
+      'UPDATE scheduled_tasks SET workspace_jid = NULL, workspace_folder = NULL WHERE workspace_jid = ?',
+    ).run(jid);
+  });
+  tx();
+}
+
 export function deleteGroupData(jid: string, folder: string): void {
   const tx = db.transaction(() => {
     // 1. 删除定时任务运行日志 + 定时任务
@@ -3251,6 +3291,7 @@ function mapUserRow(row: Record<string, unknown>): User {
       typeof row.ai_avatar_color === 'string' ? row.ai_avatar_color : null,
     ai_avatar_url:
       typeof row.ai_avatar_url === 'string' ? row.ai_avatar_url : null,
+    default_require_mention: !!row.default_require_mention,
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
     last_login_at:
@@ -3277,6 +3318,7 @@ function toUserPublic(user: User, lastActiveAt: string | null): UserPublic {
     ai_avatar_emoji: user.ai_avatar_emoji,
     ai_avatar_color: user.ai_avatar_color,
     ai_avatar_url: user.ai_avatar_url,
+    default_require_mention: user.default_require_mention,
     created_at: user.created_at,
     last_login_at: user.last_login_at,
     last_active_at: lastActiveAt,
@@ -3564,6 +3606,7 @@ export function updateUserFields(
       | 'ai_avatar_emoji'
       | 'ai_avatar_color'
       | 'ai_avatar_url'
+      | 'default_require_mention'
       | 'deleted_at'
     >
   >,
@@ -3638,6 +3681,10 @@ export function updateUserFields(
   if (updates.ai_avatar_url !== undefined) {
     fields.push('ai_avatar_url = ?');
     values.push(updates.ai_avatar_url);
+  }
+  if (updates.default_require_mention !== undefined) {
+    fields.push('default_require_mention = ?');
+    values.push(updates.default_require_mention ? 1 : 0);
   }
   if (updates.deleted_at !== undefined) {
     fields.push('deleted_at = ?');

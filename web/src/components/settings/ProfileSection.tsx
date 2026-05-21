@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Loader2, Upload, Trash2, User, Bot, Lock, Palette, Sun, Moon, Monitor, Bell, BellOff, CheckCircle2, RotateCcw } from 'lucide-react';
+import { Loader2, Upload, Trash2, User, Bot, Lock, Palette, Sun, Moon, Monitor, Bell, BellOff, CheckCircle2, RotateCcw, MessagesSquare } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { useAuthStore } from '../../stores/auth';
@@ -154,6 +154,10 @@ export function ProfileSection() {
   const [avatarUploading, setAvatarUploading] = useState(false);
   const avatarInputRef = useRef<HTMLInputElement>(null);
 
+  // IM defaults — only affects NEW auto-registered IM groups
+  const [defaultRequireMention, setDefaultRequireMention] = useState(false);
+  const [imDefaultsSaving, setImDefaultsSaving] = useState(false);
+
   // Password
   const [currentPwd, setCurrentPwd] = useState('');
   const [newPwd, setNewPwd] = useState('');
@@ -169,7 +173,8 @@ export function ProfileSection() {
     setAiAvatarEmoji(currentUser?.ai_avatar_emoji ?? null);
     setAiAvatarColor(currentUser?.ai_avatar_color ?? null);
     setAiAvatarUrl(currentUser?.ai_avatar_url ?? null);
-  }, [currentUser?.username, currentUser?.display_name, currentUser?.avatar_emoji, currentUser?.avatar_color, currentUser?.avatar_url, currentUser?.ai_name, currentUser?.ai_avatar_emoji, currentUser?.ai_avatar_color, currentUser?.ai_avatar_url]);
+    setDefaultRequireMention(currentUser?.default_require_mention ?? false);
+  }, [currentUser?.username, currentUser?.display_name, currentUser?.avatar_emoji, currentUser?.avatar_color, currentUser?.avatar_url, currentUser?.ai_name, currentUser?.ai_avatar_emoji, currentUser?.ai_avatar_color, currentUser?.ai_avatar_url, currentUser?.default_require_mention]);
 
   const handleUpdateProfile = async () => {
     setProfileSaving(true);
@@ -275,6 +280,21 @@ export function ProfileSection() {
       toast.success('头像已移除');
     } catch (err) {
       toast.error(getErrorMessage(err, '移除头像失败'));
+    }
+  };
+
+  const handleToggleDefaultRequireMention = async (next: boolean) => {
+    const prev = defaultRequireMention;
+    setDefaultRequireMention(next);
+    setImDefaultsSaving(true);
+    try {
+      await updateProfile({ default_require_mention: next });
+      toast.success(next ? '新群默认需要 @机器人' : '新群默认响应所有消息');
+    } catch (err) {
+      setDefaultRequireMention(prev);
+      toast.error(getErrorMessage(err, '保存失败'));
+    } finally {
+      setImDefaultsSaving(false);
     }
   };
 
@@ -446,6 +466,28 @@ export function ProfileSection() {
           {aiAppearanceSaving && <Loader2 className="size-4 animate-spin" />}
           保存
         </Button>
+      </Section>
+
+      {/* ── 3.5 IM Group Defaults ── */}
+      <Section
+        icon={MessagesSquare}
+        title="IM 群聊默认行为"
+        desc="影响新自动注册的飞书 / Telegram 群聊。已有群聊保持原设置不变；可在每个群里用 /require_mention 命令单独切换。"
+      >
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <Label className="text-sm text-foreground">新群默认需要 @机器人</Label>
+            <p className="text-[11px] text-muted-foreground mt-0.5">
+              开启后，机器人加入新群后只对 @它的消息回复；关闭则响应群里你发送的所有消息。
+            </p>
+          </div>
+          <Switch
+            checked={defaultRequireMention}
+            disabled={imDefaultsSaving}
+            onCheckedChange={handleToggleDefaultRequireMention}
+            aria-label="新群默认需要 @机器人"
+          />
+        </div>
       </Section>
 
       {/* ── 4. Password ── */}

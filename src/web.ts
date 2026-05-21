@@ -1009,7 +1009,7 @@ function setupWebSocket(server: any): WebSocketServer {
           continue;
         }
         // Skip empty snapshots
-        if (!snap.partialText && snap.activeTools.length === 0 && snap.recentEvents.length === 0) {
+        if (!snap.partialText && !snap.thinkingText && snap.activeTools.length === 0 && snap.recentEvents.length === 0 && snap.traceEvents.length === 0 && Object.keys(snap.taskStates).length === 0 && !snap.contextAudit) {
           continue;
         }
         // Strip #agent: suffix for ACL lookup (virtual JIDs not in registered_groups)
@@ -1022,8 +1022,12 @@ function setupWebSocket(server: any): WebSocketServer {
             chatJid: jid,
             snapshot: {
               partialText: snap.partialText,
+              thinkingText: snap.thinkingText,
               activeTools: snap.activeTools,
               recentEvents: snap.recentEvents,
+              traceEvents: snap.traceEvents,
+              taskStates: snap.taskStates,
+              contextAudit: snap.contextAudit,
               todos: snap.todos,
               systemStatus: snap.systemStatus,
               turnId: snap.turnId,
@@ -1789,6 +1793,7 @@ export function broadcastTyping(chatJid: string, isTyping: boolean): void {
 
 interface StreamingSnapshotEntry {
   partialText: string;
+  thinkingText: string;
   activeTools: Array<{
     toolName: string;
     toolUseId: string;
@@ -1800,7 +1805,34 @@ interface StreamingSnapshotEntry {
     id: string;
     timestamp: number;
     text: string;
-    kind: 'tool' | 'skill' | 'hook' | 'status';
+    kind: 'tool' | 'skill' | 'hook' | 'status' | 'task' | 'memory' | 'context' | 'debug';
+  }>;
+  traceEvents: Array<{
+    id: string;
+    timestamp: number;
+    kind: 'tool' | 'skill' | 'hook' | 'status' | 'task' | 'memory' | 'context' | 'debug';
+    scope?: StreamEvent['agentScope'];
+    title: string;
+    summary?: string;
+    detail?: string;
+    taskId?: string;
+    toolUseId?: string;
+    parentToolUseId?: string | null;
+    displayLevel?: StreamEvent['displayLevel'];
+  }>;
+  contextAudit?: StreamEvent['contextAudit'];
+  taskStates: Record<string, {
+    id: string;
+    title: string;
+    status: 'running' | 'completed' | 'error' | 'backgrounded';
+    subagentType?: string;
+    latestSummary?: string;
+    lastToolName?: string;
+    thinkingTail: string;
+    textTail: string;
+    activeTools: StreamingSnapshotEntry['activeTools'];
+    recentTools: StreamingSnapshotEntry['recentEvents'];
+    updatedAt: number;
   }>;
   todos?: Array<{ id: string; content: string; status: string }>;
   systemStatus: string | null;
@@ -1812,14 +1844,113 @@ const streamingSnapshots = new Map<string, StreamingSnapshotEntry>();
 /** Accumulates full (non-truncated) text per group for shutdown persistence & disk buffer. */
 const streamingFullTexts = new Map<string, string>();
 const MAX_SNAPSHOT_TEXT = 4000;
+const MAX_SNAPSHOT_THINKING = 8000;
 const MAX_SNAPSHOT_EVENTS = 20;
+const MAX_SNAPSHOT_TRACE_EVENTS = 200;
+const MAX_SNAPSHOT_TASK_TAIL = 4000;
 
 /** Push a recent event entry and truncate to MAX_SNAPSHOT_EVENTS. */
-function pushRecentEvent(snap: StreamingSnapshotEntry, event: { id: string; timestamp: number; text: string; kind: 'tool' | 'skill' | 'hook' | 'status' }): void {
+function pushRecentEvent(snap: StreamingSnapshotEntry, event: { id: string; timestamp: number; text: string; kind: 'tool' | 'skill' | 'hook' | 'status' | 'task' | 'memory' | 'context' | 'debug' }): void {
   snap.recentEvents.push(event);
   if (snap.recentEvents.length > MAX_SNAPSHOT_EVENTS) {
     snap.recentEvents = snap.recentEvents.slice(-MAX_SNAPSHOT_EVENTS);
   }
+}
+
+function pushTraceEvent(snap: StreamingSnapshotEntry, event: StreamEvent): void {
+  if (event.eventType === 'text_delta' || event.eventType === 'thinking_delta' || event.eventType === 'usage' || event.eventType === 'init') return;
+  const kind =
+    event.eventType.startsWith('tool_') ? (event.skillName ? 'skill' : 'tool') :
+    event.eventType.startsWith('hook_') ? 'hook' :
+    event.eventType.startsWith('task_') ? 'task' :
+    event.eventType === 'memory_recall' || event.eventType === 'compact_boundary' ? 'memory' :
+    event.eventType === 'context_audit' ? 'context' :
+    event.eventType === 'raw_sdk_event' ? 'debug' :
+    'status';
+  const title = event.title
+    || event.summary
+    || event.taskSummary
+    || event.statusText
+    || event.toolName
+    || event.rawType
+    || event.eventType;
+  snap.traceEvents.push({
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    timestamp: Date.now(),
+    kind,
+    scope: event.agentScope,
+    title,
+    summary: event.summary || event.taskSummary || event.toolInputSummary,
+    detail: event.detail,
+    taskId: event.taskId,
+    toolUseId: event.toolUseId,
+    parentToolUseId: event.parentToolUseId,
+    displayLevel: event.displayLevel,
+  });
+  if (snap.traceEvents.length > MAX_SNAPSHOT_TRACE_EVENTS) {
+    snap.traceEvents = snap.traceEvents.slice(-MAX_SNAPSHOT_TRACE_EVENTS);
+  }
+}
+
+function tailText(text: string, max: number): string {
+  return text.length > max ? text.slice(-max) : text;
+}
+
+function snapshotTaskId(event: StreamEvent): string | null {
+  return event.parentToolUseId || event.taskId || (
+    event.eventType.startsWith('task_') ? event.toolUseId || null : null
+  );
+}
+
+function updateSnapshotTask(snap: StreamingSnapshotEntry, event: StreamEvent): void {
+  const taskId = snapshotTaskId(event);
+  if (!taskId) return;
+  const task = snap.taskStates[taskId] || {
+    id: taskId,
+    title: event.taskDescription || event.toolInputSummary || event.summary || 'Task',
+    status: 'running' as const,
+    subagentType: event.subagentType,
+    thinkingTail: '',
+    textTail: '',
+    activeTools: [],
+    recentTools: [],
+    updatedAt: Date.now(),
+  };
+  task.updatedAt = Date.now();
+  if (event.taskDescription && (!task.title || task.title === 'Task')) task.title = event.taskDescription;
+  if (event.subagentType) task.subagentType = event.subagentType;
+  if (event.eventType === 'text_delta') {
+    task.textTail = tailText(task.textTail + (event.text || ''), MAX_SNAPSHOT_TASK_TAIL);
+  } else if (event.eventType === 'thinking_delta') {
+    task.thinkingTail = tailText(task.thinkingTail + (event.text || ''), MAX_SNAPSHOT_TASK_TAIL);
+  } else if (event.eventType === 'task_progress') {
+    task.latestSummary = event.summary || event.taskSummary || event.taskDescription || task.latestSummary;
+    task.lastToolName = event.lastToolName || task.lastToolName;
+    task.status = 'running';
+  } else if (event.eventType === 'task_updated') {
+    const patch = event.taskPatch;
+    if (patch?.status === 'completed') task.status = 'completed';
+    else if (patch?.status === 'failed' || patch?.status === 'killed') task.status = 'error';
+    else if (patch?.is_backgrounded) task.status = 'backgrounded';
+    task.latestSummary = event.summary || patch?.description || patch?.error || task.latestSummary;
+  } else if (event.eventType === 'task_notification') {
+    task.status = event.taskStatus === 'completed' ? 'completed' : 'error';
+    task.latestSummary = event.taskSummary || event.summary || task.latestSummary;
+  } else if (event.eventType === 'tool_use_start' && event.parentToolUseId) {
+    const tool = {
+      toolName: event.toolName || 'unknown',
+      toolUseId: event.toolUseId || '',
+      startTime: Date.now(),
+      toolInputSummary: event.toolInputSummary,
+      parentToolUseId: event.parentToolUseId,
+    };
+    task.activeTools = task.activeTools.some(t => t.toolUseId === tool.toolUseId && tool.toolUseId)
+      ? task.activeTools.map(t => (t.toolUseId === tool.toolUseId ? { ...t, ...tool } : t))
+      : [...task.activeTools, tool];
+  } else if (event.eventType === 'tool_use_end' && event.parentToolUseId) {
+    task.activeTools = task.activeTools.filter(t => t.toolUseId !== event.toolUseId);
+  }
+  snap.taskStates[taskId] = task;
 }
 
 function updateStreamingSnapshot(normalizedJid: string, event: StreamEvent): void {
@@ -1834,8 +1965,11 @@ function updateStreamingSnapshot(normalizedJid: string, event: StreamEvent): voi
   if (!snap) {
     snap = {
       partialText: '',
+      thinkingText: '',
       activeTools: [],
       recentEvents: [],
+      traceEvents: [],
+      taskStates: {},
       systemStatus: null,
       turnId: event.turnId,
       updatedAt: Date.now(),
@@ -1844,16 +1978,27 @@ function updateStreamingSnapshot(normalizedJid: string, event: StreamEvent): voi
 
   snap.updatedAt = Date.now();
   if (event.turnId) snap.turnId = event.turnId;
+  pushTraceEvent(snap, event);
+  updateSnapshotTask(snap, event);
 
   switch (event.eventType) {
     case 'text_delta':
-      if (event.text) {
+      if (event.text && !event.parentToolUseId) {
         snap.partialText += event.text;
         if (snap.partialText.length > MAX_SNAPSHOT_TEXT) {
           snap.partialText = snap.partialText.slice(-MAX_SNAPSHOT_TEXT);
         }
         // Accumulate full (non-truncated) text for shutdown persistence
         streamingFullTexts.set(normalizedJid, (streamingFullTexts.get(normalizedJid) || '') + event.text);
+      }
+      break;
+
+    case 'thinking_delta':
+      if (event.text && !event.parentToolUseId) {
+        snap.thinkingText += event.text;
+        if (snap.thinkingText.length > MAX_SNAPSHOT_THINKING) {
+          snap.thinkingText = snap.thinkingText.slice(-MAX_SNAPSHOT_THINKING);
+        }
       }
       break;
 
@@ -1890,6 +2035,33 @@ function updateStreamingSnapshot(normalizedJid: string, event: StreamEvent): voi
       }
       break;
 
+    case 'task_start':
+      pushRecentEvent(snap, {
+        id: event.toolUseId || event.taskId || `task-${Date.now()}`,
+        timestamp: Date.now(),
+        text: `Task 启动: ${event.taskDescription || event.toolInputSummary || 'Task'}`,
+        kind: 'task',
+      });
+      break;
+
+    case 'task_progress':
+      pushRecentEvent(snap, {
+        id: `task-progress-${Date.now()}`,
+        timestamp: Date.now(),
+        text: `${event.lastToolName ? `Task 进度 [${event.lastToolName}]` : 'Task 进度'}: ${event.summary || event.taskDescription || ''}`,
+        kind: 'task',
+      });
+      break;
+
+    case 'task_notification':
+      pushRecentEvent(snap, {
+        id: `task-done-${event.taskId || Date.now()}`,
+        timestamp: Date.now(),
+        text: `Task ${event.taskStatus === 'completed' ? '完成' : '结束'}: ${event.taskSummary || event.summary || ''}`,
+        kind: 'task',
+      });
+      break;
+
     case 'status':
       snap.systemStatus = event.statusText || null;
       if (event.statusText) {
@@ -1909,6 +2081,28 @@ function updateStreamingSnapshot(normalizedJid: string, event: StreamEvent): voi
           timestamp: Date.now(),
           text: `${event.hookName} (${event.hookEvent || ''})`,
           kind: 'hook',
+        });
+      }
+      break;
+
+    case 'memory_recall':
+    case 'compact_boundary':
+      pushRecentEvent(snap, {
+        id: `${event.eventType}-${Date.now()}`,
+        timestamp: Date.now(),
+        text: event.summary || event.title || event.eventType,
+        kind: 'memory',
+      });
+      break;
+
+    case 'context_audit':
+      snap.contextAudit = event.contextAudit;
+      if (event.contextAudit?.warnings?.length) {
+        pushRecentEvent(snap, {
+          id: `context-audit-${Date.now()}`,
+          timestamp: Date.now(),
+          text: `Agent Context: ${event.contextAudit.warnings[0]}`,
+          kind: 'context',
         });
       }
       break;

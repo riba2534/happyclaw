@@ -183,12 +183,15 @@ export default defineConfig(({ command }) => {
               //   4. login/logout 调 clearApiCaches() 阻止跨用户串号
               //   5. 服务端响应头 Cache-Control: private, no-store 兜底
               // `?after=` 增量轮询（每 2s）排除以免占用 maxEntries 配额。
+              // `?agentId=` 子对话首屏必须强一致；它没有主会话的 2s 轮询兜底，
+              // 若走 SWR 会出现"首次刷新旧消息，二次刷新才最新"。
               // agents 列表不在此处理：store 层已 memoize，SW 介入只会增加
               // 双层缓存失效协调的复杂度。
               {
                 urlPattern: ({ url, request }) => {
                   if (request.method !== 'GET') return false;
                   if (url.searchParams.has('after')) return false; // 排除轮询
+                  if (url.searchParams.has('agentId')) return false; // 子对话首屏走网络
                   return /^\/api\/groups\/[^/]+\/messages$/.test(url.pathname);
                 },
                 handler: 'StaleWhileRevalidate',

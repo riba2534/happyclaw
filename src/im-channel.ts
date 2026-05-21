@@ -6,6 +6,7 @@
  */
 import {
   createFeishuConnection,
+  parseFeishuRouteTarget,
   type FeishuConnection,
   type FeishuConnectionConfig,
 } from './feishu.js';
@@ -89,7 +90,7 @@ export interface IMChannelConnectOpts {
   resolveEffectiveChatJid?: (
     chatJid: string,
     messageMeta?: FeishuMessageMeta,
-  ) => { effectiveJid: string; agentId: string | null } | null;
+  ) => { effectiveJid: string; agentId: string | null; sourceJid?: string } | null;
   /** 当 IM 消息被路由到 conversation agent 后调用，触发 agent 处理 */
   onAgentMessage?: (baseChatJid: string, agentId: string) => void;
   /** Bot 被添加到群聊时调用 */
@@ -297,10 +298,12 @@ export function createFeishuChannel(config: FeishuConnectionConfig): IMChannel {
       if (!inner) return undefined;
       const larkClient = inner.getLarkClient();
       if (!larkClient) return undefined;
+      const target = parseFeishuRouteTarget(chatId);
       const opts: StreamingCardOptions = {
         client: larkClient,
-        chatId,
+        chatId: target.chatId,
         replyToMsgId: inner.getLastMessageId(chatId),
+        replyInThread: target.replyInThread,
         onCardCreated,
       };
       return new StreamingCardController(opts);

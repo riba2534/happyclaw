@@ -296,6 +296,7 @@ export const ProfileUpdateSchema = z.object({
     .refine((v) => v.startsWith('/api/auth/avatars/'), 'Invalid avatar URL')
     .nullable()
     .optional(),
+  default_require_mention: z.boolean().optional(),
 });
 
 export const PermissionValueSchema = z

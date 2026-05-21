@@ -61,6 +61,96 @@ const TASK_STATUS_LABELS: Record<string, string> = {
   error: '出错',
 };
 
+type StreamingState = import('../../stores/chat').StreamingState;
+type AgentContextAudit = NonNullable<StreamingState['contextAudit']>;
+
+function shortPath(path?: string): string {
+  if (!path) return '未设置';
+  if (path.length <= 72) return path;
+  return `...${path.slice(-69)}`;
+}
+
+function AgentContextPanel({ audit }: { audit: AgentContextAudit }) {
+  const [expanded, setExpanded] = useState(false);
+  const warningCount = audit.warnings.length;
+  const skillsCount = audit.skills.includedSkills ?? audit.skills.totalSkills ?? 0;
+  const skillsTokens = audit.skills.tokens ?? 0;
+  const rulesLoaded = audit.rules.loadedFileCount ?? 0;
+
+  const rows = [
+    {
+      label: 'CLAUDE.md',
+      value: audit.claudeMd.status,
+      detail: audit.claudeMd.runtimePath || audit.claudeMd.sourcePath,
+    },
+    {
+      label: 'rules/',
+      value: `${audit.rules.fileCount} 个文件${rulesLoaded ? ` · SDK 命中 ${rulesLoaded}` : ''}`,
+      detail: audit.rules.runtimePath || audit.rules.sourcePath,
+    },
+    {
+      label: 'skills/',
+      value: `${skillsCount} 个${skillsTokens ? ` · ${skillsTokens.toLocaleString()} tokens` : ''}`,
+      detail: audit.skills.sources
+        .filter((source) => source.sourcePath || source.runtimePath || source.count)
+        .map((source) => `${source.name}: ${source.count ?? 0}`)
+        .join(' · '),
+    },
+    {
+      label: 'HappyClaw prompt',
+      value: `${audit.happyclawPrompt.files.length} 个补丁 · ${audit.happyclawPrompt.totalBytes.toLocaleString()} bytes`,
+      detail: audit.happyclawPrompt.files.map((file) => file.name).join(', '),
+    },
+  ];
+
+  return (
+    <div className={`mb-2 rounded-lg border overflow-hidden ${warningCount ? 'border-amber-300/70 bg-amber-50/35 dark:border-amber-800/50 dark:bg-amber-950/25' : 'border-border bg-muted/20'}`}>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-muted/40 transition-colors"
+      >
+        <span className="text-xs font-medium text-muted-foreground">Agent Context</span>
+        <span className={`text-[11px] ${warningCount ? 'text-amber-700 dark:text-amber-300' : 'text-muted-foreground'}`}>
+          {warningCount ? `${warningCount} 个 warning` : '已审计'}
+        </span>
+        <span className="text-[11px] text-muted-foreground hidden sm:inline">
+          {audit.executionMode} · {skillsCount} skills
+        </span>
+        <span className="flex-1" />
+        {expanded ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
+      </button>
+      {expanded && (
+        <div className="border-t border-border/60 px-3 py-2 space-y-2">
+          <div className="grid gap-1.5 sm:grid-cols-2">
+            {rows.map((row) => (
+              <div key={row.label} className="min-w-0">
+                <div className="text-[11px] font-medium text-muted-foreground">{row.label}</div>
+                <div className="text-[13px] text-foreground/80 break-words">{row.value}</div>
+                {row.detail && (
+                  <div className="text-[11px] text-muted-foreground break-all">{shortPath(row.detail)}</div>
+                )}
+              </div>
+            ))}
+          </div>
+          {(audit.externalClaudeDir || audit.claudeConfigDir) && (
+            <div className="text-[11px] text-muted-foreground break-all">
+              {audit.externalClaudeDir && <div>externalClaudeDir: {shortPath(audit.externalClaudeDir)}</div>}
+              {audit.claudeConfigDir && <div>CLAUDE_CONFIG_DIR: {shortPath(audit.claudeConfigDir)}</div>}
+            </div>
+          )}
+          {warningCount > 0 && (
+            <div className="rounded-md border border-amber-200/70 bg-amber-100/40 dark:border-amber-800/50 dark:bg-amber-900/20 px-2 py-1.5 text-[12px] text-amber-900/80 dark:text-amber-200/80 space-y-0.5">
+              {audit.warnings.slice(0, 6).map((warning, index) => (
+                <div key={`${warning}-${index}`} className="break-words">{warning}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Collapsible block for a single Task Agent — visually consistent with the Thinking block. */
 function TaskAgentBlock({ agent, groupJid }: { agent: AgentInfo; groupJid: string }) {
   const streaming = useChatStore(s => s.agentStreaming[agent.id]);
@@ -179,6 +269,123 @@ function TaskAgentBlock({ agent, groupJid }: { agent: AgentInfo; groupJid: strin
   );
 }
 
+function SdkTaskRuntimeBlock({
+  task,
+  groupJid,
+}: {
+  task: import('../../stores/chat').StreamingTaskRuntimeState;
+  groupJid: string;
+}) {
+  const [expanded, setExpanded] = useState(task.status === 'running');
+  const isRunning = task.status === 'running' || task.status === 'backgrounded';
+  const statusLabel = task.status === 'completed'
+    ? '已完成'
+    : task.status === 'error'
+      ? '出错'
+      : task.status === 'backgrounded'
+        ? '后台执行'
+        : '执行中';
+
+  return (
+    <div className="rounded-lg border border-border bg-muted/20 overflow-hidden">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-muted/40 transition-colors"
+      >
+        <span className={`w-2 h-2 rounded-full ${isRunning ? 'bg-blue-500 animate-pulse' : task.status === 'error' ? 'bg-red-500' : 'bg-emerald-500'}`} />
+        <span className="text-xs font-medium text-foreground truncate">{task.title}</span>
+        {task.subagentType && <span className="text-[11px] text-muted-foreground">{task.subagentType}</span>}
+        <span className="text-[11px] text-muted-foreground">{statusLabel}</span>
+        <span className="flex-1" />
+        {expanded ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
+      </button>
+      {expanded && (
+        <div className="border-t border-border px-3 py-2 space-y-2">
+          {task.latestSummary && (
+            <div className="text-[13px] text-foreground/75 whitespace-pre-wrap break-words">
+              {task.lastToolName && <span className="text-muted-foreground">[{task.lastToolName}] </span>}
+              {task.latestSummary}
+            </div>
+          )}
+          {task.activeTools.length > 0 && (
+            <div className="space-y-1.5">
+              {task.activeTools.map((tool) => (
+                <ToolActivityCard key={tool.toolUseId} tool={tool} localElapsed={undefined} />
+              ))}
+            </div>
+          )}
+          {task.recentTools.length > 0 && (
+            <div className="text-[13px] text-muted-foreground space-y-0.5">
+              {task.recentTools.slice(-5).map((item) => <div key={item.id}>{item.text}</div>)}
+            </div>
+          )}
+          {task.thinkingTail && (
+            <div className="rounded-md bg-amber-50/50 dark:bg-amber-950/30 border border-amber-200/50 dark:border-amber-800/40 px-2 py-1.5 text-[13px] text-amber-900/70 dark:text-amber-200/70 whitespace-pre-wrap break-words max-h-28 overflow-y-auto">
+              {task.thinkingTail}
+            </div>
+          )}
+          {task.textTail && (
+            <div className="max-w-none overflow-hidden text-sm [&>div>*:first-child]:!mt-0">
+              <MarkdownRenderer
+                content={task.textTail.length > 2000 ? '...' + task.textTail.slice(-1500) : task.textTail}
+                groupJid={groupJid}
+                variant="chat"
+                streaming
+              />
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TracePanel({ streaming }: { streaming: import('../../stores/chat').StreamingState }) {
+  const [expanded, setExpanded] = useState(false);
+  const visibleTrace = streaming.traceEvents.filter((e) => e.displayLevel !== 'debug');
+  if (visibleTrace.length === 0 && Object.keys(streaming.taskStates).length === 0) return null;
+
+  const groups = [
+    { key: 'task', label: 'Task / Sub-agent', items: visibleTrace.filter(e => e.kind === 'task') },
+    { key: 'tool', label: 'Tools', items: visibleTrace.filter(e => e.kind === 'tool' || e.kind === 'skill') },
+    { key: 'hook', label: 'Hooks', items: visibleTrace.filter(e => e.kind === 'hook') },
+    { key: 'memory', label: 'Memory / Compaction', items: visibleTrace.filter(e => e.kind === 'memory') },
+    { key: 'context', label: 'Agent Context', items: visibleTrace.filter(e => e.kind === 'context') },
+    { key: 'system', label: 'System', items: visibleTrace.filter(e => e.kind === 'status') },
+  ].filter(g => g.items.length > 0);
+
+  return (
+    <div className="rounded-lg border border-border bg-muted/20 mb-2 overflow-hidden">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-muted/40 transition-colors"
+      >
+        <span className="text-xs font-medium text-muted-foreground">运行轨迹</span>
+        <span className="text-[11px] text-muted-foreground">{visibleTrace.length} 条</span>
+        <span className="flex-1" />
+        {expanded ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
+      </button>
+      {expanded && (
+        <div className="border-t border-border px-3 py-2 space-y-3 max-h-72 overflow-y-auto">
+          {groups.map((group) => (
+            <div key={group.key}>
+              <div className="text-[11px] font-medium text-muted-foreground mb-1">{group.label}</div>
+              <div className="space-y-1">
+                {group.items.slice(-20).map((item) => (
+                  <div key={item.id} className="text-[13px] text-foreground/75 break-words">
+                    <span className="font-medium">{item.title}</span>
+                    {item.summary && <span className="text-muted-foreground"> — {item.summary}</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Shared streaming content — used by both compact and chat modes to eliminate duplication. */
 function StreamingContent({
   streaming,
@@ -216,6 +423,11 @@ function StreamingContent({
           </svg>
           <span>{streaming.systemStatus === 'compacting' ? '上下文压缩中...' : streaming.systemStatus}</span>
         </div>
+      )}
+
+      {/* Runtime context audit */}
+      {streaming.contextAudit && (
+        <AgentContextPanel audit={streaming.contextAudit} />
       )}
 
       {/* Reasoning block */}
@@ -285,6 +497,20 @@ function StreamingContent({
       {streaming.todos && streaming.todos.length > 0 && (
         <TodoProgressPanel todos={streaming.todos} />
       )}
+
+      {/* SDK Task / sub-agent runtime state */}
+      {Object.keys(streaming.taskStates).length > 0 && (
+        <div className="mb-2 space-y-1.5">
+          {Object.values(streaming.taskStates)
+            .sort((a, b) => a.updatedAt - b.updatedAt)
+            .map((task) => (
+              <SdkTaskRuntimeBlock key={task.id} task={task} groupJid={groupJid} />
+            ))}
+        </div>
+      )}
+
+      {/* Full trace */}
+      <TracePanel streaming={streaming} />
 
       {/* Recent events timeline */}
       {streaming.recentEvents.length > 0 && (
@@ -502,7 +728,10 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNamePr
     streaming.activeTools.length > 0 ||
     streaming.activeHook ||
     streaming.systemStatus ||
+    streaming.contextAudit ||
     streaming.recentEvents.length > 0 ||
+    streaming.traceEvents.length > 0 ||
+    Object.keys(streaming.taskStates).length > 0 ||
     (streaming.todos && streaming.todos.length > 0)
   )) || hasTaskAgents;
 

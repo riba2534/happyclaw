@@ -133,6 +133,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const renameConversation = useChatStore(s => s.renameConversation);
   const reorderConversations = useChatStore(s => s.reorderConversations);
   const loadAgentMessages = useChatStore(s => s.loadAgentMessages);
+  const hydrateAgentMessages = useChatStore(s => s.hydrateAgentMessages);
   const refreshAgentMessages = useChatStore(s => s.refreshAgentMessages);
   const sendAgentMessage = useChatStore(s => s.sendAgentMessage);
   const agentMessages = useChatStore(s => s.agentMessages);
@@ -356,15 +357,22 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     selectTab(isDesktop && topicAgents[0] ? topicAgents[0].id : null);
   }, [isTopicWorkspace, activeAgentTab, topicAgents, isDesktop, selectTab]);
 
-  // Load messages for conversation agent tabs
+  // Load messages for conversation agent tabs.
+  // hydrate-then-calibrate: 先把 IndexedDB 快照灌回 store（避免首屏回退），
+  // 再走网络以服务端为准。不要用 useEffect cleanup 的 cancelled flag —— hydrate
+  // 的 set() 会改 agentMessages 触发 effect 重跑，cleanup 会把上一轮的 cancelled
+  // 置 true，导致网络校准被自己取消。改成 hydrate 完成后直接读 store 判断
+  // 「用户是否仍停留在这个 conversation tab」。
   useEffect(() => {
-    if (activeAgentTab && isConversationTab) {
-      const existing = agentMessages[activeAgentTab];
-      if (!existing) {
-        loadAgentMessages(groupJid, activeAgentTab);
-      }
-    }
-  }, [activeAgentTab, isConversationTab, groupJid, loadAgentMessages, agentMessages]);
+    if (!activeAgentTab || !isConversationTab) return;
+    if (agentMessages[activeAgentTab]) return;
+    const agentId = activeAgentTab;
+    void (async () => {
+      await hydrateAgentMessages(groupJid, agentId);
+      if (useChatStore.getState().activeAgentTab[groupJid] !== agentId) return;
+      await loadAgentMessages(groupJid, agentId);
+    })();
+  }, [activeAgentTab, isConversationTab, groupJid, hydrateAgentMessages, loadAgentMessages, agentMessages]);
 
   // 监听 WebSocket 流式事件
   useEffect(() => {

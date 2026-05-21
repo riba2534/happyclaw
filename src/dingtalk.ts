@@ -34,6 +34,7 @@ import {
   extractRepliedMsg,
   type RepliedMsg,
 } from './dingtalk-reply-parser.js';
+import { ProcessingLock, isStale } from './im-safety/index.js';
 
 // ─── Constants ──────────────────────────────────────────────────
 
@@ -292,6 +293,7 @@ export function createDingTalkConnection(
 
   // Message deduplication
   const msgCache = new Map<string, number>();
+  const processingLock = new ProcessingLock();
 
   // Last message ID per chat (for reply context)
   const lastMessageIds = new Map<string, string>();
@@ -1397,11 +1399,27 @@ export function createDingTalkConnection(
         },
         'DingTalk handleRobotMessage start',
       );
-      if (!msgId || isDuplicate(msgId)) {
-        logger.info({ msgId }, 'DingTalk dropped: duplicate or no msgId');
+      if (!msgId) {
+        logger.info({ msgId }, 'DingTalk dropped: no msgId');
+        return;
+      }
+      if (isStale(data.createAt)) {
+        logger.debug(
+          { msgId, createAt: data.createAt },
+          'Stale DingTalk message (>30min), dropping',
+        );
+        return;
+      }
+      if (isDuplicate(msgId)) {
+        logger.info({ msgId }, 'DingTalk dropped: duplicate');
+        return;
+      }
+      if (!processingLock.acquire(msgId)) {
+        logger.debug({ msgId }, 'DingTalk message already in-flight, skipping');
         return;
       }
       markSeen(msgId);
+      try {
 
       // Skip stale messages from before connection (hot-reload scenario)
       if (opts.ignoreMessagesBefore && data.createAt) {
@@ -1892,6 +1910,9 @@ export function createDingTalkConnection(
           { jid, sender: senderName, msgId },
           'DingTalk message stored',
         );
+      }
+      } finally {
+        processingLock.release(msgId);
       }
     } catch (err) {
       logger.error({ err }, 'Error handling DingTalk robot message');

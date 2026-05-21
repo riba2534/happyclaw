@@ -14,6 +14,10 @@ import {
   FileTooLargeError,
 } from './im-downloader.js';
 import { detectImageMimeType } from './image-detector.js';
+import {
+  ProcessingLock,
+  isStale as isGloballyStale,
+} from './im-safety/index.js';
 // ─── TelegramConnection Interface ──────────────────────────────
 
 export interface TelegramConnectionConfig {
@@ -179,6 +183,7 @@ export function createTelegramConnection(
   const POLLING_RESTART_DELAY_MS = 5000;
 
   const msgCache = new Map<string, number>();
+  const processingLock = new ProcessingLock();
   let bot: Bot | null = null;
   let pollingPromise: Promise<void> | null = null;
   let reconnectTimer: NodeJS.Timeout | null = null;
@@ -410,12 +415,26 @@ export function createTelegramConnection(
           // Construct deduplication key
           const msgId =
             String(ctx.message.message_id) + ':' + String(ctx.chat.id);
+          if (isGloballyStale(ctx.message.date * 1000)) {
+            logger.debug(
+              { msgId, createTimeMs: ctx.message.date * 1000 },
+              'Stale Telegram message (>30min), dropping',
+            );
+            return;
+          }
           if (isDuplicate(msgId)) {
             logger.debug({ msgId }, 'Duplicate Telegram message, skipping');
             return;
           }
+          if (!processingLock.acquire(msgId)) {
+            logger.debug(
+              { msgId },
+              'Telegram message already in-flight, skipping',
+            );
+            return;
+          }
           markSeen(msgId);
-
+          try {
           if (isStaleMessage(ctx.message.date, opts.ignoreMessagesBefore)) return;
 
           const chatId = String(ctx.chat.id);
@@ -597,6 +616,9 @@ export function createTelegramConnection(
               'Telegram message stored',
             );
           }
+          } finally {
+            processingLock.release(msgId);
+          }
         } catch (err) {
           logger.error({ err }, 'Error handling Telegram message');
         }
@@ -607,9 +629,11 @@ export function createTelegramConnection(
         try {
           const msgId =
             String(ctx.message.message_id) + ':' + String(ctx.chat.id);
+          if (isGloballyStale(ctx.message.date * 1000)) return;
           if (isDuplicate(msgId)) return;
+          if (!processingLock.acquire(msgId)) return;
           markSeen(msgId);
-
+          try {
           if (isStaleMessage(ctx.message.date, opts.ignoreMessagesBefore)) return;
 
           const chatId = String(ctx.chat.id);
@@ -741,6 +765,9 @@ export function createTelegramConnection(
             { jid, sender: senderName, msgId, routed: !!agentRouting },
             'Telegram photo stored',
           );
+          } finally {
+            processingLock.release(msgId);
+          }
         } catch (err) {
           logger.error({ err }, 'Error handling Telegram photo');
         }
@@ -751,9 +778,11 @@ export function createTelegramConnection(
         try {
           const msgId =
             String(ctx.message.message_id) + ':' + String(ctx.chat.id);
+          if (isGloballyStale(ctx.message.date * 1000)) return;
           if (isDuplicate(msgId)) return;
+          if (!processingLock.acquire(msgId)) return;
           markSeen(msgId);
-
+          try {
           if (isStaleMessage(ctx.message.date, opts.ignoreMessagesBefore)) return;
 
           const chatId = String(ctx.chat.id);
@@ -889,6 +918,9 @@ export function createTelegramConnection(
             { jid, sender: senderName, msgId, routed: !!agentRouting },
             'Telegram document stored',
           );
+          } finally {
+            processingLock.release(msgId);
+          }
         } catch (err) {
           logger.error({ err }, 'Error handling Telegram document');
         }

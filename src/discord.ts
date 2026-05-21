@@ -40,6 +40,7 @@ import { logger } from './logger.js';
 import { saveDownloadedFile, MAX_FILE_SIZE } from './im-downloader.js';
 import { detectImageMimeType } from './image-detector.js';
 import { splitTextChunks } from './im-utils.js';
+import { ProcessingLock, isStale } from './im-safety/index.js';
 
 // ─── Constants ──────────────────────────────────────────────────
 
@@ -263,6 +264,7 @@ export function createDiscordConnection(
 
   // Message deduplication — LRU Map, 1000 entries, 30min TTL
   const msgCache = new Map<string, number>();
+  const processingLock = new ProcessingLock();
 
   // Last message ID per chat (for reply context)
   const lastMessageIds = new Map<string, string>();
@@ -385,12 +387,26 @@ export function createDiscordConnection(
 
       const msgId = msg.id;
 
+      // Global stale-message drop (>30min)
+      if (isStale(msg.createdTimestamp)) {
+        logger.debug(
+          { msgId, createdTimestamp: msg.createdTimestamp },
+          'Stale Discord message (>30min), dropping',
+        );
+        return;
+      }
+
       // Dedup check
       if (isDuplicate(msgId)) {
         logger.debug({ msgId }, 'Discord dropped: duplicate');
         return;
       }
+      if (!processingLock.acquire(msgId)) {
+        logger.debug({ msgId }, 'Discord message already in-flight, skipping');
+        return;
+      }
       markSeen(msgId);
+      try {
 
       // Skip stale messages from before connection (hot-reload scenario)
       if (opts.ignoreMessagesBefore && msg.createdTimestamp) {
@@ -633,6 +649,9 @@ export function createDiscordConnection(
           { jid, sender: senderName, msgId },
           'Discord message stored',
         );
+      }
+      } finally {
+        processingLock.release(msgId);
       }
     } catch (err) {
       logger.error({ err }, 'Error handling Discord message');

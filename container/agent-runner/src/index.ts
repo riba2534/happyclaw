@@ -31,6 +31,7 @@ import type {
   ParsedMessage,
   StreamEvent,
 } from './types.js';
+import type { ClaudeContextAudit } from './stream-event.types.js';
 export type { StreamEventType, StreamEvent } from './types.js';
 
 import { sanitizeFilename, generateFallbackName } from './utils.js';
@@ -127,6 +128,147 @@ const MEMORY_SYSTEM_GUEST = loadPrompt('memory-system.guest.md');
 
 const GUIDELINES_BLOCK = `<guidelines>\n${OUTPUT_GUIDELINES}\n${WEB_FETCH_GUIDELINES}\n${BACKGROUND_TASK_GUIDELINES}\n</guidelines>`;
 const CONVERSATION_AGENT_BLOCK = `<agent-override>\n${CONVERSATION_AGENT_GUIDELINES}\n</agent-override>`;
+
+interface PromptPiece {
+  name: string;
+  text: string;
+}
+
+interface SdkContextUsage {
+  memoryFiles?: Array<{ path: string; type?: string; tokens?: number }>;
+  skills?: {
+    includedSkills: number;
+    totalSkills: number;
+    tokens: number;
+    skillFrontmatter?: Array<{ name: string; source: string; tokens: number }>;
+  };
+  systemPromptSections?: Array<{ name: string; tokens: number }>;
+  totalTokens: number;
+  maxTokens: number;
+  percentage: number;
+}
+
+function byteLength(text: string): number {
+  return Buffer.byteLength(text, 'utf-8');
+}
+
+function buildPromptAudit(pieces: PromptPiece[]): ClaudeContextAudit['happyclawPrompt'] {
+  const files = pieces.map((piece) => ({
+    name: piece.name,
+    bytes: byteLength(piece.text),
+  }));
+  return {
+    files,
+    totalBytes: files.reduce((sum, file) => sum + file.bytes, 0),
+  };
+}
+
+function buildSecurityRulesPrompt(disableMemoryLayer: boolean): string {
+  if (!disableMemoryLayer) return SECURITY_RULES;
+  return SECURITY_RULES.replace(
+    /\n### 黄线操作[\s\S]*?(?=\n### Skill \/ MCP 安装审查)/,
+    '',
+  );
+}
+
+function runtimeContextAuditBase(containerInput: ContainerInput): ClaudeContextAudit {
+  return {
+    executionMode: containerInput.contextAudit?.executionMode ?? 'container',
+    cwd: WORKSPACE_GROUP,
+    claudeConfigDir: process.env.CLAUDE_CONFIG_DIR,
+    externalClaudeDir: containerInput.contextAudit?.externalClaudeDir,
+    claudeMd: containerInput.contextAudit?.claudeMd ?? { status: 'unknown' },
+    rules: containerInput.contextAudit?.rules ?? { status: 'unknown', fileCount: 0 },
+    skills: containerInput.contextAudit?.skills ?? { sources: [] },
+    happyclawPrompt: containerInput.contextAudit?.happyclawPrompt ?? { totalBytes: 0, files: [] },
+    warnings: [...(containerInput.contextAudit?.warnings ?? [])],
+  };
+}
+
+function classifySkillSource(source: string): ClaudeContextAudit['skills']['sources'][number]['name'] {
+  if (source.includes('/opt/builtin-skills')) return 'builtin';
+  if (source.includes('/external-skills') || source.includes('/.claude/skills')) return 'external';
+  if (source.includes('/project-skills') || source.includes('/container/skills')) return 'project';
+  if (source.includes('/user-skills') || source.includes('/data/skills/')) return 'user';
+  if (source.includes('/plugins/')) return 'plugin';
+  return 'unknown';
+}
+
+function pathMatches(candidate: string, expected?: string): boolean {
+  if (!expected) return false;
+  return candidate === expected || candidate.endsWith(expected) || expected.endsWith(candidate);
+}
+
+function enrichContextAudit(
+  baseAudit: ClaudeContextAudit,
+  promptAudit: ClaudeContextAudit['happyclawPrompt'],
+  ctxUsage?: SdkContextUsage,
+): ClaudeContextAudit {
+  const audit: ClaudeContextAudit = {
+    ...baseAudit,
+    cwd: WORKSPACE_GROUP,
+    claudeConfigDir: process.env.CLAUDE_CONFIG_DIR,
+    happyclawPrompt: promptAudit,
+    warnings: [...baseAudit.warnings],
+    claudeMd: { ...baseAudit.claudeMd },
+    rules: { ...baseAudit.rules },
+    skills: {
+      ...baseAudit.skills,
+      sources: [...baseAudit.skills.sources],
+    },
+  };
+
+  if (!ctxUsage) {
+    audit.warnings.push('SDK context usage unavailable');
+    return audit;
+  }
+
+  const memoryFiles = ctxUsage.memoryFiles ?? [];
+  const claudeMemory = memoryFiles.find((file) =>
+    pathMatches(file.path, audit.claudeMd.runtimePath)
+    || pathMatches(file.path, audit.claudeMd.sourcePath)
+  );
+  if (claudeMemory) {
+    audit.claudeMd.loaded = true;
+    audit.claudeMd.tokens = claudeMemory.tokens;
+  } else if (audit.claudeMd.status === 'linked' || audit.claudeMd.status === 'mounted') {
+    audit.claudeMd.loaded = false;
+    audit.warnings.push('CLAUDE.md not reported by SDK memoryFiles');
+  }
+
+  const loadedRuleFiles = memoryFiles
+    .filter((file) =>
+      pathMatches(file.path, audit.rules.runtimePath)
+      || pathMatches(file.path, audit.rules.sourcePath)
+      || file.path.includes('/rules/')
+    )
+    .map((file) => ({ path: file.path, tokens: file.tokens }));
+  audit.rules.loadedFiles = loadedRuleFiles;
+  audit.rules.loadedFileCount = loadedRuleFiles.length;
+  if (audit.rules.fileCount > 0 && loadedRuleFiles.length === 0) {
+    audit.warnings.push('rules not loaded by SDK');
+  }
+
+  if (ctxUsage.skills) {
+    audit.skills.totalSkills = ctxUsage.skills.totalSkills;
+    audit.skills.includedSkills = ctxUsage.skills.includedSkills;
+    audit.skills.tokens = ctxUsage.skills.tokens;
+    if (ctxUsage.skills.totalSkills > 150) audit.warnings.push('skills count > 150');
+    if (ctxUsage.skills.tokens > 15000) audit.warnings.push('skills tokens > 15000');
+
+    const tokensBySource = new Map<string, number>();
+    for (const skill of ctxUsage.skills.skillFrontmatter ?? []) {
+      const key = classifySkillSource(skill.source);
+      tokensBySource.set(key, (tokensBySource.get(key) ?? 0) + (skill.tokens ?? 0));
+    }
+    audit.skills.sources = audit.skills.sources.map((source) => ({
+      ...source,
+      tokens: tokensBySource.get(source.name) ?? source.tokens,
+    }));
+  }
+
+  return audit;
+}
 
 // 启动期扫描 prompts/channels/*.md，文件名（去 .md 后缀）= channel key（feishu / telegram / qq / dingtalk / ...）
 // 新增渠道时只需在 channels/ 下加一个 .md 文件，无需改代码。
@@ -1090,18 +1232,30 @@ async function runQuery(
 
   const channel = getChannelFromJid(containerInput.chatJid);
   const channelGuidelines = CHANNEL_GUIDELINES[channel] ?? '';
+  const memoryPromptName = !disableMemoryLayer
+    ? isHome
+      ? 'memory-system.home.md'
+      : 'memory-system.guest.md'
+    : null;
 
-  // SDK settingSources 只加载 ~/.claude/CLAUDE.md 本体，不递归加载 rules/；
-  // 容器模式下 $HOME 指向会话目录，宿主机 CLAUDE.md 也读不到。因此 guidelines 必须 inline 注入。
-  const systemPromptAppend = [
-    `<behavior>\n${INTERACTION_GUIDELINES}\n</behavior>`,
-    `<skill-routing>\n${SKILL_ROUTING_GUIDELINES}\n</skill-routing>`,
-    `<security>\n${SECURITY_RULES}\n</security>`,
-    memoryRecall && `<memory-system>\n${memoryRecall}\n</memory-system>`,
-    GUIDELINES_BLOCK,
-    channelGuidelines && `<channel-format>\n${channelGuidelines}\n</channel-format>`,
-    containerInput.agentId && CONVERSATION_AGENT_BLOCK,
-  ].filter(Boolean).join('\n');
+  const promptPieces: PromptPiece[] = [
+    { name: 'interaction.md', text: `<behavior>\n${INTERACTION_GUIDELINES}\n</behavior>` },
+    { name: 'skill-routing.md', text: `<skill-routing>\n${SKILL_ROUTING_GUIDELINES}\n</skill-routing>` },
+    { name: 'security-rules.md', text: `<security>\n${buildSecurityRulesPrompt(disableMemoryLayer)}\n</security>` },
+    ...(memoryRecall && memoryPromptName
+      ? [{ name: memoryPromptName, text: `<memory-system>\n${memoryRecall}\n</memory-system>` }]
+      : []),
+    { name: 'guidelines', text: GUIDELINES_BLOCK },
+    ...(channelGuidelines
+      ? [{ name: `channels/${channel}.md`, text: `<channel-format>\n${channelGuidelines}\n</channel-format>` }]
+      : []),
+    ...(containerInput.agentId
+      ? [{ name: 'agent-override.md', text: CONVERSATION_AGENT_BLOCK }]
+      : []),
+  ];
+  const systemPromptAppend = promptPieces.map((piece) => piece.text).join('\n');
+  const promptAudit = buildPromptAudit(promptPieces);
+  const contextAuditBase = runtimeContextAuditBase(containerInput);
 
   // 调试观察：HAPPYCLAW_DUMP_PROMPT=true 时把最终 system prompt 输出到 stderr
   // host 已通过 logs/ 捕获 stderr，方便对比改 prompts/*.md 前后的差异
@@ -1178,39 +1332,40 @@ async function runQuery(
 
   try {
     const q = query({
-    prompt: stream,
-    options: {
-      ...(pathToClaudeCodeExecutable && { pathToClaudeCodeExecutable }),
-      model: CLAUDE_MODEL,
-      cwd: WORKSPACE_GROUP,
-      additionalDirectories: extraDirs,
-      resume: sessionId,
-      resumeSessionAt: resumeAt,
-      systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const, append: systemPromptAppend },
-      allowedTools,
-      ...(disallowedTools && { disallowedTools }),
-      thinking: { type: 'adaptive' as const, display: 'summarized' as const },
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
-      agentProgressSummaries: true,
-      settingSources: ['project', 'user'],
-      includePartialMessages: true,
-      ...(Object.keys(flagSettings).length > 0 ? { settings: flagSettings as any } : {}),
-      ...(userPlugins && { plugins: userPlugins }),
-      mcpServers: {
-        ...loadUserMcpServers(),     // 用户配置的 MCP（stdio/http/sse），SDK 原生支持
-        happyclaw: mcpServerConfig,  // 内置 SDK MCP 放最后，确保不被同名覆盖
-      },
-      hooks: {
-        PreCompact: [{ hooks: [createPreCompactHook(isHome, isAdminHome, disableMemoryLayer, {
-          emit,
-          getFullText: () => processor.getFullText(),
-          resetFullText: () => processor.resetFullTextAccumulator(),
-        })] }]
-      },
-      agents: PREDEFINED_AGENTS,
-    }
-  });
+      prompt: stream,
+      options: {
+        ...(pathToClaudeCodeExecutable && { pathToClaudeCodeExecutable }),
+        model: CLAUDE_MODEL,
+        cwd: WORKSPACE_GROUP,
+        additionalDirectories: extraDirs,
+        resume: sessionId,
+        ...(sessionId && resumeAt ? { resumeSessionAt: resumeAt } : {}),
+        systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const, append: systemPromptAppend },
+        allowedTools,
+        ...(disallowedTools && { disallowedTools }),
+        thinking: { type: 'adaptive' as const, display: 'summarized' as const },
+        permissionMode: 'bypassPermissions',
+        allowDangerouslySkipPermissions: true,
+        agentProgressSummaries: true,
+        settingSources: ['project', 'user'],
+        skills: 'all',
+        includePartialMessages: true,
+        ...(Object.keys(flagSettings).length > 0 ? { settings: flagSettings as any } : {}),
+        ...(userPlugins && { plugins: userPlugins }),
+        mcpServers: {
+          ...loadUserMcpServers(),     // 用户配置的 MCP（stdio/http/sse），SDK 原生支持
+          happyclaw: mcpServerConfig,  // 内置 SDK MCP 放最后，确保不被同名覆盖
+        },
+        hooks: {
+          PreCompact: [{ hooks: [createPreCompactHook(isHome, isAdminHome, disableMemoryLayer, {
+            emit,
+            getFullText: () => processor.getFullText(),
+            resetFullText: () => processor.resetFullTextAccumulator(),
+          })] }]
+        },
+        agents: PREDEFINED_AGENTS,
+      }
+    });
     queryRef = q;
     if (shouldInterrupt()) {
       log('Interrupt sentinel already present when query started, interrupting immediately');
@@ -1277,6 +1432,10 @@ async function runQuery(
       }
     }
 
+    if (processor.processMiscMessage(message as any)) {
+      continue;
+    }
+
     messageCount++;
     const msgType = message.type === 'system' ? `system/${(message as { subtype?: string }).subtype}` : message.type;
     const msgParentToolUseId = (message as any).parent_tool_use_id ?? null;
@@ -1304,7 +1463,9 @@ async function runQuery(
     }
 
     // ── 子 Agent 消息转 StreamEvent ──
-    processor.processSubAgentMessage(message as any);
+    if (processor.processSubAgentMessage(message as any)) {
+      continue;
+    }
 
     if (message.type === 'assistant' && 'uuid' in message) {
       lastAssistantUuid = (message as { uuid: string }).uuid;
@@ -1341,28 +1502,32 @@ async function runQuery(
       // Log skills and context usage for observability.
       // getContextUsage() is a newer SDK API; feature-detect to avoid spamming
       // error logs on older SDK versions where the method is absent.
-      const getCtxUsage = (q as unknown as { getContextUsage?: () => Promise<{
-        skills?: { includedSkills: number; totalSkills: number; tokens: number };
-        totalTokens: number;
-        maxTokens: number;
-        percentage: number;
-      }> }).getContextUsage;
+      const getCtxUsage = (q as unknown as { getContextUsage?: () => Promise<SdkContextUsage> }).getContextUsage;
+      let contextUsage: SdkContextUsage | undefined;
       if (typeof getCtxUsage === 'function') {
         try {
-          const ctxUsage = await getCtxUsage.call(q);
-          if (ctxUsage.skills) {
-            log(`Skills: ${ctxUsage.skills.includedSkills}/${ctxUsage.skills.totalSkills} loaded, ${ctxUsage.skills.tokens} tokens`);
+          contextUsage = await getCtxUsage.call(q);
+          if (contextUsage.skills) {
+            log(`Skills: ${contextUsage.skills.includedSkills}/${contextUsage.skills.totalSkills} loaded, ${contextUsage.skills.tokens} tokens`);
           }
-          log(`Context: ${ctxUsage.totalTokens}/${ctxUsage.maxTokens} tokens (${ctxUsage.percentage.toFixed(1)}%)`);
+          log(`Context: ${contextUsage.totalTokens}/${contextUsage.maxTokens} tokens (${contextUsage.percentage.toFixed(1)}%)`);
         } catch (ctxErr) {
           log(`[debug] getContextUsage failed: ${ctxErr instanceof Error ? ctxErr.message : String(ctxErr)}`);
         }
       }
-    }
-
-    if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
-      const tn = message as unknown as { task_id: string; tool_use_id?: string; status: string; summary: string };
-      processor.processTaskNotification(tn);
+      const contextAudit = enrichContextAudit(contextAuditBase, promptAudit, contextUsage);
+      emit({
+        status: 'stream',
+        result: null,
+        streamEvent: {
+          eventType: 'context_audit',
+          agentScope: 'system',
+          displayLevel: contextAudit.warnings.length > 0 ? 'primary' : 'detail',
+          title: 'Agent Context',
+          summary: `${contextAudit.skills.includedSkills ?? contextAudit.skills.totalSkills ?? 0} skills · ${contextAudit.rules.fileCount} rules`,
+          contextAudit,
+        },
+      });
     }
 
     if (message.type === 'result') {
