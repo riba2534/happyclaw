@@ -1449,6 +1449,18 @@ export async function runHostAgent(
     ...(process.env as Record<string, string>),
   };
 
+  // Strip macOS launch-context vars that must not be inherited by child
+  // processes. When happyclaw is started by a background process manager
+  // (pm2 / launchd / ssh / cron) outside a normal login session, XPC_FLAGS=0x2
+  // leaks into the environment. The bundled bun/CFNetwork-based claude CLI then
+  // can't reach mDNSResponder/securityd through XPC, so DNS resolution and the
+  // system CA store fail and every model request dies with FailedToOpenSocket.
+  // Plain Node uses its own resolver/TLS stack and is unaffected, which is why
+  // this only breaks the host agent. The var is meaningless to a child spawned
+  // in a different way, so dropping it restores normal name resolution. No-op
+  // on non-macOS hosts (the var does not exist there).
+  delete hostEnv['XPC_FLAGS'];
+
   // ─── Provider Pool selection (host mode) ───
   const containerOverride = getContainerEnvConfig(group.folder);
   const hostPoolResult = trySelectPoolProvider(group.folder, input.agentId);
