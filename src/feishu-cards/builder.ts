@@ -32,6 +32,49 @@ import {
   type StreamingPanelsInit,
 } from './sections.js';
 
+/** Schema 2.0 feedback buttons — horizontal layout for completed cards. */
+const FEEDBACK_BUTTONS_V2 = {
+  tag: 'column_set',
+  flex_mode: 'bisect',
+  horizontal_spacing: '8px',
+  columns: [
+    {
+      tag: 'column',
+      elements: [
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '👍 有用' },
+          type: 'default',
+          element_id: 'like_button',
+          behaviors: [
+            {
+              type: 'callback',
+              value: { action: 'feedback_like' },
+            },
+          ],
+        },
+      ],
+    },
+    {
+      tag: 'column',
+      elements: [
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '👎 没用' },
+          type: 'default',
+          element_id: 'dislike_button',
+          behaviors: [
+            {
+              type: 'callback',
+              value: { action: 'feedback_dislike' },
+            },
+          ],
+        },
+      ],
+    },
+  ],
+} as const;
+
 /** Per-platform typewriter tuning — mobile feels faster, PC breathes more. */
 const STREAMING_CONFIG = {
   print_frequency_ms: { default: 30, android: 25, ios: 40, pc: 50 },
@@ -98,6 +141,11 @@ export function buildAgentReplyCard(input: AgentCardInput): FeishuCardV2 {
   elements.push(...thinkingPanel);
   elements.push(...toolsPanel);
   elements.push(...footer);
+
+  // Add feedback buttons for completed messages
+  if (input.status === 'done') {
+    elements.push(FEEDBACK_BUTTONS_V2);
+  }
 
   const config: Record<string, unknown> = {
     update_multi: true,

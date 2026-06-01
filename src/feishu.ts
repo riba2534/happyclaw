@@ -1679,22 +1679,33 @@ export function createFeishuConnection(
           try {
             const action = data?.action?.value?.action;
             const messageId = data?.context?.open_message_id;
-            if (action !== 'interrupt_stream' || !messageId) return;
 
-            const chatJid = resolveJidByMessageId(messageId);
-            if (!chatJid) {
-              logger.debug({ messageId }, 'Card action: no mapping for messageId');
+            // Handle interrupt_stream action
+            if (action === 'interrupt_stream' && messageId) {
+              const chatJid = resolveJidByMessageId(messageId);
+              if (!chatJid) {
+                logger.debug({ messageId }, 'Card action: no mapping for messageId');
+                return;
+              }
+
+              const session = getStreamingSession(chatJid);
+              if (!session?.isActive()) {
+                logger.debug({ chatJid, messageId }, 'Card action: session not active');
+                return;
+              }
+
+              logger.info({ chatJid, messageId }, 'Card action: interrupt via button');
+              connectOptions?.onCardInterrupt?.(chatJid);
               return;
             }
 
-            const session = getStreamingSession(chatJid);
-            if (!session?.isActive()) {
-              logger.debug({ chatJid, messageId }, 'Card action: session not active');
+            // Handle feedback actions
+            if ((action === 'feedback_like' || action === 'feedback_dislike') && messageId) {
+              const emojiType = action === 'feedback_like' ? 'MeMeMe' : 'EMBARRASSED';
+              logger.info({ messageId, action, emojiType }, 'Card action: feedback button clicked');
+              await addReaction(messageId, emojiType);
               return;
             }
-
-            logger.info({ chatJid, messageId }, 'Card action: interrupt via button');
-            connectOptions?.onCardInterrupt?.(chatJid);
           } catch (err) {
             logger.error({ err }, 'Error handling card action trigger');
           }

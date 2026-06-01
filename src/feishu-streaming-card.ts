@@ -249,6 +249,51 @@ const INTERRUPT_BUTTON_V2 = {
   value: { action: 'interrupt_stream' },
 } as const;
 
+// ─── Feedback Buttons Element ─────────────────────────────────
+
+/** Schema 2.0 feedback buttons — horizontal layout for completed cards. */
+const FEEDBACK_BUTTONS_V2 = {
+  tag: 'column_set',
+  flex_mode: 'bisect',
+  horizontal_spacing: '8px',
+  columns: [
+    {
+      tag: 'column',
+      elements: [
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '👍 有用' },
+          type: 'default',
+          element_id: 'like_button',
+          behaviors: [
+            {
+              type: 'callback',
+              value: { action: 'feedback_like' },
+            },
+          ],
+        },
+      ],
+    },
+    {
+      tag: 'column',
+      elements: [
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '👎 没用' },
+          type: 'default',
+          element_id: 'dislike_button',
+          behaviors: [
+            {
+              type: 'callback',
+              value: { action: 'feedback_dislike' },
+            },
+          ],
+        },
+      ],
+    },
+  ],
+} as const;
+
 // ─── Streaming Mode Constants ─────────────────────────────────
 
 const ELEMENT_IDS = {
@@ -609,6 +654,10 @@ function buildSchema2Card(
 
   if (state === 'streaming') {
     elements.push(INTERRUPT_BUTTON_V2);
+  }
+
+  if (state === 'completed') {
+    elements.push(FEEDBACK_BUTTONS_V2);
   }
 
   if (SCHEMA2_NOTE_MAP[state]) {
