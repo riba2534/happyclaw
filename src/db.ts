@@ -1261,7 +1261,28 @@ export function initDatabase(): void {
   // its position before assertSchema('users', …) matters because the
   // schema check would otherwise reject pre-v38 databases on startup.
 
-  const SCHEMA_VERSION = '38';
+  // v38 → v39: Added user_feedback table for storing user feedback (like/dislike)
+  const v39Version = getRouterStateInternal('schema_version');
+  if (!v39Version || parseInt(v39Version, 10) < 39) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS user_feedback (
+        id TEXT PRIMARY KEY,
+        message_id TEXT NOT NULL,
+        chat_jid TEXT NOT NULL,
+        user_id TEXT,
+        username TEXT,
+        feedback_type TEXT NOT NULL,
+        user_message TEXT,
+        ai_response TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_feedback_message ON user_feedback(message_id);
+      CREATE INDEX IF NOT EXISTS idx_feedback_user ON user_feedback(user_id);
+      CREATE INDEX IF NOT EXISTS idx_feedback_created ON user_feedback(created_at);
+    `);
+  }
+
+  const SCHEMA_VERSION = '39';
   db.prepare(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', SCHEMA_VERSION);
@@ -4523,6 +4544,60 @@ export function getMessage(
   return row ?? null;
 }
 
+/**
+ * Get full message details by message ID (without requiring chat_jid).
+ */
+export function getMessageById(messageId: string): {
+  id: string;
+  chat_jid: string;
+  sender: string | null;
+  sender_name: string | null;
+  content: string;
+  is_from_me: number;
+  timestamp: string;
+} | null {
+  const row = db
+    .prepare(
+      'SELECT id, chat_jid, sender, sender_name, content, is_from_me, timestamp FROM messages WHERE id = ? LIMIT 1',
+    )
+    .get(messageId) as
+    | {
+        id: string;
+        chat_jid: string;
+        sender: string | null;
+        sender_name: string | null;
+        content: string;
+        is_from_me: number;
+        timestamp: string;
+      }
+    | undefined;
+  return row ?? null;
+}
+
+/**
+ * Get the user's message before a specific message (for feedback context).
+ */
+export function getUserMessageBeforeMessage(
+  chatJid: string,
+  messageId: string,
+): {
+  content: string;
+  sender_name: string | null;
+} | null {
+  const row = db
+    .prepare(
+      `SELECT content, sender_name FROM messages
+       WHERE chat_jid = ? AND timestamp < (
+         SELECT timestamp FROM messages WHERE id = ?
+       ) AND is_from_me = 0
+       ORDER BY timestamp DESC LIMIT 1`,
+    )
+    .get(chatJid, messageId) as
+    | { content: string; sender_name: string | null }
+    | undefined;
+  return row ?? null;
+}
+
 export function deleteMessage(chatJid: string, messageId: string): boolean {
   const result = db
     .prepare('DELETE FROM messages WHERE id = ? AND chat_jid = ?')
@@ -5871,6 +5946,73 @@ export function tryIncrementRedeemCodeUsage(
     ).run(code, userId, now);
     return true;
   })();
+}
+
+/**
+ * Store user feedback (like/dislike) with context.
+ */
+export function storeUserFeedback(params: {
+  id: string;
+  messageId: string;
+  chatJid: string;
+  userId?: string;
+  username?: string;
+  feedbackType: 'like' | 'dislike';
+  userMessage?: string;
+  aiResponse?: string;
+}): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO user_feedback (
+      id, message_id, chat_jid, user_id, username, feedback_type,
+      user_message, ai_response, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    params.id,
+    params.messageId,
+    params.chatJid,
+    params.userId ?? null,
+    params.username ?? null,
+    params.feedbackType,
+    params.userMessage ?? null,
+    params.aiResponse ?? null,
+    now,
+  );
+}
+
+/**
+ * Get user feedback by message ID.
+ */
+export function getUserFeedbackByMessageId(messageId: string): Array<{
+  id: string;
+  message_id: string;
+  chat_jid: string;
+  user_id: string | null;
+  username: string | null;
+  feedback_type: string;
+  user_message: string | null;
+  ai_response: string | null;
+  created_at: string;
+}> {
+  return db
+    .prepare(
+      `SELECT id, message_id, chat_jid, user_id, username, feedback_type,
+              user_message, ai_response, created_at
+       FROM user_feedback
+       WHERE message_id = ?
+       ORDER BY created_at DESC`,
+    )
+    .all(messageId) as Array<{
+    id: string;
+    message_id: string;
+    chat_jid: string;
+    user_id: string | null;
+    username: string | null;
+    feedback_type: string;
+    user_message: string | null;
+    ai_response: string | null;
+    created_at: string;
+  }>;
 }
 
 /**

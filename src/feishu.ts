@@ -1,12 +1,16 @@
 import fs from 'fs';
 import * as fsPromises from 'node:fs/promises';
 import * as path from 'node:path';
+import crypto from 'crypto';
 import * as lark from '@larksuiteoapi/node-sdk';
 import {
   setLastGroupSync,
   storeChatMetadata,
   storeMessageDirect,
   updateChatName,
+  storeUserFeedback,
+  getMessageById,
+  getUserMessageBeforeMessage,
 } from './db.js';
 import { logger } from './logger.js';
 import {
@@ -1680,6 +1684,9 @@ export function createFeishuConnection(
             const action = data?.action?.value?.action;
             const messageId = data?.context?.open_message_id;
 
+            // Log full event data for debugging
+            logger.debug({ data }, 'Card action trigger event received');
+
             // Handle interrupt_stream action
             if (action === 'interrupt_stream' && messageId) {
               const chatJid = resolveJidByMessageId(messageId);
@@ -1702,8 +1709,59 @@ export function createFeishuConnection(
             // Handle feedback actions
             if ((action === 'feedback_like' || action === 'feedback_dislike') && messageId) {
               const emojiType = action === 'feedback_like' ? 'MeMeMe' : 'EMBARRASSED';
-              logger.info({ messageId, action, emojiType }, 'Card action: feedback button clicked');
+              const feedbackType = action === 'feedback_like' ? 'like' : 'dislike';
+
+              logger.info({ messageId, action, emojiType, eventData: data }, 'Card action: feedback button clicked');
+
+              // Add emoji reaction
               await addReaction(messageId, emojiType);
+
+              // Store feedback to database
+              try {
+                // Extract chatJid from event context
+                const openChatId = data?.context?.open_chat_id;
+                const chatJid = openChatId ? `feishu:${openChatId}` : (resolveJidByMessageId(messageId) || 'unknown');
+
+                // Extract user info from operator
+                const userId = data?.operator?.open_id;
+                const username = data?.operator?.name || data?.operator?.user_name;
+
+                logger.info(
+                  { messageId, chatJid, userId, username, openChatId, hasOperator: !!data?.operator },
+                  'Extracted feedback context',
+                );
+
+                // Get the AI response message
+                const aiMessage = getMessageById(messageId);
+
+                // Get the user's previous message (context)
+                let userMessage: string | undefined;
+                if (aiMessage && chatJid && chatJid !== 'unknown') {
+                  const userMsg = getUserMessageBeforeMessage(chatJid, messageId);
+                  if (userMsg) {
+                    userMessage = userMsg.content;
+                  }
+                }
+
+                storeUserFeedback({
+                  id: crypto.randomUUID(),
+                  messageId,
+                  chatJid,
+                  userId,
+                  username,
+                  feedbackType,
+                  userMessage,
+                  aiResponse: aiMessage?.content,
+                });
+
+                logger.info(
+                  { messageId, feedbackType, userId, username, chatJid, hasAiMessage: !!aiMessage, hasUserMessage: !!userMessage },
+                  'User feedback stored successfully',
+                );
+              } catch (err) {
+                logger.error({ err, messageId }, 'Failed to store user feedback');
+              }
+
               return;
             }
           } catch (err) {
