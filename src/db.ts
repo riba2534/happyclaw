@@ -4575,6 +4575,30 @@ export function getMessageById(messageId: string): {
 }
 
 /**
+ * Get the most recent AI message in a chat (for feedback when open_message_id doesn't match).
+ */
+export function getLatestAiMessageInChat(chatJid: string): {
+  id: string;
+  content: string;
+  timestamp: string;
+} | null {
+  const row = db
+    .prepare(
+      `SELECT id, content, timestamp FROM messages
+       WHERE chat_jid = ? AND is_from_me = 1
+       ORDER BY timestamp DESC LIMIT 1`,
+    )
+    .get(chatJid) as
+    | {
+        id: string;
+        content: string;
+        timestamp: string;
+      }
+    | undefined;
+  return row ?? null;
+}
+
+/**
  * Get the user's message before a specific message (for feedback context).
  */
 export function getUserMessageBeforeMessage(
@@ -5950,6 +5974,7 @@ export function tryIncrementRedeemCodeUsage(
 
 /**
  * Store user feedback (like/dislike) with context.
+ * Uses INSERT OR REPLACE to prevent duplicate feedback from the same user on the same message.
  */
 export function storeUserFeedback(params: {
   id: string;

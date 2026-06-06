@@ -11,6 +11,7 @@ import { McpServersPage } from './pages/McpServersPage';
 import { PluginsPage } from './pages/PluginsPage';
 import { AgentDefinitionsPage } from './pages/AgentDefinitionsPage';
 import { UsersPage } from './pages/UsersPage';
+import { FeedbackPage } from './pages/FeedbackPage';
 import { AuthGuard } from './components/auth/AuthGuard';
 import { AppLayout } from './components/layout/AppLayout';
 import { APP_BASE, shouldUseHashRouter } from './utils/url';
@@ -68,6 +69,7 @@ export function App() {
           <Route path="/mcp-servers" element={<McpServersPage />} />
           <Route path="/plugins" element={<PluginsPage />} />
           <Route path="/agent-definitions" element={<AgentDefinitionsPage />} />
+          <Route path="/feedback" element={<FeedbackPage />} />
           <Route path="/settings" element={<Suspense fallback={null}><SettingsPage /></Suspense>} />
           <Route
             path="/users"

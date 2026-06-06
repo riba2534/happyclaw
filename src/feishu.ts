@@ -11,6 +11,7 @@ import {
   storeUserFeedback,
   getMessageById,
   getUserMessageBeforeMessage,
+  getLatestAiMessageInChat,
 } from './db.js';
 import { logger } from './logger.js';
 import {
@@ -1711,7 +1712,15 @@ export function createFeishuConnection(
               const emojiType = action === 'feedback_like' ? 'MeMeMe' : 'EMBARRASSED';
               const feedbackType = action === 'feedback_like' ? 'like' : 'dislike';
 
-              logger.info({ messageId, action, emojiType, eventData: data }, 'Card action: feedback button clicked');
+              // Log full event structure for debugging
+              logger.info({
+                messageId,
+                action,
+                emojiType,
+                fullEventData: JSON.stringify(data, null, 2),
+                operatorKeys: data?.operator ? Object.keys(data.operator) : [],
+                contextKeys: data?.context ? Object.keys(data.context) : []
+              }, 'Card action: feedback button clicked');
 
               // Add emoji reaction
               await addReaction(messageId, emojiType);
@@ -1720,42 +1729,77 @@ export function createFeishuConnection(
               try {
                 // Extract chatJid from event context
                 const openChatId = data?.context?.open_chat_id;
-                const chatJid = openChatId ? `feishu:${openChatId}` : (resolveJidByMessageId(messageId) || 'unknown');
+                const chatJid = openChatId ? `feishu:${openChatId}` : resolveJidByMessageId(messageId);
+
+                // If we cannot resolve chatJid, skip storing feedback
+                if (!chatJid) {
+                  logger.warn(
+                    { messageId, openChatId, hasContext: !!data?.context },
+                    'Cannot resolve chatJid for feedback, skipping storage',
+                  );
+                  return;
+                }
 
                 // Extract user info from operator
-                const userId = data?.operator?.open_id;
-                const username = data?.operator?.name || data?.operator?.user_name;
+                const userId = data?.operator?.open_id || data?.operator?.user_id;
+                const username = data?.operator?.name || data?.operator?.user_name || data?.operator?.tenant_key;
 
-                logger.info(
+                logger.debug(
                   { messageId, chatJid, userId, username, openChatId, hasOperator: !!data?.operator },
                   'Extracted feedback context',
                 );
 
-                // Get the AI response message
-                const aiMessage = getMessageById(messageId);
+                // Try to get the AI response message by feishu message ID first
+                let aiMessageContent: string | undefined;
+                let aiMessageId: string = messageId;
+
+                const directMessage = getMessageById(messageId);
+                if (directMessage) {
+                  aiMessageContent = directMessage.content;
+                  aiMessageId = directMessage.id;
+                } else {
+                  // If not found (likely because feishu returns different message_id),
+                  // fallback to getting the latest AI message in this chat
+                  logger.debug(
+                    { messageId, chatJid },
+                    'Message ID not found in database, using latest AI message as fallback',
+                  );
+                  const latestAiMessage = getLatestAiMessageInChat(chatJid);
+                  if (latestAiMessage) {
+                    aiMessageContent = latestAiMessage.content;
+                    aiMessageId = latestAiMessage.id;
+                  }
+                }
 
                 // Get the user's previous message (context)
                 let userMessage: string | undefined;
-                if (aiMessage && chatJid && chatJid !== 'unknown') {
-                  const userMsg = getUserMessageBeforeMessage(chatJid, messageId);
-                  if (userMsg) {
-                    userMessage = userMsg.content;
-                  }
+                const userMsg = getUserMessageBeforeMessage(chatJid, aiMessageId);
+                if (userMsg) {
+                  userMessage = userMsg.content;
                 }
 
                 storeUserFeedback({
                   id: crypto.randomUUID(),
-                  messageId,
+                  messageId: aiMessageId,
                   chatJid,
                   userId,
                   username,
                   feedbackType,
                   userMessage,
-                  aiResponse: aiMessage?.content,
+                  aiResponse: aiMessageContent,
                 });
 
                 logger.info(
-                  { messageId, feedbackType, userId, username, chatJid, hasAiMessage: !!aiMessage, hasUserMessage: !!userMessage },
+                  {
+                    feishuMessageId: messageId,
+                    dbMessageId: aiMessageId,
+                    feedbackType,
+                    userId,
+                    username,
+                    chatJid,
+                    hasAiMessage: !!aiMessageContent,
+                    hasUserMessage: !!userMessage
+                  },
                   'User feedback stored successfully',
                 );
               } catch (err) {
