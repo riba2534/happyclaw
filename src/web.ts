@@ -963,14 +963,25 @@ function setupWebSocket(server: any): WebSocketServer {
     // CORS preflight。SameSite=Strict cookie 是当前的主防御，origin 检查
     // 是纵深防御 —— SameSite 实现不严的 UA / future SameSite=Lax 回退会
     // 直接暴露 CSWSH（跨站 WebSocket 劫持）。Origin 缺失（同源、无浏览器
-    // origin）放行；存在但不在白名单则拒绝。
+    // origin）放行；同源放行；存在但不在白名单则拒绝。
     const origin = request.headers.origin as string | undefined;
     if (origin) {
-      const allowed = isAllowedOrigin(origin);
-      if (!allowed) {
-        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
-        socket.destroy();
-        return;
+      // 同源请求放行：比较 Origin 的 host 与 Host header
+      const host = request.headers.host as string | undefined;
+      let sameOrigin = false;
+      if (host) {
+        try {
+          const originHost = new URL(origin).host;
+          sameOrigin = originHost === host;
+        } catch { /* invalid origin */ }
+      }
+      if (!sameOrigin) {
+        const allowed = isAllowedOrigin(origin);
+        if (!allowed) {
+          socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+          socket.destroy();
+          return;
+        }
       }
     }
 
