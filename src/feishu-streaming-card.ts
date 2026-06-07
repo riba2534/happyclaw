@@ -2530,23 +2530,37 @@ export class StreamingCardController {
 // Reverse lookup for card callback: given a Feishu messageId from a button click,
 // find which chatJid (streaming session) it belongs to.
 
-const messageIdToChatJid = new Map<string, string>();
+interface MessageIdMapping {
+  chatJid: string;
+  rootMessageId?: string;
+}
+
+const messageIdToChatJid = new Map<string, MessageIdMapping>();
 
 /**
  * Register a messageId → chatJid mapping for card callback routing.
+ * Optionally store rootMessageId for thread-aware reaction.
  */
 export function registerMessageIdMapping(
   messageId: string,
   chatJid: string,
+  rootMessageId?: string,
 ): void {
-  messageIdToChatJid.set(messageId, chatJid);
+  messageIdToChatJid.set(messageId, { chatJid, rootMessageId });
 }
 
 /**
  * Resolve a chatJid from a Feishu messageId.
  */
 export function resolveJidByMessageId(messageId: string): string | undefined {
-  return messageIdToChatJid.get(messageId);
+  return messageIdToChatJid.get(messageId)?.chatJid;
+}
+
+/**
+ * Resolve rootMessageId from a Feishu messageId (for thread-aware reactions).
+ */
+export function resolveRootMessageId(messageId: string): string | undefined {
+  return messageIdToChatJid.get(messageId)?.rootMessageId;
 }
 
 /**

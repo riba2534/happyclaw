@@ -1714,8 +1714,17 @@ export function createFeishuConnection(
 
               logger.info({ messageId, action, feedbackType }, 'Card action: feedback button clicked');
 
-              // Add emoji reaction
-              await addReaction(messageId, emojiType);
+              // Add emoji reaction to the thread root message if available, otherwise to the card message itself
+              const { resolveRootMessageId } = await import('./feishu-streaming-card.js');
+              const rootMessageId = resolveRootMessageId(messageId);
+              const targetMessageId = rootMessageId || messageId;
+
+              await addReaction(targetMessageId, emojiType);
+
+              logger.debug(
+                { cardMessageId: messageId, rootMessageId, targetMessageId, emojiType },
+                'Added reaction to thread root or card message',
+              );
 
               // Store feedback to database
               try {

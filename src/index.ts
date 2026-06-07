@@ -2954,8 +2954,17 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Create a streaming session for Feishu channels (typing-machine effect).
   // Non-Feishu channels get undefined → all streaming logic is no-op.
   let streamingSessionJid = replySourceImJid ?? chatJid;
-  const makeOnCardCreated = (jid: string) => (messageId: string) =>
-    registerMessageIdMapping(messageId, jid);
+  // Extract rootMessageId from Feishu JID for thread-aware reactions
+  const extractRootMessageId = (jid: string): string | undefined => {
+    if (!jid.startsWith('feishu:')) return undefined;
+    const feishuRaw = jid.slice('feishu:'.length);
+    const rootMatch = feishuRaw.match(/root:([^#]+)/);
+    return rootMatch ? rootMatch[1] : undefined;
+  };
+  const makeOnCardCreated = (jid: string) => (messageId: string) => {
+    const rootMessageId = extractRootMessageId(jid);
+    registerMessageIdMapping(messageId, jid, rootMessageId);
+  };
   let streamingSession = await imManager.createStreamingSession(
     streamingSessionJid,
     makeOnCardCreated(streamingSessionJid),
@@ -6166,9 +6175,17 @@ async function processAgentConversation(
   const streamingSessionJid = replySourceImJid
     ? `${replySourceImJid}#agent:${agentId}`
     : undefined;
+  // Extract rootMessageId from replySourceImJid for thread-aware reactions
+  const extractRootMessageId = (jid: string | null): string | undefined => {
+    if (!jid || !jid.startsWith('feishu:')) return undefined;
+    const feishuRaw = jid.slice('feishu:'.length);
+    const rootMatch = feishuRaw.match(/root:([^#]+)/);
+    return rootMatch ? rootMatch[1] : undefined;
+  };
+  const agentRootMessageId = extractRootMessageId(replySourceImJid);
   let agentStreamingSession = replySourceImJid
     ? await imManager.createStreamingSession(replySourceImJid, (messageId) =>
-        registerMessageIdMapping(messageId, streamingSessionJid!),
+        registerMessageIdMapping(messageId, streamingSessionJid!, agentRootMessageId),
       )
     : undefined;
   let agentStreamingAccText = '';
@@ -6509,7 +6526,7 @@ async function processAgentConversation(
           agentStreamingSession = await imManager.createStreamingSession(
             replySourceImJid!,
             (messageId) =>
-              registerMessageIdMapping(messageId, streamingSessionJid!),
+              registerMessageIdMapping(messageId, streamingSessionJid!, agentRootMessageId),
           );
           if (agentStreamingSession) {
             registerStreamingSession(
