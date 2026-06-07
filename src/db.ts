@@ -6041,6 +6041,178 @@ export function getUserFeedbackByMessageId(messageId: string): Array<{
 }
 
 /**
+ * Get user feedback statistics.
+ */
+export function getUserFeedbackStats(): {
+  total: number;
+  byType: Array<{ feedback_type: string; count: number }>;
+  byUser: Array<{ user_id: string; username: string | null; count: number }>;
+  byChat: Array<{ chat_jid: string; count: number }>;
+  dailyTrend: Array<{ date: string; feedback_type: string; count: number }>;
+} {
+  const totalCount = db
+    .prepare('SELECT COUNT(*) as count FROM user_feedback')
+    .get() as { count: number };
+
+  const byType = db
+    .prepare(
+      'SELECT feedback_type, COUNT(*) as count FROM user_feedback GROUP BY feedback_type',
+    )
+    .all() as Array<{ feedback_type: string; count: number }>;
+
+  const byUser = db
+    .prepare(
+      `SELECT user_id, username, COUNT(*) as count
+       FROM user_feedback
+       WHERE user_id IS NOT NULL
+       GROUP BY user_id
+       ORDER BY count DESC
+       LIMIT 10`,
+    )
+    .all() as Array<{ user_id: string; username: string | null; count: number }>;
+
+  const byChat = db
+    .prepare(
+      `SELECT chat_jid, COUNT(*) as count
+       FROM user_feedback
+       GROUP BY chat_jid
+       ORDER BY count DESC
+       LIMIT 10`,
+    )
+    .all() as Array<{ chat_jid: string; count: number }>;
+
+  const dailyTrend = db
+    .prepare(
+      `SELECT
+         DATE(created_at) as date,
+         feedback_type,
+         COUNT(*) as count
+       FROM user_feedback
+       WHERE created_at >= datetime('now', '-30 days')
+       GROUP BY DATE(created_at), feedback_type
+       ORDER BY date DESC`,
+    )
+    .all() as Array<{ date: string; feedback_type: string; count: number }>;
+
+  return {
+    total: totalCount.count,
+    byType,
+    byUser,
+    byChat,
+    dailyTrend,
+  };
+}
+
+/**
+ * Get paginated user feedback list.
+ */
+export function getUserFeedbackList(params: {
+  page: number;
+  pageSize: number;
+  feedbackType?: 'like' | 'dislike';
+}): {
+  records: Array<{
+    id: string;
+    message_id: string;
+    chat_jid: string;
+    user_id: string | null;
+    username: string | null;
+    feedback_type: string;
+    user_message_preview: string | null;
+    ai_response_preview: string | null;
+    created_at: string;
+  }>;
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+} {
+  const { page, pageSize, feedbackType } = params;
+  const offset = (page - 1) * pageSize;
+
+  let query = `SELECT
+    id, message_id, chat_jid, user_id, username, feedback_type,
+    substr(user_message, 1, 100) as user_message_preview,
+    substr(ai_response, 1, 100) as ai_response_preview,
+    created_at
+  FROM user_feedback`;
+
+  const queryParams: any[] = [];
+
+  if (feedbackType) {
+    query += ' WHERE feedback_type = ?';
+    queryParams.push(feedbackType);
+  }
+
+  query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+  queryParams.push(pageSize, offset);
+
+  const records = db.prepare(query).all(...queryParams) as Array<{
+    id: string;
+    message_id: string;
+    chat_jid: string;
+    user_id: string | null;
+    username: string | null;
+    feedback_type: string;
+    user_message_preview: string | null;
+    ai_response_preview: string | null;
+    created_at: string;
+  }>;
+
+  // Get total count
+  let countQuery = 'SELECT COUNT(*) as count FROM user_feedback';
+  const countParams: any[] = [];
+  if (feedbackType) {
+    countQuery += ' WHERE feedback_type = ?';
+    countParams.push(feedbackType);
+  }
+  const totalCount = db.prepare(countQuery).get(...countParams) as {
+    count: number;
+  };
+
+  return {
+    records,
+    total: totalCount.count,
+    page,
+    pageSize,
+    totalPages: Math.ceil(totalCount.count / pageSize),
+  };
+}
+
+/**
+ * Get user feedback detail by ID.
+ */
+export function getUserFeedbackById(id: string): {
+  id: string;
+  message_id: string;
+  chat_jid: string;
+  user_id: string | null;
+  username: string | null;
+  feedback_type: string;
+  user_message: string | null;
+  ai_response: string | null;
+  created_at: string;
+} | null {
+  const feedback = db
+    .prepare(`SELECT * FROM user_feedback WHERE id = ?`)
+    .get(id) as
+    | {
+        id: string;
+        message_id: string;
+        chat_jid: string;
+        user_id: string | null;
+        username: string | null;
+        feedback_type: string;
+        user_message: string | null;
+        ai_response: string | null;
+        created_at: string;
+      }
+    | undefined;
+
+  return feedback ?? null;
+}
+
+/**
  * Close the database connection.
  * Should be called during graceful shutdown.
  */

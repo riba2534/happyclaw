@@ -1712,15 +1712,7 @@ export function createFeishuConnection(
               const emojiType = action === 'feedback_like' ? 'MeMeMe' : 'EMBARRASSED';
               const feedbackType = action === 'feedback_like' ? 'like' : 'dislike';
 
-              // Log full event structure for debugging
-              logger.info({
-                messageId,
-                action,
-                emojiType,
-                fullEventData: JSON.stringify(data, null, 2),
-                operatorKeys: data?.operator ? Object.keys(data.operator) : [],
-                contextKeys: data?.context ? Object.keys(data.context) : []
-              }, 'Card action: feedback button clicked');
+              logger.info({ messageId, action, feedbackType }, 'Card action: feedback button clicked');
 
               // Add emoji reaction
               await addReaction(messageId, emojiType);
