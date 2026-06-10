@@ -5,6 +5,7 @@ import {
   getUserFeedbackList,
   getUserFeedbackById,
 } from '../db.js';
+import { logger } from '../logger.js';
 import type { User } from '../types.js';
 
 const app = new Hono<{
@@ -13,54 +14,35 @@ const app = new Hono<{
   };
 }>();
 
-// Apply auth middleware to all routes
 app.use('*', authMiddleware);
-
-// Require view_audit_log permission for all feedback routes
-// (feedback data contains user information and should be protected)
 app.use('*', requirePermission('view_audit_log'));
 
-/**
- * Get user feedback statistics and recent records
- */
 app.get('/stats', (c) => {
   try {
     const stats = getUserFeedbackStats();
     return c.json(stats);
   } catch (err) {
-    console.error('Failed to get feedback stats:', err);
+    logger.error({ err }, 'Failed to get feedback stats');
     return c.json({ error: 'Failed to get feedback stats' }, 500);
   }
 });
 
-/**
- * Get paginated feedback list
- */
 app.get('/list', (c) => {
   try {
-    const page = parseInt(c.req.query('page') || '1', 10);
-    const pageSize = parseInt(c.req.query('pageSize') || '20', 10);
-    const feedbackType = c.req.query('feedbackType') as
-      | 'like'
-      | 'dislike'
-      | undefined;
+    const page = Math.max(1, parseInt(c.req.query('page') || '1', 10));
+    const pageSize = Math.min(100, Math.max(1, parseInt(c.req.query('pageSize') || '20', 10)));
+    const rawType = c.req.query('feedbackType');
+    const feedbackType =
+      rawType === 'like' || rawType === 'dislike' ? rawType : undefined;
 
-    const result = getUserFeedbackList({
-      page,
-      pageSize,
-      feedbackType,
-    });
-
+    const result = getUserFeedbackList({ page, pageSize, feedbackType });
     return c.json(result);
   } catch (err) {
-    console.error('Failed to get feedback list:', err);
+    logger.error({ err }, 'Failed to get feedback list');
     return c.json({ error: 'Failed to get feedback list' }, 500);
   }
 });
 
-/**
- * Get feedback detail by ID
- */
 app.get('/:id', (c) => {
   try {
     const id = c.req.param('id');
@@ -72,7 +54,7 @@ app.get('/:id', (c) => {
 
     return c.json(feedback);
   } catch (err) {
-    console.error('Failed to get feedback detail:', err);
+    logger.error({ err }, 'Failed to get feedback detail');
     return c.json({ error: 'Failed to get feedback detail' }, 500);
   }
 });

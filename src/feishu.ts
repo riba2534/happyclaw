@@ -1,7 +1,6 @@
 import fs from 'fs';
 import * as fsPromises from 'node:fs/promises';
 import * as path from 'node:path';
-import crypto from 'crypto';
 import * as lark from '@larksuiteoapi/node-sdk';
 import {
   setLastGroupSync,
@@ -24,6 +23,9 @@ import { broadcastNewMessage } from './web.js';
 import { detectImageMimeType } from './image-detector.js';
 import {
   resolveJidByMessageId,
+  resolveRootMessageId,
+  resolveDbMessageIdByCard,
+  registerMessageIdMapping,
   getStreamingSession,
 } from './feishu-streaming-card.js';
 import { optimizeMarkdownStyle } from './feishu-markdown-style.js';
@@ -94,11 +96,12 @@ export interface FeishuChatInfo {
 export interface FeishuConnection {
   connect(opts: ConnectOptions): Promise<boolean>;
   stop(): Promise<void>;
+  /** Returns the Feishu message_id(s) of the sent message(s). */
   sendMessage(
     chatId: string,
     text: string,
     localImagePaths?: string[],
-  ): Promise<void>;
+  ): Promise<string[]>;
   sendImage(
     chatId: string,
     imageBuffer: Buffer,
@@ -881,13 +884,14 @@ export function createFeishuConnection(
   /**
    * Low-level send: route to reply (thread-aware) or create, based on target.
    * Uses rootMessageId for thread routing, falls back to lastMessageIdByChat for reply context.
+   * Returns the Feishu message_id of the sent message (for callback mapping).
    */
   async function sendToFeishu(
     chatId: string,
     msgType: string,
     content: string,
-  ): Promise<void> {
-    if (!client) return;
+  ): Promise<string | undefined> {
+    if (!client) return undefined;
     const target = parseFeishuRouteTarget(chatId);
     const receiveIdType = target.chatId.startsWith('oc_')
       ? 'chat_id'
@@ -895,7 +899,7 @@ export function createFeishuConnection(
     const replyMsgId =
       target.rootMessageId || lastMessageIdByChat.get(target.chatId);
     if (replyMsgId) {
-      await client.im.message.reply({
+      const resp = await client.im.message.reply({
         path: { message_id: replyMsgId },
         data: {
           content,
@@ -903,8 +907,9 @@ export function createFeishuConnection(
           ...(target.replyInThread ? { reply_in_thread: true } : {}),
         },
       });
+      return resp?.data?.message_id;
     } else {
-      await client.im.v1.message.create({
+      const resp = await client.im.v1.message.create({
         params: { receive_id_type: receiveIdType },
         data: {
           receive_id: target.chatId,
@@ -912,6 +917,7 @@ export function createFeishuConnection(
           content,
         },
       });
+      return resp?.data?.message_id;
     }
   }
 
@@ -1715,15 +1721,14 @@ export function createFeishuConnection(
               logger.info({ messageId, action, feedbackType }, 'Card action: feedback button clicked');
 
               // Add emoji reaction to the thread root message if available, otherwise to the card message itself
-              const { resolveRootMessageId } = await import('./feishu-streaming-card.js');
               const rootMessageId = resolveRootMessageId(messageId);
               const targetMessageId = rootMessageId || messageId;
 
               await addReaction(targetMessageId, emojiType);
 
-              logger.debug(
+              logger.info(
                 { cardMessageId: messageId, rootMessageId, targetMessageId, emojiType },
-                'Added reaction to thread root or card message',
+                'msgid-map: reaction target resolved',
               );
 
               // Store feedback to database
@@ -1750,19 +1755,28 @@ export function createFeishuConnection(
                   'Extracted feedback context',
                 );
 
-                // Try to get the AI response message by feishu message ID first
+                // Resolve the AI reply this card displays. Preferred path: the
+                // exact DB message id registered when the reply was persisted.
+                // Fallbacks: the Feishu id itself, then the latest AI message.
                 let aiMessageContent: string | undefined;
                 let aiMessageId: string = messageId;
 
-                const directMessage = getMessageById(messageId);
+                const mappedDbMessageId = resolveDbMessageIdByCard(messageId);
+                logger.info(
+                  { messageId, mappedDbMessageId },
+                  'msgid-map: feedback db message id lookup',
+                );
+                const directMessage =
+                  (mappedDbMessageId ? getMessageById(mappedDbMessageId) : null) ??
+                  getMessageById(messageId);
                 if (directMessage) {
                   aiMessageContent = directMessage.content;
                   aiMessageId = directMessage.id;
                 } else {
                   // If not found (likely because feishu returns different message_id),
                   // fallback to getting the latest AI message in this chat
-                  logger.debug(
-                    { messageId, chatJid },
+                  logger.warn(
+                    { messageId, mappedDbMessageId, chatJid },
                     'Message ID not found in database, using latest AI message as fallback',
                   );
                   const latestAiMessage = getLatestAiMessageInChat(chatJid);
@@ -1772,15 +1786,17 @@ export function createFeishuConnection(
                   }
                 }
 
-                // Get the user's previous message (context)
+                // Get the user's previous message (context). Home-group replies
+                // are stored under the normalized web:{folder} jid, so prefer
+                // the chat_jid the resolved message actually lives in.
                 let userMessage: string | undefined;
-                const userMsg = getUserMessageBeforeMessage(chatJid, aiMessageId);
+                const contextChatJid = directMessage?.chat_jid ?? chatJid;
+                const userMsg = getUserMessageBeforeMessage(contextChatJid, aiMessageId);
                 if (userMsg) {
                   userMessage = userMsg.content;
                 }
 
                 storeUserFeedback({
-                  id: crypto.randomUUID(),
                   messageId: aiMessageId,
                   chatJid,
                   userId,
@@ -1870,14 +1886,35 @@ export function createFeishuConnection(
       chatId: string,
       text: string,
       localImagePaths?: string[],
-    ): Promise<void> {
+    ): Promise<string[]> {
       if (!client) {
         logger.warn(
           { chatId },
           'Feishu client not initialized, skip sending message',
         );
-        return;
+        return [];
       }
+
+      // Register the sent card so button callbacks (feedback/interrupt) can
+      // resolve the chatJid and thread root — static cards carry the same
+      // feedback buttons as streaming cards but have no onCardCreated hook.
+      const sentMessageIds: string[] = [];
+      const trackSent = (msgId: string | undefined): void => {
+        if (!msgId) {
+          logger.warn(
+            { chatId },
+            'msgid-map: static send returned no message_id, mapping skipped',
+          );
+          return;
+        }
+        const target = parseFeishuRouteTarget(chatId);
+        registerMessageIdMapping(
+          msgId,
+          `feishu:${chatId}`,
+          target.rootMessageId,
+        );
+        sentMessageIds.push(msgId);
+      };
 
       try {
         // Detect pre-built Feishu interactive card JSON — send directly without wrapping
@@ -1885,9 +1922,9 @@ export function createFeishuConnection(
           try {
             const parsed = JSON.parse(text);
             if (parsed.type === 'interactive' && parsed.card) {
-              await sendToFeishu(chatId, 'interactive', text);
+              trackSent(await sendToFeishu(chatId, 'interactive', text));
               clearAckForTarget(chatId);
-              return;
+              return sentMessageIds;
             }
           } catch {
             // Not valid card JSON, fall through to normal handling
@@ -1902,18 +1939,20 @@ export function createFeishuConnection(
         if (usePostMd) {
           // Too many tables for card format, go directly to post+md
           const postContent = buildPostMdFallback(text);
-          await sendToFeishu(chatId, 'post', postContent);
+          trackSent(await sendToFeishu(chatId, 'post', postContent));
         } else {
           const card = buildInteractiveCard(text);
           const content = JSON.stringify(card);
           try {
-            await sendToFeishu(chatId, 'interactive', content);
+            trackSent(await sendToFeishu(chatId, 'interactive', content));
           } catch (err) {
             logger.warn(
               { err, chatId },
               'Feishu interactive send failed, fallback to post+md',
             );
-            await sendToFeishu(chatId, 'post', buildPostMdFallback(text));
+            trackSent(
+              await sendToFeishu(chatId, 'post', buildPostMdFallback(text)),
+            );
           }
         }
         logger.debug({ chatId }, 'Sent Feishu card message');
@@ -1955,6 +1994,7 @@ export function createFeishuConnection(
         logger.error({ err, chatId }, 'Failed to send Feishu card message');
         clearAckForTarget(chatId);
       }
+      return sentMessageIds;
     },
 
     async sendImage(
@@ -2238,7 +2278,7 @@ export async function sendFeishuMessage(
     );
     return;
   }
-  return _defaultInstance.sendMessage(chatId, text, localImagePaths);
+  await _defaultInstance.sendMessage(chatId, text, localImagePaths);
 }
 
 /**

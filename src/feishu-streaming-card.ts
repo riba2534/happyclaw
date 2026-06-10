@@ -37,6 +37,7 @@ import {
   type StreamingPhase,
   type TodoItemView,
   type ToolCallView,
+  FEEDBACK_BUTTONS_V2,
 } from './feishu-cards/sections.js';
 
 // ─── Types ────────────────────────────────────────────────────
@@ -247,51 +248,6 @@ const INTERRUPT_BUTTON_V2 = {
   text: { tag: 'plain_text', content: '⏹ 中断回复' },
   type: 'danger',
   value: { action: 'interrupt_stream' },
-} as const;
-
-// ─── Feedback Buttons Element ─────────────────────────────────
-
-/** Schema 2.0 feedback buttons — horizontal layout for completed cards. */
-const FEEDBACK_BUTTONS_V2 = {
-  tag: 'column_set',
-  flex_mode: 'bisect',
-  horizontal_spacing: '8px',
-  columns: [
-    {
-      tag: 'column',
-      elements: [
-        {
-          tag: 'button',
-          text: { tag: 'plain_text', content: '👍 有用' },
-          type: 'default',
-          element_id: 'like_button',
-          behaviors: [
-            {
-              type: 'callback',
-              value: { action: 'feedback_like' },
-            },
-          ],
-        },
-      ],
-    },
-    {
-      tag: 'column',
-      elements: [
-        {
-          tag: 'button',
-          text: { tag: 'plain_text', content: '👎 没用' },
-          type: 'default',
-          element_id: 'dislike_button',
-          behaviors: [
-            {
-              type: 'callback',
-              value: { action: 'feedback_dislike' },
-            },
-          ],
-        },
-      ],
-    },
-  ],
 } as const;
 
 // ─── Streaming Mode Constants ─────────────────────────────────
@@ -1396,6 +1352,10 @@ export class StreamingCardController {
   private state: StreamingState = 'idle';
   private messageId: string | null = null;
   private accumulatedText = '';
+  // In-flight createInitialCard() promise — complete() awaits it so a fast
+  // reply doesn't finalize before the card exists (which would skip the
+  // onCardCreated callback and break messageId mapping registration).
+  private creationPromise: Promise<void> | null = null;
   private flushCtrl: FlushController;
   private patchFailCount = 0;
   private maxPatchFailures = 2;
@@ -1474,7 +1434,8 @@ export class StreamingCardController {
     if (this.state === 'idle') {
       // Create card immediately with thinking placeholder
       this.state = 'creating';
-      this.createInitialCard().catch((err) => {
+      this.creationPromise = this.createInitialCard();
+      this.creationPromise.catch((err) => {
         logger.warn(
           { err, chatId: this.chatId },
           'Streaming card: initial create failed (thinking), will use fallback',
@@ -1563,7 +1524,8 @@ export class StreamingCardController {
     this.stateVersion++;
     if (this.state === 'idle') {
       this.state = 'creating';
-      this.createInitialCard().catch((err) => {
+      this.creationPromise = this.createInitialCard();
+      this.creationPromise.catch((err) => {
         logger.warn(
           { err, chatId: this.chatId },
           'Streaming card: initial create failed (thinking), will use fallback',
@@ -1687,7 +1649,8 @@ export class StreamingCardController {
 
       if (this.state === 'idle') {
       this.state = 'creating';
-      this.createInitialCard().catch((err) => {
+      this.creationPromise = this.createInitialCard();
+      this.creationPromise.catch((err) => {
         logger.warn(
           { err, chatId: this.chatId },
           'Streaming card: initial create failed, will use fallback',
@@ -1711,6 +1674,25 @@ export class StreamingCardController {
    */
   async complete(finalText: string): Promise<void> {
     if (this.state !== 'streaming' && this.state !== 'creating') return;
+
+    // A fast reply can finalize while the initial card create API call is
+    // still in flight. Wait for it so finishCardCreation() observes state
+    // 'creating', fires onCardCreated, and the messageId mapping exists
+    // before the caller links the persisted reply to this card.
+    if (this.state === 'creating' && this.creationPromise) {
+      await this.creationPromise.catch(() => {});
+      // Creation may have failed while awaiting — surface it so the caller
+      // falls back to a static message instead of believing the card landed.
+      // Cast: TS keeps the pre-await narrowing on this.state, but the awaited
+      // creation flow mutates it ('streaming' on success, 'error' on failure).
+      const stateAfterCreation = this.state as StreamingState;
+      if (
+        stateAfterCreation !== 'streaming' &&
+        stateAfterCreation !== 'creating'
+      ) {
+        throw new Error('Streaming card creation failed before complete');
+      }
+    }
 
     const prevState = this.state;
     this.accumulatedText = finalText;
@@ -2533,6 +2515,8 @@ export class StreamingCardController {
 interface MessageIdMapping {
   chatJid: string;
   rootMessageId?: string;
+  /** HappyClaw DB message id of the reply this card displays (for feedback). */
+  dbMessageId?: string;
 }
 
 const messageIdToChatJid = new Map<string, MessageIdMapping>();
@@ -2547,6 +2531,10 @@ export function registerMessageIdMapping(
   rootMessageId?: string,
 ): void {
   messageIdToChatJid.set(messageId, { chatJid, rootMessageId });
+  logger.info(
+    { messageId, chatJid, rootMessageId },
+    'msgid-map: card mapping registered',
+  );
 }
 
 /**
@@ -2561,6 +2549,36 @@ export function resolveJidByMessageId(messageId: string): string | undefined {
  */
 export function resolveRootMessageId(messageId: string): string | undefined {
   return messageIdToChatJid.get(messageId)?.rootMessageId;
+}
+
+/**
+ * Attach the persisted HappyClaw message id to an existing card mapping,
+ * once the reply shown on that card has been stored to the DB. Lets the
+ * feedback callback resolve the exact message instead of guessing.
+ */
+export function registerDbMessageIdForCard(
+  messageId: string,
+  dbMessageId: string,
+): void {
+  const mapping = messageIdToChatJid.get(messageId);
+  if (mapping) {
+    mapping.dbMessageId = dbMessageId;
+    logger.info({ messageId, dbMessageId }, 'msgid-map: db message id attached');
+  } else {
+    logger.warn(
+      { messageId, dbMessageId },
+      'msgid-map: no mapping found for card, db id NOT attached',
+    );
+  }
+}
+
+/**
+ * Resolve the HappyClaw DB message id for a Feishu card messageId.
+ */
+export function resolveDbMessageIdByCard(
+  messageId: string,
+): string | undefined {
+  return messageIdToChatJid.get(messageId)?.dbMessageId;
 }
 
 /**

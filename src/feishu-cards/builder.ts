@@ -29,51 +29,9 @@ import {
   buildStatusBannerText,
   statusHeadline,
   CARD_ELEMENT_IDS,
+  FEEDBACK_BUTTONS_V2,
   type StreamingPanelsInit,
 } from './sections.js';
-
-/** Schema 2.0 feedback buttons — horizontal layout for completed cards. */
-const FEEDBACK_BUTTONS_V2 = {
-  tag: 'column_set',
-  flex_mode: 'bisect',
-  horizontal_spacing: '8px',
-  columns: [
-    {
-      tag: 'column',
-      elements: [
-        {
-          tag: 'button',
-          text: { tag: 'plain_text', content: '👍 有用' },
-          type: 'default',
-          element_id: 'like_button',
-          behaviors: [
-            {
-              type: 'callback',
-              value: { action: 'feedback_like' },
-            },
-          ],
-        },
-      ],
-    },
-    {
-      tag: 'column',
-      elements: [
-        {
-          tag: 'button',
-          text: { tag: 'plain_text', content: '👎 没用' },
-          type: 'default',
-          element_id: 'dislike_button',
-          behaviors: [
-            {
-              type: 'callback',
-              value: { action: 'feedback_dislike' },
-            },
-          ],
-        },
-      ],
-    },
-  ],
-} as const;
 
 /** Per-platform typewriter tuning — mobile feels faster, PC breathes more. */
 const STREAMING_CONFIG = {

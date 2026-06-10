@@ -115,11 +115,16 @@ export interface IMChannel {
   readonly channelType: string;
   connect(opts: IMChannelConnectOpts): Promise<boolean>;
   disconnect(): Promise<void>;
+  /**
+   * Send a message. Channels may return the platform message id(s) of the
+   * sent message(s) so callers can link them back to the persisted reply
+   * (e.g. Feishu card feedback). Channels without that capability return void.
+   */
   sendMessage(
     chatId: string,
     text: string,
     localImagePaths?: string[],
-  ): Promise<void>;
+  ): Promise<string[] | void>;
   /** Send file to chat (if supported) */
   sendFile?(chatId: string, filePath: string, fileName: string): Promise<void>;
   sendImage?(
@@ -224,7 +229,7 @@ export function createFeishuChannel(config: FeishuConnectionConfig): IMChannel {
       chatId: string,
       text: string,
       localImagePaths?: string[],
-    ): Promise<void> {
+    ): Promise<string[] | void> {
       if (!inner) {
         logger.warn(
           { chatId },
@@ -232,7 +237,7 @@ export function createFeishuChannel(config: FeishuConnectionConfig): IMChannel {
         );
         return;
       }
-      await inner.sendMessage(chatId, text, localImagePaths);
+      return inner.sendMessage(chatId, text, localImagePaths);
     },
 
     async sendImage(

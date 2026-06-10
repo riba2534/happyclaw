@@ -5,7 +5,7 @@ export interface FeedbackStats {
   total: number;
   byType: Array<{ feedback_type: string; count: number }>;
   byUser: Array<{ user_id: string; username: string | null; count: number }>;
-  byChat: Array<{ chat_jid: string; count: number }>;
+  byChat: Array<{ chat_jid: string; chat_name: string | null; count: number }>;
   dailyTrend: Array<{ date: string; feedback_type: string; count: number }>;
 }
 
@@ -13,7 +13,7 @@ export interface FeedbackRecord {
   id: string;
   message_id: string;
   chat_jid: string;
-  user_id: string | null;
+  user_id: string;
   username: string | null;
   feedback_type: string;
   user_message_preview: string | null;
@@ -25,7 +25,7 @@ export interface FeedbackDetail {
   id: string;
   message_id: string;
   chat_jid: string;
-  user_id: string | null;
+  user_id: string;
   username: string | null;
   feedback_type: string;
   user_message: string | null;

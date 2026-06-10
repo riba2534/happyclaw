@@ -183,7 +183,7 @@ class IMConnectionManager {
     jid: string,
     text: string,
     localImagePaths?: string[],
-  ): Promise<void> {
+  ): Promise<string[] | void> {
     const channelType = getChannelType(jid);
     if (!channelType) {
       logger.debug({ jid }, 'Unknown channel type for JID, skip sending');
@@ -195,7 +195,7 @@ class IMConnectionManager {
     if (!channel) {
       throw new Error(`No IM channel available for ${jid} (${channelType})`);
     }
-    await channel.sendMessage(chatId, text, localImagePaths);
+    return channel.sendMessage(chatId, text, localImagePaths);
   }
 
   /**

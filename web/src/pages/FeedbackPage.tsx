@@ -268,7 +268,7 @@ export function FeedbackPage() {
                     <div key={chat.chat_jid} className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <span className="text-muted-foreground text-sm w-6">#{index + 1}</span>
-                        <span className="text-sm truncate max-w-[300px]">{chat.chat_jid}</span>
+                        <span className="text-sm truncate max-w-[300px]">{chat.chat_name || chat.chat_jid}</span>
                       </div>
                       <Badge variant="secondary">{chat.count} 次</Badge>
                     </div>
@@ -283,7 +283,7 @@ export function FeedbackPage() {
           {/* 每日趋势 */}
           <Card>
             <CardHeader>
-              <CardTitle>最近 30 天趋势</CardTitle>
+              <CardTitle>最近 30 天趋势（显示最新 10 天）</CardTitle>
               <CardDescription>每日反馈数量统计</CardDescription>
             </CardHeader>
             <CardContent>

@@ -106,6 +106,7 @@ import {
   hasActiveStreamingSession,
   abortAllStreamingSessions,
   registerMessageIdMapping,
+  registerDbMessageIdForCard,
   getStreamingSession,
   StreamingCardController,
 } from './feishu-streaming-card.js';
@@ -228,6 +229,13 @@ const DEFAULT_MAIN_JID = 'web:main';
 const DEFAULT_MAIN_NAME = 'Main';
 const SAFE_REQUEST_ID_RE = /^[A-Za-z0-9_-]+$/;
 const OOM_EXIT_RE = /code 137/;
+
+function extractRootMessageId(jid: string | null | undefined): string | undefined {
+  if (!jid || !jid.startsWith('feishu:')) return undefined;
+  const feishuRaw = jid.slice('feishu:'.length);
+  const rootMatch = feishuRaw.match(/root:([^#]+)/);
+  return rootMatch ? rootMatch[1] : undefined;
+}
 
 function buildWebTraceUrl(folder: string | undefined, turnId?: string): string | null {
   const base = process.env.HAPPYCLAW_WEB_URL || process.env.PUBLIC_BASE_URL || process.env.WEB_BASE_URL;
@@ -1063,13 +1071,15 @@ async function sendImWithRetry(
   imJid: string,
   text: string,
   localImagePaths: string[],
-): Promise<boolean> {
-  const ok = await retryImOperation('send_message', imJid, () =>
-    imManager.sendMessage(imJid, text, localImagePaths),
-  );
+): Promise<string[] | null> {
+  let sentMessageIds: string[] = [];
+  const ok = await retryImOperation('send_message', imJid, async () => {
+    sentMessageIds =
+      (await imManager.sendMessage(imJid, text, localImagePaths)) ?? [];
+  });
   if (ok) {
     imSendFailCounts.delete(imJid);
-    return true;
+    return sentMessageIds;
   }
   // All retries exhausted — track cumulative failures
   const count = (imSendFailCounts.get(imJid) ?? 0) + 1;
@@ -1084,7 +1094,7 @@ async function sendImWithRetry(
       logger.error({ imJid, unbindErr }, 'Failed to auto-remove IM group');
     }
   }
-  return false;
+  return null;
 }
 
 /** Fire-and-forget wrapper for sendImWithRetry (used in non-await contexts). */
@@ -2954,16 +2964,13 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Create a streaming session for Feishu channels (typing-machine effect).
   // Non-Feishu channels get undefined → all streaming logic is no-op.
   let streamingSessionJid = replySourceImJid ?? chatJid;
-  // Extract rootMessageId from Feishu JID for thread-aware reactions
-  const extractRootMessageId = (jid: string): string | undefined => {
-    if (!jid.startsWith('feishu:')) return undefined;
-    const feishuRaw = jid.slice('feishu:'.length);
-    const rootMatch = feishuRaw.match(/root:([^#]+)/);
-    return rootMatch ? rootMatch[1] : undefined;
-  };
+  // Card ids created for the current turn; once the reply is persisted they
+  // get the DB message id attached so feedback clicks resolve exactly.
+  const pendingFeedbackCardIds: string[] = [];
   const makeOnCardCreated = (jid: string) => (messageId: string) => {
     const rootMessageId = extractRootMessageId(jid);
     registerMessageIdMapping(messageId, jid, rootMessageId);
+    pendingFeedbackCardIds.push(messageId);
   };
   let streamingSession = await imManager.createStreamingSession(
     streamingSessionJid,
@@ -3633,17 +3640,43 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               });
               lastSavedTurnId = effectiveTurnId;
 
+              // Link this turn's streaming cards to the persisted reply so the
+              // feedback callback resolves the exact DB message. The rebuilt
+              // card above is lazy (no Feishu message until next turn's text),
+              // so pendingFeedbackCardIds only holds this turn's cards here.
+              logger.info(
+                {
+                  chatJid,
+                  streamingCardHandledIM,
+                  pendingCardCount: pendingFeedbackCardIds.length,
+                  lastReplyMsgId,
+                },
+                'msgid-map: main turn card linking',
+              );
+              if (lastReplyMsgId) {
+                for (const cardId of pendingFeedbackCardIds) {
+                  registerDbMessageIdForCard(cardId, lastReplyMsgId);
+                }
+              }
+              pendingFeedbackCardIds.length = 0;
+
               // For routed IM (web JID with IM source), only send the FIRST
               // substantive reply to IM. Subsequent results (e.g., SDK Task
               // completions) are stored in DB but not spammed to IM.
               // Streaming card already handles IM delivery for the first reply.
               if (replySourceImJid && replySourceImJid !== chatJid) {
                 if (!streamingCardHandledIM && !sentReply) {
-                  sendImWithFailTracking(
-                    replySourceImJid,
-                    text,
-                    localImagePaths,
-                  );
+                  // Fire-and-forget, but link the sent static cards to the
+                  // persisted reply once delivered (feedback resolution).
+                  const persistedIdForCards = lastReplyMsgId;
+                  sendImWithRetry(replySourceImJid, text, localImagePaths)
+                    .then((ids) => {
+                      if (!ids || !persistedIdForCards) return;
+                      for (const imMsgId of ids) {
+                        registerDbMessageIdForCard(imMsgId, persistedIdForCards);
+                      }
+                    })
+                    .catch(() => {});
                 }
               }
 
@@ -4294,13 +4327,15 @@ async function sendMessage(
 ): Promise<string | undefined> {
   const isIMChannel = getChannelType(jid) !== null;
   const sendToIM = options.sendToIM ?? isIMChannel;
+  let sentImMessageIds: string[] = [];
   try {
     if (sendToIM && isIMChannel) {
       try {
         const localImagePaths =
           options.localImagePaths ??
           extractLocalImImagePaths(text, resolveEffectiveFolder(jid));
-        await imManager.sendMessage(jid, text, localImagePaths);
+        sentImMessageIds =
+          (await imManager.sendMessage(jid, text, localImagePaths)) ?? [];
       } catch (err) {
         logger.error({ jid, err }, 'Failed to send message to IM channel');
       }
@@ -4320,6 +4355,12 @@ async function sendMessage(
       true,
       { meta: options.messageMeta },
     );
+
+    // Link static IM cards to the persisted reply so the feedback callback
+    // resolves the exact DB message (streaming cards register via onCardCreated).
+    for (const imMsgId of sentImMessageIds) {
+      registerDbMessageIdForCard(imMsgId, persistedMsgId);
+    }
 
     broadcastNewMessage(
       jid,
@@ -6175,18 +6216,16 @@ async function processAgentConversation(
   const streamingSessionJid = replySourceImJid
     ? `${replySourceImJid}#agent:${agentId}`
     : undefined;
-  // Extract rootMessageId from replySourceImJid for thread-aware reactions
-  const extractRootMessageId = (jid: string | null): string | undefined => {
-    if (!jid || !jid.startsWith('feishu:')) return undefined;
-    const feishuRaw = jid.slice('feishu:'.length);
-    const rootMatch = feishuRaw.match(/root:([^#]+)/);
-    return rootMatch ? rootMatch[1] : undefined;
-  };
   const agentRootMessageId = extractRootMessageId(replySourceImJid);
+  // Card ids created for the current turn; once the reply is persisted they
+  // get the DB message id attached so feedback clicks resolve exactly.
+  const pendingFeedbackCardIds: string[] = [];
+  const onAgentCardCreated = (messageId: string) => {
+    registerMessageIdMapping(messageId, streamingSessionJid!, agentRootMessageId);
+    pendingFeedbackCardIds.push(messageId);
+  };
   let agentStreamingSession = replySourceImJid
-    ? await imManager.createStreamingSession(replySourceImJid, (messageId) =>
-        registerMessageIdMapping(messageId, streamingSessionJid!, agentRootMessageId),
-      )
+    ? await imManager.createStreamingSession(replySourceImJid, onAgentCardCreated)
     : undefined;
   let agentStreamingAccText = '';
   let agentStreamInterrupted = false;
@@ -6512,6 +6551,23 @@ async function processAgentConversation(
           }
         }
 
+        // Link this turn's streaming cards to the persisted reply so the
+        // feedback callback resolves the exact DB message.
+        logger.info(
+          {
+            chatJid,
+            agentId,
+            streamingCardHandledIM,
+            pendingCardCount: pendingFeedbackCardIds.length,
+            persistedMsgId,
+          },
+          'msgid-map: agent turn card linking',
+        );
+        for (const cardId of pendingFeedbackCardIds) {
+          registerDbMessageIdForCard(cardId, persistedMsgId);
+        }
+        pendingFeedbackCardIds.length = 0;
+
         // ── Rebuild streaming card after compact_partial / overflow_partial ──
         // The completed card was consumed; create a new one so post-compaction
         // tool-call progress remains visible on Feishu (#223).
@@ -6525,8 +6581,7 @@ async function processAgentConversation(
           unregisterStreamingSession(streamingSessionJid);
           agentStreamingSession = await imManager.createStreamingSession(
             replySourceImJid!,
-            (messageId) =>
-              registerMessageIdMapping(messageId, streamingSessionJid!, agentRootMessageId),
+            onAgentCardCreated,
           );
           if (agentStreamingSession) {
             registerStreamingSession(
@@ -6549,6 +6604,11 @@ async function processAgentConversation(
             localImagePaths,
           );
           if (imSent) {
+            // Static cards register chatJid/root at the channel layer; attach
+            // the persisted reply id here for exact feedback resolution.
+            for (const imMsgId of imSent) {
+              registerDbMessageIdForCard(imMsgId, persistedMsgId);
+            }
             imManager.clearAckReaction(replySourceImJid);
             logger.info(
               {
@@ -6884,6 +6944,9 @@ async function processAgentConversation(
             localImagePaths,
           );
           if (imSent) {
+            for (const imMsgId of imSent) {
+              registerDbMessageIdForCard(imMsgId, persistedMsgId);
+            }
             imManager.clearAckReaction(replySourceImJid);
           }
           logger.info({ replySourceImJid, imSent }, 'agent IM reply sent');

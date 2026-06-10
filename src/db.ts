@@ -1261,28 +1261,56 @@ export function initDatabase(): void {
   // its position before assertSchema('users', …) matters because the
   // schema check would otherwise reject pre-v38 databases on startup.
 
-  // v38 → v39: Added user_feedback table for storing user feedback (like/dislike)
-  const v39Version = getRouterStateInternal('schema_version');
-  if (!v39Version || parseInt(v39Version, 10) < 39) {
+  // v38 → v40: user_feedback table for storing user feedback (like/dislike).
+  // The upsert key is UNIQUE(user_id, message_id); user_id is NOT NULL DEFAULT ''
+  // because SQLite treats NULLs as distinct in unique constraints. Databases that
+  // ran the interim v39 layout (no UNIQUE, nullable user_id) get rebuilt here,
+  // keeping the newest row per (user_id, message_id).
+  const feedbackVersion = getRouterStateInternal('schema_version');
+  if (!feedbackVersion || parseInt(feedbackVersion, 10) < 40) {
+    const hasOldFeedbackTable = !!db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='user_feedback'",
+      )
+      .get();
+    if (hasOldFeedbackTable) {
+      db.exec(`
+        DROP INDEX IF EXISTS idx_feedback_message;
+        DROP INDEX IF EXISTS idx_feedback_user;
+        DROP INDEX IF EXISTS idx_feedback_created;
+        ALTER TABLE user_feedback RENAME TO user_feedback_v39;
+      `);
+    }
     db.exec(`
-      CREATE TABLE IF NOT EXISTS user_feedback (
+      CREATE TABLE user_feedback (
         id TEXT PRIMARY KEY,
         message_id TEXT NOT NULL,
         chat_jid TEXT NOT NULL,
-        user_id TEXT,
+        user_id TEXT NOT NULL DEFAULT '',
         username TEXT,
         feedback_type TEXT NOT NULL,
         user_message TEXT,
         ai_response TEXT,
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        UNIQUE(user_id, message_id)
       );
-      CREATE INDEX IF NOT EXISTS idx_feedback_message ON user_feedback(message_id);
-      CREATE INDEX IF NOT EXISTS idx_feedback_user ON user_feedback(user_id);
-      CREATE INDEX IF NOT EXISTS idx_feedback_created ON user_feedback(created_at);
+      CREATE INDEX idx_feedback_message ON user_feedback(message_id);
+      CREATE INDEX idx_feedback_user ON user_feedback(user_id);
+      CREATE INDEX idx_feedback_created ON user_feedback(created_at);
     `);
+    if (hasOldFeedbackTable) {
+      db.exec(`
+        INSERT OR IGNORE INTO user_feedback
+          (id, message_id, chat_jid, user_id, username, feedback_type, user_message, ai_response, created_at)
+        SELECT id, message_id, chat_jid, COALESCE(user_id, ''), username, feedback_type, user_message, ai_response, created_at
+        FROM user_feedback_v39
+        ORDER BY created_at DESC;
+        DROP TABLE user_feedback_v39;
+      `);
+    }
   }
 
-  const SCHEMA_VERSION = '39';
+  const SCHEMA_VERSION = '40';
   db.prepare(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', SCHEMA_VERSION);
@@ -5974,10 +6002,10 @@ export function tryIncrementRedeemCodeUsage(
 
 /**
  * Store user feedback (like/dislike) with context.
- * Uses INSERT OR REPLACE to prevent duplicate feedback from the same user on the same message.
+ * Upserts on (user_id, message_id) so a repeat click updates the previous
+ * feedback (e.g. like → dislike) instead of being silently dropped.
  */
 export function storeUserFeedback(params: {
-  id: string;
   messageId: string;
   chatJid: string;
   userId?: string;
@@ -5991,12 +6019,18 @@ export function storeUserFeedback(params: {
     `INSERT INTO user_feedback (
       id, message_id, chat_jid, user_id, username, feedback_type,
       user_message, ai_response, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, message_id) DO UPDATE SET
+      feedback_type = excluded.feedback_type,
+      username = excluded.username,
+      user_message = excluded.user_message,
+      ai_response = excluded.ai_response,
+      created_at = excluded.created_at`,
   ).run(
-    params.id,
+    crypto.randomUUID(),
     params.messageId,
     params.chatJid,
-    params.userId ?? null,
+    params.userId ?? '',
     params.username ?? null,
     params.feedbackType,
     params.userMessage ?? null,
@@ -6012,7 +6046,7 @@ export function getUserFeedbackByMessageId(messageId: string): Array<{
   id: string;
   message_id: string;
   chat_jid: string;
-  user_id: string | null;
+  user_id: string;
   username: string | null;
   feedback_type: string;
   user_message: string | null;
@@ -6031,7 +6065,7 @@ export function getUserFeedbackByMessageId(messageId: string): Array<{
     id: string;
     message_id: string;
     chat_jid: string;
-    user_id: string | null;
+    user_id: string;
     username: string | null;
     feedback_type: string;
     user_message: string | null;
@@ -6047,7 +6081,7 @@ export function getUserFeedbackStats(): {
   total: number;
   byType: Array<{ feedback_type: string; count: number }>;
   byUser: Array<{ user_id: string; username: string | null; count: number }>;
-  byChat: Array<{ chat_jid: string; count: number }>;
+  byChat: Array<{ chat_jid: string; chat_name: string | null; count: number }>;
   dailyTrend: Array<{ date: string; feedback_type: string; count: number }>;
 } {
   const totalCount = db
@@ -6064,7 +6098,7 @@ export function getUserFeedbackStats(): {
     .prepare(
       `SELECT user_id, username, COUNT(*) as count
        FROM user_feedback
-       WHERE user_id IS NOT NULL
+       WHERE user_id != ''
        GROUP BY user_id
        ORDER BY count DESC
        LIMIT 10`,
@@ -6073,13 +6107,18 @@ export function getUserFeedbackStats(): {
 
   const byChat = db
     .prepare(
-      `SELECT chat_jid, COUNT(*) as count
-       FROM user_feedback
-       GROUP BY chat_jid
+      `SELECT f.chat_jid, c.name as chat_name, COUNT(*) as count
+       FROM user_feedback f
+       LEFT JOIN chats c ON c.jid = f.chat_jid
+       GROUP BY f.chat_jid
        ORDER BY count DESC
        LIMIT 10`,
     )
-    .all() as Array<{ chat_jid: string; count: number }>;
+    .all() as Array<{
+    chat_jid: string;
+    chat_name: string | null;
+    count: number;
+  }>;
 
   const dailyTrend = db
     .prepare(
@@ -6115,7 +6154,7 @@ export function getUserFeedbackList(params: {
     id: string;
     message_id: string;
     chat_jid: string;
-    user_id: string | null;
+    user_id: string;
     username: string | null;
     feedback_type: string;
     user_message_preview: string | null;
@@ -6137,7 +6176,7 @@ export function getUserFeedbackList(params: {
     created_at
   FROM user_feedback`;
 
-  const queryParams: any[] = [];
+  const queryParams: (string | number)[] = [];
 
   if (feedbackType) {
     query += ' WHERE feedback_type = ?';
@@ -6151,7 +6190,7 @@ export function getUserFeedbackList(params: {
     id: string;
     message_id: string;
     chat_jid: string;
-    user_id: string | null;
+    user_id: string;
     username: string | null;
     feedback_type: string;
     user_message_preview: string | null;
@@ -6161,7 +6200,7 @@ export function getUserFeedbackList(params: {
 
   // Get total count
   let countQuery = 'SELECT COUNT(*) as count FROM user_feedback';
-  const countParams: any[] = [];
+  const countParams: (string | number)[] = [];
   if (feedbackType) {
     countQuery += ' WHERE feedback_type = ?';
     countParams.push(feedbackType);
@@ -6186,7 +6225,7 @@ export function getUserFeedbackById(id: string): {
   id: string;
   message_id: string;
   chat_jid: string;
-  user_id: string | null;
+  user_id: string;
   username: string | null;
   feedback_type: string;
   user_message: string | null;
@@ -6200,7 +6239,7 @@ export function getUserFeedbackById(id: string): {
         id: string;
         message_id: string;
         chat_jid: string;
-        user_id: string | null;
+        user_id: string;
         username: string | null;
         feedback_type: string;
         user_message: string | null;

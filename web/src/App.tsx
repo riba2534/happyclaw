@@ -69,7 +69,14 @@ export function App() {
           <Route path="/mcp-servers" element={<McpServersPage />} />
           <Route path="/plugins" element={<PluginsPage />} />
           <Route path="/agent-definitions" element={<AgentDefinitionsPage />} />
-          <Route path="/feedback" element={<FeedbackPage />} />
+          <Route
+            path="/feedback"
+            element={
+              <AuthGuard requiredPermission="view_audit_log">
+                <FeedbackPage />
+              </AuthGuard>
+            }
+          />
           <Route path="/settings" element={<Suspense fallback={null}><SettingsPage /></Suspense>} />
           <Route
             path="/users"
