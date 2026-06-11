@@ -3644,7 +3644,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               // feedback callback resolves the exact DB message. The rebuilt
               // card above is lazy (no Feishu message until next turn's text),
               // so pendingFeedbackCardIds only holds this turn's cards here.
-              logger.info(
+              logger.debug(
                 {
                   chatJid,
                   streamingCardHandledIM,
@@ -6553,7 +6553,7 @@ async function processAgentConversation(
 
         // Link this turn's streaming cards to the persisted reply so the
         // feedback callback resolves the exact DB message.
-        logger.info(
+        logger.debug(
           {
             chatJid,
             agentId,

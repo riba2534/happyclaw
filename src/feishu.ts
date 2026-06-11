@@ -1753,7 +1753,7 @@ export function createFeishuConnection(
                 }
               }
 
-              logger.info(
+              logger.debug(
                 { cardMessageId: messageId, rootMessageId, targetMessageId, emojiType, replacedPrev: !!prevReaction },
                 'msgid-map: reaction target resolved',
               );
@@ -1789,7 +1789,7 @@ export function createFeishuConnection(
                 let aiMessageId: string = messageId;
 
                 const mappedDbMessageId = resolveDbMessageIdByCard(messageId);
-                logger.info(
+                logger.debug(
                   { messageId, mappedDbMessageId },
                   'msgid-map: feedback db message id lookup',
                 );

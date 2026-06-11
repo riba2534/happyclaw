@@ -2531,7 +2531,7 @@ export function registerMessageIdMapping(
   rootMessageId?: string,
 ): void {
   messageIdToChatJid.set(messageId, { chatJid, rootMessageId });
-  logger.info(
+  logger.debug(
     { messageId, chatJid, rootMessageId },
     'msgid-map: card mapping registered',
   );
@@ -2563,7 +2563,7 @@ export function registerDbMessageIdForCard(
   const mapping = messageIdToChatJid.get(messageId);
   if (mapping) {
     mapping.dbMessageId = dbMessageId;
-    logger.info({ messageId, dbMessageId }, 'msgid-map: db message id attached');
+    logger.debug({ messageId, dbMessageId }, 'msgid-map: db message id attached');
   } else {
     logger.warn(
       { messageId, dbMessageId },
