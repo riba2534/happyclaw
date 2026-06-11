@@ -545,6 +545,13 @@ export function createFeishuConnection(
   const lastMessageIdByChat = new Map<string, string>();
   const ackReactionByChat = new Map<string, string>();
   const typingReactionByChat = new Map<string, string>();
+  // Bot's latest feedback reaction per target message — switching a vote
+  // (like → dislike) replaces the emoji instead of accumulating both.
+  const feedbackReactionByMessage = new Map<
+    string,
+    { emojiType: string; reactionId: string }
+  >();
+  const FEEDBACK_REACTION_CACHE_MAX = 500;
   const knownChatIds = new Set<string>();
   const chatTypeById = new Map<string, string>(); // chatId → 'group' | 'p2p'
   const lastCreateTimeByChat = new Map<string, number>();
@@ -1724,10 +1731,30 @@ export function createFeishuConnection(
               const rootMessageId = resolveRootMessageId(messageId);
               const targetMessageId = rootMessageId || messageId;
 
-              await addReaction(targetMessageId, emojiType);
+              // Only the latest vote keeps its emoji: remove the previous
+              // feedback reaction before adding the new one; re-clicking the
+              // same vote leaves the existing emoji untouched.
+              const prevReaction = feedbackReactionByMessage.get(targetMessageId);
+              if (prevReaction?.emojiType !== emojiType) {
+                if (prevReaction) {
+                  await removeReaction(targetMessageId, prevReaction.reactionId);
+                  feedbackReactionByMessage.delete(targetMessageId);
+                }
+                const reactionId = await addReaction(targetMessageId, emojiType);
+                if (reactionId) {
+                  feedbackReactionByMessage.set(targetMessageId, {
+                    emojiType,
+                    reactionId,
+                  });
+                  if (feedbackReactionByMessage.size > FEEDBACK_REACTION_CACHE_MAX) {
+                    const oldest = feedbackReactionByMessage.keys().next().value;
+                    if (oldest) feedbackReactionByMessage.delete(oldest);
+                  }
+                }
+              }
 
               logger.info(
-                { cardMessageId: messageId, rootMessageId, targetMessageId, emojiType },
+                { cardMessageId: messageId, rootMessageId, targetMessageId, emojiType, replacedPrev: !!prevReaction },
                 'msgid-map: reaction target resolved',
               );
 
