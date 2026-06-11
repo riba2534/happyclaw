@@ -39,13 +39,11 @@ import { broadcastNewMessage } from './web.js';
 import { logger } from './logger.js';
 import { saveDownloadedFile, MAX_FILE_SIZE } from './im-downloader.js';
 import { detectImageMimeType } from './image-detector.js';
-import { splitTextChunks } from './im-utils.js';
+import { splitTextChunks, createDedupCache } from './im-utils.js';
 import { ProcessingLock, isStale } from './im-safety/index.js';
 
 // ─── Constants ──────────────────────────────────────────────────
 
-const MSG_DEDUP_MAX = 1000;
-const MSG_DEDUP_TTL = 30 * 60 * 1000; // 30min
 const DISCORD_MSG_LIMIT = 2000; // Discord message character limit
 // Same 5MB threshold as other channels — only inline base64 for small images
 const IMAGE_MAX_BASE64_SIZE = 5 * 1024 * 1024;
@@ -263,7 +261,8 @@ export function createDiscordConnection(
   let readyFired = false;
 
   // Message deduplication — LRU Map, 1000 entries, 30min TTL
-  const msgCache = new Map<string, number>();
+  // LRU deduplication cache（共享 helper）
+  const dedup = createDedupCache({ ttlMs: 30 * 60 * 1000, max: 1000 });
   const processingLock = new ProcessingLock();
 
   // Last message ID per chat (for reply context)
@@ -275,28 +274,7 @@ export function createDiscordConnection(
     { messageId: string; channelId: string }
   >();
 
-  function isDuplicate(msgId: string): boolean {
-    const now = Date.now();
-    // Map preserves insertion order; stop at first non-expired entry
-    for (const [id, ts] of msgCache.entries()) {
-      if (now - ts > MSG_DEDUP_TTL) {
-        msgCache.delete(id);
-      } else {
-        break;
-      }
-    }
-    if (msgCache.size >= MSG_DEDUP_MAX) {
-      const firstKey = msgCache.keys().next().value;
-      if (firstKey) msgCache.delete(firstKey);
-    }
-    return msgCache.has(msgId);
-  }
 
-  function markSeen(msgId: string): void {
-    // delete + set to refresh insertion order (move to end)
-    msgCache.delete(msgId);
-    msgCache.set(msgId, Date.now());
-  }
 
   // ─── Channel Resolution ──────────────────────────────────
 
@@ -397,7 +375,7 @@ export function createDiscordConnection(
       }
 
       // Dedup check
-      if (isDuplicate(msgId)) {
+      if (dedup.isDuplicate(msgId)) {
         logger.debug({ msgId }, 'Discord dropped: duplicate');
         return;
       }
@@ -405,7 +383,7 @@ export function createDiscordConnection(
         logger.debug({ msgId }, 'Discord message already in-flight, skipping');
         return;
       }
-      markSeen(msgId);
+      dedup.markSeen(msgId);
       try {
 
       // Skip stale messages from before connection (hot-reload scenario)
@@ -863,7 +841,7 @@ export function createDiscordConnection(
         discordClient = null;
       }
       readyFired = false;
-      msgCache.clear();
+      dedup.clear();
       lastMessageIds.clear();
       ackReactionByChat.clear();
       logger.info('Discord bot disconnected');

@@ -11,6 +11,7 @@ import type { AuthUser } from '../types.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { DATA_DIR } from '../config.js';
 import { getEffectiveExternalDir } from '../runtime-config.js';
+import { validateSafeHttpsUrl } from '../url-safety.js';
 import {
   parseFrontmatter,
   validateSkillId,
@@ -605,7 +606,13 @@ skillsRoutes.get('/:id', authMiddleware, (c) => {
 skillsRoutes.patch('/:id', authMiddleware, async (c) => {
   const id = c.req.param('id');
   const authUser = c.get('user') as AuthUser;
-  const { enabled } = await c.req.json<{ enabled: boolean }>();
+  // 防 invalid JSON 把 hono 默认错误处理器返回 500 + 暴露栈。Catch 后单独
+  // 校验 enabled 是 boolean。
+  const body = (await c.req.json().catch(() => ({}))) as { enabled?: unknown };
+  if (typeof body.enabled !== 'boolean') {
+    return c.json({ error: 'enabled must be a boolean' }, 400);
+  }
+  const enabled = body.enabled;
 
   if (!validateSkillId(id)) return c.json({ error: 'Invalid skill ID' }, 400);
 
@@ -731,11 +738,18 @@ async function installSkillForUser(
   userId: string,
   pkg: string,
 ): Promise<{ success: boolean; installed?: string[]; error?: string }> {
-  if (
-    !/^[\w\-]+\/[\w\-.]+(?:[@#][\w\-.\/]+)?$/.test(pkg) &&
-    !/^https?:\/\//.test(pkg)
-  ) {
+  const isNpmName = /^[\w\-]+\/[\w\-.]+(?:[@#][\w\-.\/]+)?$/.test(pkg);
+  const isUrl = /^https?:\/\//.test(pkg);
+  if (!isNpmName && !isUrl) {
     return { success: false, error: 'Invalid package name format' };
+  }
+  // SSRF 防护：URL 形式的 skill package 必须是 HTTPS + 非内网 hostname。
+  // 仅以 npm `<scope>/<name>` 形式不需要这层校验（npm 注册中心走 npx 自带管线）。
+  if (isUrl) {
+    const reason = validateSafeHttpsUrl(pkg);
+    if (reason) {
+      return { success: false, error: `Refused skill URL: ${reason}` };
+    }
   }
 
   // Create an isolated temp directory to act as HOME so `--global` installs

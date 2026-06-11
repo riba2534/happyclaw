@@ -346,6 +346,7 @@ function TracePanel({ streaming }: { streaming: import('../../stores/chat').Stre
   if (visibleTrace.length === 0 && Object.keys(streaming.taskStates).length === 0) return null;
 
   const groups = [
+    { key: 'permission', label: '🚫 权限拒绝', items: visibleTrace.filter(e => e.kind === 'permission') },
     { key: 'task', label: 'Task / Sub-agent', items: visibleTrace.filter(e => e.kind === 'task') },
     { key: 'tool', label: 'Tools', items: visibleTrace.filter(e => e.kind === 'tool' || e.kind === 'skill') },
     { key: 'hook', label: 'Hooks', items: visibleTrace.filter(e => e.kind === 'hook') },
@@ -372,16 +373,84 @@ function TracePanel({ streaming }: { streaming: import('../../stores/chat').Stre
               <div className="text-[11px] font-medium text-muted-foreground mb-1">{group.label}</div>
               <div className="space-y-1">
                 {group.items.slice(-20).map((item) => (
-                  <div key={item.id} className="text-[13px] text-foreground/75 break-words">
-                    <span className="font-medium">{item.title}</span>
-                    {item.summary && <span className="text-muted-foreground"> — {item.summary}</span>}
-                  </div>
+                  <TraceRow key={item.id} item={item} danger={group.key === 'permission'} />
                 ))}
               </div>
             </div>
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/** A single trace row. Rows carrying a `detail` (e.g. recalled memory, compaction
+ *  summary) become click-to-expand so the trace stays scannable but the full
+ *  context is one click away. Permission rows render in red. */
+function TraceRow({
+  item,
+  danger,
+}: {
+  item: import('../../stores/chat').StreamingTraceEvent;
+  danger?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const hasDetail = !!item.detail && item.detail !== item.summary;
+  const base = danger ? 'text-red-800/80 dark:text-red-200/80' : 'text-foreground/75';
+  return (
+    <div className={`text-[13px] ${base} break-words`}>
+      <div
+        className={`flex items-start gap-1${hasDetail ? ' cursor-pointer' : ''}`}
+        onClick={hasDetail ? () => setOpen((o) => !o) : undefined}
+      >
+        {hasDetail &&
+          (open ? (
+            <ChevronUp className="w-3 h-3 mt-0.5 shrink-0 text-muted-foreground" />
+          ) : (
+            <ChevronDown className="w-3 h-3 mt-0.5 shrink-0 text-muted-foreground" />
+          ))}
+        <span>
+          <span className="font-medium">{item.title}</span>
+          {item.summary && <span className="text-muted-foreground"> — {item.summary}</span>}
+        </span>
+      </div>
+      {hasDetail && open && (
+        <div className="mt-0.5 ml-4 text-[12px] text-muted-foreground whitespace-pre-wrap break-all border-l-2 border-border pl-2">
+          {item.detail}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Prominent red banner listing denied tool calls — a denied permission is a
+ *  real signal the user should see at a glance, not something buried in the
+ *  collapsed trace panel. */
+function PermissionAlert({
+  streaming,
+}: {
+  streaming: import('../../stores/chat').StreamingState;
+}) {
+  const denied = streaming.traceEvents.filter((e) => e.kind === 'permission');
+  if (denied.length === 0) return null;
+  return (
+    <div className="rounded-lg border border-red-300 dark:border-red-800/60 bg-red-50/70 dark:bg-red-950/30 p-2 mb-2">
+      <div className="text-xs font-medium text-red-700 dark:text-red-300 mb-1">
+        🚫 权限被拒绝 ({denied.length})
+      </div>
+      <div className="space-y-0.5 max-h-28 overflow-y-auto">
+        {denied.slice(-10).map((item) => (
+          <div
+            key={item.id}
+            className="text-[13px] text-red-800/80 dark:text-red-200/80 break-words"
+          >
+            <span className="font-medium">{item.title}</span>
+            {(item.detail || item.summary) && (
+              <span className="opacity-75"> — {item.detail || item.summary}</span>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -508,6 +577,9 @@ function StreamingContent({
             ))}
         </div>
       )}
+
+      {/* Permission denials — surfaced prominently in red, not buried in trace */}
+      <PermissionAlert streaming={streaming} />
 
       {/* Full trace */}
       <TracePanel streaming={streaming} />

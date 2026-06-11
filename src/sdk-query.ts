@@ -8,10 +8,6 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { buildClaudeEnvLines, getClaudeProviderConfig } from './runtime-config.js';
 import { logger } from './logger.js';
 
-// Mutex: process.env mutation is not re-entrant. Serialize concurrent calls
-// to prevent overlapping env writes from corrupting each other.
-let envLock: Promise<void> = Promise.resolve();
-
 /**
  * Send a prompt to Claude and return the plain-text response.
  * Uses the provider configured in the web settings (not a separate CLI install).
@@ -25,26 +21,18 @@ export async function sdkQuery(
   prompt: string,
   opts?: { model?: string; timeout?: number },
 ): Promise<string | null> {
-  // Chain on the lock so only one sdkQuery touches process.env at a time
-  let release: () => void;
-  const acquired = new Promise<void>((r) => (release = r));
-  const prevLock = envLock;
-  envLock = acquired;
-  await prevLock;
-
   const timeout = opts?.timeout ?? 60_000;
 
-  // Inject provider credentials into process.env for the SDK
+  // 构造隔离的 env 副本传给 SDK（options.env 是子进程 env 的权威来源）。
+  // 不再突变全局 process.env、也无需 mutex 串行化，因此多个 sdkQuery（/recall、
+  // 自动标题、bug 上报、task 解析等）可并发执行、凭据互不串扰。
   const config = getClaudeProviderConfig();
   const envLines = buildClaudeEnvLines(config);
-  const savedEnv: Record<string, string | undefined> = {};
+  const env: Record<string, string | undefined> = { ...process.env };
   for (const line of envLines) {
     const eq = line.indexOf('=');
     if (eq <= 0) continue;
-    const key = line.slice(0, eq);
-    const value = line.slice(eq + 1);
-    savedEnv[key] = process.env[key];
-    process.env[key] = value;
+    env[line.slice(0, eq)] = line.slice(eq + 1);
   }
 
   const abortController = new AbortController();
@@ -58,6 +46,7 @@ export async function sdkQuery(
       prompt,
       options: {
         ...(model && { model }),
+        env,
         maxTurns: 1,
         allowedTools: [],
         permissionMode: 'bypassPermissions' as const,
@@ -78,14 +67,5 @@ export async function sdkQuery(
     return null;
   } finally {
     clearTimeout(timer);
-    // Restore original env
-    for (const [key, original] of Object.entries(savedEnv)) {
-      if (original === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = original;
-      }
-    }
-    release!();
   }
 }

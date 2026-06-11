@@ -11,7 +11,7 @@
 
 export type StreamEventType =
   | 'text_delta' | 'thinking_delta'
-  | 'tool_use_start' | 'tool_use_end' | 'tool_progress'
+  | 'tool_use_start' | 'tool_use_end' | 'tool_progress' | 'tool_result'
   | 'hook_started' | 'hook_progress' | 'hook_response'
   | 'task_start' | 'task_progress' | 'task_updated' | 'task_notification'
   | 'permission_denied' | 'memory_recall' | 'compact_boundary'
@@ -98,6 +98,10 @@ export interface StreamEvent {
   isNested?: boolean;
   skillName?: string;
   toolInputSummary?: string;
+  /** Tool execution result text (truncated + sanitized), carried on
+   *  `tool_result` events so the card/Web can surface what a tool returned,
+   *  aligning the trace with what Claude Code shows. */
+  toolResult?: string;
   elapsedSeconds?: number;
   hookName?: string;
   hookEvent?: string;

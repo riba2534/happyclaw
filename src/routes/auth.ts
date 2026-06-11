@@ -132,17 +132,19 @@ authRoutes.get('/status', (c) => {
 // Public: initial admin setup (only when no users exist)
 authRoutes.post('/setup', async (c) => {
   const body = await c.req.json().catch(() => ({}));
-  const { username, password } = body as {
+  const { username: rawUsername, password } = body as {
     username?: string;
     password?: string;
   };
 
-  if (!username || !password) {
+  if (!rawUsername || !password) {
     return c.json({ error: 'Username and password are required' }, 400);
   }
 
-  const usernameError = validateUsername(username);
+  const usernameError = validateUsername(rawUsername);
   if (usernameError) return c.json({ error: usernameError }, 400);
+  // 归一化大小写（与 login / register 一致）。
+  const username = rawUsername.toLowerCase();
 
   const passwordError = validatePassword(password);
   if (passwordError) return c.json({ error: passwordError }, 400);
@@ -228,7 +230,9 @@ authRoutes.post('/login', async (c) => {
     return c.json({ error: 'Invalid credentials' }, 401);
   }
 
-  const { username, password } = validation.data;
+  // Username 归一化（与 register / setup / admin create 保持一致）。
+  const username = validation.data.username.toLowerCase();
+  const { password } = validation.data;
   const ip = getClientIp(c);
   const ua = c.req.header('user-agent') || null;
 
@@ -380,7 +384,11 @@ authRoutes.post('/register', async (c) => {
     );
   }
 
-  const { username, password, display_name, invite_code } = validation.data;
+  // Username 大小写归一化：避免 'admin' / 'Admin' / 'ADMIN' 是三个独立账号
+  // （审计 / 聊天 / 提及视觉混淆）。统一以小写存储，登录、查找、显示都按
+  // 小写比较。display_name 仍可保留用户的原始大小写偏好。
+  const username = validation.data.username.toLowerCase();
+  const { password, display_name, invite_code } = validation.data;
 
   // If invite code is required but not provided, reject
   if (regConfig.requireInviteCode && !invite_code) {
@@ -469,6 +477,10 @@ authRoutes.post('/register', async (c) => {
     user_agent: ua,
     details: { role: result.role, with_invite: withInvite },
   });
+  // 计入注册成功次数：registerLimit 仅记录失败时，攻击者可用同 IP 不停换合法
+  // username 无限创建账号（auto-create home group / IM channel 槽位 / 数据库
+  // 行）。把成功也计入同一个 bucket，让 maxLoginAttempts 同时约束失败 + 成功。
+  recordLoginAttempt(`register:${ip}`, ip);
 
   // Create home group for new user
   try {
@@ -568,13 +580,15 @@ authRoutes.put('/profile', authMiddleware, async (c) => {
   if (validation.data.username !== undefined) {
     const usernameError = validateUsername(validation.data.username);
     if (usernameError) return c.json({ error: usernameError }, 400);
-    if (validation.data.username !== fullUser.username) {
-      const existed = getUserByUsername(validation.data.username);
+    // 大小写归一化（与 login / register / setup 一致）。
+    const newUsername = validation.data.username.toLowerCase();
+    if (newUsername !== fullUser.username) {
+      const existed = getUserByUsername(newUsername);
       if (existed && existed.id !== fullUser.id) {
         return c.json({ error: 'Username already taken' }, 409);
       }
     }
-    updates.username = validation.data.username;
+    updates.username = newUsername;
   }
   if (validation.data.display_name !== undefined) {
     updates.display_name = validation.data.display_name;

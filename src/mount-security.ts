@@ -138,24 +138,40 @@ function getRealPath(p: string): string | null {
   }
 }
 
+// case-insensitive 比较仅在 APFS / NTFS 上必要：那里 `~/.SSH` 与 `~/.ssh`
+// 共享同一 inode，需要大小写不敏感判定才能堵住绕过。Linux ext4/xfs 上
+// `.SSH` 与 `.ssh` 是两个不同的目录，攻击场景不存在；保留 strict 比较。
+const CASE_INSENSITIVE_FS =
+  process.platform === 'darwin' || process.platform === 'win32';
+
 /**
- * Check if a path matches any blocked pattern
+ * Check if a path matches any blocked pattern.
+ *
+ * 平台敏感：在 case-insensitive FS（APFS / NTFS）上 lowercased 比较，
+ * 否则 `~/.SSH` 会绕过 `.ssh` 黑名单挂载到真实 SSH credentials。其它平台
+ * 保留 strict `===` 防止合法目录名被误伤。
  */
 export function matchesBlockedPattern(
   realPath: string,
   blockedPatterns: string[],
 ): string | null {
   const pathParts = realPath.split(path.sep);
-
-  for (const pattern of blockedPatterns) {
-    // Check if any path component exactly matches the pattern
-    for (const part of pathParts) {
-      if (part === pattern) {
-        return pattern;
+  if (CASE_INSENSITIVE_FS) {
+    const partsLower = pathParts.map((p) => p.toLowerCase());
+    const lowerPatterns = blockedPatterns.map((p) => p.toLowerCase());
+    for (let i = 0; i < lowerPatterns.length; i++) {
+      const pattern = lowerPatterns[i];
+      for (const part of partsLower) {
+        if (part === pattern) return blockedPatterns[i];
       }
     }
+    return null;
   }
-
+  for (const pattern of blockedPatterns) {
+    for (const part of pathParts) {
+      if (part === pattern) return pattern;
+    }
+  }
   return null;
 }
 

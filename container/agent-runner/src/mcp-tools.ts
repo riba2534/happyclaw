@@ -783,6 +783,13 @@ You can optionally specify execution_mode: "container" (default, isolated Docker
         name: z.string().describe('Display name for the group'),
         folder: z
           .string()
+          // Strict regex: prevent path traversal / absolute paths flowing into
+          // host's path.join(GROUPS_DIR, folder). The host re-validates with
+          // the same shape — this is the documentation copy.
+          .regex(
+            /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/,
+            'folder must be alphanumerics + ._- (no slashes, no leading dot, ≤128 chars)',
+          )
           .describe(
             'Folder name for group files (lowercase, hyphens, e.g., "family-chat")',
           ),

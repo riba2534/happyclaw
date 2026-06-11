@@ -27,15 +27,13 @@ import {
   downloadAndDecryptMedia,
   uploadMediaBuffer,
 } from './wechat-crypto.js';
-import { markdownToPlainText, splitTextChunks } from './im-utils.js';
+import { markdownToPlainText, splitTextChunks, createDedupCache } from './im-utils.js';
 
 // ─── Constants ──────────────────────────────────────────────────
 
 const DEFAULT_BASE_URL = 'https://ilinkai.weixin.qq.com';
 const DEFAULT_CDN_BASE_URL = 'https://novac2c.cdn.weixin.qq.com/c2c';
 
-const MSG_DEDUP_MAX = 1000;
-const MSG_DEDUP_TTL = 30 * 60 * 1000; // 30min
 const MSG_SPLIT_LIMIT = 2000; // WeChat has stricter text limits than other channels
 
 const LONGPOLL_EXTRA_TIMEOUT_MS = 5000;
@@ -81,7 +79,11 @@ export interface WeChatConnectOpts {
   onReady?: () => void;
   onNewChat: (jid: string, name: string) => void;
   ignoreMessagesBefore?: number;
-  onCommand?: (chatJid: string, command: string) => Promise<string | null>;
+  onCommand?: (
+    chatJid: string,
+    command: string,
+    senderImId?: string,
+  ) => Promise<string | null>;
   resolveGroupFolder?: (jid: string) => string | undefined;
   resolveEffectiveChatJid?: (
     chatJid: string,
@@ -232,34 +234,12 @@ export function createWeChatConnection(
   const knownJids = new Set<string>();
 
   // Message deduplication: key -> timestamp
-  const msgCache = new Map<string, number>();
+  // LRU deduplication cache（共享 helper）
+  const dedup = createDedupCache({ ttlMs: 30 * 60 * 1000, max: 1000 });
 
   // ─── Deduplication ────────────────────────────────────────
 
-  function isDuplicate(key: string): boolean {
-    const now = Date.now();
-    // Evict expired entries — Map preserves insertion order, so oldest entries
-    // come first. Stop at the first non-expired entry for O(expired) instead of O(n).
-    for (const [id, ts] of msgCache.entries()) {
-      if (now - ts > MSG_DEDUP_TTL) {
-        msgCache.delete(id);
-      } else {
-        break;
-      }
-    }
-    // Evict oldest if at capacity
-    if (msgCache.size >= MSG_DEDUP_MAX) {
-      const firstKey = msgCache.keys().next().value;
-      if (firstKey) msgCache.delete(firstKey);
-    }
-    return msgCache.has(key);
-  }
 
-  function markSeen(key: string): void {
-    // delete + set to refresh insertion order (move to end)
-    msgCache.delete(key);
-    msgCache.set(key, Date.now());
-  }
 
   // ─── HTTP Helpers ─────────────────────────────────────────
 
@@ -546,8 +526,8 @@ export function createWeChatConnection(
 
       // Dedup
       const key = dedupKey(msg);
-      if (isDuplicate(key)) return;
-      markSeen(key);
+      if (dedup.isDuplicate(key)) return;
+      dedup.markSeen(key);
 
       // Skip stale messages — if no timestamp available, skip as well (can't verify freshness)
       if (opts.ignoreMessagesBefore) {
@@ -582,7 +562,7 @@ export function createWeChatConnection(
           slashMatch[1] + (slashMatch[2] ? ' ' + slashMatch[2] : '')
         ).trim();
         try {
-          const reply = await opts.onCommand(jid, cmdBody);
+          const reply = await opts.onCommand(jid, cmdBody, fromUserId);
           if (reply) {
             const ct = contextTokenCache.get(fromUserId);
             if (ct) {
@@ -793,7 +773,7 @@ export function createWeChatConnection(
 
       stopping = false;
       connected = true;
-      msgCache.clear();
+      dedup.clear();
       contextTokenCache.clear();
       knownJids.clear();
 
@@ -820,7 +800,7 @@ export function createWeChatConnection(
       cancelSleep?.();
       cancelSleep = null;
 
-      msgCache.clear();
+      dedup.clear();
       contextTokenCache.clear();
       knownJids.clear();
       logger.info('WeChat iLink bot disconnected');

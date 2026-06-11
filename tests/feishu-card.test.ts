@@ -295,7 +295,7 @@ describe('formatters', () => {
 // ─── buildAgentReplyCard shape ─────────────────────────────────
 
 describe('buildAgentReplyCard', () => {
-  test('minimal card: v2 schema, no default header/title, body visible', () => {
+  test('minimal card: v2 schema, done status header (已完成), body visible', () => {
     const card = buildAgentReplyCard({ status: 'done', text: 'Hello world' });
     expect(card.schema).toBe('2.0');
     const config = card.config as Record<string, unknown>;
@@ -303,8 +303,13 @@ describe('buildAgentReplyCard', () => {
     expect(config.update_multi).toBe(true);
     expect(config.enable_forward).toBe(true);
     expect(config.wide_screen_mode).toBeUndefined();
-    expect(config.summary).toBeUndefined();
-    expect(card.header).toBeUndefined();
+    // done now renders a violet status header titled with the status word
+    // ('已完成'), never the body's first line (issue #488 stays fixed).
+    expect(config.summary).toEqual({ content: '已完成' });
+    const header = card.header as Record<string, unknown> | undefined;
+    expect(header).toBeDefined();
+    expect(header!.template).toBe('violet');
+    expect((header!.title as Record<string, unknown>).content).toBe('已完成');
 
     const body = card.body as { elements: Array<Record<string, unknown>> } &
       Record<string, unknown>;
@@ -397,13 +402,15 @@ describe('buildAgentReplyCard', () => {
     expect(title).toBe('部分成功');
   });
 
-  test('short multi-line reply without explicit title → no header and keeps full text in body', () => {
+  test('short multi-line reply without explicit title → 已完成 header, keeps full text in body', () => {
     const text = 'Summary line\nDetail body text';
     const card = buildAgentReplyCard({
       status: 'done',
       text,
     });
-    expect(card.header).toBeUndefined();
+    // header title is the status word, NOT the body's first line ('Summary line').
+    const header = card.header as Record<string, unknown>;
+    expect((header.title as Record<string, unknown>).content).toBe('已完成');
     const body = card.body as { elements: Array<Record<string, unknown>> };
     const main = body.elements.find(
       (e) => e.element_id === CARD_ELEMENT_IDS.MAIN_CONTENT,
@@ -413,9 +420,10 @@ describe('buildAgentReplyCard', () => {
     expect(countTag(card, 'collapsible_panel')).toBe(0);
   });
 
-  test('single-line reply → no header and keeps text in body', () => {
+  test('single-line reply → 已完成 header, keeps text in body', () => {
     const card = buildAgentReplyCard({ status: 'done', text: 'short reply' });
-    expect(card.header).toBeUndefined();
+    const header = card.header as Record<string, unknown>;
+    expect((header.title as Record<string, unknown>).content).toBe('已完成');
     const body = card.body as { elements: Array<Record<string, unknown>> };
     const main = body.elements.find(
       (e) => e.element_id === CARD_ELEMENT_IDS.MAIN_CONTENT,
@@ -424,11 +432,13 @@ describe('buildAgentReplyCard', () => {
     expect(main?.content).toBe('short reply');
   });
 
-  test('long single-line reply → no header and keeps full text in body', () => {
+  test('long single-line reply → 已完成 header, keeps full text in body', () => {
     const text =
       'HappyClaw: 脚本 Updated slot: Token usage 明细很长，需要在卡片正文完整展示，不能只剩截断标题';
     const card = buildAgentReplyCard({ status: 'done', text });
-    expect(card.header).toBeUndefined();
+    // a long reply must NOT be lifted/truncated into the header title.
+    const header = card.header as Record<string, unknown>;
+    expect((header.title as Record<string, unknown>).content).toBe('已完成');
     const body = card.body as { elements: Array<Record<string, unknown>> };
     const main = body.elements.find(
       (e) => e.element_id === CARD_ELEMENT_IDS.MAIN_CONTENT,
@@ -437,13 +447,15 @@ describe('buildAgentReplyCard', () => {
     expect(main?.content).toBe(text);
   });
 
-  test('markdown heading without explicit title → no header and stays in body', () => {
+  test('markdown heading without explicit title → 已完成 header, stays in body', () => {
     const text = '# Token usage\n明细正文';
     const card = buildAgentReplyCard({
       status: 'done',
       text,
     });
-    expect(card.header).toBeUndefined();
+    // the '# Token usage' heading must stay in the body, not become the title.
+    const header = card.header as Record<string, unknown>;
+    expect((header.title as Record<string, unknown>).content).toBe('已完成');
     const body = card.body as { elements: Array<Record<string, unknown>> };
     const main = body.elements.find(
       (e) => e.element_id === CARD_ELEMENT_IDS.MAIN_CONTENT,
@@ -452,12 +464,14 @@ describe('buildAgentReplyCard', () => {
     expect(main?.content).toContain('明细正文');
   });
 
-  test('list-like first line → no header and not promoted to title', () => {
+  test('list-like first line → 已完成 header, not promoted to title', () => {
     const card = buildAgentReplyCard({
       status: 'done',
       text: '- item one\n- item two',
     });
-    expect(card.header).toBeUndefined();
+    // the list first line must NOT be promoted into the header title.
+    const header = card.header as Record<string, unknown>;
+    expect((header.title as Record<string, unknown>).content).toBe('已完成');
     const body = card.body as { elements: Array<Record<string, unknown>> };
     const main = body.elements.find(
       (e) => e.element_id === CARD_ELEMENT_IDS.MAIN_CONTENT,

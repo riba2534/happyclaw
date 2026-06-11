@@ -8,10 +8,19 @@ import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 
 interface WorkspaceSkillsPanelProps {
   groupJid: string;
+  /** True when current user is the workspace owner. Write actions
+   *  (install / toggle / delete) are only rendered when this is true.
+   *  Defaults to false so non-owners and the initial loading state both
+   *  see a read-only view (avoids button flicker on first render). */
+  canModify?: boolean;
   onClose?: () => void;
 }
 
-export function WorkspaceSkillsPanel({ groupJid, onClose: _onClose }: WorkspaceSkillsPanelProps) {
+export function WorkspaceSkillsPanel({
+  groupJid,
+  canModify = false,
+  onClose: _onClose,
+}: WorkspaceSkillsPanelProps) {
   const {
     skills,
     skillsLoading,
@@ -67,19 +76,21 @@ export function WorkspaceSkillsPanel({ groupJid, onClose: _onClose }: WorkspaceS
           >
             <RefreshCw className={`w-3.5 h-3.5 ${skillsLoading ? 'animate-spin' : ''}`} />
           </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setShowInstall(!showInstall)}
-            className="h-7 w-7 p-0"
-          >
-            <Plus className="w-3.5 h-3.5" />
-          </Button>
+          {canModify && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowInstall(!showInstall)}
+              className="h-7 w-7 p-0"
+            >
+              <Plus className="w-3.5 h-3.5" />
+            </Button>
+          )}
         </div>
       </div>
 
       {/* Install form */}
-      {showInstall && (
+      {canModify && showInstall && (
         <div className="px-4 py-2 border-b border-border flex-shrink-0">
           <div className="flex gap-2">
             <Input
@@ -125,12 +136,18 @@ export function WorkspaceSkillsPanel({ groupJid, onClose: _onClose }: WorkspaceS
           <EmptyState
             icon={Puzzle}
             title="无工作区 Skills"
-            description="当前工作区 .claude/skills/ 下没有自定义技能"
+            description={
+              canModify
+                ? '当前工作区 .claude/skills/ 下没有自定义技能'
+                : '当前工作区 .claude/skills/ 下没有自定义技能（仅 owner 可安装）'
+            }
             action={
-              <Button variant="outline" size="sm" onClick={() => setShowInstall(true)}>
-                <Plus className="w-3.5 h-3.5 mr-1" />
-                安装技能
-              </Button>
+              canModify ? (
+                <Button variant="outline" size="sm" onClick={() => setShowInstall(true)}>
+                  <Plus className="w-3.5 h-3.5 mr-1" />
+                  安装技能
+                </Button>
+              ) : undefined
             }
           />
         ) : (
@@ -139,6 +156,7 @@ export function WorkspaceSkillsPanel({ groupJid, onClose: _onClose }: WorkspaceS
               <SkillRow
                 key={skill.id}
                 skill={skill}
+                canModify={canModify}
                 onToggle={(enabled) => toggleWorkspaceSkill(groupJid, skill.id, enabled)}
                 onDelete={() => setDeleteTarget(skill.id)}
               />
@@ -162,10 +180,12 @@ export function WorkspaceSkillsPanel({ groupJid, onClose: _onClose }: WorkspaceS
 
 function SkillRow({
   skill,
+  canModify,
   onToggle,
   onDelete,
 }: {
   skill: WorkspaceSkill;
+  canModify: boolean;
   onToggle: (enabled: boolean) => void;
   onDelete: () => void;
 }) {
@@ -189,24 +209,32 @@ function SkillRow({
         )}
       </div>
       <div className="flex items-center gap-1 flex-shrink-0">
-        <button
-          onClick={() => onToggle(!skill.enabled)}
-          className="p-1 rounded hover:bg-accent transition-colors cursor-pointer"
-          title={skill.enabled ? '禁用' : '启用'}
-        >
-          {skill.enabled ? (
-            <ToggleRight className="w-4 h-4 text-emerald-500" />
-          ) : (
-            <ToggleLeft className="w-4 h-4 text-muted-foreground" />
-          )}
-        </button>
-        <button
-          onClick={onDelete}
-          className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-destructive transition-colors cursor-pointer"
-          title="删除"
-        >
-          <Trash2 className="w-3.5 h-3.5" />
-        </button>
+        {canModify ? (
+          <>
+            <button
+              onClick={() => onToggle(!skill.enabled)}
+              className="p-1 rounded hover:bg-accent transition-colors cursor-pointer"
+              title={skill.enabled ? '禁用' : '启用'}
+            >
+              {skill.enabled ? (
+                <ToggleRight className="w-4 h-4 text-emerald-500" />
+              ) : (
+                <ToggleLeft className="w-4 h-4 text-muted-foreground" />
+              )}
+            </button>
+            <button
+              onClick={onDelete}
+              className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-destructive transition-colors cursor-pointer"
+              title="删除"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </>
+        ) : (
+          <span className="text-[10px] text-muted-foreground px-1.5">
+            {skill.enabled ? '启用' : '已禁用'}
+          </span>
+        )}
       </div>
     </div>
   );

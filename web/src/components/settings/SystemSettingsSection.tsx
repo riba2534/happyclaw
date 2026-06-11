@@ -131,13 +131,14 @@ const fields: FieldConfig[] = [
     label: '对话自动压缩阈值',
     description:
       '达到该 token 数时主动触发 SDK 对话压缩。0 = 保留 SDK 默认（约 1M）。'
-      + '经验值：Opus 1M 建议 300-500，Sonnet/Haiku 200K 建议 80-120。'
+      + 'SDK 实际只接受 100K–1M，超出会被静默忽略并回退默认。'
+      + '经验值：Opus 1M 建议 300-500，Sonnet/Haiku 建议 100-200。'
       + '压缩前会通过 PreCompact hook 归档对话',
     unit: 'K tokens',
     toDisplay: (v) => Math.round(v / 1000),
     toStored: (v) => v * 1000,
     min: 0,
-    max: 2000,
+    max: 1000,
     step: 10,
   },
   {
@@ -167,6 +168,7 @@ export function SystemSettingsSection() {
   const [externalClaudeDir, setExternalClaudeDir] = useState('');
   const [disableMemoryLayerForAdminHost, setDisableMemoryLayerForAdminHost] = useState(false);
   const [pluginAutoScan, setPluginAutoScan] = useState<boolean>(true);
+  const [subagentModel, setSubagentModel] = useState('inherit');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -194,6 +196,7 @@ export function SystemSettingsSection() {
         setExternalClaudeDir(data.externalClaudeDir ?? '');
         setDisableMemoryLayerForAdminHost(data.disableMemoryLayerForAdminHost ?? false);
         setPluginAutoScan(data.pluginAutoScan ?? true);
+        setSubagentModel(data.subagentModel ?? 'inherit');
       } catch (err) {
         toast.error(getErrorMessage(err, '加载系统参数失败'));
       } finally {
@@ -241,6 +244,7 @@ export function SystemSettingsSection() {
         externalClaudeDir,
         disableMemoryLayerForAdminHost,
         pluginAutoScan,
+        subagentModel,
       };
       for (const f of fields) {
         const val = displayValues[f.key];
@@ -262,6 +266,7 @@ export function SystemSettingsSection() {
       setExternalClaudeDir(data.externalClaudeDir ?? '');
       setDisableMemoryLayerForAdminHost(data.disableMemoryLayerForAdminHost ?? false);
       setPluginAutoScan(data.pluginAutoScan ?? true);
+      setSubagentModel(data.subagentModel ?? 'inherit');
       // 刷新计费状态，更新导航栏可见性
       loadBillingStatus();
       toast.success('系统参数已保存，新参数将对后续启动的容器/进程生效');
@@ -321,6 +326,24 @@ export function SystemSettingsSection() {
             </p>
           </div>
         ))}
+
+        {/* SubAgent 模型（字符串型，独立于 number 型 fields） */}
+        <div>
+          <Label className="mb-1">SubAgent 模型</Label>
+          <select
+            value={subagentModel}
+            onChange={(e) => setSubagentModel(e.target.value)}
+            className="h-9 px-3 text-sm border border-border rounded-md bg-transparent max-w-64"
+          >
+            <option value="inherit">inherit（继承主模型，默认）</option>
+            <option value="sonnet">sonnet</option>
+            <option value="opus">opus</option>
+            <option value="haiku">haiku</option>
+          </select>
+          <p className="text-xs text-muted-foreground mt-1">
+            预定义 SubAgent（代码审查 / 网页调研）使用的模型。默认 inherit（继承主会话模型，与原行为一致）；想给子任务单独指定更便宜/更强的模型时再改。第三方 provider 用别名需配 ANTHROPIC_DEFAULT_* 映射。仅在主 Agent 委派任务时生效。
+          </p>
+        </div>
       </div>
 
       {/* 计费设置 */}

@@ -141,7 +141,7 @@ export function ChatPage() {
                     jid={mainGroup.jid} name={mainGroup.name} folder={mainGroup.folder}
                     lastMessage={mainGroup.lastMessage}
                     isActive={currentGroup === mainGroup.jid} isHome
-                    isRunning={runnerStates[mainGroup.jid] === 'running'} editable
+                    isRunning={runnerStates[mainGroup.jid] === 'running'} canModify={mainGroup.can_modify}
                     onSelect={(jid, folder) => { selectGroup(jid); navigate(`/chat/${folder}`); }}
                     onClearHistory={openClear}
                   />
@@ -159,7 +159,7 @@ export function ChatPage() {
                       lastMessage={g.lastMessage}
                       isActive={currentGroup === g.jid} isHome={false} isPinned
                       isRunning={runnerStates[g.jid] === 'running'}
-                      editable={g.editable}
+                      canModify={g.can_modify}
                       onSelect={(jid, folder) => { selectGroup(jid); navigate(`/chat/${folder}`); }}
                       onClearHistory={openClear}
                     />
@@ -183,7 +183,7 @@ export function ChatPage() {
                           lastMessage={g.lastMessage}
                           isActive={currentGroup === g.jid} isHome={false}
                           isRunning={runnerStates[g.jid] === 'running'}
-                          editable={g.editable}
+                          canModify={g.can_modify}
                           onSelect={(jid, folder) => { selectGroup(jid); navigate(`/chat/${folder}`); }}
                           onClearHistory={openClear}
                         />
@@ -210,7 +210,7 @@ export function ChatPage() {
                           isShared={g.is_shared} memberRole={g.member_role} memberCount={g.member_count}
                           isActive={currentGroup === g.jid} isHome={false}
                           isRunning={runnerStates[g.jid] === 'running'}
-                          editable={g.editable}
+                          canModify={g.can_modify}
                           onSelect={(jid, folder) => { selectGroup(jid); navigate(`/chat/${folder}`); }}
                           onClearHistory={openClear}
                         />

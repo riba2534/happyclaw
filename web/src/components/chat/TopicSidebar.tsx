@@ -11,6 +11,10 @@ interface TopicSidebarProps {
   onFilterChange: (value: string) => void;
   /** Total unfiltered count — used to distinguish "no topics" from "no matches" */
   emptyCount: number;
+  /** Owner-only ACL (backend `can_modify`). Delete is owner-only server-side;
+   *  hide the affordance for non-owners so it doesn't silently no-op. Defaults
+   *  to false to match the read-only loading state. */
+  canModify?: boolean;
 }
 
 export function TopicSidebar({
@@ -21,6 +25,7 @@ export function TopicSidebar({
   topicFilter,
   onFilterChange,
   emptyCount,
+  canModify = false,
 }: TopicSidebarProps) {
   return (
     <>
@@ -73,13 +78,15 @@ export function TopicSidebar({
                   )}
                   <span className="truncate">{agent.name}</span>
                 </button>
-                <button
-                  onClick={(e) => { e.stopPropagation(); onDeleteAgent(agent.id); }}
-                  className="mr-1 shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 cursor-pointer"
-                  aria-label="删除话题会话"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
+                {canModify && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onDeleteAgent(agent.id); }}
+                    className="mr-1 shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 cursor-pointer"
+                    aria-label="删除话题会话"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
             );
           })

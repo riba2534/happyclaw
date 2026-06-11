@@ -279,7 +279,10 @@ billingRoutes.delete(
     const deleted = deleteBillingPlan(id);
     if (!deleted) {
       return c.json(
-        { error: 'Cannot delete plan with active subscribers' },
+        {
+          error:
+            'Cannot delete plan with referenced subscriptions (including cancelled/expired). Migrate or delete those subscription rows first.',
+        },
         409,
       );
     }

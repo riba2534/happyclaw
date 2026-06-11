@@ -16,6 +16,7 @@ import {
   getMonthlyUsage,
   incrementMonthlyUsage,
   incrementDailyUsage,
+  incrementUsageBoth,
   getDailyUsage,
   getWeeklyUsageSummary,
   getUserGroupCount,
@@ -631,8 +632,9 @@ export function updateUsage(
   const month = now.toISOString().slice(0, 7);
   const date = now.toISOString().slice(0, 10);
 
-  incrementMonthlyUsage(userId, month, inputTokens, outputTokens, effectiveCost);
-  incrementDailyUsage(userId, date, inputTokens, outputTokens, effectiveCost);
+  // 走 atomic helper 让 monthly + daily 在同一 SQLite 事务里写入，
+  // 避免进程在两次 UPSERT 之间崩溃留下永久 drift（quota 计算两边依赖一致性）。
+  incrementUsageBoth(userId, month, date, inputTokens, outputTokens, effectiveCost);
 
   // Invalidate quota cache
   invalidateUserBillingCache(userId);

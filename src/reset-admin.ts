@@ -10,7 +10,10 @@ import {
 async function main(): Promise<void> {
   initDatabase();
 
-  const username = (process.argv[2] || 'admin').trim();
+  // 与 routes/auth.ts / routes/admin.ts 一致：username 小写存储，避免
+  // mixed-case 创建出登录路径永远查不到的孤儿行（login 走 toLowerCase 后
+  // 命中不到原 mixed-case 行）。
+  const username = (process.argv[2] || 'admin').trim().toLowerCase();
   const nextPassword = process.argv[3];
   if (!nextPassword || nextPassword.trim().length < 8) {
     console.error('Usage: npm run reset:admin -- <username> <new_password>');

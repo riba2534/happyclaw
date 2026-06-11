@@ -517,9 +517,12 @@ pluginsRoutes.get('/catalog/marketplaces/:mp', authMiddleware, async (c) => {
 });
 
 // POST /catalog/scan — trigger an immediate host scan + import. Admin-only:
-// scanning hits arbitrary host paths under `getEffectiveExternalDir()/plugins/
-// marketplaces/*` and copies them into the shared catalog. Member roles must
-// not influence what plugins become available system-wide.
+// scanning copies into the shared catalog from `getEffectiveExternalDir()/
+// plugins/marketplaces/*` AND from any `installLocation` registered in
+// `known_marketplaces.json` (covers directory-source marketplaces living
+// outside marketplaces/). Those are paths the host admin has themselves
+// registered in Claude Code, so they're within the existing trust boundary —
+// but member roles still must not influence what becomes available system-wide.
 pluginsRoutes.post('/catalog/scan', authMiddleware, async (c) => {
   const authUser = c.get('user') as AuthUser;
   if (authUser.role !== 'admin') {

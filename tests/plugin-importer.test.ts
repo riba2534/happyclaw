@@ -24,19 +24,16 @@ const catalog = await import('../src/plugin-catalog.js');
 const { scanHostMarketplaces, hashDirectoryContents } = importer;
 const { readCatalogIndex, getCatalogSnapshotDir } = catalog;
 
-function seedHostPlugin(opts: {
+/** Seed a marketplace under an arbitrary container `baseDir`. */
+function seedMarketplaceAt(opts: {
+  baseDir: string;
   marketplace: string;
   plugin: string;
   pluginManifest: Record<string, unknown>;
   marketplaceManifest?: Record<string, unknown>;
   files?: Record<string, string>;
 }) {
-  const mpDir = path.join(
-    tmpHostDir,
-    'plugins',
-    'marketplaces',
-    opts.marketplace,
-  );
+  const mpDir = path.join(opts.baseDir, opts.marketplace);
   const pluginDir = path.join(mpDir, 'plugins', opts.plugin);
   fs.mkdirSync(path.join(pluginDir, '.claude-plugin'), { recursive: true });
   fs.writeFileSync(
@@ -57,7 +54,40 @@ function seedHostPlugin(opts: {
       fs.writeFileSync(full, content);
     }
   }
+  return { mpDir, pluginDir };
+}
+
+/** Seed a marketplace under the conventional `<host>/plugins/marketplaces/`. */
+function seedHostPlugin(opts: {
+  marketplace: string;
+  plugin: string;
+  pluginManifest: Record<string, unknown>;
+  marketplaceManifest?: Record<string, unknown>;
+  files?: Record<string, string>;
+}) {
+  const { pluginDir } = seedMarketplaceAt({
+    ...opts,
+    baseDir: path.join(tmpHostDir, 'plugins', 'marketplaces'),
+  });
   return pluginDir;
+}
+
+/** Ensure an empty `<host>/plugins/marketplaces/` exists (no clones). */
+function seedEmptyMarketplacesRoot(): void {
+  fs.mkdirSync(path.join(tmpHostDir, 'plugins', 'marketplaces'), {
+    recursive: true,
+  });
+}
+
+/** Write `<host>/plugins/known_marketplaces.json` (Claude Code's registry). */
+function seedKnownMarketplaces(entries: Record<string, unknown>): void {
+  seedKnownMarketplacesRaw(JSON.stringify(entries));
+}
+
+function seedKnownMarketplacesRaw(raw: string): void {
+  const file = path.join(tmpHostDir, 'plugins', 'known_marketplaces.json');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, raw);
 }
 
 beforeEach(() => {
@@ -474,9 +504,243 @@ describe('scanHostMarketplaces', () => {
   });
 
   test('missing host root produces a warning, not a throw', async () => {
-    // tmpHostDir exists but has no plugins/marketplaces subdir
+    // tmpHostDir exists but has no plugins/marketplaces subdir AND no
+    // known_marketplaces.json — nothing to scan, but must warn not throw.
     const r = await scanHostMarketplaces();
     expect(r.marketplacesScanned).toBe(0);
     expect(r.warnings.length).toBeGreaterThan(0);
+  });
+
+  test('discovers a directory-source marketplace via known_marketplaces.json', async () => {
+    // wx-cli style: the marketplace lives OUTSIDE plugins/marketplaces/ and is
+    // registered only by its installLocation in known_marketplaces.json. A
+    // readdir of marketplaces/ alone (old behaviour) could never find it.
+    seedEmptyMarketplacesRoot();
+    const { mpDir } = seedMarketplaceAt({
+      baseDir: path.join(tmpHostDir, 'external'),
+      marketplace: 'wx-cli',
+      plugin: 'wx-cli',
+      pluginManifest: { name: 'wx-cli', version: '0.2.0' },
+      files: { 'commands/send.md': 'send body' },
+    });
+    seedKnownMarketplaces({
+      'wx-cli': {
+        source: { source: 'directory', path: mpDir },
+        installLocation: mpDir,
+      },
+    });
+
+    const report = await scanHostMarketplaces();
+    expect(report.marketplacesScanned).toBe(1);
+    expect(report.pluginsScanned).toBe(1);
+    expect(report.snapshotsCreated).toBe(1);
+
+    const idx = readCatalogIndex();
+    expect(Object.keys(idx.plugins)).toEqual(['wx-cli@wx-cli']);
+    expect(idx.marketplaces['wx-cli'].sourcePath).toBe(mpDir);
+  });
+
+  test('unions marketplaces/ clones with known_marketplaces.json directory sources', async () => {
+    // (a) a github-style clone physically under marketplaces/
+    seedHostPlugin({
+      marketplace: 'official',
+      plugin: 'p-official',
+      pluginManifest: { name: 'p-official', version: '1.0.0' },
+      files: { 'commands/a.md': 'a' },
+    });
+    // (b) a directory-source marketplace registered elsewhere
+    const { mpDir } = seedMarketplaceAt({
+      baseDir: path.join(tmpHostDir, 'external'),
+      marketplace: 'local-dir',
+      plugin: 'p-local',
+      pluginManifest: { name: 'p-local', version: '1.0.0' },
+      files: { 'commands/b.md': 'b' },
+    });
+    seedKnownMarketplaces({ 'local-dir': { installLocation: mpDir } });
+
+    const report = await scanHostMarketplaces();
+    expect(report.marketplacesScanned).toBe(2);
+    expect(report.pluginsScanned).toBe(2);
+
+    const idx = readCatalogIndex();
+    expect(Object.keys(idx.plugins).sort()).toEqual(
+      ['p-local@local-dir', 'p-official@official'].sort(),
+    );
+  });
+
+  test('dedupes a marketplace present in both marketplaces/ and known_marketplaces.json', async () => {
+    // github sources appear in BOTH: a physical clone under marketplaces/ AND
+    // a known_marketplaces.json entry whose installLocation points at that same
+    // dir. Must scan/import once — never double-count or double-import.
+    seedHostPlugin({
+      marketplace: 'official',
+      plugin: 'codex',
+      pluginManifest: { name: 'codex', version: '1.0.0' },
+      files: { 'commands/a.md': 'a' },
+    });
+    const physicalDir = path.join(
+      tmpHostDir,
+      'plugins',
+      'marketplaces',
+      'official',
+    );
+    seedKnownMarketplaces({
+      official: {
+        source: { source: 'github', repo: 'x/official' },
+        installLocation: physicalDir,
+      },
+    });
+
+    const report = await scanHostMarketplaces();
+    expect(report.marketplacesScanned).toBe(1);
+    expect(report.pluginsScanned).toBe(1);
+    expect(report.snapshotsCreated).toBe(1);
+
+    const idx = readCatalogIndex();
+    expect(Object.keys(idx.plugins)).toEqual(['codex@official']);
+    // Single marketplace row too — not just a single plugin key.
+    expect(Object.keys(idx.marketplaces)).toEqual(['official']);
+  });
+
+  test('falls back to marketplaces/ only when known_marketplaces.json is absent', async () => {
+    seedHostPlugin({
+      marketplace: 'mp1',
+      plugin: 'p1',
+      pluginManifest: { name: 'p1', version: '1.0.0' },
+      files: { 'commands/run.md': 'body' },
+    });
+    // No seedKnownMarketplaces() → registry file absent. Must not warn or crash.
+    const report = await scanHostMarketplaces();
+    expect(report.marketplacesScanned).toBe(1);
+    expect(report.pluginsScanned).toBe(1);
+    expect(
+      report.warnings.some((w) => w.includes('known_marketplaces')),
+    ).toBe(false);
+  });
+
+  test('malformed known_marketplaces.json warns but does not block marketplaces/ scan', async () => {
+    seedHostPlugin({
+      marketplace: 'mp1',
+      plugin: 'p1',
+      pluginManifest: { name: 'p1', version: '1.0.0' },
+      files: { 'commands/run.md': 'body' },
+    });
+    seedKnownMarketplacesRaw('{ not valid json');
+
+    const report = await scanHostMarketplaces();
+    // marketplaces/ clone still imported despite the bad registry file.
+    expect(report.pluginsScanned).toBe(1);
+    expect(
+      report.warnings.some((w) => w.includes('known_marketplaces.json')),
+    ).toBe(true);
+  });
+
+  test('resolves a relative installLocation against the plugins dir', async () => {
+    // Defensive: CC normally writes absolute paths, but guard the relative
+    // case (CC issue #23978). 'rel-mp' resolves to <host>/plugins/rel-mp.
+    seedEmptyMarketplacesRoot();
+    const { mpDir } = seedMarketplaceAt({
+      baseDir: path.join(tmpHostDir, 'plugins'),
+      marketplace: 'rel-mp',
+      plugin: 'p-rel',
+      pluginManifest: { name: 'p-rel', version: '1.0.0' },
+      files: { 'commands/a.md': 'a' },
+    });
+    seedKnownMarketplaces({ 'rel-mp': { installLocation: 'rel-mp' } });
+
+    const report = await scanHostMarketplaces();
+    expect(report.pluginsScanned).toBe(1);
+    const idx = readCatalogIndex();
+    expect(Object.keys(idx.plugins)).toEqual(['p-rel@rel-mp']);
+    expect(idx.marketplaces['rel-mp'].sourcePath).toBe(mpDir);
+  });
+
+  test('skips registry entries with missing/empty/non-string installLocation or non-object value', async () => {
+    // Exercises every per-entry guard in readKnownMarketplaces: a missing
+    // installLocation, empty string, non-string, null entry and primitive
+    // entry must all be skipped (no throw) while valid entries still import.
+    // The empty-string case is load-bearing: without the `length === 0` guard,
+    // '' would resolve to the plugins base dir itself and pollute the catalog.
+    seedHostPlugin({
+      marketplace: 'clone',
+      plugin: 'p-clone',
+      pluginManifest: { name: 'p-clone', version: '1.0.0' },
+      files: { 'commands/a.md': 'a' },
+    });
+    const { mpDir } = seedMarketplaceAt({
+      baseDir: path.join(tmpHostDir, 'external'),
+      marketplace: 'good',
+      plugin: 'p-good',
+      pluginManifest: { name: 'p-good', version: '1.0.0' },
+      files: { 'commands/b.md': 'b' },
+    });
+    seedKnownMarketplaces({
+      good: { installLocation: mpDir },
+      noLoc: { source: { source: 'github', repo: 'x/y' } },
+      emptyLoc: { installLocation: '' },
+      numLoc: { installLocation: 123 },
+      nullEntry: null,
+      strEntry: 'oops',
+    });
+
+    const report = await scanHostMarketplaces();
+    // Only the clone + 'good' import; the five malformed entries are skipped.
+    expect(report.marketplacesScanned).toBe(2);
+    expect(report.pluginsScanned).toBe(2);
+    const idx = readCatalogIndex();
+    expect(Object.keys(idx.marketplaces).sort()).toEqual(['clone', 'good']);
+  });
+
+  test('skips a stale installLocation (deleted dir or a regular file) without throwing', async () => {
+    // The directory-source feature's most likely real-world failure mode: a
+    // registry entry whose installLocation was removed, or now points at a
+    // file. readKnownMarketplaces does not stat — runScan's statSync (throw →
+    // continue) and !isDirectory() guards must absorb both, no bogus count.
+    seedHostPlugin({
+      marketplace: 'clone',
+      plugin: 'p-clone',
+      pluginManifest: { name: 'p-clone', version: '1.0.0' },
+      files: { 'commands/a.md': 'a' },
+    });
+    const ghostDir = path.join(tmpHostDir, 'external', 'ghost'); // never created
+    const filePath = path.join(tmpHostDir, 'external', 'not-a-dir');
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, 'i am a file');
+    seedKnownMarketplaces({
+      ghost: { installLocation: ghostDir },
+      fileMp: { installLocation: filePath },
+    });
+
+    const report = await scanHostMarketplaces();
+    // Both stale entries skipped; only the marketplaces/ clone imports.
+    expect(report.marketplacesScanned).toBe(1);
+    expect(report.pluginsScanned).toBe(1);
+    const idx = readCatalogIndex();
+    expect(Object.keys(idx.marketplaces)).toEqual(['clone']);
+  });
+
+  test('rejects an array-shaped known_marketplaces.json without polluting the catalog', async () => {
+    // `typeof [] === 'object'`, so without the Array.isArray guard an array
+    // registry would be iterated as marketplaces named "0", "1", …
+    seedHostPlugin({
+      marketplace: 'clone',
+      plugin: 'p-clone',
+      pluginManifest: { name: 'p-clone', version: '1.0.0' },
+      files: { 'commands/a.md': 'a' },
+    });
+    const { mpDir } = seedMarketplaceAt({
+      baseDir: path.join(tmpHostDir, 'external'),
+      marketplace: 'arr',
+      plugin: 'p-arr',
+      pluginManifest: { name: 'p-arr', version: '1.0.0' },
+    });
+    seedKnownMarketplacesRaw(JSON.stringify([{ installLocation: mpDir }]));
+
+    const report = await scanHostMarketplaces();
+    // Array registry ignored; only the marketplaces/ clone imports.
+    expect(report.pluginsScanned).toBe(1);
+    const idx = readCatalogIndex();
+    expect(Object.keys(idx.marketplaces)).toEqual(['clone']);
+    expect(idx.marketplaces['0']).toBeUndefined();
   });
 });

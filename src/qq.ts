@@ -26,7 +26,7 @@ import { logger } from './logger.js';
 import { saveDownloadedFile, MAX_FILE_SIZE } from './im-downloader.js';
 import { detectImageMimeTypeStrict } from './image-detector.js';
 import path from 'node:path';
-import { markdownToPlainText, splitTextChunks } from './im-utils.js';
+import { markdownToPlainText, splitTextChunks, createDedupCache } from './im-utils.js';
 import { ProcessingLock, isStale } from './im-safety/index.js';
 import {
   isTransientError,
@@ -38,8 +38,6 @@ import {
 const QQ_TOKEN_URL = 'https://bots.qq.com/app/getAppAccessToken';
 const QQ_API_BASE = 'https://api.sgroup.qq.com';
 const TOKEN_REFRESH_BUFFER_MS = 300_000; // refresh 5min before expiry
-const MSG_DEDUP_MAX = 1000;
-const MSG_DEDUP_TTL = 30 * 60 * 1000; // 30min
 const MSG_SPLIT_LIMIT = 5000;
 const MAX_RECONNECT_ATTEMPTS = 100;
 const RATE_LIMIT_DELAY_MS = 60_000;
@@ -275,7 +273,13 @@ export interface QQConnectOpts {
     chatName: string,
     code: string,
   ) => Promise<boolean>;
-  onCommand?: (chatJid: string, command: string) => Promise<string | null>;
+  /** 斜杠指令回调。senderImId 是发送者的裸 QQ open_id（不含 `qq:` 前缀），
+   *  与飞书/钉钉 onCommand 传裸 ID 的格式一致，用于主进程 owner-only 检查。 */
+  onCommand?: (
+    chatJid: string,
+    command: string,
+    senderImId?: string,
+  ) => Promise<string | null>;
   resolveGroupFolder?: (jid: string) => string | undefined;
   resolveEffectiveChatJid?: (
     chatJid: string,
@@ -380,7 +384,8 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
   let lastErrorIsTransient = false;
 
   // Message deduplication
-  const msgCache = new Map<string, number>();
+  // LRU deduplication cache（共享 helper）
+  const dedup = createDedupCache({ ttlMs: 30 * 60 * 1000, max: 1000 });
   const processingLock = new ProcessingLock();
 
   // Per-chat msg_seq counter for active messages
@@ -464,28 +469,7 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
     );
   }
 
-  function isDuplicate(msgId: string): boolean {
-    const now = Date.now();
-    // Map preserves insertion order; stop at first non-expired entry
-    for (const [id, ts] of msgCache.entries()) {
-      if (now - ts > MSG_DEDUP_TTL) {
-        msgCache.delete(id);
-      } else {
-        break;
-      }
-    }
-    if (msgCache.size >= MSG_DEDUP_MAX) {
-      const firstKey = msgCache.keys().next().value;
-      if (firstKey) msgCache.delete(firstKey);
-    }
-    return msgCache.has(msgId);
-  }
 
-  function markSeen(msgId: string): void {
-    // delete + set to refresh insertion order (move to end)
-    msgCache.delete(msgId);
-    msgCache.set(msgId, Date.now());
-  }
 
   function getNextMsgSeq(chatId: string): number {
     const current = msgSeqCounters.get(chatId) ?? 0;
@@ -1476,12 +1460,12 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
         logger.debug({ msgId, msgTimeMs }, 'Stale QQ C2C message (>30min), dropping');
         return;
       }
-      if (isDuplicate(msgId)) return;
+      if (dedup.isDuplicate(msgId)) return;
       if (!processingLock.acquire(msgId)) {
         logger.debug({ msgId }, 'QQ C2C message already in-flight, skipping');
         return;
       }
-      markSeen(msgId);
+      dedup.markSeen(msgId);
       try {
       // Skip stale messages from before connection (hot-reload scenario)
       if (opts.ignoreMessagesBefore && data.timestamp) {
@@ -1562,7 +1546,12 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
           slashMatch[1] + (slashMatch[2] ? ' ' + slashMatch[2] : '')
         ).trim();
         try {
-          const reply = await opts.onCommand(jid, cmdBody);
+          // Namespace senderImId with `c2c:` prefix so owner_im_id 比对在
+          // DM 与群聊上下文中独立——QQ Bot API v2 的 author.user_openid (C2C) 与
+          // author.member_openid (Group) 是两个不同的 ID namespace，protocol
+          // 层面不互通；前缀化让 DM 认领的 owner 与群里认领的 owner 各自落入
+          // 独立记录，互不干扰。
+          const reply = await opts.onCommand(jid, cmdBody, `c2c:${userOpenId}`);
           if (reply) {
             await sendQQMessage('c2c', userOpenId, markdownToPlainText(reply));
             return;
@@ -1659,12 +1648,12 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
         logger.debug({ msgId, msgTimeMs }, 'Stale QQ group message (>30min), dropping');
         return;
       }
-      if (isDuplicate(msgId)) return;
+      if (dedup.isDuplicate(msgId)) return;
       if (!processingLock.acquire(msgId)) {
         logger.debug({ msgId }, 'QQ group message already in-flight, skipping');
         return;
       }
-      markSeen(msgId);
+      dedup.markSeen(msgId);
       try {
       // Skip stale messages from before connection (hot-reload scenario)
       if (opts.ignoreMessagesBefore && data.timestamp) {
@@ -1736,7 +1725,13 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
           slashMatch[1] + (slashMatch[2] ? ' ' + slashMatch[2] : '')
         ).trim();
         try {
-          const reply = await opts.onCommand(jid, cmdBody);
+          // Namespace senderImId with `group:` prefix——见 C2C 分支的注释。
+          // member_openid 仅在群聊上下文有意义，与 C2C 的 user_openid 不互通。
+          const reply = await opts.onCommand(
+            jid,
+            cmdBody,
+            memberOpenId ? `group:${memberOpenId}` : undefined,
+          );
           if (reply) {
             await sendQQMessage(
               'group',
@@ -1879,7 +1874,7 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
       lastConnectTime = 0;
       keepaliveMode = false;
       lastErrorIsTransient = false;
-      msgCache.clear();
+      dedup.clear();
       msgSeqCounters.clear();
       rejectTimestamps.clear();
       logger.info('QQ bot disconnected');

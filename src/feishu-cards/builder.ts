@@ -50,23 +50,18 @@ export function buildAgentReplyCard(input: AgentCardInput): FeishuCardV2 {
   const explicitTitle = input.title?.trim();
   const body = optimizedText.trim();
 
-  // Header policy is driven by status, not by whether a title was passed:
-  //   - done  → drop the header unless an explicit title is given, so short
-  //             status replies don't promote their first line into a truncated
-  //             header (issue #488).
-  //   - running / warning / error → always render a status-coloured header so
-  //             the orange/red/blue state semantics survive into the terminal
-  //             card and the streaming→terminal transition stays visually
-  //             consistent (no header that suddenly disappears).
-  // The header title text comes from the explicit title when present, otherwise
-  // a minimal status word — never the body's first line.
-  const renderHeader = input.status !== 'done' || !!explicitTitle;
+  // Header policy: always render a status-coloured header so the
+  // streaming→terminal transition stays visually consistent (blue「生成中」→
+  // violet「已完成」is a colour change, not a header that suddenly vanishes).
+  // The header title is the explicit title when present, otherwise a minimal
+  // status word ('已完成'/'已中断'/'出错') — NEVER the body's first line, which
+  // was the root cause of the header/first-line duplication (issue #488). Using
+  // a fixed status word for `done` keeps issue #488 fixed while still giving the
+  // completed reply a clear status anchor.
   const headlineTitle = explicitTitle ?? statusHeadline(input.status);
-  const summaryTitle = renderHeader
-    ? input.titlePrefix
-      ? `${input.titlePrefix}${headlineTitle}`
-      : headlineTitle
-    : undefined;
+  const summaryTitle = input.titlePrefix
+    ? `${input.titlePrefix}${headlineTitle}`
+    : headlineTitle;
 
   const normalizedInput: AgentCardInput = {
     ...input,
@@ -75,7 +70,7 @@ export function buildAgentReplyCard(input: AgentCardInput): FeishuCardV2 {
     thinking: optimizedThinking,
   };
 
-  const header = renderHeader ? buildHeader(normalizedInput) : undefined;
+  const header = buildHeader(normalizedInput);
   const elements: Array<Record<string, unknown>> = [];
   if (body) {
     elements.push(...buildBodyChunks(body));
@@ -117,15 +112,13 @@ export function buildAgentReplyCard(input: AgentCardInput): FeishuCardV2 {
   const card: FeishuCardV2 = {
     schema: '2.0',
     config,
+    header,
     body: {
       direction: 'vertical',
       vertical_spacing: 'medium',
       elements,
     },
   };
-  if (header) {
-    card.header = header;
-  }
   return card;
 }
 

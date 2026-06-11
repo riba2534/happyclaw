@@ -104,6 +104,7 @@ export interface SystemSettings {
   billingCurrencyRate: number;
   externalClaudeDir: string;
   autoCompactWindow: number;
+  subagentModel: string;
   disableMemoryLayerForAdminHost: boolean;
   pluginAutoScan: boolean;
   taskBackfillGraceMs: number;

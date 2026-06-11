@@ -56,6 +56,7 @@ import {
   deleteAgent,
   deleteImContextBindingsByWorkspace,
 } from '../db.js';
+import { releaseOwner, persistGroupUpdate } from '../group-owner.js';
 import { logger } from '../logger.js';
 import {
   getContainerEnvConfig,
@@ -75,7 +76,7 @@ import { promisify } from 'node:util';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import net from 'node:net';
+// SSRF helpers 抽到 ../url-safety.ts；本文件 re-export isPrivateHostname 以保留旧导入路径。
 import { z } from 'zod';
 import { broadcastNewMessage, invalidateAllowedUserCache } from '../web.js';
 import { getStreamingSession } from '../feishu-streaming-card.js';
@@ -85,52 +86,11 @@ const execFileAsync = promisify(execFile);
 /**
  * 检查 hostname 是否为内网地址（SSRF 防护）。
  * 拒绝 127.x, 10.x, 172.16-31.x, 192.168.x, 169.254.x, ::1, fd00::, fe80:: 等。
+ *
+ * Re-export 自 ../url-safety.ts 以兼容已有调用方；新代码应直接 import 那里的版本。
  */
-function isPrivateHostname(hostname: string): boolean {
-  // localhost 变体
-  if (hostname === 'localhost' || hostname.endsWith('.localhost')) return true;
-
-  // IPv6: 移除方括号
-  const cleaned = hostname.replace(/^\[|\]$/g, '');
-
-  if (net.isIPv6(cleaned)) {
-    const lower = cleaned.toLowerCase();
-    if (lower === '::1' || lower === '::') return true;
-    // fd00::/8 (unique local) 和 fe80::/10 (link-local)
-    if (lower.startsWith('fd') || lower.startsWith('fe80')) return true;
-    // ::ffff:127.0.0.1 等 IPv4-mapped IPv6
-    if (lower.startsWith('::ffff:')) {
-      const ipv4Part = lower.slice(7);
-      return isPrivateIPv4(ipv4Part);
-    }
-    return false;
-  }
-
-  if (net.isIPv4(cleaned)) {
-    return isPrivateIPv4(cleaned);
-  }
-
-  return false;
-}
-
-function isPrivateIPv4(ip: string): boolean {
-  const parts = ip.split('.').map(Number);
-  if (parts.length !== 4 || parts.some((p) => isNaN(p))) return false;
-  const [a, b] = parts;
-  // 127.0.0.0/8
-  if (a === 127) return true;
-  // 10.0.0.0/8
-  if (a === 10) return true;
-  // 172.16.0.0/12
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  // 192.168.0.0/16
-  if (a === 192 && b === 168) return true;
-  // 169.254.0.0/16 (link-local)
-  if (a === 169 && b === 254) return true;
-  // 0.0.0.0
-  if (a === 0) return true;
-  return false;
-}
+import { isPrivateHostname } from '../url-safety.js';
+export { isPrivateHostname };
 
 const groupRoutes = new Hono<{ Variables: Variables }>();
 
@@ -157,6 +117,8 @@ interface GroupPayloadItem {
   is_shared?: boolean;
   member_role?: 'owner' | 'member';
   member_count?: number;
+  can_modify?: boolean;
+  can_manage_members?: boolean;
   pinned_at?: string;
   activation_mode?: 'auto' | 'always' | 'when_mentioned' | 'owner_mentioned' | 'disabled';
   conversation_source?: 'manual' | 'feishu_thread';
@@ -267,6 +229,11 @@ function buildGroupsPayload(user: AuthUser): Record<string, GroupPayloadItem> {
       is_shared: isShared || undefined,
       member_role: memberInfo?.role ?? undefined,
       member_count: isShared ? memberInfo?.count : undefined,
+      can_modify: canModifyGroup(user, { ...group, jid }),
+      // owner-only, matching the member-management routes' canManageGroupMembers
+      // checks (no admin override — admin is not a workspace owner, consistent
+      // with canModifyGroup / canDeleteGroup).
+      can_manage_members: canManageGroupMembers(user, { ...group, jid }),
       pinned_at: pins[jid] || undefined,
       activation_mode: group.activation_mode ?? 'auto',
       conversation_source: group.conversation_source ?? 'manual',
@@ -628,26 +595,39 @@ groupRoutes.post('/', authMiddleware, async (c) => {
     deps.ensureTerminalContainerStarted(jid);
   }
 
+  // Mirror buildGroupsPayload ACL shape so the frontend doesn't need to
+  // refetch /api/groups just to learn the writer can edit Skills/MCP/members.
+  // Creator is always owner of a fresh non-home web group, so both checks
+  // resolve true here; we still go through the helpers to keep one source of
+  // truth and avoid drift if the rules change later.
+  const groupWithJid = { ...group, jid };
+  const isAdmin = hasHostExecutionPermission(authUser);
+  const responseGroup: GroupPayloadItem = {
+    name: group.name,
+    folder: group.folder,
+    added_at: group.added_at,
+    kind: 'web',
+    editable: true,
+    deletable: true,
+    lastMessage: undefined,
+    lastMessageTime: now,
+    execution_mode: group.executionMode || 'container',
+    custom_cwd: isAdmin ? group.customCwd : undefined,
+    is_my_home: undefined,
+    is_shared: undefined,
+    member_role: 'owner',
+    member_count: undefined,
+    can_modify: canModifyGroup(authUser, groupWithJid),
+    can_manage_members: canManageGroupMembers(authUser, groupWithJid),
+    activation_mode: group.activation_mode ?? 'auto',
+    conversation_source: group.conversation_source ?? 'manual',
+    conversation_nav_mode: group.conversation_nav_mode ?? 'horizontal',
+  };
+
   return c.json({
     success: true,
     jid,
-    group: {
-      name: group.name,
-      folder: group.folder,
-      added_at: group.added_at,
-      execution_mode: group.executionMode || 'container',
-      custom_cwd: hasHostExecutionPermission(authUser)
-        ? group.customCwd
-        : undefined,
-      kind: 'web',
-      editable: true,
-      deletable: true,
-      lastMessage: undefined,
-      lastMessageTime: now,
-      member_role: 'owner',
-      member_count: 1,
-      is_shared: false,
-    },
+    group: responseGroup,
   });
 });
 
@@ -751,24 +731,21 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
 
   // Update registered group if name, activation_mode, or execution_mode changed
   if (name || activation_mode !== undefined || execution_mode !== undefined) {
+    // Spread `...existing` instead of rebuilding from an explicit field list.
+    // setRegisteredGroup is INSERT OR REPLACE (full-row overwrite), so every
+    // field omitted from the object gets silently nulled. The old explicit list
+    // dropped owner_im_id / sender_allowlist / conversation_source /
+    // conversation_nav_mode / binding_mode / feishu_chat_mode /
+    // feishu_group_message_type on EVERY rename — wiping the IM owner-gate's
+    // security anchor and corrupting feishu_thread workspaces. Only override
+    // what this PATCH actually changes.
     const updated: RegisteredGroup = {
+      ...existing,
       name: name || existing.name,
-      folder: existing.folder,
-      added_at: existing.added_at,
-      containerConfig: existing.containerConfig,
       executionMode:
         execution_mode !== undefined
           ? (execution_mode as ExecutionMode)
           : existing.executionMode,
-      customCwd: existing.customCwd,
-      initSourcePath: existing.initSourcePath,
-      initGitUrl: existing.initGitUrl,
-      created_by: existing.created_by,
-      is_home: existing.is_home,
-      target_agent_id: existing.target_agent_id,
-      target_main_jid: existing.target_main_jid,
-      reply_policy: existing.reply_policy,
-      require_mention: existing.require_mention,
       activation_mode:
         activation_mode !== undefined
           ? activation_mode
@@ -781,6 +758,39 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
   }
 
   return c.json({ success: true, pinned_at });
+});
+
+// POST /api/groups/:jid/reset-owner — admin break-glass for a stuck IM owner.
+// The IM owner-gate keys destructive commands on owner_im_id === sender. If the
+// recorded owner leaves the group / switches account, nobody matches and
+// /release_owner (owner-only) can't fire either, so owner-only commands lock up
+// permanently. A platform admin can force-release here; the next user reclaims
+// via /owner_mention (or DM auto-claim).
+groupRoutes.post('/:jid/reset-owner', authMiddleware, async (c) => {
+  const deps = getWebDeps();
+  if (!deps) return c.json({ error: 'Server not initialized' }, 500);
+
+  const authUser = c.get('user') as AuthUser;
+  if (authUser.role !== 'admin') {
+    return c.json({ error: 'Only an admin can reset the workspace owner' }, 403);
+  }
+
+  const jid = c.req.param('jid');
+  const existing = getRegisteredGroup(jid);
+  if (!existing) return c.json({ error: 'Group not found' }, 404);
+
+  // Same transition as /release_owner — clearing the owner anchor + allowlist
+  // and downgrading owner_mentioned → when_mentioned is the shared invariant
+  // (see group-owner.ts): without the downgrade isGroupOwnerMessage returns
+  // false for everyone once owner_im_id is gone and the bot goes silent
+  // group-wide.
+  const updated = releaseOwner(existing);
+  persistGroupUpdate(jid, updated, deps.getRegisteredGroups());
+  logger.info(
+    { jid, adminId: authUser.id },
+    'Workspace owner force-reset by admin (/reset-owner)',
+  );
+  return c.json({ success: true });
 });
 
 // DELETE /api/groups/:jid - 删除群组
@@ -904,6 +914,18 @@ groupRoutes.post('/:jid/stop', authMiddleware, async (c) => {
   if (!canAccessGroup({ id: authUser.id, role: authUser.role }, group)) {
     return c.json({ error: 'Group not found' }, 404);
   }
+  // Resource-level ACL: the owner (canModifyGroup) can always stop; a shared
+  // member may stop only a run they started themselves (the queue's current-run
+  // initiator), not the owner's. Mirrors the delete-message owner-or-sender model.
+  if (
+    !canModifyGroup({ id: authUser.id, role: authUser.role }, { ...group, jid }) &&
+    deps.queue.getActiveRunInitiator(jid) !== authUser.id
+  ) {
+    return c.json(
+      { error: 'Only the workspace owner or the run initiator can stop it' },
+      403,
+    );
+  }
 
   try {
     await deps.queue.stopGroup(jid);
@@ -929,6 +951,24 @@ groupRoutes.post('/:jid/interrupt', authMiddleware, async (c) => {
   const authUser = c.get('user') as AuthUser;
   if (!canAccessGroup({ id: authUser.id, role: authUser.role }, group)) {
     return c.json({ error: 'Group not found' }, 404);
+  }
+  // Resource-level ACL (see /stop): owner OR the run's initiator. Uses the full
+  // (possibly virtual #agent:) jid so an agent-conversation run resolves to its
+  // own runner. Agent/task runs carry no message initiator (getActiveRunInitiator
+  // excludes activeRunnerIsTask) → owner-only. Known safe-direction limitation:
+  // a member who started their own agent/task run can't interrupt it — only the
+  // owner can; revisit if member-initiated agent interrupt is wanted (see PR notes).
+  if (
+    !canModifyGroup(
+      { id: authUser.id, role: authUser.role },
+      { ...group, jid: baseJid },
+    ) &&
+    deps.queue.getActiveRunInitiator(jid) !== authUser.id
+  ) {
+    return c.json(
+      { error: 'Only the workspace owner or the run initiator can interrupt it' },
+      403,
+    );
   }
 
   const interrupted = deps.queue.interruptQuery(jid);
@@ -1405,7 +1445,16 @@ groupRoutes.get('/:jid/env', authMiddleware, (c) => {
     );
   }
 
-  // Check permissions
+  // Check permissions: 与 PUT 对称收紧为 owner-only。`customEnv` 含
+  // 第三方 token（GitHub / 自定义 API key 等），即使 toPublicContainerEnvForUser
+  // 把 anthropic/openai 字段做了 mask，customEnv 仍是明文返回；shared
+  // workspace 中持有 manage_group_env 的非 owner 不应能读 owner 的私密 env。
+  if (
+    user.role !== 'admin' &&
+    !canModifyGroup({ id: user.id, role: user.role }, { ...group, jid })
+  ) {
+    return c.json({ error: 'Forbidden: only the workspace owner can read env' }, 403);
+  }
   if (
     user.role !== 'admin' &&
     (!user.permissions || !user.permissions.includes('manage_group_env'))
@@ -1434,7 +1483,15 @@ groupRoutes.put('/:jid/env', authMiddleware, async (c) => {
     );
   }
 
-  // Check permissions
+  // Check permissions：owner-only。`manage_group_env` 是系统级权限但 envvar
+  // 包含 anthropicAuthToken 等会让 agent 全部流量被劫持的字段，跨用户共享
+  // 工作区里持有该权限的非 owner 不能改 owner 的 token。Admin 例外。
+  if (
+    envUser.role !== 'admin' &&
+    !canModifyGroup({ id: envUser.id, role: envUser.role }, { ...group, jid })
+  ) {
+    return c.json({ error: 'Forbidden: only the workspace owner can modify env' }, 403);
+  }
   if (
     envUser.role !== 'admin' &&
     (!envUser.permissions || !envUser.permissions.includes('manage_group_env'))

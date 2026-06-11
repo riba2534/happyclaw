@@ -121,7 +121,7 @@ export function UnifiedSidebar({ collapsed, onToggleCollapse }: UnifiedSidebarPr
             memberCount={showCollabBadge ? g.member_count : undefined}
             isActive={currentGroup === g.jid} isHome={false}
             isRunning={runnerStates[g.jid] === 'running'}
-            editable={g.editable} deletable={g.deletable}
+            canModify={g.can_modify}
             onSelect={handleGroupSelect}
             onRename={(jid, name) => setRenameState({ open: true, jid, name })}
             onClearHistory={openClear}
@@ -239,7 +239,7 @@ export function UnifiedSidebar({ collapsed, onToggleCollapse }: UnifiedSidebarPr
                         <ChatGroupItem
                           jid={mainGroup.jid} name={mainGroup.name} folder={mainGroup.folder}
                           lastMessage={mainGroup.lastMessage}                          isActive={currentGroup === mainGroup.jid} isHome
-                          isRunning={runnerStates[mainGroup.jid] === 'running'} editable
+                          isRunning={runnerStates[mainGroup.jid] === 'running'} canModify={mainGroup.can_modify}
                           onSelect={handleGroupSelect}
                           onRename={(jid, name) => setRenameState({ open: true, jid, name })}
                           onClearHistory={openClear}
@@ -259,7 +259,7 @@ export function UnifiedSidebar({ collapsed, onToggleCollapse }: UnifiedSidebarPr
                             lastMessage={g.lastMessage}                            isShared={g.is_shared} memberRole={g.member_role} memberCount={g.member_count}
                             isActive={currentGroup === g.jid} isHome={false} isPinned
                             isRunning={runnerStates[g.jid] === 'running'}
-                            editable={g.editable} deletable={g.deletable}
+                            canModify={g.can_modify}
                             onSelect={handleGroupSelect}
                             onRename={(jid, name) => setRenameState({ open: true, jid, name })}
                             onClearHistory={openClear}

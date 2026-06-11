@@ -10,7 +10,7 @@
  */
 
 import type { ContainerOutput, StreamEvent } from './types.js';
-import { extractSkillName, summarizeToolInput } from './utils.js';
+import { extractSkillName, summarizeToolInput, summarizeToolResult } from './utils.js';
 
 /** Tools with specialized input_json_delta handling — generic accumulation is skipped for these. */
 const SPECIAL_TOOLS = ['Skill', 'Task', 'Agent', 'AskUserQuestion', 'TodoWrite'];
@@ -687,12 +687,16 @@ export class StreamEventProcessor {
       return false;
     }
     if (message.subtype === 'status') {
-      const statusText = message.status?.type || null;
+      // SDKStatus 是字符串字面量（'compacting' | 'requesting' | null），不是带 .type 的对象。
+      // 旧代码读 message.status?.type 恒为 undefined，导致前端永远收不到"压缩中"状态。
+      // 注：compact_result / compact_error 确实存在于 SDKStatusMessage（仅在 status=null 的压缩
+      // 完成/失败消息上携带）；此处移除 detail 仅因当前前端 status 分支只消费 statusText，
+      // 不渲染 detail——若日后要向用户暴露压缩成败，可在 compact_error 存在时另发一条事件。
+      const statusText = message.status || null;
       this.emitStreamEvent({
         eventType: 'status',
         agentScope: 'system',
         statusText,
-        detail: message.compact_error || message.compact_result,
         displayLevel: 'primary',
       });
       return true;
@@ -890,6 +894,19 @@ export class StreamEventProcessor {
       this.emitRawSdkEvent(message, this.rawType(message), message.subtype === 'mirror_error' ? 'primary' : 'debug');
       return true;
     }
+    // `thinking_tokens` is a high-frequency progress counter the CLI (>=2.1.x)
+    // emits once per thinking chunk — ~33 for a trivial reply, thousands for a
+    // reasoning-heavy multi-agent turn. It carries no user-facing content, but
+    // the catch-all below would turn each one into a broadcast raw_sdk_event,
+    // flooding the WS. On the Web client each raw_sdk_event is NOT rAF-batched
+    // (only text/thinking deltas are), so every one triggers a synchronous
+    // Zustand set + saveStreamingToSession (JSON.stringify + sessionStorage) +
+    // StreamingDisplay re-render — starving the batched text/thinking flush so
+    // the streaming card never paints and the UI freezes on "正在思考" until the
+    // flood ends. Drop it at the source.
+    if (message.subtype === 'thinking_tokens') {
+      return true;
+    }
     this.emitRawSdkEvent(message);
     return true;
   }
@@ -1065,6 +1082,22 @@ export class StreamEventProcessor {
             this.emit({ status: 'stream', result: null,
               streamEvent: { eventType: 'tool_use_end', toolUseId: block.tool_use_id, parentToolUseId: msgParentToolUseId },
             });
+            const rb = block as { content?: unknown; is_error?: boolean };
+            const resultText = summarizeToolResult(rb.content);
+            if (resultText) {
+              // ToolResultBlockParam.is_error marks a failed tool call — prefix
+              // so the trace distinguishes failures from normal output.
+              const shown = rb.is_error ? `⚠️ ${resultText}` : resultText;
+              this.emit({ status: 'stream', result: null,
+                streamEvent: {
+                  eventType: 'tool_result',
+                  toolUseId: block.tool_use_id,
+                  toolResult: shown,
+                  detail: shown,
+                  parentToolUseId: msgParentToolUseId,
+                },
+              });
+            }
             activeSub?.delete(block.tool_use_id);
           }
         }
@@ -1072,6 +1105,44 @@ export class StreamEventProcessor {
     }
 
     return true;
+  }
+
+  /**
+   * Surface tool results for the MAIN agent (parent_tool_use_id == null).
+   * The sub-agent path emits its own tool_result events; the main path's
+   * tool_use_end is inferred from the partial stream and the result block was
+   * previously dropped entirely, so we extract it here (truncated + sanitized)
+   * and emit a `tool_result` event so the trace shows what a tool returned.
+   */
+  processMainToolResults(message: any): void {
+    if (message.type !== 'user') return;
+    if ((message.parent_tool_use_id ?? null) !== null) return;
+    const content = message.message?.content;
+    if (!Array.isArray(content)) return;
+    for (const block of content as Array<{
+      type?: string;
+      tool_use_id?: string;
+      content?: unknown;
+      is_error?: boolean;
+    }>) {
+      if (block.type === 'tool_result' && block.tool_use_id) {
+        const resultText = summarizeToolResult(block.content);
+        if (resultText) {
+          // is_error marks a failed tool call — prefix so failures stand out.
+          const shown = block.is_error ? `⚠️ ${resultText}` : resultText;
+          this.emit({
+            status: 'stream',
+            result: null,
+            streamEvent: {
+              eventType: 'tool_result',
+              toolUseId: block.tool_use_id,
+              toolResult: shown,
+              detail: shown,
+            },
+          });
+        }
+      }
+    }
   }
 
   /** Check if a tool_use was already resolved by the streaming accumulator. */

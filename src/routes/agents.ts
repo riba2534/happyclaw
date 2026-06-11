@@ -5,7 +5,7 @@ import path from 'path';
 import type { Variables } from '../web-context.js';
 import { getWebDeps } from '../web-context.js';
 import { authMiddleware } from '../middleware/auth.js';
-import { canAccessGroup } from '../web-context.js';
+import { canAccessGroup, canModifyGroup } from '../web-context.js';
 import {
   getRegisteredGroup,
   getAllRegisteredGroups,
@@ -158,7 +158,16 @@ router.post('/:jid/agents', authMiddleware, async (c) => {
   }
 
   if (!canAccessGroup(user, { ...group, jid })) {
-    return c.json({ error: 'Forbidden' }, 403);
+    return c.json({ error: 'Group not found' }, 404);
+  }
+  // Conversation CRUD mutates the owner's workspace → owner-only, mirroring
+  // workspace-config (skills/mcp). Shared members get 403; non-members were
+  // already 404'd above so the group's existence stays hidden from them.
+  if (!canModifyGroup(user, { ...group, jid })) {
+    return c.json(
+      { error: 'Only the workspace owner can manage conversations' },
+      403,
+    );
   }
   if (group.conversation_source === 'feishu_thread') {
     return c.json(
@@ -244,7 +253,14 @@ router.patch('/:jid/agents/:agentId', authMiddleware, async (c) => {
     return c.json({ error: 'Group not found' }, 404);
   }
   if (!canAccessGroup(user, { ...group, jid })) {
-    return c.json({ error: 'Forbidden' }, 403);
+    return c.json({ error: 'Group not found' }, 404);
+  }
+  // Rename mutates the owner's workspace → owner-only (see POST for rationale).
+  if (!canModifyGroup(user, { ...group, jid })) {
+    return c.json(
+      { error: 'Only the workspace owner can manage conversations' },
+      403,
+    );
   }
 
   const agent = getAgent(agentId);
@@ -298,7 +314,14 @@ router.delete('/:jid/agents/:agentId', authMiddleware, async (c) => {
   }
 
   if (!canAccessGroup(user, { ...group, jid })) {
-    return c.json({ error: 'Forbidden' }, 403);
+    return c.json({ error: 'Group not found' }, 404);
+  }
+  // Delete mutates the owner's workspace → owner-only (see POST for rationale).
+  if (!canModifyGroup(user, { ...group, jid })) {
+    return c.json(
+      { error: 'Only the workspace owner can manage conversations' },
+      403,
+    );
   }
 
   const agent = getAgent(agentId);
@@ -544,7 +567,16 @@ router.put('/:jid/agents/:agentId/im-binding', authMiddleware, async (c) => {
     return c.json({ error: 'Group not found' }, 404);
   }
   if (!canAccessGroup(user, { ...group, jid })) {
-    return c.json({ error: 'Forbidden' }, 403);
+    return c.json({ error: 'Group not found' }, 404);
+  }
+  // IM binding mutates the owner's workspace routing → owner-only, same as
+  // agent CRUD (the imGroup-side check below stays Access — you only need
+  // access to the IM group you're binding).
+  if (!canModifyGroup(user, { ...group, jid })) {
+    return c.json(
+      { error: 'Only the workspace owner can manage IM bindings' },
+      403,
+    );
   }
 
   const agent = getAgent(agentId);
@@ -568,7 +600,7 @@ router.put('/:jid/agents/:agentId/im-binding', authMiddleware, async (c) => {
   if (!imGroup) {
     return c.json({ error: 'IM group not found' }, 404);
   }
-  if (!canAccessGroup(user, { ...imGroup, jid: imJid })) {
+  if (!canModifyGroup(user, { ...imGroup, jid: imJid })) {
     return c.json({ error: 'Forbidden' }, 403);
   }
   const { threadCapable } = await checkFeishuThreadCapable(user.id, imJid, imGroup);
@@ -623,7 +655,14 @@ router.delete(
       return c.json({ error: 'Group not found' }, 404);
     }
     if (!canAccessGroup(user, { ...group, jid })) {
-      return c.json({ error: 'Forbidden' }, 403);
+      return c.json({ error: 'Group not found' }, 404);
+    }
+    // IM unbinding mutates the owner's workspace routing → owner-only.
+    if (!canModifyGroup(user, { ...group, jid })) {
+      return c.json(
+        { error: 'Only the workspace owner can manage IM bindings' },
+        403,
+      );
     }
 
     const agent = getAgent(agentId);
@@ -635,7 +674,7 @@ router.delete(
     if (!imGroup) {
       return c.json({ error: 'IM group not found' }, 404);
     }
-    if (!canAccessGroup(user, { ...imGroup, jid: imJid })) {
+    if (!canModifyGroup(user, { ...imGroup, jid: imJid })) {
       return c.json({ error: 'Forbidden' }, 403);
     }
     if (imGroup.target_agent_id !== agentId) {
@@ -672,7 +711,15 @@ router.put('/:jid/im-binding', authMiddleware, async (c) => {
     return c.json({ error: 'Group not found' }, 404);
   }
   if (!canAccessGroup(user, { ...group, jid })) {
-    return c.json({ error: 'Forbidden' }, 403);
+    return c.json({ error: 'Group not found' }, 404);
+  }
+  // Binding an IM group to the main conversation mutates the owner's workspace
+  // routing → owner-only (the imGroup-side check below stays Access).
+  if (!canModifyGroup(user, { ...group, jid })) {
+    return c.json(
+      { error: 'Only the workspace owner can manage IM bindings' },
+      403,
+    );
   }
   if (group.is_home) {
     return c.json(
@@ -691,7 +738,7 @@ router.put('/:jid/im-binding', authMiddleware, async (c) => {
   if (!imGroup) {
     return c.json({ error: 'IM group not found' }, 404);
   }
-  if (!canAccessGroup(user, { ...imGroup, jid: imJid })) {
+  if (!canModifyGroup(user, { ...imGroup, jid: imJid })) {
     return c.json({ error: 'Forbidden' }, 403);
   }
   const { threadCapable, feishuInfo } = await checkFeishuThreadCapable(user.id, imJid, imGroup);
@@ -813,14 +860,21 @@ router.delete('/:jid/im-binding/:imJid', authMiddleware, async (c) => {
     return c.json({ error: 'Group not found' }, 404);
   }
   if (!canAccessGroup(user, { ...group, jid })) {
-    return c.json({ error: 'Forbidden' }, 403);
+    return c.json({ error: 'Group not found' }, 404);
+  }
+  // Unbinding mutates the owner's workspace routing → owner-only.
+  if (!canModifyGroup(user, { ...group, jid })) {
+    return c.json(
+      { error: 'Only the workspace owner can manage IM bindings' },
+      403,
+    );
   }
 
   const imGroup = getRegisteredGroup(imJid);
   if (!imGroup) {
     return c.json({ error: 'IM group not found' }, 404);
   }
-  if (!canAccessGroup(user, { ...imGroup, jid: imJid })) {
+  if (!canModifyGroup(user, { ...imGroup, jid: imJid })) {
     return c.json({ error: 'Forbidden' }, 403);
   }
   const targetMainJid = jid; // Use actual registered JID (not folder-based)

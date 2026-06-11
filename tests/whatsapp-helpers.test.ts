@@ -186,7 +186,10 @@ describe('isMentioningBot', () => {
     ).toBe(true);
   });
 
-  test('safety degrade: no selfJid → returns true (no gating)', () => {
+  test('fail-closed: no selfJid → returns false (drop instead of letting through)', () => {
+    // 过去这里 fail-open（returns true），让 require_mention 模式下在 socket
+    // reconnect / 启动毫秒级窗口被绕过。改为 fail-closed：selfJid 未知时
+    // 回 false，主消息处理流走 shouldProcessGroupMessage 丢弃逻辑。
     expect(
       isMentioningBot(
         {
@@ -196,6 +199,6 @@ describe('isMentioningBot', () => {
         } as proto.IMessage,
         null,
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 });

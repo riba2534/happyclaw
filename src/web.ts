@@ -20,6 +20,7 @@ import {
   isHostExecutionGroup,
   hasHostExecutionPermission,
   canAccessGroup,
+  canModifyGroup,
   getCachedSessionWithUser,
   invalidateSessionCache,
 } from './web-context.js';
@@ -286,10 +287,21 @@ app.post('/api/messages', authMiddleware, async (c) => {
   }
 
   // /clear: reset session without entering message pipeline.
-  // Permission: relies on the route-level canAccessGroup + host-mode checks above.
-  // Whether to tighten /clear to owner-only is left to the follow-up ACL audit
-  // (see PR description) — keeping it aligned with send-message for now.
+  // Permission: owner-only (canModifyGroup) — aligned with `reset-session`
+  // route, since /clear has the same destructive effect (clears agent
+  // session files, stops sibling containers, drops conversation history).
   if (isClearCommand(content)) {
+    if (
+      !canModifyGroup(
+        { id: authUser.id, role: authUser.role },
+        { ...group, jid: chatJid },
+      )
+    ) {
+      return c.json(
+        { error: 'Only the workspace owner can run /clear' },
+        403,
+      );
+    }
     if (!deps) return c.json({ error: 'Server not initialized' }, 500);
     try {
       await executeSessionReset(chatJid, group.folder, {
@@ -605,7 +617,10 @@ async function handleWebUserMessage(
         'Race: eager-expanded but runner exited before sendMessage; cold-start will re-expand (inline may run twice)',
       );
     }
-    deps.queue.enqueueMessageCheck(chatJid);
+    // Pass the sender as the run initiator so the stop/interrupt routes can do
+    // a resource-level "owner OR initiator" check — a shared member can stop /
+    // interrupt the run they started, but not the owner's.
+    deps.queue.enqueueMessageCheck(chatJid, userId);
   }
 
   // Only advance per-group cursor when we piped directly into a running container.
@@ -932,7 +947,11 @@ app.use(
 // --- WebSocket ---
 
 function setupWebSocket(server: any): WebSocketServer {
-  const wss = new WebSocketServer({ noServer: true });
+  // 8 MiB 上限：覆盖单条消息含 10 张 5MB base64 image 的合法上限（~70MB 是
+  // attachments 上限里的极端情形——通过 schema 上的 attachments.max(10) 控制
+  // 而不是把 ws frame 单帧打到 100MB），也防止认证用户用单帧 OOM 服务器
+  // （ws 库默认 100 MiB；详见 node_modules/ws/lib/websocket-server.js）。
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 });
 
   server.on('upgrade', (request: any, socket: any, head: any) => {
     const { pathname } = new URL(request.url, `http://${request.headers.host}`);
@@ -940,6 +959,21 @@ function setupWebSocket(server: any): WebSocketServer {
     if (pathname !== '/ws') {
       socket.destroy();
       return;
+    }
+
+    // Origin 校验：CORS 中间件不覆盖 WebSocket，浏览器对 WebSocket 也不发
+    // CORS preflight。SameSite=Strict cookie 是当前的主防御，origin 检查
+    // 是纵深防御 —— SameSite 实现不严的 UA / future SameSite=Lax 回退会
+    // 直接暴露 CSWSH（跨站 WebSocket 劫持）。Origin 缺失（同源、无浏览器
+    // origin）放行；存在但不在白名单则拒绝。
+    const origin = request.headers.origin as string | undefined;
+    if (origin) {
+      const allowed = isAllowedOrigin(origin);
+      if (!allowed) {
+        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+        socket.destroy();
+        return;
+      }
     }
 
     // Verify session cookie (HMAC signature + DB lookup).
@@ -979,6 +1013,15 @@ function setupWebSocket(server: any): WebSocketServer {
     }
     if (session.status !== 'active') {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    // 强制改密码用户不能通过 WebSocket 发指令 / 操作终端，否则 HTTP 中
+    // PASSWORD_CHANGE_REQUIRED 形同虚设——admin 重置密码后用户仍能继续与
+    // agent 交互、开容器终端。HTTP 仍允许 /api/auth/me / /password / /sessions
+    // 完成强制改密流程。
+    if (session.must_change_password) {
+      socket.write('HTTP/1.1 403 Password Change Required\r\n\r\n');
       socket.destroy();
       return;
     }
@@ -1032,6 +1075,8 @@ function setupWebSocket(server: any): WebSocketServer {
               contextAudit: snap.contextAudit,
               todos: snap.todos,
               systemStatus: snap.systemStatus,
+              isThinking: snap.isThinking,
+              activeHook: snap.activeHook,
               turnId: snap.turnId,
             },
           } satisfies WsMessageOut));
@@ -1088,6 +1133,12 @@ function setupWebSocket(server: any): WebSocketServer {
           }
           invalidateSessionCache(sessionId);
           ws.close(1008, 'Unauthorized');
+          return;
+        }
+        // 与 upgrade 处一致：管理员重置密码后被强制改密的 session 不能继续
+        // 操作 agent / 终端；ws.close(1008) 让前端收到关闭再走改密流程。
+        if (session.must_change_password) {
+          ws.close(1008, 'Password change required');
           return;
         }
 
@@ -1198,11 +1249,20 @@ function setupWebSocket(server: any): WebSocketServer {
           // Must run before the agentId early return so /clear in a sub-agent tab
           // resets the agent session (passing agentId) instead of being delivered
           // to the agent as plain text.
-          // Permission: relies on the canAccessGroup + host-mode checks above
-          // (kept aligned with send-message; ACL tightening tracked in follow-up).
+          // Permission: owner-only (canModifyGroup) — aligned with HTTP /clear
+          // and `reset-session` route. /clear has the same destructive effect.
           // Success has no explicit ws_error/ack — the client sees the reset
           // through the broadcastNewMessage(context_reset) push from executeSessionReset.
           if (isClearCommand(content) && deps && targetGroup) {
+            if (
+              !canModifyGroup(
+                { id: session.user_id, role: session.role },
+                { ...targetGroup, jid: chatJid },
+              )
+            ) {
+              sendWsError('Only the workspace owner can run /clear', chatJid);
+              return;
+            }
             // Validate agentId before passing to executeSessionReset →
             // clearSessionFiles, which interpolates agentId into a filesystem
             // path. Mirrors the reset-session route's check (routes/groups.ts).
@@ -1569,8 +1629,11 @@ function setupWebSocket(server: any): WebSocketServer {
  * @param adminOnly - If true, only admin users receive the message
  * @param allowedUserIds - Group access filtering:
  *   - undefined: no user-level filtering (e.g. system-wide admin broadcasts)
- *   - null: ownership unresolvable → default-deny, only admin can see
- *   - Set<string>: only these users + admin can see
+ *   - null: ownership unresolvable → default-deny (drop for ALL recipients,
+ *     including admin). 这是有意的硬拒绝，不区分角色，避免 ACL 解析失败时
+ *     管理员意外看到本不该看的群组事件。注意先前文档说"only admin can see"
+ *     与代码不一致，代码 default-deny 更安全所以保留代码、对齐注释。
+ *   - Set<string>: only these users (admin must be an explicit member to see)
  */
 function safeBroadcast(
   msg: WsMessageOut,
@@ -1618,8 +1681,9 @@ function safeBroadcast(
       continue;
     }
 
-    // Group isolation: only allowed users (owner + shared members) can see this group's events
-    // allowedUserIds === null means ownership unresolvable → default-deny (admin-only)
+    // Group isolation: only allowed users (owner + shared members) can see this group's events.
+    // allowedUserIds === null means ownership unresolvable → default-deny EVERYONE
+    // (including admin). 故意这样：解析失败时宁可不广播也不要意外泄漏。
     if (allowedUserIds !== undefined) {
       if (allowedUserIds === null || !allowedUserIds.has(session.user_id)) {
         continue;
@@ -1807,12 +1871,12 @@ interface StreamingSnapshotEntry {
     id: string;
     timestamp: number;
     text: string;
-    kind: 'tool' | 'skill' | 'hook' | 'status' | 'task' | 'memory' | 'context' | 'debug';
+    kind: 'tool' | 'skill' | 'hook' | 'status' | 'task' | 'memory' | 'context' | 'debug' | 'permission';
   }>;
   traceEvents: Array<{
     id: string;
     timestamp: number;
-    kind: 'tool' | 'skill' | 'hook' | 'status' | 'task' | 'memory' | 'context' | 'debug';
+    kind: 'tool' | 'skill' | 'hook' | 'status' | 'task' | 'memory' | 'context' | 'debug' | 'permission';
     scope?: StreamEvent['agentScope'];
     title: string;
     summary?: string;
@@ -1838,6 +1902,13 @@ interface StreamingSnapshotEntry {
   }>;
   todos?: Array<{ id: string; content: string; status: string }>;
   systemStatus: string | null;
+  /** Whether the agent is mid-thinking (no text emitted yet) — kept in the
+   *  snapshot so a WS reconnect restores the "思考中" indicator instead of a
+   *  blank pause. */
+  isThinking?: boolean;
+  /** Currently-running hook, if any — restored on reconnect so the hook spinner
+   *  survives the reconnect instead of silently disappearing. */
+  activeHook?: { hookName: string; hookEvent: string } | null;
   turnId?: string;
   updatedAt: number;
 }
@@ -1852,7 +1923,7 @@ const MAX_SNAPSHOT_TRACE_EVENTS = 200;
 const MAX_SNAPSHOT_TASK_TAIL = 4000;
 
 /** Push a recent event entry and truncate to MAX_SNAPSHOT_EVENTS. */
-function pushRecentEvent(snap: StreamingSnapshotEntry, event: { id: string; timestamp: number; text: string; kind: 'tool' | 'skill' | 'hook' | 'status' | 'task' | 'memory' | 'context' | 'debug' }): void {
+function pushRecentEvent(snap: StreamingSnapshotEntry, event: { id: string; timestamp: number; text: string; kind: 'tool' | 'skill' | 'hook' | 'status' | 'task' | 'memory' | 'context' | 'debug' | 'permission' }): void {
   snap.recentEvents.push(event);
   if (snap.recentEvents.length > MAX_SNAPSHOT_EVENTS) {
     snap.recentEvents = snap.recentEvents.slice(-MAX_SNAPSHOT_EVENTS);
@@ -1867,6 +1938,7 @@ function pushTraceEvent(snap: StreamingSnapshotEntry, event: StreamEvent): void 
     event.eventType.startsWith('task_') ? 'task' :
     event.eventType === 'memory_recall' || event.eventType === 'compact_boundary' ? 'memory' :
     event.eventType === 'context_audit' ? 'context' :
+    event.eventType === 'permission_denied' ? 'permission' :
     event.eventType === 'raw_sdk_event' ? 'debug' :
     'status';
   const title = event.title
@@ -1956,6 +2028,14 @@ function updateSnapshotTask(snap: StreamingSnapshotEntry, event: StreamEvent): v
 }
 
 function updateStreamingSnapshot(normalizedJid: string, event: StreamEvent): void {
+  // turn 干净结束（silent-success）：删除快照而非累积，避免 WS 重连恢复到
+  // 「生成中」僵尸快照。前端收到同一 idle 事件后清 waiting/streaming。
+  if (event.eventType === 'status' && event.statusText === 'idle') {
+    streamingSnapshots.delete(normalizedJid);
+    streamingFullTexts.delete(normalizedJid);
+    return;
+  }
+
   let snap = streamingSnapshots.get(normalizedJid);
 
   // Reset on new turn
@@ -1986,6 +2066,8 @@ function updateStreamingSnapshot(normalizedJid: string, event: StreamEvent): voi
   switch (event.eventType) {
     case 'text_delta':
       if (event.text && !event.parentToolUseId) {
+        // Real assistant text means the current thinking burst is over.
+        snap.isThinking = false;
         snap.partialText += event.text;
         if (snap.partialText.length > MAX_SNAPSHOT_TEXT) {
           snap.partialText = snap.partialText.slice(-MAX_SNAPSHOT_TEXT);
@@ -1997,6 +2079,7 @@ function updateStreamingSnapshot(normalizedJid: string, event: StreamEvent): voi
 
     case 'thinking_delta':
       if (event.text && !event.parentToolUseId) {
+        snap.isThinking = true;
         snap.thinkingText += event.text;
         if (snap.thinkingText.length > MAX_SNAPSHOT_THINKING) {
           snap.thinkingText = snap.thinkingText.slice(-MAX_SNAPSHOT_THINKING);
@@ -2006,6 +2089,8 @@ function updateStreamingSnapshot(normalizedJid: string, event: StreamEvent): voi
 
     case 'tool_use_start':
       if (event.toolUseId && event.toolName) {
+        // A tool call ends the current thinking burst.
+        snap.isThinking = false;
         snap.activeTools.push({
           toolName: event.toolName,
           toolUseId: event.toolUseId,
@@ -2077,6 +2162,7 @@ function updateStreamingSnapshot(normalizedJid: string, event: StreamEvent): voi
       break;
 
     case 'hook_started':
+      snap.activeHook = { hookName: event.hookName || '', hookEvent: event.hookEvent || '' };
       if (event.hookName) {
         pushRecentEvent(snap, {
           id: `hook-${Date.now()}`,
@@ -2085,6 +2171,14 @@ function updateStreamingSnapshot(normalizedJid: string, event: StreamEvent): voi
           kind: 'hook',
         });
       }
+      break;
+
+    case 'hook_progress':
+      snap.activeHook = { hookName: event.hookName || '', hookEvent: event.hookEvent || '' };
+      break;
+
+    case 'hook_response':
+      snap.activeHook = null;
       break;
 
     case 'memory_recall':
@@ -2324,6 +2418,34 @@ function broadcastStatus(): void {
 let statusInterval: ReturnType<typeof setInterval> | null = null;
 let httpServer: ReturnType<typeof serve> | null = null;
 let wss: WebSocketServer | null = null;
+
+/**
+ * Test-only factory: wires the given `WebDeps` into module + route state and
+ * returns the fully-configured Hono `app` (every route is already mounted at
+ * module load) so integration tests can exercise HTTP routes via
+ * `app.request(...)` — most notably `POST /api/messages` and its `/clear`
+ * interception — without starting the HTTP server, WebSocket server, container
+ * exit callbacks, or the status-broadcast interval.
+ *
+ * Mirrors the dependency wiring in {@link startWebServer} minus all the
+ * runtime side effects. NOT for production use.
+ *
+ * The supplied `webDeps` must be complete for the routes a test actually
+ * drives — this only re-binds deps, it does not validate them, so a route that
+ * reaches a `WebDeps` field the stub omits throws at request time (not at
+ * construction). The current caller stays within the `/clear` ACL path, which
+ * needs only `queue.stopGroup` / `getSessions` / `setLastAgentTimestamp`.
+ */
+export function createAppForTest(webDeps: WebDeps): typeof app {
+  deps = webDeps;
+  setWebDeps(webDeps);
+  injectConfigDeps(webDeps);
+  injectMonitorDeps({
+    broadcastDockerBuildLog,
+    broadcastDockerBuildComplete,
+  });
+  return app;
+}
 
 export function startWebServer(webDeps: WebDeps): void {
   deps = webDeps;

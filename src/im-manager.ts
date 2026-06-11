@@ -123,6 +123,68 @@ class IMConnectionManager {
   private connections = new Map<string, UserIMConnection>();
   private adminUserIds = new Set<string>();
   private lastWhatsAppState = new Map<string, WhatsAppConnectionStateSnapshot>();
+  // Per-(userId, channelType) 串行化锁。connectChannel / disconnectChannel
+  // 必须按顺序排队，否则两次重叠的 reconnect 会让旧 disconnect 的清理跨过新
+  // connect 的 channels.set，留下一条悬挂的 live channel（双发消息）。
+  private channelLocks = new Map<string, Promise<unknown>>();
+  // Per-user 串行化锁：disconnectAllUserChannels 必须独占整个 user 范围，
+  // 否则只锁 channelType 时与 in-flight connectChannel('其他 channelType')
+  // 的 channels.set 仍会 race，让 connections.delete 之后 channel 复活。
+  // 同时记录 'sealed' 状态：disconnectAll 完成后的窗口里禁止 connectChannel
+  // 重新创建该 userId 的 connections 入口，直到外层逻辑显式调用
+  // markUserConnectableAgain（loadState 重建路径）。
+  private userLocks = new Map<string, Promise<unknown>>();
+  private sealedUsers = new Set<string>();
+
+  private async withUserLock<T>(
+    userId: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const prev = this.userLocks.get(userId) ?? Promise.resolve();
+    let release: () => void;
+    const next = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const chain = prev.catch(() => undefined).then(() => next);
+    this.userLocks.set(userId, chain);
+    await prev.catch(() => undefined);
+    try {
+      return await fn();
+    } finally {
+      release!();
+      // Drop tail entry once nothing else queued behind us, prevent unbounded
+      // growth of the lock map for short-lived users.
+      if (this.userLocks.get(userId) === chain) {
+        this.userLocks.delete(userId);
+      }
+    }
+  }
+
+  private async withChannelLock<T>(
+    userId: string,
+    channelType: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const key = `${userId}:${channelType}`;
+    const prev = this.channelLocks.get(key) ?? Promise.resolve();
+    let release: () => void;
+    const next = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // Chain `next` after the previous holder finishes (success or failure).
+    const chain = prev.catch(() => undefined).then(() => next);
+    this.channelLocks.set(key, chain);
+    await prev.catch(() => undefined);
+    try {
+      return await fn();
+    } finally {
+      release!();
+      // 长跑回收：若没人在我之后排队，移除 Map 项；否则后人继续持有。
+      if (this.channelLocks.get(key) === chain) {
+        this.channelLocks.delete(key);
+      }
+    }
+  }
 
   /** Register a user ID as admin (for fallback routing) */
   registerAdminUser(userId: string): void {
@@ -149,22 +211,73 @@ class IMConnectionManager {
     channel: IMChannel,
     opts: IMChannelConnectOpts,
   ): Promise<boolean> {
-    // Disconnect existing channel of same type
-    await this.disconnectChannel(userId, channelType);
+    // user 维度锁 + sealed 检查：避免与 disconnectAllUserChannels race。
+    // disconnect-all 期间任何 connect 都被排到锁队列后面；disconnect-all
+    // 完成时把 user 标 sealed，新 connect 直接拒绝。运维流程：禁用/删除
+    // 用户后调用 markUserReconnectable 重新允许（loadState / 用户重新启用）。
+    return this.withUserLock(userId, async () => {
+      if (this.sealedUsers.has(userId)) {
+        logger.warn(
+          { userId, channelType },
+          'connectChannel rejected: user sealed (disabled/deleted)',
+        );
+        // 谨慎：仍然 disconnect 任何已构造的 channel 释放底层资源
+        try {
+          await channel.disconnect();
+        } catch {
+          /* ignore */
+        }
+        return false;
+      }
+      return this.withChannelLock(userId, channelType, async () => {
+        // Disconnect existing channel of same type
+        await this.disconnectChannelLocked(userId, channelType);
 
-    const conn = this.getOrCreate(userId);
-    const connected = await channel.connect(opts);
-    if (connected) {
-      conn.channels.set(channelType, channel);
-      logger.info({ userId, channelType }, 'IM channel connected');
-    }
-    return connected;
+        // Re-check sealed inside the channel-lock — disconnectAllUserChannels
+        // may have flipped it while we were waiting; in that case bail.
+        if (this.sealedUsers.has(userId)) {
+          try {
+            await channel.disconnect();
+          } catch {
+            /* ignore */
+          }
+          return false;
+        }
+        const conn = this.getOrCreate(userId);
+        const connected = await channel.connect(opts);
+        if (connected) {
+          // 第三次也是最后一次 sealed 检查：channel.connect 期间网络耗时，
+          // disconnectAllUserChannels 可能已经把所有 channel 都断完并 seal。
+          if (this.sealedUsers.has(userId)) {
+            try {
+              await channel.disconnect();
+            } catch {
+              /* ignore */
+            }
+            return false;
+          }
+          conn.channels.set(channelType, channel);
+          logger.info({ userId, channelType }, 'IM channel connected');
+        }
+        return connected;
+      });
+    });
   }
 
   /**
    * Disconnect a specific channel type for a user.
    */
   async disconnectChannel(userId: string, channelType: string): Promise<void> {
+    return this.withChannelLock(userId, channelType, async () => {
+      await this.disconnectChannelLocked(userId, channelType);
+    });
+  }
+
+  /** Caller must already hold the per-(userId, channelType) lock. */
+  private async disconnectChannelLocked(
+    userId: string,
+    channelType: string,
+  ): Promise<void> {
     const conn = this.connections.get(userId);
     const channel = conn?.channels.get(channelType);
     if (channel) {
@@ -1051,22 +1164,47 @@ class IMConnectionManager {
    * (loadState filters out non-active users at startup).
    */
   async disconnectAllUserChannels(userId: string): Promise<void> {
-    const conn = this.connections.get(userId);
-    if (!conn) return;
-    const promises: Promise<void>[] = [];
-    for (const [channelType, channel] of conn.channels.entries()) {
-      promises.push(
-        channel.disconnect().catch((err) => {
+    // 必须用 user-scope 锁串行 + 设 sealed 标记：仅 channelType 锁锁不住与
+    // 同一 user 的其他 channelType 的 connectChannel 并发，会让被禁用用户的
+    // connections 在 connections.delete 之后又被 connectChannel.getOrCreate
+    // 复活，bot 持续响应消息。sealed 标记让后续 connectChannel 直接拒绝
+    // 直到 markUserReconnectable 调用（恢复用户启用时由 reconnectUserIMChannels 触发）。
+    await this.withUserLock(userId, async () => {
+      this.sealedUsers.add(userId);
+      const conn = this.connections.get(userId);
+      if (!conn) {
+        logger.info({ userId }, 'No IM connections for user, marked sealed');
+        return;
+      }
+      const channelTypes = Array.from(conn.channels.keys());
+      for (const ct of channelTypes) {
+        try {
+          await this.disconnectChannelLocked(userId, ct);
+        } catch (err) {
           logger.warn(
-            { userId, channelType, err },
+            { userId, channelType: ct, err },
             'Error disconnecting user IM channel',
           );
-        }),
+        }
+      }
+      const remaining = this.connections.get(userId);
+      if (remaining && remaining.channels.size === 0) {
+        this.connections.delete(userId);
+      }
+      logger.info(
+        { userId, sealedDuringDisconnect: true },
+        'All IM channels for user disconnected',
       );
-    }
-    await Promise.allSettled(promises);
-    this.connections.delete(userId);
-    logger.info({ userId }, 'All IM channels for user disconnected');
+    });
+  }
+
+  /**
+   * Allow connectChannel for this userId again. Used by reconnectUserIMChannels
+   * when an admin re-enables a previously disabled/deleted user — without this
+   * the sealed flag would block all reconnection until process restart.
+   */
+  markUserReconnectable(userId: string): void {
+    this.sealedUsers.delete(userId);
   }
 
   /**

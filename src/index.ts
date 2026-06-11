@@ -1,3 +1,4 @@
+import './load-env.js'; // 必须最先执行：加载 .env 到 process.env，供后续模块（config/web 等）读取
 import { ChildProcess, execFile } from 'child_process';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -116,6 +117,9 @@ import {
   formatSystemStatus,
   resolveBoundChatTarget,
   resolveLocationInfo,
+  checkImOwnerCommand,
+  isDirectMessageJid,
+  OWNER_REQUIRED_IM_COMMANDS,
   type WorkspaceInfo,
 } from './im-command-utils.js';
 import {
@@ -213,6 +217,13 @@ import {
 import { verifyPairingCode } from './telegram-pairing.js';
 import { sdkQuery } from './sdk-query.js';
 import { executeSessionReset } from './commands.js';
+import {
+  claimOwner,
+  releaseOwner,
+  addToAllowlist,
+  removeFromAllowlist,
+  persistGroupUpdate,
+} from './group-owner.js';
 import { buildRecentConversationHistoryContext } from './conversation-history.js';
 import { scanHostMarketplaces } from './plugin-importer.js';
 import { expandMessagesIfNeeded } from './plugin-expander-core.js';
@@ -299,9 +310,31 @@ export function feedStreamEventToCard(
         if (info) session.pushRecentEvent(`✅ ${info.name}`);
       }
       break;
+    case 'tool_result': {
+      // Surface the (truncated + sanitized) tool output in the timeline so the
+      // card shows *what* a tool returned, aligning with Claude Code's trace.
+      if (se.toolResult) {
+        const resultInfo = se.toolUseId ? session.getToolInfo(se.toolUseId) : undefined;
+        const toolLabel = resultInfo?.name ? `\`${resultInfo.name}\` ` : '';
+        session.pushRecentEvent(
+          `↳ <font color='grey'>结果</font> ${toolLabel}${se.toolResult.slice(0, 120)}`,
+        );
+      }
+      break;
+    }
     case 'tool_progress':
       if (se.toolUseId && se.toolInputSummary) {
         session.updateToolSummary(se.toolUseId, se.toolInputSummary);
+      }
+      // AskUserQuestion 等工具的结构化输入（questions/options）经 tool_progress
+      // 的 toolInput 字段下发（非 toolInputSummary，因流式 tool_use_start 时 input 恒空）。
+      // 写入 tc.toolInput 以驱动飞书 ASK 面板渲染，与 Web 端 applyStreamEvent 对齐。
+      if (
+        se.toolUseId &&
+        se.toolInput &&
+        session instanceof StreamingCardController
+      ) {
+        session.setToolMeta(se.toolUseId, { toolInput: se.toolInput });
       }
       break;
     case 'status':
@@ -398,13 +431,35 @@ export function feedStreamEventToCard(
     case 'usage':
       if (se.usage) session.patchUsageNote(se.usage);
       break;
-    case 'permission_denied':
+    case 'permission_denied': {
+      // A denied tool call is a real signal (the agent wanted to do something
+      // it wasn't allowed to) — render it in red so it stands out from the
+      // grey routine-event stream instead of being buried as plain text.
+      const pd = se.permissionDenied;
+      const toolName = pd?.toolName || se.toolName || '';
+      const reason = pd?.reason || pd?.message || se.summary || '';
+      const toolPart = toolName ? ` \`${toolName}\`` : '';
+      const reasonPart = reason
+        ? ` <font color='grey'>${reason.slice(0, 80)}</font>`
+        : '';
+      session.pushRecentEvent(
+        `🚫 <text_tag color='red'>权限拒绝</text_tag>${toolPart}${reasonPart}`,
+      );
+      break;
+    }
     case 'memory_recall':
     case 'compact_boundary':
     case 'notification':
     case 'prompt_suggestion':
       if (se.summary || se.title) {
-        session.pushRecentEvent(`${se.title || se.eventType}: ${(se.summary || '').slice(0, 80)}`);
+        // memory_recall / compact_boundary carry the matched memory or the
+        // pre-compaction summary in `detail`; surface it (clamped) after the
+        // headline so the runtime trace shows *what* was recalled/compacted,
+        // not just that it happened.
+        const detail = se.detail ? ` <font color='grey'>${se.detail.slice(0, 120)}</font>` : '';
+        session.pushRecentEvent(
+          `${se.title || se.eventType}: ${(se.summary || '').slice(0, 80)}${detail}`,
+        );
       }
       if (se.eventType === 'compact_boundary') {
         session.setSystemStatus(se.summary || '上下文已压缩');
@@ -1294,6 +1349,39 @@ async function handleCommand(
   const cmd = parts[0].toLowerCase();
   const rawArgs = command.slice(parts[0].length).trim();
 
+  // Owner gate for destructive IM commands. See OWNER_REQUIRED_IM_COMMANDS
+  // doc in im-command-utils.ts for the exclusion rationale (notably
+  // /owner_mention stays open as the bootstrap path for unowned groups).
+  let group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
+
+  // DM auto-claim: in a 1:1 IM chat the sender is unambiguously the owner, so
+  // claim them on the first owner-required command instead of forcing a
+  // separate /owner_mention (pure friction for a single-person DM). Group
+  // chats never auto-claim — isDirectMessageJid returns false for them, so the
+  // first commander can't silently grab ownership. Feishu already auto-sets
+  // owner_im_id via its DM owner-learn path, so this only kicks in for the
+  // non-Feishu channels that buildOnNewChat leaves unowned.
+  if (
+    OWNER_REQUIRED_IM_COMMANDS.has(cmd) &&
+    group &&
+    !group.owner_im_id &&
+    senderImId &&
+    isDirectMessageJid(chatJid)
+  ) {
+    const claimed = claimOwner(group, senderImId);
+    persistGroupUpdate(chatJid, claimed, registeredGroups);
+    group = claimed;
+    logger.info(
+      { chatJid, senderImId },
+      'Auto-claimed DM owner on first owner-required command',
+    );
+  }
+
+  const ownerCheck = checkImOwnerCommand(cmd, group, senderImId);
+  if (!ownerCheck.ok) {
+    return `⚠️ ${ownerCheck.reason}`;
+  }
+
   switch (cmd) {
     case 'clear':
       return handleClearCommand(chatJid);
@@ -1317,6 +1405,8 @@ async function handleCommand(
       return handleRequireMentionCommand(chatJid, rawArgs, senderImId);
     case 'owner_mention':
       return handleOwnerMentionCommand(chatJid, senderImId);
+    case 'release_owner':
+      return handleReleaseOwnerCommand(chatJid);
     case 'sw':
     case 'spawn':
       return handleSpawnCommand(chatJid, rawArgs, chatJid);
@@ -1679,41 +1769,42 @@ function handleRequireMentionCommand(chatJid: string, rawArgs: string, senderImI
   const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
   if (!group) return '未找到当前会话';
 
-  // owner_mentioned 模式下，只有 owner 可以修改激活模式
-  if (group.activation_mode === 'owner_mentioned' && group.owner_im_id) {
+  // owner_im_id 已存在时，无论 activation_mode 是什么，非 owner 都不能改 activation_mode：
+  // 否则任意成员可以 /require_mention false 把群从 auto/when_mentioned/owner_mentioned 翻成
+  // always，相当于聊天提权。owner_im_id 未设置时仍放行（bootstrap path）。
+  if (group.owner_im_id) {
     if (!senderImId || senderImId !== group.owner_im_id) {
-      return '当前为「仅 owner 响应」模式，只有 owner 可以修改此设置';
+      return '⚠️ 只有工作区 owner 才能修改此设置';
     }
   }
 
   const action = rawArgs.trim().toLowerCase();
   if (action === 'true') {
-    // 如果当前是 owner_mentioned 模式，切换为 when_mentioned 并清除 owner
+    // 如果当前是 owner_mentioned 模式，切换为 when_mentioned 但保留 owner
+    // 注意：不清空 owner_im_id —— owner 是工作区认领标识，非 owner 通过
+    // 切换 activation_mode 不应该获得清掉 owner、再 /owner_mention 自我夺权的能力。
     if (group.activation_mode === 'owner_mentioned') {
       const updated: RegisteredGroup = {
         ...group,
         require_mention: true,
         activation_mode: 'when_mentioned',
-        owner_im_id: undefined,
       };
-      setRegisteredGroup(chatJid, updated);
-      registeredGroups[chatJid] = updated;
+      persistGroupUpdate(chatJid, updated, registeredGroups);
       return '已从「仅 owner 响应」切换为「需要 @机器人」模式，所有人 @机器人 均可触发';
     }
     const updated: RegisteredGroup = { ...group, require_mention: true };
-    setRegisteredGroup(chatJid, updated);
-    registeredGroups[chatJid] = updated;
+    persistGroupUpdate(chatJid, updated, registeredGroups);
     return '已开启：群聊中需要 @机器人 才会响应';
   } else if (action === 'false') {
+    // 关闭 require_mention 时退出 owner_mentioned 模式，但保留 owner_im_id：
+    // owner 身份是工作区的安全锚点（owner-required 命令依据它鉴权），不能因为
+    // 切换激活策略就被任意人通过 /require_mention false 重置。
     const updated: RegisteredGroup = {
       ...group,
       require_mention: false,
-      // 同时清除 owner_mentioned 模式，恢复为全量响应
       activation_mode: 'always',
-      owner_im_id: undefined,
     };
-    setRegisteredGroup(chatJid, updated);
-    registeredGroups[chatJid] = updated;
+    persistGroupUpdate(chatJid, updated, registeredGroups);
     return '已关闭：群聊中所有消息都会响应，无需 @机器人';
   } else if (!action) {
     const current = group.require_mention === true;
@@ -1723,9 +1814,11 @@ function handleRequireMentionCommand(chatJid: string, rawArgs: string, senderImI
 }
 
 /**
- * /owner_mention 命令：将当前发送者设为群组 owner（用于 owner_mentioned 模式）。
- * 执行后该群组只响应此发送者的 @mention，其他人的 @mention 被静默忽略。
- * 如果已有 owner，只有当前 owner 可以重新设置。
+ * /owner_mention 命令：将当前发送者认领为群组 owner（owner-only 命令的鉴权锚点）。
+ * 仅写入 owner_im_id，不修改 activation_mode —— 群组的激活策略（auto / always /
+ * when_mentioned / owner_mentioned）保持不变。
+ * 已有 owner 时（任意 activation_mode），只有当前 owner 本人可幂等地重发，
+ * 其他人会被拒绝以防夺权。
  */
 function handleOwnerMentionCommand(chatJid: string, senderImId?: string): string {
   const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
@@ -1735,27 +1828,42 @@ function handleOwnerMentionCommand(chatJid: string, senderImId?: string): string
     return '无法识别发送者身份，请在飞书或钉钉群聊中使用此命令';
   }
 
-  // 已有 owner 时，只有 owner 本人可以重新设置
-  if (group.activation_mode === 'owner_mentioned' && group.owner_im_id && group.owner_im_id !== senderImId) {
-    return '当前群组已有 owner，只有 owner 本人可以重新设置';
+  // 已有 owner 时，任意 activation_mode 下都拒绝非 owner 的认领，避免任意人通过
+  // /owner_mention 覆盖已存在的 owner_im_id（哪怕群组当前是 'auto' / 'always' /
+  // 'when_mentioned' 模式，owner_im_id 也可能由 /allow 回填或别处设置过）。
+  // 当前 sender 就是 owner 本人时允许，保持幂等。
+  if (group.owner_im_id && group.owner_im_id !== senderImId) {
+    return '⚠️ 该群组已有 owner，无法重新认领';
   }
 
-  const updated: RegisteredGroup = {
-    ...group,
-    activation_mode: 'owner_mentioned',
-    owner_im_id: senderImId,
-  };
-  setRegisteredGroup(chatJid, updated);
-  registeredGroups[chatJid] = updated;
+  // 仅认领 owner，不强制切换 activation_mode：用户当前的群组激活策略（auto /
+  // always / when_mentioned）保持不变，避免 bootstrap 时被意外改成「仅 owner 响应」。
+  const updated = claimOwner(group, senderImId);
+  persistGroupUpdate(chatJid, updated, registeredGroups);
 
   logger.info(
-    { chatJid, senderImId },
-    'Owner mention mode enabled via /owner_mention command',
+    { chatJid, senderImId, activationMode: updated.activation_mode },
+    'Owner claimed via /owner_mention command',
   );
 
-  return `已开启「仅我响应」模式\n\n你的 IM 标识: ${senderImId}\n只有你 @机器人 时才会响应，其他人的 @mention 将被静默忽略。\n\n发送 /require_mention false 可恢复为全量响应。`;
+  return `已认领工作区 owner\n\n你的 IM 标识: ${senderImId}\n后续 /clear、/bind、/spawn 等 owner-only 命令将以你为准。\n群组激活策略保持不变（当前: ${updated.activation_mode ?? 'auto'}）。`;
 }
 
+/**
+ * /release_owner 命令：当前 owner 主动释放 owner 身份（reclaim path）。
+ * `checkImOwnerCommand` 已在 handleCommand 顶部确保 sender === owner_im_id。
+ * 同时清空 sender_allowlist（避免新 owner 被旧 owner 的白名单锁死、/allow 也
+ * 无法自救），并把 owner_mentioned 模式降级为 when_mentioned（否则清掉 owner
+ * 后 isGroupOwnerMessage 永远返回 false，bot 会在群里全员沉默）。
+ */
+function handleReleaseOwnerCommand(chatJid: string): string {
+  const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
+  if (!group) return '未找到当前工作区';
+  const updated = releaseOwner(group);
+  persistGroupUpdate(chatJid, updated, registeredGroups);
+  logger.info({ chatJid }, 'Owner released via /release_owner');
+  return '✅ 已释放 owner 身份。白名单已清空，激活策略已调整为 when_mentioned（如原本是 owner-only）。下一位用户可发送 /owner_mention 重新认领。';
+}
 
 /**
  * /allow @成员 命令：将 @提及的成员加入发言者白名单（仅 owner 可操作）。
@@ -1775,9 +1883,8 @@ function handleAllowCommand(
   if (!group.owner_im_id && group.created_by) {
     const userOwnerOpenId = getUserFeishuConfig(group.created_by)?.ownerOpenId;
     if (userOwnerOpenId && userOwnerOpenId === senderImId) {
-      const updated: RegisteredGroup = { ...group, owner_im_id: senderImId };
-      setRegisteredGroup(chatJid, updated);
-      registeredGroups[chatJid] = updated;
+      const updated = claimOwner(group, senderImId);
+      persistGroupUpdate(chatJid, updated, registeredGroups);
       group = updated;
       logger.info(
         { chatJid, senderImId },
@@ -1801,21 +1908,14 @@ function handleAllowCommand(
     return '请 @提及 要加入白名单的群成员：/allow @成员';
   }
 
-  const current = group.sender_allowlist ?? [senderImId];
-  const newIds = toAdd.filter((id) => !current.includes(id));
-  if (newIds.length === 0) {
+  const { group: updated, added } = addToAllowlist(group, senderImId, toAdd);
+  if (added.length === 0) {
     return '这些成员已在白名单中';
   }
+  persistGroupUpdate(chatJid, updated, registeredGroups);
+  logger.info({ chatJid, senderImId, added }, 'Members added to sender allowlist');
 
-  const updated: RegisteredGroup = {
-    ...group,
-    sender_allowlist: [...current, ...newIds],
-  };
-  setRegisteredGroup(chatJid, updated);
-  registeredGroups[chatJid] = updated;
-  logger.info({ chatJid, senderImId, added: newIds }, 'Members added to sender allowlist');
-
-  return `已将 ${newIds.length} 名成员加入白名单（当前共 ${updated.sender_allowlist!.length} 人）`;
+  return `已将 ${added.length} 名成员加入白名单（当前共 ${updated.sender_allowlist!.length} 人）`;
 }
 
 /**
@@ -1849,14 +1949,16 @@ function handleDisallowCommand(
     return 'Owner 不能将自己移出白名单';
   }
 
-  const updated_list = group.sender_allowlist.filter((id) => !toRemove.includes(id));
-  const updated: RegisteredGroup = { ...group, sender_allowlist: updated_list };
-  setRegisteredGroup(chatJid, updated);
-  registeredGroups[chatJid] = updated;
+  const { group: updated, removed } = removeFromAllowlist(group, toRemove);
+  if (removed === 0) {
+    // Nothing matched — skip the no-op persist (mirrors handleAllowCommand's
+    // early return when added.length === 0; avoids a redundant full-row write).
+    return `这些成员不在白名单中（当前共 ${group.sender_allowlist!.length} 人）`;
+  }
+  persistGroupUpdate(chatJid, updated, registeredGroups);
   logger.info({ chatJid, senderImId, removed: toRemove }, 'Members removed from sender allowlist');
 
-  const removedCount = group.sender_allowlist.length - updated_list.length;
-  return `已将 ${removedCount} 名成员从白名单移除（当前共 ${updated_list.length} 人）`;
+  return `已将 ${removed} 名成员从白名单移除（当前共 ${updated.sender_allowlist!.length} 人）`;
 }
 
 /**
@@ -2573,6 +2675,13 @@ function saveState(): void {
 }
 
 function registerGroup(jid: string, group: RegisteredGroup): void {
+  // 严格校验 folder 名：注册路径来自 IPC（agent register_group 工具）和直接调用，
+  // folder 会直接拼到 path.join(GROUPS_DIR, ...) 上。任何含 `..`、绝对路径或
+  // 路径分隔符的 folder 都会让 mkdir/写入跑出 GROUPS_DIR 之外（agent
+  // bypass-permissions 模式下完全可达）。规则与典型 unix 目录命名一致。
+  if (!group.folder || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(group.folder)) {
+    throw new Error(`registerGroup: invalid folder name: ${group.folder}`);
+  }
   registeredGroups[jid] = group;
   setRegisteredGroup(jid, group);
 
@@ -3138,15 +3247,20 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             broadcastStreamEvent(chatJid, result.streamEvent);
 
             // ── 累积 text_delta / thinking_delta 文本（中断时用于保存已输出内容）──
+            // 仅累积主 Agent 文本（无 parentToolUseId）。子 Agent（SDK Task）的
+            // 中间文本带 parentToolUseId，混入会污染飞书主卡片正文与 interrupt_partial。
+            // 与 Web 端 chat.ts 对带 parentToolUseId 的 text_delta 隔离到 Task 块的逻辑对齐。
             if (
               result.streamEvent.eventType === 'text_delta' &&
-              result.streamEvent.text
+              result.streamEvent.text &&
+              !result.streamEvent.parentToolUseId
             ) {
               streamingAccumulatedText += result.streamEvent.text;
             }
             if (
               result.streamEvent.eventType === 'thinking_delta' &&
-              result.streamEvent.text
+              result.streamEvent.text &&
+              !result.streamEvent.parentToolUseId
             ) {
               streamingAccumulatedThinking += result.streamEvent.text;
             }
@@ -3743,11 +3857,37 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     // ── Streaming card cleanup ──
     if (streamingSession) {
       if (streamingSession.isActive()) {
+        // isActive() 仍为 true ⟹ 卡片从未被 complete()（result.result 非空路径会
+        // 在 3594 complete 后令 isActive 转 false）。这里覆盖所有"卡片建了但没收口"的
+        // 收尾场景，避免卡片永久停在「生成中」（僵尸卡片）。
         if (hadError || !output || output.status === 'error') {
           await streamingSession.abort('处理出错').catch(() => {});
         } else if (wasInterrupted) {
           await streamingSession.abort('已中断').catch(() => {});
+        } else if (output.status === 'closed') {
+          // closed：容器 drain/_close 中断了 in-flight query（agent-runner 发
+          // status:'closed' 而非 interrupt 流事件，streamInterrupted 仍为 false）。
+          // 该消息会重试（3904 保留 cursor），此处仅收口卡片避免僵尸卡 + 重试叠卡。
+          // 文案区别于"已中断"：closed 是系统侧打断并自动重试，非用户主动中断。
+          await streamingSession.abort('连接已切换，正在重试').catch(() => {});
+        } else if (!sentReply) {
+          // 真 silent-success：本轮从未发过可见回复（agent 仅用 send_message 旁路
+          // 回复、最终 result 为空，3546 if(result.result) 门控跳过了 complete()）。
+          // complete() 把卡片从 streaming 收口到 completed（空正文由 buildStructuredFinalCard
+          // 兜底为 "..."，并保留 thinking/工具统计），而非裸 dispose() 留下「生成中」僵尸卡。
+          try {
+            await streamingSession.complete(streamingAccumulatedText);
+          } catch (err) {
+            logger.warn(
+              { err, chatJid },
+              'Streaming card silent-success finalize failed, disposing',
+            );
+            streamingSession.dispose();
+          }
         } else {
+          // sentReply 已为 true：卡片是正常回复 complete 后由 3651 为"下一条消息"预建的
+          // 空白 active 卡，本轮无后续 result。dispose() 丢弃，不可 complete()（否则会
+          // 凭空渲染一张正文为 "..." 的完成卡）。
           streamingSession.dispose();
         }
       }
@@ -3968,7 +4108,13 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     // which is ambiguous for host processes (could be user stop, process tree
     // kill, or actual OOM).  exitLabel is either `code N` or `signal X` —
     // never both — so this only triggers on Docker container OOM exits.
-    const isOom = OOM_EXIT_RE.test(errorDetail);
+    //
+    // Additional guard: stopGroup → SIGTERM → grace timeout → docker kill 也会
+    // 让容器以 137 退出。如果用户刚点过 stop（GroupQueue.isRecentlyStopped），
+    // 不要把这次退出计入 OOM 计数 —— 否则连续两次手动 stop 就会触发会话重置
+    // 并显示『内存溢出』提示，混淆运维。
+    const isUserStopped = queue.isRecentlyStopped(effectiveGroup.folder);
+    const isOom = !isUserStopped && OOM_EXIT_RE.test(errorDetail);
     if (isOom) {
       const folder = effectiveGroup.folder;
       consecutiveOomExits[folder] = (consecutiveOomExits[folder] || 0) + 1;
@@ -4041,6 +4187,20 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   }
 
   // Final fallback for silent-success paths (no visible reply).
+  // silent-success：agent 仅用 send_message 旁路回复或最终 result 为空，未发
+  // sdk_final new_message。前端的 waiting/streaming 被 thinking/tool 流事件设为 true 后
+  // 没有任何终态信号可清，会永久停在「正在思考...」。广播一个 idle status 事件让前端
+  // 收口；broadcastStreamEvent→updateStreamingSnapshot 会据 idle 删除后端快照，
+  // 避免 WS 重连恢复到「生成中」僵尸快照。
+  // （飞书等 IM 卡片已在 finally 的 complete()/abort() 收口，此处仅补 Web 通路。）
+  if (!sentReply) {
+    broadcastStreamEvent(chatJid, {
+      eventType: 'status',
+      statusText: 'idle',
+      turnId: lastProcessed.id,
+      sessionId: activeSessionId,
+    });
+  }
   commitCursor();
 
   return true;
@@ -5559,14 +5719,23 @@ async function processTaskIpc(
           data.executionMode === 'host' || data.executionMode === 'container'
             ? data.executionMode
             : undefined;
-        registerGroup(data.jid, {
-          name: data.name,
-          folder: data.folder,
-          added_at: new Date().toISOString(),
-          containerConfig: data.containerConfig,
-          created_by: sourceEntry?.created_by,
-          executionMode: execMode,
-        });
+        try {
+          registerGroup(data.jid, {
+            name: data.name,
+            folder: data.folder,
+            added_at: new Date().toISOString(),
+            containerConfig: data.containerConfig,
+            created_by: sourceEntry?.created_by,
+            executionMode: execMode,
+          });
+        } catch (err) {
+          // registerGroup 校验 folder 名时会抛错。IPC 来源不可信（agent 进程
+          // 可能被 prompt 注入），不要把异常冒泡到主消息循环。
+          logger.warn(
+            { jid: data.jid, folder: data.folder, err },
+            'register_group rejected by validation',
+          );
+        }
       } else {
         logger.warn(
           { data },
@@ -6229,6 +6398,10 @@ async function processAgentConversation(
     : undefined;
   let agentStreamingAccText = '';
   let agentStreamInterrupted = false;
+  // Mirrors the main session's `output.status === 'closed'` handling: set when
+  // the container drained mid-query so the finally block finalizes the card as
+  // "reconnecting" instead of leaving a zombie 生成中 card.
+  let agentClosed = false;
   if (agentStreamingSession && streamingSessionJid) {
     registerStreamingSession(streamingSessionJid, agentStreamingSession);
     logger.debug(
@@ -6291,6 +6464,11 @@ async function processAgentConversation(
         );
       }
     }
+
+    // Container drained/_closed the in-flight query — remember it so the finally
+    // block finalizes the card (the message will be retried) instead of leaving
+    // a zombie 生成中 card.
+    if (output.status === 'closed') agentClosed = true;
 
     // Track session
     if (
@@ -6814,10 +6992,31 @@ async function processAgentConversation(
     // ── Streaming card cleanup ──
     if (agentStreamingSession) {
       if (agentStreamingSession.isActive()) {
+        // Symmetric with the main session's five-way finalize (index.ts ~3804):
+        // every "card built but never completed" path must finalize so the card
+        // can't get stuck at 生成中 (zombie card).
         if (hadError) {
           await agentStreamingSession.abort('处理出错').catch(() => {});
         } else if (wasInterrupted) {
           await agentStreamingSession.abort('已中断').catch(() => {});
+        } else if (agentClosed) {
+          // Container drained/_closed the in-flight query; the message will be
+          // retried, so just finalize the card (区别于"已中断"：系统侧打断重试).
+          await agentStreamingSession.abort('连接已切换，正在重试').catch(() => {});
+        } else if (!cursorCommitted) {
+          // Silent-success: the agent replied only via the send_message
+          // side-channel or produced an empty result, so the card was never
+          // completed. complete() 收口 (空正文由 buildStructuredFinalCard 兜底)
+          // 而非裸 dispose 留下「生成中」僵尸卡。
+          try {
+            await agentStreamingSession.complete(agentStreamingAccText);
+          } catch (err) {
+            logger.warn(
+              { err, chatJid, agentId },
+              'Agent streaming card silent-success finalize failed, disposing',
+            );
+            agentStreamingSession.dispose();
+          }
         } else {
           agentStreamingSession.dispose();
         }
@@ -7932,20 +8131,34 @@ function buildFeishuBotAddedHandler(
     const isNew = !registeredGroups[chatJid] && !getRegisteredGroup(chatJid);
     onNewChat(chatJid, chatName);
     if (isNew) {
-      const ownerKnown = !!getOwnerOpenId?.();
-      const welcome =
-        `已加入「${chatName}」。\n\n` +
-        `当前群聊已启用发言者白名单，仅 bot owner 可触发我。\n` +
-        (ownerKnown
-          ? `Owner 已自动从私聊中识别。\n`
-          : `请先向机器人发一条私信，系统将自动识别您的 owner 身份。\n`) +
-        `\n/allow @成员 — 将群成员加入白名单\n` +
-        `/disallow @成员 — 从白名单移除成员\n` +
-        `/allowlist — 查看白名单`;
+      // 文案分支:仅在飞书路径(传入 getOwnerOpenId,DM 可学到 ownerOpenId 并启用 allowlist)
+      // 才提示「已启用发言者白名单」+「私信识别 owner」。通用路径(dingtalk/discord/whatsapp
+      // 不传 getOwnerOpenId)实际未启用白名单,DM 也没有 learnFeishuOwner 通道,引导用
+      // /owner_mention 在群内自我认领。
+      let welcome: string;
+      if (getOwnerOpenId) {
+        const ownerKnown = !!getOwnerOpenId();
+        welcome =
+          `已加入「${chatName}」。\n\n` +
+          `当前群聊已启用发言者白名单,仅 bot owner 可触发我。\n` +
+          (ownerKnown
+            ? `Owner 已自动从私聊中识别。\n`
+            : `请先向机器人发一条私信,系统将自动识别您的 owner 身份。\n`) +
+          `\n/allow @成员 — 将群成员加入白名单\n` +
+          `/disallow @成员 — 从白名单移除成员\n` +
+          `/allowlist — 查看白名单`;
+      } else {
+        welcome =
+          `已加入「${chatName}」。\n\n` +
+          `机器人已加入群组。请由 owner 在群内发送 /owner_mention 自我认领,命令将永久绑定该身份。\n\n` +
+          `/owner_mention — 认领工作区 owner\n` +
+          `/list — 查看所有工作区\n` +
+          `/new <名称> — 新建工作区并绑定此群`;
+      }
       imManager
         .sendMessage(chatJid, welcome)
         .catch((err) =>
-          logger.warn({ chatJid, err }, 'Failed to send Feishu group welcome message'),
+          logger.warn({ chatJid, err }, 'Failed to send group welcome message'),
         );
     }
   };
@@ -8409,13 +8622,23 @@ async function connectUserIMChannels(
   const onFeishuP2pSender = (senderOpenId: string) =>
     learnFeishuOwner(userId, senderOpenId, feishuOwnerRef);
 
-  const onNewChat = buildOnNewChat(userId, homeFolder, getFeishuOwnerOpenId);
+  // Feishu-specific closure: writes the Feishu open_id into owner_im_id when
+  // registering new chats. The non-Feishu variant omits getOwnerOpenId so that
+  // telegram / qq / wechat / dingtalk / discord / whatsapp groups don't get
+  // contaminated with a Feishu open_id that will never match their senders.
+  const feishuOnNewChat = buildOnNewChat(userId, homeFolder, getFeishuOwnerOpenId);
+  const onNewChat = buildOnNewChat(userId, homeFolder);
   const resolveGroupFolder = (chatJid: string): string | undefined => {
     return resolveEffectiveFolder(chatJid);
   };
   const resolveEffectiveChatJid = buildResolveEffectiveChatJid();
   const onAgentMessage = buildOnAgentMessage();
-  const onBotAddedToGroup = buildFeishuBotAddedHandler(userId, homeFolder, getFeishuOwnerOpenId);
+  // Feishu-specific: writes Feishu open_id as owner_im_id + locks allowlist.
+  // Non-Feishu variant omits getOwnerOpenId so dingtalk/discord/whatsapp groups
+  // don't get a Feishu open_id baked in as their owner (which would never match
+  // their own senderImId namespaces).
+  const feishuOnBotAddedToGroup = buildFeishuBotAddedHandler(userId, homeFolder, getFeishuOwnerOpenId);
+  const onBotAddedToGroup = buildFeishuBotAddedHandler(userId, homeFolder);
   const onBotRemovedFromGroup = buildOnBotRemovedFromGroup();
 
   // 各渠道互相独立，并发连接避免启动时延 N×M 累加
@@ -8424,13 +8647,13 @@ async function connectUserIMChannels(
     feishuConfig.enabled !== false &&
     feishuConfig.appId &&
     feishuConfig.appSecret
-      ? imManager.connectUserFeishu(userId, feishuConfig, onNewChat, {
+      ? imManager.connectUserFeishu(userId, feishuConfig, feishuOnNewChat, {
           ignoreMessagesBefore,
           onCommand: handleCommand,
           resolveGroupFolder,
           resolveEffectiveChatJid,
           onAgentMessage,
-          onBotAddedToGroup,
+          onBotAddedToGroup: feishuOnBotAddedToGroup,
           onBotRemovedFromGroup,
           shouldProcessGroupMessage,
           isGroupOwnerMessage,
@@ -9280,6 +9503,9 @@ async function main(): Promise<void> {
   // saved config and only connects the enabled ones, so disabled channels stay
   // down without extra branching here.
   const reconnectUserIMChannels = async (userId: string): Promise<void> => {
+    // 解封：disconnectAllUserChannels 把 user 标 sealed 后，所有 connectChannel
+    // 都被拒。re-enable / restore 用户时必须先解封否则 reload 全部失败。
+    imManager.markUserReconnectable(userId);
     const channels: Array<
       | 'feishu'
       | 'telegram'

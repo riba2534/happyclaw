@@ -452,12 +452,12 @@ export type WsMessageOut =
           id: string;
           timestamp: number;
           text: string;
-          kind: 'tool' | 'skill' | 'hook' | 'status' | 'task' | 'memory' | 'debug' | 'context';
+          kind: 'tool' | 'skill' | 'hook' | 'status' | 'task' | 'memory' | 'debug' | 'context' | 'permission';
         }>;
         traceEvents?: Array<{
           id: string;
           timestamp: number;
-          kind: 'tool' | 'skill' | 'hook' | 'status' | 'task' | 'memory' | 'debug' | 'context';
+          kind: 'tool' | 'skill' | 'hook' | 'status' | 'task' | 'memory' | 'debug' | 'context' | 'permission';
           scope?: StreamEvent['agentScope'];
           title: string;
           summary?: string;
@@ -471,6 +471,8 @@ export type WsMessageOut =
         contextAudit?: StreamEvent['contextAudit'];
         todos?: Array<{ id: string; content: string; status: string }>;
         systemStatus: string | null;
+        isThinking?: boolean;
+        activeHook?: { hookName: string; hookEvent: string } | null;
         turnId?: string;
       };
     };

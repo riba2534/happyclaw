@@ -8,10 +8,19 @@ import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 
 interface WorkspaceMcpPanelProps {
   groupJid: string;
+  /** True when current user is the workspace owner. Write actions
+   *  (add / toggle / delete) are only rendered when this is true.
+   *  Defaults to false so non-owners and the initial loading state both
+   *  see a read-only view (avoids button flicker on first render). */
+  canModify?: boolean;
   onClose?: () => void;
 }
 
-export function WorkspaceMcpPanel({ groupJid, onClose: _onClose }: WorkspaceMcpPanelProps) {
+export function WorkspaceMcpPanel({
+  groupJid,
+  canModify = false,
+  onClose: _onClose,
+}: WorkspaceMcpPanelProps) {
   const {
     mcpServers,
     mcpLoading,
@@ -100,19 +109,21 @@ export function WorkspaceMcpPanel({ groupJid, onClose: _onClose }: WorkspaceMcpP
           >
             <RefreshCw className={`w-3.5 h-3.5 ${mcpLoading ? 'animate-spin' : ''}`} />
           </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setShowAdd(!showAdd)}
-            className="h-7 w-7 p-0"
-          >
-            <Plus className="w-3.5 h-3.5" />
-          </Button>
+          {canModify && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowAdd(!showAdd)}
+              className="h-7 w-7 p-0"
+            >
+              <Plus className="w-3.5 h-3.5" />
+            </Button>
+          )}
         </div>
       </div>
 
       {/* Add form */}
-      {showAdd && (
+      {canModify && showAdd && (
         <div className="px-4 py-2 border-b border-border space-y-2 flex-shrink-0">
           <Input
             value={newId}
@@ -191,12 +202,18 @@ export function WorkspaceMcpPanel({ groupJid, onClose: _onClose }: WorkspaceMcpP
           <EmptyState
             icon={Server}
             title="无工作区 MCP Servers"
-            description="当前工作区 .claude/settings.json 中没有 MCP 配置"
+            description={
+              canModify
+                ? '当前工作区 .claude/settings.json 中没有 MCP 配置'
+                : '当前工作区 .claude/settings.json 中没有 MCP 配置（仅 owner 可添加）'
+            }
             action={
-              <Button variant="outline" size="sm" onClick={() => setShowAdd(true)}>
-                <Plus className="w-3.5 h-3.5 mr-1" />
-                添加 MCP Server
-              </Button>
+              canModify ? (
+                <Button variant="outline" size="sm" onClick={() => setShowAdd(true)}>
+                  <Plus className="w-3.5 h-3.5 mr-1" />
+                  添加 MCP Server
+                </Button>
+              ) : undefined
             }
           />
         ) : (
@@ -205,6 +222,7 @@ export function WorkspaceMcpPanel({ groupJid, onClose: _onClose }: WorkspaceMcpP
               <McpRow
                 key={server.id}
                 server={server}
+                canModify={canModify}
                 onToggle={(enabled) => toggleWorkspaceMcp(groupJid, server.id, enabled)}
                 onDelete={() => setDeleteTarget(server.id)}
               />
@@ -228,10 +246,12 @@ export function WorkspaceMcpPanel({ groupJid, onClose: _onClose }: WorkspaceMcpP
 
 function McpRow({
   server,
+  canModify,
   onToggle,
   onDelete,
 }: {
   server: WorkspaceMcpServer;
+  canModify: boolean;
   onToggle: (enabled: boolean) => void;
   onDelete: () => void;
 }) {
@@ -265,24 +285,32 @@ function McpRow({
         )}
       </div>
       <div className="flex items-center gap-1 flex-shrink-0">
-        <button
-          onClick={() => onToggle(!server.enabled)}
-          className="p-1 rounded hover:bg-accent transition-colors cursor-pointer"
-          title={server.enabled ? '禁用' : '启用'}
-        >
-          {server.enabled ? (
-            <ToggleRight className="w-4 h-4 text-emerald-500" />
-          ) : (
-            <ToggleLeft className="w-4 h-4 text-muted-foreground" />
-          )}
-        </button>
-        <button
-          onClick={onDelete}
-          className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-destructive transition-colors cursor-pointer"
-          title="删除"
-        >
-          <Trash2 className="w-3.5 h-3.5" />
-        </button>
+        {canModify ? (
+          <>
+            <button
+              onClick={() => onToggle(!server.enabled)}
+              className="p-1 rounded hover:bg-accent transition-colors cursor-pointer"
+              title={server.enabled ? '禁用' : '启用'}
+            >
+              {server.enabled ? (
+                <ToggleRight className="w-4 h-4 text-emerald-500" />
+              ) : (
+                <ToggleLeft className="w-4 h-4 text-muted-foreground" />
+              )}
+            </button>
+            <button
+              onClick={onDelete}
+              className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-destructive transition-colors cursor-pointer"
+              title="删除"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </>
+        ) : (
+          <span className="text-[10px] text-muted-foreground px-1.5">
+            {server.enabled ? '启用' : '已禁用'}
+          </span>
+        )}
       </div>
     </div>
   );

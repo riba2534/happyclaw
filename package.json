@@ -8,7 +8,6 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "dev:bun": "bun src/index.ts",
     "reset:admin": "tsx src/reset-admin.ts",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write \"src/**/*.ts\"",
@@ -20,7 +19,7 @@
     "build:all": "npx concurrently --group -n backend,web,agent-runner \"npm run build\" \"npm run build:web\" \"npm --prefix container/agent-runner run build\""
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.85",
+    "@anthropic-ai/claude-agent-sdk": "*",
     "@hono/node-server": "^1.19.9",
     "@larksuiteoapi/node-sdk": "^1.58.0",
     "@whiskeysockets/baileys": "^6.17.16",

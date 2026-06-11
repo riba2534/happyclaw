@@ -1,9 +1,16 @@
 /**
  * plugin-importer.ts
  *
- * Scan host marketplaces (default `~/.claude/plugins/marketplaces`, override via
- * SystemSettings.externalClaudeDir) and import each plugin into the immutable
- * catalog snapshot tree.
+ * Scan host marketplaces and import each plugin into the immutable catalog
+ * snapshot tree. The set of marketplaces is the UNION of:
+ *   - physical subdirs of `<externalDir>/plugins/marketplaces/` (where Claude
+ *     Code clones github-source marketplaces), and
+ *   - every `installLocation` registered in
+ *     `<externalDir>/plugins/known_marketplaces.json` — the only place a
+ *     `directory`-source marketplace (referenced in place, never copied into
+ *     marketplaces/) is recorded.
+ * `<externalDir>` defaults to `~/.claude`, overridable via
+ * SystemSettings.externalClaudeDir.
  *
  * Properties guaranteed:
  * - **Single concurrent scan per process**: a module-level mutex serializes
@@ -96,7 +103,6 @@ export function isScanInFlight(): boolean {
 // --- Internal scan implementation --------------------------------------------
 
 async function runScan(opts: ScanOptions): Promise<ImportReport> {
-  const root = resolveScanRoot(opts);
   const report: ImportReport = {
     marketplacesScanned: 0,
     pluginsScanned: 0,
@@ -107,27 +113,19 @@ async function runScan(opts: ScanOptions): Promise<ImportReport> {
 
   // Ensure catalog root exists so writes don't have to mkdir each time.
   fs.mkdirSync(getCatalogRoot(), { recursive: true });
+  // Sweep stale .tmp-* directories left behind by SIGKILLed importers.
+  // Cheap one-shot per scan; runtime sweep happens in plugin-utils.materialize.
+  sweepStaleTmpDirs(getCatalogRoot(), report);
 
-  let mpEntries: string[];
-  try {
-    mpEntries = fs.readdirSync(root);
-  } catch (err) {
-    const msg = `Marketplace root not readable at ${root}: ${
-      err instanceof Error ? err.message : String(err)
-    }`;
-    logger.warn({ root, err }, 'plugin-importer: marketplace root unreadable');
-    report.warnings.push(msg);
-    return report;
-  }
+  const marketplaces = resolveMarketplaceDirs(opts, report);
 
   const idx = readCatalogIndex();
 
-  for (const mpName of mpEntries) {
+  for (const { name: mpName, dir: mpDir } of marketplaces) {
     if (!isValidNameSegment(mpName)) {
       report.warnings.push(`Skipped invalid marketplace name: ${mpName}`);
       continue;
     }
-    const mpDir = path.join(root, mpName);
     let mpStat: fs.Stats;
     try {
       mpStat = fs.statSync(mpDir);
@@ -255,11 +253,139 @@ async function runScan(opts: ScanOptions): Promise<ImportReport> {
   return report;
 }
 
-function resolveScanRoot(opts: ScanOptions): string {
+/** A marketplace root directory resolved for scanning. */
+interface ResolvedMarketplace {
+  name: string;
+  /** Path to the marketplace root directory. */
+  dir: string;
+}
+
+/**
+ * Resolve the set of marketplace directories to scan, as the union of two
+ * sources (deduped by name; the known-registry entry wins on collision —
+ * github entries resolve to the same dir as the physical clone anyway):
+ *
+ *   (a) physical subdirectories of `<externalDir>/plugins/marketplaces/`, and
+ *   (b) every `installLocation` in `<externalDir>/plugins/known_marketplaces
+ *       .json`. This is the ONLY place a `directory`-source marketplace
+ *       appears: Claude Code references it in place (never copying into
+ *       marketplaces/), so a readdir of marketplaces/ alone can never discover
+ *       it. `installLocation` points at the real on-disk dir for github AND
+ *       directory sources, so it is a uniform anchor regardless of `source`
+ *       shape.
+ *
+ * Non-fatal problems (unreadable marketplaces/ root, malformed
+ * known_marketplaces.json) push a warning onto `report` so a partial host
+ * layout is visible in the scan result rather than failing silently.
+ */
+function resolveMarketplaceDirs(
+  opts: ScanOptions,
+  report: ImportReport,
+): ResolvedMarketplace[] {
+  // Legacy explicit-directory source: treat the given path as a container root
+  // whose subdirectories are marketplaces. Kept for API compatibility; no
+  // production caller currently passes this.
   if (opts.source && opts.source.type === 'directory') {
-    return opts.source.path;
+    return readMarketplacesRoot(opts.source.path, report);
   }
-  return path.join(getEffectiveExternalDir(), 'plugins', 'marketplaces');
+
+  const pluginsBase = path.join(getEffectiveExternalDir(), 'plugins');
+  const byName = new Map<string, ResolvedMarketplace>();
+
+  // (a) physical marketplaces/ subdirs (github-source clones live here).
+  for (const mp of readMarketplacesRoot(
+    path.join(pluginsBase, 'marketplaces'),
+    report,
+  )) {
+    byName.set(mp.name, mp);
+  }
+
+  // (b) known_marketplaces.json installLocation entries (directory sources
+  // only appear here). Registry wins on name collision.
+  for (const mp of readKnownMarketplaces(pluginsBase, report)) {
+    byName.set(mp.name, mp);
+  }
+
+  return [...byName.values()];
+}
+
+/**
+ * List the immediate subdirectories of a marketplaces container `root` as
+ * candidate marketplaces. Names are NOT validated here — the caller's main
+ * loop validates each `name` against `isValidNameSegment` and warns, matching
+ * the historical behaviour. An unreadable `root` (e.g. a host with no
+ * plugins/marketplaces dir) yields a warning + empty list rather than throwing.
+ */
+function readMarketplacesRoot(
+  root: string,
+  report: ImportReport,
+): ResolvedMarketplace[] {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(root);
+  } catch (err) {
+    const msg = `Marketplace root not readable at ${root}: ${
+      err instanceof Error ? err.message : String(err)
+    }`;
+    logger.warn({ root, err }, 'plugin-importer: marketplace root unreadable');
+    report.warnings.push(msg);
+    return [];
+  }
+  return entries.map((name) => ({ name, dir: path.join(root, name) }));
+}
+
+/**
+ * Read Claude Code's `<pluginsBase>/known_marketplaces.json` and return one
+ * entry per registered marketplace, anchored on its `installLocation` (the
+ * real on-disk path). Non-throwing: a missing file is normal (returns []); a
+ * malformed file warns and returns []. Names are validated by the caller.
+ */
+function readKnownMarketplaces(
+  pluginsBase: string,
+  report: ImportReport,
+): ResolvedMarketplace[] {
+  const file = path.join(pluginsBase, 'known_marketplaces.json');
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, 'utf-8');
+  } catch {
+    // No registry file (or unreadable). Normal on hosts that only have
+    // marketplaces/ clones — not worth a warning.
+    return [];
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    const msg = `known_marketplaces.json parse failed at ${file}: ${
+      err instanceof Error ? err.message : String(err)
+    }`;
+    logger.warn(
+      { file, err },
+      'plugin-importer: known_marketplaces.json parse failed',
+    );
+    report.warnings.push(msg);
+    return [];
+  }
+  // Reject arrays too (`typeof [] === 'object'`): a CC registry is always an
+  // object map. An array would otherwise fall through to Object.entries() and
+  // be iterated as bogus marketplaces named "0", "1", … (numeric keys pass
+  // isValidNameSegment).
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
+
+  const out: ResolvedMarketplace[] = [];
+  for (const [name, rawEntry] of Object.entries(
+    parsed as Record<string, unknown>,
+  )) {
+    if (!rawEntry || typeof rawEntry !== 'object') continue;
+    const loc = (rawEntry as Record<string, unknown>).installLocation;
+    if (typeof loc !== 'string' || loc.length === 0) continue;
+    // installLocation is documented as absolute; resolve defensively against
+    // the plugins dir if a relative path ever slips through (CC issue #23978).
+    const dir = path.isAbsolute(loc) ? loc : path.resolve(pluginsBase, loc);
+    out.push({ name, dir });
+  }
+  return out;
 }
 
 interface ImportPluginArgs {
@@ -279,6 +405,11 @@ async function importPluginSnapshot(args: ImportPluginArgs): Promise<void> {
   const { marketplace, plugin, pluginDir, manifest, idx, report } = args;
 
   const contentHash = await hashDirectoryContents(pluginDir);
+  // 32 hex chars (128-bit prefix) — 维持向后兼容：现有部署的 catalog 都是
+  // 32 字符目录名，切到 64 字符会让所有现有 snapshot 重复一份。128 位
+  // collision 抵抗在 per-(marketplace,plugin) scope 下已足够（攻击者还
+  // 需要同时控制 marketplace+plugin 名才能尝试碰撞），且 fs.existsSync
+  // idempotency 检查走的是 dir-name 不是哈希值。
   const snapshotId = `sha256-${contentHash.slice(0, 32)}`;
   const targetDir = getCatalogSnapshotDir(marketplace, plugin, snapshotId);
   const fullId = buildFullId(plugin, marketplace);
@@ -464,6 +595,68 @@ function verifyManifestPresent(dir: string): void {
     throw new Error(
       `Imported snapshot at ${dir} missing .claude-plugin/plugin.json`,
     );
+  }
+}
+
+/**
+ * 删除 catalog 下因 importer 被 SIGKILL 留下的 `.tmp-` 临时目录。
+ *
+ * **不是**全树扫描：那会误伤 plugin 内部含 `.tmp-`/`.legacy-bak@` 子串的
+ * 文件名（README.tmp-2025.md / scripts/build.tmp-stage.sh / archive.legacy-bak@v1
+ * 等）。importer 实际只在 `versions/` 这一级创建临时目录，命名形如
+ * `sha256-<hash>.tmp-<pid>-<ms>`，所以扫描限定在 `marketplaces/<mp>/plugins/<plugin>/versions/`
+ * 这一级，且仅匹配 importer 真实使用的命名。一次性、廉价。
+ */
+function sweepStaleTmpDirs(catalogRoot: string, report?: ImportReport): void {
+  // importer 命名形态：sha256-<hex>.tmp-<pid>-<ms>
+  const TMP_RE = /^sha256-[0-9a-f]+\.tmp-/;
+  let removed = 0;
+  const marketplacesRoot = path.join(catalogRoot, 'marketplaces');
+  let mpEntries: fs.Dirent[];
+  try {
+    mpEntries = fs.readdirSync(marketplacesRoot, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const mpEntry of mpEntries) {
+    if (!mpEntry.isDirectory()) continue;
+    const pluginsRoot = path.join(marketplacesRoot, mpEntry.name, 'plugins');
+    let pluginEntries: fs.Dirent[];
+    try {
+      pluginEntries = fs.readdirSync(pluginsRoot, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const pluginEntry of pluginEntries) {
+      if (!pluginEntry.isDirectory()) continue;
+      const versionsRoot = path.join(
+        pluginsRoot,
+        pluginEntry.name,
+        'versions',
+      );
+      let versionEntries: fs.Dirent[];
+      try {
+        versionEntries = fs.readdirSync(versionsRoot, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const v of versionEntries) {
+        if (!v.isDirectory()) continue;
+        if (!TMP_RE.test(v.name)) continue;
+        try {
+          fs.rmSync(path.join(versionsRoot, v.name), {
+            recursive: true,
+            force: true,
+          });
+          removed++;
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+  if (removed > 0 && report) {
+    report.warnings.push(`Swept ${removed} stale .tmp- snapshot dirs`);
   }
 }
 

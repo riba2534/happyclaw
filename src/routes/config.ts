@@ -7,7 +7,7 @@ import QRCode from 'qrcode';
 import { Hono } from 'hono';
 import { updateWeChatNoProxy } from '../config.js';
 import type { Variables } from '../web-context.js';
-import { canAccessGroup, getWebDeps } from '../web-context.js';
+import { canAccessGroup, canModifyGroup, getWebDeps } from '../web-context.js';
 import { getChannelType } from '../im-channel.js';
 import {
   deleteRegisteredGroup,
@@ -83,6 +83,7 @@ import {
   getUserWhatsAppConfig,
   saveUserWhatsAppConfig,
   updateAllSessionCredentials,
+  appendImConfigAudit,
 } from '../runtime-config.js';
 import type {
   ClaudeOAuthCredentials,
@@ -1475,6 +1476,9 @@ configRoutes.put('/user-im/feishu', authMiddleware, async (c) => {
       enabled: next.enabled as boolean | undefined,
       autoIsolateContext: next.autoIsolateContext as boolean | undefined,
     });
+    appendImConfigAudit(user.username, 'feishu', 'update', Object.keys(validation.data), {
+      userId: user.id,
+    });
 
     // Migrate existing Feishu chats when autoIsolateContext toggle changes
     const oldAutoIsolate = current?.autoIsolateContext ?? false;
@@ -1602,6 +1606,7 @@ configRoutes.put('/user-im/telegram', authMiddleware, async (c) => {
       proxyUrl: next.proxyUrl || undefined,
       enabled: next.enabled,
     });
+    appendImConfigAudit(user.username, 'telegram', 'update', Object.keys(validation.data), { userId: user.id });
 
     // Hot-reload: reconnect user's Telegram channel
     if (deps?.reloadUserIMConfig) {
@@ -1827,6 +1832,7 @@ configRoutes.put('/user-im/qq', authMiddleware, async (c) => {
       appSecret: next.appSecret,
       enabled: next.enabled,
     });
+    appendImConfigAudit(user.username, 'qq', 'update', Object.keys(validation.data), { userId: user.id });
 
     // Hot-reload: reconnect user's QQ channel
     if (deps?.reloadUserIMConfig) {
@@ -1984,10 +1990,16 @@ configRoutes.put('/user-im/qq/paired-chats/:jid', authMiddleware, async (c) => {
     return c.json({ error: 'Not authorized to rename this chat' }, 403);
   }
 
-  const body = await c.req.json<{ name?: string }>();
-  const name = (body.name ?? '').trim();
+  const body = await c.req
+    .json<{ name?: unknown }>()
+    .catch(() => ({} as { name?: unknown }));
+  const rawName = typeof body.name === 'string' ? body.name : '';
+  const name = rawName.trim();
   if (!name) {
     return c.json({ error: 'Name is required' }, 400);
+  }
+  if (name.length > 256) {
+    return c.json({ error: 'Name too long (max 256 chars)' }, 400);
   }
 
   group.name = name;
@@ -2113,6 +2125,7 @@ configRoutes.put('/user-im/dingtalk', authMiddleware, async (c) => {
 
   try {
     const saved = saveUserDingTalkConfig(user.id, next);
+    appendImConfigAudit(user.username, 'dingtalk', 'update', Object.keys(validation.data), { userId: user.id });
 
     // Hot-reload: reconnect user's DingTalk channel
     if (deps?.reloadUserIMConfig) {
@@ -2258,6 +2271,7 @@ configRoutes.put('/user-im/discord', authMiddleware, async (c) => {
 
   try {
     const saved = saveUserDiscordConfig(user.id, next);
+    appendImConfigAudit(user.username, 'discord', 'update', Object.keys(validation.data), { userId: user.id });
 
     // Hot-reload: reconnect user's Discord channel
     if (deps?.reloadUserIMConfig) {
@@ -2437,6 +2451,7 @@ configRoutes.put('/user-im/wechat', authMiddleware, async (c) => {
 
   try {
     const saved = saveUserWeChatConfig(user.id, next);
+    appendImConfigAudit(user.username, 'wechat', 'update', Object.keys(validation.data), { userId: user.id });
 
     // Update NO_PROXY based on bypassProxy setting
     updateWeChatNoProxy(saved.bypassProxy ?? true);
@@ -2567,6 +2582,7 @@ configRoutes.get('/user-im/wechat/qrcode-status', authMiddleware, async (c) => {
         baseUrl: data.baseurl || undefined,
         enabled: true,
       });
+    appendImConfigAudit(user.username, 'wechat', 'oauth_qr_confirmed', ['botToken', 'ilinkBotId', 'baseUrl', 'enabled'], { userId: user.id });
 
       // Note: ilink_user_id (the QR scanner) is NOT auto-paired here.
       // The scanner needs to send a message to the bot and use /pair <code>
@@ -2713,12 +2729,12 @@ configRoutes.put('/user-im/whatsapp', authMiddleware, async (c) => {
   if (typeof validation.data.enabled === 'boolean') {
     next.enabled = validation.data.enabled;
   }
-  if (typeof validation.data.paired === 'boolean') {
-    next.paired = validation.data.paired;
-  }
+  // paired 已从 schema 移除：由 saveUserWhatsAppConfig 在 Baileys 登录回调
+  // 中写入，前端 PUT 不再接受该字段（防止用户伪装扫码完成）。
 
   try {
     const saved = saveUserWhatsAppConfig(user.id, next);
+    appendImConfigAudit(user.username, 'whatsapp', 'update', Object.keys(validation.data), { userId: user.id });
 
     // Hot-reload: reconnect user's WhatsApp channel (skeleton always returns false)
     if (deps?.reloadUserIMConfig) {
@@ -2783,6 +2799,7 @@ configRoutes.post('/user-im/whatsapp/logout', authMiddleware, async (c) => {
       enabled: false,
       paired: false,
     });
+    appendImConfigAudit(user.username, 'whatsapp', 'logout', ['enabled', 'paired'], { userId: user.id, accountId });
     const state = deps?.getUserWhatsAppState?.(user.id) ?? {
       status: 'logged_out' as const,
     };
@@ -2817,7 +2834,14 @@ configRoutes.put('/user-im/bindings/:imJid', authMiddleware, async (c) => {
   if (!imGroup) {
     return c.json({ error: 'IM group not found' }, 404);
   }
+  // IM-binding 改的是 imGroup 行（target_agent_id / target_main_jid /
+  // activation_mode 等），与 agents.ts 的 4 个 IM-binding 路由对齐：
+  // 非成员用 access 检查隐藏存在性（404），成员但非 owner 拒绝写（403）。
+  // 否则共享工作区里的 member 可以劫持 owner 的 IM 路由到自己 agent。
   if (!canAccessGroup(user, { ...imGroup, jid: imJid })) {
+    return c.json({ error: 'IM group not found' }, 404);
+  }
+  if (!canModifyGroup(user, { ...imGroup, jid: imJid })) {
     return c.json({ error: 'Forbidden' }, 403);
   }
 

@@ -21,8 +21,8 @@ export interface ChatGroupItemProps {
   isHome: boolean;
   isPinned?: boolean;
   isRunning?: boolean;
-  editable?: boolean;
-  deletable?: boolean;
+  // Owner-only ACL (backend buildGroupsPayload 下发的 can_modify)，门控所有破坏性操作
+  canModify?: boolean;
   onSelect: (jid: string, folder: string) => void;
   onRename?: (jid: string, name: string) => void;
   onClearHistory: (jid: string, name: string) => void;
@@ -42,8 +42,7 @@ export function ChatGroupItem({
   isHome,
   isPinned,
   isRunning,
-  editable,
-  deletable,
+  canModify,
   onSelect,
   onRename,
   onClearHistory,
@@ -138,20 +137,22 @@ export function ChatGroupItem({
                 {isPinned ? '取消固定' : '固定'}
               </DropdownMenuItem>
             )}
-            {editable && onRename && (
+            {canModify && onRename && (
               <DropdownMenuItem onClick={() => onRename(jid, name)}>
                 <Pencil className="w-4 h-4" />
                 重命名
               </DropdownMenuItem>
             )}
-            <DropdownMenuItem
-              onClick={() => onClearHistory(jid, displayName)}
-              className="text-amber-700 dark:text-amber-400 focus:text-amber-700 dark:focus:text-amber-400"
-            >
-              <RotateCcw className="w-4 h-4" />
-              重建工作区
-            </DropdownMenuItem>
-            {!isHome && deletable && onDelete && (
+            {canModify && (
+              <DropdownMenuItem
+                onClick={() => onClearHistory(jid, displayName)}
+                className="text-amber-700 dark:text-amber-400 focus:text-amber-700 dark:focus:text-amber-400"
+              >
+                <RotateCcw className="w-4 h-4" />
+                重建工作区
+              </DropdownMenuItem>
+            )}
+            {!isHome && canModify && onDelete && (
               <DropdownMenuItem
                 variant="destructive"
                 onClick={() => onDelete(jid, name)}

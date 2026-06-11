@@ -26,6 +26,15 @@ export interface FileEntry {
 // 常量
 export const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 const SYSTEM_PATHS = ['logs', 'CLAUDE.md', '.claude', 'conversations'];
+// 预先转小写一次，匹配大小写不敏感文件系统（macOS APFS / Windows NTFS）。
+const SYSTEM_PATHS_LOWER = SYSTEM_PATHS.map((p) => p.toLowerCase());
+
+// 仅在大小写不敏感的平台启用 lowercased 比较。case-sensitive Linux 上
+// 'Logs/' 与 'logs/' 是不同 inode，全局 toLowerCase 会误杀合法文件名。
+// macOS / Windows 默认大小写不敏感（APFS / NTFS）→ 使用 lowercased 路径。
+// 其它平台保留 strict ===。
+const CASE_INSENSITIVE_FS =
+  process.platform === 'darwin' || process.platform === 'win32';
 
 /**
  * 获取会话流的文件根目录
@@ -86,6 +95,10 @@ export function validateAndResolvePath(
  * 判断路径是否为系统路径（禁止删除）
  * @param relativePath 相对路径
  * @returns 是否为系统路径
+ *
+ * 平台敏感：APFS（macOS 默认）/ NTFS 上 `Logs` 与 `logs` 同 inode，必须
+ * 大小写不敏感比较否则攻击者可通过大写绕过。case-sensitive Linux 上
+ * 这种攻击不可达，强行 lowercased 反而误杀合法的 'Logs/' 等文件。
  */
 export function isSystemPath(relativePath: string): boolean {
   const normalized = path.normalize(relativePath);
@@ -96,7 +109,15 @@ export function isSystemPath(relativePath: string): boolean {
   // '.' alone is not a system path (root guard lives in deleteFile)
   if (segments.length === 1 && segments[0] === '.') return false;
 
-  // 检查第一段或完全匹配
+  if (CASE_INSENSITIVE_FS) {
+    const firstSegmentLower = segments[0].toLowerCase();
+    const normalizedLower = normalized.toLowerCase();
+    return SYSTEM_PATHS_LOWER.some(
+      (sysPath) =>
+        firstSegmentLower === sysPath || normalizedLower === sysPath,
+    );
+  }
+  // case-sensitive 平台保持 strict 比较
   const firstSegment = segments[0];
   return SYSTEM_PATHS.some(
     (sysPath) => firstSegment === sysPath || normalized === sysPath,

@@ -15,9 +15,11 @@ import {
 import { logger } from './logger.js';
 import {
   saveDownloadedFile,
+  sanitizeImFilename,
   MAX_FILE_SIZE,
   FileTooLargeError,
 } from './im-downloader.js';
+import { createDedupCache } from './im-utils.js';
 import { notifyNewImMessage } from './message-notifier.js';
 import { broadcastNewMessage } from './web.js';
 import { detectImageMimeType } from './image-detector.js';
@@ -368,8 +370,11 @@ function extractMessageContent(
       const fileKey = parsed.file_key;
       const filename = parsed.file_name || '';
       if (fileKey) {
+        // 使用清洗后的文件名构造占位符，下方 replace 也用同一份清洗结果，
+        // 任何上下文（成功/失败/解析失败）都不会让原始 filename 进入 prompt。
+        const safeFilename = sanitizeImFilename(filename || fileKey);
         return {
-          text: `[文件: ${filename || fileKey}]`,
+          text: `[文件: ${safeFilename}]`,
           fileInfos: [{ fileKey, filename }],
         };
       }
@@ -534,12 +539,13 @@ function buildInteractiveCard(text: string): object {
 export function createFeishuConnection(
   config: FeishuConnectionConfig,
 ): FeishuConnection {
-  // LRU deduplication cache
-  const MSG_DEDUP_MAX = 1000;
-  const MSG_DEDUP_TTL = 30 * 60 * 1000; // 30min
+  // LRU deduplication cache（共享 helper，避免 6 个 IM channel 各自写一份）
+  const dedup = createDedupCache({
+    ttlMs: 30 * 60 * 1000,
+    max: 1000,
+  });
 
   // Per-instance state
-  const msgCache = new Map<string, number>();
   const processingLock = new ProcessingLock();
   const senderNameCache = new Map<string, string>();
   const lastMessageIdByChat = new Map<string, string>();
@@ -707,28 +713,6 @@ export function createFeishuConnection(
       botInfoRefetchInFlight = null;
     });
     return botInfoRefetchInFlight;
-  }
-
-  function isDuplicate(msgId: string): boolean {
-    const now = Date.now();
-    // Map preserves insertion order; stop at first non-expired entry
-    for (const [id, ts] of msgCache.entries()) {
-      if (now - ts > MSG_DEDUP_TTL) {
-        msgCache.delete(id);
-      } else {
-        break;
-      }
-    }
-    if (msgCache.size >= MSG_DEDUP_MAX) {
-      const firstKey = msgCache.keys().next().value;
-      if (firstKey) msgCache.delete(firstKey);
-    }
-    return msgCache.has(msgId);
-  }
-
-  function markSeen(msgId: string): void {
-    msgCache.delete(msgId);
-    msgCache.set(msgId, Date.now());
   }
 
   async function downloadFeishuImage(
@@ -976,7 +960,7 @@ export function createFeishuConnection(
       );
       return;
     }
-    if (isDuplicate(messageId)) {
+    if (dedup.isDuplicate(messageId)) {
       logger.debug({ messageId }, 'Duplicate message, skipping');
       return;
     }
@@ -987,7 +971,7 @@ export function createFeishuConnection(
       );
       return;
     }
-    markSeen(messageId);
+    dedup.markSeen(messageId);
     logger.info(
       { messageId, messageType, chatId, source },
       'Feishu message received',
@@ -1140,26 +1124,28 @@ export function createFeishuConnection(
           'Cannot resolve group folder for file download',
         );
         for (const fi of extracted.fileInfos) {
-          const placeholder = `[文件: ${fi.filename || fi.fileKey}]`;
+          const safeFilename = sanitizeImFilename(fi.filename || fi.fileKey);
+          const placeholder = `[文件: ${safeFilename}]`;
           text = text.replace(
             placeholder,
-            `[文件下载失败: ${fi.filename || fi.fileKey}]`,
+            `[文件下载失败: ${safeFilename}]`,
           );
         }
       } else {
         for (const fi of extracted.fileInfos) {
+          const safeFilename = sanitizeImFilename(fi.filename || fi.fileKey);
           const relPath = await downloadFeishuFileToDisk(
             messageId,
             fi.fileKey,
             fi.filename,
             groupFolder,
           );
-          const placeholder = `[文件: ${fi.filename || fi.fileKey}]`;
+          const placeholder = `[文件: ${safeFilename}]`;
           text = text.replace(
             placeholder,
             relPath
               ? `[文件: ${relPath}]`
-              : `[文件下载失败: ${fi.filename || fi.fileKey}]`,
+              : `[文件下载失败: ${safeFilename}]`,
           );
         }
       }

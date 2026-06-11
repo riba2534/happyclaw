@@ -17,7 +17,8 @@ import type { Variables } from '../web-context.js';
 import type { AuthUser, RegisteredGroup } from '../types.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { GROUPS_DIR } from '../config.js';
-import { canAccessGroup } from '../web-context.js';
+import { validateSafeHttpsUrl } from '../url-safety.js';
+import { canAccessGroup, canModifyGroup } from '../web-context.js';
 import { getRegisteredGroup } from '../db.js';
 import {
   parseFrontmatter,
@@ -200,6 +201,27 @@ function resolveGroup(
   return group;
 }
 
+/**
+ * Write routes require workspace ownership (canModifyGroup), not just access.
+ * Skills install/toggle/delete and MCP server CRUD all mutate `.claude/` files
+ * with the same destructive effect as `reset-session` — keep ACL aligned.
+ *
+ * Returns a 403 Response if denied, null if allowed.
+ */
+function requireWorkspaceOwner(
+  c: Context<{ Variables: Variables }>,
+  group: RegisteredGroup & { jid: string },
+): Response | null {
+  const authUser = c.get('user') as AuthUser;
+  if (!canModifyGroup({ id: authUser.id, role: authUser.role }, group)) {
+    return c.json(
+      { error: 'Only the workspace owner can modify workspace config' },
+      403,
+    );
+  }
+  return null;
+}
+
 // ===========================
 // Skills API
 // ===========================
@@ -225,15 +247,23 @@ workspaceConfigRoutes.post(
   async (c) => {
     const group = resolveGroup(c);
     if (!group) return c.json({ error: 'Group not found or access denied' }, 404);
+    const denied = requireWorkspaceOwner(c, group);
+    if (denied) return denied;
 
     const body = await c.req.json().catch(() => ({}));
     const pkg = typeof body.package === 'string' ? body.package.trim() : '';
 
-    if (
-      !/^[\w\-]+\/[\w\-.]+(?:[@#][\w\-.\/]+)?$/.test(pkg) &&
-      !/^https?:\/\//.test(pkg)
-    ) {
+    const isNpmName = /^[\w\-]+\/[\w\-.]+(?:[@#][\w\-.\/]+)?$/.test(pkg);
+    const isUrl = /^https?:\/\//.test(pkg);
+    if (!isNpmName && !isUrl) {
       return c.json({ error: 'Invalid package name format' }, 400);
+    }
+    if (isUrl) {
+      // SSRF 防护：URL 形式必须 HTTPS + 非内网（拒 169.254.169.254 等）。
+      const reason = validateSafeHttpsUrl(pkg);
+      if (reason) {
+        return c.json({ error: `Refused skill URL: ${reason}` }, 400);
+      }
     }
 
     // Install to a temp HOME, then copy to workspace skills dir
@@ -330,13 +360,19 @@ workspaceConfigRoutes.patch(
   async (c) => {
     const group = resolveGroup(c);
     if (!group) return c.json({ error: 'Group not found or access denied' }, 404);
+    const denied = requireWorkspaceOwner(c, group);
+    if (denied) return denied;
 
     const id = c.req.param('id');
     if (!validateSkillId(id)) {
       return c.json({ error: 'Invalid skill ID' }, 400);
     }
 
-    const { enabled } = await c.req.json<{ enabled: boolean }>();
+    const body = (await c.req.json().catch(() => ({}))) as { enabled?: unknown };
+    if (typeof body.enabled !== 'boolean') {
+      return c.json({ error: 'enabled must be a boolean' }, 400);
+    }
+    const enabled = body.enabled;
     const skillsDir = getWorkspaceSkillsDir(group);
     const skillDir = path.join(skillsDir, id);
 
@@ -375,6 +411,8 @@ workspaceConfigRoutes.delete(
   async (c) => {
     const group = resolveGroup(c);
     if (!group) return c.json({ error: 'Group not found or access denied' }, 404);
+    const denied = requireWorkspaceOwner(c, group);
+    if (denied) return denied;
 
     const id = c.req.param('id');
     if (!validateSkillId(id)) {
@@ -459,6 +497,8 @@ workspaceConfigRoutes.post(
   async (c) => {
     const group = resolveGroup(c);
     if (!group) return c.json({ error: 'Group not found or access denied' }, 404);
+    const denied = requireWorkspaceOwner(c, group);
+    if (denied) return denied;
 
     const body = await c.req.json().catch(() => ({}));
     const { id, command, args, env, description, type, url, headers } =
@@ -527,6 +567,8 @@ workspaceConfigRoutes.patch(
   async (c) => {
     const group = resolveGroup(c);
     if (!group) return c.json({ error: 'Group not found or access denied' }, 404);
+    const denied = requireWorkspaceOwner(c, group);
+    if (denied) return denied;
 
     const id = c.req.param('id');
     if (!/^[\w\-]+$/.test(id)) {
@@ -598,6 +640,8 @@ workspaceConfigRoutes.delete(
   async (c) => {
     const group = resolveGroup(c);
     if (!group) return c.json({ error: 'Group not found or access denied' }, 404);
+    const denied = requireWorkspaceOwner(c, group);
+    if (denied) return denied;
 
     const id = c.req.param('id');
     if (!/^[\w\-]+$/.test(id)) {

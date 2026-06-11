@@ -328,7 +328,27 @@ export function canModifyGroup(
   group: RegisteredGroup & { jid: string },
 ): boolean {
   if (group.is_home) return group.created_by === user.id;
-  if (!group.jid.startsWith('web:')) return group.created_by === user.id;
+  if (!group.jid.startsWith('web:')) {
+    if (group.created_by) return group.created_by === user.id;
+    // Legacy IM group (created_by=null): resolve owner via group_members first.
+    // Necessary for legacy IM groups bound to a non-home shared workspace —
+    // they have no is_home sibling so the sibling fallback alone returns false
+    // and the real owner (group_members role='owner') gets 403 on every
+    // destructive op despite canAccessGroup letting them through.
+    // owner-only here is stricter than canAccessGroup (which accepts 'member').
+    const memberRole = getGroupMemberRole(group.folder, user.id);
+    if (memberRole === 'owner') return true;
+    // Sibling home group fallback for legacy IM groups auto-bound to a home folder.
+    const siblingJids = getJidsByFolder(group.folder);
+    for (const jid of siblingJids) {
+      if (jid === group.jid) continue;
+      const sibling = getRegisteredGroup(jid);
+      if (sibling?.is_home && sibling.created_by) {
+        return sibling.created_by === user.id;
+      }
+    }
+    return false;
+  }
   return group.created_by === user.id;
 }
 

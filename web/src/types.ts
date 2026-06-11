@@ -8,6 +8,8 @@ export interface GroupInfo {
   is_shared?: boolean;
   member_role?: 'owner' | 'member';
   member_count?: number;
+  can_modify?: boolean;
+  can_manage_members?: boolean;
   editable?: boolean;
   deletable?: boolean;
   lastMessage?: string;

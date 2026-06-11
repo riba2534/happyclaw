@@ -52,7 +52,10 @@ function getHostSyncManifestPath(userId: string): string {
 }
 
 function validateServerId(id: string): boolean {
-  return /^[\w\-]+$/.test(id) && id !== 'happyclaw';
+  // Length cap mirrors MAX_MCP_KEY_LEN (256) — id is the JSON object key
+  // inside servers.json, an unbounded length there can balloon the file
+  // into multi-MB and slow every container spawn that JSON.parses it.
+  return id.length > 0 && id.length <= 256 && /^[\w\-]+$/.test(id) && id !== 'happyclaw';
 }
 
 async function readMcpServersFile(userId: string): Promise<McpServersFile> {
@@ -95,6 +98,54 @@ async function writeHostSyncManifest(
 }
 
 // --- Routes ---
+
+// 单个 MCP server 字段上限：避免认证用户用一个深度对象 / 巨型 args 把
+// data/mcp-servers/{userId}/servers.json 撑成多 MB（每次容器启动会 JSON.parse
+// 整个文件，OOM-class 退化）。配额同 ContainerEnvSchema 的口径。
+const MAX_MCP_STRING_LEN = 4096;
+const MAX_MCP_ARG_LEN = 2048;
+const MAX_MCP_ARGS = 50;
+const MAX_MCP_ENV_ENTRIES = 50;
+const MAX_MCP_HEADERS = 50;
+const MAX_MCP_KEY_LEN = 256;
+
+function validateMcpStringArrayLikeArgs(
+  value: unknown,
+): { ok: true } | { ok: false; reason: string } {
+  if (!Array.isArray(value)) return { ok: false, reason: 'args must be an array of strings' };
+  if (value.length > MAX_MCP_ARGS) return { ok: false, reason: `args has too many entries (max ${MAX_MCP_ARGS})` };
+  for (const v of value) {
+    if (typeof v !== 'string') return { ok: false, reason: 'args entries must be strings' };
+    if (v.length > MAX_MCP_ARG_LEN) return { ok: false, reason: `args entry exceeds ${MAX_MCP_ARG_LEN} chars` };
+  }
+  return { ok: true };
+}
+
+function validateMcpKeyValueRecord(
+  value: unknown,
+  fieldName: string,
+  maxEntries: number,
+): { ok: true } | { ok: false; reason: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return { ok: false, reason: `${fieldName} must be a plain object` };
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > maxEntries) {
+    return { ok: false, reason: `${fieldName} has too many entries (max ${maxEntries})` };
+  }
+  for (const [k, v] of entries) {
+    if (k.length > MAX_MCP_KEY_LEN) {
+      return { ok: false, reason: `${fieldName} key exceeds ${MAX_MCP_KEY_LEN} chars` };
+    }
+    if (typeof v !== 'string') {
+      return { ok: false, reason: `${fieldName} value for "${k}" must be a string` };
+    }
+    if (v.length > MAX_MCP_STRING_LEN) {
+      return { ok: false, reason: `${fieldName} value for "${k}" exceeds ${MAX_MCP_STRING_LEN} chars` };
+    }
+  }
+  return { ok: true };
+}
 
 const mcpServersRoutes = new Hono<{ Variables: Variables }>();
 
@@ -155,26 +206,35 @@ mcpServersRoutes.post('/', authMiddleware, async (c) => {
     if (!url || typeof url !== 'string') {
       return c.json({ error: 'url is required for http/sse type' }, 400);
     }
-    if (
-      headers !== undefined &&
-      (typeof headers !== 'object' ||
-        headers === null ||
-        Array.isArray(headers))
-    ) {
-      return c.json({ error: 'headers must be a plain object' }, 400);
+    if (url.length > MAX_MCP_STRING_LEN) {
+      return c.json({ error: `url exceeds ${MAX_MCP_STRING_LEN} chars` }, 400);
+    }
+    if (headers !== undefined) {
+      const r = validateMcpKeyValueRecord(headers, 'headers', MAX_MCP_HEADERS);
+      if (!r.ok) return c.json({ error: r.reason }, 400);
     }
   } else {
     if (!command || typeof command !== 'string') {
       return c.json({ error: 'command is required and must be a string' }, 400);
     }
-    if (args !== undefined && !Array.isArray(args)) {
-      return c.json({ error: 'args must be an array of strings' }, 400);
+    if (command.length > MAX_MCP_STRING_LEN) {
+      return c.json({ error: `command exceeds ${MAX_MCP_STRING_LEN} chars` }, 400);
     }
-    if (
-      env !== undefined &&
-      (typeof env !== 'object' || env === null || Array.isArray(env))
-    ) {
-      return c.json({ error: 'env must be a plain object' }, 400);
+    if (args !== undefined) {
+      const r = validateMcpStringArrayLikeArgs(args);
+      if (!r.ok) return c.json({ error: r.reason }, 400);
+    }
+    if (env !== undefined) {
+      const r = validateMcpKeyValueRecord(env, 'env', MAX_MCP_ENV_ENTRIES);
+      if (!r.ok) return c.json({ error: r.reason }, 400);
+    }
+  }
+  if (description !== undefined) {
+    if (typeof description !== 'string') {
+      return c.json({ error: 'description must be a string' }, 400);
+    }
+    if (description.length > MAX_MCP_STRING_LEN) {
+      return c.json({ error: `description exceeds ${MAX_MCP_STRING_LEN} chars` }, 400);
     }
   }
 
@@ -236,18 +296,19 @@ mcpServersRoutes.patch('/:id', authMiddleware, async (c) => {
     if (typeof command !== 'string' || !command) {
       return c.json({ error: 'command must be a non-empty string' }, 400);
     }
+    if (command.length > MAX_MCP_STRING_LEN) {
+      return c.json({ error: `command exceeds ${MAX_MCP_STRING_LEN} chars` }, 400);
+    }
     entry.command = command;
   }
   if (args !== undefined) {
-    if (!Array.isArray(args)) {
-      return c.json({ error: 'args must be an array of strings' }, 400);
-    }
+    const r = validateMcpStringArrayLikeArgs(args);
+    if (!r.ok) return c.json({ error: r.reason }, 400);
     entry.args = args;
   }
   if (env !== undefined) {
-    if (typeof env !== 'object' || env === null || Array.isArray(env)) {
-      return c.json({ error: 'env must be a plain object' }, 400);
-    }
+    const r = validateMcpKeyValueRecord(env, 'env', MAX_MCP_ENV_ENTRIES);
+    if (!r.ok) return c.json({ error: r.reason }, 400);
     entry.env = env;
   }
   // http/sse fields
@@ -255,16 +316,14 @@ mcpServersRoutes.patch('/:id', authMiddleware, async (c) => {
     if (typeof url !== 'string' || !url) {
       return c.json({ error: 'url must be a non-empty string' }, 400);
     }
+    if (url.length > MAX_MCP_STRING_LEN) {
+      return c.json({ error: `url exceeds ${MAX_MCP_STRING_LEN} chars` }, 400);
+    }
     entry.url = url;
   }
   if (headers !== undefined) {
-    if (
-      typeof headers !== 'object' ||
-      headers === null ||
-      Array.isArray(headers)
-    ) {
-      return c.json({ error: 'headers must be a plain object' }, 400);
-    }
+    const r = validateMcpKeyValueRecord(headers, 'headers', MAX_MCP_HEADERS);
+    if (!r.ok) return c.json({ error: r.reason }, 400);
     entry.headers = headers;
   }
   // common fields
@@ -275,6 +334,12 @@ mcpServersRoutes.patch('/:id', authMiddleware, async (c) => {
     entry.enabled = enabled;
   }
   if (description !== undefined) {
+    if (typeof description !== 'string' && description !== null) {
+      return c.json({ error: 'description must be a string' }, 400);
+    }
+    if (typeof description === 'string' && description.length > MAX_MCP_STRING_LEN) {
+      return c.json({ error: `description exceeds ${MAX_MCP_STRING_LEN} chars` }, 400);
+    }
     entry.description =
       typeof description === 'string' ? description : undefined;
   }

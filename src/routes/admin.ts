@@ -16,6 +16,7 @@ import {
 import { isUsernameConflictError, toUserPublic, setSessionCookie } from './auth.js';
 import type {
   AuthUser,
+  Permission,
   PermissionTemplateKey,
   AuthEventType,
 } from '../types.js';
@@ -69,6 +70,33 @@ const adminRoutes = new Hono<{ Variables: Variables }>();
 // ISO 8601 日期格式验证正则（审计日志查询 from/to 参数）
 const ISO_DATE_RE =
   /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
+
+/**
+ * 防止特权升级：非 admin actor 不应能对持有自己未持有权限的目标做 destructive
+ * 操作（改密码、改状态、删除/恢复、撤所有 session）。返回 null = 通过；返回
+ * Response = 403 失败响应。
+ *
+ * Admin role 拥有 ALL_PERMISSIONS，自然不会触发；target 是 admin 的情况由各
+ * handler 自己的 `target.role === 'admin'` 早 return 拦截。
+ */
+function denyEscalationToTarget(
+  c: any,
+  actor: AuthUser,
+  target: { role: string; permissions?: readonly Permission[] },
+  action: string,
+): Response | null {
+  if (actor.role === 'admin') return null;
+  if (target.role === 'admin') return null;
+  const actorPerms = new Set<Permission>(actor.permissions);
+  const extra = (target.permissions ?? []).filter((p) => !actorPerms.has(p));
+  if (extra.length === 0) return null;
+  return c.json(
+    {
+      error: `Forbidden: cannot ${action} a user who holds permissions you don't [${extra.join(', ')}]`,
+    },
+    403,
+  );
+}
 
 // --- User Management ---
 
@@ -129,7 +157,7 @@ adminRoutes.post('/users', authMiddleware, usersManageMiddleware, async (c) => {
   }
 
   const {
-    username,
+    username: rawUsername,
     password,
     display_name,
     role,
@@ -139,8 +167,10 @@ adminRoutes.post('/users', authMiddleware, usersManageMiddleware, async (c) => {
   } = validation.data;
   const actor = c.get('user') as AuthUser;
 
-  const usernameError = validateUsername(username);
+  const usernameError = validateUsername(rawUsername);
   if (usernameError) return c.json({ error: usernameError }, 400);
+  // Username 归一化（与 login / register / setup 一致）。
+  const username = rawUsername.toLowerCase();
 
   if (getUserByUsername(username)) {
     return c.json({ error: 'Username already taken' }, 409);
@@ -240,6 +270,22 @@ adminRoutes.patch(
         403,
       );
     }
+    // 防止特权升级：非 admin 不能对持有自己未持有权限的目标做 destructive 操作
+    // （改密码、改状态、改/撤 session、删除 / 恢复、改权限）。否则一个仅持
+    // `manage_users` 的账号可重置密码登录目标账号、继承目标的权限（典型路径：
+    // user_admin → 持有 manage_system_config 的 member → 全套 provider 配置）。
+    //
+    // 注意 permissions 也必须纳入 trigger：否则两步绕过 (1) PATCH permissions=[]
+    // 把 target 权限抹平 → (2) PATCH password=X 此时 target.permissions 已为空
+    // → denyEscalationToTarget 通过 → 接管账号。
+    const triggersPrivCheck =
+      validation.data.password !== undefined ||
+      validation.data.status !== undefined ||
+      validation.data.permissions !== undefined;
+    if (triggersPrivCheck) {
+      const denial = denyEscalationToTarget(c, actor, target, 'modify');
+      if (denial) return denial;
+    }
     if (
       actor.role !== 'admin' &&
       validation.data.role !== undefined &&
@@ -285,12 +331,23 @@ adminRoutes.patch(
           validation.data.role === 'admin' ? [...ALL_PERMISSIONS] : [];
       }
       if (validation.data.role !== target.role) {
+        // 用户角色变更必须立即作废 session：authMiddleware 用 sessionCache
+        // 缓存 30 秒（web-context.ts），不主动 invalidate 的话被降级用户在
+        // 接下来 30s 内仍能用旧权限访问受限端点。
+        invalidateUserSessions(id);
         logAuthEvent({
           event_type: 'role_changed',
           username: target.username,
           actor_username: actor.username,
           ip_address: getClientIp(c),
           details: { from: target.role, to: validation.data.role },
+        });
+        logAuthEvent({
+          event_type: 'session_revoked',
+          username: target.username,
+          actor_username: actor.username,
+          ip_address: getClientIp(c),
+          details: { action: 'role_change' },
         });
       }
     }
@@ -299,6 +356,7 @@ adminRoutes.patch(
       const nextPermissions = normalizePermissions(validation.data.permissions);
       if (actor.role !== 'admin') {
         const allowed = new Set(actor.permissions);
+        // 不能赋予 actor 自己没有的权限（grant 上限）。
         const forbidden = nextPermissions.filter((perm) => !allowed.has(perm));
         if (forbidden.length > 0) {
           return c.json(
@@ -308,8 +366,38 @@ adminRoutes.patch(
             403,
           );
         }
+        // 也不能撤掉 actor 自己没有的权限（remove 对称约束）。否则可以
+        // 二步走绕过 denyEscalationToTarget：先 PATCH permissions=[]
+        // 把目标权限抹平，再 PATCH password=X 接管账号。
+        const targetPerms = target.permissions ?? [];
+        const removed = targetPerms.filter((p) => !nextPermissions.includes(p));
+        const removedForbidden = removed.filter((p) => !allowed.has(p));
+        if (removedForbidden.length > 0) {
+          return c.json(
+            {
+              error: `Forbidden: cannot remove permissions [${removedForbidden.join(', ')}] you don't hold`,
+            },
+            403,
+          );
+        }
       }
       updates.permissions = nextPermissions;
+      // 权限变更也走作废逻辑，与角色变更对齐。比较使用规范化后的 permissions
+      // 排序+JSON 字符串比对，避免顺序差异误判为变更。
+      const prevSorted = JSON.stringify(
+        [...(target.permissions ?? [])].sort(),
+      );
+      const nextSorted = JSON.stringify([...nextPermissions].sort());
+      if (prevSorted !== nextSorted) {
+        invalidateUserSessions(id);
+        logAuthEvent({
+          event_type: 'session_revoked',
+          username: target.username,
+          actor_username: actor.username,
+          ip_address: getClientIp(c),
+          details: { action: 'permissions_change' },
+        });
+      }
     }
 
     if (validation.data.notes !== undefined) {
@@ -319,6 +407,9 @@ adminRoutes.patch(
     if (validation.data.status !== undefined) {
       if (validation.data.status === 'deleted') {
         deleteUser(id);
+        // sessionCache 是 30s TTL（web-context.ts），不主动 invalidate
+        // 的话被删用户在缓存中仍是 status='active'，可继续 HTTP / WS。
+        invalidateUserSessions(id);
         // Tear down all IM connections so feishu/telegram/qq/wechat/etc bots
         // stop responding immediately. Without this the bots would keep firing
         // until the next service restart (loadState filters non-active users).
@@ -478,6 +569,10 @@ adminRoutes.delete('/users/:id', authMiddleware, usersManageMiddleware, (c) => {
       403,
     );
   }
+  {
+    const denial = denyEscalationToTarget(c, actor, target, 'delete');
+    if (denial) return denial;
+  }
   if (target.id === actor.id) {
     return c.json({ error: 'Cannot delete yourself' }, 400);
   }
@@ -490,6 +585,12 @@ adminRoutes.delete('/users/:id', authMiddleware, usersManageMiddleware, (c) => {
   }
 
   deleteUser(id);
+  // 与 PATCH status='deleted' 路径对齐：清缓存 + 断 IM 连接，否则前端调
+  // DELETE 之后 sessionCache 仍是 active 状态、IM bot 持续响应群消息直到重启。
+  invalidateUserSessions(id);
+  void imManager
+    .disconnectAllUserChannels(id)
+    .catch(() => undefined);
 
   // Cleanup avatar files for deleted user
   try {
@@ -534,6 +635,10 @@ adminRoutes.post(
         403,
       );
     }
+    {
+      const denial = denyEscalationToTarget(c, actor, target, 'restore');
+      if (denial) return denial;
+    }
     if (target.status !== 'deleted')
       return c.json({ error: 'User is not deleted' }, 400);
 
@@ -564,6 +669,10 @@ adminRoutes.delete(
         { error: 'Forbidden: only admin can revoke admin sessions' },
         403,
       );
+    }
+    {
+      const denial = denyEscalationToTarget(c, actor, target, 'revoke sessions for');
+      if (denial) return denial;
     }
 
     invalidateUserSessions(id);

@@ -8,6 +8,7 @@ import { EmojiAvatar } from '../common/EmojiAvatar';
 import { ErrorBoundary } from '../common';
 import { Loader2, ChevronUp, ChevronDown, AlertTriangle, Square, Code2, Zap, BookOpen, Wrench } from 'lucide-react';
 import { useDisplayMode } from '../../hooks/useDisplayMode';
+import { resolveSystemMessage } from '../../lib/system-message-registry';
 
 interface MessageListProps {
   messages: Message[];
@@ -117,18 +118,11 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
       items.push({ type: 'date', content: date });
       msgs.forEach((msg) => {
         if (msg.sender === '__system__') {
-          if (msg.content === 'context_reset') {
-            items.push({ type: 'divider', content: '上下文已清除' });
-          } else if (msg.content === 'query_interrupted') {
-            items.push({ type: 'divider', content: '已中断' });
-          } else if (msg.content.startsWith('agent_error:')) {
-            items.push({ type: 'error', content: msg.content.slice('agent_error:'.length) });
-          } else if (msg.content.startsWith('agent_max_retries:')) {
-            items.push({ type: 'error', content: msg.content.slice('agent_max_retries:'.length) });
-          } else if (msg.content.startsWith('system_error:')) {
-            items.push({ type: 'error', content: msg.content.slice('system_error:'.length) });
-          } else if (msg.content.startsWith('system_info:')) {
-            items.push({ type: 'divider', content: msg.content.slice('system_info:'.length) });
+          if (msg.content.startsWith('context_overflow:')) {
+            items.push({ type: 'message', content: msg });
+          } else {
+            const resolved = resolveSystemMessage(msg.content);
+            items.push({ type: resolved.style, content: resolved.text });
           }
         } else if (!msg.is_from_me && /^\/(sw|spawn)\s+/i.test(msg.content)) {
           // /sw or /spawn commands render as compact spawn-task cards

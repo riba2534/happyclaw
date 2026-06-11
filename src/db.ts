@@ -150,6 +150,21 @@ function getNewMessagesStmt(jidCount: number): any {
          AND COALESCE(source_kind, '') NOT IN ('user_command', 'scheduled_task_prompt')
        ORDER BY timestamp ASC, id ASC`,
     );
+    // Cap cache size to avoid unbounded growth in deployments where the
+    // distinct jidCount values shift over time. better-sqlite3 does not
+    // explicitly require finalization for prepared statements (it relies on
+    // GC), so dropping the reference is safe. 64 entries covers any plausible
+    // workload (the cache key is # of jids polled in one batch, normally 1..32).
+    if (_newMsgStmtCache.size >= 64) {
+      const firstKey = _newMsgStmtCache.keys().next().value as
+        | number
+        | undefined;
+      if (firstKey !== undefined) _newMsgStmtCache.delete(firstKey);
+    }
+    _newMsgStmtCache.set(jidCount, s);
+  } else {
+    // touch — LRU: re-insert to move to end (Map preserves insertion order).
+    _newMsgStmtCache.delete(jidCount);
     _newMsgStmtCache.set(jidCount, s);
   }
   return s;
@@ -224,6 +239,34 @@ export function initDatabase(): void {
   // Enable WAL mode for better concurrency and performance
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA busy_timeout = 5000');
+  // Enable foreign-key enforcement. SQLite defaults to OFF for backward
+  // compatibility, so all FK declarations on existing schemas are silent
+  // no-ops without this PRAGMA. We log existing orphans (if any) but only
+  // for visibility — enforcement is reset to OFF when violations exist
+  // because turning it on with violations would refuse the next write.
+  // Operators can clean up via PRAGMA foreign_key_check then restart.
+  try {
+    db.exec('PRAGMA foreign_keys = ON');
+    const violations = db.prepare('PRAGMA foreign_key_check').all() as Array<{
+      table: string;
+      rowid: number;
+      parent: string;
+      fkid: number;
+    }>;
+    if (violations.length > 0) {
+      const summary = violations
+        .slice(0, 10)
+        .map((v) => `${v.table} → ${v.parent}`)
+        .join(', ');
+      logger.warn(
+        { violationCount: violations.length, sample: summary },
+        'Foreign-key violations detected; disabling enforcement to avoid blocking writes. Clean up orphans (PRAGMA foreign_key_check) and restart to re-enable.',
+      );
+      db.exec('PRAGMA foreign_keys = OFF');
+    }
+  } catch (err) {
+    logger.error({ err }, 'Failed to enable foreign-key enforcement');
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS chats (
       jid TEXT PRIMARY KEY,
@@ -1261,10 +1304,65 @@ export function initDatabase(): void {
   // its position before assertSchema('users', …) matters because the
   // schema check would otherwise reject pre-v38 databases on startup.
 
-  // v38 → v40: user_feedback table for storing user feedback (like/dislike).
+  // v38 → v39: Lowercase usernames + add COLLATE NOCASE uniqueness.
+  // R1 added `username.toLowerCase()` to login/register/setup/admin-create/
+  // profile-update routes for case-insensitive auth; without this migration
+  // any pre-existing mixed-case username (e.g. 'Admin') is permanently
+  // locked out (login lowercases input → DB lookup misses → 401).
+  // We only run UPDATE; the existing UNIQUE constraint already prevents
+  // future mixed-case inserts because the routes lowercase before INSERT.
+  // Conflicts (e.g. both 'admin' and 'Admin' rows already exist) are rare
+  // because the original UNIQUE was case-sensitive, so they exist only when
+  // the operator manually inserted both. We log the conflict and refuse to
+  // mutate that row, leaving the operator to clean up by hand.
+  {
+    const v = getRouterStateInternal('schema_version');
+    const numV = v ? parseInt(v, 10) : 0;
+    if (numV < 39 || !v) {
+      const mixedCaseRows = db
+        .prepare(
+          // ORDER BY 让多次 dry-run 结果稳定 + 让"早创建的真账号"优先被
+          // lowercase 化，避免后注册的混淆账号顶替原账号。
+          "SELECT id, username FROM users WHERE username != lower(username) ORDER BY created_at ASC, id ASC",
+        )
+        .all() as Array<{ id: string; username: string }>;
+      if (mixedCaseRows.length > 0) {
+        const txn = db.transaction(() => {
+          for (const row of mixedCaseRows) {
+            const lower = row.username.toLowerCase();
+            const conflict = db
+              .prepare('SELECT id FROM users WHERE id != ? AND username = ?')
+              .get(row.id, lower) as { id: string } | undefined;
+            if (conflict) {
+              logger.error(
+                {
+                  userId: row.id,
+                  username: row.username,
+                  conflictUserId: conflict.id,
+                },
+                'Username case-normalization migration: conflict, leaving row as-is',
+              );
+              continue;
+            }
+            db.prepare('UPDATE users SET username = ? WHERE id = ?').run(
+              lower,
+              row.id,
+            );
+          }
+        });
+        txn();
+        logger.info(
+          { rows: mixedCaseRows.length },
+          'Username case-normalization migration v39 completed',
+        );
+      }
+    }
+  }
+
+  // v39 → v40: user_feedback table for storing user feedback (like/dislike).
   // The upsert key is UNIQUE(user_id, message_id); user_id is NOT NULL DEFAULT ''
   // because SQLite treats NULLs as distinct in unique constraints. Databases that
-  // ran the interim v39 layout (no UNIQUE, nullable user_id) get rebuilt here,
+  // ran the interim WIP layout (no UNIQUE, nullable user_id) get rebuilt here,
   // keeping the newest row per (user_id, message_id).
   const feedbackVersion = getRouterStateInternal('schema_version');
   if (!feedbackVersion || parseInt(feedbackVersion, 10) < 40) {
@@ -1278,7 +1376,7 @@ export function initDatabase(): void {
         DROP INDEX IF EXISTS idx_feedback_message;
         DROP INDEX IF EXISTS idx_feedback_user;
         DROP INDEX IF EXISTS idx_feedback_created;
-        ALTER TABLE user_feedback RENAME TO user_feedback_v39;
+        ALTER TABLE user_feedback RENAME TO user_feedback_old;
       `);
     }
     db.exec(`
@@ -1303,9 +1401,9 @@ export function initDatabase(): void {
         INSERT OR IGNORE INTO user_feedback
           (id, message_id, chat_jid, user_id, username, feedback_type, user_message, ai_response, created_at)
         SELECT id, message_id, chat_jid, COALESCE(user_id, ''), username, feedback_type, user_message, ai_response, created_at
-        FROM user_feedback_v39
+        FROM user_feedback_old
         ORDER BY created_at DESC;
-        DROP TABLE user_feedback_v39;
+        DROP TABLE user_feedback_old;
       `);
     }
   }
@@ -2549,14 +2647,51 @@ type RegisteredGroupRow = {
 function parseGroupRow(
   row: RegisteredGroupRow,
 ): RegisteredGroup & { jid: string } {
+  // 防御性 JSON.parse：parseGroupRow 在启动期 loadState 路径上被调用，单条
+  // 损坏的 row（手工 SQL / 部分写入 / migration 失误）不能让进程退出。
+  // 用 warn 日志保留可观测性，损坏字段 fallback 到 undefined。
+  let containerConfig: RegisteredGroup['containerConfig'];
+  if (row.container_config) {
+    try {
+      containerConfig = JSON.parse(row.container_config);
+    } catch (err) {
+      logger.warn(
+        { jid: row.jid, err, raw: row.container_config.slice(0, 200) },
+        'parseGroupRow: container_config JSON malformed, dropping',
+      );
+    }
+  }
+  let senderAllowlist: string[] | undefined;
+  if (row.sender_allowlist != null) {
+    try {
+      const parsed = JSON.parse(row.sender_allowlist) as unknown;
+      if (Array.isArray(parsed) && parsed.every((v) => typeof v === 'string')) {
+        senderAllowlist = parsed as string[];
+      } else {
+        // Fail-closed：semantics 层把 [] 视为「禁止所有发送者」。坏数据回退
+        // 到 [] 比 undefined（=允许全部）更安全 —— 与 R0 的 owner-only 默认
+        // 一致，不会把限制群默默改成开放群。
+        senderAllowlist = [];
+        logger.warn(
+          { jid: row.jid },
+          'parseGroupRow: sender_allowlist not a string[], falling back to [] (fail-closed)',
+        );
+      }
+    } catch (err) {
+      // 解析失败同样 fail-closed：[] = 禁止所有，等待运维修复。
+      senderAllowlist = [];
+      logger.warn(
+        { jid: row.jid, err, raw: row.sender_allowlist.slice(0, 200) },
+        'parseGroupRow: sender_allowlist JSON malformed, falling back to [] (fail-closed)',
+      );
+    }
+  }
   return {
     jid: row.jid,
     name: row.name,
     folder: row.folder,
     added_at: row.added_at,
-    containerConfig: row.container_config
-      ? JSON.parse(row.container_config)
-      : undefined,
+    containerConfig,
     executionMode: parseExecutionMode(row.execution_mode, `group ${row.jid}`),
     customCwd: row.custom_cwd ?? undefined,
     initSourcePath: row.init_source_path ?? undefined,
@@ -2579,9 +2714,7 @@ function parseGroupRow(
       row.binding_mode === 'thread_map' ? 'thread_map' : 'single_context',
     feishu_chat_mode: row.feishu_chat_mode ?? undefined,
     feishu_group_message_type: row.feishu_group_message_type ?? undefined,
-    sender_allowlist: row.sender_allowlist != null
-      ? (JSON.parse(row.sender_allowlist) as string[])
-      : undefined,
+    sender_allowlist: senderAllowlist,
   };
 }
 
@@ -3257,23 +3390,34 @@ export function getGroupsByOwner(
     target_agent_id: string | null;
   }>;
 
-  return rows.map((row) => ({
-    jid: row.jid,
-    name: row.name,
-    folder: row.folder,
-    added_at: row.added_at,
-    containerConfig: row.container_config
-      ? JSON.parse(row.container_config)
-      : undefined,
-    executionMode: parseExecutionMode(row.execution_mode, `group ${row.jid}`),
-    customCwd: row.custom_cwd ?? undefined,
-    initSourcePath: row.init_source_path ?? undefined,
-    initGitUrl: row.init_git_url ?? undefined,
-    created_by: row.created_by ?? undefined,
-    is_home: row.is_home === 1,
-    target_main_jid: row.target_main_jid ?? undefined,
-    target_agent_id: row.target_agent_id ?? undefined,
-  }));
+  return rows.map((row) => {
+    let containerConfig: RegisteredGroup['containerConfig'];
+    if (row.container_config) {
+      try {
+        containerConfig = JSON.parse(row.container_config);
+      } catch (err) {
+        logger.warn(
+          { jid: row.jid, err },
+          'getGroupsByOwner: container_config JSON malformed, dropping',
+        );
+      }
+    }
+    return {
+      jid: row.jid,
+      name: row.name,
+      folder: row.folder,
+      added_at: row.added_at,
+      containerConfig,
+      executionMode: parseExecutionMode(row.execution_mode, `group ${row.jid}`),
+      customCwd: row.custom_cwd ?? undefined,
+      initSourcePath: row.init_source_path ?? undefined,
+      initGitUrl: row.init_git_url ?? undefined,
+      created_by: row.created_by ?? undefined,
+      is_home: row.is_home === 1,
+      target_main_jid: row.target_main_jid ?? undefined,
+      target_agent_id: row.target_agent_id ?? undefined,
+    };
+  });
 }
 
 // ===================== Auth CRUD =====================
@@ -4869,13 +5013,16 @@ export function updateBillingPlan(
 }
 
 export function deleteBillingPlan(id: string): boolean {
-  // Don't delete if users are subscribed
-  const hasSubscribers = db
+  // Don't delete if any subscription (any status) references this plan.
+  // PRAGMA foreign_keys=ON 会因 cancelled/expired 残留行让 DELETE 抛
+  // SQLITE_CONSTRAINT_FOREIGNKEY 把请求 500；先在应用层校验给 caller 一个
+  // 干净的 false 返回，运维需要手动迁移残留订阅再删 plan。
+  const hasReferences = db
     .prepare(
-      "SELECT COUNT(*) as cnt FROM user_subscriptions WHERE plan_id = ? AND status = 'active'",
+      'SELECT COUNT(*) as cnt FROM user_subscriptions WHERE plan_id = ?',
     )
     .get(id) as { cnt: number };
-  if (hasSubscribers.cnt > 0) return false;
+  if (hasReferences.cnt > 0) return false;
   const result = db.prepare('DELETE FROM billing_plans WHERE id = ?').run(id);
   return result.changes > 0;
 }
@@ -4956,33 +5103,39 @@ export function getUserActiveSubscription(
 }
 
 export function createUserSubscription(sub: UserSubscription): void {
-  // Cancel existing active subscriptions
-  db.prepare(
-    "UPDATE user_subscriptions SET status = 'cancelled', cancelled_at = ? WHERE user_id = ? AND status = 'active'",
-  ).run(new Date().toISOString(), sub.user_id);
+  // Wrap in a transaction so partial failure can't leave the user without an
+  // active subscription (cancel succeeded, insert/update failed). Same shape
+  // as expireSubscriptions / batchAssignPlan elsewhere in this file.
+  const txn = db.transaction(() => {
+    // Cancel existing active subscriptions
+    db.prepare(
+      "UPDATE user_subscriptions SET status = 'cancelled', cancelled_at = ? WHERE user_id = ? AND status = 'active'",
+    ).run(new Date().toISOString(), sub.user_id);
 
-  db.prepare(
-    `INSERT INTO user_subscriptions (id, user_id, plan_id, status, started_at, expires_at, cancelled_at, trial_ends_at, notes, auto_renew, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    sub.id,
-    sub.user_id,
-    sub.plan_id,
-    sub.status,
-    sub.started_at,
-    sub.expires_at,
-    sub.cancelled_at,
-    sub.trial_ends_at,
-    sub.notes,
-    sub.auto_renew ? 1 : 0,
-    sub.created_at,
-  );
+    db.prepare(
+      `INSERT INTO user_subscriptions (id, user_id, plan_id, status, started_at, expires_at, cancelled_at, trial_ends_at, notes, auto_renew, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      sub.id,
+      sub.user_id,
+      sub.plan_id,
+      sub.status,
+      sub.started_at,
+      sub.expires_at,
+      sub.cancelled_at,
+      sub.trial_ends_at,
+      sub.notes,
+      sub.auto_renew ? 1 : 0,
+      sub.created_at,
+    );
 
-  // Update user's subscription_plan_id
-  db.prepare('UPDATE users SET subscription_plan_id = ? WHERE id = ?').run(
-    sub.plan_id,
-    sub.user_id,
-  );
+    // Update user's subscription_plan_id
+    db.prepare('UPDATE users SET subscription_plan_id = ? WHERE id = ?').run(
+      sub.plan_id,
+      sub.user_id,
+    );
+  });
+  txn();
 }
 
 export function cancelUserSubscription(userId: string): void {
@@ -5421,6 +5574,27 @@ export function incrementMonthlyUsage(
   ).run(userId, month, inputTokens, outputTokens, costUsd, now);
 }
 
+/**
+ * Atomic monthly+daily usage increment. Wraps the two UPSERTs in a single
+ * SQLite transaction so a crash between them can't leave the two tables
+ * divergent for that turn (silent drift over time). billing.ts uses this
+ * instead of calling the two helpers in sequence.
+ */
+export function incrementUsageBoth(
+  userId: string,
+  month: string,
+  date: string,
+  inputTokens: number,
+  outputTokens: number,
+  costUsd: number,
+): void {
+  const txn = db.transaction(() => {
+    incrementMonthlyUsage(userId, month, inputTokens, outputTokens, costUsd);
+    incrementDailyUsage(userId, date, inputTokens, outputTokens, costUsd);
+  });
+  txn();
+}
+
 export function getUserMonthlyUsageHistory(
   userId: string,
   months = 6,
@@ -5572,9 +5746,9 @@ export function getBillingAuditLog(
       event_type: String(r.event_type) as BillingAuditEventType,
       user_id: String(r.user_id),
       actor_id: typeof r.actor_id === 'string' ? r.actor_id : null,
-      details: typeof r.details === 'string'
-        ? (JSON.parse(r.details) as Record<string, unknown>)
-        : null,
+      // 防御性 parse：单行损坏不应让整个审计 API 500（事故排查的关键时刻
+      // 不能因一行坏数据看不到日志）。parseJsonDetails 出错时返回 null。
+      details: parseJsonDetails(r.details),
       created_at: String(r.created_at),
     })),
     total,

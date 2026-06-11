@@ -154,10 +154,17 @@ RUN chmod +x /app/entrypoint.sh
 # Set ownership to node user (non-root) for writable directories
 RUN chown -R node:node /workspace
 
-# Install oh-my-zsh for node user (ys theme)
-RUN su - node -c 'sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended' \
+# Install oh-my-zsh for node user (ys theme).
+# Best-effort: the installer pulls install.sh from raw.githubusercontent.com AND
+# git-clones the ohmyzsh repo from github.com — both are flaky behind some
+# networks (notably CN), where the clone doesn't fail fast but HANGS. A plain
+# `|| echo` can't rescue a hang, so wrap in `timeout` to cap the attempt. It's a
+# cosmetic shell theme, NOT required by the agent runtime, so timeout/failure
+# must fall back to the default shell rather than abort the whole image build.
+RUN timeout -k 5 90 su - node -c 'sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended' \
     && sed -i 's/ZSH_THEME="robbyrussell"/ZSH_THEME="ys"/' /home/node/.zshrc \
-    && chsh -s /bin/zsh node
+    && chsh -s /bin/zsh node \
+    || echo "⚠️ oh-my-zsh setup skipped (network slow/unavailable); container keeps default shell"
 
 # Entrypoint runs as root to fix volume permissions, then drops to node user.
 # Do NOT add USER node here — entrypoint handles the privilege drop.

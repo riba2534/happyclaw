@@ -21,6 +21,10 @@ export interface CardMeta {
   durationMs?: number;
   inputTokens?: number;
   outputTokens?: number;
+  /** Cached prompt tokens read this turn — surfaced so真实成本 isn't underestimated. */
+  cacheReadInputTokens?: number;
+  /** Prompt tokens written to cache this turn. */
+  cacheCreationInputTokens?: number;
   costUSD?: number;
   numTurns?: number;
   /** Per-tool aggregated counts. Takes precedence over `toolCount`. */

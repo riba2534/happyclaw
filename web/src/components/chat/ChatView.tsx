@@ -149,6 +149,10 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   // Sidebar: members tab visibility
   const isHome = !!group?.is_home;
   const showMembersTab = (!!group?.is_shared || group?.member_role === 'owner') && !isHome;
+  // Workspace config (skills + MCP) write permission. Backend `canModifyGroup`
+  // ACL result is propagated via the `can_modify` field; trust it as the
+  // single source of truth to avoid frontend/backend divergence.
+  const canModifyWorkspaceConfig = !!group?.can_modify;
   const visibleTabs = SIDEBAR_TABS.filter(t => t.id !== 'members' || showMembersTab);
 
   // Fallback: if current tab is hidden, reset to files
@@ -663,6 +667,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         <AgentTabBar
           agents={agents}
           activeTab={activeAgentTab}
+          canModify={canModifyWorkspaceConfig}
           onSelectTab={(id) => selectTab(id)}
           onDeleteAgent={(id) => {
             const agent = agents.find((a) => a.id === id);
@@ -699,6 +704,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                 <TopicSidebar
                   topicAgents={filteredTopicAgents}
                   activeAgentTab={activeAgentTab}
+                  canModify={canModifyWorkspaceConfig}
                   onSelectAgent={(id) => selectTab(id)}
                   onDeleteAgent={(id) => deleteAgentAction(groupJid, id)}
                   topicFilter={topicFilter}
@@ -744,7 +750,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                         return ok;
                       }}
                       groupJid={groupJid}
-                      onResetSession={() => { setResetAgentId(activeAgentTab); setShowResetConfirm(true); }}
+                      onResetSession={canModifyWorkspaceConfig ? () => { setResetAgentId(activeAgentTab); setShowResetConfirm(true); } : undefined}
                     />
                   </>
                 ) : (
@@ -780,7 +786,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                   return ok;
                 }}
                 groupJid={groupJid}
-                onResetSession={() => { setResetAgentId(activeAgentTab); setShowResetConfirm(true); }}
+                onResetSession={canModifyWorkspaceConfig ? () => { setResetAgentId(activeAgentTab); setShowResetConfirm(true); } : undefined}
               />
             </>
           ) : (
@@ -800,7 +806,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
               <MessageInput
                 onSend={handleSend}
                 groupJid={groupJid}
-                onResetSession={() => { setResetAgentId(null); setShowResetConfirm(true); }}
+                onResetSession={canModifyWorkspaceConfig ? () => { setResetAgentId(null); setShowResetConfirm(true); } : undefined}
                 onToggleTerminal={canUseTerminal ? handleTerminalToggle : undefined}
               />
             </>
@@ -849,9 +855,15 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
             ) : sidebarTab === 'env' ? (
               <ContainerEnvPanel groupJid={groupJid} />
             ) : sidebarTab === 'skills' ? (
-              <WorkspaceSkillsPanel groupJid={groupJid} />
+              <WorkspaceSkillsPanel
+                groupJid={groupJid}
+                canModify={canModifyWorkspaceConfig}
+              />
             ) : sidebarTab === 'mcp' ? (
-              <WorkspaceMcpPanel groupJid={groupJid} />
+              <WorkspaceMcpPanel
+                groupJid={groupJid}
+                canModify={canModifyWorkspaceConfig}
+              />
             ) : (
               <GroupMembersPanel groupJid={groupJid} />
             )}
@@ -931,6 +943,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
           <div className="flex-1 overflow-hidden h-[calc(80dvh-56px)]">
             <WorkspaceSkillsPanel
               groupJid={groupJid}
+              canModify={canModifyWorkspaceConfig}
               onClose={() => setMobilePanel(null)}
             />
           </div>
@@ -946,6 +959,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
           <div className="flex-1 overflow-hidden h-[calc(80dvh-56px)]">
             <WorkspaceMcpPanel
               groupJid={groupJid}
+              canModify={canModifyWorkspaceConfig}
               onClose={() => setMobilePanel(null)}
             />
           </div>

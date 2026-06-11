@@ -32,9 +32,9 @@ export function GroupMembersPanel({ groupJid }: GroupMembersPanelProps) {
   const [error, setError] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
 
-  const isOwner = group?.member_role === 'owner';
-  const isAdmin = currentUser?.role === 'admin';
-  const canManage = isOwner || isAdmin;
+  // 后端 `canManageGroupMembers` 通过 `can_manage_members` 字段下发（已包含 admin 语义），
+  // 前端不再自拼 ACL。
+  const canManage = !!group?.can_manage_members;
 
   const loadedRef = useRef<string | null>(null);
   useEffect(() => {

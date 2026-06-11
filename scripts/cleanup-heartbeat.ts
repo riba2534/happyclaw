@@ -5,8 +5,7 @@
  *   - data/groups/user-global/{userId}/HEARTBEAT.md
  *   - data/groups/user-global/{userId}/daily-summary/
  *
- * 用法：bun scripts/cleanup-heartbeat.ts
- *      或 npx tsx scripts/cleanup-heartbeat.ts
+ * 用法：npx tsx scripts/cleanup-heartbeat.ts
  *
  * 幂等：再跑一次什么都不发生（文件不存在就跳过）。
  */

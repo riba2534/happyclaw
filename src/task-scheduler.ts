@@ -110,7 +110,10 @@ function ensureTaskWorkspace(
   const jid = `web:${crypto.randomUUID()}`;
   // Strip existing 'task-' prefix from IPC-originated IDs to avoid 'task-task-...'
   const idBase = task.id.startsWith('task-') ? task.id.slice(5) : task.id;
-  const folder = `task-${idBase.slice(0, 12)}`;
+  // 用完整 task id 而不是 slice(0,12)：12 字符的截断只有 ~32 bit 熵，会让两个
+  // 同时创建的隔离任务指向同一个 folder，互相覆盖工作区文件。task id 已经是
+  // randomUUID 形态、不超长，直接用。registerGroup 的 folder 校验允许 . - _。
+  const folder = `task-${idBase}`;
   // 从 prompt 提取简短名称（取第一行前 12 个字符）
   const firstLine = task.prompt.split('\n')[0].trim();
   const shortName = firstLine.slice(0, 12).trim() || task.id.slice(0, 6);
@@ -235,16 +238,55 @@ function computeNextRun(task: ScheduledTask): string | null {
   } else if (task.schedule_type === 'interval') {
     const ms = Number(task.schedule_value);
     if (!Number.isFinite(ms) || ms <= 0) return null;
-    const anchor = task.next_run
+    const anchorRaw = task.next_run
       ? new Date(task.next_run).getTime()
       : Date.now();
+    // 防御：损坏的 next_run（手工 SQL / 旧版宽松校验）会让 anchor=NaN，
+    // 后续算术全变 NaN，最终 `new Date(NaN).toISOString()` 抛 RangeError，
+    // 把任务永久卡死在 runningTaskIds。优雅 fallback 到 now。
+    const anchor = Number.isFinite(anchorRaw) ? anchorRaw : Date.now();
     const now = Date.now();
     const elapsed = now - anchor;
     const periods = elapsed > 0 ? Math.ceil(elapsed / ms) : 1;
-    return new Date(anchor + periods * ms).toISOString();
+    const next = anchor + periods * ms;
+    if (!Number.isFinite(next)) return null;
+    return new Date(next).toISOString();
   }
   // 'once' tasks have no next run
   return null;
+}
+
+function safeComputeNextRun(task: ScheduledTask, manualRun?: boolean): string | null {
+  if (manualRun) return task.next_run ?? null;
+  try {
+    return computeNextRun(task);
+  } catch (err) {
+    logger.error(
+      { taskId: task.id, err },
+      'computeNextRun failed; leaving next_run unchanged',
+    );
+    return null;
+  }
+}
+
+/**
+ * 包装 updateTaskRunLog 让 SQLite 临时抛错（WAL busy / 磁盘满 / migration
+ * 期间 schema 锁）不会冒泡出函数体，否则会跳过下面 runningTaskIds.delete
+ * 让任务永久卡在 running set。
+ */
+function safeUpdateTaskRunLog(
+  taskId: string,
+  runLogId: number,
+  patch: Parameters<typeof updateTaskRunLog>[1],
+): void {
+  try {
+    updateTaskRunLog(runLogId, patch);
+  } catch (err) {
+    logger.error(
+      { taskId, runLogId, err },
+      'updateTaskRunLog failed (continuing to free runningTaskIds)',
+    );
+  }
 }
 
 /**
@@ -275,6 +317,23 @@ async function runTask(
   if (!task) return;
 
   runningTaskIds.add(task.id);
+  // 顶层兜底 finally：runningTaskIds.add 之后到 inner runTask 真正进入 try
+  // 之间还有 logTaskRunStart / ensureTaskWorkspace / mkdirSync / getUserById /
+  // checkBilling / writeTasksSnapshot 等多次 DB/FS 调用，任意一处抛错都会
+  // 让 task.id 永久挂在 runningTaskIds（scheduler 跳过该任务直到进程重启）。
+  // 内层 try/finally 仍照常处理 next_run / 计费等逻辑；这层只兜底删 set。
+  try {
+    await runTaskInner(task, deps, options);
+  } finally {
+    runningTaskIds.delete(task.id);
+  }
+}
+
+async function runTaskInner(
+  task: ScheduledTask,
+  deps: SchedulerDependencies,
+  options?: RunTaskOptions,
+): Promise<void> {
   const startTime = Date.now();
   const runLogId = logTaskRunStart(task.id);
 
@@ -288,15 +347,20 @@ async function runTask(
       { taskId: task.id, workspaceJid: workspace.jid },
       'Workspace group not found after creation',
     );
-    updateTaskRunLog(runLogId, {
+    safeUpdateTaskRunLog(task.id, runLogId, {
       duration_ms: Date.now() - startTime,
       status: 'error',
       result: null,
       error: `Workspace group not found: ${workspace.jid}`,
     });
-    const nextRun = options?.manualRun ? task.next_run : computeNextRun(task);
-    updateTaskAfterRun(task.id, nextRun, `Error: Workspace group not found: ${workspace.jid}`);
-    runningTaskIds.delete(task.id);
+    try {
+      const nextRun = safeComputeNextRun(task, options?.manualRun);
+      updateTaskAfterRun(task.id, nextRun, `Error: Workspace group not found: ${workspace.jid}`);
+    } catch (err) {
+      logger.error({ taskId: task.id, err }, 'updateTaskAfterRun failed in early-exit');
+    } finally {
+      runningTaskIds.delete(task.id);
+    }
     return;
   }
 
@@ -326,15 +390,20 @@ async function runTask(
         },
         'Owner not active, blocking scheduled task',
       );
-      updateTaskRunLog(runLogId, {
+      safeUpdateTaskRunLog(task.id, runLogId, {
         duration_ms: Date.now() - startTime,
         status: 'error',
         result: null,
         error: '账户已禁用',
       });
-      runningTaskIds.delete(task.id);
-      const nextRun = options?.manualRun ? task.next_run : computeNextRun(task);
-      updateTaskAfterRun(task.id, nextRun, 'Error: 账户已禁用');
+      try {
+        const nextRun = safeComputeNextRun(task, options?.manualRun);
+        updateTaskAfterRun(task.id, nextRun, 'Error: 账户已禁用');
+      } catch (err) {
+        logger.error({ taskId: task.id, err }, 'updateTaskAfterRun failed in owner-gate');
+      } finally {
+        runningTaskIds.delete(task.id);
+      }
       return;
     }
   }
@@ -355,16 +424,21 @@ async function runTask(
           },
           'Billing access denied, blocking scheduled task',
         );
-        updateTaskRunLog(runLogId, {
+        safeUpdateTaskRunLog(task.id, runLogId, {
           duration_ms: Date.now() - startTime,
           status: 'error',
           result: null,
           error: `计费限制: ${reason}`,
         });
-        runningTaskIds.delete(task.id);
-        // Still compute next run so the task isn't stuck (but preserve for manual runs)
-        const nextRun = options?.manualRun ? task.next_run : computeNextRun(task);
-        updateTaskAfterRun(task.id, nextRun, `Error: 计费限制: ${reason}`);
+        try {
+          // Still compute next run so the task isn't stuck (but preserve for manual runs)
+          const nextRun = safeComputeNextRun(task, options?.manualRun);
+          updateTaskAfterRun(task.id, nextRun, `Error: 计费限制: ${reason}`);
+        } catch (err) {
+          logger.error({ taskId: task.id, err }, 'updateTaskAfterRun failed in billing-gate');
+        } finally {
+          runningTaskIds.delete(task.id);
+        }
         return;
       }
     }
@@ -408,7 +482,7 @@ async function runTask(
     // 注意：runningTaskIds.delete() 不在此处调用，
     // 必须等到 updateTaskAfterRun() ��新 next_run 后才能释放防重复屏障（#363）
     const durationMs = lastOutputTime - startTime;
-    updateTaskRunLog(runLogId, {
+    safeUpdateTaskRunLog(task.id, runLogId, {
       duration_ms: durationMs,
       status: error ? 'error' : 'success',
       result,
@@ -539,16 +613,28 @@ async function runTask(
     finalizeRunLog();
   }
 
-  // manualRun: preserve original next_run schedule
-  const nextRun = options?.manualRun ? task.next_run : computeNextRun(task);
-
-  const resultSummary = error
-    ? `Error: ${error}`
-    : result
-      ? result.slice(0, 200)
-      : 'Completed';
+  // 必须在 top-level try/finally 里清理 runningTaskIds：computeNextRun 抛错
+  // （损坏 cron / 损坏 next_run 等）+ updateTaskAfterRun 抛错都不能让任务永久
+  // 卡在 runningTaskIds 里被 scheduler 跳过。
   try {
-    updateTaskAfterRun(task.id, nextRun, resultSummary);
+    let nextRun: string | null = null;
+    let resultSummary = error
+      ? `Error: ${error}`
+      : result
+        ? result.slice(0, 200)
+        : 'Completed';
+    nextRun = safeComputeNextRun(task, options?.manualRun);
+    if (!options?.manualRun && nextRun === null && task.schedule_type !== 'once' && !error) {
+      resultSummary = 'Error: failed to compute next_run';
+    }
+    try {
+      updateTaskAfterRun(task.id, nextRun, resultSummary);
+    } catch (err) {
+      logger.error(
+        { taskId: task.id, err },
+        'updateTaskAfterRun failed',
+      );
+    }
   } finally {
     runningTaskIds.delete(task.id);
   }
@@ -609,6 +695,20 @@ async function runScriptTask(
   if (!task) return;
 
   runningTaskIds.add(task.id);
+  // 顶层兜底 finally（同 runTask）。
+  try {
+    await runScriptTaskInner(task, deps, groupJid, manualRun);
+  } finally {
+    runningTaskIds.delete(task.id);
+  }
+}
+
+async function runScriptTaskInner(
+  task: ScheduledTask,
+  deps: SchedulerDependencies,
+  groupJid: string,
+  manualRun = false,
+): Promise<void> {
   const startTime = Date.now();
   const runLogId = logTaskRunStart(task.id);
 
@@ -629,15 +729,19 @@ async function runScriptTask(
           { taskId: task.id, userId: ownerId, ownerStatus: ownerGate.status },
           'Owner not active, blocking script task',
         );
-        updateTaskRunLog(runLogId, {
+        safeUpdateTaskRunLog(task.id, runLogId, {
           duration_ms: Date.now() - startTime,
           status: 'error',
           result: null,
           error: '账户已禁用',
         });
         runningTaskIds.delete(task.id);
-        const nextRun = manualRun ? task.next_run : computeNextRun(task);
-        updateTaskAfterRun(task.id, nextRun, 'Error: 账户已禁用');
+        const nextRun = safeComputeNextRun(task, manualRun);
+        try {
+          updateTaskAfterRun(task.id, nextRun, 'Error: 账户已禁用');
+        } catch (err) {
+          logger.error({ taskId: task.id, err }, 'updateTaskAfterRun failed in script owner-gate');
+        }
         return;
       }
     }
@@ -662,15 +766,19 @@ async function runScriptTask(
             },
             'Billing access denied, blocking script task',
           );
-          updateTaskRunLog(runLogId, {
+          safeUpdateTaskRunLog(task.id, runLogId, {
             duration_ms: Date.now() - startTime,
             status: 'error',
             result: null,
             error: `计费限制: ${reason}`,
           });
           runningTaskIds.delete(task.id);
-          const nextRun = manualRun ? task.next_run : computeNextRun(task);
-          updateTaskAfterRun(task.id, nextRun, `Error: 计费限制: ${reason}`);
+          const nextRun = safeComputeNextRun(task, manualRun);
+          try {
+            updateTaskAfterRun(task.id, nextRun, `Error: 计费限制: ${reason}`);
+          } catch (err) {
+            logger.error({ taskId: task.id, err }, 'updateTaskAfterRun failed in script billing-gate');
+          }
           return;
         }
       }
@@ -685,15 +793,20 @@ async function runScriptTask(
       { taskId: task.id },
       'Script task has no script_command, skipping',
     );
-    updateTaskRunLog(runLogId, {
+    safeUpdateTaskRunLog(task.id, runLogId, {
       duration_ms: Date.now() - startTime,
       status: 'error',
       result: null,
       error: 'script_command is empty',
     });
-    const nextRun = manualRun ? task.next_run : computeNextRun(task);
-    updateTaskAfterRun(task.id, nextRun, 'Error: script_command is empty');
-    runningTaskIds.delete(task.id);
+    try {
+      const nextRun = safeComputeNextRun(task, manualRun);
+      updateTaskAfterRun(task.id, nextRun, 'Error: script_command is empty');
+    } catch (err) {
+      logger.error({ taskId: task.id, err }, 'updateTaskAfterRun failed in script no-command');
+    } finally {
+      runningTaskIds.delete(task.id);
+    }
     return;
   }
 
@@ -760,22 +873,37 @@ async function runScriptTask(
 
   const durationMs = Date.now() - startTime;
 
-  updateTaskRunLog(runLogId, {
-    duration_ms: durationMs,
-    status: error ? 'error' : 'success',
-    result,
-    error,
-  });
-
-  // manualRun: preserve original next_run schedule
-  const nextRun = manualRun ? task.next_run : computeNextRun(task);
-  const resultSummary = error
-    ? `Error: ${error}`
-    : result
-      ? result.slice(0, 200)
-      : 'Completed';
+  // 顶层 try/finally 兜底：updateTaskRunLog/safeComputeNextRun/updateTaskAfterRun
+  // 任一抛错都不能让任务永久卡在 runningTaskIds（scheduler 主循环会一直跳过）。
   try {
-    updateTaskAfterRun(task.id, nextRun, resultSummary);
+    try {
+      safeUpdateTaskRunLog(task.id, runLogId, {
+        duration_ms: durationMs,
+        status: error ? 'error' : 'success',
+        result,
+        error,
+      });
+    } catch (err) {
+      logger.error(
+        { taskId: task.id, err },
+        'updateTaskRunLog failed in script main path',
+      );
+    }
+    // manualRun: preserve original next_run schedule
+    const nextRun = safeComputeNextRun(task, manualRun);
+    const resultSummary = error
+      ? `Error: ${error}`
+      : result
+        ? result.slice(0, 200)
+        : 'Completed';
+    try {
+      updateTaskAfterRun(task.id, nextRun, resultSummary);
+    } catch (err) {
+      logger.error(
+        { taskId: task.id, err },
+        'updateTaskAfterRun failed in script main path',
+      );
+    }
   } finally {
     runningTaskIds.delete(task.id);
   }
@@ -843,8 +971,10 @@ async function runGroupModeTask(
     });
   } finally {
     try {
-      const nextRun = manualRun ? task.next_run : computeNextRun(task);
+      const nextRun = safeComputeNextRun(task, manualRun);
       updateTaskAfterRun(task.id, nextRun, resultSummary);
+    } catch (err) {
+      logger.error({ taskId: task.id, err }, 'updateTaskAfterRun failed in group-mode');
     } finally {
       runningTaskIds.delete(task.id);
     }
@@ -903,6 +1033,15 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
   logger.info('Scheduler loop started');
 
   const loop = async () => {
+    // Shutdown 自检：grace 期间若有任务到点会 spawn 子进程，孤儿化风险。
+    // GroupQueue.isShuttingDown 在 src/index.ts shutdown handler 一开始
+    // 就被设为 true（queue.shutdown 内部），所以 scheduler 看到后停 tick。
+    if (deps.queue.isShuttingDown?.()) {
+      logger.info('Scheduler tick skipped: queue is shutting down');
+      // 仍排下一次 tick，让 process exit 退出循环（如果 shutdown 完成可恢复）
+      setTimeout(loop, 60_000);
+      return;
+    }
     try {
       // Periodic cleanup of old task run logs (every 24h)
       const now = Date.now();
@@ -938,21 +1077,34 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
 
         if (shouldSkipBackfill(currentTask.next_run, Date.now(), graceMs)) {
           const overdueMs = Date.now() - new Date(currentTask.next_run!).getTime();
-          const advancedNextRun = computeNextRun(currentTask);
-          advanceSkippedTask(currentTask.id, advancedNextRun);
-          logTaskRun({
-            task_id: currentTask.id,
-            run_at: new Date().toISOString(),
-            duration_ms: 0,
-            status: 'success',
-            result: `Skipped: overdue by ${Math.round(overdueMs / 1000)}s, exceeds backfill grace window (${Math.round(graceMs / 1000)}s)`,
-            error: null,
-          });
-          logger.info(
-            { taskId: currentTask.id, overdueMs, graceMs, nextRun: advancedNextRun },
-            'Skipping overdue task: exceeds backfill grace window',
-          );
-          continue;
+          // Once-tasks 行为：用户明确希望它至少跑一次。跳过 backfill 会让
+          // computeNextRun 返回 null，advanceSkippedTask(null) 把 status 翻为
+          // completed —— 用户重启系统后 once-task 直接消失，没运行过。改为
+          // 直接 fall through 到正常运行路径（让它一次性跑完）；否则按原 backfill
+          // 跳过逻辑，cron / interval 推到下一次触发。
+          if (currentTask.schedule_type === 'once') {
+            logger.info(
+              { taskId: currentTask.id, overdueMs, graceMs },
+              'Once-task overdue but running it anyway (no auto-complete on skip)',
+            );
+            // intentional fall-through to normal run below
+          } else {
+            const advancedNextRun = safeComputeNextRun(currentTask);
+            advanceSkippedTask(currentTask.id, advancedNextRun);
+            logTaskRun({
+              task_id: currentTask.id,
+              run_at: new Date().toISOString(),
+              duration_ms: 0,
+              status: 'success',
+              result: `Skipped: overdue by ${Math.round(overdueMs / 1000)}s, exceeds backfill grace window (${Math.round(graceMs / 1000)}s)`,
+              error: null,
+            });
+            logger.info(
+              { taskId: currentTask.id, overdueMs, graceMs, nextRun: advancedNextRun },
+              'Skipping overdue task: exceeds backfill grace window',
+            );
+            continue;
+          }
         }
 
         const groups = deps.registeredGroups();
@@ -963,6 +1115,24 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
             { taskId: currentTask.id, groupFolder: currentTask.group_folder },
             'Target group not registered, skipping scheduled task',
           );
+          // 对 once-task 主动止损：若目标群组永远找不到，advanceSkippedTask
+          // 把它推到 completed，避免每 60s tick 一次反复打 error 日志。
+          // cron / interval 不动 next_run（重启后可能群组恢复），只 once 自动收尾。
+          if (currentTask.schedule_type === 'once') {
+            try {
+              advanceSkippedTask(currentTask.id, null);
+              logTaskRun({
+                task_id: currentTask.id,
+                run_at: new Date().toISOString(),
+                duration_ms: 0,
+                status: 'error',
+                result: null,
+                error: `Target group not registered: ${currentTask.chat_jid ?? currentTask.group_folder}`,
+              });
+            } catch (err) {
+              logger.error({ taskId: currentTask.id, err }, 'Failed to mark once-task as completed after missing target');
+            }
+          }
           continue;
         }
 

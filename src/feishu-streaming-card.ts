@@ -242,11 +242,17 @@ function buildCardContent(
 
 // ─── Interrupt Button Element ────────────────────────────────
 
-/** Schema 2.0 standalone button — used by every card path (legacy + CardKit). */
+/**
+ * Schema 2.0 standalone button — used by every card path (legacy + CardKit).
+ * Interrupting is a routine user choice, not a destructive action, so the button
+ * stays a neutral `default` button. Reserve the red `danger` accent for genuine
+ * error states (failed/timeout cards) so red keeps its "something went wrong"
+ * meaning instead of glowing on every in-progress reply.
+ */
 const INTERRUPT_BUTTON_V2 = {
   tag: 'button',
   text: { tag: 'plain_text', content: '⏹ 中断回复' },
-  type: 'danger',
+  type: 'default',
   value: { action: 'interrupt_stream' },
 } as const;
 
@@ -654,16 +660,46 @@ function formatUsageNote(usage: {
   costUSD: number;
   durationMs: number;
   numTurns: number;
+  cacheReadInputTokens?: number;
 }): string {
   const fmt = (n: number) =>
     n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
   const parts: string[] = [];
-  parts.push(`${fmt(usage.inputTokens)} / ${fmt(usage.outputTokens)} tokens`);
+  let tokenPart = `${fmt(usage.inputTokens)} / ${fmt(usage.outputTokens)} tokens`;
+  if (usage.cacheReadInputTokens && usage.cacheReadInputTokens > 0) {
+    tokenPart += ` (+${fmt(usage.cacheReadInputTokens)} cached)`;
+  }
+  parts.push(tokenPart);
   if (usage.costUSD > 0) parts.push(`$${usage.costUSD.toFixed(4)}`);
   if (usage.durationMs > 0)
     parts.push(`${(usage.durationMs / 1000).toFixed(1)}s`);
   if (usage.numTurns > 1) parts.push(`${usage.numTurns} turns`);
   return `💰 ${parts.join(' · ')}`;
+}
+
+/**
+ * Pick the primary model name from a per-model usage breakdown — the model that
+ * produced the most output tokens (the one that actually generated the reply,
+ * not a cheap summarizer/router model). Falls back to the first key.
+ */
+function pickPrimaryModel(
+  modelUsage:
+    | Record<string, { outputTokens?: number }>
+    | undefined,
+): string | undefined {
+  if (!modelUsage) return undefined;
+  const entries = Object.entries(modelUsage);
+  if (entries.length === 0) return undefined;
+  let best = entries[0][0];
+  let bestOut = entries[0][1]?.outputTokens ?? 0;
+  for (const [name, mu] of entries) {
+    const out = mu?.outputTokens ?? 0;
+    if (out > bestOut) {
+      best = name;
+      bestOut = out;
+    }
+  }
+  return best;
 }
 
 // ─── Streaming Mode Card Builder ──────────────────────────────
@@ -1724,6 +1760,9 @@ export class StreamingCardController {
     costUSD: number;
     durationMs: number;
     numTurns: number;
+    cacheReadInputTokens?: number;
+    cacheCreationInputTokens?: number;
+    modelUsage?: Record<string, { outputTokens?: number }>;
   }): Promise<void> {
     if (this.state !== 'completed') return;
 
@@ -2326,11 +2365,19 @@ export class StreamingCardController {
       costUSD: number;
       durationMs: number;
       numTurns: number;
+      cacheReadInputTokens?: number;
+      cacheCreationInputTokens?: number;
+      modelUsage?: Record<string, { outputTokens?: number }>;
     },
   ): object {
     const status: CardStatus = finalState === 'aborted' ? 'warning' : 'done';
     const toolCounts = new Map<string, number>();
     for (const tc of this.toolCalls.values()) {
+      // Task sub-agents are surfaced in the dedicated tasks panel; don't also
+      // double-count them as ordinary tools (the streaming card registers each
+      // Task via startTool('Task: …') for its timeline). Counting them here
+      // would yield a confusing 'Task: xxx' entry in the tool stats.
+      if (tc.name === 'Task' || tc.name.startsWith('Task:')) continue;
       toolCounts.set(tc.name, (toolCounts.get(tc.name) ?? 0) + 1);
     }
     const toolCalls: ToolCallStat[] = Array.from(
@@ -2346,8 +2393,11 @@ export class StreamingCardController {
         meta: {
         toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
         durationMs: usage?.durationMs,
+        model: pickPrimaryModel(usage?.modelUsage),
         inputTokens: usage?.inputTokens,
         outputTokens: usage?.outputTokens,
+        cacheReadInputTokens: usage?.cacheReadInputTokens,
+        cacheCreationInputTokens: usage?.cacheCreationInputTokens,
         costUSD: usage?.costUSD,
         numTurns: usage?.numTurns,
       },

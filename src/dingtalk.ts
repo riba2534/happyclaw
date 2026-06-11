@@ -29,7 +29,7 @@ import { GROUPS_DIR } from './config.js';
 import { saveDownloadedFile, MAX_FILE_SIZE } from './im-downloader.js';
 import { extractFileText } from './file-text-extractor.js';
 import { detectImageMimeType } from './image-detector.js';
-import { markdownToPlainText, splitTextChunks } from './im-utils.js';
+import { markdownToPlainText, splitTextChunks, createDedupCache } from './im-utils.js';
 import {
   extractRepliedMsg,
   type RepliedMsg,
@@ -39,8 +39,6 @@ import { ProcessingLock, isStale } from './im-safety/index.js';
 // ─── Constants ──────────────────────────────────────────────────
 
 const DINGTALK_API_BASE = 'https://api.dingtalk.com';
-const MSG_DEDUP_MAX = 1000;
-const MSG_DEDUP_TTL = 30 * 60 * 1000; // 30min
 const MSG_SPLIT_LIMIT = 4000; // DingTalk markdown card limit
 // Same 5MB threshold as WeChat — only inline base64 for small images
 const IMAGE_MAX_BASE64_SIZE = 5 * 1024 * 1024;
@@ -292,7 +290,8 @@ export function createDingTalkConnection(
   let tokenInfo: DingTalkAccessToken | null = null;
 
   // Message deduplication
-  const msgCache = new Map<string, number>();
+  // LRU deduplication cache（共享 helper）
+  const dedup = createDedupCache({ ttlMs: 30 * 60 * 1000, max: 1000 });
   const processingLock = new ProcessingLock();
 
   // Last message ID per chat (for reply context)
@@ -359,28 +358,7 @@ export function createDingTalkConnection(
     { msgId: string; conversationId: string }
   >();
 
-  function isDuplicate(msgId: string): boolean {
-    const now = Date.now();
-    // Map preserves insertion order; stop at first non-expired entry
-    for (const [id, ts] of msgCache.entries()) {
-      if (now - ts > MSG_DEDUP_TTL) {
-        msgCache.delete(id);
-      } else {
-        break;
-      }
-    }
-    if (msgCache.size >= MSG_DEDUP_MAX) {
-      const firstKey = msgCache.keys().next().value;
-      if (firstKey) msgCache.delete(firstKey);
-    }
-    return msgCache.has(msgId);
-  }
 
-  function markSeen(msgId: string): void {
-    // delete + set to refresh insertion order (move to end)
-    msgCache.delete(msgId);
-    msgCache.set(msgId, Date.now());
-  }
 
   // ─── Token Management ──────────────────────────────────────
 
@@ -1410,7 +1388,7 @@ export function createDingTalkConnection(
         );
         return;
       }
-      if (isDuplicate(msgId)) {
+      if (dedup.isDuplicate(msgId)) {
         logger.info({ msgId }, 'DingTalk dropped: duplicate');
         return;
       }
@@ -1418,7 +1396,7 @@ export function createDingTalkConnection(
         logger.debug({ msgId }, 'DingTalk message already in-flight, skipping');
         return;
       }
-      markSeen(msgId);
+      dedup.markSeen(msgId);
       try {
 
       // Skip stale messages from before connection (hot-reload scenario)
@@ -2018,7 +1996,7 @@ export function createDingTalkConnection(
       }
 
       tokenInfo = null;
-      msgCache.clear();
+      dedup.clear();
       lastMessageIds.clear();
       lastSessionWebhooks.clear();
       sessionWebhookExpiry.clear();

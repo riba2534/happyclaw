@@ -37,6 +37,18 @@ import { getChannelType, extractChatId } from '../im-channel.js';
 
 const tasksRoutes = new Hono<{ Variables: Variables }>();
 
+/**
+ * 防止共享工作区里 member A 改 / 跑 / 删 member B 的任务。admin 例外、
+ * 历史 task.created_by=null 的也放行（兼容老数据；管理员可视情况手动迁移）。
+ * 返回 null = 通过；返回 Response = 404（统一伪装为 not_found，避免泄漏存在性）。
+ */
+function denyForeignTask(c: any, existing: { created_by?: string | null }, authUser: AuthUser): Response | null {
+  if (authUser.role === 'admin') return null;
+  if (!existing.created_by) return null; // legacy task without owner — admin-only effectively
+  if (existing.created_by === authUser.id) return null;
+  return c.json({ error: 'Task not found' }, 404);
+}
+
 // --- Routes ---
 
 tasksRoutes.get('/', authMiddleware, async (c) => {
@@ -240,6 +252,10 @@ tasksRoutes.patch('/:id', authMiddleware, async (c) => {
       );
     }
   }
+  {
+    const denial = denyForeignTask(c, existing, authUser);
+    if (denial) return denial;
+  }
   const body = await c.req.json().catch(() => ({}));
 
   const validation = TaskPatchSchema.safeParse(body);
@@ -310,9 +326,20 @@ tasksRoutes.patch('/:id', authMiddleware, async (c) => {
           .next()
           .toISOString() || new Date().toISOString();
       } else if (schedType === 'interval') {
-        const ms = parseInt(schedValue, 10);
+        // Number() not parseInt(): parseInt('1e16',10) === 1 silently truncates
+        // and the patch ends up with a 1ms interval. Same upper bound as create.
+        const ms = Number(schedValue);
         if (!Number.isFinite(ms) || ms <= 0) {
           return c.json({ error: 'Invalid interval value' }, 400);
+        }
+        const MAX_INTERVAL_MS = 365 * 24 * 60 * 60 * 1000;
+        if (ms > MAX_INTERVAL_MS) {
+          return c.json(
+            {
+              error: `Interval exceeds maximum (${MAX_INTERVAL_MS} ms = 1 year). Use cron for longer schedules.`,
+            },
+            400,
+          );
         }
         patchData.next_run = new Date(Date.now() + ms).toISOString();
       } else if (schedType === 'once') {
@@ -351,6 +378,10 @@ tasksRoutes.delete('/:id', authMiddleware, (c) => {
         403,
       );
     }
+  }
+  {
+    const denial = denyForeignTask(c, existing, authUser);
+    if (denial) return denial;
   }
   // Only admin can delete script tasks
   if (existing.execution_type === 'script' && authUser.role !== 'admin') {
@@ -409,6 +440,10 @@ tasksRoutes.post('/:id/run', authMiddleware, (c) => {
       );
     }
   }
+  {
+    const denial = denyForeignTask(c, existing, authUser);
+    if (denial) return denial;
+  }
 
   // Only admin can run script tasks
   if (existing.execution_type === 'script' && authUser.role !== 'admin') {
@@ -444,6 +479,12 @@ tasksRoutes.get('/:id/logs', authMiddleware, (c) => {
         403,
       );
     }
+  }
+  // 与 PATCH/DELETE/RUN 对齐：shared workspace 中 member A 不应能读
+  // member B 的任务日志（含 prompt、stderr、tool 输出）。
+  {
+    const denial = denyForeignTask(c, existing, authUser);
+    if (denial) return denial;
   }
   const limitRaw = parseInt(c.req.query('limit') || '20', 10);
   const limit = Math.min(

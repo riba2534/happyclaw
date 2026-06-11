@@ -5,11 +5,13 @@ import https from 'node:https';
 import { Agent as HttpsAgent } from 'node:https';
 import { ProxyAgent } from 'proxy-agent';
 import { storeChatMetadata, storeMessageDirect, updateChatName } from './db.js';
+import { createDedupCache } from './im-utils.js';
 import { notifyNewImMessage } from './message-notifier.js';
 import { broadcastNewMessage } from './web.js';
 import { logger } from './logger.js';
 import {
   saveDownloadedFile,
+  sanitizeImFilename,
   MAX_FILE_SIZE,
   FileTooLargeError,
 } from './im-downloader.js';
@@ -37,8 +39,15 @@ export interface TelegramConnectOpts {
     chatName: string,
     code: string,
   ) => Promise<boolean>;
-  /** 斜杠指令回调（如 /clear），返回回复文本或 null */
-  onCommand?: (chatJid: string, command: string) => Promise<string | null>;
+  /** 斜杠指令回调（如 /clear），返回回复文本或 null。
+   *  senderImId 是发送者的裸 Telegram 用户 ID（不含 `tg:` 前缀），
+   *  与飞书/钉钉 onCommand 传裸 open_id / senderId 的格式一致，
+   *  用于在主进程做 owner-only 命令检查（owner_im_id 比对）。 */
+  onCommand?: (
+    chatJid: string,
+    command: string,
+    senderImId?: string,
+  ) => Promise<string | null>;
   /** 热重连时设置：丢弃 date 早于此时间戳（epoch ms）的消息，避免处理渠道关闭期间的堆积消息 */
   ignoreMessagesBefore?: number;
   /** 根据 jid 解析群组 folder，用于下载文件/图片到工作区 */
@@ -178,11 +187,10 @@ export function createTelegramConnection(
   config: TelegramConnectionConfig,
 ): TelegramConnection {
   // LRU deduplication cache
-  const MSG_DEDUP_MAX = 1000;
-  const MSG_DEDUP_TTL = 30 * 60 * 1000; // 30min
+  // LRU deduplication cache（共享 helper，避免 6 个 IM channel 各自写一份）
+  const dedup = createDedupCache({ ttlMs: 30 * 60 * 1000, max: 1000 });
   const POLLING_RESTART_DELAY_MS = 5000;
 
-  const msgCache = new Map<string, number>();
   const processingLock = new ProcessingLock();
   let bot: Bot | null = null;
   let pollingPromise: Promise<void> | null = null;
@@ -196,28 +204,7 @@ export function createTelegramConnection(
         })
       : new HttpsAgent({ keepAlive: true, family: 4 });
 
-  function isDuplicate(msgId: string): boolean {
-    const now = Date.now();
-    // Map preserves insertion order; stop at first non-expired entry
-    for (const [id, ts] of msgCache.entries()) {
-      if (now - ts > MSG_DEDUP_TTL) {
-        msgCache.delete(id);
-      } else {
-        break;
-      }
-    }
-    if (msgCache.size >= MSG_DEDUP_MAX) {
-      const firstKey = msgCache.keys().next().value;
-      if (firstKey) msgCache.delete(firstKey);
-    }
-    return msgCache.has(msgId);
-  }
 
-  function markSeen(msgId: string): void {
-    // delete + set to refresh insertion order (move to end)
-    msgCache.delete(msgId);
-    msgCache.set(msgId, Date.now());
-  }
 
   /**
    * 通过 Telegram Bot API 下载文件到工作区磁盘。
@@ -422,7 +409,7 @@ export function createTelegramConnection(
             );
             return;
           }
-          if (isDuplicate(msgId)) {
+          if (dedup.isDuplicate(msgId)) {
             logger.debug({ msgId }, 'Duplicate Telegram message, skipping');
             return;
           }
@@ -433,7 +420,7 @@ export function createTelegramConnection(
             );
             return;
           }
-          markSeen(msgId);
+          dedup.markSeen(msgId);
           try {
           if (isStaleMessage(ctx.message.date, opts.ignoreMessagesBefore)) return;
 
@@ -530,7 +517,10 @@ export function createTelegramConnection(
               'Telegram slash command detected',
             );
             try {
-              const reply = await opts.onCommand(jid, cmdBody);
+              const senderImId = ctx.from?.id
+                ? String(ctx.from.id)
+                : undefined;
+              const reply = await opts.onCommand(jid, cmdBody, senderImId);
               if (reply) {
                 await ctx.reply(reply);
                 return; // 已知命令，拦截
@@ -630,9 +620,9 @@ export function createTelegramConnection(
           const msgId =
             String(ctx.message.message_id) + ':' + String(ctx.chat.id);
           if (isGloballyStale(ctx.message.date * 1000)) return;
-          if (isDuplicate(msgId)) return;
+          if (dedup.isDuplicate(msgId)) return;
           if (!processingLock.acquire(msgId)) return;
-          markSeen(msgId);
+          dedup.markSeen(msgId);
           try {
           if (isStaleMessage(ctx.message.date, opts.ignoreMessagesBefore)) return;
 
@@ -779,9 +769,9 @@ export function createTelegramConnection(
           const msgId =
             String(ctx.message.message_id) + ':' + String(ctx.chat.id);
           if (isGloballyStale(ctx.message.date * 1000)) return;
-          if (isDuplicate(msgId)) return;
+          if (dedup.isDuplicate(msgId)) return;
           if (!processingLock.acquire(msgId)) return;
-          markSeen(msgId);
+          dedup.markSeen(msgId);
           try {
           if (isStaleMessage(ctx.message.date, opts.ignoreMessagesBefore)) return;
 
@@ -812,12 +802,13 @@ export function createTelegramConnection(
 
           const doc = ctx.message.document;
           const originalFilename = doc.file_name || 'file';
+          const safeFilename = sanitizeImFilename(originalFilename);
 
           // file_size 超过上限时跳过下载
           if (doc.file_size !== undefined && doc.file_size > MAX_FILE_SIZE) {
             const earlyRouting = opts.resolveEffectiveChatJid?.(jid);
             const earlyTargetJid = earlyRouting?.effectiveJid ?? jid;
-            const text = `[文件过大，未下载: ${originalFilename}]`;
+            const text = `[文件过大，未下载: ${safeFilename}]`;
             const id = crypto.randomUUID();
             const timestamp = new Date(ctx.message.date * 1000).toISOString();
             const senderId = ctx.from?.id ? `tg:${ctx.from.id}` : 'tg:unknown';
@@ -863,7 +854,7 @@ export function createTelegramConnection(
             );
             fileText = relPath
               ? `[文件: ${relPath}]`
-              : `[文件下载失败: ${originalFilename}]`;
+              : `[文件下载失败: ${safeFilename}]`;
           }
 
           const caption = ctx.message.caption;

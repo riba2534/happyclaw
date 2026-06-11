@@ -15,7 +15,14 @@ export const TaskPatchSchema = z.object({
   execution_mode: z.enum(['host', 'container']).optional(),
   script_command: z.string().max(4096).nullable().optional(),
   status: z.enum(['active', 'paused']).optional(),
-  next_run: z.string().optional(),
+  // next_run 必须是可解析的 ISO 日期。schedule_value 在 PATCH 路由里随
+  // schedule_type 决定语义（cron/interval/once 各有要求），路由层会单独检查。
+  // 这里只兜底 next_run 的格式，避免 garbage-in 让 scheduler computeNextRun 抛
+  // RangeError 把任务永久卡死在 runningTaskIds（高危 bug 修复）。
+  next_run: z
+    .string()
+    .refine((v) => !isNaN(Date.parse(v)), 'next_run must be ISO 8601')
+    .optional(),
   notify_channels: z
     .array(z.enum(['feishu', 'telegram', 'qq', 'wechat', 'dingtalk', 'discord']))
     .nullable()
@@ -26,6 +33,14 @@ export const TaskPatchSchema = z.object({
 // 也允许预定义表达式如 @daily, @hourly 等
 const CRON_REGEX =
   /^(@(yearly|annually|monthly|weekly|daily|hourly|minutely|secondly)|(\S+\s+){4,5}\S+)$/;
+
+// interval 调度上限：1 年毫秒数。再大就接近 JS Date 的安全范围边界，
+// `new Date(Date.now() + ms).toISOString()` 会抛 RangeError。1 年内任何场景
+// 都该用 cron 而不是 interval，所以这是合理的硬上限。
+const MAX_INTERVAL_MS = 365 * 24 * 60 * 60 * 1000;
+
+// JS Date 安全上限（约 8.64e15ms after 1970）。once 任务给 100 年余量足够。
+const MAX_ONCE_TIMESTAMP_MS = 100 * 365 * 24 * 60 * 60 * 1000;
 
 export const TaskCreateSchema = z
   .object({
@@ -75,6 +90,13 @@ export const TaskCreateSchema = z
           path: ['schedule_value'],
           message: 'Interval must be a positive number (milliseconds)',
         });
+      } else if (num > MAX_INTERVAL_MS) {
+        // 防止 `new Date(Date.now() + ms).toISOString()` 抛 RangeError 让请求 500
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['schedule_value'],
+          message: `Interval exceeds maximum (${MAX_INTERVAL_MS} ms = 1 year). Use cron for longer schedules.`,
+        });
       }
     } else if (data.schedule_type === 'once') {
       const ts = Date.parse(data.schedule_value);
@@ -83,6 +105,12 @@ export const TaskCreateSchema = z
           code: z.ZodIssueCode.custom,
           path: ['schedule_value'],
           message: 'Once schedule must be a valid ISO 8601 date string',
+        });
+      } else if (Math.abs(ts) > MAX_ONCE_TIMESTAMP_MS) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['schedule_value'],
+          message: 'Once schedule out of representable range',
         });
       }
     }
@@ -97,13 +125,22 @@ export const MessageAttachmentSchema = z.object({
   mimeType: z
     .string()
     .regex(/^image\//)
+    // 实际 image MIME 都是 image/png, image/jpeg, image/svg+xml 这种 ≤30 字符；
+    // 加 cap 防止 mimeType: 'image/' + 'a'.repeat(N) 配合 attachments.max(10)
+    // 做请求体放大攻击。
+    .max(128)
     .optional(),
 });
 
+// 单条消息文本上限 64 KB：覆盖正常超长粘贴 / 长 prompt（远超普通 IM 的 4-5KB
+// 限制），但又远低于 WS frame 上限和 attachments 上限，配合 ws maxPayload 8MiB
+// 防止认证 DoS（详见 src/web.ts setupWebSocket 注释）。
+const MAX_MESSAGE_CONTENT_LENGTH = 64 * 1024;
+
 export const MessageCreateSchema = z
   .object({
-    chatJid: z.string().min(1),
-    content: z.string().optional().default(''),
+    chatJid: z.string().min(1).max(512),
+    content: z.string().max(MAX_MESSAGE_CONTENT_LENGTH).optional().default(''),
     attachments: z.array(MessageAttachmentSchema).max(10).optional(),
   })
   .superRefine((data, ctx) => {
@@ -139,13 +176,20 @@ export const GroupMemberAddSchema = z.object({
   user_id: z.string().min(1),
 });
 
+// Schema 层 cap：路由 handler 还有 byteLength 校验作为底线。Schema 层 cap
+// 让 Hono 在 c.req.json() 之后立刻拒绝，攻击者无法用单条巨大 JSON 把内存
+// 撑爆（早期 fail-fast）。略大于 byte 上限以避免 char vs byte 把 emoji
+// 多字节字符提前拦死。
+const MAX_MEMORY_FILE_CHARS = 600_000;
+const MAX_GLOBAL_MEMORY_CHARS = 240_000;
+
 export const MemoryFileSchema = z.object({
-  path: z.string().min(1),
-  content: z.string(),
+  path: z.string().min(1).max(1024),
+  content: z.string().max(MAX_MEMORY_FILE_CHARS),
 });
 
 export const MemoryGlobalSchema = z.object({
-  content: z.string(),
+  content: z.string().max(MAX_GLOBAL_MEMORY_CHARS),
 });
 
 export const ClaudeConfigSchema = z.object({
@@ -240,10 +284,11 @@ export const SystemSettingsSchema = z.object({
     .number()
     .int()
     .refine(
-      (v) => v === 0 || (v >= 10000 && v <= 2000000),
-      'autoCompactWindow must be 0 (disabled) or between 10000 and 2000000',
+      (v) => v === 0 || (v >= 100000 && v <= 1000000),
+      'autoCompactWindow must be 0 (disabled) or between 100000 and 1000000',
     )
     .optional(),
+  subagentModel: z.string().min(1).max(64).optional(),
   disableMemoryLayerForAdminHost: z.boolean().optional(),
   pluginAutoScan: z.boolean().optional(),
   taskBackfillGraceMs: z
@@ -763,14 +808,15 @@ export const WhatsAppConfigSchema = z
     accountId: z.string().max(64).optional(),
     phoneNumber: z.string().max(32).optional(),
     enabled: z.boolean().optional(),
-    /** 标记 Baileys 扫码完成 — 由后续 PR 在登录回调中写入，前端不应直接发 true */
-    paired: z.boolean().optional(),
+    // `paired` 由 Baileys 登录回调（saveUserWhatsAppConfig 内部）写入，
+    // 不在 HTTP 层接受 —— 否则用户 PUT { paired: true } 可以伪装扫码完成。
+    // 移除 schema 字段后，路由 handler 已通过解构忽略上行字段，
+    // refine 也只校验剩下三个真实字段。
   })
   .refine(
     (data) =>
       typeof data.accountId === 'string' ||
       typeof data.phoneNumber === 'string' ||
-      typeof data.enabled === 'boolean' ||
-      typeof data.paired === 'boolean',
+      typeof data.enabled === 'boolean',
     { message: 'At least one config field must be provided' },
   );

@@ -65,6 +65,19 @@ const PANEL_ICON = {
   token: 'down-small-ccm_outlined',
 } as const;
 
+/**
+ * Per-panel header tints. Feishu's saturated colour TOKENS (wathet/turquoise/
+ * orange) render as DARK fills on a collapsible_panel header, which buried the
+ * dark title text (unreadable). Use very light rgba fills instead — near-white
+ * Material-50 shades that keep the title legible while still differentiating the
+ * panels. (background_color accepts rgba; it rejects hex.)
+ */
+const PANEL_TINT = {
+  thinking: 'rgba(227, 242, 253, 1)', // light blue  (#e3f2fd)
+  tools: 'rgba(224, 247, 250, 1)', // light cyan  (#e0f7fa)
+  ask: 'rgba(255, 243, 224, 1)', // light amber (#fff3e0)
+} as const;
+
 type El = Record<string, unknown>;
 
 export function formatDuration(ms: number | undefined): string {
@@ -187,9 +200,14 @@ export function buildMetaRow(meta: CardMeta | undefined): El[] {
   if (meta.durationMs !== undefined) push('⏱ 耗时', formatDuration(meta.durationMs));
   if (meta.model) push('🤖 模型', `\`${shortModel(meta.model)}\``);
   if (meta.inputTokens !== undefined || meta.outputTokens !== undefined) {
+    const cached = meta.cacheReadInputTokens;
+    const cacheHint =
+      cached !== undefined && cached > 0
+        ? ` <font color='grey'>(+${formatTokens(cached)} cached)</font>`
+        : '';
     push(
       '💡 Token',
-      `${formatTokens(meta.inputTokens)} / ${formatTokens(meta.outputTokens)}`,
+      `${formatTokens(meta.inputTokens)} / ${formatTokens(meta.outputTokens)}${cacheHint}`,
     );
   }
   const toolCount = meta.toolCalls?.length
@@ -234,6 +252,7 @@ export function buildThinkingPanel(thinking: string | undefined): El[] {
       title: '**💭 思考过程**',
       expanded: false,
       elementId: CARD_ELEMENT_IDS.THINKING_PANEL_FINAL,
+      backgroundColor: PANEL_TINT.thinking,
       elements: [
         {
           tag: 'markdown',
@@ -268,6 +287,7 @@ export function buildToolsPanel(toolCalls: ToolCallStat[] | undefined): El[] {
       title: `**🛠 工具调用** ${totalBadge}`,
       expanded: false,
       elementId: CARD_ELEMENT_IDS.TOOLS_PANEL_FINAL,
+      backgroundColor: PANEL_TINT.tools,
       elements: [{ tag: 'markdown', content: lines.join('\n') }],
     }),
   ];
@@ -594,6 +614,7 @@ export function buildStreamingPanels(init: StreamingPanelsInit): El[] {
       contentElementId: CARD_ELEMENT_IDS.ASK_CONTENT,
       title: '**❓ 等待你的回复**',
       expanded: init.expandAsk ?? true,
+      backgroundColor: PANEL_TINT.ask,
       content:
         init.askContent ?? "<font color='grey'>暂无提问</font>",
     }),
@@ -616,6 +637,7 @@ export function buildStreamingPanels(init: StreamingPanelsInit): El[] {
       contentElementId: CARD_ELEMENT_IDS.TOOLS_CONTENT,
       title: '**🛠 工具时间轴**',
       expanded: init.expandTools ?? false,
+      backgroundColor: PANEL_TINT.tools,
       content: init.toolsContent ?? '<font color=\'grey\'>尚未调用工具…</font>',
     }),
     buildRuntimePanel({
@@ -623,6 +645,7 @@ export function buildStreamingPanels(init: StreamingPanelsInit): El[] {
       contentElementId: CARD_ELEMENT_IDS.THINKING_CONTENT,
       title: '**💭 思考过程**',
       expanded: init.expandThinking ?? false,
+      backgroundColor: PANEL_TINT.thinking,
       content: init.thinkingContent ?? '<font color=\'grey\'>尚未开始思考…</font>',
     }),
     buildRuntimePanel({
@@ -643,11 +666,13 @@ export function buildRuntimePanel(opts: {
   title: string;
   expanded: boolean;
   content: string;
+  backgroundColor?: string;
 }): El {
   return collapsiblePanel({
     title: opts.title,
     expanded: opts.expanded,
     elementId: opts.elementId,
+    backgroundColor: opts.backgroundColor,
     elements: [
       {
         tag: 'markdown',
@@ -663,6 +688,15 @@ interface CollapsibleOpts {
   expanded: boolean;
   elements: El[];
   elementId?: string;
+  /**
+   * Header tint. Defaults to neutral grey. Semantic panels get a restrained
+   * accent (thinking→wathet, tools→turquoise, ask→orange) so the eye can tell
+   * them apart at a glance without the card turning into a colour soup — keep
+   * the palette to ≤3 accents plus grey.
+   */
+  backgroundColor?: string;
+  /** Header leading icon. Defaults to the shared fold chevron. */
+  icon?: El;
 }
 
 function collapsiblePanel(opts: CollapsibleOpts): El {
@@ -671,9 +705,9 @@ function collapsiblePanel(opts: CollapsibleOpts): El {
     expanded: opts.expanded,
     header: {
       title: { tag: 'markdown', content: opts.title },
-      background_color: 'grey',
+      background_color: opts.backgroundColor ?? 'grey',
       padding: PANEL_PADDING,
-      icon: PANEL_ICON,
+      icon: opts.icon ?? PANEL_ICON,
     },
     elements: opts.elements,
   };

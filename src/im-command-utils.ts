@@ -243,3 +243,103 @@ export function formatSystemStatus(
 
   return lines.join('\n');
 }
+
+// ─── IM Owner Gate ──────────────────────────────────────────────
+
+/**
+ * IM commands that mutate workspace state (clear session, change bindings,
+ * spawn agents) must be restricted to the workspace owner.
+ *
+ * Excluded from the gate:
+ *   - owner_mention: the only bootstrap path to claim an unowned group;
+ *     gating it would lock new groups out forever
+ *   - require_mention: shared as a settings toggle by design (its own
+ *     guard only applies when activation_mode is 'owner_mentioned')
+ *   - allow / disallow / allowlist: already enforce sender === owner_im_id
+ *     inside their own handlers
+ *   - list / status / where / recall: read-only utilities
+ */
+export const OWNER_REQUIRED_IM_COMMANDS: ReadonlySet<string> = new Set([
+  'clear',
+  'bind',
+  'unbind',
+  'new',
+  'sw',
+  'spawn',
+  // release_owner is the reclaim path: only the current owner can release;
+  // gate handles the "must equal current owner_im_id" check uniformly.
+  'release_owner',
+]);
+
+export interface ImOwnerCheckGroup {
+  owner_im_id?: string | null;
+}
+
+/**
+ * Decide whether an IM slash command should be allowed.
+ * `cmd` should already be lowercased (matches the cmd name without `/`).
+ * Returns `{ ok: true }` for commands outside the owner-required set or
+ * when the caller is the recorded owner; otherwise an error reason that
+ * can be sent back to the IM channel verbatim.
+ */
+export function checkImOwnerCommand(
+  cmd: string,
+  group: ImOwnerCheckGroup | null | undefined,
+  senderImId: string | undefined,
+): { ok: true } | { ok: false; reason: string } {
+  if (!OWNER_REQUIRED_IM_COMMANDS.has(cmd)) return { ok: true };
+  if (!senderImId) {
+    return { ok: false, reason: '该通道暂不支持此命令（缺少发送者身份）' };
+  }
+  if (!group?.owner_im_id) {
+    return {
+      ok: false,
+      reason:
+        '工作区尚未认领 owner，请由 owner 在群内发送 /owner_mention 自我认领（仅记录身份，不会改变群组激活策略）',
+    };
+  }
+  if (senderImId !== group.owner_im_id) {
+    return { ok: false, reason: '只有工作区 owner 才能执行此命令' };
+  }
+  return { ok: true };
+}
+
+/**
+ * Decide whether a chat JID is a 1:1 direct message (vs a group chat).
+ *
+ * Used by the IM owner-gate to auto-claim the sender as owner on the first
+ * owner-required command in a DM — in a 1:1 chat the sender is unambiguously
+ * the owner, so forcing `/owner_mention` first is pure friction. Group chats
+ * must NEVER auto-claim (the first commander isn't necessarily the owner), so
+ * the safe default for any ambiguous/unknown JID is `false`.
+ *
+ * Detection is purely structural (no channel handles needed) because every
+ * channel that auto-registers DMs encodes DM-ness in the JID it builds:
+ *   - qq:        `qq:c2c:{openid}`            (group → `qq:group:...`)
+ *   - dingtalk:  `dingtalk:c2c:{staffId}`     (group → `dingtalk:{cid...}`)
+ *   - discord:   `discord:dm:{userId}`        (guild → `discord:{channelId}`)
+ *   - whatsapp:  `...@s.whatsapp.net`         (group → `...@g.us`)
+ *   - wechat:    `wechat:{userId}`            (1:1 only — no group support)
+ *   - telegram:  `telegram:{chatId}`          (private chat id is positive;
+ *                groups/supergroups are negative — a stable Bot API guarantee)
+ *   - feishu:    cannot be told apart from the JID, but Feishu auto-sets
+ *                owner_im_id via the DM owner-learn path, so DM auto-claim is
+ *                moot there → treat as non-DM (false).
+ *
+ * The failure mode is intentionally one-directional: a group can never be
+ * misread as a DM (no auto-grant in a group), at worst a real DM is misread as
+ * a group and the user falls back to `/owner_mention`.
+ */
+export function isDirectMessageJid(chatJid: string): boolean {
+  if (chatJid.startsWith('qq:')) return chatJid.startsWith('qq:c2c:');
+  if (chatJid.startsWith('dingtalk:')) return chatJid.startsWith('dingtalk:c2c:');
+  if (chatJid.startsWith('discord:')) return chatJid.startsWith('discord:dm:');
+  if (chatJid.startsWith('whatsapp:')) return chatJid.endsWith('@s.whatsapp.net');
+  if (chatJid.startsWith('wechat:')) return true; // WeChat integration is 1:1 only
+  if (chatJid.startsWith('telegram:')) {
+    const id = Number(chatJid.slice('telegram:'.length));
+    return Number.isFinite(id) && id > 0;
+  }
+  // feishu / web / unknown → not eligible for DM auto-claim.
+  return false;
+}

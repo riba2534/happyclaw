@@ -588,6 +588,7 @@ WebSocket：`/ws`（协议详见 §3.6）。
 | `AUTO_COMPACT_WINDOW` | `0`（禁用，使用 SDK 默认 ~1M） | Claude Agent SDK 自动对话压缩触发点（tokens），0 = 关闭，>0 范围 [10000, 2000000]（可通过设置页覆盖） |
 | `TASK_BACKFILL_GRACE_MS` | `300000`（5min） | 定时任务逾期容忍窗口（毫秒）。停机重启后 `next_run` 距今超过该窗口的任务直接跳过本次（推到下一次触发），避免跨天积压任务集体 fire 刷屏。0 = 关闭旧行为（可通过设置页覆盖） |
 | `TRUST_PROXY` | `false` | 信任反向代理的 `X-Forwarded-For` 头（启用后从代理头获取客户端 IP） |
+| `CORS_ALLOWED_ORIGINS` | 空（仅放行 localhost） | 公网域名访问**必须**配置：WebSocket upgrade 有 Origin 纵深防御（防 CSWSH），非 localhost 的 Origin 不在白名单会被 **403** 拒绝 → 前端 WS 连不上、无流式卡片。设为逗号分隔的域名（如 `https://claw.example.com`）或 `*`（放行所有，关闭该防御）。可写入项目根 `.env`（启动时由 `src/load-env.ts` 自动加载） |
 | `TZ` | 系统时区 | 定时任务时区 |
 
 ## 10. 开发约束

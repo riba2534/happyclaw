@@ -128,3 +128,92 @@ describe('StreamEventProcessor observability mapping', () => {
     expect(outputs).toHaveLength(0);
   });
 });
+
+// Guards the data contracts that the Feishu/Web streaming-card consumers depend on.
+// See the "僵尸卡片 / parity" fixes: Feishu feedStreamEventToCard now consumes
+// tool_progress.toolInput (AskUserQuestion), and both Feishu accumulation and Web
+// applyStreamEvent filter sub-agent text by parentToolUseId.
+describe('StreamEventProcessor card-consumer data contracts', () => {
+  test('AskUserQuestion streams its questions via tool_progress.toolInput (not toolInputSummary)', () => {
+    const { processor, outputs } = makeProcessor();
+
+    // tool_use_start: streaming input is empty (SDK sends input via input_json_delta).
+    processor.processStreamEvent({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'tool_use', name: 'AskUserQuestion', id: 'ask-1', input: {} },
+      },
+    });
+
+    // input_json_delta accumulates the questions JSON.
+    const inputJson = JSON.stringify({
+      questions: [{ question: '选哪个方案?', options: [{ label: 'A' }, { label: 'B' }] }],
+    });
+    processor.processStreamEvent({
+      type: 'stream_event',
+      event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: inputJson } },
+    });
+
+    // A tool_progress event must carry the parsed questions in toolInput — this is
+    // the field the Feishu ASK panel reads via collectAskQuestions(tc.toolInput).
+    const askProgress = outputs
+      .map((o) => o.streamEvent)
+      .find((e) => e?.eventType === 'tool_progress' && e?.toolName === 'AskUserQuestion');
+    expect(askProgress).toBeDefined();
+    expect(askProgress?.toolUseId).toBe('ask-1');
+    expect(askProgress?.toolInput).toMatchObject({
+      questions: [{ question: '选哪个方案?' }],
+    });
+  });
+
+  test('sub-agent text_delta carries parentToolUseId so consumers can isolate it from the main card', () => {
+    const { processor, outputs } = makeProcessor();
+
+    // A nested (sub-agent) text block: parent_tool_use_id is set.
+    processor.processStreamEvent({
+      type: 'stream_event',
+      parent_tool_use_id: 'task-parent-1',
+      event: { type: 'content_block_start', index: 0, content_block: { type: 'text' } },
+    });
+    processor.processStreamEvent({
+      type: 'stream_event',
+      parent_tool_use_id: 'task-parent-1',
+      event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '子 Agent 中间输出' } },
+    });
+    // Force the buffered text out (FLUSH_CHARS not reached for short text).
+    processor.cleanup();
+
+    const subText = outputs
+      .map((o) => o.streamEvent)
+      .find((e) => e?.eventType === 'text_delta' && e?.text === '子 Agent 中间输出');
+    expect(subText).toBeDefined();
+    // The guard in src/index.ts (Feishu) and web/src/stores/chat.ts (Web) keys off
+    // this field to keep sub-agent text out of the main card body.
+    expect(subText?.parentToolUseId).toBe('task-parent-1');
+    expect(subText?.agentScope).toBe('subagent');
+  });
+
+  test('main-agent text_delta has no parentToolUseId so it accumulates into the main card', () => {
+    const { processor, outputs } = makeProcessor();
+
+    processor.processStreamEvent({
+      type: 'stream_event',
+      event: { type: 'content_block_start', index: 0, content_block: { type: 'text' } },
+    });
+    processor.processStreamEvent({
+      type: 'stream_event',
+      event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '主 Agent 正文' } },
+    });
+    processor.cleanup();
+
+    const mainText = outputs
+      .map((o) => o.streamEvent)
+      .find((e) => e?.eventType === 'text_delta' && e?.text === '主 Agent 正文');
+    expect(mainText).toBeDefined();
+    // null/undefined parentToolUseId ⟹ passes the `!parentToolUseId` guard ⟹ accumulates.
+    expect(mainText?.parentToolUseId ?? null).toBeNull();
+    expect(mainText?.agentScope).toBe('main');
+  });
+});

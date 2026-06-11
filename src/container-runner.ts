@@ -758,9 +758,14 @@ export function buildVolumeMounts(
     resolvedProvider?.customEnv,
   );
   // SystemSettings.autoCompactWindow > 0 时注入到容器，让 agent-runner 通过 query() settings 传给 SDK
-  const sysAutoCompact = getSystemSettings().autoCompactWindow;
-  if (sysAutoCompact > 0) {
-    envLines.push(`AUTO_COMPACT_WINDOW=${sysAutoCompact}`);
+  const sysSettings = getSystemSettings();
+  if (sysSettings.autoCompactWindow > 0) {
+    envLines.push(`AUTO_COMPACT_WINDOW=${sysSettings.autoCompactWindow}`);
+  }
+  // SubAgent 模型：仅在显式配置了非默认值时注入。默认 'inherit' 与省略 model 等价，
+  // 此时不注入，避免覆盖用户可能在 provider customEnv 里设的 SUBAGENT_MODEL（与 autoCompact 对称）。
+  if (sysSettings.subagentModel && sysSettings.subagentModel !== 'inherit') {
+    envLines.push(`SUBAGENT_MODEL=${sysSettings.subagentModel}`);
   }
   if (envLines.length > 0) {
     const envFilePath = path.join(envDir, 'env');
@@ -1449,6 +1454,18 @@ export async function runHostAgent(
     ...(process.env as Record<string, string>),
   };
 
+  // Strip macOS launch-context vars that must not be inherited by child
+  // processes. When happyclaw is started by a background process manager
+  // (pm2 / launchd / ssh / cron) outside a normal login session, XPC_FLAGS=0x2
+  // leaks into the environment. The bundled bun/CFNetwork-based claude CLI then
+  // can't reach mDNSResponder/securityd through XPC, so DNS resolution and the
+  // system CA store fail and every model request dies with FailedToOpenSocket.
+  // Plain Node uses its own resolver/TLS stack and is unaffected, which is why
+  // this only breaks the host agent. The var is meaningless to a child spawned
+  // in a different way, so dropping it restores normal name resolution. No-op
+  // on non-macOS hosts (the var does not exist there).
+  delete hostEnv['XPC_FLAGS'];
+
   // ─── Provider Pool selection (host mode) ───
   const containerOverride = getContainerEnvConfig(group.folder);
   const hostPoolResult = trySelectPoolProvider(group.folder, input.agentId);
@@ -1544,9 +1561,13 @@ export async function runHostAgent(
     }
 
     // SystemSettings.autoCompactWindow > 0 时注入到 host 进程，agent-runner 通过 query() settings 传给 SDK
-    const hostAutoCompact = getSystemSettings().autoCompactWindow;
-    if (hostAutoCompact > 0) {
-      hostEnv['AUTO_COMPACT_WINDOW'] = String(hostAutoCompact);
+    const hostSysSettings = getSystemSettings();
+    if (hostSysSettings.autoCompactWindow > 0) {
+      hostEnv['AUTO_COMPACT_WINDOW'] = String(hostSysSettings.autoCompactWindow);
+    }
+    // SubAgent 模型：仅非默认 'inherit' 时注入，避免覆盖 customEnv 同名值。
+    if (hostSysSettings.subagentModel && hostSysSettings.subagentModel !== 'inherit') {
+      hostEnv['SUBAGENT_MODEL'] = hostSysSettings.subagentModel;
     }
 
     // admin 主容器 + 系统设置 disableMemoryLayerForAdminHost 时禁用 HappyClaw 记忆层：

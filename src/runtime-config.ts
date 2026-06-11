@@ -12,6 +12,46 @@ const DEFAULT_THIRD_PARTY_PROFILE_ID = 'default';
 const DEFAULT_THIRD_PARTY_PROFILE_NAME = '默认第三方';
 const OFFICIAL_CLAUDE_PROFILE_ID = '__official__';
 
+/**
+ * 写加密 / OAuth / IM 凭据等含敏感数据的 JSON 配置文件。
+ * 即便外层 AES-256-GCM 已加密 ciphertext，密文 + IV + auth tag 仍不应让
+ * 同主机其他本地账号读到（旧版默认 0o644 在多租户场景下泄漏整套 IM/OAuth 凭据
+ * 的 ciphertext，配合 key 文件泄漏即可解密）。统一走该 helper：tmp 文件以
+ * 0o600 创建，rename 后再次 chmod 防御 APFS 上 mode 不跟随 inode 的边角情况。
+ */
+function writeSecretFile(targetPath: string, data: string): void {
+  const tmp = `${targetPath}.tmp`;
+  // 先 unlink stale tmp，避免 fs.writeFileSync 在文件已存在时复用旧 mode
+  // (Node 文档：mode 仅在 on-create 时应用)。残留 0o644 会让我们这次写入
+  // 落到 0o644 ciphertext，rename 后即便 chmod 0o600 也有 race 窗口。
+  try {
+    fs.unlinkSync(tmp);
+  } catch (err: any) {
+    if (err && err.code !== 'ENOENT') {
+      // 罕见路径权限错：让外层捕捉到，避免静默把 secret 落到 0o644。
+      throw err;
+    }
+  }
+  // 用 fd 路径强制 0o600 创建：fs.openSync 的 mode 在 O_CREAT 时一定生效，
+  // fs.writeFileSync(fd, ...) 内部循环处理 short-write。
+  const fd = fs.openSync(
+    tmp,
+    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC,
+    0o600,
+  );
+  try {
+    fs.writeFileSync(fd, data);
+  } finally {
+    try { fs.closeSync(fd); } catch { /* ignore */ }
+  }
+  fs.renameSync(tmp, targetPath);
+  try {
+    fs.chmodSync(targetPath, 0o600);
+  } catch {
+    /* best effort */
+  }
+}
+
 const CLAUDE_CONFIG_DIR = path.join(DATA_DIR, 'config');
 const CLAUDE_CONFIG_FILE = path.join(CLAUDE_CONFIG_DIR, 'claude-provider.json');
 const CLAUDE_CONFIG_KEY_FILE = path.join(
@@ -980,9 +1020,7 @@ function writeStoredState(state: ClaudeStoredStateV3Resolved): void {
   };
 
   fs.mkdirSync(CLAUDE_CONFIG_DIR, { recursive: true });
-  const tmp = `${CLAUDE_CONFIG_FILE}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
-  fs.renameSync(tmp, CLAUDE_CONFIG_FILE);
+  writeSecretFile(CLAUDE_CONFIG_FILE, JSON.stringify(payload, null, 2) + '\n');
 }
 
 // ─── V4 统一供应商 Read / Write / CRUD ──────────────────────────
@@ -1196,9 +1234,7 @@ function writeStoredStateV4(
   };
 
   fs.mkdirSync(CLAUDE_CONFIG_DIR, { recursive: true });
-  const tmp = `${CLAUDE_CONFIG_FILE}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
-  fs.renameSync(tmp, CLAUDE_CONFIG_FILE);
+  writeSecretFile(CLAUDE_CONFIG_FILE, JSON.stringify(payload, null, 2) + '\n');
 }
 
 // ─── V4 公开 API ─────────────────────────────────────────────
@@ -1678,9 +1714,7 @@ export function saveFeishuProviderConfig(
   };
 
   fs.mkdirSync(CLAUDE_CONFIG_DIR, { recursive: true });
-  const tmp = `${FEISHU_CONFIG_FILE}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
-  fs.renameSync(tmp, FEISHU_CONFIG_FILE);
+  writeSecretFile(FEISHU_CONFIG_FILE, JSON.stringify(payload, null, 2) + '\n');
   return normalized;
 }
 
@@ -1775,9 +1809,7 @@ export function saveTelegramProviderConfig(
   };
 
   fs.mkdirSync(CLAUDE_CONFIG_DIR, { recursive: true });
-  const tmp = `${TELEGRAM_CONFIG_FILE}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
-  fs.renameSync(tmp, TELEGRAM_CONFIG_FILE);
+  writeSecretFile(TELEGRAM_CONFIG_FILE, JSON.stringify(payload, null, 2) + '\n');
   return normalized;
 }
 
@@ -2481,10 +2513,43 @@ export function appendClaudeConfigAudit(
     metadata,
   };
   fs.mkdirSync(CLAUDE_CONFIG_DIR, { recursive: true });
-  fs.appendFileSync(
-    CLAUDE_CONFIG_AUDIT_FILE,
-    `${JSON.stringify(entry)}\n`,
-    'utf-8',
+  // 用 fd + O_APPEND 路径强制 0o600 创建：fs.appendFileSync 不接受 mode 参数，
+  // 首次落盘 mode = 0o666 & ~umask（实测 0o644），同主机其他本地账号能读
+  // 管理员审计轨迹（用户名 / OAuth 登录时点 / IM 凭据轮换时间窗 = 暴力破解
+  // 窗口枚举素材）。和 writeSecretFile 同形态强 0o600。
+  const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND;
+  const fd = fs.openSync(CLAUDE_CONFIG_AUDIT_FILE, flags, 0o600);
+  try {
+    fs.writeSync(fd, `${JSON.stringify(entry)}\n`);
+  } finally {
+    try { fs.closeSync(fd); } catch { /* ignore */ }
+  }
+  // 自愈历史 0o644 文件：appendFileSync 在升级前已经创建过，单纯切到 fd 路径
+  // 只对新文件生效；显式 chmod 保证存量也收紧。
+  try {
+    fs.chmodSync(CLAUDE_CONFIG_AUDIT_FILE, 0o600);
+  } catch {
+    /* best effort */
+  }
+}
+
+/**
+ * 记录 IM 通道密钥/配置轮换。复用 claude-provider.audit.log 文件以集中
+ * 审计；调用方需提供 channel ('feishu'|'telegram'|...) 和 changedFields
+ * （如 ['appSecret','encryptKey']）。同 appendClaudeConfigAudit 一样不抛错。
+ */
+export function appendImConfigAudit(
+  actor: string,
+  channel: string,
+  action: string,
+  changedFields: string[],
+  metadata?: Record<string, unknown>,
+): void {
+  appendClaudeConfigAudit(
+    actor,
+    `im_${channel}_${action}`,
+    changedFields,
+    metadata,
   );
 }
 
@@ -2585,9 +2650,7 @@ export function saveContainerEnvConfig(
   }
 
   fs.mkdirSync(CONTAINER_ENV_DIR, { recursive: true });
-  const tmp = `${containerEnvPath(folder)}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(sanitized, null, 2) + '\n', 'utf-8');
-  fs.renameSync(tmp, containerEnvPath(folder));
+  writeSecretFile(containerEnvPath(folder), JSON.stringify(sanitized, null, 2) + '\n');
 }
 
 export function deleteContainerEnvConfig(folder: string): void {
@@ -2790,11 +2853,20 @@ export function writeCredentialsFile(
 
   const filePath = path.join(sessionDir, '.credentials.json');
   const tmp = `${filePath}.tmp`;
+  // 0o600 — credentials 是 plaintext OAuth access/refresh token，
+  // 不能让同主机其他本地账号读取（旧版用 0o644 是泄漏）。
   fs.writeFileSync(tmp, JSON.stringify(credentialsData, null, 2) + '\n', {
     encoding: 'utf-8',
-    mode: 0o644,
+    mode: 0o600,
   });
   fs.renameSync(tmp, filePath);
+  // 防御性 chmod：rename 在 macOS APFS 上有时会保留旧 inode 的 mode；
+  // 显式再 chmod 一次确保最终落地权限严格。
+  try {
+    fs.chmodSync(filePath, 0o600);
+  } catch {
+    /* ignore — best effort */
+  }
 }
 
 /**
@@ -3162,9 +3234,7 @@ export function saveUserFeishuConfig(
   const dir = userImDir(userId);
   fs.mkdirSync(dir, { recursive: true });
   const filePath = path.join(dir, 'feishu.json');
-  const tmp = `${filePath}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
-  fs.renameSync(tmp, filePath);
+  writeSecretFile(filePath, JSON.stringify(payload, null, 2) + '\n');
   return normalized;
 }
 
@@ -3177,9 +3247,7 @@ export function saveFeishuOwnerOpenId(userId: string, openId: string): void {
     const content = fs.readFileSync(filePath, 'utf-8');
     const parsed = JSON.parse(content) as Record<string, unknown>;
     parsed.ownerOpenId = openId;
-    const tmp = `${filePath}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(parsed, null, 2) + '\n', 'utf-8');
-    fs.renameSync(tmp, filePath);
+    writeSecretFile(filePath, JSON.stringify(parsed, null, 2) + '\n');
     logger.info({ userId, openId }, 'Feishu owner open_id saved');
   } catch (err) {
     logger.warn({ err, userId }, 'Failed to save Feishu owner open_id');
@@ -3237,9 +3305,7 @@ export function saveUserTelegramConfig(
   const dir = userImDir(userId);
   fs.mkdirSync(dir, { recursive: true });
   const filePath = path.join(dir, 'telegram.json');
-  const tmp = `${filePath}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
-  fs.renameSync(tmp, filePath);
+  writeSecretFile(filePath, JSON.stringify(payload, null, 2) + '\n');
   return normalized;
 }
 
@@ -3291,9 +3357,7 @@ export function saveUserQQConfig(
   const dir = userImDir(userId);
   fs.mkdirSync(dir, { recursive: true });
   const filePath = path.join(dir, 'qq.json');
-  const tmp = `${filePath}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
-  fs.renameSync(tmp, filePath);
+  writeSecretFile(filePath, JSON.stringify(payload, null, 2) + '\n');
   return normalized;
 }
 
@@ -3384,9 +3448,7 @@ export function saveUserWeChatConfig(
   const dir = userImDir(userId);
   fs.mkdirSync(dir, { recursive: true });
   const filePath = path.join(dir, 'wechat.json');
-  const tmp = `${filePath}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
-  fs.renameSync(tmp, filePath);
+  writeSecretFile(filePath, JSON.stringify(payload, null, 2) + '\n');
   return normalized;
 }
 
@@ -3458,9 +3520,7 @@ export function saveUserWhatsAppConfig(
   const dir = userImDir(userId);
   fs.mkdirSync(dir, { recursive: true });
   const filePath = path.join(dir, 'whatsapp.json');
-  const tmp = `${filePath}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
-  fs.renameSync(tmp, filePath);
+  writeSecretFile(filePath, JSON.stringify(payload, null, 2) + '\n');
   return normalized;
 }
 
@@ -3517,9 +3577,7 @@ export function saveUserDingTalkConfig(
   const dir = userImDir(userId);
   fs.mkdirSync(dir, { recursive: true });
   const filePath = path.join(dir, 'dingtalk.json');
-  const tmp = `${filePath}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
-  fs.renameSync(tmp, filePath);
+  writeSecretFile(filePath, JSON.stringify(payload, null, 2) + '\n');
   return normalized;
 }
 
@@ -3573,9 +3631,7 @@ export function saveUserDiscordConfig(
   const dir = userImDir(userId);
   fs.mkdirSync(dir, { recursive: true });
   const filePath = path.join(dir, 'discord.json');
-  const tmp = `${filePath}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
-  fs.renameSync(tmp, filePath);
+  writeSecretFile(filePath, JSON.stringify(payload, null, 2) + '\n');
   return normalized;
 }
 
@@ -3606,6 +3662,9 @@ export interface SystemSettings {
   externalClaudeDir: string;
   // Claude Agent SDK 自动对话压缩触发点（tokens）。0 = 保留 SDK 默认（约 1M）
   autoCompactWindow: number;
+  // 预定义 SubAgent（code-reviewer / web-researcher）使用的模型别名或完整 ID。
+  // 经 SUBAGENT_MODEL 注入容器；默认 inherit（继承主会话模型，不擅自改变），可在设置页改。
+  subagentModel: string;
   // 关闭 admin host 模式下 HappyClaw 自带的 memory 注入层（MCP 工具、模板 CLAUDE.md、WORKSPACE_GLOBAL/MEMORY env）
   // 启用后 admin 可以在 host 模式下完全按原生 Claude Code 的 Playbook 使用 ~/.claude/ 下的 memory/skills/rules
   disableMemoryLayerForAdminHost: boolean;
@@ -3637,6 +3696,7 @@ const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
   billingCurrencyRate: 1,
   externalClaudeDir: '',
   autoCompactWindow: 0,
+  subagentModel: 'inherit',
   disableMemoryLayerForAdminHost: false,
   pluginAutoScan: true,
   taskBackfillGraceMs: 300000,
@@ -3646,6 +3706,17 @@ function parseIntEnv(envVar: string | undefined, fallback: number): number {
   if (!envVar) return fallback;
   const parsed = parseInt(envVar, 10);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+/**
+ * autoCompactWindow 区间收紧：0 = 禁用（用 SDK 默认 ~1M）；>0 收紧到 [100000, 1000000]。
+ * SDK 侧 schema 为 assistant.mjs 的 `.min(1e5).max(1e6).catch(void 0)`——越界值会被静默剥离
+ * 回退默认。在读（file/env）与写（save）两端统一调用，避免存量/手填的越界值在下游静默失效。
+ */
+function clampAutoCompactWindow(v: unknown): number {
+  const n = typeof v === 'number' ? v : NaN;
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(1_000_000, Math.max(100_000, Math.floor(n)));
 }
 
 function parseFloatEnv(envVar: string | undefined, fallback: number): number {
@@ -3726,10 +3797,11 @@ function readSystemSettingsFromFile(): SystemSettings | null {
       typeof raw.externalClaudeDir === 'string'
         ? raw.externalClaudeDir.trim()
         : DEFAULT_SYSTEM_SETTINGS.externalClaudeDir,
-    autoCompactWindow:
-      typeof raw.autoCompactWindow === 'number' && raw.autoCompactWindow >= 0
-        ? raw.autoCompactWindow
-        : DEFAULT_SYSTEM_SETTINGS.autoCompactWindow,
+    autoCompactWindow: clampAutoCompactWindow(raw.autoCompactWindow),
+    subagentModel:
+      typeof raw.subagentModel === 'string' && raw.subagentModel.trim()
+        ? raw.subagentModel.trim()
+        : DEFAULT_SYSTEM_SETTINGS.subagentModel,
     disableMemoryLayerForAdminHost:
       typeof raw.disableMemoryLayerForAdminHost === 'boolean'
         ? raw.disableMemoryLayerForAdminHost
@@ -3800,10 +3872,11 @@ function buildEnvFallbackSettings(): SystemSettings {
     ),
     externalClaudeDir:
       process.env.EXTERNAL_CLAUDE_DIR || DEFAULT_SYSTEM_SETTINGS.externalClaudeDir,
-    autoCompactWindow: parseIntEnv(
-      process.env.AUTO_COMPACT_WINDOW,
-      DEFAULT_SYSTEM_SETTINGS.autoCompactWindow,
+    autoCompactWindow: clampAutoCompactWindow(
+      parseIntEnv(process.env.AUTO_COMPACT_WINDOW, DEFAULT_SYSTEM_SETTINGS.autoCompactWindow),
     ),
+    subagentModel:
+      process.env.SUBAGENT_MODEL || DEFAULT_SYSTEM_SETTINGS.subagentModel,
     disableMemoryLayerForAdminHost:
       process.env.DISABLE_MEMORY_LAYER_FOR_ADMIN_HOST === 'true' ||
       DEFAULT_SYSTEM_SETTINGS.disableMemoryLayerForAdminHost,
@@ -3900,15 +3973,14 @@ export function saveSystemSettings(
   if (merged.billingMinStartBalanceUsd > 1000000)
     merged.billingMinStartBalanceUsd = 1000000;
 
-  // autoCompactWindow: 0 表示禁用（使用 SDK 默认），>0 必须在 [10000, 2000000] 范围
-  if (
-    merged.autoCompactWindow < 0 ||
-    !Number.isFinite(merged.autoCompactWindow)
-  ) {
-    merged.autoCompactWindow = 0;
-  } else if (merged.autoCompactWindow > 0) {
-    if (merged.autoCompactWindow < 10000) merged.autoCompactWindow = 10000;
-    if (merged.autoCompactWindow > 2000000) merged.autoCompactWindow = 2000000;
+  // autoCompactWindow 在读/写两端统一用 clampAutoCompactWindow 收紧（见函数注释）。
+  merged.autoCompactWindow = clampAutoCompactWindow(merged.autoCompactWindow);
+
+  // subagentModel: 非空字符串（别名或完整 model ID），去空白并限长；空则回退默认。
+  if (typeof merged.subagentModel !== 'string' || !merged.subagentModel.trim()) {
+    merged.subagentModel = DEFAULT_SYSTEM_SETTINGS.subagentModel;
+  } else {
+    merged.subagentModel = merged.subagentModel.trim().slice(0, 64);
   }
 
   // taskBackfillGraceMs: 0 = 关闭（旧行为：无视逾期全 backfill）；

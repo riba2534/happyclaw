@@ -71,7 +71,10 @@ const DEFAULT_ALLOWED_TOOLS = [
   'WebSearch', 'WebFetch',
   'Task', 'TaskOutput', 'TaskStop',
   'TeamCreate', 'TeamDelete', 'SendMessage',
-  'TodoWrite', 'ToolSearch', 'Skill',
+  // 'Skill' removed: since SDK 0.3.x skills are enabled via the `skills` option
+  // (skills: 'all' below), not by listing a 'Skill' tool here. Keeping the dead
+  // entry just invited confusion.
+  'TodoWrite', 'ToolSearch',
   'NotebookEdit',
   'mcp__happyclaw__*'
 ];
@@ -86,20 +89,22 @@ const MEMORY_FLUSH_ALLOWED_TOOLS = [
 
 // Memory flush 期间禁用的工具（disallowedTools 会从模型上下文中完全移除这些工具）
 // 注意：allowedTools 仅控制自动审批，不限制工具可见性；
-//       bypassPermissions 模式下所有工具都自动通过，所以必须用 disallowedTools 来限制
-const MEMORY_FLUSH_DISALLOWED_TOOLS = [
+//       bypassPermissions 模式下所有工具都自动通过，所以必须用 disallowedTools 来限制。
+// mcp__happyclaw__* 部分不在这里硬编码，而是在 main() 里按 createMcpTools() 的注册全集
+// 动态派生（见 memoryFlushDisallowedTools），只保留 memory_append/get/search，
+// 避免后续新增 MCP 工具后再次遗漏屏蔽（如曾漏掉的 send_image/send_file/discord_*/*_skill）。
+const MEMORY_FLUSH_DISALLOWED_BUILTINS = [
   'Bash', 'Write', 'WebSearch', 'WebFetch', 'Glob', 'Grep',
   'Task', 'TaskOutput', 'TaskStop',
   'TeamCreate', 'TeamDelete', 'SendMessage',
   'TodoWrite', 'ToolSearch', 'Skill', 'NotebookEdit',
-  'mcp__happyclaw__send_message',
-  'mcp__happyclaw__schedule_task',
-  'mcp__happyclaw__list_tasks',
-  'mcp__happyclaw__pause_task',
-  'mcp__happyclaw__resume_task',
-  'mcp__happyclaw__cancel_task',
-  'mcp__happyclaw__register_group',
 ];
+// 记忆刷新期间仍需保留可用的 MCP 工具（读写记忆正是 flush 的目的）。
+const MEMORY_FLUSH_KEEP_MCP = new Set([
+  'mcp__happyclaw__memory_append',
+  'mcp__happyclaw__memory_get',
+  'mcp__happyclaw__memory_search',
+]);
 
 const IMAGE_MAX_DIMENSION = 8000; // Anthropic API 限制
 
@@ -581,14 +586,16 @@ function trimSessionJsonl(jsonlPath: string): void {
       if (lines[i].trim()) nonEmptyLines.push({ index: i, line: lines[i] });
     }
 
-    // Find the last compact_boundary entry
+    // Find the last compact_boundary entry (and any preserved segment it references)
     let lastBoundaryPos = -1;
+    let preservedHeadUuid: string | undefined;
     let parseSkipped = 0;
     for (let i = nonEmptyLines.length - 1; i >= 0; i--) {
       try {
         const entry = JSON.parse(nonEmptyLines[i].line);
         if (entry.type === 'system' && entry.subtype === 'compact_boundary') {
           lastBoundaryPos = i;
+          preservedHeadUuid = entry.compact_metadata?.preserved_segment?.head_uuid;
           break;
         }
       } catch {
@@ -605,9 +612,24 @@ function trimSessionJsonl(jsonlPath: string): void {
       return;
     }
 
-    // Keep entries from last compact_boundary onwards
-    const trimmedLines = nonEmptyLines.slice(lastBoundaryPos).map(e => e.line);
-    const removedCount = lastBoundaryPos;
+    // partial compaction 时 boundary 带 preserved_segment{head_uuid, anchor_uuid, tail_uuid}：
+    // 保留段内容是 head_uuid..tail_uuid，SDK 的 resume loader 会在 anchor_uuid 处把它拼回。
+    // 若裁切越过 head_uuid，会连同这些消息及其 uuid 一起删掉，导致 loader 找不到锚点、resume
+    // 丢上下文。因此把裁切起点回退到 head_uuid 所在行，保住整段保留消息。
+    let trimStartPos = lastBoundaryPos;
+    if (preservedHeadUuid) {
+      const preservedPos = nonEmptyLines.findIndex((e) => {
+        try { return JSON.parse(e.line).uuid === preservedHeadUuid; } catch { return false; }
+      });
+      if (preservedPos >= 0 && preservedPos < trimStartPos) {
+        trimStartPos = preservedPos;
+        log(`Session trim: preserving segment from head_uuid=${preservedHeadUuid.slice(0, 8)} (pos ${preservedPos} < boundary ${lastBoundaryPos})`);
+      }
+    }
+
+    // Keep entries from trimStartPos onwards
+    const trimmedLines = nonEmptyLines.slice(trimStartPos).map(e => e.line);
+    const removedCount = trimStartPos;
 
     const TRIM_MIN_ENTRIES = 50; // Skip trimming if fewer entries before boundary (not worth the I/O)
     if (removedCount < TRIM_MIN_ENTRIES) {
@@ -1298,6 +1320,8 @@ async function runQuery(
     interruptedDuringQuery = true;
     suppressOutputAfterInterrupt = true;
     ipcPolling = false;
+    // 这条 early-return 在下方 try 块之前，不被 finally 覆盖，需就地关闭 watcher（close 幂等）。
+    ipcQueryWatcher.close();
     stream.end();
     return { newSessionId, lastAssistantUuid, closedDuringQuery, interruptedDuringQuery, pipedMessagesDuringQuery };
   }
@@ -1367,8 +1391,17 @@ async function runQuery(
         allowDangerouslySkipPermissions: true,
         agentProgressSummaries: true,
         settingSources: ['project', 'user'],
+        // 启用全部已发现的技能到主会话。SDK 0.3.x 起 skills 是"打开技能的唯一正确位置"
+        // （用了它就无需再往 allowedTools 塞已废弃的 'Skill'）。'all' = 启用所有发现的技能，
+        // 显式声明比依赖 CLI 隐式默认更可靠，确保全局/项目/用户技能完整挂载生效。
         skills: 'all',
         includePartialMessages: true,
+        // Forward sub-agent (Task) text/thinking as stream events so the card's
+        // sub-agent transcript lights up live instead of only filling in when the
+        // Task completes. The stream-processor already renders these
+        // (agentScope:'subagent' deltas, stream-processor.ts ~979); this flag is
+        // what actually makes the SDK emit them.
+        forwardSubagentText: true,
         ...(Object.keys(flagSettings).length > 0 ? { settings: flagSettings as any } : {}),
         ...(userPlugins && { plugins: userPlugins }),
         mcpServers: {
@@ -1486,6 +1519,12 @@ async function runQuery(
       continue;
     }
 
+    // ── Main-agent tool results → tool_result stream events ──
+    // (sub-agent results are handled inside processSubAgentMessage above)
+    if (message.type === 'user') {
+      processor.processMainToolResults(message as any);
+    }
+
     if (message.type === 'assistant' && 'uuid' in message) {
       lastAssistantUuid = (message as { uuid: string }).uuid;
       const assistantMsg = message as Record<string, unknown>;
@@ -1535,6 +1574,15 @@ async function runQuery(
         }
       }
       const contextAudit = enrichContextAudit(contextAuditBase, promptAudit, contextUsage);
+      // 1M 上下文缩水告警：默认 opus[1m] 期望约 1M 上下文窗口，若 SDK / 模型资格判定
+      // 静默退回（例如 200K），在此立即暴露而非等到溢出。push 进 warnings 会让下方
+      // emit 的 displayLevel 自动升为 'primary'，在前端醒目展示。
+      if (CLAUDE_MODEL.includes('[1m]') && contextUsage && contextUsage.maxTokens > 0 && contextUsage.maxTokens < 900_000) {
+        contextAudit.warnings.push(
+          `上下文窗口仅 ${Math.round(contextUsage.maxTokens / 1000)}K tokens（预期约 1M），1M 上下文可能未生效`,
+        );
+        log(`[WARN] 1M context not active: maxTokens=${contextUsage.maxTokens}`);
+      }
       emit({
         status: 'stream',
         result: null,
@@ -1610,6 +1658,11 @@ async function runQuery(
       // another result is emitted within the same query (e.g. user sent
       // a follow-up via IPC mid-query), it won't overwrite this one (#214).
       containerInput.turnId = generateTurnId();
+      // 同步重置已累积的 assistant 文本缓冲：单次 query 内若产生第二条 result
+      // （mid-query follow-up），canonicalAssistantText 不应携带上一 turn 的文本，
+      // 否则第二条回复会重复前一 turn 的内容前缀（与 turnId 轮转对称）。
+      canonicalAssistantText = undefined;
+      canonicalAssistantUuid = undefined;
 
       // Emit usage stream event with token counts and cost
       const resultMsg = message as Record<string, unknown>;
@@ -1664,16 +1717,12 @@ async function runQuery(
     }
   }
 
-  // Cleanup residual state
+  // Cleanup residual state（IPC watcher 统一由下方 finally 关闭）
   processor.cleanup();
 
-  ipcPolling = false;
-  ipcQueryWatcher.close();
   log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}, interruptedDuringQuery: ${interruptedDuringQuery}`);
   return { newSessionId, lastAssistantUuid, closedDuringQuery, interruptedDuringQuery, pipedMessagesDuringQuery };
   } catch (err) {
-    ipcPolling = false;
-    ipcQueryWatcher.close();
     const errorMessage = err instanceof Error ? err.message : String(err);
 
     // 检测上下文溢出错误
@@ -1703,6 +1752,10 @@ async function runQuery(
     // 中断导致的 SDK 错误（error_during_execution 等）：正常返回，不抛出
     if (interruptedDuringQuery) {
       log(`runQuery error during interrupt (non-fatal): ${errorMessage}`);
+      // 收尾：catch 路径跳过了正常出口的 processor.cleanup()，残留 <200 字符的
+      // 缓冲尾巴（未达 flush 阈值、定时器未触发）会永久丢失，导致 interrupt_partial 缺尾。
+      // cleanup() 幂等安全（seenTextualResult 时丢尾避重复，否则 flushBuffers）。
+      processor.cleanup();
       return { newSessionId, lastAssistantUuid, closedDuringQuery, interruptedDuringQuery, pipedMessagesDuringQuery };
     }
 
@@ -1713,6 +1766,9 @@ async function runQuery(
     // 时会落到下方 re-throw，被外层当 error 退避，把一次干净的 shutdown 误报成失败。
     if (postResultInterruptRequested) {
       log(`runQuery error after shutdown interrupt (non-fatal): ${errorMessage}`);
+      // 同 interruptedDuringQuery：补 cleanup() 刷新残留缓冲尾巴，避免 shutdown
+      // 中断时未达阈值的最后一小段文本丢失。
+      processor.cleanup();
       return { newSessionId, lastAssistantUuid, closedDuringQuery, interruptedDuringQuery, pipedMessagesDuringQuery };
     }
 
@@ -1735,6 +1791,13 @@ async function runQuery(
     }
     // 继续抛出
     throw err;
+  } finally {
+    // IPC watcher 清理：覆盖 try 块内的正常出口、catch 抛出，以及 try 内所有 early-return
+    // （resume 失败 / 上下文溢出 / 不可恢复 transcript 错误）。query 启动前的中断 early-return
+    // 在 try 之外，已就地 close()。finally 必然执行，避免长生命周期容器累积 FSWatcher + 后备
+    // 定时器，以及旧 watcher 抢先 drain 本应进入新 query 的 IPC 消息。
+    ipcPolling = false;
+    ipcQueryWatcher.close();
   }
 }
 
@@ -1809,6 +1872,17 @@ async function main(): Promise<void> {
     tools: createMcpTools(mcpToolsConfig),
   });
   let mcpServerConfig = buildMcpServerConfig();
+
+  // 记忆刷新阶段的 disallowedTools：内置危险工具 + 除记忆工具外的全部已注册 MCP 工具。
+  // 从 createMcpTools() 的注册全集动态派生，确保新增工具自动纳入屏蔽，避免再次遗漏
+  // （send_image/send_file/install_skill/uninstall_skill/discord_* 等）。
+  const memoryFlushDisallowedTools = [
+    ...MEMORY_FLUSH_DISALLOWED_BUILTINS,
+    ...createMcpTools(mcpToolsConfig)
+      .map((t) => `mcp__happyclaw__${t.name}`)
+      .filter((n) => !MEMORY_FLUSH_KEEP_MCP.has(n)),
+  ];
+
   const memoryRecallPrompt = buildMemoryRecallPrompt(isHome, disableMemoryLayer);
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
 
@@ -2062,7 +2136,7 @@ async function main(): Promise<void> {
           resumeAt,
           false,
           MEMORY_FLUSH_ALLOWED_TOOLS,
-          MEMORY_FLUSH_DISALLOWED_TOOLS,
+          memoryFlushDisallowedTools,
         );
         if (flushResult.newSessionId) { sessionId = flushResult.newSessionId; latestSessionId = sessionId; }
         if (flushResult.lastAssistantUuid) resumeAt = flushResult.lastAssistantUuid;

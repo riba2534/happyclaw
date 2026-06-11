@@ -8,6 +8,11 @@ import type { AgentInfo } from '../../types';
 interface AgentTabBarProps {
   agents: AgentInfo[];
   activeTab: string | null; // null = main conversation
+  /** Workspace owner-only ACL (backend `can_modify`). When false, all mutating
+   *  affordances (create / rename / delete / bind) are hidden — non-owners get
+   *  read-only tabs they can still select and view. Defaults to false so the
+   *  loading state and non-owners both render read-only (no button flicker). */
+  canModify?: boolean;
   onSelectTab: (agentId: string | null) => void;
   onDeleteAgent: (agentId: string) => void;
   onRenameAgent?: (agentId: string, currentName: string) => void;
@@ -153,7 +158,7 @@ function SortableTab({ agent, isActive, onSelect, onContextMenu, onTouchStart, o
   );
 }
 
-export function AgentTabBar({ agents, activeTab, onSelectTab, onDeleteAgent, onRenameAgent, onCreateConversation, onBindIm, onBindMainIm, onReorder }: AgentTabBarProps) {
+export function AgentTabBar({ agents, activeTab, canModify = false, onSelectTab, onDeleteAgent, onRenameAgent, onCreateConversation, onBindIm, onBindMainIm, onReorder }: AgentTabBarProps) {
   // Spawn agents are rendered inline in the main chat, not as separate tabs
   const conversations = useMemo(() => agents.filter(a => a.kind === 'conversation'), [agents]);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -191,8 +196,9 @@ export function AgentTabBar({ agents, activeTab, onSelectTab, onDeleteAgent, onR
     onReorder?.(reordered.map(a => a.id));
   }, [conversations, onReorder]);
 
-  // Show bar if there are agents OR if creation is available
-  if (conversations.length === 0 && !onCreateConversation) return null;
+  // Show bar if there are agents OR if the owner can create one. Non-owners
+  // with no conversation tabs see nothing extra (just the main conversation).
+  if (conversations.length === 0 && !(onCreateConversation && canModify)) return null;
 
   const openContextMenu = (agentId: string, agentName: string, x: number, y: number) => {
     // Clamp position to viewport
@@ -206,10 +212,13 @@ export function AgentTabBar({ agents, activeTab, onSelectTab, onDeleteAgent, onR
   const handleContextMenu = (e: React.MouseEvent, agent: AgentInfo) => {
     e.preventDefault();
     e.stopPropagation();
+    // All context-menu actions (rename / bind / delete) mutate the workspace.
+    if (!canModify) return;
     openContextMenu(agent.id, agent.name, e.clientX, e.clientY);
   };
 
   const handleTouchStart = (agent: AgentInfo, e: React.TouchEvent) => {
+    if (!canModify) return; // no long-press menu for read-only (non-owner) tabs
     const touch = e.touches[0];
     const x = touch.clientX;
     const y = touch.clientY;
@@ -235,7 +244,7 @@ export function AgentTabBar({ agents, activeTab, onSelectTab, onDeleteAgent, onR
           onClick={() => onSelectTab(null)}
         >
           <span>主对话</span>
-          {onBindMainIm && (
+          {onBindMainIm && canModify && (
             <button
               onClick={(e) => { e.stopPropagation(); onBindMainIm(); }}
               className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-accent transition-all cursor-pointer"
@@ -263,8 +272,8 @@ export function AgentTabBar({ agents, activeTab, onSelectTab, onDeleteAgent, onR
           </SortableContext>
         </DndContext>
 
-        {/* Create conversation button */}
-        {onCreateConversation && (
+        {/* Create conversation button (owner-only) */}
+        {onCreateConversation && canModify && (
           <button
             onClick={onCreateConversation}
             className="flex-shrink-0 flex items-center gap-0.5 px-2 py-1 rounded-md text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground transition-colors cursor-pointer"

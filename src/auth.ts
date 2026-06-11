@@ -43,11 +43,22 @@ export interface VerifiedToken {
   legacy: boolean;
 }
 
+// 旧版未签名 session cookie 平滑迁移开关。默认关：HMAC 签名是设计用来防止
+// 数据库 / 备份 / 日志泄漏 raw session token 后被冒名登录，永久接受未签名
+// cookie 让该防护形同虚设。运维需要在线升级时可以临时设
+// ALLOW_LEGACY_UNSIGNED_COOKIE=true 重启一次让旧 cookie 自动升级，然后回到默认。
+const ALLOW_LEGACY_UNSIGNED_COOKIE =
+  process.env.ALLOW_LEGACY_UNSIGNED_COOKIE === 'true';
+
 /** Verify and extract the raw token from a signed cookie value. Returns null if invalid. */
 export function verifySessionToken(signedValue: string): VerifiedToken | null {
   const dotIndex = signedValue.lastIndexOf('.');
   if (dotIndex === -1) {
-    // Legacy unsigned token — accept and flag for upgrade
+    if (!ALLOW_LEGACY_UNSIGNED_COOKIE) return null;
+    // Legacy unsigned token — accept and flag for upgrade. Token must look
+    // like a 32-byte hex string (the only shape generateSessionToken emits)
+    // to avoid accepting arbitrary attacker-supplied junk.
+    if (!/^[0-9a-f]{64}$/.test(signedValue)) return null;
     return { token: signedValue, legacy: true };
   }
   const token = signedValue.substring(0, dotIndex);
