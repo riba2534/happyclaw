@@ -7365,6 +7365,14 @@ async function startMessageLoop(): Promise<void> {
           const lastSourceJidForRoute =
             messagesToSend[messagesToSend.length - 1]?.source_jid || chatJid;
 
+          // Propagate scheduled-task identity into the running agent. Group-mode
+          // tasks inject their prompt as a normal message; when a runner is
+          // already active this IPC path (not the cold-start runContainerAgent
+          // path) handles delivery, so it must carry task_id too — otherwise the
+          // task's send_message output loses task attribution and the host skips
+          // the notify_channels broadcast (riba2534/happyclaw#559).
+          const injectionTaskId = extractLastTaskId(messagesToSend);
+
           const sendResult = queue.sendMessage(
             chatJid,
             formatted,
@@ -7374,6 +7382,7 @@ async function startMessageLoop(): Promise<void> {
               activeRouteUpdaters.get(group.folder)?.(lastSourceJidForRoute);
             },
             lastSourceJidForRoute,
+            injectionTaskId,
           );
           if (sendResult === 'sent') {
             logger.debug(
