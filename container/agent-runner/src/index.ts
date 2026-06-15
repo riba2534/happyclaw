@@ -42,6 +42,7 @@ import {
 import { StreamEventProcessor } from './stream-processor.js';
 import { PREDEFINED_AGENTS } from './agent-definitions.js';
 import { createMcpTools } from './mcp-tools.js';
+import { createCanUseToolHandler } from './permission-handler.js';
 
 // 路径解析：优先读取环境变量，降级到容器内默认路径（保持向后兼容）
 const WORKSPACE_GROUP = process.env.HAPPYCLAW_WORKSPACE_GROUP || '/workspace/group';
@@ -1265,6 +1266,17 @@ async function runQuery(
   });
   // Initial drain to process any pre-existing files
   pollIpcDuringQuery();
+  const canUseTool = createCanUseToolHandler({
+    getPermissionMode: () => 'bypassPermissions',
+    log,
+    emitStatus: (statusText) => {
+      emit({
+        status: 'stream',
+        result: null,
+        streamEvent: { eventType: 'status', statusText },
+      });
+    },
+  });
 
   const processor = new StreamEventProcessor(emit, log);
 
@@ -1389,6 +1401,7 @@ async function runQuery(
         thinking: { type: 'adaptive' as const, display: 'summarized' as const },
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
+        canUseTool,
         agentProgressSummaries: true,
         settingSources: ['project', 'user'],
         // 启用全部已发现的技能到主会话。SDK 0.3.x 起 skills 是"打开技能的唯一正确位置"
