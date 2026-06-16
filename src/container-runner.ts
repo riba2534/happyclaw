@@ -1350,7 +1350,7 @@ export async function runHostAgent(
       for (const root of allowlist.allowedRoots) {
         const expandedRoot = root.path.startsWith('~')
           ? path.join(
-              process.env.HOME || '/Users/user',
+              process.env.HOME || os.homedir(),
               root.path.slice(root.path.startsWith('~/') ? 2 : 1),
             )
           : path.resolve(root.path);
@@ -1651,7 +1651,9 @@ export async function runHostAgent(
     if (capResult.resolvedPaths['claude']) {
       const resolvedClaudeDir = path.dirname(capResult.resolvedPaths['claude']);
       const currentPath = hostEnv['PATH'] || process.env.PATH || '';
-      hostEnv['PATH'] = `${resolvedClaudeDir}:${currentPath}`;
+      // path.delimiter（Windows ';'，POSIX ':'）——硬编码 ':' 会在 Windows 上
+      // 把盘符（E:）也当分隔符，PATH 被拼烂导致 claude 目录无法生效。
+      hostEnv['PATH'] = `${resolvedClaudeDir}${path.delimiter}${currentPath}`;
       logger.info(
         { group: group.name, resolvedClaudeDir, resolvedPath: capResult.resolvedPaths['claude'] },
         'Host preflight: claude binary resolved',

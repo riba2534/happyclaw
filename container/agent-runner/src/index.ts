@@ -16,6 +16,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { execFileSync } from 'child_process';
 import { query, HookCallback, PreCompactHookInput, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { detectImageMimeTypeFromBase64Strict } from './image-detector.js';
@@ -111,8 +112,12 @@ const IMAGE_MAX_DIMENSION = 8000; // Anthropic API 限制
 // ── 系统提示词从独立 Markdown 文件加载（启动期一次性 readFileSync 缓存到模块级常量）──
 // 文件位于 container/agent-runner/prompts/，便于改提示词无需重编译 + CR 友好。
 
+// 用 fileURLToPath 而非 new URL(...).pathname：后者在 Windows 上返回
+// "/E:/.../index.js"（带前导斜杠 + 盘符），path.join 后会丢盘符变成 "\E:\..."，
+// 再被 Node 按当前盘根解析成 "E:\E:\..." 导致 ENOENT。fileURLToPath 在
+// Linux 容器与 Windows host 模式下都返回正确的本地路径。
 const PROMPTS_DIR = path.join(
-  path.dirname(new URL(import.meta.url).pathname),
+  path.dirname(fileURLToPath(import.meta.url)),
   '..',
   'prompts',
 );
@@ -1338,24 +1343,43 @@ async function runQuery(
   // SDK 的 optionalDependencies（@anthropic-ai/claude-agent-sdk-linux-x64 等）在 npm 上是空包，
   // 无法通过 node_modules/.bin/ 找到 working binary。通过 which 找到实际路径后传给 SDK。
   let pathToClaudeCodeExecutable: string | undefined;
-  try {
-    const resolvedPath = execFileSync('which', ['claude'], { timeout: 5_000, encoding: 'utf-8' }).trim();
-    if (resolvedPath) {
-      pathToClaudeCodeExecutable = resolvedPath;
+  // Windows host 模式：SDK 的 win32 平台包（@anthropic-ai/claude-agent-sdk-win32-x64）
+  // 带的是真实 claude.exe，直接解析它——`which` 在 Windows 上多半不存在/找不到，
+  // 且 SDK 自带的 win32 解析会漏 `.exe`。注意：Linux 容器里这些 optionalDependencies
+  // 是空包，必须走下面的 `which`（指向全局安装的 @anthropic-ai/claude-code），故仅 win32 走此分支。
+  if (process.platform === 'win32') {
+    const sdkBundled = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '..',
+      'node_modules',
+      '@anthropic-ai',
+      `claude-agent-sdk-${process.platform}-${process.arch}`,
+      'claude.exe',
+    );
+    if (fs.existsSync(sdkBundled)) {
+      pathToClaudeCodeExecutable = sdkBundled;
     }
-  } catch {
-    // Fallback: try to find it in common locations
-    const commonPaths = [
-      '/usr/local/bin/claude',
-      '/usr/bin/claude',
-      path.join(process.env.HOME || '/root', '.local/bin/claude'),
-      // 容器内 agent-runner 的本地依赖（package.json 声明了 @anthropic-ai/claude-code）
-      '/app/node_modules/.bin/claude',
-    ];
-    for (const p of commonPaths) {
-      if (fs.existsSync(p)) {
-        pathToClaudeCodeExecutable = p;
-        break;
+  }
+  if (!pathToClaudeCodeExecutable) {
+    try {
+      const resolvedPath = execFileSync('which', ['claude'], { timeout: 5_000, encoding: 'utf-8' }).trim();
+      if (resolvedPath) {
+        pathToClaudeCodeExecutable = resolvedPath;
+      }
+    } catch {
+      // Fallback: try to find it in common locations
+      const commonPaths = [
+        '/usr/local/bin/claude',
+        '/usr/bin/claude',
+        path.join(process.env.HOME || '/root', '.local/bin/claude'),
+        // 容器内 agent-runner 的本地依赖（package.json 声明了 @anthropic-ai/claude-code）
+        '/app/node_modules/.bin/claude',
+      ];
+      for (const p of commonPaths) {
+        if (fs.existsSync(p)) {
+          pathToClaudeCodeExecutable = p;
+          break;
+        }
       }
     }
   }
