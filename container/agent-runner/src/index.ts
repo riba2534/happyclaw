@@ -17,6 +17,7 @@
 import fs from 'fs';
 import path from 'path';
 import { execFileSync } from 'child_process';
+import { createRequire } from 'module';
 import { query, HookCallback, PreCompactHookInput, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { detectImageMimeTypeFromBase64Strict } from './image-detector.js';
 import { pruneProcessedHistoryImagesInTranscript as pruneProcessedHistoryImagesInTranscriptFile } from './history-image-prune.js';
@@ -119,6 +120,24 @@ const PROMPTS_DIR = path.join(
 
 function loadPrompt(...segments: string[]): string {
   return fs.readFileSync(path.join(PROMPTS_DIR, ...segments), 'utf-8').trimEnd();
+}
+
+// 解析本地依赖 @anthropic-ai/claude-code 的真实 CLI binary 路径。
+// 该包 postinstall 会把平台对应的 native binary 落地到其 `bin` 字段指向的位置
+// （Windows / macOS / Linux 一致），作为 SDK 的 pathToClaudeCodeExecutable 最可靠来源——
+// 它不依赖 PATH，也不会命中 SDK optionalDependencies 里那些空的 native binary 占位包。
+function resolveBundledClaudeCli(): string | undefined {
+  try {
+    const require = createRequire(import.meta.url);
+    const pkgJsonPath = require.resolve('@anthropic-ai/claude-code/package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf-8')) as { bin?: string | Record<string, string> };
+    const binRel = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.claude;
+    if (!binRel) return undefined;
+    const binPath = path.join(path.dirname(pkgJsonPath), binRel);
+    return fs.existsSync(binPath) ? binPath : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 const SECURITY_RULES = loadPrompt('security-rules.md');
@@ -1334,28 +1353,37 @@ async function runQuery(
     flagSettings.autoCompactWindow = autoCompactWindow;
   }
 
-  // Resolve the actual claude CLI path using `which`.
+  // Resolve the actual claude CLI path for the SDK.
   // SDK 的 optionalDependencies（@anthropic-ai/claude-agent-sdk-linux-x64 等）在 npm 上是空包，
-  // 无法通过 node_modules/.bin/ 找到 working binary。通过 which 找到实际路径后传给 SDK。
-  let pathToClaudeCodeExecutable: string | undefined;
-  try {
-    const resolvedPath = execFileSync('which', ['claude'], { timeout: 5_000, encoding: 'utf-8' }).trim();
-    if (resolvedPath) {
-      pathToClaudeCodeExecutable = resolvedPath;
-    }
-  } catch {
-    // Fallback: try to find it in common locations
-    const commonPaths = [
-      '/usr/local/bin/claude',
-      '/usr/bin/claude',
-      path.join(process.env.HOME || '/root', '.local/bin/claude'),
-      // 容器内 agent-runner 的本地依赖（package.json 声明了 @anthropic-ai/claude-code）
-      '/app/node_modules/.bin/claude',
-    ];
-    for (const p of commonPaths) {
-      if (fs.existsSync(p)) {
-        pathToClaudeCodeExecutable = p;
-        break;
+  // 当 pathToClaudeCodeExecutable 留空时 SDK 会去找这些空包里的 native binary 而失败
+  // （Windows 宿主机模式下报 "Claude Code native binary not found at .../claude-agent-sdk-win32-x64/claude"）。
+  // 优先解析本地依赖 @anthropic-ai/claude-code 里 postinstall 落地的真实跨平台 binary，
+  // 它在 Windows / macOS / Linux 上一致存在，且不依赖 PATH 上是否有可用的 claude。
+  let pathToClaudeCodeExecutable: string | undefined = resolveBundledClaudeCli();
+  if (!pathToClaudeCodeExecutable) {
+    try {
+      // `which` 在 Windows 上不存在，改用 `where`；其多行输出取第一行。
+      const lookupCmd = process.platform === 'win32' ? 'where' : 'which';
+      const resolvedPath = execFileSync(lookupCmd, ['claude'], { timeout: 5_000, encoding: 'utf-8' })
+        .split(/\r?\n/)[0]
+        .trim();
+      if (resolvedPath) {
+        pathToClaudeCodeExecutable = resolvedPath;
+      }
+    } catch {
+      // Fallback: try to find it in common locations
+      const commonPaths = [
+        '/usr/local/bin/claude',
+        '/usr/bin/claude',
+        path.join(process.env.HOME || '/root', '.local/bin/claude'),
+        // 容器内 agent-runner 的本地依赖（package.json 声明了 @anthropic-ai/claude-code）
+        '/app/node_modules/.bin/claude',
+      ];
+      for (const p of commonPaths) {
+        if (fs.existsSync(p)) {
+          pathToClaudeCodeExecutable = p;
+          break;
+        }
       }
     }
   }
