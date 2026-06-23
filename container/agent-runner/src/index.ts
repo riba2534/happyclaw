@@ -1391,17 +1391,20 @@ async function runQuery(
         allowDangerouslySkipPermissions: true,
         agentProgressSummaries: true,
         settingSources: ['project', 'user'],
-        // 启用全部已发现的技能到主会话。SDK 0.3.x 起 skills 是"打开技能的唯一正确位置"
-        // （用了它就无需再往 allowedTools 塞已废弃的 'Skill'）。'all' = 启用所有发现的技能，
-        // 显式声明比依赖 CLI 隐式默认更可靠，确保全局/项目/用户技能完整挂载生效。
-        skills: 'all',
+        // 技能挂载：SDK 0.2.110 起 Options.skills 类型从 'all' 改为 string[]（要预加载的技能名列表）。
+        // 不传 skills 时，技能仍由 settingSources（project/user）自动发现并挂载到主会话——
+        // 这正是原 'all' 想要的“全部技能生效”行为，故此处不再显式传 skills。
+        // 如需强制预加载特定技能，改为 skills: ['name1', 'name2']。
         includePartialMessages: true,
         // Forward sub-agent (Task) text/thinking as stream events so the card's
         // sub-agent transcript lights up live instead of only filling in when the
         // Task completes. The stream-processor already renders these
         // (agentScope:'subagent' deltas, stream-processor.ts ~979); this flag is
         // what actually makes the SDK emit them.
-        forwardSubagentText: true,
+        // NOTE: SDK 0.2.110 从 Options 类型中移除了 forwardSubagentText（子代理转录
+        // 改走 SubagentStart/Stop hooks + getSubagentMessages）。这里用 as any 保留传值，
+        // 运行时若仍被支持则生效，否则被忽略——不影响启动。
+        ...({ forwardSubagentText: true } as any),
         ...(Object.keys(flagSettings).length > 0 ? { settings: flagSettings as any } : {}),
         ...(userPlugins && { plugins: userPlugins }),
         mcpServers: {
