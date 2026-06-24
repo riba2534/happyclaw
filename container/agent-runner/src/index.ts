@@ -134,7 +134,11 @@ function resolveBundledClaudeCli(): string | undefined {
     const binRel = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.claude;
     if (!binRel) return undefined;
     const binPath = path.join(path.dirname(pkgJsonPath), binRel);
-    return fs.existsSync(binPath) ? binPath : undefined;
+    if (!fs.existsSync(binPath)) return undefined;
+    // postinstall replaces the ~500-byte shell stub with the real native binary;
+    // if it hasn't run, the stub is still there — skip so we fall through to which/where.
+    const size = fs.statSync(binPath).size;
+    return size > 4096 ? binPath : undefined;
   } catch {
     return undefined;
   }
