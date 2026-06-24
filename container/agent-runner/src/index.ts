@@ -1391,10 +1391,11 @@ async function runQuery(
         allowDangerouslySkipPermissions: true,
         agentProgressSummaries: true,
         settingSources: ['project', 'user'],
-        // 技能挂载：SDK 0.2.110 起 Options.skills 类型从 'all' 改为 string[]（要预加载的技能名列表）。
-        // 不传 skills 时，技能仍由 settingSources（project/user）自动发现并挂载到主会话——
+        // 技能挂载：SDK 0.2.110 起顶层 Options 已不再接受 skills 字段，技能改由
+        // settingSources（project/user）做文件系统发现并挂载到主会话——
         // 这正是原 'all' 想要的“全部技能生效”行为，故此处不再显式传 skills。
-        // 如需强制预加载特定技能，改为 skills: ['name1', 'name2']。
+        // 注意：string[] 形态的 skills（预加载技能名列表）仅适用于 AgentDefinition，
+        // 不能传给 query() 的顶层 Options。
         includePartialMessages: true,
         // Forward sub-agent (Task) text/thinking as stream events so the card's
         // sub-agent transcript lights up live instead of only filling in when the
@@ -1402,8 +1403,11 @@ async function runQuery(
         // (agentScope:'subagent' deltas, stream-processor.ts ~979); this flag is
         // what actually makes the SDK emit them.
         // NOTE: SDK 0.2.110 从 Options 类型中移除了 forwardSubagentText（子代理转录
-        // 改走 SubagentStart/Stop hooks + getSubagentMessages）。这里用 as any 保留传值，
-        // 运行时若仍被支持则生效，否则被忽略——不影响启动。
+        // 改走 SubagentStart/Stop hooks + getSubagentMessages）。这里用 as any 保留传值
+        // 以消除 tsc 报错、不阻塞启动。
+        // TODO（已知待跟进项）：若新版 SDK 已彻底改走 hooks 路径，则卡片中子代理转录的
+        // “实时点亮”可能已静默失效。后续应迁移到 SubagentStart/Stop hooks，或确认
+        // 该 flag 运行时仍生效。
         ...({ forwardSubagentText: true } as any),
         ...(Object.keys(flagSettings).length > 0 ? { settings: flagSettings as any } : {}),
         ...(userPlugins && { plugins: userPlugins }),
