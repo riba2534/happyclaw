@@ -1283,7 +1283,7 @@ async function runQuery(
   let resultReceivedAt: number | null = null;
   const POST_RESULT_TIMEOUT_MS = 5_000;
   // queryRef is set just before the for-await loop so pollIpcDuringQuery can call interrupt()
-  let queryRef: { interrupt(): Promise<void> } | null = null;
+  let queryRef: { interrupt(): Promise<unknown> } | null = null;       
   let messageCount = 0;
   let resultCount = 0;
   let postResultInterruptRequested = false;
