@@ -1589,7 +1589,7 @@ async function runQuery(
       if (!visibleOutputStarted && resultCount === 0) {
         suppressOutputAfterInterrupt = true;
       }
-      queryRef.interrupt().catch((err: unknown) => log(`Immediate interrupt call failed: ${err}`));
+      queryRef!.interrupt().catch((err: unknown) => log(`Immediate interrupt call failed: ${err}`));  
       stream.end();
       ipcPolling = false;
     }
