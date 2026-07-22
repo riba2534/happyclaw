@@ -33,6 +33,10 @@ describe('provider model fallback lifecycle', () => {
     const samples = [
       ["You're out of extra usage · resets 2:10am (Asia/Shanghai)", true],
       ["You've hit your limit", true],
+      // Qualified variants of the real banner ("session"/"weekly" limit) must
+      // match too — the original pattern only accepted the bare "your limit".
+      ["You've hit your session limit · resets 11:10pm (Asia/Singapore)", true],
+      ["You've hit your weekly limit · resets 3am (America/New_York)", true],
       ['Claude usage limit reached. Your limit will reset at 3pm.', true],
       [
         'To avoid a rate limit, retry the request with exponential backoff.',

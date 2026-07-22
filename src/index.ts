@@ -47,6 +47,7 @@ import {
   AvailableGroup,
   ContainerInput,
   ContainerOutput,
+  AgentRunOptions,
   runContainerAgent,
   runHostAgent,
   runAgentWithModelFallback,
@@ -4650,6 +4651,32 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       scheduledTaskId: message.task_id ?? null,
     })),
   );
+
+  // Account-limit failover: when the selected provider hits its usage/session
+  // limit, runAgentWithModelFallback retries this turn on another provider.
+  // The switch resets the Claude session (thinking-block signatures are
+  // per-account), so re-inject recent history — same treatment as the proactive
+  // willClearSessionOnProviderSwitch path. Built here where missedMessages is in
+  // scope so the current turn's own messages are excluded from the injected
+  // history. Rebuilt from the ORIGINAL prompt each retry to avoid stacking.
+  const providerSwitchRunOptions: AgentRunOptions = {
+    rebuildInputForProviderSwitch: (originalInput) => {
+      const historyContext = buildRecentConversationHistoryContext(
+        chatJid,
+        new Set(missedMessages.map((m) => m.id)),
+        {
+          limit: 30,
+          maxMessageLength: 700,
+          intro:
+            '检测到本次因切换 provider 需要使用新的底层模型 session。以下是 HappyClaw 保存的最近对话记录，供你延续上下文。',
+        },
+      );
+      return historyContext
+        ? { ...originalInput, prompt: historyContext.context + prompt }
+        : originalInput;
+    },
+  };
+
   try {
     output = await runAgent(
       effectiveGroup,
@@ -5538,6 +5565,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       currentSourceJid,
       currentChannelContext,
       agentProfile,
+      providerSwitchRunOptions,
     );
   } finally {
     runEnded = true;
@@ -6216,6 +6244,7 @@ async function runAgent(
   currentSourceJid?: string,
   channelContext?: ChannelTurnContext,
   agentProfile?: AgentProfile,
+  runOptions?: AgentRunOptions,
 ): Promise<{ status: 'success' | 'error' | 'closed'; error?: string }> {
   const isHome = !!group.is_home;
   const owner = group.created_by ? getUserById(group.created_by) : undefined;
@@ -6353,6 +6382,7 @@ async function runAgent(
         onProcessCb,
         wrappedOnOutput,
         ownerHomeFolder,
+        runOptions,
       );
     } else {
       output = await runAgentWithModelFallback(
@@ -6377,6 +6407,7 @@ async function runAgent(
         onProcessCb,
         wrappedOnOutput,
         ownerHomeFolder,
+        runOptions,
       );
     }
 

@@ -22,6 +22,27 @@ describe('isProviderFailureResult — positive (genuine Claude limit notices)', 
     expect(isProviderFailureResult(msg)).toBe(true);
   });
 
+  test('detects Claude "hit your session limit" banner (qualified limit)', () => {
+    // Regression: the real banner qualifies "limit" ("session limit"), which
+    // the original pattern missed — the notice leaked to users verbatim and
+    // the exhausted account was never marked unhealthy, so weighted pools
+    // never rotated off it.
+    const msg =
+      "You've hit your session limit · resets 11:10pm (Asia/Singapore)";
+    expect(isProviderFailureResult(msg)).toBe(true);
+  });
+
+  test('detects other qualified limit variants (weekly/usage, "reached")', () => {
+    expect(
+      isProviderFailureResult(
+        "You've hit your weekly limit · resets 3am (America/New_York)",
+      ),
+    ).toBe(true);
+    expect(isProviderFailureResult("You've reached your usage limit.")).toBe(
+      true,
+    );
+  });
+
   test('detects "usage limit reached" notice with reset time', () => {
     const msg =
       'Claude usage limit reached. Your limit will reset at 3pm (America/New_York)';

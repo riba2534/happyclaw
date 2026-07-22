@@ -770,7 +770,12 @@ const API_ERROR_PATTERNS = [
 /** Claude-specific account/usage-limit phrases (not generic provider errors). */
 const CLAUDE_LIMIT_PHRASE_PATTERNS = [
   /\bout of extra usage\b/i,
-  /\byou(?:'ve|'re| are)\s+(?:hit|out of)\s+(?:your\s+)?(?:limit|extra usage)\b/i,
+  // Optional qualifier before "limit" so the real Claude banner "you've hit
+  // your SESSION limit" (also "weekly"/"usage"/etc.) matches, not just the bare
+  // "your limit". Without it, account session limits went undetected — the
+  // English notice leaked to the user and the provider was never marked
+  // unhealthy, so weighted pools never rotated off the exhausted account.
+  /\byou(?:'ve|'re| are)\s+(?:hit|out of|reached)\s+(?:your\s+)?(?:\w+\s+)?(?:limit|extra usage)\b/i,
   // "usage limit reached" — anchored on "usage" so a generic "rate limit
   // reached" / "request limit reached" in a normal reply does not match.
   /\busage\s+limit\s+reached\b/i,

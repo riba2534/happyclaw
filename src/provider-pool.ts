@@ -81,6 +81,20 @@ export class ProviderPool {
     return this.members.filter((m) => m.enabled).length;
   }
 
+  /**
+   * Whether at least one enabled member is currently considered healthy.
+   * Used by the account-limit failover loop to decide if retrying the turn on
+   * a different provider is worthwhile — once every account is exhausted there
+   * is nothing left to switch to.
+   */
+  hasHealthyEnabledMember(): boolean {
+    return this.members.some((m) => {
+      if (!m.enabled) return false;
+      const health = this.healthMap.get(m.profileId);
+      return !health || health.healthy;
+    });
+  }
+
   // ─── 选择算法 ────────────────────────────────────────────
 
   /** 选择一个提供商，返回 profileId */
@@ -197,10 +211,7 @@ export class ProviderPool {
       : health.consecutiveErrors + 1;
     health.lastErrorAt = Date.now();
 
-    if (
-      health.healthy &&
-      health.consecutiveErrors >= this.unhealthyThreshold
-    ) {
+    if (health.healthy && health.consecutiveErrors >= this.unhealthyThreshold) {
       health.healthy = false;
       health.unhealthySince = Date.now();
       logger.warn(

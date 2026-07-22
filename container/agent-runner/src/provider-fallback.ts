@@ -3,7 +3,10 @@ import type { IpcInputMessage } from './ipc-delivery.js';
 /** Claude-specific account/usage-limit phrases (not generic API errors). */
 const CLAUDE_LIMIT_PHRASE_PATTERNS = [
   /\bout of extra usage\b/i,
-  /\byou(?:'ve|'re| are)\s+(?:hit|out of)\s+(?:your\s+)?(?:limit|extra usage)\b/i,
+  // Optional qualifier before "limit" so the real Claude banner "you've hit
+  // your SESSION limit" (also "weekly"/"usage") matches, not just "your limit".
+  // Keep in sync with the copy in src/agent-output-parser.ts.
+  /\byou(?:'ve|'re| are)\s+(?:hit|out of|reached)\s+(?:your\s+)?(?:\w+\s+)?(?:limit|extra usage)\b/i,
   /\busage\s+limit\s+reached\b/i,
   /\bupgrade\s+to\s+(?:increase|raise)\s+your\s+usage\s+limit\b/i,
   /\byour\s+(?:usage\s+)?limit\s+will\s+reset\b/i,

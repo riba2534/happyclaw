@@ -2556,6 +2556,41 @@ export async function runHostAgent(
 export type AgentRunner = typeof runContainerAgent | typeof runHostAgent;
 
 /** Compatibility entry point; same-turn fallback now lives inside agent-runner. */
+export interface AgentRunOptions {
+  /**
+   * Rebuild the run input before retrying the turn on a *different* provider
+   * after an account-level usage limit ("You've hit your session limit …").
+   *
+   * Switching providers resets the Claude session inside the runner (thinking-
+   * block signatures are per-account), so the fresh session would otherwise
+   * lose context. The caller uses this hook to re-inject recent conversation
+   * history into the prompt — mirroring the proactive
+   * willClearSessionOnProviderSwitch path.
+   *
+   * Always invoked with the ORIGINAL input so repeated retries rebuild from the
+   * same base instead of stacking history prefixes.
+   */
+  rebuildInputForProviderSwitch?: (
+    originalInput: ContainerInput,
+  ) => ContainerInput;
+}
+
+/**
+ * Run one agent turn, transparently retrying it on another provider when the
+ * selected account hits its usage/session limit.
+ *
+ * Two independent recovery layers cooperate here:
+ *  - In-process MODEL fallback (opus → sonnet on the SAME account) happens
+ *    inside the runner and is invisible to this wrapper.
+ *  - Cross-process PROVIDER (account) failover happens HERE: when the runner
+ *    reports `providerFailure`, the exhausted account has already been marked
+ *    unhealthy, so re-invoking the runner re-selects a healthy account, resets
+ *    the session, and answers the same turn — instead of surfacing the raw
+ *    English limit notice and dropping the user's message.
+ *
+ * Retries are capped at the number of enabled providers (each account gets one
+ * shot) and stop early once no healthy account remains.
+ */
 export async function runAgentWithModelFallback(
   runFn: AgentRunner,
   group: RegisteredGroup,
@@ -2567,6 +2602,40 @@ export async function runAgentWithModelFallback(
   ) => void,
   onOutput?: (output: ContainerOutput) => Promise<void>,
   ownerHomeFolder?: string,
+  options?: AgentRunOptions,
 ): Promise<ContainerOutput> {
-  return runFn(group, input, onProcess, onOutput, ownerHomeFolder);
+  const maxAttempts = Math.max(1, providerPool.getEnabledCount());
+  let currentInput = input;
+  let output = await runFn(
+    group,
+    currentInput,
+    onProcess,
+    onOutput,
+    ownerHomeFolder,
+  );
+
+  for (let attempt = 1; attempt < maxAttempts; attempt++) {
+    if (!output.providerFailure) return output;
+    // The just-exhausted account was marked unhealthy by runFn's health
+    // reporting. Only retry while a *different* healthy account remains;
+    // otherwise surface the failure unchanged.
+    if (!providerPool.hasHealthyEnabledMember()) return output;
+
+    logger.warn(
+      { group: group.name, attempt },
+      'Account usage limit hit; retrying the turn on another provider',
+    );
+    currentInput = options?.rebuildInputForProviderSwitch
+      ? options.rebuildInputForProviderSwitch(input)
+      : input;
+    output = await runFn(
+      group,
+      currentInput,
+      onProcess,
+      onOutput,
+      ownerHomeFolder,
+    );
+  }
+
+  return output;
 }
