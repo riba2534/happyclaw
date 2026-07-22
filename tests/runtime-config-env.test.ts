@@ -75,6 +75,15 @@ describe('buildClaudeEnvLines', () => {
     expect(lines).toContain('API_TIMEOUT_MS=3000000');
   });
 
+  test('treats native 1M models (Fable 5) as 1M without the [1m] suffix', () => {
+    const lines = buildClaudeEnvLines(
+      config({ anthropicModel: 'claude-fable-5' }),
+      NO_CUSTOM_ENV,
+    );
+
+    expect(lines).toContain('CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000');
+  });
+
   test('uses defaults but lets provider settings override third-party values', () => {
     const lines = buildClaudeEnvLines(config({ anthropicModel: 'k3' }), {
       CLAUDE_CODE_AUTO_COMPACT_WINDOW: '999999',

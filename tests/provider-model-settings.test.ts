@@ -48,6 +48,17 @@ describe('third-party provider model settings', () => {
     });
   });
 
+  test('treats native 1M models (Fable 5) as 1M without the toggle', () => {
+    const rows = buildDefaultProviderEnv('claude-fable-5', false);
+
+    expect(
+      rows.find((row) => row.key === 'CLAUDE_CODE_AUTO_COMPACT_WINDOW')?.value,
+    ).toBe('1000000');
+    expect(
+      rows.find((row) => row.key === 'ANTHROPIC_DEFAULT_OPUS_MODEL')?.value,
+    ).toBe('claude-fable-5');
+  });
+
   test('keeps model-derived rows pending until a model is entered', () => {
     const rows = buildDefaultProviderEnv('', false);
 

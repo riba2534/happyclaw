@@ -1,9 +1,20 @@
 const STANDARD_CONTEXT_WINDOW = 200_000;
 const EXTENDED_CONTEXT_WINDOW = 1_000_000;
 
-/** Claude Agent SDK uses the [1m] model suffix to request extended context. */
+/** Fable 5 / Sonnet 5 / Mythos 5 ship a 1M context window natively, no [1m] suffix. */
+const NATIVE_EXTENDED_CONTEXT_MODEL_RE =
+  /(?:^|[/:_-])(?:fable|sonnet|mythos)-5(?!\d)/i;
+
+/**
+ * Claude Agent SDK uses the [1m] model suffix to request extended context;
+ * Fable 5 / Sonnet 5 / Mythos 5 models get the 1M window without any suffix.
+ */
 export function isExtendedContextModel(model: string): boolean {
-  return /(\[1m\])+$/i.test(model.trim());
+  const normalized = model.trim();
+  return (
+    /(\[1m\])+$/i.test(normalized) ||
+    NATIVE_EXTENDED_CONTEXT_MODEL_RE.test(normalized)
+  );
 }
 
 export function resolveModelContextWindow(model: string): number {

@@ -141,7 +141,12 @@ const THIRD_PARTY_RUNTIME_DEFAULTS = {
 } as const;
 
 function isOneMillionContextModel(model: string): boolean {
-  return /\[1m\]$/i.test(model.trim());
+  const normalized = model.trim();
+  // Fable 5 / Sonnet 5 / Mythos 5 ship a 1M context window natively, no [1m] suffix.
+  return (
+    /\[1m\]$/i.test(normalized) ||
+    /(?:^|[/:_-])(?:fable|sonnet|mythos)-5(?!\d)/i.test(normalized)
+  );
 }
 const DANGEROUS_ENV_VARS = new Set([
   // Code execution / preload attacks

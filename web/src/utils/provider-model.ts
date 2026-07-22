@@ -1,5 +1,8 @@
 const ONE_MILLION_CONTEXT_SUFFIX = '[1m]';
 const ONE_MILLION_CONTEXT_SUFFIX_RE = /(?:\[1m\])+$/i;
+/** Fable 5 / Sonnet 5 / Mythos 5 ship a 1M context window natively, no [1m] suffix. */
+const NATIVE_ONE_MILLION_CONTEXT_RE =
+  /(?:^|[/:_-])(?:fable|sonnet|mythos)-5(?!\d)/i;
 
 export interface ProviderModelSelection {
   model: string;
@@ -44,7 +47,10 @@ export function buildDefaultProviderEnv(
     { key: 'ANTHROPIC_DEFAULT_HAIKU_MODEL', value: model, source: 'model' },
     {
       key: 'CLAUDE_CODE_AUTO_COMPACT_WINDOW',
-      value: oneMillionContext ? '1000000' : '200000',
+      value:
+        oneMillionContext || NATIVE_ONE_MILLION_CONTEXT_RE.test(model)
+          ? '1000000'
+          : '200000',
       source: 'context',
     },
     {

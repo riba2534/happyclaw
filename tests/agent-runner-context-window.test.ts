@@ -16,6 +16,25 @@ describe('Claude model-aware context compression', () => {
     expect(isExtendedContextModel('model[1m] trailing')).toBe(false);
   });
 
+  test('treats Fable 5 / Sonnet 5 / Mythos 5 as native 1M models without the suffix', () => {
+    expect(resolveModelContextWindow('claude-fable-5')).toBe(1_000_000);
+    expect(resolveModelContextWindow('fable-5')).toBe(1_000_000);
+    expect(resolveModelContextWindow('claude-sonnet-5')).toBe(1_000_000);
+    expect(resolveModelContextWindow('claude-mythos-5')).toBe(1_000_000);
+    expect(resolveModelContextWindow('hub/claude-fable-5-20260101')).toBe(
+      1_000_000,
+    );
+    expect(resolveAutoCompactWindow('claude-fable-5', 80)).toBe(800_000);
+    // 名字里恰好含 fable 但不是 fable-5 的模型不受影响
+    expect(resolveModelContextWindow('fables-5')).toBe(200_000);
+    expect(resolveModelContextWindow('fable-50')).toBe(200_000);
+    // Sonnet 4.5（claude-sonnet-4-5）仍是 200K，不能被 sonnet-5 误伤
+    expect(resolveModelContextWindow('claude-sonnet-4-5')).toBe(200_000);
+    expect(resolveModelContextWindow('claude-sonnet-4-5-20250929')).toBe(
+      200_000,
+    );
+  });
+
   test('clamps legacy fixed thresholds to the active model window', () => {
     expect(resolveLegacyAutoCompactWindow('sonnet', 800_000)).toBe(180_000);
     expect(resolveLegacyAutoCompactWindow('sonnet', 120_000)).toBe(120_000);

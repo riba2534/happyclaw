@@ -2134,7 +2134,8 @@ async function runQueryAttempt(
     };
   }
 
-  // No override = SDK model-aware default: normally 200K; [1m] requests 1M.
+  // No override = SDK model-aware default: normally 200K; [1m] suffix or a
+  // native-1M model (Fable 5 / Sonnet 5 / Mythos 5) counts as 1M.
   // Percentage policy takes precedence over the legacy absolute-token setting.
   const autoCompactPercentage = parseInt(
     process.env.AUTO_COMPACT_PERCENTAGE ?? '0',
@@ -2572,7 +2573,7 @@ async function runQueryAttempt(
           contextAudit.warnings.push(contextBudget.warning);
           log(`[WARN] ${contextBudget.warning}`);
         }
-        // 1M 上下文缩水告警：带 [1m] 后缀的模型期望约 1M 上下文窗口，若 SDK / 模型资格判定
+        // 1M 上下文缩水告警：带 [1m] 后缀或原生 1M（Fable 5 / Sonnet 5 / Mythos 5）的模型期望约 1M 上下文窗口，若 SDK / 模型资格判定
         // 静默退回（例如 200K），在此立即暴露而非等到溢出。push 进 warnings 会让下方
         // emit 的 displayLevel 自动升为 'primary'，在前端醒目展示。
         if (

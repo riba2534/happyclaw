@@ -1596,7 +1596,8 @@ export function AgentProfilesPage() {
                               className="mt-1 text-[11px] leading-5 text-muted-foreground"
                             >
                               根据当前模型自动决定压缩时机。普通模型通常为 200K
-                              上下文；模型名带 [1m] 时按 1M 处理。
+                              上下文；Fable 5 / Sonnet 5 / Mythos 5 或模型名带
+                              [1m] 时按 1M 处理。
                             </p>
                           </div>
                           <Switch
