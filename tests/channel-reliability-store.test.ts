@@ -966,7 +966,12 @@ describe('durable streaming card state and cleanup', () => {
       60_000,
       '2026-07-23T03:59:00.600Z',
     )!;
-    expect(reliability.markChannelOutboxSending(outboxClaim)).toBe(true);
+    expect(
+      reliability.markChannelOutboxSending(
+        outboxClaim,
+        '2026-07-23T03:59:00.650Z',
+      ),
+    ).toBe(true);
     expect(
       reliability.rollbackUnpublishedStreamingCardReservation(
         claim,
