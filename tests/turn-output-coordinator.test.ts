@@ -346,6 +346,45 @@ describe('ActiveTurnOutputRegistry exactly-one staging', () => {
     expect(b).toHaveBeenCalledOnce();
   });
 
+  test('records physical utterances only for the exact active scope and input', () => {
+    const registry = new ActiveTurnOutputRegistry();
+    const mainDelivered = vi.fn();
+    const agentDelivered = vi.fn();
+    const mainScope = channelTurnScope('workspace');
+    const agentScope = channelTurnScope('workspace', 'conversation-agent');
+    const main = registry.bind(mainScope, 'same-turn', {
+      onProgress: () => true,
+      onFinalCandidate: () => true,
+      onUtteranceDelivered: mainDelivered,
+    });
+    const agent = registry.bind(agentScope, 'same-turn', {
+      onProgress: () => true,
+      onFinalCandidate: () => true,
+      onUtteranceDelivered: agentDelivered,
+    });
+
+    expect(
+      registry.recordDeliveredUtterance({
+        scopeKey: agentScope,
+        inputTurnId: 'same-turn',
+      }),
+    ).toBe(true);
+    expect(main.deliveredUtterances).toBe(0);
+    expect(agent.deliveredUtterances).toBe(1);
+    expect(mainDelivered).not.toHaveBeenCalled();
+    expect(agentDelivered).toHaveBeenCalledOnce();
+
+    agent.markFinalized();
+    expect(
+      registry.recordDeliveredUtterance({
+        scopeKey: agentScope,
+        inputTurnId: 'same-turn',
+      }),
+    ).toBe(false);
+    expect(agent.deliveredUtterances).toBe(1);
+    expect(agentDelivered).toHaveBeenCalledOnce();
+  });
+
   test('projection failure does not poison dedupe or staged-final state', () => {
     const registry = new ActiveTurnOutputRegistry();
     const final = vi

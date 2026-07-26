@@ -34,6 +34,7 @@ import {
 } from '../../lib/message-timeline';
 import { resolveAgentDisplayIdentity } from '../../utils/agent-identity';
 import { useAuthStore } from '../../stores/auth';
+import type { InteractionMode } from '../../types';
 
 interface MessageListProps {
   messages: Message[];
@@ -55,6 +56,7 @@ interface MessageListProps {
   agentAvatarUrl?: string | null;
   agentAvatarEmoji?: string | null;
   agentAvatarColor?: string | null;
+  interactionMode?: InteractionMode;
   /** Callback to send a message (used for quick prompts in empty state) */
   onSend?: (content: string) => void;
 }
@@ -95,6 +97,7 @@ export function MessageList({
   agentAvatarUrl,
   agentAvatarEmoji,
   agentAvatarColor,
+  interactionMode = 'assistant',
   onSend,
 }: MessageListProps) {
   const { mode: displayMode } = useDisplayMode();
@@ -705,6 +708,7 @@ export function MessageList({
               agentAvatarUrl={agentAvatarUrl}
               agentAvatarEmoji={agentAvatarEmoji}
               agentAvatarColor={agentAvatarColor}
+              interactionMode={interactionMode}
             />
           )}
           {groupJid && agentId && (
@@ -716,6 +720,7 @@ export function MessageList({
               agentAvatarUrl={agentAvatarUrl}
               agentAvatarEmoji={agentAvatarEmoji}
               agentAvatarColor={agentAvatarColor}
+              interactionMode={interactionMode}
             />
           )}
 
@@ -732,6 +737,7 @@ export function MessageList({
                 agentAvatarUrl={agentAvatarUrl}
                 agentAvatarEmoji={agentAvatarEmoji}
                 agentAvatarColor={agentAvatarColor}
+                interactionMode={interactionMode}
               />
             ))}
         </div>

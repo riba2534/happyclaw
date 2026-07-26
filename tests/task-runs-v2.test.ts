@@ -45,6 +45,40 @@ function createDefinition(id: string, overrides: Record<string, unknown> = {}) {
 }
 
 describe('scheduled task definition revisions', () => {
+  test('atomically enforces the per-owner live definition cap', () => {
+    const createdAt = new Date().toISOString();
+    const definition = {
+      group_folder: 'workspace',
+      chat_jid: 'web:workspace',
+      prompt: 'capacity test',
+      schedule_type: 'cron' as const,
+      schedule_value: '0 * * * *',
+      context_mode: 'isolated' as const,
+      execution_type: 'agent' as const,
+      execution_mode: 'container' as const,
+      script_command: null,
+      next_run: new Date(Date.now() + 60_000).toISOString(),
+      status: 'active' as const,
+      created_at: createdAt,
+      created_by: 'capacity-owner',
+      notify_channels: null,
+    };
+    expect(
+      db.createTaskWithinOwnerLimit({ ...definition, id: 'capacity-first' }, 1),
+    ).toEqual({ status: 'created' });
+    expect(
+      db.createTaskWithinOwnerLimit(
+        { ...definition, id: 'capacity-second' },
+        1,
+      ),
+    ).toMatchObject({
+      status: 'limit_reached',
+      limit: 1,
+      count: 1,
+    });
+    expect(db.getTaskById('capacity-second')).toBeUndefined();
+  });
+
   test('uses CAS and preserves soft-deleted definitions for restore/history', () => {
     const onceAt = new Date(Date.now() + 60 * 60_000).toISOString();
     const task = createDefinition('revision-task', {
@@ -119,6 +153,34 @@ describe('scheduled task definition revisions', () => {
 });
 
 describe('durable task occurrences', () => {
+  test('freezes the concrete delivery route in each run snapshot', () => {
+    const originalRoute =
+      'feishu:oc_snapshot#account:bot-a#thread:t-1#root:m-1';
+    const task = createDefinition('route-snapshot', {
+      chat_jid: 'feishu:oc_snapshot#account:bot-a',
+      delivery_route_jid: originalRoute,
+    });
+    const created = db.createTaskRun({
+      task,
+      triggerType: 'manual',
+      idempotencyKey: 'route-snapshot-run',
+    });
+    expect(created.run.definition_snapshot.delivery_route_jid).toBe(
+      originalRoute,
+    );
+
+    const updated = db.updateTaskWithRevision(task.id, task.revision, {
+      chat_jid: 'web:other-workspace',
+      group_folder: 'other-workspace',
+      delivery_route_jid: 'web:other-workspace',
+    });
+    expect(updated.status).toBe('updated');
+    expect(
+      db.getTaskRunById(created.run.id)?.definition_snapshot.delivery_route_jid,
+    ).toBe(originalRoute);
+    db.cancelTaskRun(created.run.id);
+  });
+
   test('deduplicates manual idempotency keys and blocks overlap', () => {
     const task = createDefinition('manual-dedupe');
     const first = db.createTaskRun({

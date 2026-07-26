@@ -195,8 +195,12 @@ export interface ContainerInput {
   prompt: string;
   sessionId?: string;
   turnId?: string;
+  /** Exact GroupQueue query attempt for Web stream fencing. */
+  queryRunId?: string;
   groupFolder: string;
   chatJid: string;
+  /** Workspace-scoped interaction contract for this public Agent turn. */
+  interactionMode?: 'assistant' | 'proactive';
   /** Source JID of the latest message that triggered this run (e.g. `discord:123…`).
    * Used by per-channel MCP tools (discord_*, etc.) to identify the current
    * incoming chat. Undefined when chatJid already encodes the IM source. */
@@ -253,8 +257,18 @@ export interface ContainerOutput {
   newSessionId?: string;
   error?: string;
   providerFailure?: boolean;
+  /**
+   * Set by the host after it quarantines the failed provider and checks the
+   * remaining pool. The agent runner itself only emits providerFailure.
+   */
+  providerFailureTerminal?: boolean;
   /** Internal host-control marker: this turn is being retried in-process. */
   providerFailureRetrying?: boolean;
+  /**
+   * Provider failed during an internal side-query after the durable user turn
+   * completed. The host quarantines it without replaying or notifying again.
+   */
+  providerFailureMaintenance?: boolean;
   streamEvent?: StreamEvent;
   /**
    * Immutable identity of the user input turn that produced this output.
@@ -293,8 +307,12 @@ export interface ContainerOutput {
   ipcReceipts?: Array<{
     deliveryId: string;
     chatJid: string;
-    coveredCursors?: Array<{ timestamp: string; id: string }>;
-    cursor: { timestamp: string; id: string };
+    coveredCursors?: Array<{
+      timestamp: string;
+      id: string;
+      sourceJid?: string;
+    }>;
+    cursor: { timestamp: string; id: string; sourceJid?: string };
   }>;
 }
 

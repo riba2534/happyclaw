@@ -296,16 +296,33 @@ describe('agent-runner IPC delivery turn tracker', () => {
       deliveryId: 'delivery-batch',
       chatJid: 'web:main',
       coveredCursors: [
-        { timestamp: '2026-07-10T00:00:01.000Z', id: 'm1' },
-        { timestamp: '2026-07-10T00:00:02.000Z', id: 'm2' },
+        {
+          timestamp: '2026-07-10T00:00:01.000Z',
+          id: 'm1',
+          sourceJid: 'feishu:oc_chat#account:account-a',
+        },
+        {
+          timestamp: '2026-07-10T00:00:02.000Z',
+          id: 'm2',
+          sourceJid: 'telegram:-100123#account:account-b',
+        },
       ],
-      cursor: { timestamp: '2026-07-10T00:00:02.000Z', id: 'm2' },
+      cursor: {
+        timestamp: '2026-07-10T00:00:02.000Z',
+        id: 'm2',
+        sourceJid: 'telegram:-100123#account:account-b',
+      },
     });
 
     expect(parsed?.coveredCursors?.map((cursor) => cursor.id)).toEqual([
       'm1',
       'm2',
     ]);
+    expect(parsed?.coveredCursors?.map((cursor) => cursor.sourceJid)).toEqual([
+      'feishu:oc_chat#account:account-a',
+      'telegram:-100123#account:account-b',
+    ]);
+    expect(parsed?.cursor.sourceJid).toBe('telegram:-100123#account:account-b');
   });
 
   test('malformed or stale receipt payloads are rejected at the runner boundary', () => {

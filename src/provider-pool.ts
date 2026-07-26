@@ -85,28 +85,8 @@ export class ProviderPool {
 
   /** 选择一个提供商，返回 profileId */
   selectProvider(): string {
-    const { strategy, members, recoveryIntervalMs } = this;
-    const now = Date.now();
-
-    // Auto-recover unhealthy members (skip disabled ones)
-    for (const member of members) {
-      if (!member.enabled) continue;
-      const health = this.healthMap.get(member.profileId);
-      if (
-        health &&
-        !health.healthy &&
-        health.unhealthySince !== null &&
-        now - health.unhealthySince >= recoveryIntervalMs
-      ) {
-        health.healthy = true;
-        health.consecutiveErrors = 0;
-        health.unhealthySince = null;
-        logger.info(
-          { profileId: member.profileId },
-          'Provider auto-recovered after recovery interval',
-        );
-      }
-    }
+    const { strategy, members } = this;
+    this.refreshRecoveryState();
 
     // Filter to enabled + healthy candidates
     const candidates = members.filter((m) => {
@@ -197,10 +177,7 @@ export class ProviderPool {
       : health.consecutiveErrors + 1;
     health.lastErrorAt = Date.now();
 
-    if (
-      health.healthy &&
-      health.consecutiveErrors >= this.unhealthyThreshold
-    ) {
+    if (health.healthy && health.consecutiveErrors >= this.unhealthyThreshold) {
       health.healthy = false;
       health.unhealthySince = Date.now();
       logger.warn(
@@ -227,6 +204,32 @@ export class ProviderPool {
   }
 
   // ─── 查询 ───────────────────────────────────────────────
+
+  /**
+   * Apply the same time-based recovery rule used by provider selection.
+   * Failure-disposition checks call this first so "pool exhausted" cannot
+   * disagree with what the next selectProvider() call would consider healthy.
+   */
+  refreshRecoveryState(now = Date.now()): void {
+    for (const member of this.members) {
+      if (!member.enabled) continue;
+      const health = this.healthMap.get(member.profileId);
+      if (
+        health &&
+        !health.healthy &&
+        health.unhealthySince !== null &&
+        now - health.unhealthySince >= this.recoveryIntervalMs
+      ) {
+        health.healthy = true;
+        health.consecutiveErrors = 0;
+        health.unhealthySince = null;
+        logger.info(
+          { profileId: member.profileId },
+          'Provider auto-recovered after recovery interval',
+        );
+      }
+    }
+  }
 
   getHealthStatuses(): ProviderHealthStatus[] {
     // Ensure all configured members have health entries

@@ -290,6 +290,8 @@ export interface StreamEvent {
   eventType: StreamEventType;
   /** Which runtime actor produced the event. */
   agentScope?: StreamAgentScope;
+  /** Exact GroupQueue query attempt that produced this event. */
+  queryRunId?: string;
   /** Correlates all stream events for a single user turn. */
   turnId?: string;
   /** SDK session identifier if known. */

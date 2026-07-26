@@ -89,7 +89,7 @@ export function AgentPromptEditor({
             <PromptModeOption
               checked={mode === 'append'}
               title="保留并追加（推荐）"
-              description="保留 Claude Code 默认提示词，再追加下面四部分。"
+              description="Assistant 模式保留 Claude Code 默认提示词，再追加下面四部分。"
               onSelect={() => onModeChange('append')}
             />
             <PromptModeOption
@@ -99,6 +99,11 @@ export function AgentPromptEditor({
               onSelect={() => onModeChange('replace')}
             />
           </div>
+          <p className="mt-2 text-xs leading-5 text-muted-foreground">
+            主动模式始终使用 AgentProfile 与 HappyClaw
+            运行规则组成的独立系统提示词，不继承 Assistant 导向的 Claude Code
+            默认提示词；此选项仅影响 Assistant 模式。
+          </p>
         </fieldset>
 
         <div className="grid gap-4 lg:grid-cols-[190px_minmax(0,1fr)]">

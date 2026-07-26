@@ -2113,6 +2113,8 @@ function toSystemSettingsResponse(
     maxConcurrentScripts: settings.maxConcurrentScripts,
     scriptTimeout: settings.scriptTimeout,
     taskBackfillGraceMs: settings.taskBackfillGraceMs,
+    maxRepliesPerTurn: settings.maxRepliesPerTurn,
+    maxTasksPerUser: settings.maxTasksPerUser,
     fallbackModel: settings.fallbackModel,
   };
 }

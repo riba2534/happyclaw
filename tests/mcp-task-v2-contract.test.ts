@@ -263,5 +263,8 @@ describe('scheduled-task MCP V2 contract', () => {
       'Agent execution requires a non-empty prompt.',
     );
     expect(hostSource).toContain('SCRIPT_TASK_HOST_REQUIRED_ERROR');
+    expect(hostSource).toContain('createTaskWithinOwnerLimit(');
+    expect(hostSource).toContain('getSystemSettings().maxTasksPerUser');
+    expect(hostSource).toContain("code: 'TASK_LIMIT_REACHED'");
   });
 });

@@ -224,6 +224,53 @@ describe('formal sessions API', () => {
     expect(body.agent?.id).toBe(body.session?.id);
   });
 
+  test('thread-mapped workspaces still allow independent Web sessions', async () => {
+    seedTestGroup();
+    asUser(OWNER_ID);
+    db.setRegisteredGroup(GROUP_JID, {
+      ...db.getRegisteredGroup(GROUP_JID)!,
+      conversation_source: 'native_thread',
+      conversation_nav_mode: 'vertical_threads',
+    });
+
+    const { status, body } = await postSession({
+      name: 'Web alongside topics',
+    });
+
+    expect(status, JSON.stringify(body)).toBe(200);
+    expect(body.session).toMatchObject({
+      name: 'Web alongside topics',
+      source_kind: 'manual',
+      title_source: 'manual',
+    });
+    expect(db.getAgent(body.session.id)).toMatchObject({
+      chat_jid: GROUP_JID,
+      source_kind: 'manual',
+    });
+    expect(db.getRegisteredGroup(GROUP_JID)).toMatchObject({
+      conversation_source: 'native_thread',
+      conversation_nav_mode: 'vertical_threads',
+    });
+  });
+
+  test('legacy conversation creation also coexists with native topics', async () => {
+    seedTestGroup();
+    asUser(OWNER_ID);
+    db.setRegisteredGroup(GROUP_JID, {
+      ...db.getRegisteredGroup(GROUP_JID)!,
+      conversation_source: 'feishu_thread',
+      conversation_nav_mode: 'vertical_threads',
+    });
+
+    const { status, body } = await postAgent({ name: 'Legacy Web session' });
+
+    expect(status, JSON.stringify(body)).toBe(200);
+    expect(body.agent).toMatchObject({
+      name: 'Legacy Web session',
+      source_kind: 'manual',
+    });
+  });
+
   test('DELETE /sessions/:id is blocked by channel_mounts session binding', async () => {
     seedTestGroup();
     asUser(OWNER_ID);

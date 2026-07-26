@@ -20,4 +20,27 @@ describe('sticky channel session ownership', () => {
       'qq:group-b#account:bot-b',
     );
   });
+
+  test('the reply anchor follows the current message inside one conversation', () => {
+    // Regression: the first inbound of a session could carry a root_id, and
+    // freezing the whole route on it meant every later reply — including for
+    // top-level messages — was delivered into that one thread.
+    const laterTopLevel = 'feishu:chat-a#account:bot-a';
+    expect(resolveStickyChannelOwner(feishu, laterTopLevel)).toBe(
+      laterTopLevel,
+    );
+
+    const otherThread =
+      'feishu:chat-a#account:bot-a#root:root-b#thread:thread-b';
+    expect(resolveStickyChannelOwner(feishu, otherThread)).toBe(otherThread);
+  });
+
+  test('a different chat or account in the same provider does not take ownership', () => {
+    expect(
+      resolveStickyChannelOwner(feishu, 'feishu:chat-b#account:bot-a'),
+    ).toBe(feishu);
+    expect(
+      resolveStickyChannelOwner(feishu, 'feishu:chat-a#account:bot-b'),
+    ).toBe(feishu);
+  });
 });

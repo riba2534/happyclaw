@@ -1,4 +1,5 @@
 import {
+  DefinitiveChannelDeliveryError,
   deliverChannelOutboxItem,
   type ChannelDeliveryPersistedPhase,
   type ChannelOutboxDeliveryResult,
@@ -17,6 +18,7 @@ import type {
   FeishuCapabilityRequest,
   FeishuCapabilityResult,
 } from './feishu-capability.js';
+import { DefinitiveFeishuCapabilityError } from './feishu-capability.js';
 
 export interface DeliverFeishuCapabilityMutationInput extends ChannelRouteSnapshot {
   turnRunId: string;
@@ -76,7 +78,16 @@ export async function deliverFeishuCapabilityMutation(
     delivery: {
       mode: 'single',
       send: async () => {
-        providerResult = await input.execute();
+        try {
+          providerResult = await input.execute();
+        } catch (error) {
+          if (error instanceof DefinitiveFeishuCapabilityError) {
+            throw new DefinitiveChannelDeliveryError(error.message, {
+              cause: error,
+            });
+          }
+          throw error;
+        }
         return {
           // Legacy connector APIs do not expose a uniform mutation receipt.
           // Persist a deterministic ACK only after the operation returned

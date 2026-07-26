@@ -39,7 +39,9 @@ afterAll(() => {
 
 describe('channel reliability schema v60', () => {
   test('creates all four ledgers and nonterminal indexes idempotently', () => {
-    expect(db.getRouterState('schema_version')).toBe('60');
+    expect(db.getRouterState('schema_version')).toBe(
+      String(db.CURRENT_SCHEMA_VERSION),
+    );
     db.closeDatabase();
 
     const probe = new Database(path.join(storeDir, 'messages.db'), {
@@ -77,7 +79,9 @@ describe('channel reliability schema v60', () => {
     probe.close();
 
     db.initDatabase();
-    expect(db.getRouterState('schema_version')).toBe('60');
+    expect(db.getRouterState('schema_version')).toBe(
+      String(db.CURRENT_SCHEMA_VERSION),
+    );
   });
 
   test('advances provider cursors monotonically and scopes them by chat', () => {
@@ -674,6 +678,47 @@ describe('per-artifact durable channel outbox', () => {
     }).run;
   }
 
+  test('a turn cannot complete while a nonterminal child Outbox remains', () => {
+    const run = createOutboxRun('parent-completion-fence');
+    const turnClaim = reliability.claimChannelTurnRunById(
+      run.id,
+      'parent-completion-worker',
+      60_000,
+    )!;
+    const outbox = reliability.enqueueChannelOutbox({
+      ...route,
+      turnRunId: run.id,
+      ordinal: 0,
+      kind: 'text',
+      payload: { text: 'must settle before parent completion' },
+    }).item;
+
+    expect(
+      reliability.completeChannelTurnRun(turnClaim, {
+        result: { replyDelivered: true },
+      }),
+    ).toBe(false);
+    expect(reliability.getChannelTurnRun(run.id)?.status).toBe('running');
+
+    const outboxClaim = reliability.claimChannelOutboxById(
+      outbox.id,
+      'child-outbox-worker',
+      60_000,
+    )!;
+    expect(reliability.markChannelOutboxSending(outboxClaim)).toBe(true);
+    expect(
+      reliability.completeChannelOutbox(outboxClaim, {
+        providerMessageId: 'om_child_settled',
+      }),
+    ).toBe(true);
+    expect(
+      reliability.completeChannelTurnRun(turnClaim, {
+        result: { replyDelivered: true },
+      }),
+    ).toBe(true);
+    expect(reliability.getChannelTurnRun(run.id)?.status).toBe('completed');
+  });
+
   test('claims an explicitly selected item without stealing another route', () => {
     const run = createOutboxRun('targeted');
     const first = reliability.enqueueChannelOutbox({
@@ -1153,5 +1198,111 @@ describe('durable streaming card state and cleanup', () => {
     expect(reliability.getChannelTurnRun(turn.id)).toBeUndefined();
     expect(reliability.getChannelOutboxItem(outbox.item.id)).toBeUndefined();
     expect(reliability.getStreamingCardRecord(card.id)).toBeUndefined();
+  });
+});
+
+describe('uncertain outbox operator surface', () => {
+  test('lists uncertain rows oldest-first so an operator can reach them', () => {
+    // An uncertain row fences its whole turn until a human decides whether the
+    // provider accepted the message. Nothing in the runtime can make that
+    // call, so without a way to enumerate them the fence has no release and
+    // the rows are unreachable — the turn can then never reach 'completed'.
+    const run = reliability.createChannelTurnRun({
+      ...route,
+      idempotencyKey: 'outbox-turn:operator-listing',
+      now: '2026-07-23T03:00:00.000Z',
+    }).run;
+
+    const before = reliability.listUncertainChannelOutbox().length;
+
+    const created = reliability.enqueueChannelOutbox({
+      ...route,
+      turnRunId: run.id,
+      ordinal: 0,
+      kind: 'text',
+      payload: { text: 'ack lost mid-send' },
+      now: '2026-07-23T03:00:00.100Z',
+    }).item;
+    const claim = reliability.claimChannelOutboxById(
+      created.id,
+      'operator-sender',
+      1_000,
+      '2026-07-23T03:00:00.200Z',
+    )!;
+    reliability.markChannelOutboxSending(claim, '2026-07-23T03:00:00.300Z');
+    reliability.reconcileExpiredChannelOutbox('2026-07-23T03:00:01.400Z');
+
+    const listed = reliability.listUncertainChannelOutbox();
+    expect(listed.length).toBe(before + 1);
+    const mine = listed.find((item) => item.id === created.id)!;
+    expect(mine.status).toBe('uncertain');
+    expect(mine.turnRunId).toBe(run.id);
+
+    // Resolving it removes it from the operator queue.
+    expect(
+      reliability.resolveUncertainChannelOutbox(mine.id, mine.revision, {
+        resolution: 'failed',
+        error: 'operator confirmed the provider never accepted it',
+        now: '2026-07-23T03:00:02.000Z',
+      }),
+    ).toBe(true);
+    expect(
+      reliability
+        .listUncertainChannelOutbox()
+        .some((item) => item.id === created.id),
+    ).toBe(false);
+  });
+
+  test('a stale revision cannot resolve the row twice', () => {
+    const run = reliability.createChannelTurnRun({
+      ...route,
+      idempotencyKey: 'outbox-turn:operator-cas',
+      now: '2026-07-23T04:00:00.000Z',
+    }).run;
+    const created = reliability.enqueueChannelOutbox({
+      ...route,
+      turnRunId: run.id,
+      ordinal: 0,
+      kind: 'text',
+      payload: { text: 'double-resolve guard' },
+      now: '2026-07-23T04:00:00.100Z',
+    }).item;
+    const claim = reliability.claimChannelOutboxById(
+      created.id,
+      'cas-sender',
+      1_000,
+      '2026-07-23T04:00:00.200Z',
+    )!;
+    reliability.markChannelOutboxSending(claim, '2026-07-23T04:00:00.300Z');
+    reliability.reconcileExpiredChannelOutbox('2026-07-23T04:00:01.400Z');
+
+    const uncertain = reliability.getChannelOutboxItem(created.id)!;
+    expect(
+      reliability.resolveUncertainChannelOutbox(
+        uncertain.id,
+        uncertain.revision,
+        {
+          resolution: 'delivered',
+          providerMessageId: 'confirmed-by-operator',
+          now: '2026-07-23T04:00:02.000Z',
+        },
+      ),
+    ).toBe(true);
+    // Replaying the same revision must not flip a settled row again.
+    expect(
+      reliability.resolveUncertainChannelOutbox(
+        uncertain.id,
+        uncertain.revision,
+        {
+          resolution: 'failed',
+          error: 'stale replay',
+          now: '2026-07-23T04:00:03.000Z',
+        },
+      ),
+    ).toBe(false);
+    expect(reliability.getChannelOutboxItem(created.id)).toMatchObject({
+      status: 'delivered',
+      providerMessageId: 'confirmed-by-operator',
+    });
   });
 });

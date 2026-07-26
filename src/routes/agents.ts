@@ -464,16 +464,6 @@ router.post('/:jid/agents', authMiddleware, async (c) => {
       403,
     );
   }
-  if (
-    group.conversation_source === 'feishu_thread' ||
-    group.conversation_source === 'native_thread'
-  ) {
-    return c.json(
-      { error: 'Native thread workspaces do not support manual conversations' },
-      400,
-    );
-  }
-
   const body = await c.req.json().catch(() => ({}));
   let name = typeof body.name === 'string' ? body.name.trim() : '';
   if (name.length > 40) {
@@ -501,6 +491,10 @@ router.post('/:jid/agents', authMiddleware, async (c) => {
     result_summary: null,
     last_im_jid: null,
     spawned_from_jid: null,
+    // Channel-native topics and Web-created conversations intentionally
+    // coexist in one workspace. The source belongs to the session, not to
+    // the workspace-wide navigation mode.
+    source_kind: 'manual',
     title_source: isAutoTitle ? 'auto_pending' : 'manual',
   };
 
@@ -558,16 +552,6 @@ router.post('/:jid/sessions', authMiddleware, async (c) => {
       403,
     );
   }
-  if (
-    group.conversation_source === 'feishu_thread' ||
-    group.conversation_source === 'native_thread'
-  ) {
-    return c.json(
-      { error: 'Native thread workspaces do not support manual sessions' },
-      400,
-    );
-  }
-
   const body = await c.req.json().catch(() => ({}));
   let name = typeof body.name === 'string' ? body.name.trim() : '';
   if (name.length > 40) {
@@ -594,6 +578,10 @@ router.post('/:jid/sessions', authMiddleware, async (c) => {
     result_summary: null,
     last_im_jid: null,
     spawned_from_jid: null,
+    // A thread-mapped channel only controls its own native sessions. It must
+    // not remove the workspace owner's ability to create independent Web
+    // sessions in the same workspace.
+    source_kind: 'manual',
     title_source: isAutoTitle ? 'auto_pending' : 'manual',
   };
 

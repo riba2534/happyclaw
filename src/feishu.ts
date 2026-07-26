@@ -36,7 +36,11 @@ import {
   type MentionGateMention,
 } from './feishu-mention-gate.js';
 import { resolveAdmittedChannelRoute } from './channel-admission.js';
-import { parseChannelAddress } from './channel-address.js';
+import {
+  extractProviderTarget,
+  parseChannelAddress,
+  scopeChannelJid,
+} from './channel-address.js';
 import type { FeishuConversationPlan } from './feishu-conversation-policy.js';
 import {
   executeFeishuCapability,
@@ -58,6 +62,10 @@ import {
   updateClaimedChannelInbox,
   type ClaimedChannelInboxItem,
 } from './channel-reliability-store.js';
+import {
+  ExactAsyncIndicatorRegistry,
+  processingIndicatorKey,
+} from './processing-indicator.js';
 import type {
   ChannelTurnContext,
   FeishuMessageMeta,
@@ -173,6 +181,7 @@ export interface FeishuConnection {
     chatId: string,
     text: string,
     localImagePaths?: string[],
+    options?: { presentation?: 'default' | 'native' },
   ): Promise<void>;
   sendImage(
     chatId: string,
@@ -182,9 +191,8 @@ export interface FeishuConnection {
     fileName?: string,
   ): Promise<void>;
   sendFile(chatId: string, filePath: string, fileName: string): Promise<void>;
-  sendReaction(chatId: string, isTyping: boolean): Promise<void>;
-  /** Clear the "OnIt" ack reaction for a chat (e.g. when streaming card handled the reply). */
-  clearAckReaction(chatId: string): void;
+  /** Clear the "OnIt" ack reaction owned by one exact inbound input. */
+  clearAckReaction(chatId: string, inputMessageId: string): Promise<void>;
   isConnected(): boolean;
   syncGroups(): Promise<void>;
   getChatInfo(chatId: string): Promise<FeishuChatInfo | null>;
@@ -663,8 +671,28 @@ export function buildFeishuRouteTarget(
   return parseFeishuRouteTarget(parts.join('#'));
 }
 
-function feishuRouteToJid(target: FeishuRouteTarget): string {
-  return `feishu:${target.raw}`;
+/**
+ * Build a route JID for a thread/root target.
+ *
+ * `target.raw` is assembled from the raw provider `chat_id`, so it carries no
+ * account scope. Emitting it directly produced a JID that `getRegisteredGroup`
+ * could not match once inbound JIDs were account-scoped, which made the whole
+ * turn fail closed: no outbound route, no warm-session admission, not even the
+ * tail interruption notice. Re-apply the scope from the already-normalized base
+ * JID — `scopeChannelJid` preserves provider-native thread/root fragments.
+ *
+ * The native-topic branch keeps its own builder (`buildNativeThreadRouteJid`),
+ * which appends onto the normalized JID for the same reason.
+ */
+function feishuRouteToJid(
+  target: FeishuRouteTarget,
+  accountScopedBaseJid?: string,
+): string {
+  const jid = `feishu:${target.raw}`;
+  const accountId = accountScopedBaseJid
+    ? parseChannelAddress(accountScopedBaseJid)?.channelAccountId
+    : undefined;
+  return accountId ? scopeChannelJid(jid, accountId) : jid;
 }
 
 /**
@@ -988,8 +1016,10 @@ export function createFeishuConnection(
   const inboxOwner = `feishu:${reliabilityAccountId}:${randomUUID()}`;
   const senderNameCache = new Map<string, string>();
   const lastMessageIdByChat = new Map<string, string>();
-  const ackReactionByChat = new Map<string, string>();
-  const typingReactionByChat = new Map<string, string>();
+  const ackReactions = new ExactAsyncIndicatorRegistry<{
+    messageId: string;
+    reactionId: string;
+  }>();
   const inboxHeartbeatByClaim = new Map<string, NodeJS.Timeout>();
   const knownChatIds = new Set<string>();
   const chatTypeById = new Map<string, string>(); // chatId → 'group' | 'p2p'
@@ -1487,26 +1517,23 @@ export function createFeishuConnection(
     }
   }
 
-  async function removeReaction(
+  async function removeReactionStrict(
     messageId: string,
     reactionId: string,
   ): Promise<void> {
-    try {
-      await client!.im.messageReaction.delete({
-        path: { message_id: messageId, reaction_id: reactionId },
-      });
-    } catch (err) {
-      logger.debug({ err, messageId, reactionId }, 'Failed to remove reaction');
-    }
+    await client!.im.messageReaction.delete({
+      path: { message_id: messageId, reaction_id: reactionId },
+    });
   }
 
-  function clearAckForTarget(rawTarget: string): void {
+  function clearAckForInput(
+    rawTarget: string,
+    inputMessageId: string,
+  ): Promise<void> {
     const target = parseFeishuRouteTarget(rawTarget);
-    const ackStored = ackReactionByChat.get(target.raw);
-    if (!ackStored) return;
-    const [ackMsgId, ackReactionId] = ackStored.split(':');
-    removeReaction(ackMsgId, ackReactionId).catch(() => {});
-    ackReactionByChat.delete(target.raw);
+    return ackReactions.clear(
+      processingIndicatorKey(target.raw, inputMessageId),
+    );
   }
 
   function p2pLastMessageId(target: FeishuRouteTarget): string | undefined {
@@ -2467,25 +2494,27 @@ export function createFeishuConnection(
       const routeSourceJid =
         agentRouting?.sourceJid ??
         (messageRouteTarget.threadId || messageRouteTarget.rootMessageId
-          ? feishuRouteToJid(messageRouteTarget)
+          ? feishuRouteToJid(messageRouteTarget, chatJid)
           : chatJid);
 
       // ── Ack Reaction：确认已收到消息（在 mention 过滤之后，避免对未处理的消息加表情） ──
       if (source === 'ws') {
+        // The registry is owned by one channel-account instance. Keep its key
+        // provider-native on both attach and clear; account scoping belongs to
+        // ImManager's instance lookup, not to the provider target.
         const ackTarget = parseFeishuRouteTarget(
-          routeSourceJid.startsWith('feishu:')
-            ? routeSourceJid.slice('feishu:'.length)
-            : routeSourceJid,
+          extractProviderTarget(routeSourceJid),
         );
-        addReaction(messageId, 'OnIt')
-          .then((reactionId) => {
-            if (reactionId) {
-              ackReactionByChat.set(
-                ackTarget.raw,
-                `${messageId}:${reactionId}`,
-              );
-            }
-          })
+        ackReactions
+          .attach(
+            processingIndicatorKey(ackTarget.raw, messageId),
+            async () => {
+              const reactionId = await addReaction(messageId, 'OnIt');
+              return reactionId ? { messageId, reactionId } : null;
+            },
+            ({ messageId: ackMessageId, reactionId }) =>
+              removeReactionStrict(ackMessageId, reactionId),
+          )
           .catch(() => {});
       }
 
@@ -2596,8 +2625,12 @@ export function createFeishuConnection(
         broadcastFollowUpUpdate(targetJid);
         const position = followUp.position ?? 1;
         if (followUp.runId) {
-          const queuedReplyTarget = routeSourceJid.startsWith('feishu:')
-            ? routeSourceJid.slice('feishu:'.length)
+          // Strip the prefix through the shared helper, which also drops the
+          // account fragment. Slicing by hand left `#account:` in place, and
+          // requireFeishuRouteTarget only accepts thread/root fragments — so
+          // every account-scoped route threw here instead of sending the card.
+          const queuedReplyTarget = routeSourceJid
+            ? extractProviderTarget(routeSourceJid)
             : messageRouteTarget.raw;
           await sendToFeishu(
             queuedReplyTarget,
@@ -3228,6 +3261,7 @@ export function createFeishuConnection(
       eventDispatcher = null;
       reconnecting = false;
       disconnectedChecks = 0;
+      await ackReactions.clearAll();
       if (wsClient) {
         logger.info('Stopping Feishu client');
         try {
@@ -3246,6 +3280,7 @@ export function createFeishuConnection(
       chatId: string,
       text: string,
       localImagePaths?: string[],
+      options?: { presentation?: 'default' | 'native' },
     ): Promise<void> {
       if (!client) {
         throw new Error('Feishu client is not initialized');
@@ -3254,43 +3289,50 @@ export function createFeishuConnection(
       requireFeishuRouteTarget(chatId);
 
       try {
-        // Detect pre-built Feishu interactive card JSON — send directly without wrapping
-        if (text.startsWith('{"type":"interactive"')) {
-          try {
-            const parsed = JSON.parse(text);
-            if (parsed.type === 'interactive' && parsed.card) {
-              await sendToFeishu(chatId, 'interactive', text);
-              clearAckForTarget(chatId);
-              return;
-            }
-          } catch {
-            // Not valid card JSON, fall through to normal handling
-          }
-        }
-
-        // Count markdown tables to decide format upfront — Feishu cards have a table limit
-        // Each table has exactly one separator row (e.g. |---|---|), so counting those = table count
-        const tableCount = (text.match(/^\|[\s:-]+\|/gm) || []).length;
-        const usePostMd = tableCount > CARD_TABLE_LIMIT;
-
-        if (usePostMd) {
-          // Too many tables for card format, go directly to post+md
-          const postContent = buildPostMdFallback(text);
-          await sendToFeishu(chatId, 'post', postContent);
+        // Proactive-mode workspace Agents speak as ordinary native rich-text
+        // messages. They never enter the interactive-card presentation lane.
+        if (options?.presentation === 'native') {
+          await sendToFeishu(chatId, 'post', buildPostMdFallback(text));
         } else {
-          const card = buildInteractiveCard(text);
-          const content = JSON.stringify(card);
-          try {
-            await sendToFeishu(chatId, 'interactive', content);
-          } catch (err) {
-            logger.warn(
-              { err, chatId },
-              'Feishu interactive send failed, fallback to post+md',
-            );
+          if (text.startsWith('{"type":"interactive"')) {
+            // Detect pre-built Feishu interactive card JSON — send directly
+            // without wrapping.
+            try {
+              const parsed = JSON.parse(text);
+              if (parsed.type === 'interactive' && parsed.card) {
+                await sendToFeishu(chatId, 'interactive', text);
+                return;
+              }
+            } catch {
+              // Not valid card JSON, fall through to normal handling
+            }
+          }
+
+          // Count markdown tables to decide format upfront — Feishu cards have
+          // a table limit. Each table has exactly one separator row.
+          const tableCount = (text.match(/^\|[\s:-]+\|/gm) || []).length;
+          const usePostMd = tableCount > CARD_TABLE_LIMIT;
+
+          if (usePostMd) {
             await sendToFeishu(chatId, 'post', buildPostMdFallback(text));
+          } else {
+            const card = buildInteractiveCard(text);
+            const content = JSON.stringify(card);
+            try {
+              await sendToFeishu(chatId, 'interactive', content);
+            } catch (err) {
+              logger.warn(
+                { err, chatId },
+                'Feishu interactive send failed, fallback to post+md',
+              );
+              await sendToFeishu(chatId, 'post', buildPostMdFallback(text));
+            }
           }
         }
-        logger.debug({ chatId }, 'Sent Feishu card message');
+        logger.debug(
+          { chatId, presentation: options?.presentation ?? 'default' },
+          'Sent Feishu message',
+        );
 
         for (const localImagePath of localImagePaths || []) {
           try {
@@ -3321,10 +3363,8 @@ export function createFeishuConnection(
             throw imageErr;
           }
         }
-        clearAckForTarget(chatId);
       } catch (err) {
-        logger.error({ err, chatId }, 'Failed to send Feishu card message');
-        clearAckForTarget(chatId);
+        logger.error({ err, chatId }, 'Failed to send Feishu message');
         throw err;
       }
     },
@@ -3371,8 +3411,6 @@ export function createFeishuConnection(
         if (caption) {
           await sendToFeishu(chatId, 'text', JSON.stringify({ text: caption }));
         }
-        clearAckForTarget(chatId);
-
         logger.info(
           { chatId, imageKey, mimeType, size: imageBuffer.length },
           'Feishu image sent',
@@ -3437,8 +3475,6 @@ export function createFeishuConnection(
           msgType,
           JSON.stringify({ file_key: fileKey }),
         );
-        clearAckForTarget(chatId);
-
         logger.info(
           { chatId, fileName, fileSize: buffer.length },
           'File sent to Feishu',
@@ -3452,36 +3488,8 @@ export function createFeishuConnection(
       }
     },
 
-    async sendReaction(chatId: string, isTyping: boolean): Promise<void> {
-      if (!client) return;
-      const target = requireFeishuRouteTarget(chatId);
-      const reactionKey = target.raw;
-      const lastMsgId = target.rootMessageId || p2pLastMessageId(target);
-      if (!lastMsgId) {
-        logger.debug(
-          { chatId },
-          'Skipping Feishu reaction: route has no trusted message anchor',
-        );
-        return;
-      }
-
-      if (isTyping) {
-        const reactionId = await addReaction(lastMsgId, 'OnIt');
-        if (reactionId) {
-          typingReactionByChat.set(reactionKey, `${lastMsgId}:${reactionId}`);
-        }
-      } else {
-        const stored = typingReactionByChat.get(reactionKey);
-        if (stored) {
-          const [msgId, reactionId] = stored.split(':');
-          await removeReaction(msgId, reactionId);
-          typingReactionByChat.delete(reactionKey);
-        }
-      }
-    },
-
-    clearAckReaction(chatId: string): void {
-      clearAckForTarget(chatId);
+    clearAckReaction(chatId: string, inputMessageId: string): Promise<void> {
+      return clearAckForInput(chatId, inputMessageId);
     },
 
     isConnected(): boolean {
@@ -3652,17 +3660,6 @@ export async function sendFeishuMessage(
     return;
   }
   return _defaultInstance.sendMessage(chatId, text, localImagePaths);
-}
-
-/**
- * @deprecated Use FeishuConnection.sendReaction() instead.
- */
-export async function setFeishuTyping(
-  chatId: string,
-  isTyping: boolean,
-): Promise<void> {
-  if (!_defaultInstance) return;
-  return _defaultInstance.sendReaction(chatId, isTyping);
 }
 
 /**

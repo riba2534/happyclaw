@@ -34,6 +34,8 @@ export interface ContainerConfig {
 }
 
 export type ExecutionMode = 'container' | 'host';
+/** User-visible interaction contract owned by one Workspace↔Agent binding. */
+export type InteractionMode = 'assistant' | 'proactive';
 export type ConversationSource = 'manual' | 'native_thread' | 'feishu_thread';
 export type ConversationNavMode = 'horizontal' | 'vertical_threads';
 export type ImBindingMode = 'single_context' | 'thread_map';
@@ -302,6 +304,15 @@ export interface AgentProfilePromptVersion extends AgentProfilePrompts {
   created_at: string;
 }
 
+/** Durable Workspace↔AgentProfile binding and its interaction contract. */
+export interface WorkspaceAgentProfileBinding {
+  group_folder: string;
+  agent_profile_id: string;
+  interaction_mode: InteractionMode;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface AgentProfileRuntimePolicy {
   context: {
     source: 'managed' | 'host_claude';
@@ -474,6 +485,16 @@ export interface ScheduledTask {
   created_at: string;
   created_by?: string;
   notify_channels?: string[] | null;
+  /**
+   * Concrete delivery route captured when the task was created.
+   *
+   * `chat_jid` is workspace-level, so execution used to re-derive its target and
+   * could fall back to another group in the same folder. This JID carries the
+   * whole binding — provider, external chat, channel account and Feishu
+   * thread/root — so a run either reaches the place it was scheduled from or
+   * fails; it never silently picks somewhere else.
+   */
+  delivery_route_jid?: string | null;
   /** Optimistic-concurrency revision for edits made through REST/MCP/UI. */
   revision: number;
   updated_at: string;
@@ -521,6 +542,7 @@ export interface TaskRunDefinitionSnapshot {
   prompt: string;
   group_folder: string;
   chat_jid: string;
+  delivery_route_jid: string | null;
   context_mode: 'group' | 'isolated';
   execution_type: 'agent' | 'script';
   execution_mode: 'host' | 'container' | null;
@@ -777,10 +799,19 @@ export interface ImContextBinding {
 
 export interface ActiveRunSnapshot {
   chatJid: string;
-  runId: string | null;
+  runId: string;
   startedAt: string;
-  phase: 'queued' | 'preparing' | 'running';
+  // No 'queued': a queued message has no exact attempt identity yet, so it can
+  // never receive a matching run_finished terminal. Queued chats travel in
+  // `queuedChatJids` on the snapshot message instead.
+  phase: 'preparing' | 'running';
 }
+
+export type RunFinishReason =
+  | 'completed'
+  | 'released'
+  | 'runner_exit'
+  | 'stopped';
 
 // WebSocket message types
 export type WsMessageOut =
@@ -811,6 +842,8 @@ export type WsMessageOut =
       chatJid: string;
       event: StreamEvent;
       agentId?: string;
+      /** Exact GroupQueue attempt that owns this stream event. */
+      runId?: string;
     }
   | {
       type: 'agent_status';
@@ -836,8 +869,22 @@ export type WsMessageOut =
       phase: 'preparing';
     }
   | {
+      type: 'run_finished';
+      chatJid: string;
+      runId: string;
+      finishedAt: string;
+      reason: RunFinishReason;
+    }
+  | {
       type: 'active_run_snapshot';
       runs: ActiveRunSnapshot[];
+      /**
+       * Chats whose message is enqueued behind a busy runner. They have no run
+       * identity yet, so they cannot be `runs` entries — but the client still
+       * has to show a wait state, otherwise a user who reloads mid-queue sees
+       * an idle composer and sends the same message twice.
+       */
+      queuedChatJids: string[];
     }
   | {
       type: 'follow_up_update';
@@ -894,6 +941,8 @@ export type WsMessageOut =
   | {
       type: 'stream_snapshot';
       chatJid: string;
+      /** Exact GroupQueue attempt that owns this reconnect snapshot. */
+      runId?: string;
       snapshot: {
         partialText: string;
         thinkingText?: string;

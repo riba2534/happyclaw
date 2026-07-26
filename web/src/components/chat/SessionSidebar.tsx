@@ -34,6 +34,7 @@ interface SessionSidebarProps {
   onClose?: () => void;
   onSelectSession: (id: string | null) => void;
   onCreateSession?: () => void;
+  isCreatingSession?: boolean;
   onRenameSession?: (id: string, name: string) => void;
   onDeleteSession: (id: string) => void;
   onBindSession?: (id: string | null) => void;
@@ -110,6 +111,7 @@ export function SessionSidebar({
   onClose,
   onSelectSession,
   onCreateSession,
+  isCreatingSession = false,
   onRenameSession,
   onDeleteSession,
   onBindSession,
@@ -134,7 +136,10 @@ export function SessionSidebar({
     });
   }, [query, scope, sessions]);
   const showNavigationTools = isTopicWorkspace || sessions.length >= 6;
-  const sessionNoun = isTopicWorkspace ? '话题' : '会话';
+  // “会话” is the umbrella concept in Web. Channel-native topics are one
+  // source of sessions, and may coexist with manually-created Web sessions.
+  const sessionNoun = '会话';
+  const createSessionLabel = isTopicWorkspace ? '新建 Web 会话' : '新建会话';
   const totalCount = sessions.length + 1;
   const sessionVirtualizer = useVirtualizer({
     count: visibleSessions.length,
@@ -157,7 +162,7 @@ export function SessionSidebar({
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <div className="truncate text-[13px] font-semibold text-foreground">
-                {title || (isTopicWorkspace ? '飞书话题' : '会话')}
+                {title || '会话'}
               </div>
               <span className="rounded-md bg-brand-50 px-1.5 py-0.5 text-[10px] font-medium text-primary dark:bg-brand-700/15 dark:text-brand-300">
                 {totalCount}
@@ -165,14 +170,27 @@ export function SessionSidebar({
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1">
-            {canModify && !isTopicWorkspace && onCreateSession && (
+            {canModify && onCreateSession && (
               <button
                 onClick={onCreateSession}
-                className="grid min-h-9 min-w-9 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer"
-                title="新建会话"
-                aria-label="新建会话"
+                disabled={isCreatingSession}
+                aria-busy={isCreatingSession}
+                className="grid min-h-9 min-w-9 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 cursor-pointer"
+                title={createSessionLabel}
+                aria-label={
+                  isCreatingSession
+                    ? `正在${createSessionLabel}`
+                    : createSessionLabel
+                }
               >
-                <Plus className="h-4 w-4" />
+                {isCreatingSession ? (
+                  <Loader2
+                    className="h-4 w-4 animate-spin"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <Plus className="h-4 w-4" aria-hidden="true" />
+                )}
               </button>
             )}
             {onClose && (
@@ -226,11 +244,7 @@ export function SessionSidebar({
           isMain
           canModify={canModify}
           onSelect={() => onSelectSession(null)}
-          onBind={
-            onBindSession && !isTopicWorkspace
-              ? () => onBindSession(null)
-              : undefined
-          }
+          onBind={onBindSession ? () => onBindSession(null) : undefined}
         />
 
         {visibleSessions.length === 0 ? (
@@ -275,7 +289,7 @@ export function SessionSidebar({
                     readonlyTitle={nativeManaged}
                     onSelect={() => onSelectSession(session.id)}
                     onBind={
-                      onBindSession
+                      onBindSession && !nativeManaged
                         ? () => onBindSession(session.id)
                         : undefined
                     }

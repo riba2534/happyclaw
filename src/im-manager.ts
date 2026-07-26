@@ -8,6 +8,7 @@
 import {
   type IMChannel,
   type IMChannelConnectOpts,
+  type ChannelMessageDeliveryOptions,
   getChannelType,
   createFeishuChannel,
   createTelegramChannel,
@@ -766,6 +767,7 @@ export class IMConnectionManager {
     jid: string,
     text: string,
     localImagePaths?: string[],
+    options?: ChannelMessageDeliveryOptions,
   ): Promise<void> {
     const channelType = getChannelType(jid);
     if (!channelType) {
@@ -778,7 +780,12 @@ export class IMConnectionManager {
     if (!channel) {
       throw new Error(`No IM channel available for ${jid} (${channelType})`);
     }
-    await channel.sendMessage(chatId, text, localImagePaths);
+    if (options) {
+      await channel.sendMessage(chatId, text, localImagePaths, options);
+    } else {
+      // Preserve the historical three-argument connector call shape.
+      await channel.sendMessage(chatId, text, localImagePaths);
+    }
   }
 
   /**
@@ -904,14 +911,18 @@ export class IMConnectionManager {
   /**
    * Set typing indicator on an IM chat, auto-routing via JID prefix.
    */
-  async setTyping(jid: string, isTyping: boolean): Promise<void> {
+  async setTyping(
+    jid: string,
+    isTyping: boolean,
+    leaseId?: string,
+  ): Promise<void> {
     const channelType = getChannelType(jid);
     if (!channelType) return;
 
     const chatId = extractProviderTarget(jid);
     const channel = this.findChannelForJid(jid, channelType);
     if (channel) {
-      await channel.setTyping(chatId, isTyping);
+      await channel.setTyping(chatId, isTyping, leaseId);
     }
     // No fallback for typing — silently ignore if owner's connection is unavailable
   }
@@ -919,14 +930,14 @@ export class IMConnectionManager {
   /**
    * Clear the ack reaction for a chat (e.g. when streaming card handled the reply).
    */
-  clearAckReaction(jid: string): void {
+  async clearAckReaction(jid: string, inputMessageId: string): Promise<void> {
     const channelType = getChannelType(jid);
     if (!channelType) return;
 
     const chatId = extractProviderTarget(jid);
     const channel = this.findChannelForJid(jid, channelType);
     if (channel?.clearAckReaction) {
-      channel.clearAckReaction(chatId);
+      await channel.clearAckReaction(chatId, inputMessageId);
     }
   }
 
@@ -1809,18 +1820,6 @@ export class IMConnectionManager {
       { chatJid },
       'No Telegram connection available to send message',
     );
-  }
-
-  /**
-   * Set typing reaction on a Feishu chat.
-   * @deprecated Use setTyping(jid, isTyping) which auto-routes.
-   */
-  async setFeishuTyping(chatJid: string, isTyping: boolean): Promise<void> {
-    const chatId = extractProviderTarget(chatJid);
-    const channel = this.findChannelForJid(chatJid, 'feishu');
-    if (channel) {
-      await channel.setTyping(chatId, isTyping);
-    }
   }
 
   /**

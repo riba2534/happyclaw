@@ -3,15 +3,20 @@
 import { Hono, type Context } from 'hono';
 import * as crypto from 'node:crypto';
 import { sdkQuery } from '../sdk-query.js';
+import { getSystemSettings } from '../runtime-config.js';
 import type { Variables } from '../web-context.js';
 import { authMiddleware } from '../middleware/auth.js';
-import { TaskCreateSchema, TaskPatchSchema } from '../schemas.js';
+import {
+  MAX_TASK_PROMPT_LENGTH,
+  TaskCreateSchema,
+  TaskPatchSchema,
+} from '../schemas.js';
 import { logger } from '../logger.js';
 import {
   getAllTasks,
   getDeletedTasks,
   getTaskById,
-  createTask,
+  createTaskWithinOwnerLimit,
   getTaskRunLogs,
   updateTaskWithRevision,
   softDeleteTaskWithRevision,
@@ -261,6 +266,8 @@ tasksRoutes.post('/', authMiddleware, async (c) => {
   const taskId = crypto.randomUUID();
   const now = new Date().toISOString();
 
+  const taskCap = getSystemSettings().maxTasksPerUser;
+
   let nextRun: string;
   try {
     nextRun = computeNextRunForSchedule(schedule_type, schedule_value);
@@ -273,23 +280,35 @@ tasksRoutes.post('/', authMiddleware, async (c) => {
     );
   }
 
-  createTask({
-    id: taskId,
-    group_folder: groupFolder,
-    chat_jid: chatJid,
-    prompt: prompt || '',
-    schedule_type,
-    schedule_value,
-    context_mode: validation.data.context_mode || 'isolated',
-    execution_type: execType,
-    execution_mode: taskExecutionMode,
-    script_command: script_command ?? null,
-    next_run: nextRun,
-    status: 'active',
-    created_at: now,
-    created_by: authUser.id,
-    notify_channels: notify_channels ?? null,
-  });
+  const creation = createTaskWithinOwnerLimit(
+    {
+      id: taskId,
+      group_folder: groupFolder,
+      chat_jid: chatJid,
+      prompt: prompt || '',
+      schedule_type,
+      schedule_value,
+      context_mode: validation.data.context_mode || 'isolated',
+      execution_type: execType,
+      execution_mode: taskExecutionMode,
+      script_command: script_command ?? null,
+      next_run: nextRun,
+      status: 'active',
+      created_at: now,
+      created_by: authUser.id,
+      notify_channels: notify_channels ?? null,
+    },
+    taskCap,
+  );
+  if (creation.status === 'limit_reached') {
+    return c.json(
+      {
+        error: `定时任务数量已达上限（${creation.limit}）。请先删除不再需要的任务。`,
+        code: 'TASK_LIMIT_REACHED',
+      },
+      409,
+    );
+  }
   notifyTaskSchedulerChanged();
 
   return c.json({ success: true, taskId });
@@ -402,6 +421,7 @@ tasksRoutes.patch('/:id', authMiddleware, async (c) => {
   // Validate chat_jid if being changed
   const patchData = { ...validation.data } as typeof validation.data & {
     group_folder?: string;
+    delivery_route_jid?: string;
   };
   let effectiveTargetGroup: ReturnType<typeof getRegisteredGroup> = group;
   if (validation.data.chat_jid !== undefined) {
@@ -416,6 +436,9 @@ tasksRoutes.patch('/:id', authMiddleware, async (c) => {
     }
     // Keep group_folder in sync with chat_jid
     patchData.group_folder = targetGroup.folder;
+    // A Web edit has no thread-scoped source context. Rebind delivery to the
+    // selected workspace/chat itself instead of retaining the previous route.
+    patchData.delivery_route_jid = validation.data.chat_jid;
     effectiveTargetGroup = targetGroup;
   }
 
@@ -649,12 +672,25 @@ tasksRoutes.post('/:id/restore', authMiddleware, async (c) => {
       428,
     );
   }
-  const mutation = restoreTaskWithRevision(id, expectedRevision);
+  const mutation = restoreTaskWithRevision(
+    id,
+    expectedRevision,
+    getSystemSettings().maxTasksPerUser,
+  );
   if (mutation.status === 'not_found') {
     return c.json({ error: 'Task not found' }, 404);
   }
   if (mutation.status === 'conflict') {
     return revisionConflict(c, mutation.task);
+  }
+  if (mutation.status === 'limit_reached') {
+    return c.json(
+      {
+        error: `定时任务数量已达上限（${mutation.limit}）。请先删除不再需要的任务。`,
+        code: 'TASK_LIMIT_REACHED',
+      },
+      409,
+    );
   }
   notifyTaskSchedulerChanged();
   return c.json({ success: true, task: mutation.task });
@@ -893,7 +929,10 @@ function parseAiResult(
     if (fenced) jsonStr = fenced[1].trim();
     const parsed = JSON.parse(jsonStr);
     return {
-      prompt: parsed.prompt || description,
+      prompt:
+        typeof parsed.prompt === 'string' && parsed.prompt
+          ? parsed.prompt
+          : description,
       schedule_type: parsed.schedule_type || 'cron',
       schedule_value: parsed.schedule_value || '',
       summary: parsed.summary || '',
@@ -913,6 +952,15 @@ tasksRoutes.post('/ai', authMiddleware, async (c) => {
     typeof body.description === 'string' ? body.description.trim() : '';
   if (!description) {
     return c.json({ error: '请输入任务描述' }, 400);
+  }
+  if (description.length > MAX_TASK_PROMPT_LENGTH) {
+    return c.json(
+      {
+        error: `任务描述不能超过 ${MAX_TASK_PROMPT_LENGTH} 个字符`,
+        code: 'TASK_PROMPT_TOO_LONG',
+      },
+      400,
+    );
   }
   const notifyChannels: string[] | null = body.notify_channels ?? null;
 
@@ -966,24 +1014,38 @@ tasksRoutes.post('/ai', authMiddleware, async (c) => {
     ? 'host'
     : 'container';
 
-  // Create task immediately with 'parsing' status and description as prompt
-  createTask({
-    id: taskId,
-    group_folder: groupFolder,
-    chat_jid: chatJid,
-    prompt: description,
-    schedule_type: 'cron',
-    schedule_value: '0 0 * * *', // placeholder, will be updated after parsing
-    context_mode: requestedContextMode ?? 'isolated',
-    execution_type: 'agent',
-    execution_mode: taskExecutionMode,
-    script_command: null,
-    next_run: null,
-    status: 'parsing',
-    created_at: now,
-    created_by: authUser.id,
-    notify_channels: notifyChannels,
-  });
+  // Create task immediately with 'parsing' status and description as prompt.
+  // AI creation is the default UI path, so it must share the same atomic
+  // capacity boundary as manual REST and Agent/MCP creation.
+  const creation = createTaskWithinOwnerLimit(
+    {
+      id: taskId,
+      group_folder: groupFolder,
+      chat_jid: chatJid,
+      prompt: description,
+      schedule_type: 'cron',
+      schedule_value: '0 0 * * *', // placeholder, will be updated after parsing
+      context_mode: requestedContextMode ?? 'isolated',
+      execution_type: 'agent',
+      execution_mode: taskExecutionMode,
+      script_command: null,
+      next_run: null,
+      status: 'parsing',
+      created_at: now,
+      created_by: authUser.id,
+      notify_channels: notifyChannels,
+    },
+    getSystemSettings().maxTasksPerUser,
+  );
+  if (creation.status === 'limit_reached') {
+    return c.json(
+      {
+        error: `定时任务数量已达上限（${creation.limit}）。请先删除不再需要的任务。`,
+        code: 'TASK_LIMIT_REACHED',
+      },
+      409,
+    );
+  }
   const parsingRevision = getTaskById(taskId)?.revision ?? 1;
 
   const updateParsedTask = (
@@ -1032,6 +1094,21 @@ tasksRoutes.post('/ai', authMiddleware, async (c) => {
           prompt: description,
         });
         logger.warn({ taskId }, 'AI parse result invalid, task paused');
+        return;
+      }
+      if (parsed.prompt.length > MAX_TASK_PROMPT_LENGTH) {
+        updateParsedTask({
+          status: 'paused',
+          prompt: description,
+        });
+        logger.warn(
+          {
+            taskId,
+            promptLength: parsed.prompt.length,
+            maxPromptLength: MAX_TASK_PROMPT_LENGTH,
+          },
+          'AI parsed prompt exceeded the task prompt limit; task paused',
+        );
         return;
       }
 

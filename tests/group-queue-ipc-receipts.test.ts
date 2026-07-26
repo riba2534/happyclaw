@@ -36,7 +36,7 @@ function inputDir(): string {
   return path.join(DATA_DIR, 'ipc', FOLDER, 'input');
 }
 
-function readPayloads(): Array<{ receipt?: Receipt }> {
+function readPayloads(): Array<{ receipt?: Receipt; queryRunId?: string }> {
   return fs
     .readdirSync(inputDir())
     .filter((name) => name.endsWith('.json'))
@@ -98,6 +98,29 @@ afterEach(async () => {
 });
 
 describe('GroupQueue IPC delivery receipts', () => {
+  test('stamps each warm IPC file with its exact query attempt', async () => {
+    await startRunner();
+    const runA = queue.getActiveQueryId(JID);
+    expect(runA).toBeTruthy();
+
+    inject('m1');
+    expect(
+      readPayloads().find((payload) => payload.receipt?.cursor.id === 'm1')
+        ?.queryRunId,
+    ).toBe(runA);
+
+    queue.markRunnerQueryIdle(JID);
+    expect(queue.getActiveQueryId(JID)).toBeNull();
+    inject('m2');
+    const runB = queue.getActiveQueryId(JID);
+    expect(runB).toBeTruthy();
+    expect(runB).not.toBe(runA);
+    expect(
+      readPayloads().find((payload) => payload.receipt?.cursor.id === 'm2')
+        ?.queryRunId,
+    ).toBe(runB);
+  });
+
   test('commits only a contiguous per-chat prefix under out-of-order stdout', async () => {
     await startRunner();
     const first = inject('m1');
@@ -178,6 +201,36 @@ describe('GroupQueue IPC delivery receipts', () => {
 
     expect(commits).toEqual([batch]);
     expect(committedId).toBe('m2');
+  });
+
+  test('preserves each covered input provider route across accounts and channels', async () => {
+    await startRunner();
+    const coveredCursors = [
+      {
+        ...cursor('m1'),
+        sourceJid: 'feishu:oc_chat#account:account-a',
+      },
+      {
+        ...cursor('m2'),
+        sourceJid: 'telegram:-100123#account:account-b',
+      },
+    ];
+
+    expect(
+      queue.sendMessage(JID, 'mixed', undefined, undefined, JID, undefined, {
+        chatJid: JID,
+        coveredCursors,
+        cursor: coveredCursors[1],
+      }),
+    ).toBe('sent');
+
+    const receipt = readPayloads().find(
+      (payload) => payload.receipt?.cursor.id === 'm2',
+    )?.receipt;
+    expect(receipt?.coveredCursors).toEqual(coveredCursors);
+    expect(receipt?.cursor.sourceJid).toBe(
+      'telegram:-100123#account:account-b',
+    );
   });
 
   test('rejects an inconsistent terminal before writing an IPC claim', async () => {

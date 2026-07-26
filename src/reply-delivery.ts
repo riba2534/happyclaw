@@ -49,6 +49,90 @@ export interface RetrySkipDecisionInput {
   ipcReplyDeliveredForInputTurn: boolean;
 }
 
+/**
+ * Read a genuine SDK-final acknowledgement by immutable input id.
+ *
+ * Warm runners can activate input B before a delayed callback for input A
+ * arrives. Callers must therefore never collapse this ledger into a
+ * runner-wide boolean: A's late final is not evidence that B was delivered.
+ */
+export function wasGenuineReplyDeliveredForInput(
+  deliveredByInput: ReadonlyMap<string, boolean>,
+  inputTurnId: string,
+): boolean {
+  return deliveredByInput.get(inputTurnId) === true;
+}
+
+export interface AssistantPrimaryProjectionInput {
+  /** Immutable input identity resolved by inputTurnId/receipt/cold-start. */
+  canonicalInputTurnId: string;
+  status: 'success' | 'error' | 'stream' | 'closed';
+  result: string | null;
+  sourceKind?: string | null;
+  inputTurnId?: string;
+  ipcReceiptCount?: number;
+  inputTurnCompleted?: boolean;
+  finalizationReason?: string;
+  pendingBgTasks?: number;
+  sdkMessageUuid?: string;
+  /** A non-held, physically acknowledged primary answer already exists. */
+  primaryAlreadyProjected: boolean;
+  /** Some answer/checkpoint has already been persisted for this input. */
+  anyReplyProjected: boolean;
+}
+
+export interface AssistantPrimaryProjectionDecision {
+  project: boolean;
+  canonicalTurnId: string;
+  reason: 'first_primary' | 'already_projected' | 'trailing_lifecycle_success';
+}
+
+/**
+ * Enforce exactly one Assistant primary answer per immutable input turn.
+ *
+ * The host runner emits a final session snapshot on graceful SIGTERM as
+ * `{status:'success', result:null, newSessionId}` without turn correlation.
+ * If that frame reaches TurnOutputCoordinator after a real answer, the empty
+ * result can recover the previous streamed candidate and create a second DB/Web
+ * bubble. Treat that trailing frame as lifecycle-only, while still allowing an
+ * otherwise unique null result to recover its streamed candidate.
+ */
+export function decideAssistantPrimaryProjection(
+  input: AssistantPrimaryProjectionInput,
+): AssistantPrimaryProjectionDecision {
+  if (input.primaryAlreadyProjected) {
+    return {
+      project: false,
+      canonicalTurnId: input.canonicalInputTurnId,
+      reason: 'already_projected',
+    };
+  }
+
+  const isUncorrelatedLifecycleSuccess =
+    input.status === 'success' &&
+    input.result === null &&
+    input.inputTurnId === undefined &&
+    (input.ipcReceiptCount ?? 0) === 0 &&
+    input.sourceKind == null &&
+    input.inputTurnCompleted === undefined &&
+    input.finalizationReason === undefined &&
+    input.pendingBgTasks === undefined &&
+    input.sdkMessageUuid === undefined;
+  if (isUncorrelatedLifecycleSuccess && input.anyReplyProjected) {
+    return {
+      project: false,
+      canonicalTurnId: input.canonicalInputTurnId,
+      reason: 'trailing_lifecycle_success',
+    };
+  }
+
+  return {
+    project: true,
+    canonicalTurnId: input.canonicalInputTurnId,
+    reason: 'first_primary',
+  };
+}
+
 export interface IpcReplyTurnTracker {
   inputTurnId: string;
   delivered: boolean;

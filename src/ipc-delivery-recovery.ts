@@ -10,8 +10,12 @@ function parseTypedDeliveryFile(filepath: string): IpcDeliveryReceipt | null {
       receipt?: {
         deliveryId?: unknown;
         chatJid?: unknown;
-        coveredCursors?: Array<{ timestamp?: unknown; id?: unknown }>;
-        cursor?: { timestamp?: unknown; id?: unknown };
+        coveredCursors?: Array<{
+          timestamp?: unknown;
+          id?: unknown;
+          sourceJid?: unknown;
+        }>;
+        cursor?: { timestamp?: unknown; id?: unknown; sourceJid?: unknown };
       };
     };
     const receipt = payload.receipt;
@@ -39,12 +43,18 @@ function parseTypedDeliveryFile(filepath: string): IpcDeliveryReceipt | null {
             coveredCursors: receipt.coveredCursors.map((cursor) => ({
               timestamp: cursor.timestamp as string,
               id: cursor.id as string,
+              ...(typeof cursor.sourceJid === 'string'
+                ? { sourceJid: cursor.sourceJid }
+                : {}),
             })),
           }
         : {}),
       cursor: {
         timestamp: receipt.cursor.timestamp,
         id: receipt.cursor.id,
+        ...(typeof receipt.cursor.sourceJid === 'string'
+          ? { sourceJid: receipt.cursor.sourceJid }
+          : {}),
       },
     };
   } catch {

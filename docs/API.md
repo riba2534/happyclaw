@@ -80,6 +80,13 @@ Public：
 `POST /api/messages` 可以携带 Web 附件和 Runtime Session 标识。`/clear` 会进入与
 `reset-session` 相同的 owner 级破坏性检查。
 
+`POST /api/groups` 和 `PATCH /api/groups/:jid` 接受 `interaction_mode`
+（`assistant` 或 `proactive`），两者的响应体都会回显当前值。该字段存放在
+Workspace↔AgentProfile 绑定行上，因此：仅 `web:` 前缀工作区可修改，否则 403；
+工作区没有 AgentProfile 绑定时返回 409 `WORKSPACE_AGENT_PROFILE_MISSING`。
+它与 `execution_mode` 共享同一道 quiesce 边界，暖 Runner 只能观察到旧契约或新
+契约；停机失败返回 503 并带 `persisted` 标记。
+
 ## 文件
 
 - `GET|POST /api/groups/:jid/files`
@@ -228,6 +235,14 @@ Legacy 渠道 facade 位于 `/api/config/user-im/*`，涵盖飞书、Telegram、
 写入使用 revision 或 idempotency key 防止并发覆盖和重复运行。运行状态与通知状态
 分开持久化；通知失败不会重新执行任务主体。
 
+所有创建入口（手工 REST、AI 创建和 MCP `schedule_task`）以及软删恢复都会在同一
+原子边界检查 `maxTasksPerUser`；达到上限时返回 409 `TASK_LIMIT_REACHED`
+（已软删的不计入）。`prompt` 与 `script_command` 有长度上限，AI 输入和解析结果、
+REST 与 MCP `schedule_task` / `update_task` 使用同一组上限，超出即拒绝。
+
+PATCH 修改 `chat_jid` 时会同时更新任务的具体 `delivery_route_jid`。已经物化的 Run
+在 `definition_snapshot` 中冻结原投递路由，不会因后续任务编辑而切换目标。
+
 ## Skills、MCP 和 Plugins
 
 Skills：
@@ -318,7 +333,14 @@ Plugins：
 - `GET /api/health`，Public
 - `GET /api/status`
 - `POST /api/status/groups/:folder/switch-provider`
+- `GET /api/status/channel-outbox/uncertain`
+- `POST /api/status/channel-outbox/:id/resolve`
 - `POST /api/docker/build`
+
+投递结果不确定的 outbox 记录会围栏住整个 Turn，运行时无法自行判定，只能由人工
+确认后放行。`resolve` 使用 `expectedRevision` 做 compare-and-set，取值为
+`delivered`（需要 `providerMessageId`）或 `failed`；revision 过期返回 409，
+调用方必须重新读取后再决定，不能盲目重试。列表不返回 payload。
 
 问题报告：
 

@@ -41,6 +41,11 @@ import {
   evaluateChannelAdmission,
   resolveAdmittedChannelRoute,
 } from './channel-admission.js';
+import { extractProviderTarget } from './channel-address.js';
+import {
+  ExactAsyncIndicatorRegistry,
+  processingIndicatorKey,
+} from './processing-indicator.js';
 
 // ─── Constants ──────────────────────────────────────────────────
 
@@ -153,7 +158,7 @@ export interface DiscordConnection {
   ): Promise<void>;
   sendFile(chatId: string, filePath: string, fileName: string): Promise<void>;
   setTyping(chatId: string, isTyping: boolean): Promise<void>;
-  clearAckReaction(chatId: string): void;
+  clearAckReaction(chatId: string, inputMessageId: string): Promise<void>;
   isConnected(): boolean;
   getLastMessageId?(chatId: string): string | undefined;
   createStreamingSession?(
@@ -285,11 +290,10 @@ export function createDiscordConnection(
   // Last message ID per chat (for reply context)
   const lastMessageIds = new Map<string, string>();
 
-  // Ack reaction per chat: { messageId, channelId }
-  const ackReactionByChat = new Map<
-    string,
-    { messageId: string; channelId: string }
-  >();
+  const ackReactions = new ExactAsyncIndicatorRegistry<{
+    messageId: string;
+    channelId: string;
+  }>();
 
   // ─── Channel Resolution ──────────────────────────────────
 
@@ -320,48 +324,28 @@ export function createDiscordConnection(
 
   // ─── Ack Reaction ─────────────────────────────────────────
 
-  /**
-   * Add an eyes emoji reaction to a user's message as ack confirmation.
-   */
-  async function attachAckReaction(msg: Message, jid: string): Promise<void> {
-    try {
-      await msg.react('\u{1F440}'); // eyes emoji
-      ackReactionByChat.set(jid, {
-        messageId: msg.id,
-        channelId: msg.channelId,
-      });
-      logger.debug({ msgId: msg.id, jid }, 'Discord ack reaction attached');
-    } catch (err) {
-      logger.debug(
-        { err, msgId: msg.id, jid },
-        'Discord ack reaction attach failed',
+  async function recallAckReaction(stored: {
+    messageId: string;
+    channelId: string;
+  }): Promise<void> {
+    const client = discordClient;
+    if (!client?.user) {
+      throw new Error('Discord client is unavailable during ack recall');
+    }
+    const channel = await client.channels.fetch(stored.channelId);
+    if (!channel?.isTextBased()) {
+      throw new Error(
+        `Discord ack channel is unavailable or not text-based: ${stored.channelId}`,
       );
     }
-  }
-
-  /**
-   * Remove the eyes emoji reaction from the stored message for a chat.
-   * Silent on failure — the emoji is non-critical.
-   */
-  async function recallAckReaction(chatId: string): Promise<void> {
-    const stored = ackReactionByChat.get(chatId);
-    if (!stored) return;
-    ackReactionByChat.delete(chatId);
-    try {
-      if (!discordClient?.user) return;
-      const channel = await discordClient.channels.fetch(stored.channelId);
-      if (channel?.isTextBased()) {
-        const textChannel = channel as TextBasedChannel;
-        const msg = await textChannel.messages.fetch(stored.messageId);
-        const reaction = msg.reactions.cache.find(
-          (r) => r.emoji.name === '\u{1F440}',
-        );
-        if (reaction) {
-          await reaction.users.remove(discordClient.user.id);
-        }
-      }
-    } catch {
-      // Non-critical: emoji will remain but won't break anything
+    const textChannel = channel as TextBasedChannel;
+    const msg = await textChannel.messages.fetch(stored.messageId);
+    const reaction = msg.reactions.cache.find(
+      (r) => r.emoji.name === '\u{1F440}',
+    );
+    // Absence is an idempotent success: the provider no longer owns a reaction.
+    if (reaction) {
+      await reaction.users.remove(client.user.id);
     }
   }
 
@@ -680,8 +664,34 @@ export function createDiscordConnection(
           agentRouting?.agentId ?? undefined,
         );
 
-        // Ack reaction: confirm receipt with eyes emoji
-        attachAckReaction(msg, jid).catch(() => {});
+        // Exact-input ack reaction: install ownership before the async
+        // provider call so a fast terminal clear cannot race past attach.
+        const ackChatId = extractProviderTarget(jid);
+        ackReactions
+          .attach(
+            processingIndicatorKey(ackChatId, id),
+            async () => {
+              try {
+                await msg.react('\u{1F440}'); // eyes emoji
+                logger.debug(
+                  { msgId: msg.id, inputMessageId: id, jid },
+                  'Discord ack reaction attached',
+                );
+                return {
+                  messageId: msg.id,
+                  channelId: msg.channelId,
+                };
+              } catch (err) {
+                logger.debug(
+                  { err, msgId: msg.id, inputMessageId: id, jid },
+                  'Discord ack reaction attach failed',
+                );
+                return null;
+              }
+            },
+            recallAckReaction,
+          )
+          .catch(() => {});
 
         notifyNewImMessage();
 
@@ -983,6 +993,7 @@ export function createDiscordConnection(
 
     async disconnect(): Promise<void> {
       stopping = true;
+      await ackReactions.clearAll();
       if (discordClient) {
         try {
           discordClient.destroy();
@@ -994,7 +1005,6 @@ export function createDiscordConnection(
       readyFired = false;
       dedup.clear();
       lastMessageIds.clear();
-      ackReactionByChat.clear();
       processingLock.dispose();
       logger.info('Discord bot disconnected');
     },
@@ -1071,8 +1081,8 @@ export function createDiscordConnection(
       }
     },
 
-    clearAckReaction(chatId: string): void {
-      recallAckReaction(chatId).catch(() => {});
+    clearAckReaction(chatId: string, inputMessageId: string): Promise<void> {
+      return ackReactions.clear(processingIndicatorKey(chatId, inputMessageId));
     },
 
     isConnected(): boolean {

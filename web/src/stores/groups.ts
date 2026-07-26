@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { api } from '../api/client';
 import type { GroupInfo } from '../types';
+import { normalizeGroupInteractionMode } from '../lib/interaction-mode';
 
 export type { GroupInfo };
 
@@ -25,7 +26,13 @@ export const useGroupsStore = create<GroupsState>((set) => ({
       const data = await api.get<{ groups: Record<string, GroupInfo> }>(
         '/api/groups',
       );
-      set({ groups: data.groups, loading: false, error: null });
+      const groups = Object.fromEntries(
+        Object.entries(data.groups).map(([jid, group]) => [
+          jid,
+          normalizeGroupInteractionMode(group),
+        ]),
+      );
+      set({ groups, loading: false, error: null });
     } catch (err) {
       set({
         loading: false,

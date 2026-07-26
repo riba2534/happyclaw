@@ -12,6 +12,7 @@ import {
   getAgentProfile,
   getRegisteredGroup,
   getWorkspaceAgentProfileId,
+  getWorkspaceInteractionMode,
   listAgentChannelMountsByWorkspace,
   listWorkspaceRecords,
   listWorkspaceRuntimeSessionsByWorkspace,
@@ -114,6 +115,7 @@ function serializeWorkspaceSummary(
     execution_mode: inspectGovernance
       ? (group.executionMode ?? 'container')
       : undefined,
+    interaction_mode: getWorkspaceInteractionMode(workspace.folder),
     custom_cwd: isAdmin ? (group.customCwd ?? null) : undefined,
     agent_profile: getAgentProfileSnapshot(workspace, inspectGovernance),
     runtime_session_count: inspectGovernance

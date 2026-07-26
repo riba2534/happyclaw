@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronUp } from 'lucide-react';
-import { useChatStore } from '../../stores/chat';
+import { ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
+import { shouldRecoverStaleWaiting, useChatStore } from '../../stores/chat';
 import { useAuthStore } from '../../stores/auth';
 import { resolveAgentDisplayIdentity } from '../../utils/agent-identity';
-import type { AgentInfo } from '../../types';
+import type { AgentInfo, InteractionMode } from '../../types';
 import { EmojiAvatar } from '../common/EmojiAvatar';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { TodoProgressPanel } from './TodoProgressPanel';
@@ -11,6 +11,7 @@ import { ToolActivityCard } from './ToolActivityCard';
 import { useDisplayMode } from '../../hooks/useDisplayMode';
 import { formatThinkingDuration } from '../../utils/thinking-duration';
 import { WorkflowRunCard } from './WorkflowRunCard';
+import { shouldShowStreamingPartialText } from '../../lib/interaction-mode';
 
 /** Render AskUserQuestion options as a visual card (read-only). */
 function AskUserQuestionCard({
@@ -532,6 +533,7 @@ function StreamingContent({
   setThinkingExpanded,
   thinkingRef,
   handleThinkingScroll,
+  showPartialText,
 }: {
   streaming: import('../../stores/chat').StreamingState;
   localElapsed: Record<string, number>;
@@ -540,6 +542,7 @@ function StreamingContent({
   setThinkingExpanded: (v: boolean) => void;
   thinkingRef: React.RefObject<HTMLDivElement | null>;
   handleThinkingScroll: () => void;
+  showPartialText: boolean;
 }) {
   // Classify active tools
   const cardTools = streaming.activeTools.filter(
@@ -742,7 +745,7 @@ function StreamingContent({
       )}
 
       {/* Partial text */}
-      {streaming.partialText && (
+      {showPartialText && streaming.partialText && (
         <div className="max-w-none overflow-hidden [&>div>*:first-child]:!mt-0">
           <MarkdownRenderer
             content={
@@ -768,6 +771,7 @@ interface StreamingDisplayProps {
   agentAvatarUrl?: string | null;
   agentAvatarEmoji?: string | null;
   agentAvatarColor?: string | null;
+  interactionMode?: InteractionMode;
 }
 
 const EMPTY_AGENTS: AgentInfo[] = [];
@@ -780,11 +784,18 @@ export function StreamingDisplay({
   agentAvatarUrl,
   agentAvatarEmoji,
   agentAvatarColor,
+  interactionMode = 'assistant',
 }: StreamingDisplayProps) {
   const mainStreaming = useChatStore((s) => s.streaming[groupJid]);
   const agentStreamingState = useChatStore((s) =>
     agentId ? s.agentStreaming[agentId] : undefined,
   );
+  const runtimeAgentKind = useChatStore((s) =>
+    agentId
+      ? s.agents[groupJid]?.find((agent) => agent.id === agentId)?.kind
+      : undefined,
+  );
+  const runtimeJid = agentId ? `${groupJid}#agent:${agentId}` : groupJid;
   const streaming = agentId ? agentStreamingState : mainStreaming;
   // Task agents — only shown in main conversation (not inside agent tabs)
   const allAgents = useChatStore((s) =>
@@ -795,6 +806,14 @@ export function StreamingDisplay({
     [allAgents],
   );
   const hasTaskAgents = taskAgents.length > 0;
+  // Fire-and-forget spawn Agents retain Assistant streaming semantics even in
+  // a proactive Workspace. The Workspace contract applies to main and
+  // conversation Agent loops.
+  const effectiveInteractionMode =
+    runtimeAgentKind === 'spawn' ? 'assistant' : interactionMode;
+  const showPartialText = shouldShowStreamingPartialText(
+    effectiveInteractionMode,
+  );
   const appearance = useAuthStore((state) => state.appearance);
   const agentIdentity = resolveAgentDisplayIdentity({
     agentName: senderNameProp,
@@ -821,51 +840,59 @@ export function StreamingDisplay({
   const userToggledThinkingRef = useRef(false);
   const [localElapsed, setLocalElapsed] = useState<Record<string, number>>({});
 
-  // Auto-clear stale waiting state to prevent UI getting stuck when agent
-  // process dies without sending a final message.
+  // Exact run_started/run_finished events own the public waiting lifecycle.
+  // This timer only recovers orphaned UI state after the authoritative run has
+  // disappeared; long but healthy runs may remain quiet indefinitely.
   const lastStreamActivityRef = useRef(Date.now());
   useEffect(() => {
-    // Reset activity timer whenever streaming state changes (i.e., new stream events)
-    if (streaming) {
-      lastStreamActivityRef.current = Date.now();
-    }
+    if (streaming) lastStreamActivityRef.current = Date.now();
   }, [streaming]);
 
   useEffect(() => {
+    if (isWaiting) lastStreamActivityRef.current = Date.now();
+  }, [isWaiting, runtimeJid]);
+
+  useEffect(() => {
     if (!isWaiting) return;
-    // Record the moment waiting starts
-    lastStreamActivityRef.current = Date.now();
 
-    const STALE_NO_DATA_MS = 60_000; // 60s with no stream data at all
-    const STALE_WITH_DATA_MS = 180_000; // 3min since last stream event
-
-    const interval = setInterval(() => {
-      const elapsed = Date.now() - lastStreamActivityRef.current;
+    const interval = window.setInterval(() => {
       const state = useChatStore.getState();
-      const hasData = agentId
+      const hasActiveRun = !!state.activeRuns[runtimeJid];
+      const hasStreamData = agentId
         ? !!state.agentStreaming[agentId]
         : !!state.streaming[groupJid];
-      const threshold = hasData ? STALE_WITH_DATA_MS : STALE_NO_DATA_MS;
+      if (
+        !shouldRecoverStaleWaiting({
+          elapsedMs: Date.now() - lastStreamActivityRef.current,
+          hasStreamData,
+          hasActiveRun,
+        })
+      ) {
+        return;
+      }
 
-      if (elapsed > threshold) {
-        // Clear the stuck waiting state via clearStreaming (handles pendingThinking + SDK Task preservation)
-        useChatStore.getState().clearStreaming(groupJid);
-        if (agentId) {
-          // clearStreaming doesn't handle agent-specific state, clean it separately
-          useChatStore.setState((s) => {
-            const nextStreaming = { ...s.agentStreaming };
-            delete nextStreaming[agentId];
-            return {
-              agentWaiting: { ...s.agentWaiting, [agentId]: false },
-              agentStreaming: nextStreaming,
-            };
-          });
+      if (agentId) {
+        useChatStore.setState((current) => {
+          // Re-check under the state mutation so a concurrent run_started
+          // cannot be cleared by this stale interval tick.
+          if (current.activeRuns[runtimeJid]) return current;
+          const nextStreaming = { ...current.agentStreaming };
+          delete nextStreaming[agentId];
+          return {
+            agentWaiting: { ...current.agentWaiting, [agentId]: false },
+            agentStreaming: nextStreaming,
+          };
+        });
+      } else {
+        // clearStreaming also preserves any useful completed thinking state.
+        if (!useChatStore.getState().activeRuns[runtimeJid]) {
+          useChatStore.getState().clearStreaming(groupJid);
         }
       }
-    }, 10_000); // check every 10s
+    }, 10_000);
 
-    return () => clearInterval(interval);
-  }, [isWaiting, groupJid, agentId]);
+    return () => window.clearInterval(interval);
+  }, [agentId, groupJid, isWaiting, runtimeJid]);
 
   // Auto-scroll thinking content (unless user scrolled up)
   useEffect(() => {
@@ -947,10 +974,36 @@ export function StreamingDisplay({
     userScrolledRef.current = !isAtBottom;
   };
 
+  // Proactive mode exposes only committed native messages plus an explicit run
+  // lifecycle. Keep its activity signal visually separate from message content:
+  // it is not an unfinished Assistant reply and must not look like another card.
+  if (effectiveInteractionMode === 'proactive') {
+    if (!isWaiting) return null;
+    return (
+      <div
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        aria-label={`${senderName}正在处理`}
+        className={
+          isCompact
+            ? 'mb-2 flex min-h-10 items-center gap-2 border-b border-border pb-2 text-sm text-muted-foreground'
+            : 'mx-auto flex min-h-10 w-full max-w-4xl items-center gap-2 px-4 py-2 text-sm text-muted-foreground lg:pl-[60px]'
+        }
+      >
+        <Loader2
+          aria-hidden="true"
+          className="h-4 w-4 shrink-0 animate-spin text-primary motion-reduce:animate-none"
+        />
+        <span>正在处理…</span>
+      </div>
+    );
+  }
+
   // 计算是否有流式数据（含中断后冻结的 partialText）
   const hasStreamData =
     (streaming &&
-      (streaming.partialText ||
+      ((showPartialText && streaming.partialText) ||
         streaming.thinkingText ||
         streaming.activeTools.length > 0 ||
         streaming.activeHook ||
@@ -969,7 +1022,7 @@ export function StreamingDisplay({
   // 仅在既不等待也无冻结数据时才隐藏
   if (!isWaiting && !hasStreamData) return null;
 
-  // Waiting but no stream data: show empty AI card with bouncing dots
+  // Waiting but no stream data: show an accessible loading indicator
   if (isWaiting && !hasStreamData) {
     if (isCompact) {
       return (
@@ -979,13 +1032,16 @@ export function StreamingDisplay({
               {senderName}
             </span>
           </div>
-          <div className="flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
-            <span className="w-1.5 h-1.5 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
-            <span className="w-1.5 h-1.5 bg-brand-400 rounded-full animate-bounce" />
-            <span className="text-sm text-muted-foreground ml-1">
-              正在准备...
-            </span>
+          <div
+            role="status"
+            aria-live="polite"
+            className="flex items-center gap-2"
+          >
+            <Loader2
+              aria-hidden="true"
+              className="h-4 w-4 animate-spin text-primary motion-reduce:animate-none"
+            />
+            <span className="text-sm text-muted-foreground">正在准备回复…</span>
           </div>
         </div>
       );
@@ -1023,12 +1079,17 @@ export function StreamingDisplay({
               </span>
             </div>
             <div className="bg-surface rounded-xl border border-border/60 px-5 py-4 font-serif shadow-card">
-              <div className="flex items-center gap-1.5">
-                <span className="w-2 h-2 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
-                <span className="w-2 h-2 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
-                <span className="w-2 h-2 bg-brand-400 rounded-full animate-bounce" />
-                <span className="text-sm text-muted-foreground ml-1">
-                  正在准备...
+              <div
+                role="status"
+                aria-live="polite"
+                className="flex items-center gap-2"
+              >
+                <Loader2
+                  aria-hidden="true"
+                  className="h-4 w-4 animate-spin text-primary motion-reduce:animate-none"
+                />
+                <span className="text-sm text-muted-foreground">
+                  正在准备回复…
                 </span>
               </div>
             </div>
@@ -1074,6 +1135,7 @@ export function StreamingDisplay({
               }}
               thinkingRef={thinkingRef}
               handleThinkingScroll={handleThinkingScroll}
+              showPartialText={showPartialText}
             />
           )}
 
@@ -1157,6 +1219,7 @@ export function StreamingDisplay({
                 }}
                 thinkingRef={thinkingRef}
                 handleThinkingScroll={handleThinkingScroll}
+                showPartialText={showPartialText}
               />
             )}
 

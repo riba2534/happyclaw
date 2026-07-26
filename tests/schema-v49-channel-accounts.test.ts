@@ -59,7 +59,9 @@ describe('schema v50 channel account protocol lifecycle', () => {
   test('adds account metadata and account dimensions without rewriting legacy JIDs', async () => {
     const db = await import('../src/db.js');
     db.initDatabase();
-    expect(db.getRouterState('schema_version')).toBe('60');
+    expect(db.getRouterState('schema_version')).toBe(
+      String(db.CURRENT_SCHEMA_VERSION),
+    );
     expect(db.getRegisteredGroup('telegram:legacy-chat')).toMatchObject({
       channel_account_id: undefined,
       created_by: 'legacy-owner',

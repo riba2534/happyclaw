@@ -39,7 +39,7 @@ describe('Codex-style Web follow-up product contract', () => {
     expect(input).not.toMatch(/selectFollowUpMode/);
   });
 
-  test('uses query activity instead of a warm conversation process for stop state', () => {
+  test('uses an exact query attempt instead of a warm or backoff process for stop state', () => {
     const chatView = read('web/src/components/chat/ChatView.tsx');
     const store = read('web/src/stores/chat.ts');
 
@@ -47,7 +47,9 @@ describe('Codex-style Web follow-up product contract', () => {
     expect(chatView).toMatch(/isRunning=\{currentContextWaiting\}/);
     expect(chatView).toMatch(/status: 'idle' as const/);
     expect(store).toMatch(/queryInFlight\?: boolean/);
-    expect(store).toMatch(/g\.queryInFlight \|\| g\.pendingMessages/);
+    expect(store).toMatch(/queryId\?: string \| null/);
+    expect(store).toMatch(/hasExactQueryAttempt\(g\)/);
+    expect(store).not.toMatch(/g\.queryInFlight \|\| g\.pendingMessages/);
   });
 
   test('exposes every queued message with edit, reorder, send, and delete', () => {

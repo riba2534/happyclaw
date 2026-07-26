@@ -13,6 +13,23 @@ export interface HostIpcOutputRouteInput {
   deliveryRole?: unknown;
   authorized: boolean;
   scheduledTask: boolean;
+  interactionMode?: 'assistant' | 'proactive';
+}
+
+export function resolveHostIpcLogicalChatJid(input: {
+  sourceChatJid: string;
+  agentId?: string | null;
+  agentChatJid?: string | null;
+  taskRunId?: string | null;
+  scheduledTask: boolean;
+}): string {
+  if (input.agentId) {
+    return `${input.agentChatJid || input.sourceChatJid}#agent:${input.agentId}`;
+  }
+  if (input.taskRunId && input.scheduledTask) {
+    return `${input.sourceChatJid}#task:${input.taskRunId}`;
+  }
+  return input.sourceChatJid;
 }
 
 export type HostIpcOutputRoute =
@@ -67,6 +84,7 @@ export function routeHostIpcOutput(
   }
   if (
     input.scheduledTask ||
+    input.interactionMode === 'proactive' ||
     deliveryRole === null ||
     deliveryRole === 'separate'
   ) {

@@ -22,6 +22,7 @@ import {
   workflowRunFromToolInput,
 } from './workflow-run.js';
 import type { WorkflowRunSnapshot } from './stream-event.types.js';
+import { BackgroundTaskDrainTracker } from './background-task-drain.js';
 
 // SDK 任务终态（task_updated.patch.status 语义下"不会再有后续信号"的状态）。
 // web/src/stores/chat.ts、src/web.ts、src/index.ts 各有等价映射——SDK 新增
@@ -48,6 +49,8 @@ type PendingSubAgentMessage = {
 export class StreamEventProcessor {
   private readonly emit: EmitFn;
   private readonly log: LogFn;
+  private readonly backgroundDrain = new BackgroundTaskDrainTracker();
+  private readonly backgroundLevelTaskIds = new Set<string>();
 
   // Text aggregation buffers — keyed by parentToolUseId (BUF_MAIN for top-level)
   private readonly BUF_MAIN = '__main__';
@@ -1052,6 +1055,7 @@ export class StreamEventProcessor {
         message.task_id;
       const desc = message.description || message.prompt || '';
       if (message.task_id && !message.skip_transcript) {
+        this.backgroundDrain.taskStarted(message.task_id);
         this.pendingSdkTasks.set(message.task_id, {
           description: desc,
           taskType:
@@ -1123,8 +1127,14 @@ export class StreamEventProcessor {
       const pending = this.pendingSdkTasks.get(message.task_id);
       if (pending && message.patch?.is_backgrounded === true) {
         pending.isBackgrounded = true;
+        if (pending.taskType === 'local_bash') {
+          this.backgroundDrain.markNonBlocking(message.task_id);
+        } else {
+          this.backgroundDrain.markBackground(message.task_id);
+        }
       }
       if (patchStatus && SDK_TERMINAL_TASK_STATUSES.has(patchStatus)) {
+        this.backgroundDrain.taskTerminal(message.task_id);
         this.settlePendingSdkTask(
           message.task_id,
           `task_updated:${patchStatus}`,
@@ -1143,6 +1153,50 @@ export class StreamEventProcessor {
     }
     if (message.subtype === 'task_notification') {
       this.processTaskNotification(message);
+      return true;
+    }
+    if (message.subtype === 'background_tasks_changed') {
+      const tasks: Array<{
+        task_id: string;
+        task_type?: string;
+        description?: string;
+      }> = Array.isArray(message.tasks)
+        ? (message.tasks as unknown[]).filter(
+            (
+              task: unknown,
+            ): task is {
+              task_id: string;
+              task_type?: string;
+              description?: string;
+            } =>
+              typeof task === 'object' &&
+              task !== null &&
+              typeof (task as { task_id?: unknown }).task_id === 'string',
+          )
+        : [];
+      const nextIds = new Set(tasks.map((task) => task.task_id));
+      for (const previousId of this.backgroundLevelTaskIds) {
+        if (!nextIds.has(previousId)) {
+          this.pendingSdkTasks.delete(previousId);
+        }
+      }
+      this.backgroundLevelTaskIds.clear();
+      for (const task of tasks) {
+        this.backgroundLevelTaskIds.add(task.task_id);
+        const existing = this.pendingSdkTasks.get(task.task_id);
+        if (!existing) {
+          this.pendingSdkTasks.set(task.task_id, {
+            description: task.description || task.task_id,
+            taskType: task.task_type,
+            isBackgrounded: true,
+          });
+        } else {
+          existing.isBackgrounded = true;
+          existing.taskType ??= task.task_type;
+        }
+      }
+      this.backgroundDrain.replaceBackgroundTasks([...nextIds]);
+      this.emitRawSdkEvent(message, this.rawType(message), 'debug');
       return true;
     }
     if (message.subtype === 'permission_denied') {
@@ -1785,6 +1839,7 @@ export class StreamEventProcessor {
     output_file?: string;
     usage?: any;
   }): void {
+    this.backgroundDrain.taskNotification(message.task_id);
     this.settlePendingSdkTask(
       message.task_id,
       `task_notification:${message.status}`,
@@ -1890,6 +1945,60 @@ export class StreamEventProcessor {
         count++;
     }
     return count;
+  }
+
+  /** Notification completions which the main Agent has not yet consumed. */
+  getBlockingBackgroundCompletionDebtCount(): number {
+    return this.backgroundDrain.completionDebtCount;
+  }
+
+  /**
+   * Composite protocol count used for input completion. The live SDK map and
+   * the replace-level tracker overlap for ordinary events, so take their max
+   * before adding completion debts.
+   */
+  getBlockingBackgroundProtocolCount(): number {
+    return (
+      Math.max(
+        this.getBlockingPendingSdkTaskCount(),
+        this.backgroundDrain.pendingBlockingCount,
+      ) + this.backgroundDrain.completionDebtCount
+    );
+  }
+
+  /**
+   * Main-Agent activity after a task completion notification. The next result
+   * may repay the debt; activity alone is deliberately insufficient.
+   */
+  observeBackgroundNotificationActivity(taskId?: string): void {
+    this.backgroundDrain.notificationActivityObserved(taskId);
+    this.backgroundDrain.invalidateObservedResult();
+  }
+
+  /** Record a result boundary and report whether all background debt is paid. */
+  observeBackgroundResult(originKind?: string): boolean {
+    return this.backgroundDrain.resultObserved(originKind);
+  }
+
+  /** Used after a late authoritative level update. */
+  canCompleteObservedBackgroundResult(): boolean {
+    return this.backgroundDrain.canCompleteObservedResult();
+  }
+
+  invalidateObservedBackgroundResult(): void {
+    this.backgroundDrain.invalidateObservedResult();
+  }
+
+  observeBackgroundNotificationWithoutQuery(): void {
+    this.backgroundDrain.notificationWillNotQuery();
+  }
+
+  commitObservedBackgroundResult(): void {
+    this.backgroundDrain.commitObservedResult();
+  }
+
+  requiresBackgroundResultQuiescence(): boolean {
+    return this.backgroundDrain.requiresQuiescence;
   }
 
   /** pending 任务的简述列表，用于日志与前端提示。 */

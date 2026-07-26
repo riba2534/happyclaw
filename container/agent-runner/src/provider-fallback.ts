@@ -1,4 +1,7 @@
-import type { SDKRateLimitInfo } from '@anthropic-ai/claude-agent-sdk';
+import type {
+  SDKAssistantMessageError,
+  SDKRateLimitInfo,
+} from '@anthropic-ai/claude-agent-sdk';
 import type { IpcInputMessage } from './ipc-delivery.js';
 
 export type ProviderLimitScope = 'account' | 'model';
@@ -144,6 +147,28 @@ export function decideProviderLimitAction(input: {
 /** Keep this deliberately strict; a match triggers a transparent model retry. */
 export function isProviderLimitNotice(result: string | null): boolean {
   return classifyProviderLimitNotice(result) !== null;
+}
+
+const ACCOUNT_PROVIDER_ASSISTANT_ERRORS = new Set<SDKAssistantMessageError>([
+  'authentication_failed',
+  'oauth_org_not_allowed',
+  'billing_error',
+  'rate_limit',
+  'overloaded',
+  'model_not_found',
+  'server_error',
+]);
+
+/**
+ * Third-party Anthropic-compatible endpoints can emit an AssistantMessage
+ * carrying `error` without ever following it with rate_limit_event/result.
+ * Treat provider/account failures as terminal control-plane signals instead of
+ * waiting indefinitely for a Result that may never arrive.
+ */
+export function isAccountProviderAssistantError(
+  error: SDKAssistantMessageError | undefined,
+): error is SDKAssistantMessageError {
+  return !!error && ACCOUNT_PROVIDER_ASSISTANT_ERRORS.has(error);
 }
 
 /**

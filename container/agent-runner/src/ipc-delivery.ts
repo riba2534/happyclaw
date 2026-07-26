@@ -11,6 +11,8 @@ export type IpcDeliveryReceipt = NonNullable<
 export interface IpcInputMessage {
   text: string;
   images?: Array<{ data: string; mimeType?: string }>;
+  /** Exact GroupQueue query attempt that admitted this IPC input. */
+  queryRunId?: string;
   taskId?: string;
   sourceJid?: string;
   channelContext?: ChannelTurnContext;
@@ -58,7 +60,9 @@ export function parseIpcReceipt(
   ) {
     return undefined;
   }
-  let coveredCursors: Array<{ timestamp: string; id: string }> | undefined;
+  let coveredCursors:
+    | Array<{ timestamp: string; id: string; sourceJid?: string }>
+    | undefined;
   if (Object.prototype.hasOwnProperty.call(receipt, 'coveredCursors')) {
     if (
       !Array.isArray(receipt.coveredCursors) ||
@@ -74,7 +78,13 @@ export function parseIpcReceipt(
         typeof covered.id !== 'string'
       )
         return undefined;
-      coveredCursors.push({ timestamp: covered.timestamp, id: covered.id });
+      coveredCursors.push({
+        timestamp: covered.timestamp,
+        id: covered.id,
+        ...(typeof covered.sourceJid === 'string'
+          ? { sourceJid: covered.sourceJid }
+          : {}),
+      });
     }
     const maximum = [...coveredCursors].sort((a, b) => {
       if (a.timestamp !== b.timestamp) {
@@ -90,7 +100,13 @@ export function parseIpcReceipt(
     deliveryId: receipt.deliveryId,
     chatJid: receipt.chatJid,
     ...(coveredCursors && coveredCursors.length > 0 ? { coveredCursors } : {}),
-    cursor: { timestamp: cursor.timestamp, id: cursor.id },
+    cursor: {
+      timestamp: cursor.timestamp,
+      id: cursor.id,
+      ...(typeof cursor.sourceJid === 'string'
+        ? { sourceJid: cursor.sourceJid }
+        : {}),
+    },
   };
 }
 
@@ -244,6 +260,7 @@ export function serializeIpcInputMessage(message: IpcInputMessage): object {
     type: 'message',
     text: message.text,
     images: message.images,
+    queryRunId: message.queryRunId,
     taskId: message.taskId,
     sourceJid: message.sourceJid,
     channelContext: message.channelContext,

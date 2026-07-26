@@ -11,6 +11,7 @@ import {
   TIMEZONE,
 } from './config.js';
 import { getSystemSettings } from './runtime-config.js';
+import { channelConversationJid } from './channel-address.js';
 import {
   ContainerOutput,
   runContainerAgent,
@@ -18,6 +19,7 @@ import {
   runAgentWithModelFallback,
   writeTasksSnapshot,
 } from './container-runner.js';
+import { PROVIDER_FAILURE_USER_NOTICE } from './provider-failure.js';
 import {
   advanceSkippedTask,
   cancelTaskRun,
@@ -102,24 +104,47 @@ import {
 } from './isolated-task-ipc.js';
 import { getScriptTaskHostExecutionError } from './script-task-policy.js';
 
+export function shouldFinalizeScheduledRunOutput(
+  output: Pick<
+    ContainerOutput,
+    'status' | 'inputTurnCompleted' | 'providerFailureTerminal'
+  >,
+  inputPreviouslyCompleted = false,
+): boolean {
+  return (
+    output.status === 'error' ||
+    output.providerFailureTerminal === true ||
+    (output.status === 'success' && output.inputTurnCompleted === true) ||
+    (output.status === 'closed' && inputPreviouslyCompleted)
+  );
+}
+
 /**
  * Resolve the actual group JID to send a task to.
  * Falls back from the task's stored chat_jid to any group matching the same folder.
+ */
+/**
+ * Resolve where this task delivers, or nothing.
+ *
+ * This used to fall back to "any group in the same folder, preferring `web:`"
+ * when the stored target did not resolve, so a task bound to one Feishu group
+ * could silently start answering in another group — or on the Web — after a
+ * rebind or folder migration. CLAUDE.md section 6.4 forbids exactly that: the
+ * response target must not degrade to a default. A run now either reaches its
+ * recorded binding or fails terminally, which the caller surfaces.
+ *
+ * The binding may carry Feishu thread/root fragments while `registered_groups`
+ * is keyed by the conversation JID, so both spellings are accepted.
  */
 function resolveTargetGroupJid(
   task: ScheduledTask,
   groups: Record<string, RegisteredGroup>,
 ): string {
-  const directTarget = groups[task.chat_jid];
-  if (directTarget && directTarget.folder === task.group_folder) {
-    return task.chat_jid;
-  }
-  const sameFolder = Object.entries(groups).filter(
-    ([, g]) => g.folder === task.group_folder,
-  );
-  const preferred =
-    sameFolder.find(([jid]) => jid.startsWith('web:')) || sameFolder[0];
-  return preferred?.[0] || '';
+  const route = task.delivery_route_jid || task.chat_jid;
+  if (!route) return '';
+  const bound = groups[route] ?? groups[channelConversationJid(route)];
+  if (bound && bound.folder === task.group_folder) return route;
+  return '';
 }
 
 function resolveTaskExecutionMode(
@@ -436,6 +461,11 @@ export interface SchedulerDependencies {
       workspaceFolder?: string;
       /** Skip the source channel only after its connector strictly ACKed. */
       sourceAlreadyDelivered?: boolean;
+      /**
+       * The task's recorded delivery binding. Framework-sent notices go here
+       * rather than being resolved by scanning the owner's groups.
+       */
+      deliveryRouteJid?: string | null;
     },
   ) => Promise<void | TaskRunNotificationReceipt>;
   /** Retry one concrete IM delivery without replaying Agent work/Web writes. */
@@ -1003,6 +1033,7 @@ async function runTaskInner(
 
   let result: string | null = null;
   let error: string | null = null;
+  let scheduledInputCompleted = false;
   // Track the time of last meaningful output from the agent.
   // duration_ms should measure actual work time, not include idle wait.
   let lastOutputTime = startTime;
@@ -1125,10 +1156,21 @@ async function runTaskInner(
         if (streamedOutput.status === 'stream' && streamedOutput.streamEvent) {
           deps.broadcastStreamEvent?.(effectiveJid, streamedOutput.streamEvent);
         }
-        if (streamedOutput.result) {
+        if (streamedOutput.providerFailure) {
+          if (streamedOutput.providerFailureTerminal === true) {
+            error = PROVIDER_FAILURE_USER_NOTICE;
+            lastOutputTime = Date.now();
+          }
+        } else if (streamedOutput.result) {
           result = streamedOutput.result;
           lastOutputTime = Date.now();
           resetIdleTimer();
+        }
+        if (
+          !streamedOutput.providerFailure &&
+          streamedOutput.inputTurnCompleted === true
+        ) {
+          scheduledInputCompleted = true;
         }
         if (streamedOutput.status === 'error') {
           error = streamedOutput.error || 'Unknown error';
@@ -1150,9 +1192,22 @@ async function runTaskInner(
             },
           );
         }
-        // Finalize run log on first non-stream output (success/error/closed).
-        // Don't wait for the process to exit — idle timeout can be very long.
-        if (streamedOutput.status !== 'stream') {
+        const closedBeforeCompletion =
+          streamedOutput.status === 'closed' && !scheduledInputCompleted;
+        if (closedBeforeCompletion) {
+          error = 'Agent closed before completing the scheduled task input';
+          lastOutputTime = Date.now();
+        }
+        // A non-stream frame can still be an incomplete partial (context
+        // compaction/truncation). Only finalize after the durable scheduled
+        // input reaches a real terminal boundary.
+        if (
+          closedBeforeCompletion ||
+          shouldFinalizeScheduledRunOutput(
+            streamedOutput,
+            scheduledInputCompleted,
+          )
+        ) {
           finalizeRunLog();
         }
       },
@@ -1161,8 +1216,24 @@ async function runTaskInner(
 
     if (idleTimer) clearTimeout(idleTimer);
 
-    if (output.status === 'error') {
+    if (!output.providerFailure && output.inputTurnCompleted === true) {
+      scheduledInputCompleted = true;
+    }
+    if (output.providerFailure) {
+      error = PROVIDER_FAILURE_USER_NOTICE;
+      lastOutputTime = Date.now();
+    } else if (output.status === 'closed' && !scheduledInputCompleted) {
+      error = 'Agent closed before completing the scheduled task input';
+      lastOutputTime = Date.now();
+    } else if (output.status === 'error') {
       error = output.error || 'Unknown error';
+      lastOutputTime = Date.now();
+    } else if (
+      output.status === 'success' &&
+      !scheduledInputCompleted &&
+      output.inputTurnCompleted !== true
+    ) {
+      error = 'Agent exited before completing the scheduled task input';
       lastOutputTime = Date.now();
     } else if (output.result) {
       // Messages are sent via MCP tool (IPC), result text is just logged
@@ -1238,6 +1309,7 @@ async function runTaskInner(
           // it a second time.  Failures still need the scheduler fallback.
           ownerId: error ? taskOwnerId || undefined : undefined,
           notifyChannels: task.notify_channels,
+          deliveryRouteJid: task.delivery_route_jid ?? task.chat_jid,
           sourceKind: 'sdk_final',
           // Use source workspace folder for IM routing; task sessions are virtual
           // chats under that workspace and should inherit its channel bindings.
@@ -1708,10 +1780,40 @@ let schedulerDepsRef: SchedulerDependencies | null = null;
 interface ActiveDurableExecution {
   taskId: string;
   kind: 'isolated' | 'group' | 'script';
+  /** Claim generation that registered this entry; see clearActiveDurableExecution. */
+  attempt: number;
   stop?: () => void | Promise<void>;
 }
 
 const activeDurableExecutions = new Map<string, ActiveDurableExecution>();
+
+/**
+ * Compare-and-delete keyed on the claim generation.
+ *
+ * The map is keyed by run id so `cancelTaskRunNow` can find a stopper without
+ * knowing the attempt. If a lapsed lease lets the same run be claimed a second
+ * time, the losing attempt's cleanup must not evict the winning attempt's
+ * stopper — that produced an execution nothing could cancel, with the DB marked
+ * cancelled while the process kept running.
+ */
+function clearActiveDurableExecution(runId: string, attempt: number): void {
+  const current = activeDurableExecutions.get(runId);
+  if (current && current.attempt === attempt) {
+    activeDurableExecutions.delete(runId);
+  }
+}
+
+/**
+ * Scheduler work the group queue cannot see: script runs and notification
+ * retries are started detached, so `queue.shutdown()` neither waits for nor
+ * cancels them. Tracking them here lets `stopSchedulerLoop` drain them.
+ */
+const detachedSchedulerWork = new Set<Promise<unknown>>();
+
+function trackDetachedSchedulerWork(work: Promise<unknown>): void {
+  detachedSchedulerWork.add(work);
+  void work.finally(() => detachedSchedulerWork.delete(work));
+}
 
 function taskFromRunSnapshot(
   current: ScheduledTask,
@@ -1767,11 +1869,21 @@ export function notifyTaskSchedulerChanged(): void {
   if (schedulerRunning) armScheduler(0);
 }
 
+/**
+ * Release a run that never crossed the execution boundary.
+ *
+ * `countsAsAttempt: false` is for releases caused by us rather than by the run
+ * — currently process shutdown. Those return the claim's budget so a rolling
+ * restart cannot exhaust `MAX_SAFE_PRESTART_ATTEMPTS` on an occurrence that has
+ * not executed even once, and they skip the terminal-failure branch entirely.
+ */
 function scheduleSafePrestartRetry(
   claim: ClaimedTaskRun,
   reason: string,
+  options: { countsAsAttempt?: boolean } = {},
 ): void {
-  if (claim.attempt >= MAX_SAFE_PRESTART_ATTEMPTS) {
+  const countsAsAttempt = options.countsAsAttempt !== false;
+  if (countsAsAttempt && claim.attempt >= MAX_SAFE_PRESTART_ATTEMPTS) {
     completeTaskRun(claim.id, claim.lease_owner, claim.lease_token, {
       status: 'failed',
       error: `${reason}; safe pre-execution retry limit reached`,
@@ -1780,13 +1892,14 @@ function scheduleSafePrestartRetry(
     return;
   }
   const exponent = Math.max(0, claim.attempt - 1);
-  const delayMs = Math.min(60_000, 1_000 * 2 ** exponent);
+  const delayMs = countsAsAttempt ? Math.min(60_000, 1_000 * 2 ** exponent) : 0;
   releaseTaskRunForRetry(
     claim.id,
     claim.lease_owner,
     claim.lease_token,
     new Date(Date.now() + delayMs).toISOString(),
     reason,
+    { countsAsAttempt },
   );
 }
 
@@ -2139,7 +2252,7 @@ function executeClaimedTaskRun(
   ) => {
     clearInterval(heartbeat);
     activeDurableTaskIds.delete(task.id);
-    activeDurableExecutions.delete(claim.id);
+    clearActiveDurableExecution(claim.id, claim.attempt);
     finishDurableRunFromLegacyLog(
       claim,
       mode,
@@ -2175,6 +2288,7 @@ function executeClaimedTaskRun(
     activeDurableExecutions.set(claim.id, {
       taskId: task.id,
       kind: 'script',
+      attempt: claim.attempt,
       stop: () => abortController.abort('task_run_cancelled_or_fenced'),
     });
     if (
@@ -2185,32 +2299,34 @@ function executeClaimedTaskRun(
       )
     ) {
       clearInterval(heartbeat);
-      activeDurableExecutions.delete(claim.id);
+      clearActiveDurableExecution(claim.id, claim.attempt);
       return;
     }
     executionStartedAtMs = Date.now();
     activeDurableTaskIds.add(task.id);
-    void runScriptTask(
-      task,
-      executionDeps,
-      targetGroupJid,
-      claim.trigger_type === 'manual',
-      claim,
-      abortController.signal,
-    )
-      .catch((err) =>
-        logger.error(
-          { runId: claim.id, taskId: task.id, err },
-          'V2 script run failed',
-        ),
+    trackDetachedSchedulerWork(
+      runScriptTask(
+        task,
+        executionDeps,
+        targetGroupJid,
+        claim.trigger_type === 'manual',
+        claim,
+        abortController.signal,
       )
-      .finally(() => {
-        if (!leaseLost) finish(heartbeat, 'script');
-        else {
-          activeDurableTaskIds.delete(task.id);
-          activeDurableExecutions.delete(claim.id);
-        }
-      });
+        .catch((err) =>
+          logger.error(
+            { runId: claim.id, taskId: task.id, err },
+            'V2 script run failed',
+          ),
+        )
+        .finally(() => {
+          if (!leaseLost) finish(heartbeat, 'script');
+          else {
+            activeDurableTaskIds.delete(task.id);
+            clearActiveDurableExecution(claim.id, claim.attempt);
+          }
+        }),
+    );
     return;
   }
 
@@ -2222,6 +2338,7 @@ function executeClaimedTaskRun(
     activeDurableExecutions.set(claim.id, {
       taskId: task.id,
       kind: 'group',
+      attempt: claim.attempt,
     });
     if (
       !markTaskRunExecutionStarted(
@@ -2231,7 +2348,7 @@ function executeClaimedTaskRun(
       )
     ) {
       clearInterval(heartbeat);
-      activeDurableExecutions.delete(claim.id);
+      clearActiveDurableExecution(claim.id, claim.attempt);
       return;
     }
     executionStartedAtMs = Date.now();
@@ -2253,7 +2370,7 @@ function executeClaimedTaskRun(
         if (!leaseLost) finish(heartbeat, 'group');
         else {
           activeDurableTaskIds.delete(task.id);
-          activeDurableExecutions.delete(claim.id);
+          clearActiveDurableExecution(claim.id, claim.attempt);
         }
       });
     return;
@@ -2291,15 +2408,17 @@ function executeClaimedTaskRun(
   activeDurableExecutions.set(claim.id, {
     taskId: task.id,
     kind: 'isolated',
+    attempt: claim.attempt,
     stop,
   });
   const onDropped = () => {
     if (settled) return;
     settled = true;
     clearInterval(heartbeat);
-    activeDurableExecutions.delete(claim.id);
+    clearActiveDurableExecution(claim.id, claim.attempt);
     if (!started) {
-      if (claim.trigger_type === 'manual') {
+      const shuttingDown = deps.queue.isShuttingDown?.() === true;
+      if (claim.trigger_type === 'manual' && !shuttingDown) {
         // A manual Run Now request that never crossed the execution boundary is
         // safe to terminate; the user may immediately press Run Now again.
         completeTaskRun(claim.id, claim.lease_owner, claim.lease_token, {
@@ -2308,7 +2427,15 @@ function executeClaimedTaskRun(
           notificationStatus: 'skipped',
         });
       } else {
-        scheduleSafePrestartRetry(claim, 'Task queue dropped the run');
+        // Shutdown is not the run's failure: keep the budget and let the next
+        // process pick it straight back up.
+        scheduleSafePrestartRetry(
+          claim,
+          shuttingDown
+            ? 'Process shut down before the run started'
+            : 'Task queue dropped the run',
+          { countsAsAttempt: !shuttingDown },
+        );
       }
     }
     armScheduler(0);
@@ -2327,7 +2454,7 @@ function executeClaimedTaskRun(
         if (!started) {
           settled = true;
           clearInterval(heartbeat);
-          activeDurableExecutions.delete(claim.id);
+          clearActiveDurableExecution(claim.id, claim.attempt);
           return;
         }
         executionStartedAtMs = Date.now();
@@ -2584,14 +2711,16 @@ function pumpTaskNotificationRetries(deps: SchedulerDependencies): void {
       TASK_RUN_LEASE_MS,
     );
     if (!claim) break;
-    void processClaimedTaskRunNotification(claim, deps, TASK_RUN_LEASE_MS)
-      .catch((err) =>
-        logger.error(
-          { runId: claim.runId, err },
-          'Task notification retry crashed',
-        ),
-      )
-      .finally(() => armScheduler(0));
+    trackDetachedSchedulerWork(
+      processClaimedTaskRunNotification(claim, deps, TASK_RUN_LEASE_MS)
+        .catch((err) =>
+          logger.error(
+            { runId: claim.runId, err },
+            'Task notification retry crashed',
+          ),
+        )
+        .finally(() => armScheduler(0)),
+    );
   }
 }
 
@@ -2627,6 +2756,49 @@ function pumpTaskScheduler(deps: SchedulerDependencies): void {
       armSchedulerFromStore();
     }
   }
+}
+
+/**
+ * Stop materializing new occurrences and drain scheduler-owned detached work.
+ *
+ * Shutdown order is a contract: external intake stops first, then the scheduler
+ * stops taking new work while delivery is still available, and only then are
+ * transports and watchers closed. Without this step `queue.shutdown()` returned
+ * while script runs and notification retries were still in flight, and the
+ * process exited mid-write.
+ *
+ * The drain re-reads the live set each round because settling one item can
+ * enqueue its follow-up (a finished run schedules its notification). Rounds and
+ * wall clock are both bounded so a wedged item cannot block shutdown.
+ */
+export async function stopSchedulerLoop(
+  options: { drainMs?: number } = {},
+): Promise<void> {
+  schedulerRunning = false;
+  if (schedulerTimer) {
+    clearTimeout(schedulerTimer);
+    schedulerTimer = null;
+  }
+  const deadline = Date.now() + (options.drainMs ?? 10_000);
+  for (let round = 0; round < 8; round++) {
+    if (detachedSchedulerWork.size === 0) break;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await Promise.race([
+      Promise.allSettled([...detachedSchedulerWork]),
+      new Promise((resolve) => {
+        const timer = setTimeout(resolve, remaining);
+        timer.unref?.();
+      }),
+    ]);
+  }
+  if (detachedSchedulerWork.size > 0) {
+    logger.warn(
+      { pending: detachedSchedulerWork.size },
+      'Scheduler drain timed out with detached work still pending',
+    );
+  }
+  schedulerDepsRef = null;
 }
 
 export function startSchedulerLoop(deps: SchedulerDependencies): void {

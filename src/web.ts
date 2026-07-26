@@ -99,6 +99,7 @@ import type {
   StreamEvent,
   UserRole,
   MessageCursor,
+  RunFinishReason,
 } from './types.js';
 import {
   WEB_PORT,
@@ -114,6 +115,7 @@ import { PLUGIN_EXPANSION_ATTACHMENT_TYPE } from './plugin-expander-sentinel.js'
 import { persistPluginExpansion } from './plugin-expander-store.js';
 import { logger } from './logger.js';
 import { recordRunContextSnapshot } from './run-context-snapshot.js';
+import { RunStreamFence } from './run-stream-fence.js';
 import {
   executeSessionReset,
   isClearCommand,
@@ -841,12 +843,13 @@ async function handleWebUserMessage(
     deps.advanceNextPullCursorOnly(chatJid, { timestamp, id: messageId });
   }
   deps.advanceGlobalCursor({ timestamp, id: messageId });
+  const startedRunId = deps.queue.getActiveQueryId(chatJid);
   return {
     ok: true,
     messageId,
     timestamp,
     disposition: activeRunId ? 'steered' : 'started',
-    runId: activeRunId ?? undefined,
+    runId: activeRunId ?? startedRunId ?? undefined,
   };
 }
 
@@ -1199,12 +1202,13 @@ async function handleAgentConversationMessage(
     }
   }
   // 'sent' needs no further action
+  const startedRunId = deps.queue.getActiveQueryId(virtualChatJid);
   return {
     ok: true,
     messageId,
     timestamp,
     disposition: activeRunId ? 'steered' : 'started',
-    runId: activeRunId ?? undefined,
+    runId: activeRunId ?? startedRunId ?? undefined,
   };
 }
 
@@ -1392,7 +1396,57 @@ function setupWebSocket(server: any): WebSocketServer {
       role: (connSession?.role || 'member') as UserRole,
     });
 
-    // Push streaming snapshots for active groups this user can access
+    // Push an authoritative logical-run snapshot on every connection. A warm
+    // agent process may be active while no query is running, so process
+    // lifecycle (`active`) is not sufficient for restoring the composer and
+    // stream card after a reconnect. This must precede stream_snapshot so the
+    // client can fence each projection against its exact attempt.
+    if (connSession && deps) {
+      const userId = connSession.user_id;
+      const queueStatus = deps.queue.getStatus();
+      const runs: Array<{
+        chatJid: string;
+        runId: string;
+        startedAt: string;
+        phase: 'preparing' | 'running';
+      }> = [];
+      const queuedChatJids: string[] = [];
+      for (const g of queueStatus.groups) {
+        const baseJid = stripRuntimeJidSuffix(g.jid);
+        const jid = normalizeRuntimeJid(g.jid);
+        const allowed = getGroupAllowedUserIds(baseJid);
+        if (allowed === null || !allowed.has(userId)) continue;
+        // A pending message/retry timer has no exact attempt identity yet, so
+        // it cannot be a `runs` entry: emitting runId:null would create a wait
+        // state that can never receive a matching run_finished terminal. It
+        // still has to reach the client, or a reload mid-queue shows an idle
+        // composer and invites a duplicate send.
+        if (!g.queryInFlight || !g.queryId) {
+          if (g.pendingMessages) queuedChatJids.push(jid);
+          continue;
+        }
+        const hasStreamSnapshot = streamingSnapshots.has(jid);
+        runs.push({
+          chatJid: jid,
+          runId: g.queryId,
+          startedAt: new Date(g.queryStartedAt ?? Date.now()).toISOString(),
+          phase: hasStreamSnapshot ? 'running' : 'preparing',
+        });
+      }
+      try {
+        ws.send(
+          JSON.stringify({
+            type: 'active_run_snapshot',
+            runs,
+            queuedChatJids,
+          } satisfies WsMessageOut),
+        );
+      } catch {
+        /* client not ready */
+      }
+    }
+
+    // Push streaming snapshots for active groups this user can access.
     if (connSession && streamingSnapshots.size > 0) {
       const userId = connSession.user_id;
       for (const [jid, snap] of streamingSnapshots) {
@@ -1403,14 +1457,16 @@ function setupWebSocket(server: any): WebSocketServer {
           streamingSnapshots.delete(jid);
           continue;
         }
-        // Skip empty snapshots
+        // Skip empty or unowned snapshots. Every live query projection must
+        // have a terminal-capable run identity before it can restore waiting.
         if (
-          !snap.partialText &&
-          !snap.thinkingText &&
-          snap.activeTools.length === 0 &&
-          snap.recentEvents.length === 0 &&
-          snap.traceEvents.length === 0 &&
-          Object.keys(snap.taskStates).length === 0
+          !snap.runId ||
+          (!snap.partialText &&
+            !snap.thinkingText &&
+            snap.activeTools.length === 0 &&
+            snap.recentEvents.length === 0 &&
+            snap.traceEvents.length === 0 &&
+            Object.keys(snap.taskStates).length === 0)
         ) {
           continue;
         }
@@ -1423,6 +1479,7 @@ function setupWebSocket(server: any): WebSocketServer {
             JSON.stringify({
               type: 'stream_snapshot',
               chatJid: jid,
+              runId: snap.runId,
               snapshot: {
                 partialText: snap.partialText,
                 thinkingText: snap.thinkingText,
@@ -1436,66 +1493,6 @@ function setupWebSocket(server: any): WebSocketServer {
                 activeHook: snap.activeHook,
                 turnId: snap.turnId,
               },
-            } satisfies WsMessageOut),
-          );
-        } catch {
-          /* client not ready */
-        }
-      }
-    }
-
-    // Push an authoritative logical-run snapshot on every connection. A warm
-    // agent process may be active while no query is running, so process
-    // lifecycle (`active`) is not sufficient for restoring the composer and
-    // stream card after a reconnect.
-    if (connSession && deps) {
-      const userId = connSession.user_id;
-      const queueStatus = deps.queue.getStatus();
-      const runs: Array<{
-        chatJid: string;
-        runId: string | null;
-        startedAt: string;
-        phase: 'queued' | 'preparing' | 'running';
-      }> = [];
-      for (const g of queueStatus.groups) {
-        if (!g.queryInFlight && !g.pendingMessages) continue;
-        const baseJid = stripRuntimeJidSuffix(g.jid);
-        const jid = normalizeRuntimeJid(g.jid);
-        const allowed = getGroupAllowedUserIds(baseJid);
-        if (allowed === null || !allowed.has(userId)) continue;
-        const hasStreamSnapshot = streamingSnapshots.has(jid);
-        runs.push({
-          chatJid: jid,
-          runId: g.queryId,
-          startedAt: new Date(g.queryStartedAt ?? Date.now()).toISOString(),
-          phase: g.queryInFlight
-            ? hasStreamSnapshot
-              ? 'running'
-              : 'preparing'
-            : 'queued',
-        });
-      }
-      try {
-        ws.send(
-          JSON.stringify({
-            type: 'active_run_snapshot',
-            runs,
-          } satisfies WsMessageOut),
-        );
-      } catch {
-        /* client not ready */
-      }
-
-      // Keep the established runner_state event for older clients and sidebar
-      // indicators. Unlike the old implementation, only logical work (not a
-      // merely warm process) is reported as running.
-      for (const run of runs) {
-        try {
-          ws.send(
-            JSON.stringify({
-              type: 'runner_state',
-              chatJid: run.chatJid,
-              state: 'running',
             } satisfies WsMessageOut),
           );
         } catch {
@@ -2296,10 +2293,20 @@ interface StreamingSnapshotEntry {
    *  survives the reconnect instead of silently disappearing. */
   activeHook?: { hookName: string; hookEvent: string } | null;
   turnId?: string;
+  /** Exact GroupQueue attempt that owns this projection. */
+  runId?: string;
   updatedAt: number;
 }
 
 const streamingSnapshots = new Map<string, StreamingSnapshotEntry>();
+/** Exact query attempt currently projected for each runtime JID. This is
+ * deliberately separate from process lifecycle: a conversation process may
+ * stay warm while no query is active. */
+const activeLogicalRuns = new Map<
+  string,
+  { runId: string; startedAt: number }
+>();
+const streamRunFence = new RunStreamFence();
 /** runner idle 后的墓碑标记：阻止迟到 stream 事件重建已清理的快照。
  * key 为完整 normalizedJid（主 jid 或 `web:folder#agent:id` 虚拟 jid），
  * 与 runner/快照同粒度；下一个 run 的 'running' 状态清除。 */
@@ -2533,6 +2540,7 @@ function updateSnapshotTask(
 function updateStreamingSnapshot(
   normalizedJid: string,
   event: StreamEvent,
+  runId?: string,
 ): void {
   // Context audits are operator diagnostics. They must not enter user-facing
   // WebSocket snapshots, even if this helper is called outside the broadcaster.
@@ -2541,6 +2549,11 @@ function updateStreamingSnapshot(
   // turn 干净结束（silent-success）：删除快照而非累积，避免 WS 重连恢复到
   // 「生成中」僵尸快照。前端收到同一 idle 事件后清 waiting/streaming。
   if (event.eventType === 'status' && event.statusText === 'idle') {
+    // Legacy stream events do not carry GroupQueue's exact queryId. If another
+    // query is already active for this JID, this may be a late idle from the
+    // previous attempt and must not clear the new snapshot. The exact
+    // run_finished event owns cleanup for the active attempt.
+    if (activeLogicalRuns.has(normalizedJid)) return;
     streamingSnapshots.delete(normalizedJid);
     streamingFullTexts.delete(normalizedJid);
     return;
@@ -2575,12 +2588,14 @@ function updateStreamingSnapshot(
       taskStates: {},
       systemStatus: null,
       turnId: event.turnId,
+      runId,
       updatedAt: Date.now(),
     };
   }
 
   snap.updatedAt = Date.now();
   if (event.turnId) snap.turnId = event.turnId;
+  if (runId) snap.runId = runId;
   pushTraceEvent(snap, event);
   updateSnapshotTask(snap, event);
 
@@ -2789,15 +2804,42 @@ export function broadcastStreamEvent(
 
   const jid = normalizeHomeJid(chatJid);
   const allowedUserIds = getGroupAllowedUserIds(chatJid);
+  // Agent streams use virtual JID format (jid#agent:agentId) as the exact
+  // query-lifecycle key. turnId ownership survives an A→B replacement so a
+  // delayed callback from A cannot be relabelled as B.
+  const snapshotJid = agentId ? `${jid}#agent:${agentId}` : jid;
+  const decision = event.queryRunId
+    ? streamRunFence.observeExact(snapshotJid, event.queryRunId, event.turnId)
+    : streamRunFence.observe(snapshotJid, event.turnId);
+  if (!decision.accepted) {
+    logger.debug(
+      {
+        chatJid: snapshotJid,
+        turnId: event.turnId,
+        runId: decision.runId,
+      },
+      'Discarding stream event from superseded query attempt',
+    );
+    return;
+  }
   const msg: WsMessageOut = agentId
-    ? { type: 'stream_event', chatJid: jid, event, agentId }
-    : { type: 'stream_event', chatJid: jid, event };
+    ? {
+        type: 'stream_event',
+        chatJid: jid,
+        event,
+        agentId,
+        runId: decision.runId,
+      }
+    : {
+        type: 'stream_event',
+        chatJid: jid,
+        event,
+        runId: decision.runId,
+      };
   safeBroadcast(msg, isHostGroupJid(chatJid), allowedUserIds);
 
   // Accumulate snapshot for both main and agent streams.
-  // Agent streams use virtual JID format (jid#agent:agentId) as the key.
-  const snapshotJid = agentId ? `${jid}#agent:${agentId}` : jid;
-  updateStreamingSnapshot(snapshotJid, event);
+  updateStreamingSnapshot(snapshotJid, event, decision.runId);
 }
 
 export function broadcastGroupCreated(
@@ -2954,34 +2996,31 @@ export function broadcastRunnerState(
     state,
   };
   safeBroadcast(msg, isHostGroupJid(baseJid), allowedUserIds);
+  if (state === 'idle') pruneOrphanedAgentSnapshots(jid);
+}
 
-  // Clear streaming snapshots when runner goes idle (main + all agent snapshots)
-  if (state === 'idle') {
-    streamingSnapshots.delete(jid);
-    streamingFullTexts.delete(jid);
-    // Collect keys first, then delete (avoid mutating Map during iteration)
-    const agentPrefix = jid + '#agent:';
-    const snapshotKeysToDelete = [...streamingSnapshots.keys()].filter((k) =>
-      k.startsWith(agentPrefix),
-    );
-    const fullTextKeysToDelete = [...streamingFullTexts.keys()].filter((k) =>
-      k.startsWith(agentPrefix),
-    );
-    for (const key of snapshotKeysToDelete) streamingSnapshots.delete(key);
-    for (const key of fullTextKeysToDelete) streamingFullTexts.delete(key);
-    // 墓碑：拦截本 run 残留 outputChain 回调对快照的迟到重建。同粒度落键——
-    // 主 runner idle 落 `web:folder`，agent/task runner idle 落各自虚拟 jid，
-    // 互不误伤。容量上限防 Map 无界增长（长期运行会累积大量短命虚拟 jid）。
-    snapshotTombstones.set(jid, Date.now());
-    if (snapshotTombstones.size > MAX_SNAPSHOT_TOMBSTONES) {
-      for (const k of snapshotTombstones.keys()) {
-        if (snapshotTombstones.size <= MAX_SNAPSHOT_TOMBSTONES) break;
-        snapshotTombstones.delete(k);
-      }
-    }
-  } else {
-    // 新 run 启动，恢复快照写入
-    snapshotTombstones.delete(jid);
+/**
+ * Drop sub-agent stream snapshots that no longer have a live run.
+ *
+ * `broadcastRunFinished` deletes only the exact JID whose runId matched, so a
+ * sub-agent run ending without one — dropped before announceQueryStart, or a
+ * runId mismatch — leaves its snapshot resident until the 30-minute staleness
+ * sweep that runs on the next reconnect. Until then a reconnecting client can
+ * restore a zombie "generating" card.
+ *
+ * Entries still in `activeLogicalRuns` are left alone: those are the live
+ * sub-agents that the narrower deletion was introduced to protect.
+ */
+function pruneOrphanedAgentSnapshots(baseRuntimeJid: string): void {
+  const prefix = `${baseRuntimeJid}#agent:`;
+  for (const key of [...streamingSnapshots.keys()]) {
+    if (!key.startsWith(prefix) || activeLogicalRuns.has(key)) continue;
+    streamingSnapshots.delete(key);
+    streamingFullTexts.delete(key);
+  }
+  for (const key of [...streamingFullTexts.keys()]) {
+    if (!key.startsWith(prefix) || activeLogicalRuns.has(key)) continue;
+    streamingFullTexts.delete(key);
   }
 }
 
@@ -2993,6 +3032,10 @@ export function broadcastRunStarted(
   const baseJid = stripRuntimeJidSuffix(chatJid);
   const jid = normalizeRuntimeJid(chatJid);
   const allowedUserIds = getGroupAllowedUserIds(baseJid);
+  activeLogicalRuns.set(jid, { runId, startedAt });
+  streamRunFence.start(jid, runId);
+  // New exact attempt supersedes the previous attempt's late-event tombstone.
+  snapshotTombstones.delete(jid);
   safeBroadcast(
     {
       type: 'run_started',
@@ -3004,6 +3047,45 @@ export function broadcastRunStarted(
     isHostGroupJid(baseJid),
     allowedUserIds,
   );
+}
+
+export function broadcastRunFinished(
+  chatJid: string,
+  runId: string,
+  reason: RunFinishReason,
+  finishedAt: number,
+): void {
+  const baseJid = stripRuntimeJidSuffix(chatJid);
+  const jid = normalizeRuntimeJid(chatJid);
+  const allowedUserIds = getGroupAllowedUserIds(baseJid);
+  const current = activeLogicalRuns.get(jid);
+
+  // Always publish the exact terminal event so clients can fence it. Only
+  // mutate server-side projection when it still belongs to this attempt.
+  safeBroadcast(
+    {
+      type: 'run_finished',
+      chatJid: jid,
+      runId,
+      reason,
+      finishedAt: new Date(finishedAt).toISOString(),
+    },
+    isHostGroupJid(baseJid),
+    allowedUserIds,
+  );
+
+  if (current?.runId !== runId) return;
+  activeLogicalRuns.delete(jid);
+  streamRunFence.finish(jid, runId);
+  streamingSnapshots.delete(jid);
+  streamingFullTexts.delete(jid);
+  snapshotTombstones.set(jid, finishedAt);
+  if (snapshotTombstones.size > MAX_SNAPSHOT_TOMBSTONES) {
+    for (const key of snapshotTombstones.keys()) {
+      if (snapshotTombstones.size <= MAX_SNAPSHOT_TOMBSTONES) break;
+      snapshotTombstones.delete(key);
+    }
+  }
 }
 
 export function broadcastDockerBuildLog(line: string): void {
@@ -3126,6 +3208,7 @@ export function startWebServer(webDeps: WebDeps): void {
   // Register runner state change callback for sidebar indicators
   webDeps.queue.setOnRunnerStateChange(broadcastRunnerState);
   webDeps.queue.setOnQueryStart(broadcastRunStarted);
+  webDeps.queue.setOnQueryFinish(broadcastRunFinished);
 
   // Broadcast status every 5 seconds
   if (statusInterval) clearInterval(statusInterval);

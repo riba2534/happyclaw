@@ -33,6 +33,7 @@ import {
   ExecutionMode,
   InviteCode,
   InviteCodeWithCreator,
+  InteractionMode,
   MessageFinalizationReason,
   FollowUpMode,
   FollowUpStatus,
@@ -62,6 +63,7 @@ import {
   UserSubscription,
   UserSession,
   UserSessionWithUser,
+  WorkspaceAgentProfileBinding,
   Permission,
   PermissionTemplateKey,
 } from './types.js';
@@ -80,7 +82,12 @@ import {
 } from './channel-reliability-store.js';
 
 let db: InstanceType<typeof Database>;
-const CURRENT_SCHEMA_VERSION = 60;
+/**
+ * Exported so migration tests can assert "an old database reaches head" without
+ * restating the number. Hardcoding it meant every schema bump edited a dozen
+ * unrelated test files, which is churn that hides real assertion changes.
+ */
+export const CURRENT_SCHEMA_VERSION = 63;
 
 export function isDatabaseInitialized(): boolean {
   return Boolean(db?.open);
@@ -901,6 +908,8 @@ export function initDatabase(): void {
     CREATE TABLE IF NOT EXISTS workspace_agent_profiles (
       group_folder TEXT PRIMARY KEY,
       agent_profile_id TEXT NOT NULL,
+      interaction_mode TEXT NOT NULL DEFAULT 'assistant'
+        CHECK (interaction_mode IN ('assistant', 'proactive')),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -1193,6 +1202,18 @@ export function initDatabase(): void {
   ensureColumn('scheduled_tasks', 'revision', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumn('scheduled_tasks', 'updated_at', "TEXT NOT NULL DEFAULT ''");
   ensureColumn('scheduled_tasks', 'deleted_at', 'TEXT');
+  // v62 -> v63: a task stored only the workspace-level `chat_jid`, so execution
+  // had to re-derive its target and fell back to "any group in this folder,
+  // preferring web:". Capture the concrete delivery route instead — HappyClaw's
+  // JID already encodes provider, external chat, channel account and Feishu
+  // thread/root, so one column carries the whole binding. Existing rows are
+  // backfilled from `chat_jid`, which is exactly the route they used before.
+  ensureColumn('scheduled_tasks', 'delivery_route_jid', 'TEXT');
+  db.prepare(
+    `UPDATE scheduled_tasks
+     SET delivery_route_jid = chat_jid
+     WHERE delivery_route_jid IS NULL AND chat_jid IS NOT NULL`,
+  ).run();
   ensureColumn('task_runs', 'notification_summary', 'TEXT');
   ensureColumn('task_runs', 'notification_payload', 'TEXT');
   ensureColumn(
@@ -2124,6 +2145,62 @@ export function initDatabase(): void {
   // pass backfills sources and removes any projection-only ghosts.
   // v45 → v46: workspace sharing was removed. Drop the legacy membership
   // table so stale grants cannot survive an upgrade.
+  // v60 -> v61: interaction behavior belongs to the Workspace↔Agent binding,
+  // not the reusable AgentProfile. This column must exist before the generic
+  // AgentProfile workspace backfill below: that backfill reads existing
+  // bindings through getWorkspaceAgentProfileId(), whose row projection now
+  // includes interaction_mode.
+  ensureColumn(
+    'workspace_agent_profiles',
+    'interaction_mode',
+    "TEXT NOT NULL DEFAULT 'assistant'",
+  );
+
+  // v61 -> v62: "persona" conflated identity with reply delivery. The mode is
+  // now named "proactive": the Agent explicitly decides when to call
+  // send_message, while its identity remains owned by AgentProfile.
+  const replyModeSchemaVersion = Number(
+    getRouterStateInternal('schema_version') ?? '0',
+  );
+  if (replyModeSchemaVersion < 62) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE workspace_agent_profiles_v62 (
+          group_folder TEXT PRIMARY KEY,
+          agent_profile_id TEXT NOT NULL,
+          interaction_mode TEXT NOT NULL DEFAULT 'assistant'
+            CHECK (interaction_mode IN ('assistant', 'proactive')),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        INSERT INTO workspace_agent_profiles_v62 (
+          group_folder, agent_profile_id, interaction_mode, created_at, updated_at
+        )
+        SELECT
+          group_folder,
+          agent_profile_id,
+          CASE
+            WHEN interaction_mode IN ('persona', 'proactive') THEN 'proactive'
+            ELSE 'assistant'
+          END,
+          created_at,
+          updated_at
+        FROM workspace_agent_profiles;
+        DROP TABLE workspace_agent_profiles;
+        ALTER TABLE workspace_agent_profiles_v62
+          RENAME TO workspace_agent_profiles;
+        CREATE INDEX idx_workspace_agent_profiles_profile
+          ON workspace_agent_profiles(agent_profile_id);
+      `);
+    })();
+  }
+  db.prepare(
+    `UPDATE workspace_agent_profiles
+     SET interaction_mode = 'assistant'
+     WHERE interaction_mode IS NULL
+        OR interaction_mode NOT IN ('assistant', 'proactive')`,
+  ).run();
+
   db.exec('DROP TABLE IF EXISTS group_members');
   backfillAgentProfileDefaultsAndWorkspaceMappings();
   removeLegacyAgentToolPolicies();
@@ -4001,18 +4078,18 @@ export function getMessagesSince(
   return rows.map((row) => normalizeMessageRow(row));
 }
 
-export function createTask(
-  task: Omit<
-    ScheduledTask,
-    'last_run' | 'last_result' | 'revision' | 'updated_at' | 'deleted_at'
-  > &
-    Partial<Pick<ScheduledTask, 'revision' | 'updated_at' | 'deleted_at'>>,
-): void {
+type CreateTaskInput = Omit<
+  ScheduledTask,
+  'last_run' | 'last_result' | 'revision' | 'updated_at' | 'deleted_at'
+> &
+  Partial<Pick<ScheduledTask, 'revision' | 'updated_at' | 'deleted_at'>>;
+
+export function createTask(task: CreateTaskInput): void {
   const updatedAt = task.updated_at ?? task.created_at;
   db.prepare(
     `
-    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, execution_type, script_command, execution_mode, next_run, status, created_at, created_by, notify_channels, revision, updated_at, deleted_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, execution_type, script_command, execution_mode, next_run, status, created_at, created_by, notify_channels, revision, updated_at, deleted_at, delivery_route_jid)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     task.id,
@@ -4035,7 +4112,43 @@ export function createTask(
     task.revision ?? 1,
     updatedAt,
     task.deleted_at ?? null,
+    // Fall back to chat_jid so a caller that has no concrete route still records
+    // an explicit binding rather than leaving execution to re-derive one.
+    task.delivery_route_jid ?? task.chat_jid,
   );
+}
+
+export type TaskCapacityCreateResult =
+  | { status: 'created' }
+  | { status: 'limit_reached'; limit: number; count: number };
+
+/**
+ * Atomically enforce the per-owner live-task fuse and insert a definition.
+ *
+ * Every production writer must use this boundary. Keeping the COUNT and INSERT
+ * in one IMMEDIATE transaction prevents concurrent REST/IPC processes from
+ * observing the same remaining slot.
+ */
+export function createTaskWithinOwnerLimit(
+  task: CreateTaskInput,
+  maxTasksPerUser: number,
+): TaskCapacityCreateResult {
+  return db
+    .transaction((): TaskCapacityCreateResult => {
+      if (maxTasksPerUser > 0 && task.created_by) {
+        const count = countTasksByOwner(task.created_by);
+        if (count >= maxTasksPerUser) {
+          return {
+            status: 'limit_reached',
+            limit: maxTasksPerUser,
+            count,
+          };
+        }
+      }
+      createTask(task);
+      return { status: 'created' };
+    })
+    .immediate();
 }
 
 /** Parse notify_channels from JSON string stored in DB and normalize new fields */
@@ -4057,6 +4170,11 @@ function mapTaskRow(row: unknown): ScheduledTask {
   if (!Number.isInteger(r.revision) || r.revision < 1) r.revision = 1;
   if (!r.updated_at) r.updated_at = r.created_at;
   if (r.deleted_at === undefined) r.deleted_at = null;
+  // Rows written before the column existed behave as if bound to chat_jid,
+  // which is the route they actually used.
+  if (r.delivery_route_jid === undefined || r.delivery_route_jid === null) {
+    r.delivery_route_jid = r.chat_jid ?? null;
+  }
   // Defensive: legacy BLOB cells in TEXT-affinity columns come back as Buffer.
   r.prompt = toUtf8String(r.prompt);
   if (r.script_command !== undefined)
@@ -4076,6 +4194,23 @@ export function getTasksForGroup(groupFolder: string): ScheduledTask[] {
     )
     .all(groupFolder)
     .map(mapTaskRow);
+}
+
+/**
+ * Live (non-deleted) schedule count for one owner, used as a capacity fuse.
+ *
+ * Per-task frequency floors and the one-nonterminal-run index bound a single
+ * task, but nothing bounded the number of tasks: N schedules firing every
+ * minute can keep the queue saturated and crowd out interactive sessions.
+ */
+export function countTasksByOwner(ownerId: string): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS count FROM scheduled_tasks
+       WHERE deleted_at IS NULL AND created_by = ?`,
+    )
+    .get(ownerId) as { count: number } | undefined;
+  return row?.count ?? 0;
 }
 
 export function getAllTasks(): ScheduledTask[] {
@@ -4112,6 +4247,7 @@ export function updateTask(
       | 'status'
       | 'notify_channels'
       | 'chat_jid'
+      | 'delivery_route_jid'
       | 'group_folder'
     >
   >,
@@ -4174,6 +4310,10 @@ export function updateTask(
     fields.push('chat_jid = ?');
     values.push(updates.chat_jid);
   }
+  if (updates.delivery_route_jid !== undefined) {
+    fields.push('delivery_route_jid = ?');
+    values.push(updates.delivery_route_jid);
+  }
   if (updates.group_folder !== undefined) {
     fields.push('group_folder = ?');
     values.push(updates.group_folder);
@@ -4199,6 +4339,15 @@ export type TaskRevisionMutationResult =
 export type TaskSoftDeleteMutationResult =
   | TaskRevisionMutationResult
   | { status: 'active_run'; task: ScheduledTask; run: TaskRun };
+
+export type TaskRestoreMutationResult =
+  | TaskRevisionMutationResult
+  | {
+      status: 'limit_reached';
+      task: ScheduledTask;
+      limit: number;
+      count: number;
+    };
 
 /**
  * Optimistic mutation used by V2 REST/MCP callers. Legacy updateTask remains
@@ -4255,6 +4404,8 @@ export function updateTaskWithRevision(
     );
   }
   if (updates.chat_jid !== undefined) pushText('chat_jid', updates.chat_jid);
+  if (updates.delivery_route_jid !== undefined)
+    pushText('delivery_route_jid', updates.delivery_route_jid);
   if (updates.group_folder !== undefined)
     pushText('group_folder', updates.group_folder);
 
@@ -4321,27 +4472,43 @@ export function softDeleteTaskWithRevision(
 export function restoreTaskWithRevision(
   id: string,
   expectedRevision: number,
-): TaskRevisionMutationResult {
-  const current = getTaskById(id);
-  if (!current) return { status: 'not_found' };
-  if (current.revision !== expectedRevision) {
-    return { status: 'conflict', task: current };
-  }
-  if (!current.deleted_at) return { status: 'updated', task: current };
-  const now = new Date().toISOString();
-  const result = db
-    .prepare(
-      `UPDATE scheduled_tasks
-       SET deleted_at = NULL, status = 'paused', next_run = NULL,
-           revision = revision + 1, updated_at = ?
-       WHERE id = ? AND revision = ? AND deleted_at IS NOT NULL`,
-    )
-    .run(now, id, expectedRevision);
-  const latest = getTaskById(id);
-  if (result.changes === 1 && latest)
-    return { status: 'updated', task: latest };
-  if (!latest) return { status: 'not_found' };
-  return { status: 'conflict', task: latest };
+  maxTasksPerUser = 0,
+): TaskRestoreMutationResult {
+  return db
+    .transaction((): TaskRestoreMutationResult => {
+      const current = getTaskById(id);
+      if (!current) return { status: 'not_found' };
+      if (current.revision !== expectedRevision) {
+        return { status: 'conflict', task: current };
+      }
+      if (!current.deleted_at) return { status: 'updated', task: current };
+      if (maxTasksPerUser > 0 && current.created_by) {
+        const count = countTasksByOwner(current.created_by);
+        if (count >= maxTasksPerUser) {
+          return {
+            status: 'limit_reached',
+            task: current,
+            limit: maxTasksPerUser,
+            count,
+          };
+        }
+      }
+      const now = new Date().toISOString();
+      const result = db
+        .prepare(
+          `UPDATE scheduled_tasks
+           SET deleted_at = NULL, status = 'paused', next_run = NULL,
+               revision = revision + 1, updated_at = ?
+           WHERE id = ? AND revision = ? AND deleted_at IS NOT NULL`,
+        )
+        .run(now, id, expectedRevision);
+      const latest = getTaskById(id);
+      if (result.changes === 1 && latest)
+        return { status: 'updated', task: latest };
+      if (!latest) return { status: 'not_found' };
+      return { status: 'conflict', task: latest };
+    })
+    .immediate();
 }
 
 export function updateTaskWorkspace(
@@ -4549,6 +4716,7 @@ function taskDefinitionSnapshot(
     prompt: task.prompt,
     group_folder: task.group_folder,
     chat_jid: task.chat_jid,
+    delivery_route_jid: task.delivery_route_jid ?? task.chat_jid,
     context_mode: task.context_mode,
     execution_type: task.execution_type,
     execution_mode: task.execution_mode ?? null,
@@ -4561,11 +4729,15 @@ function mapTaskRunRow(row: TaskRunRow): TaskRun {
   let snapshot: TaskRunDefinitionSnapshot;
   try {
     snapshot = JSON.parse(row.definition_snapshot) as TaskRunDefinitionSnapshot;
+    if (snapshot.delivery_route_jid === undefined) {
+      snapshot.delivery_route_jid = snapshot.chat_jid || null;
+    }
   } catch {
     snapshot = {
       prompt: '',
       group_folder: '',
       chat_jid: '',
+      delivery_route_jid: null,
       context_mode: 'isolated',
       execution_type: 'agent',
       execution_mode: null,
@@ -4968,6 +5140,24 @@ export function failExpiredStartedTaskRuns(): number {
   })();
 }
 
+/**
+ * Lease expiry decides who may *take over*, never who may *commit*.
+ *
+ * `renew`/`release`/`complete` fence on `lease_owner` + `lease_token` only. A
+ * worker whose lease lapsed while nobody claimed it still owns its result and
+ * can settle it; the moment another owner claims the row the token advances and
+ * every write from the old worker is rejected. Gating these writes on
+ * `lease_expires_at > now` as well produced the opposite failure: a run that had
+ * actually finished — possibly after already sending its output to the user —
+ * could not be committed, stayed `running`, and was later marked `failed` by
+ * `failExpiredStartedTaskRuns`. Because started runs are deliberately
+ * at-most-once, that lost the execution outright and raised a false failure
+ * alert.
+ *
+ * Every takeover path (`claimNextTaskRun`, `cancelTaskRun`,
+ * `failExpiredStartedTaskRuns`) increments `lease_token`, so dropping the time
+ * condition does not open a double-write window.
+ */
 export function renewTaskRunLease(
   id: string,
   owner: string,
@@ -4981,29 +5171,40 @@ export function renewTaskRunLease(
     .prepare(
       `UPDATE task_runs SET lease_expires_at = ?, updated_at = ?
        WHERE id = ? AND status = 'running' AND lease_owner = ?
-         AND lease_token = ? AND lease_expires_at > ?`,
+         AND lease_token = ?`,
     )
-    .run(expiresAt, nowIso, id, owner, token, nowIso);
+    .run(expiresAt, nowIso, id, owner, token);
   return result.changes === 1;
 }
 
+/**
+ * `attempt` is incremented by `claimNextTaskRun`, so it counts claims. A
+ * release that is not the run's own fault must give that budget back, otherwise
+ * process shutdown burns the pre-execution retry allowance: five ordinary
+ * restarts would permanently fail an occurrence that never executed once.
+ * Mirrors the reference runtime's `incrementFailure=false` release.
+ */
 export function releaseTaskRunForRetry(
   id: string,
   owner: string,
   token: number,
   availableAt: string,
   error: string,
+  options: { countsAsAttempt?: boolean } = {},
 ): boolean {
   const now = new Date().toISOString();
+  const attemptExpr =
+    options.countsAsAttempt === false ? 'MAX(0, attempt - 1)' : 'attempt';
   const result = db
     .prepare(
       `UPDATE task_runs
        SET status = 'retry_wait', available_at = ?, error = ?,
+           attempt = ${attemptExpr},
            lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
        WHERE id = ? AND status = 'running' AND lease_owner = ?
-         AND lease_token = ? AND lease_expires_at > ?`,
+         AND lease_token = ?`,
     )
-    .run(availableAt, error, now, id, owner, token, now);
+    .run(availableAt, error, now, id, owner, token);
   return result.changes === 1;
 }
 
@@ -5029,13 +5230,13 @@ export function completeTaskRun(
     const current = db
       .prepare('SELECT * FROM task_runs WHERE id = ?')
       .get(id) as TaskRunRow | undefined;
+    // Fencing is owner+token only; see renewTaskRunLease for why an expired
+    // but unclaimed lease must still be able to settle its own result.
     if (
       !current ||
       current.status !== 'running' ||
       current.lease_owner !== owner ||
-      current.lease_token !== token ||
-      !current.lease_expires_at ||
-      current.lease_expires_at <= now
+      current.lease_token !== token
     ) {
       return false;
     }
@@ -5073,7 +5274,7 @@ export function completeTaskRun(
              notification_error = ?, duration_ms = ?, completed_at = ?,
              lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
          WHERE id = ? AND status = 'running' AND lease_owner = ?
-           AND lease_token = ? AND lease_expires_at > ?`,
+           AND lease_token = ?`,
       )
       .run(
         input.status,
@@ -5087,7 +5288,6 @@ export function completeTaskRun(
         id,
         owner,
         token,
-        now,
       );
     if (changed.changes !== 1) return false;
     const summary = input.error
@@ -7585,30 +7785,105 @@ export function archiveAgentProfile(
 export function assignWorkspaceAgentProfile(
   groupFolder: string,
   profileId: string,
+  interactionMode?: InteractionMode,
 ): void {
   const now = new Date().toISOString();
   db.transaction(() => {
     db.prepare(
       `INSERT INTO workspace_agent_profiles (
-        group_folder, agent_profile_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?)
+        group_folder, agent_profile_id, interaction_mode, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(group_folder) DO UPDATE SET
         agent_profile_id = excluded.agent_profile_id,
+        interaction_mode = CASE
+          WHEN ? IS NULL THEN workspace_agent_profiles.interaction_mode
+          ELSE excluded.interaction_mode
+        END,
         updated_at = excluded.updated_at`,
-    ).run(groupFolder, profileId, now, now);
+    ).run(
+      groupFolder,
+      profileId,
+      interactionMode ?? 'assistant',
+      now,
+      now,
+      interactionMode ?? null,
+    );
     syncAgentChannelMountsForWorkspaceFolder(groupFolder);
   })();
+}
+
+function parseInteractionMode(
+  value: unknown,
+  groupFolder: string,
+): InteractionMode {
+  if (value === 'proactive' || value === 'persona') return 'proactive';
+  if (value !== 'assistant' && value != null && value !== '') {
+    logger.warn(
+      { groupFolder, interactionMode: value },
+      'Invalid workspace interaction mode; falling back to assistant',
+    );
+  }
+  return 'assistant';
+}
+
+export function getWorkspaceAgentProfileBinding(
+  groupFolder: string,
+): WorkspaceAgentProfileBinding | undefined {
+  const row = db
+    .prepare(
+      `SELECT group_folder, agent_profile_id, interaction_mode, created_at, updated_at
+       FROM workspace_agent_profiles
+       WHERE group_folder = ?`,
+    )
+    .get(groupFolder) as
+    | {
+        group_folder: string;
+        agent_profile_id: string;
+        interaction_mode: unknown;
+        created_at: string;
+        updated_at: string;
+      }
+    | undefined;
+  if (!row) return undefined;
+  return {
+    group_folder: row.group_folder,
+    agent_profile_id: row.agent_profile_id,
+    interaction_mode: parseInteractionMode(
+      row.interaction_mode,
+      row.group_folder,
+    ),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
 }
 
 export function getWorkspaceAgentProfileId(
   groupFolder: string,
 ): string | undefined {
-  const row = db
+  return getWorkspaceAgentProfileBinding(groupFolder)?.agent_profile_id;
+}
+
+export function getWorkspaceInteractionMode(
+  groupFolder: string,
+): InteractionMode {
+  return (
+    getWorkspaceAgentProfileBinding(groupFolder)?.interaction_mode ??
+    'assistant'
+  );
+}
+
+export function setWorkspaceInteractionMode(
+  groupFolder: string,
+  interactionMode: InteractionMode,
+): boolean {
+  const result = db
     .prepare(
-      'SELECT agent_profile_id FROM workspace_agent_profiles WHERE group_folder = ?',
+      `UPDATE workspace_agent_profiles
+       SET interaction_mode = ?, updated_at = ?
+       WHERE group_folder = ?`,
     )
-    .get(groupFolder) as { agent_profile_id: string } | undefined;
-  return row?.agent_profile_id;
+    .run(interactionMode, new Date().toISOString(), groupFolder);
+  return result.changes > 0;
 }
 
 export function deleteWorkspaceAgentProfile(groupFolder: string): void {

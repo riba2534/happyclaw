@@ -11,6 +11,8 @@ const {
   deleteGroupMessageSnapshotsMock,
   loadAgentMessageSnapshotMock,
   saveAgentMessageSnapshotMock,
+  notifyIfHiddenMock,
+  showNotificationPromptToastMock,
 } = vi.hoisted(() => ({
   apiGetMock: vi.fn(),
   apiPostMock: vi.fn(),
@@ -20,6 +22,8 @@ const {
   deleteGroupMessageSnapshotsMock: vi.fn(),
   loadAgentMessageSnapshotMock: vi.fn(),
   saveAgentMessageSnapshotMock: vi.fn(),
+  notifyIfHiddenMock: vi.fn(),
+  showNotificationPromptToastMock: vi.fn(),
 }));
 
 vi.mock('../web/src/api/client', () => ({
@@ -59,9 +63,9 @@ vi.mock('../web/src/stores/auth', () => ({
 
 vi.mock('../web/src/utils/toast', () => ({
   showToast: vi.fn(),
-  notifyIfHidden: vi.fn(),
+  notifyIfHidden: notifyIfHiddenMock,
   shouldEmitBackgroundTaskNotice: vi.fn(() => false),
-  showNotificationPromptToast: vi.fn(),
+  showNotificationPromptToast: showNotificationPromptToastMock,
 }));
 
 vi.mock('../web/src/utils/messageSnapshotCache', () => ({
@@ -71,7 +75,8 @@ vi.mock('../web/src/utils/messageSnapshotCache', () => ({
   saveAgentMessageSnapshot: saveAgentMessageSnapshotMock,
 }));
 
-const { useChatStore } = await import('../web/src/stores/chat');
+const { shouldRecoverStaleWaiting, useChatStore } =
+  await import('../web/src/stores/chat');
 const initialState = useChatStore.getState();
 
 function message(id: string, timestamp: string): Message {
@@ -94,6 +99,7 @@ function resetChatStore(): void {
       currentGroup: null,
       messages: {},
       waiting: {},
+      activeRuns: {},
       hasMore: {},
       loading: false,
       error: null,
@@ -250,6 +256,14 @@ describe('conversation Agent usage events', () => {
       agentHasMore: { [agentId]: false },
       agentStreaming: {},
       agentWaiting: { [agentId]: false },
+      activeRuns: {
+        [`${jid}#agent:${agentId}`]: {
+          chatJid: `${jid}#agent:${agentId}`,
+          runId: 'run-workflow-1',
+          startedAt: '2026-07-21T15:22:00.000Z',
+          phase: 'running',
+        },
+      },
     });
 
     useChatStore.getState().handleStreamEvent(
@@ -269,6 +283,7 @@ describe('conversation Agent usage events', () => {
         },
       },
       agentId,
+      'run-workflow-1',
     );
 
     const updated = useChatStore.getState().agentMessages[agentId][0];
@@ -285,6 +300,323 @@ describe('conversation Agent usage events', () => {
       [expect.objectContaining({ id: finalReply.id })],
       false,
     );
+  });
+});
+
+describe('exact Web run state sequences', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetChatStore();
+  });
+
+  it('replaces A streaming with B snapshot after reconnect', () => {
+    const jid = 'web:reconnect';
+    useChatStore.setState({
+      activeRuns: {
+        [jid]: {
+          chatJid: jid,
+          runId: 'run-a',
+          startedAt: '2026-07-25T00:00:00.000Z',
+          phase: 'running',
+        },
+      },
+      waiting: { [jid]: true },
+      streaming: {
+        [jid]: {
+          partialText: 'A stale partial',
+          thinkingText: '',
+          isThinking: false,
+          activeTools: [],
+          activeHook: null,
+          systemStatus: null,
+          recentEvents: [],
+          traceEvents: [],
+          taskStates: {},
+        },
+      },
+    });
+
+    useChatStore.getState().handleActiveRunSnapshot([
+      {
+        chatJid: jid,
+        runId: 'run-b',
+        startedAt: '2026-07-25T00:01:00.000Z',
+        phase: 'running',
+      },
+    ]);
+    expect(useChatStore.getState().streaming[jid]).toBeUndefined();
+    expect(useChatStore.getState().activeRuns[jid]?.runId).toBe('run-b');
+
+    useChatStore.getState().handleStreamSnapshot(
+      jid,
+      {
+        partialText: 'B canonical partial',
+        activeTools: [],
+        recentEvents: [],
+        systemStatus: null,
+      },
+      undefined,
+      'run-b',
+    );
+
+    expect(useChatStore.getState().streaming[jid]?.partialText).toBe(
+      'B canonical partial',
+    );
+  });
+
+  it('does not restore waiting for proactive sdk_send_message on a warm idle runner', async () => {
+    const jid = 'web:proactive-idle';
+    const proactiveUtterance: Message = {
+      id: 'utterance-1',
+      chat_jid: jid,
+      sender: 'happyclaw-agent',
+      sender_name: 'HappyClaw',
+      content: '我先告诉你当前进度。',
+      timestamp: '2026-07-25T00:00:00.000Z',
+      is_from_me: true,
+      source_kind: 'sdk_send_message',
+    };
+    useChatStore.setState({
+      messages: { [jid]: [proactiveUtterance] },
+      waiting: { [jid]: true },
+      streaming: {
+        [jid]: {
+          partialText: 'stale',
+          thinkingText: '',
+          isThinking: false,
+          activeTools: [],
+          activeHook: null,
+          systemStatus: null,
+          recentEvents: [],
+          traceEvents: [],
+          taskStates: {},
+        },
+      },
+    });
+    apiGetMock.mockImplementation(async (path: string) => {
+      if (path === '/api/status') {
+        return {
+          groups: [
+            {
+              jid,
+              active: true,
+              pendingMessages: false,
+              queryInFlight: false,
+              queryId: null,
+            },
+          ],
+        };
+      }
+      return { messages: [] };
+    });
+
+    await useChatStore.getState().restoreActiveState();
+
+    expect(useChatStore.getState().waiting[jid]).toBeUndefined();
+    expect(useChatStore.getState().streaming[jid]).toBeUndefined();
+  });
+
+  it('never stale-recovers an exact active run', () => {
+    expect(
+      shouldRecoverStaleWaiting({
+        elapsedMs: 10 * 60_000,
+        hasStreamData: false,
+        hasActiveRun: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRecoverStaleWaiting({
+        elapsedMs: 10 * 60_000,
+        hasStreamData: true,
+        hasActiveRun: true,
+      }),
+    ).toBe(false);
+  });
+
+  it('stale-recovers only an orphaned waiting state after its grace period', () => {
+    expect(
+      shouldRecoverStaleWaiting({
+        elapsedMs: 60_000,
+        hasStreamData: false,
+        hasActiveRun: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRecoverStaleWaiting({
+        elapsedMs: 60_001,
+        hasStreamData: false,
+        hasActiveRun: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldRecoverStaleWaiting({
+        elapsedMs: 180_000,
+        hasStreamData: true,
+        hasActiveRun: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRecoverStaleWaiting({
+        elapsedMs: 180_001,
+        hasStreamData: true,
+        hasActiveRun: false,
+      }),
+    ).toBe(true);
+  });
+
+  it('treats each proactive utterance as unread without finalizing its active run', () => {
+    const jid = 'web:proactive-live';
+    const runId = 'run-proactive-live';
+    const utterance = {
+      id: 'utterance-live-1',
+      chat_jid: jid,
+      sender: 'happyclaw-agent',
+      sender_name: 'HappyClaw',
+      content: '官方资料已经查完，我还在核对第三方实测。',
+      timestamp: '2026-07-25T00:00:30.000Z',
+      is_from_me: true,
+      source_kind: 'sdk_send_message',
+    };
+    useChatStore.setState({
+      currentGroup: 'web:other',
+      groups: {
+        [jid]: {
+          name: '主动调研',
+          folder: 'proactive-live',
+          added_at: '2026-07-25T00:00:00.000Z',
+          interaction_mode: 'proactive',
+        },
+      },
+      activeRuns: {
+        [jid]: {
+          chatJid: jid,
+          runId,
+          startedAt: '2026-07-25T00:00:00.000Z',
+          phase: 'running',
+        },
+      },
+      waiting: { [jid]: true },
+      streaming: {
+        [jid]: {
+          partialText: '',
+          thinkingText: '',
+          isThinking: false,
+          activeTools: [],
+          activeHook: null,
+          systemStatus: 'requesting',
+          recentEvents: [],
+          traceEvents: [],
+          taskStates: {},
+        },
+      },
+    });
+
+    useChatStore.getState().handleWsNewMessage(jid, utterance);
+
+    let state = useChatStore.getState();
+    expect(state.messages[jid]).toEqual([
+      expect.objectContaining({ id: utterance.id }),
+    ]);
+    expect(state.unreadReplies[jid]).toBe(1);
+    expect(state.waiting[jid]).toBe(true);
+    expect(state.streaming[jid]?.systemStatus).toBe('requesting');
+    expect(notifyIfHiddenMock).toHaveBeenCalledWith(
+      '主动调研',
+      utterance.content,
+    );
+    expect(showNotificationPromptToastMock).not.toHaveBeenCalled();
+
+    // A duplicate WebSocket frame must not create another unread/notification.
+    useChatStore.getState().handleWsNewMessage(jid, utterance);
+    state = useChatStore.getState();
+    expect(state.unreadReplies[jid]).toBe(1);
+    expect(notifyIfHiddenMock).toHaveBeenCalledTimes(1);
+
+    useChatStore.getState().handleRunFinished(jid, runId);
+    state = useChatStore.getState();
+    expect(state.waiting[jid]).toBe(false);
+    expect(state.streaming[jid]).toBeUndefined();
+  });
+
+  it('marks a proactive conversation message unread outside its active tab', () => {
+    const jid = 'web:main';
+    const agentId = 'agent-proactive';
+    useChatStore.setState({
+      currentGroup: jid,
+      activeAgentTab: { [jid]: null },
+      agentWaiting: { [agentId]: true },
+      agents: {
+        [jid]: [
+          {
+            id: agentId,
+            name: '主动调研',
+            prompt: '',
+            status: 'running',
+            kind: 'conversation',
+            created_at: '2026-07-25T00:00:00.000Z',
+            latest_message: null,
+          },
+        ],
+      },
+    });
+
+    useChatStore.getState().handleWsNewMessage(
+      jid,
+      {
+        id: 'agent-utterance-1',
+        chat_jid: `${jid}#agent:${agentId}`,
+        sender: 'happyclaw-agent',
+        sender_name: 'HappyClaw',
+        content: '我先给你一个阶段结论。',
+        timestamp: '2026-07-25T00:00:30.000Z',
+        is_from_me: true,
+        source_kind: 'sdk_send_message',
+      },
+      agentId,
+    );
+
+    let state = useChatStore.getState();
+    expect(state.unreadReplies[jid]).toBe(1);
+    expect(state.agentWaiting[agentId]).toBe(true);
+    expect(state.agents[jid][0]).toMatchObject({
+      last_active_at: '2026-07-25T00:00:30.000Z',
+      latest_message: {
+        content: '我先给你一个阶段结论。',
+        timestamp: '2026-07-25T00:00:30.000Z',
+      },
+    });
+    expect(notifyIfHiddenMock).toHaveBeenCalledTimes(1);
+    expect(showNotificationPromptToastMock).not.toHaveBeenCalled();
+
+    // unreadReplies is Workspace-scoped today, so entering this Agent
+    // conversation marks the current Workspace as read.
+    useChatStore.getState().setActiveAgentTab(jid, agentId);
+    state = useChatStore.getState();
+    expect(state.activeAgentTab[jid]).toBe(agentId);
+    expect(state.unreadReplies[jid]).toBeUndefined();
+
+    useChatStore.setState({ unreadReplies: { [jid]: 1 } });
+    useChatStore.getState().setActiveAgentTab(jid, null);
+    state = useChatStore.getState();
+    expect(state.activeAgentTab[jid]).toBeNull();
+    expect(state.unreadReplies[jid]).toBeUndefined();
+  });
+
+  it('does not clear unread when mirroring a background workspace tab', () => {
+    const visibleJid = 'web:visible';
+    const backgroundJid = 'web:background';
+    useChatStore.setState({
+      currentGroup: visibleJid,
+      unreadReplies: { [backgroundJid]: 2 },
+    });
+
+    useChatStore
+      .getState()
+      .setActiveAgentTab(backgroundJid, 'agent-background');
+
+    const state = useChatStore.getState();
+    expect(state.activeAgentTab[backgroundJid]).toBe('agent-background');
+    expect(state.unreadReplies[backgroundJid]).toBe(2);
   });
 });
 

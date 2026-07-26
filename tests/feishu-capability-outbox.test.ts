@@ -22,6 +22,8 @@ const { deliverFeishuCapabilityMutation } =
   await import('../src/feishu-capability-outbox.js');
 const { isFeishuCapabilityMutation } =
   await import('../src/feishu-capability.js');
+const { DefinitiveFeishuCapabilityError } =
+  await import('../src/feishu-capability.js');
 
 const route = {
   provider: 'feishu',
@@ -171,6 +173,50 @@ describe('Feishu capability mutation outbox', () => {
     });
     expect(replay.delivery.status).toBe('uncertain');
     expect(physicalCalls).toBe(1);
+  });
+
+  test('an explicit broker or provider rejection fails definitively without fencing sibling delivery', async () => {
+    const run = store.createChannelTurnRun({
+      ...route,
+      idempotencyKey: 'feishu-mutation-definitive-rejection',
+    }).run;
+    const request = {
+      operation: 'send_card' as const,
+      params: { card: { header: { background_color: 'invalid' } } },
+    };
+    const rejected = await deliverFeishuCapabilityMutation({
+      ...route,
+      turnRunId: run.id,
+      requestId: 'invalid-card-request',
+      request,
+      owner: 'invalid-card-worker',
+      execute: async () => {
+        throw new DefinitiveFeishuCapabilityError(
+          'send_card failed (code=230099, msg=parse card json err)',
+        );
+      },
+    });
+
+    expect(rejected.delivery).toMatchObject({
+      status: 'failed',
+      reused: false,
+      error: expect.stringContaining('parse card json err'),
+    });
+    expect(store.getUncertainChannelOutboxForTurn(run.id)).toBeUndefined();
+
+    const sibling = await delivery.deliverChannelOutboxItem({
+      ...route,
+      turnRunId: run.id,
+      ordinal: 1,
+      kind: 'text',
+      payload: { text: 'fall back to a normal message' },
+      owner: 'normal-message-worker',
+      delivery: {
+        mode: 'single',
+        send: async () => ({ providerMessageId: 'om_normal_fallback' }),
+      },
+    });
+    expect(sibling.status).toBe('delivered');
   });
 
   test('the host integration requires exact input scope for mutations', () => {

@@ -13,6 +13,9 @@ export type SendMessageResult = 'sent' | 'no_active';
 export interface IpcMessageCursor {
   timestamp: string;
   id: string;
+  /** Immutable provider route that owns this exact original input's side
+   * effects. Omitted for Web/legacy inputs. */
+  sourceJid?: string;
 }
 export interface IpcDeliveryReceipt {
   deliveryId: string;
@@ -55,6 +58,12 @@ interface QueuedTask {
   /** Release caller-owned reservations when queued work is discarded. */
   onDropped?: () => void;
 }
+
+export type QueryFinishReason =
+  | 'completed'
+  | 'released'
+  | 'runner_exit'
+  | 'stopped';
 
 const MAX_RETRIES = 5;
 const BASE_RETRY_MS = 5000;
@@ -167,6 +176,14 @@ export class GroupQueue {
     | null = null;
   private onQueryIdleFn:
     | ((chatJid: string, completedQueryId: string) => void)
+    | null = null;
+  private onQueryFinishFn:
+    | ((
+        chatJid: string,
+        completedQueryId: string,
+        reason: QueryFinishReason,
+        finishedAt: number,
+      ) => void)
     | null = null;
   private userConcurrentLimitFn:
     | ((groupJid: string) => { allowed: boolean })
@@ -564,6 +581,40 @@ export class GroupQueue {
     this.onQueryIdleFn = fn;
   }
 
+  /**
+   * Observe the exact logical query terminal boundary.
+   *
+   * This is intentionally separate from setOnQueryIdle: the latter dispatches
+   * durable queued follow-ups and must retain its single owner in index.ts.
+   * Web lifecycle projection consumes this callback without changing queue
+   * release/steer behaviour.
+   */
+  setOnQueryFinish(
+    fn: (
+      chatJid: string,
+      completedQueryId: string,
+      reason: QueryFinishReason,
+      finishedAt: number,
+    ) => void,
+  ): void {
+    this.onQueryFinishFn = fn;
+  }
+
+  private announceQueryFinish(
+    groupJid: string,
+    queryId: string,
+    reason: QueryFinishReason,
+  ): void {
+    try {
+      this.onQueryFinishFn?.(groupJid, queryId, reason, Date.now());
+    } catch (err) {
+      logger.error(
+        { groupJid, queryId, reason, err },
+        'onQueryFinish callback failed',
+      );
+    }
+  }
+
   setUserConcurrentLimitChecker(
     fn: (groupJid: string) => { allowed: boolean },
   ): void {
@@ -934,6 +985,10 @@ export class GroupQueue {
     state.queryStartedAt = null;
     state.announcedQueryId = null;
     if (!completedQueryId) return;
+    // Publish the terminal event before the legacy idle callback. The callback
+    // may synchronously reserve/announce the next queued query; ordering the
+    // old terminal first prevents a late idle from clearing that new run.
+    this.announceQueryFinish(groupJid, completedQueryId, 'completed');
     try {
       this.onQueryIdleFn?.(groupJid, completedQueryId);
     } catch (err) {
@@ -976,6 +1031,11 @@ export class GroupQueue {
     state.queryId = null;
     state.queryStartedAt = null;
     state.announcedQueryId = null;
+    this.announceQueryFinish(
+      groupJid,
+      expectedQueryId,
+      notifyIdle ? 'completed' : 'released',
+    );
     if (notifyIdle) {
       try {
         this.onQueryIdleFn?.(groupJid, expectedQueryId);
@@ -1318,6 +1378,13 @@ export class GroupQueue {
     // 当前 query 完成后 waitForIpcMessage() → drainIpcInput() 会合并所有
     // 待处理的 IPC 消息为一个 prompt，实现自然聚合（如飞书转发+评论场景）。
     // 不再写 _drain：容器无需退出重启，复用当前进程即可。
+    //
+    // Capture the exact query attempt before publishing the IPC file. The
+    // child echoes this identity on every stream event, which lets Web reject
+    // late A output without confusing a legitimate retry B that reuses the
+    // same durable input/turn ID.
+    const queryRunId =
+      state.queryInFlight && state.queryId ? state.queryId : randomUUID();
 
     const inputDir = this.resolveIpcInputDir(state);
     let tempPath: string | undefined;
@@ -1374,6 +1441,7 @@ export class GroupQueue {
           type: 'message',
           text,
           images,
+          queryRunId,
           sourceJid,
           channelContext,
           taskId,
@@ -1397,7 +1465,7 @@ export class GroupQueue {
       }
       if (!state.queryInFlight || !state.queryId) {
         state.queryInFlight = true;
-        state.queryId = randomUUID();
+        state.queryId = queryRunId;
         state.queryStartedAt = Date.now();
         state.announcedQueryId = null;
         this.announceQueryStart(groupJid, state);
@@ -2144,6 +2212,7 @@ export class GroupQueue {
           'Stop requested recently, skipping pendingMessages re-arm',
         );
       }
+      const unfinishedQueryId = state.queryId;
       state.active = false;
       state.drainSentinelWritten = false;
       state.hasIpcInjectedMessages = false;
@@ -2152,6 +2221,13 @@ export class GroupQueue {
       state.queryId = null;
       state.queryStartedAt = null;
       state.announcedQueryId = null;
+      if (unfinishedQueryId) {
+        this.announceQueryFinish(
+          groupJid,
+          unfinishedQueryId,
+          isStopRequested ? 'stopped' : 'runner_exit',
+        );
+      }
       state.process = null;
       state.containerName = null;
       state.displayName = null;
@@ -2285,6 +2361,7 @@ export class GroupQueue {
         this.recoverUnacknowledgedIpcDeliveries(groupJid, state);
         this.recoverUnconsumedIpc(groupJid, state, 'task exit');
       }
+      const unfinishedQueryId = state.queryId;
       state.active = false;
       state.activeRunnerIsTask = false;
       state.activeTask = null;
@@ -2294,6 +2371,13 @@ export class GroupQueue {
       state.queryId = null;
       state.queryStartedAt = null;
       state.announcedQueryId = null;
+      if (unfinishedQueryId) {
+        this.announceQueryFinish(
+          groupJid,
+          unfinishedQueryId,
+          state.stopRequested ? 'stopped' : 'runner_exit',
+        );
+      }
       state.process = null;
       state.containerName = null;
       state.displayName = null;

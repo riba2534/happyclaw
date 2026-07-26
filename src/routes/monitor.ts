@@ -20,6 +20,11 @@ import {
   getUserById,
   hasContainerModeGroups,
 } from '../db.js';
+import {
+  getChannelOutboxItem,
+  listUncertainChannelOutbox,
+  resolveUncertainChannelOutbox,
+} from '../channel-reliability-store.js';
 import { CONTAINER_IMAGE } from '../config.js';
 import { getSystemSettings, getProviders } from '../runtime-config.js';
 import { setProviderOverride } from '../container-runner.js';
@@ -387,6 +392,140 @@ monitorRoutes.post(
       providerName: target.name,
       restarted,
     });
+  },
+);
+
+// GET /api/status/channel-outbox/uncertain - 列出待人工确认的投递
+//
+// An outbox row goes `uncertain` when the send started but its provider ACK
+// was lost. That fences the whole turn: a sibling row could duplicate a
+// message the provider already accepted. Only a human can inspect the target
+// chat and decide, so this pair of endpoints is the fence's release — without
+// them the turn can never complete and the row is unreachable.
+monitorRoutes.get(
+  '/status/channel-outbox/uncertain',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const limitParam = Number(c.req.query('limit') ?? '100');
+    const items = listUncertainChannelOutbox(
+      Number.isFinite(limitParam) ? limitParam : 100,
+    );
+    // Payload is deliberately omitted: it carries user message content, and
+    // the operator only needs identity plus routing to reconcile.
+    return c.json({
+      items: items.map((item) => ({
+        id: item.id,
+        turnRunId: item.turnRunId,
+        kind: item.kind,
+        ordinal: item.ordinal,
+        revision: item.revision,
+        provider: item.provider,
+        accountId: item.accountId,
+        chatId: item.chatId,
+        attempt: item.attempt,
+        error: item.error,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+      })),
+      total: items.length,
+    });
+  },
+);
+
+// POST /api/status/channel-outbox/:id/resolve - 人工裁决一条待确认投递
+monitorRoutes.post(
+  '/status/channel-outbox/:id/resolve',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const id = c.req.param('id');
+    let body: {
+      resolution?: unknown;
+      expectedRevision?: unknown;
+      providerMessageId?: unknown;
+      error?: unknown;
+    };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON body' }, 400);
+    }
+    if (body.resolution !== 'delivered' && body.resolution !== 'failed') {
+      return c.json(
+        { error: "resolution must be 'delivered' or 'failed'" },
+        400,
+      );
+    }
+    const expectedRevision = Number(body.expectedRevision);
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {
+      return c.json(
+        { error: 'expectedRevision (non-negative integer) is required' },
+        400,
+      );
+    }
+    if (
+      body.resolution === 'delivered' &&
+      (typeof body.providerMessageId !== 'string' || !body.providerMessageId)
+    ) {
+      return c.json(
+        {
+          error:
+            "providerMessageId (string) is required when resolution is 'delivered'",
+        },
+        400,
+      );
+    }
+
+    const existing = getChannelOutboxItem(id);
+    if (!existing) return c.json({ error: 'Outbox item not found' }, 404);
+    if (existing.status !== 'uncertain') {
+      return c.json(
+        {
+          error: `Outbox item is '${existing.status}', not 'uncertain'`,
+          status: existing.status,
+        },
+        409,
+      );
+    }
+
+    const resolved =
+      body.resolution === 'delivered'
+        ? resolveUncertainChannelOutbox(id, expectedRevision, {
+            resolution: 'delivered',
+            providerMessageId: body.providerMessageId as string,
+          })
+        : resolveUncertainChannelOutbox(id, expectedRevision, {
+            resolution: 'failed',
+            error:
+              typeof body.error === 'string' && body.error
+                ? body.error
+                : 'Operator marked this delivery as failed',
+          });
+    if (!resolved) {
+      // Lost the compare-and-set: someone else resolved it, or the caller's
+      // revision is stale. Never retry blindly — re-read and decide again.
+      return c.json(
+        {
+          error:
+            'Outbox item changed since it was read; re-read it and retry with the current revision',
+          currentRevision: getChannelOutboxItem(id)?.revision ?? null,
+        },
+        409,
+      );
+    }
+
+    const authUser = c.get('user') as AuthUser;
+    logger.warn(
+      {
+        outboxItemId: id,
+        turnRunId: existing.turnRunId,
+        resolution: body.resolution,
+        resolvedBy: authUser.username,
+      },
+      'Uncertain channel outbox item resolved by operator',
+    );
+    return c.json({ ok: true, id, resolution: body.resolution });
   },
 );
 

@@ -40,6 +40,11 @@ import {
   evaluateChannelAdmission,
   resolveAdmittedChannelRoute,
 } from './channel-admission.js';
+import { extractProviderTarget } from './channel-address.js';
+import {
+  ExactAsyncIndicatorRegistry,
+  processingIndicatorKey,
+} from './processing-indicator.js';
 
 // ─── Constants ──────────────────────────────────────────────────
 
@@ -105,8 +110,8 @@ export interface DingTalkConnection {
   ): Promise<void>;
   sendFile(chatId: string, filePath: string, fileName: string): Promise<void>;
   sendReaction(chatId: string, isTyping: boolean): Promise<void>;
-  /** Clear the ack reaction for a chat (e.g. when streaming card handled the reply) */
-  clearAckReaction(chatId: string): void;
+  /** Clear the ack reaction owned by one exact inbound input. */
+  clearAckReaction(chatId: string, inputMessageId: string): Promise<void>;
   isConnected(): boolean;
   getLastMessageId?(chatId: string): string | undefined;
   createStreamingSession?(
@@ -437,11 +442,10 @@ export function createDingTalkConnection(
     });
   }
 
-  // Ack reaction per chat (emoji reaction on user's message to confirm receipt)
-  const ackReactionByChat = new Map<
-    string,
-    { msgId: string; conversationId: string }
-  >();
+  const ackReactions = new ExactAsyncIndicatorRegistry<{
+    msgId: string;
+    conversationId: string;
+  }>();
 
   // ─── Token Management ──────────────────────────────────────
 
@@ -604,25 +608,15 @@ export function createDingTalkConnection(
 
   const ACK_REACTION_ATTACH_DELAYS = [0, 400, 1200];
 
-  /** Track in-flight attach promises so clearAckReaction can await them. */
-  const pendingAttaches = new Map<string, Promise<void>>();
-
   /**
    * Attach "🤔思考中" emoji reaction to user's message as ack confirmation.
    * Retries up to 3 times with backoff for transient failures.
-   * @param chatId raw JID (e.g. "dingtalk:c2c:xxx") — will be stripped to
-   *   bare chatId for storage, matching the key used by recallAckReaction.
    */
   async function attachAckReaction(
     msgId: string,
     conversationId: string,
-    rawJid: string,
-  ): Promise<void> {
-    // Strip the "dingtalk:" prefix so the Map key matches what
-    // recallAckReaction receives (which comes through extractChatId).
-    const chatId = rawJid.startsWith('dingtalk:')
-      ? rawJid.slice('dingtalk:'.length)
-      : rawJid;
+    chatId: string,
+  ): Promise<{ msgId: string; conversationId: string } | null> {
     const body = {
       robotCode: config.clientId,
       openMsgId: msgId,
@@ -643,15 +637,8 @@ export function createDingTalkConnection(
       }
       try {
         await apiRequest('POST', '/v1.0/robot/emotion/reply', body);
-        // Recall previous reaction before overwriting (e.g. second message
-        // arrives before the first is replied — prevents orphaned emoji)
-        const existing = ackReactionByChat.get(chatId);
-        if (existing) {
-          recallAckReaction(chatId).catch(() => {});
-        }
-        ackReactionByChat.set(chatId, { msgId, conversationId });
         logger.debug({ msgId, chatId }, 'DingTalk ack reaction attached');
-        return;
+        return { msgId, conversationId };
       } catch (err: any) {
         // apiRequest throws plain Error objects (no .response property),
         // so parse the status code from the error message string.
@@ -663,41 +650,33 @@ export function createDingTalkConnection(
             { err: err.message, msgId, chatId },
             'DingTalk ack reaction attach failed',
           );
-          return;
+          return null;
         }
       }
     }
+    return null;
   }
 
-  /**
-   * Recall the ack reaction emoji from user's message.
-   * Silent on failure — the emoji will naturally expire.
-   */
-  async function recallAckReaction(chatId: string): Promise<void> {
-    const stored = ackReactionByChat.get(chatId);
-    if (!stored) return;
-    ackReactionByChat.delete(chatId);
-    try {
-      await apiRequest('POST', '/v1.0/robot/emotion/recall', {
-        robotCode: config.clientId,
-        openMsgId: stored.msgId,
-        openConversationId: stored.conversationId,
-        emotionType: 2,
+  /** Recall the exact ack reaction. Failures propagate so registry ownership
+   * remains retryable instead of silently orphaning the provider handle. */
+  async function recallAckReaction(stored: {
+    msgId: string;
+    conversationId: string;
+  }): Promise<void> {
+    await apiRequest('POST', '/v1.0/robot/emotion/recall', {
+      robotCode: config.clientId,
+      openMsgId: stored.msgId,
+      openConversationId: stored.conversationId,
+      emotionType: 2,
+      emotionName: '🤔思考中',
+      textEmotion: {
+        emotionId: '2659900',
         emotionName: '🤔思考中',
-        textEmotion: {
-          emotionId: '2659900',
-          emotionName: '🤔思考中',
-          text: '🤔思考中',
-          backgroundId: 'im_bg_1',
-        },
-      });
-      logger.debug({ chatId }, 'DingTalk ack reaction recalled');
-    } catch (err: any) {
-      logger.debug(
-        { err: err.message, chatId },
-        'DingTalk ack reaction recall failed (non-critical)',
-      );
-    }
+        text: '🤔思考中',
+        backgroundId: 'im_bg_1',
+      },
+    });
+    logger.debug({ msgId: stored.msgId }, 'DingTalk ack reaction recalled');
   }
 
   // ─── Message Sending ──────────────────────────────────────
@@ -1970,16 +1949,14 @@ export function createDingTalkConnection(
         );
 
         // ── Ack Reaction：确认已收到消息 ──
-        const chatId = jid.startsWith('dingtalk:')
-          ? jid.slice('dingtalk:'.length)
-          : jid;
-        const attachPromise = attachAckReaction(
-          msgId,
-          conversationId,
-          jid,
-        ).catch(() => {});
-        pendingAttaches.set(chatId, attachPromise);
-        attachPromise.finally(() => pendingAttaches.delete(chatId));
+        const chatId = extractProviderTarget(jid);
+        ackReactions
+          .attach(
+            processingIndicatorKey(chatId, id),
+            () => attachAckReaction(msgId, conversationId, chatId),
+            recallAckReaction,
+          )
+          .catch(() => {});
 
         notifyNewImMessage();
 
@@ -2102,6 +2079,7 @@ export function createDingTalkConnection(
 
     async disconnect(): Promise<void> {
       stopping = true;
+      await ackReactions.clearAll();
 
       if (client) {
         try {
@@ -2449,15 +2427,8 @@ export function createDingTalkConnection(
       // DingTalk doesn't support typing indicators via Stream
     },
 
-    clearAckReaction(chatId: string): void {
-      const pending = pendingAttaches.get(chatId);
-      if (pending) {
-        pending
-          .then(() => recallAckReaction(chatId).catch(() => {}))
-          .catch(() => {});
-      } else {
-        recallAckReaction(chatId).catch(() => {});
-      }
+    clearAckReaction(chatId: string, inputMessageId: string): Promise<void> {
+      return ackReactions.clear(processingIndicatorKey(chatId, inputMessageId));
     },
 
     isConnected(): boolean {

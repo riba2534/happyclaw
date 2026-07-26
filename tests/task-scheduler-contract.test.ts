@@ -66,6 +66,7 @@ const { runContainerAgentMock, runHostAgentMock, runScriptMock } = vi.hoisted(
         status: 'success',
         result: 'task result',
         newSessionId: `task-session:${input.taskRunId}`,
+        inputTurnCompleted: true,
       };
     }),
     runHostAgentMock: vi.fn(async () => ({
@@ -106,6 +107,7 @@ const {
   enqueueIsolatedScheduledTask,
   getRunningTaskIds,
   processClaimedTaskRunNotification,
+  shouldFinalizeScheduledRunOutput,
   triggerTaskNow,
 } = await import('../src/task-scheduler.js');
 
@@ -192,6 +194,74 @@ afterAll(() => {
 });
 
 describe('scheduled task workspace/session contract', () => {
+  test('finalizes only at a durable scheduled-input boundary', () => {
+    expect(
+      shouldFinalizeScheduledRunOutput({
+        status: 'success',
+        inputTurnCompleted: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldFinalizeScheduledRunOutput({
+        status: 'success',
+        inputTurnCompleted: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldFinalizeScheduledRunOutput({
+        status: 'error',
+      }),
+    ).toBe(true);
+    expect(
+      shouldFinalizeScheduledRunOutput({
+        status: 'closed',
+      }),
+    ).toBe(false);
+    expect(
+      shouldFinalizeScheduledRunOutput(
+        {
+          status: 'closed',
+        },
+        true,
+      ),
+    ).toBe(true);
+  });
+
+  test('records an early close after an incomplete partial as an error', async () => {
+    const taskId = createTask({ id: 'task-incomplete-close-error' });
+    const groups = {
+      [GROUP_JID]: db.getRegisteredGroup(GROUP_JID)!,
+    };
+    runContainerAgentMock.mockImplementationOnce(
+      async (_group, input, onProcess, onOutput) => {
+        onProcess?.({} as never, `container-${input.taskRunId}`, null);
+        await onOutput?.({
+          status: 'success',
+          result: 'partial only',
+          inputTurnCompleted: false,
+        });
+        await onOutput?.({
+          status: 'closed',
+          result: null,
+        });
+        return {
+          status: 'closed',
+          result: null,
+        };
+      },
+    );
+    const { deps, waitForRun } = makeDeps(groups);
+
+    expect(triggerTaskNow(taskId, deps).success).toBe(true);
+    await waitForRun();
+
+    expect(db.getTaskRunLogs(taskId, 1)[0]).toMatchObject({
+      status: 'error',
+      result: 'partial only',
+      error: expect.stringContaining('before completing'),
+    });
+  });
+
   test('resume accepts only future one-shot schedules', () => {
     const future = new Date(Date.now() + 60_000).toISOString();
     const past = new Date(Date.now() - 60_000).toISOString();

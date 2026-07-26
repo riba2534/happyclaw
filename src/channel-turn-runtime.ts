@@ -7,6 +7,7 @@ import {
   createStreamingCardRecord,
   finalizeStreamingCardRecord,
   getChannelTurnRun,
+  getUncertainChannelOutboxForTurn,
   getStreamingCardRecord,
   heartbeatChannelTurnRun,
   interruptChannelTurnRunWithDeliveredEffect,
@@ -224,6 +225,18 @@ export class ChannelTurnRuntime {
   }
 
   complete(result?: unknown): boolean {
+    const uncertainDelivery = getUncertainChannelOutboxForTurn(this.runId);
+    if (uncertainDelivery) {
+      logger.error(
+        {
+          runId: this.runId,
+          outboxItemId: uncertainDelivery.id,
+          outboxKind: uncertainDelivery.kind,
+        },
+        'Refusing to complete channel turn while a provider side effect is uncertain',
+      );
+      return false;
+    }
     if (this.durabilityError) {
       logger.error(
         { err: this.durabilityError, runId: this.runId },

@@ -24,6 +24,21 @@ export interface FeishuCapabilityResult {
   data: unknown;
 }
 
+/**
+ * The broker or Feishu explicitly rejected a capability request before any
+ * visible mutation could be accepted. The durable Outbox may safely record a
+ * definitive failure instead of fencing the whole turn as uncertain.
+ */
+export class DefinitiveFeishuCapabilityError extends Error {
+  constructor(message: string, options: { cause?: unknown } = {}) {
+    super(
+      message,
+      options.cause === undefined ? undefined : { cause: options.cause },
+    );
+    this.name = 'DefinitiveFeishuCapabilityError';
+  }
+}
+
 const FEISHU_READ_OPERATIONS = new Set<FeishuCapabilityOperation>([
   'get_chat',
   'list_members',
@@ -110,20 +125,26 @@ function boundedInt(
 function assertApiSuccess(operation: string, response: unknown): void {
   const result = record(response);
   if (typeof result.code === 'number' && result.code !== 0) {
-    throw new Error(
+    throw new DefinitiveFeishuCapabilityError(
       `${operation} failed (code=${result.code}, msg=${optionalString(result.msg) || 'unknown'})`,
     );
   }
 }
 
 function currentChatId(context: ChannelTurnContext): string {
-  if (!context.chat?.id) throw new Error('Current Feishu chat id is missing');
+  if (!context.chat?.id) {
+    throw new DefinitiveFeishuCapabilityError(
+      'Current Feishu chat id is missing',
+    );
+  }
   return context.chat.id;
 }
 
 function currentMessageId(context: ChannelTurnContext): string {
   if (!context.message?.id) {
-    throw new Error('Current Feishu message id is missing');
+    throw new DefinitiveFeishuCapabilityError(
+      'Current Feishu message id is missing',
+    );
   }
   return context.message.id;
 }
@@ -169,7 +190,9 @@ async function assertMessageInCurrentChat(
   const items = Array.isArray(response.data?.items) ? response.data.items : [];
   const message = items.find((item) => item.message_id === messageId);
   if (!message || message.chat_id !== currentChatId(context)) {
-    throw new Error('Message does not belong to the current Feishu chat');
+    throw new DefinitiveFeishuCapabilityError(
+      'Message does not belong to the current Feishu chat',
+    );
   }
   return sanitizeMessage(message);
 }
@@ -195,7 +218,9 @@ async function assertMessageOwnedByCurrentBot(
     expected.size === 0 ||
     !actual.some((identity) => expected.has(identity))
   ) {
-    throw new Error('Message was not sent by the current bound Feishu Bot');
+    throw new DefinitiveFeishuCapabilityError(
+      'Message was not sent by the current bound Feishu Bot',
+    );
   }
 }
 
@@ -213,7 +238,9 @@ function resolveUserTarget(context: ChannelTurnContext): {
   if (sender?.unionId) {
     return { userId: sender.unionId, userIdType: 'union_id' };
   }
-  throw new Error('Current sender identity is unavailable');
+  throw new DefinitiveFeishuCapabilityError(
+    'Current sender identity is unavailable',
+  );
 }
 
 function feishuErrorCode(error: unknown): number | undefined {
@@ -237,7 +264,9 @@ function sanitizeGenericResponse(response: unknown): unknown {
     return value;
   });
   if (json.length > 2_000_000) {
-    throw new Error('Feishu API response exceeded the 2 MB broker limit');
+    throw new DefinitiveFeishuCapabilityError(
+      'Feishu API response exceeded the 2 MB broker limit',
+    );
   }
   return JSON.parse(json) as unknown;
 }
@@ -264,13 +293,15 @@ function validateGenericApiRequest(params: Record<string, unknown>): {
     path.includes('..') ||
     !/^\/open-apis\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+$/.test(path)
   ) {
-    throw new Error('Feishu API path is invalid');
+    throw new DefinitiveFeishuCapabilityError('Feishu API path is invalid');
   }
   const policy = GENERIC_API_PREFIXES.find((entry) =>
     path.startsWith(entry.prefix),
   );
   if (!policy || !policy.methods.has(method)) {
-    throw new Error(`Feishu API ${method} ${path} is not broker-allowlisted`);
+    throw new DefinitiveFeishuCapabilityError(
+      `Feishu API ${method} ${path} is not broker-allowlisted`,
+    );
   }
   return {
     method,
@@ -293,7 +324,9 @@ export async function executeFeishuCapability(
   request: FeishuCapabilityRequest,
 ): Promise<FeishuCapabilityResult> {
   if (context.provider !== 'feishu') {
-    throw new Error('Feishu capability requires a Feishu input turn');
+    throw new DefinitiveFeishuCapabilityError(
+      'Feishu capability requires a Feishu input turn',
+    );
   }
   const params = record(request.params);
   const chatId = currentChatId(context);
@@ -446,10 +479,14 @@ export async function executeFeishuCapability(
         await assertMessageInCurrentChat(client, context, requestedMessageId);
       }
       const card = record(params.card);
-      if (Object.keys(card).length === 0) throw new Error('Card is required');
+      if (Object.keys(card).length === 0) {
+        throw new DefinitiveFeishuCapabilityError('Card is required');
+      }
       const serialized = JSON.stringify(card);
       if (serialized.length > 30_000) {
-        throw new Error('Feishu card exceeds the 30 KB broker limit');
+        throw new DefinitiveFeishuCapabilityError(
+          'Feishu card exceeds the 30 KB broker limit',
+        );
       }
       const response = await client.im.v1.message.reply({
         path: { message_id: messageId },
@@ -479,7 +516,9 @@ export async function executeFeishuCapability(
         await assertMessageInCurrentChat(client, context, messageId);
       }
       const emojiType = optionalString(params.emojiType);
-      if (!emojiType) throw new Error('emojiType is required');
+      if (!emojiType) {
+        throw new DefinitiveFeishuCapabilityError('emojiType is required');
+      }
       const response = await client.im.v1.messageReaction.create({
         path: { message_id: messageId },
         data: { reaction_type: { emoji_type: emojiType } },
@@ -498,7 +537,9 @@ export async function executeFeishuCapability(
         await assertMessageInCurrentChat(client, context, messageId);
       }
       const reactionId = optionalString(params.reactionId);
-      if (!reactionId) throw new Error('reactionId is required');
+      if (!reactionId) {
+        throw new DefinitiveFeishuCapabilityError('reactionId is required');
+      }
       const response = await client.im.v1.messageReaction.delete({
         path: { message_id: messageId, reaction_id: reactionId },
       });
@@ -513,7 +554,9 @@ export async function executeFeishuCapability(
       const messageId = optionalString(params.messageId);
       const text = typeof params.text === 'string' ? params.text : undefined;
       if (!messageId || text === undefined) {
-        throw new Error('messageId and text are required');
+        throw new DefinitiveFeishuCapabilityError(
+          'messageId and text are required',
+        );
       }
       await assertMessageOwnedByCurrentBot(client, context, messageId);
       const response = await client.im.v1.message.update({
@@ -529,7 +572,9 @@ export async function executeFeishuCapability(
 
     case 'recall_message': {
       const messageId = optionalString(params.messageId);
-      if (!messageId) throw new Error('messageId is required');
+      if (!messageId) {
+        throw new DefinitiveFeishuCapabilityError('messageId is required');
+      }
       await assertMessageOwnedByCurrentBot(client, context, messageId);
       const response = await client.im.v1.message.delete({
         path: { message_id: messageId },

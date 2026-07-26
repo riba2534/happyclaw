@@ -58,7 +58,26 @@ export class TurnOutputCoordinator {
   private implicitMessageCounter = 0;
   private stagedFinal: string | null = null;
   private finalized = false;
+  private deliveredUtteranceCount = 0;
   private readonly stagedFingerprints = new Set<string>();
+
+  /**
+   * Safety fuse for a runaway model loop, not a UX limit. `0` disables it.
+   *
+   * Proactive mode hands the "how many messages" decision to the model, so the
+   * framework needs its own bound on user-visible output; every delivered
+   * message is an irreversible side effect in a real chat. The number is
+   * deliberately kept out of the prompt so the model cannot treat it as a quota
+   * to spend — it only ever learns about it as a `reply_limit_reached` refusal.
+   */
+  constructor(private readonly maxUtterances = 0) {}
+
+  /** Checked before delivery; recordDeliveredUtterance runs after it succeeds. */
+  canDeliverUtterance(): boolean {
+    if (this.finalized) return false;
+    if (this.maxUtterances <= 0) return true;
+    return this.deliveredUtteranceCount < this.maxUtterances;
+  }
 
   reduceStreamEvent(event: TurnOutputStreamEvent): TurnOutputProjection {
     const before = this.answerCandidate;
@@ -215,11 +234,26 @@ export class TurnOutputCoordinator {
   markFinalized(): void {
     this.finalized = true;
   }
+
+  recordDeliveredUtterance(): boolean {
+    if (this.finalized) return false;
+    this.deliveredUtteranceCount += 1;
+    return true;
+  }
+
+  get deliveredUtterances(): number {
+    return this.deliveredUtteranceCount;
+  }
+
+  get hasDeliveredUtterance(): boolean {
+    return this.deliveredUtteranceCount > 0;
+  }
 }
 
 export interface ActiveTurnOutputCallbacks {
   onProgress: (text: string) => boolean;
   onFinalCandidate: (text: string) => boolean;
+  onUtteranceDelivered?: () => void;
 }
 
 interface ActiveTurnOutputBinding {
@@ -240,6 +274,11 @@ export interface StageTurnMessageResult {
   reason?: 'inactive_turn' | 'finalized' | 'projection_unavailable';
 }
 
+export interface RecordDeliveredUtteranceInput {
+  scopeKey: string;
+  inputTurnId: string;
+}
+
 /**
  * Process-local bridge between the IPC watcher and the foreground Agent turn.
  * The durable Turn/Outbox remains the authority for physical side effects;
@@ -249,6 +288,13 @@ export interface StageTurnMessageResult {
 export class ActiveTurnOutputRegistry {
   private readonly bindings = new Map<string, ActiveTurnOutputBinding>();
 
+  /**
+   * Read lazily per turn so a settings change applies to newly started turns
+   * without a restart, while a turn already in flight keeps the bound it began
+   * with.
+   */
+  constructor(private readonly maxUtterancesProvider: () => number = () => 0) {}
+
   private key(scopeKey: string, inputTurnId: string): string {
     return `${scopeKey}\0${inputTurnId}`;
   }
@@ -257,7 +303,7 @@ export class ActiveTurnOutputRegistry {
     scopeKey: string,
     inputTurnId: string,
     callbacks: ActiveTurnOutputCallbacks,
-    coordinator = new TurnOutputCoordinator(),
+    coordinator = new TurnOutputCoordinator(this.maxUtterancesProvider()),
   ): TurnOutputCoordinator {
     this.bindings.set(this.key(scopeKey, inputTurnId), {
       coordinator,
@@ -302,6 +348,37 @@ export class ActiveTurnOutputRegistry {
     }
     binding.coordinator.commitPreparedMessage(prepared);
     return { accepted: true, duplicate: false };
+  }
+
+  /**
+   * Record a physical, user-visible independent message against the exact
+   * active input turn. Unknown or already-finalized turns are intentionally
+   * ignored so a stale IPC acknowledgement cannot settle a newer turn.
+   */
+  recordDeliveredUtterance(input: RecordDeliveredUtteranceInput): boolean {
+    const binding = this.bindings.get(
+      this.key(input.scopeKey, input.inputTurnId),
+    );
+    if (!binding) return false;
+    if (!binding.coordinator.recordDeliveredUtterance()) return false;
+    binding.callbacks.onUtteranceDelivered?.();
+    return true;
+  }
+
+  /**
+   * Whether this turn may still emit user-visible output.
+   *
+   * Unknown turns return `true`: the reply fuse only governs turns this
+   * registry is actually tracking, and callers such as scheduled tasks have
+   * their own accounting. Suppression here must never be the reason an
+   * untracked delivery path silently stops working.
+   */
+  canDeliverUtterance(input: RecordDeliveredUtteranceInput): boolean {
+    const binding = this.bindings.get(
+      this.key(input.scopeKey, input.inputTurnId),
+    );
+    if (!binding) return true;
+    return binding.coordinator.canDeliverUtterance();
   }
 
   unbind(

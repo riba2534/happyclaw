@@ -20,9 +20,16 @@ import {
   ProcessingLock,
   isStale as isGloballyStale,
 } from './im-safety/index.js';
-import { channelConversationJid } from './channel-address.js';
+import {
+  channelConversationJid,
+  extractProviderTarget,
+} from './channel-address.js';
 import { resolveAdmittedChannelRoute } from './channel-admission.js';
 import type { ChannelMessageMeta } from './types.js';
+import {
+  ExactAsyncIndicatorRegistry,
+  processingIndicatorKey,
+} from './processing-indicator.js';
 // ─── TelegramConnection Interface ──────────────────────────────
 
 export interface TelegramConnectionConfig {
@@ -213,6 +220,7 @@ export interface TelegramConnection {
   ): Promise<void>;
   sendFile(chatId: string, filePath: string, fileName: string): Promise<void>;
   sendChatAction(chatId: string, action: 'typing'): Promise<void>;
+  clearAckReaction(chatId: string, inputMessageId: string): Promise<void>;
   isConnected(): boolean;
 }
 
@@ -323,6 +331,10 @@ export function createTelegramConnection(
 
   const processingLock = new ProcessingLock();
   let bot: Bot | null = null;
+  const ackReactions = new ExactAsyncIndicatorRegistry<{
+    chatId: number;
+    messageId: number;
+  }>();
   let pollingPromise: Promise<void> | null = null;
   let reconnectTimer: NodeJS.Timeout | null = null;
   let pollingWatchdogTimer: NodeJS.Timeout | null = null;
@@ -768,15 +780,36 @@ export function createTelegramConnection(
             updateChatName(jid, chatName);
             opts.onNewChat(jid, chatName);
 
-            // Reaction 确认
-            try {
-              await ctx.react('👀');
-            } catch (err) {
-              logger.debug({ err, msgId }, 'Failed to add Telegram reaction');
-            }
-
             // 存储消息
             const id = crypto.randomUUID();
+            ackReactions
+              .attach(
+                processingIndicatorKey(extractProviderTarget(sourceJid), id),
+                async () => {
+                  try {
+                    await ctx.react('👀');
+                    return {
+                      chatId: ctx.chat.id,
+                      messageId: ctx.message.message_id,
+                    };
+                  } catch (err) {
+                    logger.debug(
+                      { err, msgId },
+                      'Failed to add Telegram reaction',
+                    );
+                    return null;
+                  }
+                },
+                async (handle) => {
+                  if (!bot) throw new Error('Telegram bot is not initialized');
+                  await bot.api.setMessageReaction(
+                    handle.chatId,
+                    handle.messageId,
+                    [],
+                  );
+                },
+              )
+              .catch(() => {});
             const timestamp = new Date(ctx.message.date * 1000).toISOString();
             const senderId = ctx.from?.id ? `tg:${ctx.from.id}` : 'tg:unknown';
             storeChatMetadata(targetJid, timestamp);
@@ -949,13 +982,35 @@ export function createTelegramConnection(
             const caption = ctx.message.caption;
             const text = caption ? `${imgMarker}\n${caption}` : imgMarker;
 
-            try {
-              await ctx.react('👀');
-            } catch (err) {
-              logger.debug({ err, msgId }, 'Failed to add Telegram reaction');
-            }
-
             const id = crypto.randomUUID();
+            ackReactions
+              .attach(
+                processingIndicatorKey(extractProviderTarget(sourceJid), id),
+                async () => {
+                  try {
+                    await ctx.react('👀');
+                    return {
+                      chatId: ctx.chat.id,
+                      messageId: ctx.message.message_id,
+                    };
+                  } catch (err) {
+                    logger.debug(
+                      { err, msgId },
+                      'Failed to add Telegram reaction',
+                    );
+                    return null;
+                  }
+                },
+                async (handle) => {
+                  if (!bot) throw new Error('Telegram bot is not initialized');
+                  await bot.api.setMessageReaction(
+                    handle.chatId,
+                    handle.messageId,
+                    [],
+                  );
+                },
+              )
+              .catch(() => {});
             const timestamp = new Date(ctx.message.date * 1000).toISOString();
             const senderId = ctx.from?.id ? `tg:${ctx.from.id}` : 'tg:unknown';
             storeChatMetadata(targetJid, timestamp);
@@ -1123,13 +1178,35 @@ export function createTelegramConnection(
             const caption = ctx.message.caption;
             const text = caption ? `${fileText}\n${caption}` : fileText;
 
-            try {
-              await ctx.react('👀');
-            } catch (err) {
-              logger.debug({ err, msgId }, 'Failed to add Telegram reaction');
-            }
-
             const id = crypto.randomUUID();
+            ackReactions
+              .attach(
+                processingIndicatorKey(extractProviderTarget(sourceJid), id),
+                async () => {
+                  try {
+                    await ctx.react('👀');
+                    return {
+                      chatId: ctx.chat.id,
+                      messageId: ctx.message.message_id,
+                    };
+                  } catch (err) {
+                    logger.debug(
+                      { err, msgId },
+                      'Failed to add Telegram reaction',
+                    );
+                    return null;
+                  }
+                },
+                async (handle) => {
+                  if (!bot) throw new Error('Telegram bot is not initialized');
+                  await bot.api.setMessageReaction(
+                    handle.chatId,
+                    handle.messageId,
+                    [],
+                  );
+                },
+              )
+              .catch(() => {});
             const timestamp = new Date(ctx.message.date * 1000).toISOString();
             const senderId = ctx.from?.id ? `tg:${ctx.from.id}` : 'tg:unknown';
             storeChatMetadata(targetJid, timestamp);
@@ -1328,6 +1405,7 @@ export function createTelegramConnection(
       connected = false;
       watchdogRestarting = false;
       clearPollingWatchdog();
+      await ackReactions.clearAll();
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
@@ -1417,6 +1495,10 @@ export function createTelegramConnection(
         logger.error({ err, chatId }, 'Failed to send Telegram message');
         throw err;
       }
+    },
+
+    clearAckReaction(chatId: string, inputMessageId: string): Promise<void> {
+      return ackReactions.clear(processingIndicatorKey(chatId, inputMessageId));
     },
 
     async sendImage(

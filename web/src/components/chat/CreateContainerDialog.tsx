@@ -32,7 +32,9 @@ import { useChatStore } from '../../stores/chat';
 import { useAuthStore } from '../../stores/auth';
 import { useAgentProfilesStore } from '../../stores/agent-profiles';
 import { getAgentContextSource } from '../../types';
+import type { InteractionMode } from '../../types';
 import { workspaceCreationBlockReason } from '../../utils/agent-product';
+import { InteractionModeSelector } from './InteractionModeSelector';
 
 interface CreateContainerDialogProps {
   open: boolean;
@@ -56,6 +58,8 @@ export function CreateContainerDialog({
   const [initSourcePath, setInitSourcePath] = useState('');
   const [initGitUrl, setInitGitUrl] = useState('');
   const [selectedAgentProfileId, setSelectedAgentProfileId] = useState('');
+  const [interactionMode, setInteractionMode] =
+    useState<InteractionMode>('assistant');
 
   const createFlow = useChatStore((s) => s.createFlow);
   const canHostExec = useAuthStore((s) => s.user?.role === 'admin');
@@ -102,6 +106,7 @@ export function CreateContainerDialog({
     setInitSourcePath('');
     setInitGitUrl('');
     setSelectedAgentProfileId('');
+    setInteractionMode('assistant');
   };
 
   const handleClose = () => {
@@ -135,6 +140,7 @@ export function CreateContainerDialog({
       }
       if (selectedAgentProfileId)
         options.agent_profile_id = selectedAgentProfileId;
+      options.interaction_mode = interactionMode;
       const created = await createFlow(
         trimmed,
         Object.keys(options).length ? options : undefined,
@@ -154,11 +160,11 @@ export function CreateContainerDialog({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && handleClose()}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>为 Agent 新建工作区</DialogTitle>
           <DialogDescription>
-            选择 Agent，并分别确认工作区的运行位置和 Agent 上下文。
+            选择 Agent，并确认工作区的回复模式、运行位置和上下文。
           </DialogDescription>
         </DialogHeader>
 
@@ -222,6 +228,13 @@ export function CreateContainerDialog({
             )}
           </div>
 
+          <InteractionModeSelector
+            value={interactionMode}
+            onChange={setInteractionMode}
+            name="create-workspace-interaction-mode"
+            disabled={loading}
+          />
+
           {/* Name input */}
           <div>
             <label className="block text-sm font-medium mb-2">工作区名称</label>
@@ -238,7 +251,7 @@ export function CreateContainerDialog({
 
           {selectedProfile && (
             <div className="rounded-lg border bg-muted/20 p-3">
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-3 sm:grid-cols-3">
                 <div className="min-w-0">
                   <div className="text-[11px] font-medium text-muted-foreground">
                     运行位置
@@ -260,6 +273,16 @@ export function CreateContainerDialog({
                   </div>
                   <div className="mt-1 text-sm font-medium text-foreground">
                     {inheritsHostClaude ? '继承 ~/.claude' : 'HappyClaw 管理'}
+                  </div>
+                </div>
+                <div className="min-w-0">
+                  <div className="text-[11px] font-medium text-muted-foreground">
+                    回复模式
+                  </div>
+                  <div className="mt-1 text-sm font-medium text-foreground">
+                    {interactionMode === 'proactive'
+                      ? '主动模式'
+                      : 'Assistant 模式'}
                   </div>
                 </div>
               </div>

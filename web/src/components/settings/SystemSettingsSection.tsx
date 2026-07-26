@@ -21,7 +21,9 @@ type NumericSettingKey =
   | 'loginLockoutMinutes'
   | 'maxConcurrentScripts'
   | 'scriptTimeout'
-  | 'taskBackfillGraceMs';
+  | 'taskBackfillGraceMs'
+  | 'maxRepliesPerTurn'
+  | 'maxTasksPerUser';
 
 interface FieldConfig {
   key: NumericSettingKey;
@@ -167,6 +169,30 @@ const fieldGroups: FieldGroup[] = [
         toStored: (value) => value * 60_000,
         min: 0,
         max: 1440,
+        step: 1,
+      },
+      {
+        key: 'maxTasksPerUser',
+        label: '每用户定时任务上限',
+        description:
+          '单个用户可持有的定时任务总数，防止大量任务持续占满执行容量。0 表示不限制。',
+        unit: '个',
+        toDisplay: (value) => value,
+        toStored: (value) => value,
+        min: 0,
+        max: 10000,
+        step: 10,
+      },
+      {
+        key: 'maxRepliesPerTurn',
+        label: '单轮消息条数上限',
+        description:
+          '一次回合内 Agent 最多送达多少条用户可见消息，用于兜住异常的重复发送循环；正常对话远达不到。0 表示不限制。',
+        unit: '条',
+        toDisplay: (value) => value,
+        toStored: (value) => value,
+        min: 0,
+        max: 500,
         step: 1,
       },
     ],

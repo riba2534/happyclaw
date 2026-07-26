@@ -124,7 +124,7 @@ describe('resolveTurnOutcome', () => {
     );
 
     expect(closedBranch).toContain(
-      'genuineReplyDelivered || ipcReplyTurnTracker.delivered',
+      'activeGenuineReplyDelivered || ipcReplyTurnTracker.delivered',
     );
     expect(closedBranch).not.toContain('replyDelivered: sentReply');
   });
@@ -140,7 +140,7 @@ describe('resolveTurnOutcome', () => {
     );
 
     expect(missingOutputBranch).toContain(
-      'genuineReplyDelivered || ipcReplyTurnTracker.delivered',
+      'activeGenuineReplyDelivered || ipcReplyTurnTracker.delivered',
     );
     expect(missingOutputBranch).toContain('commitCursor();');
     expect(missingOutputBranch).not.toContain('sentReply');
@@ -250,7 +250,12 @@ describe('resolveTurnOutcome', () => {
     expect(mainCleanup).toContain('getUncertainChannelOutboxForTurn');
     expect(mainCleanup).toContain('runtime.interrupt');
     expect(mainCleanup).toContain('commitCursor();');
-    expect(mainCleanup).toContain("'delivery-uncertain'");
+    expect(mainCleanup).toContain(
+      'await deliverChannelManualReconciliationNotice',
+    );
+    expect(mainCleanup).toContain(
+      "interactionMode === 'proactive' ? 'native' : 'default'",
+    );
 
     const postCleanup = main.slice(
       main.indexOf('// runAgent threw — output is undefined'),
@@ -260,7 +265,7 @@ describe('resolveTurnOutcome', () => {
       'if (channelDeliveryNeedsManualReconciliation)',
     );
     expect(postCleanup).toContain(
-      'return channelManualNoticesAcknowledged && cursorCommitted;',
+      'return channelManualNoticesAcknowledged && activeCursorCommitted;',
     );
 
     const agentCleanup = main.slice(
@@ -278,18 +283,32 @@ describe('resolveTurnOutcome', () => {
       path.join(process.cwd(), 'src/index.ts'),
       'utf8',
     );
+    const branchStart = main.indexOf(
+      '// Feishu card JSON: store extracted markdown for web',
+    );
     const branch = main.slice(
-      main.indexOf('// Feishu card JSON: store extracted markdown for web'),
-      main.indexOf('// Scheduled-task output routing.'),
+      branchStart,
+      main.indexOf(
+        'recordSuccessfulIpcSend(sourceGroup, data.chatJid, data.text)',
+        branchStart,
+      ),
     );
 
     expect(branch).toContain('sendToIM: false');
+    expect(branch).toContain('effectiveChatJid');
+    expect(branch).toContain('projectionMessageId');
     expect(branch).toContain('resolveImRoute({');
     expect(branch).toContain('ipcAgentId,');
     expect(branch).toContain('data.inputTurnId');
-    expect(branch).toContain('channelTurnScope(sourceGroup, ipcAgentId)');
-    expect(branch).toContain(
-      'sendImWithRetry(\n                        ipcImRoute,\n                        data.text,',
+    expect(branch).toContain('const messageScopeKey = channelTurnScope(');
+    // The IM leg must receive the raw native payload, not the Web projection.
+    // Whitespace-insensitive so nesting changes (e.g. adding a guard around the
+    // send) do not break an assertion about argument order.
+    expect(branch.replace(/\s+/g, ' ')).toContain(
+      'sendImWithRetry( ipcImRoute, data.text,',
+    );
+    expect(branch.indexOf('sendImWithRetry(')).toBeLessThan(
+      branch.indexOf('const sendOutcome = await sendMessageWithOutcome'),
     );
     expect(branch).not.toContain('imTextOverride: webText');
   });

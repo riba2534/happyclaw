@@ -30,6 +30,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Server,
+  Settings2,
   SlidersHorizontal,
   Sun,
   Terminal,
@@ -50,6 +51,8 @@ import {
 } from '../../utils/workspaceLastAgent';
 import { CHANNEL_LABEL } from '../settings/channel-meta';
 import { getAgentProfileDisplayName } from '../../utils/agent-product';
+import { normalizeInteractionMode } from '../../lib/interaction-mode';
+import { WorkspaceInteractionModeDialog } from './WorkspaceInteractionModeDialog';
 
 /** Sentinel value for binding the main conversation (vs. a specific agent) */
 const MAIN_BINDING = '__main__' as const;
@@ -79,7 +82,10 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     'files',
   );
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [showInteractionModeDialog, setShowInteractionModeDialog] =
+    useState(false);
   const [resetLoading, setResetLoading] = useState(false);
+  const [creatingSession, setCreatingSession] = useState(false);
   const [resetAgentId, setResetAgentId] = useState<string | null>(null);
   // Desktop: visible controls panel height, mounted controls terminal lifecycle.
   const [terminalVisible, setTerminalVisible] = useState(false);
@@ -123,6 +129,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const handleStreamEvent = useChatStore((s) => s.handleStreamEvent);
   const handleWsNewMessage = useChatStore((s) => s.handleWsNewMessage);
   const handleStreamSnapshot = useChatStore((s) => s.handleStreamSnapshot);
+  const updateInteractionMode = useChatStore((s) => s.updateInteractionMode);
 
   const agents = useChatStore((s) => s.agents[groupJid] ?? EMPTY_AGENTS);
   const activeAgentTab = useChatStore(
@@ -186,6 +193,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   // ACL result is propagated via the `can_modify` field; trust it as the
   // single source of truth to avoid frontend/backend divergence.
   const canModifyWorkspaceConfig = !!group?.can_modify;
+  const interactionMode = normalizeInteractionMode(group?.interaction_mode);
 
   useEffect(() => {
     if (!canModifyWorkspaceConfig && contextPanelView === 'env') {
@@ -220,13 +228,14 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     };
   }, [isOwnHome]);
 
-  // 进入对话时清除未读计数
+  // 未读目前按 Workspace 聚合：进入主会话或切换到任一 Agent 会话，
+  // 都表示用户已经查看当前 Workspace。
   useEffect(() => {
     markChatRead(groupJid);
     const onFocus = () => markChatRead(groupJid);
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
-  }, [groupJid, markChatRead]);
+  }, [activeAgentTab, groupJid, markChatRead]);
 
   // Load messages on group select
   const hasMessages = !!groupMessages;
@@ -441,7 +450,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   useEffect(() => {
     const unsub1 = wsManager.on('stream_event', (data: any) => {
       if (data.chatJid === groupJid) {
-        handleStreamEvent(groupJid, data.event, data.agentId);
+        handleStreamEvent(groupJid, data.event, data.agentId, data.runId);
       }
     });
     // 通过 new_message 立即添加消息到本地状态（消除轮询延迟导致的消息"丢失"）
@@ -461,14 +470,19 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     const unsub4 = wsManager.on('stream_snapshot', (data: any) => {
       if (!data.snapshot) return;
       if (data.chatJid === groupJid) {
-        handleStreamSnapshot(groupJid, data.snapshot);
+        handleStreamSnapshot(groupJid, data.snapshot, undefined, data.runId);
       } else if (
         typeof data.chatJid === 'string' &&
         data.chatJid.startsWith(agentSnapshotPrefix)
       ) {
         // Agent-specific snapshot: extract agentId and restore agentStreaming
         const snapshotAgentId = data.chatJid.slice(agentSnapshotPrefix.length);
-        handleStreamSnapshot(groupJid, data.snapshot, snapshotAgentId);
+        handleStreamSnapshot(
+          groupJid,
+          data.snapshot,
+          snapshotAgentId,
+          data.runId,
+        );
       }
     });
     const unsub5 = wsManager.on('follow_up_update', (data: any) => {
@@ -557,10 +571,19 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   };
 
   const handleCreateSession = useCallback(async () => {
-    const agent = await createConversation(groupJid, '');
-    if (!agent) return;
-    selectTab(agent.id);
-  }, [createConversation, groupJid, selectTab]);
+    if (creatingSession) return;
+    setCreatingSession(true);
+    try {
+      const agent = await createConversation(groupJid, '');
+      if (!agent) {
+        toast.error(useChatStore.getState().error || '创建 Web 会话失败');
+        return;
+      }
+      selectTab(agent.id);
+    } finally {
+      setCreatingSession(false);
+    }
+  }, [createConversation, creatingSession, groupJid, selectTab]);
 
   const handleDeleteSession = useCallback(
     (id: string) => {
@@ -712,6 +735,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         selectTab(id);
       }}
       onCreateSession={() => void handleCreateSession()}
+      isCreatingSession={creatingSession}
       onRenameSession={(id, currentName) => {
         setRenameTarget({ agentId: id, name: currentName });
       }}
@@ -855,6 +879,27 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                   </span>
                 </>
               )}
+              <span className="text-muted-foreground/40">·</span>
+              <span
+                className={cn(
+                  'inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[10px] font-medium',
+                  interactionMode === 'proactive'
+                    ? 'border-primary/30 bg-primary/5 text-primary'
+                    : 'border-border bg-muted/50 text-muted-foreground',
+                )}
+                title={
+                  interactionMode === 'proactive'
+                    ? '主动模式：由 Agent 决定何时发送 0～多条独立消息'
+                    : 'Assistant 模式：框架在任务完成后交付一条主回复'
+                }
+                aria-label={
+                  interactionMode === 'proactive'
+                    ? '当前为主动模式'
+                    : '当前为 Assistant 模式'
+                }
+              >
+                {interactionMode === 'proactive' ? '主动' : 'Assistant'}
+              </span>
               {isOwnHome &&
                 imStatus &&
                 Object.entries(imStatus).some(([, v]) => v) && (
@@ -880,6 +925,18 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
               <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
               运行中
             </span>
+          )}
+          {canModifyWorkspaceConfig && (
+            <button
+              type="button"
+              onClick={() => setShowInteractionModeDialog(true)}
+              className="inline-flex h-11 w-11 items-center justify-center gap-1.5 rounded-lg text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer sm:h-9 sm:w-auto sm:px-2.5"
+              title="工作区设置"
+              aria-label="工作区设置"
+            >
+              <Settings2 className="h-4 w-4" />
+              <span className="hidden xl:inline">工作区设置</span>
+            </button>
           )}
           {canModifyWorkspaceConfig && (
             <button
@@ -986,6 +1043,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                   agentAvatarUrl={group?.agent_profile_avatar_url}
                   agentAvatarEmoji={group?.agent_profile_avatar_emoji}
                   agentAvatarColor={group?.agent_profile_avatar_color}
+                  interactionMode={interactionMode}
                   onSend={(content) => {
                     handleActiveAgentSend(content);
                   }}
@@ -1036,6 +1094,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                   agentAvatarUrl={group?.agent_profile_avatar_url}
                   agentAvatarEmoji={group?.agent_profile_avatar_emoji}
                   agentAvatarColor={group?.agent_profile_avatar_color}
+                  interactionMode={interactionMode}
                   onSend={(content) => handleSend(content)}
                 />
                 <MessageInput
@@ -1134,6 +1193,14 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
           {renderContextPanel()}
         </SheetContent>
       </Sheet>
+
+      <WorkspaceInteractionModeDialog
+        open={showInteractionModeDialog}
+        workspaceName={workspaceDisplayName}
+        currentMode={interactionMode}
+        onClose={() => setShowInteractionModeDialog(false)}
+        onSave={(mode) => updateInteractionMode(groupJid, mode)}
+      />
 
       {/* Mobile: Terminal sheet */}
       <Sheet

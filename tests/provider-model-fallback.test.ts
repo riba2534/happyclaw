@@ -4,6 +4,7 @@ import {
   classifyProviderLimitNotice,
   classifyProviderRateLimitType,
   decideProviderLimitAction,
+  isAccountProviderAssistantError,
   isProviderLimitNotice,
   ProviderFallbackModelState,
   ProviderFallbackTurnLedger,
@@ -124,6 +125,17 @@ describe('provider model fallback lifecycle', () => {
     expect(classifyProviderRateLimitType('seven_day_overage_included')).toBe(
       'model',
     );
+  });
+
+  test('fails fast on synthetic assistant provider errors without a Result', () => {
+    expect(isAccountProviderAssistantError('rate_limit')).toBe(true);
+    expect(isAccountProviderAssistantError('billing_error')).toBe(true);
+    expect(isAccountProviderAssistantError('authentication_failed')).toBe(true);
+    expect(isAccountProviderAssistantError('overloaded')).toBe(true);
+    expect(isAccountProviderAssistantError('server_error')).toBe(true);
+    expect(isAccountProviderAssistantError('invalid_request')).toBe(false);
+    expect(isAccountProviderAssistantError('max_output_tokens')).toBe(false);
+    expect(isAccountProviderAssistantError(undefined)).toBe(false);
   });
 
   test('structured rejection wins over text and preserves model-only errors without fallback', () => {

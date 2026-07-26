@@ -9,8 +9,15 @@
 # Covered call patterns:
 #   loadPrompt('foo.md')                — single-arg helper
 #   loadPrompt('seg', 'foo.md')         — multi-segment helper (last arg is the file)
+#   loadPrompt(\n  'foo.md',\n)         — prettier-reflowed call (arg on its own line)
 #   path.join(..., 'prompts', 'foo.md') — path.join literal
 #   'prompts/foo.md' / "prompts/foo.md" — direct concatenation
+#
+# These patterns are line-based, so a new call style can slip past them. The
+# guard near the end makes that loud: every .md literal in src/ must be either
+# captured by a pattern or listed as deliberately-not-a-prompt. Without it a
+# partial miss still printed "all resolved" — which is exactly what happened
+# when prettier reflowed two loadPrompt calls onto multiple lines.
 #
 # Style aligned with scripts/check-stream-event-sync.sh: pure bash + grep -E, no python3.
 
@@ -49,7 +56,14 @@ fi
 #   2) 'prompts', 'foo.md'           — path.join-style literal pair
 #   3) 'prompts/foo.md'              — slash-form direct literal
 HITS_FILE="$(mktemp)"
-trap 'rm -f "$HITS_FILE"' EXIT
+ALL_MD_FILE="$(mktemp)"
+CAPTURED_FILE="$(mktemp)"
+trap 'rm -f "$HITS_FILE" "$ALL_MD_FILE" "$CAPTURED_FILE"' EXIT
+
+# .md literals that are intentionally not agent-runner prompts: they name the
+# user's workspace memory files and are resolved against the workspace dir at
+# runtime, not against container/agent-runner/prompts/.
+NON_PROMPT_MD='^(CLAUDE|CLAUDE\.local)\.md$'
 
 # Pattern 1: loadPrompt(...) — pull the final quoted .md arg before the closing paren.
 #            Works for loadPrompt('foo.md') and loadPrompt('seg', 'foo.md').
@@ -66,6 +80,12 @@ grep -HnE "['\"]prompts['\"][[:space:]]*,[[:space:]]*['\"][a-zA-Z0-9_.-]+\.md['\
 # Pattern 3: 'prompts/foo.md' direct
 grep -HnE "['\"]prompts/[a-zA-Z0-9_.-]+\.md['\"]" "${TS_FILES[@]}" 2>/dev/null \
   | sed -nE "s/^([^:]+):([0-9]+):.*['\"]prompts\/([a-zA-Z0-9_.-]+\.md)['\"].*$/\1:\2:\3/p" \
+  >> "$HITS_FILE" || true
+
+# Pattern 4: a lone quoted .md literal on its own line — what prettier produces
+#            when a loadPrompt(...) call exceeds the print width.
+grep -HnE "^[[:space:]]*['\"][a-zA-Z0-9_.-]+\.md['\"],?[[:space:]]*$" "${TS_FILES[@]}" 2>/dev/null \
+  | sed -nE "s/^([^:]+):([0-9]+):[[:space:]]*['\"]([a-zA-Z0-9_.-]+\.md)['\"],?[[:space:]]*$/\1:\2:\3/p" \
   >> "$HITS_FILE" || true
 
 # Sort + uniq by (file, line, filename) tuple.
@@ -86,11 +106,36 @@ if [ "$HIT_COUNT" -eq 0 ]; then
   exit 0
 fi
 
+# Guard: no .md literal in src/ may go uncaptured. A pattern that stops
+# matching must fail the build, not silently shrink the checked set.
+grep -hoE "['\"][a-zA-Z0-9_.-]+\.md['\"]" "${TS_FILES[@]}" 2>/dev/null \
+  | tr -d "'\"" | sort -u > "$ALL_MD_FILE" || true
+awk -F: '{print $3}' "$HITS_FILE" | sort -u > "$CAPTURED_FILE"
+
+UNCAPTURED=""
+while IFS= read -r name; do
+  [ -z "$name" ] && continue
+  if echo "$name" | grep -qE "$NON_PROMPT_MD"; then continue; fi
+  if ! grep -qxF "$name" "$CAPTURED_FILE"; then
+    UNCAPTURED="$UNCAPTURED $name"
+  fi
+done < "$ALL_MD_FILE"
+
+if [ -n "$UNCAPTURED" ]; then
+  echo "✗ Unrecognized prompt-reference form for:$UNCAPTURED"
+  echo ""
+  echo "  These .md literals appear in agent-runner src/ but no pattern above"
+  echo "  captured them, so they would not be checked for existence."
+  echo "  Add a pattern, or extend NON_PROMPT_MD if they are not prompts."
+  exit 1
+fi
+
 # Walk through hits, check existence.
 MISSING=0
 declare -a UNIQUE_NAMES=()
 while IFS=: read -r file line name; do
   if [ -z "$name" ]; then continue; fi
+  if echo "$name" | grep -qE "$NON_PROMPT_MD"; then continue; fi
   if [ ! -f "$PROMPTS_DIR/$name" ]; then
     rel="${file#$ROOT/}"
     echo "Missing: prompts/$name (referenced in $rel:$line)"

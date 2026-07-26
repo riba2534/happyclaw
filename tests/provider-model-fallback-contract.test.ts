@@ -11,6 +11,11 @@ const hostRunner = fs.readFileSync(
   path.join(root, 'src/container-runner.ts'),
   'utf8',
 );
+const main = fs.readFileSync(path.join(root, 'src/index.ts'), 'utf8');
+const taskScheduler = fs.readFileSync(
+  path.join(root, 'src/task-scheduler.ts'),
+  'utf8',
+);
 
 describe('provider fallback source contracts', () => {
   test('cold/warm retry uses the failed turn payload rather than startup input', () => {
@@ -36,7 +41,9 @@ describe('provider fallback source contracts', () => {
     expect(agentRunner).toContain(
       'const info: SDKRateLimitInfo = message.rate_limit_info',
     );
-    expect(agentRunner).toContain('structuredRejection: structuredLimit');
+    expect(agentRunner).toContain(
+      'structuredRejection: { rateLimitType: info.rateLimitType }',
+    );
     expect(agentRunner).toContain(
       "limitDecision.action === 'provider_failure'",
     );
@@ -46,9 +53,9 @@ describe('provider fallback source contracts', () => {
     expect(agentRunner).toContain(
       'PROVIDER_FALLBACK_MODELS.activeModelOverride',
     );
-    expect(agentRunner).toMatch(
-      /providerFailureRetrying: true,[\s\S]*?emitResultUsage\(resultMsg, containerInput\.turnId \|\| generateTurnId\(\)\)/,
-    );
+    expect(agentRunner).toContain('providerFailureRetrying: true');
+    expect(agentRunner).toContain('terminalModelLimitFailure: true');
+    expect(agentRunner).not.toContain('pendingRejectedRateLimit');
   });
 
   test('host consumes the hidden model retry marker without quarantining provider', () => {
@@ -60,6 +67,82 @@ describe('provider fallback source contracts', () => {
     expect(hostRunner).not.toContain('ownerHomeFolder,\n    fallbackModel');
     expect(agentRunner).not.toMatch(
       /providerFailure:\s*true,\s*providerFailureRetrying:\s*true/,
+    );
+  });
+
+  test('a synthetic assistant provider error cannot park the SDK stream', () => {
+    expect(agentRunner).toContain(
+      'isAccountProviderAssistantError(assistantError)',
+    );
+    expect(agentRunner).toContain(
+      'publishProviderAccountFailure(assistantError)',
+    );
+    expect(agentRunner).toContain(
+      'const ipcReceipts = ipcDeliveryTracker.completeNextTurn()',
+    );
+    expect(agentRunner).toContain(
+      'writeOutput(outputCorrelation.correlate(output))',
+    );
+    expect(agentRunner).toContain(
+      "runSdkControlWithTimeout(\n              'getContextUsage'",
+    );
+    expect(agentRunner).toContain('new SdkFirstResponseWatchdog(');
+  });
+
+  test('host quarantines before projection and chooses retry vs terminal', () => {
+    expect(
+      hostRunner.match(/applyProviderFailureDisposition\(/g)?.length,
+    ).toBeGreaterThanOrEqual(5);
+    expect(hostRunner).toMatch(
+      /providerPool\.reportFailure\(selectedProfileId, true\);[\s\S]*?applyProviderFailureDisposition\([\s\S]*?await onOutput\(output\)/,
+    );
+    expect(hostRunner).toMatch(
+      /providerPool\.reportFailure\(hostSelectedProfileId, true\);[\s\S]*?applyProviderFailureDisposition\([\s\S]*?await onOutput\(output\)/,
+    );
+    expect(hostRunner).toMatch(
+      /providerPool\.refreshFromConfig\([\s\S]*?providerPool\.refreshRecoveryState\(\)/,
+    );
+  });
+
+  test('maintenance provider failures cannot project or replay a completed input', () => {
+    expect(agentRunner).toContain('providerFailureMaintenance: true');
+    expect(agentRunner).toContain(
+      'queryResult.durableInputTurnCompleted === true',
+    );
+    expect(
+      hostRunner.match(/output\.providerFailureMaintenance &&/g),
+    ).toHaveLength(2);
+    expect(hostRunner).toContain('healthyInputTurnCompleted');
+    expect(hostRunner).toContain('hostHealthyInputTurnCompleted');
+    expect(hostRunner).toContain(
+      'Provider failed after scheduled input completed; suppressing replay',
+    );
+  });
+
+  test('provider failures are visible only at pool exhaustion across interaction modes', () => {
+    expect(main).not.toContain(
+      'Provider failure result suppressed from user (silent switch)',
+    );
+    expect(main.match(/Provider failure surfaced to user/g)).toHaveLength(2);
+    expect(main).toContain('result.providerFailureTerminal !== true');
+    expect(main).toContain('output.providerFailureTerminal !== true');
+    expect(main).toContain('rollbackIdleMainCardReservation(');
+    expect(main).toContain('rollbackIdleAgentCardReservation(');
+    expect(main).toMatch(
+      /!publishesFrameworkAnswer\(interactionMode\)\s*&&\s*!result\.providerFailure/,
+    );
+    expect(main).toMatch(
+      /!publishesFrameworkAnswer\(interactionMode\)\s*&&\s*!output\.providerFailure/,
+    );
+  });
+
+  test('scheduled tasks classify exhausted providers as failures', () => {
+    expect(taskScheduler).toContain(
+      'streamedOutput.providerFailureTerminal === true',
+    );
+    expect(taskScheduler).toContain('error = PROVIDER_FAILURE_USER_NOTICE');
+    expect(hostRunner).toContain(
+      'Scheduled task provider failed; retrying the same prompt on another provider',
     );
   });
 });

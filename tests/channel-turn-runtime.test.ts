@@ -93,6 +93,40 @@ describe('durable channel turn runtime', () => {
     replay.dispose();
   });
 
+  test('cannot complete a turn while one provider side effect remains uncertain', () => {
+    const runtime = ChannelTurnRuntime.start({
+      ...route,
+      externalMessageId: 'msg-uncertain-cannot-complete',
+      agentId: 'agent-uncertain-cannot-complete',
+    });
+    const outbox = reliability.enqueueChannelOutbox({
+      ...route,
+      turnRunId: runtime.runId,
+      ordinal: 0,
+      kind: 'card',
+      payload: { card: { schema: '2.0' } },
+    }).item;
+    const claim = reliability.claimChannelOutboxById(
+      outbox.id,
+      'uncertain-delivery-worker',
+      100,
+      '2099-07-25T00:00:00.000Z',
+    )!;
+    expect(
+      reliability.markChannelOutboxSending(claim, '2099-07-25T00:00:00.001Z'),
+    ).toBe(true);
+    expect(
+      reliability.reconcileExpiredChannelOutbox('2099-07-25T00:00:00.200Z'),
+    ).toEqual({ retryable: 0, uncertain: 1 });
+
+    expect(runtime.complete({ replyDelivered: true })).toBe(false);
+    expect(reliability.getChannelTurnRun(runtime.runId)?.status).toBe(
+      'running',
+    );
+    expect(runtime.interrupt('Provider side effect is uncertain')).toBe(true);
+    runtime.dispose();
+  });
+
   test('restart never re-executes after a delivered Outbox ACK survived the process', () => {
     const input = {
       ...route,

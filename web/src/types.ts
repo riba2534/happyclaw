@@ -1,7 +1,10 @@
+export type InteractionMode = 'assistant' | 'proactive';
+
 export interface GroupInfo {
   name: string;
   folder: string;
   added_at: string;
+  interaction_mode: InteractionMode;
   kind?: 'home' | 'main' | 'feishu' | 'web';
   is_home?: boolean;
   is_my_home?: boolean;

@@ -177,6 +177,7 @@ export interface IMChannel {
     chatId: string,
     text: string,
     localImagePaths?: string[],
+    options?: ChannelMessageDeliveryOptions,
   ): Promise<void>;
   /** Send file to chat (if supported) */
   sendFile?(chatId: string, filePath: string, fileName: string): Promise<void>;
@@ -187,9 +188,9 @@ export interface IMChannel {
     caption?: string,
     fileName?: string,
   ): Promise<void>;
-  setTyping(chatId: string, isTyping: boolean): Promise<void>;
-  /** Clear the ack reaction for a chat (e.g. when streaming card handled the reply) */
-  clearAckReaction?(chatId: string): void;
+  setTyping(chatId: string, isTyping: boolean, leaseId?: string): Promise<void>;
+  /** Clear the ack reaction owned by one exact inbound input. */
+  clearAckReaction?(chatId: string, inputMessageId: string): Promise<void>;
   isConnected(): boolean;
   syncGroups?(): Promise<void>;
   /** Create a streaming card session for real-time card updates (Feishu or DingTalk) */
@@ -215,6 +216,11 @@ export interface IMChannel {
     context: ChannelTurnContext,
     request: FeishuCapabilityRequest,
   ): Promise<FeishuCapabilityResult>;
+}
+
+export interface ChannelMessageDeliveryOptions {
+  /** `native` avoids bot/card presentation for Proactive-mode workspace Agents. */
+  presentation?: 'default' | 'native';
 }
 
 // ─── Channel Registry ───────────────────────────────────────────
@@ -294,6 +300,7 @@ export function createFeishuChannel(config: FeishuConnectionConfig): IMChannel {
       chatId: string,
       text: string,
       localImagePaths?: string[],
+      options?: ChannelMessageDeliveryOptions,
     ): Promise<void> {
       if (!inner) {
         logger.warn(
@@ -302,7 +309,7 @@ export function createFeishuChannel(config: FeishuConnectionConfig): IMChannel {
         );
         return;
       }
-      await inner.sendMessage(chatId, text, localImagePaths);
+      await inner.sendMessage(chatId, text, localImagePaths, options);
     },
 
     async sendImage(
@@ -322,14 +329,18 @@ export function createFeishuChannel(config: FeishuConnectionConfig): IMChannel {
       await inner.sendImage(chatId, imageBuffer, mimeType, caption, fileName);
     },
 
-    async setTyping(chatId: string, isTyping: boolean): Promise<void> {
-      if (!inner) return;
-      await inner.sendReaction(chatId, isTyping);
+    async setTyping(_chatId: string, _isTyping: boolean): Promise<void> {
+      // Feishu's inbound exact-input OnIt reaction is the sole processing
+      // indicator owner. The former chat-level reaction was keyed only by
+      // route, so turn A could remove turn B's reaction and leak A's handle.
     },
 
-    clearAckReaction(chatId: string): void {
+    async clearAckReaction(
+      chatId: string,
+      inputMessageId: string,
+    ): Promise<void> {
       if (!inner) return;
-      inner.clearAckReaction(chatId);
+      await inner.clearAckReaction(chatId, inputMessageId);
     },
 
     isConnected(): boolean {
@@ -407,18 +418,94 @@ export function createFeishuChannel(config: FeishuConnectionConfig): IMChannel {
 
 // ─── Telegram Adapter ───────────────────────────────────────────
 
+/**
+ * Upper bound on how long one typing lease may stay held.
+ *
+ * A typing pulse stops only once its last lease is released, so any path that
+ * loses a lease — a runner crash, an exception between acquiring it and the
+ * turn terminal — pins the indicator, and with it the provider polling
+ * interval, for the process lifetime. Nothing else bounds that.
+ *
+ * Deliberately far longer than any healthy turn: this must never cut a slow
+ * run short, only reclaim a lease whose owner is gone.
+ */
+const TYPING_LEASE_MAX_MS = 60 * 60 * 1000;
+
+class TypingLeaseExpiry {
+  private readonly timers = new Map<string, NodeJS.Timeout>();
+
+  constructor(
+    private readonly onExpire: (chatId: string, leaseId: string) => void,
+  ) {}
+
+  private key(chatId: string, leaseId: string): string {
+    return `${chatId}\u0000${leaseId}`;
+  }
+
+  arm(chatId: string, leaseId: string): void {
+    const key = this.key(chatId, leaseId);
+    const existing = this.timers.get(key);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this.timers.delete(key);
+      this.onExpire(chatId, leaseId);
+    }, TYPING_LEASE_MAX_MS);
+    timer.unref?.();
+    this.timers.set(key, timer);
+  }
+
+  disarm(chatId: string, leaseId: string): void {
+    const key = this.key(chatId, leaseId);
+    const timer = this.timers.get(key);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.timers.delete(key);
+  }
+
+  disarmChat(chatId: string): void {
+    const prefix = `${chatId}\u0000`;
+    for (const [key, timer] of [...this.timers]) {
+      if (!key.startsWith(prefix)) continue;
+      clearTimeout(timer);
+      this.timers.delete(key);
+    }
+  }
+
+  disarmAll(): void {
+    for (const timer of this.timers.values()) clearTimeout(timer);
+    this.timers.clear();
+  }
+}
+
 export function createTelegramChannel(
   config: TelegramConnectionConfig,
 ): IMChannel {
   let inner: TelegramConnection | null = null;
-  // Telegram typing indicator expires after ~5s; resend every 4s while active.
-  let typingTimer: NodeJS.Timeout | null = null;
+  // A chat may have overlapping warm inputs. Each input owns a lease; the
+  // provider pulse stops only after the final lease is released.
+  const typingLeases = new Map<string, Set<string>>();
+  const typingTimers = new Map<string, NodeJS.Timeout>();
+  const typingExpiry = new TypingLeaseExpiry((chatId, leaseId) => {
+    const leases = typingLeases.get(chatId);
+    if (!leases?.delete(leaseId)) return;
+    logger.warn(
+      { chatId, leaseId },
+      'Telegram typing lease expired; releasing abandoned indicator',
+    );
+    if (leases.size === 0) clearTyping(chatId);
+  });
 
-  function clearTypingTimer(): void {
-    if (typingTimer) {
-      clearInterval(typingTimer);
-      typingTimer = null;
-    }
+  function clearTyping(chatId: string): void {
+    const timer = typingTimers.get(chatId);
+    if (timer) clearInterval(timer);
+    typingTimers.delete(chatId);
+    typingLeases.delete(chatId);
+    typingExpiry.disarmChat(chatId);
+  }
+
+  function clearAllTyping(): void {
+    for (const chatId of typingTimers.keys()) clearTyping(chatId);
+    typingExpiry.disarmAll();
   }
 
   const channel: IMChannel = {
@@ -450,7 +537,7 @@ export function createTelegramChannel(
     },
 
     async disconnect(): Promise<void> {
-      clearTypingTimer();
+      clearAllTyping();
       if (inner) {
         await inner.disconnect();
         inner = null;
@@ -504,10 +591,27 @@ export function createTelegramChannel(
       await inner.sendFile(chatId, filePath, fileName);
     },
 
-    async setTyping(chatId: string, isTyping: boolean): Promise<void> {
-      // Always clear existing timer first
-      clearTypingTimer();
-      if (!isTyping || !inner) return;
+    async setTyping(
+      chatId: string,
+      isTyping: boolean,
+      leaseId = '__legacy__',
+    ): Promise<void> {
+      if (!inner) return;
+      let leases = typingLeases.get(chatId);
+      if (!leases) {
+        leases = new Set<string>();
+        typingLeases.set(chatId, leases);
+      }
+      if (!isTyping) {
+        leases.delete(leaseId);
+        typingExpiry.disarm(chatId, leaseId);
+        if (leases.size === 0) clearTyping(chatId);
+        return;
+      }
+      if (leases.has(leaseId)) return;
+      leases.add(leaseId);
+      typingExpiry.arm(chatId, leaseId);
+      if (typingTimers.has(chatId)) return;
 
       const sendAction = async (): Promise<void> => {
         if (!inner) return;
@@ -516,9 +620,16 @@ export function createTelegramChannel(
 
       // Send immediately, then repeat every 4s to keep indicator alive
       void sendAction();
-      typingTimer = setInterval(() => {
-        void sendAction();
-      }, 4000);
+      typingTimers.set(
+        chatId,
+        setInterval(() => {
+          void sendAction();
+        }, 4000),
+      );
+    },
+
+    async clearAckReaction(chatId, inputMessageId) {
+      await inner?.clearAckReaction(chatId, inputMessageId);
     },
 
     isConnected(): boolean {
@@ -660,6 +771,18 @@ export function createWeChatChannel(
   onUpdatesBuf?: (cursor: string) => void | Promise<void>,
 ): IMChannel {
   let inner: WeChatConnection | null = null;
+  const typingLeases = new Map<string, Set<string>>();
+  const typingExpiry = new TypingLeaseExpiry((chatId, leaseId) => {
+    const leases = typingLeases.get(chatId);
+    if (!leases?.delete(leaseId)) return;
+    logger.warn(
+      { chatId, leaseId },
+      'WeChat typing lease expired; releasing abandoned indicator',
+    );
+    if (leases.size > 0) return;
+    typingLeases.delete(chatId);
+    void inner?.sendTyping(chatId, false).catch(() => undefined);
+  });
 
   const channel: IMChannel = {
     channelType: 'wechat',
@@ -692,6 +815,8 @@ export function createWeChatChannel(
     },
 
     async disconnect(): Promise<void> {
+      typingLeases.clear();
+      typingExpiry.disarmAll();
       if (inner) {
         const cursor = inner.getUpdatesBuf();
         await inner.disconnect();
@@ -743,9 +868,30 @@ export function createWeChatChannel(
       await inner.sendFile(chatId, filePath, fileName);
     },
 
-    async setTyping(chatId: string, isTyping: boolean): Promise<void> {
+    async setTyping(
+      chatId: string,
+      isTyping: boolean,
+      leaseId = '__legacy__',
+    ): Promise<void> {
       if (!inner) return;
-      await inner.sendTyping(chatId, isTyping);
+      let leases = typingLeases.get(chatId);
+      if (!leases) {
+        leases = new Set<string>();
+        typingLeases.set(chatId, leases);
+      }
+      if (isTyping) {
+        const wasIdle = leases.size === 0;
+        leases.add(leaseId);
+        typingExpiry.arm(chatId, leaseId);
+        if (wasIdle) await inner.sendTyping(chatId, true);
+        return;
+      }
+      leases.delete(leaseId);
+      typingExpiry.disarm(chatId, leaseId);
+      if (leases.size > 0) return;
+      typingLeases.delete(chatId);
+      typingExpiry.disarmChat(chatId);
+      await inner.sendTyping(chatId, false);
     },
 
     isConnected(): boolean {
@@ -847,9 +993,12 @@ export function createDingTalkChannel(
       await inner.sendFile(chatId, filePath, fileName);
     },
 
-    clearAckReaction(chatId: string): void {
+    async clearAckReaction(
+      chatId: string,
+      inputMessageId: string,
+    ): Promise<void> {
       if (!inner) return;
-      inner.clearAckReaction(chatId);
+      await inner.clearAckReaction(chatId, inputMessageId);
     },
 
     isConnected(): boolean {
@@ -900,7 +1049,23 @@ export function createDiscordChannel(
 ): IMChannel & DiscordChannelExtensions {
   const streamingEnabled = opts?.streamingMode === 'edit';
   let inner: DiscordConnection | null = null;
-  let typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
+  const typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
+  const typingLeases = new Map<string, Set<string>>();
+  const typingExpiry = new TypingLeaseExpiry((chatId, leaseId) => {
+    const leases = typingLeases.get(chatId);
+    if (!leases?.delete(leaseId)) return;
+    logger.warn(
+      { chatId, leaseId },
+      'Discord typing lease expired; releasing abandoned indicator',
+    );
+    if (leases.size > 0) return;
+    typingLeases.delete(chatId);
+    const interval = typingIntervals.get(chatId);
+    if (interval) {
+      clearInterval(interval);
+      typingIntervals.delete(chatId);
+    }
+  });
 
   const channel: IMChannel & DiscordChannelExtensions = {
     channelType: 'discord',
@@ -935,6 +1100,8 @@ export function createDiscordChannel(
       // Clear all typing intervals
       for (const [, interval] of typingIntervals) clearInterval(interval);
       typingIntervals.clear();
+      typingLeases.clear();
+      typingExpiry.disarmAll();
       if (inner) {
         await inner.disconnect();
         inner = null;
@@ -956,9 +1123,17 @@ export function createDiscordChannel(
       await inner.sendImage(chatId, imageBuffer, mimeType, caption, fileName);
     },
 
-    async setTyping(chatId, isTyping) {
+    async setTyping(chatId, isTyping, leaseId = '__legacy__') {
       if (!inner) return;
       if (isTyping) {
+        let leases = typingLeases.get(chatId);
+        if (!leases) {
+          leases = new Set<string>();
+          typingLeases.set(chatId, leases);
+        }
+        if (leases.has(leaseId)) return;
+        leases.add(leaseId);
+        typingExpiry.arm(chatId, leaseId);
         // Discord typing indicator lasts 10s, repeat every 9s
         if (!typingIntervals.has(chatId)) {
           await inner.setTyping(chatId, true);
@@ -970,6 +1145,12 @@ export function createDiscordChannel(
           typingIntervals.set(chatId, interval);
         }
       } else {
+        const leases = typingLeases.get(chatId);
+        leases?.delete(leaseId);
+        typingExpiry.disarm(chatId, leaseId);
+        if (leases && leases.size > 0) return;
+        typingLeases.delete(chatId);
+        typingExpiry.disarmChat(chatId);
         const interval = typingIntervals.get(chatId);
         if (interval) {
           clearInterval(interval);
@@ -978,8 +1159,8 @@ export function createDiscordChannel(
       }
     },
 
-    clearAckReaction(chatId) {
-      inner?.clearAckReaction(chatId);
+    async clearAckReaction(chatId, inputMessageId) {
+      await inner?.clearAckReaction(chatId, inputMessageId);
     },
 
     isConnected() {
@@ -1023,6 +1204,18 @@ export function createWhatsAppChannel(
   onConnectionUpdate?: (state: WhatsAppConnectionState) => void,
 ): IMChannel & { getWhatsAppState?: () => WhatsAppConnectionState } {
   let inner: WhatsAppConnection | null = null;
+  const typingLeases = new Map<string, Set<string>>();
+  const typingExpiry = new TypingLeaseExpiry((chatId, leaseId) => {
+    const leases = typingLeases.get(chatId);
+    if (!leases?.delete(leaseId)) return;
+    logger.warn(
+      { chatId, leaseId },
+      'WhatsApp typing lease expired; releasing abandoned indicator',
+    );
+    if (leases.size > 0) return;
+    typingLeases.delete(chatId);
+    void inner?.sendTyping(chatId, false).catch(() => undefined);
+  });
 
   const channel: IMChannel & {
     getWhatsAppState?: () => WhatsAppConnectionState;
@@ -1061,6 +1254,8 @@ export function createWhatsAppChannel(
     },
 
     async disconnect(): Promise<void> {
+      typingLeases.clear();
+      typingExpiry.disarmAll();
       if (inner) {
         await inner.disconnect();
         inner = null;
@@ -1068,6 +1263,8 @@ export function createWhatsAppChannel(
     },
 
     async logout(): Promise<void> {
+      typingLeases.clear();
+      typingExpiry.disarmAll();
       if (inner) {
         await inner.logout();
         inner = null;
@@ -1109,9 +1306,30 @@ export function createWhatsAppChannel(
       await inner.sendFile(chatId, filePath, fileName);
     },
 
-    async setTyping(chatId: string, isTyping: boolean): Promise<void> {
+    async setTyping(
+      chatId: string,
+      isTyping: boolean,
+      leaseId = '__legacy__',
+    ): Promise<void> {
       if (!inner) return;
-      await inner.sendTyping(chatId, isTyping);
+      let leases = typingLeases.get(chatId);
+      if (!leases) {
+        leases = new Set<string>();
+        typingLeases.set(chatId, leases);
+      }
+      if (isTyping) {
+        const wasIdle = leases.size === 0;
+        leases.add(leaseId);
+        typingExpiry.arm(chatId, leaseId);
+        if (wasIdle) await inner.sendTyping(chatId, true);
+        return;
+      }
+      leases.delete(leaseId);
+      typingExpiry.disarm(chatId, leaseId);
+      if (leases.size > 0) return;
+      typingLeases.delete(chatId);
+      typingExpiry.disarmChat(chatId);
+      await inner.sendTyping(chatId, false);
     },
 
     isConnected(): boolean {

@@ -59,6 +59,8 @@ vi.mock('../src/middleware/auth.ts', async (importOriginal) => {
 
 const tasksRoutesModule = await import('../src/routes/tasks.js');
 const db = await import('../src/db.js');
+const runtimeConfig = await import('../src/runtime-config.js');
+const { MAX_TASK_PROMPT_LENGTH } = await import('../src/schemas.js');
 const webContext = await import('../src/web-context.js');
 const { enqueueIsolatedScheduledTask, getRunningTaskIds } =
   await import('../src/task-scheduler.js');
@@ -162,6 +164,9 @@ beforeEach(() => {
     'unsafe-script-route-task',
     'script-permissions-task',
     'cancel-no-scheduler-task',
+    'capacity-live-task',
+    'capacity-deleted-task',
+    'route-move-task',
   ]) {
     try {
       db.deleteTask(id);
@@ -173,6 +178,7 @@ beforeEach(() => {
   webDepsState.current = null;
   webContext.setWebDeps({} as any);
   sdkQueryMock.mockReset();
+  runtimeConfig.saveSystemSettings({ maxTasksPerUser: 200 });
 });
 
 afterEach(() => {
@@ -288,6 +294,108 @@ describe('tasks route ownership and cleanup contract', () => {
       prompt: '每天执行',
       revision: editedRevision,
       status: 'paused',
+    });
+  });
+
+  test('AI creation enforces the owner cap and both user/model prompt bounds', async () => {
+    const capOwner = 'capacity-owner';
+    const capJid = 'web:capacity-owner';
+    const capFolder = 'capacity-owner';
+    db.setRegisteredGroup(capJid, {
+      name: 'Capacity Workspace',
+      folder: capFolder,
+      added_at: new Date().toISOString(),
+      executionMode: 'container',
+      created_by: capOwner,
+      is_home: false,
+    } as any);
+    createTask('capacity-live-task', capOwner, {
+      group_folder: capFolder,
+      chat_jid: capJid,
+    });
+    runtimeConfig.saveSystemSettings({ maxTasksPerUser: 1 });
+    asUser(capOwner);
+
+    let response = await tasksRoutes.request('/ai', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        description: '每天生成一次摘要',
+        chat_jid: capJid,
+      }),
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      code: 'TASK_LIMIT_REACHED',
+    });
+    expect(sdkQueryMock).not.toHaveBeenCalled();
+
+    response = await tasksRoutes.request('/ai', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        description: 'x'.repeat(MAX_TASK_PROMPT_LENGTH + 1),
+        chat_jid: capJid,
+      }),
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      code: 'TASK_PROMPT_TOO_LONG',
+    });
+
+    runtimeConfig.saveSystemSettings({ maxTasksPerUser: 200 });
+    sdkQueryMock.mockResolvedValueOnce(
+      JSON.stringify({
+        prompt: 'y'.repeat(MAX_TASK_PROMPT_LENGTH + 1),
+        schedule_type: 'cron',
+        schedule_value: '0 9 * * *',
+        summary: 'oversized model output',
+      }),
+    );
+    response = await tasksRoutes.request('/ai', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        description: '每天生成摘要',
+        chat_jid: capJid,
+      }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    await vi.waitFor(() => {
+      expect(db.getTaskById(body.taskId)).toMatchObject({
+        prompt: '每天生成摘要',
+        status: 'paused',
+      });
+    });
+    db.deleteTask(body.taskId);
+  });
+
+  test('moving a task updates its concrete delivery route', async () => {
+    const targetJid = 'web:route-move-target';
+    const targetFolder = 'route-move-target';
+    db.setRegisteredGroup(targetJid, {
+      name: 'Route Move Target',
+      folder: targetFolder,
+      added_at: new Date().toISOString(),
+      executionMode: 'container',
+      created_by: OWNER_ID,
+      is_home: false,
+    } as any);
+    createTask('route-move-task', OWNER_ID, {
+      delivery_route_jid: `${GROUP_JID}#thread:old`,
+    });
+    asUser(OWNER_ID);
+
+    const moved = await patchTask('route-move-task', {
+      chat_jid: targetJid,
+      execution_mode: 'container',
+    });
+    expect(moved.status).toBe(200);
+    expect(db.getTaskById('route-move-task')).toMatchObject({
+      chat_jid: targetJid,
+      group_folder: targetFolder,
+      delivery_route_jid: targetJid,
     });
   });
 
@@ -553,6 +661,50 @@ describe('tasks route ownership and cleanup contract', () => {
       next_run: null,
     });
     expect(db.getTaskRunsForTask('restore-route-task')).toHaveLength(1);
+  });
+
+  test('restoring a soft-deleted task cannot exceed the owner cap', async () => {
+    const capOwner = 'capacity-owner';
+    const capJid = 'web:capacity-owner';
+    const capFolder = 'capacity-owner';
+    db.setRegisteredGroup(capJid, {
+      name: 'Capacity Workspace',
+      folder: capFolder,
+      added_at: new Date().toISOString(),
+      executionMode: 'container',
+      created_by: capOwner,
+      is_home: false,
+    } as any);
+    createTask('capacity-live-task', capOwner, {
+      group_folder: capFolder,
+      chat_jid: capJid,
+    });
+    createTask('capacity-deleted-task', capOwner, {
+      group_folder: capFolder,
+      chat_jid: capJid,
+    });
+    const deleted = db.softDeleteTaskWithRevision(
+      'capacity-deleted-task',
+      db.getTaskById('capacity-deleted-task')!.revision,
+    );
+    expect(deleted.status).toBe('updated');
+    if (deleted.status !== 'updated') return;
+
+    runtimeConfig.saveSystemSettings({ maxTasksPerUser: 1 });
+    asUser(capOwner);
+    const response = await tasksRoutes.request(
+      '/capacity-deleted-task/restore',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ expected_revision: deleted.task.revision }),
+      },
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      code: 'TASK_LIMIT_REACHED',
+    });
+    expect(db.getTaskById('capacity-deleted-task')?.deleted_at).toBeTruthy();
   });
 
   test('restored future once task rebuilds next_run, while an expired once task is rejected', async () => {

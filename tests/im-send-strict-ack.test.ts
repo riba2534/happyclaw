@@ -161,6 +161,42 @@ async function connectedTransports() {
 }
 
 describe('IM strict send acknowledgement', () => {
+  test('Feishu native presentation uses post while default keeps interactive cards', async () => {
+    const { feishu } = await connectedTransports();
+
+    await expect(
+      feishu.sendMessage('oc_1', '像真人一样发言', undefined, {
+        presentation: 'native',
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(controls.feishuMessageCreate).toHaveBeenCalledOnce();
+    expect(controls.feishuMessageCreate.mock.calls[0][0].data).toMatchObject({
+      receive_id: 'oc_1',
+      msg_type: 'post',
+    });
+    expect(
+      JSON.parse(
+        controls.feishuMessageCreate.mock.calls[0][0].data.content as string,
+      ),
+    ).toMatchObject({
+      zh_cn: {
+        content: [[{ tag: 'md', text: '像真人一样发言' }]],
+      },
+    });
+
+    controls.feishuMessageCreate.mockClear();
+    await expect(
+      feishu.sendMessage('oc_1', '传统机器人回复'),
+    ).resolves.toBeUndefined();
+
+    expect(controls.feishuMessageCreate).toHaveBeenCalledOnce();
+    expect(controls.feishuMessageCreate.mock.calls[0][0].data).toMatchObject({
+      receive_id: 'oc_1',
+      msg_type: 'interactive',
+    });
+  });
+
   test('Feishu chat inventory reports every visible chat to registration', async () => {
     const feishu = createFeishuConnection({
       appId: 'app',
