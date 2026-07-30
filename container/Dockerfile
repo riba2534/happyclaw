@@ -99,8 +99,14 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uvx /usr/local/bin/uvx
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
 
-# Set Chromium path for agent-browser
+# Set Chromium path for agent-browser. The entrypoint starts a managed
+# headless Chromium instance on this container-local CDP port, and
+# agent-browser attaches to it instead of launching a second browser with a
+# random debugging port.
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV HAPPYCLAW_CHROMIUM_CDP_HOST=127.0.0.1
+ENV HAPPYCLAW_CHROMIUM_CDP_PORT=9222
+ENV AGENT_BROWSER_CDP=9222
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV PUPPETEER_SKIP_DOWNLOAD=true

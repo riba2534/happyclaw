@@ -85,18 +85,79 @@ ln -s /app/node_modules /tmp/dist/node_modules
 ln -s /app/prompts /tmp/prompts
 chmod -R a-w /tmp/dist
 
-# Buffer stdin to file (container requires EOF to flush stdin pipe)
-cat > /tmp/input.json
-chmod 644 /tmp/input.json
-
 # Fix permissions on exit: Claude Code creates some files with mode 0600
 # (e.g. settings.json), which the host backend (agent user) cannot read.
-# The trap runs as root after the node process exits.
+# The trap runs as root after the node process exits. It also stops the managed
+# Chromium process so no browser child survives a cancelled run.
+CHROMIUM_PID=
 cleanup() {
+  if [ -n "$CHROMIUM_PID" ] && kill -0 "$CHROMIUM_PID" 2>/dev/null; then
+    kill "$CHROMIUM_PID" 2>/dev/null || true
+    for ((attempt = 0; attempt < 20; attempt++)); do
+      kill -0 "$CHROMIUM_PID" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 "$CHROMIUM_PID" 2>/dev/null; then
+      kill -KILL "$CHROMIUM_PID" 2>/dev/null || true
+    fi
+    wait "$CHROMIUM_PID" 2>/dev/null || true
+  fi
   chmod -R a+rwX /home/node/.claude 2>/dev/null || true
   chmod -R a+rwX /workspace/group 2>/dev/null || true
 }
 trap cleanup EXIT
+
+# Start one deterministic browser for this task container. Binding to loopback
+# keeps the raw Chrome DevTools Protocol private to the container; a future Web
+# browser panel must proxy the authenticated agent-browser dashboard/stream,
+# never publish this port directly.
+HAPPYCLAW_CHROMIUM_CDP_HOST="${HAPPYCLAW_CHROMIUM_CDP_HOST:-127.0.0.1}"
+HAPPYCLAW_CHROMIUM_CDP_PORT="${HAPPYCLAW_CHROMIUM_CDP_PORT:-9222}"
+CHROMIUM_PROFILE_DIR=/tmp/happyclaw-chromium-profile
+CHROMIUM_LOG=/tmp/happyclaw-chromium.log
+mkdir -p "$CHROMIUM_PROFILE_DIR"
+chown -R node:node "$CHROMIUM_PROFILE_DIR"
+
+# agent-browser reads this value when its daemon starts, so it attaches to the
+# managed browser instead of creating another Chromium with a random CDP port.
+export AGENT_BROWSER_CDP="$HAPPYCLAW_CHROMIUM_CDP_PORT"
+
+HOME=/home/node setpriv --reuid=node --regid=node --init-groups -- \
+  "${AGENT_BROWSER_EXECUTABLE_PATH:-/usr/bin/chromium}" \
+  --headless=new \
+  --no-sandbox \
+  --disable-dev-shm-usage \
+  --no-first-run \
+  --no-default-browser-check \
+  --remote-debugging-address="$HAPPYCLAW_CHROMIUM_CDP_HOST" \
+  --remote-debugging-port="$HAPPYCLAW_CHROMIUM_CDP_PORT" \
+  --user-data-dir="$CHROMIUM_PROFILE_DIR" \
+  about:blank >"$CHROMIUM_LOG" 2>&1 &
+CHROMIUM_PID=$!
+
+CHROMIUM_READY=false
+for ((attempt = 0; attempt < 100; attempt++)); do
+  if curl --noproxy '*' -fsS \
+    "http://127.0.0.1:${HAPPYCLAW_CHROMIUM_CDP_PORT}/json/version" \
+    >/dev/null 2>&1; then
+    CHROMIUM_READY=true
+    break
+  fi
+  if ! kill -0 "$CHROMIUM_PID" 2>/dev/null; then
+    break
+  fi
+  sleep 0.1
+done
+
+if [ "$CHROMIUM_READY" != true ]; then
+  echo "Chromium failed to listen on container-local CDP port ${HAPPYCLAW_CHROMIUM_CDP_PORT}" >&2
+  cat "$CHROMIUM_LOG" >&2 2>/dev/null || true
+  exit 1
+fi
+
+# Buffer stdin to file (container requires EOF to flush stdin pipe)
+cat > /tmp/input.json
+chmod 644 /tmp/input.json
 
 # Drop privileges and execute agent-runner as node user
 runuser -u node -- node /tmp/dist/index.js < /tmp/input.json
