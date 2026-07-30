@@ -27,11 +27,20 @@ import {
   buildProviderModel,
   parseProviderModel,
 } from '../../utils/provider-model';
+import {
+  PROVIDER_PRESETS,
+  getPresetEndpoint,
+  getPresetModel,
+  providerPresetRegionLabel,
+  type ProviderPreset,
+  type ProviderPresetRegion,
+} from '../../utils/provider-presets';
 import type { ProviderWithHealth, EnvRow } from './types';
 import { getErrorMessage } from './types';
 
 type ProviderType = 'official' | 'third_party';
 type OfficialAuthTab = 'oauth' | 'setup_token' | 'api_key';
+type PresetSelection = ProviderPreset | 'custom';
 
 const RESERVED_ENV_KEYS = new Set([
   'ANTHROPIC_BASE_URL',
@@ -124,6 +133,13 @@ export function ProviderEditor({
   const [oneMillionContext, setOneMillionContext] = useState(false);
   const [weight, setWeight] = useState(1);
 
+  // 预设选择（仅第三方创建模式）
+  const [presetSelection, setPresetSelection] =
+    useState<PresetSelection>('custom');
+  const [presetRegion, setPresetRegion] = useState<ProviderPresetRegion | null>(
+    null,
+  );
+
   // 官方认证
   const [authTab, setAuthTab] = useState<OfficialAuthTab>('oauth');
   const [setupToken, setSetupToken] = useState('');
@@ -166,6 +182,8 @@ export function ProviderEditor({
       setModel('');
       setOneMillionContext(false);
       setWeight(1);
+      setPresetSelection('custom');
+      setPresetRegion(null);
       setAuthTab('oauth');
       setSetupToken('');
       setApiKey('');
@@ -184,6 +202,8 @@ export function ProviderEditor({
       setModel(modelSelection.model);
       setOneMillionContext(modelSelection.oneMillionContext);
       setWeight(provider.weight);
+      setPresetSelection('custom');
+      setPresetRegion(null);
       setAuthTab('oauth');
       setSetupToken('');
       setApiKey('');
@@ -231,6 +251,44 @@ export function ProviderEditor({
     setCustomEnvRows((prev) =>
       prev.map((row, i) => (i === index ? { ...row, [field]: value } : row)),
     );
+
+  // Apply a preset's default region, endpoint, and model to the editable
+  // fields. Every filled value remains editable, so a preset is only a
+  // convenience for the manually typed endpoint + single model flow.
+  const applyPreset = useCallback(
+    (preset: ProviderPreset) => {
+      const region = presetRegion ?? preset.defaultRegion;
+      const endpoint = getPresetEndpoint(preset, region);
+      setBaseUrl(endpoint.anthropicBaseUrl);
+      const presetModel = getPresetModel(preset, preset.defaultModelId);
+      setModel(presetModel.modelId);
+      setOneMillionContext(presetModel.oneMillionContext);
+      setName((current) => current.trim() || preset.name);
+      setPresetRegion(region);
+    },
+    [presetRegion],
+  );
+
+  const handlePresetChange = useCallback(
+    (selection: PresetSelection) => {
+      setPresetSelection(selection);
+      if (selection !== 'custom') {
+        applyPreset(selection);
+      }
+    },
+    [applyPreset],
+  );
+
+  const handlePresetRegionChange = useCallback(
+    (region: ProviderPresetRegion) => {
+      setPresetRegion(region);
+      if (presetSelection !== 'custom') {
+        const endpoint = getPresetEndpoint(presetSelection, region);
+        setBaseUrl(endpoint.anthropicBaseUrl);
+      }
+    },
+    [presetSelection],
+  );
 
   const updateProviderEnv = (
     key: string,
@@ -305,6 +363,12 @@ export function ProviderEditor({
 
   // ─── 保存 ──────────────────────────────────────────────────
   const handleSave = async () => {
+    // Switching the provider type away from a preset resets the preset
+    // selection so the create-time preset UI does not leak into official mode.
+    if (providerType !== 'third_party' && presetSelection !== 'custom') {
+      setPresetSelection('custom');
+      setPresetRegion(null);
+    }
     const normalizedModel =
       providerType === 'third_party'
         ? buildProviderModel(model, oneMillionContext)
@@ -563,6 +627,86 @@ export function ProviderEditor({
                   第三方
                 </button>
               </div>
+            </div>
+          )}
+
+          {/* ─── 第三方预设选择（仅创建模式） ─── */}
+          {isCreate && providerType === 'third_party' && (
+            <div className="space-y-3 rounded-xl border border-border/80 bg-muted/30 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-xs font-medium text-foreground">
+                  预设提供商
+                </label>
+                <span className="text-[11px] text-muted-foreground">
+                  选择后自动填充端点与模型
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  aria-pressed={presetSelection === 'custom'}
+                  onClick={() => handlePresetChange('custom')}
+                  className={`min-h-8 rounded-md px-3 py-1 text-xs transition-colors cursor-pointer ${
+                    presetSelection === 'custom'
+                      ? 'bg-background text-primary shadow-sm'
+                      : 'text-muted-foreground'
+                  }`}
+                >
+                  自定义
+                </button>
+                {PROVIDER_PRESETS.map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    aria-pressed={presetSelection === preset}
+                    onClick={() => handlePresetChange(preset)}
+                    className={`min-h-8 rounded-md px-3 py-1 text-xs transition-colors cursor-pointer ${
+                      presetSelection === preset
+                        ? 'bg-background text-primary shadow-sm'
+                        : 'text-muted-foreground'
+                    }`}
+                  >
+                    {preset.name}
+                  </button>
+                ))}
+              </div>
+              {presetSelection !== 'custom' && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[11px] text-muted-foreground">
+                    区域：
+                  </span>
+                  {presetSelection.endpoints.map((endpoint) => (
+                    <button
+                      key={endpoint.region}
+                      type="button"
+                      aria-pressed={presetRegion === endpoint.region}
+                      onClick={() => handlePresetRegionChange(endpoint.region)}
+                      className={`min-h-7 rounded-md px-2.5 py-0.5 text-[11px] transition-colors cursor-pointer ${
+                        (presetRegion ?? presetSelection.defaultRegion) ===
+                        endpoint.region
+                          ? 'bg-background text-primary shadow-sm'
+                          : 'text-muted-foreground'
+                      }`}
+                    >
+                      {providerPresetRegionLabel(endpoint.region)}
+                    </button>
+                  ))}
+                  <a
+                    href={
+                      getPresetEndpoint(
+                        presetSelection,
+                        presetRegion ?? presetSelection.defaultRegion,
+                      ).docsRoot
+                    }
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="ml-1 inline-flex items-center gap-0.5 text-[11px] text-teal-600 underline"
+                  >
+                    <ExternalLink className="size-3" />
+                    文档
+                  </a>
+                </div>
+              )}
             </div>
           )}
 
@@ -857,14 +1001,40 @@ export function ProviderEditor({
                       ANTHROPIC_MODEL
                     </span>
                   </label>
-                  <Input
-                    type="text"
-                    value={model}
-                    onChange={(e) => setModel(e.target.value)}
-                    disabled={saving}
-                    placeholder="例如 glm-5.2、k3、qwen3.7-max"
-                    autoComplete="off"
-                  />
+                  {presetSelection !== 'custom' ? (
+                    <select
+                      value={model}
+                      onChange={(e) => {
+                        setModel(e.target.value);
+                        const presetModel = getPresetModel(
+                          presetSelection,
+                          e.target.value,
+                        );
+                        setOneMillionContext(presetModel.oneMillionContext);
+                      }}
+                      disabled={saving}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"
+                    >
+                      {presetSelection.models.map((presetModel) => (
+                        <option
+                          key={presetModel.modelId}
+                          value={presetModel.modelId}
+                        >
+                          {presetModel.modelId}
+                          {presetModel.oneMillionContext ? ' (1M)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <Input
+                      type="text"
+                      value={model}
+                      onChange={(e) => setModel(e.target.value)}
+                      disabled={saving}
+                      placeholder="例如 glm-5.2、k3、qwen3.7-max"
+                      autoComplete="off"
+                    />
+                  )}
                 </div>
 
                 <div className="flex min-h-16 items-center justify-between gap-3 rounded-xl border border-border/80 bg-muted/35 px-3.5 py-2.5">
