@@ -60,6 +60,7 @@ describe('storeMessageDirect + task_id propagation', () => {
     const rows = getMessagesSince(chatJid, EMPTY_CURSOR);
     expect(rows).toHaveLength(1);
     expect(rows[0].id).toBe('m-A-1');
+    expect(rows[0].source_kind).toBe('scheduled_task_prompt');
     expect(rows[0].task_id).toBe('t1');
   });
 
@@ -129,6 +130,7 @@ describe('storeMessageDirect + task_id propagation', () => {
     expect(ids).toContain('m-C-1');
     expect(ids).not.toContain('m-C-2'); // scheduled_task_prompt is filtered
     const surfaced = messages.find((m) => m.id === 'm-C-1');
+    expect(surfaced!.source_kind).toBe('legacy');
     expect(surfaced!.task_id).toBe('t2');
   });
 

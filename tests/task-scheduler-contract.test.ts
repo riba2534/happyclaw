@@ -905,6 +905,20 @@ describe('scheduled task workspace/session contract', () => {
     });
     expect(cold.map((item) => item.id)).toEqual([runA.id, runB.id]);
 
+    const coldFromNarrowProjection = resolveScheduledGroupRunsForOutput({
+      ...common,
+      fallbackInputTurnId: promptB.id,
+      coldMessages: [
+        {
+          id: promptB.id,
+          chat_jid: GROUP_JID,
+          task_id: promptB.task_id,
+        },
+      ],
+      output: { inputTurnId: promptB.id },
+    });
+    expect(coldFromNarrowProjection.map((item) => item.id)).toEqual([runB.id]);
+
     const warm = resolveScheduledGroupRunsForOutput({
       ...common,
       fallbackInputTurnId: 'unrelated-cold-input',
@@ -949,6 +963,74 @@ describe('scheduled task workspace/session contract', () => {
       output: { inputTurnId: ordinary.id },
     });
     expect(ordinaryOnly).toEqual([]);
+  });
+
+  test('resolves a cold group run from the real incremental message projection', () => {
+    const chatJid = 'web:task-contract-cold-db-projection';
+    db.setRegisteredGroup(chatJid, {
+      ...db.getRegisteredGroup(GROUP_JID)!,
+      folder: 'task-contract-cold-db-projection',
+    });
+    const taskId = createTask({
+      id: 'task-group-cold-db-projection',
+      chat_jid: chatJid,
+      group_folder: 'task-contract-cold-db-projection',
+      context_mode: 'group',
+    });
+    const task = db.getTaskById(taskId)!;
+    const created = db.createTaskRun({
+      task,
+      triggerType: 'manual',
+      idempotencyKey: 'group-cold-db-projection',
+    });
+    const claim = db.claimNextTaskRun(
+      'group-cold-db-projection-worker',
+      60_000,
+    )!;
+    expect(claim.id).toBe(created.run.id);
+    expect(
+      db.markTaskRunExecutionStarted(
+        claim.id,
+        claim.lease_owner,
+        claim.lease_token,
+      ),
+    ).toBe(true);
+    const promptId = scheduledGroupPromptMessageId(claim.id);
+    db.storeScheduledGroupPromptAndCompleteRun({
+      runId: claim.id,
+      taskId,
+      leaseOwner: claim.lease_owner,
+      leaseToken: claim.lease_token,
+      messageId: promptId,
+      chatJid,
+      senderId: 'system',
+      senderName: '定时任务',
+      text: 'run the production-shaped cold report',
+      queuedResult: '已排队',
+    });
+
+    const coldMessages = db.getMessagesSince(chatJid, {
+      timestamp: '',
+      id: '',
+    });
+    expect(coldMessages).toEqual([
+      expect.objectContaining({
+        id: promptId,
+        source_kind: 'scheduled_task_prompt',
+        task_id: taskId,
+      }),
+    ]);
+    expect(
+      resolveScheduledGroupRunsForOutput({
+        chatJid,
+        fallbackInputTurnId: promptId,
+        coldMessages,
+        output: { inputTurnId: promptId },
+        getMessage: (targetJid, messageId) =>
+          db.getMessage(targetJid, messageId) as any,
+        getRun: db.getTaskRunById,
+      }).map((run) => run.id),
+    ).toEqual([claim.id]);
   });
 
   test('upgrades a delivered group run with the full result exactly once', () => {

@@ -188,7 +188,7 @@ function stmts() {
          )`,
       ),
       getMessagesSince: db.prepare(
-        `SELECT id, chat_jid, source_jid, sender, sender_name, content, timestamp, attachments, channel_context, task_id,
+        `SELECT id, chat_jid, source_jid, sender, sender_name, content, timestamp, attachments, channel_context, source_kind, task_id,
                 delivery_mode, delivery_status, delivery_run_id, delivery_priority, delivery_updated_at
          FROM messages
          WHERE chat_jid = ? AND (timestamp > ? OR (timestamp = ? AND id > ?)) AND is_from_me = 0
@@ -208,7 +208,7 @@ function getNewMessagesStmt(jidCount: number): any {
   if (!s) {
     const placeholders = Array(jidCount).fill('?').join(',');
     s = db.prepare(
-      `SELECT id, chat_jid, source_jid, sender, sender_name, content, timestamp, attachments, channel_context, task_id,
+      `SELECT id, chat_jid, source_jid, sender, sender_name, content, timestamp, attachments, channel_context, source_kind, task_id,
               delivery_mode, delivery_status, delivery_run_id, delivery_priority, delivery_updated_at
        FROM messages
        WHERE (timestamp > ? OR (timestamp = ? AND id > ?))

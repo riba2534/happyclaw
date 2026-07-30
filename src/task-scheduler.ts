@@ -1974,11 +1974,17 @@ export function resolveScheduledGroupRunsForOutput(input: {
   const runs: TaskRun[] = [];
   for (const ref of refs) {
     if (ref.chatJid !== input.chatJid) continue;
+    const coldMessage = input.coldMessages.find(
+      (candidate) =>
+        candidate.chat_jid === ref.chatJid && candidate.id === ref.messageId,
+    );
+    // Incremental message queries are deliberately narrow projections. If an
+    // older caller omits scheduler ownership metadata, re-read the canonical
+    // row instead of treating the prompt as an ordinary user message.
     const message =
-      input.coldMessages.find(
-        (candidate) =>
-          candidate.chat_jid === ref.chatJid && candidate.id === ref.messageId,
-      ) ?? input.getMessage(ref.chatJid, ref.messageId);
+      coldMessage?.source_kind && coldMessage.task_id
+        ? coldMessage
+        : (input.getMessage(ref.chatJid, ref.messageId) ?? coldMessage);
     if (
       !message ||
       message.source_kind !== 'scheduled_task_prompt' ||
