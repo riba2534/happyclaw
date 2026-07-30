@@ -61,7 +61,7 @@ describe('Docker image distribution contract', () => {
     expect(latestIndex).toBeGreaterThan(smokeIndex);
   });
 
-  test('keeps remote and local image lifecycles separate', () => {
+  test('builds only in GitHub Actions and pulls published images at runtime', () => {
     expect(read('src/config.ts')).toContain(
       "'riba2534/happyclaw-agent:latest'",
     );
@@ -69,24 +69,40 @@ describe('Docker image distribution contract', () => {
     expect(makefile).toContain(
       'CONTAINER_IMAGE ?= riba2534/happyclaw-agent:latest',
     );
-    expect(makefile).toContain(
-      'LOCAL_CONTAINER_IMAGE ?= happyclaw-agent:local',
-    );
-    expect(makefile).toContain('CONTAINER_IMAGE_PULL ?= always');
+    expect(makefile).toContain('docker-pull:');
     expect(makefile).toContain('docker pull "$(CONTAINER_IMAGE)"');
-    expect(makefile).toContain('docker-build-local:');
-    expect(makefile).toContain(
-      './container/build.sh "$(LOCAL_CONTAINER_IMAGE)"',
-    );
-    expect(makefile).toContain('dev-local:');
-    expect(makefile).toContain('start-local:');
-    expect(makefile).toContain('CONTAINER_IMAGE_PULL=never');
+    expect(makefile).not.toContain('docker-build-local:');
+    expect(makefile).not.toContain('dev-local:');
+    expect(makefile).not.toContain('start-local:');
+    expect(makefile).not.toContain('LOCAL_CONTAINER_IMAGE');
+    expect(makefile).not.toContain('CONTAINER_IMAGE_PULL');
+    expect(fs.existsSync(path.join(root, 'container/build.sh'))).toBe(false);
 
-    const buildScript = read('container/build.sh');
-    expect(buildScript).toContain(
-      '${LOCAL_CONTAINER_IMAGE:-happyclaw-agent:local}',
+    const monitorRoute = read('src/routes/monitor.ts');
+    expect(monitorRoute).toContain("'/docker/pull'");
+    expect(monitorRoute).toContain("spawn('docker', ['pull', CONTAINER_IMAGE]");
+    expect(monitorRoute).not.toContain("'/docker/build'");
+    expect(monitorRoute).not.toMatch(
+      /spawn\(['"](?:docker|bash)['"],\s*\[['"]build/,
     );
-    expect(buildScript).toContain('docker build --pull');
+
+    const localEntrypoints = [
+      'Makefile',
+      'package.json',
+      'web/package.json',
+      'container/agent-runner/package.json',
+      ...['scripts', 'container'].flatMap((directory) =>
+        fs
+          .readdirSync(path.join(root, directory))
+          .filter((file) => file.endsWith('.sh'))
+          .map((file) => path.join(directory, file)),
+      ),
+    ];
+    for (const source of localEntrypoints.map(read)) {
+      expect(source).not.toMatch(
+        /\b(?:docker\s+(?:buildx?\b|compose\s+build\b)|podman\s+build\b)/,
+      );
+    }
   });
 
   test('smoke helper exercises the production entrypoint and real HTTP endpoint', () => {

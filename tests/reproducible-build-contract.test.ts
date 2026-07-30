@@ -74,7 +74,6 @@ describe('reproducible build contract', () => {
 
   test('container tools refresh to latest with rollback and audit controls', () => {
     const dockerfile = read('container/Dockerfile');
-    const buildScript = read('container/build.sh');
     const publishWorkflow = read('.github/workflows/docker-publish.yml');
 
     expect(dockerfile).toMatch(/^FROM node:24-slim$/m);
@@ -93,7 +92,7 @@ describe('reproducible build contract', () => {
     expect(dockerfile).toContain("version('headroom-ai')");
     expect(dockerfile).toContain('PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1');
     expect(dockerfile).not.toContain('npm install -g');
-    expect(buildScript).not.toContain('CACHEBUST');
     expect(publishWorkflow).toContain('TOOL_REFRESH=${{ github.sha }}');
+    expect(fs.existsSync(path.join(root, 'container/build.sh'))).toBe(false);
   });
 });

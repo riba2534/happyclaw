@@ -13,7 +13,7 @@ import {
   RefreshCw,
   AlertTriangle,
   CheckCircle,
-  Hammer,
+  Download,
   Loader2,
   ExternalLink,
 } from 'lucide-react';
@@ -29,11 +29,11 @@ export function MonitorPage() {
     status,
     loading,
     loadStatus,
-    building,
-    buildLogs,
-    buildResult,
-    buildDockerImage,
-    clearBuildResult,
+    pulling,
+    pullLogs,
+    pullResult,
+    pullDockerImage,
+    clearPullResult,
   } = useMonitorStore();
   const canManageSystem = useAuthStore((s) =>
     s.hasPermission('manage_system_config'),
@@ -80,22 +80,22 @@ export function MonitorPage() {
     };
   }, []);
 
-  // WebSocket listeners for docker build progress
+  // WebSocket listeners for Docker Hub pull progress
   useEffect(() => {
     const unsubLog = wsManager.on(
-      'docker_build_log',
+      'docker_pull_log',
       (data: { line: string }) => {
         useMonitorStore.setState((s) => ({
-          buildLogs: [...s.buildLogs.slice(-199), data.line],
+          pullLogs: [...s.pullLogs.slice(-199), data.line],
         }));
       },
     );
     const unsubComplete = wsManager.on(
-      'docker_build_complete',
+      'docker_pull_complete',
       (data: { success: boolean; error?: string }) => {
         useMonitorStore.setState({
-          building: false,
-          buildResult: { success: data.success, error: data.error },
+          pulling: false,
+          pullResult: { success: data.success, error: data.error },
         });
         loadStatus();
       },
@@ -123,14 +123,14 @@ export function MonitorPage() {
       .catch(() => {});
   }, []);
 
-  // Auto-scroll build logs to bottom
+  // Auto-scroll pull logs to bottom
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [buildLogs]);
+  }, [pullLogs]);
 
-  const handleBuild = async () => {
-    clearBuildResult();
-    await buildDockerImage();
+  const handlePull = async () => {
+    clearPullResult();
+    await pullDockerImage();
   };
 
   return (
@@ -202,29 +202,29 @@ export function MonitorPage() {
                     )}
                   </div>
                   <Button
-                    onClick={handleBuild}
-                    disabled={building || !canManageSystem}
+                    onClick={handlePull}
+                    disabled={pulling || !canManageSystem}
                     title={!canManageSystem ? '需要系统配置权限' : undefined}
                   >
-                    {building ? (
+                    {pulling ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin" />
-                        构建中...
+                        拉取中...
                       </>
                     ) : (
                       <>
-                        <Hammer className="w-4 h-4" />
-                        {status.dockerImageExists ? '重新构建' : '构建镜像'}
+                        <Download className="w-4 h-4" />
+                        {status.dockerImageExists ? '拉取最新镜像' : '拉取镜像'}
                       </>
                     )}
                   </Button>
                 </div>
 
-                {/* Build logs */}
-                {building && buildLogs.length > 0 && (
+                {/* Pull logs */}
+                {pulling && pullLogs.length > 0 && (
                   <div className="mt-4">
                     <div className="bg-[#0f172a] dark:bg-[#0a0f1a] rounded-lg p-3 max-h-64 overflow-y-auto font-mono text-xs text-green-400">
-                      {buildLogs.map((line, i) => (
+                      {pullLogs.map((line, i) => (
                         <div key={i} className="whitespace-pre-wrap break-all">
                           {line}
                         </div>
@@ -234,27 +234,25 @@ export function MonitorPage() {
                   </div>
                 )}
 
-                {buildResult && (
+                {pullResult && (
                   <div
-                    className={`mt-4 p-4 rounded-lg border ${buildResult.success ? 'bg-success-bg border-success/20' : 'bg-error-bg border-error/20'}`}
+                    className={`mt-4 p-4 rounded-lg border ${pullResult.success ? 'bg-success-bg border-success/20' : 'bg-error-bg border-error/20'}`}
                   >
                     <div className="flex items-center gap-2 mb-2">
-                      {buildResult.success ? (
+                      {pullResult.success ? (
                         <CheckCircle className="w-4 h-4 text-success" />
                       ) : (
                         <AlertTriangle className="w-4 h-4 text-error" />
                       )}
                       <span
-                        className={`text-sm font-medium ${buildResult.success ? 'text-success' : 'text-error'}`}
+                        className={`text-sm font-medium ${pullResult.success ? 'text-success' : 'text-error'}`}
                       >
-                        {buildResult.success
-                          ? '构建成功（已使用最新 Claude Code SDK/CLI）'
-                          : '构建失败'}
+                        {pullResult.success ? '镜像拉取成功' : '镜像拉取失败'}
                       </span>
                     </div>
-                    {buildResult.error && (
+                    {pullResult.error && (
                       <pre className="text-xs text-error bg-error-bg rounded p-3 mt-2 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap">
-                        {buildResult.error}
+                        {pullResult.error}
                       </pre>
                     )}
                   </div>

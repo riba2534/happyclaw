@@ -1,7 +1,7 @@
-.PHONY: dev dev-local dev-backend dev-web build build-backend build-web start start-local \
+.PHONY: dev dev-backend dev-web build build-backend build-web start \
        typecheck typecheck-backend typecheck-web typecheck-agent-runner \
        format format-check install install-host-tools clean reset-init update-sdk ensure-latest-sdk sync-types \
-       backup restore help _ensure-docker-image docker-build-local logs status stop \
+       backup restore help _ensure-docker-image docker-pull logs status stop \
        _check-sync _ensure-builtin-skills _build-web-if-stale _build-ar-if-stale _build-backend-if-stale
 
 # ─── Runtime ────────────────────────────────────────────────
@@ -17,8 +17,6 @@ RUNNER  := npx tsx src/index.ts
 RUNTIME_DATA_DIR ?= data
 BACKUP_DIR ?= .
 CONTAINER_IMAGE ?= riba2534/happyclaw-agent:latest
-LOCAL_CONTAINER_IMAGE ?= happyclaw-agent:local
-CONTAINER_IMAGE_PULL ?= always
 export CONTAINER_IMAGE
 
 # ─── Development ─────────────────────────────────────────────
@@ -30,11 +28,6 @@ dev: ## 启动前后端（首次自动安装依赖并拉取容器镜像）
 	@$(PKG) --prefix container/agent-runner run build --silent 2>/dev/null || $(PKG) --prefix container/agent-runner run build
 	@echo "🚀 使用 $(PKG) 启动..."
 	$(PKG) run dev:all
-
-dev-local: ## 使用本机构建的 Agent 镜像启动开发环境（不拉取远端镜像）
-	@$(MAKE) dev \
-	  CONTAINER_IMAGE="$(LOCAL_CONTAINER_IMAGE)" \
-	  CONTAINER_IMAGE_PULL=never
 
 dev-backend: ## 仅启动后端（tsx 直跑 TS）
 	$(RUNNER)
@@ -74,11 +67,6 @@ start: ## 一键启动生产环境（前台阻塞运行）
 	@$(MAKE) _build-ar-if-stale
 	@echo "🟢 Node 模式：运行编译后的 dist/index.js（本项目不使用 bun，WebSocket 需要 node）"
 	node dist/index.js
-
-start-local: ## 使用本机构建的 Agent 镜像启动生产环境（不拉取远端镜像）
-	@$(MAKE) start \
-	  CONTAINER_IMAGE="$(LOCAL_CONTAINER_IMAGE)" \
-	  CONTAINER_IMAGE_PULL=never
 
 # ─── Internal build checks ────────────────────────────────────
 
@@ -184,38 +172,15 @@ format-check: ## 检查代码格式
 
 # ─── Docker Image ─────────────────────────────────────────────
 
-_ensure-docker-image: ## (内部) 按 CONTAINER_IMAGE_PULL 策略准备容器镜像
+_ensure-docker-image: ## (内部) 从镜像仓库拉取 GitHub Actions 发布的容器镜像
 	@if command -v docker >/dev/null 2>&1; then \
-	  case "$(CONTAINER_IMAGE_PULL)" in \
-	    always) \
-	      echo "🐳 拉取 Docker 镜像 $(CONTAINER_IMAGE)..."; \
-	      if docker pull "$(CONTAINER_IMAGE)"; then \
-	        echo "✅ Docker 镜像已就绪：$(CONTAINER_IMAGE)"; \
-	      elif docker image inspect "$(CONTAINER_IMAGE)" >/dev/null 2>&1; then \
-	        echo "⚠️  无法拉取远端镜像，继续使用本地缓存：$(CONTAINER_IMAGE)"; \
-	      else \
-	        echo "❌ 无法拉取且本地没有镜像：$(CONTAINER_IMAGE)"; \
-	        exit 1; \
-	      fi \
-	      ;; \
-	    never) \
-	      if docker image inspect "$(CONTAINER_IMAGE)" >/dev/null 2>&1; then \
-	        echo "✅ 使用本地 Docker 镜像（不拉取）：$(CONTAINER_IMAGE)"; \
-	      else \
-	        echo "❌ 本地镜像不存在：$(CONTAINER_IMAGE)"; \
-	        echo "   请先运行 make docker-build-local，或改用 make dev / make start。"; \
-	        exit 1; \
-	      fi \
-	      ;; \
-	    *) \
-	      echo "❌ CONTAINER_IMAGE_PULL 仅支持 always 或 never，当前值：$(CONTAINER_IMAGE_PULL)"; \
-	      exit 1 \
-	      ;; \
-	  esac; \
+	  $(MAKE) --no-print-directory docker-pull; \
 	fi
 
-docker-build-local: ## 构建独立的本地 Agent 镜像（默认 happyclaw-agent:local）
-	./container/build.sh "$(LOCAL_CONTAINER_IMAGE)"
+docker-pull: ## 拉取 GitHub Actions 发布的 Agent 镜像
+	@echo "🐳 拉取 Docker 镜像 $(CONTAINER_IMAGE)..."
+	@docker pull "$(CONTAINER_IMAGE)"
+	@echo "✅ Docker 镜像已就绪：$(CONTAINER_IMAGE)"
 
 # ─── Shared Types ────────────────────────────────────────────
 
@@ -268,7 +233,7 @@ clean: ## 清理构建产物
 	rm -rf dist
 	rm -rf web/dist
 	rm -rf container/agent-runner/dist
-	rm -f .build-sentinel .docker-build-sentinel
+	rm -f .build-sentinel
 
 reset-init: ## 完全重置为首装状态（清空所有运行时数据）
 	rm -rf data store groups

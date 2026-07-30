@@ -9,14 +9,14 @@ export interface SystemStatus {
   queueLength: number;
   uptime: number;
   dockerImageExists: boolean;
-  dockerBuildInProgress?: boolean;
+  dockerPullInProgress?: boolean;
   claudeCodeVersions?: {
     host: string | null;
     container: string | null;
     latest: string | null;
   } | null;
-  dockerBuildLogs?: string[];
-  dockerBuildResult?: { success: boolean; error?: string } | null;
+  dockerPullLogs?: string[];
+  dockerPullResult?: { success: boolean; error?: string } | null;
   groups: Array<{
     jid: string;
     active: boolean;
@@ -35,17 +35,17 @@ interface MonitorState {
   status: SystemStatus | null;
   loading: boolean;
   error: string | null;
-  building: boolean;
-  buildLogs: string[];
-  buildResult: {
+  pulling: boolean;
+  pullLogs: string[];
+  pullResult: {
     success: boolean;
     error?: string;
     stdout?: string;
     stderr?: string;
   } | null;
   loadStatus: () => Promise<void>;
-  buildDockerImage: () => Promise<void>;
-  clearBuildResult: () => void;
+  pullDockerImage: () => Promise<void>;
+  clearPullResult: () => void;
   switchProvider: (
     folder: string,
     providerId: string,
@@ -56,9 +56,9 @@ export const useMonitorStore = create<MonitorState>((set) => ({
   status: null,
   loading: false,
   error: null,
-  building: false,
-  buildLogs: [],
-  buildResult: null,
+  pulling: false,
+  pullLogs: [],
+  pullResult: null,
 
   loadStatus: async () => {
     set({ loading: true });
@@ -70,23 +70,23 @@ export const useMonitorStore = create<MonitorState>((set) => ({
         error: null,
       };
       const state = useMonitorStore.getState();
-      if (status.dockerBuildInProgress && !state.building) {
-        // 后端正在构建，但前端不知道（页面刷新后恢复）
-        update.building = true;
+      if (status.dockerPullInProgress && !state.pulling) {
+        // 后端正在拉取，但前端不知道（页面刷新后恢复）
+        update.pulling = true;
         // 恢复日志（仅当本地无日志时）
         if (
-          state.buildLogs.length === 0 &&
-          status.dockerBuildLogs &&
-          status.dockerBuildLogs.length > 0
+          state.pullLogs.length === 0 &&
+          status.dockerPullLogs &&
+          status.dockerPullLogs.length > 0
         ) {
-          update.buildLogs = status.dockerBuildLogs;
+          update.pullLogs = status.dockerPullLogs;
         }
-      } else if (!status.dockerBuildInProgress && state.building) {
-        // 后端构建已结束，同步重置
-        update.building = false;
+      } else if (!status.dockerPullInProgress && state.pulling) {
+        // 后端拉取已结束，同步重置
+        update.pulling = false;
         // 恢复结果
-        if (status.dockerBuildResult) {
-          update.buildResult = status.dockerBuildResult;
+        if (status.dockerPullResult) {
+          update.pullResult = status.dockerPullResult;
         }
       }
       set(update);
@@ -98,15 +98,15 @@ export const useMonitorStore = create<MonitorState>((set) => ({
     }
   },
 
-  buildDockerImage: async () => {
-    set({ building: true, buildLogs: [], buildResult: null });
+  pullDockerImage: async () => {
+    set({ pulling: true, pullLogs: [], pullResult: null });
     try {
-      await api.post('/api/docker/build', {});
+      await api.post('/api/docker/pull', {});
       // POST returns 202 immediately; progress comes via WebSocket
     } catch (err) {
       set({
-        building: false,
-        buildResult: {
+        pulling: false,
+        pullResult: {
           success: false,
           error: err instanceof Error ? err.message : String(err),
         },
@@ -114,7 +114,7 @@ export const useMonitorStore = create<MonitorState>((set) => ({
     }
   },
 
-  clearBuildResult: () => set({ buildResult: null, buildLogs: [] }),
+  clearPullResult: () => set({ pullResult: null, pullLogs: [] }),
 
   switchProvider: async (folder: string, providerId: string) => {
     const res = await api.post<{ ok: boolean; restarted: boolean }>(

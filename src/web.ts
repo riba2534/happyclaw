@@ -3190,15 +3190,15 @@ export function broadcastRunFinished(
   }
 }
 
-export function broadcastDockerBuildLog(line: string): void {
-  safeBroadcast({ type: 'docker_build_log', line }, true);
+export function broadcastDockerPullLog(line: string): void {
+  safeBroadcast({ type: 'docker_pull_log', line }, true);
 }
 
-export function broadcastDockerBuildComplete(
+export function broadcastDockerPullComplete(
   success: boolean,
   error?: string,
 ): void {
-  safeBroadcast({ type: 'docker_build_complete', success, error }, true);
+  safeBroadcast({ type: 'docker_pull_complete', success, error }, true);
 }
 
 function broadcastStatus(): void {
@@ -3248,8 +3248,8 @@ export function createAppForTest(webDeps: WebDeps): typeof app {
   injectConfigDeps(webDeps);
   injectChannelAccountDeps(webDeps);
   injectMonitorDeps({
-    broadcastDockerBuildLog,
-    broadcastDockerBuildComplete,
+    broadcastDockerPullLog,
+    broadcastDockerPullComplete,
   });
   return app;
 }
@@ -3260,8 +3260,8 @@ export function startWebServer(webDeps: WebDeps): void {
   injectConfigDeps(webDeps);
   injectChannelAccountDeps(webDeps);
   injectMonitorDeps({
-    broadcastDockerBuildLog,
-    broadcastDockerBuildComplete,
+    broadcastDockerPullLog,
+    broadcastDockerPullComplete,
   });
 
   httpServer = serve(

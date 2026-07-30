@@ -206,7 +206,7 @@ read-only 投影按 host-issued turn ID 精确匹配当前或已接纳的 queued
 | 邀请码                                            | `manage_invites`                                   |
 | 审计日志和导出                                    | `view_audit_log`                                   |
 | `/api/billing/admin/*`                            | `manage_billing`                                   |
-| `/api/docker/build`、运行监控管理                 | `manage_system_config`                             |
+| `/api/docker/pull`、运行监控管理                  | `manage_system_config`                             |
 | `/api/status/channel-outbox/*` 人工裁决           | `manage_system_config`                             |
 | `POST /api/groups/:jid/reset-owner`               | admin break-glass，同时仍验证目标资源              |
 

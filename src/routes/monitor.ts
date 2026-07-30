@@ -1,5 +1,4 @@
 import { execFile, spawn } from 'child_process';
-import path from 'path';
 import readline from 'readline';
 import { promisify } from 'util';
 
@@ -165,16 +164,16 @@ async function getClaudeCodeVersions(): Promise<VersionInfo> {
   return info;
 }
 
-// --- Docker build state ---
+// --- Docker image pull state ---
 
-let buildState: {
-  building: boolean;
+let pullState: {
+  pulling: boolean;
   startedAt: number | null;
   startedBy: string | null;
   logs: string[];
   result: { success: boolean; error?: string } | null;
 } = {
-  building: false,
+  pulling: false,
   startedAt: null,
   startedBy: null,
   logs: [],
@@ -188,11 +187,11 @@ let broadcastComplete: ((success: boolean, error?: string) => void) | null =
   null;
 
 export function injectMonitorDeps(deps: {
-  broadcastDockerBuildLog: (line: string) => void;
-  broadcastDockerBuildComplete: (success: boolean, error?: string) => void;
+  broadcastDockerPullLog: (line: string) => void;
+  broadcastDockerPullComplete: (success: boolean, error?: string) => void;
 }) {
-  broadcastLog = deps.broadcastDockerBuildLog;
-  broadcastComplete = deps.broadcastDockerBuildComplete;
+  broadcastLog = deps.broadcastDockerPullLog;
+  broadcastComplete = deps.broadcastDockerPullComplete;
 }
 
 const monitorRoutes = new Hono<{ Variables: Variables }>();
@@ -330,11 +329,11 @@ monitorRoutes.get('/status', authMiddleware, async (c) => {
     uptime: Math.floor(process.uptime()),
     groups: enrichedGroups,
     dockerImageExists,
-    dockerBuildInProgress: buildState.building,
+    dockerPullInProgress: pullState.pulling,
     claudeCodeVersions: isAdmin ? await getClaudeCodeVersions() : undefined,
-    dockerBuildLogs:
-      isAdmin && buildState.building ? buildState.logs.slice(-50) : undefined,
-    dockerBuildResult: isAdmin ? buildState.result : undefined,
+    dockerPullLogs:
+      isAdmin && pullState.pulling ? pullState.logs.slice(-50) : undefined,
+    dockerPullResult: isAdmin ? pullState.result : undefined,
   });
 });
 
@@ -535,63 +534,79 @@ monitorRoutes.post(
   },
 );
 
-// POST /api/docker/build - 构建 Docker 镜像（仅 admin，异步启动 + WS 推送进度）
+// POST /api/docker/pull - 拉取 GitHub Actions 发布的镜像（仅 admin，异步 + WS 进度）
 monitorRoutes.post(
-  '/docker/build',
+  '/docker/pull',
   authMiddleware,
   systemConfigMiddleware,
   async (c) => {
-    if (buildState.building) {
+    if (pullState.pulling) {
       return c.json(
         {
-          error: 'Docker image build already in progress',
-          startedAt: buildState.startedAt,
-          startedBy: buildState.startedBy,
+          error: 'Docker image pull already in progress',
+          startedAt: pullState.startedAt,
+          startedBy: pullState.startedBy,
         },
         409,
       );
     }
 
     const authUser = c.get('user') as AuthUser;
-    const buildScript = path.resolve(process.cwd(), 'container', 'build.sh');
 
-    buildState = {
-      building: true,
+    pullState = {
+      pulling: true,
       startedAt: Date.now(),
       startedBy: authUser.username,
       logs: [],
       result: null,
     };
     logger.info(
-      { startedBy: authUser.username },
-      'Docker image build requested via API',
+      { image: CONTAINER_IMAGE, startedBy: authUser.username },
+      'Docker image pull requested via API',
     );
 
-    // Spawn build process asynchronously
-    const proc = spawn('bash', [buildScript], {
-      cwd: path.resolve(process.cwd(), 'container'),
+    // Runtime hosts only consume immutable output from the registry. Image
+    // compilation is exclusively owned by .github/workflows/docker-publish.yml.
+    const proc = spawn('docker', ['pull', CONTAINER_IMAGE], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    let settled = false;
+
+    const finish = (success: boolean, error?: string) => {
+      if (settled) return;
+      settled = true;
+      pullState.pulling = false;
+      pullState.result = { success, error };
+      if (success) {
+        cachedDockerImageId = null;
+        cachedVersions = null;
+        logger.info({ image: CONTAINER_IMAGE }, 'Docker image pull completed');
+      } else {
+        logger.error(
+          { image: CONTAINER_IMAGE, error },
+          'Docker image pull failed',
+        );
+      }
+      broadcastComplete?.(success, error);
+    };
 
     // 10-minute timeout
     const timeout = setTimeout(
       () => {
         proc.kill('SIGKILL');
-        const errMsg = 'Docker build timed out after 10 minutes';
+        const errMsg = 'Docker image pull timed out after 10 minutes';
         logger.error(errMsg);
-        buildState.building = false;
-        buildState.result = { success: false, error: errMsg };
         broadcastLog?.(errMsg);
-        broadcastComplete?.(false, errMsg);
+        finish(false, errMsg);
       },
       10 * 60 * 1000,
     );
 
     const pushLine = (line: string) => {
-      buildState.logs.push(line);
+      pullState.logs.push(line);
       // Keep last 200 lines in memory
-      if (buildState.logs.length > 200) {
-        buildState.logs = buildState.logs.slice(-200);
+      if (pullState.logs.length > 200) {
+        pullState.logs = pullState.logs.slice(-200);
       }
       broadcastLog?.(line);
     };
@@ -611,26 +626,13 @@ monitorRoutes.post(
       const success = code === 0;
       const error = success
         ? undefined
-        : `Build process exited with code ${code}`;
-      if (success) {
-        logger.info('Docker image build completed');
-        // Invalidate version cache so next query fetches from new image
-        cachedVersions = null;
-      } else {
-        logger.error({ code }, 'Docker image build failed');
-      }
-      buildState.building = false;
-      buildState.result = { success, error };
-      broadcastComplete?.(success, error);
+        : `Docker pull exited with code ${code}`;
+      finish(success, error);
     });
 
     proc.on('error', (err) => {
       clearTimeout(timeout);
-      const errorMsg = err.message;
-      logger.error({ err }, 'Docker image build process error');
-      buildState.building = false;
-      buildState.result = { success: false, error: errorMsg };
-      broadcastComplete?.(false, errorMsg);
+      finish(false, err.message);
     });
 
     // Return immediately with 202 Accepted
@@ -638,7 +640,7 @@ monitorRoutes.post(
       {
         accepted: true,
         message:
-          'Docker image build started. Progress will be streamed via WebSocket.',
+          'Docker image pull started. Progress will be streamed via WebSocket.',
       },
       202,
     );

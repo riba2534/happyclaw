@@ -530,7 +530,10 @@ Web 和 Runtime 不再把它们当作第二个可写真相源。
 - `POST /api/status/groups/:folder/switch-provider`
 - `GET /api/status/channel-outbox/uncertain`
 - `POST /api/status/channel-outbox/:id/resolve`
-- `POST /api/docker/build`
+- `POST /api/docker/pull`
+
+Agent 镜像只由 `main` 分支的 GitHub Actions 构建并发布。该接口仅在运行主机上执行
+`docker pull` 更新已发布镜像，不在用户机器上编译镜像。
 
 投递结果不确定的 outbox 记录会围栏住整个 Turn，运行时无法自行判定，只能由人工
 确认后放行。`resolve` 使用 `expectedRevision` 做 compare-and-set，取值为
@@ -571,7 +574,7 @@ Web 和 Runtime 不再把它们当作第二个可写真相源。
 - `terminal_started`
 - `terminal_stopped`
 - `terminal_error`
-- `docker_build_log`
-- `docker_build_complete`
+- `docker_pull_log`
+- `docker_pull_complete`
 
 精确联合类型和字段以 `src/web.ts`、`src/types.ts` 与 `shared/stream-event.ts` 为准。

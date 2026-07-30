@@ -39,7 +39,6 @@ bun.lockb
 
 # Build cache
 .build-sentinel
-.docker-build-sentinel
 *.tsbuildinfo
 coverage/
 playwright-report/

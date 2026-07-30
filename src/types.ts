@@ -935,8 +935,8 @@ export type WsMessageOut =
   | { type: 'terminal_stopped'; chatJid: string; reason?: string }
   | { type: 'terminal_error'; chatJid: string; error: string }
   | { type: 'group_created'; jid: string; folder: string; name: string }
-  | { type: 'docker_build_log'; line: string }
-  | { type: 'docker_build_complete'; success: boolean; error?: string }
+  | { type: 'docker_pull_log'; line: string }
+  | { type: 'docker_pull_complete'; success: boolean; error?: string }
   | {
       type: 'whatsapp_status';
       userId: string;
