@@ -24,6 +24,599 @@ afterAll(() => {
 });
 
 describe('notification retry wake scheduling', () => {
+  test('workspace projection exhaustion settles the exact group business result', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-30T12:00:00.000Z'));
+    try {
+      const createdAt = new Date().toISOString();
+      db.createTask({
+        id: 'group-workspace-exhausted-success',
+        group_folder: 'workspace',
+        chat_jid: 'web:workspace',
+        prompt: 'build report',
+        schedule_type: 'cron',
+        schedule_value: '0 * * * *',
+        context_mode: 'group',
+        execution_type: 'agent',
+        execution_mode: 'container',
+        script_command: null,
+        next_run: new Date(Date.now() + 3_600_000).toISOString(),
+        status: 'active',
+        created_at: createdAt,
+        notify_channels: null,
+      });
+      const task = db.getTaskById('group-workspace-exhausted-success')!;
+      const created = db.createTaskRun({ task, triggerType: 'manual' });
+      const execution = db.claimNextTaskRun('group-exhaust-worker', 60_000)!;
+      db.markTaskRunExecutionStarted(
+        execution.id,
+        execution.lease_owner,
+        execution.lease_token,
+      );
+      db.completeTaskRun(
+        execution.id,
+        execution.lease_owner,
+        execution.lease_token,
+        {
+          status: 'delivered',
+          result: '已排队',
+          notificationStatus: 'skipped',
+        },
+      );
+      const payload: db.TaskRunNotificationPayload = {
+        kind: 'workspace_result',
+        chatJid: task.chat_jid,
+        text: '完整业务结果',
+        groupRunId: created.run.id,
+        groupTaskId: task.id,
+        groupStatus: 'success',
+        groupResult: '完整业务结果',
+        groupError: null,
+        options: {
+          sourceKind: 'scheduled_task_result',
+          messageId: `scheduled-group-result:${created.run.id}`,
+          skipStore: false,
+          workspaceFolder: task.group_folder,
+        },
+      };
+      db.recordTaskRunNotificationReceipt(
+        created.run.id,
+        {
+          status: 'failed',
+          summary: {
+            attempted: 1,
+            succeeded: 0,
+            failed: 1,
+            failed_channels: ['workspace'],
+          },
+          error: 'workspace unavailable',
+        },
+        payload,
+      );
+
+      vi.advanceTimersByTime(1_000);
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        const claim = db.claimTaskRunNotificationById(
+          created.run.id,
+          `workspace-exhaust-worker-${attempt}`,
+          60_000,
+        )!;
+        expect(claim.attempt).toBe(attempt);
+        expect(
+          db.completeTaskRunNotificationAttempt(
+            claim,
+            {
+              status: 'failed',
+              summary: {
+                attempted: 1,
+                succeeded: 0,
+                failed: 1,
+                failed_channels: ['workspace'],
+              },
+              error: 'workspace unavailable',
+            },
+            payload,
+          ),
+        ).toBe(true);
+        vi.advanceTimersByTime(1_000 * 2 ** Math.max(0, attempt - 1));
+      }
+
+      expect(db.getTaskRunById(created.run.id)).toMatchObject({
+        status: 'success',
+        result: '完整业务结果',
+        error: null,
+        notification_status: 'failed',
+        notification_attempt: 5,
+      });
+      const raw = db.getTaskRunById(created.run.id) as unknown as {
+        notification_payload: string | null;
+      };
+      expect(raw.notification_payload).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('expired final workspace lease settles terminal group outcome without replay', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-30T13:00:00.000Z'));
+    try {
+      const createdAt = new Date().toISOString();
+      db.createTask({
+        id: 'group-workspace-expired-failure',
+        group_folder: 'workspace',
+        chat_jid: 'web:workspace',
+        prompt: 'build failing report',
+        schedule_type: 'cron',
+        schedule_value: '0 * * * *',
+        context_mode: 'group',
+        execution_type: 'agent',
+        execution_mode: 'container',
+        script_command: null,
+        next_run: new Date(Date.now() + 3_600_000).toISOString(),
+        status: 'active',
+        created_at: createdAt,
+        notify_channels: null,
+      });
+      const task = db.getTaskById('group-workspace-expired-failure')!;
+      const created = db.createTaskRun({ task, triggerType: 'manual' });
+      const execution = db.claimNextTaskRun('group-expiry-worker', 60_000)!;
+      db.markTaskRunExecutionStarted(
+        execution.id,
+        execution.lease_owner,
+        execution.lease_token,
+      );
+      db.completeTaskRun(
+        execution.id,
+        execution.lease_owner,
+        execution.lease_token,
+        {
+          status: 'delivered',
+          result: '已排队',
+          notificationStatus: 'skipped',
+        },
+      );
+      const payload: db.TaskRunNotificationPayload = {
+        kind: 'workspace_result',
+        chatJid: task.chat_jid,
+        text: '执行失败',
+        groupRunId: created.run.id,
+        groupTaskId: task.id,
+        groupStatus: 'failed',
+        groupResult: null,
+        groupError: 'business failed',
+        options: {
+          sourceKind: 'scheduled_task_result',
+          messageId: `scheduled-group-terminal:${created.run.id}`,
+          skipStore: false,
+          workspaceFolder: task.group_folder,
+        },
+      };
+      db.recordTaskRunNotificationReceipt(
+        created.run.id,
+        {
+          status: 'failed',
+          summary: {
+            attempted: 1,
+            succeeded: 0,
+            failed: 1,
+            failed_channels: ['workspace'],
+          },
+          error: 'workspace unavailable',
+        },
+        payload,
+      );
+      vi.advanceTimersByTime(1_000);
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        const claim = db.claimTaskRunNotificationById(
+          created.run.id,
+          `workspace-expiry-worker-${attempt}`,
+          2,
+        )!;
+        expect(claim.attempt).toBe(attempt);
+        vi.advanceTimersByTime(5);
+      }
+
+      expect(db.finalizeExpiredTaskRunNotificationAttempts()).toBe(1);
+      expect(db.getTaskRunById(created.run.id)).toMatchObject({
+        status: 'failed',
+        result: null,
+        error: 'business failed',
+        notification_status: 'failed',
+        notification_error: expect.stringContaining(
+          'delivery outcome is unknown',
+        ),
+        notification_attempt: 5,
+      });
+      expect(
+        db.claimTaskRunNotificationById(
+          created.run.id,
+          'must-not-replay-workspace',
+          60_000,
+        ),
+      ).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('expired exact cancelled workspace lease clears its payload without reopening the run', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-30T14:00:00.000Z'));
+    try {
+      const createdAt = new Date().toISOString();
+      db.createTask({
+        id: 'group-workspace-expired-cancelled',
+        group_folder: 'workspace',
+        chat_jid: 'web:workspace',
+        prompt: 'cancel report',
+        schedule_type: 'cron',
+        schedule_value: '0 * * * *',
+        context_mode: 'group',
+        execution_type: 'agent',
+        execution_mode: 'container',
+        script_command: null,
+        next_run: new Date(Date.now() + 3_600_000).toISOString(),
+        status: 'active',
+        created_at: createdAt,
+        notify_channels: null,
+      });
+      const task = db.getTaskById('group-workspace-expired-cancelled')!;
+      const created = db.createTaskRun({ task, triggerType: 'manual' });
+      const execution = db.claimNextTaskRun('group-cancel-worker', 60_000)!;
+      db.markTaskRunExecutionStarted(
+        execution.id,
+        execution.lease_owner,
+        execution.lease_token,
+      );
+      db.completeTaskRun(
+        execution.id,
+        execution.lease_owner,
+        execution.lease_token,
+        {
+          status: 'delivered',
+          result: '已排队',
+          notificationStatus: 'skipped',
+        },
+      );
+      const payload: db.TaskRunNotificationPayload = {
+        kind: 'workspace_result',
+        chatJid: task.chat_jid,
+        text: '任务已取消',
+        groupRunId: created.run.id,
+        groupTaskId: task.id,
+        groupStatus: 'cancelled',
+        groupResult: null,
+        groupError: 'cancelled by user',
+        options: {
+          sourceKind: 'scheduled_task_result',
+          messageId: `scheduled-group-terminal:${created.run.id}`,
+          skipStore: false,
+          workspaceFolder: task.group_folder,
+        },
+      };
+      db.recordTaskRunNotificationReceipt(
+        created.run.id,
+        {
+          status: 'failed',
+          summary: {
+            attempted: 1,
+            succeeded: 0,
+            failed: 1,
+            failed_channels: ['workspace'],
+          },
+          error: 'workspace unavailable',
+        },
+        payload,
+      );
+      vi.advanceTimersByTime(1_000);
+      for (let attempt = 1; attempt < 5; attempt++) {
+        const claim = db.claimTaskRunNotificationById(
+          created.run.id,
+          `workspace-cancel-worker-${attempt}`,
+          60_000,
+        )!;
+        db.completeTaskRunNotificationAttempt(
+          claim,
+          {
+            status: 'failed',
+            summary: {
+              attempted: 1,
+              succeeded: 0,
+              failed: 1,
+              failed_channels: ['workspace'],
+            },
+            error: 'workspace unavailable',
+          },
+          payload,
+        );
+        vi.advanceTimersByTime(1_000 * 2 ** Math.max(0, attempt - 1));
+      }
+      const finalClaim = db.claimTaskRunNotificationById(
+        created.run.id,
+        'workspace-cancel-worker-5',
+        2,
+      )!;
+      expect(finalClaim.attempt).toBe(5);
+
+      // Simulate the crash window after Web projection finalized the business
+      // run but before the notification lease completion write.
+      expect(
+        db.finalizeDeliveredGroupTaskRun(created.run.id, task.id, {
+          status: 'cancelled',
+          error: 'cancelled by user',
+        }),
+      ).toBe(true);
+      vi.advanceTimersByTime(5);
+      expect(db.finalizeExpiredTaskRunNotificationAttempts()).toBe(1);
+      expect(db.getTaskRunById(created.run.id)).toMatchObject({
+        status: 'cancelled',
+        error: 'cancelled by user',
+        notification_status: 'failed',
+        notification_error: expect.stringContaining(
+          'delivery outcome is unknown',
+        ),
+      });
+      const raw = db.getTaskRunById(created.run.id) as unknown as {
+        notification_payload: string | null;
+        notification_lease_owner: string | null;
+      };
+      expect(raw.notification_payload).toBeNull();
+      expect(raw.notification_lease_owner).toBeNull();
+
+      const completed = db.createTaskRun({ task, triggerType: 'manual' });
+      const completedExecution = db.claimNextTaskRun(
+        'group-cancel-complete-worker',
+        60_000,
+      )!;
+      db.markTaskRunExecutionStarted(
+        completedExecution.id,
+        completedExecution.lease_owner,
+        completedExecution.lease_token,
+      );
+      db.completeTaskRun(
+        completedExecution.id,
+        completedExecution.lease_owner,
+        completedExecution.lease_token,
+        {
+          status: 'delivered',
+          result: '已排队',
+          notificationStatus: 'skipped',
+        },
+      );
+      const completedPayload: db.TaskRunNotificationPayload = {
+        ...payload,
+        groupRunId: completed.run.id,
+        options: {
+          ...payload.options!,
+          messageId: `scheduled-group-terminal:${completed.run.id}`,
+        },
+      };
+      db.recordTaskRunNotificationReceipt(
+        completed.run.id,
+        {
+          status: 'failed',
+          summary: {
+            attempted: 1,
+            succeeded: 0,
+            failed: 1,
+            failed_channels: ['workspace'],
+          },
+          error: 'temporary workspace outage',
+        },
+        completedPayload,
+      );
+      vi.advanceTimersByTime(1_000);
+      const completedClaim = db.claimTaskRunNotificationById(
+        completed.run.id,
+        'group-cancel-completion-notifier',
+        60_000,
+      )!;
+      db.finalizeDeliveredGroupTaskRun(completed.run.id, task.id, {
+        status: 'cancelled',
+        error: 'cancelled by user',
+      });
+      expect(
+        db.completeTaskRunNotificationAttempt(completedClaim, {
+          status: 'success',
+          summary: {
+            attempted: 1,
+            succeeded: 1,
+            failed: 0,
+            failed_channels: [],
+          },
+        }),
+      ).toBe(true);
+      expect(db.getTaskRunById(completed.run.id)).toMatchObject({
+        status: 'cancelled',
+        notification_status: 'success',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('exact cancelled workspace repair survives a normal failure and an early worker crash', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-30T14:30:00.000Z'));
+    try {
+      const createdAt = new Date().toISOString();
+      db.createTask({
+        id: 'group-workspace-cancelled-retry',
+        group_folder: 'workspace',
+        chat_jid: 'web:workspace',
+        prompt: 'cancelled retry report',
+        schedule_type: 'cron',
+        schedule_value: '0 * * * *',
+        context_mode: 'group',
+        execution_type: 'agent',
+        execution_mode: 'container',
+        script_command: null,
+        next_run: new Date(Date.now() + 3_600_000).toISOString(),
+        status: 'active',
+        created_at: createdAt,
+        notify_channels: null,
+      });
+      const task = db.getTaskById('group-workspace-cancelled-retry')!;
+      const prepare = (suffix: string) => {
+        const created = db.createTaskRun({
+          task,
+          triggerType: 'manual',
+          idempotencyKey: `cancelled-retry-${suffix}`,
+        });
+        const execution = db.claimNextTaskRun(
+          `cancelled-retry-execution-${suffix}`,
+          60_000,
+        )!;
+        db.markTaskRunExecutionStarted(
+          execution.id,
+          execution.lease_owner,
+          execution.lease_token,
+        );
+        db.completeTaskRun(
+          execution.id,
+          execution.lease_owner,
+          execution.lease_token,
+          {
+            status: 'delivered',
+            result: '已排队',
+            notificationStatus: 'skipped',
+          },
+        );
+        const payload: db.TaskRunNotificationPayload = {
+          kind: 'workspace_result',
+          chatJid: task.chat_jid,
+          text: '任务已取消',
+          groupRunId: created.run.id,
+          groupTaskId: task.id,
+          groupStatus: 'cancelled',
+          groupResult: null,
+          groupError: 'cancelled by user',
+          options: {
+            sourceKind: 'scheduled_task_result',
+            messageId: `scheduled-group-terminal:${created.run.id}`,
+            skipStore: false,
+            workspaceFolder: task.group_folder,
+          },
+        };
+        db.recordTaskRunNotificationReceipt(
+          created.run.id,
+          {
+            status: 'failed',
+            summary: {
+              attempted: 1,
+              succeeded: 0,
+              failed: 1,
+              failed_channels: ['workspace'],
+            },
+            error: 'workspace unavailable',
+          },
+          payload,
+        );
+        return { created, payload };
+      };
+
+      const normal = prepare('normal-failure');
+      vi.advanceTimersByTime(1_000);
+      const first = db.claimTaskRunNotificationById(
+        normal.created.run.id,
+        'cancelled-normal-attempt-1',
+        60_000,
+      )!;
+      expect(
+        db.finalizeDeliveredGroupTaskRun(normal.created.run.id, task.id, {
+          status: 'cancelled',
+          error: 'cancelled by user',
+        }),
+      ).toBe(true);
+      expect(
+        db.completeTaskRunNotificationAttempt(
+          first,
+          {
+            status: 'failed',
+            summary: {
+              attempted: 1,
+              succeeded: 0,
+              failed: 1,
+              failed_channels: ['workspace'],
+            },
+            error: 'workspace still unavailable',
+          },
+          normal.payload,
+        ),
+      ).toBe(true);
+      const retryWake = db.getNextTaskRunWakeAt();
+      expect(retryWake).not.toBeNull();
+      expect(new Date(retryWake!).getTime()).toBeGreaterThan(Date.now());
+      vi.advanceTimersByTime(1_000);
+      const second = db.claimTaskRunNotificationById(
+        normal.created.run.id,
+        'cancelled-normal-attempt-2',
+        60_000,
+      )!;
+      expect(second.attempt).toBe(2);
+      expect(
+        db.completeTaskRunNotificationAttempt(second, {
+          status: 'success',
+          summary: {
+            attempted: 1,
+            succeeded: 1,
+            failed: 0,
+            failed_channels: [],
+          },
+        }),
+      ).toBe(true);
+      expect(db.getTaskRunById(normal.created.run.id)).toMatchObject({
+        status: 'cancelled',
+        notification_status: 'success',
+        notification_payload: null,
+        notification_lease_owner: null,
+      });
+
+      const crashed = prepare('early-crash');
+      vi.advanceTimersByTime(1_000);
+      const crashedFirst = db.claimTaskRunNotificationById(
+        crashed.created.run.id,
+        'cancelled-crash-attempt-1',
+        2,
+      )!;
+      expect(crashedFirst.attempt).toBe(1);
+      expect(
+        db.finalizeDeliveredGroupTaskRun(crashed.created.run.id, task.id, {
+          status: 'cancelled',
+          error: 'cancelled by user',
+        }),
+      ).toBe(true);
+      vi.advanceTimersByTime(5);
+      expect(db.getNextTaskRunWakeAt()).not.toBeNull();
+      const crashedSecond = db.claimTaskRunNotificationById(
+        crashed.created.run.id,
+        'cancelled-crash-attempt-2',
+        60_000,
+      )!;
+      expect(crashedSecond.attempt).toBe(2);
+      expect(
+        db.completeTaskRunNotificationAttempt(crashedSecond, {
+          status: 'success',
+          summary: {
+            attempted: 1,
+            succeeded: 1,
+            failed: 0,
+            failed_channels: [],
+          },
+        }),
+      ).toBe(true);
+      expect(db.getTaskRunById(crashed.created.run.id)).toMatchObject({
+        status: 'cancelled',
+        notification_status: 'success',
+        notification_payload: null,
+        notification_lease_owner: null,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('an active slow-delivery lease wakes at lease expiry, not stale available_at', async () => {
     const createdAt = new Date().toISOString();
     db.createTask({

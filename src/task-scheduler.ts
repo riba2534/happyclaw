@@ -27,10 +27,12 @@ import {
   claimNextTaskRunNotification,
   ClaimedTaskRunNotification,
   claimNextTaskRun,
+  completeIsolatedTaskRunWithWorkspaceResultIntent,
   completeTaskRunNotificationAttempt,
   completeTaskRun,
   createTaskRun,
   failExpiredStartedTaskRuns,
+  finalizeDeliveredGroupTaskRun,
   finalizeExpiredTaskRunNotificationAttempts,
   finalizeTaskRunNotificationIfPending,
   getAllTasks,
@@ -452,7 +454,22 @@ export interface SchedulerDependencies {
     senderName: string,
     text: string,
     taskId?: string,
-  ) => void;
+    taskRunId?: string,
+  ) => string | void;
+  /**
+   * Atomically persist a group-mode prompt and fence the durable run into its
+   * delivered hand-off state. Required for V2 group occurrences.
+   */
+  storeGroupPromptAndDeliverRun?: (input: {
+    run: ClaimedTaskRun;
+    messageId: string;
+    chatJid: string;
+    senderId: string;
+    senderName: string;
+    text: string;
+    taskId: string;
+    queuedResult: string;
+  }) => string;
   /** Store task result in workspace chat and push to owner's IM channels */
   storeResultAndNotify?: (
     chatJid: string,
@@ -531,6 +548,12 @@ export interface RunTaskOptions {
   sourceWorkspaceFolder?: string;
   /** V2 occurrence already owns a fenced task_runs lease. */
   durableRun?: ClaimedTaskRun;
+  /**
+   * Exposes the exact isolated terminal hand-off to the owning queue callback
+   * so it can retry one synchronous DB failure without falling back to a
+   * non-atomic legacy completion.
+   */
+  onDurableTerminalHandoffPrepared?: (commit: () => boolean) => void;
 }
 
 const runningTaskIds = new Set<string>();
@@ -1082,6 +1105,75 @@ async function runTaskInner(
   // duration_ms should measure actual work time, not include idle wait.
   let lastOutputTime = startTime;
   let runLogFinalized = false;
+  let durableWorkspaceIntentStored = false;
+  let preparedDurableWorkspaceCommit: (() => boolean) | null = null;
+
+  const commitDurableWorkspaceIntent = (): boolean => {
+    if (durableWorkspaceIntentStored) return true;
+    if (
+      !deps.storeResultAndNotify ||
+      !options?.durableRun ||
+      !options.taskRunId ||
+      effectiveJid === workspace.jid
+    ) {
+      return false;
+    }
+    if (!preparedDurableWorkspaceCommit) {
+      const durableRun = options.durableRun;
+      const runId = durableRun.id;
+      const cleanedResult = result ? stripAgentInternalTags(result) : null;
+      const durableOutcomeError =
+        error ||
+        (cleanedResult?.trim()
+          ? null
+          : '定时任务已结束，但 Agent 没有返回可展示的完整业务结果。');
+      const workspaceResult = formatScheduledTaskWorkspaceResult({
+        task,
+        runId,
+        result: cleanedResult,
+        error: durableOutcomeError,
+      });
+      preparedDurableWorkspaceCommit = () =>
+        completeIsolatedTaskRunWithWorkspaceResultIntent({
+          runId,
+          taskId: task.id,
+          leaseOwner: durableRun.lease_owner,
+          leaseToken: durableRun.lease_token,
+          status: durableOutcomeError ? 'failed' : 'success',
+          result: cleanedResult,
+          error: durableOutcomeError,
+          payload: {
+            kind: 'workspace_result',
+            chatJid: workspace.jid,
+            text: workspaceResult,
+            options: {
+              sourceKind: 'scheduled_task_result',
+              messageId: `scheduled-task-result:${runId}`,
+              skipStore: false,
+              workspaceFolder: workspace.folder || undefined,
+            },
+          },
+        });
+      options.onDurableTerminalHandoffPrepared?.(
+        preparedDurableWorkspaceCommit,
+      );
+    }
+    try {
+      durableWorkspaceIntentStored = preparedDurableWorkspaceCommit();
+    } catch (err) {
+      logger.error(
+        { taskId: task.id, runId: options.durableRun.id, err },
+        'Isolated task workspace-result hand-off transaction failed',
+      );
+    }
+    if (!durableWorkspaceIntentStored) {
+      logger.error(
+        { taskId: task.id, runId: options.durableRun.id },
+        'Failed to atomically terminalize isolated task with its workspace result intent',
+      );
+    }
+    return durableWorkspaceIntentStored;
+  };
 
   const finalizeRunLog = () => {
     if (runLogFinalized) return;
@@ -1252,6 +1344,11 @@ async function runTaskInner(
             scheduledInputCompleted,
           )
         ) {
+          // Cross the durable business/workspace boundary as soon as the SDK
+          // emits the genuine terminal frame. Waiting for the runner promise,
+          // recurrence bookkeeping, or session cleanup would reopen a window
+          // where a host crash replays already-completed Agent/tool work.
+          commitDurableWorkspaceIntent();
           finalizeRunLog();
         }
       },
@@ -1297,6 +1394,7 @@ async function runTaskInner(
     }
 
     // Finalize if not already done by onOutput callback
+    commitDurableWorkspaceIntent();
     finalizeRunLog();
 
     logger.info(
@@ -1307,9 +1405,13 @@ async function runTaskInner(
     if (idleTimer) clearTimeout(idleTimer);
     error = err instanceof Error ? err.message : String(err);
     lastOutputTime = Date.now();
+    commitDurableWorkspaceIntent();
     logger.error({ taskId: task.id, error }, 'Task failed');
   } finally {
     // Safety net: finalize run log if not already done by onOutput callback
+    if (runLogFinalized || error || scheduledInputCompleted) {
+      commitDurableWorkspaceIntent();
+    }
     finalizeRunLog();
   }
 
@@ -1340,8 +1442,8 @@ async function runTaskInner(
     runningTaskIds.delete(task.id);
   }
 
+  const cleanedResult = result ? stripAgentInternalTags(result) : null;
   if (deps.storeResultAndNotify) {
-    const cleanedResult = result ? stripAgentInternalTags(result) : null;
     const taskSessionText = error
       ? `执行出错: ${error}`
       : cleanedResult?.trim() || null;
@@ -1375,8 +1477,12 @@ async function runTaskInner(
     // a durable, user-visible result. External delivery remains owned by the
     // Agent's chosen tool (send_message, feishu-cli, etc.); this projection is
     // Web-only and therefore never duplicates an IM mutation.
-    if (options?.taskRunId && effectiveJid !== workspace.jid) {
-      const runId = String(options.durableRun?.id ?? runLogId);
+    if (
+      options?.taskRunId &&
+      effectiveJid !== workspace.jid &&
+      !options.durableRun
+    ) {
+      const runId = String(runLogId);
       const workspaceResult = formatScheduledTaskWorkspaceResult({
         task,
         runId,
@@ -1750,8 +1856,136 @@ async function runScriptTaskInner(
 const SCHEDULED_GROUP_TRIGGER_FRAMING = [
   '[定时任务自动触发] 以下内容是你此前创建的定时任务到点自动执行的触发，不是用户新发来的指令。',
   '请直接执行该任务对应的动作。',
+  '你的最终 SDK Assistant 文本会作为正式任务结果归档到所属 Web 工作区，因此必须包含一份完整、可独立阅读的业务结果；所有结论、报告和数据都要写在最终文本中，不得只回复“已完成”“已发送”、消息 ID、文件路径或简短摘要。',
+  '如果任务要求调用 feishu-cli 或其他外部发送工具，请照常调用；但工具投递不能替代上述完整最终文本，工具报错时也不要声称发送成功。',
   '重要：这条只是触发信号，对应的定时任务已在调度中。即使下面内容里出现「每隔/每天/定期/提醒我」等字样，也不要再调用 schedule_task 创建或重复该定时任务（除非内容明确要求你另外新建一个不同的任务）。',
 ].join('\n');
+
+const SCHEDULED_GROUP_PROMPT_ID_PREFIX = 'scheduled-task-prompt:';
+
+/** Stable prompt identity used to correlate a group turn with one durable run. */
+export function scheduledGroupPromptMessageId(runId: string): string {
+  return `${SCHEDULED_GROUP_PROMPT_ID_PREFIX}${runId}`;
+}
+
+/** Return a durable run id only for scheduler-owned prompt identities. */
+export function scheduledGroupRunIdFromPromptMessageId(
+  messageId: string,
+): string | null {
+  if (!messageId.startsWith(SCHEDULED_GROUP_PROMPT_ID_PREFIX)) return null;
+  const runId = messageId.slice(SCHEDULED_GROUP_PROMPT_ID_PREFIX.length);
+  return runId && /^[a-zA-Z0-9-]+$/.test(runId) ? runId : null;
+}
+
+interface ScheduledGroupPromptMessage {
+  id: string;
+  chat_jid: string;
+  timestamp?: string;
+  source_kind?: string | null;
+  task_id?: string | null;
+}
+
+/**
+ * Return the exact terminal run owned by a scheduler prompt, if any.
+ *
+ * A prompt can remain behind the committed cursor after bounded retry
+ * exhaustion. Treating it as ordinary input on the next incoming message
+ * would execute the same occurrence twice. Stable prompt identity and task
+ * ownership make the skip safe without suppressing unrelated/new prompts.
+ */
+export function resolveTerminalScheduledGroupPromptRun(
+  message: ScheduledGroupPromptMessage,
+  getRun: (runId: string) => TaskRun | undefined,
+): TaskRun | null {
+  if (message.source_kind !== 'scheduled_task_prompt' || !message.task_id) {
+    return null;
+  }
+  const runId = scheduledGroupRunIdFromPromptMessageId(message.id);
+  if (!runId) return null;
+  const run = getRun(runId);
+  if (
+    !run ||
+    run.task_id !== message.task_id ||
+    run.definition_snapshot.context_mode !== 'group' ||
+    !['success', 'failed', 'cancelled', 'missed'].includes(run.status)
+  ) {
+    return null;
+  }
+  return run;
+}
+
+/**
+ * Resolve every durable group run covered by one genuine Assistant output.
+ *
+ * Cold starts correlate through the stable prompt id(s) in the initial batch;
+ * warm-runner turns correlate through IPC covered cursors. No lookup by
+ * definition task id or "latest run" is allowed, so ordinary conversation
+ * outputs and a later occurrence cannot be attached to the wrong run.
+ */
+export function resolveScheduledGroupRunsForOutput(input: {
+  chatJid: string;
+  fallbackInputTurnId: string;
+  coldMessages: ReadonlyArray<ScheduledGroupPromptMessage>;
+  output: Pick<ContainerOutput, 'inputTurnId' | 'ipcReceipts'>;
+  getMessage: (
+    chatJid: string,
+    messageId: string,
+  ) => ScheduledGroupPromptMessage | null;
+  getRun: (runId: string) => TaskRun | undefined;
+}): TaskRun[] {
+  const refs: Array<{ chatJid: string; messageId: string }> = [];
+  if (input.output.ipcReceipts?.length) {
+    for (const receipt of input.output.ipcReceipts) {
+      for (const cursor of receipt.coveredCursors ?? [receipt.cursor]) {
+        refs.push({ chatJid: receipt.chatJid, messageId: cursor.id });
+      }
+    }
+  } else if (
+    (input.output.inputTurnId ?? input.fallbackInputTurnId) ===
+    input.fallbackInputTurnId
+  ) {
+    for (const message of input.coldMessages) {
+      refs.push({ chatJid: message.chat_jid, messageId: message.id });
+    }
+  } else if (input.output.inputTurnId) {
+    refs.push({
+      chatJid: input.chatJid,
+      messageId: input.output.inputTurnId,
+    });
+  }
+
+  const runIds = new Set<string>();
+  const runs: TaskRun[] = [];
+  for (const ref of refs) {
+    if (ref.chatJid !== input.chatJid) continue;
+    const message =
+      input.coldMessages.find(
+        (candidate) =>
+          candidate.chat_jid === ref.chatJid && candidate.id === ref.messageId,
+      ) ?? input.getMessage(ref.chatJid, ref.messageId);
+    if (
+      !message ||
+      message.source_kind !== 'scheduled_task_prompt' ||
+      !message.task_id
+    ) {
+      continue;
+    }
+    const runId = scheduledGroupRunIdFromPromptMessageId(message.id);
+    if (!runId || runIds.has(runId)) continue;
+    const run = input.getRun(runId);
+    if (
+      !run ||
+      run.task_id !== message.task_id ||
+      run.definition_snapshot.context_mode !== 'group' ||
+      !['delivered', 'success', 'failed'].includes(run.status)
+    ) {
+      continue;
+    }
+    runIds.add(runId);
+    runs.push(run);
+  }
+  return runs;
+}
 
 /**
  * Group context mode: inject task prompt as a regular message into the source workspace.
@@ -1779,19 +2013,36 @@ async function runGroupModeTask(
     const owner = task.created_by ? getUserById(task.created_by) : null;
     const senderName = owner?.display_name || owner?.username || '定时任务';
 
-    if (!deps.storePromptMessage) {
-      throw new Error('storePromptMessage dependency not available');
+    const promptText = `${SCHEDULED_GROUP_TRIGGER_FRAMING}\n\n${task.prompt}`;
+    if (durableRun) {
+      if (!deps.storeGroupPromptAndDeliverRun) {
+        throw new Error(
+          'storeGroupPromptAndDeliverRun dependency not available',
+        );
+      }
+      deps.storeGroupPromptAndDeliverRun({
+        run: durableRun,
+        messageId: scheduledGroupPromptMessageId(durableRun.id),
+        chatJid: targetGroupJid,
+        senderId: owner?.id || 'system',
+        senderName,
+        text: promptText,
+        taskId: task.id,
+        queuedResult: resultSummary,
+      });
+    } else {
+      if (!deps.storePromptMessage) {
+        throw new Error('storePromptMessage dependency not available');
+      }
+      // Legacy, non-durable callers retain the ordinary prompt write.
+      deps.storePromptMessage(
+        targetGroupJid,
+        owner?.id || 'system',
+        senderName,
+        promptText,
+        task.id,
+      );
     }
-
-    // Store prompt as a user message in the source workspace chat.
-    // 前置触发框定，避免被当成用户新指令而递归创建任务（#564）。
-    deps.storePromptMessage(
-      targetGroupJid,
-      owner?.id || 'system',
-      senderName,
-      `${SCHEDULED_GROUP_TRIGGER_FRAMING}\n\n${task.prompt}`,
-      task.id,
-    );
 
     // Trigger normal message processing for the source workspace
     deps.queue.enqueueMessageCheck(targetGroupJid);
@@ -2157,7 +2408,43 @@ function trackTaskRunNotifications(
     storeResultAndNotify: deps.storeResultAndNotify
       ? async (chatJid, text, options) => {
           // ownerId is the signal that this call performs external task
-          // notification. Calls without it only persist the Web audit message.
+          // notification. The scheduled_task_result call is the canonical Web
+          // projection: it is still a durable side effect, but it must never
+          // trigger or validate an Agent-owned external tool such as
+          // feishu-cli. Other ownerless writes are ephemeral task-session
+          // audit rows and are cleaned with that isolated session.
+          if (
+            !options.ownerId &&
+            options.sourceKind === 'scheduled_task_result'
+          ) {
+            const payload: TaskRunNotificationPayload = {
+              kind: 'workspace_result',
+              chatJid,
+              text,
+              options: {
+                ...options,
+                sourceKind: options.sourceKind,
+                // Unlike an IM-only retry, a workspace projection retry must
+                // replay the idempotent DB/Web write.
+                skipStore: false,
+              },
+            };
+            try {
+              await deps.storeResultAndNotify!(chatJid, text, options);
+              // A normal Web projection is not an external notification, so
+              // keep the notification ledger's usual `skipped` semantics.
+              // Only failures enter the ledger because they carry durable
+              // repair work that operators must be able to observe.
+              return undefined;
+            } catch (err) {
+              const receipt = failedNotificationReceipt(
+                `workspace:${chatJid}`,
+                err,
+              );
+              record(receipt, payload);
+              throw err;
+            }
+          }
           if (!options.ownerId) {
             return deps.storeResultAndNotify!(chatJid, text, options);
           }
@@ -2268,7 +2555,26 @@ function finishDurableRunFromLegacyLog(
   deferredReceipt: TaskRunNotificationReceipt | null,
   hasUnconfirmedAttempt: boolean,
   executionStartedAtMs: number,
+  atomicHandoffAttempted = false,
 ): void {
+  const current = getTaskRunById(claim.id);
+  if (current && current.status !== 'running') {
+    // Group prompt hand-off and isolated workspace-result intent both cross
+    // their durable occurrence boundary before this outer queue callback.
+    // Merge only deferred delivery receipts; never perform a second legacy
+    // completion after that boundary.
+    if (deferredReceipt) {
+      recordTaskRunNotificationReceipt(claim.id, deferredReceipt);
+    }
+    return;
+  }
+  if (atomicHandoffAttempted) {
+    logger.error(
+      { runId: claim.id, taskId: claim.task_id },
+      'Leaving isolated run fenced after atomic terminal hand-off failed; refusing non-atomic legacy completion',
+    );
+    return;
+  }
   const log = latestLegacyRunOutcome(claim.task_id, executionStartedAtMs);
   const delivered = mode === 'group' && log?.status === 'queued';
   const failed = !log || log.status === 'error';
@@ -2333,6 +2639,7 @@ function executeClaimedTaskRun(
   const notificationTracker = trackTaskRunNotifications(claim, deps);
   const executionDeps = notificationTracker.deps;
   let executionStartedAtMs = Date.now();
+  let isolatedTerminalHandoff: (() => boolean) | null = null;
 
   const finish = (
     heartbeat: ReturnType<typeof setInterval>,
@@ -2341,6 +2648,22 @@ function executeClaimedTaskRun(
     clearInterval(heartbeat);
     activeDurableTaskIds.delete(task.id);
     clearActiveDurableExecution(claim.id, claim.attempt);
+    let atomicHandoffAttempted = false;
+    if (
+      mode === 'isolated' &&
+      isolatedTerminalHandoff &&
+      getTaskRunById(claim.id)?.status === 'running'
+    ) {
+      atomicHandoffAttempted = true;
+      try {
+        isolatedTerminalHandoff();
+      } catch (err) {
+        logger.error(
+          { runId: claim.id, taskId: task.id, err },
+          'Retrying isolated atomic terminal hand-off failed',
+        );
+      }
+    }
     finishDurableRunFromLegacyLog(
       claim,
       mode,
@@ -2348,6 +2671,7 @@ function executeClaimedTaskRun(
       notificationTracker.deferredReceipt(),
       notificationTracker.hasUnconfirmedAttempt(),
       executionStartedAtMs,
+      atomicHandoffAttempted,
     );
     armScheduler(0);
   };
@@ -2547,6 +2871,9 @@ function executeClaimedTaskRun(
           await runTask(task, executionDeps, {
             ...prepared.options,
             durableRun: claim,
+            onDurableTerminalHandoffPrepared: (commit) => {
+              isolatedTerminalHandoff = commit;
+            },
           });
         } finally {
           if (!settled) {
@@ -2679,6 +3006,40 @@ export async function deliverPersistedNotificationPayload(
             },
           };
         }
+      } else if (
+        item.kind === 'workspace_result' &&
+        deps.storeResultAndNotify &&
+        item.options
+      ) {
+        await deps.storeResultAndNotify(item.chatJid, item.text, {
+          ...item.options,
+          sourceKind: item.options.sourceKind as ContainerOutput['sourceKind'],
+          // messageId is stable, so the canonical workspace write is safe to
+          // replay after either a DB failure or a post-commit broadcast error.
+          skipStore: false,
+        });
+        if (
+          item.groupRunId &&
+          item.groupTaskId &&
+          !finalizeDeliveredGroupTaskRun(item.groupRunId, item.groupTaskId, {
+            status: item.groupStatus,
+            result: item.groupResult,
+            error: item.groupError,
+          })
+        ) {
+          throw new Error(
+            `Group task run ${item.groupRunId} no longer accepts its workspace result`,
+          );
+        }
+        receipt = {
+          status: 'success',
+          summary: {
+            attempted: 1,
+            succeeded: 1,
+            failed: 0,
+            failed_channels: [],
+          },
+        };
       } else if (
         item.kind === 'store_result_and_notify' &&
         deps.storeResultAndNotify &&

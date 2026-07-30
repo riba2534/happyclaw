@@ -213,7 +213,7 @@ REST 接口和状态字段见 [API 文档](docs/API.md#任务)。
 ### 环境要求
 
 - macOS 或 Linux；Windows 推荐使用 WSL2。
-- [Node.js](https://nodejs.org/) 20 或更高版本，推荐使用 CI 同款 Node.js 22。
+- [Node.js](https://nodejs.org/) 20 或更高版本，推荐使用 CI 同款 Node.js 24。
 - npm 与 GNU Make。
 - [Docker](https://www.docker.com/)：普通成员和 Container 工作区需要；仅使用管理员 Host 工作区时可不安装。
 
@@ -256,20 +256,30 @@ make dev
 | 命令                                            | 说明                                                  |
 | ----------------------------------------------- | ----------------------------------------------------- |
 | `make start`                                    | 构建必要产物并以前台生产模式启动                      |
+| `make start-local`                              | 使用本地 Agent 镜像启动生产环境且不拉取远端镜像       |
 | `WEB_PORT=8080 make start`                      | 使用自定义端口启动                                    |
 | `make status`                                   | 查看端口、健康状态、日志文件和 Docker 容器            |
 | `make stop`                                     | 停止当前端口上的 HappyClaw 服务                       |
 | `make docker-build-local`                       | 开发时显式在本机重新构建 Agent 镜像                   |
+| `make dev-local`                                | 使用本地 Agent 镜像启动开发环境且不拉取远端镜像       |
 | `make install-host-tools`                       | 安装 Host 工具并刷新 Host/Container 共用的内置 Skills |
 | `make backup`                                   | 创建一致性运行数据备份                                |
 | `make restore FILE=happyclaw-backup-xxx.tar.gz` | 停止服务后恢复指定备份                                |
 | `make help`                                     | 查看完整命令列表                                      |
 
-`main` 分支每次推送都会重新构建并发布
-`riba2534/happyclaw-agent:latest`（amd64/arm64）。两个架构会分别在 GitHub
-原生 x64 与 ARM64 Hosted Runner 上并行构建，不使用 QEMU 模拟。镜像构建时会解析
-Claude Code、Claude Agent SDK、agent-browser、feishu-cli、uv 和 Headroom 的最新稳定版；
-实际安装版本记录在镜像内的
+`make docker-build-local` 默认构建独立标签 `happyclaw-agent:local`；随后使用
+`make dev-local` 或 `make start-local`，启动过程不会拉取远端镜像。普通的
+`make dev` 和 `make start` 仍会拉取 DockerHub 上的 `latest`，因此本地开发镜像
+不会被同名远端标签覆盖。可以通过 `LOCAL_CONTAINER_IMAGE=example:local`
+覆盖本地标签。
+
+`main` 分支每次推送都会重新构建
+`riba2534/happyclaw-agent`（amd64/arm64）。两个架构会分别在 GitHub 原生 x64
+与 ARM64 Hosted Runner 上并行构建，不使用 QEMU 模拟。每个 runner 先推送没有
+用户标签的 digest candidate，使用真实容器入口启动 Chromium，并通过 HTTP 请求
+`/json/version`；两边都验证通过后才合并、签名并提升 `git-<sha>` 和 `latest`
+manifest。镜像构建时会解析 Claude Code、Claude Agent SDK、agent-browser、
+feishu-cli、uv 和 Headroom 的最新稳定版；实际安装版本记录在镜像内的
 `/usr/local/share/happyclaw-tool-versions.txt`，需要回滚时也可以通过 Docker
 build args 指定精确版本。
 

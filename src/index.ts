@@ -110,6 +110,8 @@ import {
   getTaskRunById,
   getActiveTaskRunForTask,
   getTaskRunsForTask,
+  finalizeDeliveredGroupTaskRun,
+  recordGroupWorkspaceProjectionFailureAndFinalize,
   recordTaskRunNotificationReceipt,
   finalizeTaskRunNotificationIfPending,
   type TaskRunAtomicNotificationPayload,
@@ -127,6 +129,8 @@ import {
   deleteSession,
   deleteMessagesForChatJid,
   storeMessageDirect,
+  storeScheduledGroupPromptAndCompleteRun,
+  storeScheduledGroupWorkspaceResultAndFinalize,
   updateLatestMessageTokenUsage,
   rebuildMessageTokenUsageFromLedger,
   updateChatName,
@@ -421,6 +425,7 @@ import {
   GroupQueue,
   type IpcDeliveryReceipt,
   type IpcDeliveryTarget,
+  type MessageRetrySnapshot,
   type IpcPrePublishAdmission,
 } from './group-queue.js';
 import {
@@ -433,6 +438,10 @@ import {
   computeNextRunForSchedule,
   computeNextRunForTaskResume,
   getRunningTaskIds,
+  formatScheduledTaskWorkspaceResult,
+  resolveScheduledGroupRunsForOutput,
+  resolveTerminalScheduledGroupPromptRun,
+  scheduledGroupPromptMessageId,
 } from './task-scheduler.js';
 import { getMergedTaskRunHistory } from './task-run-history.js';
 import { findDuplicateActiveAgentTask } from './task-definition-fingerprint.js';
@@ -466,6 +475,7 @@ import {
   FollowUpActionResult,
   MessageSourceKind,
   MessageFinalizationReason,
+  TaskRun,
   TaskRunStatus,
 } from './types.js';
 import {
@@ -4757,6 +4767,17 @@ interface SendMessageOptions {
     sourceKind?: MessageSourceKind;
     finalizationReason?: MessageFinalizationReason;
   };
+  /**
+   * Exact scheduler occurrences represented by this canonical group result.
+   * The DB row and these transitions commit atomically before Web broadcast.
+   */
+  scheduledGroupFinalizations?: Array<{
+    runId: string;
+    taskId: string;
+    status?: 'success' | 'failed' | 'cancelled';
+    result?: string | null;
+    error?: string | null;
+  }>;
 }
 
 /**
@@ -5330,6 +5351,162 @@ function learnDirectMessageOwners(
   }
 }
 
+function settleScheduledGroupWorkspaceProjection(input: {
+  runs: TaskRun[];
+  chatJid: string;
+  workspaceFolder: string;
+  text: string;
+  messageId: string;
+  projected: boolean;
+  projectionError?: string;
+  runStatus?: 'success' | 'failed' | 'cancelled';
+  runResult?: string | null;
+  runError?: string | null;
+}): boolean {
+  if (input.runs.length === 0) return false;
+  let allDurable = true;
+  for (const run of input.runs) {
+    if (input.projected) {
+      const finalized = finalizeDeliveredGroupTaskRun(run.id, run.task_id, {
+        status: input.runStatus,
+        result: input.runResult === undefined ? input.text : input.runResult,
+        error: input.runError,
+      });
+      allDurable &&= finalized;
+      if (!finalized) {
+        logger.error(
+          { runId: run.id, taskId: run.task_id, chatJid: input.chatJid },
+          'Failed to finalize group scheduled-task workspace result',
+        );
+      }
+      continue;
+    }
+
+    const error =
+      input.projectionError ||
+      `Scheduled-task workspace result was not persisted and broadcast: ${input.chatJid}`;
+    const payload = {
+      kind: 'workspace_result',
+      chatJid: input.chatJid,
+      text: input.text,
+      groupRunId: run.id,
+      groupTaskId: run.task_id,
+      groupStatus: input.runStatus,
+      groupResult: input.runResult === undefined ? input.text : input.runResult,
+      groupError: input.runError,
+      options: {
+        sourceKind: 'scheduled_task_result',
+        messageId: input.messageId,
+        skipStore: false,
+        workspaceFolder: input.workspaceFolder,
+      },
+    } as const;
+    const recorded = recordGroupWorkspaceProjectionFailureAndFinalize({
+      runId: run.id,
+      taskId: run.task_id,
+      receipt: {
+        status: 'failed',
+        summary: {
+          attempted: 1,
+          succeeded: 0,
+          failed: 1,
+          failed_channels: [`workspace:${input.chatJid}`],
+        },
+        error,
+      },
+      payload,
+      status: input.runStatus,
+      result: input.runResult === undefined ? input.text : input.runResult,
+      error: input.runError,
+    });
+    allDurable &&= recorded;
+    if (!recorded) {
+      logger.error(
+        { runId: run.id, taskId: run.task_id, chatJid: input.chatJid },
+        'Failed to persist group scheduled-task workspace projection retry',
+      );
+    }
+  }
+  return allDurable;
+}
+
+async function projectTerminalScheduledGroupRuns(input: {
+  runs: Iterable<TaskRun>;
+  chatJid: string;
+  workspaceFolder: string;
+  status: 'failed' | 'cancelled';
+  error: string;
+}): Promise<boolean> {
+  let allDurable = true;
+  let sawDeliveredRun = false;
+  for (const staleRun of input.runs) {
+    const run = getTaskRunById(staleRun.id);
+    if (!run) continue;
+    if (run.status === input.status && run.error === input.error) {
+      sawDeliveredRun = true;
+      continue;
+    }
+    if (run.status !== 'delivered') continue;
+    sawDeliveredRun = true;
+    const task = getTaskById(run.task_id);
+    const text = task
+      ? formatScheduledTaskWorkspaceResult({
+          task,
+          runId: run.id,
+          result: null,
+          error: input.error,
+        })
+      : `## ❌ 定时任务执行失败\n\n**任务 ID**：\`${run.task_id}\`\n**运行 ID**：\`${run.id}\`\n**错误**：${input.error}`;
+    const messageId = `scheduled-group-terminal:${run.id}`;
+    const outcome = await sendMessageWithOutcome(input.chatJid, text, {
+      messageId,
+      sendToIM: false,
+      source: 'scheduled_task',
+      messageMeta: {
+        sourceKind: 'scheduled_task_result',
+        finalizationReason:
+          input.status === 'cancelled' ? 'interrupted' : 'error',
+      },
+      scheduledGroupFinalizations: [
+        {
+          runId: run.id,
+          taskId: run.task_id,
+          status: input.status,
+          result: null,
+          error: input.error,
+        },
+      ],
+    });
+    const durable = settleScheduledGroupWorkspaceProjection({
+      runs: [run],
+      chatJid: input.chatJid,
+      workspaceFolder: input.workspaceFolder,
+      text,
+      messageId,
+      projected: outcome.webProjected && !!outcome.messageId,
+      projectionError: outcome.webProjected
+        ? undefined
+        : `Scheduled-task terminal workspace result was not persisted and broadcast: ${input.chatJid}`,
+      runStatus: input.status,
+      runResult: null,
+      runError: input.error,
+    });
+    allDurable &&= durable;
+    if (!durable) {
+      logger.error(
+        {
+          runId: run.id,
+          taskId: run.task_id,
+          chatJid: input.chatJid,
+          status: input.status,
+        },
+        'Failed to durably project terminal group scheduled-task result',
+      );
+    }
+  }
+  return sawDeliveredRun && allDurable;
+}
+
 /**
  * Process all pending messages for a group.
  * Called by the GroupQueue when it's this group's turn.
@@ -5371,6 +5548,29 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let missedMessages = getMessagesSince(chatJid, sinceCursor);
 
   if (missedMessages.length === 0) return true;
+
+  // Bounded-retry exhaustion may intentionally leave ordinary messages
+  // behind the committed cursor. Consume only scheduler prompts whose exact
+  // durable occurrence is already terminal, so a later user message cannot
+  // execute that old occurrence again.
+  const terminalScheduledPrompts = missedMessages.filter((message) =>
+    resolveTerminalScheduledGroupPromptRun(message, getTaskRunById),
+  );
+  if (terminalScheduledPrompts.length > 0) {
+    for (const message of terminalScheduledPrompts) {
+      completeOutOfBandMessage(chatJid, {
+        timestamp: message.timestamp,
+        id: message.id,
+      });
+    }
+    const terminalIds = new Set(
+      terminalScheduledPrompts.map((message) => message.id),
+    );
+    missedMessages = missedMessages.filter(
+      (message) => !terminalIds.has(message.id),
+    );
+    if (missedMessages.length === 0) return true;
+  }
 
   // Direct IM chats reply to themselves. Routed IM messages keep their original
   // source_jid so workspace-bound conversations can reply back to the sender
@@ -5486,6 +5686,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   if (effectiveGroup.created_by) {
     learnDirectMessageOwners(effectiveGroup.created_by, missedMessages);
+  }
+
+  const retrySnapshot = createIpcDeliveryTarget(chatJid, missedMessages);
+  if (retrySnapshot) {
+    queue.setMessageRetrySnapshot(chatJid, retrySnapshot);
   }
 
   const agentProfile = resolveEffectiveAgentProfile(
@@ -5759,6 +5964,53 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     inputTurnId: lastProcessed.id,
     delivered: false,
   };
+  const scheduledGroupRunsByInput = new Map<string, Map<string, TaskRun>>();
+  const terminalScheduledGroupInputs = new Set<string>();
+  const rememberScheduledGroupRuns = (
+    containerOutput: Pick<ContainerOutput, 'inputTurnId' | 'ipcReceipts'>,
+  ): TaskRun[] => {
+    const runs = resolveScheduledGroupRunsForOutput({
+      chatJid,
+      fallbackInputTurnId: lastProcessed.id,
+      coldMessages: missedMessages,
+      output: containerOutput,
+      getMessage: (targetJid, messageId) =>
+        getAgentBuilderInputMessage(targetJid, messageId),
+      getRun: getTaskRunById,
+    });
+    const inputTurnId =
+      containerOutput.inputTurnId ??
+      containerOutput.ipcReceipts?.[containerOutput.ipcReceipts.length - 1]
+        ?.deliveryId ??
+      ipcReplyTurnTracker.inputTurnId;
+    if (runs.length > 0 && inputTurnId) {
+      const remembered =
+        scheduledGroupRunsByInput.get(inputTurnId) ??
+        new Map<string, TaskRun>();
+      for (const run of runs) remembered.set(run.id, run);
+      scheduledGroupRunsByInput.set(inputTurnId, remembered);
+    }
+    return runs;
+  };
+  const projectCurrentScheduledGroupTerminal = (
+    status: 'failed' | 'cancelled',
+    error: string,
+  ): Promise<boolean> => {
+    const inputTurnId = ipcReplyTurnTracker.inputTurnId;
+    return projectTerminalScheduledGroupRuns({
+      runs: scheduledGroupRunsByInput.get(inputTurnId)?.values() ?? [],
+      chatJid,
+      workspaceFolder: effectiveGroup.folder,
+      status,
+      error,
+    }).then((durable) => {
+      if (durable) terminalScheduledGroupInputs.add(inputTurnId);
+      return durable;
+    });
+  };
+  // A cold run owns the whole initial durable batch. Warm turns are remembered
+  // later from each IPC receipt's covered cursor set.
+  rememberScheduledGroupRuns({ inputTurnId: lastProcessed.id });
   let currentInputCursor: MessageCursor = {
     timestamp: lastProcessed.timestamp,
     id: lastProcessed.id,
@@ -6786,6 +7038,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             );
             return;
           }
+          // Warm runners may report the exact covered scheduled prompt only on
+          // an earlier IPC receipt. Remember it before lifecycle/provider
+          // callbacks return so the later genuine final can settle the same
+          // durable run without guessing from ordinary conversation history.
+          rememberScheduledGroupRuns(result);
           await activateMainProjectionForInput(result.inputTurnId);
           if (result.inputTurnCompleted) {
             const completedInputTurnIds = result.ipcReceipts?.length
@@ -7347,10 +7604,22 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               resetIdleTimer();
               return;
             }
-            result.result = PROVIDER_FAILURE_USER_NOTICE;
+            const terminalGroupFailureDurable =
+              await projectCurrentScheduledGroupTerminal(
+                'failed',
+                PROVIDER_FAILURE_USER_NOTICE,
+              );
+            // The dedicated scheduled-task failure projection is richer and
+            // stable across replay. Suppress the generic provider notice only
+            // when that exact run has been durably projected or queued for
+            // workspace retry.
+            result.result = terminalGroupFailureDurable
+              ? null
+              : PROVIDER_FAILURE_USER_NOTICE;
             logger.warn(
               {
                 group: group.name,
+                terminalGroupFailureDurable,
               },
               'Provider failure surfaced to user',
             );
@@ -7364,7 +7633,69 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               result,
               lastProcessed.id,
             );
-            if (result.proactiveFinalCandidate?.trim()) {
+            const scheduledRuns = [
+              ...(scheduledGroupRunsByInput.get(proactiveInputId)?.values() ??
+                []),
+            ];
+            const completedScheduledCandidate =
+              result.status === 'success' &&
+              result.inputTurnCompleted === true &&
+              result.proactiveFinalCandidate?.trim()
+                ? stripAgentInternalTags(result.proactiveFinalCandidate).trim()
+                : '';
+            if (
+              scheduledRuns.length > 0 &&
+              result.inputTurnCompleted === true
+            ) {
+              if (completedScheduledCandidate) {
+                const messageId = `scheduled-group-result:${crypto
+                  .createHash('sha256')
+                  .update(
+                    [
+                      chatJid,
+                      proactiveInputId,
+                      ...scheduledRuns.map((run) => run.id).sort(),
+                    ].join('\0'),
+                  )
+                  .digest('hex')
+                  .slice(0, 32)}`;
+                const outcome = await sendMessageWithOutcome(
+                  chatJid,
+                  completedScheduledCandidate,
+                  {
+                    messageId,
+                    sendToIM: false,
+                    source: 'scheduled_task',
+                    messageMeta: {
+                      turnId: proactiveInputId,
+                      sessionId: result.sessionId || activeSessionId,
+                      sourceKind: 'scheduled_task_result',
+                      finalizationReason: 'completed',
+                    },
+                    scheduledGroupFinalizations: scheduledRuns.map((run) => ({
+                      runId: run.id,
+                      taskId: run.task_id,
+                      status: 'success',
+                      result: completedScheduledCandidate,
+                      error: null,
+                    })),
+                  },
+                );
+                settleScheduledGroupWorkspaceProjection({
+                  runs: scheduledRuns,
+                  chatJid,
+                  workspaceFolder: effectiveGroup.folder,
+                  text: completedScheduledCandidate,
+                  messageId,
+                  projected: outcome.webProjected && !!outcome.messageId,
+                });
+              } else {
+                await projectCurrentScheduledGroupTerminal(
+                  'failed',
+                  '定时任务已结束，但 Agent 没有返回可展示的完整业务结果。',
+                );
+              }
+            } else if (result.proactiveFinalCandidate?.trim()) {
               const outputScope =
                 channelOutboxScopesByInput.get(proactiveInputId);
               const recovery = await recoverProactiveFinalCandidate({
@@ -7754,6 +8085,37 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               } else {
                 turnIdForDb = effectiveTurnId;
               }
+              const isGenuineCompletedGroupResult =
+                result.status === 'success' &&
+                !result.providerFailure &&
+                !holdReason &&
+                result.inputTurnCompleted === true &&
+                isGenuineReplyResult({
+                  holdReason,
+                  sourceKind: result.sourceKind,
+                  finalizationReason: result.finalizationReason,
+                });
+              const scheduledGroupRuns = isGenuineCompletedGroupResult
+                ? [
+                    ...(scheduledGroupRunsByInput
+                      .get(effectiveTurnId)
+                      ?.values() ?? []),
+                  ]
+                : [];
+              const scheduledGroupResultMessageId =
+                scheduledGroupRuns.length > 0
+                  ? `scheduled-group-result:${crypto
+                      .createHash('sha256')
+                      .update(
+                        [
+                          chatJid,
+                          effectiveTurnId,
+                          ...scheduledGroupRuns.map((run) => run.id).sort(),
+                        ].join('\0'),
+                      )
+                      .digest('hex')
+                      .slice(0, 32)}`
+                  : undefined;
               const durableOutputIdentity =
                 result.sdkMessageUuid ||
                 crypto
@@ -7766,6 +8128,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                 chatJid,
                 dbText,
                 {
+                  messageId: scheduledGroupResultMessageId,
                   sendToIM: directImReply && !skipImSend,
                   imTextOverride: dbText !== text ? text : undefined,
                   localImagePaths,
@@ -7787,9 +8150,31 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                     finalizationReason:
                       result.finalizationReason || 'completed',
                   },
+                  scheduledGroupFinalizations: scheduledGroupRuns.map(
+                    (run) => ({
+                      runId: run.id,
+                      taskId: run.task_id,
+                      status: 'success',
+                      result: dbText,
+                      error: null,
+                    }),
+                  ),
                 },
               );
               lastReplyMsgId = replySendOutcome.messageId;
+              const scheduledGroupProjectionDurable =
+                scheduledGroupRuns.length > 0
+                  ? settleScheduledGroupWorkspaceProjection({
+                      runs: scheduledGroupRuns,
+                      chatJid,
+                      workspaceFolder: effectiveGroup.folder,
+                      text: dbText,
+                      messageId: scheduledGroupResultMessageId!,
+                      projected:
+                        replySendOutcome.webProjected &&
+                        !!replySendOutcome.messageId,
+                    })
+                  : false;
               // A final provider-card ACK is the irreversible user-visible
               // side effect for this turn.  Do it only after the Web/DB row is
               // durable, and only after every local attachment has reached
@@ -7891,6 +8276,17 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               let replyDeliveryAcknowledged = streamingCardHandledIM
                 ? streamingCardAttachmentsDelivered
                 : replySendOutcome.targetDelivered;
+              // A Web-only group-mode task must not replay Agent work after
+              // its canonical projection failure has been persisted for
+              // idempotent notification-worker repair.
+              if (
+                scheduledGroupRuns.length > 0 &&
+                !directImReply &&
+                !outputReplySourceJid &&
+                scheduledGroupProjectionDurable
+              ) {
+                replyDeliveryAcknowledged = true;
+              }
               if (!holdReason) {
                 activeWorkflowRuns = [];
                 completedWorkflowRuns = [];
@@ -7974,6 +8370,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                 mirrorDeliveryAcknowledged &&= delivered;
               }
               replyDeliveryAcknowledged &&= mirrorDeliveryAcknowledged;
+              // An IM/card ACK proves only a channel side effect. Every
+              // scheduled group occurrence must also have durably committed
+              // its canonical Web result and business terminal before its
+              // input cursor may advance; otherwise a DB failure can consume
+              // the prompt while leaving the run stranded in `delivered`.
+              if (scheduledGroupRuns.length > 0) {
+                replyDeliveryAcknowledged &&= scheduledGroupProjectionDurable;
+              }
 
               sentReply = true;
               sentReplyByInput.set(outputChannelScope.inputId, true);
@@ -8334,6 +8738,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   }
   if (!output) {
     if (queue.getRecentStopDisposition(effectiveGroup.folder) === 'discard') {
+      await projectCurrentScheduledGroupTerminal(
+        'cancelled',
+        '定时任务已被用户停止，未继续执行。',
+      );
       commitCursor();
       await clearProcessingIndicatorForInput(ipcReplyTurnTracker.inputTurnId);
       return true;
@@ -8343,6 +8751,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     // narrow delivery signals complete the turn; DB-only interrupt partials
     // deliberately do not set either signal and therefore remain retryable.
     if (activeGenuineReplyDelivered || ipcReplyTurnTracker.delivered) {
+      if (!activeGenuineReplyDelivered && ipcReplyTurnTracker.delivered) {
+        await projectCurrentScheduledGroupTerminal(
+          'failed',
+          'Agent 在发送旁路消息后退出，但没有返回定时任务的完整业务结果。',
+        );
+      }
       await notifyProactiveTailInterruption(ipcReplyTurnTracker.inputTurnId);
       commitCursor();
       await clearProcessingIndicatorForInput(ipcReplyTurnTracker.inputTurnId);
@@ -8353,6 +8767,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const stopDisposition = queue.getRecentStopDisposition(effectiveGroup.folder);
   if (stopDisposition === 'discard') {
+    await projectCurrentScheduledGroupTerminal(
+      'cancelled',
+      '定时任务已被用户停止，未继续执行。',
+    );
     const activeInputHealthy = healthyCompletedInputTurns.has(
       ipcReplyTurnTracker.inputTurnId,
     );
@@ -8403,6 +8821,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
 
     sendSystemMessage(chatJid, 'context_reset', `会话已自动重置：${detail}`);
+    await projectCurrentScheduledGroupTerminal(
+      'failed',
+      `无法恢复的会话记录错误：${detail}`,
+    );
     commitCursor();
     await clearProcessingIndicatorForInput(ipcReplyTurnTracker.inputTurnId);
     return true;
@@ -8445,6 +8867,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       return false;
     }
 
+    await projectCurrentScheduledGroupTerminal(
+      'failed',
+      output.error || lastError || 'Agent 连接在定时任务产生完整结果前关闭。',
+    );
     logger.info(
       { group: group.name, chatJid, turnOutcome },
       'Container close resolved without replay',
@@ -8548,6 +8974,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   if (
     isErrorExit &&
+    terminalScheduledGroupInputs.has(ipcReplyTurnTracker.inputTurnId)
+  ) {
+    commitCursor();
+    await clearProcessingIndicatorForInput(ipcReplyTurnTracker.inputTurnId);
+    return true;
+  }
+
+  if (
+    isErrorExit &&
     !healthyCompletedInputTurns.has(ipcReplyTurnTracker.inputTurnId)
   ) {
     // Partial/interrupted text is useful to persist, but it is not a delivery
@@ -8578,6 +9013,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         ipcReplyDeliveredForInputTurn: ipcReplyTurnTracker.delivered,
       })
     ) {
+      await projectCurrentScheduledGroupTerminal(
+        'failed',
+        output.error || lastError || 'Agent 在发送旁路消息后异常退出。',
+      );
       commitCursor();
       await clearProcessingIndicatorForInput(ipcReplyTurnTracker.inputTurnId);
       return true;
@@ -8606,6 +9045,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         deterministicFailure: true,
       });
       sendSystemMessage(chatJid, 'context_overflow', budgetMsg);
+      await projectCurrentScheduledGroupTerminal('failed', budgetMsg);
       logger.warn(
         { group: group.name, error: budgetMsg, turnOutcome },
         'Static prompt/context budget is invalid; skipping retry',
@@ -8619,6 +9059,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (errorDetail.startsWith('context_overflow:')) {
       const overflowMsg = errorDetail.replace(/^context_overflow:\s*/, '');
       sendSystemMessage(chatJid, 'context_overflow', overflowMsg);
+      await projectCurrentScheduledGroupTerminal('failed', overflowMsg);
       logger.warn(
         { group: group.name, error: overflowMsg },
         'Context overflow detected, skipping retry',
@@ -8636,6 +9077,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         '',
       );
       sendSystemMessage(chatJid, 'system_error', profileMsg);
+      await projectCurrentScheduledGroupTerminal('failed', profileMsg);
       logger.warn(
         { group: group.name, error: profileMsg },
         'AgentProfile references unavailable skill/MCP, skipping retry',
@@ -8704,6 +9146,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           chatJid,
           'context_reset',
           '会话文件过大导致内存溢出（OOM），已自动重置会话。之前的对话上下文已清除，请重新描述您的需求。',
+        );
+        await projectCurrentScheduledGroupTerminal(
+          'failed',
+          '会话文件过大导致内存溢出（OOM），已自动重置会话。',
         );
         commitCursor();
         await clearProcessingIndicatorForInput(ipcReplyTurnTracker.inputTurnId);
@@ -9147,6 +9593,9 @@ async function runAgent(
 
 interface SendMessageOutcome {
   messageId?: string;
+  /** True only after the canonical DB row and its WebSocket broadcast both
+   * complete. Kept separate from an IM connector ACK. */
+  webProjected: boolean;
   /** True only when the logical target actually received the message. For an
    * IM JID this requires connector success; for a Web/virtual JID it requires
    * successful persistence+broadcast. */
@@ -9161,6 +9610,7 @@ async function sendMessageWithOutcome(
   const isIMChannel = getChannelType(jid) !== null;
   const sendToIM = options.sendToIM ?? isIMChannel;
   let targetDelivered = false;
+  let webProjected = false;
   try {
     if (sendToIM && isIMChannel) {
       try {
@@ -9182,17 +9632,32 @@ async function sendMessageWithOutcome(
     // Persist assistant reply so Web polling can render it and clear waiting state.
     const msgId = options.messageId ?? crypto.randomUUID();
     const timestamp = new Date().toISOString();
-    ensureChatExists(jid);
-    const persistedMsgId = storeMessageDirect(
-      msgId,
-      jid,
-      'happyclaw-agent',
-      ASSISTANT_NAME,
-      text,
-      timestamp,
-      true,
-      { meta: options.messageMeta },
-    );
+    const persistedMsgId =
+      options.scheduledGroupFinalizations &&
+      options.scheduledGroupFinalizations.length > 0
+        ? storeScheduledGroupWorkspaceResultAndFinalize({
+            messageId: msgId,
+            chatJid: jid,
+            senderId: 'happyclaw-agent',
+            senderName: ASSISTANT_NAME,
+            text,
+            timestamp,
+            messageMeta: options.messageMeta,
+            finalizations: options.scheduledGroupFinalizations,
+          })
+        : (() => {
+            ensureChatExists(jid);
+            return storeMessageDirect(
+              msgId,
+              jid,
+              'happyclaw-agent',
+              ASSISTANT_NAME,
+              text,
+              timestamp,
+              true,
+              { meta: options.messageMeta },
+            );
+          })();
     if (!sendToIM || !isIMChannel) targetDelivered = true;
 
     broadcastNewMessage(
@@ -9215,6 +9680,7 @@ async function sendMessageWithOutcome(
       undefined,
       options.source,
     );
+    webProjected = true;
     logger.info({ jid, length: text.length, sendToIM }, 'Message sent');
     // Skip agent_reply broadcast for scheduled tasks to avoid clearing
     // streaming state of a concurrently running main agent.
@@ -9223,10 +9689,10 @@ async function sendMessageWithOutcome(
     if (!options.source) {
       broadcastToWebClients(jid, text);
     }
-    return { messageId: persistedMsgId, targetDelivered };
+    return { messageId: persistedMsgId, targetDelivered, webProjected };
   } catch (err) {
     logger.error({ jid, err }, 'Failed to send message');
-    return { targetDelivered };
+    return { targetDelivered, webProjected };
   }
 }
 
@@ -19965,16 +20431,55 @@ async function main(): Promise<void> {
     const group = registeredGroups[groupJid];
     return group?.folder || groupJid;
   });
-  queue.setOnMaxRetriesExceeded((groupJid: string) => {
-    const group = registeredGroups[groupJid];
-    const name = group?.name || groupJid;
-    sendSystemMessage(
-      groupJid,
-      'agent_max_retries',
-      `${name} 处理失败，已达最大重试次数`,
-    );
-    void clearTrackedProcessingIndicators(groupJid);
-  });
+  queue.setOnMaxRetriesExceeded(
+    async (groupJid: string, snapshot: MessageRetrySnapshot | null) => {
+      try {
+        const group =
+          registeredGroups[groupJid] ?? getRegisteredGroup(groupJid);
+        const name = group?.name || groupJid;
+        const error = `${name} 处理失败，已达最大重试次数`;
+        if (group && snapshot?.coveredCursors.length) {
+          // Use only the immutable batch read by the final failed attempt.
+          // A prompt arriving while this callback runs belongs to a future
+          // attempt and must not be marked failed or consumed here.
+          const exactMessages: Array<
+            NonNullable<ReturnType<typeof getAgentBuilderInputMessage>>
+          > = [];
+          for (const cursor of snapshot.coveredCursors) {
+            const message = getAgentBuilderInputMessage(groupJid, cursor.id);
+            if (message) exactMessages.push(message);
+          }
+          const runs = resolveScheduledGroupRunsForOutput({
+            chatJid: groupJid,
+            fallbackInputTurnId: snapshot.cursor.id,
+            coldMessages: exactMessages,
+            output: { inputTurnId: snapshot.cursor.id },
+            getMessage: (targetJid, messageId) =>
+              getAgentBuilderInputMessage(targetJid, messageId),
+            getRun: getTaskRunById,
+          });
+          const durable = await projectTerminalScheduledGroupRuns({
+            runs,
+            chatJid: groupJid,
+            workspaceFolder: resolveEffectiveGroup(group).effectiveGroup.folder,
+            status: 'failed',
+            error,
+          });
+          if (durable) {
+            // Retry exhaustion terminates this immutable final-attempt batch,
+            // including any ordinary inputs coalesced before its upper bound.
+            // Commit the whole bounded snapshot so crash recovery cannot
+            // replay the old scheduler prompt; later messages sort after this
+            // cursor and remain pending.
+            advanceCursors(groupJid, snapshot.cursor);
+          }
+        }
+        sendSystemMessage(groupJid, 'agent_max_retries', error);
+      } finally {
+        await clearTrackedProcessingIndicators(groupJid);
+      }
+    },
+  );
   // Billing: user-level concurrent container limit
   queue.setUserConcurrentLimitChecker((groupJid: string) => {
     if (!isBillingEnabled()) return { allowed: true };
@@ -20088,8 +20593,17 @@ async function main(): Promise<void> {
     },
     broadcastStreamEvent,
     onWorkspaceCreated: broadcastGroupCreated,
-    storePromptMessage: (chatJid, senderId, senderName, text, taskId) => {
-      const msgId = crypto.randomUUID();
+    storePromptMessage: (
+      chatJid,
+      senderId,
+      senderName,
+      text,
+      taskId,
+      taskRunId,
+    ) => {
+      const msgId = taskRunId
+        ? scheduledGroupPromptMessageId(taskRunId)
+        : crypto.randomUUID();
       const now = new Date().toISOString();
       ensureChatExists(chatJid);
       storeMessageDirect(
@@ -20113,10 +20627,36 @@ async function main(): Promise<void> {
         timestamp: now,
         is_from_me: false,
       });
+      return msgId;
+    },
+    storeGroupPromptAndDeliverRun: (input) => {
+      const msgId = storeScheduledGroupPromptAndCompleteRun({
+        runId: input.run.id,
+        taskId: input.taskId,
+        leaseOwner: input.run.lease_owner,
+        leaseToken: input.run.lease_token,
+        messageId: input.messageId,
+        chatJid: input.chatJid,
+        senderId: input.senderId,
+        senderName: input.senderName,
+        text: input.text,
+        queuedResult: input.queuedResult,
+      });
+      const now = new Date().toISOString();
+      broadcastNewMessage(input.chatJid, {
+        id: msgId,
+        chat_jid: input.chatJid,
+        sender: input.senderId,
+        sender_name: input.senderName,
+        content: input.text,
+        timestamp: now,
+        is_from_me: false,
+      });
+      return msgId;
     },
     storeResultAndNotify: async (chatJid, text, options) => {
       if (!options.skipStore) {
-        await sendMessage(chatJid, text, {
+        const outcome = await sendMessageWithOutcome(chatJid, text, {
           messageId: options.messageId,
           sendToIM: false,
           source: 'scheduled_task',
@@ -20124,6 +20664,11 @@ async function main(): Promise<void> {
             sourceKind: options.sourceKind || 'sdk_final',
           },
         });
+        if (!outcome.webProjected || !outcome.messageId) {
+          throw new Error(
+            `Scheduled-task workspace result was not persisted and broadcast: ${chatJid}`,
+          );
+        }
       }
 
       if (!options.ownerId) return;

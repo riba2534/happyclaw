@@ -12,42 +12,170 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  IMAGE_NAME: riba2534/happyclaw-agent
+
 jobs:
-  publish:
-    name: Build and publish on native runners
-    uses: docker/github-builder/.github/workflows/build.yml@27ade872c1e2296e62ef15ab3b10d37665e57cf7 # v1
+  build-and-smoke:
+    name: Build and smoke (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # docker/github-builder finalizes image tags in its reusable workflow.
+      # Build by digest here so no user-facing tag can move before both native
+      # runners have started their image and passed the real CDP HTTP probe.
+      - name: Build and push untagged candidate
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ./container
+          file: ./container/Dockerfile
+          platforms: ${{ matrix.platform }}
+          pull: true
+          build-args: |
+            TOOL_REFRESH=${{ github.sha }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=happyclaw-agent-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=happyclaw-agent-${{ matrix.arch }}
+          sbom: true
+          provenance: mode=max
+          labels: |
+            org.opencontainers.image.title=HappyClaw Agent
+            org.opencontainers.image.description=Isolated multi-platform agent runtime for HappyClaw
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      - name: Start candidate and probe Chromium over HTTP
+        env:
+          IMAGE_REF: ${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+        run: ./scripts/smoke-agent-image.sh "$IMAGE_REF" "${{ matrix.arch }}"
+
+      - name: Record verified digest
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          mkdir -p /tmp/happyclaw-digests
+          touch "/tmp/happyclaw-digests/${IMAGE_DIGEST#sha256:}"
+
+      - name: Upload verified digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/happyclaw-digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  promote:
+    name: Promote verified multi-platform image
+    needs: build-and-smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: read
       id-token: write
-    with:
-      output: image
-      push: true
-      platforms: linux/amd64,linux/arm64
-      distribute: true
-      setup-qemu: false
-      runner: |
-        default=ubuntu-24.04
-        linux/amd64=ubuntu-24.04
-        linux/arm64=ubuntu-24.04-arm
-      context: ./container
-      file: ./Dockerfile
-      build-args: |
-        TOOL_REFRESH=${{ github.sha }}
-      cache: true
-      cache-scope: happyclaw-agent
-      cache-mode: max
-      sbom: true
-      sign: auto
-      set-meta-labels: true
-      meta-images: riba2534/happyclaw-agent
-      meta-tags: |
-        type=raw,value=latest
-        type=sha,format=long,prefix=git-
-      meta-labels: |
-        org.opencontainers.image.title=HappyClaw Agent
-        org.opencontainers.image.description=Isolated multi-platform agent runtime for HappyClaw
-    secrets:
-      registry-auths: |
-        - registry: docker.io
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Download verified digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: digests-*
+          path: /tmp/happyclaw-digests
+          merge-multiple: true
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
+
+      - name: Create and sign verified commit manifest
+        id: manifest
+        run: |
+          set -euo pipefail
+          mapfile -t digest_files < <(find /tmp/happyclaw-digests -maxdepth 1 -type f -printf '%f\n' | sort)
+          if [ "${#digest_files[@]}" -ne 2 ]; then
+            echo "Expected two verified platform digests, found ${#digest_files[@]}" >&2
+            exit 1
+          fi
+
+          sources=()
+          for digest in "${digest_files[@]}"; do
+            if [[ ! "$digest" =~ ^[a-f0-9]{64}$ ]]; then
+              echo "Invalid digest artifact: $digest" >&2
+              exit 1
+            fi
+            sources+=("${IMAGE_NAME}@sha256:${digest}")
+          done
+
+          commit_tag="${IMAGE_NAME}:git-${GITHUB_SHA}"
+          docker buildx imagetools create --tag "$commit_tag" "${sources[@]}"
+          inspection="$(docker buildx imagetools inspect "$commit_tag")"
+          printf '%s\n' "$inspection"
+
+          raw_manifest="$(docker buildx imagetools inspect --raw "$commit_tag")"
+          jq -e '
+            [
+              .manifests[] |
+              select(
+                (.platform.os // "unknown") != "unknown" and
+                (.platform.architecture // "unknown") != "unknown"
+              ) |
+              "\(.platform.os)/\(.platform.architecture)"
+            ] as $platforms |
+            ($platforms | length) == 2 and
+            (($platforms | sort) == ["linux/amd64", "linux/arm64"])
+          ' <<<"$raw_manifest" >/dev/null
+
+          manifest_digest="$(awk '$1 == "Digest:" { print $2; exit }' <<<"$inspection")"
+          [[ "$manifest_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          cosign sign --yes "${IMAGE_NAME}@${manifest_digest}"
+          certificate_identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/docker-publish.yml@${GITHUB_REF}"
+          cosign verify \
+            --certificate-identity "$certificate_identity" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "${IMAGE_NAME}@${manifest_digest}" >/dev/null
+          echo "digest=$manifest_digest" >>"$GITHUB_OUTPUT"
+
+      - name: Promote signed manifest to latest
+        env:
+          MANIFEST_DIGEST: ${{ steps.manifest.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "${IMAGE_NAME}:latest" \
+            "${IMAGE_NAME}@${MANIFEST_DIGEST}"
+          latest_digest="$(
+            docker buildx imagetools inspect "${IMAGE_NAME}:latest" |
+              awk '$1 == "Digest:" { print $2; exit }'
+          )"
+          test "$latest_digest" = "$MANIFEST_DIGEST"
+          echo "Published ${IMAGE_NAME}:latest at ${MANIFEST_DIGEST}"

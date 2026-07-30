@@ -90,8 +90,8 @@ RUN printf '%s\n' "$TOOL_REFRESH" > /etc/happyclaw-tool-refresh \
     # Symlink fd-find → fd (Debian names it fdfind)
     && ln -sf /usr/bin/fdfind /usr/local/bin/fd
 
-# Pull the newest stable multi-arch uv release. The publish workflow uses
-# `pull: true`, and TOOL_REFRESH prevents a stale cached COPY layer.
+# Pull the newest stable multi-arch uv release. CI and the local build helper
+# enable base-image pulling, and TOOL_REFRESH prevents a stale cached COPY layer.
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uvx /usr/local/bin/uvx
 

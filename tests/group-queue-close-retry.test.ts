@@ -188,12 +188,73 @@ describe('GroupQueue close outcome retry lifecycle', () => {
     await flushPromises();
     expect(runs).toBe(6);
     expect(onMaxRetriesExceeded).toHaveBeenCalledOnce();
-    expect(onMaxRetriesExceeded).toHaveBeenCalledWith(JID);
+    expect(onMaxRetriesExceeded).toHaveBeenCalledWith(JID, null);
     expect(queue.getRetryCount(JID)).toBe(0);
 
     await vi.advanceTimersByTimeAsync(60_000);
     await flushPromises();
     expect(runs).toBe(6);
+  });
+
+  test('max retry awaits the exact final-attempt snapshot and excludes later work', async () => {
+    const ordinaryCursor = {
+      timestamp: '2026-07-30T00:00:00.000Z',
+      id: 'ordinary-before-scheduled',
+    };
+    const failedCursor = {
+      timestamp: '2026-07-30T00:00:01.000Z',
+      id: 'scheduled-task-prompt:failed-run',
+    };
+    const laterCursor = {
+      timestamp: '2026-07-30T00:00:02.000Z',
+      id: 'scheduled-task-prompt:later-run',
+    };
+    let runs = 0;
+    let releaseTerminal!: () => void;
+    const terminalReleased = new Promise<void>((resolve) => {
+      releaseTerminal = resolve;
+    });
+    const observedSnapshots: unknown[] = [];
+
+    queue.setProcessMessagesFn(async () => {
+      runs += 1;
+      queue.setMessageRetrySnapshot(JID, {
+        coveredCursors:
+          runs <= 6 ? [ordinaryCursor, failedCursor] : [laterCursor],
+        cursor: runs <= 6 ? failedCursor : laterCursor,
+      });
+      return runs > 6;
+    });
+    queue.setOnMaxRetriesExceeded(async (_jid, snapshot) => {
+      observedSnapshots.push(snapshot);
+      await terminalReleased;
+    });
+
+    queue.enqueueMessageCheck(JID);
+    await flushPromises();
+    for (const delay of [5_000, 10_000, 20_000, 40_000, 80_000]) {
+      await vi.advanceTimersByTimeAsync(delay);
+      await flushPromises();
+    }
+    expect(runs).toBe(6);
+    expect(observedSnapshots).toEqual([
+      {
+        coveredCursors: [ordinaryCursor, failedCursor],
+        cursor: failedCursor,
+      },
+    ]);
+
+    // This models a new prompt arriving after the final attempt snapshot.
+    // The active max-retry callback must finish its exact terminal work before
+    // the queue starts the new batch, and the old callback never sees B.
+    queue.enqueueMessageCheck(JID);
+    await flushPromises();
+    expect(runs).toBe(6);
+
+    releaseTerminal();
+    await flushPromises();
+    expect(runs).toBe(7);
+    expect(observedSnapshots).toHaveLength(1);
   });
 
   test('conversation task retries on its task lane without invoking message processing', async () => {

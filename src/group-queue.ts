@@ -31,6 +31,11 @@ export interface IpcDeliveryTarget {
   coveredCursors: IpcMessageCursor[];
   cursor: IpcMessageCursor;
 }
+/** Immutable DB-message batch owned by one concrete message-lane attempt. */
+export interface MessageRetrySnapshot {
+  coveredCursors: IpcMessageCursor[];
+  cursor: IpcMessageCursor;
+}
 export interface IpcPrePublishAdmission {
   /** Undo host-side Turn/Card/Outbox reservations if disk publish fails. */
   rollback?: () => void;
@@ -150,6 +155,8 @@ interface GroupState {
   retryTimer: ReturnType<typeof setTimeout> | null;
   /** Exact task captured by a retry timer; null means a message-lane retry. */
   retryTask: QueuedTask | null;
+  /** Exact message batch captured by the current message-lane attempt. */
+  messageRetrySnapshot: MessageRetrySnapshot | null;
   restarting: boolean;
   /** Provider profile ID selected for the current active runner (null = default/override). */
   selectedProviderId: string | null;
@@ -208,7 +215,12 @@ export class GroupQueue {
   private hostModeChecker: ((groupJid: string) => boolean) | null = null;
   private serializationKeyResolver: ((groupJid: string) => string) | null =
     null;
-  private onMaxRetriesExceededFn: ((groupJid: string) => void) | null = null;
+  private onMaxRetriesExceededFn:
+    | ((
+        groupJid: string,
+        snapshot: MessageRetrySnapshot | null,
+      ) => void | Promise<void>)
+    | null = null;
   private onContainerExitFn: ((groupJid: string) => void) | null = null;
   private onRunnerStateChangeFn:
     | ((chatJid: string, state: 'idle' | 'running') => void)
@@ -269,6 +281,7 @@ export class GroupQueue {
         retryCount: 0,
         retryTimer: null,
         retryTask: null,
+        messageRetrySnapshot: null,
         restarting: false,
         selectedProviderId: null,
         feishuCliAccountId: null,
@@ -578,8 +591,35 @@ export class GroupQueue {
     this.serializationKeyResolver = fn;
   }
 
-  setOnMaxRetriesExceeded(fn: (groupJid: string) => void): void {
+  setOnMaxRetriesExceeded(
+    fn: (
+      groupJid: string,
+      snapshot: MessageRetrySnapshot | null,
+    ) => void | Promise<void>,
+  ): void {
     this.onMaxRetriesExceededFn = fn;
+  }
+
+  /**
+   * Fence retry exhaustion to the immutable DB batch read by the current
+   * message-lane attempt. Messages arriving after this snapshot must remain
+   * pending work and cannot be attributed to the failed attempt.
+   */
+  setMessageRetrySnapshot(
+    groupJid: string,
+    snapshot: MessageRetrySnapshot,
+  ): boolean {
+    const state = this.groups.get(groupJid);
+    if (!state?.active || state.activeRunnerIsTask) return false;
+    const coveredCursors = [...snapshot.coveredCursors]
+      .map((cursor) => ({ ...cursor }))
+      .sort(compareIpcMessageCursors);
+    if (coveredCursors.length === 0) return false;
+    state.messageRetrySnapshot = {
+      coveredCursors,
+      cursor: { ...coveredCursors[coveredCursors.length - 1] },
+    };
+    return true;
   }
 
   setOnContainerExit(fn: (groupJid: string) => void): void {
@@ -732,6 +772,7 @@ export class GroupQueue {
     }
     state.retryTask = null;
     state.retryCount = 0;
+    state.messageRetrySnapshot = null;
   }
 
   /**
@@ -2206,6 +2247,7 @@ export class GroupQueue {
     state.queryStartedAt = Date.now();
     state.announcedQueryId = null;
     state.pendingMessages = false;
+    state.messageRetrySnapshot = null;
     this.waitingGroups.delete(groupJid);
     this.activeCount++;
     if (isHostMode) {
@@ -2236,11 +2278,12 @@ export class GroupQueue {
         const success = await this.processMessagesFn(groupJid);
         if (success) {
           state.retryCount = 0;
+          state.messageRetrySnapshot = null;
           // Defensive: clear any lingering retry timer from a previous failed
           // run that was superseded by a successful drain-triggered run.
           this.clearRetryTimer(state);
         } else if (this.canScheduleRetry(state)) {
-          this.scheduleRetry(groupJid, state);
+          await this.scheduleRetry(groupJid, state);
         } else {
           logger.info(
             {
@@ -2255,7 +2298,7 @@ export class GroupQueue {
     } catch (err) {
       logger.error({ groupJid, err }, 'Error processing messages for group');
       if (this.canScheduleRetry(state)) {
-        this.scheduleRetry(groupJid, state);
+        await this.scheduleRetry(groupJid, state);
       } else {
         logger.info(
           {
@@ -2428,7 +2471,7 @@ export class GroupQueue {
       const success = await task.fn();
       if (success === false) {
         if (this.canScheduleRetry(state)) {
-          this.scheduleRetry(groupJid, state, task);
+          await this.scheduleRetry(groupJid, state, task);
         } else {
           logger.info(
             {
@@ -2514,11 +2557,11 @@ export class GroupQueue {
     return !this.shuttingDown && !state.stopRequested && !state.restarting;
   }
 
-  private scheduleRetry(
+  private async scheduleRetry(
     groupJid: string,
     state: GroupState,
     retryTask: QueuedTask | null = null,
-  ): void {
+  ): Promise<void> {
     if (!this.canScheduleRetry(state)) {
       logger.info(
         {
@@ -2560,10 +2603,14 @@ export class GroupQueue {
       state.retryCount = 0;
       state.retryTask = null;
       try {
-        this.onMaxRetriesExceededFn?.(groupJid);
+        await this.onMaxRetriesExceededFn?.(
+          groupJid,
+          retryTask ? null : state.messageRetrySnapshot,
+        );
       } catch (err) {
         logger.error({ groupJid, err }, 'onMaxRetriesExceeded callback failed');
       }
+      state.messageRetrySnapshot = null;
       return;
     }
 

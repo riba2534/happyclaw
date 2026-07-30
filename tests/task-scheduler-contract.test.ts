@@ -129,6 +129,9 @@ const {
   enqueueIsolatedScheduledTask,
   getRunningTaskIds,
   processClaimedTaskRunNotification,
+  resolveScheduledGroupRunsForOutput,
+  resolveTerminalScheduledGroupPromptRun,
+  scheduledGroupPromptMessageId,
   shouldFinalizeScheduledRunOutput,
   triggerTaskNow,
 } = await import('../src/task-scheduler.js');
@@ -136,7 +139,10 @@ const {
 const GROUP_JID = 'web:task-contract';
 const GROUP_FOLDER = 'task-contract';
 
-function makeDeps(groups: Record<string, any>) {
+function makeDeps(
+  groups: Record<string, any>,
+  options: { autoDrainNotifications?: boolean } = {},
+) {
   let runPromise: Promise<void> | null = null;
   const queue = {
     enqueueTask: vi.fn(
@@ -151,21 +157,45 @@ function makeDeps(groups: Record<string, any>) {
     isGroupMutationPaused: vi.fn(() => false),
   };
 
+  const deps = {
+    registeredGroups: () => groups,
+    getSessions: () => ({}),
+    queue,
+    onProcess: vi.fn(),
+    sendMessage: vi.fn(),
+    broadcastStreamEvent: vi.fn(),
+    storePromptMessage: vi.fn(),
+    storeGroupPromptAndDeliverRun: vi.fn((input: any) =>
+      db.storeScheduledGroupPromptAndCompleteRun({
+        runId: input.run.id,
+        taskId: input.taskId,
+        leaseOwner: input.run.lease_owner,
+        leaseToken: input.run.lease_token,
+        messageId: input.messageId,
+        chatJid: input.chatJid,
+        senderId: input.senderId,
+        senderName: input.senderName,
+        text: input.text,
+        queuedResult: input.queuedResult,
+      }),
+    ),
+    storeResultAndNotify: vi.fn(),
+    assistantName: 'HappyClaw',
+  } as any;
   return {
-    deps: {
-      registeredGroups: () => groups,
-      getSessions: () => ({}),
-      queue,
-      onProcess: vi.fn(),
-      sendMessage: vi.fn(),
-      broadcastStreamEvent: vi.fn(),
-      storePromptMessage: vi.fn(),
-      storeResultAndNotify: vi.fn(),
-      assistantName: 'HappyClaw',
-    } as any,
+    deps,
     queue,
     waitForRun: async () => {
       await runPromise;
+      if (options.autoDrainNotifications === false) return;
+      for (let index = 0; index < 8; index++) {
+        const claim = db.claimNextTaskRunNotification(
+          `task-contract-auto-notifier-${index}`,
+          60_000,
+        );
+        if (!claim) break;
+        await processClaimedTaskRunNotification(claim, deps, 60_000);
+      }
     },
   };
 }
@@ -283,6 +313,43 @@ describe('scheduled task workspace/session contract', () => {
       result: 'partial only',
       error: expect.stringContaining('before completing'),
     });
+  });
+
+  test('fails an isolated occurrence whose completed Agent turn has no full business result', async () => {
+    const taskId = createTask({ id: 'task-empty-isolated-result' });
+    const groups = {
+      [GROUP_JID]: db.getRegisteredGroup(GROUP_JID)!,
+    };
+    runContainerAgentMock.mockImplementationOnce(
+      async (_group, input, onProcess) => {
+        onProcess?.({} as never, `container-${input.taskRunId}`, null);
+        return {
+          status: 'success',
+          result: null,
+          inputTurnCompleted: true,
+        };
+      },
+    );
+    const { deps, waitForRun } = makeDeps(groups);
+
+    const trigger = triggerTaskNow(taskId, deps);
+    await waitForRun();
+
+    expect(db.getTaskRunById(trigger.runId!)).toMatchObject({
+      status: 'failed',
+      result: null,
+      error: expect.stringContaining('没有返回可展示的完整业务结果'),
+      notification_status: 'success',
+    });
+    expect(deps.storeResultAndNotify).toHaveBeenCalledWith(
+      GROUP_JID,
+      expect.stringContaining('没有返回可展示的完整业务结果'),
+      expect.objectContaining({
+        sourceKind: 'scheduled_task_result',
+        messageId: `scheduled-task-result:${trigger.runId}`,
+        skipStore: false,
+      }),
+    );
   });
 
   test('resume accepts only future one-shot schedules', () => {
@@ -458,6 +525,108 @@ describe('scheduled task workspace/session contract', () => {
     expect(storedTask.workspace_folder).toBeNull();
   });
 
+  test('commits the isolated terminal and workspace intent inside the SDK terminal callback', async () => {
+    const taskId = createTask({ id: 'task-terminal-callback-handoff' });
+    const groups = {
+      [GROUP_JID]: db.getRegisteredGroup(GROUP_JID)!,
+    };
+    let observedTerminalInsideRunner = false;
+    runContainerAgentMock.mockImplementationOnce(
+      async (_group, input, onProcess, onOutput) => {
+        onProcess?.({} as never, `container-${input.taskRunId}`, null);
+        await onOutput?.({
+          status: 'success',
+          result: 'callback terminal result',
+          inputTurnCompleted: true,
+        });
+        const durableRunId = input.taskRunId
+          .replace(/^task-run-/, '')
+          .replace(/-attempt-1$/, '');
+        const duringCallbackReturn = db.getTaskRunById(durableRunId)!;
+        observedTerminalInsideRunner =
+          duringCallbackReturn.status === 'success' &&
+          duringCallbackReturn.result === 'callback terminal result' &&
+          JSON.parse(
+            (
+              duringCallbackReturn as unknown as {
+                notification_payload: string;
+              }
+            ).notification_payload,
+          ).options.messageId === `scheduled-task-result:${durableRunId}`;
+        return {
+          status: 'success',
+          result: 'callback terminal result',
+          inputTurnCompleted: true,
+        };
+      },
+    );
+    const { deps, waitForRun } = makeDeps(groups);
+
+    const trigger = triggerTaskNow(taskId, deps);
+    await waitForRun();
+
+    expect(observedTerminalInsideRunner).toBe(true);
+    expect(db.getTaskRunById(trigger.runId!)).toMatchObject({
+      status: 'success',
+      result: 'callback terminal result',
+      notification_status: 'success',
+    });
+    expect(runContainerAgentMock).toHaveBeenCalledOnce();
+  });
+
+  test('persists and retries a failed canonical workspace result without rerunning isolated Agent work', async () => {
+    const taskId = createTask({ id: 'task-workspace-projection-retry' });
+    const groups = {
+      [GROUP_JID]: db.getRegisteredGroup(GROUP_JID)!,
+    };
+    const { deps, waitForRun } = makeDeps(groups);
+    deps.storeResultAndNotify.mockImplementation(
+      async (_chatJid: string, _text: string, options: any) => {
+        if (options.sourceKind === 'scheduled_task_result') {
+          throw new Error('workspace broadcast unavailable');
+        }
+      },
+    );
+
+    const trigger = triggerTaskNow(taskId, deps);
+    await waitForRun();
+    await vi.waitFor(() => {
+      expect(db.getTaskRunById(trigger.runId!)?.status).not.toBe('running');
+    });
+    const finished = db.getTaskRunById(trigger.runId!)!;
+    expect(finished).toMatchObject({
+      status: 'success',
+      result: 'task result',
+      notification_status: 'failed',
+    });
+    expect(finished.notification_error).toContain(
+      'workspace broadcast unavailable',
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 1_050));
+    const retry = db.claimNextTaskRunNotification(
+      'workspace-projection-retry-worker',
+      60_000,
+    )!;
+    expect(retry.payload).toMatchObject({
+      kind: 'workspace_result',
+      chatJid: GROUP_JID,
+      options: {
+        messageId: `scheduled-task-result:${trigger.runId}`,
+        skipStore: false,
+      },
+    });
+
+    deps.storeResultAndNotify.mockResolvedValueOnce(undefined);
+    expect(await processClaimedTaskRunNotification(retry, deps, 60_000)).toBe(
+      true,
+    );
+    expect(db.getTaskRunById(trigger.runId!)?.notification_status).toBe(
+      'success',
+    );
+    expect(runContainerAgentMock).toHaveBeenCalledOnce();
+  });
+
   test('isolated manual runs get distinct Claude session namespaces', async () => {
     const taskId = createTask({ id: 'task-per-run-session' });
     const groups = {
@@ -499,6 +668,761 @@ describe('scheduled task workspace/session contract', () => {
       result: '已排队到源工作区，等待智能体执行',
       error: null,
     });
+    expect(deps.storeGroupPromptAndDeliverRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatJid: GROUP_JID,
+        senderId: 'system',
+        senderName: '定时任务',
+        text: expect.stringContaining('write a short status'),
+        taskId,
+        messageId: expect.stringMatching(/^scheduled-task-prompt:/),
+      }),
+    );
+    const storedPrompt = (deps.storeGroupPromptAndDeliverRun as any).mock
+      .calls[0][0].text as string;
+    expect(storedPrompt).toContain('完整、可独立阅读的业务结果');
+    expect(storedPrompt).toContain('所有结论、报告和数据都要写在最终文本中');
+    expect(storedPrompt).toContain('不得只回复“已完成”“已发送”');
+    expect(storedPrompt).toContain('feishu-cli');
+    expect(storedPrompt).toContain('工具投递不能替代上述完整最终文本');
+  });
+
+  test('resolves exact cold and warm group runs, including multi-prompt batches, without guessing from ordinary messages', () => {
+    const run = (id: string, taskId: string) =>
+      ({
+        id,
+        task_id: taskId,
+        status: 'delivered',
+        definition_snapshot: { context_mode: 'group' },
+      }) as any;
+    const runA = run('11111111-1111-4111-8111-111111111111', 'group-task-a');
+    const runB = run('22222222-2222-4222-8222-222222222222', 'group-task-b');
+    const promptA = {
+      id: scheduledGroupPromptMessageId(runA.id),
+      chat_jid: GROUP_JID,
+      source_kind: 'scheduled_task_prompt',
+      task_id: runA.task_id,
+    };
+    const promptB = {
+      id: scheduledGroupPromptMessageId(runB.id),
+      chat_jid: GROUP_JID,
+      source_kind: 'scheduled_task_prompt',
+      task_id: runB.task_id,
+    };
+    const ordinary = {
+      id: 'ordinary-user-input',
+      chat_jid: GROUP_JID,
+      source_kind: 'legacy',
+      task_id: null,
+    };
+    const messages = new Map(
+      [promptA, ordinary, promptB].map((message) => [message.id, message]),
+    );
+    const runs = new Map([
+      [runA.id, runA],
+      [runB.id, runB],
+    ]);
+    const common = {
+      chatJid: GROUP_JID,
+      getMessage: (_chatJid: string, messageId: string) =>
+        messages.get(messageId) ?? null,
+      getRun: (runId: string) => runs.get(runId),
+    };
+
+    const cold = resolveScheduledGroupRunsForOutput({
+      ...common,
+      fallbackInputTurnId: promptB.id,
+      coldMessages: [promptA, ordinary, promptB],
+      output: { inputTurnId: promptB.id },
+    });
+    expect(cold.map((item) => item.id)).toEqual([runA.id, runB.id]);
+
+    const warm = resolveScheduledGroupRunsForOutput({
+      ...common,
+      fallbackInputTurnId: 'unrelated-cold-input',
+      coldMessages: [],
+      output: {
+        inputTurnId: 'ipc-delivery-turn',
+        ipcReceipts: [
+          {
+            chatJid: GROUP_JID,
+            deliveryId: 'ipc-delivery-turn',
+            cursor: { timestamp: '2026-07-30T00:00:00.000Z', id: promptB.id },
+            coveredCursors: [
+              {
+                timestamp: '2026-07-30T00:00:00.000Z',
+                id: promptA.id,
+              },
+              {
+                timestamp: '2026-07-30T00:00:01.000Z',
+                id: ordinary.id,
+              },
+              {
+                timestamp: '2026-07-30T00:00:02.000Z',
+                id: promptB.id,
+              },
+            ],
+          } as any,
+        ],
+      },
+    });
+    expect(warm.map((item) => item.id)).toEqual([runA.id, runB.id]);
+
+    const ordinaryOnly = resolveScheduledGroupRunsForOutput({
+      ...common,
+      fallbackInputTurnId: ordinary.id,
+      coldMessages: [ordinary],
+      output: { inputTurnId: ordinary.id },
+    });
+    expect(ordinaryOnly).toEqual([]);
+  });
+
+  test('upgrades a delivered group run with the full result exactly once', () => {
+    const taskId = createTask({
+      id: 'task-group-result-idempotency',
+      context_mode: 'group',
+    });
+    const task = db.getTaskById(taskId)!;
+    const created = db.createTaskRun({
+      task,
+      triggerType: 'manual',
+      idempotencyKey: 'group-result-idempotency',
+    });
+    const claim = db.claimNextTaskRun('group-result-worker', 60_000)!;
+    expect(claim.id).toBe(created.run.id);
+    expect(
+      db.markTaskRunExecutionStarted(
+        claim.id,
+        claim.lease_owner,
+        claim.lease_token,
+      ),
+    ).toBe(true);
+    expect(
+      db.completeTaskRun(claim.id, claim.lease_owner, claim.lease_token, {
+        status: 'delivered',
+        result: '已排队到源工作区，等待智能体执行',
+        notificationStatus: 'skipped',
+      }),
+    ).toBe(true);
+
+    expect(
+      db.finalizeDeliveredGroupTaskRun(claim.id, taskId, {
+        result: '完整业务结果',
+      }),
+    ).toBe(true);
+    expect(
+      db.finalizeDeliveredGroupTaskRun(claim.id, taskId, {
+        result: '完整业务结果',
+      }),
+    ).toBe(true);
+    expect(
+      db.finalizeDeliveredGroupTaskRun(claim.id, taskId, {
+        result: '迟到的不同回调',
+      }),
+    ).toBe(false);
+    expect(db.getTaskRunById(claim.id)).toMatchObject({
+      status: 'success',
+      result: '完整业务结果',
+      error: null,
+    });
+  });
+
+  test('atomically rolls back the group prompt when the run fence cannot enter delivered state', () => {
+    const taskId = createTask({
+      id: 'task-group-prompt-atomicity',
+      context_mode: 'group',
+    });
+    const task = db.getTaskById(taskId)!;
+    const created = db.createTaskRun({
+      task,
+      triggerType: 'manual',
+      idempotencyKey: 'group-prompt-atomicity',
+    });
+    const claim = db.claimNextTaskRun('group-atomic-worker', 60_000)!;
+    expect(claim.id).toBe(created.run.id);
+    expect(
+      db.markTaskRunExecutionStarted(
+        claim.id,
+        claim.lease_owner,
+        claim.lease_token,
+      ),
+    ).toBe(true);
+    const messageId = scheduledGroupPromptMessageId(claim.id);
+
+    expect(() =>
+      db.storeScheduledGroupPromptAndCompleteRun({
+        runId: claim.id,
+        taskId,
+        leaseOwner: claim.lease_owner,
+        leaseToken: claim.lease_token + 1,
+        messageId,
+        chatJid: GROUP_JID,
+        senderId: 'system',
+        senderName: '定时任务',
+        text: 'atomic prompt',
+        queuedResult: '已排队',
+      }),
+    ).toThrow(/lost its execution fence/);
+    expect(db.getMessage(GROUP_JID, messageId)).toBeNull();
+    expect(db.getTaskRunById(claim.id)?.status).toBe('running');
+
+    expect(
+      db.storeScheduledGroupPromptAndCompleteRun({
+        runId: claim.id,
+        taskId,
+        leaseOwner: claim.lease_owner,
+        leaseToken: claim.lease_token,
+        messageId,
+        chatJid: GROUP_JID,
+        senderId: 'system',
+        senderName: '定时任务',
+        text: 'atomic prompt',
+        queuedResult: '已排队',
+      }),
+    ).toBe(messageId);
+    expect(db.getMessage(GROUP_JID, messageId)).toMatchObject({
+      id: messageId,
+      is_from_me: 0,
+    });
+    expect(db.getTaskRunById(claim.id)).toMatchObject({
+      status: 'delivered',
+      result: '已排队',
+      notification_status: 'skipped',
+    });
+  });
+
+  test('atomically stores one canonical group result and terminalizes every represented run', () => {
+    const taskA = createTask({
+      id: 'task-group-result-atomic-a',
+      context_mode: 'group',
+    });
+    const taskB = createTask({
+      id: 'task-group-result-atomic-b',
+      context_mode: 'group',
+    });
+    const deliveredRuns = [taskA, taskB].map((taskId, index) => {
+      const task = db.getTaskById(taskId)!;
+      const created = db.createTaskRun({
+        task,
+        triggerType: 'manual',
+        idempotencyKey: `group-result-atomic-${index}`,
+      });
+      const claim = db.claimNextTaskRun(
+        `group-result-atomic-worker-${index}`,
+        60_000,
+      )!;
+      db.markTaskRunExecutionStarted(
+        claim.id,
+        claim.lease_owner,
+        claim.lease_token,
+      );
+      db.completeTaskRun(claim.id, claim.lease_owner, claim.lease_token, {
+        status: 'delivered',
+        result: '已排队',
+        notificationStatus: 'skipped',
+      });
+      return { runId: created.run.id, taskId };
+    });
+    const messageId = 'scheduled-group-result:atomic-two-runs';
+
+    expect(
+      db.storeScheduledGroupWorkspaceResultAndFinalize({
+        messageId,
+        chatJid: GROUP_JID,
+        senderId: 'happyclaw-agent',
+        senderName: 'HappyClaw',
+        text: '两个任务共享的完整结果',
+        timestamp: new Date().toISOString(),
+        messageMeta: { sourceKind: 'scheduled_task_result' },
+        finalizations: deliveredRuns.map((run) => ({
+          ...run,
+          status: 'success',
+          result: '两个任务共享的完整结果',
+          error: null,
+        })),
+      }),
+    ).toBe(messageId);
+    expect(db.getMessagesPage(GROUP_JID)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: messageId,
+          content: '两个任务共享的完整结果',
+          source_kind: 'scheduled_task_result',
+        }),
+      ]),
+    );
+    for (const run of deliveredRuns) {
+      expect(db.getTaskRunById(run.runId)).toMatchObject({
+        status: 'success',
+        result: '两个任务共享的完整结果',
+      });
+    }
+  });
+
+  test('rolls back the canonical group message and earlier run transitions when any represented run rejects', () => {
+    const taskA = createTask({
+      id: 'task-group-result-rollback-a',
+      context_mode: 'group',
+    });
+    const taskB = createTask({
+      id: 'task-group-result-rollback-b',
+      context_mode: 'group',
+    });
+    const deliveredRuns = [taskA, taskB].map((taskId, index) => {
+      const task = db.getTaskById(taskId)!;
+      const created = db.createTaskRun({
+        task,
+        triggerType: 'manual',
+        idempotencyKey: `group-result-rollback-${index}`,
+      });
+      const claim = db.claimNextTaskRun(
+        `group-result-rollback-worker-${index}`,
+        60_000,
+      )!;
+      db.markTaskRunExecutionStarted(
+        claim.id,
+        claim.lease_owner,
+        claim.lease_token,
+      );
+      db.completeTaskRun(claim.id, claim.lease_owner, claim.lease_token, {
+        status: 'delivered',
+        result: '已排队',
+        notificationStatus: 'skipped',
+      });
+      return { runId: created.run.id, taskId };
+    });
+    const messageId = 'scheduled-group-result:must-rollback';
+
+    expect(() =>
+      db.storeScheduledGroupWorkspaceResultAndFinalize({
+        messageId,
+        chatJid: GROUP_JID,
+        senderId: 'happyclaw-agent',
+        senderName: 'HappyClaw',
+        text: '不得留下的结果',
+        timestamp: new Date().toISOString(),
+        messageMeta: { sourceKind: 'scheduled_task_result' },
+        finalizations: [
+          {
+            ...deliveredRuns[0],
+            status: 'success',
+            result: '不得留下的结果',
+          },
+          {
+            ...deliveredRuns[1],
+            taskId: `${deliveredRuns[1].taskId}-wrong-fence`,
+            status: 'success',
+            result: '不得留下的结果',
+          },
+        ],
+      }),
+    ).toThrow(/could not atomically accept/);
+    expect(db.getMessage(GROUP_JID, messageId)).toBeNull();
+    for (const run of deliveredRuns) {
+      expect(db.getTaskRunById(run.runId)).toMatchObject({
+        status: 'delivered',
+        result: '已排队',
+      });
+    }
+  });
+
+  test('atomically terminalizes an isolated run with a pending canonical workspace intent', () => {
+    const taskId = createTask({ id: 'task-isolated-result-atomic' });
+    const task = db.getTaskById(taskId)!;
+    const created = db.createTaskRun({
+      task,
+      triggerType: 'manual',
+      idempotencyKey: 'isolated-result-atomic',
+    });
+    const claim = db.claimNextTaskRun('isolated-result-atomic-worker', 60_000)!;
+    db.markTaskRunExecutionStarted(
+      claim.id,
+      claim.lease_owner,
+      claim.lease_token,
+    );
+    const payload: db.TaskRunTextNotificationPayload = {
+      kind: 'workspace_result',
+      chatJid: GROUP_JID,
+      text: '完整隔离任务结果',
+      options: {
+        sourceKind: 'scheduled_task_result',
+        messageId: `scheduled-task-result:${created.run.id}`,
+        skipStore: false,
+        workspaceFolder: GROUP_FOLDER,
+      },
+    };
+
+    expect(
+      db.completeIsolatedTaskRunWithWorkspaceResultIntent({
+        runId: created.run.id,
+        taskId,
+        leaseOwner: claim.lease_owner,
+        leaseToken: claim.lease_token + 1,
+        status: 'success',
+        result: '完整隔离任务结果',
+        error: null,
+        payload,
+      }),
+    ).toBe(false);
+    expect(db.getTaskRunById(created.run.id)).toMatchObject({
+      status: 'running',
+      notification_payload: null,
+    });
+
+    expect(
+      db.completeIsolatedTaskRunWithWorkspaceResultIntent({
+        runId: created.run.id,
+        taskId,
+        leaseOwner: claim.lease_owner,
+        leaseToken: claim.lease_token,
+        status: 'success',
+        result: '完整隔离任务结果',
+        error: null,
+        payload,
+      }),
+    ).toBe(true);
+    const stored = db.getTaskRunById(created.run.id)!;
+    expect(stored).toMatchObject({
+      status: 'success',
+      result: '完整隔离任务结果',
+      notification_status: 'pending',
+      lease_owner: null,
+    });
+    expect(
+      JSON.parse(
+        (stored as unknown as { notification_payload: string })
+          .notification_payload,
+      ),
+    ).toEqual(payload);
+    expect(
+      db.recordTaskRunNotificationReceipt(created.run.id, {
+        status: 'success',
+        summary: {
+          attempted: 1,
+          succeeded: 1,
+          failed: 0,
+          failed_channels: [],
+        },
+      }),
+    ).toBe(true);
+    const projectionClaim = db.claimTaskRunNotificationById(
+      created.run.id,
+      'isolated-result-projector',
+      60_000,
+    )!;
+    expect(projectionClaim).toMatchObject({ payload, attempt: 1 });
+    expect(
+      db.recordTaskRunNotificationReceipt(created.run.id, {
+        status: 'success',
+        summary: {
+          attempted: 1,
+          succeeded: 1,
+          failed: 0,
+          failed_channels: [],
+        },
+      }),
+    ).toBe(true);
+    expect(
+      db.completeTaskRunNotificationAttempt(projectionClaim, {
+        status: 'success',
+        summary: {
+          attempted: 1,
+          succeeded: 1,
+          failed: 0,
+          failed_channels: [],
+        },
+      }),
+    ).toBe(true);
+    expect(db.getTaskRunById(created.run.id)).toMatchObject({
+      notification_status: 'success',
+      notification_error: null,
+      notification_summary: {
+        attempted: 3,
+        succeeded: 3,
+        failed: 0,
+        failed_channels: [],
+      },
+    });
+  });
+
+  test('retries a failed group workspace projection before upgrading delivered to success', async () => {
+    const taskId = createTask({
+      id: 'task-group-workspace-retry',
+      context_mode: 'group',
+    });
+    const task = db.getTaskById(taskId)!;
+    const created = db.createTaskRun({
+      task,
+      triggerType: 'manual',
+      idempotencyKey: 'group-workspace-retry',
+    });
+    const claim = db.claimNextTaskRun('group-workspace-worker', 60_000)!;
+    expect(claim.id).toBe(created.run.id);
+    expect(
+      db.markTaskRunExecutionStarted(
+        claim.id,
+        claim.lease_owner,
+        claim.lease_token,
+      ),
+    ).toBe(true);
+    const promptId = scheduledGroupPromptMessageId(claim.id);
+    db.storeScheduledGroupPromptAndCompleteRun({
+      runId: claim.id,
+      taskId,
+      leaseOwner: claim.lease_owner,
+      leaseToken: claim.lease_token,
+      messageId: promptId,
+      chatJid: GROUP_JID,
+      senderId: 'system',
+      senderName: '定时任务',
+      text: 'run the report',
+      queuedResult: '已排队',
+    });
+    const resultMessageId = `scheduled-group-result:${claim.id}`;
+    const retryPayload: db.TaskRunNotificationPayload = {
+      kind: 'workspace_result',
+      chatJid: GROUP_JID,
+      text: '完整调研结果',
+      groupRunId: claim.id,
+      groupTaskId: taskId,
+      groupResult: '完整调研结果',
+      options: {
+        sourceKind: 'scheduled_task_result',
+        messageId: resultMessageId,
+        skipStore: false,
+        workspaceFolder: GROUP_FOLDER,
+      },
+    };
+    expect(
+      db.recordTaskRunNotificationReceipt(
+        claim.id,
+        {
+          status: 'failed',
+          summary: {
+            attempted: 1,
+            succeeded: 0,
+            failed: 1,
+            failed_channels: [`workspace:${GROUP_JID}`],
+          },
+          error: 'broadcast unavailable',
+        },
+        retryPayload,
+      ),
+    ).toBe(true);
+    expect(db.getTaskRunById(claim.id)).toMatchObject({
+      status: 'delivered',
+      notification_status: 'failed',
+      result: '已排队',
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 1_050));
+    const retry = db.claimNextTaskRunNotification(
+      'group-workspace-retry-worker',
+      60_000,
+    )!;
+    const storeResultAndNotify = vi.fn(async () => undefined);
+    expect(
+      await processClaimedTaskRunNotification(
+        retry,
+        {
+          storeResultAndNotify,
+          sendMessage: vi.fn(),
+        } as never,
+        60_000,
+      ),
+    ).toBe(true);
+    expect(storeResultAndNotify).toHaveBeenCalledWith(
+      GROUP_JID,
+      '完整调研结果',
+      expect.objectContaining({
+        messageId: resultMessageId,
+        skipStore: false,
+      }),
+    );
+    expect(db.getTaskRunById(claim.id)).toMatchObject({
+      status: 'success',
+      result: '完整调研结果',
+      notification_status: 'success',
+    });
+  });
+
+  test('keeps a group run delivered during retry and durably settles a terminal workspace failure', async () => {
+    const taskId = createTask({
+      id: 'task-group-terminal-workspace-retry',
+      context_mode: 'group',
+    });
+    const task = db.getTaskById(taskId)!;
+    const created = db.createTaskRun({
+      task,
+      triggerType: 'manual',
+      idempotencyKey: 'group-terminal-workspace-retry',
+    });
+    const claim = db.claimNextTaskRun('group-terminal-worker', 60_000)!;
+    db.markTaskRunExecutionStarted(
+      claim.id,
+      claim.lease_owner,
+      claim.lease_token,
+    );
+    db.storeScheduledGroupPromptAndCompleteRun({
+      runId: claim.id,
+      taskId,
+      leaseOwner: claim.lease_owner,
+      leaseToken: claim.lease_token,
+      messageId: scheduledGroupPromptMessageId(claim.id),
+      chatJid: GROUP_JID,
+      senderId: 'system',
+      senderName: '定时任务',
+      text: 'run terminal report',
+      queuedResult: '已排队',
+    });
+    const error = '处理失败，已达最大重试次数';
+    const messageId = `scheduled-group-terminal:${claim.id}`;
+    expect(
+      db.recordTaskRunNotificationReceipt(
+        claim.id,
+        {
+          status: 'failed',
+          summary: {
+            attempted: 1,
+            succeeded: 0,
+            failed: 1,
+            failed_channels: [`workspace:${GROUP_JID}`],
+          },
+          error: 'workspace unavailable',
+        },
+        {
+          kind: 'workspace_result',
+          chatJid: GROUP_JID,
+          text: `## ❌ 定时任务执行失败\n\n${error}`,
+          groupRunId: claim.id,
+          groupTaskId: taskId,
+          groupStatus: 'failed',
+          groupResult: null,
+          groupError: error,
+          options: {
+            sourceKind: 'scheduled_task_result',
+            messageId,
+            skipStore: false,
+            workspaceFolder: GROUP_FOLDER,
+          },
+        },
+      ),
+    ).toBe(true);
+
+    // A retryable/intermediate failure must not falsely terminate the run
+    // before the visible workspace result is durable.
+    expect(db.getTaskRunById(claim.id)).toMatchObject({
+      status: 'delivered',
+      notification_status: 'failed',
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 1_050));
+    const retry = db.claimNextTaskRunNotification(
+      'group-terminal-retry-worker',
+      60_000,
+    )!;
+    const storeResultAndNotify = vi.fn(async () => undefined);
+    expect(
+      await processClaimedTaskRunNotification(
+        retry,
+        {
+          storeResultAndNotify,
+          sendMessage: vi.fn(),
+        } as never,
+        60_000,
+      ),
+    ).toBe(true);
+    expect(storeResultAndNotify).toHaveBeenCalledWith(
+      GROUP_JID,
+      expect.stringContaining(error),
+      expect.objectContaining({ messageId, skipStore: false }),
+    );
+    expect(db.getTaskRunById(claim.id)).toMatchObject({
+      status: 'failed',
+      result: null,
+      error,
+      notification_status: 'success',
+    });
+  });
+
+  test('skips only exact terminal group prompts after max retry', () => {
+    const taskId = createTask({
+      id: 'task-group-terminal-prompt-skip',
+      context_mode: 'group',
+    });
+    const task = db.getTaskById(taskId)!;
+    const oldCreated = db.createTaskRun({
+      task,
+      triggerType: 'manual',
+      idempotencyKey: 'old-terminal-prompt',
+    });
+    const oldClaim = db.claimNextTaskRun('old-terminal-worker', 60_000)!;
+    db.markTaskRunExecutionStarted(
+      oldClaim.id,
+      oldClaim.lease_owner,
+      oldClaim.lease_token,
+    );
+    db.completeTaskRun(
+      oldClaim.id,
+      oldClaim.lease_owner,
+      oldClaim.lease_token,
+      {
+        status: 'delivered',
+        result: '已排队',
+        notificationStatus: 'skipped',
+      },
+    );
+    db.finalizeDeliveredGroupTaskRun(oldCreated.run.id, taskId, {
+      status: 'failed',
+      error: 'max retries',
+    });
+
+    const laterCreated = db.createTaskRun({
+      task,
+      triggerType: 'manual',
+      idempotencyKey: 'later-live-prompt',
+    });
+    const laterClaim = db.claimNextTaskRun('later-live-worker', 60_000)!;
+    db.markTaskRunExecutionStarted(
+      laterClaim.id,
+      laterClaim.lease_owner,
+      laterClaim.lease_token,
+    );
+    db.completeTaskRun(
+      laterClaim.id,
+      laterClaim.lease_owner,
+      laterClaim.lease_token,
+      {
+        status: 'delivered',
+        result: '已排队',
+        notificationStatus: 'skipped',
+      },
+    );
+
+    const oldPrompt = {
+      id: scheduledGroupPromptMessageId(oldCreated.run.id),
+      chat_jid: GROUP_JID,
+      source_kind: 'scheduled_task_prompt',
+      task_id: taskId,
+    };
+    const laterPrompt = {
+      id: scheduledGroupPromptMessageId(laterCreated.run.id),
+      chat_jid: GROUP_JID,
+      source_kind: 'scheduled_task_prompt',
+      task_id: taskId,
+    };
+    expect(
+      resolveTerminalScheduledGroupPromptRun(oldPrompt, db.getTaskRunById),
+    ).toMatchObject({ id: oldCreated.run.id, status: 'failed' });
+    expect(
+      resolveTerminalScheduledGroupPromptRun(laterPrompt, db.getTaskRunById),
+    ).toBeNull();
+    expect(
+      resolveTerminalScheduledGroupPromptRun(
+        { ...oldPrompt, id: laterPrompt.id },
+        db.getTaskRunById,
+      ),
+    ).toBeNull();
   });
 
   test('host task cannot use an admin creator to bypass a downgraded workspace owner', async () => {
@@ -1069,7 +1993,10 @@ describe('scheduled task workspace/session contract', () => {
         return { status: 'error', error: 'Agent failed after IPC output' };
       },
     );
-    const { deps, waitForRun } = makeDeps({ [GROUP_JID]: group });
+    const { deps, waitForRun } = makeDeps(
+      { [GROUP_JID]: group },
+      { autoDrainNotifications: false },
+    );
     deps.storeResultAndNotify.mockResolvedValue({
       status: 'success',
       summary: {
@@ -1104,7 +2031,18 @@ describe('scheduled task workspace/session contract', () => {
           }
         ).notification_payload,
       ),
-    ).toEqual(ipcPayload);
+    ).toMatchObject({
+      kind: 'batch',
+      items: expect.arrayContaining([
+        ipcPayload,
+        expect.objectContaining({
+          kind: 'workspace_result',
+          options: expect.objectContaining({
+            messageId: `scheduled-task-result:${trigger.runId}`,
+          }),
+        }),
+      ]),
+    });
     expect(deps.storeResultAndNotify).toHaveBeenCalledWith(
       expect.any(String),
       expect.stringContaining('Agent failed after IPC output'),

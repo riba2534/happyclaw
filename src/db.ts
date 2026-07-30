@@ -5581,6 +5581,416 @@ export function completeTaskRun(
   })();
 }
 
+/**
+ * Atomically terminalize one fenced isolated execution and enqueue its
+ * canonical Web workspace result.
+ *
+ * The Agent may already have performed arbitrary tool side effects by this
+ * point, so persisting the execution terminal separately from the Web repair
+ * intent would create an avoidable replay window. The notification worker
+ * performs only the idempotent workspace projection; it never reruns Agent
+ * work or interprets Agent-owned tools such as feishu-cli.
+ */
+export function completeIsolatedTaskRunWithWorkspaceResultIntent(input: {
+  runId: string;
+  taskId: string;
+  leaseOwner: string;
+  leaseToken: number;
+  status: 'success' | 'failed';
+  result?: string | null;
+  error?: string | null;
+  payload: TaskRunTextNotificationPayload;
+}): boolean {
+  if (
+    input.payload.kind !== 'workspace_result' ||
+    input.payload.groupRunId ||
+    input.payload.groupTaskId ||
+    input.payload.options?.sourceKind !== 'scheduled_task_result' ||
+    input.payload.options.messageId !== `scheduled-task-result:${input.runId}`
+  ) {
+    return false;
+  }
+
+  const now = new Date();
+  const nowIso = now.toISOString();
+  return db.transaction(() => {
+    const current = db
+      .prepare('SELECT * FROM task_runs WHERE id = ?')
+      .get(input.runId) as TaskRunRow | undefined;
+    if (
+      !current ||
+      current.task_id !== input.taskId ||
+      current.status !== 'running' ||
+      current.lease_owner !== input.leaseOwner ||
+      current.lease_token !== input.leaseToken
+    ) {
+      return false;
+    }
+
+    let currentPayload: TaskRunNotificationPayload | null = null;
+    let currentSummary: TaskRunNotificationSummary = {
+      attempted: 0,
+      succeeded: 0,
+      failed: 0,
+      failed_channels: [],
+    };
+    try {
+      currentPayload = current.notification_payload
+        ? (JSON.parse(
+            current.notification_payload,
+          ) as TaskRunNotificationPayload)
+        : null;
+      currentSummary = current.notification_summary
+        ? (JSON.parse(
+            current.notification_summary,
+          ) as TaskRunNotificationSummary)
+        : currentSummary;
+    } catch {
+      return false;
+    }
+
+    const mergedPayload = mergeTaskRunNotificationPayloads(
+      currentPayload,
+      input.payload,
+    );
+    if (!mergedPayload) return false;
+    const notificationStatus: TaskRunNotificationStatus =
+      current.notification_status === 'failed' ||
+      current.notification_status === 'partial_failed'
+        ? current.notification_status
+        : 'pending';
+    const startedAt = current.started_at
+      ? new Date(current.started_at).getTime()
+      : new Date(current.created_at).getTime();
+    const durationMs = Math.max(0, now.getTime() - startedAt);
+    const availableAt =
+      current.notification_available_at &&
+      current.notification_available_at < nowIso
+        ? current.notification_available_at
+        : nowIso;
+    const changed = db
+      .prepare(
+        `UPDATE task_runs
+         SET status = ?, result = ?, error = ?,
+             notification_status = ?, notification_error = ?,
+             notification_summary = ?, notification_payload = ?,
+             notification_attempt = CASE
+               WHEN notification_lease_owner IS NULL THEN 0
+               ELSE notification_attempt
+             END,
+             notification_available_at = ?,
+             notification_generation = notification_generation + 1,
+             duration_ms = ?, completed_at = ?,
+             lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+         WHERE id = ? AND task_id = ? AND status = 'running'
+           AND lease_owner = ? AND lease_token = ?`,
+      )
+      .run(
+        input.status,
+        input.result ?? null,
+        input.error ?? null,
+        notificationStatus,
+        current.notification_error,
+        JSON.stringify(currentSummary),
+        JSON.stringify(mergedPayload),
+        availableAt,
+        durationMs,
+        nowIso,
+        nowIso,
+        input.runId,
+        input.taskId,
+        input.leaseOwner,
+        input.leaseToken,
+      );
+    if (changed.changes !== 1) return false;
+
+    const summary = input.error
+      ? `Error: ${input.error}`
+      : input.result?.slice(0, 200) || 'Completed';
+    db.prepare(
+      `UPDATE scheduled_tasks
+       SET last_run = ?, last_result = ?,
+           status = CASE
+             WHEN schedule_type = 'once' AND next_run IS NULL THEN 'completed'
+             ELSE status
+           END,
+           updated_at = ?
+       WHERE id = ?`,
+    ).run(nowIso, summary, nowIso, input.taskId);
+    return true;
+  })();
+}
+
+export interface StoreScheduledGroupPromptInput {
+  runId: string;
+  taskId: string;
+  leaseOwner: string;
+  leaseToken: number;
+  messageId: string;
+  chatJid: string;
+  senderId: string;
+  senderName: string;
+  text: string;
+  queuedResult: string;
+}
+
+/**
+ * Atomically cross the group-mode execution boundary.
+ *
+ * Persisting the prompt and releasing the run lease in separate transactions
+ * leaves a crash window where the workspace later executes the prompt while
+ * lease recovery marks its run failed. Keeping both writes under one SQLite
+ * transaction makes either the prompt+delivered hand-off visible together or
+ * neither visible.
+ */
+export function storeScheduledGroupPromptAndCompleteRun(
+  input: StoreScheduledGroupPromptInput,
+): string {
+  return db.transaction(() => {
+    const run = db
+      .prepare(
+        `SELECT task_id, status, lease_owner, lease_token, started_at, created_at
+         FROM task_runs WHERE id = ?`,
+      )
+      .get(input.runId) as
+      | Pick<
+          TaskRunRow,
+          | 'task_id'
+          | 'status'
+          | 'lease_owner'
+          | 'lease_token'
+          | 'started_at'
+          | 'created_at'
+        >
+      | undefined;
+    if (!run || run.task_id !== input.taskId) {
+      throw new Error(
+        `Group task run ${input.runId} does not belong to task ${input.taskId}`,
+      );
+    }
+
+    ensureChatExists(input.chatJid);
+    const messageId = storeMessageDirect(
+      input.messageId,
+      input.chatJid,
+      input.senderId,
+      input.senderName,
+      input.text,
+      new Date().toISOString(),
+      false,
+      {
+        meta: {
+          sourceKind: 'scheduled_task_prompt',
+          taskId: input.taskId,
+        },
+      },
+    );
+
+    const now = new Date().toISOString();
+    const startedAt = run.started_at
+      ? new Date(run.started_at).getTime()
+      : new Date(run.created_at).getTime();
+    const durationMs = Math.max(0, Date.now() - startedAt);
+    const changed = db
+      .prepare(
+        `UPDATE task_runs
+         SET status = 'delivered', result = ?, error = NULL,
+             notification_status = 'skipped', notification_error = NULL,
+             duration_ms = ?, completed_at = ?,
+             lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+         WHERE id = ? AND task_id = ? AND status = 'running'
+           AND lease_owner = ? AND lease_token = ?`,
+      )
+      .run(
+        input.queuedResult,
+        durationMs,
+        now,
+        now,
+        input.runId,
+        input.taskId,
+        input.leaseOwner,
+        input.leaseToken,
+      );
+    if (changed.changes !== 1) {
+      throw new Error(
+        `Group task run ${input.runId} lost its execution fence during prompt delivery`,
+      );
+    }
+    db.prepare(
+      `UPDATE scheduled_tasks
+       SET last_run = ?, last_result = ?,
+           status = CASE
+             WHEN schedule_type = 'once' AND next_run IS NULL THEN 'completed'
+             ELSE status
+           END,
+           updated_at = ?
+       WHERE id = ?`,
+    ).run(now, input.queuedResult.slice(0, 200), now, input.taskId);
+    return messageId;
+  })();
+}
+
+/**
+ * Replace a group-mode run's queue acknowledgement with the exact Assistant
+ * outcome produced by that scheduler-owned prompt.
+ *
+ * Group execution crosses an asynchronous workspace queue boundary, so its
+ * lease is intentionally released as `delivered` after prompt injection. The
+ * stable prompt message id later identifies this exact run. Only that terminal
+ * hand-off state may be upgraded; ordinary conversations and another
+ * occurrence of the same task cannot overwrite it.
+ */
+export function finalizeDeliveredGroupTaskRun(
+  id: string,
+  taskId: string,
+  input: {
+    status?: 'success' | 'failed' | 'cancelled';
+    result?: string | null;
+    error?: string | null;
+  },
+): boolean {
+  return db.transaction(() =>
+    finalizeDeliveredGroupTaskRunInTransaction(id, taskId, input),
+  )();
+}
+
+function finalizeDeliveredGroupTaskRunInTransaction(
+  id: string,
+  taskId: string,
+  input: {
+    status?: 'success' | 'failed' | 'cancelled';
+    result?: string | null;
+    error?: string | null;
+  },
+): boolean {
+  const resultText = input.result?.trim() || null;
+  const errorText = input.error?.trim() || null;
+  const status = input.status ?? (errorText ? 'failed' : 'success');
+  const now = new Date().toISOString();
+  const current = db
+    .prepare(
+      `SELECT task_id, status, result, error, completed_at
+         FROM task_runs WHERE id = ?`,
+    )
+    .get(id) as
+    | Pick<
+        TaskRunRow,
+        'task_id' | 'status' | 'result' | 'error' | 'completed_at'
+      >
+    | undefined;
+  if (!current || current.task_id !== taskId) return false;
+
+  // Duplicate SDK terminal frames and replay-safe Web writes are no-ops.
+  if (
+    current.status === status &&
+    current.result === resultText &&
+    current.error === errorText
+  ) {
+    return true;
+  }
+  if (current.status !== 'delivered') return false;
+
+  const changed = db
+    .prepare(
+      `UPDATE task_runs
+         SET status = ?, result = ?, error = ?, completed_at = ?,
+             duration_ms = CASE
+               WHEN started_at IS NULL THEN duration_ms
+               ELSE MAX(0, CAST((julianday(?) - julianday(started_at)) * 86400000 AS INTEGER))
+             END,
+             updated_at = ?
+         WHERE id = ? AND task_id = ? AND status = 'delivered'`,
+    )
+    .run(status, resultText, errorText, now, now, now, id, taskId);
+  if (changed.changes !== 1) return false;
+
+  const summary = errorText
+    ? `Error: ${errorText}`
+    : resultText?.slice(0, 200) || 'Completed';
+  // Do not let a late result from an older group occurrence overwrite a
+  // newer run's task-list summary.
+  db.prepare(
+    `UPDATE scheduled_tasks
+       SET last_run = ?, last_result = ?, updated_at = ?
+       WHERE id = ?
+         AND (last_run = ? OR last_run IS NULL)`,
+  ).run(now, summary, now, taskId, current.completed_at);
+  return true;
+}
+
+export interface ScheduledGroupWorkspaceFinalization {
+  runId: string;
+  taskId: string;
+  status?: 'success' | 'failed' | 'cancelled';
+  result?: string | null;
+  error?: string | null;
+}
+
+export interface StoreScheduledGroupWorkspaceResultInput {
+  messageId: string;
+  chatJid: string;
+  senderId: string;
+  senderName: string;
+  text: string;
+  timestamp: string;
+  messageMeta?: {
+    turnId?: string;
+    sessionId?: string;
+    sdkMessageUuid?: string;
+    sourceKind?: MessageSourceKind;
+    finalizationReason?: MessageFinalizationReason;
+  };
+  finalizations: ScheduledGroupWorkspaceFinalization[];
+}
+
+/**
+ * Atomically persist one canonical group result and terminalize every exact
+ * scheduler occurrence represented by that result.
+ *
+ * The WebSocket broadcast deliberately happens at the caller after this
+ * transaction commits. A crash before commit leaves both message and runs
+ * untouched; a crash after commit leaves a durable message that polling can
+ * recover while the stable scheduler prompts are already terminal.
+ */
+export function storeScheduledGroupWorkspaceResultAndFinalize(
+  input: StoreScheduledGroupWorkspaceResultInput,
+): string {
+  if (input.finalizations.length === 0) {
+    throw new Error('Scheduled group workspace result has no run finalization');
+  }
+  return db.transaction(() => {
+    ensureChatExists(input.chatJid);
+    const messageId = storeMessageDirect(
+      input.messageId,
+      input.chatJid,
+      input.senderId,
+      input.senderName,
+      input.text,
+      input.timestamp,
+      true,
+      { meta: input.messageMeta },
+    );
+    for (const finalization of input.finalizations) {
+      if (
+        !finalizeDeliveredGroupTaskRunInTransaction(
+          finalization.runId,
+          finalization.taskId,
+          {
+            status: finalization.status,
+            result: finalization.result,
+            error: finalization.error,
+          },
+        )
+      ) {
+        throw new Error(
+          `Group task run ${finalization.runId} could not atomically accept its workspace result`,
+        );
+      }
+    }
+    return messageId;
+  })();
+}
+
 /** Cancellation increments the fencing token so a late worker cannot commit. */
 export function cancelTaskRun(
   id: string,
@@ -5689,9 +6099,15 @@ export function updateTaskRunNotification(
 }
 
 export interface TaskRunTextNotificationPayload {
-  kind: 'store_result_and_notify' | 'send_message';
+  kind: 'store_result_and_notify' | 'send_message' | 'workspace_result';
   chatJid: string;
   text: string;
+  /** Optional group-mode terminal transition completed after Web persistence. */
+  groupRunId?: string;
+  groupTaskId?: string;
+  groupStatus?: 'success' | 'failed' | 'cancelled';
+  groupResult?: string | null;
+  groupError?: string | null;
   options?: {
     ownerId?: string;
     notifyChannels?: string[] | null;
@@ -5763,6 +6179,8 @@ export interface ClaimedTaskRunNotification {
 const MAX_TASK_NOTIFICATION_ATTEMPTS = 5;
 const FINAL_NOTIFICATION_UNKNOWN_ERROR =
   'Final notification attempt expired; delivery outcome is unknown';
+const PENDING_NOTIFICATION_RETRY_ERROR =
+  'Notification retry work remains pending delivery';
 
 function mergeTaskRunNotificationPayloads(
   current: TaskRunNotificationPayload | null,
@@ -5806,6 +6224,69 @@ function taskRunNotificationPayloadItems(
 ): TaskRunAtomicNotificationPayload[] {
   if (!payload) return [];
   return payload.kind === 'batch' ? payload.items : [payload];
+}
+
+function notificationPayloadOwnsCancelledGroupWorkspaceRun(
+  payload: TaskRunNotificationPayload | null | undefined,
+  runId: string,
+): boolean {
+  return taskRunNotificationPayloadItems(payload).some(
+    (item) =>
+      item.kind === 'workspace_result' &&
+      item.groupRunId === runId &&
+      Boolean(item.groupTaskId) &&
+      item.groupStatus === 'cancelled',
+  );
+}
+
+function cancelledGroupWorkspaceRetryPayload(
+  payload: TaskRunNotificationPayload | null | undefined,
+  runId: string,
+): TaskRunNotificationPayload | null {
+  const items = taskRunNotificationPayloadItems(payload).filter(
+    (item) =>
+      item.kind === 'workspace_result' &&
+      item.groupRunId === runId &&
+      Boolean(item.groupTaskId) &&
+      item.groupStatus === 'cancelled',
+  );
+  return items.length === 0
+    ? null
+    : items.length === 1
+      ? items[0]
+      : { kind: 'batch', items };
+}
+
+/**
+ * Notification exhaustion must not leave the asynchronous group execution in
+ * `delivered` forever. Execution and projection status remain independent:
+ * settle the exact business outcome carried by the payload while the
+ * notification row keeps its failed/unknown delivery audit.
+ */
+function settleDiscardedGroupWorkspaceResults(
+  runId: string,
+  payload: TaskRunNotificationPayload | null | undefined,
+): number {
+  let settled = 0;
+  for (const item of taskRunNotificationPayloadItems(payload)) {
+    if (
+      item.kind !== 'workspace_result' ||
+      item.groupRunId !== runId ||
+      !item.groupTaskId
+    ) {
+      continue;
+    }
+    if (
+      finalizeDeliveredGroupTaskRunInTransaction(runId, item.groupTaskId, {
+        status: item.groupStatus,
+        result: item.groupResult,
+        error: item.groupError,
+      })
+    ) {
+      settled++;
+    }
+  }
+  return settled;
 }
 
 /** Remove exactly the atomic work owned by one claim from the latest queue. */
@@ -5964,7 +6445,7 @@ function keepRetryWorkNonSuccessful(
   return {
     ...receipt,
     status: 'failed',
-    error: receipt.error || 'Notification retry work remains pending delivery',
+    error: receipt.error || PENDING_NOTIFICATION_RETRY_ERROR,
   };
 }
 
@@ -5974,67 +6455,93 @@ export function recordTaskRunNotificationReceipt(
   receipt: TaskRunNotificationReceipt,
   retryPayload?: TaskRunNotificationPayload,
 ): boolean {
+  return db.transaction(() =>
+    recordTaskRunNotificationReceiptInTransaction(runId, receipt, retryPayload),
+  )();
+}
+
+function recordTaskRunNotificationReceiptInTransaction(
+  runId: string,
+  receipt: TaskRunNotificationReceipt,
+  retryPayload?: TaskRunNotificationPayload,
+  allowCancelledWorkspaceRun = false,
+): boolean {
   const now = new Date();
-  return db.transaction(() => {
-    const row = db
-      .prepare(
-        `SELECT status, notification_status, notification_error,
+  const row = db
+    .prepare(
+      `SELECT status, notification_status, notification_error,
                 notification_summary, notification_payload,
+                notification_available_at,
+                notification_lease_owner,
                 notification_generation
          FROM task_runs WHERE id = ?`,
-      )
-      .get(runId) as
-      | Pick<
-          TaskRunRow,
-          | 'status'
-          | 'notification_status'
-          | 'notification_error'
-          | 'notification_summary'
-          | 'notification_payload'
-          | 'notification_generation'
-        >
-      | undefined;
-    // Cancellation/misfire is authoritative. Late IPC files must not notify
-    // the user or resurrect notification-only retry work.
-    if (!row || row.status === 'cancelled' || row.status === 'missed') {
-      return false;
-    }
-    let currentSummary: TaskRunNotificationSummary | null = null;
-    let currentPayload: TaskRunNotificationPayload | null = null;
-    try {
-      currentSummary = row.notification_summary
-        ? (JSON.parse(row.notification_summary) as TaskRunNotificationSummary)
-        : null;
-      currentPayload = row.notification_payload
-        ? (JSON.parse(row.notification_payload) as TaskRunNotificationPayload)
-        : null;
-    } catch {
-      // A new valid receipt repairs malformed legacy/internal JSON.
-    }
-    let mergedReceipt = mergeTaskRunNotificationReceipts(
-      row.notification_status,
-      currentSummary,
-      row.notification_error,
-      receipt,
-    );
-    const shouldRetry =
-      (receipt.status === 'failed' || receipt.status === 'partial_failed') &&
-      !!retryPayload;
-    const mergedPayload = mergeTaskRunNotificationPayloads(
-      currentPayload,
-      shouldRetry ? retryPayload : undefined,
-    );
-    mergedReceipt = keepRetryWorkNonSuccessful(mergedReceipt, mergedPayload);
-    const addedNewRetryWork = notificationPayloadAddsNewWork(
-      currentPayload,
-      shouldRetry ? retryPayload : undefined,
-    );
-    const availableAt = mergedPayload
-      ? new Date(now.getTime() + 1_000).toISOString()
+    )
+    .get(runId) as
+    | Pick<
+        TaskRunRow,
+        | 'status'
+        | 'notification_status'
+        | 'notification_error'
+        | 'notification_summary'
+        | 'notification_payload'
+        | 'notification_available_at'
+        | 'notification_lease_owner'
+        | 'notification_generation'
+      >
+    | undefined;
+  // Cancellation/misfire is authoritative. Late IPC files must not notify
+  // the user or resurrect notification-only retry work.
+  if (
+    !row ||
+    (row.status === 'cancelled' && !allowCancelledWorkspaceRun) ||
+    row.status === 'missed'
+  ) {
+    return false;
+  }
+  let currentSummary: TaskRunNotificationSummary | null = null;
+  let currentPayload: TaskRunNotificationPayload | null = null;
+  try {
+    currentSummary = row.notification_summary
+      ? (JSON.parse(row.notification_summary) as TaskRunNotificationSummary)
       : null;
-    const result = db
-      .prepare(
-        `UPDATE task_runs
+    currentPayload = row.notification_payload
+      ? (JSON.parse(row.notification_payload) as TaskRunNotificationPayload)
+      : null;
+  } catch {
+    // A new valid receipt repairs malformed legacy/internal JSON.
+  }
+  let mergedReceipt = mergeTaskRunNotificationReceipts(
+    row.notification_status,
+    currentSummary,
+    row.notification_error,
+    receipt,
+  );
+  const shouldRetry =
+    (receipt.status === 'failed' || receipt.status === 'partial_failed') &&
+    !!retryPayload;
+  const mergedPayload = mergeTaskRunNotificationPayloads(
+    currentPayload,
+    shouldRetry ? retryPayload : undefined,
+  );
+  mergedReceipt = keepRetryWorkNonSuccessful(mergedReceipt, mergedPayload);
+  const addedNewRetryWork = notificationPayloadAddsNewWork(
+    currentPayload,
+    shouldRetry ? retryPayload : undefined,
+  );
+  const retryAt = new Date(now.getTime() + 1_000).toISOString();
+  const availableAt = mergedPayload
+    ? [
+        currentPayload && !row.notification_lease_owner
+          ? row.notification_available_at
+          : null,
+        shouldRetry ? retryAt : null,
+      ]
+        .filter((value): value is string => !!value)
+        .sort()[0] || retryAt
+    : null;
+  const result = db
+    .prepare(
+      `UPDATE task_runs
          SET notification_status = ?, notification_error = ?,
              notification_summary = ?, notification_payload = ?,
              notification_attempt = CASE WHEN ? AND notification_lease_owner IS NULL THEN 0
@@ -6042,20 +6549,75 @@ export function recordTaskRunNotificationReceipt(
              notification_available_at = ?,
              notification_generation = notification_generation + 1,
              updated_at = ?
-         WHERE id = ? AND status NOT IN ('cancelled','missed')`,
-      )
-      .run(
-        mergedReceipt.status,
-        mergedReceipt.error ?? null,
-        JSON.stringify(mergedReceipt.summary),
-        mergedPayload ? JSON.stringify(mergedPayload) : null,
-        addedNewRetryWork ? 1 : 0,
-        availableAt,
-        now.toISOString(),
-        runId,
-      );
-    return result.changes === 1;
-  })();
+         WHERE id = ?
+           AND (
+             status NOT IN ('cancelled','missed')
+             OR (? = 1 AND status = 'cancelled')
+           )`,
+    )
+    .run(
+      mergedReceipt.status,
+      mergedReceipt.error ?? null,
+      JSON.stringify(mergedReceipt.summary),
+      mergedPayload ? JSON.stringify(mergedPayload) : null,
+      addedNewRetryWork ? 1 : 0,
+      availableAt,
+      now.toISOString(),
+      runId,
+      allowCancelledWorkspaceRun ? 1 : 0,
+    );
+  return result.changes === 1;
+}
+
+/**
+ * Atomically persist canonical Web projection repair work and settle the exact
+ * group execution outcome. Neither the notification repair nor the business
+ * terminal is allowed to become visible alone across a crash.
+ */
+export function recordGroupWorkspaceProjectionFailureAndFinalize(input: {
+  runId: string;
+  taskId: string;
+  receipt: TaskRunNotificationReceipt;
+  payload: TaskRunTextNotificationPayload;
+  status?: 'success' | 'failed' | 'cancelled';
+  result?: string | null;
+  error?: string | null;
+}): boolean {
+  if (
+    input.payload.kind !== 'workspace_result' ||
+    input.payload.groupRunId !== input.runId ||
+    input.payload.groupTaskId !== input.taskId
+  ) {
+    return false;
+  }
+  try {
+    return db.transaction(() => {
+      if (
+        !recordTaskRunNotificationReceiptInTransaction(
+          input.runId,
+          input.receipt,
+          input.payload,
+          input.status === 'cancelled',
+        )
+      ) {
+        return false;
+      }
+      if (
+        !finalizeDeliveredGroupTaskRunInTransaction(input.runId, input.taskId, {
+          status: input.status,
+          result: input.result,
+          error: input.error,
+        })
+      ) {
+        throw new Error(
+          `Group task run ${input.runId} could not atomically settle its workspace projection failure`,
+        );
+      }
+      return true;
+    })();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -6276,16 +6838,43 @@ function claimTaskRunNotification(
   const nowIso = now.toISOString();
   const expiresAt = new Date(now.getTime() + leaseMs).toISOString();
   return db.transaction(() => {
-    const row = db
+    const rows = db
       .prepare(
-        `SELECT id, notification_payload, notification_attempt,
+        `SELECT id, status, notification_payload, notification_attempt,
                 notification_lease_token, notification_generation,
                 notification_status, notification_summary,
                 notification_error
          FROM task_runs
          WHERE notification_payload IS NOT NULL
            AND (? IS NULL OR id = ?)
-           AND status IN ('success','failed','delivered')
+           AND (
+             status IN ('success','failed','delivered')
+             OR (
+               status = 'cancelled'
+               AND CASE
+                 WHEN json_valid(notification_payload) THEN (
+                   (
+                     json_extract(notification_payload, '$.kind') = 'workspace_result'
+                     AND json_extract(notification_payload, '$.groupRunId') = id
+                     AND json_extract(notification_payload, '$.groupTaskId') IS NOT NULL
+                     AND json_extract(notification_payload, '$.groupStatus') = 'cancelled'
+                   )
+                   OR (
+                     json_extract(notification_payload, '$.kind') = 'batch'
+                     AND EXISTS (
+                       SELECT 1
+                       FROM json_each(notification_payload, '$.items') AS item
+                       WHERE json_extract(item.value, '$.kind') = 'workspace_result'
+                         AND json_extract(item.value, '$.groupRunId') = id
+                         AND json_extract(item.value, '$.groupTaskId') IS NOT NULL
+                         AND json_extract(item.value, '$.groupStatus') = 'cancelled'
+                     )
+                   )
+                 )
+                 ELSE 0
+               END
+             )
+           )
            AND notification_attempt < ?
            AND (
              (notification_status IN ('failed','partial_failed','pending')
@@ -6295,76 +6884,103 @@ function claimTaskRunNotification(
              OR (notification_lease_expires_at IS NOT NULL
                  AND notification_lease_expires_at <= ?)
            )
-         ORDER BY notification_available_at, completed_at, created_at LIMIT 1`,
+         ORDER BY CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END,
+                  notification_available_at, completed_at, created_at
+         LIMIT 32`,
       )
-      .get(
+      .all(
         runId ?? null,
         runId ?? null,
         MAX_TASK_NOTIFICATION_ATTEMPTS,
         nowIso,
         nowIso,
-      ) as
-      | {
-          id: string;
-          notification_payload: string;
-          notification_attempt: number;
-          notification_lease_token: number;
-          notification_generation: number;
-          notification_status: TaskRunNotificationStatus;
-          notification_summary: string | null;
-          notification_error: string | null;
-        }
-      | undefined;
-    if (!row) return undefined;
-    const token = row.notification_lease_token + 1;
-    const changed = db
-      .prepare(
-        `UPDATE task_runs
+      ) as Array<{
+      id: string;
+      status: TaskRunStatus;
+      notification_payload: string;
+      notification_attempt: number;
+      notification_lease_token: number;
+      notification_generation: number;
+      notification_status: TaskRunNotificationStatus;
+      notification_summary: string | null;
+      notification_error: string | null;
+    }>;
+    for (const row of rows) {
+      let payload: TaskRunNotificationPayload;
+      try {
+        payload = JSON.parse(
+          row.notification_payload,
+        ) as TaskRunNotificationPayload;
+      } catch {
+        db.prepare(
+          `UPDATE task_runs SET notification_status='failed',
+             notification_error='Invalid persisted notification payload',
+             notification_payload=NULL, notification_available_at=NULL,
+             notification_lease_owner=NULL,
+             notification_lease_expires_at=NULL,
+             notification_lease_payload=NULL, updated_at=?
+           WHERE id=? AND notification_lease_token=?`,
+        ).run(nowIso, row.id, row.notification_lease_token);
+        continue;
+      }
+      if (
+        row.status === 'cancelled' &&
+        !notificationPayloadOwnsCancelledGroupWorkspaceRun(payload, row.id)
+      ) {
+        continue;
+      }
+
+      const token = row.notification_lease_token + 1;
+      const changed = db
+        .prepare(
+          `UPDATE task_runs
          SET notification_lease_owner = ?, notification_lease_token = ?,
              notification_lease_expires_at = ?,
              notification_lease_payload = notification_payload,
              notification_attempt = notification_attempt + 1,
              updated_at = ?
          WHERE id = ? AND notification_lease_token = ?`,
-      )
-      .run(
-        owner,
-        token,
-        expiresAt,
-        nowIso,
-        row.id,
-        row.notification_lease_token,
-      );
-    if (changed.changes !== 1) return undefined;
-    try {
-      return {
-        runId: row.id,
-        payload: JSON.parse(
-          row.notification_payload,
-        ) as TaskRunNotificationPayload,
-        attempt: row.notification_attempt + 1,
-        owner,
-        token,
-        expiresAt,
-        generation: row.notification_generation,
-        notificationStatus: row.notification_status,
-        notificationSummary: row.notification_summary
-          ? (JSON.parse(row.notification_summary) as TaskRunNotificationSummary)
-          : null,
-        notificationError: row.notification_error,
-      };
-    } catch {
-      db.prepare(
-        `UPDATE task_runs SET notification_status='failed',
-           notification_error='Invalid persisted notification payload',
-           notification_payload=NULL, notification_available_at=NULL,
-           notification_lease_owner=NULL, notification_lease_expires_at=NULL,
-           notification_lease_payload=NULL,
-           updated_at=? WHERE id=? AND notification_lease_owner=?
+        )
+        .run(
+          owner,
+          token,
+          expiresAt,
+          nowIso,
+          row.id,
+          row.notification_lease_token,
+        );
+      if (changed.changes !== 1) continue;
+      try {
+        return {
+          runId: row.id,
+          payload,
+          attempt: row.notification_attempt + 1,
+          owner,
+          token,
+          expiresAt,
+          generation: row.notification_generation,
+          notificationStatus: row.notification_status,
+          notificationSummary: row.notification_summary
+            ? (JSON.parse(
+                row.notification_summary,
+              ) as TaskRunNotificationSummary)
+            : null,
+          notificationError: row.notification_error,
+        };
+      } catch {
+        db.prepare(
+          `UPDATE task_runs SET notification_status='failed',
+             notification_error='Invalid persisted notification payload',
+             notification_payload=NULL, notification_available_at=NULL,
+             notification_lease_owner=NULL,
+             notification_lease_expires_at=NULL,
+             notification_lease_payload=NULL, updated_at=?
+           WHERE id=? AND notification_lease_owner=?
              AND notification_lease_token=?`,
-      ).run(nowIso, row.id, owner, token);
-      return undefined;
+        ).run(nowIso, row.id, owner, token);
+      }
     }
+    return undefined;
   })();
 }
 
@@ -6435,10 +7051,22 @@ export function finalizeExpiredTaskRunNotificationAttempts(): number {
       } catch {
         currentSummary = null;
       }
-      const remainingPayload = subtractTaskRunNotificationPayload(
+      let remainingPayload = subtractTaskRunNotificationPayload(
         currentPayload,
         claimedPayload,
       );
+      const ownsCancelledGroupWorkspaceRun =
+        row.status === 'cancelled' &&
+        notificationPayloadOwnsCancelledGroupWorkspaceRun(
+          claimedPayload,
+          row.id,
+        );
+      if (ownsCancelledGroupWorkspaceRun) {
+        // Cancellation is authoritative. Late notification-only work appended
+        // before the cancellation became visible must not keep a cancelled
+        // run reclaimable forever.
+        remainingPayload = null;
+      }
       const summary: TaskRunNotificationSummary = {
         attempted: (currentSummary?.attempted ?? 0) + 1,
         succeeded: currentSummary?.succeeded ?? 0,
@@ -6468,7 +7096,10 @@ export function finalizeExpiredTaskRunNotificationAttempts(): number {
              AND notification_lease_token = ?
              AND notification_lease_expires_at <= ?
              AND notification_generation = ?
-             AND status NOT IN ('cancelled','missed')`,
+             AND (
+               status NOT IN ('cancelled','missed')
+               OR (? = 1 AND status = 'cancelled')
+             )`,
         )
         .run(
           notificationStatusForSummary(summary),
@@ -6486,7 +7117,11 @@ export function finalizeExpiredTaskRunNotificationAttempts(): number {
           row.notification_lease_token,
           now,
           row.notification_generation,
+          ownsCancelledGroupWorkspaceRun ? 1 : 0,
         );
+      if (result.changes === 1) {
+        settleDiscardedGroupWorkspaceResults(row.id, claimedPayload);
+      }
       changed += result.changes;
     }
     return changed;
@@ -6528,6 +7163,11 @@ export function completeTaskRunNotificationAttempt(
   const workerAvailableAt = workerRetryable
     ? new Date(now.getTime() + delayMs).toISOString()
     : null;
+  const ownsCancelledGroupWorkspaceRun =
+    notificationPayloadOwnsCancelledGroupWorkspaceRun(
+      claim.payload,
+      claim.runId,
+    );
   return db.transaction(() => {
     const row = db
       .prepare(
@@ -6556,7 +7196,7 @@ export function completeTaskRunNotificationAttempt(
       | undefined;
     if (
       !row ||
-      row.status === 'cancelled' ||
+      (row.status === 'cancelled' && !ownsCancelledGroupWorkspaceRun) ||
       row.status === 'missed' ||
       row.notification_lease_owner !== claim.owner ||
       row.notification_lease_token !== claim.token ||
@@ -6583,14 +7223,25 @@ export function completeTaskRunNotificationAttempt(
     const latePayload = concurrentWrite
       ? subtractTaskRunNotificationPayload(currentPayload, claim.payload)
       : null;
-    const nextPayload = mergeTaskRunNotificationPayloads(
-      latePayload,
-      workerRetryable ? retryPayload : undefined,
-    );
+    const cancelledAuthoritative =
+      row.status === 'cancelled' && ownsCancelledGroupWorkspaceRun;
+    const nextPayload = cancelledAuthoritative
+      ? workerRetryable
+        ? cancelledGroupWorkspaceRetryPayload(retryPayload, claim.runId)
+        : null
+      : mergeTaskRunNotificationPayloads(
+          latePayload,
+          workerRetryable ? retryPayload : undefined,
+        );
 
     // A final-attempt crash is terminal historical evidence: later work may
     // succeed, but it cannot retroactively prove that unknown delivery A did
     // not happen. Preserve that audit receipt while settling fresh batch B.
+    const claimedSummaryIsHistoricalSuccess =
+      !!claim.notificationSummary &&
+      claim.notificationSummary.failed === 0 &&
+      (claim.notificationStatus === 'pending' ||
+        claim.notificationError === PENDING_NOTIFICATION_RETRY_ERROR);
     let nextReceipt =
       currentSummary &&
       row.notification_error?.includes(FINAL_NOTIFICATION_UNKNOWN_ERROR)
@@ -6600,7 +7251,14 @@ export function completeTaskRunNotificationAttempt(
             row.notification_error,
             receipt,
           )
-        : receipt;
+        : claimedSummaryIsHistoricalSuccess && claim.notificationSummary
+          ? mergeTaskRunNotificationReceipts(
+              notificationStatusForSummary(claim.notificationSummary),
+              claim.notificationSummary,
+              null,
+              receipt,
+            )
+          : receipt;
     if (concurrentWrite) {
       const lateSummary = subtractNotificationSummary(
         currentSummary,
@@ -6613,9 +7271,9 @@ export function completeTaskRunNotificationAttempt(
         lateSummary.failed > 0
       ) {
         nextReceipt = mergeTaskRunNotificationReceipts(
-          receipt.status,
-          receipt.summary,
-          receipt.error ?? null,
+          nextReceipt.status,
+          nextReceipt.summary,
+          nextReceipt.error ?? null,
           {
             status:
               lateSummary.failed === 0
@@ -6647,7 +7305,8 @@ export function completeTaskRunNotificationAttempt(
     // The late payload was appended after this claim began and has not itself
     // consumed an attempt. Reset the shared batch counter so its next claim is
     // attempt 1 (and the merged batch receives a complete retry budget).
-    const nextAttempt = latePayload ? 0 : row.notification_attempt;
+    const nextAttempt =
+      latePayload && !cancelledAuthoritative ? 0 : row.notification_attempt;
     const result = db
       .prepare(
         `UPDATE task_runs
@@ -6663,7 +7322,10 @@ export function completeTaskRunNotificationAttempt(
            AND notification_lease_token = ?
            AND notification_lease_expires_at > ?
            AND notification_generation = ?
-           AND status NOT IN ('cancelled','missed')`,
+           AND (
+             status NOT IN ('cancelled','missed')
+             OR (? = 1 AND status = 'cancelled')
+           )`,
       )
       .run(
         nextReceipt.status,
@@ -6678,7 +7340,16 @@ export function completeTaskRunNotificationAttempt(
         claim.token,
         nowIso,
         row.notification_generation,
+        ownsCancelledGroupWorkspaceRun ? 1 : 0,
       );
+    const discardedPayload =
+      !workerRetryable &&
+      (receipt.status === 'failed' || receipt.status === 'partial_failed')
+        ? (retryPayload ?? claim.payload)
+        : null;
+    if (result.changes === 1 && discardedPayload) {
+      settleDiscardedGroupWorkspaceResults(claim.runId, discardedPayload);
+    }
     return result.changes === 1;
   })();
 }
@@ -6710,7 +7381,51 @@ export function getNextTaskRunWakeAt(): string | null {
        )`,
     )
     .get(now) as { wake_at: string | null };
-  return row.wake_at ?? null;
+  const cancelledWorkspaceRows = db
+    .prepare(
+      `SELECT id, notification_payload, notification_available_at
+       FROM task_runs
+       WHERE status = 'cancelled'
+         AND notification_payload IS NOT NULL
+         AND notification_attempt < ?
+         AND notification_available_at IS NOT NULL
+         AND notification_lease_owner IS NULL
+         AND notification_status IN ('failed','partial_failed','pending')`,
+    )
+    .all(MAX_TASK_NOTIFICATION_ATTEMPTS) as Array<{
+    id: string;
+    notification_payload: string;
+    notification_available_at: string;
+  }>;
+  let cancelledWakeAt: string | null = null;
+  for (const candidate of cancelledWorkspaceRows) {
+    try {
+      const payload = JSON.parse(
+        candidate.notification_payload,
+      ) as TaskRunNotificationPayload;
+      if (
+        !notificationPayloadOwnsCancelledGroupWorkspaceRun(
+          payload,
+          candidate.id,
+        )
+      ) {
+        continue;
+      }
+      if (
+        !cancelledWakeAt ||
+        candidate.notification_available_at < cancelledWakeAt
+      ) {
+        cancelledWakeAt = candidate.notification_available_at;
+      }
+    } catch {
+      // Invalid cancelled payloads are not scheduler-owned repair work.
+    }
+  }
+  return (
+    [row.wake_at, cancelledWakeAt]
+      .filter((value): value is string => !!value)
+      .sort()[0] ?? null
+  );
 }
 
 export function getNextScheduledTaskWakeAt(): string | null {
