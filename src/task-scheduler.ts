@@ -23,6 +23,7 @@ import {
 import { PROVIDER_FAILURE_USER_NOTICE } from './provider-failure.js';
 import {
   advanceSkippedTask,
+  cancelDeliveredGroupTaskRunWithWorkspaceIntent,
   cancelTaskRun,
   claimNextTaskRunNotification,
   ClaimedTaskRunNotification,
@@ -518,23 +519,38 @@ export function formatScheduledTaskWorkspaceResult(input: {
   runId: string;
   result: string | null;
   error: string | null;
+  status?: 'success' | 'failed' | 'cancelled';
 }): string {
-  const title = input.error
-    ? '## ❌ 定时任务执行失败'
-    : '## ✅ 定时任务执行完成';
+  const status =
+    input.status ?? (input.error ? ('failed' as const) : ('success' as const));
+  const title =
+    status === 'cancelled'
+      ? '## ⏹️ 定时任务已取消'
+      : status === 'failed'
+        ? '## ❌ 定时任务执行失败'
+        : '## ✅ 定时任务执行完成';
   const metadata = [
     `**任务**：${scheduledTaskDisplayName(input.task)}`,
     `**运行 ID**：\`${input.runId}\``,
   ];
-  if (input.error) metadata.push(`**错误**：${input.error}`);
+  if (input.error) {
+    metadata.push(
+      status === 'cancelled'
+        ? `**原因**：${input.error}`
+        : `**错误**：${input.error}`,
+    );
+  }
 
   const content = input.result?.trim();
   if (content) {
     return `${title}\n\n${metadata.join('\n')}\n\n---\n\n${content}`;
   }
-  const emptyNotice = input.error
-    ? '本次运行没有留下可展示的业务结果，请查看执行日志。'
-    : '本次运行已结束，但 Agent 没有返回可展示的业务结果。';
+  const emptyNotice =
+    status === 'cancelled'
+      ? '本次运行已由用户取消。'
+      : input.error
+        ? '本次运行没有留下可展示的业务结果，请查看执行日志。'
+        : '本次运行已结束，但 Agent 没有返回可展示的业务结果。';
   return `${title}\n\n${metadata.join('\n')}\n\n${emptyNotice}`;
 }
 
@@ -1977,7 +1993,7 @@ export function resolveScheduledGroupRunsForOutput(input: {
       !run ||
       run.task_id !== message.task_id ||
       run.definition_snapshot.context_mode !== 'group' ||
-      !['delivered', 'success', 'failed'].includes(run.status)
+      !['delivered', 'success', 'failed', 'cancelled'].includes(run.status)
     ) {
       continue;
     }
@@ -1985,6 +2001,15 @@ export function resolveScheduledGroupRunsForOutput(input: {
     runs.push(run);
   }
   return runs;
+}
+
+/**
+ * A terminal committed for an exact scheduler prompt wins over later provider
+ * shutdown/error callbacks. Those callbacks are transport lifecycle events,
+ * not authority to replace an already-visible business result.
+ */
+export function hasAuthoritativeScheduledGroupTerminal(run: TaskRun): boolean {
+  return ['success', 'failed', 'cancelled'].includes(run.status);
 }
 
 /**
@@ -3358,10 +3383,68 @@ export function cancelTaskRunNow(runId: string): {
 } {
   const run = getTaskRunById(runId);
   if (!run) return { success: false, error: 'Task run not found' };
-  if (!['queued', 'running', 'retry_wait'].includes(run.status)) {
+  const cancellingDeliveredGroupRun =
+    run.status === 'delivered' &&
+    run.definition_snapshot.context_mode === 'group';
+  if (
+    !cancellingDeliveredGroupRun &&
+    !['queued', 'running', 'retry_wait'].includes(run.status)
+  ) {
     return { success: false, error: `Task run is already ${run.status}` };
   }
-  if (!cancelTaskRun(runId)) {
+  const reason = 'Cancelled by user';
+  const task = cancellingDeliveredGroupRun ? getTaskById(run.task_id) : null;
+  const snapshotTask =
+    task && cancellingDeliveredGroupRun
+      ? {
+          ...task,
+          prompt: run.definition_snapshot.prompt,
+          group_folder: run.definition_snapshot.group_folder,
+          chat_jid: run.definition_snapshot.chat_jid,
+          delivery_route_jid:
+            run.definition_snapshot.delivery_route_jid ??
+            run.definition_snapshot.chat_jid,
+          context_mode: run.definition_snapshot.context_mode,
+          execution_type: run.definition_snapshot.execution_type,
+          execution_mode: run.definition_snapshot.execution_mode,
+          script_command: run.definition_snapshot.script_command,
+          notify_channels: run.definition_snapshot.notify_channels,
+        }
+      : null;
+  const deliveryRouteJid =
+    run.definition_snapshot.delivery_route_jid ??
+    run.definition_snapshot.chat_jid;
+  const cancelled = cancellingDeliveredGroupRun
+    ? !!snapshotTask &&
+      cancelDeliveredGroupTaskRunWithWorkspaceIntent({
+        runId,
+        taskId: run.task_id,
+        reason,
+        payload: {
+          kind: 'workspace_result',
+          chatJid: deliveryRouteJid,
+          text: formatScheduledTaskWorkspaceResult({
+            task: snapshotTask,
+            runId,
+            result: null,
+            error: reason,
+            status: 'cancelled',
+          }),
+          groupRunId: runId,
+          groupTaskId: run.task_id,
+          groupStatus: 'cancelled',
+          groupResult: null,
+          groupError: reason,
+          options: {
+            sourceKind: 'scheduled_task_result',
+            messageId: `scheduled-group-terminal:${runId}`,
+            skipStore: false,
+            workspaceFolder: run.definition_snapshot.group_folder,
+          },
+        },
+      })
+    : cancelTaskRun(runId, reason);
+  if (!cancelled) {
     return {
       success: false,
       error: 'Task run state changed; refresh and retry',

@@ -191,6 +191,7 @@ beforeEach(() => {
     'purge-stale-route-task-a',
     'purge-stale-route-task-b',
     'route-move-task',
+    'delivered-group-list-task',
   ]) {
     try {
       db.deleteTask(id);
@@ -884,6 +885,56 @@ describe('tasks route ownership and cleanup contract', () => {
       attempt: 0,
       notification_status: 'pending',
     });
+  });
+
+  test('task list exposes a delivered group run as stoppable current work', async () => {
+    createTask('delivered-group-list-task', OWNER_ID, {
+      context_mode: 'group',
+    });
+    const task = db.getTaskById('delivered-group-list-task')!;
+    const created = db.createTaskRun({
+      task,
+      triggerType: 'manual',
+      idempotencyKey: 'delivered-group-list-run',
+    });
+    const claim = db.claimNextTaskRun('delivered-group-list-worker', 60_000)!;
+    expect(claim.id).toBe(created.run.id);
+    expect(
+      db.markTaskRunExecutionStarted(
+        claim.id,
+        claim.lease_owner,
+        claim.lease_token,
+      ),
+    ).toBe(true);
+    expect(
+      db.completeTaskRun(claim.id, claim.lease_owner, claim.lease_token, {
+        status: 'delivered',
+        result: '已投递到主会话',
+        notificationStatus: 'skipped',
+      }),
+    ).toBe(true);
+    asUser(OWNER_ID);
+
+    const response = await tasksRoutes.request('/');
+    expect(response.status).toBe(200);
+    const listed = (await response.json()).tasks.find(
+      (candidate: any) => candidate.id === task.id,
+    );
+    expect(listed).toMatchObject({
+      current_run: {
+        id: created.run.id,
+        status: 'delivered',
+      },
+      permissions: {
+        can_stop: true,
+      },
+    });
+    expect(
+      db.finalizeDeliveredGroupTaskRun(created.run.id, task.id, {
+        status: 'cancelled',
+        error: 'test cleanup',
+      }),
+    ).toBe(true);
   });
 
   test('runs endpoint merges pre-upgrade history with V2 runs and removes duplicates', async () => {

@@ -28,6 +28,10 @@ describe('task run status contract', () => {
     expect(detail).toMatch(/queued:\s*\{[\s\S]*label: '已排队'/);
     expect(detail).toContain("label: '等待重试'");
     expect(detail).toContain("label: '已投递到主会话'");
+    expect(card).toContain('queued|running|recovering|retry_wait|delivered');
+    expect(card).toMatch(
+      /\[\s*'queued',\s*'running',\s*'recovering',\s*'retry_wait',\s*'delivered',?\s*\]/,
+    );
     expect(detail).toContain('定时任务完整结果');
     expect(detail).toContain('setSelectedLog(log)');
     expect(detail).toContain('<MarkdownRenderer');

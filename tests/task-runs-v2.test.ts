@@ -119,6 +119,96 @@ describe('scheduled task definition revisions', () => {
 });
 
 describe('durable task occurrences', () => {
+  test('treats only delivered group runs as active and prioritizes executable work', () => {
+    const groupTask = createDefinition('active-delivered-group', {
+      context_mode: 'group',
+    });
+    const delivered = db.createTaskRun({
+      task: groupTask,
+      triggerType: 'manual',
+      idempotencyKey: 'active-delivered-group-first',
+    });
+    const groupClaim = db.claimNextTaskRun(
+      'active-delivered-group-worker',
+      60_000,
+    )!;
+    expect(groupClaim.id).toBe(delivered.run.id);
+    expect(
+      db.markTaskRunExecutionStarted(
+        groupClaim.id,
+        groupClaim.lease_owner,
+        groupClaim.lease_token,
+      ),
+    ).toBe(true);
+    expect(
+      db.completeTaskRun(
+        groupClaim.id,
+        groupClaim.lease_owner,
+        groupClaim.lease_token,
+        {
+          status: 'delivered',
+          result: 'queued in workspace',
+          notificationStatus: 'skipped',
+        },
+      ),
+    ).toBe(true);
+    expect(db.getActiveTaskRunForTask(groupTask.id)?.id).toBe(delivered.run.id);
+
+    const queued = db.createTaskRun({
+      task: groupTask,
+      triggerType: 'manual',
+      idempotencyKey: 'active-delivered-group-second',
+    });
+    expect(queued.created).toBe(true);
+    expect(db.getActiveTaskRunForTask(groupTask.id)?.id).toBe(queued.run.id);
+    expect(db.cancelTaskRun(queued.run.id)).toBe(true);
+    expect(db.getActiveTaskRunForTask(groupTask.id)?.id).toBe(delivered.run.id);
+    expect(
+      db.finalizeDeliveredGroupTaskRun(delivered.run.id, groupTask.id, {
+        status: 'cancelled',
+        error: 'test cleanup',
+      }),
+    ).toBe(true);
+
+    const isolatedTask = createDefinition('inactive-delivered-isolated');
+    const isolated = db.createTaskRun({
+      task: isolatedTask,
+      triggerType: 'manual',
+      idempotencyKey: 'inactive-delivered-isolated-run',
+    });
+    const isolatedClaim = db.claimNextTaskRun(
+      'inactive-delivered-isolated-worker',
+      60_000,
+    )!;
+    expect(isolatedClaim.id).toBe(isolated.run.id);
+    expect(
+      db.markTaskRunExecutionStarted(
+        isolatedClaim.id,
+        isolatedClaim.lease_owner,
+        isolatedClaim.lease_token,
+      ),
+    ).toBe(true);
+    expect(
+      db.completeTaskRun(
+        isolatedClaim.id,
+        isolatedClaim.lease_owner,
+        isolatedClaim.lease_token,
+        {
+          status: 'delivered',
+          result: 'legacy isolated delivery',
+          notificationStatus: 'skipped',
+        },
+      ),
+    ).toBe(true);
+    expect(db.getActiveTaskRunForTask(isolatedTask.id)).toBeUndefined();
+    expect(
+      db.finalizeDeliveredGroupTaskRun(isolated.run.id, isolatedTask.id, {
+        status: 'failed',
+        error: 'test cleanup',
+      }),
+    ).toBe(true);
+  });
+
   test('freezes the concrete delivery route in each run snapshot', () => {
     const originalRoute =
       'feishu:oc_snapshot#account:bot-a#thread:t-1#root:m-1';

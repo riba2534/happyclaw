@@ -51,6 +51,7 @@ vi.mock('../src/web.js', () => ({
 }));
 
 const db = await import('../src/db.js');
+const { cancelTaskRunNow } = await import('../src/task-scheduler.js');
 const memoryStore = await import('../src/memory-store.js');
 const ownerProfile = await import('../src/owner-profile-store.js');
 const webContext = await import('../src/web-context.js');
@@ -62,9 +63,7 @@ const stopGroup = vi.fn(async () => {});
 const pauseToken = { id: 1 };
 const pauseGroupsForMutation = vi.fn(() => pauseToken);
 const resumeGroupsAfterMutation = vi.fn();
-const cancelTaskRun = vi.fn((runId: string) => ({
-  success: db.cancelTaskRun(runId),
-}));
+const cancelTaskRun = vi.fn((runId: string) => cancelTaskRunNow(runId));
 const waitForTaskRunsToStop = vi.fn(async () => true);
 const sessions: Record<string, unknown> = {};
 
@@ -165,7 +164,7 @@ describe('POST /:jid/clear-history workspace rebuild', () => {
       prompt: 'This task must move to the recycle bin.',
       schedule_type: 'cron',
       schedule_value: '0 9 * * *',
-      context_mode: 'isolated',
+      context_mode: 'group',
       execution_type: 'agent',
       execution_mode: 'container',
       script_command: null,
@@ -181,6 +180,30 @@ describe('POST /:jid/clear-history workspace rebuild', () => {
       triggerType: 'manual',
       idempotencyKey: 'rebuild-active-run',
     }).run;
+    const activeClaim = db.claimNextTaskRun(
+      'rebuild-delivered-worker',
+      60_000,
+    )!;
+    expect(activeClaim.id).toBe(activeRun.id);
+    expect(
+      db.markTaskRunExecutionStarted(
+        activeClaim.id,
+        activeClaim.lease_owner,
+        activeClaim.lease_token,
+      ),
+    ).toBe(true);
+    expect(
+      db.completeTaskRun(
+        activeClaim.id,
+        activeClaim.lease_owner,
+        activeClaim.lease_token,
+        {
+          status: 'delivered',
+          result: '已排队到源工作区，等待智能体执行',
+          notificationStatus: 'skipped',
+        },
+      ),
+    ).toBe(true);
 
     const workspaceDir = path.join(groupsDir, FOLDER);
     const legacyMemoryDir = path.join(root, 'memory', FOLDER);

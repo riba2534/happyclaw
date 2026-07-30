@@ -4419,7 +4419,17 @@ export function pauseWorkspaceTasksForRebuild(
              FROM task_runs tr
              JOIN scheduled_tasks st ON st.id = tr.task_id
              WHERE st.group_folder = ?
-               AND tr.status IN ('queued','running','retry_wait')
+               AND (
+                 tr.status IN ('queued','running','retry_wait')
+                 OR (
+                   tr.status = 'delivered'
+                   AND json_valid(tr.definition_snapshot)
+                   AND json_extract(
+                     tr.definition_snapshot,
+                     '$.context_mode'
+                   ) = 'group'
+                 )
+               )
              ORDER BY tr.created_at, tr.id`,
           )
           .all(groupFolder) as Array<{ id: string }>
@@ -5263,8 +5273,19 @@ export function getActiveTaskRunForTask(taskId: string): TaskRun | undefined {
   const row = db
     .prepare(
       `SELECT * FROM task_runs
-       WHERE task_id = ? AND status IN ('queued','running','retry_wait')
-       ORDER BY created_at LIMIT 1`,
+       WHERE task_id = ?
+         AND (
+           status IN ('queued','running','retry_wait')
+           OR (
+             status = 'delivered'
+             AND json_valid(definition_snapshot)
+             AND json_extract(definition_snapshot, '$.context_mode') = 'group'
+           )
+         )
+       ORDER BY
+         CASE WHEN status IN ('queued','running','retry_wait') THEN 0 ELSE 1 END,
+         created_at
+       LIMIT 1`,
     )
     .get(taskId) as TaskRunRow | undefined;
   return row ? mapTaskRunRow(row) : undefined;
@@ -6025,6 +6046,117 @@ export function cancelTaskRun(
        WHERE id = ? AND schedule_type = 'once' AND next_run IS NULL
          AND status IN ('active','paused')`,
     ).run(now, current.task_id);
+    return true;
+  })();
+}
+
+/**
+ * Cancel a group occurrence after its prompt crossed the workspace queue
+ * boundary. `delivered` is terminal only for the scheduler worker; the Agent
+ * still owes a business result, so user cancellation must remain available.
+ *
+ * The cancelled business terminal and its canonical Web projection intent are
+ * committed together. The notification worker may then idempotently store and
+ * broadcast the cancellation result without replaying Agent work.
+ */
+export function cancelDeliveredGroupTaskRunWithWorkspaceIntent(input: {
+  runId: string;
+  taskId: string;
+  reason: string;
+  payload: TaskRunTextNotificationPayload;
+}): boolean {
+  if (
+    input.payload.kind !== 'workspace_result' ||
+    input.payload.groupRunId !== input.runId ||
+    input.payload.groupTaskId !== input.taskId ||
+    input.payload.groupStatus !== 'cancelled' ||
+    input.payload.groupResult !== null ||
+    input.payload.groupError !== input.reason ||
+    input.payload.options?.sourceKind !== 'scheduled_task_result' ||
+    input.payload.options.messageId !==
+      `scheduled-group-terminal:${input.runId}`
+  ) {
+    return false;
+  }
+  const payloadOptions = input.payload.options;
+
+  const now = new Date().toISOString();
+  return db.transaction(() => {
+    const current = db
+      .prepare(
+        `SELECT task_id, definition_snapshot
+           FROM task_runs
+          WHERE id = ? AND task_id = ? AND status = 'delivered'`,
+      )
+      .get(input.runId, input.taskId) as
+      | Pick<TaskRunRow, 'task_id' | 'definition_snapshot'>
+      | undefined;
+    if (!current) return false;
+
+    let snapshot: TaskRunDefinitionSnapshot;
+    try {
+      snapshot = JSON.parse(
+        current.definition_snapshot,
+      ) as TaskRunDefinitionSnapshot;
+    } catch {
+      return false;
+    }
+    const deliveryRouteJid = snapshot.delivery_route_jid || snapshot.chat_jid;
+    if (
+      snapshot.context_mode !== 'group' ||
+      input.payload.chatJid !== deliveryRouteJid ||
+      payloadOptions.workspaceFolder !== snapshot.group_folder
+    ) {
+      return false;
+    }
+
+    const summary: TaskRunNotificationSummary = {
+      attempted: 0,
+      succeeded: 0,
+      failed: 0,
+      failed_channels: [],
+    };
+    const changed = db
+      .prepare(
+        `UPDATE task_runs
+            SET status = 'cancelled', result = NULL, error = ?,
+                completed_at = ?, updated_at = ?,
+                duration_ms = CASE
+                  WHEN started_at IS NULL THEN duration_ms
+                  ELSE MAX(0, CAST((julianday(?) - julianday(started_at)) * 86400000 AS INTEGER))
+                END,
+                notification_status = 'pending',
+                notification_error = NULL,
+                notification_summary = ?,
+                notification_payload = ?,
+                notification_attempt = 0,
+                notification_available_at = ?,
+                notification_lease_owner = NULL,
+                notification_lease_expires_at = NULL,
+                notification_lease_payload = NULL,
+                notification_generation = notification_generation + 1,
+                lease_owner = NULL, lease_expires_at = NULL,
+                lease_token = lease_token + 1
+          WHERE id = ? AND task_id = ? AND status = 'delivered'`,
+      )
+      .run(
+        input.reason,
+        now,
+        now,
+        now,
+        JSON.stringify(summary),
+        JSON.stringify(input.payload),
+        now,
+        input.runId,
+        input.taskId,
+      );
+    if (changed.changes !== 1) return false;
+
+    db.prepare(
+      `UPDATE scheduled_tasks SET status = 'completed', updated_at = ?
+       WHERE id = ? AND schedule_type = 'once' AND next_run IS NULL
+         AND status IN ('active','paused')`,
+    ).run(now, input.taskId);
     return true;
   })();
 }
@@ -7506,7 +7638,7 @@ export function cleanupOldTaskRunLogs(retentionDays = 30): number {
     .prepare(
       `DELETE FROM task_runs
        WHERE completed_at IS NOT NULL AND completed_at < ?
-         AND status IN ('success','failed','cancelled','missed','delivered')`,
+         AND status IN ('success','failed','cancelled','missed')`,
     )
     .run(cutoff);
   return result.changes + durable.changes;
@@ -10892,7 +11024,17 @@ export function rebuildWorkspacePersistentState(input: {
              FROM task_runs tr
              JOIN scheduled_tasks st ON st.id = tr.task_id
              WHERE st.group_folder = ?
-               AND tr.status IN ('queued','running','retry_wait')
+               AND (
+                 tr.status IN ('queued','running','retry_wait')
+                 OR (
+                   tr.status = 'delivered'
+                   AND json_valid(tr.definition_snapshot)
+                   AND json_extract(
+                     tr.definition_snapshot,
+                     '$.context_mode'
+                   ) = 'group'
+                 )
+               )
              ORDER BY tr.created_at, tr.id`,
           )
           .all(input.groupFolder) as Array<{ id: string }>

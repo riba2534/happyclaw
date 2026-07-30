@@ -128,6 +128,7 @@ const {
   deliverPersistedNotificationPayload,
   enqueueIsolatedScheduledTask,
   getRunningTaskIds,
+  hasAuthoritativeScheduledGroupTerminal,
   processClaimedTaskRunNotification,
   resolveScheduledGroupRunsForOutput,
   resolveTerminalScheduledGroupPromptRun,
@@ -687,16 +688,173 @@ describe('scheduled task workspace/session contract', () => {
     expect(storedPrompt).toContain('工具投递不能替代上述完整最终文本');
   });
 
+  test('cancels a delivered group run and durably projects the cancellation into its workspace', async () => {
+    const baseJid = 'feishu:oc_cancel#account:bot-a';
+    const deliveryRouteJid = `${baseJid}#thread:thread-a#root:root-a`;
+    db.setRegisteredGroup(baseJid, {
+      ...db.getRegisteredGroup(GROUP_JID)!,
+      folder: GROUP_FOLDER,
+    });
+    const taskId = createTask({
+      id: 'task-group-delivered-cancel',
+      context_mode: 'group',
+      chat_jid: baseJid,
+      delivery_route_jid: deliveryRouteJid,
+    });
+    const groups = {
+      [baseJid]: db.getRegisteredGroup(baseJid)!,
+    };
+    const { deps } = makeDeps(groups);
+
+    const trigger = triggerTaskNow(taskId, deps);
+    expect(trigger).toMatchObject({
+      success: true,
+      runId: expect.any(String),
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(db.getTaskRunById(trigger.runId!)).toMatchObject({
+      status: 'delivered',
+      notification_status: 'skipped',
+    });
+
+    expect(
+      db.cancelDeliveredGroupTaskRunWithWorkspaceIntent({
+        runId: trigger.runId!,
+        taskId,
+        reason: 'Cancelled by user',
+        payload: {
+          kind: 'workspace_result',
+          chatJid: baseJid,
+          text: 'must not commit on the wrong route',
+          groupRunId: trigger.runId!,
+          groupTaskId: taskId,
+          groupStatus: 'cancelled',
+          groupResult: null,
+          groupError: 'Cancelled by user',
+          options: {
+            sourceKind: 'scheduled_task_result',
+            messageId: `scheduled-group-terminal:${trigger.runId}`,
+            skipStore: false,
+            workspaceFolder: GROUP_FOLDER,
+          },
+        },
+      }),
+    ).toBe(false);
+    expect(db.getTaskRunById(trigger.runId!)).toMatchObject({
+      status: 'delivered',
+      notification_status: 'skipped',
+    });
+
+    db.updateTask(taskId, { prompt: 'edited prompt must not leak' });
+    expect(cancelTaskRunNow(trigger.runId!)).toEqual({ success: true });
+    expect(db.getTaskRunById(trigger.runId!)).toMatchObject({
+      status: 'cancelled',
+      result: null,
+      error: 'Cancelled by user',
+      notification_status: 'pending',
+    });
+
+    const lateMessageId = `scheduled-group-late:${trigger.runId}`;
+    expect(() =>
+      db.storeScheduledGroupWorkspaceResultAndFinalize({
+        messageId: lateMessageId,
+        chatJid: deliveryRouteJid,
+        senderId: 'happyclaw-agent',
+        senderName: 'HappyClaw',
+        text: '迟到的成功结果',
+        timestamp: new Date().toISOString(),
+        messageMeta: { sourceKind: 'scheduled_task_result' },
+        finalizations: [
+          {
+            runId: trigger.runId!,
+            taskId,
+            status: 'success',
+            result: '迟到的成功结果',
+            error: null,
+          },
+        ],
+      }),
+    ).toThrow(/could not atomically accept/);
+    expect(db.getMessage(deliveryRouteJid, lateMessageId)).toBeNull();
+    expect(db.getTaskRunById(trigger.runId!)).toMatchObject({
+      status: 'cancelled',
+      result: null,
+      error: 'Cancelled by user',
+      notification_status: 'pending',
+    });
+
+    const notification = db.claimTaskRunNotificationById(
+      trigger.runId!,
+      'group-cancel-workspace-projector',
+      60_000,
+    )!;
+    expect(notification.payload).toMatchObject({
+      kind: 'workspace_result',
+      chatJid: deliveryRouteJid,
+      groupRunId: trigger.runId,
+      groupTaskId: taskId,
+      groupStatus: 'cancelled',
+      groupResult: null,
+      groupError: 'Cancelled by user',
+      options: {
+        sourceKind: 'scheduled_task_result',
+        messageId: `scheduled-group-terminal:${trigger.runId}`,
+        skipStore: false,
+        workspaceFolder: GROUP_FOLDER,
+      },
+    });
+    expect(notification.payload).toMatchObject({
+      text: expect.stringContaining('定时任务已取消'),
+    });
+    expect(notification.payload).toMatchObject({
+      text: expect.stringContaining('write a short status'),
+    });
+    expect(notification.payload).toMatchObject({
+      text: expect.stringContaining('Cancelled by user'),
+    });
+    expect((notification.payload as { text: string }).text).not.toContain(
+      '执行失败',
+    );
+    expect((notification.payload as { text: string }).text).not.toContain(
+      'edited prompt must not leak',
+    );
+    expect(
+      await processClaimedTaskRunNotification(notification, deps, 60_000),
+    ).toBe(true);
+    expect(deps.storeResultAndNotify).toHaveBeenCalledWith(
+      deliveryRouteJid,
+      expect.stringContaining('Cancelled by user'),
+      expect.objectContaining({
+        messageId: `scheduled-group-terminal:${trigger.runId}`,
+        skipStore: false,
+      }),
+    );
+    expect(db.getTaskRunById(trigger.runId!)).toMatchObject({
+      status: 'cancelled',
+      notification_status: 'success',
+      notification_error: null,
+    });
+  });
+
   test('resolves exact cold and warm group runs, including multi-prompt batches, without guessing from ordinary messages', () => {
-    const run = (id: string, taskId: string) =>
+    const run = (
+      id: string,
+      taskId: string,
+      status: 'delivered' | 'success' | 'failed' | 'cancelled' = 'delivered',
+    ) =>
       ({
         id,
         task_id: taskId,
-        status: 'delivered',
+        status,
         definition_snapshot: { context_mode: 'group' },
       }) as any;
     const runA = run('11111111-1111-4111-8111-111111111111', 'group-task-a');
     const runB = run('22222222-2222-4222-8222-222222222222', 'group-task-b');
+    const runC = run(
+      '33333333-3333-4333-8333-333333333333',
+      'group-task-c',
+      'cancelled',
+    );
     const promptA = {
       id: scheduledGroupPromptMessageId(runA.id),
       chat_jid: GROUP_JID,
@@ -709,6 +867,12 @@ describe('scheduled task workspace/session contract', () => {
       source_kind: 'scheduled_task_prompt',
       task_id: runB.task_id,
     };
+    const promptC = {
+      id: scheduledGroupPromptMessageId(runC.id),
+      chat_jid: GROUP_JID,
+      source_kind: 'scheduled_task_prompt',
+      task_id: runC.task_id,
+    };
     const ordinary = {
       id: 'ordinary-user-input',
       chat_jid: GROUP_JID,
@@ -716,11 +880,15 @@ describe('scheduled task workspace/session contract', () => {
       task_id: null,
     };
     const messages = new Map(
-      [promptA, ordinary, promptB].map((message) => [message.id, message]),
+      [promptA, ordinary, promptB, promptC].map((message) => [
+        message.id,
+        message,
+      ]),
     );
     const runs = new Map([
       [runA.id, runA],
       [runB.id, runB],
+      [runC.id, runC],
     ]);
     const common = {
       chatJid: GROUP_JID,
@@ -761,12 +929,18 @@ describe('scheduled task workspace/session contract', () => {
                 timestamp: '2026-07-30T00:00:02.000Z',
                 id: promptB.id,
               },
+              {
+                timestamp: '2026-07-30T00:00:03.000Z',
+                id: promptC.id,
+              },
             ],
           } as any,
         ],
       },
     });
-    expect(warm.map((item) => item.id)).toEqual([runA.id, runB.id]);
+    expect(warm.map((item) => item.id)).toEqual([runA.id, runB.id, runC.id]);
+    expect(hasAuthoritativeScheduledGroupTerminal(runC)).toBe(true);
+    expect(hasAuthoritativeScheduledGroupTerminal(runA)).toBe(false);
 
     const ordinaryOnly = resolveScheduledGroupRunsForOutput({
       ...common,
@@ -820,6 +994,15 @@ describe('scheduled task workspace/session contract', () => {
         result: '迟到的不同回调',
       }),
     ).toBe(false);
+    expect(db.getTaskRunById(claim.id)).toMatchObject({
+      status: 'success',
+      result: '完整业务结果',
+      error: null,
+    });
+    expect(cancelTaskRunNow(claim.id)).toEqual({
+      success: false,
+      error: 'Task run is already success',
+    });
     expect(db.getTaskRunById(claim.id)).toMatchObject({
       status: 'success',
       result: '完整业务结果',
@@ -1423,6 +1606,15 @@ describe('scheduled task workspace/session contract', () => {
         db.getTaskRunById,
       ),
     ).toBeNull();
+    expect(
+      db.finalizeDeliveredGroupTaskRun(laterCreated.run.id, taskId, {
+        status: 'cancelled',
+        error: 'Cancelled by user',
+      }),
+    ).toBe(true);
+    expect(
+      resolveTerminalScheduledGroupPromptRun(laterPrompt, db.getTaskRunById),
+    ).toMatchObject({ id: laterCreated.run.id, status: 'cancelled' });
   });
 
   test('host task cannot use an admin creator to bypass a downgraded workspace owner', async () => {

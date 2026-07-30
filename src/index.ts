@@ -439,6 +439,7 @@ import {
   computeNextRunForTaskResume,
   getRunningTaskIds,
   formatScheduledTaskWorkspaceResult,
+  hasAuthoritativeScheduledGroupTerminal,
   resolveScheduledGroupRunsForOutput,
   resolveTerminalScheduledGroupPromptRun,
   scheduledGroupPromptMessageId,
@@ -5442,7 +5443,11 @@ async function projectTerminalScheduledGroupRuns(input: {
   for (const staleRun of input.runs) {
     const run = getTaskRunById(staleRun.id);
     if (!run) continue;
-    if (run.status === input.status && run.error === input.error) {
+    // A genuine terminal already committed for this exact prompt is
+    // authoritative. Provider shutdown/error callbacks can arrive after a
+    // user cancellation or successful result and must not create a competing
+    // generic terminal message.
+    if (hasAuthoritativeScheduledGroupTerminal(run)) {
       sawDeliveredRun = true;
       continue;
     }
@@ -5455,8 +5460,11 @@ async function projectTerminalScheduledGroupRuns(input: {
           runId: run.id,
           result: null,
           error: input.error,
+          status: input.status,
         })
-      : `## ❌ 定时任务执行失败\n\n**任务 ID**：\`${run.task_id}\`\n**运行 ID**：\`${run.id}\`\n**错误**：${input.error}`;
+      : input.status === 'cancelled'
+        ? `## ⏹️ 定时任务已取消\n\n**任务 ID**：\`${run.task_id}\`\n**运行 ID**：\`${run.id}\`\n**原因**：${input.error}`
+        : `## ❌ 定时任务执行失败\n\n**任务 ID**：\`${run.task_id}\`\n**运行 ID**：\`${run.id}\`\n**错误**：${input.error}`;
     const messageId = `scheduled-group-terminal:${run.id}`;
     const outcome = await sendMessageWithOutcome(input.chatJid, text, {
       messageId,

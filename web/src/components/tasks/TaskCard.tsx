@@ -52,7 +52,9 @@ export function TaskCard({
   const currentRun = task.current_run;
   const effectiveRunning =
     isRunning ||
-    !!currentRun?.status.match(/^(queued|running|recovering|retry_wait)$/);
+    !!currentRun?.status.match(
+      /^(queued|running|recovering|retry_wait|delivered)$/,
+    );
 
   const runStatusLabel = (run: TaskRun): string => {
     switch (run.status) {
@@ -275,9 +277,13 @@ export function TaskCard({
           {currentRun &&
             onStopRun &&
             task.permissions?.can_stop !== false &&
-            ['queued', 'running', 'recovering', 'retry_wait'].includes(
-              currentRun.status,
-            ) && (
+            [
+              'queued',
+              'running',
+              'recovering',
+              'retry_wait',
+              'delivered',
+            ].includes(currentRun.status) && (
               <button
                 type="button"
                 onClick={(event) => {
