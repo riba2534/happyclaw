@@ -266,8 +266,9 @@ make dev
 | `make help`                                     | 查看完整命令列表                                      |
 
 `main` 分支每次推送都会重新构建并发布
-`riba2534/happyclaw-agent:latest`（amd64/arm64）。镜像构建时会解析 Claude Code、
-Claude Agent SDK、agent-browser、feishu-cli、uv 和 Headroom 的最新稳定版；
+`riba2534/happyclaw-agent:latest`（amd64/arm64）。两个架构会分别在 GitHub
+原生 x64 与 ARM64 Hosted Runner 上并行构建，不使用 QEMU 模拟。镜像构建时会解析
+Claude Code、Claude Agent SDK、agent-browser、feishu-cli、uv 和 Headroom 的最新稳定版；
 实际安装版本记录在镜像内的
 `/usr/local/share/happyclaw-tool-versions.txt`，需要回滚时也可以通过 Docker
 build args 指定精确版本。

@@ -6,31 +6,29 @@ const root = process.cwd();
 const read = (file: string) => fs.readFileSync(path.join(root, file), 'utf8');
 
 describe('Docker image distribution contract', () => {
-  test('main pushes publish a pinned multi-platform latest image', () => {
+  test('main pushes publish from pinned native multi-platform runners', () => {
     const workflow = read('.github/workflows/docker-publish.yml');
 
     expect(workflow).toContain('branches: [main]');
-    expect(workflow).toContain('IMAGE_NAME: riba2534/happyclaw-agent');
+    expect(workflow).toContain(
+      'uses: docker/github-builder/.github/workflows/build.yml@27ade872c1e2296e62ef15ab3b10d37665e57cf7',
+    );
+    expect(workflow).toContain('meta-images: riba2534/happyclaw-agent');
     expect(workflow).toContain('type=raw,value=latest');
     expect(workflow).toContain('type=sha,format=long,prefix=git-');
     expect(workflow).toContain('platforms: linux/amd64,linux/arm64');
+    expect(workflow).toContain('distribute: true');
+    expect(workflow).toContain('setup-qemu: false');
+    expect(workflow).toContain('linux/amd64=ubuntu-24.04');
+    expect(workflow).toContain('linux/arm64=ubuntu-24.04-arm');
     expect(workflow).toContain('TOOL_REFRESH=${{ github.sha }}');
     expect(workflow).toContain('username: ${{ secrets.DOCKERHUB_USERNAME }}');
     expect(workflow).toContain('password: ${{ secrets.DOCKERHUB_TOKEN }}');
     expect(workflow).not.toContain(`${['dckr', 'pat'].join('_')}_`);
-
-    for (const action of [
-      'actions/checkout',
-      'docker/setup-qemu-action',
-      'docker/setup-buildx-action',
-      'docker/login-action',
-      'docker/metadata-action',
-      'docker/build-push-action',
-    ]) {
-      expect(workflow).toMatch(
-        new RegExp(`uses: ${action.replace('/', '\\/')}@[a-f0-9]{40}(?:\\s|$)`),
-      );
-    }
+    expect(workflow).not.toContain('docker/setup-qemu-action');
+    expect(workflow).toMatch(
+      /uses: docker\/github-builder\/\.github\/workflows\/build\.yml@[a-f0-9]{40}(?:\s|$)/,
+    );
   });
 
   test('runtime defaults to the remotely published image', () => {
