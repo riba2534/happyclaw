@@ -30,7 +30,7 @@ jobs:
         linux/amd64=ubuntu-24.04
         linux/arm64=ubuntu-24.04-arm
       context: ./container
-      file: ./container/Dockerfile
+      file: ./Dockerfile
       build-args: |
         TOOL_REFRESH=${{ github.sha }}
       cache: true

@@ -21,6 +21,9 @@ describe('Docker image distribution contract', () => {
     expect(workflow).toContain('setup-qemu: false');
     expect(workflow).toContain('linux/amd64=ubuntu-24.04');
     expect(workflow).toContain('linux/arm64=ubuntu-24.04-arm');
+    expect(workflow).toContain('context: ./container');
+    expect(workflow).toContain('file: ./Dockerfile');
+    expect(workflow).not.toContain('file: ./container/Dockerfile');
     expect(workflow).toContain('TOOL_REFRESH=${{ github.sha }}');
     expect(workflow).toContain('username: ${{ secrets.DOCKERHUB_USERNAME }}');
     expect(workflow).toContain('password: ${{ secrets.DOCKERHUB_TOKEN }}');
