@@ -173,9 +173,26 @@ jobs:
           docker buildx imagetools create \
             --tag "${IMAGE_NAME}:latest" \
             "${IMAGE_NAME}@${MANIFEST_DIGEST}"
-          latest_digest="$(
-            docker buildx imagetools inspect "${IMAGE_NAME}:latest" |
-              awk '$1 == "Digest:" { print $2; exit }'
-          )"
+
+          # Docker Hub can acknowledge the tag mutation before every registry
+          # read path can resolve it. Retry the read-after-write verification
+          # instead of marking an already-published image as failed.
+          latest_digest=""
+          for attempt in {1..12}; do
+            if inspection="$(
+              docker buildx imagetools inspect "${IMAGE_NAME}:latest" 2>&1
+            )"; then
+              latest_digest="$(
+                awk '$1 == "Digest:" { print $2; exit }' <<<"$inspection"
+              )"
+              if [ "$latest_digest" = "$MANIFEST_DIGEST" ]; then
+                break
+              fi
+              echo "latest resolved to ${latest_digest:-no digest}; waiting for ${MANIFEST_DIGEST}" >&2
+            else
+              echo "latest is not readable yet (attempt ${attempt}/12): ${inspection}" >&2
+            fi
+            sleep 5
+          done
           test "$latest_digest" = "$MANIFEST_DIGEST"
           echo "Published ${IMAGE_NAME}:latest at ${MANIFEST_DIGEST}"
