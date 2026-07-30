@@ -24,7 +24,10 @@ import {
   acknowledgeIpcReplyTurn,
   decideAssistantPrimaryProjection,
   isGenuineReplyResult,
+  occupiesPrimaryReplyDeliverySlot,
+  resolveHeldReplyDbText,
   setIpcReplyInputTurn,
+  shouldFinalizeScheduledGroupPrimaryResult,
   shouldSkipRetryAfterLateError,
   wasGenuineReplyDeliveredForInput,
   type IpcReplyTurnTracker,
@@ -1246,6 +1249,7 @@ type ReplyRouteAdmission = (
   inputTurnId: string,
   inputCursor?: MessageCursor,
   coveredInputs?: Array<{ id: string; sourceJid?: string }>,
+  receipt?: IpcDeliveryReceipt,
 ) => IpcPrePublishAdmission | false;
 const activeRouteAdmissions = new Map<string, ReplyRouteAdmission>();
 
@@ -1268,6 +1272,7 @@ function invokeActiveRouteAdmission(
           id: cursor.id,
           sourceJid: cursor.sourceJid,
         })),
+        receipt,
       )
     : false;
 }
@@ -6480,7 +6485,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   bindTurnOutputCoordinator(lastProcessed.id);
   activeRouteAdmissions.set(
     mainAdmissionKey,
-    (newSourceJid, inputTurnId, inputCursor, coveredInputs) => {
+    (newSourceJid, inputTurnId, inputCursor, coveredInputs, receipt) => {
       const isCurrentOrNewer =
         !inputCursor ||
         isCursorAfter(inputCursor, currentInputCursor) ||
@@ -6578,10 +6583,21 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           );
         }
       }
+      // This runs in GroupQueue's beforePublish hook, before the IPC temp file
+      // is atomically renamed into the runner-visible inbox. A host runner can
+      // therefore never emit its first primary result before the exact
+      // scheduled prompt cursors have been bound to this random delivery id.
+      if (receipt?.deliveryId === inputTurnId) {
+        rememberScheduledGroupRuns({
+          inputTurnId,
+          ipcReceipts: [receipt],
+        });
+      }
       return {
         rollback: () => {
           const admitted = admittedWarmMainInputs.get(inputTurnId);
           if (!admitted) return;
+          scheduledGroupRunsByInput.delete(inputTurnId);
           admittedWarmMainInputs.delete(inputTurnId);
           channelTurnRuntimes.delete(inputTurnId);
           channelOutboxScopesByInput.delete(inputTurnId);
@@ -7914,6 +7930,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                   : (result.pendingBgTasks ?? 0) > 0
                     ? 'bg_tasks'
                     : null;
+              if (!holdReason) text = stripRedundantCompletionPreamble(text);
+              // Keep the substantive fragment separately: a healthy
+              // truncation_continue must concatenate the original fragment
+              // without preserving this transient progress notice.
+              const heldPartText = text;
               // 状态提示追加进正文：进入 DB / Web / 卡片转录，非卡渠道（QQ 纯文本
               // 等无法挂起的通道）也能看到"还没完"。
               if (result.finalizationReason === 'truncated') {
@@ -7921,7 +7942,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               } else if ((result.pendingBgTasks ?? 0) > 0) {
                 text += `\n\n> ⏳ ${result.pendingBgTasks} 个后台任务运行中，完成后将继续汇总`;
               }
-              if (!holdReason) text = stripRedundantCompletionPreamble(text);
               const localImagePaths = extractLocalImImagePaths(
                 text,
                 effectiveGroup.folder,
@@ -7931,6 +7951,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               // DB 合并用：进入卡片分支前留存已有挂起前缀（分支内会改动 parts）
               const heldBaseForDb = heldCardBaseText();
               const wasInHeldSeq = heldDbTurnId !== null;
+              const heldSequenceTurnId = heldDbTurnId;
+              const occupiesPrimarySlot = occupiesPrimaryReplyDeliverySlot(
+                result.sourceKind,
+              );
 
               // ── Complete or hold Feishu streaming card ──
               // If a streaming card is active, finalize it with the complete text.
@@ -7942,7 +7966,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                 | NonNullable<typeof outputStreamingSession>
                 | undefined;
               if (holdReason) {
-                heldCardParts.push(text);
+                heldCardParts.push(heldPartText);
                 cardHeldThisResult = true;
                 if (outputStreamingSession?.isActive()) {
                   streamingCardHandledIM = true;
@@ -7971,7 +7995,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                   },
                   'Reply held open (background tasks / truncation continue)',
                 );
-              } else if (outputStreamingSession?.isActive()) {
+              } else if (
+                occupiesPrimarySlot &&
+                outputStreamingSession?.isActive()
+              ) {
                 pendingStreamingCardCompletion = outputStreamingSession;
                 streamingCardHandledIM = true;
               }
@@ -8088,28 +8115,39 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                 // Intermediate held turns remain visible while running. The
                 // healthy completion replaces them with the authoritative
                 // final answer; WorkflowRunCard preserves the execution trace.
-                dbText = holdReason ? heldBaseForDb + text : text;
+                dbText = resolveHeldReplyDbText({
+                  heldBaseText: heldBaseForDb,
+                  text,
+                  sourceKind: result.sourceKind,
+                  holdReason,
+                  wasInHeldSequence: wasInHeldSeq,
+                });
                 if (!holdReason) heldDbTurnId = null; // healthy 收尾，序列结束
               } else {
                 turnIdForDb = effectiveTurnId;
               }
-              const isGenuineCompletedGroupResult =
-                result.status === 'success' &&
-                !result.providerFailure &&
-                !holdReason &&
-                result.inputTurnCompleted === true &&
-                isGenuineReplyResult({
+              const scheduledGroupCorrelationInputId =
+                result.sourceKind === 'truncation_continue' &&
+                heldSequenceTurnId
+                  ? heldSequenceTurnId
+                  : effectiveTurnId;
+              const correlatedScheduledGroupRuns = [
+                ...(scheduledGroupRunsByInput
+                  .get(scheduledGroupCorrelationInputId)
+                  ?.values() ?? []),
+              ];
+              const scheduledGroupRuns =
+                shouldFinalizeScheduledGroupPrimaryResult({
+                  status: result.status,
+                  providerFailure: result.providerFailure,
                   holdReason,
                   sourceKind: result.sourceKind,
                   finalizationReason: result.finalizationReason,
-                });
-              const scheduledGroupRuns = isGenuineCompletedGroupResult
-                ? [
-                    ...(scheduledGroupRunsByInput
-                      .get(effectiveTurnId)
-                      ?.values() ?? []),
-                  ]
-                : [];
+                  hasScheduledGroupRuns:
+                    correlatedScheduledGroupRuns.length > 0,
+                })
+                  ? correlatedScheduledGroupRuns
+                  : [];
               const scheduledGroupResultMessageId =
                 scheduledGroupRuns.length > 0
                   ? `scheduled-group-result:${crypto
@@ -8154,7 +8192,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                     turnId: turnIdForDb,
                     sessionId: result.sessionId || activeSessionId,
                     sdkMessageUuid: result.sdkMessageUuid,
-                    sourceKind: result.sourceKind || 'sdk_final',
+                    sourceKind:
+                      scheduledGroupRuns.length > 0
+                        ? 'scheduled_task_result'
+                        : result.sourceKind || 'sdk_final',
                     finalizationReason:
                       result.finalizationReason || 'completed',
                   },
@@ -8237,7 +8278,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
                 const cardFinalization = await finalizeChannelCardAfterDelivery(
                   pendingStreamingCardCompletion,
-                  text,
+                  dbText,
                   streamingCardAttachmentsDelivered,
                   streamingCardAttachmentsDelivered
                     ? '回复投递未确认，系统将重试'
@@ -8387,8 +8428,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                 replyDeliveryAcknowledged &&= scheduledGroupProjectionDurable;
               }
 
-              sentReply = true;
-              sentReplyByInput.set(outputChannelScope.inputId, true);
+              if (occupiesPrimarySlot) {
+                sentReply = true;
+                sentReplyByInput.set(outputChannelScope.inputId, true);
+              }
               // See isGenuineReplyResult's doc comment (src/reply-delivery.ts)
               // for why a held/partial result must not count. Only ever SET
               // to true, never overwrite back to false: a later held/partial
@@ -8426,7 +8469,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               // Persist cursor as soon as a visible reply is emitted.
               // Long-lived runners may stay alive for idleTimeout, and waiting
               // until process exit would cause duplicate replay after restart.
-              if (replyDeliveryAcknowledged) {
+              if (replyDeliveryAcknowledged && occupiesPrimarySlot) {
                 const acknowledgedInputIds = result.ipcReceipts?.length
                   ? result.ipcReceipts.map((receipt) => receipt.deliveryId)
                   : [result.inputTurnId ?? lastProcessed.id];
@@ -15650,13 +15693,20 @@ async function processAgentConversation(
             : (output.pendingBgTasks ?? 0) > 0
               ? 'bg_tasks'
               : null;
+        if (!holdReason) text = stripRedundantCompletionPreamble(text);
+        // Retain only business content in the held accumulator. The visible
+        // checkpoint may carry a progress notice, but the completed
+        // truncation continuation must not include that obsolete notice.
+        const heldPartText = text;
         // 状态提示追加进正文（DB / Web / 卡片转录一致可见）
         if (output.finalizationReason === 'truncated') {
           text += '\n\n> ⚠️ 回复在生成中被上游截断，正在自动续写…';
         } else if ((output.pendingBgTasks ?? 0) > 0) {
           text += `\n\n> ⏳ ${output.pendingBgTasks} 个后台任务运行中，完成后将继续汇总`;
         }
-        if (!holdReason) text = stripRedundantCompletionPreamble(text);
+        const occupiesPrimarySlot = occupiesPrimaryReplyDeliverySlot(
+          output.sourceKind,
+        );
         heldAgentUsagePatchPending = false;
         const isFirstReply = !(
           agentReplySentByInput.get(outputAgentScope.inputId) ?? false
@@ -15670,7 +15720,13 @@ async function processAgentConversation(
         const msgId = heldAgentDbMsgId ?? crypto.randomUUID();
         // Keep progress visible while held, then replace it with the final
         // answer so process narration never becomes part of the conclusion.
-        const dbText = holdReason ? heldBaseForDb + text : text;
+        const dbText = resolveHeldReplyDbText({
+          heldBaseText: heldBaseForDb,
+          text,
+          sourceKind: output.sourceKind,
+          holdReason,
+          wasInHeldSequence: heldAgentDbTurnId !== null,
+        });
         const dbTurnId = inHeldSeq
           ? heldAgentDbTurnId || outputAgentScope.inputId
           : outputAgentScope.inputId;
@@ -15735,7 +15791,11 @@ async function processAgentConversation(
         }
 
         // Async LLM title upgrade after the first substantive reply.
-        if (isFirstReply && agent.kind === 'conversation') {
+        if (
+          occupiesPrimarySlot &&
+          isFirstReply &&
+          agent.kind === 'conversation'
+        ) {
           const fresh = getAgent(agentId);
           if (fresh?.title_source === 'auto_pending') {
             void generateAndApplyLLMTitle(agentId, chatJid, virtualChatJid);
@@ -15757,7 +15817,7 @@ async function processAgentConversation(
         if (holdReason) {
           // 挂起：不定稿，正文进 heldAgentParts，有卡片则状态行提示，后续
           // turn 的流式增量继续追加到同一张卡（Sub 路径 session 本就不轮换）。
-          heldAgentParts.push(text);
+          heldAgentParts.push(heldPartText);
           agentStreamingAccText = '';
           if (outputAgentStreamingSession?.isActive()) {
             streamingCardHandledIM = true;
@@ -15785,7 +15845,10 @@ async function processAgentConversation(
             },
             'Agent reply held open (background tasks / truncation continue)',
           );
-        } else if (outputAgentStreamingSession?.isActive()) {
+        } else if (
+          occupiesPrimarySlot &&
+          outputAgentStreamingSession?.isActive()
+        ) {
           // Provisional only: DB/Web persistence above is durable, but the
           // provider card must remain active until every local attachment has
           // a physical, exact-turn Outbox ACK.
@@ -15844,7 +15907,7 @@ async function processAgentConversation(
         if (pendingAgentCardCompletion) {
           const cardFinalization = await finalizeChannelCardAfterDelivery(
             pendingAgentCardCompletion,
-            text,
+            dbText,
             agentCardAttachmentsDelivered,
             agentCardAttachmentsDelivered
               ? '回复投递未确认，已切换为消息发送'
@@ -15994,7 +16057,7 @@ async function processAgentConversation(
               agentCardAttachmentsDelivered) ||
             agentStaticImDelivered) &&
           agentMirrorDeliveryAcknowledged;
-        if (agentReplyDeliveryAcknowledged) {
+        if (agentReplyDeliveryAcknowledged && occupiesPrimarySlot) {
           const acknowledgedInputIds = output.ipcReceipts?.length
             ? output.ipcReceipts.map((receipt) => receipt.deliveryId)
             : [output.inputTurnId ?? lastProcessed.id];

@@ -6,7 +6,10 @@ import {
   acknowledgeIpcReplyTurn,
   decideAssistantPrimaryProjection,
   isGenuineReplyResult,
+  occupiesPrimaryReplyDeliverySlot,
+  resolveHeldReplyDbText,
   setIpcReplyInputTurn,
+  shouldFinalizeScheduledGroupPrimaryResult,
   shouldSkipRetryAfterLateError,
   wasGenuineReplyDeliveredForInput,
 } from '../src/reply-delivery.js';
@@ -86,6 +89,146 @@ describe('isGenuineReplyResult', () => {
         finalizationReason: 'truncated',
       }),
     ).toBe(false);
+  });
+
+  test('an input rejection warning is visible but never marks the primary reply complete', () => {
+    expect(
+      isGenuineReplyResult({
+        holdReason: null,
+        sourceKind: 'input_rejection_warning',
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('shouldFinalizeScheduledGroupPrimaryResult', () => {
+  test('finalizes the first substantive primary before a lifecycle completion frame', () => {
+    expect(
+      shouldFinalizeScheduledGroupPrimaryResult({
+        status: 'success',
+        providerFailure: false,
+        hasScheduledGroupRuns: true,
+        holdReason: null,
+        sourceKind: 'sdk_final',
+        finalizationReason: 'completed',
+      }),
+    ).toBe(true);
+  });
+
+  test('finalizes a healthy continuation that completes a truncated scheduled answer', () => {
+    expect(
+      shouldFinalizeScheduledGroupPrimaryResult({
+        status: 'success',
+        providerFailure: false,
+        hasScheduledGroupRuns: true,
+        holdReason: null,
+        sourceKind: 'truncation_continue',
+        finalizationReason: 'completed',
+      }),
+    ).toBe(true);
+  });
+
+  test.each([
+    {
+      label: 'unrelated',
+      status: 'success' as const,
+      providerFailure: false,
+      hasScheduledGroupRuns: false,
+      holdReason: null,
+      sourceKind: 'sdk_final',
+    },
+    {
+      label: 'provider failure',
+      status: 'success' as const,
+      providerFailure: true,
+      hasScheduledGroupRuns: true,
+      holdReason: null,
+      sourceKind: 'sdk_final',
+    },
+    {
+      label: 'input rejection warning without a primary source',
+      status: 'success' as const,
+      providerFailure: false,
+      hasScheduledGroupRuns: true,
+      holdReason: null,
+      sourceKind: 'input_rejection_warning',
+    },
+    {
+      label: 'internal continuation output',
+      status: 'success' as const,
+      providerFailure: false,
+      hasScheduledGroupRuns: true,
+      holdReason: null,
+      sourceKind: 'auto_continue',
+    },
+    {
+      label: 'background checkpoint',
+      status: 'success' as const,
+      providerFailure: false,
+      hasScheduledGroupRuns: true,
+      holdReason: 'bg_tasks' as const,
+      sourceKind: 'sdk_final',
+    },
+    {
+      label: 'partial continuation',
+      status: 'success' as const,
+      providerFailure: false,
+      hasScheduledGroupRuns: true,
+      holdReason: null,
+      sourceKind: 'overflow_partial',
+    },
+    {
+      label: 'still-truncated continuation',
+      status: 'success' as const,
+      providerFailure: false,
+      hasScheduledGroupRuns: true,
+      holdReason: 'truncated' as const,
+      sourceKind: 'truncation_continue',
+      finalizationReason: 'truncated',
+    },
+    {
+      label: 'stream event',
+      status: 'stream' as const,
+      providerFailure: false,
+      hasScheduledGroupRuns: true,
+      holdReason: null,
+      sourceKind: 'sdk_final',
+    },
+  ])('rejects $label output', (input) => {
+    expect(shouldFinalizeScheduledGroupPrimaryResult(input)).toBe(false);
+  });
+});
+
+describe('scheduled result presentation boundaries', () => {
+  test('an input rejection warning remains auxiliary and does not occupy the primary delivery slot', () => {
+    expect(occupiesPrimaryReplyDeliverySlot('input_rejection_warning')).toBe(
+      false,
+    );
+    expect(occupiesPrimaryReplyDeliverySlot('sdk_final')).toBe(true);
+  });
+
+  test('a healthy truncation continuation persists the complete business result', () => {
+    expect(
+      resolveHeldReplyDbText({
+        heldBaseText: '调研首段：市场规模 100\n\n---\n\n',
+        text: '续写尾段：结论为增长。',
+        sourceKind: 'truncation_continue',
+        holdReason: null,
+        wasInHeldSequence: true,
+      }),
+    ).toBe('调研首段：市场规模 100\n\n---\n\n续写尾段：结论为增长。');
+  });
+
+  test('an ordinary healthy SDK final remains authoritative over held progress', () => {
+    expect(
+      resolveHeldReplyDbText({
+        heldBaseText: '中间进度\n\n---\n\n',
+        text: '完整的最终汇总',
+        sourceKind: 'sdk_final',
+        holdReason: null,
+        wasInHeldSequence: true,
+      }),
+    ).toBe('完整的最终汇总');
   });
 });
 
@@ -347,8 +490,31 @@ describe('Assistant primary projection boundary', () => {
     expect(source).toContain(
       'agentAnyReplyProjectedByInput.set(outputAgentScope.inputId, true);',
     );
+    expect(source).toMatch(
+      /activeRouteAdmissions\.set\(\s+mainAdmissionKey,\s+\(newSourceJid, inputTurnId, inputCursor, coveredInputs, receipt\) => \{/,
+    );
+    expect(source).toMatch(
+      /beforePublish hook,[\s\S]{0,500}if \(receipt\?\.deliveryId === inputTurnId\) \{\s+rememberScheduledGroupRuns\(\{\s+inputTurnId,\s+ipcReceipts: \[receipt\],/,
+    );
+    expect(source).toContain('scheduledGroupRunsByInput.delete(inputTurnId);');
+    expect(
+      source.match(
+        /finalizeChannelCardAfterDelivery\(\s+pending(?:StreamingCard|AgentCard)Completion,\s+dbText,/g,
+      ),
+    ).toHaveLength(2);
     expect(source).not.toContain(
       'outputAlreadySent && effectiveTurnId === lastSavedTurnId',
+    );
+
+    const runnerSource = fs.readFileSync(
+      path.join(process.cwd(), 'container/agent-runner/src/index.ts'),
+      'utf8',
+    );
+    expect(runnerSource).toMatch(
+      /result: `\\u26a0\\ufe0f \$\{reason\}`,[\s\S]{0,120}sourceKind: 'input_rejection_warning'/,
+    );
+    expect(runnerSource).toMatch(
+      /const truncationLogicalInputTurnId = activeOutputInputTurnId;[\s\S]{0,3500}'truncation_continue',\s+truncationIpcMessages,\s+mcpToolsConfig,\s+truncationLogicalInputTurnId,\s+false,/,
     );
   });
 });

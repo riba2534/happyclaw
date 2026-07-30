@@ -459,6 +459,7 @@ export type MessageSourceKind =
   | 'sdk_final'
   | 'sdk_send_message'
   | 'proactive_sdk_fallback'
+  | 'input_rejection_warning'
   | 'interrupt_partial'
   | 'overflow_partial'
   | 'compact_partial'

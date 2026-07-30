@@ -130,7 +130,8 @@ function stmts() {
     _stmts = {
       storeMessageSelect: db.prepare(
         `SELECT id FROM messages
-         WHERE chat_jid = ? AND turn_id = ? AND source_kind = 'sdk_final'
+         WHERE chat_jid = ? AND turn_id = ?
+           AND source_kind IN ('sdk_final','truncation_continue','scheduled_task_result')
          ORDER BY timestamp DESC LIMIT 1`,
       ),
       storeMessageInsert: db.prepare(
@@ -2671,11 +2672,13 @@ export function storeMessageDirect(
 ): string {
   const { attachments, tokenUsage, sourceJid, channelContext, meta } =
     opts ?? {};
-  // truncation_continue 与 sdk_final 同属"最终回复"：截断自动续写的后续 turn
-  // 复用挂起序列的 turnId 时必须命中同一行（全渠道一条回复的 DB 合并基础）。
+  // SDK/continuation/scheduled terminals share one logical final-answer row.
+  // A scheduled terminal must upgrade an earlier held sdk_final checkpoint,
+  // while replay of scheduled_task_result must remain idempotent.
   const existingFinalRow =
     (meta?.sourceKind === 'sdk_final' ||
-      meta?.sourceKind === 'truncation_continue') &&
+      meta?.sourceKind === 'truncation_continue' ||
+      meta?.sourceKind === 'scheduled_task_result') &&
     meta.turnId
       ? (stmts().storeMessageSelect.get(chatJid, meta.turnId) as
           | { id: string }

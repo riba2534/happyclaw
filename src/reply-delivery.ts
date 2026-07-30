@@ -29,6 +29,7 @@ export interface ReplyResultInfo {
 export function isGenuineReplyResult(info: ReplyResultInfo): boolean {
   if (info.holdReason) return false;
   if (
+    info.sourceKind === 'input_rejection_warning' ||
     info.sourceKind === 'overflow_partial' ||
     info.sourceKind === 'compact_partial'
   ) {
@@ -36,6 +37,55 @@ export function isGenuineReplyResult(info: ReplyResultInfo): boolean {
   }
   if (info.finalizationReason === 'truncated') return false;
   return true;
+}
+
+export interface ScheduledGroupPrimaryResultInfo extends ReplyResultInfo {
+  status: 'success' | 'error' | 'stream' | 'closed';
+  providerFailure?: boolean;
+  hasScheduledGroupRuns: boolean;
+}
+
+/**
+ * A scheduled group run is finalized by the same substantive primary answer
+ * that the user sees. Host runners may emit that answer before a later,
+ * content-free `inputTurnCompleted` lifecycle frame; requiring the lifecycle
+ * flag would persist the answer as ordinary `sdk_final` and strand the exact
+ * run in `delivered`.
+ *
+ * Held/partial/provider-failure outputs remain ineligible, so an intermediate
+ * checkpoint can never become the business terminal.
+ */
+export function shouldFinalizeScheduledGroupPrimaryResult(
+  info: ScheduledGroupPrimaryResultInfo,
+): boolean {
+  return (
+    info.hasScheduledGroupRuns &&
+    info.status === 'success' &&
+    !info.providerFailure &&
+    (info.sourceKind === 'sdk_final' ||
+      info.sourceKind === 'truncation_continue') &&
+    isGenuineReplyResult(info)
+  );
+}
+
+export function occupiesPrimaryReplyDeliverySlot(
+  sourceKind?: string | null,
+): boolean {
+  return sourceKind !== 'input_rejection_warning';
+}
+
+export function resolveHeldReplyDbText(input: {
+  heldBaseText: string;
+  text: string;
+  sourceKind?: string | null;
+  holdReason: 'bg_tasks' | 'truncated' | null;
+  wasInHeldSequence: boolean;
+}): string {
+  if (input.holdReason) return input.heldBaseText + input.text;
+  if (input.wasInHeldSequence && input.sourceKind === 'truncation_continue') {
+    return input.heldBaseText + input.text;
+  }
+  return input.text;
 }
 
 export interface RetrySkipDecisionInput {

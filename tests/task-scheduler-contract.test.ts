@@ -1142,6 +1142,95 @@ describe('scheduled task workspace/session contract', () => {
     }
   });
 
+  test('upgrades one held sdk_final row to the complete scheduled result', () => {
+    const taskId = createTask({
+      id: 'task-group-truncation-merge',
+      context_mode: 'group',
+    });
+    const task = db.getTaskById(taskId)!;
+    const created = db.createTaskRun({
+      task,
+      triggerType: 'manual',
+      idempotencyKey: 'group-truncation-merge',
+    });
+    const claim = db.claimNextTaskRun('group-truncation-merge-worker', 60_000)!;
+    expect(claim.id).toBe(created.run.id);
+    expect(
+      db.markTaskRunExecutionStarted(
+        claim.id,
+        claim.lease_owner,
+        claim.lease_token,
+      ),
+    ).toBe(true);
+    expect(
+      db.completeTaskRun(claim.id, claim.lease_owner, claim.lease_token, {
+        status: 'delivered',
+        result: '已排队',
+        notificationStatus: 'skipped',
+      }),
+    ).toBe(true);
+
+    const turnId = 'scheduled-truncated-logical-input';
+    const heldMessageId = db.storeMessageDirect(
+      'scheduled-truncated-held',
+      GROUP_JID,
+      'happyclaw-agent',
+      'HappyClaw',
+      '首段业务数据\n\n> ⚠️ 回复在生成中被上游截断，正在自动续写…',
+      new Date().toISOString(),
+      true,
+      {
+        meta: {
+          turnId,
+          sourceKind: 'sdk_final',
+          finalizationReason: 'truncated',
+        },
+      },
+    );
+    const completeResult = '首段业务数据\n\n---\n\n续写后的最终结论';
+
+    expect(
+      db.storeScheduledGroupWorkspaceResultAndFinalize({
+        messageId: 'scheduled-group-result:truncation-merge',
+        chatJid: GROUP_JID,
+        senderId: 'happyclaw-agent',
+        senderName: 'HappyClaw',
+        text: completeResult,
+        timestamp: new Date().toISOString(),
+        messageMeta: {
+          turnId,
+          sourceKind: 'scheduled_task_result',
+          finalizationReason: 'completed',
+        },
+        finalizations: [
+          {
+            runId: created.run.id,
+            taskId,
+            status: 'success',
+            result: completeResult,
+            error: null,
+          },
+        ],
+      }),
+    ).toBe(heldMessageId);
+
+    const rows = db
+      .getMessagesPage(GROUP_JID)
+      .filter((message) => message.turn_id === turnId);
+    expect(rows).toEqual([
+      expect.objectContaining({
+        id: heldMessageId,
+        content: completeResult,
+        source_kind: 'scheduled_task_result',
+        finalization_reason: 'completed',
+      }),
+    ]);
+    expect(db.getTaskRunById(created.run.id)).toMatchObject({
+      status: 'success',
+      result: completeResult,
+    });
+  });
+
   test('rolls back the canonical group message and earlier run transitions when any represented run rejects', () => {
     const taskA = createTask({
       id: 'task-group-result-rollback-a',

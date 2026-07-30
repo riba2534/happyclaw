@@ -11,7 +11,10 @@ import {
   latestIpcInputMessage,
   orderIpcInputMessages,
   parseIpcReceipt,
+  partitionIpcMessagesForLogicalTurn,
   requeueIpcInputMessages,
+  resolveLogicalQueryInputTurnId,
+  shouldAcceptIpcMessagesDuringQuery,
   serializeIpcInputMessage,
   type IpcDeliveryReceipt,
   type IpcInputMessage,
@@ -195,6 +198,46 @@ describe('agent-runner IPC delivery turn tracker', () => {
       correlation.correlate({ status: 'success', result: 'cold result' })
         .inputTurnId,
     ).toBe('host-turn-cold');
+  });
+
+  test('keeps an internal truncation continuation on the original logical input', () => {
+    expect(
+      resolveLogicalQueryInputTurnId(
+        'presentation-turn-for-continuation',
+        'scheduled-prompt-logical-input',
+      ),
+    ).toBe('scheduled-prompt-logical-input');
+    expect(resolveLogicalQueryInputTurnId('ordinary-turn')).toBe(
+      'ordinary-turn',
+    );
+  });
+
+  test('keeps continuation A authoritative while deferring later IPC B', () => {
+    const turnA = message('1');
+    const turnB = message('2');
+    const logicalA = turnA.receipt!.deliveryId;
+    const { owned, deferred } = partitionIpcMessagesForLogicalTurn(
+      [turnA, turnB],
+      logicalA,
+    );
+    expect(owned).toEqual([turnA]);
+    expect(deferred).toEqual([turnB]);
+
+    // Even a malformed/unpartitioned legacy call cannot let receipt B override
+    // the explicit continuation owner A.
+    const tracker = new IpcTurnDeliveryTracker([turnB]);
+    const correlation = new IpcTurnOutputCorrelation(
+      tracker,
+      'presentation-continuation',
+      logicalA,
+    );
+    expect(
+      correlation.correlate({ status: 'success', result: 'A continued' })
+        .inputTurnId,
+    ).toBe(logicalA);
+    expect(correlation.syncCurrentTurn()).toBe(logicalA);
+    expect(shouldAcceptIpcMessagesDuringQuery(true, false)).toBe(false);
+    expect(shouldAcceptIpcMessagesDuringQuery(true, true)).toBe(true);
   });
 
   test('pending background, truncation, error and interrupt are not completions', () => {

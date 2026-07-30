@@ -69,7 +69,7 @@ describe('strict physical acknowledgement contract', () => {
   test('main and agent mirror paths await exact-target durable Outboxes and join primary ACK', () => {
     const mainMirror = sliceBetween(
       '// Optional mirror mode for explicitly bound IM channels',
-      '\n              sentReply = true;',
+      '\n              if (occupiesPrimarySlot) {',
     );
     expect(mainMirror).toContain('const mirrorScope = bindChannelOutboxScope(');
     expect(mainMirror).toContain('const delivered = await sendImWithRetry(');
@@ -81,7 +81,7 @@ describe('strict physical acknowledgement contract', () => {
 
     const agentMirror = sliceBetween(
       '// Optional mirror mode for linked IM channels',
-      '\n        if (agentReplyDeliveryAcknowledged)',
+      '\n        if (agentReplyDeliveryAcknowledged && occupiesPrimarySlot)',
     );
     expect(agentMirror).toContain(
       'const mirrorScope = bindChannelOutboxScope(',

@@ -236,8 +236,12 @@ export class IpcTurnOutputCorrelation {
   constructor(
     private readonly tracker: IpcTurnDeliveryTracker,
     coldHostTurnId: string,
+    private readonly forcedLogicalInputTurnId?: string,
   ) {
-    this.inputTurnIdValue = tracker.currentTurnDeliveryId || coldHostTurnId;
+    this.inputTurnIdValue =
+      forcedLogicalInputTurnId ||
+      tracker.currentTurnDeliveryId ||
+      coldHostTurnId;
   }
 
   get currentInputTurnId(): string {
@@ -246,13 +250,51 @@ export class IpcTurnOutputCorrelation {
 
   syncCurrentTurn(fallbackInputTurnId = this.inputTurnIdValue): string {
     this.inputTurnIdValue =
-      this.tracker.currentTurnDeliveryId || fallbackInputTurnId;
+      this.forcedLogicalInputTurnId ||
+      this.tracker.currentTurnDeliveryId ||
+      fallbackInputTurnId;
     return this.inputTurnIdValue;
   }
 
   correlate(output: ContainerOutput): ContainerOutput {
     return { ...output, inputTurnId: this.inputTurnIdValue };
   }
+}
+
+/** Internal continuation queries may rotate their presentation turn id, but
+ * every emitted frame must retain the immutable user-input identity. */
+export function resolveLogicalQueryInputTurnId(
+  presentationTurnId: string | undefined,
+  logicalInputTurnIdOverride?: string,
+): string | undefined {
+  return logicalInputTurnIdOverride ?? presentationTurnId;
+}
+
+export function partitionIpcMessagesForLogicalTurn(
+  messages: IpcInputMessage[],
+  logicalInputTurnId: string | undefined,
+): {
+  owned: IpcInputMessage[];
+  deferred: IpcInputMessage[];
+} {
+  if (!logicalInputTurnId) return { owned: [...messages], deferred: [] };
+  const owned: IpcInputMessage[] = [];
+  const deferred: IpcInputMessage[] = [];
+  for (const message of messages) {
+    if (!message.receipt || message.receipt.deliveryId === logicalInputTurnId) {
+      owned.push(message);
+    } else {
+      deferred.push(message);
+    }
+  }
+  return { owned, deferred };
+}
+
+export function shouldAcceptIpcMessagesDuringQuery(
+  emitOutput: boolean,
+  acceptIpcMessagesDuringQuery: boolean,
+): boolean {
+  return emitOutput && acceptIpcMessagesDuringQuery;
 }
 
 export function serializeIpcInputMessage(message: IpcInputMessage): object {

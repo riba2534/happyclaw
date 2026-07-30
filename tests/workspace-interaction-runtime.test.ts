@@ -111,6 +111,13 @@ describe('workspace interaction runtime policy', () => {
       shouldResolveFrameworkPrimaryAnswer({
         mode: 'assistant',
         status: 'success',
+        sourceKind: 'input_rejection_warning',
+      }),
+    ).toBe(false);
+    expect(
+      shouldResolveFrameworkPrimaryAnswer({
+        mode: 'assistant',
+        status: 'success',
         providerFailure: true,
       }),
     ).toBe(false);

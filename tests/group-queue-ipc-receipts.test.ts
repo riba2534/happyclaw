@@ -409,6 +409,39 @@ describe('GroupQueue IPC delivery receipts', () => {
     expect(abandoned).not.toHaveBeenCalled();
   });
 
+  test('completes admission before publishing the runner-visible IPC file', async () => {
+    await startRunner();
+    const order: string[] = [];
+
+    expect(
+      queue.sendMessage(
+        JID,
+        'bind-before-publish',
+        undefined,
+        () => {
+          order.push('injected');
+          expect(readPayloads()).toHaveLength(1);
+        },
+        JID,
+        'scheduled-task',
+        {
+          chatJid: JID,
+          coveredCursors: [cursor('scheduled-prompt')],
+          cursor: cursor('scheduled-prompt'),
+        },
+        undefined,
+        (receipt) => {
+          order.push('admitted');
+          expect(receipt?.deliveryId).toBeTruthy();
+          expect(readPayloads()).toEqual([]);
+          return {};
+        },
+      ),
+    ).toBe('sent');
+
+    expect(order).toEqual(['admitted', 'injected']);
+  });
+
   test('disk publish failure rolls back admission and removes the temp file', async () => {
     await startRunner();
     const rollback = vi.fn();

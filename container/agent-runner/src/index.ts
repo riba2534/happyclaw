@@ -91,7 +91,10 @@ import {
   latestIpcInputMessage,
   orderIpcInputMessages,
   parseIpcReceipt,
+  partitionIpcMessagesForLogicalTurn,
   requeueIpcInputMessages,
+  resolveLogicalQueryInputTurnId,
+  shouldAcceptIpcMessagesDuringQuery,
   type IpcDeliveryReceipt,
   type IpcInputMessage,
 } from './ipc-delivery.js';
@@ -1661,6 +1664,8 @@ async function runQueryAttempt(
   sourceKindOverride?: ContainerOutput['sourceKind'],
   initialIpcMessages: IpcInputMessage[] = [],
   mcpToolsContext?: McpContext,
+  logicalInputTurnIdOverride?: string,
+  acceptIpcMessagesDuringQuery = true,
 ): Promise<{
   newSessionId?: string;
   lastAssistantUuid?: string;
@@ -1696,10 +1701,15 @@ async function runQueryAttempt(
   // name in the return type, this includes the initial startup/idle-drain batch
   // as well as messages piped while the query is active.
   const ipcDeliveryTracker = new IpcTurnDeliveryTracker(initialIpcMessages);
-  const coldInputTurnId = containerInput.turnId || generateTurnId();
+  const coldInputTurnId =
+    resolveLogicalQueryInputTurnId(
+      containerInput.turnId,
+      logicalInputTurnIdOverride,
+    ) ?? generateTurnId();
   const outputCorrelation = new IpcTurnOutputCorrelation(
     ipcDeliveryTracker,
     coldInputTurnId,
+    logicalInputTurnIdOverride,
   );
   const activateCurrentInputTurn = (
     fallbackInputTurnId: string = outputCorrelation.currentInputTurnId,
@@ -1898,6 +1908,7 @@ async function runQueryAttempt(
       status: 'success',
       result: `\u26a0\ufe0f ${reason}`,
       newSessionId: undefined,
+      sourceKind: 'input_rejection_warning',
     });
   }
 
@@ -2110,11 +2121,16 @@ async function runQueryAttempt(
       ipcQueryWatcher.close();
       return;
     }
-    // Maintenance side-queries (emitOutput=false) must NOT consume user IPC
-    // messages — those belong to the main query loop. Only sentinels
-    // are checked above. Without this guard, a user message arriving during a side-query
-    // gets silently consumed, leaving queryInFlight=true on the host forever (bug #259).
-    if (!emitOutput) {
+    // Maintenance and internal continuation queries must NOT consume later
+    // user IPC messages — those belong to the main query loop. Only sentinels
+    // are checked above. The preceding truncated query requeues anything it
+    // already drained before the continuation disables consumption here.
+    if (
+      !shouldAcceptIpcMessagesDuringQuery(
+        emitOutput,
+        acceptIpcMessagesDuringQuery,
+      )
+    ) {
       return; // No setTimeout needed — watcher will trigger next check on file change
     }
 
@@ -3708,6 +3724,8 @@ async function runQuery(
   sourceKindOverride?: ContainerOutput['sourceKind'],
   initialIpcMessages: IpcInputMessage[] = [],
   mcpToolsContext?: McpContext,
+  logicalInputTurnIdOverride?: string,
+  acceptIpcMessagesDuringQuery = true,
 ): Promise<RunQueryResult> {
   const first = await runQueryAttempt(
     prompt,
@@ -3723,6 +3741,8 @@ async function runQuery(
     sourceKindOverride,
     initialIpcMessages,
     mcpToolsContext,
+    logicalInputTurnIdOverride,
+    acceptIpcMessagesDuringQuery,
   );
   const failed = first.providerFailureTurn;
   if (!failed) return first;
@@ -3757,6 +3777,8 @@ async function runQuery(
     sourceKindOverride,
     failed.ipcMessages,
     mcpToolsContext,
+    logicalInputTurnIdOverride,
+    acceptIpcMessagesDuringQuery,
   );
 }
 
@@ -4370,7 +4392,21 @@ async function main(): Promise<void> {
       let truncatedTail = ranCompactionContinue
         ? undefined
         : queryResult.suspectTruncatedTail;
-      let truncationIpcMessages = queryResult.pipedMessagesDuringQuery;
+      const truncationLogicalInputTurnId = activeOutputInputTurnId;
+      const initialTruncationInputs = partitionIpcMessagesForLogicalTurn(
+        queryResult.pipedMessagesDuringQuery,
+        truncationLogicalInputTurnId,
+      );
+      let truncationIpcMessages = initialTruncationInputs.owned;
+      if (initialTruncationInputs.deferred.length > 0) {
+        requeueIpcInputMessages(
+          IPC_INPUT_DIR,
+          initialTruncationInputs.deferred,
+        );
+        log(
+          `Re-enqueued ${initialTruncationInputs.deferred.length} later IPC message(s) before truncation continuation`,
+        );
+      }
       let truncationContinues = 0;
       const MAX_TRUNCATION_CONTINUES = 2;
       let closedDuringTruncationContinue = false;
@@ -4401,6 +4437,8 @@ async function main(): Promise<void> {
           'truncation_continue',
           truncationIpcMessages,
           mcpToolsConfig,
+          truncationLogicalInputTurnId,
+          false,
         );
         truncationIpcMessages = contResult.pipedMessagesDuringQuery;
         currentIpcMessages = truncationIpcMessages;
@@ -4496,7 +4534,6 @@ async function main(): Promise<void> {
           },
         });
       }
-
       log('Query ended, waiting for next IPC message...');
 
       // Wait for the next message or _close sentinel
