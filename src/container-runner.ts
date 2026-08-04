@@ -505,7 +505,7 @@ function applyKnownProviderFailureDisposition(
   output.inputTurnCompleted = terminal;
 }
 
-interface VolumeMount {
+export interface VolumeMount {
   hostPath: string;
   containerPath: string;
   readonly: boolean;
@@ -1534,15 +1534,114 @@ export function buildVolumeMounts(
   return mounts;
 }
 
-function buildContainerArgs(
+export type ContainerHostIdentityMode =
+  | 'direct'
+  | 'namespaced'
+  | 'virtualized'
+  | 'host-root'
+  | 'unknown';
+
+export interface ContainerHostIdentity {
+  mode: ContainerHostIdentityMode;
+  uid?: number;
+  gid?: number;
+}
+
+export interface ContainerHostIdentityProbe {
+  platform: NodeJS.Platform;
+  uid?: number;
+  gid?: number;
+  securityOptions: readonly string[] | null;
+}
+
+function isPositiveUnixId(value: number | undefined): value is number {
+  return Number.isSafeInteger(value) && value !== undefined && value > 0;
+}
+
+/**
+ * Decide whether container ids share the host's numeric id namespace.
+ *
+ * Numeric remapping is safe only for a rootful Linux daemon without userns.
+ * Rootless Docker/Podman and userns-remap deliberately translate ids, while
+ * Docker Desktop virtualizes bind-mount ownership. Unknown probes fail closed
+ * to the entrypoint's permission reconciler instead of guessing.
+ */
+export function resolveContainerHostIdentity(
+  probe: ContainerHostIdentityProbe,
+): ContainerHostIdentity {
+  if (probe.platform === 'darwin' || probe.platform === 'win32') {
+    return { mode: 'virtualized' };
+  }
+  if (probe.platform !== 'linux') return { mode: 'unknown' };
+
+  if (probe.uid === 0) return { mode: 'host-root' };
+  if (!isPositiveUnixId(probe.uid)) return { mode: 'unknown' };
+  if (probe.securityOptions === null) return { mode: 'unknown' };
+
+  const hasUserNamespace = probe.securityOptions.some((option) => {
+    const normalized = option.toLowerCase();
+    return normalized.includes('rootless') || normalized.includes('userns');
+  });
+  if (hasUserNamespace) return { mode: 'namespaced' };
+
+  return {
+    mode: 'direct',
+    uid: probe.uid,
+    ...(isPositiveUnixId(probe.gid) ? { gid: probe.gid } : {}),
+  };
+}
+
+let cachedContainerHostIdentity: ContainerHostIdentity | null = null;
+
+function detectContainerHostIdentity(): ContainerHostIdentity {
+  if (cachedContainerHostIdentity) return cachedContainerHostIdentity;
+
+  let securityOptions: readonly string[] | null = null;
+  try {
+    const raw = execFileSync(
+      'docker',
+      ['info', '--format', '{{json .SecurityOptions}}'],
+      { encoding: 'utf8', timeout: 3_000 },
+    ).trim();
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      Array.isArray(parsed) &&
+      parsed.every((option) => typeof option === 'string')
+    ) {
+      securityOptions = parsed;
+    }
+  } catch {
+    // A missing/unsupported probe must not enable numeric id remapping.
+  }
+
+  cachedContainerHostIdentity = resolveContainerHostIdentity({
+    platform: process.platform,
+    uid: process.getuid?.(),
+    gid: process.getgid?.(),
+    securityOptions,
+  });
+  return cachedContainerHostIdentity;
+}
+
+export function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
   tz: string,
+  hostIdentity: ContainerHostIdentity = detectContainerHostIdentity(),
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
   // Set timezone so container Node.js processes use local time (Asia/Shanghai)
   args.push('-e', `TZ=${tz}`);
+  args.push('-e', `HAPPYCLAW_HOST_IDENTITY_MODE=${hostIdentity.mode}`);
+  if (hostIdentity.mode === 'direct') {
+    if (isPositiveUnixId(hostIdentity.uid)) {
+      args.push('-e', `HAPPYCLAW_HOST_UID=${hostIdentity.uid}`);
+    }
+    if (isPositiveUnixId(hostIdentity.gid)) {
+      args.push('-e', `HAPPYCLAW_HOST_GID=${hostIdentity.gid}`);
+    }
+  }
 
   // Docker: -v with :ro suffix for readonly
   for (const mount of mounts) {

@@ -140,6 +140,32 @@ describe('buildClaudeEnvLines', () => {
     expect(lines).toContain('PROJECT_ENV=kept');
   });
 
+  test('blocks custom env from overriding permission reconciler controls', () => {
+    const blocked = {
+      HAPPYCLAW_SESSION_ROOT: '/',
+      HAPPYCLAW_SESSION_PERMISSION_HELPER: '/tmp/attacker.sh',
+      HAPPYCLAW_HOST_IDENTITY_MODE: 'direct',
+      HAPPYCLAW_HOST_UID: '0',
+      HAPPYCLAW_HOST_GID: '0',
+      HAPPYCLAW_RECONCILE_SESSION_PERMISSIONS: '0',
+      HAPPYCLAW_MOUNT_PREPARE_MODE: 'recursive',
+      HAPPYCLAW_RUNTIME_USER: 'root',
+      PROJECT_ENV: 'kept',
+    };
+    const lines = buildContainerEnvLines(
+      config({ anthropicBaseUrl: '', anthropicModel: '' }),
+      { customEnv: blocked },
+      blocked,
+    );
+
+    for (const key of Object.keys(blocked).filter(
+      (key) => key !== 'PROJECT_ENV',
+    )) {
+      expect(lines.some((line) => line.startsWith(`${key}=`))).toBe(false);
+    }
+    expect(lines).toContain('PROJECT_ENV=kept');
+  });
+
   test('injects an authoritative endpoint kind that custom env cannot replace', () => {
     const thirdParty = buildContainerEnvLines(
       config({ anthropicBaseUrl: 'https://proxy.test' }),

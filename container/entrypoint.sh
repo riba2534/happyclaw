@@ -6,13 +6,25 @@ set -e
 # Without this, the host cannot delete/modify files created by the container.
 umask 0000
 
-# Fix ownership on mounted volumes.
-# Host uid may differ from container node user (uid 1000), especially in
-# rootless podman where uid remapping causes EACCES on bind mounts.
-# Running as root here so chown works regardless of host uid.
-chown -R node:node /home/node/.claude 2>/dev/null || true
-chown -R node:node /home/node/.feishu-cli 2>/dev/null || true
-chown -R node:node /workspace/group /workspace/ipc 2>/dev/null || true
+# A rootful Linux daemon can safely align node with a non-root host uid. For
+# rootless/userns, host-root and Docker Desktop the helper deliberately avoids
+# assuming that numeric ids have the same meaning on both sides of the mount.
+source /app/session-permissions.sh
+happyclaw_configure_node_identity
+
+# Fix access to the explicit writable mounts. Direct identity mapping touches
+# only mount roots, namespace/VM fallback shares only mount roots, and host-root
+# recursively prepares only these explicit mounts. No path recursively chowns
+# the image's /home/node directory.
+happyclaw_prepare_mounted_path /home/node/.claude
+happyclaw_prepare_mounted_path /home/node/.feishu-cli
+happyclaw_prepare_mounted_path /workspace/group
+happyclaw_prepare_mounted_path /workspace/ipc
+# Repair restrictive session files only when numeric host identity cannot be
+# represented. Direct and host-root modes retain their narrower ownership model.
+if [ "$HAPPYCLAW_RECONCILE_SESSION_PERMISSIONS" = 1 ]; then
+  happyclaw_relax_session_permissions
+fi
 
 # Mark mounted directories as safe for git (CVE-2022-24765 ownership check).
 # Host uid may differ from container node user, causing git to refuse operations.
@@ -91,6 +103,7 @@ chmod -R a-w /tmp/dist
 # Chromium process so no browser child survives a cancelled run.
 CHROMIUM_PID=
 cleanup() {
+  happyclaw_stop_session_permission_reconciler
   if [ -n "$CHROMIUM_PID" ] && kill -0 "$CHROMIUM_PID" 2>/dev/null; then
     kill "$CHROMIUM_PID" 2>/dev/null || true
     for ((attempt = 0; attempt < 20; attempt++)); do
@@ -102,10 +115,14 @@ cleanup() {
     fi
     wait "$CHROMIUM_PID" 2>/dev/null || true
   fi
-  chmod -R a+rwX /home/node/.claude 2>/dev/null || true
   chmod -R a+rwX /workspace/group 2>/dev/null || true
 }
 trap cleanup EXIT
+
+# Numeric uid alignment makes 0600 files host-readable in direct mode. A
+# rootless/userns daemon cannot do that safely, so reconcile the isolated
+# session mount while Claude is running, not only after container exit.
+happyclaw_start_session_permission_reconciler
 
 # Start one deterministic browser for this task container. Binding to loopback
 # keeps the raw Chrome DevTools Protocol private to the container; a future Web

@@ -65,6 +65,7 @@ RUN printf '%s\n' "$TOOL_REFRESH" > /etc/happyclaw-tool-refresh \
     # --- Process & system ---
     procps \
     lsof \
+    inotify-tools \
     # --- Text search & dev ---
     ripgrep \
     fd-find \
@@ -210,8 +211,8 @@ RUN npm run build
 # scoped; legacy global/memory filesystem roots must not exist in the runtime.
 RUN mkdir -p /workspace/group /workspace/extra /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input
 
-# Copy entrypoint script (runs as root, drops to node user via runuser)
-COPY entrypoint.sh /app/entrypoint.sh
+# Copy entrypoint scripts (run as root, then drop to node via runuser)
+COPY entrypoint.sh session-permissions.sh /app/
 RUN chmod +x /app/entrypoint.sh
 
 # Set ownership to node user (non-root) for writable directories
