@@ -25,6 +25,7 @@
 | `/api/agent-profiles`              | `src/routes/agent-profiles.ts`   | 产品级 Agent                  |
 | `/api/channel-accounts`            | `src/routes/channel-accounts.ts` | 多渠道账号                    |
 | `/api/config`                      | `src/routes/config.ts`           | Provider、系统与兼容渠道配置  |
+| `/api/config`                      | `src/routes/brand-assets.ts`     | 品牌资源上传、删除与公开读取  |
 | `/api/tasks`                       | `src/routes/tasks.ts`            | 定时任务和运行                |
 | `/api/memory`                      | `src/routes/memory.ts`           | Workspace Memory v2           |
 | `/api/skills`                      | `src/routes/skills.ts`           | 用户 Skills                   |
@@ -297,6 +298,9 @@ Provider：
 - `GET|PUT /api/config/appearance`
 - `GET /api/config/appearance/public`，Public
 - `POST|DELETE /api/config/appearance/avatar`
+- `POST|DELETE /api/config/appearance/brand-icon`，仅 admin
+- `POST|DELETE /api/config/appearance/brand-banner`，仅 admin
+- `GET /api/config/brand-assets/:filename`，Public；只接受服务端生成的品牌资源文件名
 
 Legacy 渠道 facade 位于 `/api/config/user-im/*`，涵盖飞书、Telegram、QQ、钉钉、
 微信、Discord 和 WhatsApp。它们继续服务旧数据和旧客户端；新 UI 与新功能使用
