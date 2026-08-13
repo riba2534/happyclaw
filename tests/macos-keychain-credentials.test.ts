@@ -315,20 +315,39 @@ describe('MacosKeychainCredentialStore', () => {
     ).toBe(true);
   });
 
-  test('fails closed on unknown ownership, concurrent changes, and failed persistence', async () => {
+  // Without an ownership item there is nothing to reconcile against, and a
+  // multi-account pool can never satisfy a match check — so adopt the selected
+  // provider and record ownership instead of blocking host mode permanently.
+  test('adopts the selected provider when ownership is unknown', async () => {
     const fake = new FakeKeychain();
     const service = claudeKeychainServiceName(CONFIG_DIR);
     fake.items.set(
       service,
-      JSON.stringify({ claudeAiOauth: REFRESHED, mcpOAuth: {} }),
-    );
-    await expect(
-      fake.store().reconcile(CONFIG_DIR, {
-        providerId: 'official-a',
-        claudeAiOauth: OAUTH,
+      JSON.stringify({
+        claudeAiOauth: REFRESHED,
+        mcpOAuth: { 'some-server': 'keep-me' },
       }),
-    ).rejects.toThrow('ownership is unknown');
+    );
 
+    const migrated = await fake.store().reconcile(CONFIG_DIR, {
+      providerId: 'official-a',
+      claudeAiOauth: OAUTH,
+    });
+
+    expect(migrated).toEqual(normalizeClaudeAiOauth(OAUTH));
+    const stored = JSON.parse(fake.items.get(service)!);
+    expect(stored.claudeAiOauth).toEqual(normalizeClaudeAiOauth(OAUTH));
+    expect(stored.mcpOAuth).toEqual({ 'some-server': 'keep-me' });
+    expect(
+      JSON.parse(
+        fake.items.get(claudeKeychainOwnershipServiceName(CONFIG_DIR))!,
+      ).providerId,
+    ).toBe('official-a');
+  });
+
+  test('fails closed on concurrent changes and failed persistence', async () => {
+    const fake = new FakeKeychain();
+    const service = claudeKeychainServiceName(CONFIG_DIR);
     fake.items.clear();
     fake.items.set(service, JSON.stringify({ claudeAiOauth: OAUTH }));
     const store = fake.store();

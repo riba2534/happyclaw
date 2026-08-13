@@ -526,9 +526,30 @@ export class MacosKeychainCredentialStore {
           return desired;
         }
         if (!sharesCredentialLineage(existingOauth, desired)) {
-          throw new MacosKeychainCredentialError(
-            'Keychain OAuth ownership is unknown and does not match the selected provider',
+          // No ownership item means this is the first reconcile after the
+          // upgrade that introduced ownership tracking, so an unrelated
+          // credential is the expected state rather than a suspicious one.
+          //
+          // Failing closed here is unrecoverable for a multi-account provider
+          // pool: the item holds whichever account was seeded last, the pool
+          // keeps rotating, and no selected provider can ever match it — so
+          // host mode stays blocked for every provider, forever, with no
+          // supported way to clear the item.
+          //
+          // There is also no third party to protect. The service name is
+          // derived from HappyClaw's own CLAUDE_CONFIG_DIR, so HappyClaw is the
+          // only writer of that item. Adopt the selected provider and record
+          // ownership; this is a one-shot migration that reproduces the
+          // pre-ownership behaviour, and every later reconcile takes the
+          // rotation-aware branches below.
+          const migrated = mergeClaudeKeychainPayload(existingJson, desired);
+          if (migrated !== null) await this.write(service, migrated);
+          await this.writeOwnership(
+            service,
+            options.providerId,
+            desiredFingerprint,
           );
+          return desired;
         }
         if (existingOauth.expiresAt > desired.expiresAt) {
           await this.persistRefresh(options, desired, existingOauth);
