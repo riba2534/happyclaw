@@ -34,6 +34,8 @@ describe('system brand migration', () => {
       aiAvatarColor: '#123456',
       aiAvatarUrl: '/api/auth/avatars/system-agent-before.png',
       aiAvatarMode: 'brand',
+      brandIconUrl: null,
+      brandBannerUrl: null,
     });
   });
 
@@ -43,6 +45,31 @@ describe('system brand migration', () => {
       aiAvatarColor: '#123456',
       aiAvatarUrl: null,
       aiAvatarMode: 'brand',
+    });
+  });
+
+  test('persists brand icon and banner URLs independently of each other', () => {
+    expect(
+      runtime.saveAppearanceConfig({
+        brandIconUrl: '/api/config/brand-assets/brand-icon-abcd1234.png',
+      }),
+    ).toMatchObject({
+      brandIconUrl: '/api/config/brand-assets/brand-icon-abcd1234.png',
+      brandBannerUrl: null,
+    });
+
+    expect(
+      runtime.saveAppearanceConfig({
+        brandBannerUrl: '/api/config/brand-assets/brand-banner-abcd1234.png',
+      }),
+    ).toMatchObject({
+      brandIconUrl: '/api/config/brand-assets/brand-icon-abcd1234.png',
+      brandBannerUrl: '/api/config/brand-assets/brand-banner-abcd1234.png',
+    });
+
+    expect(runtime.saveAppearanceConfig({ brandIconUrl: null })).toMatchObject({
+      brandIconUrl: null,
+      brandBannerUrl: '/api/config/brand-assets/brand-banner-abcd1234.png',
     });
   });
 });

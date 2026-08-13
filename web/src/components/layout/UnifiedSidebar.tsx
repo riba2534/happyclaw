@@ -233,8 +233,11 @@ export function UnifiedSidebar({
         <nav className="w-[4.5rem] h-full bg-muted/30 flex flex-col items-center py-3 gap-1 flex-shrink-0">
           <div className="w-11 h-11 rounded-xl overflow-hidden mb-3 flex-shrink-0">
             <img
-              src={`${import.meta.env.BASE_URL}icons/icon-192.png`}
-              alt="HappyClaw"
+              src={
+                appearance?.brandIconUrl ||
+                `${import.meta.env.BASE_URL}icons/icon-192.png`
+              }
+              alt={appearance?.appName || 'HappyClaw'}
               className="w-full h-full object-cover"
             />
           </div>
@@ -343,9 +346,12 @@ export function UnifiedSidebar({
           <div className="w-[16.5rem] h-full flex flex-col bg-muted/30">
             <div className="flex items-center gap-2 px-4 pt-6 pb-3 mb-3 flex-shrink-0">
               <img
-                src={`${import.meta.env.BASE_URL}icons/logo-text.svg`}
+                src={
+                  appearance?.brandBannerUrl ||
+                  `${import.meta.env.BASE_URL}icons/logo-text.svg`
+                }
                 alt={appearance?.appName || 'HappyClaw'}
-                className="h-10"
+                className="h-10 max-w-[12.5rem] object-contain object-left"
               />
               <div className="flex-1" />
               <button

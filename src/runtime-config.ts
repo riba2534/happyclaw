@@ -3367,6 +3367,10 @@ export interface AppearanceConfig {
   aiAvatarColor: string;
   aiAvatarUrl: string | null;
   aiAvatarMode: 'brand' | 'emoji';
+  // 400x400 square mark shown in the collapsed sidebar rail.
+  brandIconUrl: string | null;
+  // 600x200 left-aligned wordmark shown above the workspace list.
+  brandBannerUrl: string | null;
 }
 
 const DEFAULT_APPEARANCE_CONFIG: AppearanceConfig = {
@@ -3376,6 +3380,8 @@ const DEFAULT_APPEARANCE_CONFIG: AppearanceConfig = {
   aiAvatarColor: '#0d9488',
   aiAvatarUrl: null,
   aiAvatarMode: 'brand',
+  brandIconUrl: null,
+  brandBannerUrl: null,
 };
 
 export function getAppearanceConfig(): AppearanceConfig {
@@ -3408,6 +3414,14 @@ export function getAppearanceConfig(): AppearanceConfig {
           ? raw.aiAvatarUrl
           : null,
       aiAvatarMode: raw.aiAvatarMode === 'emoji' ? 'emoji' : 'brand',
+      brandIconUrl:
+        typeof raw.brandIconUrl === 'string' && raw.brandIconUrl
+          ? raw.brandIconUrl
+          : null,
+      brandBannerUrl:
+        typeof raw.brandBannerUrl === 'string' && raw.brandBannerUrl
+          ? raw.brandBannerUrl
+          : null,
     };
   } catch (err) {
     logger.warn(
@@ -3430,6 +3444,14 @@ export function saveAppearanceConfig(
     aiAvatarUrl:
       next.aiAvatarUrl === undefined ? existing.aiAvatarUrl : next.aiAvatarUrl,
     aiAvatarMode: next.aiAvatarMode ?? existing.aiAvatarMode,
+    brandIconUrl:
+      next.brandIconUrl === undefined
+        ? existing.brandIconUrl
+        : next.brandIconUrl,
+    brandBannerUrl:
+      next.brandBannerUrl === undefined
+        ? existing.brandBannerUrl
+        : next.brandBannerUrl,
     updatedAt: new Date().toISOString(),
   };
   fs.mkdirSync(CLAUDE_CONFIG_DIR, { recursive: true });
@@ -3443,6 +3465,8 @@ export function saveAppearanceConfig(
     aiAvatarColor: config.aiAvatarColor,
     aiAvatarUrl: config.aiAvatarUrl,
     aiAvatarMode: config.aiAvatarMode,
+    brandIconUrl: config.brandIconUrl,
+    brandBannerUrl: config.brandBannerUrl,
   };
 }
 

@@ -2,6 +2,7 @@ import { bodyLimit } from 'hono/body-limit';
 
 export const AVATAR_MAX_FILE_BYTES = 3 * 1024 * 1024;
 export const SKILL_ARCHIVE_MAX_FILE_BYTES = 10 * 1024 * 1024;
+export const BRAND_ASSET_MAX_FILE_BYTES = 3 * 1024 * 1024;
 
 // Multipart boundaries and field metadata add a small amount of overhead on
 // top of the file itself. Keep the allowance bounded so chunked uploads are
@@ -20,6 +21,9 @@ export const avatarUploadBodyLimit = createUploadBodyLimit(
 );
 export const skillArchiveUploadBodyLimit = createUploadBodyLimit(
   SKILL_ARCHIVE_MAX_FILE_BYTES,
+);
+export const brandAssetUploadBodyLimit = createUploadBodyLimit(
+  BRAND_ASSET_MAX_FILE_BYTES,
 );
 
 // Exported for focused middleware tests with a tiny byte budget.

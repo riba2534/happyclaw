@@ -776,6 +776,18 @@ export const AppearanceConfigSchema = z.object({
     .nullable()
     .optional(),
   aiAvatarMode: z.enum(['brand', 'emoji']).optional(),
+  brandIconUrl: z
+    .string()
+    .regex(/^\/api\/config\/brand-assets\/brand-icon-[a-f0-9]{8}\.(?:jpg|png)$/)
+    .nullable()
+    .optional(),
+  brandBannerUrl: z
+    .string()
+    .regex(
+      /^\/api\/config\/brand-assets\/brand-banner-[a-f0-9]{8}\.(?:jpg|png)$/,
+    )
+    .nullable()
+    .optional(),
 });
 
 export const ChangePasswordSchema = z.object({

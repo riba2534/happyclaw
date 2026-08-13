@@ -42,6 +42,10 @@ export interface AppearanceConfig {
   aiAvatarColor: string;
   aiAvatarUrl: string | null;
   aiAvatarMode: 'brand' | 'emoji';
+  // 400x400 square mark shown in the collapsed sidebar rail.
+  brandIconUrl: string | null;
+  // 600x200 left-aligned wordmark shown above the workspace list.
+  brandBannerUrl: string | null;
 }
 
 export interface SetupStatus {

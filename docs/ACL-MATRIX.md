@@ -208,6 +208,8 @@ read-only 投影按 host-issued turn ID 精确匹配当前或已接纳的 queued
 | `/api/billing/admin/*`                            | `manage_billing`                                   |
 | `/api/docker/pull`、运行监控管理                  | `manage_system_config`                             |
 | `/api/status/channel-outbox/*` 人工裁决           | `manage_system_config`                             |
+| 系统外观读写（`GET/PUT /api/config/appearance`）  | `manage_system_config`                             |
+| 品牌资源上传/删除（图标、横幅头像文件写入）       | admin（`adminRoleMiddleware`）                     |
 | `POST /api/groups/:jid/reset-owner`               | admin break-glass，同时仍验证目标资源              |
 
 系统 MCP 默认仅 admin 可用；只有显式设置为 shared 后，普通成员的 Agent 才能进入
