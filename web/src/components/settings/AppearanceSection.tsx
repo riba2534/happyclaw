@@ -74,10 +74,10 @@ function BrandAssetUpload({
 
   const remove = async () => {
     try {
-      const appearance = await api.delete<AppearanceConfig>(
+      const result = await api.delete<{ appearance: AppearanceConfig }>(
         `/api/config/appearance/brand-${kind}`,
       );
-      onChange(appearance);
+      onChange(result.appearance);
       toast.success(`已恢复默认${title}`);
     } catch (err) {
       toast.error(getErrorMessage(err, `移除${title}失败`));

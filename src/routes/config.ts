@@ -8,12 +8,9 @@ import { ProxyAgent } from 'proxy-agent';
 import QRCode from 'qrcode';
 import { Hono } from 'hono';
 import { DATA_DIR } from '../config.js';
-import { detectImageMimeTypeStrict } from '../image-detector.js';
 import {
   avatarUploadBodyLimit,
   AVATAR_MAX_FILE_BYTES,
-  brandAssetUploadBodyLimit,
-  BRAND_ASSET_MAX_FILE_BYTES,
 } from '../http-upload-policy.js';
 import type { Variables } from '../web-context.js';
 import { canAccessGroup, canModifyGroup, getWebDeps } from '../web-context.js';
@@ -141,6 +138,7 @@ import { parseOAuthUsageBucket } from '../runtime-config.js';
 import type { AudienceMode, AuthUser, RegisteredGroup } from '../types.js';
 import { hasPermission } from '../permissions.js';
 import { logger } from '../logger.js';
+import brandAssetRoutes from './brand-assets.js';
 import { testFeishuCredentials } from '../feishu-connectivity.js';
 import {
   buildSessionMountUpdate,
@@ -2192,161 +2190,7 @@ configRoutes.delete(
   },
 );
 
-// ─── Brand assets (sidebar mark + wordmark) ────────────────────────
-//
-// Two independently configurable images:
-// - brand-icon:   400x400 square mark shown in the collapsed sidebar rail.
-// - brand-banner: 600x200 left-aligned wordmark shown above the workspace
-//                 list. Only PNG/JPG are accepted for either asset.
-
-const BRAND_ASSETS_DIR = path.join(DATA_DIR, 'brand-assets');
-const BRAND_ASSET_KINDS = {
-  icon: { field: 'brandIconUrl', prefix: 'brand-icon-' },
-  banner: { field: 'brandBannerUrl', prefix: 'brand-banner-' },
-} as const;
-type BrandAssetKind = keyof typeof BRAND_ASSET_KINDS;
-const BRAND_ASSET_EXTENSIONS: Record<string, string> = {
-  'image/jpeg': '.jpg',
-  'image/png': '.png',
-};
-const BRAND_ASSET_FILENAME_RE =
-  /^brand-(?:icon|banner)-[a-f0-9]{8}\.(?:jpg|png)$/;
-
-// Appearance settings are stored in one JSON file and each asset kind owns a
-// shared directory. Serialize mutations so a stale cleanup from one request
-// cannot remove the file selected by another concurrent request.
-let brandAssetMutation = Promise.resolve();
-
-async function withBrandAssetMutation<T>(
-  operation: () => T | Promise<T>,
-): Promise<T> {
-  const previous = brandAssetMutation;
-  let release!: () => void;
-  brandAssetMutation = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  await previous;
-  try {
-    return await operation();
-  } finally {
-    release();
-  }
-}
-
-function removeStaleBrandAssets(prefix: string, keep?: string): void {
-  if (!fs.existsSync(BRAND_ASSETS_DIR)) return;
-  for (const filename of fs.readdirSync(BRAND_ASSETS_DIR)) {
-    if (!filename.startsWith(prefix) || filename === keep) continue;
-    fs.rmSync(path.join(BRAND_ASSETS_DIR, filename), { force: true });
-  }
-}
-
-function registerBrandAssetUploadRoute(kind: BrandAssetKind) {
-  const { field, prefix } = BRAND_ASSET_KINDS[kind];
-  configRoutes.post(
-    `/appearance/brand-${kind}`,
-    authMiddleware,
-    adminRoleMiddleware,
-    brandAssetUploadBodyLimit,
-    async (c) => {
-      if (
-        !(c.req.header('content-type') || '').includes('multipart/form-data')
-      ) {
-        return c.json({ error: 'Expected multipart/form-data' }, 400);
-      }
-      const formData = await c.req.formData();
-      const file = formData.get(kind);
-      if (!file || !(file instanceof File)) {
-        return c.json({ error: `No ${kind} file provided` }, 400);
-      }
-      if (file.size > BRAND_ASSET_MAX_FILE_BYTES) {
-        return c.json({ error: 'File too large (max 3MB)' }, 413);
-      }
-      const bytes = Buffer.from(await file.arrayBuffer());
-      const mimeType = detectImageMimeTypeStrict(bytes);
-      const extension = mimeType ? BRAND_ASSET_EXTENSIONS[mimeType] : undefined;
-      if (!extension) {
-        return c.json({ error: 'Unsupported image type. Use jpg or png' }, 400);
-      }
-
-      try {
-        return await withBrandAssetMutation(() => {
-          fs.mkdirSync(BRAND_ASSETS_DIR, { recursive: true });
-          const filename = `${prefix}${randomBytes(4).toString('hex')}${extension}`;
-          const destination = path.join(BRAND_ASSETS_DIR, filename);
-          const temporary = `${destination}.tmp`;
-          fs.writeFileSync(temporary, bytes);
-          fs.renameSync(temporary, destination);
-          const assetUrl = `/api/config/brand-assets/${filename}`;
-          try {
-            const appearance = saveAppearanceConfig({ [field]: assetUrl });
-            removeStaleBrandAssets(prefix, filename);
-            return c.json({ appearance, assetUrl });
-          } catch (err) {
-            fs.rmSync(destination, { force: true });
-            throw err;
-          }
-        });
-      } catch (err) {
-        logger.error({ err, kind }, 'Failed to save brand asset');
-        return c.json({ error: 'Failed to save brand asset' }, 500);
-      }
-    },
-  );
-
-  configRoutes.delete(
-    `/appearance/brand-${kind}`,
-    authMiddleware,
-    adminRoleMiddleware,
-    async (c) => {
-      try {
-        return await withBrandAssetMutation(() => {
-          const appearance = saveAppearanceConfig({ [field]: null });
-          removeStaleBrandAssets(prefix);
-          return c.json({ appearance });
-        });
-      } catch (err) {
-        logger.error({ err, kind }, 'Failed to remove brand asset');
-        return c.json({ error: 'Failed to remove brand asset' }, 500);
-      }
-    },
-  );
-}
-
-registerBrandAssetUploadRoute('icon');
-registerBrandAssetUploadRoute('banner');
-
-// Public — serves the uploaded brand assets. No auth: the sidebar and the
-// pre-login screens render these images before a session exists.
-configRoutes.get('/brand-assets/:filename', async (c) => {
-  const filename = c.req.param('filename');
-  if (!filename || !BRAND_ASSET_FILENAME_RE.test(filename)) {
-    return c.json({ error: 'Invalid filename' }, 400);
-  }
-
-  const filePath = path.join(BRAND_ASSETS_DIR, filename);
-  let data: Buffer;
-  try {
-    data = fs.readFileSync(filePath);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      return c.json({ error: 'Brand asset not found' }, 404);
-    }
-    logger.error({ err, filename }, 'Failed to read brand asset');
-    return c.json({ error: 'Failed to read brand asset' }, 500);
-  }
-
-  const contentType = filename.endsWith('.png') ? 'image/png' : 'image/jpeg';
-  return new Response(new Uint8Array(data), {
-    status: 200,
-    headers: {
-      'Content-Type': contentType,
-      'Cache-Control': 'public, max-age=31536000, immutable',
-      'X-Content-Type-Options': 'nosniff',
-      'Content-Security-Policy': "default-src 'none'; sandbox",
-    },
-  });
-});
+configRoutes.route('/', brandAssetRoutes);
 
 // Public endpoint — no auth required (like /api/auth/status)
 configRoutes.get('/appearance/public', (c) => {

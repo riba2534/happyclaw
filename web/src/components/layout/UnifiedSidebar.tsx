@@ -37,6 +37,7 @@ import {
   partitionAgentWorkspaceSections,
 } from '../../utils/agent-product';
 import { useDeleteWorkspace } from '../../hooks/useDeleteWorkspace';
+import { withBasePath } from '../../utils/url';
 
 interface UnifiedSidebarProps {
   collapsed: boolean;
@@ -234,8 +235,9 @@ export function UnifiedSidebar({
           <div className="w-11 h-11 rounded-xl overflow-hidden mb-3 flex-shrink-0">
             <img
               src={
-                appearance?.brandIconUrl ||
-                `${import.meta.env.BASE_URL}icons/icon-192.png`
+                appearance?.brandIconUrl
+                  ? withBasePath(appearance.brandIconUrl)
+                  : `${import.meta.env.BASE_URL}icons/icon-192.png`
               }
               alt={appearance?.appName || 'HappyClaw'}
               className="w-full h-full object-cover"
@@ -347,8 +349,9 @@ export function UnifiedSidebar({
             <div className="flex items-center gap-2 px-4 pt-6 pb-3 mb-3 flex-shrink-0">
               <img
                 src={
-                  appearance?.brandBannerUrl ||
-                  `${import.meta.env.BASE_URL}icons/logo-text.svg`
+                  appearance?.brandBannerUrl
+                    ? withBasePath(appearance.brandBannerUrl)
+                    : `${import.meta.env.BASE_URL}icons/logo-text.svg`
                 }
                 alt={appearance?.appName || 'HappyClaw'}
                 className="h-10 max-w-[12.5rem] object-contain object-left"
