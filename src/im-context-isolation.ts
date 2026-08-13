@@ -23,6 +23,14 @@ export function getUserContextIsolationConfig(
     };
   }
 
+  // WeCom (企业微信) is a single-bot channel with no per-workspace binding UI.
+  // Isolate every chat into its own conversation so a DM and a group each get
+  // their own session channel owner — otherwise all chats collapse to web:main
+  // and share one owner slot, sending private (1:1) replies to the group.
+  if (channelType === 'wecom') {
+    return { enabled: true, sourceKind: 'auto_im' };
+  }
+
   return { enabled: false, sourceKind: 'auto_im' };
 }
 
