@@ -83,6 +83,71 @@ describe('channel account registration fallback', () => {
     ).toBe(fallbackBound);
   });
 
+  test('does not bind an unbound direct chat to the account default workspace', () => {
+    expect(
+      applyChannelAccountRegistrationFallback(
+        baseGroup,
+        'bot-a',
+        'web:account-default',
+        'direct',
+      ),
+    ).toMatchObject({
+      channel_account_id: 'bot-a',
+    });
+    expect(
+      applyChannelAccountRegistrationFallback(
+        baseGroup,
+        'bot-a',
+        'web:account-default',
+        'direct',
+      ).target_main_jid,
+    ).toBeUndefined();
+  });
+
+  test('still binds an unbound group chat to the account default workspace', () => {
+    expect(
+      applyChannelAccountRegistrationFallback(
+        baseGroup,
+        'bot-a',
+        'web:account-default',
+        'group',
+      ),
+    ).toMatchObject({
+      channel_account_id: 'bot-a',
+      target_main_jid: 'web:account-default',
+    });
+  });
+
+  test('preserves a manual workspace or session bind on a direct chat', () => {
+    const workspaceBound = {
+      ...baseGroup,
+      channel_account_id: 'bot-a',
+      target_main_jid: 'web:user-selected',
+    };
+    expect(
+      applyChannelAccountRegistrationFallback(
+        workspaceBound,
+        'bot-a',
+        'web:account-default',
+        'direct',
+      ),
+    ).toBe(workspaceBound);
+
+    const sessionBound = {
+      ...baseGroup,
+      channel_account_id: 'bot-a',
+      target_agent_id: 'conversation-123',
+    };
+    expect(
+      applyChannelAccountRegistrationFallback(
+        sessionBound,
+        'bot-a',
+        'web:account-default',
+        'direct',
+      ),
+    ).toBe(sessionBound);
+  });
+
   test('uses explicit workspace then home, never an Agent first-workspace fallback', () => {
     const account = {
       owner_user_id: 'owner',

@@ -171,8 +171,8 @@ describe('schema version head', () => {
     // one assertion that fails when the head moves, forcing whoever bumps it
     // to confirm the matching migration block — and a test covering it —
     // actually landed. Update the literal in the same commit as the migration.
-    // v71: persists provider message identity/order for WeChat token replay; see
-    // tests/schema-v70-wechat-context-token.test.ts for migration coverage.
-    expect(db.CURRENT_SCHEMA_VERSION).toBe(71);
+    // v72: moves WeCom DMs off a shared workspace main owner slot; see
+    // tests/schema-v72-wecom-direct-mount.test.ts for migration coverage.
+    expect(db.CURRENT_SCHEMA_VERSION).toBe(72);
   });
 });

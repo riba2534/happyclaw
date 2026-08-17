@@ -246,6 +246,7 @@ import {
   isNativeContextContainer,
   resolveChannelMountTarget,
   restoreDefaultChannelMount,
+  attachDefaultChannelAccountMount,
   upgradeNativeContextChannelMount,
 } from './channel-mount-service.js';
 import { isThreadMapCapableChat } from './im-channel-capabilities.js';
@@ -400,10 +401,7 @@ import {
   ensureLegacyDefaultChannelAccount,
   syncDefaultChannelAccountCredentials,
 } from './channel-account-migration.js';
-import {
-  applyChannelAccountRegistrationFallback,
-  resolveChannelAccountFallbackWorkspace,
-} from './channel-account-routing.js';
+import { resolveChannelAccountFallbackWorkspace } from './channel-account-routing.js';
 import { testChannelAccountCredentials } from './channel-account-connectivity.js';
 import {
   buildAgentProfilePrompt,
@@ -18630,18 +18628,24 @@ function buildOnPairAttempt(
     const group = registeredGroups[jid] ?? getRegisteredGroup(jid);
     if (group) {
       const fallbackWorkspaceJid = defaultWorkspaceJid ?? pairingUserHome.jid;
-      const updated = accountId
-        ? applyChannelAccountRegistrationFallback(
-            group,
-            accountId,
-            fallbackWorkspaceJid,
-          )
-        : {
-            ...group,
-            ...(group.target_main_jid || group.target_agent_id
-              ? {}
-              : { target_main_jid: fallbackWorkspaceJid }),
-          };
+      const updated = attachDefaultChannelAccountMount({
+        sourceJid: jid,
+        group,
+        accountId,
+        fallbackWorkspaceJid,
+        userId: result.userId,
+        onCreated: (agent, workspaceJid) => {
+          broadcastAgentStatus(
+            workspaceJid,
+            agent.id,
+            'idle',
+            agent.name,
+            '',
+            undefined,
+            'conversation',
+          );
+        },
+      });
       const pairedOwnerImId = ownerImIdFromDirectConversationJid(jid);
       const paired = pairedOwnerImId
         ? claimOwner(
@@ -19624,11 +19628,24 @@ async function reloadChannelAccountById(accountId: string): Promise<boolean> {
     baseOnNewChat(jid, name);
     const group = registeredGroups[jid] ?? getRegisteredGroup(jid);
     if (!group) return;
-    const updated = applyChannelAccountRegistrationFallback(
+    const updated = attachDefaultChannelAccountMount({
+      sourceJid: jid,
       group,
-      account.id,
-      workspace.jid,
-    );
+      accountId: account.id,
+      fallbackWorkspaceJid: workspace.jid,
+      userId: account.owner_user_id,
+      onCreated: (agent, workspaceJid) => {
+        broadcastAgentStatus(
+          workspaceJid,
+          agent.id,
+          'idle',
+          agent.name,
+          '',
+          undefined,
+          'conversation',
+        );
+      },
+    });
     // Steady-state inbound messages resolve to an already-attached group;
     // rewriting an identical row on every message was pure write amplification.
     if (updated === group) return;

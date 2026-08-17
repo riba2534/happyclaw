@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import type {
   ChannelAccount,
   ChannelProvider,
@@ -7,10 +8,17 @@ import type {
   SubAgent,
 } from './types.js';
 import { getChannelType } from './im-channel.js';
-import { parseChannelAddress } from './channel-address.js';
+import {
+  channelConversationJid,
+  parseChannelAddress,
+} from './channel-address.js';
+import { applyChannelAccountRegistrationFallback } from './channel-account-routing.js';
+import { resolveChannelConversationKind } from './channel-conversation-kind.js';
 import { isThreadMapCapableChat } from './im-channel-capabilities.js';
 import { requiresMention as feishuRequiresMention } from './feishu-conversation-policy.js';
 import {
+  createAgent,
+  ensureChatExists,
   getChannelAccount,
   getAllRegisteredGroups,
   getDefaultChannelAccount,
@@ -18,8 +26,13 @@ import {
   getLegacyChannelAccount,
   getRegisteredGroup,
   getUserHomeGroup,
+  listAgentsByJid,
   setRegisteredGroup,
+  updateAgentLastImJid,
+  updateChatName,
 } from './db.js';
+import { logger } from './logger.js';
+import { ensureAgentDirectories } from './utils.js';
 import { getWebDeps } from './web-context.js';
 
 export interface ChannelMountResolutionDeps {
@@ -266,10 +279,177 @@ export function restoreDefaultChannelMount(
     },
     liveInfo,
   );
-  if (resolved.status === 'resolved') {
-    commitChannelMountUpdate(channelJid, resolved.updated);
+  if (resolved.status !== 'resolved') return resolved;
+
+  // Infer kind from the JID only. Feishu P2P metadata must not opt Feishu
+  // into a channel_direct session; that path stays auto_im.
+  if (resolveChannelConversationKind(channelJid) === 'direct') {
+    const mounted = ensureDirectChannelSessionMount({
+      sourceJid: channelJid,
+      group: {
+        ...group,
+        ...((resolved.accountId ?? group.channel_account_id)
+          ? {
+              channel_account_id:
+                resolved.accountId ?? group.channel_account_id,
+            }
+          : {}),
+      },
+      workspaceJid: resolved.workspaceJid,
+      userId: ownerUserId ?? group.created_by ?? '',
+      force: true,
+      mountOptions: { replyPolicy: 'source_only' },
+    });
+    commitChannelMountUpdate(channelJid, mounted);
+    return { ...resolved, updated: mounted };
   }
+
+  commitChannelMountUpdate(channelJid, resolved.updated);
   return resolved;
+}
+
+export interface EnsureDirectChannelSessionMountParams {
+  sourceJid: string;
+  group: RegisteredGroup;
+  workspaceJid: string;
+  userId: string;
+  /** Remount even when the chat already has a workspace or session bind. */
+  force?: boolean;
+  mountOptions?: ChannelMountUpdateOptions;
+  onCreated?: (agent: SubAgent, workspaceJid: string) => void;
+}
+
+function matchesDirectConversationJid(
+  lastImJid: string | null,
+  conversationJid: string,
+): boolean {
+  if (!lastImJid) return false;
+  return (
+    lastImJid === conversationJid ||
+    channelConversationJid(lastImJid) === conversationJid
+  );
+}
+
+/**
+ * Mount an unbound (or force-restored) direct chat onto a dedicated
+ * conversation session in the fallback workspace. Reuses an existing
+ * `channel_direct` session for the same conversation JID when one exists.
+ */
+export function ensureDirectChannelSessionMount(
+  params: EnsureDirectChannelSessionMountParams,
+): RegisteredGroup {
+  if (
+    !params.force &&
+    (params.group.target_agent_id || params.group.target_main_jid)
+  ) {
+    return params.group;
+  }
+
+  const workspace = getRegisteredGroup(params.workspaceJid);
+  if (!workspace) return params.group;
+
+  const conversationJid = channelConversationJid(params.sourceJid);
+  const reusable = listAgentsByJid(params.workspaceJid).find(
+    (agent) =>
+      agent.source_kind === 'channel_direct' &&
+      matchesDirectConversationJid(agent.last_im_jid, conversationJid),
+  );
+
+  if (
+    reusable &&
+    params.group.target_agent_id === reusable.id &&
+    !params.group.target_main_jid
+  ) {
+    return params.group;
+  }
+
+  const now = new Date().toISOString();
+  const agent =
+    reusable ??
+    (() => {
+      const created: SubAgent = {
+        id: crypto.randomUUID(),
+        group_folder: workspace.folder,
+        chat_jid: params.workspaceJid,
+        name: params.group.name || conversationJid,
+        prompt: '',
+        status: 'idle',
+        kind: 'conversation',
+        created_by: params.userId || workspace.created_by || null,
+        created_at: now,
+        completed_at: null,
+        result_summary: null,
+        last_im_jid: conversationJid,
+        spawned_from_jid: null,
+        source_kind: 'channel_direct',
+        last_active_at: now,
+      };
+      createAgent(created);
+      ensureAgentDirectories(workspace.folder, created.id);
+      const virtualChatJid = `${params.workspaceJid}#agent:${created.id}`;
+      ensureChatExists(virtualChatJid);
+      updateChatName(virtualChatJid, created.name);
+      params.onCreated?.(created, params.workspaceJid);
+      logger.info(
+        {
+          sourceJid: params.sourceJid,
+          agentId: created.id,
+          workspaceJid: params.workspaceJid,
+        },
+        'Created channel_direct session mount for direct chat',
+      );
+      return created;
+    })();
+
+  if (reusable) {
+    updateAgentLastImJid(reusable.id, conversationJid);
+  }
+
+  return buildSessionMountUpdate(params.group, agent.id, params.mountOptions);
+}
+
+/**
+ * Account-aware first-registration attach. Groups and unknown chats fall
+ * back to the account default workspace. Direct chats get a dedicated
+ * session in that workspace so they do not share the main owner slot.
+ */
+export function attachDefaultChannelAccountMount(params: {
+  sourceJid: string;
+  group: RegisteredGroup;
+  accountId?: string;
+  fallbackWorkspaceJid: string;
+  userId: string;
+  onCreated?: (agent: SubAgent, workspaceJid: string) => void;
+}): RegisteredGroup {
+  const conversationKind = resolveChannelConversationKind(params.sourceJid);
+  const withAccount = params.accountId
+    ? applyChannelAccountRegistrationFallback(
+        params.group,
+        params.accountId,
+        params.fallbackWorkspaceJid,
+        conversationKind,
+      )
+    : conversationKind === 'direct' ||
+        params.group.target_main_jid ||
+        params.group.target_agent_id
+      ? params.group
+      : { ...params.group, target_main_jid: params.fallbackWorkspaceJid };
+
+  if (
+    conversationKind !== 'direct' ||
+    withAccount.target_main_jid ||
+    withAccount.target_agent_id
+  ) {
+    return withAccount;
+  }
+
+  return ensureDirectChannelSessionMount({
+    sourceJid: params.sourceJid,
+    group: withAccount,
+    workspaceJid: params.fallbackWorkspaceJid,
+    userId: params.userId,
+    onCreated: params.onCreated,
+  });
 }
 
 /**

@@ -193,8 +193,9 @@ export interface RegisteredGroup {
   target_agent_id?: string;
   /**
    * Binding target stored as the canonical workspace JID.
-   * - group chats: the workspace itself owns the channel context;
-   * - direct chats: the workspace's main session owns the channel context.
+   * Group chats own the workspace main context. Direct chats must not use
+   * this slot — they bind through `target_agent_id` so they do not share
+   * the workspace main channel-owner key with a group.
    */
   target_main_jid?: string;
   reply_policy?: 'source_only' | 'mirror'; // IM 绑定的回复策略
@@ -841,7 +842,13 @@ export interface SubAgent {
   last_im_jid: string | null;
   /** 发起 /spawn 命令的源会话 JID，用于完成后结果回注 */
   spawned_from_jid: string | null;
-  source_kind?: 'manual' | 'native_thread' | 'feishu_thread' | 'auto_im' | null;
+  source_kind?:
+    | 'manual'
+    | 'native_thread'
+    | 'feishu_thread'
+    | 'auto_im'
+    | 'channel_direct'
+    | null;
   thread_id?: string | null;
   root_message_id?: string | null;
   title_source?:

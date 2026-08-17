@@ -353,7 +353,13 @@ export interface AgentInfo {
   completed_at?: string;
   result_summary?: string;
   linked_im_groups?: Array<{ jid: string; name: string }>;
-  source_kind?: 'manual' | 'native_thread' | 'feishu_thread' | 'auto_im' | null;
+  source_kind?:
+    | 'manual'
+    | 'native_thread'
+    | 'feishu_thread'
+    | 'auto_im'
+    | 'channel_direct'
+    | null;
   thread_id?: string | null;
   root_message_id?: string | null;
   title_source?:

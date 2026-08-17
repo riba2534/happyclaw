@@ -37,7 +37,7 @@ describe('channel binding REST contract', () => {
       'Channel account has no default or owner home workspace',
     );
     expect(service).toMatch(
-      /if \(resolved\.status === 'resolved'\) \{[\s\S]*commitChannelMountUpdate/,
+      /if \(resolved\.status !== 'resolved'\) return resolved;[\s\S]*commitChannelMountUpdate/,
     );
   });
 

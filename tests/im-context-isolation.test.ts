@@ -54,6 +54,14 @@ describe('getUserContextIsolationConfig', () => {
       enabled: false,
       sourceKind: 'auto_im',
     });
+    expect(getUserContextIsolationConfig('u1', 'wecom', deps)).toEqual({
+      enabled: false,
+      sourceKind: 'auto_im',
+    });
+    expect(getUserContextIsolationConfig('u1', 'qq', deps)).toEqual({
+      enabled: false,
+      sourceKind: 'auto_im',
+    });
   });
 });
 

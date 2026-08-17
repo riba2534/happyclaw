@@ -1152,7 +1152,7 @@ describe('agents IM-binding ACL (owner-only, mirrors CRUD)', () => {
     }
   });
 
-  test('deleting a session binding restores the account default workspace', async () => {
+  test('deleting a session binding remounts a direct chat onto a default-workspace session', async () => {
     seedTestGroup();
     asUser(OWNER_ID);
     const created = await postSession({ name: 'Temporary session' });
@@ -1186,15 +1186,20 @@ describe('agents IM-binding ACL (owner-only, mirrors CRUD)', () => {
     );
     expect(status).toBe(200);
     expect(body.target_main_jid).toBe(GROUP_JID);
-    expect(db.getRegisteredGroup(imJid)).toMatchObject({
-      target_main_jid: GROUP_JID,
-      target_agent_id: undefined,
+    const restored = db.getRegisteredGroup(imJid);
+    expect(restored).toMatchObject({
+      target_main_jid: undefined,
       binding_mode: 'single_context',
       activation_mode: 'when_mentioned',
       owner_im_id: 'owner-im',
       sender_allowlist: ['owner-im'],
       reply_policy: 'source_only',
     });
+    expect(restored?.target_agent_id).toBeTruthy();
+    expect(restored?.target_agent_id).not.toBe(sessionId);
+    expect(db.getAgent(restored!.target_agent_id!)?.source_kind).toBe(
+      'channel_direct',
+    );
   });
 
   test('unbinding one of multiple chats keeps the agent fallback route on a remaining chat', async () => {

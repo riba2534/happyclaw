@@ -6,6 +6,16 @@ const read = (file: string) =>
   fs.readFileSync(path.join(process.cwd(), file), 'utf8');
 
 describe('WeCom full-stack provider registration', () => {
+  test('uses channel-account session mounts for DMs instead of Feishu auto_im isolation', () => {
+    const isolation = read('src/im-context-isolation.ts');
+    expect(isolation).toContain("if (channelType === 'feishu')");
+    expect(isolation).not.toContain('wecom');
+
+    const runtime = read('src/index.ts');
+    expect(runtime).toContain('attachDefaultChannelAccountMount(');
+    expect(runtime).not.toContain('applyChannelAccountRegistrationFallback(');
+  });
+
   test('registers account-scoped admission and transport status in runtime', () => {
     const source = read('src/index.ts');
     const start = source.indexOf("} else if (account.provider === 'wecom') {");

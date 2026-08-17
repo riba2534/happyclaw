@@ -64,7 +64,9 @@ describe.sequential('schema v71 WeChat context_token generations', () => {
     legacy.close();
 
     db.initDatabase();
-    expect(db.getRouterState('schema_version')).toBe('71');
+    expect(db.getRouterState('schema_version')).toBe(
+      String(db.CURRENT_SCHEMA_VERSION),
+    );
     expect(db.listWeChatContextTokens(account.id)[0]).toMatchObject({
       context_token: 'legacy-token',
       send_count: 9,
@@ -185,7 +187,9 @@ describe.sequential('schema v71 WeChat context_token generations', () => {
     `);
     v69.close();
     db.initDatabase();
-    expect(db.getRouterState('schema_version')).toBe('71');
+    expect(db.getRouterState('schema_version')).toBe(
+      String(db.CURRENT_SCHEMA_VERSION),
+    );
     const probe = new Database(databasePath, { readonly: true });
     const columns = probe
       .prepare('PRAGMA table_info(wechat_context_tokens)')
