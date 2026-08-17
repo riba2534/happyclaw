@@ -160,6 +160,37 @@ describe.sequential('WeCom DM / group channel-account mounts', () => {
     expect(rebound.target_agent_id).toBe(first.target_agent_id);
   });
 
+  test('keeps the same native DM isolated across WeCom accounts', () => {
+    db.createChannelAccount({
+      id: 'bot-b',
+      owner_user_id: 'owner-a',
+      provider: 'wecom',
+      name: 'Second WeCom bot',
+      secret_ref: 'channel-account:bot-b',
+      default_workspace_jid: workspaceJid,
+    });
+    let secondAgentId: string | undefined;
+    try {
+      const first = db.getRegisteredGroup(dmJid)!;
+      const second = attachDefaultChannelAccountMount({
+        sourceJid: 'wecom:c2c:user-1#account:bot-b',
+        group: chatGroup('Private DM on second bot'),
+        accountId: 'bot-b',
+        fallbackWorkspaceJid: workspaceJid,
+        userId: 'owner-a',
+      });
+      secondAgentId = second.target_agent_id;
+      expect(secondAgentId).toBeTruthy();
+      expect(secondAgentId).not.toBe(first.target_agent_id);
+      expect(db.getAgent(secondAgentId!)?.last_im_jid).toBe(
+        'wecom:c2c:user-1#account:bot-b',
+      );
+    } finally {
+      if (secondAgentId) db.deleteAgent(secondAgentId);
+      db.deleteChannelAccount('bot-b', 'owner-a');
+    }
+  });
+
   test('does not overwrite a manual session or workspace bind', () => {
     const sessionBound = chatGroup('Manual session', {
       channel_account_id: 'bot-a',
@@ -199,6 +230,10 @@ describe.sequential('WeCom DM / group channel-account mounts', () => {
         target_main_jid: workspaceJid,
       }),
     );
+    db.clearSessionChannelOwner('wecom-ws', null);
+    expect(db.setSessionChannelOwnerOnce('wecom-ws', null, restoreJid)).toBe(
+      restoreJid,
+    );
     const restored = restoreDefaultChannelMount(
       restoreJid,
       db.getRegisteredGroup(restoreJid)!,
@@ -216,5 +251,6 @@ describe.sequential('WeCom DM / group channel-account mounts', () => {
     expect(db.getAgent(restored.updated.target_agent_id!)?.source_kind).toBe(
       'channel_direct',
     );
+    expect(db.getSessionChannelOwner('wecom-ws')).toBeUndefined();
   });
 });

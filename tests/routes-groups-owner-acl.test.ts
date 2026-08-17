@@ -435,6 +435,99 @@ describe('DELETE /:jid blocks channel_mounts-bound workspaces', () => {
       db.deleteChannelAccount(accountId, OWNER_ID);
     }
   });
+
+  test('confirmed delete keeps a WeCom DM on an isolated fallback session', async () => {
+    const accountId = 'delete-workspace-wecom-account';
+    const dmJid = `wecom:c2c:delete-workspace-user#account:${accountId}`;
+    const oldAgentId = 'delete-workspace-wecom-old-session';
+    let fallbackAgentId: string | undefined;
+    db.createChannelAccount({
+      id: accountId,
+      owner_user_id: OWNER_ID,
+      provider: 'wecom',
+      name: 'Delete workspace WeCom Bot',
+      secret_ref: 'test-secret',
+      default_workspace_jid: JID,
+    });
+    db.createAgent({
+      id: oldAgentId,
+      group_folder: FOLDER,
+      chat_jid: JID,
+      name: 'Legacy direct session',
+      prompt: '',
+      status: 'idle',
+      kind: 'conversation',
+      created_by: OWNER_ID,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+      result_summary: null,
+      last_im_jid: dmJid,
+      spawned_from_jid: null,
+      source_kind: 'channel_direct',
+    });
+    db.setRegisteredGroup(dmJid, {
+      name: 'Mounted WeCom DM',
+      folder: HOME_FOLDER,
+      added_at: new Date().toISOString(),
+      created_by: OWNER_ID,
+      channel_account_id: accountId,
+      target_agent_id: oldAgentId,
+      binding_mode: 'single_context',
+    });
+    for (const jid of [JID, IM_JID, HOME_JID, dmJid]) {
+      webDepsCache[jid] = db.getRegisteredGroup(jid)!;
+    }
+    webContext.setWebDeps({
+      getRegisteredGroups: () => webDepsCache,
+      getSessions: () => ({}),
+      setLastAgentTimestamp: vi.fn(),
+      queue: {
+        pauseGroupsForMutation: () => ({ id: 1 }),
+        resumeGroupsAfterMutation: vi.fn(),
+        discardGroupsAfterMutation: vi.fn(),
+        listDescendantJids: () => [],
+        stopGroup: vi.fn(async () => {}),
+      },
+    } as unknown as Parameters<typeof webContext.setWebDeps>[0]);
+
+    try {
+      asUser(OWNER_ID, 'member');
+      const response = await groupRoutes.request(
+        `/${encodeURIComponent(JID)}?unbind_channels=true`,
+        { method: 'DELETE' },
+      );
+      expect(response.status).toBe(200);
+
+      const rerouted = db.getRegisteredGroup(dmJid)!;
+      fallbackAgentId = rerouted.target_agent_id;
+      expect(rerouted.target_main_jid).toBeUndefined();
+      expect(fallbackAgentId).toBeTruthy();
+      expect(fallbackAgentId).not.toBe(oldAgentId);
+      expect(db.getAgent(oldAgentId)).toBeUndefined();
+      expect(db.getAgent(fallbackAgentId!)).toMatchObject({
+        chat_jid: HOME_JID,
+        group_folder: HOME_FOLDER,
+        source_kind: 'channel_direct',
+        last_im_jid: dmJid,
+      });
+      expect(db.getChannelMount(dmJid)).toMatchObject({
+        workspace_jid: HOME_JID,
+        session_id: fallbackAgentId,
+      });
+      expect(db.getChannelAccount(accountId)?.default_workspace_jid).toBe(
+        HOME_JID,
+      );
+    } finally {
+      delete webDepsCache[dmJid];
+      try {
+        db.deleteRegisteredGroup(dmJid);
+      } catch {
+        /* ignore */
+      }
+      if (fallbackAgentId) db.deleteAgent(fallbackAgentId);
+      db.deleteChannelAccount(accountId, OWNER_ID);
+    }
+  });
 });
 
 describe('DELETE /:jid mutation pause', () => {

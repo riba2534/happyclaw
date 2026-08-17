@@ -27,6 +27,7 @@ import {
   getRegisteredGroup,
   getUserHomeGroup,
   listAgentsByJid,
+  setRegisteredGroupAndClearMatchingMainOwner,
   setRegisteredGroup,
   updateAgentLastImJid,
   updateChatName,
@@ -284,6 +285,13 @@ export function restoreDefaultChannelMount(
   // Infer kind from the JID only. Feishu P2P metadata must not opt Feishu
   // into a channel_direct session; that path stays auto_im.
   if (resolveChannelConversationKind(channelJid) === 'direct') {
+    const previousWorkspaceJid = resolveWorkspaceJid(group.target_main_jid, {
+      getRegisteredGroup,
+      getJidsByFolder,
+    });
+    const previousWorkspaceFolder = previousWorkspaceJid
+      ? getRegisteredGroup(previousWorkspaceJid)?.folder
+      : undefined;
     const mounted = ensureDirectChannelSessionMount({
       sourceJid: channelJid,
       group: {
@@ -300,7 +308,9 @@ export function restoreDefaultChannelMount(
       force: true,
       mountOptions: { replyPolicy: 'source_only' },
     });
-    commitChannelMountUpdate(channelJid, mounted);
+    commitChannelMountUpdate(channelJid, mounted, {
+      clearMatchingMainOwnerFolder: previousWorkspaceFolder,
+    });
     return { ...resolved, updated: mounted };
   }
 
@@ -715,8 +725,17 @@ export function buildUnmountUpdate(
 export function commitChannelMountUpdate(
   channelJid: string,
   updated: RegisteredGroup,
+  options: { clearMatchingMainOwnerFolder?: string } = {},
 ): void {
-  setRegisteredGroup(channelJid, updated);
+  if (options.clearMatchingMainOwnerFolder) {
+    setRegisteredGroupAndClearMatchingMainOwner(
+      channelJid,
+      updated,
+      options.clearMatchingMainOwnerFolder,
+    );
+  } else {
+    setRegisteredGroup(channelJid, updated);
+  }
   const deps = getWebDeps();
   if (!deps) return;
   const groups = deps.getRegisteredGroups();

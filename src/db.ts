@@ -2526,77 +2526,81 @@ export function initDatabase(): void {
  * message cannot keep delivering into that private chat.
  */
 export function migrateWecomDirectWorkspaceMountsToSessions(): number {
-  const groups = getAllRegisteredGroups();
-  let migrated = 0;
+  return db
+    .transaction(() => {
+      const groups = getAllRegisteredGroups();
+      let migrated = 0;
 
-  for (const [jid, group] of Object.entries(groups)) {
-    if (!jid.startsWith('wecom:c2c:')) continue;
-    if (!group.target_main_jid || group.target_agent_id) continue;
+      for (const [jid, group] of Object.entries(groups)) {
+        if (!jid.startsWith('wecom:c2c:')) continue;
+        if (!group.target_main_jid || group.target_agent_id) continue;
 
-    const workspaceJid = resolveWorkspaceJidForMount(group.target_main_jid);
-    if (!workspaceJid) continue;
-    const workspace = getRegisteredGroup(workspaceJid);
-    if (!workspace) continue;
+        const workspaceJid = resolveWorkspaceJidForMount(group.target_main_jid);
+        if (!workspaceJid) continue;
+        const workspace = getRegisteredGroup(workspaceJid);
+        if (!workspace) continue;
 
-    const conversationJid = channelConversationJid(jid);
-    const reusable = listAgentsByJid(workspaceJid).find(
-      (agent) =>
-        agent.source_kind === 'channel_direct' &&
-        agent.last_im_jid &&
-        (agent.last_im_jid === conversationJid ||
-          channelConversationJid(agent.last_im_jid) === conversationJid),
-    );
+        const conversationJid = channelConversationJid(jid);
+        const reusable = listAgentsByJid(workspaceJid).find(
+          (agent) =>
+            agent.source_kind === 'channel_direct' &&
+            agent.last_im_jid &&
+            (agent.last_im_jid === conversationJid ||
+              channelConversationJid(agent.last_im_jid) === conversationJid),
+        );
 
-    const now = new Date().toISOString();
-    const agent =
-      reusable ??
-      (() => {
-        const created: SubAgent = {
-          id: crypto.randomUUID(),
-          group_folder: workspace.folder,
-          chat_jid: workspaceJid,
-          name: group.name || conversationJid,
-          prompt: '',
-          status: 'idle',
-          kind: 'conversation',
-          created_by: group.created_by ?? workspace.created_by ?? null,
-          created_at: now,
-          completed_at: null,
-          result_summary: null,
-          last_im_jid: conversationJid,
-          spawned_from_jid: null,
-          source_kind: 'channel_direct',
-          last_active_at: now,
-        };
-        createAgent(created);
-        const virtualChatJid = `${workspaceJid}#agent:${created.id}`;
-        ensureChatExists(virtualChatJid);
-        updateChatName(virtualChatJid, created.name);
-        return created;
-      })();
+        const now = new Date().toISOString();
+        const agent =
+          reusable ??
+          (() => {
+            const created: SubAgent = {
+              id: crypto.randomUUID(),
+              group_folder: workspace.folder,
+              chat_jid: workspaceJid,
+              name: group.name || conversationJid,
+              prompt: '',
+              status: 'idle',
+              kind: 'conversation',
+              created_by: group.created_by ?? workspace.created_by ?? null,
+              created_at: now,
+              completed_at: null,
+              result_summary: null,
+              last_im_jid: conversationJid,
+              spawned_from_jid: null,
+              source_kind: 'channel_direct',
+              last_active_at: now,
+            };
+            createAgent(created);
+            const virtualChatJid = `${workspaceJid}#agent:${created.id}`;
+            ensureChatExists(virtualChatJid);
+            updateChatName(virtualChatJid, created.name);
+            return created;
+          })();
 
-    setRegisteredGroup(jid, {
-      ...group,
-      target_agent_id: agent.id,
-      target_main_jid: undefined,
-      binding_mode: 'single_context',
-    });
+        setRegisteredGroup(jid, {
+          ...group,
+          target_agent_id: agent.id,
+          target_main_jid: undefined,
+          binding_mode: 'single_context',
+        });
 
-    const ownerJid = getSessionChannelOwner(workspace.folder, null);
-    if (ownerJid && channelConversationJid(ownerJid) === conversationJid) {
-      clearSessionChannelOwner(workspace.folder, null);
-    }
+        const ownerJid = getSessionChannelOwner(workspace.folder, null);
+        if (ownerJid && channelConversationJid(ownerJid) === conversationJid) {
+          clearSessionChannelOwner(workspace.folder, null);
+        }
 
-    migrated += 1;
-  }
+        migrated += 1;
+      }
 
-  if (migrated > 0) {
-    logger.info(
-      { migrated },
-      'Migrated WeCom direct chats off shared workspace main mounts',
-    );
-  }
-  return migrated;
+      if (migrated > 0) {
+        logger.info(
+          { migrated },
+          'Migrated WeCom direct chats off shared workspace main mounts',
+        );
+      }
+      return migrated;
+    })
+    .immediate();
 }
 
 /**
@@ -11111,6 +11115,28 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
 }
 
 /**
+ * Persist a channel reroute and release a stale workspace-main owner in one
+ * transaction. The owner is cleared only when it belongs to the same canonical
+ * direct conversation, so unrelated channels cannot lose their sticky route.
+ */
+export function setRegisteredGroupAndClearMatchingMainOwner(
+  jid: string,
+  group: RegisteredGroup,
+  previousWorkspaceFolder: string,
+): void {
+  db.transaction(() => {
+    setRegisteredGroup(jid, group);
+    const ownerJid = getSessionChannelOwner(previousWorkspaceFolder, null);
+    if (
+      ownerJid &&
+      channelConversationJid(ownerJid) === channelConversationJid(jid)
+    ) {
+      clearSessionChannelOwner(previousWorkspaceFolder, null);
+    }
+  })();
+}
+
+/**
  * Refresh the provider-hosted avatar for an already registered external chat.
  * Discovery invokes onNewChat first, so a missing row means the chat was not
  * admitted and must not be created as a side effect of avatar synchronization.
@@ -12086,12 +12112,18 @@ export function deleteGroupData(
      * Callers update their live routing cache only after this transaction
      * succeeds.
      */
-    channelUpdates?: Array<{ jid: string; group: RegisteredGroup }>;
+    channelUpdates?:
+      | Array<{ jid: string; group: RegisteredGroup }>
+      | (() => Array<{ jid: string; group: RegisteredGroup }>);
   } = {},
 ): void {
   const tx = db.transaction(() => {
     const legacyMainJid = `web:${folder}`;
-    for (const update of options.channelUpdates ?? []) {
+    const channelUpdates =
+      typeof options.channelUpdates === 'function'
+        ? options.channelUpdates()
+        : (options.channelUpdates ?? []);
+    for (const update of channelUpdates) {
       setRegisteredGroup(update.jid, update.group);
     }
     db.prepare(

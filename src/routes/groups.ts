@@ -94,8 +94,10 @@ import { getChannelType } from '../im-channel.js';
 import {
   buildNativeThreadWorkspaceUpdate,
   buildUnmountUpdate,
+  ensureDirectChannelSessionMount,
   resolveDefaultChannelMountForWorkspaceDeletion,
 } from '../channel-mount-service.js';
+import { resolveChannelConversationKind } from '../channel-conversation-kind.js';
 import {
   AdditionalMountValidationError,
   loadMountAllowlist,
@@ -1790,37 +1792,51 @@ groupRoutes.delete('/:jid', authMiddleware, async (c) => {
       group: RegisteredGroup;
     }> = [];
     const nativeThreadTargets = new Set<string>();
-    if (confirmedChannelUnbind) {
-      for (const channelJid of freshBindingSummary.mountedChannelJids) {
-        const channelGroup = getRegisteredGroup(channelJid);
-        if (!channelGroup) continue;
-        const restored = resolveDefaultChannelMountForWorkspaceDeletion(
-          channelJid,
-          channelGroup,
-          channelGroup.created_by ?? authUser.id,
-          excludedWorkspaceJids,
-        );
-        if (restored.status === 'resolved') {
-          channelUpdates.push({
-            jid: channelJid,
-            group: restored.updated,
-          });
-          if (restored.routingMode === 'thread_map') {
-            nativeThreadTargets.add(restored.workspaceJid);
-          }
-        } else {
-          // A damaged legacy account may have no viable default workspace.
-          // Clearing its route is still safer than leaving a dangling pointer
-          // to the workspace that is about to disappear.
-          channelUpdates.push({
-            jid: channelJid,
-            group: buildUnmountUpdate(channelGroup),
-          });
-        }
-      }
-    }
 
-    deleteGroupData(jid, freshExisting.folder, { channelUpdates });
+    deleteGroupData(jid, freshExisting.folder, {
+      // Resolve and create any fallback direct sessions inside the same SQLite
+      // transaction as the workspace deletion. A crash must not leave a DM on
+      // a shared main mount or publish a half-created session route.
+      channelUpdates: () => {
+        if (!confirmedChannelUnbind) return channelUpdates;
+        for (const channelJid of freshBindingSummary.mountedChannelJids) {
+          const channelGroup = getRegisteredGroup(channelJid);
+          if (!channelGroup) continue;
+          const restored = resolveDefaultChannelMountForWorkspaceDeletion(
+            channelJid,
+            channelGroup,
+            channelGroup.created_by ?? authUser.id,
+            excludedWorkspaceJids,
+          );
+          if (restored.status === 'resolved') {
+            const updated =
+              resolveChannelConversationKind(channelJid) === 'direct'
+                ? ensureDirectChannelSessionMount({
+                    sourceJid: channelJid,
+                    group: restored.updated,
+                    workspaceJid: restored.workspaceJid,
+                    userId: channelGroup.created_by ?? authUser.id,
+                    force: true,
+                    mountOptions: { replyPolicy: 'source_only' },
+                  })
+                : restored.updated;
+            channelUpdates.push({ jid: channelJid, group: updated });
+            if (restored.routingMode === 'thread_map') {
+              nativeThreadTargets.add(restored.workspaceJid);
+            }
+          } else {
+            // A damaged legacy account may have no viable default workspace.
+            // Clearing its route is still safer than leaving a dangling pointer
+            // to the workspace that is about to disappear.
+            channelUpdates.push({
+              jid: channelJid,
+              group: buildUnmountUpdate(channelGroup),
+            });
+          }
+        }
+        return channelUpdates;
+      },
+    });
     deleteCommitted = true;
 
     const registeredGroups = deps.getRegisteredGroups();

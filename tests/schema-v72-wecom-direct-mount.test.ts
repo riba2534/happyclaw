@@ -100,6 +100,34 @@ describe('schema v72 WeCom direct workspace-mount migration', () => {
       dmJid,
     );
 
+    const failureInjector = new Database(databasePath);
+    failureInjector.exec(`
+      CREATE TRIGGER fail_wecom_direct_mount_update
+      BEFORE UPDATE OF target_agent_id ON registered_groups
+      WHEN OLD.jid = '${dmJid}'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected migration failure');
+      END;
+    `);
+    failureInjector.close();
+
+    expect(() => db.migrateWecomDirectWorkspaceMountsToSessions()).toThrow(
+      'injected migration failure',
+    );
+    expect(db.getRegisteredGroup(dmJid)).toMatchObject({
+      target_main_jid: legacyFolderJid,
+    });
+    expect(
+      db
+        .listAgentsByJid(workspaceJid)
+        .filter((agent) => agent.source_kind === 'channel_direct'),
+    ).toHaveLength(0);
+    expect(db.getSessionChannelOwner('wecom-legacy-ws')).toBe(dmJid);
+
+    const triggerCleanup = new Database(databasePath);
+    triggerCleanup.exec('DROP TRIGGER fail_wecom_direct_mount_update');
+    triggerCleanup.close();
+
     expect(db.migrateWecomDirectWorkspaceMountsToSessions()).toBe(1);
     expect(db.migrateWecomDirectWorkspaceMountsToSessions()).toBe(0);
 
