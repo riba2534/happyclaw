@@ -50,6 +50,7 @@ import authRoutes from './routes/auth.js';
 import groupRoutes from './routes/groups.js';
 import memoryRoutes from './routes/memory.js';
 import configRoutes, { injectConfigDeps } from './routes/config.js';
+import { codexFacadeRoutes } from './codex-facade.js';
 import tasksRoutes from './routes/tasks.js';
 import adminRoutes from './routes/admin.js';
 import fileRoutes from './routes/files.js';
@@ -271,6 +272,7 @@ app.route('/api/groups', groupRoutes);
 app.route('/api/groups', fileRoutes); // File routes also under /api/groups
 app.route('/api/memory', memoryRoutes);
 app.route('/api/config', configRoutes);
+app.route('/', codexFacadeRoutes);
 app.route('/api/tasks', tasksRoutes);
 app.route('/api/skills', skillsRoutes);
 app.route('/api/admin', adminRoutes);

@@ -41,6 +41,7 @@ import {
   buildContainerEnvLines,
   clearInheritedClaudeProviderEnv,
   getClaudeProviderConfig,
+  getRunnerProviderConfig,
   getContainerEnvConfig,
   getDefaultProviderId,
   getEnabledProviders,
@@ -56,6 +57,7 @@ import {
   buildClaudeAiOauthPayload,
   updateProviderOAuthCredentialsIfCurrent,
 } from './runtime-config.js';
+import { rewriteCodexFacadeEnvForContainer } from './codex-runtime.js';
 import {
   removeClaudeKeychainOAuth,
   syncClaudeKeychainOAuth,
@@ -1731,16 +1733,18 @@ export function buildVolumeMounts(
       : null,
   );
   fs.mkdirSync(envDir, { recursive: true });
-  const globalConfig = resolvedProvider?.config ?? getClaudeProviderConfig();
+  const globalConfig = resolvedProvider?.config ?? getRunnerProviderConfig();
   const containerOverride = getContainerEnvConfig(group.folder);
   const effectiveContainerOverride = resolvedProvider
     ? { customEnv: containerOverride.customEnv }
     : containerOverride;
-  const envLines = buildContainerEnvLines(
+  const builtEnvLines = buildContainerEnvLines(
     globalConfig,
     effectiveContainerOverride,
     resolvedProvider?.customEnv,
   );
+  const facadeRewrite = rewriteCodexFacadeEnvForContainer(builtEnvLines);
+  const envLines = facadeRewrite.lines;
   const agentEffort = resolveAgentSdkEffort(agentProfile?.runtimePolicy);
   removeProviderEffortEnv(envLines, agentEffort);
   // Agent policy is authoritative; do not inherit global/custom runtime env.
@@ -2244,12 +2248,21 @@ export async function runContainerAgent(
       ? `-${sessionAgentId.replace(/[^a-zA-Z0-9-]/g, '-')}`
       : '';
     const containerName = `happyclaw-${safeName}${agentSuffix}-${Date.now()}`;
+    const runnerConfig = resolvedProvider?.config ?? getRunnerProviderConfig();
+    const facadeNetwork = rewriteCodexFacadeEnvForContainer(
+      runnerConfig.anthropicBaseUrl
+        ? [`ANTHROPIC_BASE_URL=${runnerConfig.anthropicBaseUrl}`]
+        : [],
+    );
     const containerArgs = buildContainerArgs(
       mounts,
       containerName,
       TIMEZONE,
       detectContainerHostIdentity(),
-      { addHostGateway: containerProxy.addHostGateway },
+      {
+        addHostGateway:
+          containerProxy.addHostGateway || facadeNetwork.addHostGateway,
+      },
     );
 
     logger.debug(
@@ -3026,7 +3039,7 @@ export async function runHostAgent(
     input.agentProfile?.modelConfigId,
   );
   const globalConfig =
-    hostPoolResult?.resolved.config ?? getClaudeProviderConfig();
+    hostPoolResult?.resolved.config ?? getRunnerProviderConfig();
   let hostProviderFailureReported = false;
   let hostProviderFailureTerminal: boolean | undefined;
   let hostProviderFailureMaintenance = false;

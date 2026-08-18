@@ -5,6 +5,12 @@ import os from 'os';
 
 import { ASSISTANT_NAME, DATA_DIR } from './config.js';
 import { logger } from './logger.js';
+import type { CodexCredential } from './codex-translator.js';
+import {
+  CODEX_DEFAULT_MODEL,
+  getCodexFacadeBaseUrl,
+  issueCodexRunnerToken,
+} from './codex-runtime.js';
 
 const MAX_FIELD_LENGTH = 2000;
 const CURRENT_CONFIG_VERSION = 3;
@@ -227,6 +233,9 @@ export interface ClaudeOAuthCredentials {
   subscriptionType?: string; // e.g. 'max', 'pro' — written to .credentials.json if present
 }
 
+export type ProviderType = 'official' | 'third_party' | 'codex';
+export type CodexOAuthCredentials = CodexCredential;
+
 export interface OAuthUsageBucket {
   utilization: number; // 0-100
   resets_at: string; // ISO 8601
@@ -332,6 +341,7 @@ interface SecretPayload {
   anthropicApiKey: string;
   claudeCodeOauthToken: string;
   claudeOAuthCredentials?: ClaudeOAuthCredentials | null;
+  codexOAuthCredentials?: CodexOAuthCredentials | null;
 }
 
 interface EncryptedSecrets {
@@ -435,7 +445,7 @@ const DEFAULT_BALANCING_CONFIG: BalancingConfig = {
 interface StoredProviderV4 {
   id: string;
   name: string;
-  type: 'official' | 'third_party';
+  type: ProviderType;
   enabled: boolean;
   weight: number;
   anthropicBaseUrl: string;
@@ -466,7 +476,7 @@ interface StoredClaudeProviderConfigV5 {
 export interface UnifiedProvider {
   id: string;
   name: string;
-  type: 'official' | 'third_party';
+  type: ProviderType;
   enabled: boolean;
   weight: number;
   anthropicBaseUrl: string;
@@ -475,6 +485,7 @@ export interface UnifiedProvider {
   anthropicApiKey: string;
   claudeCodeOauthToken: string;
   claudeOAuthCredentials: ClaudeOAuthCredentials | null;
+  codexOAuthCredentials: CodexOAuthCredentials | null;
   customEnv: Record<string, string>;
   updatedAt: string;
 }
@@ -483,7 +494,7 @@ export interface UnifiedProvider {
 export interface UnifiedProviderPublic {
   id: string;
   name: string;
-  type: 'official' | 'third_party';
+  type: ProviderType;
   enabled: boolean;
   weight: number;
   anthropicBaseUrl: string;
@@ -497,6 +508,9 @@ export interface UnifiedProviderPublic {
   hasClaudeOAuthCredentials: boolean;
   claudeOAuthCredentialsExpiresAt: number | null;
   claudeOAuthCredentialsAccessTokenMasked: string | null;
+  hasCodexOAuthCredentials: boolean;
+  codexOAuthEmailMasked: string | null;
+  codexOAuthPlanType: string | null;
   customEnv: Record<string, string>;
   updatedAt: string;
 }
@@ -764,6 +778,27 @@ function decryptSecrets(secrets: EncryptedSecrets): SecretPayload {
         scopes: Array.isArray(creds.scopes) ? (creds.scopes as string[]) : [],
         ...(typeof creds.subscriptionType === 'string'
           ? { subscriptionType: creds.subscriptionType }
+          : {}),
+      };
+    }
+  }
+  if (
+    parsed.codexOAuthCredentials &&
+    typeof parsed.codexOAuthCredentials === 'object'
+  ) {
+    const creds = parsed.codexOAuthCredentials as Record<string, unknown>;
+    if (typeof creds.accessToken === 'string' && creds.accessToken) {
+      result.codexOAuthCredentials = {
+        accessToken: creds.accessToken,
+        refreshToken:
+          typeof creds.refreshToken === 'string' ? creds.refreshToken : '',
+        accountId: typeof creds.accountId === 'string' ? creds.accountId : '',
+        ...(typeof creds.idToken === 'string'
+          ? { idToken: creds.idToken }
+          : {}),
+        ...(typeof creds.email === 'string' ? { email: creds.email } : {}),
+        ...(typeof creds.planType === 'string'
+          ? { planType: creds.planType }
           : {}),
       };
     }
@@ -1132,6 +1167,7 @@ function toStoredProviderV4(provider: UnifiedProvider): StoredProviderV4 {
     anthropicApiKey: provider.anthropicApiKey || '',
     claudeCodeOauthToken: provider.claudeCodeOauthToken || '',
     claudeOAuthCredentials: provider.claudeOAuthCredentials ?? null,
+    codexOAuthCredentials: provider.codexOAuthCredentials ?? null,
   };
   const sanitizedEnv = sanitizeCustomEnvMap(provider.customEnv || {}, {
     skipReservedClaudeKeys: true,
@@ -1152,12 +1188,19 @@ function toStoredProviderV4(provider: UnifiedProvider): StoredProviderV4 {
   };
 }
 
+function normalizeStoredProviderType(type: unknown): ProviderType {
+  if (type === 'codex' || type === 'third_party' || type === 'official') {
+    return type;
+  }
+  return 'official';
+}
+
 function fromStoredProviderV4(stored: StoredProviderV4): UnifiedProvider {
   const secrets = decryptSecrets(stored.secrets);
   return {
     id: stored.id,
     name: stored.name,
-    type: stored.type,
+    type: normalizeStoredProviderType(stored.type),
     enabled: stored.enabled,
     weight: Math.max(1, Math.min(100, stored.weight || 1)),
     anthropicBaseUrl: stored.anthropicBaseUrl || '',
@@ -1166,6 +1209,7 @@ function fromStoredProviderV4(stored: StoredProviderV4): UnifiedProvider {
     anthropicApiKey: secrets.anthropicApiKey || '',
     claudeCodeOauthToken: secrets.claudeCodeOauthToken || '',
     claudeOAuthCredentials: secrets.claudeOAuthCredentials ?? null,
+    codexOAuthCredentials: secrets.codexOAuthCredentials ?? null,
     customEnv: sanitizeCustomEnvMap(stored.customEnv || {}, {
       skipReservedClaudeKeys: true,
     }),
@@ -1199,6 +1243,7 @@ function migrateV3toV4(v3: ClaudeStoredStateV3Resolved): {
       anthropicApiKey: v3.officialSecrets.anthropicApiKey,
       claudeCodeOauthToken: v3.officialSecrets.claudeCodeOauthToken,
       claudeOAuthCredentials: v3.officialSecrets.claudeOAuthCredentials ?? null,
+      codexOAuthCredentials: null,
       customEnv: v3.officialCustomEnv || {},
       updatedAt: v3.officialUpdatedAt || now,
     });
@@ -1219,6 +1264,7 @@ function migrateV3toV4(v3: ClaudeStoredStateV3Resolved): {
       anthropicApiKey: '',
       claudeCodeOauthToken: '',
       claudeOAuthCredentials: null,
+      codexOAuthCredentials: null,
       customEnv: profile.customEnv || {},
       updatedAt: profile.updatedAt || now,
     });
@@ -1449,13 +1495,14 @@ export function saveBalancingConfig(
 
 export function createProvider(input: {
   name: string;
-  type: 'official' | 'third_party';
+  type: ProviderType;
   anthropicBaseUrl?: string;
   anthropicAuthToken?: string;
   anthropicModel?: string;
   anthropicApiKey?: string;
   claudeCodeOauthToken?: string;
   claudeOAuthCredentials?: ClaudeOAuthCredentials | null;
+  codexOAuthCredentials?: CodexOAuthCredentials | null;
   customEnv?: Record<string, string>;
   weight?: number;
   enabled?: boolean;
@@ -1493,11 +1540,22 @@ export function createProvider(input: {
       ? normalizeSecret(input.claudeCodeOauthToken, 'claudeCodeOauthToken')
       : '',
     claudeOAuthCredentials: input.claudeOAuthCredentials ?? null,
+    codexOAuthCredentials: input.codexOAuthCredentials ?? null,
     customEnv: sanitizeCustomEnvMap(input.customEnv || {}, {
       skipReservedClaudeKeys: true,
     }),
     updatedAt: now,
   };
+  if (provider.type === 'codex') {
+    provider.anthropicBaseUrl = '';
+    provider.anthropicAuthToken = '';
+    provider.anthropicApiKey = '';
+    provider.claudeCodeOauthToken = '';
+    provider.claudeOAuthCredentials = null;
+    if (!provider.anthropicModel) {
+      provider.anthropicModel = CODEX_DEFAULT_MODEL;
+    }
+  }
 
   state.providers.push(provider);
   const defaultProviderId =
@@ -1563,6 +1621,8 @@ export function updateProviderSecrets(
     clearClaudeCodeOauthToken?: boolean;
     claudeOAuthCredentials?: ClaudeOAuthCredentials;
     clearClaudeOAuthCredentials?: boolean;
+    codexOAuthCredentials?: CodexOAuthCredentials;
+    clearCodexOAuthCredentials?: boolean;
   },
 ): UnifiedProvider {
   const state = readStoredStateV4();
@@ -1607,6 +1667,12 @@ export function updateProviderSecrets(
     updated.claudeCodeOauthToken = '';
   } else if (secrets.clearClaudeOAuthCredentials) {
     updated.claudeOAuthCredentials = null;
+  }
+
+  if (secrets.codexOAuthCredentials) {
+    updated.codexOAuthCredentials = secrets.codexOAuthCredentials;
+  } else if (secrets.clearCodexOAuthCredentials) {
+    updated.codexOAuthCredentials = null;
   }
 
   state.providers[idx] = updated;
@@ -1742,6 +1808,63 @@ export function providerToConfig(
   };
 }
 
+/** Runner env for a provider. Codex is the only type that uses the local facade. */
+export function toRunnerProviderConfig(
+  provider: UnifiedProvider,
+): ClaudeProviderConfig {
+  if (provider.type === 'codex') {
+    return {
+      anthropicBaseUrl: getCodexFacadeBaseUrl(),
+      anthropicAuthToken: issueCodexRunnerToken(provider.id),
+      anthropicApiKey: '',
+      claudeCodeOauthToken: '',
+      claudeOAuthCredentials: null,
+      anthropicModel: provider.anthropicModel || CODEX_DEFAULT_MODEL,
+      updatedAt: provider.updatedAt,
+    };
+  }
+  return providerToConfig(provider);
+}
+
+export function getRunnerProviderConfig(): ClaudeProviderConfig {
+  const state = readStoredStateV4();
+  if (state) {
+    const selected =
+      state.providers.find((p) => p.id === state.defaultProviderId) ??
+      state.providers.find((p) => p.enabled) ??
+      state.providers[0];
+    if (selected) return toRunnerProviderConfig(selected);
+  }
+  return defaultsFromEnv();
+}
+
+export function updateProviderCodexCredentialsIfCurrent(
+  id: string,
+  expected: CodexOAuthCredentials,
+  refreshed: CodexOAuthCredentials,
+): boolean {
+  const state = readStoredStateV4();
+  if (!state) throw new Error('Claude 配置不存在');
+  const idx = state.providers.findIndex((provider) => provider.id === id);
+  if (idx < 0) throw new Error('未找到指定供应商');
+  const current = state.providers[idx];
+  const currentCred = current.codexOAuthCredentials;
+  if (
+    !currentCred ||
+    currentCred.accessToken !== expected.accessToken ||
+    currentCred.refreshToken !== expected.refreshToken
+  ) {
+    return false;
+  }
+  state.providers[idx] = {
+    ...current,
+    codexOAuthCredentials: { ...refreshed },
+    updatedAt: new Date().toISOString(),
+  };
+  writeStoredStateV4(state.providers, state.balancing, state.defaultProviderId);
+  return true;
+}
+
 /** Convert UnifiedProvider to public (masked) representation */
 export function toPublicProvider(
   provider: UnifiedProvider,
@@ -1766,6 +1889,11 @@ export function toPublicProvider(
     claudeOAuthCredentialsAccessTokenMasked: provider.claudeOAuthCredentials
       ? maskSecret(provider.claudeOAuthCredentials.accessToken)
       : null,
+    hasCodexOAuthCredentials: !!provider.codexOAuthCredentials,
+    codexOAuthEmailMasked: provider.codexOAuthCredentials?.email
+      ? maskSecret(provider.codexOAuthCredentials.email)
+      : null,
+    codexOAuthPlanType: provider.codexOAuthCredentials?.planType ?? null,
     customEnv: provider.customEnv || {},
     updatedAt: provider.updatedAt,
   };
@@ -1792,13 +1920,13 @@ export function resolveProviderById(providerId: string): {
       state.providers.find((p) => p.enabled) || state.providers[0];
     if (!fallback) return { config: defaultsFromEnv(), customEnv: {} };
     return {
-      config: providerToConfig(fallback),
+      config: toRunnerProviderConfig(fallback),
       customEnv: fallback.customEnv,
     };
   }
 
   return {
-    config: providerToConfig(provider),
+    config: toRunnerProviderConfig(provider),
     customEnv: provider.customEnv,
   };
 }

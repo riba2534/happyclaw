@@ -128,6 +128,15 @@ import {
   updateAllSessionCredentials,
   appendImConfigAudit,
 } from '../runtime-config.js';
+import type { CodexOAuthCredentials } from '../runtime-config.js';
+import {
+  CODEX_OAUTH_TTL_MS,
+  exchangeCodexDeviceGrant,
+  pollCodexDeviceGrant,
+  requestCodexDeviceCode,
+  verificationUrl,
+} from '../codex-oauth.js';
+import { CODEX_DEFAULT_MODEL } from '../codex-runtime.js';
 import type {
   ClaudeOAuthCredentials,
   CachedOAuthUsage,
@@ -755,11 +764,33 @@ interface OAuthFlow {
 }
 const oauthFlows = new Map<string, OAuthFlow>();
 
+interface CodexOAuthFlow {
+  id: string;
+  verificationUrl: string;
+  userCode: string;
+  status: 'pending' | 'completed' | 'failed' | 'expired';
+  accountName?: string;
+  providerId?: string;
+  error?: string;
+  expiresAt: number;
+  targetProviderId?: string;
+}
+const codexOAuthFlows = new Map<string, CodexOAuthFlow>();
+
 // Periodic cleanup of expired flows
 setInterval(() => {
   const now = Date.now();
   for (const [key, flow] of oauthFlows) {
     if (flow.expiresAt < now) oauthFlows.delete(key);
+  }
+  for (const [key, flow] of codexOAuthFlows) {
+    if (flow.expiresAt < now && flow.status === 'pending') {
+      flow.status = 'expired';
+      flow.error = 'Authorization expired';
+    }
+    if (flow.expiresAt + 60 * 60 * 1000 < now) {
+      codexOAuthFlows.delete(key);
+    }
   }
 }, 60_000);
 
@@ -1622,6 +1653,134 @@ configRoutes.post(
     }
   },
 );
+
+// ─── POST /codex/oauth/start — Codex device-code OAuth ─────
+configRoutes.post(
+  '/codex/oauth/start',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const targetProviderId =
+      typeof (body as Record<string, unknown>).targetProviderId === 'string'
+        ? ((body as Record<string, unknown>).targetProviderId as string)
+        : undefined;
+    try {
+      const device = await requestCodexDeviceCode();
+      const id = `oa_${randomBytes(12).toString('hex')}`;
+      const flow: CodexOAuthFlow = {
+        id,
+        verificationUrl: verificationUrl(),
+        userCode: device.userCode,
+        status: 'pending',
+        expiresAt: Date.now() + CODEX_OAUTH_TTL_MS,
+        targetProviderId,
+      };
+      codexOAuthFlows.set(id, flow);
+      void completeCodexOAuth(id, device).catch((err) => {
+        logger.warn({ err, id }, 'Codex OAuth background poll failed');
+      });
+      return c.json({
+        id: flow.id,
+        verificationUrl: flow.verificationUrl,
+        userCode: flow.userCode,
+        status: flow.status,
+        expiresAt: new Date(flow.expiresAt).toISOString(),
+      });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Failed to start Codex OAuth';
+      logger.warn({ err }, 'Codex OAuth start failed');
+      return c.json({ error: message }, 502);
+    }
+  },
+);
+
+configRoutes.get(
+  '/codex/oauth/:id',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const id = c.req.param('id');
+    const flow = codexOAuthFlows.get(id);
+    if (!flow) {
+      return c.json({ error: 'Authorization flow not found or expired' }, 404);
+    }
+    if (flow.status === 'pending' && Date.now() > flow.expiresAt) {
+      flow.status = 'expired';
+      flow.error = 'Authorization expired';
+    }
+    return c.json({
+      id: flow.id,
+      verificationUrl: flow.verificationUrl,
+      userCode: flow.userCode,
+      status: flow.status,
+      accountName: flow.accountName,
+      providerId: flow.providerId,
+      error: flow.error,
+      expiresAt: new Date(flow.expiresAt).toISOString(),
+    });
+  },
+);
+
+async function completeCodexOAuth(
+  flowId: string,
+  device: { deviceAuthId: string; userCode: string; interval: number },
+): Promise<void> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CODEX_OAUTH_TTL_MS);
+  try {
+    const grant = await pollCodexDeviceGrant(device, {
+      signal: controller.signal,
+    });
+    const credential = await exchangeCodexDeviceGrant(grant);
+    const actorFlow = codexOAuthFlows.get(flowId);
+    const provider = persistCodexOAuthProvider(
+      credential,
+      actorFlow?.targetProviderId,
+    );
+    const flow = codexOAuthFlows.get(flowId);
+    if (flow) {
+      flow.status = 'completed';
+      flow.providerId = provider.id;
+      flow.accountName = provider.name;
+    }
+  } catch (err) {
+    const flow = codexOAuthFlows.get(flowId);
+    if (flow) {
+      const expired =
+        err instanceof Error &&
+        (err.name === 'AbortError' || /expired/i.test(err.message));
+      flow.status = expired ? 'expired' : 'failed';
+      flow.error = expired
+        ? 'Authorization expired'
+        : err instanceof Error
+          ? err.message
+          : 'Codex authorization failed';
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function persistCodexOAuthProvider(
+  credential: CodexOAuthCredentials,
+  targetProviderId?: string,
+) {
+  if (targetProviderId) {
+    return updateProviderSecrets(targetProviderId, {
+      codexOAuthCredentials: credential,
+    });
+  }
+  const name = credential.email || 'ChatGPT Codex';
+  return createProvider({
+    name,
+    type: 'codex',
+    anthropicModel: CODEX_DEFAULT_MODEL,
+    codexOAuthCredentials: credential,
+    enabled: true,
+  });
+}
 
 // ─── PUT /claude/custom-env — 更新当前启用供应商的自定义环境变量 ─────
 configRoutes.put(

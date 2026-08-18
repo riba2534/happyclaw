@@ -30,7 +30,7 @@ import {
 import type { ProviderWithHealth, EnvRow } from './types';
 import { getErrorMessage } from './types';
 
-type ProviderType = 'official' | 'third_party';
+type ProviderType = 'official' | 'third_party' | 'codex';
 type OfficialAuthTab = 'oauth' | 'setup_token' | 'api_key';
 
 const RESERVED_ENV_KEYS = new Set([
@@ -130,6 +130,10 @@ export function ProviderEditor({
   const [oauthState, setOauthState] = useState<string | null>(null);
   const [oauthCode, setOauthCode] = useState('');
   const [oauthExchanging, setOauthExchanging] = useState(false);
+  const [codexFlowId, setCodexFlowId] = useState<string | null>(null);
+  const [codexUserCode, setCodexUserCode] = useState('');
+  const [codexVerifyUrl, setCodexVerifyUrl] = useState('');
+  const [codexStatus, setCodexStatus] = useState<string | null>(null);
 
   // 第三方认证
   const [authToken, setAuthToken] = useState('');
@@ -166,6 +170,10 @@ export function ProviderEditor({
       setApiKey('');
       setOauthState(null);
       setOauthCode('');
+      setCodexFlowId(null);
+      setCodexUserCode('');
+      setCodexVerifyUrl('');
+      setCodexStatus(null);
       setAuthToken('');
       setAuthTokenDirty(false);
       setClearTokenOnSave(false);
@@ -297,12 +305,72 @@ export function ProviderEditor({
     }
   }, [oauthState, oauthCode, setError, setNotice, onSave]);
 
+  const handleCodexOAuthStart = useCallback(async () => {
+    setOauthLoading(true);
+    setError(null);
+    try {
+      const body: Record<string, unknown> = {};
+      if (!isCreate && provider) {
+        body.targetProviderId = provider.id;
+      }
+      const data = await api.post<{
+        id: string;
+        verificationUrl: string;
+        userCode: string;
+        status: string;
+      }>('/api/config/codex/oauth/start', body);
+      setCodexFlowId(data.id);
+      setCodexUserCode(data.userCode);
+      setCodexVerifyUrl(data.verificationUrl);
+      setCodexStatus(data.status);
+      window.open(data.verificationUrl, '_blank', 'noopener,noreferrer');
+    } catch (err) {
+      setError(getErrorMessage(err, 'Codex 授权启动失败'));
+    } finally {
+      setOauthLoading(false);
+    }
+  }, [isCreate, provider, setError]);
+
+  useEffect(() => {
+    if (!codexFlowId || (codexStatus && codexStatus !== 'pending')) return;
+    let cancelled = false;
+    const timer = window.setInterval(async () => {
+      try {
+        const data = await api.get<{
+          status: string;
+          accountName?: string;
+          error?: string;
+        }>(`/api/config/codex/oauth/${codexFlowId}`);
+        if (cancelled) return;
+        setCodexStatus(data.status);
+        if (data.status === 'completed') {
+          setNotice(
+            data.accountName
+              ? `Codex 已登录：${data.accountName}`
+              : 'Codex 登录成功，凭据已加密保存。',
+          );
+          onSave();
+        } else if (data.status === 'failed' || data.status === 'expired') {
+          setError(data.error || 'Codex 授权失败，请重新发起');
+        }
+      } catch {
+        // keep polling until expiry
+      }
+    }, 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [codexFlowId, codexStatus, onSave, setError, setNotice]);
+
   // ─── 保存 ──────────────────────────────────────────────────
   const handleSave = async () => {
     const normalizedModel =
       providerType === 'third_party'
         ? buildProviderModel(model, oneMillionContext)
-        : model.trim();
+        : providerType === 'codex'
+          ? model.trim() || 'gpt-5.6-sol'
+          : model.trim();
     if (providerType === 'third_party' && !normalizedModel) {
       setError('请填写第三方 API 支持的模型名称');
       return;
@@ -311,7 +379,9 @@ export function ProviderEditor({
       name.trim() ||
       (providerType === 'third_party'
         ? parseProviderModel(normalizedModel).model
-        : '');
+        : providerType === 'codex'
+          ? 'ChatGPT Codex'
+          : '');
     if (!trimmedName) {
       setError('请填写模型配置名称');
       return;
@@ -357,6 +427,8 @@ export function ProviderEditor({
           }
           createBody.anthropicBaseUrl = trimmedBaseUrl;
           createBody.anthropicAuthToken = trimmedToken;
+        } else if (providerType === 'codex') {
+          createBody.anthropicModel = normalizedModel;
         } else {
           // 官方模式 — 根据认证方式设置凭据
           if (authTab === 'setup_token') {
@@ -521,7 +593,9 @@ export function ProviderEditor({
           <DialogDescription className="text-left text-xs leading-5">
             {providerType === 'third_party'
               ? '填写端点、密钥和模型即可；Claude Code 运行参数会自动预填，也可在高级设置中调整。'
-              : '配置 Claude 官方认证方式与默认模型。'}
+              : providerType === 'codex'
+                ? '通过 ChatGPT 设备码登录 Codex。Runner 仍走 Anthropic Messages，由本机 facade 翻译。'
+                : '配置 Claude 官方认证方式与默认模型。'}
           </DialogDescription>
         </DialogHeader>
 
@@ -556,6 +630,18 @@ export function ProviderEditor({
                   }`}
                 >
                   第三方
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={providerType === 'codex'}
+                  onClick={() => setProviderType('codex')}
+                  className={`min-h-9 rounded-md px-3 py-1.5 text-sm transition-colors cursor-pointer ${
+                    providerType === 'codex'
+                      ? 'bg-background text-primary shadow-sm'
+                      : 'text-muted-foreground'
+                  }`}
+                >
+                  Codex
                 </button>
               </div>
             </div>
@@ -906,6 +992,84 @@ export function ProviderEditor({
                     </p>
                   </div>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {providerType === 'codex' && (
+            <div className="space-y-4">
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50/50 p-4 space-y-3 dark:border-emerald-800 dark:bg-emerald-950/20">
+                <div className="text-sm font-medium text-foreground">
+                  ChatGPT Codex（设备码登录）
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  浏览器只接触一次性验证码。Access / refresh token
+                  仅在服务端交换并加密入库，API 不返回明文。
+                </div>
+                {!isCreate && provider?.hasCodexOAuthCredentials && (
+                  <div className="rounded-md border border-emerald-200 bg-emerald-50/50 p-3 text-xs dark:border-emerald-800 dark:bg-emerald-950/30">
+                    <div className="text-emerald-700 dark:text-emerald-300">
+                      已绑定 {provider.codexOAuthEmailMasked || 'ChatGPT 订阅'}
+                      {provider.codexOAuthPlanType
+                        ? ` · ${provider.codexOAuthPlanType}`
+                        : ''}
+                    </div>
+                  </div>
+                )}
+                {!codexFlowId ? (
+                  <Button
+                    onClick={handleCodexOAuthStart}
+                    disabled={saving || oauthLoading}
+                  >
+                    {oauthLoading ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <ExternalLink className="size-4" />
+                    )}
+                    {!isCreate && provider?.hasCodexOAuthCredentials
+                      ? '重新登录 ChatGPT'
+                      : '登录 ChatGPT Codex'}
+                  </Button>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="text-xs text-amber-700 dark:text-amber-300">
+                      在 ChatGPT 打开验证页，输入代码{' '}
+                      <code className="rounded bg-muted px-1 font-mono">
+                        {codexUserCode}
+                      </code>
+                    </div>
+                    {codexVerifyUrl && (
+                      <a
+                        href={codexVerifyUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-teal-600 underline"
+                      >
+                        {codexVerifyUrl}
+                      </a>
+                    )}
+                    <div className="text-xs text-muted-foreground">
+                      状态：{codexStatus || 'pending'}
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div>
+                <label className="block text-xs text-muted-foreground mb-1">
+                  模型
+                </label>
+                <Input
+                  type="text"
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  disabled={saving}
+                  placeholder="gpt-5.6-sol"
+                  className="font-mono"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  默认 gpt-5.6-sol。Claude Agent SDK 经本机 Anthropic facade
+                  访问 Codex Responses。
+                </p>
               </div>
             </div>
           )}

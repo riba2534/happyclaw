@@ -1169,16 +1169,26 @@ const ProviderBaseUrlSchema = z
     { message: 'Base URL must be an HTTP(S) URL' },
   );
 
+export const CodexOAuthCredentialsSchema = z.object({
+  accessToken: z.string().min(1),
+  refreshToken: z.string().min(1),
+  accountId: z.string().min(1),
+  idToken: z.string().optional(),
+  email: z.string().optional(),
+  planType: z.string().optional(),
+});
+
 export const UnifiedProviderCreateSchema = z
   .object({
     name: z.string().min(1).max(64),
-    type: z.enum(['official', 'third_party']),
+    type: z.enum(['official', 'third_party', 'codex']),
     anthropicBaseUrl: ProviderBaseUrlSchema.optional(),
     anthropicAuthToken: z.string().max(2000).optional(),
     anthropicModel: z.string().max(128).optional(),
     anthropicApiKey: z.string().max(2000).optional(),
     claudeCodeOauthToken: z.string().max(2000).optional(),
     claudeOAuthCredentials: ClaudeOAuthCredentialsSchema.optional(),
+    codexOAuthCredentials: CodexOAuthCredentialsSchema.optional(),
     customEnv: z.record(z.string().max(256), z.string().max(4096)).optional(),
     weight: z.number().int().min(1).max(100).optional(),
     enabled: z.boolean().optional(),
@@ -1225,6 +1235,8 @@ export const UnifiedProviderSecretsSchema = z
     clearClaudeCodeOauthToken: z.boolean().optional(),
     claudeOAuthCredentials: ClaudeOAuthCredentialsSchema.optional(),
     clearClaudeOAuthCredentials: z.boolean().optional(),
+    codexOAuthCredentials: CodexOAuthCredentialsSchema.optional(),
+    clearCodexOAuthCredentials: z.boolean().optional(),
   })
   .refine(
     (data) => {
@@ -1236,7 +1248,9 @@ export const UnifiedProviderSecretsSchema = z
         typeof data.claudeCodeOauthToken === 'string' ||
         data.clearClaudeCodeOauthToken === true ||
         data.claudeOAuthCredentials !== undefined ||
-        data.clearClaudeOAuthCredentials === true
+        data.clearClaudeOAuthCredentials === true ||
+        data.codexOAuthCredentials !== undefined ||
+        data.clearCodexOAuthCredentials === true
       );
     },
     { message: 'At least one secret field must be provided' },

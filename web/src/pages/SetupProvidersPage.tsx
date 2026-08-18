@@ -12,7 +12,7 @@ import type {
 import { getErrorMessage } from '../components/settings/types';
 import { useAuthStore } from '../stores/auth';
 
-type ProviderMode = 'official' | 'third_party';
+type ProviderMode = 'official' | 'third_party' | 'codex';
 
 const RESERVED_ENV_KEYS = new Set([
   'ANTHROPIC_BASE_URL',
@@ -70,6 +70,11 @@ export function SetupProvidersPage() {
   const [oauthCode, setOauthCode] = useState('');
   const [oauthExchanging, setOauthExchanging] = useState(false);
   const [oauthDone, setOauthDone] = useState(false);
+  const [codexFlowId, setCodexFlowId] = useState<string | null>(null);
+  const [codexUserCode, setCodexUserCode] = useState('');
+  const [codexVerifyUrl, setCodexVerifyUrl] = useState('');
+  const [codexStatus, setCodexStatus] = useState<string | null>(null);
+  const [codexDone, setCodexDone] = useState(false);
 
   // Third-party mode
   const [baseUrl, setBaseUrl] = useState('');
@@ -163,6 +168,11 @@ export function SetupProvidersPage() {
         return;
       }
       customEnv = envResult.customEnv;
+    } else if (providerMode === 'codex') {
+      if (!codexDone) {
+        setError('请先完成 ChatGPT Codex 设备码登录');
+        return;
+      }
     } else if (!officialToken.trim() && !apiKey.trim() && !oauthDone) {
       setError('官方渠道请通过一键登录、填写 API Key 或手动填写 setup-token / .credentials.json');
       return;
@@ -226,7 +236,7 @@ export function SetupProvidersPage() {
             });
           }
         }
-      } else {
+      } else if (providerMode === 'third_party') {
         await api.post<UnifiedProviderPublic>(
           '/api/config/claude/providers',
           {
@@ -303,7 +313,7 @@ export function SetupProvidersPage() {
         <section className="bg-card rounded-xl border border-border shadow-sm p-5">
           <div className="flex items-center gap-2 mb-3">
             <KeyRound className="w-4 h-4 text-primary" />
-            <h2 className="text-base font-semibold text-foreground">Claude Code 配置（二选一）</h2>
+            <h2 className="text-base font-semibold text-foreground">模型配置（官方 / 第三方 / Codex）</h2>
           </div>
 
           <div className="inline-flex rounded-lg border border-border p-1 bg-muted mb-4">
@@ -325,9 +335,83 @@ export function SetupProvidersPage() {
             >
               第三方渠道
             </button>
+            <button
+              type="button"
+              onClick={() => setProviderMode('codex')}
+              className={`px-3 py-1.5 text-sm rounded-md transition-colors cursor-pointer ${
+                providerMode === 'codex' ? 'bg-background text-primary shadow-sm' : 'text-muted-foreground'
+              }`}
+            >
+              Codex
+            </button>
           </div>
 
-          {providerMode === 'official' ? (
+          {providerMode === 'codex' ? (
+            <div className="space-y-3 rounded-lg border border-emerald-200 bg-emerald-50/40 p-4">
+              <p className="text-sm text-foreground">通过 ChatGPT 设备码登录 Codex。凭据加密保存，不会出现在 API 响应里。</p>
+              {codexDone ? (
+                <p className="text-sm text-emerald-700">Codex 已登录，可以继续。</p>
+              ) : !codexFlowId ? (
+                <Button
+                  onClick={async () => {
+                    setOauthLoading(true);
+                    setError(null);
+                    try {
+                      const data = await api.post<{
+                        id: string;
+                        verificationUrl: string;
+                        userCode: string;
+                        status: string;
+                      }>('/api/config/codex/oauth/start');
+                      setCodexFlowId(data.id);
+                      setCodexUserCode(data.userCode);
+                      setCodexVerifyUrl(data.verificationUrl);
+                      setCodexStatus(data.status);
+                      window.open(data.verificationUrl, '_blank', 'noopener,noreferrer');
+                    } catch (err) {
+                      setError(getErrorMessage(err, 'Codex 授权启动失败'));
+                    } finally {
+                      setOauthLoading(false);
+                    }
+                  }}
+                  disabled={oauthLoading || saving}
+                >
+                  {oauthLoading ? <Loader2 className="size-4 animate-spin" /> : <ExternalLink className="size-4" />}
+                  登录 ChatGPT Codex
+                </Button>
+              ) : (
+                <div className="space-y-2 text-sm">
+                  <p>
+                    验证码 <code className="rounded bg-muted px-1 font-mono">{codexUserCode}</code>
+                  </p>
+                  <a href={codexVerifyUrl} target="_blank" rel="noopener noreferrer" className="text-teal-600 underline">
+                    {codexVerifyUrl}
+                  </a>
+                  <p className="text-xs text-muted-foreground">状态：{codexStatus || 'pending'}</p>
+                  <Button
+                    variant="outline"
+                    onClick={async () => {
+                      if (!codexFlowId) return;
+                      try {
+                        const data = await api.get<{ status: string; error?: string }>(
+                          `/api/config/codex/oauth/${codexFlowId}`,
+                        );
+                        setCodexStatus(data.status);
+                        if (data.status === 'completed') setCodexDone(true);
+                        if (data.status === 'failed' || data.status === 'expired') {
+                          setError(data.error || 'Codex 授权失败');
+                        }
+                      } catch (err) {
+                        setError(getErrorMessage(err, '查询 Codex 授权状态失败'));
+                      }
+                    }}
+                  >
+                    刷新状态
+                  </Button>
+                </div>
+              )}
+            </div>
+          ) : providerMode === 'official' ? (
             <div className="space-y-4">
               {/* Official auth tabs */}
               <div className="inline-flex rounded-lg border border-border p-1 bg-muted">

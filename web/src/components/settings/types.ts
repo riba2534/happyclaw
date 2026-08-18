@@ -3,7 +3,7 @@
 export interface UnifiedProviderPublic {
   id: string;
   name: string;
-  type: 'official' | 'third_party';
+  type: 'official' | 'third_party' | 'codex';
   enabled: boolean;
   weight: number;
   anthropicBaseUrl: string;
@@ -17,6 +17,9 @@ export interface UnifiedProviderPublic {
   hasClaudeOAuthCredentials: boolean;
   claudeOAuthCredentialsExpiresAt: number | null;
   claudeOAuthCredentialsAccessTokenMasked: string | null;
+  hasCodexOAuthCredentials: boolean;
+  codexOAuthEmailMasked: string | null;
+  codexOAuthPlanType: string | null;
   customEnv: Record<string, string>;
   updatedAt: string;
 }
