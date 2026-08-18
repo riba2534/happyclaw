@@ -49,7 +49,10 @@ import {
 import authRoutes from './routes/auth.js';
 import groupRoutes from './routes/groups.js';
 import memoryRoutes from './routes/memory.js';
-import configRoutes, { injectConfigDeps } from './routes/config.js';
+import configRoutes, {
+  handleGrokBrowserCallback,
+  injectConfigDeps,
+} from './routes/config.js';
 import { codexFacadeRoutes } from './codex-facade.js';
 import tasksRoutes from './routes/tasks.js';
 import adminRoutes from './routes/admin.js';
@@ -273,6 +276,20 @@ app.route('/api/groups', fileRoutes); // File routes also under /api/groups
 app.route('/api/memory', memoryRoutes);
 app.route('/api/config', configRoutes);
 app.route('/', codexFacadeRoutes);
+
+// xAI Grok PKCE redirect_uri whitelist is http://127.0.0.1:<port>/callback
+app.get('/callback', async (c) => {
+  const code = c.req.query('code') || '';
+  const state = c.req.query('state') || '';
+  const result = await handleGrokBrowserCallback(code, state);
+  const title = result.ok ? 'Grok 已接入' : 'Grok 接入失败';
+  const body = result.ok
+    ? `<h2>Grok 订阅已接入 HappyClaw</h2><p>账号「${escapeHtml(result.accountName || 'xAI Grok')}」与默认模型 grok-4.5 已创建，可以关闭本页。</p>`
+    : `<h2>未能完成 Grok 授权</h2><p>${escapeHtml(result.error || 'unknown error')}</p><p>把地址栏整段 URL 粘贴回 HappyClaw 设置页也可完成接入。</p>`;
+  return c.html(
+    `<!doctype html><meta charset="utf-8"><title>${title}</title><div style="font-family:sans-serif;max-width:480px;margin:80px auto;text-align:center">${body}</div>`,
+  );
+});
 app.route('/api/tasks', tasksRoutes);
 app.route('/api/skills', skillsRoutes);
 app.route('/api/admin', adminRoutes);
@@ -1257,6 +1274,15 @@ async function handleAgentConversationMessage(
   };
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
 // --- Static Files ---
 
 // @hono/node-server 的 serveStatic 不支持条件请求：带 If-None-Match /
@@ -1366,7 +1392,13 @@ app.use(
     root: './web/dist',
     rewriteRequestPath: (p) => {
       // SPA fallback
-      if (p.startsWith('/api') || p.startsWith('/ws')) return p;
+      if (
+        p.startsWith('/api') ||
+        p.startsWith('/ws') ||
+        p.startsWith('/model') ||
+        p === '/callback'
+      )
+        return p;
       if (p.match(/\.\w+$/)) return p; // Has file extension
       return '/index.html';
     },

@@ -30,7 +30,7 @@ import {
 import type { ProviderWithHealth, EnvRow } from './types';
 import { getErrorMessage } from './types';
 
-type ProviderType = 'official' | 'third_party' | 'codex';
+type ProviderType = 'official' | 'third_party' | 'codex' | 'grok';
 type OfficialAuthTab = 'oauth' | 'setup_token' | 'api_key';
 
 const RESERVED_ENV_KEYS = new Set([
@@ -134,6 +134,11 @@ export function ProviderEditor({
   const [codexUserCode, setCodexUserCode] = useState('');
   const [codexVerifyUrl, setCodexVerifyUrl] = useState('');
   const [codexStatus, setCodexStatus] = useState<string | null>(null);
+  const [grokFlowId, setGrokFlowId] = useState<string | null>(null);
+  const [grokAuthorizeUrl, setGrokAuthorizeUrl] = useState('');
+  const [grokStatus, setGrokStatus] = useState<string | null>(null);
+  const [grokPaste, setGrokPaste] = useState('');
+  const [grokExchanging, setGrokExchanging] = useState(false);
 
   // 第三方认证
   const [authToken, setAuthToken] = useState('');
@@ -174,6 +179,10 @@ export function ProviderEditor({
       setCodexUserCode('');
       setCodexVerifyUrl('');
       setCodexStatus(null);
+      setGrokFlowId(null);
+      setGrokAuthorizeUrl('');
+      setGrokStatus(null);
+      setGrokPaste('');
       setAuthToken('');
       setAuthTokenDirty(false);
       setClearTokenOnSave(false);
@@ -363,6 +372,91 @@ export function ProviderEditor({
     };
   }, [codexFlowId, codexStatus, onSave, setError, setNotice]);
 
+  const handleGrokOAuthStart = useCallback(async () => {
+    setOauthLoading(true);
+    setError(null);
+    try {
+      const body: Record<string, unknown> = {};
+      if (!isCreate && provider) {
+        body.targetProviderId = provider.id;
+      }
+      const data = await api.post<{
+        id: string;
+        authorizeUrl: string;
+        status: string;
+      }>('/api/config/grok/oauth/start', body);
+      setGrokFlowId(data.id);
+      setGrokAuthorizeUrl(data.authorizeUrl);
+      setGrokStatus(data.status);
+      setGrokPaste('');
+      window.open(data.authorizeUrl, '_blank', 'noopener,noreferrer');
+    } catch (err) {
+      setError(getErrorMessage(err, 'Grok 授权启动失败'));
+    } finally {
+      setOauthLoading(false);
+    }
+  }, [isCreate, provider, setError]);
+
+  const handleGrokOAuthPaste = useCallback(async () => {
+    if (!grokFlowId || !grokPaste.trim()) {
+      setError('请粘贴授权回调 URL 或 code');
+      return;
+    }
+    setGrokExchanging(true);
+    setError(null);
+    try {
+      const data = await api.post<{
+        status: string;
+        accountName?: string;
+      }>(`/api/config/grok/oauth/${grokFlowId}/code`, {
+        code: grokPaste.trim(),
+      });
+      setGrokStatus(data.status);
+      setNotice(
+        data.accountName
+          ? `Grok 已登录：${data.accountName}`
+          : 'Grok 登录成功，凭据已加密保存。',
+      );
+      onSave();
+    } catch (err) {
+      setError(getErrorMessage(err, 'Grok 授权码换取失败'));
+    } finally {
+      setGrokExchanging(false);
+    }
+  }, [grokFlowId, grokPaste, onSave, setError, setNotice]);
+
+  useEffect(() => {
+    if (!grokFlowId || (grokStatus && grokStatus !== 'pending')) return;
+    let cancelled = false;
+    const timer = window.setInterval(async () => {
+      try {
+        const data = await api.get<{
+          status: string;
+          accountName?: string;
+          error?: string;
+        }>(`/api/config/grok/oauth/${grokFlowId}`);
+        if (cancelled) return;
+        setGrokStatus(data.status);
+        if (data.status === 'completed') {
+          setNotice(
+            data.accountName
+              ? `Grok 已登录：${data.accountName}`
+              : 'Grok 登录成功，凭据已加密保存。',
+          );
+          onSave();
+        } else if (data.status === 'failed' || data.status === 'expired') {
+          setError(data.error || 'Grok 授权失败，请重新发起');
+        }
+      } catch {
+        // keep polling until expiry
+      }
+    }, 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [grokFlowId, grokStatus, onSave, setError, setNotice]);
+
   // ─── 保存 ──────────────────────────────────────────────────
   const handleSave = async () => {
     const normalizedModel =
@@ -370,7 +464,9 @@ export function ProviderEditor({
         ? buildProviderModel(model, oneMillionContext)
         : providerType === 'codex'
           ? model.trim() || 'gpt-5.6-sol'
-          : model.trim();
+          : providerType === 'grok'
+            ? model.trim() || 'grok-4.5'
+            : model.trim();
     if (providerType === 'third_party' && !normalizedModel) {
       setError('请填写第三方 API 支持的模型名称');
       return;
@@ -381,7 +477,9 @@ export function ProviderEditor({
         ? parseProviderModel(normalizedModel).model
         : providerType === 'codex'
           ? 'ChatGPT Codex'
-          : '');
+          : providerType === 'grok'
+            ? 'xAI Grok'
+            : '');
     if (!trimmedName) {
       setError('请填写模型配置名称');
       return;
@@ -427,7 +525,7 @@ export function ProviderEditor({
           }
           createBody.anthropicBaseUrl = trimmedBaseUrl;
           createBody.anthropicAuthToken = trimmedToken;
-        } else if (providerType === 'codex') {
+        } else if (providerType === 'codex' || providerType === 'grok') {
           createBody.anthropicModel = normalizedModel;
         } else {
           // 官方模式 — 根据认证方式设置凭据
@@ -577,7 +675,7 @@ export function ProviderEditor({
   };
 
   const handleClose = () => {
-    if (!saving && !oauthExchanging) {
+    if (!saving && !oauthExchanging && !grokExchanging) {
       setOauthState(null);
       onCancel();
     }
@@ -595,7 +693,9 @@ export function ProviderEditor({
               ? '填写端点、密钥和模型即可；Claude Code 运行参数会自动预填，也可在高级设置中调整。'
               : providerType === 'codex'
                 ? '通过 ChatGPT 设备码登录 Codex。Runner 仍走 Anthropic Messages，由本机 facade 翻译。'
-                : '配置 Claude 官方认证方式与默认模型。'}
+                : providerType === 'grok'
+                  ? '通过 xAI Grok CLI OAuth 登录。Runner 仍走 Anthropic Messages，由本机 facade 翻译到 cli-chat-proxy。'
+                  : '配置 Claude 官方认证方式与默认模型。'}
           </DialogDescription>
         </DialogHeader>
 
@@ -642,6 +742,18 @@ export function ProviderEditor({
                   }`}
                 >
                   Codex
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={providerType === 'grok'}
+                  onClick={() => setProviderType('grok')}
+                  className={`min-h-9 rounded-md px-3 py-1.5 text-sm transition-colors cursor-pointer ${
+                    providerType === 'grok'
+                      ? 'bg-background text-primary shadow-sm'
+                      : 'text-muted-foreground'
+                  }`}
+                >
+                  Grok
                 </button>
               </div>
             </div>
@@ -1074,6 +1186,99 @@ export function ProviderEditor({
             </div>
           )}
 
+          {providerType === 'grok' && (
+            <div className="space-y-4">
+              <div className="rounded-lg border border-sky-200 bg-sky-50/50 p-4 space-y-3 dark:border-sky-800 dark:bg-sky-950/20">
+                <div className="text-sm font-medium text-foreground">
+                  xAI Grok（CLI 订阅 OAuth）
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  打开 auth.x.ai 授权后，浏览器会跳到 127.0.0.1
+                  /callback。本机部署会自动完成；远端部署请把地址栏整段 URL
+                  粘贴回来。Access / refresh token 仅在服务端交换并加密入库。
+                </div>
+                {!isCreate && provider?.hasGrokOAuthCredentials && (
+                  <div className="rounded-md border border-sky-200 bg-sky-50/50 p-3 text-xs dark:border-sky-800 dark:bg-sky-950/30">
+                    <div className="text-sky-700 dark:text-sky-300">
+                      已绑定 {provider.grokOAuthEmailMasked || 'Grok 订阅'}
+                    </div>
+                  </div>
+                )}
+                {!grokFlowId ? (
+                  <Button
+                    onClick={handleGrokOAuthStart}
+                    disabled={saving || oauthLoading}
+                  >
+                    {oauthLoading ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <ExternalLink className="size-4" />
+                    )}
+                    {!isCreate && provider?.hasGrokOAuthCredentials
+                      ? '重新登录 Grok'
+                      : '登录 xAI Grok'}
+                  </Button>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="text-xs text-amber-700 dark:text-amber-300">
+                      授权窗口已打开。完成后把地址栏 URL 或 code 粘贴到下方。
+                    </div>
+                    {grokAuthorizeUrl && (
+                      <a
+                        href={grokAuthorizeUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-teal-600 underline break-all"
+                      >
+                        {grokAuthorizeUrl}
+                      </a>
+                    )}
+                    <div className="flex gap-2">
+                      <Input
+                        type="text"
+                        value={grokPaste}
+                        onChange={(e) => setGrokPaste(e.target.value)}
+                        disabled={grokExchanging}
+                        placeholder="粘贴 http://127.0.0.1:.../callback?code=... 或授权码"
+                        className="flex-1"
+                      />
+                      <Button
+                        onClick={handleGrokOAuthPaste}
+                        disabled={grokExchanging || !grokPaste.trim()}
+                      >
+                        {grokExchanging && (
+                          <Loader2 className="size-4 animate-spin" />
+                        )}
+                        确认
+                      </Button>
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      状态：{grokStatus || 'pending'}
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div>
+                <label className="block text-xs text-muted-foreground mb-1">
+                  模型
+                </label>
+                <Input
+                  type="text"
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  disabled={saving}
+                  placeholder="grok-4.5"
+                  className="font-mono"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  默认 grok-4.5。推理力度 low / medium /
+                  high（其余档位会映射到这三档）。Claude Agent SDK 经本机
+                  Anthropic facade 访问 cli-chat-proxy。
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* ─── 官方模型选择 ─── */}
           {providerType === 'official' && (
             <div>
@@ -1311,12 +1516,15 @@ export function ProviderEditor({
             <Button
               variant="outline"
               onClick={handleClose}
-              disabled={saving || oauthExchanging}
+              disabled={saving || oauthExchanging || grokExchanging}
             >
               取消
             </Button>
             {/* OAuth 模式下创建时不需要保存按钮（OAuth 回调会自动触发 onSave） */}
-            <Button onClick={handleSave} disabled={saving || oauthExchanging}>
+            <Button
+              onClick={handleSave}
+              disabled={saving || oauthExchanging || grokExchanging}
+            >
               {saving && <Loader2 className="size-4 animate-spin" />}
               {isCreate ? '创建' : '保存'}
             </Button>

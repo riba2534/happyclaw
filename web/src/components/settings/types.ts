@@ -3,7 +3,7 @@
 export interface UnifiedProviderPublic {
   id: string;
   name: string;
-  type: 'official' | 'third_party' | 'codex';
+  type: 'official' | 'third_party' | 'codex' | 'grok';
   enabled: boolean;
   weight: number;
   anthropicBaseUrl: string;
@@ -20,6 +20,8 @@ export interface UnifiedProviderPublic {
   hasCodexOAuthCredentials: boolean;
   codexOAuthEmailMasked: string | null;
   codexOAuthPlanType: string | null;
+  hasGrokOAuthCredentials: boolean;
+  grokOAuthEmailMasked: string | null;
   customEnv: Record<string, string>;
   updatedAt: string;
 }

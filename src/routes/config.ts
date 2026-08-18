@@ -128,7 +128,10 @@ import {
   updateAllSessionCredentials,
   appendImConfigAudit,
 } from '../runtime-config.js';
-import type { CodexOAuthCredentials } from '../runtime-config.js';
+import type {
+  CodexOAuthCredentials,
+  GrokOAuthCredentials,
+} from '../runtime-config.js';
 import {
   CODEX_OAUTH_TTL_MS,
   exchangeCodexDeviceGrant,
@@ -137,6 +140,14 @@ import {
   verificationUrl,
 } from '../codex-oauth.js';
 import { CODEX_DEFAULT_MODEL } from '../codex-runtime.js';
+import {
+  GROK_OAUTH_TTL_MS,
+  exchangeGrokCode,
+  generateGrokPkce,
+  grokAuthorizeUrl,
+  grokRedirectUri,
+} from '../grok-oauth.js';
+import { GROK_DEFAULT_MODEL, extractGrokAuthCode } from '../grok-translator.js';
 import type {
   ClaudeOAuthCredentials,
   CachedOAuthUsage,
@@ -777,6 +788,21 @@ interface CodexOAuthFlow {
 }
 const codexOAuthFlows = new Map<string, CodexOAuthFlow>();
 
+interface GrokOAuthFlow {
+  id: string;
+  state: string;
+  codeVerifier: string;
+  redirectUri: string;
+  authorizeUrl: string;
+  status: 'pending' | 'completed' | 'failed' | 'expired';
+  accountName?: string;
+  providerId?: string;
+  error?: string;
+  expiresAt: number;
+  targetProviderId?: string;
+}
+const grokOAuthFlows = new Map<string, GrokOAuthFlow>();
+
 // Periodic cleanup of expired flows
 setInterval(() => {
   const now = Date.now();
@@ -790,6 +816,15 @@ setInterval(() => {
     }
     if (flow.expiresAt + 60 * 60 * 1000 < now) {
       codexOAuthFlows.delete(key);
+    }
+  }
+  for (const [key, flow] of grokOAuthFlows) {
+    if (flow.expiresAt < now && flow.status === 'pending') {
+      flow.status = 'expired';
+      flow.error = 'Authorization expired';
+    }
+    if (flow.expiresAt + 60 * 60 * 1000 < now) {
+      grokOAuthFlows.delete(key);
     }
   }
 }, 60_000);
@@ -1781,6 +1816,190 @@ function persistCodexOAuthProvider(
     enabled: true,
   });
 }
+
+function persistGrokOAuthProvider(
+  credential: GrokOAuthCredentials,
+  targetProviderId?: string,
+) {
+  if (targetProviderId) {
+    return updateProviderSecrets(targetProviderId, {
+      grokOAuthCredentials: credential,
+    });
+  }
+  const name = credential.email || 'xAI Grok';
+  return createProvider({
+    name,
+    type: 'grok',
+    anthropicModel: GROK_DEFAULT_MODEL,
+    grokOAuthCredentials: credential,
+    enabled: true,
+  });
+}
+
+async function completeGrokOAuthFlow(
+  flow: GrokOAuthFlow,
+  code: string,
+): Promise<void> {
+  if (flow.status === 'pending' && Date.now() > flow.expiresAt) {
+    flow.status = 'expired';
+    flow.error = 'Authorization expired';
+    throw new Error(flow.error);
+  }
+  if (flow.status !== 'pending') {
+    throw new Error(`Grok authorization already ${flow.status}`);
+  }
+  const credential = await exchangeGrokCode(
+    code,
+    flow.redirectUri,
+    flow.codeVerifier,
+  );
+  const provider = persistGrokOAuthProvider(credential, flow.targetProviderId);
+  flow.status = 'completed';
+  flow.providerId = provider.id;
+  flow.accountName = provider.name;
+}
+
+function findGrokFlowByState(state: string): GrokOAuthFlow | undefined {
+  for (const flow of grokOAuthFlows.values()) {
+    if (flow.state === state && flow.status === 'pending') return flow;
+  }
+  return undefined;
+}
+
+export async function handleGrokBrowserCallback(
+  code: string,
+  state: string,
+): Promise<{ ok: boolean; error?: string; accountName?: string }> {
+  if (!code || !state) {
+    return { ok: false, error: 'missing code/state' };
+  }
+  const flow = findGrokFlowByState(state);
+  if (!flow) {
+    return { ok: false, error: 'state invalid or expired' };
+  }
+  try {
+    await completeGrokOAuthFlow(flow, code);
+    return { ok: true, accountName: flow.accountName };
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : 'Grok token exchange failed';
+    if (flow.status === 'pending') {
+      flow.status = 'failed';
+      flow.error = message;
+    }
+    return { ok: false, error: message };
+  }
+}
+
+// ─── POST /grok/oauth/start — xAI PKCE OAuth ─────
+configRoutes.post(
+  '/grok/oauth/start',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const targetProviderId =
+      typeof (body as Record<string, unknown>).targetProviderId === 'string'
+        ? ((body as Record<string, unknown>).targetProviderId as string)
+        : undefined;
+    const pkce = generateGrokPkce();
+    const redirectUri = grokRedirectUri();
+    const authorizeUrl = grokAuthorizeUrl(
+      pkce.state,
+      redirectUri,
+      pkce.challenge,
+    );
+    const id = `goa_${randomBytes(12).toString('hex')}`;
+    const flow: GrokOAuthFlow = {
+      id,
+      state: pkce.state,
+      codeVerifier: pkce.verifier,
+      redirectUri,
+      authorizeUrl,
+      status: 'pending',
+      expiresAt: Date.now() + GROK_OAUTH_TTL_MS,
+      targetProviderId,
+    };
+    grokOAuthFlows.set(id, flow);
+    return c.json({
+      id: flow.id,
+      authorizeUrl,
+      status: flow.status,
+      expiresAt: new Date(flow.expiresAt).toISOString(),
+      note: '授权后浏览器会跳到 127.0.0.1 页面（xAI 白名单限制），把地址栏整段 URL 粘贴回 HappyClaw 完成接入',
+    });
+  },
+);
+
+configRoutes.get(
+  '/grok/oauth/:id',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const id = c.req.param('id');
+    const flow = grokOAuthFlows.get(id);
+    if (!flow) {
+      return c.json({ error: 'Authorization flow not found or expired' }, 404);
+    }
+    if (flow.status === 'pending' && Date.now() > flow.expiresAt) {
+      flow.status = 'expired';
+      flow.error = 'Authorization expired';
+    }
+    return c.json({
+      id: flow.id,
+      authorizeUrl: flow.authorizeUrl,
+      status: flow.status,
+      accountName: flow.accountName,
+      providerId: flow.providerId,
+      error: flow.error,
+      expiresAt: new Date(flow.expiresAt).toISOString(),
+    });
+  },
+);
+
+configRoutes.post(
+  '/grok/oauth/:id/code',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const id = c.req.param('id');
+    const flow = grokOAuthFlows.get(id);
+    if (!flow) {
+      return c.json({ error: 'Authorization flow not found or expired' }, 404);
+    }
+    const body = await c.req.json().catch(() => ({}));
+    const raw =
+      typeof (body as { code?: unknown }).code === 'string'
+        ? (body as { code: string }).code
+        : typeof (body as { url?: unknown }).url === 'string'
+          ? (body as { url: string }).url
+          : '';
+    const parsed = extractGrokAuthCode(raw);
+    if (!parsed.code) {
+      return c.json({ error: 'Missing authorization code' }, 400);
+    }
+    if (parsed.state && parsed.state !== flow.state) {
+      return c.json({ error: 'state mismatch' }, 400);
+    }
+    try {
+      await completeGrokOAuthFlow(flow, parsed.code);
+      return c.json({
+        status: flow.status,
+        accountName: flow.accountName,
+        providerId: flow.providerId,
+      });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Grok token exchange failed';
+      if (flow.status === 'pending') {
+        flow.status = 'failed';
+        flow.error = message;
+      }
+      const status = flow.status === 'expired' ? 400 : 502;
+      return c.json({ error: message, status: flow.status }, status);
+    }
+  },
+);
 
 // ─── PUT /claude/custom-env — 更新当前启用供应商的自定义环境变量 ─────
 configRoutes.put(

@@ -64,7 +64,7 @@ HappyClaw 不是一个简单的聊天 API Wrapper。智能体运行在真实的 
 | **工作区**     | 智能体归属、宿主机/容器执行、独立目录、项目环境变量、项目 Claude 上下文、多会话                                              |
 | **能力治理**   | 用户 Skills、系统/用户 MCP、Claude Code Plugins 与最终生效预览；智能体工具权限完整开放                                       |
 | **消息渠道**   | 飞书、Telegram、QQ、钉钉、微信、企业微信、Discord、WhatsApp，多账号、扫码登录、工作区/会话绑定                               |
-| **模型提供商** | Anthropic 官方、第三方兼容端点与 ChatGPT Codex（本机 Anthropic facade）、多 Provider、轮询/加权/故障转移、健康检查、会话粘性 |
+| **模型提供商** | Anthropic 官方、第三方兼容端点、ChatGPT Codex 与 xAI Grok（本机 Anthropic facade）、多 Provider、轮询/加权/故障转移、健康检查、会话粘性 |
 | **定时任务**   | Cron、固定间隔、一次性任务，智能体/Script 执行，隔离上下文，幂等立即运行，通知重试                                           |
 | **记忆与文件** | Workspace Memory（事实、决策、经验、待跟进）、来源与修订、CAS 编辑、搜索、文件与终端                                         |
 | **用量与计费** | Token 分类统计、智能体/工作区/模型筛选、明细与 CSV 导出、订阅、余额、兑换码与配额                                            |
@@ -189,10 +189,11 @@ HappyClaw 可以同时配置多个 Claude Provider，并为新会话按策略选
 | **Anthropic 官方** | Claude OAuth、一键登录、`setup-token` / `.credentials.json` 或 API Key                   |
 | **第三方兼容端点** | 填写 API Endpoint、Auth Token 和模型名称，可启用 1M 上下文                               |
 | **ChatGPT Codex**  | ChatGPT 设备码登录；Runner 仍走 Anthropic Messages，由本机 facade 翻译到 Codex Responses |
+| **xAI Grok**       | auth.x.ai PKCE 登录；同一 facade 翻译到 cli-chat-proxy Responses，默认 grok-4.5 |
 
 第三方 Provider 会自动预填 Claude Code 兼容环境变量，包括主模型映射、上下文窗口、自动压缩、超时和非必要流量设置。高级设置会展示所有预填值，用户可以编辑、恢复默认值或增加自定义 Header 等环境变量。
 
-Codex 不改写官方或第三方的直连路径。选中 Codex 时，Runner 的 `ANTHROPIC_BASE_URL` 指向本机 `POST /model/v1/messages` facade（仅 runner bearer），由 HappyClaw 翻译到 ChatGPT Codex Responses。同一 facade 也是后续 Grok 等非 Anthropic 上游的接入面。凭据密封保存，API 只返回是否已登录与脱敏邮箱。
+Codex 与 Grok 都不改写官方或第三方的直连路径。选中 Codex 或 Grok 时，Runner 的 `ANTHROPIC_BASE_URL` 指向本机 `POST /model/v1/messages` facade（仅 runner bearer）。Codex 翻译到 ChatGPT Responses；Grok 翻译到 `cli-chat-proxy.grok.com/v1/responses`（`X-XAI-Token-Auth: xai-grok-cli`）。凭据密封保存，API 只返回是否已登录与脱敏邮箱。
 
 负载均衡支持：
 
@@ -518,6 +519,13 @@ Claude Code，并把实际版本写入
 <summary><strong>可以使用 ChatGPT Codex 吗？</strong></summary>
 
 可以。在“设置 → 模型与提供商”添加 Codex 并用 ChatGPT 设备码登录。Claude Agent SDK 仍然只讲 Anthropic Messages；HappyClaw 在本机 facade 上翻译到 Codex Responses。官方 Claude 与第三方兼容端点继续直连，不会经过该 facade。
+
+</details>
+
+<details>
+<summary><strong>可以使用 xAI Grok 吗？</strong></summary>
+
+可以。在“设置 → 模型与提供商”添加 Grok 并用 xAI OAuth 登录（auth.x.ai PKCE，公共 Grok CLI client）。授权后浏览器会跳到 `http://127.0.0.1:<port>/callback`；本机部署自动完成，远端部署把地址栏 URL 粘贴回来即可。Claude Agent SDK 仍然只讲 Anthropic Messages；HappyClaw 在本机 facade 上翻译到 cli-chat-proxy。官方 Claude、第三方兼容端点与 Codex 路径不变。
 
 </details>
 

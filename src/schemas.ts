@@ -1178,10 +1178,18 @@ export const CodexOAuthCredentialsSchema = z.object({
   planType: z.string().optional(),
 });
 
+export const GrokOAuthCredentialsSchema = z.object({
+  accessToken: z.string().min(1),
+  refreshToken: z.string().min(1),
+  idToken: z.string().optional(),
+  expiresAt: z.string().optional(),
+  email: z.string().optional(),
+});
+
 export const UnifiedProviderCreateSchema = z
   .object({
     name: z.string().min(1).max(64),
-    type: z.enum(['official', 'third_party', 'codex']),
+    type: z.enum(['official', 'third_party', 'codex', 'grok']),
     anthropicBaseUrl: ProviderBaseUrlSchema.optional(),
     anthropicAuthToken: z.string().max(2000).optional(),
     anthropicModel: z.string().max(128).optional(),
@@ -1189,6 +1197,7 @@ export const UnifiedProviderCreateSchema = z
     claudeCodeOauthToken: z.string().max(2000).optional(),
     claudeOAuthCredentials: ClaudeOAuthCredentialsSchema.optional(),
     codexOAuthCredentials: CodexOAuthCredentialsSchema.optional(),
+    grokOAuthCredentials: GrokOAuthCredentialsSchema.optional(),
     customEnv: z.record(z.string().max(256), z.string().max(4096)).optional(),
     weight: z.number().int().min(1).max(100).optional(),
     enabled: z.boolean().optional(),
@@ -1237,6 +1246,8 @@ export const UnifiedProviderSecretsSchema = z
     clearClaudeOAuthCredentials: z.boolean().optional(),
     codexOAuthCredentials: CodexOAuthCredentialsSchema.optional(),
     clearCodexOAuthCredentials: z.boolean().optional(),
+    grokOAuthCredentials: GrokOAuthCredentialsSchema.optional(),
+    clearGrokOAuthCredentials: z.boolean().optional(),
   })
   .refine(
     (data) => {
@@ -1250,7 +1261,9 @@ export const UnifiedProviderSecretsSchema = z
         data.claudeOAuthCredentials !== undefined ||
         data.clearClaudeOAuthCredentials === true ||
         data.codexOAuthCredentials !== undefined ||
-        data.clearCodexOAuthCredentials === true
+        data.clearCodexOAuthCredentials === true ||
+        data.grokOAuthCredentials !== undefined ||
+        data.clearGrokOAuthCredentials === true
       );
     },
     { message: 'At least one secret field must be provided' },

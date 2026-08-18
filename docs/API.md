@@ -286,12 +286,24 @@ Provider：
 - `POST /api/config/claude/oauth/callback`
 - `POST /api/config/codex/oauth/start`
 - `GET /api/config/codex/oauth/:id`
+- `POST /api/config/grok/oauth/start`
+- `GET /api/config/grok/oauth/:id`
+- `POST /api/config/grok/oauth/:id/code`
+- `GET /callback`（xAI 白名单 redirect_uri，无登录态）
 - `PUT /api/config/claude/custom-env`
 
 `type=codex` 走 ChatGPT 设备码登录。Access / refresh token 密封持久化，公开 API 只返回
-`hasCodexOAuthCredentials`、脱敏邮箱和 plan。Runner 在选中 Codex 时使用本机
-`POST /model/v1/messages`（及 `count_tokens`）Anthropic facade；未带 runner bearer
-返回 401 且不会访问上游。官方与第三方 Provider 仍直连 Anthropic / 兼容端点。
+`hasCodexOAuthCredentials`、脱敏邮箱和 plan。
+
+`type=grok` 走 auth.x.ai PKCE（公共 client `b1a00492-073a-47ea-816f-4c329264a828`，
+scopes 含 `grok-cli:access` + `api:access` + `offline_access`）。redirect_uri 固定为
+`http://127.0.0.1:<WEB_PORT>/callback`。本机回调自动换 token；远端把地址栏 URL
+POST 到 `/grok/oauth/:id/code`。公开 API 只返回 `hasGrokOAuthCredentials` 与脱敏邮箱。
+默认模型 `grok-4.5`，reasoning effort 仅 `low|medium|high`。
+
+Runner 在选中 Codex 或 Grok 时使用本机 `POST /model/v1/messages`（及 `count_tokens`）
+Anthropic facade；未带 runner bearer 返回 401 且不会访问上游。官方与第三方 Provider
+仍直连 Anthropic / 兼容端点。
 
 系统：
 

@@ -1,9 +1,8 @@
 /**
- * Local Anthropic Messages facade used only by Codex runners.
+ * Local Anthropic Messages facade used by Codex and Grok runners.
  *
  * Official Claude and third-party Anthropic-compat providers stay direct.
- * This HTTP surface is the substrate for later Grok (same Anthropic in,
- * a different upstream out).
+ * Same Anthropic in; Codex and Grok are different Responses upstreams.
  */
 
 import { Hono } from 'hono';
@@ -29,19 +28,38 @@ import {
 } from './codex-oauth.js';
 import { resolveCodexRunnerProviderId } from './codex-runtime.js';
 import {
+  grokCredentialExpiresSoon,
+  grokCredentialSnapshot,
+  refreshGrokCredential,
+} from './grok-oauth.js';
+import {
+  anthropicToGrokRequest,
+  GROK_DEFAULT_MODEL,
+  GROK_RESPONSES_URL,
+  grokUpstreamHeaders,
+  type GrokCredential,
+} from './grok-translator.js';
+import {
   getProviders,
   updateProviderCodexCredentialsIfCurrent,
+  updateProviderGrokCredentialsIfCurrent,
 } from './runtime-config.js';
 
 const REFRESH_BUFFER_MS = 5 * 60 * 1000;
 const refreshLocks = new Map<string, Promise<CodexCredential>>();
+const grokRefreshLocks = new Map<string, Promise<GrokCredential>>();
 
 export function resetCodexRefreshLocksForTests(): void {
   refreshLocks.clear();
+  grokRefreshLocks.clear();
+}
+
+function readProvider(providerId: string) {
+  return getProviders().find((item) => item.id === providerId) ?? null;
 }
 
 function readCodexCredential(providerId: string): CodexCredential | null {
-  const provider = getProviders().find((item) => item.id === providerId);
+  const provider = readProvider(providerId);
   if (
     !provider ||
     provider.type !== 'codex' ||
@@ -50,6 +68,30 @@ function readCodexCredential(providerId: string): CodexCredential | null {
     return null;
   }
   return { ...provider.codexOAuthCredentials };
+}
+
+function readGrokCredential(providerId: string): GrokCredential | null {
+  const provider = readProvider(providerId);
+  if (!provider || provider.type !== 'grok' || !provider.grokOAuthCredentials) {
+    return null;
+  }
+  return { ...provider.grokOAuthCredentials };
+}
+
+function resolveGrokEffort(
+  raw: AnthropicMessagesRequest,
+  providerId: string,
+): string {
+  const rec = raw as AnthropicMessagesRequest & {
+    effort?: unknown;
+    thinking?: { effort?: unknown };
+  };
+  if (typeof rec.effort === 'string' && rec.effort.trim()) return rec.effort;
+  if (typeof rec.thinking?.effort === 'string' && rec.thinking.effort.trim()) {
+    return rec.thinking.effort;
+  }
+  const provider = readProvider(providerId);
+  return provider?.customEnv?.CLAUDE_CODE_EFFORT_LEVEL || 'medium';
 }
 
 async function persistRefreshedCredential(
@@ -101,6 +143,43 @@ export async function refreshAndPersistCodexCredential(
   }
 }
 
+export async function refreshAndPersistGrokCredential(
+  providerId: string,
+  stale: GrokCredential,
+): Promise<GrokCredential> {
+  const inflight = grokRefreshLocks.get(providerId);
+  if (inflight) return inflight;
+
+  const work = (async () => {
+    const latest = readGrokCredential(providerId);
+    if (
+      latest &&
+      grokCredentialSnapshot(latest) !== grokCredentialSnapshot(stale) &&
+      !grokCredentialExpiresSoon(latest, REFRESH_BUFFER_MS)
+    ) {
+      return latest;
+    }
+    const refreshed = await refreshGrokCredential(latest ?? stale);
+    const persisted = updateProviderGrokCredentialsIfCurrent(
+      providerId,
+      latest ?? stale,
+      refreshed,
+    );
+    if (!persisted) {
+      const after = readGrokCredential(providerId);
+      if (after) return after;
+    }
+    return refreshed;
+  })();
+
+  grokRefreshLocks.set(providerId, work);
+  try {
+    return await work;
+  } finally {
+    grokRefreshLocks.delete(providerId);
+  }
+}
+
 export async function callCodexResponses(
   providerId: string,
   credential: CodexCredential,
@@ -148,8 +227,64 @@ export async function callCodexResponses(
   return first;
 }
 
+export async function callGrokResponses(
+  providerId: string,
+  credential: GrokCredential,
+  body: unknown,
+): Promise<{ status: number; text: string }> {
+  let current = credential;
+  if (
+    current.refreshToken &&
+    grokCredentialExpiresSoon(current, REFRESH_BUFFER_MS)
+  ) {
+    try {
+      current = await refreshAndPersistGrokCredential(providerId, current);
+    } catch (err) {
+      logger.warn({ err, providerId }, 'Grok proactive token refresh failed');
+    }
+  }
+
+  const once = async (cred: GrokCredential) => {
+    const res = await fetch(GROK_RESPONSES_URL, {
+      method: 'POST',
+      headers: grokUpstreamHeaders(cred.accessToken),
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    return { status: res.status, text };
+  };
+
+  let first = await once(current);
+  if (first.status === 401 && current.refreshToken) {
+    try {
+      current = await refreshAndPersistGrokCredential(providerId, current);
+      first = await once(current);
+    } catch (err) {
+      logger.warn({ err, providerId }, 'Grok 401 refresh failed');
+    }
+  }
+  return first;
+}
+
 function parseUpstreamSse(text: string): string[] {
   return text.split(/\r?\n/);
+}
+
+function facadeErrorResponse(
+  streaming: boolean,
+  message: string,
+  status: 400 | 502 = 502,
+) {
+  if (streaming) {
+    return new Response(anthropicErrorSse(message), {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache',
+      },
+    });
+  }
+  return null;
 }
 
 export function createCodexFacadeApp(): Hono {
@@ -178,9 +313,15 @@ export function createCodexFacadeApp(): Hono {
     if (!providerId) {
       return c.json({ error: 'unauthorized' }, 401);
     }
-    const credential = readCodexCredential(providerId);
-    if (!credential) {
+    const provider = readProvider(providerId);
+    const isGrok = provider?.type === 'grok';
+    const codexCredential = isGrok ? null : readCodexCredential(providerId);
+    const grokCredential = isGrok ? readGrokCredential(providerId) : null;
+    if (!isGrok && !codexCredential) {
       return c.json(anthropicErrorJson('Codex account is not authorized'), 400);
+    }
+    if (isGrok && !grokCredential) {
+      return c.json(anthropicErrorJson('Grok account is not authorized'), 400);
     }
 
     const raw = (await c.req
@@ -195,40 +336,35 @@ export function createCodexFacadeApp(): Hono {
         content: stripThinkingBlocks(message.content),
       }));
     }
-    raw.model = raw.model?.trim() || CODEX_DEFAULT_MODEL;
+    raw.model =
+      raw.model?.trim() || (isGrok ? GROK_DEFAULT_MODEL : CODEX_DEFAULT_MODEL);
     const streaming = raw.stream === true;
-    const request = anthropicToCodexRequest(raw);
+    const request = isGrok
+      ? anthropicToGrokRequest(raw, resolveGrokEffort(raw, providerId))
+      : anthropicToCodexRequest(raw);
+    const label = isGrok ? 'grok' : 'codex';
 
     let upstream: { status: number; text: string };
     try {
-      upstream = await callCodexResponses(providerId, credential, request);
+      upstream = isGrok
+        ? await callGrokResponses(providerId, grokCredential!, request)
+        : await callCodexResponses(providerId, codexCredential!, request);
     } catch (err) {
       const message =
-        err instanceof Error ? err.message : 'codex upstream failed';
-      logger.warn({ err, providerId }, 'Codex upstream call failed');
-      if (streaming) {
-        return new Response(anthropicErrorSse(message), {
-          status: 200,
-          headers: {
-            'Content-Type': 'text/event-stream; charset=utf-8',
-            'Cache-Control': 'no-cache',
-          },
-        });
-      }
+        err instanceof Error ? err.message : `${label} upstream failed`;
+      logger.warn(
+        { err, providerId },
+        `${isGrok ? 'Grok' : 'Codex'} upstream call failed`,
+      );
+      const sse = facadeErrorResponse(streaming, message);
+      if (sse) return sse;
       return c.json(anthropicErrorJson(message), 502);
     }
 
     if (upstream.status !== 200) {
-      const message = `codex ${upstream.status}: ${upstream.text.slice(0, 800)}`;
-      if (streaming) {
-        return new Response(anthropicErrorSse(message), {
-          status: 200,
-          headers: {
-            'Content-Type': 'text/event-stream; charset=utf-8',
-            'Cache-Control': 'no-cache',
-          },
-        });
-      }
+      const message = `${label} ${upstream.status}: ${upstream.text.slice(0, 800)}`;
+      const sse = facadeErrorResponse(streaming, message);
+      if (sse) return sse;
       return c.json(anthropicErrorJson(message), 502);
     }
 

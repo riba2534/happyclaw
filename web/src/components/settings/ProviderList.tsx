@@ -123,6 +123,14 @@ function CredentialBadges({ provider }: { provider: ProviderWithHealth }) {
       detail: provider.codexOAuthEmailMasked ?? undefined,
     });
   }
+  if (provider.hasGrokOAuthCredentials) {
+    badges.push({
+      label: 'Grok',
+      color:
+        'bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-800',
+      detail: provider.grokOAuthEmailMasked ?? undefined,
+    });
+  }
 
   if (badges.length === 0) {
     return (
@@ -211,14 +219,18 @@ export function ProviderList({
                             ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300'
                             : provider.type === 'codex'
                               ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300'
-                              : 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300'
+                              : provider.type === 'grok'
+                                ? 'bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300'
+                                : 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300'
                         }`}
                       >
                         {provider.type === 'official'
                           ? '官方'
                           : provider.type === 'codex'
                             ? 'Codex'
-                            : '第三方'}
+                            : provider.type === 'grok'
+                              ? 'Grok'
+                              : '第三方'}
                       </span>
                       {isDefault && (
                         <span className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[11px] text-primary">

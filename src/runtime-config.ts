@@ -11,6 +11,7 @@ import {
   getCodexFacadeBaseUrl,
   issueCodexRunnerToken,
 } from './codex-runtime.js';
+import { GROK_DEFAULT_MODEL, type GrokCredential } from './grok-translator.js';
 
 const MAX_FIELD_LENGTH = 2000;
 const CURRENT_CONFIG_VERSION = 3;
@@ -233,8 +234,9 @@ export interface ClaudeOAuthCredentials {
   subscriptionType?: string; // e.g. 'max', 'pro' — written to .credentials.json if present
 }
 
-export type ProviderType = 'official' | 'third_party' | 'codex';
+export type ProviderType = 'official' | 'third_party' | 'codex' | 'grok';
 export type CodexOAuthCredentials = CodexCredential;
+export type GrokOAuthCredentials = GrokCredential;
 
 export interface OAuthUsageBucket {
   utilization: number; // 0-100
@@ -342,6 +344,7 @@ interface SecretPayload {
   claudeCodeOauthToken: string;
   claudeOAuthCredentials?: ClaudeOAuthCredentials | null;
   codexOAuthCredentials?: CodexOAuthCredentials | null;
+  grokOAuthCredentials?: GrokOAuthCredentials | null;
 }
 
 interface EncryptedSecrets {
@@ -486,6 +489,7 @@ export interface UnifiedProvider {
   claudeCodeOauthToken: string;
   claudeOAuthCredentials: ClaudeOAuthCredentials | null;
   codexOAuthCredentials: CodexOAuthCredentials | null;
+  grokOAuthCredentials: GrokOAuthCredentials | null;
   customEnv: Record<string, string>;
   updatedAt: string;
 }
@@ -511,6 +515,8 @@ export interface UnifiedProviderPublic {
   hasCodexOAuthCredentials: boolean;
   codexOAuthEmailMasked: string | null;
   codexOAuthPlanType: string | null;
+  hasGrokOAuthCredentials: boolean;
+  grokOAuthEmailMasked: string | null;
   customEnv: Record<string, string>;
   updatedAt: string;
 }
@@ -800,6 +806,26 @@ function decryptSecrets(secrets: EncryptedSecrets): SecretPayload {
         ...(typeof creds.planType === 'string'
           ? { planType: creds.planType }
           : {}),
+      };
+    }
+  }
+  if (
+    parsed.grokOAuthCredentials &&
+    typeof parsed.grokOAuthCredentials === 'object'
+  ) {
+    const creds = parsed.grokOAuthCredentials as Record<string, unknown>;
+    if (typeof creds.accessToken === 'string' && creds.accessToken) {
+      result.grokOAuthCredentials = {
+        accessToken: creds.accessToken,
+        refreshToken:
+          typeof creds.refreshToken === 'string' ? creds.refreshToken : '',
+        ...(typeof creds.idToken === 'string'
+          ? { idToken: creds.idToken }
+          : {}),
+        ...(typeof creds.expiresAt === 'string'
+          ? { expiresAt: creds.expiresAt }
+          : {}),
+        ...(typeof creds.email === 'string' ? { email: creds.email } : {}),
       };
     }
   }
@@ -1168,6 +1194,7 @@ function toStoredProviderV4(provider: UnifiedProvider): StoredProviderV4 {
     claudeCodeOauthToken: provider.claudeCodeOauthToken || '',
     claudeOAuthCredentials: provider.claudeOAuthCredentials ?? null,
     codexOAuthCredentials: provider.codexOAuthCredentials ?? null,
+    grokOAuthCredentials: provider.grokOAuthCredentials ?? null,
   };
   const sanitizedEnv = sanitizeCustomEnvMap(provider.customEnv || {}, {
     skipReservedClaudeKeys: true,
@@ -1189,7 +1216,12 @@ function toStoredProviderV4(provider: UnifiedProvider): StoredProviderV4 {
 }
 
 function normalizeStoredProviderType(type: unknown): ProviderType {
-  if (type === 'codex' || type === 'third_party' || type === 'official') {
+  if (
+    type === 'codex' ||
+    type === 'grok' ||
+    type === 'third_party' ||
+    type === 'official'
+  ) {
     return type;
   }
   return 'official';
@@ -1210,6 +1242,7 @@ function fromStoredProviderV4(stored: StoredProviderV4): UnifiedProvider {
     claudeCodeOauthToken: secrets.claudeCodeOauthToken || '',
     claudeOAuthCredentials: secrets.claudeOAuthCredentials ?? null,
     codexOAuthCredentials: secrets.codexOAuthCredentials ?? null,
+    grokOAuthCredentials: secrets.grokOAuthCredentials ?? null,
     customEnv: sanitizeCustomEnvMap(stored.customEnv || {}, {
       skipReservedClaudeKeys: true,
     }),
@@ -1244,6 +1277,7 @@ function migrateV3toV4(v3: ClaudeStoredStateV3Resolved): {
       claudeCodeOauthToken: v3.officialSecrets.claudeCodeOauthToken,
       claudeOAuthCredentials: v3.officialSecrets.claudeOAuthCredentials ?? null,
       codexOAuthCredentials: null,
+      grokOAuthCredentials: null,
       customEnv: v3.officialCustomEnv || {},
       updatedAt: v3.officialUpdatedAt || now,
     });
@@ -1265,6 +1299,7 @@ function migrateV3toV4(v3: ClaudeStoredStateV3Resolved): {
       claudeCodeOauthToken: '',
       claudeOAuthCredentials: null,
       codexOAuthCredentials: null,
+      grokOAuthCredentials: null,
       customEnv: profile.customEnv || {},
       updatedAt: profile.updatedAt || now,
     });
@@ -1503,6 +1538,7 @@ export function createProvider(input: {
   claudeCodeOauthToken?: string;
   claudeOAuthCredentials?: ClaudeOAuthCredentials | null;
   codexOAuthCredentials?: CodexOAuthCredentials | null;
+  grokOAuthCredentials?: GrokOAuthCredentials | null;
   customEnv?: Record<string, string>;
   weight?: number;
   enabled?: boolean;
@@ -1541,19 +1577,28 @@ export function createProvider(input: {
       : '',
     claudeOAuthCredentials: input.claudeOAuthCredentials ?? null,
     codexOAuthCredentials: input.codexOAuthCredentials ?? null,
+    grokOAuthCredentials: input.grokOAuthCredentials ?? null,
     customEnv: sanitizeCustomEnvMap(input.customEnv || {}, {
       skipReservedClaudeKeys: true,
     }),
     updatedAt: now,
   };
-  if (provider.type === 'codex') {
+  if (provider.type === 'codex' || provider.type === 'grok') {
     provider.anthropicBaseUrl = '';
     provider.anthropicAuthToken = '';
     provider.anthropicApiKey = '';
     provider.claudeCodeOauthToken = '';
     provider.claudeOAuthCredentials = null;
-    if (!provider.anthropicModel) {
-      provider.anthropicModel = CODEX_DEFAULT_MODEL;
+    if (provider.type === 'codex') {
+      provider.grokOAuthCredentials = null;
+      if (!provider.anthropicModel) {
+        provider.anthropicModel = CODEX_DEFAULT_MODEL;
+      }
+    } else {
+      provider.codexOAuthCredentials = null;
+      if (!provider.anthropicModel) {
+        provider.anthropicModel = GROK_DEFAULT_MODEL;
+      }
     }
   }
 
@@ -1623,6 +1668,8 @@ export function updateProviderSecrets(
     clearClaudeOAuthCredentials?: boolean;
     codexOAuthCredentials?: CodexOAuthCredentials;
     clearCodexOAuthCredentials?: boolean;
+    grokOAuthCredentials?: GrokOAuthCredentials;
+    clearGrokOAuthCredentials?: boolean;
   },
 ): UnifiedProvider {
   const state = readStoredStateV4();
@@ -1673,6 +1720,12 @@ export function updateProviderSecrets(
     updated.codexOAuthCredentials = secrets.codexOAuthCredentials;
   } else if (secrets.clearCodexOAuthCredentials) {
     updated.codexOAuthCredentials = null;
+  }
+
+  if (secrets.grokOAuthCredentials) {
+    updated.grokOAuthCredentials = secrets.grokOAuthCredentials;
+  } else if (secrets.clearGrokOAuthCredentials) {
+    updated.grokOAuthCredentials = null;
   }
 
   state.providers[idx] = updated;
@@ -1808,18 +1861,20 @@ export function providerToConfig(
   };
 }
 
-/** Runner env for a provider. Codex is the only type that uses the local facade. */
+/** Runner env for a provider. Codex and Grok use the local Anthropic facade. */
 export function toRunnerProviderConfig(
   provider: UnifiedProvider,
 ): ClaudeProviderConfig {
-  if (provider.type === 'codex') {
+  if (provider.type === 'codex' || provider.type === 'grok') {
     return {
       anthropicBaseUrl: getCodexFacadeBaseUrl(),
       anthropicAuthToken: issueCodexRunnerToken(provider.id),
       anthropicApiKey: '',
       claudeCodeOauthToken: '',
       claudeOAuthCredentials: null,
-      anthropicModel: provider.anthropicModel || CODEX_DEFAULT_MODEL,
+      anthropicModel:
+        provider.anthropicModel ||
+        (provider.type === 'grok' ? GROK_DEFAULT_MODEL : CODEX_DEFAULT_MODEL),
       updatedAt: provider.updatedAt,
     };
   }
@@ -1836,6 +1891,33 @@ export function getRunnerProviderConfig(): ClaudeProviderConfig {
     if (selected) return toRunnerProviderConfig(selected);
   }
   return defaultsFromEnv();
+}
+
+export function updateProviderGrokCredentialsIfCurrent(
+  id: string,
+  expected: GrokOAuthCredentials,
+  refreshed: GrokOAuthCredentials,
+): boolean {
+  const state = readStoredStateV4();
+  if (!state) throw new Error('Claude 配置不存在');
+  const idx = state.providers.findIndex((provider) => provider.id === id);
+  if (idx < 0) throw new Error('未找到指定供应商');
+  const current = state.providers[idx];
+  const currentCred = current.grokOAuthCredentials;
+  if (
+    !currentCred ||
+    currentCred.accessToken !== expected.accessToken ||
+    currentCred.refreshToken !== expected.refreshToken
+  ) {
+    return false;
+  }
+  state.providers[idx] = {
+    ...current,
+    grokOAuthCredentials: { ...refreshed },
+    updatedAt: new Date().toISOString(),
+  };
+  writeStoredStateV4(state.providers, state.balancing, state.defaultProviderId);
+  return true;
 }
 
 export function updateProviderCodexCredentialsIfCurrent(
@@ -1894,6 +1976,10 @@ export function toPublicProvider(
       ? maskSecret(provider.codexOAuthCredentials.email)
       : null,
     codexOAuthPlanType: provider.codexOAuthCredentials?.planType ?? null,
+    hasGrokOAuthCredentials: !!provider.grokOAuthCredentials,
+    grokOAuthEmailMasked: provider.grokOAuthCredentials?.email
+      ? maskSecret(provider.grokOAuthCredentials.email)
+      : null,
     customEnv: provider.customEnv || {},
     updatedAt: provider.updatedAt,
   };
