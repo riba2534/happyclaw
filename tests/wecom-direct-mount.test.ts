@@ -4,6 +4,8 @@ import path from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 
+import type { ChannelProvider } from '../src/types.js';
+
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wecom-direct-mount-'));
 const store = path.join(tmp, 'db');
 const groups = path.join(tmp, 'groups');
@@ -33,6 +35,42 @@ const now = '2026-08-17T00:00:00.000Z';
 const workspaceJid = 'web:wecom-ws';
 const dmJid = 'wecom:c2c:user-1#account:bot-a';
 const groupJid = 'wecom:group:chat-1#account:bot-a';
+
+const CLASSIFIABLE_ISOLATION_CASES = [
+  {
+    name: 'QQ',
+    provider: 'qq' as ChannelProvider,
+    accountId: 'qq-bot-a',
+    workspaceJid: 'web:qq-iso-ws',
+    folder: 'qq-iso-ws',
+    dms: ['qq:c2c:alice#account:qq-bot-a'],
+    groupJid: 'qq:group:sales#account:qq-bot-a',
+    restoreJid: 'qq:c2c:restore-user#account:qq-bot-a',
+  },
+  {
+    name: 'Discord',
+    provider: 'discord' as ChannelProvider,
+    accountId: 'discord-bot-a',
+    workspaceJid: 'web:discord-iso-ws',
+    folder: 'discord-iso-ws',
+    dms: ['discord:dm:alice#account:discord-bot-a'],
+    groupJid: 'discord:guild-channel-1#account:discord-bot-a',
+    restoreJid: 'discord:dm:restore-user#account:discord-bot-a',
+  },
+  {
+    name: 'WhatsApp',
+    provider: 'whatsapp' as ChannelProvider,
+    accountId: 'wa-bot-a',
+    workspaceJid: 'web:wa-iso-ws',
+    folder: 'wa-iso-ws',
+    dms: [
+      'whatsapp:15551230000@s.whatsapp.net#account:wa-bot-a',
+      'whatsapp:123456789012345@lid#account:wa-bot-a',
+    ],
+    groupJid: 'whatsapp:120363000000000000@g.us#account:wa-bot-a',
+    restoreJid: 'whatsapp:15551239999@hosted.lid#account:wa-bot-a',
+  },
+] as const;
 
 function workspaceGroup() {
   return {
@@ -64,6 +102,22 @@ beforeAll(() => {
     secret_ref: 'channel-account:bot-a',
     default_workspace_jid: workspaceJid,
   });
+  for (const fixture of CLASSIFIABLE_ISOLATION_CASES) {
+    db.setRegisteredGroup(fixture.workspaceJid, {
+      name: `${fixture.name} workspace`,
+      folder: fixture.folder,
+      added_at: now,
+      created_by: 'owner-a',
+    });
+    db.createChannelAccount({
+      id: fixture.accountId,
+      owner_user_id: 'owner-a',
+      provider: fixture.provider,
+      name: `${fixture.name} bot`,
+      secret_ref: `channel-account:${fixture.accountId}`,
+      default_workspace_jid: fixture.workspaceJid,
+    });
+  }
 });
 
 afterAll(() => {
@@ -254,3 +308,142 @@ describe.sequential('WeCom DM / group channel-account mounts', () => {
     expect(db.getSessionChannelOwner('wecom-ws')).toBeUndefined();
   });
 });
+
+describe.sequential(
+  'QQ/Discord/WhatsApp DM / group channel-account mounts',
+  () => {
+    test.each(CLASSIFIABLE_ISOLATION_CASES)(
+      '$name: new attach isolates DM from group main owner',
+      (fixture) => {
+        const mountedDms = fixture.dms.map((sourceJid) => {
+          const dm = attachDefaultChannelAccountMount({
+            sourceJid,
+            group: chatGroup(`${fixture.name} private DM`),
+            accountId: fixture.accountId,
+            fallbackWorkspaceJid: fixture.workspaceJid,
+            userId: 'owner-a',
+          });
+          expect(dm.channel_account_id).toBe(fixture.accountId);
+          expect(dm.target_main_jid).toBeUndefined();
+          expect(dm.target_agent_id).toBeTruthy();
+          db.setRegisteredGroup(sourceJid, dm);
+          expect(db.getChannelMount(sourceJid)).toMatchObject({
+            workspace_jid: fixture.workspaceJid,
+            session_id: dm.target_agent_id,
+            routing_mode: 'single_session',
+          });
+          const dmTarget = resolveChannelMountTarget(
+            db.getChannelMount(sourceJid)!,
+            {
+              getAgent: db.getAgent,
+              getRegisteredGroup: db.getRegisteredGroup,
+            },
+          );
+          expect(dmTarget).toMatchObject({
+            status: 'resolved',
+            effectiveJid: `${fixture.workspaceJid}#agent:${dm.target_agent_id}`,
+            agentId: dm.target_agent_id,
+          });
+          return dm;
+        });
+        expect(new Set(mountedDms.map((dm) => dm.target_agent_id)).size).toBe(
+          fixture.dms.length,
+        );
+
+        const group = attachDefaultChannelAccountMount({
+          sourceJid: fixture.groupJid,
+          group: chatGroup(`${fixture.name} group`),
+          accountId: fixture.accountId,
+          fallbackWorkspaceJid: fixture.workspaceJid,
+          userId: 'owner-a',
+        });
+        expect(group).toMatchObject({
+          channel_account_id: fixture.accountId,
+          target_main_jid: fixture.workspaceJid,
+        });
+        expect(group.target_agent_id).toBeUndefined();
+        db.setRegisteredGroup(fixture.groupJid, group);
+        expect(db.getChannelMount(fixture.groupJid)).toMatchObject({
+          workspace_jid: fixture.workspaceJid,
+          session_id: null,
+        });
+
+        expect(
+          db.setSessionChannelOwnerOnce(fixture.folder, null, fixture.groupJid),
+        ).toBe(fixture.groupJid);
+        for (const [index, sourceJid] of fixture.dms.entries()) {
+          const agentId = mountedDms[index]!.target_agent_id!;
+          expect(
+            db.setSessionChannelOwnerOnce(fixture.folder, null, sourceJid),
+          ).toBe(fixture.groupJid);
+          expect(
+            db.setSessionChannelOwnerOnce(fixture.folder, agentId, sourceJid),
+          ).toBe(sourceJid);
+          expect(
+            db.setSessionChannelOwnerOnce(
+              fixture.folder,
+              agentId,
+              fixture.groupJid,
+            ),
+          ).toBe(sourceJid);
+        }
+      },
+    );
+
+    test.each(CLASSIFIABLE_ISOLATION_CASES)(
+      '$name: /unbind restore remounts leftover DM off workspace main',
+      (fixture) => {
+        db.setRegisteredGroup(
+          fixture.restoreJid,
+          chatGroup(`${fixture.name} leftover DM`, {
+            channel_account_id: fixture.accountId,
+            target_main_jid: fixture.workspaceJid,
+          }),
+        );
+        db.clearSessionChannelOwner(fixture.folder, null);
+        expect(
+          db.setSessionChannelOwnerOnce(
+            fixture.folder,
+            null,
+            fixture.restoreJid,
+          ),
+        ).toBe(fixture.restoreJid);
+        const restored = restoreDefaultChannelMount(
+          fixture.restoreJid,
+          db.getRegisteredGroup(fixture.restoreJid)!,
+          'owner-a',
+        );
+        expect(restored.status).toBe('resolved');
+        if (restored.status !== 'resolved') return;
+        expect(restored.workspaceJid).toBe(fixture.workspaceJid);
+        expect(restored.updated.target_main_jid).toBeUndefined();
+        expect(restored.updated.target_agent_id).toBeTruthy();
+        expect(db.getChannelMount(fixture.restoreJid)).toMatchObject({
+          workspace_jid: fixture.workspaceJid,
+          session_id: restored.updated.target_agent_id,
+        });
+        expect(
+          db.getAgent(restored.updated.target_agent_id!)?.source_kind,
+        ).toBe('channel_direct');
+        expect(db.getSessionChannelOwner(fixture.folder)).toBeUndefined();
+        expect(
+          db.setSessionChannelOwnerOnce(fixture.folder, null, fixture.groupJid),
+        ).toBe(fixture.groupJid);
+        expect(
+          db.setSessionChannelOwnerOnce(
+            fixture.folder,
+            null,
+            fixture.restoreJid,
+          ),
+        ).toBe(fixture.groupJid);
+        expect(
+          db.setSessionChannelOwnerOnce(
+            fixture.folder,
+            restored.updated.target_agent_id,
+            fixture.restoreJid,
+          ),
+        ).toBe(fixture.restoreJid);
+      },
+    );
+  },
+);

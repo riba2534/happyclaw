@@ -104,7 +104,7 @@ let db: InstanceType<typeof Database>;
  * restating the number. Hardcoding it meant every schema bump edited a dozen
  * unrelated test files, which is churn that hides real assertion changes.
  */
-export const CURRENT_SCHEMA_VERSION = 73;
+export const CURRENT_SCHEMA_VERSION = 74;
 
 export function isDatabaseInitialized(): boolean {
   return Boolean(db?.open);
@@ -2545,6 +2545,22 @@ export function initDatabase(): void {
     migrateClassifiableDirectWorkspaceMountsToSessions();
   }
 
+  // v73 -> v74: v73 used resolveChannelConversationKind as it existed then.
+  // #659 later classified WhatsApp @lid / @hosted / @hosted.lid as direct.
+  // Databases already stamped schema 73 in that window still have those
+  // JIDs on target_main_jid (they were unknown and skipped) and can share
+  // channel_session_owner:{folder}:main with a group. Re-run the same
+  // remount with the current classifier. Groups, manual target_agent_id,
+  // missing workspaces, and unknown JIDs stay skipped. Already-migrated
+  // WeCom / QQ / Discord / PN-WhatsApp rows are idempotent. Do not rewrite
+  // the v72 or v73 blocks.
+  const leftoverClassifiableDirectMountSchemaVersion = Number(
+    getRouterStateInternal('schema_version') ?? '0',
+  );
+  if (leftoverClassifiableDirectMountSchemaVersion < 74) {
+    migrateClassifiableDirectWorkspaceMountsToSessions();
+  }
+
   db.prepare(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', String(CURRENT_SCHEMA_VERSION));
@@ -2649,11 +2665,13 @@ export function migrateWecomDirectWorkspaceMountsToSessions(): number {
 
 /**
  * Move leftover JID-classifiable DMs off a shared workspace main mount.
+ * Uses the current conversation classifier (including WhatsApp LID/hosted).
  * Same skip rules as v72: already-bound sessions (manual or v72 WeCom),
  * groups, unknown/unclassifiable JIDs (including Feishu without metadata),
  * and missing workspaces stay untouched. If the workspace main owner still
  * points at the DM, clear it so a later group message cannot keep
- * delivering into that private chat.
+ * delivering into that private chat. Idempotent for already-migrated rows;
+ * v74 re-runs this for databases stamped 73 before the LID classifier.
  */
 export function migrateClassifiableDirectWorkspaceMountsToSessions(): number {
   return db
@@ -2715,6 +2733,14 @@ export function migrateClassifiableDirectWorkspaceMountsToSessions(): number {
           target_main_jid: undefined,
           binding_mode: 'single_context',
         });
+        // Isolation only clears main owner on first marker insert. A leftover
+        // DM remounted onto an already-isolated workspace (v73 ran for a
+        // sibling, then this JID later became classifiable) must still drop a
+        // stolen main owner without wiping an unrelated group owner.
+        const ownerJid = getSessionChannelOwner(workspace.folder, null);
+        if (ownerJid && channelConversationJid(ownerJid) === conversationJid) {
+          clearSessionChannelOwner(workspace.folder, null);
+        }
 
         affectedWorkspaces.set(workspaceJid, workspace);
 

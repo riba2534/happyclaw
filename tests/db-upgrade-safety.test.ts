@@ -171,10 +171,10 @@ describe('schema version head', () => {
     // one assertion that fails when the head moves, forcing whoever bumps it
     // to confirm the matching migration block — and a test covering it —
     // actually landed. Update the literal in the same commit as the migration.
-    // v73: generalizes the v72 WeCom DM remount to other JID-classifiable
-    // DMs (QQ / DingTalk / Discord / WhatsApp / Telegram / WeChat leftover
-    // target_main_jid collisions). See
-    // tests/schema-v73-classifiable-direct-mount.test.ts. Do not rewrite v72.
-    expect(db.CURRENT_SCHEMA_VERSION).toBe(73);
+    // v74: re-runs leftover JID-classifiable DM remount with the current
+    // classifier so WhatsApp @lid / @hosted / @hosted.lid rows skipped by
+    // v73 (stamped before #659) leave shared workspace main. See
+    // tests/schema-v74-leftover-direct-mount.test.ts. Do not rewrite v72/v73.
+    expect(db.CURRENT_SCHEMA_VERSION).toBe(74);
   });
 });
