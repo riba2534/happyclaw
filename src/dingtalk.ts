@@ -131,6 +131,31 @@ export interface DingTalkGroupMessageSuccess {
   message?: string;
 }
 
+/** Timeout / 5xx / 429: the first send may already have left the client. */
+function isUncertainFormatFallbackError(err: unknown): boolean {
+  let current: unknown = err;
+  const seen = new Set<unknown>();
+  while (current && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current);
+    const rec = current as Record<string, unknown>;
+    const code = String(rec.code ?? rec.errno ?? '');
+    const status = Number(rec.error_code ?? rec.statusCode ?? rec.status);
+    const message = String(rec.message ?? '');
+    if (
+      /ETIMEDOUT|ESOCKETTIMEDOUT|ECONNRESET|ECONNREFUSED|EPIPE|ENOTFOUND|EAI_AGAIN|UND_ERR_/i.test(
+        `${code} ${message}`,
+      ) ||
+      status === 429 ||
+      (status >= 500 && status <= 599) ||
+      /HTTP failed \((429|5\d\d)\)/.test(message)
+    ) {
+      return true;
+    }
+    current = rec.cause;
+  }
+  return false;
+}
+
 /** Validate the persistent groupMessages endpoint's transport and envelope. */
 export function parseDingTalkGroupMessageResponse(
   statusCode: number | undefined,
@@ -2192,7 +2217,10 @@ export function createDingTalkConnection(
             'sampleMarkdown',
             msgParam,
           );
-        } catch {
+        } catch (err) {
+          if (isUncertainFormatFallbackError(err)) {
+            throw err;
+          }
           // Fall back to plain text
           const plainContent = markdownToPlainText(chunk);
           const plainMsgParam = JSON.stringify({ content: plainContent });
