@@ -25,6 +25,7 @@ import {
 } from './feishu-cards/builder.js';
 import type { CardStatus, ToolCallStat } from './feishu-cards/types.js';
 import { formatFeishuUsageNote } from './feishu-usage-display.js';
+import type { FeishuUsageNoteInput } from './feishu-usage-display.js';
 import {
   CARD_ELEMENT_IDS,
   statusHeadline,
@@ -2079,6 +2080,25 @@ export class StreamingCardController {
   /** True when finalize split content across multiple cards — patchUsageNote
    * must not rebuild a single card or it would overwrite the first card. */
   private finalizedAsSplit = false;
+  /** Handle to the LAST card produced by splitOnFinalize. Without it a split
+   * reply silently loses its usage note (model / tokens / elapsed): the single
+   * card rebuild is forbidden, so patchUsageNote used to just return. Keeping
+   * the tail card's renderer + text lets us re-render only that card with the
+   * note appended, which is where a reader looks for it anyway.
+   *
+   * `render` rather than a backend handle because the tail is not always a
+   * continuation card: the split branch is entered on the FINAL card's JSON
+   * size too, and a tool-heavy turn blows past that limit while its reply text
+   * still fits one group. The tail is then the reused streaming card, which is
+   * a StreamingModeBackend (updateCardFull) rather than a CardKitBackend
+   * (updateCard). */
+  private lastSplitCard: {
+    render: (cardJson: object) => Promise<void>;
+    text: string;
+    state: Schema2State;
+    titlePrefix: string;
+    title?: string;
+  } | null = null;
   /** Serializes legacy im.v1.message.patch calls — that API has no sequence
    * number, so an in-flight「生成中」patch landing AFTER the terminal patch
    * would permanently revert the card to streaming state. */
@@ -2521,10 +2541,23 @@ export class StreamingCardController {
         // would overwrite the first card with full text while continuation
         // cards remain. The explicit flag matters: for ASCII long replies the
         // truncated JSON is small, so a byte-size check alone never trips.
-        if (this.finalizedAsSplit) return;
+        if (this.finalizedAsSplit) {
+          // Rebuilding one card would clobber the continuations, but the note
+          // itself must not be lost — re-render just the tail card with it.
+          await this.patchUsageNoteOnSplitTail(usage);
+          return;
+        }
         const cardJson = this.buildStructuredFinalCard('completed', usage);
         const cardSize = Buffer.byteLength(JSON.stringify(cardJson), 'utf-8');
-        if (cardSize > CARD_SIZE_LIMIT) return;
+        if (cardSize > CARD_SIZE_LIMIT) {
+          // Silent drop here is what made long replies lose model/token info;
+          // keep the card intact but leave a trace instead of vanishing.
+          logger.debug(
+            { chatId: this.chatId, cardSize, limit: CARD_SIZE_LIMIT },
+            'Streaming card: usage note skipped, rebuilt card exceeds size limit',
+          );
+          return;
+        }
         await this.streamingBackend.updateCardFull(cardJson);
       } else if (this.messageId || this.multiCard) {
         // For CardKit v1 / legacy: skip if multiCard has split content
@@ -2539,6 +2572,38 @@ export class StreamingCardController {
         'Streaming card: patchUsageNote failed (non-fatal)',
       );
     }
+  }
+
+  /**
+   * Re-render the tail card of a split finalize so the usage note (model /
+   * tokens / elapsed) still reaches the reader. Only the last card is touched;
+   * earlier cards keep their frozen content.
+   */
+  private async patchUsageNoteOnSplitTail(
+    usage: FeishuUsageNoteInput,
+  ): Promise<void> {
+    const tail = this.lastSplitCard;
+    if (!tail) return;
+    const note = formatFeishuUsageNote(usage);
+    if (!note) return;
+    const cardJson = buildSchema2Card(
+      tail.text,
+      tail.state,
+      tail.titlePrefix,
+      tail.title,
+      undefined,
+      note,
+    );
+    if (
+      Buffer.byteLength(JSON.stringify(cardJson), 'utf-8') > CARD_SIZE_LIMIT
+    ) {
+      logger.debug(
+        { chatId: this.chatId },
+        'Streaming card: split-tail usage note skipped, card exceeds size limit',
+      );
+      return;
+    }
+    await tail.render(cardJson);
   }
 
   /**
@@ -3399,6 +3464,18 @@ export class StreamingCardController {
         // override title so their first line stays in the body.
         const firstCard = buildSchema2Card(text, state, '');
         await backend.updateCardFull(firstCard);
+        // Single group: the reused streaming card IS the tail. Recording it
+        // only in the continuation branch below would leave lastSplitCard null
+        // for every oversized-JSON-but-short-text reply, and the usage note
+        // would be dropped exactly as before the fix.
+        if (isLast) {
+          this.lastSplitCard = {
+            render: (cardJson) => backend.updateCardFull(cardJson),
+            text,
+            state,
+            titlePrefix: '',
+          };
+        }
       } else {
         const contCard = new CardKitBackend(this.client);
         const contCardJson = buildSchema2Card(text, state, '(续) ', title);
@@ -3409,6 +3486,17 @@ export class StreamingCardController {
           this.replyInThread,
         );
         this.onCardCreated?.(newMsgId);
+        // Remember the tail card so patchUsageNote can still deliver the usage
+        // note on split replies (see lastSplitCard).
+        if (isLast) {
+          this.lastSplitCard = {
+            render: (cardJson) => contCard.updateCard(cardJson),
+            text,
+            state,
+            titlePrefix: '(续) ',
+            title,
+          };
+        }
       }
     }
   }

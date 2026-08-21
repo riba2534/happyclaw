@@ -399,4 +399,58 @@ describe('Feishu CardKit streaming controller', () => {
       controller.dispose();
     },
   );
+
+  // Regression: finalize enters the split branch on raw text length as well as
+  // on card JSON size, and splitOnFinalize can still emit a SINGLE group. The
+  // tail is then the reused streaming card rather than a continuation card, so
+  // recording the tail only in the continuation branch silently dropped the
+  // usage note on exactly the long, tool-heavy replies that carry one.
+  test('a split finalize that yields one group still lands the usage note on the tail card', async () => {
+    const mock = makeClient();
+    const controller = new StreamingCardController({
+      client: mock.client as any,
+      chatId: 'oc_split_tail',
+    });
+
+    // Over MAX_FINAL_SINGLE_CARD_CHARS (15000) so finalize splits, but ASCII
+    // and under FREEZE_SLICE_BYTES (16KB) so the split produces one group.
+    const body = Array.from(
+      { length: 40 },
+      (_, i) => `paragraph ${i} ${'a'.repeat(370)}`,
+    ).join('\n\n');
+    expect(body.length).toBeGreaterThan(15000);
+    expect(Buffer.byteLength(body, 'utf-8')).toBeLessThan(16 * 1024);
+
+    controller.append(body);
+    await vi.waitFor(() => expect(controller.currentState).toBe('streaming'));
+    const backend = (controller as any).streamingBackend as {
+      drain(): Promise<void>;
+    };
+    await backend.drain();
+
+    await controller.complete(body);
+    expect(controller.currentState).toBe('completed');
+    // Guard the premise: if this ever stops splitting, the test below would
+    // pass for the wrong reason.
+    expect((controller as any).finalizedAsSplit).toBe(true);
+    expect((controller as any).lastSplitCard).not.toBeNull();
+
+    mock.cardUpdate.mockClear();
+    await controller.patchUsageNote({
+      inputTokens: 1200,
+      outputTokens: 340,
+      costUSD: 0.42,
+      durationMs: 12000,
+      numTurns: 3,
+    });
+    await backend.drain();
+
+    const rendered = mock.cardUpdate.mock.calls
+      .map((call) => String(call[0].data.card.data))
+      .join('\n');
+    expect(rendered).toContain('💰');
+    expect(rendered).toContain('输入 1.2K');
+    expect(rendered).toContain('输出 340');
+    controller.dispose();
+  });
 });
