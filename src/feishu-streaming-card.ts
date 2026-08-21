@@ -2099,6 +2099,18 @@ export class StreamingCardController {
     titlePrefix: string;
     title?: string;
   } | null = null;
+  /** Usage that arrived before finalize settled, parked for redelivery.
+   *
+   * The runner emits usage right after the final result, while complete() is
+   * still mid-flight (state flips to 'completed' at its top, the card writes
+   * settle much later). Rendering the note immediately would either race the
+   * finalize rebuild on the same serialized backend queue — last writer wins,
+   * and the finalize card carries no note — or, on the split path, read
+   * lastSplitCard before splitOnFinalize has recorded it. Park the usage and
+   * let complete() flush it after the terminal card is actually in place. */
+  private pendingUsage: FeishuUsageNoteInput | null = null;
+  /** True once complete() has finished writing the terminal card(s). */
+  private finalizeSettled = false;
   /** Serializes legacy im.v1.message.patch calls — that API has no sequence
    * number, so an in-flight「生成中」patch landing AFTER the terminal patch
    * would permanently revert the card to streaming state. */
@@ -2516,6 +2528,17 @@ export class StreamingCardController {
       this.emitLifecycle('failed', err);
       throw err;
     }
+
+    // Terminal card is in place — deliver any usage that arrived while the
+    // finalize writes were still in flight. Ordering via the same serialized
+    // backend queue guarantees the note lands after the terminal card instead
+    // of being overwritten by it.
+    this.finalizeSettled = true;
+    if (this.pendingUsage) {
+      const parked = this.pendingUsage;
+      this.pendingUsage = null;
+      await this.patchUsageNote(parked).catch(() => {});
+    }
   }
 
   /**
@@ -2533,7 +2556,15 @@ export class StreamingCardController {
     reasoningTokens?: number;
     modelUsage?: Record<string, { outputTokens?: number }>;
   }): Promise<void> {
-    if (this.state !== 'completed') return;
+    if (this.state === 'aborted' || this.state === 'error') return;
+    if (this.state !== 'completed' || !this.finalizeSettled) {
+      // Finalize still in flight (or usage arrived before the final result):
+      // rendering now would be overwritten by the terminal card rebuild or,
+      // on the split path, miss lastSplitCard. complete() flushes this after
+      // the terminal card settles.
+      this.pendingUsage = usage;
+      return;
+    }
 
     try {
       if (this.backendMode === 'streaming' && this.streamingBackend) {

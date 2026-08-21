@@ -453,4 +453,48 @@ describe('Feishu CardKit streaming controller', () => {
     expect(rendered).toContain('输出 340');
     controller.dispose();
   });
+
+  // Regression: the runner emits usage right after the final result, while
+  // complete() is still writing the terminal card. state flips to 'completed'
+  // at the top of complete(), so the note used to render immediately and race
+  // the finalize rebuild on the same serialized queue — last writer wins, and
+  // the finalize card carries no note. The usage must be parked and delivered
+  // after the terminal card settles.
+  test('usage arriving while complete() is mid-flight still lands on the final card', async () => {
+    const mock = makeClient();
+    const controller = new StreamingCardController({
+      client: mock.client as any,
+      chatId: 'oc_usage_race',
+    });
+    controller.append('短回复正文');
+    await vi.waitFor(() => expect(controller.currentState).toBe('streaming'));
+    const backend = (controller as any).streamingBackend as {
+      drain(): Promise<void>;
+    };
+    await backend.drain();
+
+    // Fire usage while complete() is in flight — do not await complete first.
+    const completing = controller.complete('短回复正文');
+    const patching = controller.patchUsageNote({
+      inputTokens: 800,
+      outputTokens: 120,
+      costUSD: 0.1,
+      durationMs: 5000,
+      numTurns: 2,
+    });
+    await Promise.all([completing, patching]);
+    await backend.drain();
+
+    // The LAST terminal card write must carry the usage — earlier writes may
+    // legitimately lack it, but if the final one does, the usage was lost.
+    // The single-card path renders usage as the structured meta_row (⏱/💡),
+    // not the 💰 footer note (that form is for split-tail cards).
+    const lastCard = String(
+      mock.cardUpdate.mock.calls.at(-1)![0].data.card.data,
+    );
+    expect(lastCard).toContain('meta_row');
+    expect(lastCard).toContain('输出 120');
+    expect(lastCard).toContain('输入 800');
+    controller.dispose();
+  });
 });
