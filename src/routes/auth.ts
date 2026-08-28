@@ -51,6 +51,7 @@ import {
   validateUsername,
   validatePassword,
   generateUserId,
+  isLocalInitialSetupAllowed,
 } from '../auth.js';
 import type { AuthUser, User, UserPublic } from '../types.js';
 import { logger } from '../logger.js';
@@ -134,8 +135,21 @@ authRoutes.get('/status', (c) => {
   return c.json({ initialized });
 });
 
-// Public: initial admin setup (only when no users exist)
+// Public: initial admin setup (only when no users exist, and only from
+// loopback unless ALLOW_REMOTE_SETUP=1/true). createInitialAdminUser is
+// already atomic, but a remote host that can hit the port first could
+// still steal the first admin without this origin check.
 authRoutes.post('/setup', async (c) => {
+  if (!isLocalInitialSetupAllowed(c)) {
+    return c.json(
+      {
+        error:
+          'Initial setup must be performed from the host (loopback). Set ALLOW_REMOTE_SETUP=true to allow remote first-admin creation.',
+      },
+      403,
+    );
+  }
+
   const body = await c.req.json().catch(() => ({}));
   const { username: rawUsername, password } = body as {
     username?: string;

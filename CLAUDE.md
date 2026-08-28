@@ -319,6 +319,7 @@ Web 持久设置 > 环境变量 > 代码默认值
 | `MAX_FILE_SIZE_MB`                   | `50`                              | Web/IM 入站文件上限                |
 | `CORS_ALLOWED_ORIGINS`               | 仅 localhost                      | WebSocket Origin 白名单            |
 | `TRUST_PROXY`                        | `false`                           | 是否信任反向代理来源头             |
+| `ALLOW_REMOTE_SETUP`                 | `false`                           | 允许远程创建首个管理员             |
 | `TZ`                                 | 系统时区                          | 调度时区                           |
 
 Provider 和渠道账号应优先通过 Web 配置。Legacy `/api/config/user-im/*` 只用于兼容，

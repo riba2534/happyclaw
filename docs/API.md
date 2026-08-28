@@ -44,7 +44,7 @@
 Public：
 
 - `GET /api/auth/status`
-- `POST /api/auth/setup`，仅用户表为空时可用
+- `POST /api/auth/setup`，仅用户表为空且来自回环地址时可用；远程初始化需 `ALLOW_REMOTE_SETUP=true`
 - `POST /api/auth/login`
 - `GET /api/auth/register/status`
 - `POST /api/auth/register`

@@ -239,3 +239,78 @@ export function sessionExpiresAt(): string {
 export function isSessionExpired(expiresAt: string): boolean {
   return new Date(expiresAt).getTime() < Date.now();
 }
+
+// --- First-admin setup origin ---
+
+function isTruthyEnvFlag(value: string | undefined): boolean {
+  return value === '1' || value === 'true';
+}
+
+/**
+ * True for IPv4 127.0.0.0/8, IPv6 ::1, IPv4-mapped loopback, and localhost.
+ * Used by first-admin setup so a remote host cannot steal the initial admin
+ * by hitting a publicly bound port.
+ */
+export function isLoopbackAddress(ip: string | null | undefined): boolean {
+  if (!ip || typeof ip !== 'string') return false;
+  let value = ip.trim().toLowerCase();
+  if (!value) return false;
+  if (value.startsWith('[') && value.endsWith(']')) {
+    value = value.slice(1, -1);
+  }
+  const zone = value.indexOf('%');
+  if (zone !== -1) value = value.slice(0, zone);
+
+  if (value === 'localhost' || value === 'localhost.') return true;
+  if (value === '::1') return true;
+
+  if (/^127(?:\.(?:\d{1,3})){3}$/.test(value)) {
+    return value.split('.').every((part) => {
+      const n = Number(part);
+      return n >= 0 && n <= 255;
+    });
+  }
+
+  // Node may emit ::ffff:127.0.0.1 or ::ffff:7f00:1
+  if (value.startsWith('::ffff:')) {
+    const mapped = value.slice('::ffff:'.length);
+    if (mapped.includes('.')) return isLoopbackAddress(mapped);
+    const hex = mapped.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    if (!hex) return false;
+    return ((parseInt(hex[1], 16) >> 8) & 0xff) === 127;
+  }
+
+  return false;
+}
+
+function getDirectRemoteAddress(c: any): string {
+  return (
+    c?.env?.incoming?.socket?.remoteAddress ||
+    c?.env?.remoteAddr ||
+    c?.req?.raw?.socket?.remoteAddress ||
+    ''
+  );
+}
+
+/**
+ * First-admin setup is loopback-only unless ALLOW_REMOTE_SETUP=1/true.
+ *
+ * X-Forwarded-For is untrusted unless the TCP peer is also loopback (a local
+ * reverse proxy). A remote client spoofing XFF: 127.0.0.1 is rejected.
+ * When the peer is loopback and XFF names a remote client, the request is
+ * treated as remote.
+ */
+export function isLocalInitialSetupAllowed(c: any): boolean {
+  if (isTruthyEnvFlag(process.env.ALLOW_REMOTE_SETUP)) return true;
+
+  const socketIp = getDirectRemoteAddress(c);
+  if (!isLoopbackAddress(socketIp)) return false;
+
+  const xff = c?.req?.header?.('x-forwarded-for');
+  if (xff) {
+    const originalClient = xff.split(',')[0]?.trim();
+    if (originalClient && !isLoopbackAddress(originalClient)) return false;
+  }
+
+  return true;
+}

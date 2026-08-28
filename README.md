@@ -242,7 +242,7 @@ make start
 
 首次访问按照向导完成：
 
-1. 创建第一个管理员账户。
+1. 创建第一个管理员账户。默认只能从本机（回环地址）调用 `POST /api/auth/setup`；若必须远程初始化，启动前设置 `ALLOW_REMOTE_SETUP=true`。
 2. 配置 Anthropic 官方账号或第三方 Claude 兼容 Provider。
 3. 可选添加飞书、Telegram、QQ、钉钉、微信、企业微信、Discord 或 WhatsApp 渠道账号。
 4. 进入工作台创建智能体、工作区和会话。
@@ -324,6 +324,7 @@ HappyClaw 优先通过 Web 设置管理配置，不要求用户维护一组庞�
 | `MAX_FILE_SIZE_MB`                   | `50`                              | Web 和 IM 入站文件大小上限                                                         |
 | `CORS_ALLOWED_ORIGINS`               | 仅 localhost                      | 公网部署的 WebSocket Origin 白名单                                                 |
 | `TRUST_PROXY`                        | `false`                           | 位于可信反向代理后时设为 `true`                                                    |
+| `ALLOW_REMOTE_SETUP`                 | `false`                           | 允许从非回环地址创建首个管理员；默认仅本机可调用 `POST /api/auth/setup`            |
 | `TZ`                                 | 系统时区                          | 日志与定时任务时区                                                                 |
 | `HTTPS_PROXY` / `HTTP_PROXY`         | 未设置                            | 独立配置 HTTPS/HTTP 出站代理；主进程与每个智能体容器都会使用，也接受对应的小写变量 |
 | `NO_PROXY`                           | 未设置                            | 独立配置不走代理的地址列表，也接受 `no_proxy`                                      |

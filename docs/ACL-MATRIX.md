@@ -36,17 +36,17 @@
 
 ## 2. Public 接口
 
-| 路由                                 | 方法 | 附加条件               |
-| ------------------------------------ | ---- | ---------------------- |
-| `/api/auth/status`                   | GET  | 无                     |
-| `/api/auth/setup`                    | POST | 仅用户表为空           |
-| `/api/auth/login`                    | POST | 登录限流               |
-| `/api/auth/register/status`          | GET  | 无                     |
-| `/api/auth/register`                 | POST | 注册策略、邀请码、限流 |
-| `/api/auth/avatars/:filename`        | GET  | 仅允许受管头像路径     |
-| `/api/config/appearance/public`      | GET  | 只返回公开外观         |
-| `/api/config/brand-assets/:filename` | GET  | 仅允许受管品牌资源名   |
-| `/api/health`                        | GET  | 不返回敏感运行详情     |
+| 路由                                 | 方法 | 附加条件                                          |
+| ------------------------------------ | ---- | ------------------------------------------------- |
+| `/api/auth/status`                   | GET  | 无                                                |
+| `/api/auth/setup`                    | POST | 仅用户表为空且来自回环（或 `ALLOW_REMOTE_SETUP`） |
+| `/api/auth/login`                    | POST | 登录限流                                          |
+| `/api/auth/register/status`          | GET  | 无                                                |
+| `/api/auth/register`                 | POST | 注册策略、邀请码、限流                            |
+| `/api/auth/avatars/:filename`        | GET  | 仅允许受管头像路径                                |
+| `/api/config/appearance/public`      | GET  | 只返回公开外观                                    |
+| `/api/config/brand-assets/:filename` | GET  | 仅允许受管品牌资源名                              |
+| `/api/health`                        | GET  | 不返回敏感运行详情                                |
 
 `/ws` 不是 Public。Upgrade 时必须同时通过 Cookie Session 与 Origin 校验。
 
