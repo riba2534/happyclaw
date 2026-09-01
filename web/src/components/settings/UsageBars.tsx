@@ -102,13 +102,41 @@ export function UsageBars({ providerId }: { providerId: string }) {
     seven_day: '7d',
     seven_day_opus: '7dO',
     seven_day_sonnet: '7dS',
+    seven_day_sonnet_max: '7dSMax',
+    extra_usage: 'Extra',
   } as const;
 
   const buckets: { label: string; bucket: OAuthUsageBucket }[] = [];
-  if (usage.data.five_hour) buckets.push({ label: USAGE_BUCKET_LABELS.five_hour, bucket: usage.data.five_hour });
-  if (usage.data.seven_day) buckets.push({ label: USAGE_BUCKET_LABELS.seven_day, bucket: usage.data.seven_day });
-  if (usage.data.seven_day_opus) buckets.push({ label: USAGE_BUCKET_LABELS.seven_day_opus, bucket: usage.data.seven_day_opus });
-  if (usage.data.seven_day_sonnet) buckets.push({ label: USAGE_BUCKET_LABELS.seven_day_sonnet, bucket: usage.data.seven_day_sonnet });
+  if (usage.data.five_hour)
+    buckets.push({
+      label: USAGE_BUCKET_LABELS.five_hour,
+      bucket: usage.data.five_hour,
+    });
+  if (usage.data.seven_day)
+    buckets.push({
+      label: USAGE_BUCKET_LABELS.seven_day,
+      bucket: usage.data.seven_day,
+    });
+  if (usage.data.seven_day_opus)
+    buckets.push({
+      label: USAGE_BUCKET_LABELS.seven_day_opus,
+      bucket: usage.data.seven_day_opus,
+    });
+  if (usage.data.seven_day_sonnet)
+    buckets.push({
+      label: USAGE_BUCKET_LABELS.seven_day_sonnet,
+      bucket: usage.data.seven_day_sonnet,
+    });
+  if (usage.data.seven_day_sonnet_max)
+    buckets.push({
+      label: USAGE_BUCKET_LABELS.seven_day_sonnet_max,
+      bucket: usage.data.seven_day_sonnet_max,
+    });
+  if (usage.data.extra_usage)
+    buckets.push({
+      label: USAGE_BUCKET_LABELS.extra_usage,
+      bucket: usage.data.extra_usage,
+    });
 
   if (buckets.length === 0) return null;
 

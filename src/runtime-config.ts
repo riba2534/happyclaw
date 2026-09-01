@@ -234,6 +234,8 @@ export interface OAuthUsageResponse {
   seven_day: OAuthUsageBucket | null;
   seven_day_opus: OAuthUsageBucket | null;
   seven_day_sonnet: OAuthUsageBucket | null;
+  seven_day_sonnet_max: OAuthUsageBucket | null;
+  extra_usage: OAuthUsageBucket | null;
 }
 
 export interface CachedOAuthUsage {
@@ -3605,6 +3607,39 @@ export interface OAuthUsageBucket {
   resets_at: string;
 }
 
+const OAUTH_USAGE_USED_KEYS = [
+  'used',
+  'usage',
+  'credits_used',
+  'used_credits',
+] as const;
+const OAUTH_USAGE_LIMIT_KEYS = [
+  'limit',
+  'credits_limit',
+  'monthly_limit',
+] as const;
+
+function readFiniteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+function readFirstFiniteNumber(
+  obj: Record<string, unknown>,
+  keys: readonly string[],
+): number | undefined {
+  for (const key of keys) {
+    const n = readFiniteNumber(obj[key]);
+    if (n !== undefined) return n;
+  }
+  return undefined;
+}
+
+function clampUtilizationPercent(n: number): number {
+  return Math.round(Math.min(100, Math.max(0, n)));
+}
+
 /**
  * 解析 OAuth usage bucket 对象
  * 运行时类型守卫，验证 API 响应结构
@@ -3612,7 +3647,22 @@ export interface OAuthUsageBucket {
 export function parseOAuthUsageBucket(v: unknown): OAuthUsageBucket | null {
   if (!v || typeof v !== 'object') return null;
   const obj = v as Record<string, unknown>;
-  if (typeof obj.utilization !== 'number' || typeof obj.resets_at !== 'string')
-    return null;
-  return { utilization: obj.utilization, resets_at: obj.resets_at };
+  if (typeof obj.resets_at !== 'string') return null;
+
+  const direct = readFiniteNumber(obj.utilization);
+  if (direct !== undefined) {
+    return {
+      utilization: clampUtilizationPercent(direct),
+      resets_at: obj.resets_at,
+    };
+  }
+
+  const used = readFirstFiniteNumber(obj, OAUTH_USAGE_USED_KEYS);
+  const limit = readFirstFiniteNumber(obj, OAUTH_USAGE_LIMIT_KEYS);
+  if (used === undefined || limit === undefined || limit <= 0) return null;
+
+  return {
+    utilization: clampUtilizationPercent((used / limit) * 100),
+    resets_at: obj.resets_at,
+  };
 }

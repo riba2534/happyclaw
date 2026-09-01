@@ -118,6 +118,8 @@ export interface OAuthUsageResponse {
   seven_day: OAuthUsageBucket | null;
   seven_day_opus: OAuthUsageBucket | null;
   seven_day_sonnet: OAuthUsageBucket | null;
+  seven_day_sonnet_max: OAuthUsageBucket | null;
+  extra_usage: OAuthUsageBucket | null;
 }
 
 export interface CachedOAuthUsage {

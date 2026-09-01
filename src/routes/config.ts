@@ -828,6 +828,8 @@ async function fetchOAuthUsage(providerId: string): Promise<CachedOAuthUsage> {
         seven_day: parseOAuthUsageBucket(raw.seven_day),
         seven_day_opus: parseOAuthUsageBucket(raw.seven_day_opus),
         seven_day_sonnet: parseOAuthUsageBucket(raw.seven_day_sonnet),
+        seven_day_sonnet_max: parseOAuthUsageBucket(raw.seven_day_sonnet_max),
+        extra_usage: parseOAuthUsageBucket(raw.extra_usage),
       };
 
       const result: CachedOAuthUsage = { data, fetchedAt: Date.now() };
