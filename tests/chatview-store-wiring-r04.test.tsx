@@ -359,4 +359,253 @@ describe('R04: Real ChatView and Zustand store integration test', () => {
     expect(textarea().value).toBe('');
     expect(useChatStore.getState().drafts[WS_JID]).toBeUndefined();
   });
+
+  test('A sends -> switch B -> back to A type Draft 2 -> late send success does NOT wipe store or DOM upon reload', async () => {
+    let resolveSendMain: (ok: boolean) => void = () => {};
+    vi.spyOn(useChatStore.getState(), 'sendMessage').mockImplementation(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveSendMain = resolve;
+        }),
+    );
+
+    await act(async () => {
+      root?.render(
+        <MemoryRouter initialEntries={[`/chat/flow-integrated`]}>
+          <Routes>
+            <Route
+              path="/chat/:groupFolder"
+              element={<ChatView groupJid={WS_JID} />}
+            />
+          </Routes>
+        </MemoryRouter>,
+      );
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    const textarea = () =>
+      container?.querySelector('textarea') as HTMLTextAreaElement;
+    const clickSession = async (name: string) => {
+      const btn = Array.from(
+        container?.querySelectorAll('[data-hc-session-sidebar] button') ?? [],
+      ).find((b) => b.textContent?.includes(name));
+      expect(btn).toBeTruthy();
+      await act(async () => {
+        btn?.click();
+      });
+    };
+
+    // 1. In Main, type Message 1 and click send
+    await act(async () => {
+      typeInTextarea(textarea(), 'Message 1 from Main');
+    });
+
+    const sendBtn = () =>
+      container?.querySelector('button[title="发送消息"]') as HTMLButtonElement;
+    await act(async () => {
+      sendBtn().click();
+    });
+
+    // 2. While send is pending, switch to Alpha
+    await clickSession('Alpha Agent');
+    expect(textarea().value).toBe('');
+
+    // 3. Switch back to Main and type Draft 2, wait 350ms for debounce save
+    await clickSession('Integrated Test Workspace 对话');
+    await act(async () => {
+      typeInTextarea(textarea(), 'Draft 2 typed after returning to Main');
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 350));
+    });
+
+    // Verify Draft 2 is safely persisted in real store
+    expect(useChatStore.getState().drafts[`${WS_JID}::main`]).toBe(
+      'Draft 2 typed after returning to Main',
+    );
+
+    // 4. Earlier send from step 1 now resolves successfully
+    await act(async () => {
+      resolveSendMain(true);
+    });
+
+    // CRITICAL: store draft must NOT be cleared by the old send!
+    expect(useChatStore.getState().drafts[`${WS_JID}::main`]).toBe(
+      'Draft 2 typed after returning to Main',
+    );
+    expect(textarea().value).toBe('Draft 2 typed after returning to Main');
+
+    // 5. Simulate page refresh / unmount-remount: Draft 2 must be restored!
+    await act(async () => {
+      root?.unmount();
+      root = createRoot(container!);
+    });
+
+    await act(async () => {
+      root?.render(
+        <MemoryRouter initialEntries={[`/chat/flow-integrated`]}>
+          <Routes>
+            <Route
+              path="/chat/:groupFolder"
+              element={<ChatView groupJid={WS_JID} />}
+            />
+          </Routes>
+        </MemoryRouter>,
+      );
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    const reloadedTextarea = container?.querySelector(
+      'textarea',
+    ) as HTMLTextAreaElement;
+    expect(reloadedTextarea.value).toBe(
+      'Draft 2 typed after returning to Main',
+    );
+  });
+
+  test('A sends -> switch B -> back to A type Draft 3 -> switch B -> send fails: old failure does NOT overwrite new draft', async () => {
+    let rejectSendMain: (ok: boolean) => void = () => {};
+    vi.spyOn(useChatStore.getState(), 'sendMessage').mockImplementation(
+      () =>
+        new Promise<boolean>((resolve) => {
+          rejectSendMain = resolve;
+        }),
+    );
+
+    await act(async () => {
+      root?.render(
+        <MemoryRouter initialEntries={[`/chat/flow-integrated`]}>
+          <Routes>
+            <Route
+              path="/chat/:groupFolder"
+              element={<ChatView groupJid={WS_JID} />}
+            />
+          </Routes>
+        </MemoryRouter>,
+      );
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    const textarea = () =>
+      container?.querySelector('textarea') as HTMLTextAreaElement;
+    const clickSession = async (name: string) => {
+      const btn = Array.from(
+        container?.querySelectorAll('[data-hc-session-sidebar] button') ?? [],
+      ).find((b) => b.textContent?.includes(name));
+      expect(btn).toBeTruthy();
+      await act(async () => {
+        btn?.click();
+      });
+    };
+
+    // 1. Send Message A
+    await act(async () => {
+      typeInTextarea(textarea(), 'Message A');
+    });
+    const sendBtn = () =>
+      container?.querySelector('button[title="发送消息"]') as HTMLButtonElement;
+    await act(async () => {
+      sendBtn().click();
+    });
+
+    // 2. Switch B
+    await clickSession('Alpha Agent');
+
+    // 3. Back to Main, type Draft 3 and wait 350ms
+    await clickSession('Integrated Test Workspace 对话');
+    await act(async () => {
+      typeInTextarea(textarea(), 'Draft 3 in Main');
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 350));
+    });
+
+    expect(useChatStore.getState().drafts[`${WS_JID}::main`]).toBe(
+      'Draft 3 in Main',
+    );
+
+    // 4. Switch to Beta
+    await clickSession('Beta Agent');
+
+    // 5. Earlier Message A fails!
+    await act(async () => {
+      rejectSendMain(false);
+    });
+
+    // 6. Switch back to Main: Draft 3 must still be preserved, NOT overwritten by old 'Message A'!
+    await clickSession('Integrated Test Workspace 对话');
+    expect(useChatStore.getState().drafts[`${WS_JID}::main`]).toBe(
+      'Draft 3 in Main',
+    );
+    expect(textarea().value).toBe('Draft 3 in Main');
+  });
+
+  test('clearing textarea and quickly unmounting cleans store reliably and prevents ghost resurrection', async () => {
+    // Seed draft in store
+    useChatStore
+      .getState()
+      .saveDraft(`${WS_JID}::main`, 'Existing draft to delete');
+
+    await act(async () => {
+      root?.render(
+        <MemoryRouter initialEntries={[`/chat/flow-integrated`]}>
+          <Routes>
+            <Route
+              path="/chat/:groupFolder"
+              element={<ChatView groupJid={WS_JID} />}
+            />
+          </Routes>
+        </MemoryRouter>,
+      );
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    const textarea = () =>
+      container?.querySelector('textarea') as HTMLTextAreaElement;
+    expect(textarea().value).toBe('Existing draft to delete');
+
+    // User empties the textarea and unmounts immediately (before 300ms debounce fires)
+    await act(async () => {
+      typeInTextarea(textarea(), '');
+    });
+
+    // Immediately unmount component
+    await act(async () => {
+      root?.unmount();
+      root = createRoot(container!);
+    });
+
+    // Store draft must be reliably cleared via contentRef without waiting for timer!
+    expect(useChatStore.getState().drafts[`${WS_JID}::main`]).toBeUndefined();
+
+    // Remount: must be completely empty, no resurrection!
+    await act(async () => {
+      root?.render(
+        <MemoryRouter initialEntries={[`/chat/flow-integrated`]}>
+          <Routes>
+            <Route
+              path="/chat/:groupFolder"
+              element={<ChatView groupJid={WS_JID} />}
+            />
+          </Routes>
+        </MemoryRouter>,
+      );
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    const newTextarea = container?.querySelector(
+      'textarea',
+    ) as HTMLTextAreaElement;
+    expect(newTextarea.value).toBe('');
+  });
 });

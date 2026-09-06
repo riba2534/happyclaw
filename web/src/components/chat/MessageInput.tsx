@@ -136,6 +136,8 @@ export function MessageInput({
   });
   const editRevisionRef = useRef(0);
   const editingFollowUpSessionRef = useRef<string | null>(null);
+  const contentRef = useRef(content);
+  contentRef.current = content;
 
   // 窄 selector：这是 1200+ 行常驻组件，无 selector 的整 store 订阅会让它在
   // 流式输出的每一帧（rAF 级 set()）都重渲染一次。actions 引用稳定。
@@ -146,6 +148,10 @@ export function MessageInput({
   const drafts = useChatStore((s) => s.drafts);
   const saveDraft = useChatStore((s) => s.saveDraft);
   const clearDraft = useChatStore((s) => s.clearDraft);
+  const saveDraftRef = useRef(saveDraft);
+  saveDraftRef.current = saveDraft;
+  const clearDraftRef = useRef(clearDraft);
+  clearDraftRef.current = clearDraft;
   const { mode: displayMode } = useDisplayMode();
   const isCompact = displayMode === 'compact';
   const isMobile = useMediaQuery('(max-width: 1023px)');
@@ -244,7 +250,7 @@ export function MessageInput({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentDraftKey, groupJid, sessionId]);
 
-  // Cleanup debounce timer on unmount, save current draft
+  // Cleanup debounce timer on unmount, save or clear current draft safely
   useEffect(() => {
     return () => {
       if (draftTimerRef.current) {
@@ -252,9 +258,16 @@ export function MessageInput({
       }
       const active = sessionRef.current;
       if (active.draftKey) {
-        const text = textareaRef.current?.value.trim() ?? '';
+        // 使用 contentRef.current 同步捕获，避免 React passive effect 卸载时 textareaRef.current 已为 null
+        const text = contentRef.current.trim();
         if (text) {
-          useChatStore.getState().saveDraft(active.draftKey, text);
+          saveDraftRef.current(active.draftKey, text);
+        } else {
+          // 若用户已删空但防抖未触发即离开页面，可靠清理 store 防止旧草稿非预期复活
+          clearDraftRef.current(active.draftKey);
+          if (active.sessionId === 'main' && active.groupJid) {
+            clearDraftRef.current(active.groupJid);
+          }
         }
       }
     };
@@ -364,14 +377,23 @@ export function MessageInput({
 
     if (ok) {
       successTap();
-      // 发送成功：清空发起发送的 Session 的草稿
-      if (sendingSession.draftKey) {
+      // 发送成功：仅当当前 store 中该 Session 的草稿内容仍等于本次发送的原内容或未设时才清理，
+      // 绝不冲毁后来在该 Session 中新键入并保存的新草稿！
+      const currentStoredDraft = sendingSession.draftKey
+        ? useChatStore.getState?.()?.drafts?.[sendingSession.draftKey] ??
+          drafts[sendingSession.draftKey]
+        : undefined;
+      if (
+        sendingSession.draftKey &&
+        (currentStoredDraft === undefined || currentStoredDraft === trimmed)
+      ) {
         clearDraft(sendingSession.draftKey);
         // 若为 main 会话，同步清理旧 legacy key，防止旧草稿日后复活
         if (sendingSession.sessionId === 'main' && sendingSession.groupJid) {
           clearDraft(sendingSession.groupJid);
         }
       }
+
       // 只有当前用户仍停留在发起发送的同一个 Session，且输入框在此期间未产生新输入修改时，才清空输入框和待发附件
       const isSameSession =
         sessionRef.current.draftKey === sendingSession.draftKey;
@@ -380,6 +402,7 @@ export function MessageInput({
 
       if (isSameSession && isUneditedSinceSend) {
         setContent('');
+        contentRef.current = '';
         editRevisionRef.current += 1;
         if (draftTimerRef.current) {
           clearTimeout(draftTimerRef.current);
@@ -395,25 +418,28 @@ export function MessageInput({
         currentImages.forEach((img) => URL.revokeObjectURL(img.preview));
       }
     } else {
-      // 失败分支：如果用户尚未改动输入框，保留输入与草稿；若用户已编辑新内容，绝不覆盖新草稿
+      // 失败分支：绝不能用旧的 trimmed 覆盖后来输入并保存的新草稿！
       const isSameSession =
         sessionRef.current.draftKey === sendingSession.draftKey;
       const isUneditedSinceSend =
         editRevisionRef.current === sendingEditRevision;
+      const currentStoredDraft = sendingSession.draftKey
+        ? useChatStore.getState?.()?.drafts?.[sendingSession.draftKey] ??
+          drafts[sendingSession.draftKey]
+        : undefined;
+
+      if (sendingSession.draftKey && trimmed) {
+        // 仅在当前未被后来新草稿覆盖时才允许保留旧草稿供重试
+        if (!currentStoredDraft || currentStoredDraft === trimmed) {
+          saveDraft(sendingSession.draftKey, trimmed);
+        }
+      }
 
       if (isSameSession && isUneditedSinceSend) {
-        if (sendingSession.draftKey && trimmed) {
-          saveDraft(sendingSession.draftKey, trimmed);
-        }
         setSendError('发送失败，输入已保留，请重试');
         setTimeout(() => setSendError(null), 4000);
-      } else if (!isSameSession) {
-        // 用户已切换到其他会话：为原会话保存旧草稿，不影响当前会话
-        if (sendingSession.draftKey && trimmed) {
-          saveDraft(sendingSession.draftKey, trimmed);
-        }
       } else {
-        // 同一会话已有新编辑内容：不回滚新内容，给出明确失败提醒
+        // 同一会话已有新编辑内容或已切走：不回滚新内容，给出明确失败提醒
         setSendError('早先消息发送失败，请重试');
         setTimeout(() => setSendError(null), 4000);
       }

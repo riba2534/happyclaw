@@ -317,21 +317,38 @@ export function MemoryPage() {
 
   const visibleItems = useMemo(() => {
     const trimmed = query.trim().toLowerCase();
-    const isSpecialStatus =
-      statusFilter === 'proposed' ||
-      statusFilter === 'conflicted' ||
-      statusFilter === 'future' ||
-      statusFilter === 'expired';
-
     let list = items;
-    if (searchHits && !isSpecialStatus) {
-      list = searchHits.map((hit) => hit.item);
-    } else if (trimmed) {
-      list = list.filter(
-        (item) =>
-          (item.title && item.title.toLowerCase().includes(trimmed)) ||
-          item.content.toLowerCase().includes(trimmed),
-      );
+
+    if (trimmed) {
+      if (statusFilter === 'all') {
+        // 在全部状态下搜索：以 searchHits 命中文档为基础，同时合入匹配关键词的候选/冲突记录，防止被仅活跃召回接口冲掉
+        const matchedActive = searchHits
+          ? searchHits.map((hit) => hit.item)
+          : items.filter(
+              (it) =>
+                (it.title && it.title.toLowerCase().includes(trimmed)) ||
+                it.content.toLowerCase().includes(trimmed),
+            );
+        const matchedNonActive = items.filter(
+          (it) =>
+            it.status !== 'active' &&
+            ((it.title && it.title.toLowerCase().includes(trimmed)) ||
+              it.content.toLowerCase().includes(trimmed)),
+        );
+        const byId = new Map<string, WorkspaceMemoryItem>();
+        for (const it of matchedActive) byId.set(it.id, it);
+        for (const it of matchedNonActive) byId.set(it.id, it);
+        list = Array.from(byId.values());
+      } else if (statusFilter === 'active' || statusFilter === 'effective') {
+        list = searchHits ? searchHits.map((hit) => hit.item) : items;
+      } else {
+        // proposed, conflicted, future, expired 等：在对应集合中按关键词检索
+        list = list.filter(
+          (item) =>
+            (item.title && item.title.toLowerCase().includes(trimmed)) ||
+            item.content.toLowerCase().includes(trimmed),
+        );
+      }
     }
 
     if (kindFilter !== 'all') {
@@ -595,6 +612,14 @@ export function MemoryPage() {
           } catch {
             // best-effort 合并
           }
+        }
+
+        // 第二段异步结束后重新校验 workspace 与代次，防止切换工作区或筛选后旧请求覆盖
+        if (
+          !isCurrentWorkspace(workspaceJid, workspaceEpoch) ||
+          listGenerationRef.current !== requestGeneration
+        ) {
+          return;
         }
 
         setItems((current) =>
@@ -1404,7 +1429,11 @@ export function MemoryPage() {
                       variant={statusFilter === tab.key ? 'secondary' : 'ghost'}
                       size="sm"
                       className="h-7 px-2.5 text-xs"
-                      onClick={() => setStatusFilter(tab.key as any)}
+                      onClick={() => {
+                        searchGenerationRef.current += 1;
+                        setSearchHits(null);
+                        setStatusFilter(tab.key as any);
+                      }}
                     >
                       {tab.label}
                     </Button>
