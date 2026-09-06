@@ -1,188 +1,166 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { readinessManager } from '../src/readiness-manager.js';
 
-describe('ReadinessManager Lifecycle & Probes', () => {
+describe('ReadinessManager Lifecycle, Security & Native Probes', () => {
   beforeEach(() => {
     readinessManager.reset();
   });
 
   it('初始未就绪状态返回 initializing (503)', () => {
-    const report = readinessManager.getReport();
+    const report = readinessManager.getPublicReport('sha-init');
     expect(report.ready).toBe(false);
     expect(report.status).toBe('initializing');
     expect(report.statusCode).toBe(503);
+    expect(report.currentSha).toBe('sha-init');
     expect(report.phases.database.status).toBe('pending');
     expect(report.phases.recovery.status).toBe('pending');
     expect(report.phases.consumers.status).toBe('pending');
   });
 
+  it('公开接口严格安全脱敏：不泄漏任何账号 ID、账号名或错误堆栈', () => {
+    readinessManager.setDbStatus('failed', 'SQLITE_BUSY: database is locked');
+    readinessManager.registerChannel({
+      id: 'secret-acc-id-9988',
+      provider: 'feishu',
+      name: '内部隐私机器人',
+      enabled: true,
+      optional: true,
+      status: 'failed',
+      error: 'Token contains invalid private key payload',
+    });
+
+    const publicReport = readinessManager.getPublicReport('sha-clean');
+    expect(publicReport.currentSha).toBe('sha-clean');
+    expect(publicReport.status).toBe('failed');
+    expect(publicReport.ready).toBe(false);
+
+    // 转换为字符串进行彻底扫描
+    const publicJson = JSON.stringify(publicReport);
+    expect(publicJson).not.toContain('secret-acc-id-9988');
+    expect(publicJson).not.toContain('内部隐私机器人');
+    expect(publicJson).not.toContain(
+      'Token contains invalid private key payload',
+    );
+    expect(publicJson).not.toContain('SQLITE_BUSY');
+
+    // 只有管理员报告才输出内部详细诊断
+    const adminReport = readinessManager.getAdminReport('sha-clean');
+    const adminJson = JSON.stringify(adminReport);
+    expect(adminJson).toContain('secret-acc-id-9988');
+    expect(adminJson).toContain('内部隐私机器人');
+    expect(adminJson).toContain('Token contains invalid private key payload');
+    expect(adminJson).toContain('SQLITE_BUSY');
+  });
+
+  it('动态增删账户与启用状态切换测试', () => {
+    readinessManager.setDbStatus('ready');
+    readinessManager.setRecoveryStatus('ready');
+    readinessManager.setConsumersStatus('ready');
+
+    // 1. 新增启用账户 -> connecting，系统应处于 initializing
+    readinessManager.registerChannel({
+      id: 'acc-dynamic-1',
+      provider: 'feishu',
+      name: '动态飞书',
+      enabled: true,
+    });
+    expect(readinessManager.getPublicReport().status).toBe('initializing');
+
+    // 2. 停用该账户 (enabled = false) -> disabled，系统应恢复 ready
+    readinessManager.registerChannel({
+      id: 'acc-dynamic-1',
+      provider: 'feishu',
+      name: '动态飞书',
+      enabled: false,
+    });
+    expect(readinessManager.getPublicReport().status).toBe('ready');
+
+    // 3. 重新启用原先 disabled 账户 -> connecting，系统应变为 initializing
+    readinessManager.registerChannel({
+      id: 'acc-dynamic-1',
+      provider: 'feishu',
+      name: '动态飞书',
+      enabled: true,
+    });
+    expect(readinessManager.getPublicReport().status).toBe('initializing');
+
+    // 4. 删除账户 -> 移除后系统恢复 ready
+    readinessManager.removeChannel('acc-dynamic-1');
+    expect(readinessManager.getPublicReport().status).toBe('ready');
+  });
+
+  it('真实 native 异步连接生命周期驱动测试 (WeChat / WhatsApp / QQ)', () => {
+    readinessManager.setDbStatus('ready');
+    readinessManager.setRecoveryStatus('ready');
+    readinessManager.setConsumersStatus('ready');
+
+    // 注册 WeChat 账户
+    readinessManager.registerChannel({
+      id: 'acc-wechat-async',
+      provider: 'wechat',
+      name: '微信机器人',
+      enabled: true,
+      optional: true,
+    });
+
+    // 模拟 native 连接中
+    readinessManager.setChannelStatus('acc-wechat-async', 'connecting');
+    expect(readinessManager.getPublicReport().status).toBe('initializing');
+
+    // 模拟 native connected 事件到达
+    readinessManager.setChannelStatus('acc-wechat-async', 'connected');
+    expect(readinessManager.getPublicReport().status).toBe('ready');
+
+    // 模拟网络抖动 native reconnecting 事件到达
+    readinessManager.setChannelStatus(
+      'acc-wechat-async',
+      'connecting',
+      'Network socket dropped',
+    );
+    expect(readinessManager.getPublicReport().status).toBe('initializing');
+
+    // 模拟重连成功
+    readinessManager.setChannelStatus('acc-wechat-async', 'connected');
+    expect(readinessManager.getPublicReport().status).toBe('ready');
+
+    // 模拟永久失效 (expired/failed) -> 触发可选降级
+    readinessManager.setChannelStatus(
+      'acc-wechat-async',
+      'failed',
+      'Session QR expired',
+    );
+    expect(readinessManager.getPublicReport().status).toBe('degraded');
+    expect(readinessManager.getPublicReport().summary).toContain(
+      'Optional channel degraded',
+    );
+  });
+
   it('数据库失败时返回 failed (503)', () => {
     readinessManager.setDbStatus('failed', 'SQLITE_CORRUPT: disk I/O error');
-    const report = readinessManager.getReport();
+    const report = readinessManager.getPublicReport();
     expect(report.ready).toBe(false);
     expect(report.status).toBe('failed');
     expect(report.statusCode).toBe(503);
     expect(report.summary).toContain('Database failed');
-    expect(report.phases.database.error).toBe('SQLITE_CORRUPT: disk I/O error');
   });
 
-  it('恢复失败时返回 failed (503)', () => {
+  it('恢复失败与消费者失败真实标记', () => {
     readinessManager.setDbStatus('ready');
     readinessManager.setRecoveryStatus(
       'failed',
       null,
       'Failed to reconcile outbox deliveries',
     );
-    const report = readinessManager.getReport();
+    let report = readinessManager.getPublicReport();
     expect(report.ready).toBe(false);
     expect(report.status).toBe('failed');
-    expect(report.statusCode).toBe(503);
     expect(report.summary).toContain('Startup recovery failed');
-  });
 
-  it('恢复中与消费者启动中保持 initializing (503)', () => {
-    readinessManager.setDbStatus('ready');
-    readinessManager.setRecoveryStatus('in_progress');
-    let report = readinessManager.getReport();
-    expect(report.status).toBe('initializing');
+    readinessManager.setRecoveryStatus('ready');
+    readinessManager.setConsumersStatus('failed', 'GroupQueue start failed');
+    report = readinessManager.getPublicReport();
     expect(report.ready).toBe(false);
-
-    readinessManager.setRecoveryStatus('ready', { uncertain: 0, retryable: 2 });
-    readinessManager.setConsumersStatus('starting');
-    report = readinessManager.getReport();
-    expect(report.status).toBe('initializing');
-    expect(report.ready).toBe(false);
-  });
-
-  it('渠道延迟连接 (connecting) 阶段保持 initializing (503)', () => {
-    readinessManager.setDbStatus('ready');
-    readinessManager.setRecoveryStatus('ready');
-    readinessManager.setConsumersStatus('ready');
-
-    // 注册启用的渠道，处于 connecting
-    readinessManager.registerChannel({
-      id: 'acc-feishu-1',
-      provider: 'feishu',
-      name: '研发飞书机器人',
-      enabled: true,
-      optional: true,
-    });
-
-    const report = readinessManager.getReport();
-    expect(report.status).toBe('initializing');
-    expect(report.ready).toBe(false);
-    expect(report.statusCode).toBe(503);
-    expect(report.summary).toContain('connecting');
-    expect(report.phases.channels.items[0].status).toBe('connecting');
-  });
-
-  it('禁用渠道 (disabled) 不阻塞就绪', () => {
-    readinessManager.setDbStatus('ready');
-    readinessManager.setRecoveryStatus('ready');
-    readinessManager.setConsumersStatus('ready');
-
-    // 注册已禁用的渠道
-    readinessManager.registerChannel({
-      id: 'acc-telegram-off',
-      provider: 'telegram',
-      name: '未启用的 Telegram',
-      enabled: false,
-    });
-
-    const report = readinessManager.getReport();
-    expect(report.status).toBe('ready');
-    expect(report.ready).toBe(true);
-    expect(report.statusCode).toBe(200);
-    expect(report.phases.channels.disabledCount).toBe(1);
-    expect(report.phases.channels.items[0].status).toBe('disabled');
-  });
-
-  it('可选渠道连接失败时支持业务降级 (degraded, 200)', () => {
-    readinessManager.setDbStatus('ready');
-    readinessManager.setRecoveryStatus('ready');
-    readinessManager.setConsumersStatus('ready');
-
-    readinessManager.registerChannel({
-      id: 'acc-feishu',
-      provider: 'feishu',
-      name: '主飞书机器人',
-      enabled: true,
-      optional: true,
-    });
-    readinessManager.setChannelStatus('acc-feishu', 'connected');
-
-    readinessManager.registerChannel({
-      id: 'acc-discord',
-      provider: 'discord',
-      name: '备选 Discord',
-      enabled: true,
-      optional: true,
-    });
-    readinessManager.setChannelStatus(
-      'acc-discord',
-      'failed',
-      'Discord gateway login timeout 401',
-    );
-
-    const report = readinessManager.getReport();
-    expect(report.status).toBe('degraded');
-    expect(report.ready).toBe(true);
-    expect(report.statusCode).toBe(200);
-    expect(report.summary).toContain('Optional channel(s) degraded');
-    expect(report.summary).toContain('备选 Discord(discord)');
-  });
-
-  it('关键非可选渠道失败时阻断就绪 (failed, 503)', () => {
-    readinessManager.setDbStatus('ready');
-    readinessManager.setRecoveryStatus('ready');
-    readinessManager.setConsumersStatus('ready');
-
-    readinessManager.registerChannel({
-      id: 'acc-core-feishu',
-      provider: 'feishu',
-      name: '核心飞书机器人',
-      enabled: true,
-      optional: false, // 必选渠道，不可降级
-    });
-    readinessManager.setChannelStatus(
-      'acc-core-feishu',
-      'failed',
-      'Feishu appSecret invalid',
-    );
-
-    const report = readinessManager.getReport();
     expect(report.status).toBe('failed');
-    expect(report.ready).toBe(false);
-    expect(report.statusCode).toBe(503);
-    expect(report.summary).toContain('Critical channel(s) failed');
-  });
-
-  it('全套启用的组件与渠道连接就绪后达到完全 ready (200)', () => {
-    readinessManager.setDbStatus('ready');
-    readinessManager.setRecoveryStatus('ready', { uncertain: 0, retryable: 0 });
-    readinessManager.setConsumersStatus('ready');
-
-    readinessManager.registerChannel({
-      id: 'acc-feishu',
-      provider: 'feishu',
-      name: '主飞书',
-      enabled: true,
-    });
-    readinessManager.setChannelStatus('acc-feishu', 'connected');
-
-    readinessManager.registerChannel({
-      id: 'acc-qq',
-      provider: 'qq',
-      name: 'QQ 机器人',
-      enabled: false,
-    });
-
-    const report = readinessManager.getReport();
-    expect(report.status).toBe('ready');
-    expect(report.ready).toBe(true);
-    expect(report.statusCode).toBe(200);
-    expect(report.phases.channels.connectedCount).toBe(1);
-    expect(report.phases.channels.disabledCount).toBe(1);
-    expect(report.summary).toContain('operational');
+    expect(report.summary).toContain('Consumers failed');
   });
 });

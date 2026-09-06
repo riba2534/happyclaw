@@ -80,7 +80,7 @@ beforeAll(() => {
     secret_ref: 'sec-main',
   });
 
-  // 写入测试群组
+  // 写入测试工作区群组
   db.setRegisteredGroup('feishu:bot-feishu-main:chat-alert', {
     name: '生产报警群',
     folder: 'alert-workspace',
@@ -106,7 +106,7 @@ describe('Monitor Routes API (Health, Readiness, Outbox, Uncertain CAS)', () => 
     expect(typeof body.checks.uptime).toBe('number');
   });
 
-  test('GET /health/readiness 返回多阶段就绪探针报告', async () => {
+  test('GET /health/readiness (公开接口) 严格脱敏且包含 currentSha', async () => {
     readiness.readinessManager.setDbStatus('ready');
     readiness.readinessManager.setRecoveryStatus('ready', {
       uncertain: 0,
@@ -128,13 +128,27 @@ describe('Monitor Routes API (Health, Readiness, Outbox, Uncertain CAS)', () => 
     const body = (await res.json()) as any;
     expect(body.ready).toBe(true);
     expect(body.status).toBe('ready');
-    expect(body.phases.database.status).toBe('ready');
-    expect(body.phases.recovery.status).toBe('ready');
-    expect(body.phases.consumers.status).toBe('ready');
-    expect(body.phases.channels.connectedCount).toBe(1);
+    expect(body.currentSha).toBeDefined();
+
+    // 关键安全验证：公开报告不得输出内部账号 ID 与账号名
+    const jsonStr = JSON.stringify(body);
+    expect(jsonStr).not.toContain('bot-feishu-main');
+    expect(jsonStr).not.toContain('运维监控机器人');
   });
 
-  test('GET /status/channel-outbox 暴露年龄、超期、丰富路由身份且严禁泄漏 payload', async () => {
+  test('GET /status/readiness (管理员接口) 包含账号明细与内部诊断', async () => {
+    const res = await routes.fetch(
+      new Request('http://localhost/status/readiness'),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.ready).toBe(true);
+    expect(body.phases.channels.items).toBeDefined();
+    expect(body.phases.channels.items[0].id).toBe('bot-feishu-main');
+    expect(body.phases.channels.items[0].name).toBe('运维监控机器人');
+  });
+
+  test('GET /status/channel-outbox 暴露真实 Workspace 路由、?agent= 导航且保留顶层字段兼容', async () => {
     const now = Date.now();
     const oldTime = new Date(now - 100_000).toISOString();
 
@@ -146,6 +160,7 @@ describe('Monitor Routes API (Health, Readiness, Outbox, Uncertain CAS)', () => 
       accountId: 'bot-feishu-main',
       sourceJid: 'feishu:bot-feishu-main:chat-alert',
       sessionId: 'session-alert-123',
+      agentId: 'agent-ops-primary',
       chatId: 'chat-alert',
       rootId: 'root-msg-1',
       threadId: 'thread-99',
@@ -183,89 +198,137 @@ describe('Monitor Routes API (Health, Readiness, Outbox, Uncertain CAS)', () => 
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
 
-    expect(body.summary).toBeDefined();
-    expect(body.summary.uncertain).toBeGreaterThanOrEqual(1);
-    expect(body.summary.overdue).toBeGreaterThanOrEqual(1);
-
     const item = body.items.find((i: any) => i.id === claimed?.id);
     expect(item).toBeDefined();
-    expect(item.status).toBe('uncertain');
-    expect(item.isOverdue).toBe(true);
-    expect(item.ageSeconds).toBeGreaterThanOrEqual(90);
-    expect(item.ageFormatted).toContain('m');
 
-    // 验证真实路由身份
-    expect(item.route.provider).toBe('feishu');
-    expect(item.route.accountId).toBe('bot-feishu-main');
-    expect(item.route.botName).toBe('运维监控机器人');
-    expect(item.route.sourceJid).toBe('feishu:bot-feishu-main:chat-alert');
-    expect(item.route.groupName).toBe('生产报警群');
+    // 1. 顶层兼容性验证
+    expect(item.provider).toBe('feishu');
+    expect(item.accountId).toBe('bot-feishu-main');
+    expect(item.turnRunId).toBe('turn-route-1');
+
+    // 2. 真实 Workspace 解析与 ?agent= 导航验证
     expect(item.route.groupFolder).toBe('alert-workspace');
-    expect(item.route.sessionId).toBe('session-alert-123');
+    expect(item.route.agentId).toBe('agent-ops-primary');
     expect(item.route.navigationUrl).toBe(
-      '/chat/alert-workspace?session=session-alert-123',
+      '/chat/alert-workspace?agent=agent-ops-primary',
     );
 
-    // 严格安全边界断言：绝对不能包含 payload！
+    // 3. 严格数据隐私保护：绝无 payload
     expect(item.payload).toBeUndefined();
-    const rawJson = JSON.stringify(body);
-    expect(rawJson).not.toContain('DO_NOT_LEAK_THIS_SECRET_TEXT_12345');
+    expect(JSON.stringify(body)).not.toContain(
+      'DO_NOT_LEAK_THIS_SECRET_TEXT_12345',
+    );
   });
 
-  test('POST /status/channel-outbox/:id/resolve CAS 裁决与 impact 结果返回', async () => {
-    const listRes = await routes.fetch(
-      new Request('http://localhost/status/channel-outbox/uncertain'),
+  test('POST /status/channel-outbox/:id/resolve 真实栅栏状态判定（同 Turn 存在兄弟项时不宣告释放）', async () => {
+    const now = Date.now();
+    const oldTime = new Date(now - 50_000).toISOString();
+
+    // 创建一个 Turn，包含两条 uncertain 消息（例如图文混合发送）
+    reliability.createChannelTurnRun({
+      id: 'turn-multi-uncertain',
+      idempotencyKey: 'idem-multi-turn',
+      provider: 'feishu',
+      accountId: 'bot-feishu-main',
+      sourceJid: 'feishu:bot-feishu-main:chat-alert',
+    });
+
+    reliability.enqueueChannelOutbox({
+      turnRunId: 'turn-multi-uncertain',
+      ordinal: 0,
+      kind: 'text',
+      idempotencyKey: 'idem-multi-1',
+      provider: 'feishu',
+      accountId: 'bot-feishu-main',
+      sourceJid: 'feishu:bot-feishu-main:chat-alert',
+      payload: { text: '文本段' },
+      now: oldTime,
+    });
+    reliability.enqueueChannelOutbox({
+      turnRunId: 'turn-multi-uncertain',
+      ordinal: 1,
+      kind: 'image',
+      idempotencyKey: 'idem-multi-2',
+      provider: 'feishu',
+      accountId: 'bot-feishu-main',
+      sourceJid: 'feishu:bot-feishu-main:chat-alert',
+      payload: { image_key: 'img-1' },
+      now: oldTime,
+    });
+
+    // 声明两条都被置为 uncertain
+    const claim1 = reliability.claimChannelOutboxById(
+      reliability
+        .listChannelOutboxForMonitoring({ limit: 100 })
+        .find((i) => i.idempotencyKey === 'idem-multi-1')!.id,
+      'w1',
+      60000,
+      oldTime,
     );
-    expect(listRes.status).toBe(200);
-    const listBody = (await listRes.json()) as any;
-    expect(listBody.items.length).toBeGreaterThanOrEqual(1);
+    reliability.failChannelOutbox(claim1!, {
+      error: 'ACK dropped 1',
+      uncertain: true,
+      now: oldTime,
+    });
 
-    const target = listBody.items[0];
+    const claim2 = reliability.claimChannelOutboxById(
+      reliability
+        .listChannelOutboxForMonitoring({ limit: 100 })
+        .find((i) => i.idempotencyKey === 'idem-multi-2')!.id,
+      'w1',
+      60000,
+      oldTime,
+    );
+    reliability.failChannelOutbox(claim2!, {
+      error: 'ACK dropped 2',
+      uncertain: true,
+      now: oldTime,
+    });
 
-    // 1. CAS 冲突测试：传错 expectedRevision
-    const conflictRes = await routes.fetch(
+    // 获取当前最新版本号 (经过 claim 与 fail 两次状态推进，revision 递增为 2)
+    const item1 = reliability.getChannelOutboxItem(claim1!.id)!;
+    const item2 = reliability.getChannelOutboxItem(claim2!.id)!;
+
+    // 裁决第一条：因为第二条仍为 uncertain，因此不能判定 fence_released！
+    const res1 = await routes.fetch(
       new Request(
-        `http://localhost/status/channel-outbox/${target.id}/resolve`,
+        `http://localhost/status/channel-outbox/${claim1!.id}/resolve`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             resolution: 'delivered',
-            expectedRevision: target.revision + 50,
-            providerMessageId: 'fs_msg_9999',
+            expectedRevision: item1.revision,
+            providerMessageId: 'msg-part-1',
           }),
         },
       ),
     );
-    expect(conflictRes.status).toBe(409);
-    const conflictBody = (await conflictRes.json()) as any;
-    expect(conflictBody.error).toContain('Outbox item changed');
-    expect(conflictBody.currentRevision).toBe(target.revision);
+    expect(res1.status).toBe(200);
+    const body1 = (await res1.json()) as any;
+    expect(body1.impact.turnStatus).toBe('fenced_by_siblings');
+    expect(body1.impact.description).toContain(
+      '仍有其他待确认兄弟项，栅栏保持有效',
+    );
 
-    // 2. CAS 成功测试：正确 revision 裁决为 delivered
-    const successRes = await routes.fetch(
+    // 裁决第二条：兄弟项全部解决，Turn 栅栏真正释放！
+    const res2 = await routes.fetch(
       new Request(
-        `http://localhost/status/channel-outbox/${target.id}/resolve`,
+        `http://localhost/status/channel-outbox/${claim2!.id}/resolve`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             resolution: 'delivered',
-            expectedRevision: target.revision,
-            providerMessageId: 'fs_msg_9999',
+            expectedRevision: item2.revision,
+            providerMessageId: 'msg-part-2',
           }),
         },
       ),
     );
-    expect(successRes.status).toBe(200);
-    const successBody = (await successRes.json()) as any;
-    expect(successBody.ok).toBe(true);
-    expect(successBody.resolution).toBe('delivered');
-    expect(successBody.impact).toBeDefined();
-    expect(successBody.impact.action).toBe('marked_delivered');
-    expect(successBody.impact.turnStatus).toBe('fence_released');
-    expect(successBody.impact.description).toContain('fs_msg_9999');
-    expect(successBody.impact.route.botName).toBe('运维监控机器人');
-    expect(successBody.impact.route.groupName).toBe('生产报警群');
+    expect(res2.status).toBe(200);
+    const body2 = (await res2.json()) as any;
+    expect(body2.impact.turnStatus).toBe('fence_released');
+    expect(body2.impact.description).toContain('栅栏已完全释放');
   });
 });

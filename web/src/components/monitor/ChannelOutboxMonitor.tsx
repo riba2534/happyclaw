@@ -378,9 +378,11 @@ export function ChannelOutboxMonitor() {
                         )}
                       </div>
                       <div className="text-[11px] text-muted-foreground font-mono truncate max-w-xs">
-                        {item.route.sessionId
-                          ? `session: ${item.route.sessionId}`
-                          : item.route.sourceJid}
+                        {item.route.agentId
+                          ? `agent: ${item.route.agentId}`
+                          : item.route.sessionId
+                            ? `session: ${item.route.sessionId}`
+                            : item.route.sourceJid}
                       </div>
                     </td>
                     <td className="px-3 py-3 text-muted-foreground max-w-md">

@@ -1,13 +1,21 @@
 # Dependencies
 node_modules/
 
-# Build output
+# Build output (matches both directories and symlinks)
+dist
 dist/
+web/dist
 web/dist/
+container/agent-runner/dist
 container/agent-runner/dist/
+.releases/
+.releases
+.release-staging-*/
 .release-candidate/
 .release-previous/
 .release-current.json
+.deploy.lock/
+.deploy.lock
 
 # Runtime data — databases, encrypted configs, sessions, IPC, env files, agent workspaces
 # All personal data, auto-created at startup, must not be committed.

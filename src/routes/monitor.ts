@@ -13,8 +13,12 @@ import {
 } from '../web-context.js';
 import { canAccessGroup } from '../group-acl.js';
 import {
+  getAgent,
   getAllRegisteredGroups,
   getChannelAccount,
+  getChannelMount,
+  getImContextBinding,
+  getImContextBindingByRootMessageId,
   getRegisteredGroup,
   getRouterState,
   getUserById,
@@ -23,6 +27,7 @@ import {
 import {
   getChannelOutboxItem,
   getChannelTurnRun,
+  hasUncertainChannelOutbox,
   listUncertainChannelOutbox,
   listChannelOutboxForMonitoring,
   getChannelOutboxSummary,
@@ -242,11 +247,22 @@ monitorRoutes.get('/health', async (c) => {
   return c.json({ status, checks }, statusCode);
 });
 
-// GET /api/health/readiness - 业务就绪探针（无认证，支持多阶段、可选渠道降级与禁用渠道不阻塞）
+// GET /api/health/readiness - 业务就绪探针（无认证，安全脱敏，暴露整体就绪状态、概要与运行版本 SHA，不泄漏内部账号与详细报错）
 monitorRoutes.get('/health/readiness', async (c) => {
-  const report = readinessManager.getReport();
+  const report = readinessManager.getPublicReport();
   return c.json(report, report.statusCode);
 });
+
+// GET /api/status/readiness - 管理员业务就绪完整诊断（需系统管理权限，包含内部账号明细、连接时间与详细报错）
+monitorRoutes.get(
+  '/status/readiness',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const report = readinessManager.getAdminReport();
+    return c.json(report, report.statusCode);
+  },
+);
 
 async function checkDockerImageExists(): Promise<boolean> {
   // Skip Docker check entirely when no groups use container mode
@@ -384,6 +400,98 @@ function formatAge(ageMs: number): string {
   return `${hours}h ${remainingMinutes}m`;
 }
 
+function resolveWorkspaceAndAgent(item: ChannelOutboxItem) {
+  const turnRun = item.turnRunId ? getChannelTurnRun(item.turnRunId) : null;
+  const sessionId = turnRun?.sessionId ?? null;
+  let agentId = turnRun?.agentId ?? null;
+
+  let groupFolder: string | null = null;
+  let groupName: string | null = null;
+
+  // 1. 如果有 agentId，通过 agent -> parent workspace
+  if (agentId) {
+    const agent = getAgent(agentId);
+    if (agent?.chat_jid) {
+      const parentGroup = getRegisteredGroup(agent.chat_jid);
+      if (parentGroup?.folder) {
+        groupFolder = parentGroup.folder;
+        groupName = parentGroup.name;
+      }
+    }
+  }
+
+  // 2. 如果是原生话题，通过 im_context_bindings
+  if (!groupFolder && item.sourceJid) {
+    const threadContextId = item.threadId || item.rootId;
+    let binding = threadContextId
+      ? getImContextBinding(item.sourceJid, 'thread', threadContextId)
+      : undefined;
+    if (!binding && item.rootId) {
+      binding = getImContextBindingByRootMessageId(
+        item.sourceJid,
+        'thread',
+        item.rootId,
+      );
+    }
+    if (binding) {
+      if (!agentId && binding.agent_id) agentId = binding.agent_id;
+      if (binding.workspace_jid) {
+        const ws = getRegisteredGroup(binding.workspace_jid);
+        if (ws?.folder) {
+          groupFolder = ws.folder;
+          groupName = ws.name;
+        }
+      }
+    }
+  }
+
+  // 3. 通过 channel_mounts
+  if (!groupFolder && item.sourceJid) {
+    const baseJid = item.sourceJid.includes('#')
+      ? item.sourceJid.split('#')[0]
+      : item.sourceJid;
+    const mount = getChannelMount(item.sourceJid) || getChannelMount(baseJid);
+    if (mount?.workspace_jid) {
+      const ws = getRegisteredGroup(mount.workspace_jid);
+      if (ws?.folder) {
+        groupFolder = ws.folder;
+        groupName = ws.name;
+      }
+    }
+  }
+
+  // 4. 兜底通过 sourceJid 直接查 registeredGroup
+  if (!groupFolder && item.sourceJid) {
+    const baseJid = item.sourceJid.includes('#')
+      ? item.sourceJid.split('#')[0]
+      : item.sourceJid;
+    const group =
+      getRegisteredGroup(item.sourceJid) || getRegisteredGroup(baseJid);
+    if (group?.folder) {
+      groupFolder = group.folder;
+      groupName = group.name;
+    } else if (item.sourceJid.startsWith('web:')) {
+      groupFolder = item.sourceJid.replace(/^web:/, '');
+    }
+  }
+
+  // 5. 导航 URL：真实 ChatView 消费的是 ?agent=
+  let navigationUrl: string | null = null;
+  if (groupFolder) {
+    navigationUrl = agentId
+      ? `/chat/${groupFolder}?agent=${encodeURIComponent(agentId)}`
+      : `/chat/${groupFolder}`;
+  }
+
+  return {
+    sessionId,
+    agentId,
+    groupFolder,
+    groupName,
+    navigationUrl,
+  };
+}
+
 function enrichOutboxItem(item: ChannelOutboxItem, now = Date.now()) {
   const createdTime = new Date(item.createdAt).getTime();
   const ageMs = Math.max(0, now - createdTime);
@@ -394,29 +502,11 @@ function enrichOutboxItem(item: ChannelOutboxItem, now = Date.now()) {
   const account = item.accountId ? getChannelAccount(item.accountId) : null;
   const botName = account?.name ?? null;
 
-  // 2. 群组与工作区
-  const group = item.sourceJid ? getRegisteredGroup(item.sourceJid) : null;
-  const groupName = group?.name ?? null;
-  const groupFolder =
-    group?.folder ??
-    (item.sourceJid?.startsWith('web:')
-      ? item.sourceJid.replace(/^web:/, '')
-      : null);
+  // 2. 真实 Workspace 与 Agent 路由解析
+  const { sessionId, agentId, groupFolder, groupName, navigationUrl } =
+    resolveWorkspaceAndAgent(item);
 
-  // 3. 关联 Turn 获取 sessionId 与 agentId
-  const turnRun = item.turnRunId ? getChannelTurnRun(item.turnRunId) : null;
-  const sessionId = turnRun?.sessionId ?? null;
-  const agentId = turnRun?.agentId ?? null;
-
-  // 4. 生成可导航链接
-  let navigationUrl: string | null = null;
-  if (groupFolder) {
-    navigationUrl = sessionId
-      ? `/chat/${groupFolder}?session=${encodeURIComponent(sessionId)}`
-      : `/chat/${groupFolder}`;
-  }
-
-  // 绝不暴露 item.payload，严格遵守数据与安全隐私边界
+  // 保持原有顶层字段兼容性，严守隐私不包含 payload
   return {
     id: item.id,
     turnRunId: item.turnRunId,
@@ -424,6 +514,9 @@ function enrichOutboxItem(item: ChannelOutboxItem, now = Date.now()) {
     ordinal: item.ordinal,
     revision: item.revision,
     status: item.status,
+    provider: item.provider,
+    accountId: item.accountId,
+    chatId: item.chatId,
     attempt: item.attempt,
     error: item.error,
     createdAt: item.createdAt,
@@ -597,11 +690,21 @@ monitorRoutes.post(
       'Uncertain channel outbox item resolved by operator',
     );
 
+    // 关键修正：真实复查同 Turn 是否还有其他未决 uncertain 兄弟项
+    const stillHasUncertain = hasUncertainChannelOutbox(existing.turnRunId);
+    const turnStatus = stillHasUncertain
+      ? 'fenced_by_siblings'
+      : 'fence_released';
+
     const enriched = enrichOutboxItem(existing);
     const impactDescription =
       body.resolution === 'delivered'
-        ? `投递已标记为由平台成功接收 (MessageID: ${body.providerMessageId})。回合 ${existing.turnRunId} 栅栏已释放，后续队列可继续推进。`
-        : `投递已标记失败 (原因: ${body.error || '操作员标记投递失败'})。回合 ${existing.turnRunId} 不再重复发送本条目，栅栏已释放。`;
+        ? stillHasUncertain
+          ? `投递已标记为由平台成功接收 (MessageID: ${body.providerMessageId})。但回合 ${existing.turnRunId} 仍有其他待确认兄弟项，栅栏保持有效。`
+          : `投递已标记为由平台成功接收 (MessageID: ${body.providerMessageId})。回合 ${existing.turnRunId} 栅栏已完全释放，后续队列可继续推进。`
+        : stillHasUncertain
+          ? `投递已标记失败 (原因: ${body.error || '操作员标记投递失败'})。回合 ${existing.turnRunId} 仍有其他未决条目，栅栏保持有效。`
+          : `投递已标记失败 (原因: ${body.error || '操作员标记投递失败'})。回合 ${existing.turnRunId} 不再重复发送本条目，栅栏已完全释放。`;
 
     return c.json({
       ok: true,
@@ -616,7 +719,7 @@ monitorRoutes.post(
             ? 'marked_delivered'
             : 'marked_failed',
         turnRunId: existing.turnRunId,
-        turnStatus: 'fence_released',
+        turnStatus,
         description: impactDescription,
         route: enriched.route,
       },

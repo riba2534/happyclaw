@@ -20281,12 +20281,19 @@ async function reloadChannelAccountById(accountId: string): Promise<boolean> {
             if (state.status === 'connected') {
               updateChannelAccountAuthStatus(account.id, 'authorized');
               updateChannelAccountStatus(account.id, 'connected');
+              readinessManager.setChannelStatus(account.id, 'connected');
             } else if (state.status === 'connecting') {
               updateChannelAccountStatus(account.id, 'connecting');
+              readinessManager.setChannelStatus(account.id, 'connecting');
             } else if (state.status === 'reconnecting') {
               updateChannelAccountStatus(
                 account.id,
                 'reconnecting',
+                state.error,
+              );
+              readinessManager.setChannelStatus(
+                account.id,
+                'connecting',
                 state.error,
               );
             } else if (state.status === 'expired') {
@@ -20300,11 +20307,21 @@ async function reloadChannelAccountById(accountId: string): Promise<boolean> {
                 'disconnected',
                 state.error,
               );
+              readinessManager.setChannelStatus(
+                account.id,
+                'failed',
+                state.error || 'Token expired',
+              );
             } else {
               // A normal transport stop preserves reusable authorization.
               updateChannelAccountStatus(
                 account.id,
                 'disconnected',
+                state.error,
+              );
+              readinessManager.setChannelStatus(
+                account.id,
+                state.error ? 'failed' : 'disabled',
                 state.error,
               );
             }
@@ -20492,9 +20509,11 @@ async function reloadChannelAccountById(accountId: string): Promise<boolean> {
             if (state.status === 'connected') {
               updateChannelAccountAuthStatus(account.id, 'authorized');
               updateChannelAccountStatus(account.id, 'connected');
+              readinessManager.setChannelStatus(account.id, 'connected');
             } else if (state.status === 'qr' || state.status === 'connecting') {
               updateChannelAccountAuthStatus(account.id, 'awaiting_scan');
               updateChannelAccountStatus(account.id, 'connecting');
+              readinessManager.setChannelStatus(account.id, 'connecting');
             } else if (state.status === 'logged_out') {
               updateChannelAccountAuthStatus(
                 account.id,
@@ -20506,10 +20525,20 @@ async function reloadChannelAccountById(accountId: string): Promise<boolean> {
                 'disconnected',
                 state.error,
               );
+              readinessManager.setChannelStatus(
+                account.id,
+                state.error ? 'failed' : 'disabled',
+                state.error,
+              );
             } else {
               updateChannelAccountStatus(
                 account.id,
                 'disconnected',
+                state.error,
+              );
+              readinessManager.setChannelStatus(
+                account.id,
+                state.error ? 'failed' : 'disabled',
                 state.error,
               );
             }
@@ -22602,26 +22631,36 @@ async function main(): Promise<void> {
   // Starting the message loop earlier can create a second active card for the
   // same logical turn while the provider still shows the old one as running.
   readinessManager.setRecoveryStatus('in_progress');
-  await reconcileChannelReliabilityOnStartup(imManager);
-  const outboxRecovery = reconcileChannelOutboxDeliveries();
-  if (outboxRecovery.uncertain > 0) {
-    logger.warn(
-      outboxRecovery,
-      'Channel outbox contains uncertain sends; automatic replay is blocked',
-    );
-  } else if (outboxRecovery.retryable > 0) {
-    logger.info(
-      outboxRecovery,
-      'Channel outbox recovered retryable pre-send work',
-    );
+  try {
+    await reconcileChannelReliabilityOnStartup(imManager);
+    const outboxRecovery = reconcileChannelOutboxDeliveries();
+    if (outboxRecovery.uncertain > 0) {
+      logger.warn(
+        outboxRecovery,
+        'Channel outbox contains uncertain sends; automatic replay is blocked',
+      );
+    } else if (outboxRecovery.retryable > 0) {
+      logger.info(
+        outboxRecovery,
+        'Channel outbox recovered retryable pre-send work',
+      );
+    }
+    readinessManager.setRecoveryStatus('ready', {
+      uncertain: outboxRecovery.uncertain,
+      retryable: outboxRecovery.retryable,
+    });
+  } catch (err: any) {
+    const message = err instanceof Error ? err.message : String(err);
+    readinessManager.setRecoveryStatus('failed', null, message);
+    logger.error({ err }, 'Startup reliability recovery failed');
+    throw err;
   }
-  readinessManager.setRecoveryStatus('ready', {
-    uncertain: outboxRecovery.uncertain,
-    retryable: outboxRecovery.retryable,
-  });
   channelReliabilityRecoveryLoop =
     startChannelReliabilityRecoveryLoop(imManager);
-  unsubscribeChannelReadyRecovery = imManager.onChannelReady(() => {
+  unsubscribeChannelReadyRecovery = imManager.onChannelReady((event) => {
+    if (event?.accountId) {
+      readinessManager.setChannelStatus(event.accountId, 'connected');
+    }
     void channelReliabilityRecoveryLoop?.trigger();
   });
   imManager.resumeDeferredInbound();
@@ -22639,8 +22678,16 @@ async function main(): Promise<void> {
   // Otherwise an overdue task can race startup recovery with a fresh Runner.
   startSchedulerLoop(schedulerDeps);
   streamingBuffer.start();
-  startMessageLoop();
-  readinessManager.setConsumersStatus('ready');
+  readinessManager.setConsumersStatus('starting');
+  try {
+    startMessageLoop();
+    readinessManager.setConsumersStatus('ready');
+  } catch (err: any) {
+    const message = err instanceof Error ? err.message : String(err);
+    readinessManager.setConsumersStatus('failed', message);
+    logger.error({ err }, 'Message consumers loop failed to start');
+    throw err;
+  }
 
   // Start Feishu group sync if any connection is active
   if (anyFeishuConnected) {

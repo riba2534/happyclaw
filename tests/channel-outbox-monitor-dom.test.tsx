@@ -43,7 +43,7 @@ const mockItems = [
       agentId: 'agent-ops',
       groupFolder: 'ops-workspace',
       groupName: '运维值班群',
-      navigationUrl: '/chat/ops-workspace?session=session-alpha-99',
+      navigationUrl: '/chat/ops-workspace?agent=agent-ops',
     },
   },
 ];
@@ -114,14 +114,14 @@ describe('ChannelOutboxMonitor DOM component', () => {
     // 3. 真实来源展示
     expect(html).toContain('主飞书运营机器人');
     expect(html).toContain('运维值班群');
-    expect(html).toContain('session: session-alpha-99');
+    expect(html).toContain('agent: agent-ops');
 
     // 4. 异常与隐私
     expect(html).toContain('Provider ACK dropped during timeout');
 
     // 5. 导航链接
     const navLink = container?.querySelector(
-      'a[href="/chat/ops-workspace?session=session-alpha-99"]',
+      'a[href="/chat/ops-workspace?agent=agent-ops"]',
     );
     expect(navLink).not.toBeNull();
 

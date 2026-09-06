@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import crypto from 'node:crypto';
+import { readinessManager } from '../readiness-manager.js';
 import type { Variables } from '../web-context.js';
 import { authMiddleware } from '../middleware/auth.js';
 import type {
@@ -602,6 +603,12 @@ routes.post('/', authMiddleware, async (c) => {
             ? 'authorized'
             : 'draft',
     });
+    readinessManager.registerChannel({
+      id: account.id,
+      provider: account.provider,
+      name: account.name,
+      enabled: account.enabled,
+    });
     if (account.enabled && account.auth_mode !== 'qr_session') {
       const connected = await deps.reloadChannelAccount?.(account.id);
       if (connected === false) {
@@ -611,8 +618,14 @@ routes.post('/', authMiddleware, async (c) => {
           'Connection failed',
         );
         updateChannelAccountStatus(account.id, 'error', 'Connection failed');
+        readinessManager.setChannelStatus(
+          account.id,
+          'failed',
+          'Connection failed',
+        );
       } else {
         updateChannelAccountAuthStatus(account.id, 'authorized');
+        readinessManager.setChannelStatus(account.id, 'connected');
       }
     }
     return c.json(
@@ -1200,13 +1213,21 @@ routes.post('/:id/toggle', authMiddleware, async (c) => {
   if (!current) return c.json({ error: 'Channel account not found' }, 404);
   const enabled = !current.enabled;
   updateChannelAccount(id, user.id, { enabled });
+  readinessManager.registerChannel({
+    id: current.id,
+    provider: current.provider,
+    name: current.name,
+    enabled,
+  });
   if (enabled && current.auth_status === 'authorized') {
     updateChannelAccountStatus(id, 'connecting');
+    readinessManager.setChannelStatus(id, 'connecting');
     try {
       const connected = await deps.reloadChannelAccount?.(id);
       if (connected === false) {
         updateChannelAccount(id, user.id, { enabled: false });
         updateChannelAccountStatus(id, 'error', 'Connection failed');
+        readinessManager.setChannelStatus(id, 'failed', 'Connection failed');
         syncLegacyUserImFacade(getChannelAccountForUser(id, user.id)!);
         return c.json(
           {
@@ -1215,10 +1236,13 @@ routes.post('/:id/toggle', authMiddleware, async (c) => {
           },
           422,
         );
+      } else {
+        readinessManager.setChannelStatus(id, 'connected');
       }
     } catch (error) {
       updateChannelAccount(id, user.id, { enabled: false });
       updateChannelAccountStatus(id, 'error', 'Connection failed');
+      readinessManager.setChannelStatus(id, 'failed', String(error));
       syncLegacyUserImFacade(getChannelAccountForUser(id, user.id)!);
       const message = error instanceof Error ? error.message : String(error);
       return c.json(
@@ -1230,6 +1254,7 @@ routes.post('/:id/toggle', authMiddleware, async (c) => {
       );
     }
   } else {
+    readinessManager.setChannelStatus(id, 'disabled');
     if (!enabled) cancelPendingOnboarding(current);
     try {
       await deps.disconnectChannelAccount?.(id);
@@ -1288,6 +1313,7 @@ routes.delete('/:id', authMiddleware, async (c) => {
   pendingWeChatQr.delete(id);
   deleteChannelAccount(id, user.id);
   deleteChannelAccountSecret(account.secret_ref);
+  readinessManager.removeChannel(id);
   return c.json({ success: true });
 });
 

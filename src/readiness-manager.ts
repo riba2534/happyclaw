@@ -1,3 +1,6 @@
+import fs from 'fs';
+import path from 'path';
+import { execSync } from 'child_process';
 import { logger } from './logger.js';
 
 export type ReadinessPhaseStatus =
@@ -55,19 +58,85 @@ export interface ChannelsPhase {
   items: ChannelReadinessItem[];
 }
 
-export interface ReadinessReport {
+export interface PublicReadinessReport {
   status: 'ready' | 'degraded' | 'initializing' | 'failed';
   ready: boolean;
   statusCode: 200 | 503;
+  currentSha: string;
   summary: string;
   timestamp: string;
   uptimeSeconds: number;
+  phases: {
+    database: { status: 'pending' | 'ready' | 'failed' };
+    recovery: { status: 'pending' | 'in_progress' | 'ready' | 'failed' };
+    consumers: { status: 'pending' | 'starting' | 'ready' | 'failed' };
+    channels: {
+      status: 'ready' | 'degraded' | 'connecting' | 'failed';
+      totalAccounts: number;
+      enabledCount: number;
+      connectedCount: number;
+      failedCount: number;
+      disabledCount: number;
+    };
+  };
+}
+
+export interface AdminReadinessReport extends PublicReadinessReport {
   phases: {
     database: DbPhase;
     recovery: RecoveryPhase;
     consumers: ConsumersPhase;
     channels: ChannelsPhase;
   };
+}
+
+let cachedCommitSha: string | null = null;
+
+export function resolveCurrentCommitSha(): string {
+  if (process.env.HAPPYCLAW_GIT_SHA) return process.env.HAPPYCLAW_GIT_SHA;
+  if (cachedCommitSha) return cachedCommitSha;
+
+  try {
+    const metaPath = path.join(
+      process.cwd(),
+      '.releases',
+      'current',
+      'meta.json',
+    );
+    if (fs.existsSync(metaPath)) {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+      if (meta.commitSha) {
+        cachedCommitSha = meta.commitSha;
+        return cachedCommitSha!;
+      }
+    }
+  } catch {}
+
+  try {
+    const currentFile = path.join(process.cwd(), '.release-current.json');
+    if (fs.existsSync(currentFile)) {
+      const current = JSON.parse(fs.readFileSync(currentFile, 'utf8'));
+      if (current.commitSha) {
+        cachedCommitSha = current.commitSha;
+        return cachedCommitSha!;
+      }
+    }
+  } catch {}
+
+  try {
+    const sha = execSync('git rev-parse HEAD 2>/dev/null', {
+      timeout: 1000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .toString()
+      .trim();
+    if (sha) {
+      cachedCommitSha = sha;
+      return cachedCommitSha;
+    }
+  } catch {}
+
+  return 'unknown';
 }
 
 class ReadinessManager {
@@ -89,7 +158,6 @@ class ReadinessManager {
   };
   private channelMap = new Map<string, ChannelReadinessItem>();
 
-  /** 标记数据库阶段 */
   setDbStatus(status: 'ready' | 'failed', error?: string | null): void {
     this.dbPhase = {
       status,
@@ -101,7 +169,6 @@ class ReadinessManager {
     }
   }
 
-  /** 标记数据恢复阶段（Outbox/Inbox 等） */
   setRecoveryStatus(
     status: 'in_progress' | 'ready' | 'failed',
     detail?: Record<string, unknown> | null,
@@ -118,7 +185,6 @@ class ReadinessManager {
     }
   }
 
-  /** 标记消息队列与消费者阶段 */
   setConsumersStatus(
     status: 'starting' | 'ready' | 'failed',
     error?: string | null,
@@ -133,16 +199,18 @@ class ReadinessManager {
     }
   }
 
-  /** 注册或更新渠道账号 */
   registerChannel(account: {
     id: string;
     provider: string;
     name: string;
     enabled: boolean;
     optional?: boolean;
+    status?: ChannelConnectionStatus;
+    error?: string | null;
   }): void {
     const existing = this.channelMap.get(account.id);
-    const optional = account.optional ?? true; // 默认渠道故障支持业务降级，不阻塞全站
+    const optional = account.optional ?? true;
+
     if (!account.enabled) {
       this.channelMap.set(account.id, {
         id: account.id,
@@ -158,20 +226,36 @@ class ReadinessManager {
       return;
     }
 
+    let nextStatus = account.status;
+    if (!nextStatus) {
+      if (!existing || existing.status === 'disabled') {
+        nextStatus = 'connecting';
+      } else {
+        nextStatus = existing.status;
+      }
+    }
     this.channelMap.set(account.id, {
       id: account.id,
       provider: account.provider,
       name: account.name,
       enabled: true,
       optional,
-      status: existing?.status ?? 'connecting',
-      error: existing?.error ?? null,
+      status: nextStatus,
+      error:
+        account.error ??
+        (existing?.status === 'disabled' ? null : (existing?.error ?? null)),
       lastAttemptAt: existing?.lastAttemptAt ?? new Date().toISOString(),
-      connectedAt: existing?.connectedAt ?? null,
+      connectedAt:
+        nextStatus === 'connected'
+          ? (existing?.connectedAt ?? new Date().toISOString())
+          : null,
     });
   }
 
-  /** 更新渠道连接状态 */
+  removeChannel(accountId: string): void {
+    this.channelMap.delete(accountId);
+  }
+
   setChannelStatus(
     accountId: string,
     status: ChannelConnectionStatus,
@@ -188,7 +272,6 @@ class ReadinessManager {
     }
   }
 
-  /** 清空或重置状态（供测试或重新初始化） */
   reset(): void {
     this.dbPhase = { status: 'pending', error: null, checkedAt: null };
     this.recoveryPhase = {
@@ -199,10 +282,10 @@ class ReadinessManager {
     };
     this.consumersPhase = { status: 'pending', error: null, startedAt: null };
     this.channelMap.clear();
+    cachedCommitSha = null;
   }
 
-  /** 生成业务就绪报告 */
-  getReport(): ReadinessReport {
+  private computeChannelsPhase(): ChannelsPhase {
     const channelItems = Array.from(this.channelMap.values());
     const totalAccounts = channelItems.length;
     const enabledItems = channelItems.filter((i) => i.enabled);
@@ -219,7 +302,6 @@ class ReadinessManager {
       (i) => i.status === 'connecting',
     ).length;
 
-    // 渠道阶段状态判定
     let channelsStatus: ChannelsPhase['status'] = 'ready';
     if (connectingCount > 0) {
       channelsStatus = 'connecting';
@@ -228,7 +310,7 @@ class ReadinessManager {
       channelsStatus = allFailedAreOptional ? 'degraded' : 'failed';
     }
 
-    const channelsPhase: ChannelsPhase = {
+    return {
       status: channelsStatus,
       totalAccounts,
       enabledCount,
@@ -237,79 +319,120 @@ class ReadinessManager {
       disabledCount,
       items: channelItems,
     };
+  }
 
-    // 综合判定
-    let overallStatus: ReadinessReport['status'] = 'ready';
+  private evaluateStatus(channelsPhase: ChannelsPhase): {
+    overallStatus: 'ready' | 'degraded' | 'initializing' | 'failed';
+    reasons: string[];
+    safeSummary: string;
+  } {
+    let overallStatus: 'ready' | 'degraded' | 'initializing' | 'failed' =
+      'ready';
     const reasons: string[] = [];
 
-    // 1. 检查 DB
     if (this.dbPhase.status === 'failed') {
       overallStatus = 'failed';
-      reasons.push(`Database failed: ${this.dbPhase.error ?? 'unknown error'}`);
+      reasons.push('Database failed');
     } else if (this.dbPhase.status === 'pending') {
       overallStatus = 'initializing';
-      reasons.push('Database initialization pending');
+      reasons.push('Database pending');
     }
 
-    // 2. 检查 Recovery
     if (this.recoveryPhase.status === 'failed') {
       overallStatus = 'failed';
-      reasons.push(
-        `Startup recovery failed: ${this.recoveryPhase.error ?? 'unknown error'}`,
-      );
+      reasons.push('Startup recovery failed');
     } else if (
       this.recoveryPhase.status === 'pending' ||
       this.recoveryPhase.status === 'in_progress'
     ) {
       if (overallStatus !== 'failed') overallStatus = 'initializing';
-      reasons.push('Startup reliability recovery in progress');
+      reasons.push('Startup recovery in progress');
     }
 
-    // 3. 检查 Consumers
     if (this.consumersPhase.status === 'failed') {
       overallStatus = 'failed';
-      reasons.push(
-        `Message consumers failed: ${this.consumersPhase.error ?? 'unknown error'}`,
-      );
+      reasons.push('Consumers failed');
     } else if (
       this.consumersPhase.status === 'pending' ||
       this.consumersPhase.status === 'starting'
     ) {
       if (overallStatus !== 'failed') overallStatus = 'initializing';
-      reasons.push('Message consumers starting');
+      reasons.push('Consumers starting');
     }
 
-    // 4. 检查 Channels
-    if (channelsStatus === 'connecting') {
+    if (channelsPhase.status === 'connecting') {
       if (overallStatus !== 'failed') overallStatus = 'initializing';
-      reasons.push(`${connectingCount} enabled channel(s) connecting`);
-    } else if (channelsStatus === 'failed') {
+      reasons.push(
+        `${channelsPhase.items.filter((i) => i.enabled && i.status === 'connecting').length} channel(s) connecting`,
+      );
+    } else if (channelsPhase.status === 'failed') {
       overallStatus = 'failed';
-      const nonOptionalFailed = failedItems.filter((i) => !i.optional);
-      reasons.push(
-        `Critical channel(s) failed: ${nonOptionalFailed.map((i) => `${i.name}(${i.provider})`).join(', ')}`,
-      );
-    } else if (channelsStatus === 'degraded') {
-      if (overallStatus === 'ready') {
-        overallStatus = 'degraded';
-      }
-      reasons.push(
-        `Optional channel(s) degraded: ${failedItems.map((i) => `${i.name}(${i.provider})`).join(', ')}`,
-      );
+      reasons.push('Critical channel connection failed');
+    } else if (channelsPhase.status === 'degraded') {
+      if (overallStatus === 'ready') overallStatus = 'degraded';
+      reasons.push('Optional channel degraded');
     }
 
-    const ready = overallStatus === 'ready' || overallStatus === 'degraded';
-    const statusCode: 200 | 503 = ready ? 200 : 503;
-    const summary =
+    const safeSummary =
       reasons.length > 0
         ? reasons.join('; ')
         : 'All systems and enabled channels operational';
+
+    return { overallStatus, reasons, safeSummary };
+  }
+
+  /**
+   * 公开探针报告（无认证，严格脱敏：绝不泄露账号 ID、账号名或详细报错堆栈）
+   */
+  getPublicReport(
+    currentSha = resolveCurrentCommitSha(),
+  ): PublicReadinessReport {
+    const channelsPhase = this.computeChannelsPhase();
+    const { overallStatus, safeSummary } = this.evaluateStatus(channelsPhase);
+
+    const ready = overallStatus === 'ready' || overallStatus === 'degraded';
+    const statusCode: 200 | 503 = ready ? 200 : 503;
 
     return {
       status: overallStatus,
       ready,
       statusCode,
-      summary,
+      currentSha,
+      summary: safeSummary,
+      timestamp: new Date().toISOString(),
+      uptimeSeconds: Math.floor(process.uptime()),
+      phases: {
+        database: { status: this.dbPhase.status },
+        recovery: { status: this.recoveryPhase.status },
+        consumers: { status: this.consumersPhase.status },
+        channels: {
+          status: channelsPhase.status,
+          totalAccounts: channelsPhase.totalAccounts,
+          enabledCount: channelsPhase.enabledCount,
+          connectedCount: channelsPhase.connectedCount,
+          failedCount: channelsPhase.failedCount,
+          disabledCount: channelsPhase.disabledCount,
+        },
+      },
+    };
+  }
+
+  /**
+   * 管理员详情报告（需认证：包含内部账号、时间戳及具体错误）
+   */
+  getAdminReport(currentSha = resolveCurrentCommitSha()): AdminReadinessReport {
+    const channelsPhase = this.computeChannelsPhase();
+    const { overallStatus, safeSummary } = this.evaluateStatus(channelsPhase);
+
+    const ready = overallStatus === 'ready' || overallStatus === 'degraded';
+    const statusCode: 200 | 503 = ready ? 200 : 503;
+
+    return {
+      status: overallStatus,
+      ready,
+      statusCode,
+      currentSha,
+      summary: safeSummary,
       timestamp: new Date().toISOString(),
       uptimeSeconds: Math.floor(process.uptime()),
       phases: {
@@ -319,6 +442,11 @@ class ReadinessManager {
         channels: channelsPhase,
       },
     };
+  }
+
+  /** 兼容别名 */
+  getReport(): PublicReadinessReport {
+    return this.getPublicReport();
   }
 }
 
