@@ -839,6 +839,8 @@ export interface BindChannelToWorkspaceCommand {
   activationMode?: RegisteredGroup['activation_mode'];
   audienceMode?: string;
   ownerImId?: string | null;
+  ownerClaimSource?: RegisteredGroup['owner_claim_source'];
+  liveInfo?: NativeContextMetadata;
 }
 
 export interface BindChannelToSessionCommand {
@@ -848,6 +850,8 @@ export interface BindChannelToSessionCommand {
   activationMode?: RegisteredGroup['activation_mode'];
   audienceMode?: string;
   ownerImId?: string | null;
+  ownerClaimSource?: RegisteredGroup['owner_claim_source'];
+  liveInfo?: NativeContextMetadata;
 }
 
 /**
@@ -864,17 +868,28 @@ export function executeBindChannelToWorkspace(
     folder: command.channelJid.replace(/:/g, '_'),
     added_at: new Date().toISOString(),
   };
-  const updated = buildWorkspaceMountUpdate(
-    current,
-    command.workspaceJid,
-    command.routingMode ?? 'single_session',
-    {
-      replyPolicy: command.replyPolicy,
-      activationMode: command.activationMode,
-      audienceMode: command.audienceMode as any,
-      ownerImId: command.ownerImId,
-    },
-  );
+  const updated: RegisteredGroup = {
+    ...buildWorkspaceMountUpdate(
+      current,
+      command.workspaceJid,
+      command.routingMode ?? 'single_session',
+      {
+        replyPolicy: command.replyPolicy,
+        activationMode: command.activationMode,
+        audienceMode: command.audienceMode as any,
+        ownerImId: command.ownerImId,
+      },
+    ),
+    ...(command.ownerClaimSource
+      ? { owner_claim_source: command.ownerClaimSource }
+      : {}),
+    ...(command.liveInfo?.chat_mode
+      ? { feishu_chat_mode: command.liveInfo.chat_mode }
+      : {}),
+    ...(command.liveInfo?.group_message_type
+      ? { feishu_group_message_type: command.liveInfo.group_message_type }
+      : {}),
+  };
   commitChannelMountUpdate(command.channelJid, updated);
   const mount = getChannelMount(command.channelJid);
   if (!mount) {
@@ -896,12 +911,23 @@ export function executeBindChannelToSession(
     folder: command.channelJid.replace(/:/g, '_'),
     added_at: new Date().toISOString(),
   };
-  const updated = buildSessionMountUpdate(current, command.sessionId, {
-    replyPolicy: command.replyPolicy,
-    activationMode: command.activationMode,
-    audienceMode: command.audienceMode as any,
-    ownerImId: command.ownerImId,
-  });
+  const updated: RegisteredGroup = {
+    ...buildSessionMountUpdate(current, command.sessionId, {
+      replyPolicy: command.replyPolicy,
+      activationMode: command.activationMode,
+      audienceMode: command.audienceMode as any,
+      ownerImId: command.ownerImId,
+    }),
+    ...(command.ownerClaimSource
+      ? { owner_claim_source: command.ownerClaimSource }
+      : {}),
+    ...(command.liveInfo?.chat_mode
+      ? { feishu_chat_mode: command.liveInfo.chat_mode }
+      : {}),
+    ...(command.liveInfo?.group_message_type
+      ? { feishu_group_message_type: command.liveInfo.group_message_type }
+      : {}),
+  };
   commitChannelMountUpdate(command.channelJid, updated);
   const mount = getChannelMount(command.channelJid);
   if (!mount) {
@@ -913,8 +939,15 @@ export function executeBindChannelToSession(
 /**
  * Domain command to unbind an IM channel from all targets.
  */
-export function executeUnbindChannel(channelJid: string): void {
+export function executeUnbindChannel(
+  channelJid: string,
+  options: {
+    clearMatchingMainOwnerFolder?: string;
+    resetActivation?: boolean;
+  } = {},
+): void {
   const current = getRegisteredGroup(channelJid);
   if (!current) return;
-  unbindChannelMount(channelJid, current);
+  const updated = buildUnmountUpdate(current, options);
+  commitChannelMountUpdate(channelJid, updated, options);
 }

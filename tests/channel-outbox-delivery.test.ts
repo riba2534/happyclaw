@@ -573,6 +573,7 @@ describe('channel outbox physical delivery transaction', () => {
       {
         mode: 'startup',
         now,
+        includeOutbox: true,
       },
     );
     // Nothing expired yet (60s lease > 10s elapsed)
@@ -594,6 +595,7 @@ describe('channel outbox physical delivery transaction', () => {
       {
         mode: 'live',
         now,
+        includeOutbox: true,
       },
     );
     // Should have reconciled 1 retryable (claimed) and 1 uncertain (sending)

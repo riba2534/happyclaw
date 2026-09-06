@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type Database from 'better-sqlite3';
 
 import { DATA_DIR } from './config.js';
 import { logger } from './logger.js';
@@ -20,7 +19,11 @@ import {
   withCapabilityScopeLocks,
   userCapabilityLockKey,
 } from './capability-lock.js';
-import { listAgentProfilesForUser } from './db.js';
+import {
+  listAgentProfilesForUser,
+  storeMessageDirect,
+  ensureChatExists,
+} from './db.js';
 
 export const MAX_SKILL_INSTALL_BYTES = 50 * 1024 * 1024; // 50MB
 export const SKILL_ARCHIVE_MAX_FILE_BYTES = 10 * 1024 * 1024; // 10MB
@@ -66,21 +69,27 @@ export function writeSkillsManifest(
   }
 }
 
-export interface CapabilityMutationRecord {
-  requestId: string;
-  userId: string;
-  sourceGroup?: string | null;
-  groupFolder?: string | null;
-  capabilityKind: 'skills';
-  action: 'install' | 'uninstall';
-  target: string;
-  status: 'pending' | 'accepted' | 'applied' | 'failed';
-  resultJson?: string | null;
-  error?: string | null;
-  createdAt: string;
-  updatedAt: string;
-  appliedAt?: string | null;
-}
+import {
+  type CapabilityMutationRecord,
+  bindCapabilityMutationDatabase,
+  createCapabilityMutationSchema,
+  getCapabilityMutationRequest,
+  recordCapabilityMutationRequest,
+  claimCapabilityMutation,
+  updateCapabilityMutationRequest,
+  listPendingCapabilityMutations,
+} from './capability-mutation-store.js';
+
+export {
+  type CapabilityMutationRecord,
+  bindCapabilityMutationDatabase,
+  createCapabilityMutationSchema,
+  getCapabilityMutationRequest,
+  recordCapabilityMutationRequest,
+  claimCapabilityMutation,
+  updateCapabilityMutationRequest,
+  listPendingCapabilityMutations,
+};
 
 export interface SkillInstallResult {
   success: boolean;
@@ -101,169 +110,6 @@ export interface SkillDeleteResult {
   error?: string;
   retryable?: boolean;
   invalidatedRuntimeJids?: number;
-}
-
-let activeMutationDatabase: Database.Database | null = null;
-
-export function bindCapabilityMutationDatabase(
-  db: Database.Database | null,
-): void {
-  activeMutationDatabase = db;
-}
-
-function getStoreDatabase(): Database.Database {
-  if (!activeMutationDatabase) {
-    throw new Error('Capability mutation database is not initialized');
-  }
-  return activeMutationDatabase;
-}
-
-export function createCapabilityMutationSchema(
-  connection: Database.Database,
-): void {
-  connection.exec(`
-    CREATE TABLE IF NOT EXISTS capability_mutation_requests (
-      request_id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      source_group TEXT,
-      group_folder TEXT,
-      capability_kind TEXT NOT NULL,
-      action TEXT NOT NULL,
-      target TEXT NOT NULL,
-      status TEXT NOT NULL,
-      result_json TEXT,
-      error TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      applied_at TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_cap_mutation_folder_status
-      ON capability_mutation_requests(group_folder, status);
-  `);
-}
-
-function mapMutationRow(row: any): CapabilityMutationRecord {
-  return {
-    requestId: row.request_id,
-    userId: row.user_id,
-    sourceGroup: row.source_group ?? null,
-    groupFolder: row.group_folder ?? null,
-    capabilityKind: row.capability_kind,
-    action: row.action,
-    target: row.target,
-    status: row.status,
-    resultJson: row.result_json ?? null,
-    error: row.error ?? null,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    appliedAt: row.applied_at ?? null,
-  };
-}
-
-export function getCapabilityMutationRequest(
-  requestId: string,
-): CapabilityMutationRecord | undefined {
-  const db = getStoreDatabase();
-  const row = db
-    .prepare('SELECT * FROM capability_mutation_requests WHERE request_id = ?')
-    .get(requestId);
-  return row ? mapMutationRow(row) : undefined;
-}
-
-export function recordCapabilityMutationRequest(
-  record: Omit<CapabilityMutationRecord, 'createdAt' | 'updatedAt'>,
-): CapabilityMutationRecord {
-  const db = getStoreDatabase();
-  const now = new Date().toISOString();
-  return db.transaction(() => {
-    const existing = db
-      .prepare(
-        'SELECT * FROM capability_mutation_requests WHERE request_id = ?',
-      )
-      .get(record.requestId);
-    if (existing) {
-      return mapMutationRow(existing);
-    }
-    db.prepare(
-      `INSERT INTO capability_mutation_requests (
-        request_id, user_id, source_group, group_folder,
-        capability_kind, action, target, status,
-        result_json, error, created_at, updated_at, applied_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      record.requestId,
-      record.userId,
-      record.sourceGroup ?? null,
-      record.groupFolder ?? null,
-      record.capabilityKind,
-      record.action,
-      record.target,
-      record.status,
-      record.resultJson ?? null,
-      record.error ?? null,
-      now,
-      now,
-      record.appliedAt ?? null,
-    );
-    return {
-      ...record,
-      createdAt: now,
-      updatedAt: now,
-    };
-  })();
-}
-
-export function updateCapabilityMutationRequest(
-  requestId: string,
-  update: {
-    status: 'pending' | 'accepted' | 'applied' | 'failed';
-    resultJson?: string | null;
-    error?: string | null;
-    appliedAt?: string | null;
-  },
-): boolean {
-  const db = getStoreDatabase();
-  const now = new Date().toISOString();
-  const res = db
-    .prepare(
-      `UPDATE capability_mutation_requests
-       SET status = ?,
-           result_json = COALESCE(?, result_json),
-           error = COALESCE(?, error),
-           applied_at = COALESCE(?, applied_at),
-           updated_at = ?
-       WHERE request_id = ?`,
-    )
-    .run(
-      update.status,
-      update.resultJson ?? null,
-      update.error ?? null,
-      update.appliedAt ?? (update.status === 'applied' ? now : null),
-      now,
-      requestId,
-    );
-  return res.changes === 1;
-}
-
-export function listPendingCapabilityMutations(filter?: {
-  groupFolder?: string;
-  userId?: string;
-}): CapabilityMutationRecord[] {
-  const db = getStoreDatabase();
-  let query =
-    "SELECT * FROM capability_mutation_requests WHERE status IN ('pending', 'accepted')";
-  const params: any[] = [];
-  if (filter?.groupFolder) {
-    query += ' AND group_folder = ?';
-    params.push(filter.groupFolder);
-  }
-  if (filter?.userId) {
-    query += ' AND user_id = ?';
-    params.push(filter.userId);
-  }
-  query += ' ORDER BY created_at ASC';
-  const rows = db.prepare(query).all(...params);
-  return rows.map(mapMutationRow);
 }
 
 // --- User Skill Locks & Mutation Utilities ---
@@ -395,15 +241,15 @@ export function referencedByCustomSkillProfiles(
 ): Array<{ id: string; name: string; skillIds: string[] }> {
   const candidates = new Set(skillIds);
   return listAgentProfilesForUser(userId)
-    .filter((profile) => profile.runtime_policy.skills.mode === 'custom')
-    .map((profile) => ({
+    .filter((profile: any) => profile.runtime_policy.skills.mode === 'custom')
+    .map((profile: any) => ({
       id: profile.id,
       name: profile.name,
-      skillIds: profile.runtime_policy.skills.ids.filter((id) =>
+      skillIds: profile.runtime_policy.skills.ids.filter((id: string) =>
         candidates.has(id),
       ),
     }))
-    .filter((profile) => profile.skillIds.length > 0);
+    .filter((profile: any) => profile.skillIds.length > 0);
 }
 
 // --- Core Unlocked Mutation Functions ---
@@ -516,10 +362,14 @@ export function deleteSkillForUserUnlocked(
   const skillDir = path.join(userDir, skillId);
 
   if (!fs.existsSync(skillDir)) {
-    return {
-      success: false,
-      error: 'Skill not found or is a project-level skill',
-    };
+    // Idempotent deletion: if already absent from disk, ensure manifest is cleaned and return success
+    const previousManifest = readSkillsManifest(userId);
+    if (skillId in previousManifest.skills) {
+      const nextManifest = structuredClone(previousManifest);
+      delete nextManifest.skills[skillId];
+      writeSkillsManifest(userId, nextManifest);
+    }
+    return { success: true };
   }
 
   if (!validateSkillPath(userDir, skillDir)) {
@@ -568,6 +418,8 @@ export async function installSkillForUser(
     requestId?: string;
     sourceGroup?: string;
     groupFolder?: string;
+    sessionId?: string;
+    inputTurnId?: string;
     isAgentCaller?: boolean;
   },
 ): Promise<SkillInstallResult> {
@@ -582,6 +434,17 @@ export async function installSkillForUser(
   if (isAgentCaller) {
     const existing = getCapabilityMutationRequest(requestId);
     if (existing) {
+      // Recheck identity bindings
+      if (
+        existing.userId !== userId ||
+        existing.action !== 'install' ||
+        existing.target !== pkg
+      ) {
+        return {
+          success: false,
+          error: `Request ID conflict: requestId "${requestId}" already belongs to a different operation or identity`,
+        };
+      }
       if (existing.status === 'applied') {
         let installed: string[] = [];
         try {
@@ -620,6 +483,8 @@ export async function installSkillForUser(
       userId,
       sourceGroup: options?.sourceGroup ?? null,
       groupFolder: options?.groupFolder ?? null,
+      sessionId: options?.sessionId ?? null,
+      inputTurnId: options?.inputTurnId ?? null,
       capabilityKind: 'skills',
       action: 'install',
       target: pkg,
@@ -627,7 +492,13 @@ export async function installSkillForUser(
     });
 
     logger.info(
-      { userId, pkg, requestId, sourceGroup: options?.sourceGroup },
+      {
+        userId,
+        pkg,
+        requestId,
+        sessionId: options?.sessionId,
+        inputTurnId: options?.inputTurnId,
+      },
       'Skill installation request accepted for turn-boundary execution',
     );
 
@@ -649,17 +520,23 @@ export async function installSkillForUser(
     );
 
     if (options?.requestId) {
+      const isSuccess = Boolean(result.value.success);
       recordCapabilityMutationRequest({
         requestId: options.requestId,
         userId,
         sourceGroup: options.sourceGroup ?? null,
         groupFolder: options.groupFolder ?? null,
+        sessionId: options.sessionId ?? null,
+        inputTurnId: options.inputTurnId ?? null,
         capabilityKind: 'skills',
         action: 'install',
         target: pkg,
-        status: 'applied',
-        resultJson: JSON.stringify(result.value.installed ?? []),
-        appliedAt: new Date().toISOString(),
+        status: isSuccess ? 'applied' : 'failed',
+        resultJson: isSuccess
+          ? JSON.stringify(result.value.installed ?? [])
+          : null,
+        error: isSuccess ? null : result.value.error || 'Installation failed',
+        appliedAt: isSuccess ? new Date().toISOString() : null,
       });
     }
 
@@ -680,6 +557,8 @@ export async function installSkillForUser(
         userId,
         sourceGroup: options.sourceGroup ?? null,
         groupFolder: options.groupFolder ?? null,
+        sessionId: options.sessionId ?? null,
+        inputTurnId: options.inputTurnId ?? null,
         capabilityKind: 'skills',
         action: 'install',
         target: pkg,
@@ -702,6 +581,8 @@ export async function deleteSkillForUser(
     requestId?: string;
     sourceGroup?: string;
     groupFolder?: string;
+    sessionId?: string;
+    inputTurnId?: string;
     isAgentCaller?: boolean;
   },
 ): Promise<SkillDeleteResult> {
@@ -715,6 +596,16 @@ export async function deleteSkillForUser(
   if (isAgentCaller) {
     const existing = getCapabilityMutationRequest(requestId);
     if (existing) {
+      if (
+        existing.userId !== userId ||
+        existing.action !== 'uninstall' ||
+        existing.target !== skillId
+      ) {
+        return {
+          success: false,
+          error: `Request ID conflict: requestId "${requestId}" already belongs to a different operation or identity`,
+        };
+      }
       if (existing.status === 'applied') {
         return {
           success: true,
@@ -744,6 +635,8 @@ export async function deleteSkillForUser(
       userId,
       sourceGroup: options?.sourceGroup ?? null,
       groupFolder: options?.groupFolder ?? null,
+      sessionId: options?.sessionId ?? null,
+      inputTurnId: options?.inputTurnId ?? null,
       capabilityKind: 'skills',
       action: 'uninstall',
       target: skillId,
@@ -751,7 +644,13 @@ export async function deleteSkillForUser(
     });
 
     logger.info(
-      { userId, skillId, requestId, sourceGroup: options?.sourceGroup },
+      {
+        userId,
+        skillId,
+        requestId,
+        sessionId: options?.sessionId,
+        inputTurnId: options?.inputTurnId,
+      },
       'Skill uninstallation request accepted for turn-boundary execution',
     );
 
@@ -777,17 +676,20 @@ export async function deleteSkillForUser(
     );
 
     if (options?.requestId) {
+      const isSuccess = Boolean(result.value.success);
       recordCapabilityMutationRequest({
         requestId: options.requestId,
         userId,
         sourceGroup: options.sourceGroup ?? null,
         groupFolder: options.groupFolder ?? null,
+        sessionId: options.sessionId ?? null,
+        inputTurnId: options.inputTurnId ?? null,
         capabilityKind: 'skills',
         action: 'uninstall',
         target: skillId,
-        status: result.value.success ? 'applied' : 'failed',
-        error: result.value.error ?? null,
-        appliedAt: result.value.success ? new Date().toISOString() : null,
+        status: isSuccess ? 'applied' : 'failed',
+        error: isSuccess ? null : result.value.error || 'Uninstallation failed',
+        appliedAt: isSuccess ? new Date().toISOString() : null,
       });
     }
 
@@ -808,6 +710,8 @@ export async function deleteSkillForUser(
         userId,
         sourceGroup: options.sourceGroup ?? null,
         groupFolder: options.groupFolder ?? null,
+        sessionId: options.sessionId ?? null,
+        inputTurnId: options.inputTurnId ?? null,
         capabilityKind: 'skills',
         action: 'uninstall',
         target: skillId,
@@ -824,22 +728,71 @@ export async function deleteSkillForUser(
 }
 
 /**
- * Execute all pending or accepted capability mutations at a safe boundary (e.g. turn completion or restart).
- * Guaranteed to run with runtime quiesce and update the durable mutation requests.
+ * Record an internal system message visible in the conversation transcript
+ * (not forwarded to external IM channels).
+ */
+function recordMutationCompletionNotice(item: CapabilityMutationRecord): void {
+  const targetChatJid =
+    item.sourceGroup ||
+    (item.groupFolder ? `web:${item.groupFolder}` : undefined);
+  if (!targetChatJid) return;
+
+  try {
+    const noticeContent =
+      item.status === 'applied'
+        ? `[系统通知] Skill "${item.target}" 已成功${item.action === 'install' ? '安装' : '卸载'}并生效。`
+        : `[系统通知] Skill "${item.target}" ${item.action === 'install' ? '安装' : '卸载'}失败: ${item.error || '未知错误'}`;
+
+    ensureChatExists(targetChatJid);
+    storeMessageDirect(
+      `notice-${item.requestId}`,
+      targetChatJid,
+      'system',
+      'System',
+      noticeContent,
+      new Date().toISOString(),
+      true,
+      {
+        meta: { sourceKind: 'capability_mutation_notice' } as any,
+      },
+    );
+  } catch (err) {
+    logger.debug(
+      { err, requestId: item.requestId },
+      'Could not record mutation notice message',
+    );
+  }
+}
+
+/**
+ * Execute all pending or accepted capability mutations at a safe boundary (turn completion or restart).
+ * Uses atomic CAS claim to ensure concurrent callers execute each mutation exactly once.
  */
 export async function applyPendingCapabilityMutations(filter?: {
   groupFolder?: string;
+  sessionId?: string;
+  inputTurnId?: string;
   userId?: string;
-}): Promise<{ applied: number; failed: number }> {
+}): Promise<{ applied: number; failed: number; skipped: number }> {
   const pending = listPendingCapabilityMutations(filter);
   if (pending.length === 0) {
-    return { applied: 0, failed: 0 };
+    return { applied: 0, failed: 0, skipped: 0 };
   }
 
   let applied = 0;
   let failed = 0;
+  let skipped = 0;
+  const workerId = `worker-${process.pid}-${Math.random().toString(36).slice(2, 6)}`;
 
-  for (const item of pending) {
+  for (const candidate of pending) {
+    // Atomic CAS claim to guarantee single execution under concurrency
+    const claimed = claimCapabilityMutation(candidate.requestId, workerId);
+    if (!claimed) {
+      skipped++;
+      continue;
+    }
+
+    const item = claimed;
     try {
       if (item.action === 'install') {
         const result = await withUserSkillRuntimeMutation(
@@ -859,6 +812,7 @@ export async function applyPendingCapabilityMutations(filter?: {
             appliedAt: new Date().toISOString(),
           });
           applied++;
+          recordMutationCompletionNotice({ ...item, status: 'applied' });
           logger.info(
             {
               requestId: item.requestId,
@@ -873,6 +827,11 @@ export async function applyPendingCapabilityMutations(filter?: {
             error: result.value.error || 'Installation failed',
           });
           failed++;
+          recordMutationCompletionNotice({
+            ...item,
+            status: 'failed',
+            error: result.value.error || 'Installation failed',
+          });
         }
       } else if (item.action === 'uninstall') {
         const result = await withUserSkillRuntimeMutation(
@@ -891,6 +850,7 @@ export async function applyPendingCapabilityMutations(filter?: {
             appliedAt: new Date().toISOString(),
           });
           applied++;
+          recordMutationCompletionNotice({ ...item, status: 'applied' });
           logger.info(
             {
               requestId: item.requestId,
@@ -905,21 +865,44 @@ export async function applyPendingCapabilityMutations(filter?: {
             error: result.value.error || 'Uninstallation failed',
           });
           failed++;
+          recordMutationCompletionNotice({
+            ...item,
+            status: 'failed',
+            error: result.value.error || 'Uninstallation failed',
+          });
         }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      // If postcommit quiesce failed, mark as quiesce_failed for bounded convergence instead of hard failure
+      const isQuiescePersisted =
+        error instanceof WorkspaceRuntimeQuiesceError && error.persisted;
+      const nextStatus = isQuiescePersisted ? 'quiesce_failed' : 'failed';
+
       updateCapabilityMutationRequest(item.requestId, {
-        status: 'failed',
+        status: nextStatus,
         error: message,
       });
-      failed++;
-      logger.error(
-        { requestId: item.requestId, err: error },
-        'Failed applying pending capability mutation at turn boundary',
-      );
+
+      if (isQuiescePersisted) {
+        logger.warn(
+          { requestId: item.requestId, err: error },
+          'Capability mutation committed but post-commit quiesce failed; marked for convergence',
+        );
+      } else {
+        failed++;
+        recordMutationCompletionNotice({
+          ...item,
+          status: 'failed',
+          error: message,
+        });
+        logger.error(
+          { requestId: item.requestId, err: error },
+          'Failed applying pending capability mutation at turn boundary',
+        );
+      }
     }
   }
 
-  return { applied, failed };
+  return { applied, failed, skipped };
 }

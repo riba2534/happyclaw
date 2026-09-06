@@ -202,7 +202,7 @@ describe('capability runtime mutation invalidation', () => {
     const applied = await skillService.applyPendingCapabilityMutations({
       groupFolder: 'u1-inherit-folder',
     });
-    expect(applied).toEqual({ applied: 1, failed: 0 });
+    expect(applied).toEqual({ applied: 1, failed: 0, skipped: 0 });
 
     // After turn boundary execution, caller workspace is quiesced
     expect(state.deletedFolders).toEqual(['u1-inherit-folder']);

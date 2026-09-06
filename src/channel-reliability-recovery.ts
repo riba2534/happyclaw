@@ -32,6 +32,7 @@ interface ReconciliationPassOptions {
   /** Live passes are restricted to the boot backlog, never current work. */
   createdBefore?: string;
   now?: Date | string;
+  includeOutbox?: boolean;
 }
 
 const MISSING_PROVIDER_IDENTITY_ERROR = manualReconciliationError(
@@ -94,7 +95,7 @@ export async function reconcileChannelReliabilityPass(
   reconciled: number;
   deferred: number;
   interruptedTurns: number;
-  outbox: { retryable: number; uncertain: number };
+  outbox?: { retryable: number; uncertain: number };
 }> {
   const cards = listAllNonterminalStreamingCards(1_000);
   let reconciled = 0;
@@ -299,20 +300,22 @@ export async function reconcileChannelReliabilityPass(
     fencedTurnIds.size +
     deliveredEffectTurns +
     interruptExpiredChannelTurnRuns();
-  // Reconcile expired outbox delivery leases in continuous recovery.
-  // Pre-send rows become retry_wait; sending rows become uncertain (no auto-replay).
-  const outbox = reconcileExpiredChannelOutbox(options.now);
+
+  let outbox: { retryable: number; uncertain: number } | undefined;
+  if (options.includeOutbox) {
+    outbox = reconcileExpiredChannelOutbox(options.now);
+  }
 
   // The live timer fires every 15s and almost always reconciles nothing;
   // logging each no-op pass at info drowned out real events (87% of all
   // production log records were all-zero lines from this call site).
   const logLevel =
-    outbox.uncertain > 0
+    outbox && outbox.uncertain > 0
       ? ('warn' as const)
       : reconciled > 0 ||
           deferred > 0 ||
           interruptedTurns > 0 ||
-          outbox.retryable > 0 ||
+          (outbox && outbox.retryable > 0) ||
           options.mode === 'startup'
         ? ('info' as const)
         : ('debug' as const);
@@ -320,7 +323,9 @@ export async function reconcileChannelReliabilityPass(
     { reconciled, deferred, interruptedTurns, outbox, mode: options.mode },
     'Channel reliability reconciliation completed',
   );
-  return { reconciled, deferred, interruptedTurns, outbox };
+  return options.includeOutbox
+    ? { reconciled, deferred, interruptedTurns, outbox: outbox! }
+    : { reconciled, deferred, interruptedTurns };
 }
 
 /**
@@ -330,16 +335,13 @@ export async function reconcileChannelReliabilityPass(
  */
 export async function reconcileChannelReliabilityOnStartup(
   reconciler: StreamingCardReconciler,
-  options: { now?: Date | string } = {},
 ): Promise<{
   reconciled: number;
   deferred: number;
   interruptedTurns: number;
-  outbox: { retryable: number; uncertain: number };
 }> {
   return reconcileChannelReliabilityPass(reconciler, {
     mode: 'startup',
-    now: options.now,
   });
 }
 
@@ -363,7 +365,9 @@ export function startChannelReliabilityRecoveryLoop(
       mode: 'live',
       createdBefore: bootBacklogCutoff,
     })
-      .then(() => undefined)
+      .then(() => {
+        reconcileExpiredChannelOutbox();
+      })
       .catch((error) => {
         logger.error(
           { err: error },

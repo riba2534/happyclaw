@@ -35,8 +35,10 @@
 
 ## 3. 重建与自愈约束 (Rebuild Constraints)
 
-1. **服务启动期一致性对账**：
-   - 服务启动时若检测到版本升级或存在潜在脱节，调用 `syncAllChannelMountsFromRegisteredGroups()` 从持久镜像全量重构 `channel_mounts` 与 `agent_channel_mounts`。
+1. **权威真相重建方向**：
+   - 规范事实源为 `channel_mounts` 与 `agent_channel_mounts`。
+   - 兼容迁移阶段：系统在启动时若发现历史未迁移记录，可通过 `syncAllChannelMountsFromRegisteredGroups()` 进行前向填充；
+   - 最终收敛规则：一旦完成规范表迁移，所有镜像投影均通过 `syncRegisteredGroupsFromNormalizedChannelMounts()` 从规范挂载表反向生成 `registered_groups` 镜像，保证数据权威性始终归属于 normalized 关系表。
 2. **孤儿清理与自愈**：
    - 当引用的 `workspace_jid` 或 `session_id` 被物理删除时，外键级联或清理逻辑原子清除关联的挂载记录与镜像记录，防止幽灵路由。
 3. **单向不可逆规则**：

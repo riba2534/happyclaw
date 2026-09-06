@@ -213,13 +213,18 @@ export async function settleChannelTurnOutput(
 
   if (allCompleted) {
     ctx.markOutputSettled(result);
-    void applyPendingCapabilityMutations({ groupFolder: ctx.folder }).catch(
-      (err) =>
+    for (const inputId of inputIds) {
+      void applyPendingCapabilityMutations({
+        groupFolder: ctx.folder,
+        sessionId: ctx.agentId ?? 'main',
+        inputTurnId: inputId,
+      }).catch((err) =>
         logger.error(
-          { err, groupFolder: ctx.folder },
+          { err, groupFolder: ctx.folder, inputTurnId: inputId },
           'Failed to apply pending capability mutations at turn settlement boundary',
         ),
-    );
+      );
+    }
   }
 
   return allCompleted;

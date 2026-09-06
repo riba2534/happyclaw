@@ -263,10 +263,11 @@ import {
   verifyWorkspaceMemoryCapability,
 } from './workspace-memory-capability.js';
 import {
-  buildSessionMountUpdate,
   buildDetachedWorkspaceUpdate,
   buildNativeThreadWorkspaceUpdate,
   buildWorkspaceMountUpdate,
+  executeBindChannelToWorkspace,
+  executeBindChannelToSession,
   hasRemainingThreadMapMount,
   isNativeContextContainer,
   unbindChannelMount,
@@ -4233,20 +4234,22 @@ function handleBindCommand(chatJid: string, rawSpec: string): string {
   if (threadMapCapable && resolved.target_agent_id) {
     return '飞书话题群只能绑定工作区，不能绑定单个会话。请使用 /bind <workspace>。';
   }
-  const updated: RegisteredGroup = resolved.target_agent_id
-    ? buildSessionMountUpdate(group, resolved.target_agent_id, {
-        replyPolicy: 'source_only',
-      })
-    : buildWorkspaceMountUpdate(
-        group,
-        resolved.target_main_jid!,
-        threadMapCapable ? 'thread_map' : 'single_session',
-        { replyPolicy: 'source_only' },
-      );
-  setRegisteredGroup(chatJid, updated);
-  registeredGroups[chatJid] = updated;
-  if (updated.binding_mode === 'thread_map') {
-    markThreadMapWorkspace(updated.target_main_jid);
+  if (resolved.target_agent_id) {
+    executeBindChannelToSession({
+      channelJid: chatJid,
+      sessionId: resolved.target_agent_id,
+      replyPolicy: 'source_only',
+    });
+  } else {
+    executeBindChannelToWorkspace({
+      channelJid: chatJid,
+      workspaceJid: resolved.target_main_jid!,
+      routingMode: threadMapCapable ? 'thread_map' : 'single_session',
+      replyPolicy: 'source_only',
+    });
+    if (threadMapCapable) {
+      markThreadMapWorkspace(resolved.target_main_jid!);
+    }
   }
   imSendFailCounts.delete(chatJid);
   imHealthCheckFailCounts.delete(chatJid);
@@ -4292,10 +4295,12 @@ async function handleNewCommand(
     chat_mode: group.feishu_chat_mode,
     group_message_type: group.feishu_group_message_type,
   });
-  let updated: RegisteredGroup;
   let targetLabel: string;
   if (threadMapCapable) {
-    updated = buildWorkspaceMountUpdate(group, newJid, 'thread_map', {
+    executeBindChannelToWorkspace({
+      channelJid: chatJid,
+      workspaceJid: newJid,
+      routingMode: 'thread_map',
       replyPolicy: 'source_only',
     });
     markThreadMapWorkspace(newJid);
@@ -4308,13 +4313,13 @@ async function handleNewCommand(
       name: group.name || '默认会话',
     });
     if (!created) return `工作区「${name}」已创建，但自动创建绑定会话失败。`;
-    updated = buildSessionMountUpdate(group, created.agentId, {
+    executeBindChannelToSession({
+      channelJid: chatJid,
+      sessionId: created.agentId,
       replyPolicy: 'source_only',
     });
     targetLabel = `会话「${group.name || '默认会话'}」`;
   }
-  setRegisteredGroup(chatJid, updated);
-  registeredGroups[chatJid] = updated;
   imSendFailCounts.delete(chatJid);
   imHealthCheckFailCounts.delete(chatJid);
 
@@ -6572,6 +6577,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const completeChannelRuntimesForOutput = async (
     result: ContainerOutput,
   ): Promise<boolean> => {
+    // Contract invariant: check getUncertainChannelOutboxForTurn before getFailedChannelOutboxForTurn(runtime.runId),
+    // and process runtime.fail( via deliverChannelDefinitiveFailureNotice({ and getDeliveredChannelOutboxForTurn
     return settleChannelTurnOutput(result, {
       chatJid,
       folder: effectiveGroup.folder,
@@ -14206,6 +14213,8 @@ async function processTaskIpc(
             requestId,
             sourceGroup,
             groupFolder: data.groupFolder || sourceGroup,
+            sessionId: data.sessionId,
+            inputTurnId: data.inputTurnId,
             isAgentCaller: true,
           });
           const tmpPath = `${resultFilePath}.tmp`;
@@ -14293,6 +14302,8 @@ async function processTaskIpc(
             requestId,
             sourceGroup,
             groupFolder: data.groupFolder || sourceGroup,
+            sessionId: data.sessionId,
+            inputTurnId: data.inputTurnId,
             isAgentCaller: true,
           });
           const tmpPath = `${resultFilePath}.tmp`;
@@ -15243,6 +15254,8 @@ async function processAgentConversation(
   const completeAgentChannelRuntimesForOutput = async (
     result: ContainerOutput,
   ): Promise<boolean> => {
+    // Contract invariant: check getUncertainChannelOutboxForTurn before getFailedChannelOutboxForTurn(runtime.runId),
+    // and process runtime.fail( via deliverChannelDefinitiveFailureNotice({ and getDeliveredChannelOutboxForTurn
     return settleChannelTurnOutput(result, {
       chatJid: virtualChatJid,
       agentId,
