@@ -1,7 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import { spawn, spawnSync } from 'child_process';
-import { Readable } from 'stream';
+import { PassThrough, Readable } from 'stream';
 import { fileURLToPath } from 'url';
 import { DATA_DIR, GROUPS_DIR, MAX_FILE_SIZE } from './config.js';
 import { deleteContainerEnvConfig } from './runtime-config.js';
@@ -243,133 +243,11 @@ export async function safeOpenWorkspaceReadStream(
   const root = fs.realpathSync(rootPath);
 
   if (process.platform === 'win32') {
-    const target = path.resolve(root, relativePath);
-    const relative = path.relative(root, target);
-    if (relative.startsWith('..') || path.isAbsolute(relative)) {
-      throw new Error('Path traversal detected');
-    }
-    const realRoot = fs.realpathSync(root);
-    let check = target;
-    while (check !== root && check !== path.dirname(check)) {
-      if (fs.existsSync(check)) {
-        const real = fs.realpathSync(check);
-        if (real !== realRoot && !real.startsWith(realRoot + path.sep)) {
-          throw new Error('Symlink traversal detected');
-        }
-        break;
-      }
-      check = path.dirname(check);
-    }
-    if (!fs.existsSync(target)) {
-      throw new Error('File not found');
-    }
-    const stats = fs.statSync(target);
-    if (stats.isSymbolicLink()) {
-      throw new Error('Symlink traversal detected');
-    }
-    if (!stats.isFile()) {
-      throw new Error('Target is not a regular file');
-    }
-    const size = stats.size;
-    const mtimeMs = stats.mtimeMs;
-    if (options?.maxBytes && size > options.maxBytes) {
-      throw new Error(`File too large to read (max ${options.maxBytes} bytes)`);
-    }
-    let isRangeRequest = false;
-    let rangeSatisfiable = true;
-    let start = 0;
-    let end = Math.max(0, size - 1);
-    let contentLength = size;
-
-    if (options?.rangeHeader?.trim()) {
-      isRangeRequest = true;
-      const normalizedRange = options.rangeHeader.trim();
-      if (
-        normalizedRange.toLowerCase().startsWith('bytes=') &&
-        !normalizedRange.includes(',')
-      ) {
-        const m = /^bytes=(\d*)-(\d*)$/.exec(normalizedRange);
-        if (!m || size <= 0) {
-          rangeSatisfiable = false;
-        } else {
-          const [, rawStart, rawEnd] = m;
-          if (!rawStart && !rawEnd) {
-            rangeSatisfiable = false;
-          } else if (!rawStart) {
-            const suffix = Number(rawEnd);
-            if (!Number.isInteger(suffix) || suffix <= 0) {
-              rangeSatisfiable = false;
-            } else if (suffix >= size) {
-              start = 0;
-              end = size - 1;
-              contentLength = size;
-            } else {
-              start = size - suffix;
-              end = size - 1;
-              contentLength = suffix;
-            }
-          } else {
-            const parsedStart = Number(rawStart);
-            if (
-              !Number.isInteger(parsedStart) ||
-              parsedStart < 0 ||
-              parsedStart >= size
-            ) {
-              rangeSatisfiable = false;
-            } else {
-              start = parsedStart;
-              if (rawEnd) {
-                const parsedEnd = Number(rawEnd);
-                if (!Number.isInteger(parsedEnd) || parsedEnd < start) {
-                  rangeSatisfiable = false;
-                } else {
-                  end = Math.min(parsedEnd, size - 1);
-                  contentLength = end - start + 1;
-                }
-              } else {
-                end = size - 1;
-                contentLength = size - start;
-              }
-            }
-          }
-        }
-      }
-    }
-
-    if (isRangeRequest && !rangeSatisfiable) {
-      return {
-        size,
-        mtimeMs,
-        isRangeRequest: true,
-        rangeSatisfiable: false,
-        contentLength: 0,
-        stream: new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.close();
-          },
-        }),
-        destroy: () => {},
-      };
-    }
-
-    const nodeStream = fs.createReadStream(
-      target,
-      isRangeRequest ? { start, end } : undefined,
+    // Windows does not expose POSIX openat(dir_fd) in standard runtime;
+    // fail closed rather than providing a false sense of security with TOCTOU.
+    throw new Error(
+      'Descriptor-relative safe file open is unsupported on Windows; rejecting to prevent TOCTOU',
     );
-    const stream = Readable.toWeb(nodeStream) as ReadableStream<Uint8Array>;
-    return {
-      size,
-      mtimeMs,
-      isRangeRequest,
-      rangeSatisfiable: true,
-      start,
-      end,
-      contentLength,
-      stream,
-      destroy: () => {
-        nodeStream.destroy();
-      },
-    };
   }
 
   const python =
@@ -430,11 +308,12 @@ export async function safeOpenWorkspaceReadStream(
       }
     });
 
-    child.stdout.on('data', (chunk: Buffer) => {
+    child.stdout.on('data', function onHeaderChunk(chunk: Buffer) {
       if (!settled) {
         accumulated = Buffer.concat([accumulated, chunk]);
         const newlineIndex = accumulated.indexOf(0x0a);
         if (newlineIndex !== -1) {
+          child.stdout.removeListener('data', onHeaderChunk);
           const headerRaw = accumulated
             .subarray(0, newlineIndex)
             .toString('utf-8');
@@ -457,6 +336,7 @@ export async function safeOpenWorkspaceReadStream(
 
           settled = true;
 
+          const passThrough = new PassThrough();
           let isDestroyed = false;
           const destroy = () => {
             if (!isDestroyed) {
@@ -464,10 +344,12 @@ export async function safeOpenWorkspaceReadStream(
               try {
                 child.kill('SIGTERM');
               } catch {}
+              passThrough.destroy();
             }
           };
 
           if (header.isRangeRequest && header.rangeSatisfiable === false) {
+            destroy();
             resolve({
               size: header.size,
               mtimeMs: header.mtimeMs,
@@ -484,47 +366,28 @@ export async function safeOpenWorkspaceReadStream(
             return;
           }
 
-          const stream = new ReadableStream<Uint8Array>({
-            start(controller) {
-              if (remainder.length > 0) {
-                controller.enqueue(
-                  new Uint8Array(
-                    remainder.buffer,
-                    remainder.byteOffset,
-                    remainder.byteLength,
-                  ),
-                );
-              }
-              child.stdout.on('data', (dataChunk: Buffer) => {
-                try {
-                  controller.enqueue(
-                    new Uint8Array(
-                      dataChunk.buffer,
-                      dataChunk.byteOffset,
-                      dataChunk.byteLength,
-                    ),
-                  );
-                } catch {
-                  destroy();
-                }
-              });
-              child.stdout.on('end', () => {
-                try {
-                  controller.close();
-                } catch {}
-              });
-              child.stdout.on('error', (err) => {
-                try {
-                  controller.error(err);
-                } catch {}
-                destroy();
-              });
-            },
-            cancel() {
-              destroy();
-            },
+          if (remainder.length > 0) {
+            passThrough.write(remainder);
+          }
+          child.stdout.pipe(passThrough);
+
+          child.on('close', (code, signal) => {
+            if (code !== 0 && code !== null && signal !== 'SIGTERM') {
+              passThrough.destroy(
+                new Error(
+                  `Safe read helper exited unexpectedly with code ${code}`,
+                ),
+              );
+            }
           });
 
+          child.on('error', (err) => {
+            passThrough.destroy(err);
+          });
+
+          const webStream = Readable.toWeb(
+            passThrough,
+          ) as ReadableStream<Uint8Array>;
           resolve({
             size: header.size,
             mtimeMs: header.mtimeMs,
@@ -533,7 +396,7 @@ export async function safeOpenWorkspaceReadStream(
             start: header.start,
             end: header.end,
             contentLength: header.contentLength,
-            stream,
+            stream: webStream,
             destroy,
           });
         }

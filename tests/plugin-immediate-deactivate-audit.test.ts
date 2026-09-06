@@ -230,7 +230,18 @@ describe('R15: 插件立即停用与能力/凭据变更审计测试', () => {
     // 验证隔离性：用户 B 依然保持启用状态，不受任何影响！
     expect(readUserPluginsV2(memberBId)?.enabled[fullId]?.enabled).toBe(true);
 
-    // 4. 验证审计记录
+    // 4. 验证立即停用重试路径：再次调用立即停用（此时 v2 已移除），必须作为幂等重试成功，绝不报 400 not enabled！
+    const resRetry = await pluginsRoutes.request(
+      `/deactivate-immediately/${encodeURIComponent(fullId)}`,
+      {
+        method: 'POST',
+        headers: { cookie: memberACookie },
+      },
+    );
+    expect(resRetry.status).toBe(200);
+    expect(((await resRetry.json()) as any).success).toBe(true);
+
+    // 5. 验证审计记录
     const auditLogs = queryAuthAuditLogs({ limit: 50 });
     const deactivateLog = auditLogs.logs.find(
       (l) =>
@@ -245,6 +256,44 @@ describe('R15: 插件立即停用与能力/凭据变更审计测试', () => {
     expect(details?.scope).toBe(`user:${memberAId}`);
     expect((details?.runtimeResult as Record<string, unknown>)?.success).toBe(
       true,
+    );
+  });
+
+  test('用户私有插件 Secret 管理 API：脱敏只返回键名，支持配置、物化更新与安全撤回', async () => {
+    // 1. 配置 Secret
+    const resPut = await pluginsRoutes.request('/secrets/API_CUSTOM_KEY', {
+      method: 'PUT',
+      headers: { cookie: memberACookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: 'real-user-a-secret-plain-999' }),
+    });
+    expect(resPut.status).toBe(200);
+    expect(((await resPut.json()) as any).key).toBe('API_CUSTOM_KEY');
+
+    // 2. 脱敏查询已配置的键名
+    const resGet = await pluginsRoutes.request('/secrets', {
+      headers: { cookie: memberACookie },
+    });
+    expect(resGet.status).toBe(200);
+    const bodyGet = (await resGet.json()) as { keys: string[] };
+    expect(bodyGet.keys).toContain('API_CUSTOM_KEY');
+    // 严格不泄露凭据明文
+    expect(JSON.stringify(bodyGet)).not.toContain(
+      'real-user-a-secret-plain-999',
+    );
+
+    // 3. 安全撤回 Secret
+    const resDel = await pluginsRoutes.request('/secrets/API_CUSTOM_KEY', {
+      method: 'DELETE',
+      headers: { cookie: memberACookie },
+    });
+    expect(resDel.status).toBe(200);
+
+    // 再次查询已不在列表中
+    const resGetAfter = await pluginsRoutes.request('/secrets', {
+      headers: { cookie: memberACookie },
+    });
+    expect(((await resGetAfter.json()) as any).keys).not.toContain(
+      'API_CUSTOM_KEY',
     );
   });
 

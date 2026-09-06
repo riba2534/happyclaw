@@ -129,13 +129,31 @@ beforeAll(() => {
     ].join('\n'),
   );
 
-  // 文档样例 .env.example 包含说明性占位符
+  // 嵌套子目录下包含敏感凭据
+  const subConfigDir = path.join(pluginDir, 'subconfig');
+  fs.mkdirSync(subConfigDir, { recursive: true });
   fs.writeFileSync(
-    path.join(pluginDir, '.env.example'),
-    'API_SECRET_TOKEN=your_token_here\n',
+    path.join(subConfigDir, '.env.nested'),
+    'NESTED_SECRET=nested-plain-secret-555\n',
   );
 
-  // .mcp.json 包含敏感 env 和 header
+  // 文档样例 .env.example 包含真实高熵 token（即使文件名含 example 也要清洗真实密钥）
+  fs.writeFileSync(
+    path.join(pluginDir, '.env.example'),
+    'REAL_KEY_IN_EXAMPLE=sk-ant-api03-real-leak-token-111222333\n',
+  );
+
+  // 危险私钥与凭据文件
+  fs.writeFileSync(
+    path.join(pluginDir, 'server.key'),
+    '-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----',
+  );
+  fs.writeFileSync(
+    path.join(pluginDir, 'credentials.json'),
+    '{"client_secret": "forbidden-secret"}',
+  );
+
+  // .mcp.json 包含敏感 env、带连字符的 header，以及已有规范引用
   fs.writeFileSync(
     path.join(pluginDir, '.mcp.json'),
     JSON.stringify({
@@ -147,7 +165,8 @@ beforeAll(() => {
             NORMAL_CONFIG: 'some-value',
           },
           headers: {
-            Authorization: 'Bearer publisher-bearer-999',
+            'X-API-Key': 'publisher-x-key-999',
+            Authorization: 'Bearer ${EXISTING_AUTH_REF}',
           },
         },
       },
@@ -164,7 +183,7 @@ afterAll(() => {
 describe('R14: 共享 Catalog 导入预检与双用户 Secret 隔离及撤回测试', () => {
   let activeSnapshot: string;
 
-  test('共享快照导入预检：识别凭据并脱敏，预检警告中不打印任何明文凭据', async () => {
+  test('共享快照导入预检：识别凭据并脱敏，预检警告中不打印任何明文凭据，危险文件被移除', async () => {
     const report = await scanHostMarketplaces({
       source: { type: 'directory', path: fixtureSource },
     });
@@ -172,18 +191,25 @@ describe('R14: 共享 Catalog 导入预检与双用户 Secret 隔离及撤回测
     expect(report.pluginsScanned).toBe(1);
     expect(report.snapshotsCreated).toBe(1);
 
-    // 预检警告中必须指出敏感变量，但严格不包含明文凭据值！
+    // 预检警告中必须指出敏感变量与危险文件，但严格不包含明文凭据值！
     const warningsText = report.warnings.join('\n');
     expect(warningsText).toContain('API_SECRET_TOKEN');
     expect(warningsText).toContain('CUSTOM_KEY');
     expect(warningsText).toContain('plugserver.env.API_KEY');
+    expect(warningsText).toContain('NESTED_SECRET');
+    expect(warningsText).toContain('REAL_KEY_IN_EXAMPLE');
+    expect(warningsText).toContain('server.key');
+    expect(warningsText).toContain('credentials.json');
 
     expect(warningsText).not.toContain(
       'super-secret-original-publisher-token-999',
     );
     expect(warningsText).not.toContain('custom-plain-secret-777');
     expect(warningsText).not.toContain('publisher-mcp-key-888');
-    expect(warningsText).not.toContain('publisher-bearer-999');
+    expect(warningsText).not.toContain('publisher-x-key-999');
+    expect(warningsText).not.toContain(
+      'sk-ant-api03-real-leak-token-111222333',
+    );
 
     // 检查普通成员启用插件
     const fullId = 'secretplug@secmarket';
@@ -199,44 +225,51 @@ describe('R14: 共享 Catalog 导入预检与双用户 Secret 隔离及撤回测
     const bodyA = (await resA.json()) as { snapshot: string };
     activeSnapshot = bodyA.snapshot;
 
-    // 验证普通成员物化目录中：原始发布者的凭据值已被清洗为 Secret 占位符
+    // 验证普通成员物化目录中：危险私钥和凭据文件已被彻底删除，绝不在成员目录
     const runtimeA = getUserPluginRuntimePath(
       userAId,
       activeSnapshot,
       'secmarket',
       'secretplug',
     );
+    expect(fs.existsSync(path.join(runtimeA, 'server.key'))).toBe(false);
+    expect(fs.existsSync(path.join(runtimeA, 'credentials.json'))).toBe(false);
+
+    // 原始发布者的凭据值已被清洗为 Secret 占位符
     const envContent = fs.readFileSync(path.join(runtimeA, '.env'), 'utf-8');
-    // 普通配置保留
     expect(envContent).toContain('PORT=8080');
     expect(envContent).toContain('APP_ENV=production');
-    // 文档样例未被删除
-    expect(fs.existsSync(path.join(runtimeA, '.env.example'))).toBe(true);
-    // 原始发布者的明文凭据绝不在成员目录
     expect(envContent).not.toContain(
       'super-secret-original-publisher-token-999',
     );
-    expect(envContent).not.toContain('custom-plain-secret-777');
     expect(envContent).toContain('API_SECRET_TOKEN=${API_SECRET_TOKEN}');
-    expect(envContent).toContain('CUSTOM_KEY=${CUSTOM_KEY}');
+
+    // 嵌套子目录与 example 均被脱敏
+    const nestedContent = fs.readFileSync(
+      path.join(runtimeA, 'subconfig', '.env.nested'),
+      'utf-8',
+    );
+    expect(nestedContent).not.toContain('nested-plain-secret-555');
+    expect(nestedContent).toContain('NESTED_SECRET=${NESTED_SECRET}');
+
+    // .mcp.json 已有的 Bearer ${EXISTING_AUTH_REF} 规范引用完整保留
+    const mcpRaw = fs.readFileSync(path.join(runtimeA, '.mcp.json'), 'utf-8');
+    expect(mcpRaw).toContain('Bearer ${EXISTING_AUTH_REF}');
   });
 
-  test('双用户 Secret 隔离：用户 A 与用户 B 各自解析私有凭据，互不可见', async () => {
-    // 为用户 A 配置 Secret
-    setUserPluginSecret(
-      userAId,
-      'API_SECRET_TOKEN',
-      'secret-value-of-user-alice',
-    );
+  test('双用户 Secret 隔离与特殊字符安全注入：JSON 结构完整，特殊字符严格转义无注入', async () => {
+    // 为用户 A 配置包含反斜杠、双引号、换行的特殊 Secret
+    const complexSecretA = 'secret"with\\quotes\nand-newline';
+    setUserPluginSecret(userAId, 'API_SECRET_TOKEN', complexSecretA);
     setUserPluginSecret(userAId, 'CUSTOM_KEY', 'custom-secret-of-user-alice');
+    setUserPluginSecret(userAId, 'X_API_Key', 'user-a-x-api-key');
 
-    // 为用户 B 配置不同的 Secret（或不配置）
+    // 为用户 B 配置普通的 Secret
     setUserPluginSecret(
       userBId,
       'API_SECRET_TOKEN',
       'secret-value-of-user-bob',
     );
-    // 用户 B 未配置 CUSTOM_KEY
 
     // 用户 A 重新物化（强制刷新）
     materializeUserRuntime(userAId, { force: true });
@@ -266,20 +299,41 @@ describe('R14: 共享 Catalog 导入预检与双用户 Secret 隔离及撤回测
       'secretplug',
     );
 
+    // 验证用户 A 的 .mcp.json 依然是合法 JSON，且特殊字符被安全转义与解析！
+    const mcpAContent = fs.readFileSync(
+      path.join(runtimeA, '.mcp.json'),
+      'utf-8',
+    );
+    const parsedMcpA = JSON.parse(mcpAContent);
+    expect(parsedMcpA.mcpServers.plugserver.headers['X-API-Key']).toBe(
+      'user-a-x-api-key',
+    );
+
     const envA = fs.readFileSync(path.join(runtimeA, '.env'), 'utf-8');
     const envB = fs.readFileSync(path.join(runtimeB, '.env'), 'utf-8');
 
-    // 用户 A 看到的是用户 A 自己的 Secret
-    expect(envA).toContain('API_SECRET_TOKEN=secret-value-of-user-alice');
+    // 用户 A 看到的是用户 A 自己的复杂 Secret（带有引号与换行，env 中安全包裹）
+    expect(envA).toContain(JSON.stringify(complexSecretA));
     expect(envA).toContain('CUSTOM_KEY=custom-secret-of-user-alice');
     expect(envA).not.toContain('secret-value-of-user-bob');
 
     // 用户 B 看到的是用户 B 自己的 Secret，绝无用户 A 的 Secret！
     expect(envB).toContain('API_SECRET_TOKEN=secret-value-of-user-bob');
-    expect(envB).not.toContain('secret-value-of-user-alice');
+    expect(envB).not.toContain(complexSecretA);
     expect(envB).not.toContain('custom-secret-of-user-alice');
-    // 用户 B 未配置的保留占位符
-    expect(envB).toContain('CUSTOM_KEY=${CUSTOM_KEY}');
+  });
+
+  test('Secret 存储安全验证：存储在不可挂载的 users 目录，且具有安全权限', async () => {
+    const { getUserPluginSecretsPath } = await import('../src/plugin-utils.js');
+    const secretPathA = getUserPluginSecretsPath(userAId);
+
+    // 存储路径必须位于 plugins/users/，绝不能位于会被容器挂载的 runtime/ 树下！
+    expect(secretPathA).toContain(path.join('plugins', 'users'));
+    expect(secretPathA).not.toContain(path.join('plugins', 'runtime'));
+
+    // 文件与目录权限检查
+    const fileStat = fs.statSync(secretPathA);
+    expect(fileStat.mode & 0o077).toBe(0);
   });
 
   test('Secret 撤回：用户 A 撤回凭据后重新物化，真实凭据立即从运行目录清除', async () => {

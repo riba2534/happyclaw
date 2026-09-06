@@ -38,11 +38,15 @@ export interface ImportReport {
 
 interface PluginsState {
   marketplaces: MarketplaceEntry[];
+  secrets: string[];
   loading: boolean;
   scanning: boolean;
   error: string | null;
 
   loadPlugins: () => Promise<void>;
+  loadSecrets: () => Promise<string[]>;
+  setSecret: (key: string, value: string) => Promise<void>;
+  revokeSecret: (key: string) => Promise<void>;
   scanCatalog: () => Promise<ImportReport>;
   toggleEnabled: (pluginFullId: string, enabled: boolean) => Promise<void>;
   deactivateImmediately: (
@@ -53,6 +57,7 @@ interface PluginsState {
 
 export const usePluginsStore = create<PluginsState>((set, get) => ({
   marketplaces: [],
+  secrets: [],
   loading: false,
   scanning: false,
   error: null,
@@ -69,6 +74,39 @@ export const usePluginsStore = create<PluginsState>((set, get) => ({
         loading: false,
         error: err instanceof Error ? err.message : String(err),
       });
+    }
+  },
+
+  loadSecrets: async () => {
+    try {
+      const data = await api.get<{ keys: string[] }>('/api/plugins/secrets');
+      set({ secrets: data.keys, error: null });
+      return data.keys;
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : String(err) });
+      return [];
+    }
+  },
+
+  setSecret: async (key: string, value: string) => {
+    try {
+      await api.put(`/api/plugins/secrets/${encodeURIComponent(key)}`, {
+        value,
+      });
+      await get().loadSecrets();
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : String(err) });
+      throw err;
+    }
+  },
+
+  revokeSecret: async (key: string) => {
+    try {
+      await api.delete(`/api/plugins/secrets/${encodeURIComponent(key)}`);
+      await get().loadSecrets();
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : String(err) });
+      throw err;
     }
   },
 

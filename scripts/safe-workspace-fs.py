@@ -229,7 +229,12 @@ def read_file(root_fd: int, request: dict[str, object]) -> None:
     file_fd = -1
     try:
         try:
-            file_fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+            # 打开必须包含 os.O_NONBLOCK，防止遇到 FIFO / 命名管道时因无写端而内核永久挂死
+            file_fd = os.open(
+                leaf,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                dir_fd=parent_fd,
+            )
         except (FileNotFoundError, IsADirectoryError):
             fail("File not found")
         except NotADirectoryError:

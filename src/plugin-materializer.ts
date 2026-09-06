@@ -169,59 +169,141 @@ export function getUserPluginRuntimeDir(
  * from the catalog. Admins can call `cleanupOrphanRuntime(userId)` directly
  * when they need to reclaim space.
  */
+function replaceSecretsInString(
+  str: string,
+  secrets: Record<string, string>,
+): { result: string; modified: boolean } {
+  let modified = false;
+  const result = str.replace(/\$\{([A-Za-z0-9_-]+)\}/g, (match, varName) => {
+    const normalizedKey = varName.replace(/-/g, '_');
+    if (Object.prototype.hasOwnProperty.call(secrets, varName)) {
+      modified = true;
+      return secrets[varName];
+    }
+    if (Object.prototype.hasOwnProperty.call(secrets, normalizedKey)) {
+      modified = true;
+      return secrets[normalizedKey];
+    }
+    return match;
+  });
+  return { result, modified };
+}
+
+function recursiveReplaceObjectSecrets(
+  obj: unknown,
+  secrets: Record<string, string>,
+): boolean {
+  if (!obj || typeof obj !== 'object') return false;
+  let anyModified = false;
+  if (Array.isArray(obj)) {
+    for (let i = 0; i < obj.length; i++) {
+      if (typeof obj[i] === 'string') {
+        const { result, modified } = replaceSecretsInString(obj[i], secrets);
+        if (modified) {
+          obj[i] = result;
+          anyModified = true;
+        }
+      } else if (typeof obj[i] === 'object' && obj[i] !== null) {
+        if (recursiveReplaceObjectSecrets(obj[i], secrets)) anyModified = true;
+      }
+    }
+  } else {
+    for (const [k, v] of Object.entries(obj)) {
+      if (typeof v === 'string') {
+        const { result, modified } = replaceSecretsInString(v, secrets);
+        if (modified) {
+          (obj as Record<string, unknown>)[k] = result;
+          anyModified = true;
+        }
+      } else if (typeof v === 'object' && v !== null) {
+        if (recursiveReplaceObjectSecrets(v, secrets)) anyModified = true;
+      }
+    }
+  }
+  return anyModified;
+}
+
+function formatEnvValue(value: string): string {
+  if (
+    value.includes('\n') ||
+    value.includes('"') ||
+    value.includes(' ') ||
+    value.includes('\r')
+  ) {
+    return JSON.stringify(value);
+  }
+  return value;
+}
+
 function resolveUserSecretsInTree(targetDir: string, userId: string): void {
   const secrets = getUserPluginSecrets(userId);
+  if (Object.keys(secrets).length === 0) return;
 
-  let entries: fs.Dirent[] = [];
-  try {
-    entries = fs.readdirSync(targetDir, { withFileTypes: true });
-  } catch {
-    return;
+  function walkDir(dir: string): string[] {
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    const paths: string[] = [];
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        paths.push(...walkDir(full));
+      } else if (entry.isFile()) {
+        paths.push(full);
+      }
+    }
+    return paths;
   }
 
-  for (const entry of entries) {
-    if (!entry.isFile()) continue;
-    if (entry.name.startsWith('.env')) {
-      const envPath = path.join(targetDir, entry.name);
+  const allFiles = walkDir(targetDir);
+
+  for (const filePath of allFiles) {
+    const baseName = path.basename(filePath);
+
+    // 1. 处理 .env* 文件
+    if (baseName.startsWith('.env')) {
       try {
-        const content = fs.readFileSync(envPath, 'utf-8');
+        const content = fs.readFileSync(filePath, 'utf-8');
+        const lines = content.split(/\r?\n/);
         let modified = false;
-        const replaced = content.replace(
-          /\$\{([A-Za-z0-9_]+)\}/g,
-          (match, varName) => {
-            if (Object.prototype.hasOwnProperty.call(secrets, varName)) {
-              modified = true;
-              return secrets[varName];
-            }
-            return match;
-          },
-        );
+        const newLines = lines.map((line) => {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith('#')) return line;
+          const eqIdx = line.indexOf('=');
+          if (eqIdx === -1) return line;
+          const key = line.slice(0, eqIdx).trim();
+          const rawVal = line.slice(eqIdx + 1).trim();
+
+          const { result, modified: lineModified } = replaceSecretsInString(
+            rawVal,
+            secrets,
+          );
+          if (lineModified) {
+            modified = true;
+            return `${key}=${formatEnvValue(result)}`;
+          }
+          return line;
+        });
+
         if (modified) {
-          fs.writeFileSync(envPath, replaced, 'utf-8');
+          fs.writeFileSync(filePath, newLines.join('\n'), 'utf-8');
         }
       } catch {}
     }
-  }
 
-  const mcpPath = path.join(targetDir, '.mcp.json');
-  if (fs.existsSync(mcpPath)) {
-    try {
-      const raw = fs.readFileSync(mcpPath, 'utf-8');
-      let modified = false;
-      const replaced = raw.replace(
-        /\$\{([A-Za-z0-9_]+)\}/g,
-        (match, varName) => {
-          if (Object.prototype.hasOwnProperty.call(secrets, varName)) {
-            modified = true;
-            return secrets[varName];
-          }
-          return match;
-        },
-      );
-      if (modified) {
-        fs.writeFileSync(mcpPath, replaced, 'utf-8');
-      }
-    } catch {}
+    // 2. 处理 .mcp.json（严格通过 JSON.parse -> 递归替换 -> JSON.stringify，杜绝结构破坏与注入）
+    if (baseName === '.mcp.json' || baseName.endsWith('.mcp.json')) {
+      try {
+        const raw = fs.readFileSync(filePath, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (recursiveReplaceObjectSecrets(parsed, secrets)) {
+          fs.writeFileSync(filePath, JSON.stringify(parsed, null, 2), 'utf-8');
+        }
+      } catch {}
+    }
   }
 }
 

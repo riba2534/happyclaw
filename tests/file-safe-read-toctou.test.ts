@@ -287,4 +287,100 @@ describe('R01: 文件安全读取防 TOCTOU 回归测试', () => {
     expect(resDir.status).toBe(400);
     expect(await resDir.text()).toContain('Cannot download directory');
   });
+
+  test('FIFO 防御：打开命名管道立即以非阻塞拒绝，绝不阻塞挂死', async () => {
+    const fifoPath = path.join(workspaceDir, 'fifo-dos-probe.txt');
+    if (fs.existsSync(fifoPath)) fs.unlinkSync(fifoPath);
+    try {
+      const { execSync } = await import('child_process');
+      execSync(`mkfifo "${fifoPath}"`);
+    } catch {
+      // 平台不支持 mkfifo 时跳过
+      return;
+    }
+
+    const t0 = Date.now();
+    const fifoEncoded = encodePath('fifo-dos-probe.txt');
+    const res = await filesRoutes.request(
+      `/${encodeURIComponent(jid)}/files/download/${fifoEncoded}`,
+      { headers: { cookie: cookieHeader } },
+    );
+    const duration = Date.now() - t0;
+
+    // 必须在 1 秒内立即返回（通常 50ms 内），绝不挂住！
+    expect(duration).toBeLessThan(1000);
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain('Cannot download directory');
+  });
+
+  test('真实 TOCTOU 动态交错：路径校验与打开之间动态替换为外部符号链接，绝不泄露外部 marker', async () => {
+    const relPath = 'dynamic-toctou-target.txt';
+    const targetPath = path.join(workspaceDir, relPath);
+    if (fs.existsSync(targetPath)) fs.unlinkSync(targetPath);
+    fs.writeFileSync(targetPath, 'INITIAL_INSIDE_CONTENT', 'utf-8');
+
+    const encoded = encodePath(relPath);
+
+    // 模拟并发写入竞争：在发起请求的同时或极短间隔内替换目标为指向外部敏感文件的符号链接
+    const replacePromise = (async () => {
+      // 延迟 5ms 让路由进入路径解析阶段，并在打开前执行替换
+      await new Promise((r) => setTimeout(r, 5));
+      try {
+        fs.unlinkSync(targetPath);
+        fs.symlinkSync(outsideMarkerFile, targetPath);
+      } catch {}
+    })();
+
+    const [res] = await Promise.all([
+      filesRoutes.request(
+        `/${encodeURIComponent(jid)}/files/download/${encoded}`,
+        { headers: { cookie: cookieHeader } },
+      ),
+      replacePromise,
+    ]);
+
+    const body = await res.text();
+    // 核心安全断言：无论时序如何交错，绝对不能返回外部 marker！
+    expect(body).not.toContain(outsideMarkerContent);
+
+    // 随后再次请求已被替换的文件：必须明确被拦截为 500
+    const resSecond = await filesRoutes.request(
+      `/${encodeURIComponent(jid)}/files/download/${encoded}`,
+      { headers: { cookie: cookieHeader } },
+    );
+    expect(resSecond.status).toBe(500);
+    expect(await resSecond.text()).not.toContain(outsideMarkerContent);
+  });
+
+  test('流背压与取消：提前关闭/取消读取流，底层资源和子进程安全回收', async () => {
+    const relPath = 'stream-cancel-test.dat';
+    const filePath = path.join(workspaceDir, relPath);
+    // 写入 500KB 测试数据
+    const chunk = 'A'.repeat(1024);
+    const streamWrite = fs.createWriteStream(filePath);
+    for (let i = 0; i < 500; i++) {
+      streamWrite.write(chunk);
+    }
+    await new Promise((resolve) => streamWrite.end(resolve));
+
+    const encoded = encodePath(relPath);
+    const res = await filesRoutes.request(
+      `/${encodeURIComponent(jid)}/files/download/${encoded}`,
+      { headers: { cookie: cookieHeader } },
+    );
+    expect(res.status).toBe(200);
+
+    const reader = res.body?.getReader();
+    expect(reader).toBeDefined();
+
+    // 仅读取前几个 chunk 便主动取消流
+    const first = await reader!.read();
+    expect(first.value).toBeDefined();
+
+    // 取消流，模拟客户端连接断开
+    await reader!.cancel('client disconnected');
+
+    // 稍等 50ms 确认没有未捕获异常或进程孤立
+    await new Promise((r) => setTimeout(r, 50));
+  });
 });

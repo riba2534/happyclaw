@@ -68,7 +68,7 @@ export function getUserPluginRuntimePath(
 }
 
 export function getUserPluginSecretsPath(userId: string): string {
-  return path.join(getUserRuntimeRoot(userId), 'secrets.json');
+  return path.join(DATA_DIR, 'plugins', 'users', userId, 'secrets.json');
 }
 
 export function getUserPluginSecrets(userId: string): Record<string, string> {
@@ -85,6 +85,10 @@ export function getUserPluginSecrets(userId: string): Record<string, string> {
   }
 }
 
+export function getUserPluginSecretKeys(userId: string): string[] {
+  return Object.keys(getUserPluginSecrets(userId));
+}
+
 export function setUserPluginSecret(
   userId: string,
   key: string,
@@ -97,8 +101,11 @@ export function setUserPluginSecret(
     secrets[key] = value;
   }
   const filePath = getUserPluginSecretsPath(userId);
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(secrets, null, 2), 'utf-8');
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(filePath, JSON.stringify(secrets, null, 2), {
+    encoding: 'utf-8',
+    mode: 0o600,
+  });
 }
 
 // --- v2 read/write -----------------------------------------------------------

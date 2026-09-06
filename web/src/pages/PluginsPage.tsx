@@ -6,12 +6,16 @@ import {
   AlertTriangle,
   Info,
   X,
+  KeyRound,
+  Trash2,
+  Plus,
 } from 'lucide-react';
 import { PageHeader } from '@/components/common/PageHeader';
 import { SkeletonCardList } from '@/components/common/Skeletons';
 import { EmptyState } from '@/components/common/EmptyState';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import {
   Dialog,
@@ -43,10 +47,14 @@ function WarningBadge({ warnings }: { warnings: PluginEntry['warnings'] }) {
 export function PluginsPage() {
   const {
     marketplaces,
+    secrets,
     loading,
     scanning,
     error,
     loadPlugins,
+    loadSecrets,
+    setSecret,
+    revokeSecret,
     scanCatalog,
     toggleEnabled,
     deactivateImmediately,
@@ -62,10 +70,42 @@ export function PluginsPage() {
     null,
   );
   const [deactivating, setDeactivating] = useState(false);
+  const [newKey, setNewKey] = useState('');
+  const [newVal, setNewVal] = useState('');
+  const [savingSecret, setSavingSecret] = useState(false);
 
   useEffect(() => {
     loadPlugins();
-  }, [loadPlugins]);
+    loadSecrets();
+  }, [loadPlugins, loadSecrets]);
+
+  const handleSaveSecret = async () => {
+    if (!newKey.trim() || !newVal) return;
+    setSavingSecret(true);
+    try {
+      await setSecret(newKey.trim(), newVal);
+      toast.success(`已设置 Secret 引用 ${newKey.trim()}`);
+      setNewKey('');
+      setNewVal('');
+    } catch (err) {
+      toast.error(
+        `设置失败：${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setSavingSecret(false);
+    }
+  };
+
+  const handleRevokeSecret = async (key: string) => {
+    try {
+      await revokeSecret(key);
+      toast.success(`已撤回 Secret ${key}`);
+    } catch (err) {
+      toast.error(
+        `撤回失败：${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
 
   const totalPlugins = marketplaces.reduce(
     (acc, mp) => acc + mp.plugins.length,
@@ -204,6 +244,76 @@ export function PluginsPage() {
         )}
 
         <div className="p-6 space-y-6">
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between mb-3 pb-3 border-b border-border">
+                <div className="flex items-center gap-2">
+                  <KeyRound size={16} className="text-primary" />
+                  <span className="font-semibold text-sm">
+                    用户私有插件 Secret 管理
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    （用于安全替换 {'${KEY}'} 引用，不进入共享快照，按用户隔离）
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Input
+                    type="text"
+                    placeholder="变量名，如 API_KEY"
+                    value={newKey}
+                    onChange={(e) => setNewKey(e.target.value)}
+                    className="w-48 text-xs font-mono h-8"
+                  />
+                  <Input
+                    type="password"
+                    placeholder="Secret 值（敏感凭据）"
+                    value={newVal}
+                    onChange={(e) => setNewVal(e.target.value)}
+                    className="w-64 text-xs font-mono h-8"
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleSaveSecret}
+                    disabled={savingSecret || !newKey.trim() || !newVal}
+                    className="text-xs h-8"
+                  >
+                    <Plus size={13} className="mr-1" />
+                    {savingSecret ? '保存中...' : '配置 Secret'}
+                  </Button>
+                </div>
+
+                {secrets.length > 0 ? (
+                  <div className="flex flex-wrap gap-2 pt-2">
+                    {secrets.map((key) => (
+                      <div
+                        key={key}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-muted text-xs font-mono border border-border"
+                      >
+                        <span>{key}</span>
+                        <span className="text-muted-foreground">***</span>
+                        <button
+                          onClick={() => handleRevokeSecret(key)}
+                          className="text-destructive hover:text-destructive/80 ml-1"
+                          title="撤回并从私有运行目录中清除"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-xs text-muted-foreground">
+                    暂无已配置的私有 Secret
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
           {loading && marketplaces.length === 0 ? (
             <SkeletonCardList count={3} />
           ) : error ? (
