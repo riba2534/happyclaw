@@ -495,6 +495,7 @@ export interface EvalRun {
   model: string;
   capability_snapshot: Record<string, unknown>;
   status: EvalRunStatus;
+  provider_source: 'live_provider' | 'test_mock';
   total_cases: number;
   completed_cases: number;
   base_pass_count: number;
@@ -526,6 +527,8 @@ export interface EvalRunCaseDetails {
   jsonValid?: boolean;
   missingJsonKeys?: string[];
   lengthValid?: boolean;
+  failedHardGates?: string[];
+  gateExplanation?: string;
   reasons?: string[];
 }
 

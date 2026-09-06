@@ -44,7 +44,8 @@ vi.mock('../src/middleware/auth.ts', () => ({
 
 const db = await import('../src/db.js');
 const { evalRoutes } = await import('../src/routes/eval.js');
-const { waitForEvalRunCompletion } = await import('../src/eval-service.js');
+const { waitForEvalRunCompletion, setEvalExecutionProviderForTests } =
+  await import('../src/eval-service.js');
 const { SYSTEM_EVAL_SUITE_ID } = await import('../src/eval-builtin-suite.js');
 
 const app = new Hono();
@@ -52,6 +53,18 @@ app.route('/api/eval', evalRoutes);
 
 beforeAll(() => {
   db.initDatabase();
+  setEvalExecutionProviderForTests(async (options) => ({
+    output: `Test output for ${options.caseId} from ${options.versionTag}: interface OrderItem { price: number; } proxy_set_header X-Forwarded-For; {"host": "node", "cpu": 1, "disk": 2, "abnormal_processes": []} bank-api 熔断 CREATE INDEX idx_user_created ON orders; {"code": "ERR"} SingleFlight 抖动 DELETE /api/users/123 204 GET /api/orders 200 【核心收益】IPC【潜在风险】 path.join recursive: true 唯一流水号 状态机 FROM AS builder USER node git reflog cherry-pick 脱敏 138****0000 formatMessage replace`,
+    durationMs: 5,
+    inputTokens: 100,
+    outputTokens: 80,
+    cacheReadTokens: 10,
+    cacheCreationTokens: 0,
+    reasoningTokens: 0,
+    toolsUsed: [],
+    reportedCostUSD: 0.0004,
+  }));
+
   db.createUser({
     id: 'route-test-user-1',
     username: 'route-test-user-1',
@@ -78,6 +91,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  setEvalExecutionProviderForTests(null);
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 

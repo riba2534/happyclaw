@@ -20,11 +20,15 @@ import { estimateKabooModelCostUSD } from './kaboo-pricing.js';
 import {
   buildClaudeEnvLines,
   clearInheritedClaudeProviderEnv,
-  getClaudeProviderConfig,
+  getEnabledProviders,
+  getProviders,
+  providerToConfig,
+  type ClaudeProviderConfig,
 } from './runtime-config.js';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type {
-  AgentProfilePromptVersion,
+  AgentProfile,
+  AgentProfilePrompts,
   EvalCase,
   EvalCaseRule,
   EvalCompareSummary,
@@ -37,7 +41,7 @@ import type {
 } from './types.js';
 import { SYSTEM_EVAL_SUITE_ID } from './eval-builtin-suite.js';
 
-/** Execution provider signature for mockability in tests. */
+/** Execution provider signature for mockability in tests only. */
 export type EvalExecutionProvider = (options: {
   prompt: string;
   systemPrompt: string;
@@ -51,24 +55,48 @@ export type EvalExecutionProvider = (options: {
   durationMs: number;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+  reasoningTokens?: number;
   toolsUsed: EvalRunCaseToolUsage[];
+  reportedCostUSD?: number;
 }>;
 
-let customExecutionProvider: EvalExecutionProvider | null = null;
+let testInjectedProvider: EvalExecutionProvider | null = null;
 
-export function setEvalExecutionProvider(
+/**
+ * Strictly restricted test-only hook.
+ * Disallows fake execution outside of automated tests to guarantee genuine model evaluation.
+ */
+export function setEvalExecutionProviderForTests(
   provider: EvalExecutionProvider | null,
 ): void {
-  customExecutionProvider = provider;
+  if (process.env.NODE_ENV !== 'test') {
+    throw new Error(
+      'Test execution provider can only be injected in test environment',
+    );
+  }
+  testInjectedProvider = provider;
 }
+
+// Backward compatibility alias for test suites
+export const setEvalExecutionProvider = setEvalExecutionProviderForTests;
 
 // In-memory active runs AbortControllers for cancellation
 const activeRunAbortControllers = new Map<string, AbortController>();
 
 /**
- * Deterministic rule-based evaluation engine.
- * Computes a weighted score between 0 and 100 based on matching expected patterns,
- * keywords, format constraints, and safety checks.
+ * Hard-gated rule-based evaluation engine.
+ *
+ * Requirements act as strict acceptance gates:
+ * 1. Missing required keywords => Hard Gate Fail.
+ * 2. Matched forbidden keywords => Immediate Disqualification.
+ * 3. Invalid JSON or non-plain-object (when requireJson is true) => Hard Gate Fail.
+ * 4. Missing required JSON keys => Hard Gate Fail.
+ * 5. Failed regex match or ReDoS-dangerous pattern => Hard Gate Fail.
+ * 6. Empty output or length violation => Hard Gate Fail.
+ *
+ * Only when all hard gates pass AND score >= passThreshold can auto_verdict be 'pass'.
  */
 export function evaluateOutputAgainstRules(
   output: string,
@@ -78,119 +106,190 @@ export function evaluateOutputAgainstRules(
   verdict: EvalVerdict;
   details: EvalRunCaseDetails;
 } {
-  const text = output || '';
+  const text = output?.trim() || '';
   const matchedKeywords: string[] = [];
   const missingKeywords: string[] = [];
   const matchedForbidden: string[] = [];
   const matchedRegex: string[] = [];
   const failedRegex: string[] = [];
   const missingJsonKeys: string[] = [];
+  const failedHardGates: string[] = [];
   const reasons: string[] = [];
 
   let score = 100;
+  let isHardGatePassed = true;
 
-  // 1. Check required keywords
+  // Gate 0: Non-empty output check
+  if (!text) {
+    failedHardGates.push('模型输出为空');
+    reasons.push('模型输出为空，任务未完成');
+    return {
+      score: 0,
+      verdict: 'fail',
+      details: {
+        lengthValid: false,
+        failedHardGates,
+        gateExplanation: 'Hard Gate 未通过: 模型输出为空',
+        reasons,
+      },
+    };
+  }
+
+  // Gate 1: Required keywords (all must be present)
   if (rules.requiredKeywords && rules.requiredKeywords.length > 0) {
-    const keywordWeight = 40 / rules.requiredKeywords.length;
+    const kwWeight = 50 / rules.requiredKeywords.length;
     for (const kw of rules.requiredKeywords) {
       if (text.toLowerCase().includes(kw.toLowerCase())) {
         matchedKeywords.push(kw);
       } else {
         missingKeywords.push(kw);
-        score -= keywordWeight;
+        score -= kwWeight;
         reasons.push(`缺失必需关键词: "${kw}"`);
       }
     }
+    if (missingKeywords.length > 0) {
+      isHardGatePassed = false;
+      failedHardGates.push(`缺失必需关键词 (${missingKeywords.join(', ')})`);
+    }
   }
 
-  // 2. Check forbidden keywords
+  // Gate 2: Forbidden keywords (none must be present)
   if (rules.forbiddenKeywords && rules.forbiddenKeywords.length > 0) {
     for (const fkw of rules.forbiddenKeywords) {
       if (text.toLowerCase().includes(fkw.toLowerCase())) {
         matchedForbidden.push(fkw);
-        score -= 40;
-        reasons.push(`包含违规/禁止内容: "${fkw}"`);
+        score -= 60;
+        reasons.push(`命中违禁/禁止内容: "${fkw}"`);
       }
+    }
+    if (matchedForbidden.length > 0) {
+      isHardGatePassed = false;
+      failedHardGates.push(`命中违禁内容 (${matchedForbidden.join(', ')})`);
     }
   }
 
-  // 3. Check regular expression patterns
+  // Gate 3: Regular expressions with ReDoS defense
   if (rules.regexPatterns && rules.regexPatterns.length > 0) {
-    const regexWeight = 30 / rules.regexPatterns.length;
+    const rxWeight = 30 / rules.regexPatterns.length;
+    const safeText = text.slice(0, 15000);
+
     for (const pattern of rules.regexPatterns) {
+      // ReDoS heuristic check: limit pattern length and prevent catastrophic nested repetition
+      const isDangerousPattern =
+        pattern.length > 200 ||
+        /(\+|\*|\{[0-9,]+\})\s*(\+|\*|\{[0-9,]+\})/.test(pattern) ||
+        /\([^)]*(\+|\*)[^)]*\)\s*(\+|\*|\{)/.test(pattern);
+
+      if (isDangerousPattern) {
+        failedRegex.push(pattern);
+        score -= rxWeight;
+        reasons.push(`正则表达式包含潜在 ReDoS 风险或超长: /${pattern}/`);
+        continue;
+      }
+
       try {
         const re = new RegExp(pattern, 'i');
-        if (re.test(text)) {
+        if (re.test(safeText)) {
           matchedRegex.push(pattern);
         } else {
           failedRegex.push(pattern);
-          score -= regexWeight;
-          reasons.push(`未匹配目标模式: /${pattern}/i`);
+          score -= rxWeight;
+          reasons.push(`未匹配必需正则模式: /${pattern}/i`);
         }
       } catch {
         failedRegex.push(pattern);
-        score -= regexWeight;
+        score -= rxWeight;
+        reasons.push(`无效的正则表达式语法: /${pattern}/`);
       }
+    }
+
+    if (failedRegex.length > 0) {
+      isHardGatePassed = false;
+      failedHardGates.push(`未匹配必需正则模式 (${failedRegex.join(', ')})`);
     }
   }
 
-  // 4. Check JSON requirement
+  // Gate 4: JSON object validation & key presence protection
   let jsonValid = true;
   if (rules.requireJson) {
-    let parsedJson: Record<string, unknown> | null = null;
+    let parsedJson: unknown = null;
     try {
-      // Clean possible codeblock wrappers
-      let jsonStr = text.trim();
+      let jsonStr = text;
       const codeBlockMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
       if (codeBlockMatch) {
         jsonStr = codeBlockMatch[1].trim();
       }
       parsedJson = JSON.parse(jsonStr);
-      jsonValid = true;
     } catch {
       jsonValid = false;
-      score -= 35;
-      reasons.push('输出未能解析为合法的 JSON 格式');
+      score -= 60;
+      reasons.push('输出未能解析为合法 JSON');
+      failedHardGates.push('输出未能解析为合法 JSON');
+      isHardGatePassed = false;
     }
 
-    if (
-      jsonValid &&
-      parsedJson &&
-      rules.requiredJsonKeys &&
-      rules.requiredJsonKeys.length > 0
-    ) {
-      const keyWeight = 20 / rules.requiredJsonKeys.length;
-      for (const key of rules.requiredJsonKeys) {
-        if (!(key in parsedJson)) {
-          missingJsonKeys.push(key);
-          score -= keyWeight;
-          reasons.push(`JSON 缺少必要键: "${key}"`);
+    if (jsonValid) {
+      const isPlainObject =
+        parsedJson !== null &&
+        typeof parsedJson === 'object' &&
+        !Array.isArray(parsedJson);
+
+      if (!isPlainObject) {
+        jsonValid = false;
+        score -= 50;
+        reasons.push(
+          'JSON 顶层必须为 Key-Value Object 字典，不支持 Primitive 或 Array',
+        );
+        failedHardGates.push('JSON 结构必须为 Object 字典');
+        isHardGatePassed = false;
+      } else {
+        const objRecord = parsedJson as Record<string, unknown>;
+        if (rules.requiredJsonKeys && rules.requiredJsonKeys.length > 0) {
+          const keyWeight = 30 / rules.requiredJsonKeys.length;
+          for (const key of rules.requiredJsonKeys) {
+            const hasKey = Object.prototype.hasOwnProperty.call(objRecord, key);
+            if (!hasKey || objRecord[key] === undefined) {
+              missingJsonKeys.push(key);
+              score -= keyWeight;
+              reasons.push(`JSON 缺少必需键: "${key}"`);
+            }
+          }
+          if (missingJsonKeys.length > 0) {
+            isHardGatePassed = false;
+            failedHardGates.push(
+              `JSON 缺失必需键 (${missingJsonKeys.join(', ')})`,
+            );
+          }
         }
       }
     }
   }
 
-  // 5. Length checks
+  // Gate 5: Length constraints
   let lengthValid = true;
-  if (rules.minLength && text.trim().length < rules.minLength) {
+  if (rules.minLength && text.length < rules.minLength) {
     lengthValid = false;
-    score -= 15;
-    reasons.push(`内容过短 (${text.trim().length} < ${rules.minLength})`);
+    score -= 20;
+    reasons.push(`输出长度不足 (${text.length} < ${rules.minLength})`);
+    failedHardGates.push(`输出长度不足 (<${rules.minLength})`);
+    isHardGatePassed = false;
   }
-  if (rules.maxLength && text.trim().length > rules.maxLength) {
+  if (rules.maxLength && text.length > rules.maxLength) {
     lengthValid = false;
-    score -= 15;
-    reasons.push(`内容过长 (${text.trim().length} > ${rules.maxLength})`);
+    score -= 20;
+    reasons.push(`输出长度超标 (${text.length} > ${rules.maxLength})`);
+    failedHardGates.push(`输出长度超标 (>${rules.maxLength})`);
+    isHardGatePassed = false;
   }
 
-  // Clamp score to [0, 100]
   score = Math.max(0, Math.min(100, Math.round(score)));
 
   const passThreshold = rules.passThreshold ?? 70;
-  const passed =
-    score >= passThreshold &&
-    matchedForbidden.length === 0 &&
-    missingKeywords.length === 0;
+  const passed = isHardGatePassed && score >= passThreshold;
+
+  const gateExplanation = isHardGatePassed
+    ? '所有必需验收门禁均已通过'
+    : `必需验收门禁未通过: ${failedHardGates.join('; ')}`;
 
   return {
     score,
@@ -204,315 +303,69 @@ export function evaluateOutputAgainstRules(
       jsonValid: rules.requireJson ? jsonValid : undefined,
       missingJsonKeys: rules.requireJson ? missingJsonKeys : undefined,
       lengthValid,
+      failedHardGates: failedHardGates.length > 0 ? failedHardGates : undefined,
+      gateExplanation,
       reasons,
     },
   };
 }
 
 /**
- * Built-in deterministic fake provider used when real credentials are absent or in tests.
- * Accurately simulates model output, differentiating between base and improved target prompts.
+ * Resolve authorized model provider and configuration for the agent.
+ * Respects agent.model_config_id if pinned, otherwise resolves to the enabled provider.
+ * Throws actionable errors if providers are missing, disabled, or unconfigured.
  */
-export async function defaultFakeEvalProvider(options: {
-  prompt: string;
-  systemPrompt: string;
+export function resolveAgentModelExecutionConfig(
+  profile: AgentProfile,
+  modelOverride?: string,
+): {
+  providerId: string;
+  providerName: string;
   model: string;
-  cwd: string;
-  abortSignal?: AbortSignal;
-  caseId: string;
-  versionTag: 'base' | 'target' | 'single';
-}): Promise<{
-  output: string;
-  durationMs: number;
-  inputTokens: number;
-  outputTokens: number;
-  toolsUsed: EvalRunCaseToolUsage[];
-}> {
-  if (options.abortSignal?.aborted) {
-    throw new Error('Eval execution aborted');
-  }
+  providerConfig: ClaudeProviderConfig;
+  customEnv?: Record<string, string>;
+} {
+  const providers = getProviders();
 
-  const isTarget = options.versionTag === 'target';
-  const started = Date.now();
-
-  // Deterministic simulation responses for the 15 benchmark cases
-  let simulatedOutput = '';
-  switch (options.caseId) {
-    case 'eval-case-01-refactor-boundary':
-      if (isTarget) {
-        simulatedOutput = `
-interface OrderItem {
-  price: number;
-  count: number;
-}
-
-export function calcTotal(items: OrderItem[] | null | undefined, discountRate: number): number {
-  if (!items || !Array.isArray(items) || items.length === 0) return 0;
-  if (typeof discountRate !== 'number' || discountRate < 0 || discountRate > 1) {
-    throw new Error('Invalid discount rate');
-  }
-  const sum = items.reduce((acc, item) => acc + (Math.max(0, item.price) * Math.max(0, item.count)), 0);
-  return Math.round(sum * (1 - discountRate) * 100) / 100;
-}
-        `.trim();
-      } else {
-        // Base version has flaws (missing interface or boundary check)
-        simulatedOutput = `
-function calcTotal(items: any[], discountRate: any) {
-  let sum = 0;
-  for (let i = 0; i < items.length; i++) {
-    sum += items[i].price * items[i].count;
-  }
-  return sum * (1 - discountRate);
-}
-        `.trim();
-      }
-      break;
-
-    case 'eval-case-02-nginx-sec':
-      if (isTarget) {
-        simulatedOutput = `
-1. 缺少 X-Real-IP 与 X-Forwarded-For 真实客户端头；
-2. 缺少 client_max_body_size 限制导致慢溢出攻击风险；
-3. 缺少 X-Frame-Options 等安全响应头。
-
-加固配置：
-\`\`\`nginx
-server {
-    listen 80;
-    server_name api.example.com;
-    client_max_body_size 10M;
-
-    location / {
-        proxy_pass http://backend:8080;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+  if (profile.model_config_id) {
+    const matched = providers.find((p) => p.id === profile.model_config_id);
+    if (!matched) {
+      throw new Error(
+        `智能体绑定的模型配置 [${profile.model_config_id}] 不存在，无法启动评测`,
+      );
     }
-}
-\`\`\`
-        `.trim();
-      } else {
-        simulatedOutput =
-          '配置看起来还行，但可以考虑加上 proxy_set_header Host $host;';
-      }
-      break;
-
-    case 'eval-case-03-json-extract':
-      if (isTarget) {
-        simulatedOutput = JSON.stringify({
-          host: 'node-prod-03',
-          status: 'healthy',
-          cpu: { user: '18.5%', sys: '3.2%' },
-          disk: { free: '380GB', mount: '/data' },
-          abnormal_processes: ['zombie-worker', 'stale-log-flusher'],
-          timestamp: '2026-09-07T04:00:00Z',
-        });
-      } else {
-        // Base version might include markdown formatting or fail keys
-        simulatedOutput = `提取结果如下：\n主机是 node-prod-03，CPU 占用 18.5% user，磁盘还剩 380GB。`;
-      }
-      break;
-
-    case 'eval-case-04-log-root-cause':
-      simulatedOutput = `
-1. 根因分析：底层 bank-api 接口响应超时（ETIMEDOUT）是故障的原始根因。
-2. 级联雪崩机制：order-service 对超时的 pay-gateway 发起 3 次重试，每次重试再次穿透，引发重试风暴，导致连接池耗尽并返回 504 Gateway Timeout。
-3. 治理建议：
-   - 引入熔断降级机制（Circuit Breaker），当 downstream 失败率超阈值时快速失败；
-   - 重试策略增加指数退避与随机抖动（Jitter），禁止在超时重试上盲目连发。
-      `.trim();
-      break;
-
-    case 'eval-case-05-sql-optimize':
-      simulatedOutput = `
-1. 性能瓶颈分析：LIMIT 500000, 20 需要先扫描排序并抛弃前 50 万条整行数据，带来大量回表 IO。
-2. 延迟关联优化 SQL：
-\`\`\`sql
-SELECT o.* FROM orders o
-JOIN (
-  SELECT id FROM orders
-  WHERE user_id = 10023
-  ORDER BY created_at DESC
-  LIMIT 500000, 20
-) tmp ON o.id = tmp.id;
-\`\`\`
-3. 复合索引语句：
-\`\`\`sql
-CREATE INDEX idx_user_created ON orders (user_id, created_at DESC);
-\`\`\`
-      `.trim();
-      break;
-
-    case 'eval-case-06-api-validation':
-      simulatedOutput = `
-校验规则定义：
-- username: 长度 3-20 位，正则表达式 ^[a-zA-Z0-9_]{3,20}$
-- password: 长度 8-32 位，必须包含大小写、数字及特殊字符中的至少 3 种
-- phone: 匹配中国大陆 11 位手机号 ^1[3-9]\\d{9}$
-
-统一错误响应 JSON:
-\`\`\`json
-{
-  "code": "VALIDATION_FAILED",
-  "message": "参数校验失败",
-  "errors": [
-    { "field": "phone", "message": "手机号码格式不合法" }
-  ]
-}
-\`\`\`
-      `.trim();
-      break;
-
-    case 'eval-case-07-concurrency-race':
-      simulatedOutput = `
-在高并发热点数据缓存失效瞬间，利用 SingleFlight 或互斥锁（Mutex）保证同一时间只有一个并发请求穿透到数据库，其它并发调用挂起并等待复用该结果。
-同时，在设置缓存过期时间时必须加入随机抖动（Jitter，如 base_ttl + rand(0, 30s)），有效预防大量不同热点缓存在同一时刻集中失效造成的雪崩效应。
-      `.trim();
-      break;
-
-    case 'eval-case-08-restful-standards':
-      simulatedOutput = `
-审查问题与重构：
-1. GET /api/user/deleteUser?id=123 违反 GET 幂等只读语义。重构：DELETE /api/users/123，响应状态码 204 No Content。
-2. POST /api/get_order_detail_by_id 包含动词且使用 POST 读数据。重构：GET /api/orders/:id，响应状态码 200 OK。
-3. POST /api/updateProductStatus 使用动词。重构：PATCH /api/products/:id/status，响应状态码 200 OK。
-      `.trim();
-      break;
-
-    case 'eval-case-09-doc-summary':
-      simulatedOutput = `
-【核心收益】
-1. 故障隔离：边缘连接层解耦，单渠道网络抖动不再波及全局服务。
-2. 平滑重启：客户端长连接持续维持，热升级实现用户无感。
-3. 资源节约：架构精简后服务器内存消耗显著下降 30%。
-
-【潜在风险】
-1. 通信开销：跨层引入 IPC 调用增加了网络延迟与传输消耗。
-2. 架构复杂度：分布式链路排查与运维监控链条加长。
-      `.trim();
-      break;
-
-    case 'eval-case-10-cross-platform':
-      simulatedOutput = `
-环境缺陷：
-1. 硬编码斜杠路径拼接在 Windows 容易出现路径分隔符混乱；
-2. 未递归创建上级目录，当目录不存在时直接 writeFileSync 会抛出 ENOENT；
-3. 依赖 process.cwd() 易受启动工作区不确定性影响。
-
-健壮修复：
-\`\`\`js
-const path = require('node:path');
-const fs = require('node:fs');
-
-const targetDir = path.resolve(process.cwd(), 'data', 'temp');
-fs.mkdirSync(targetDir, { recursive: true });
-const cachePath = path.join(targetDir, fileName);
-fs.writeFileSync(cachePath, content, 'utf8');
-\`\`\`
-      `.trim();
-      break;
-
-    case 'eval-case-11-payment-idempotency':
-      simulatedOutput = `
-设计流程：
-1. 唯一索引防御：在支付流水记录表上以第三方支付凭证 out_trade_no / notify_id 建立 UNIQUE 唯一索引。
-2. 状态机严格校验：只有订单状态为 pending 时才允许流转至 paid，已支付状态直接幂等响应成功并忽略。
-3. 分布式锁与事务控制：以 order_id 为锁粒度，在数据库事务提交成功后再释放分布式锁与发送后续通知。
-      `.trim();
-      break;
-
-    case 'eval-case-12-dockerfile-multistage':
-      simulatedOutput = `
-\`\`\`dockerfile
-FROM node:20-alpine AS builder
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run build
-
-FROM node:20-alpine AS runner
-WORKDIR /app
-ENV NODE_ENV=production
-USER node
-COPY package*.json ./
-RUN npm ci --omit=dev
-COPY --from=builder --chown=node:node /app/dist ./dist
-CMD ["node", "dist/index.js"]
-\`\`\`
-      `.trim();
-      break;
-
-    case 'eval-case-13-git-recovery':
-      simulatedOutput = `
-抢救步骤：
-1. 运行 \`git reflog\` 查看近期所有 HEAD 变动历史记录，定位被跳过 commit 的原始 SHA（或 HEAD@{n}）。
-2. 使用 \`git cherry-pick <commit-sha>\` 将丢失的提交挑选合入当前分支，或者创建应急分支救回。
-原理：Git 的每个 HEAD 变更都会在 reflog 中保留指针记录，只要对象未被 gc 清理即可完整找回。
-      `.trim();
-      break;
-
-    case 'eval-case-14-privacy-masking':
-      simulatedOutput = `
-安全合规分析：
-明文打印身份证号和银行卡号违反个人信息保护法与等保合规要求，属于重大违规操作，易导致敏感凭据泄露。
-
-通用脱敏掩码实现：
-\`\`\`ts
-export function maskPhone(phone: string): string {
-  return phone.replace(/^(\\d{3})\\d{4}(\\d{4})$/, '$1****$2');
-}
-
-export function maskIdCard(idCard: string): string {
-  return idCard.replace(/^(\\d{6})\\d{8}(\\d{4})$/, '$1********$2');
-}
-\`\`\`
-      `.trim();
-      break;
-
-    case 'eval-case-15-i18n-format':
-      simulatedOutput = `
-\`\`\`ts
-export function formatMessage(
-  template: string,
-  params?: Record<string, unknown>,
-): string {
-  if (!template) return '';
-  if (!params) return template;
-  return template.replace(/\\{(\\w+)\\}/g, (match, key) => {
-    return key in params && params[key] !== undefined && params[key] !== null
-      ? String(params[key])
-      : match;
-  });
-}
-\`\`\`
-
-测试用例覆盖了正常匹配替换、params 为空、以及参数缺失保留原占位符的情况。
-      `.trim();
-      break;
-
-    default:
-      simulatedOutput = `执行完成：针对任务 ${options.caseId} 的处理结果。`;
+    if (!matched.enabled) {
+      throw new Error(
+        `智能体绑定的模型配置 [${matched.name || profile.model_config_id}] 已被禁用，无法启动评测`,
+      );
+    }
+    return {
+      providerId: matched.id,
+      providerName: matched.name,
+      model:
+        modelOverride || matched.anthropicModel || 'claude-3-5-sonnet-20241022',
+      providerConfig: providerToConfig(matched),
+      customEnv: matched.customEnv,
+    };
   }
 
-  // Add minimal delay (skip in test for high execution throughput)
-  const delayMs = process.env.NODE_ENV === 'test' ? 0 : 10;
-  if (delayMs > 0) {
-    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  const enabled = getEnabledProviders();
+  if (enabled.length === 0) {
+    throw new Error(
+      '系统没有启用的模型 Provider 配置，请先在模型配置页面启用一个 Provider',
+    );
   }
 
-  const durationMs = Math.max(1, Date.now() - started);
-  const inputTokens = Math.round(options.prompt.length * 1.5) + 300;
-  const outputTokens = Math.round(simulatedOutput.length * 1.2);
-
+  const defaultProvider = enabled[0];
   return {
-    output: simulatedOutput,
-    durationMs,
-    inputTokens,
-    outputTokens,
-    toolsUsed: [],
+    providerId: defaultProvider.id,
+    providerName: defaultProvider.name,
+    model:
+      modelOverride ||
+      defaultProvider.anthropicModel ||
+      'claude-3-5-sonnet-20241022',
+    providerConfig: providerToConfig(defaultProvider),
+    customEnv: defaultProvider.customEnv,
   };
 }
 
@@ -520,6 +373,8 @@ async function executeWithClaudeAgentSdk(options: {
   prompt: string;
   systemPrompt: string;
   model: string;
+  providerConfig: ClaudeProviderConfig;
+  customEnv?: Record<string, string>;
   cwd: string;
   abortSignal?: AbortSignal;
 }): Promise<{
@@ -527,10 +382,16 @@ async function executeWithClaudeAgentSdk(options: {
   durationMs: number;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  reasoningTokens: number;
   toolsUsed: EvalRunCaseToolUsage[];
+  reportedCostUSD?: number;
 }> {
-  const config = getClaudeProviderConfig();
-  const envLines = buildClaudeEnvLines(config);
+  const envLines = buildClaudeEnvLines(
+    options.providerConfig,
+    options.customEnv,
+  );
   const env: Record<string, string | undefined> = { ...process.env };
   clearInheritedClaudeProviderEnv(env);
   for (const line of envLines) {
@@ -541,16 +402,20 @@ async function executeWithClaudeAgentSdk(options: {
 
   const startedAt = Date.now();
   let resultText = '';
-  const toolsUsed: EvalRunCaseToolUsage[] = [];
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheCreationTokens = 0;
+  let reasoningTokens = 0;
+  let reportedCostUSD: number | undefined;
+  const toolMap = new Map<string, number>();
 
   const abortController = new AbortController();
   if (options.abortSignal) {
     options.abortSignal.addEventListener(
       'abort',
       () => abortController.abort(),
-      {
-        once: true,
-      },
+      { once: true },
     );
   }
 
@@ -561,7 +426,7 @@ async function executeWithClaudeAgentSdk(options: {
       systemPrompt: options.systemPrompt,
       cwd: options.cwd,
       env,
-      maxTurns: 2,
+      maxTurns: 3,
       tools: [],
       skills: [],
       settingSources: [],
@@ -572,24 +437,110 @@ async function executeWithClaudeAgentSdk(options: {
     },
   });
 
-  for await (const event of conversation) {
-    if (event.type === 'result' && event.subtype === 'success') {
-      resultText = event.result;
+  for await (const message of conversation) {
+    // 1. Primary authority: Result event usage & modelUsage
+    if (message.type === 'result') {
+      if (message.subtype === 'success') {
+        resultText = message.result || '';
+      }
+      const rawUsage = (message as any).usage;
+      if (rawUsage) {
+        inputTokens =
+          rawUsage.input_tokens ?? rawUsage.inputTokens ?? inputTokens;
+        outputTokens =
+          rawUsage.output_tokens ?? rawUsage.outputTokens ?? outputTokens;
+        cacheReadTokens =
+          rawUsage.cache_read_input_tokens ??
+          rawUsage.cacheReadInputTokens ??
+          cacheReadTokens;
+        cacheCreationTokens =
+          rawUsage.cache_creation_input_tokens ??
+          rawUsage.cacheCreationInputTokens ??
+          cacheCreationTokens;
+        reasoningTokens =
+          rawUsage.reasoning_output_tokens ??
+          rawUsage.reasoningTokens ??
+          reasoningTokens;
+      }
+      const rawModelUsage = (message as any).modelUsage;
+      if (rawModelUsage && typeof rawModelUsage === 'object') {
+        for (const mUsage of Object.values(rawModelUsage) as any[]) {
+          if (mUsage && typeof mUsage === 'object') {
+            inputTokens = Math.max(inputTokens, mUsage.inputTokens ?? 0);
+            outputTokens = Math.max(outputTokens, mUsage.outputTokens ?? 0);
+            cacheReadTokens = Math.max(
+              cacheReadTokens,
+              mUsage.cacheReadInputTokens ?? 0,
+            );
+            cacheCreationTokens = Math.max(
+              cacheCreationTokens,
+              mUsage.cacheCreationInputTokens ?? 0,
+            );
+            reasoningTokens = Math.max(
+              reasoningTokens,
+              mUsage.reasoningTokens ?? 0,
+            );
+            if (typeof mUsage.costUSD === 'number') {
+              reportedCostUSD = mUsage.costUSD;
+            }
+          }
+        }
+      }
+      if (typeof (message as any).total_cost_usd === 'number') {
+        reportedCostUSD = (message as any).total_cost_usd;
+      }
+    }
+
+    // 2. Stream events usage observation
+    if (message.type === 'stream_event') {
+      const ev = (message as any).event;
+      if (ev?.type === 'message_start' && ev.message?.usage) {
+        inputTokens = ev.message.usage.input_tokens ?? inputTokens;
+        cacheReadTokens =
+          ev.message.usage.cache_read_input_tokens ?? cacheReadTokens;
+        cacheCreationTokens =
+          ev.message.usage.cache_creation_input_tokens ?? cacheCreationTokens;
+      }
+      if (ev?.type === 'message_delta' && ev.usage) {
+        outputTokens = ev.usage.output_tokens ?? outputTokens;
+      }
+    }
+
+    // 3. Tool use observation
+    if (
+      message.type === 'tool_progress' ||
+      message.type === 'tool_use_summary'
+    ) {
+      const toolName =
+        (message as any).tool_name || (message as any).toolName || 'tool';
+      toolMap.set(toolName, (toolMap.get(toolName) || 0) + 1);
+    } else if (
+      message.type === 'assistant' &&
+      Array.isArray((message as any).content)
+    ) {
+      for (const block of (message as any).content) {
+        if (block?.type === 'tool_use' && block.name) {
+          toolMap.set(block.name, (toolMap.get(block.name) || 0) + 1);
+        }
+      }
     }
   }
 
-  const durationMs = Date.now() - startedAt;
-  const inputTokens =
-    Math.round(options.prompt.length * 1.5) +
-    Math.round(options.systemPrompt.length * 1.2);
-  const outputTokens = Math.round(resultText.length * 1.2);
+  const durationMs = Math.max(1, Date.now() - startedAt);
+  const toolsUsed: EvalRunCaseToolUsage[] = Array.from(toolMap.entries()).map(
+    ([name, count]) => ({ name, count }),
+  );
 
   return {
     output: resultText.trim(),
     durationMs,
     inputTokens,
     outputTokens,
+    cacheReadTokens,
+    cacheCreationTokens,
+    reasoningTokens,
     toolsUsed,
+    reportedCostUSD,
   };
 }
 
@@ -600,16 +551,29 @@ async function executeCase(options: {
   evalCase: EvalCase;
   systemPrompt: string;
   model: string;
+  providerConfig?: ClaudeProviderConfig;
+  customEnv?: Record<string, string>;
   runId: string;
   versionTag: 'base' | 'target' | 'single';
   promptVersion: number;
   promptHash: string;
   abortSignal?: AbortSignal;
-}): Promise<Omit<EvalRunCase, 'id' | 'created_at' | 'updated_at'>> {
+}): Promise<
+  Omit<EvalRunCase, 'id' | 'created_at' | 'updated_at'> & {
+    case_input_snapshot: string;
+    case_expected_snapshot: string;
+    case_rules_snapshot: EvalCaseRule;
+    cache_read_tokens: number;
+    cache_creation_tokens: number;
+    reasoning_tokens: number;
+  }
+> {
   const {
     evalCase,
     systemPrompt,
     model,
+    providerConfig,
+    customEnv,
     runId,
     versionTag,
     promptVersion,
@@ -626,43 +590,52 @@ async function executeCase(options: {
   );
   try {
     fs.mkdirSync(caseWorkspaceDir, { recursive: true });
-  } catch {
-    // Ignore existing
-  }
+  } catch {}
 
-  let provider = customExecutionProvider;
-  if (!provider) {
-    if (
-      process.env.NODE_ENV === 'test' ||
-      process.env.EVAL_USE_FAKE_PROVIDER === '1'
-    ) {
-      provider = defaultFakeEvalProvider;
-    } else {
-      const config = getClaudeProviderConfig();
-      const hasRealProvider = Boolean(
-        config.anthropicApiKey ||
-        config.anthropicAuthToken ||
-        config.claudeCodeOauthToken ||
-        config.claudeOAuthCredentials,
-      );
-      if (hasRealProvider) {
-        provider = executeWithClaudeAgentSdk;
-      } else {
-        provider = defaultFakeEvalProvider;
-      }
-    }
-  }
+  const startedAt = Date.now();
 
   try {
-    const execResult = await provider({
-      prompt: evalCase.input_prompt,
-      systemPrompt,
-      model,
-      cwd: caseWorkspaceDir,
-      abortSignal,
-      caseId: evalCase.id,
-      versionTag,
-    });
+    let execResult: {
+      output: string;
+      durationMs: number;
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens?: number;
+      cacheCreationTokens?: number;
+      reasoningTokens?: number;
+      toolsUsed: EvalRunCaseToolUsage[];
+      reportedCostUSD?: number;
+    };
+
+    // Use test injected provider if strictly in test scope
+    if (process.env.NODE_ENV === 'test' && testInjectedProvider) {
+      execResult = await testInjectedProvider({
+        prompt: evalCase.input_prompt,
+        systemPrompt,
+        model,
+        cwd: caseWorkspaceDir,
+        abortSignal,
+        caseId: evalCase.id,
+        versionTag,
+      });
+    } else {
+      if (!providerConfig) {
+        throw new Error('未配置有效的模型 Provider，无法执行评测');
+      }
+      execResult = await executeWithClaudeAgentSdk({
+        prompt: evalCase.input_prompt,
+        systemPrompt,
+        model,
+        providerConfig,
+        customEnv,
+        cwd: caseWorkspaceDir,
+        abortSignal,
+      });
+    }
+
+    if (!execResult.output && !abortSignal?.aborted) {
+      throw new Error('模型执行未产生有效输出内容');
+    }
 
     // Score against rules
     const evalOutcome = evaluateOutputAgainstRules(
@@ -671,15 +644,24 @@ async function executeCase(options: {
     );
 
     // Cost estimation
-    const estimatedCostUsd = estimateKabooModelCostUSD(model, {
-      inputTokens: execResult.inputTokens,
-      outputTokens: execResult.outputTokens,
-    });
+    const estimatedCostUsd =
+      execResult.reportedCostUSD !== undefined
+        ? execResult.reportedCostUSD
+        : estimateKabooModelCostUSD(model, {
+            inputTokens: execResult.inputTokens,
+            outputTokens: execResult.outputTokens,
+            cacheReadInputTokens: execResult.cacheReadTokens,
+            cacheCreationInputTokens: execResult.cacheCreationTokens,
+            reasoningTokens: execResult.reasoningTokens,
+          });
 
     return {
       run_id: runId,
       case_id: evalCase.id,
       case_name: evalCase.name,
+      case_input_snapshot: evalCase.input_prompt,
+      case_expected_snapshot: evalCase.expected_output,
+      case_rules_snapshot: evalCase.eval_rules,
       version_tag: versionTag,
       prompt_version: promptVersion,
       prompt_hash: promptHash,
@@ -692,6 +674,9 @@ async function executeCase(options: {
       tokens_input: execResult.inputTokens,
       tokens_output: execResult.outputTokens,
       tokens_total: execResult.inputTokens + execResult.outputTokens,
+      cache_read_tokens: execResult.cacheReadTokens || 0,
+      cache_creation_tokens: execResult.cacheCreationTokens || 0,
+      reasoning_tokens: execResult.reasoningTokens || 0,
       estimated_cost_usd: estimatedCostUsd,
       tools_used: execResult.toolsUsed,
       human_feedback: null,
@@ -705,6 +690,9 @@ async function executeCase(options: {
       run_id: runId,
       case_id: evalCase.id,
       case_name: evalCase.name,
+      case_input_snapshot: evalCase.input_prompt,
+      case_expected_snapshot: evalCase.expected_output,
+      case_rules_snapshot: evalCase.eval_rules,
       version_tag: versionTag,
       prompt_version: promptVersion,
       prompt_hash: promptHash,
@@ -713,12 +701,19 @@ async function executeCase(options: {
       auto_score: 0,
       auto_verdict: 'fail',
       eval_details: {
-        reasons: [isAborted ? '用户取消运行' : (err as Error).message],
+        failedHardGates: [
+          isAborted ? '用户取消运行' : `执行失败: ${(err as Error).message}`,
+        ],
+        gateExplanation: isAborted ? '运行被主动取消' : '执行遇到异常中断',
+        reasons: [(err as Error).message || 'Execution failed'],
       },
-      duration_ms: 0,
+      duration_ms: Math.max(1, Date.now() - startedAt),
       tokens_input: 0,
       tokens_output: 0,
       tokens_total: 0,
+      cache_read_tokens: 0,
+      cache_creation_tokens: 0,
+      reasoning_tokens: 0,
       estimated_cost_usd: 0,
       tools_used: [],
       human_feedback: null,
@@ -730,6 +725,7 @@ async function executeCase(options: {
 
 /**
  * Start an evaluation run (supports both compare mode and single version mode).
+ * Performs strict existence and ownership validation on all prompt versions.
  */
 export async function startEvalRun(input: {
   ownerUserId: string;
@@ -753,40 +749,81 @@ export async function startEvalRun(input: {
   }
 
   const mode = input.mode || 'compare';
-  const targetVersion = input.targetVersion ?? profile.version;
-  const baseVersion =
-    mode === 'compare'
-      ? (input.baseVersion ?? Math.max(1, targetVersion - 1))
-      : null;
 
-  // Resolve prompts & hashes
-  let basePrompts: Partial<AgentProfilePromptVersion> | null = null;
-  let targetPrompts: Partial<AgentProfilePromptVersion> | null = null;
+  // 1. Strict targetVersion existence & ownership validation
+  const targetVersion = input.targetVersion ?? profile.version;
+  let targetPrompts: AgentProfilePrompts;
 
   if (targetVersion === profile.version) {
-    targetPrompts = profile;
+    targetPrompts = {
+      identity_prompt: profile.identity_prompt,
+      soul_prompt: profile.soul_prompt,
+      agents_prompt: profile.agents_prompt,
+      tools_prompt: profile.tools_prompt,
+      prompt_mode: profile.prompt_mode,
+    };
   } else {
-    targetPrompts =
-      getAgentProfilePromptVersion(profile.id, ownerUserId, targetVersion) ||
-      profile;
+    const versionRow = getAgentProfilePromptVersion(
+      profile.id,
+      ownerUserId,
+      targetVersion,
+    );
+    if (!versionRow) {
+      throw new Error(
+        `目标提示词版本 v${targetVersion} 不存在或不属于当前智能体`,
+      );
+    }
+    targetPrompts = {
+      identity_prompt: versionRow.identity_prompt,
+      soul_prompt: versionRow.soul_prompt,
+      agents_prompt: versionRow.agents_prompt,
+      tools_prompt: versionRow.tools_prompt,
+      prompt_mode: versionRow.prompt_mode,
+    };
   }
 
-  if (mode === 'compare' && baseVersion !== null) {
+  // 2. Strict baseVersion existence & ownership validation (compare mode)
+  let basePrompts: AgentProfilePrompts | null = null;
+  let baseVersion: number | null = null;
+
+  if (mode === 'compare') {
+    if (input.baseVersion === undefined || input.baseVersion === null) {
+      throw new Error('对比模式必须指定基准版本 base_version');
+    }
+    baseVersion = input.baseVersion;
     if (baseVersion === profile.version) {
-      basePrompts = profile;
+      basePrompts = {
+        identity_prompt: profile.identity_prompt,
+        soul_prompt: profile.soul_prompt,
+        agents_prompt: profile.agents_prompt,
+        tools_prompt: profile.tools_prompt,
+        prompt_mode: profile.prompt_mode,
+      };
     } else {
-      basePrompts =
-        getAgentProfilePromptVersion(profile.id, ownerUserId, baseVersion) ||
-        null;
+      const versionRow = getAgentProfilePromptVersion(
+        profile.id,
+        ownerUserId,
+        baseVersion,
+      );
+      if (!versionRow) {
+        throw new Error(
+          `基准提示词版本 v${baseVersion} 不存在或不属于当前智能体`,
+        );
+      }
+      basePrompts = {
+        identity_prompt: versionRow.identity_prompt,
+        soul_prompt: versionRow.soul_prompt,
+        agents_prompt: versionRow.agents_prompt,
+        tools_prompt: versionRow.tools_prompt,
+        prompt_mode: versionRow.prompt_mode,
+      };
     }
   }
 
   const basePromptText = basePrompts
     ? buildAgentProfilePrompt(basePrompts)
     : '';
-  const targetPromptText = targetPrompts
-    ? buildAgentProfilePrompt(targetPrompts)
-    : '';
+  const targetPromptText = buildAgentProfilePrompt(targetPrompts);
 
   const basePromptHash = basePrompts
     ? crypto.createHash('sha256').update(basePromptText).digest('hex')
@@ -796,10 +833,34 @@ export async function startEvalRun(input: {
     .update(targetPromptText)
     .digest('hex');
 
-  const config = getClaudeProviderConfig();
-  const effectiveModel =
-    input.model || config.anthropicModel || 'claude-3-5-sonnet-20241022';
+  // 3. Resolve execution provider and ensure real credentials unless test mock is injected
+  const isTestExecution =
+    process.env.NODE_ENV === 'test' && testInjectedProvider !== null;
+  let resolvedModelConfig: ReturnType<
+    typeof resolveAgentModelExecutionConfig
+  > | null = null;
 
+  if (!isTestExecution) {
+    resolvedModelConfig = resolveAgentModelExecutionConfig(
+      profile,
+      input.model,
+    );
+    const hasCredentials = Boolean(
+      resolvedModelConfig.providerConfig.anthropicApiKey ||
+      resolvedModelConfig.providerConfig.anthropicAuthToken ||
+      resolvedModelConfig.providerConfig.claudeCodeOauthToken ||
+      resolvedModelConfig.providerConfig.claudeOAuthCredentials,
+    );
+    if (!hasCredentials) {
+      throw new Error(
+        `智能体授权 Provider [${resolvedModelConfig.providerName}] 未配置有效凭据，无法启动真实评测`,
+      );
+    }
+  }
+
+  const effectiveModel =
+    resolvedModelConfig?.model || input.model || 'claude-3-5-sonnet-20241022';
+  const providerSource = isTestExecution ? 'test_mock' : 'live_provider';
   const runId = `eval-run-${crypto.randomUUID()}`;
   const totalCases = suiteWithCases.cases.length;
 
@@ -816,10 +877,25 @@ export async function startEvalRun(input: {
     target_version: targetVersion,
     target_prompt_hash: targetPromptHash,
     model: effectiveModel,
+    provider_source: providerSource,
     capability_snapshot: {
+      provider_id: resolvedModelConfig?.providerId || 'test_injected',
+      provider_name:
+        resolvedModelConfig?.providerName || 'Test Injected Provider',
+      model: effectiveModel,
+      model_config_id: profile.model_config_id || null,
       runtime_policy: profile.runtime_policy,
       prompt_mode: profile.prompt_mode,
       version: profile.version,
+      sandbox_boundary: {
+        fs: 'isolated_eval_workspace',
+        network: 'model_api_only',
+        external_side_effects: 'strictly_forbidden',
+      },
+      prompts_snapshot: {
+        base: basePrompts,
+        target: targetPrompts,
+      },
     },
     status: 'running',
     total_cases: totalCases,
@@ -860,6 +936,8 @@ export async function startEvalRun(input: {
             evalCase: c,
             systemPrompt: basePromptText,
             model: effectiveModel,
+            providerConfig: resolvedModelConfig?.providerConfig,
+            customEnv: resolvedModelConfig?.customEnv,
             runId,
             versionTag: 'base',
             promptVersion: baseVersion,
@@ -880,6 +958,8 @@ export async function startEvalRun(input: {
           evalCase: c,
           systemPrompt: targetPromptText,
           model: effectiveModel,
+          providerConfig: resolvedModelConfig?.providerConfig,
+          customEnv: resolvedModelConfig?.customEnv,
           runId,
           versionTag: mode === 'compare' ? 'target' : 'single',
           promptVersion: targetVersion,

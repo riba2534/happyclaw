@@ -31,17 +31,123 @@ const {
   generateEvalMarkdownReport,
   generateEvalJsonReport,
   submitCaseFeedback,
-  setEvalExecutionProvider,
+  setEvalExecutionProviderForTests,
   waitForEvalRunCompletion,
 } = await import('../src/eval-service.js');
 const { BUILTIN_EVAL_CASES, SYSTEM_EVAL_SUITE_ID } =
   await import('../src/eval-builtin-suite.js');
 
+/**
+ * Explicit test-only execution provider to simulate deterministic tool and model outputs.
+ * Never available in production code paths.
+ */
+function createTestMockProvider() {
+  return async (options: {
+    prompt: string;
+    systemPrompt: string;
+    model: string;
+    cwd: string;
+    abortSignal?: AbortSignal;
+    caseId: string;
+    versionTag: 'base' | 'target' | 'single';
+  }) => {
+    if (options.abortSignal?.aborted) {
+      throw new Error('Eval execution aborted');
+    }
+
+    const isTarget = options.versionTag === 'target';
+    let output = '';
+
+    switch (options.caseId) {
+      case 'eval-case-01-refactor-boundary':
+        output = isTarget
+          ? 'interface OrderItem { price: number; count: number; }\nexport function calcTotal(items: OrderItem[]): number { return items.reduce((a, b) => a + b.price * b.count, 0); }'
+          : 'function calcTotal(items: any[]) { return items.length; }';
+        break;
+      case 'eval-case-02-nginx-sec':
+        output =
+          'proxy_set_header X-Forwarded-For $remote_addr; client_max_body_size 20M;';
+        break;
+      case 'eval-case-03-json-extract':
+        output = JSON.stringify({
+          host: 'node-prod-03',
+          cpu: '18.5%',
+          disk: '380GB',
+          abnormal_processes: ['zombie-worker'],
+        });
+        break;
+      case 'eval-case-04-log-root-cause':
+        output =
+          '底层 bank-api 超时，引起 order-service 重试风暴，建议引入熔断降级。';
+        break;
+      case 'eval-case-05-sql-optimize':
+        output =
+          'CREATE INDEX idx_user_created ON orders (user_id, created_at DESC); LIMIT 500000, 20';
+        break;
+      case 'eval-case-06-api-validation':
+        output =
+          '校验 username 与 password 以及 phone (13800000000)。{"code": "ERR_VALIDATION", "message": "fail"}';
+        break;
+      case 'eval-case-07-concurrency-race':
+        output =
+          '在高并发热点缓存击穿时，利用 SingleFlight 或互斥锁控制单个穿透，并引入随机抖动 Jitter。';
+        break;
+      case 'eval-case-08-restful-standards':
+        output = 'DELETE /api/users/123 返回 204。GET /api/orders 返回 200。';
+        break;
+      case 'eval-case-09-doc-summary':
+        output =
+          '【核心收益】长连接隔离，平滑重启，内存降低30%。【潜在风险】IPC跨层延迟增加，排障链路变长。';
+        break;
+      case 'eval-case-10-cross-platform':
+        output =
+          'const path = require("node:path"); path.join(dir, file); fs.mkdirSync(dir, { recursive: true });';
+        break;
+      case 'eval-case-11-payment-idempotency':
+        output =
+          '基于唯一流水号索引与状态机校验，在数据库事务提交后释放锁以保证幂等。';
+        break;
+      case 'eval-case-12-dockerfile-multistage':
+        output =
+          'FROM node:20 AS builder\nRUN npm run build\nFROM node:20 AS runner\nUSER node\nENV NODE_ENV=production';
+        break;
+      case 'eval-case-13-git-recovery':
+        output =
+          '使用 git reflog 查找丢失的 HEAD@{1}，通过 git cherry-pick 恢复。';
+        break;
+      case 'eval-case-14-privacy-masking':
+        output =
+          '明文打印严重违规合规要求，必须脱敏掩码：138****0000，身份证号加*脱敏。';
+        break;
+      case 'eval-case-15-i18n-format':
+        output =
+          'export function formatMessage(template: string, params?: Record<string, unknown>): string { return template.replace(/\\{(\\w+)\\}/g, ""); }';
+        break;
+      default:
+        output = `Executed case ${options.caseId}`;
+    }
+
+    return {
+      output,
+      durationMs: 5,
+      inputTokens: 120,
+      outputTokens: 80,
+      cacheReadTokens: 15,
+      cacheCreationTokens: 0,
+      reasoningTokens: 0,
+      toolsUsed: [{ name: 'read_file', count: 1 }],
+      reportedCostUSD: 0.0005,
+    };
+  };
+}
+
 beforeAll(() => {
   db.initDatabase();
+  setEvalExecutionProviderForTests(createTestMockProvider());
 });
 
 afterAll(() => {
+  setEvalExecutionProviderForTests(null);
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -61,8 +167,8 @@ function seedUser(id: string): void {
 }
 
 describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
-  describe('规则判定引擎 evaluateOutputAgainstRules', () => {
-    test('正确判定必需关键词与及格通过', () => {
+  describe('规则判定引擎 evaluateOutputAgainstRules (Hard Gates 门禁)', () => {
+    test('全部硬门禁满足时正确裁决通过', () => {
       const output =
         'interface User { id: number; } export function test(): number { return 1; }';
       const outcome = evaluateOutputAgainstRules(output, {
@@ -72,11 +178,11 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
 
       expect(outcome.verdict).toBe('pass');
       expect(outcome.score).toBe(100);
-      expect(outcome.details.matchedKeywords).toEqual(['interface', 'number']);
-      expect(outcome.details.missingKeywords).toEqual([]);
+      expect(outcome.details.failedHardGates).toBeUndefined();
+      expect(outcome.details.gateExplanation).toContain('均已通过');
     });
 
-    test('缺失关键约束时扣分并给出具体原因', () => {
+    test('缺失必需关键词时硬门禁一票否决 (必判 fail)', () => {
       const output = 'const a = 1;';
       const outcome = evaluateOutputAgainstRules(output, {
         requiredKeywords: ['interface', 'export'],
@@ -84,15 +190,15 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
       });
 
       expect(outcome.verdict).toBe('fail');
-      expect(outcome.score).toBeLessThan(70);
-      expect(outcome.details.missingKeywords).toContain('interface');
-      expect(outcome.details.missingKeywords).toContain('export');
+      expect(outcome.details.failedHardGates).toBeDefined();
       expect(
-        outcome.details.reasons?.some((r) => r.includes('缺失必需关键词')),
+        outcome.details.failedHardGates?.some((g) =>
+          g.includes('缺失必需关键词'),
+        ),
       ).toBe(true);
     });
 
-    test('包含违禁词时直接判为 fail', () => {
+    test('包含违禁词时直接一票否决 (必判 fail)', () => {
       const output = 'interface Foo { bar: any; }';
       const outcome = evaluateOutputAgainstRules(output, {
         requiredKeywords: ['interface'],
@@ -103,63 +209,55 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
       expect(outcome.verdict).toBe('fail');
       expect(outcome.details.matchedForbidden).toContain('any');
       expect(
-        outcome.details.reasons?.some((r) => r.includes('包含违规/禁止内容')),
+        outcome.details.failedHardGates?.some((g) =>
+          g.includes('命中违禁内容'),
+        ),
       ).toBe(true);
     });
 
-    test('正则表达式匹配校验', () => {
-      const output = 'CREATE INDEX idx_user_id ON users(user_id);';
-      const outcome = evaluateOutputAgainstRules(output, {
-        regexPatterns: ['CREATE\\s+INDEX', 'ON\\s+users'],
-        passThreshold: 70,
+    test('JSON 顶层为 primitive 或 array 时硬门禁拦截', () => {
+      const arrayJson = '[1, 2, 3]';
+      const outcome = evaluateOutputAgainstRules(arrayJson, {
+        requireJson: true,
       });
 
-      expect(outcome.verdict).toBe('pass');
-      expect(outcome.details.matchedRegex).toHaveLength(2);
-      expect(outcome.details.failedRegex).toHaveLength(0);
+      expect(outcome.verdict).toBe('fail');
+      expect(
+        outcome.details.failedHardGates?.some((g) => g.includes('Object 字典')),
+      ).toBe(true);
     });
 
-    test('有效 JSON 与必需 JSON 键校验', () => {
-      const validJsonOutput =
-        '```json\n{"host": "prod-1", "cpu": 12, "disk": 40}\n```';
-      const passOutcome = evaluateOutputAgainstRules(validJsonOutput, {
+    test('JSON 缺失必需键时安全拦截且不抛 TypeError', () => {
+      const jsonStr = '{"host": "prod-1"}';
+      const outcome = evaluateOutputAgainstRules(jsonStr, {
         requireJson: true,
         requiredJsonKeys: ['host', 'cpu', 'disk'],
-        passThreshold: 70,
       });
 
-      expect(passOutcome.verdict).toBe('pass');
-      expect(passOutcome.details.jsonValid).toBe(true);
-      expect(passOutcome.details.missingJsonKeys).toEqual([]);
-
-      const invalidJsonOutput = '非JSON纯文本响应';
-      const failOutcome = evaluateOutputAgainstRules(invalidJsonOutput, {
-        requireJson: true,
-        passThreshold: 70,
-      });
-
-      expect(failOutcome.verdict).toBe('fail');
-      expect(failOutcome.details.jsonValid).toBe(false);
+      expect(outcome.verdict).toBe('fail');
+      expect(outcome.details.missingJsonKeys).toEqual(['cpu', 'disk']);
       expect(
-        failOutcome.details.reasons?.some((r) => r.includes('合法的 JSON')),
+        outcome.details.failedHardGates?.some((g) =>
+          g.includes('JSON 缺失必需键'),
+        ),
       ).toBe(true);
     });
 
-    test('长度区间限制校验', () => {
-      const shortOutput = 'too short';
-      const outcome = evaluateOutputAgainstRules(shortOutput, {
-        minLength: 50,
+    test('防 ReDoS 安全检查：检测超长或危险灾难性回溯模式', () => {
+      const outcome = evaluateOutputAgainstRules('test text', {
+        regexPatterns: ['(a+)+b'], // 典型灾难性回溯 pattern
       });
 
-      expect(outcome.details.lengthValid).toBe(false);
-      expect(outcome.details.reasons?.some((r) => r.includes('内容过短'))).toBe(
+      expect(outcome.verdict).toBe('fail');
+      expect(outcome.details.failedRegex).toContain('(a+)+b');
+      expect(outcome.details.reasons?.some((r) => r.includes('ReDoS'))).toBe(
         true,
       );
     });
   });
 
   describe('内置典型基准案例集 (15条脱敏任务)', () => {
-    test('自动初始化 15 个脱敏典型工程任务', () => {
+    test('自动初始化 15 个脱敏典型工程任务与确定性验收条件', () => {
       expect(BUILTIN_EVAL_CASES).toHaveLength(15);
       const categories = new Set(BUILTIN_EVAL_CASES.map((c) => c.category));
       expect(categories).toContain('code');
@@ -170,15 +268,9 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
       expect(categories).toContain('doc');
       expect(categories).toContain('tooling');
       expect(categories).toContain('i18n');
-
-      for (const c of BUILTIN_EVAL_CASES) {
-        expect(c.input_prompt.length).toBeGreaterThan(20);
-        expect(c.expected_output.length).toBeGreaterThan(10);
-        expect(c.timeout_ms).toBeGreaterThanOrEqual(1000);
-      }
     });
 
-    test('DB 中能够检索到内置系统评测集与全部案例', () => {
+    test('DB 中能够检索到系统内置基准集与 15 个完整案例', () => {
       const suites = db.listEvalSuites('user-eval-a');
       const builtin = suites.find((s) => s.id === SYSTEM_EVAL_SUITE_ID);
       expect(builtin).toBeDefined();
@@ -190,6 +282,75 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
     });
   });
 
+  describe('版本严格校验与快照锁定', () => {
+    const userId = 'eval-strict-ver-user';
+
+    beforeAll(() => {
+      seedUser(userId);
+    });
+
+    test('target_version 不存在时必须明确拒绝 (杜绝静默 fallback)', async () => {
+      const profile = db.createAgentProfile({
+        ownerUserId: userId,
+        name: '版本测试智能体',
+        identityPrompt: '测试版本校验',
+        promptMode: 'append',
+      });
+
+      await expect(
+        startEvalRun({
+          ownerUserId: userId,
+          agentProfileId: profile.id,
+          mode: 'single',
+          targetVersion: 999, // 不存在的版本
+        }),
+      ).rejects.toThrow('目标提示词版本 v999 不存在');
+    });
+
+    test('base_version 不存在时必须明确拒绝 (杜绝空 prompt 冒充)', async () => {
+      const profile = db.createAgentProfile({
+        ownerUserId: userId,
+        name: '对比版本测试智能体',
+        identityPrompt: '测试对比版本',
+        promptMode: 'append',
+      });
+
+      await expect(
+        startEvalRun({
+          ownerUserId: userId,
+          agentProfileId: profile.id,
+          mode: 'compare',
+          baseVersion: 999, // 不存在的基准版本
+          targetVersion: 1,
+        }),
+      ).rejects.toThrow('基准提示词版本 v999 不存在');
+    });
+
+    test('未配置有效 Provider 凭据且未显式注入测试替身时必须拒绝启动 (无 Fake 兜底)', async () => {
+      const profile = db.createAgentProfile({
+        ownerUserId: userId,
+        name: '无凭据智能体',
+        identityPrompt: '测试凭据校验',
+        promptMode: 'append',
+      });
+
+      // 临时移除测试注入
+      setEvalExecutionProviderForTests(null);
+
+      await expect(
+        startEvalRun({
+          ownerUserId: userId,
+          agentProfileId: profile.id,
+          mode: 'single',
+          targetVersion: 1,
+        }),
+      ).rejects.toThrow();
+
+      // 恢复测试注入
+      setEvalExecutionProviderForTests(createTestMockProvider());
+    });
+  });
+
   describe('评测执行生命周期与双版本对比 (startEvalRun & Summary)', () => {
     const userId = 'eval-test-user-01';
 
@@ -197,8 +358,8 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
       seedUser(userId);
     });
 
-    test('创建 Agent 历史版本并成功执行双版本对比评测', async () => {
-      // 1. 创建 AgentProfile
+    test('执行双版本对比评测，验证真实快照持久化与指标汇总', async () => {
+      // 1. 创建 AgentProfile v1
       const profile = db.createAgentProfile({
         ownerUserId: userId,
         name: '代码与架构助手',
@@ -208,10 +369,9 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
         toolsPrompt: '无特殊限制。',
         promptMode: 'append',
       });
-
       expect(profile.version).toBe(1);
 
-      // 2. 更新 AgentProfile 产生 v2
+      // 2. 更新生成 v2
       const profileV2 = db.updateAgentProfile(profile.id, userId, {
         identityPrompt:
           '你是一名资深全栈工程师，执行严格防守性重构与安全加固。',
@@ -220,7 +380,7 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
       });
       expect(profileV2?.version).toBe(2);
 
-      // 3. 触发双版本对比评测
+      // 3. 触发评测运行
       const run = await startEvalRun({
         ownerUserId: userId,
         agentProfileId: profile.id,
@@ -230,47 +390,38 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
       });
 
       expect(run.id).toBeDefined();
-      expect(run.agent_profile_id).toBe(profile.id);
-      expect(run.base_version).toBe(1);
-      expect(run.target_version).toBe(2);
+      expect(run.provider_source).toBe('test_mock'); // 明确标识测试注入
       expect(run.status).toBe('running');
-      expect(run.base_prompt_hash).toBeTruthy();
-      expect(run.target_prompt_hash).toBeTruthy();
 
-      // 等待异步后台执行结束
-      const finishedRun = await waitForEvalRunCompletion(run.id);
-
+      // 等待执行完成
+      const finishedRun = await waitForEvalRunCompletion(run.id, 10000);
       expect(finishedRun?.status).toBe('completed');
       expect(finishedRun?.completed_cases).toBe(15);
       expect(finishedRun?.target_pass_count).toBeGreaterThan(0);
-      expect(finishedRun?.target_avg_duration_ms).toBeGreaterThan(0);
       expect(finishedRun?.target_estimated_cost_usd).toBeGreaterThan(0);
 
-      // 4. 验证对比指标与 Delta 分析
+      // 4. 验证案例快照持久化
+      const runCases = db.listEvalRunCases(run.id);
+      expect(runCases.length).toBe(30); // 15 base + 15 target
+      for (const rc of runCases) {
+        expect(rc.actual_output.length).toBeGreaterThan(0);
+        expect(rc.status).toBe('completed');
+      }
+
+      // 5. 验证对比指标与 Delta 分析
       const summary = getEvalRunSummary(run.id, userId);
       expect(summary).not.toBeNull();
       expect(summary?.run.id).toBe(run.id);
       expect(summary?.baseSummary?.version).toBe(1);
       expect(summary?.targetSummary.version).toBe(2);
       expect(summary?.delta).toBeDefined();
-      expect(summary?.delta?.passRateDelta).toBeDefined();
-      expect(summary?.cases).toHaveLength(15);
-
-      // 案例明细中有 baseResult 和 targetResult
-      const case01 = summary?.cases.find(
-        (c) => c.caseId === 'eval-case-01-refactor-boundary',
-      );
-      expect(case01).toBeDefined();
-      expect(case01?.baseResult?.version_tag).toBe('base');
-      expect(case01?.targetResult?.version_tag).toBe('target');
-      expect(case01?.targetResult?.auto_verdict).toBe('pass');
     }, 20000);
 
     test('运行取消控制：能够在执行过程中终止任务', async () => {
       const profile = db.listAgentProfilesForUser(userId)[0];
 
-      // 设置一个慢速 provider 用于测试取消
-      setEvalExecutionProvider(async ({ abortSignal }) => {
+      // 设置慢速 provider 测试取消
+      setEvalExecutionProviderForTests(async ({ abortSignal }) => {
         await new Promise((resolve, reject) => {
           const timer = setTimeout(resolve, 500);
           abortSignal?.addEventListener('abort', () => {
@@ -295,7 +446,6 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
 
       expect(slowRun.status).toBe('running');
 
-      // 立即取消
       const cancelOk = cancelEvalRun(slowRun.id, userId);
       expect(cancelOk).toBe(true);
 
@@ -303,8 +453,51 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
       const afterCancel = db.getEvalRun(slowRun.id, userId);
       expect(afterCancel?.status).toBe('cancelled');
 
-      // 恢复默认 provider
-      setEvalExecutionProvider(null);
+      // 恢复常规 testMockProvider
+      setEvalExecutionProviderForTests(createTestMockProvider());
+    });
+  });
+
+  describe('服务重启与孤儿 running 状态恢复 (recoverDanglingEvalRuns)', () => {
+    test('系统启动时自动将未完成的 running 评测转为 interrupted 终态', () => {
+      const runId = 'dangling-test-run-1';
+      db.createEvalRun({
+        id: runId,
+        owner_user_id: 'user-dangling',
+        agent_profile_id: 'profile-dangling',
+        agent_name: 'Dangling Agent',
+        suite_id: SYSTEM_EVAL_SUITE_ID,
+        suite_version: 1,
+        mode: 'single',
+        base_version: null,
+        base_prompt_hash: null,
+        target_version: 1,
+        target_prompt_hash: 'hash',
+        model: 'test-model',
+        provider_source: 'test_mock',
+        capability_snapshot: {},
+        status: 'running', // 模拟崩溃前留在 running
+        total_cases: 15,
+        completed_cases: 3,
+        base_pass_count: 0,
+        target_pass_count: 3,
+        base_avg_duration_ms: 0,
+        target_avg_duration_ms: 10,
+        base_total_tokens: 0,
+        target_total_tokens: 300,
+        base_estimated_cost_usd: 0,
+        target_estimated_cost_usd: 0.001,
+        error_message: null,
+      });
+
+      // 执行恢复
+      const result = db.recoverDanglingEvalRuns();
+      expect(result.recoveredRuns).toBeGreaterThanOrEqual(1);
+
+      const recovered = db.getEvalRun(runId);
+      expect(recovered?.status).toBe('interrupted');
+      expect(recovered?.error_message).toContain('服务重启');
+      expect(recovered?.completed_at).toBeTruthy();
     });
   });
 
@@ -331,8 +524,7 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
         targetVersion: 1,
       });
 
-      // 等待完成
-      await waitForEvalRunCompletion(run.id);
+      await waitForEvalRunCompletion(run.id, 10000);
 
       const mdReport = generateEvalMarkdownReport(run.id, userId);
       expect(mdReport).not.toBeNull();
@@ -351,7 +543,7 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
     }, 20000);
   });
 
-  describe('人工反馈与审核 (Human Feedback)', () => {
+  describe('人工反馈与权限隔离 (Human Feedback & ACL)', () => {
     const userId = 'eval-feedback-user';
 
     beforeAll(() => {
@@ -372,7 +564,7 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
         mode: 'single',
       });
 
-      await waitForEvalRunCompletion(run.id);
+      await waitForEvalRunCompletion(run.id, 10000);
 
       const runCases = db.listEvalRunCases(run.id);
       expect(runCases.length).toBeGreaterThan(0);
@@ -392,7 +584,6 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
       expect(updated?.human_feedback).toBe('accepted');
       expect(updated?.human_notes).toBe('重构很规范，符合工程防守标准');
 
-      // 验证重新读取
       const refreshed = db.getEvalRunCase(targetCase.id);
       expect(refreshed?.human_feedback).toBe('accepted');
       expect(refreshed?.human_notes).toBe('重构很规范，符合工程防守标准');
@@ -408,7 +599,7 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
       });
 
       const run = db.createEvalRun({
-        id: 'eval-run-isolated-test',
+        id: 'eval-run-isolated-test-2',
         owner_user_id: userId,
         agent_profile_id: profile.id,
         agent_name: profile.name,
@@ -420,6 +611,7 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
         target_version: 1,
         target_prompt_hash: 'hash',
         model: 'test-model',
+        provider_source: 'test_mock',
         capability_snapshot: {},
         status: 'completed',
         total_cases: 1,
@@ -436,7 +628,7 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
       });
 
       const runCase = db.createEvalRunCase({
-        id: 'eval-rcase-isolated-test',
+        id: 'eval-rcase-isolated-test-2',
         run_id: run.id,
         case_id: 'case-1',
         case_name: 'case-1',

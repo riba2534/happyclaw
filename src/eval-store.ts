@@ -90,6 +90,8 @@ export function createEvalSchema(db: SqliteDatabase): void {
       target_version INTEGER,
       target_prompt_hash TEXT,
       model TEXT NOT NULL,
+      provider_source TEXT NOT NULL DEFAULT 'live_provider',
+      provider_id TEXT NOT NULL DEFAULT '',
       capability_snapshot TEXT NOT NULL DEFAULT '{}',
       status TEXT NOT NULL DEFAULT 'pending',
       total_cases INTEGER NOT NULL DEFAULT 0,
@@ -119,6 +121,9 @@ export function createEvalSchema(db: SqliteDatabase): void {
       run_id TEXT NOT NULL,
       case_id TEXT NOT NULL,
       case_name TEXT NOT NULL,
+      case_input_snapshot TEXT NOT NULL DEFAULT '',
+      case_expected_snapshot TEXT NOT NULL DEFAULT '',
+      case_rules_snapshot TEXT NOT NULL DEFAULT '{}',
       version_tag TEXT NOT NULL,
       prompt_version INTEGER NOT NULL,
       prompt_hash TEXT NOT NULL,
@@ -131,6 +136,9 @@ export function createEvalSchema(db: SqliteDatabase): void {
       tokens_input INTEGER NOT NULL DEFAULT 0,
       tokens_output INTEGER NOT NULL DEFAULT 0,
       tokens_total INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+      reasoning_tokens INTEGER NOT NULL DEFAULT 0,
       estimated_cost_usd REAL NOT NULL DEFAULT 0,
       tools_used TEXT NOT NULL DEFAULT '[]',
       human_feedback TEXT,
@@ -144,6 +152,48 @@ export function createEvalSchema(db: SqliteDatabase): void {
     CREATE INDEX IF NOT EXISTS idx_eval_run_cases_run
       ON eval_run_cases(run_id, version_tag, case_id);
   `);
+
+  // Ensure columns for existing installations
+  try {
+    db.exec(
+      `ALTER TABLE eval_runs ADD COLUMN provider_source TEXT NOT NULL DEFAULT 'live_provider'`,
+    );
+  } catch {}
+  try {
+    db.exec(
+      `ALTER TABLE eval_runs ADD COLUMN provider_id TEXT NOT NULL DEFAULT ''`,
+    );
+  } catch {}
+  try {
+    db.exec(
+      `ALTER TABLE eval_run_cases ADD COLUMN case_input_snapshot TEXT NOT NULL DEFAULT ''`,
+    );
+  } catch {}
+  try {
+    db.exec(
+      `ALTER TABLE eval_run_cases ADD COLUMN case_expected_snapshot TEXT NOT NULL DEFAULT ''`,
+    );
+  } catch {}
+  try {
+    db.exec(
+      `ALTER TABLE eval_run_cases ADD COLUMN case_rules_snapshot TEXT NOT NULL DEFAULT '{}'`,
+    );
+  } catch {}
+  try {
+    db.exec(
+      `ALTER TABLE eval_run_cases ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0`,
+    );
+  } catch {}
+  try {
+    db.exec(
+      `ALTER TABLE eval_run_cases ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0`,
+    );
+  } catch {}
+  try {
+    db.exec(
+      `ALTER TABLE eval_run_cases ADD COLUMN reasoning_tokens INTEGER NOT NULL DEFAULT 0`,
+    );
+  } catch {}
 }
 
 function parseJsonSafe<T>(val: unknown, fallback: T): T {
@@ -211,6 +261,8 @@ function mapRunRow(row: Record<string, unknown>): EvalRun {
         ? String(row.target_prompt_hash)
         : null,
     model: String(row.model),
+    provider_source:
+      (row.provider_source as EvalRun['provider_source']) || 'live_provider',
     capability_snapshot: parseJsonSafe(row.capability_snapshot, {}),
     status: row.status as EvalRun['status'],
     total_cases: Number(row.total_cases || 0),
@@ -532,12 +584,14 @@ export function createEvalRun(
     `INSERT INTO eval_runs (
       id, owner_user_id, agent_profile_id, agent_name, suite_id, suite_version, mode,
       base_version, base_prompt_hash, target_version, target_prompt_hash, model,
+      provider_source, provider_id,
       capability_snapshot, status, total_cases, completed_cases, base_pass_count, target_pass_count,
       base_avg_duration_ms, target_avg_duration_ms, base_total_tokens, target_total_tokens,
       base_estimated_cost_usd, target_estimated_cost_usd, error_message, created_at, updated_at
     ) VALUES (
       ?, ?, ?, ?, ?, ?, ?,
       ?, ?, ?, ?, ?,
+      ?, ?,
       ?, ?, ?, ?, ?, ?,
       ?, ?, ?, ?,
       ?, ?, ?, ?, ?
@@ -555,6 +609,8 @@ export function createEvalRun(
     run.target_version,
     run.target_prompt_hash,
     run.model,
+    run.provider_source || 'live_provider',
+    (run as any).provider_id || '',
     JSON.stringify(run.capability_snapshot || {}),
     run.status || 'pending',
     run.total_cases,
@@ -692,14 +748,22 @@ export function createEvalRunCase(
 
   db.prepare(
     `INSERT INTO eval_run_cases (
-      id, run_id, case_id, case_name, version_tag, prompt_version, prompt_hash,
+      id, run_id, case_id, case_name,
+      case_input_snapshot, case_expected_snapshot, case_rules_snapshot,
+      version_tag, prompt_version, prompt_hash,
       status, actual_output, auto_score, auto_verdict, eval_details, duration_ms,
-      tokens_input, tokens_output, tokens_total, estimated_cost_usd, tools_used,
+      tokens_input, tokens_output, tokens_total,
+      cache_read_tokens, cache_creation_tokens, reasoning_tokens,
+      estimated_cost_usd, tools_used,
       human_feedback, human_notes, error_message, created_at, updated_at
     ) VALUES (
-      ?, ?, ?, ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?, ?,
+      ?, ?, ?,
       ?, ?, ?, ?, ?, ?,
-      ?, ?, ?, ?, ?,
+      ?, ?, ?,
+      ?, ?, ?,
+      ?, ?,
       ?, ?, ?, ?, ?
     )`,
   ).run(
@@ -707,6 +771,9 @@ export function createEvalRunCase(
     data.run_id,
     data.case_id,
     data.case_name,
+    (data as any).case_input_snapshot || '',
+    (data as any).case_expected_snapshot || '',
+    JSON.stringify((data as any).case_rules_snapshot || {}),
     data.version_tag,
     data.prompt_version,
     data.prompt_hash,
@@ -719,6 +786,9 @@ export function createEvalRunCase(
     data.tokens_input || 0,
     data.tokens_output || 0,
     data.tokens_total || 0,
+    (data as any).cache_read_tokens || 0,
+    (data as any).cache_creation_tokens || 0,
+    (data as any).reasoning_tokens || 0,
     data.estimated_cost_usd || 0,
     JSON.stringify(data.tools_used || []),
     data.human_feedback || null,
@@ -846,4 +916,43 @@ export function updateEvalRunCaseFeedback(
   ).run(feedback, updatedNotes, now, id);
 
   return getEvalRunCase(id);
+}
+
+/**
+ * Clean up dangling running/pending runs after process crash or service restart.
+ * Eliminates orphan running records by marking them as interrupted.
+ */
+export function recoverDanglingEvalRuns(): {
+  recoveredRuns: number;
+  recoveredCases: number;
+} {
+  const db = getDb();
+  const now = new Date().toISOString();
+  return db.transaction(() => {
+    const runsRes = db
+      .prepare(
+        `UPDATE eval_runs
+         SET status = 'interrupted',
+             error_message = '服务重启导致评测中断',
+             completed_at = ?,
+             updated_at = ?
+         WHERE status IN ('pending', 'running')`,
+      )
+      .run(now, now);
+
+    const casesRes = db
+      .prepare(
+        `UPDATE eval_run_cases
+         SET status = 'interrupted',
+             error_message = '服务重启导致用例中断',
+             updated_at = ?
+         WHERE status IN ('pending', 'running')`,
+      )
+      .run(now);
+
+    return {
+      recoveredRuns: runsRes.changes,
+      recoveredCases: casesRes.changes,
+    };
+  })();
 }

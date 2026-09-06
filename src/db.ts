@@ -125,6 +125,7 @@ import {
   listEvalRunCases,
   updateEvalRunCase,
   updateEvalRunCaseFeedback,
+  recoverDanglingEvalRuns,
 } from './eval-store.js';
 import { splitLegacyEmbeddedReferenceContent } from './message-prompt.js';
 
@@ -1016,6 +1017,7 @@ export function initDatabase(
   createEvalSchema(db);
   bindEvalDatabase(db);
   ensureBuiltinEvalSuite();
+  recoverDanglingEvalRuns();
   if (
     rawSchemaVersionBeforeInit !== null &&
     Number(rawSchemaVersionBeforeInit) < 66
@@ -15574,4 +15576,5 @@ export {
   listEvalRunCases,
   updateEvalRunCase,
   updateEvalRunCaseFeedback,
+  recoverDanglingEvalRuns,
 };
