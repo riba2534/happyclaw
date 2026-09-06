@@ -90,12 +90,27 @@ export interface AdminReadinessReport extends PublicReadinessReport {
   };
 }
 
-let cachedCommitSha: string | null = null;
-
-export function resolveCurrentCommitSha(): string {
+function detectBootstrapReleaseSha(): string {
+  // 1. 显式环境变量优先
   if (process.env.HAPPYCLAW_GIT_SHA) return process.env.HAPPYCLAW_GIT_SHA;
-  if (cachedCommitSha) return cachedCommitSha;
 
+  // 2. 通过 import.meta.url 真实物理路径反查所属不可变 release 根中的 version.json
+  try {
+    const currentScriptPath = fs.realpathSync(new URL(import.meta.url));
+    let searchDir = path.dirname(currentScriptPath);
+    for (let i = 0; i < 5; i++) {
+      const versionFile = path.join(searchDir, 'version.json');
+      if (fs.existsSync(versionFile)) {
+        const v = JSON.parse(fs.readFileSync(versionFile, 'utf8'));
+        if (v.commitSha) return v.commitSha;
+      }
+      const parent = path.dirname(searchDir);
+      if (parent === searchDir) break;
+      searchDir = parent;
+    }
+  } catch {}
+
+  // 3. 启动时刻读取 .releases/current/meta.json 或 .release-current.json
   try {
     const metaPath = path.join(
       process.cwd(),
@@ -105,10 +120,7 @@ export function resolveCurrentCommitSha(): string {
     );
     if (fs.existsSync(metaPath)) {
       const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-      if (meta.commitSha) {
-        cachedCommitSha = meta.commitSha;
-        return cachedCommitSha!;
-      }
+      if (meta.commitSha) return meta.commitSha;
     }
   } catch {}
 
@@ -116,13 +128,11 @@ export function resolveCurrentCommitSha(): string {
     const currentFile = path.join(process.cwd(), '.release-current.json');
     if (fs.existsSync(currentFile)) {
       const current = JSON.parse(fs.readFileSync(currentFile, 'utf8'));
-      if (current.commitSha) {
-        cachedCommitSha = current.commitSha;
-        return cachedCommitSha!;
-      }
+      if (current.commitSha) return current.commitSha;
     }
   } catch {}
 
+  // 4. 进程启动冷启兜底：一次性读取启动时的 git HEAD
   try {
     const sha = execSync('git rev-parse HEAD 2>/dev/null', {
       timeout: 1000,
@@ -130,13 +140,17 @@ export function resolveCurrentCommitSha(): string {
     })
       .toString()
       .trim();
-    if (sha) {
-      cachedCommitSha = sha;
-      return cachedCommitSha;
-    }
+    if (sha) return sha;
   } catch {}
 
   return 'unknown';
+}
+
+// 进程启动时刻一次性固化的不可变版本常量，生命周期内绝不随外部 git HEAD 切换漂移
+export const BOOTSTRAP_COMMIT_SHA: string = detectBootstrapReleaseSha();
+
+export function resolveCurrentCommitSha(): string {
+  return BOOTSTRAP_COMMIT_SHA;
 }
 
 class ReadinessManager {
@@ -282,7 +296,6 @@ class ReadinessManager {
     };
     this.consumersPhase = { status: 'pending', error: null, startedAt: null };
     this.channelMap.clear();
-    cachedCommitSha = null;
   }
 
   private computeChannelsPhase(): ChannelsPhase {
