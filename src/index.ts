@@ -1,5 +1,8 @@
 import './load-env.js'; // 必须最先执行：加载 .env 到 process.env，供后续模块（config/web 等）读取
-import { readinessManager } from './readiness-manager.js';
+import {
+  readinessManager,
+  setChannelAuthoritativeSyncSource,
+} from './readiness-manager.js';
 import { ChildProcess, execFile } from 'child_process';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -22607,6 +22610,26 @@ async function main(): Promise<void> {
   // Feishu records its durable Inbox before invoking these callbacks. Keep
   // execution paused while transports connect and old provider cards are
   // reconciled; messages arriving in this window remain queued for retry.
+  // 注册权威渠道就绪同步源：使 Readiness 报告始终以底层 IMManager 真实连接与数据库状态为准
+  setChannelAuthoritativeSyncSource(() => {
+    const allAccounts = listAllChannelAccounts();
+    return allAccounts.map((account) => ({
+      id: account.id,
+      provider: account.provider,
+      name: account.name,
+      enabled: account.enabled,
+      auth_status: account.auth_status,
+      transport_status: account.transport_status,
+      last_error: account.last_error,
+      owner_user_id: account.owner_user_id,
+      isConnected: imManager.isChannelAccountConnected(
+        account.owner_user_id,
+        account.provider,
+        account.id,
+      ),
+    }));
+  });
+
   const allAccountsForReadiness = listAllChannelAccounts();
   for (const account of allAccountsForReadiness) {
     readinessManager.registerChannel({

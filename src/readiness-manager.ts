@@ -90,6 +90,26 @@ export interface AdminReadinessReport extends PublicReadinessReport {
   };
 }
 
+export type ChannelAuthoritativeSyncSource = () => Array<{
+  id: string;
+  provider: string;
+  name: string;
+  enabled: boolean;
+  auth_status: string;
+  transport_status?: string | null;
+  last_error?: string | null;
+  owner_user_id: string;
+  isConnected: boolean;
+}>;
+
+let channelSyncSource: ChannelAuthoritativeSyncSource | null = null;
+
+export function setChannelAuthoritativeSyncSource(
+  source: ChannelAuthoritativeSyncSource | null,
+): void {
+  channelSyncSource = source;
+}
+
 function detectBootstrapReleaseSha(): string {
   // 1. 显式环境变量优先
   if (process.env.HAPPYCLAW_GIT_SHA) return process.env.HAPPYCLAW_GIT_SHA;
@@ -298,9 +318,114 @@ class ReadinessManager {
     this.channelMap.clear();
   }
 
+  private syncAuthoritativeChannels(): void {
+    if (!channelSyncSource) return;
+    try {
+      const liveAccounts = channelSyncSource();
+      const liveIds = new Set(liveAccounts.map((a) => a.id));
+
+      // 清理已删除的账号
+      for (const id of Array.from(this.channelMap.keys())) {
+        if (!liveIds.has(id)) {
+          this.channelMap.delete(id);
+        }
+      }
+
+      // 同步最新权威状态
+      for (const account of liveAccounts) {
+        if (!account.enabled) {
+          this.channelMap.set(account.id, {
+            id: account.id,
+            provider: account.provider,
+            name: account.name,
+            enabled: false,
+            optional: true,
+            status: 'disabled',
+            error: null,
+            lastAttemptAt: null,
+            connectedAt: null,
+          });
+          continue;
+        }
+
+        // enabled === true 的情况
+        if (account.auth_status !== 'authorized') {
+          const isAwaiting =
+            account.auth_status === 'draft' ||
+            account.auth_status === 'awaiting_scan';
+          this.channelMap.set(account.id, {
+            id: account.id,
+            provider: account.provider,
+            name: account.name,
+            enabled: true,
+            optional: true,
+            status: isAwaiting ? 'connecting' : 'failed',
+            error: isAwaiting
+              ? 'Awaiting authorization (scan/credentials)'
+              : account.last_error ||
+                'Account authorization expired or revoked',
+            lastAttemptAt: new Date().toISOString(),
+            connectedAt: null,
+          });
+          continue;
+        }
+
+        // auth_status === 'authorized'
+        if (account.isConnected) {
+          const existing = this.channelMap.get(account.id);
+          this.channelMap.set(account.id, {
+            id: account.id,
+            provider: account.provider,
+            name: account.name,
+            enabled: true,
+            optional: true,
+            status: 'connected',
+            error: null,
+            lastAttemptAt: existing?.lastAttemptAt ?? new Date().toISOString(),
+            connectedAt: existing?.connectedAt ?? new Date().toISOString(),
+          });
+        } else {
+          // 底层未连接
+          const isReconnecting =
+            account.transport_status === 'reconnecting' ||
+            account.transport_status === 'connecting';
+          this.channelMap.set(account.id, {
+            id: account.id,
+            provider: account.provider,
+            name: account.name,
+            enabled: true,
+            optional: true,
+            status: isReconnecting ? 'connecting' : 'failed',
+            error:
+              account.last_error ||
+              (isReconnecting
+                ? 'Reconnecting to provider'
+                : 'Channel transport disconnected'),
+            lastAttemptAt: new Date().toISOString(),
+            connectedAt: null,
+          });
+        }
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Readiness: 同步权威渠道状态异常');
+    }
+  }
+
   private computeChannelsPhase(): ChannelsPhase {
+    this.syncAuthoritativeChannels();
+
     const channelItems = Array.from(this.channelMap.values());
     const totalAccounts = channelItems.length;
+
+    // 严防任何 enabled === true 的账号残留非法 status='disabled' 状态
+    for (const item of channelItems) {
+      if (item.enabled && item.status === 'disabled') {
+        item.status = 'connecting';
+        item.error = item.error || 'Awaiting connection/authorization';
+        item.connectedAt = null;
+      }
+    }
+
     const enabledItems = channelItems.filter((i) => i.enabled);
     const enabledCount = enabledItems.length;
     const connectedCount = enabledItems.filter(
@@ -321,6 +446,9 @@ class ReadinessManager {
     } else if (failedCount > 0) {
       const allFailedAreOptional = failedItems.every((i) => i.optional);
       channelsStatus = allFailedAreOptional ? 'degraded' : 'failed';
+    } else if (enabledCount > 0 && connectedCount < enabledCount) {
+      // 关键防线：若启用了账号但未全部 connected，且无 failed，绝不能误报 ready
+      channelsStatus = 'connecting';
     }
 
     return {
