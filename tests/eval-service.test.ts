@@ -374,6 +374,9 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
         expect.fail('应该抛出异常');
       } catch (err: any) {
         expect(err.message).toContain('Upstream connection reset');
+        expect(err.accumulatedUsage).toBeDefined();
+        expect(err.accumulatedUsage.inputTokens).toBe(500);
+        expect(err.accumulatedUsage.cacheReadTokens).toBe(100);
       } finally {
         mockSdkQueryGenerator = null;
       }

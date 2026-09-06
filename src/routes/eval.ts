@@ -9,6 +9,7 @@ import {
   deleteEvalRun,
   deleteEvalSuite,
   getEvalCase,
+  getEvalRun,
   getEvalSuite,
   getEvalSuiteWithCases,
   listEvalRuns,
@@ -310,11 +311,19 @@ evalRoutes.post('/runs/:id/cancel', (c) => {
 evalRoutes.delete('/runs/:id', (c) => {
   const user = c.get('user') as AuthUser;
   const id = c.req.param('id');
-  const ok = deleteEvalRun(id, user.id);
-  if (!ok) {
+  const run = getEvalRun(id, user.id);
+  if (!run) {
     return c.json({ error: '评测记录不存在或无权删除' }, 404);
   }
-  return c.json({ success: true });
+  if (['pending', 'running'].includes(run.status)) {
+    return c.json(
+      { error: '评测正在执行中，请先取消评测并等待结束后再删除记录' },
+      409,
+    );
+  }
+
+  const ok = deleteEvalRun(id, user.id);
+  return c.json({ success: ok });
 });
 
 // --- 4. Downloadable Reports ---

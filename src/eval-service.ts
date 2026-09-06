@@ -114,6 +114,7 @@ export class SdkExecutionError extends Error {
   };
   durationMs: number;
   toolsUsed: EvalRunCaseToolUsage[];
+  reportedCostUSD?: number;
 
   constructor(
     message: string,
@@ -127,6 +128,7 @@ export class SdkExecutionError extends Error {
       };
       durationMs?: number;
       toolsUsed?: EvalRunCaseToolUsage[];
+      reportedCostUSD?: number;
     },
   ) {
     super(message);
@@ -134,6 +136,7 @@ export class SdkExecutionError extends Error {
     this.accumulatedUsage = options?.accumulatedUsage;
     this.durationMs = options?.durationMs || 0;
     this.toolsUsed = options?.toolsUsed || [];
+    this.reportedCostUSD = options?.reportedCostUSD;
   }
 }
 
@@ -505,132 +508,172 @@ export async function executeWithClaudeAgentSdk(options: {
     },
   });
 
-  for await (const message of conversation) {
-    // 1. Primary authority: Result event usage & modelUsage
-    if (message.type === 'result') {
-      const isApiError =
-        (message as any).is_error === true || message.subtype !== 'success';
-      if (!isApiError) {
-        resultText = message.result || '';
+  try {
+    for await (const message of conversation) {
+      // 1. Primary authority: Result event usage & modelUsage
+      if (message.type === 'result') {
+        const isApiError =
+          (message as any).is_error === true || message.subtype !== 'success';
+        if (!isApiError) {
+          resultText = message.result || '';
+        }
+
+        const rawUsage = (message as any).usage;
+        if (rawUsage) {
+          inputTokens =
+            rawUsage.input_tokens ?? rawUsage.inputTokens ?? inputTokens;
+          outputTokens =
+            rawUsage.output_tokens ?? rawUsage.outputTokens ?? outputTokens;
+          cacheReadTokens =
+            rawUsage.cache_read_input_tokens ??
+            rawUsage.cacheReadInputTokens ??
+            cacheReadTokens;
+          cacheCreationTokens =
+            rawUsage.cache_creation_input_tokens ??
+            rawUsage.cacheCreationInputTokens ??
+            cacheCreationTokens;
+          reasoningTokens =
+            rawUsage.reasoning_output_tokens ??
+            rawUsage.reasoningTokens ??
+            reasoningTokens;
+        }
+        const rawModelUsage = (message as any).modelUsage;
+        if (rawModelUsage && typeof rawModelUsage === 'object') {
+          let mInput = 0;
+          let mOutput = 0;
+          let mCacheRead = 0;
+          let mCacheCreate = 0;
+          let mReasoning = 0;
+          let mCost = 0;
+          for (const mUsage of Object.values(rawModelUsage) as any[]) {
+            if (mUsage && typeof mUsage === 'object') {
+              mInput += mUsage.inputTokens ?? 0;
+              mOutput += mUsage.outputTokens ?? 0;
+              mCacheRead += mUsage.cacheReadInputTokens ?? 0;
+              mCacheCreate += mUsage.cacheCreationInputTokens ?? 0;
+              mReasoning += mUsage.reasoningTokens ?? 0;
+              if (typeof mUsage.costUSD === 'number') {
+                mCost += mUsage.costUSD;
+              }
+            }
+          }
+          if (mInput > 0) inputTokens = mInput;
+          if (mOutput > 0) outputTokens = mOutput;
+          if (mCacheRead > 0) cacheReadTokens = mCacheRead;
+          if (mCacheCreate > 0) cacheCreationTokens = mCacheCreate;
+          if (mReasoning > 0) reasoningTokens = mReasoning;
+          if (mCost > 0) reportedCostUSD = mCost;
+        }
+        if (typeof (message as any).total_cost_usd === 'number') {
+          reportedCostUSD = (message as any).total_cost_usd;
+        }
+
+        // Intercept API errors: error text must never masquerade as completed output
+        if (isApiError) {
+          const errDetail =
+            (message as any).result ||
+            (Array.isArray((message as any).errors)
+              ? (message as any).errors.join('; ')
+              : null) ||
+            `SDK execution ended with subtype: ${message.subtype}`;
+          throw new SdkExecutionError(`API Error: ${errDetail}`, {
+            accumulatedUsage: {
+              inputTokens,
+              outputTokens,
+              cacheReadTokens,
+              cacheCreationTokens,
+              reasoningTokens,
+            },
+            durationMs: Math.max(1, Date.now() - startedAt),
+            toolsUsed: Array.from(toolMap.entries()).map(([name, count]) => ({
+              name,
+              count,
+            })),
+          });
+        }
       }
 
-      const rawUsage = (message as any).usage;
-      if (rawUsage) {
-        inputTokens =
-          rawUsage.input_tokens ?? rawUsage.inputTokens ?? inputTokens;
-        outputTokens =
-          rawUsage.output_tokens ?? rawUsage.outputTokens ?? outputTokens;
-        cacheReadTokens =
-          rawUsage.cache_read_input_tokens ??
-          rawUsage.cacheReadInputTokens ??
-          cacheReadTokens;
-        cacheCreationTokens =
-          rawUsage.cache_creation_input_tokens ??
-          rawUsage.cacheCreationInputTokens ??
-          cacheCreationTokens;
-        reasoningTokens =
-          rawUsage.reasoning_output_tokens ??
-          rawUsage.reasoningTokens ??
-          reasoningTokens;
+      // 2. Stream events usage observation
+      if (message.type === 'stream_event') {
+        const ev = (message as any).event;
+        if (ev?.type === 'message_start' && ev.message?.usage) {
+          inputTokens = ev.message.usage.input_tokens ?? inputTokens;
+          cacheReadTokens =
+            ev.message.usage.cache_read_input_tokens ?? cacheReadTokens;
+          cacheCreationTokens =
+            ev.message.usage.cache_creation_input_tokens ?? cacheCreationTokens;
+        }
+        if (ev?.type === 'message_delta' && ev.usage) {
+          outputTokens = ev.usage.output_tokens ?? outputTokens;
+        }
       }
-      const rawModelUsage = (message as any).modelUsage;
-      if (rawModelUsage && typeof rawModelUsage === 'object') {
-        let mInput = 0;
-        let mOutput = 0;
-        let mCacheRead = 0;
-        let mCacheCreate = 0;
-        let mReasoning = 0;
-        let mCost = 0;
-        for (const mUsage of Object.values(rawModelUsage) as any[]) {
-          if (mUsage && typeof mUsage === 'object') {
-            mInput += mUsage.inputTokens ?? 0;
-            mOutput += mUsage.outputTokens ?? 0;
-            mCacheRead += mUsage.cacheReadInputTokens ?? 0;
-            mCacheCreate += mUsage.cacheCreationInputTokens ?? 0;
-            mReasoning += mUsage.reasoningTokens ?? 0;
-            if (typeof mUsage.costUSD === 'number') {
-              mCost += mUsage.costUSD;
+
+      // 3. Tool use observation with tool_use_id deduplication
+      if (
+        message.type === 'tool_progress' ||
+        message.type === 'tool_use_summary'
+      ) {
+        const toolId =
+          (message as any).tool_use_id || (message as any).toolUseId;
+        const toolName =
+          (message as any).tool_name || (message as any).toolName || 'tool';
+        if (toolId && toolName && !seenToolUseIds.has(toolId)) {
+          seenToolUseIds.add(toolId);
+          toolMap.set(toolName, (toolMap.get(toolName) || 0) + 1);
+        }
+      } else if (message.type === 'assistant') {
+        const assistantContent = (message as any).message?.content;
+        if (Array.isArray(assistantContent)) {
+          for (const block of assistantContent) {
+            if (block?.type === 'tool_use' && block.name) {
+              const toolId =
+                block.id || `${block.name}-${toolMap.get(block.name) || 0}`;
+              if (!seenToolUseIds.has(toolId)) {
+                seenToolUseIds.add(toolId);
+                toolMap.set(block.name, (toolMap.get(block.name) || 0) + 1);
+              }
             }
           }
         }
-        if (mInput > 0) inputTokens = mInput;
-        if (mOutput > 0) outputTokens = mOutput;
-        if (mCacheRead > 0) cacheReadTokens = mCacheRead;
-        if (mCacheCreate > 0) cacheCreationTokens = mCacheCreate;
-        if (mReasoning > 0) reasoningTokens = mReasoning;
-        if (mCost > 0) reportedCostUSD = mCost;
-      }
-      if (typeof (message as any).total_cost_usd === 'number') {
-        reportedCostUSD = (message as any).total_cost_usd;
-      }
-
-      // Intercept API errors: error text must never masquerade as completed output
-      if (isApiError) {
-        const errDetail =
-          (message as any).result ||
-          (Array.isArray((message as any).errors)
-            ? (message as any).errors.join('; ')
-            : null) ||
-          `SDK execution ended with subtype: ${message.subtype}`;
-        throw new SdkExecutionError(`API Error: ${errDetail}`, {
-          accumulatedUsage: {
-            inputTokens,
-            outputTokens,
-            cacheReadTokens,
-            cacheCreationTokens,
-            reasoningTokens,
-          },
-          durationMs: Math.max(1, Date.now() - startedAt),
-          toolsUsed: Array.from(toolMap.entries()).map(([name, count]) => ({
-            name,
-            count,
-          })),
-        });
       }
     }
-
-    // 2. Stream events usage observation
-    if (message.type === 'stream_event') {
-      const ev = (message as any).event;
-      if (ev?.type === 'message_start' && ev.message?.usage) {
-        inputTokens = ev.message.usage.input_tokens ?? inputTokens;
-        cacheReadTokens =
-          ev.message.usage.cache_read_input_tokens ?? cacheReadTokens;
-        cacheCreationTokens =
-          ev.message.usage.cache_creation_input_tokens ?? cacheCreationTokens;
-      }
-      if (ev?.type === 'message_delta' && ev.usage) {
-        outputTokens = ev.usage.output_tokens ?? outputTokens;
-      }
+  } catch (err: unknown) {
+    if (err instanceof SdkExecutionError) {
+      throw err;
     }
+    throw new SdkExecutionError((err as Error).message || 'SDK Query Failure', {
+      accumulatedUsage: {
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheCreationTokens,
+        reasoningTokens,
+      },
+      durationMs: Math.max(1, Date.now() - startedAt),
+      toolsUsed: Array.from(toolMap.entries()).map(([name, count]) => ({
+        name,
+        count,
+      })),
+      reportedCostUSD,
+    });
+  }
 
-    // 3. Tool use observation with tool_use_id deduplication
-    if (
-      message.type === 'tool_progress' ||
-      message.type === 'tool_use_summary'
-    ) {
-      const toolId = (message as any).tool_use_id || (message as any).toolUseId;
-      const toolName =
-        (message as any).tool_name || (message as any).toolName || 'tool';
-      if (toolId && toolName && !seenToolUseIds.has(toolId)) {
-        seenToolUseIds.add(toolId);
-        toolMap.set(toolName, (toolMap.get(toolName) || 0) + 1);
-      }
-    } else if (message.type === 'assistant') {
-      const assistantContent = (message as any).message?.content;
-      if (Array.isArray(assistantContent)) {
-        for (const block of assistantContent) {
-          if (block?.type === 'tool_use' && block.name) {
-            const toolId =
-              block.id || `${block.name}-${toolMap.get(block.name) || 0}`;
-            if (!seenToolUseIds.has(toolId)) {
-              seenToolUseIds.add(toolId);
-              toolMap.set(block.name, (toolMap.get(block.name) || 0) + 1);
-            }
-          }
-        }
-      }
-    }
+  if (!resultText.trim() && !abortController.signal.aborted) {
+    throw new SdkExecutionError('模型执行未产生有效输出内容', {
+      accumulatedUsage: {
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheCreationTokens,
+        reasoningTokens,
+      },
+      durationMs: Math.max(1, Date.now() - startedAt),
+      toolsUsed: Array.from(toolMap.entries()).map(([name, count]) => ({
+        name,
+        count,
+      })),
+      reportedCostUSD,
+    });
   }
 
   const durationMs = Math.max(1, Date.now() - startedAt);
