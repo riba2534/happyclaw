@@ -80,7 +80,7 @@ chmod 600 .env
 `deploy-release.sh` 执行的原子发布流程：
 
 1. **工作树干净预检**：校验当前目录无未提交更改，记录旧版本 `HAPPYCLAW_PREVIOUS_SHA`；
-2. **独立候选准备 (.release-candidate)**：在隔离 worktree 中签出 `HAPPYCLAW_EXPECTED_SHA`，依次构建主服务、Web 前端与 Agent Runner；
+2. **独立候选准备 (.release-candidate)**：在隔离 worktree 中签出 `HAPPYCLAW_EXPECTED_SHA`，隔离执行三包全量构建 `npm run build:all`（包括主服务、Web 前端与 Agent Runner）；
 3. **不可变镜像校验**：分支构建必须使用 `riba2534/happyclaw-agent:git-<SHA>` 不可变标签，严禁使用浮动的 `latest`；
 4. **失败零污染防护**：任一步构建或校验失败，脚本立即退出并清理候选目录，线上正运行的代码与 `web/dist` 绝不受任何影响；
 5. **原子激活 (Atomic Switch)**：三包产物全部校验成功后，将当前在线产物安全归档至 `.release-previous`（仅保留代码 SHA 与三包产物，**绝不备份 SQLite/runtime/.env 数据**），随后将 Git HEAD 与三包产物同步切换至目标版本；
