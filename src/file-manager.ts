@@ -1,7 +1,6 @@
 import path from 'path';
 import fs from 'fs';
 import { spawn, spawnSync } from 'child_process';
-import { PassThrough, Readable } from 'stream';
 import { fileURLToPath } from 'url';
 import { DATA_DIR, GROUPS_DIR, MAX_FILE_SIZE } from './config.js';
 import { deleteContainerEnvConfig } from './runtime-config.js';
@@ -309,191 +308,214 @@ export async function safeOpenWorkspaceReadStream(
       }
     });
 
-    child.stdout.on('data', function onHeaderChunk(chunk: Buffer) {
+    child.stdout.pause();
+
+    const onReadable = () => {
       if (!settled) {
-        accumulated = Buffer.concat([accumulated, chunk]);
-        const newlineIndex = accumulated.indexOf(0x0a);
-        if (newlineIndex !== -1) {
-          child.stdout.removeListener('data', onHeaderChunk);
-          const headerRaw = accumulated
-            .subarray(0, newlineIndex)
-            .toString('utf-8');
-          const remainder = accumulated.subarray(newlineIndex + 1);
+        let chunk: Buffer | null;
+        while ((chunk = child.stdout.read(1024)) !== null) {
+          accumulated = Buffer.concat([accumulated, chunk]);
+          const newlineIndex = accumulated.indexOf(0x0a);
+          if (newlineIndex !== -1) {
+            child.stdout.removeListener('readable', onReadable);
+            const headerRaw = accumulated
+              .subarray(0, newlineIndex)
+              .toString('utf-8');
+            const remainder = accumulated.subarray(newlineIndex + 1);
 
-          let header: any;
-          try {
-            header = JSON.parse(headerRaw);
-          } catch {
-            onHeaderFailure(
-              new Error(`Invalid header from safe read helper: ${headerRaw}`),
-            );
-            return;
-          }
-
-          if (!header.ok) {
-            onHeaderFailure(new Error(header.error || 'Safe read failed'));
-            return;
-          }
-
-          settled = true;
-
-          const passThrough = new PassThrough();
-          let isDestroyed = false;
-          const destroy = () => {
-            if (!isDestroyed) {
-              isDestroyed = true;
-              child.stdout.removeAllListeners();
-              try {
-                child.stdin.destroy();
-              } catch {}
-              try {
-                child.kill('SIGTERM');
-              } catch {}
-              // 50ms 兜底强杀，确保子进程生命周期绝对与流取消连通
-              setTimeout(() => {
-                try {
-                  if (child.exitCode === null && child.signalCode === null) {
-                    child.kill('SIGKILL');
-                  }
-                } catch {}
-              }, 50).unref?.();
-              passThrough.destroy();
+            let header: any;
+            try {
+              header = JSON.parse(headerRaw);
+            } catch {
+              onHeaderFailure(
+                new Error(`Invalid header from safe read helper: ${headerRaw}`),
+              );
+              return;
             }
-          };
 
-          passThrough.on('close', () => destroy());
-          passThrough.on('error', () => destroy());
+            if (!header.ok) {
+              onHeaderFailure(new Error(header.error || 'Safe read failed'));
+              return;
+            }
 
-          if (header.isRangeRequest && header.rangeSatisfiable === false) {
-            destroy();
+            settled = true;
+
+            let isDestroyed = false;
+            const destroy = () => {
+              if (!isDestroyed) {
+                isDestroyed = true;
+                child.stdout.removeAllListeners();
+                try {
+                  child.stdin.destroy();
+                } catch {}
+                try {
+                  child.kill('SIGTERM');
+                } catch {}
+                setTimeout(() => {
+                  try {
+                    if (child.exitCode === null && child.signalCode === null) {
+                      child.kill('SIGKILL');
+                    }
+                  } catch {}
+                }, 50).unref?.();
+              }
+            };
+
+            if (header.isRangeRequest && header.rangeSatisfiable === false) {
+              destroy();
+              resolve({
+                size: header.size,
+                mtimeMs: header.mtimeMs,
+                isRangeRequest: true,
+                rangeSatisfiable: false,
+                contentLength: 0,
+                stream: new ReadableStream<Uint8Array>({
+                  start(controller) {
+                    controller.close();
+                  },
+                }),
+                destroy,
+                processPid: child.pid,
+              });
+              return;
+            }
+
+            let streamFinalized = false;
+            let receivedBytes = remainder.length;
+
+            // 核心有界背压控制：
+            // 1. child.stdout 默认暂停，只有当 WebStream 的 pull() 被调用时才单次 resume() 拉取一个 chunk；
+            // 2. 读到一个 chunk 后立即 pause() 恢复上游背压，使内核管道填满并挂起 Python 子进程；
+            // 3. 严格使用 ByteLengthQueuingStrategy(64KB)，杜绝基于对象计数导致的内存堆积。
+            child.stdout.pause();
+
+            const finalize = (
+              code: number | null,
+              signal: NodeJS.Signals | null,
+              controller: ReadableStreamDefaultController<Uint8Array>,
+            ) => {
+              if (streamFinalized) return;
+              streamFinalized = true;
+
+              if (code !== 0 && code !== null && signal !== 'SIGTERM') {
+                destroy();
+                controller.error(
+                  new Error(
+                    `Safe read helper exited unexpectedly with code ${code}${
+                      stderrBuffer.trim() ? `: ${stderrBuffer.trim()}` : ''
+                    }`,
+                  ),
+                );
+                return;
+              }
+
+              if (receivedBytes < header.contentLength) {
+                destroy();
+                controller.error(
+                  new Error(
+                    `Truncated stream: received ${receivedBytes} of ${header.contentLength} bytes`,
+                  ),
+                );
+                return;
+              }
+
+              destroy();
+              try {
+                controller.close();
+              } catch {}
+            };
+
+            const boundedStream = new ReadableStream<Uint8Array>(
+              {
+                start(controller) {
+                  if (remainder.length > 0) {
+                    controller.enqueue(
+                      new Uint8Array(
+                        remainder.buffer,
+                        remainder.byteOffset,
+                        remainder.byteLength,
+                      ),
+                    );
+                  }
+                },
+                pull(controller) {
+                  return new Promise<void>((resolve, reject) => {
+                    if (streamFinalized) {
+                      resolve();
+                      return;
+                    }
+
+                    const onData = (dataChunk: Buffer) => {
+                      receivedBytes += dataChunk.length;
+                      controller.enqueue(
+                        new Uint8Array(
+                          dataChunk.buffer,
+                          dataChunk.byteOffset,
+                          dataChunk.byteLength,
+                        ),
+                      );
+                      // 读到一个 chunk 后立即恢复暂停，严格实现有界背压
+                      child.stdout.pause();
+                      cleanup();
+                      resolve();
+                    };
+
+                    const onClose = (
+                      code: number | null,
+                      signal: NodeJS.Signals | null,
+                    ) => {
+                      cleanup();
+                      finalize(code, signal, controller);
+                      resolve();
+                    };
+
+                    const onError = (err: Error) => {
+                      cleanup();
+                      destroy();
+                      controller.error(err);
+                      reject(err);
+                    };
+
+                    const cleanup = () => {
+                      child.stdout.removeListener('data', onData);
+                      child.removeListener('close', onClose);
+                      child.removeListener('error', onError);
+                    };
+
+                    child.stdout.once('data', onData);
+                    child.once('close', onClose);
+                    child.once('error', onError);
+
+                    child.stdout.resume();
+                  });
+                },
+                cancel(reason) {
+                  destroy();
+                  return Promise.resolve();
+                },
+              },
+              new ByteLengthQueuingStrategy({ highWaterMark: 64 * 1024 }),
+            );
+
             resolve({
               size: header.size,
               mtimeMs: header.mtimeMs,
-              isRangeRequest: true,
-              rangeSatisfiable: false,
-              contentLength: 0,
-              stream: new ReadableStream<Uint8Array>({
-                start(controller) {
-                  controller.close();
-                },
-              }),
+              isRangeRequest: !!header.isRangeRequest,
+              rangeSatisfiable: true,
+              start: header.start,
+              end: header.end,
+              contentLength: header.contentLength,
+              stream: boundedStream,
               destroy,
+              processPid: child.pid,
             });
             return;
           }
-
-          let receivedBytes = remainder.length;
-
-          if (remainder.length > 0) {
-            passThrough.write(remainder);
-          }
-
-          child.stdout.on('data', (dataChunk: Buffer) => {
-            receivedBytes += dataChunk.length;
-          });
-
-          // 关键安全保证：阻止 child.stdout 自动结束 passThrough，
-          // 防止 Node 管道自动 EOF 早于 child close 非0到达从而掩盖并发截断异常
-          child.stdout.pipe(passThrough, { end: false });
-
-          let finalized = false;
-          const finalize = (
-            code: number | null,
-            signal: NodeJS.Signals | null,
-          ) => {
-            if (finalized) return;
-            finalized = true;
-
-            if (code !== 0 && code !== null && signal !== 'SIGTERM') {
-              passThrough.destroy(
-                new Error(
-                  `Safe read helper exited unexpectedly with code ${code}${
-                    stderrBuffer.trim() ? `: ${stderrBuffer.trim()}` : ''
-                  }`,
-                ),
-              );
-              return;
-            }
-
-            if (receivedBytes < header.contentLength) {
-              passThrough.destroy(
-                new Error(
-                  `Truncated stream: received ${receivedBytes} of ${header.contentLength} bytes`,
-                ),
-              );
-              return;
-            }
-
-            passThrough.end();
-          };
-
-          child.on('close', (code, signal) => {
-            finalize(code, signal);
-          });
-
-          child.on('error', (err) => {
-            if (!finalized) {
-              finalized = true;
-              passThrough.destroy(err);
-            }
-          });
-
-          const baseWebStream = Readable.toWeb(
-            passThrough,
-          ) as ReadableStream<Uint8Array>;
-
-          let streamReader: ReadableStreamDefaultReader<Uint8Array> | null =
-            null;
-          const cancellableWebStream = new ReadableStream<Uint8Array>({
-            start(controller) {
-              const reader = baseWebStream.getReader();
-              streamReader = reader;
-              function pump(): void {
-                reader
-                  .read()
-                  .then(({ done, value }) => {
-                    if (done) {
-                      try {
-                        controller.close();
-                      } catch {}
-                      return;
-                    }
-                    controller.enqueue(value);
-                    pump();
-                  })
-                  .catch((err) => {
-                    destroy();
-                    try {
-                      controller.error(err);
-                    } catch {}
-                  });
-              }
-              pump();
-            },
-            cancel(reason) {
-              destroy();
-              if (streamReader) {
-                return streamReader.cancel(reason).catch(() => {});
-              }
-              return Promise.resolve();
-            },
-          });
-
-          resolve({
-            size: header.size,
-            mtimeMs: header.mtimeMs,
-            isRangeRequest: !!header.isRangeRequest,
-            rangeSatisfiable: true,
-            start: header.start,
-            end: header.end,
-            contentLength: header.contentLength,
-            stream: cancellableWebStream,
-            destroy,
-            processPid: child.pid,
-          });
         }
       }
-    });
+    };
+
+    child.stdout.on('readable', onReadable);
 
     child.stdin.end(JSON.stringify(request));
   });

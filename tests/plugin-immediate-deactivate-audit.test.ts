@@ -31,6 +31,7 @@ const {
 } = await import('../src/db.js');
 const { signSessionToken } = await import('../src/auth.js');
 const { setWebDeps } = await import('../src/web-context.js');
+const { GroupQueue } = await import('../src/group-queue.js');
 const { scanHostMarketplaces } = await import('../src/plugin-importer.js');
 const { readUserPluginsV2 } = await import('../src/plugin-utils.js');
 const pluginsRoutes = (await import('../src/routes/plugins.js')).default;
@@ -45,8 +46,8 @@ let adminCookie: string;
 let memberACookie: string;
 let memberBCookie: string;
 
-const stoppedJids: string[] = [];
-const blockedJids: string[] = [];
+let realQueue: any;
+const executedTasks: string[] = [];
 const mockSessions: Record<string, string> = {};
 
 const fixtureSource = path.join(tmpRoot, 'fixture-marketplaces');
@@ -179,26 +180,15 @@ beforeAll(async () => {
   mockSessions['workspace-a'] = 'active-session-a';
   mockSessions['workspace-b'] = 'active-session-b';
 
+  realQueue = new GroupQueue();
+  realQueue.setHostModeChecker(() => true);
+  realQueue.setProcessMessagesFn(async (jid: string) => {
+    executedTasks.push(jid);
+    return true;
+  });
+
   setWebDeps({
-    queue: {
-      pauseGroupsForMutation: (jids: string[]) => ({ keys: jids }),
-      resumeGroupsAfterMutation: () => {},
-      listDescendantJids: () => [],
-      stopGroup: async (jid: string) => {
-        stoppedJids.push(jid);
-        return true;
-      },
-      blockGroupsForRuntimeSafety: (jids: string[]) => {
-        blockedJids.push(...jids);
-      },
-      unblockGroupsForRuntimeSafety: (jids: string[]) => {
-        for (const j of jids) {
-          const idx = blockedJids.indexOf(j);
-          if (idx >= 0) blockedJids.splice(idx, 1);
-        }
-      },
-      isGroupRuntimeSafetyBlocked: (jid: string) => blockedJids.includes(jid),
-    },
+    queue: realQueue,
     sessions: mockSessions,
     getSessions: () => mockSessions,
     getRegisteredGroups: () => getAllRegisteredGroups(),
@@ -545,8 +535,22 @@ describe('R15: 插件立即停用与能力/凭据变更审计测试', () => {
       );
       expect(resFail.status).toBe(503);
 
-      // 验证：受影响的工作区已被安装安全 gate（blocked）！
-      expect(blockedJids.length).toBeGreaterThan(0);
+      // 验证：受影响的工作区已被真实队列安装安全 gate（blocked）！
+      expect(realQueue.isGroupRuntimeSafetyBlocked('web:workspace-a')).toBe(
+        true,
+      );
+
+      // 向真实队列排入待执行任务
+      realQueue.enqueueTask(
+        'web:workspace-a',
+        'safety-block-probe-task',
+        async () => {
+          executedTasks.push('safety-block-probe-task');
+        },
+      );
+
+      // 关键安全断言：在安全门禁存在期间，排队任务被严格拦截，绝不提前启动！
+      expect(executedTasks).not.toContain('safety-block-probe-task');
 
       // 验证：审计表中记录了失败事件
       const logsFail = queryAuthAuditLogs({
@@ -569,7 +573,14 @@ describe('R15: 插件立即停用与能力/凭据变更审计测试', () => {
       expect(resRetry.status).toBe(200);
 
       // 验证：安全 gate 已经被成功解除（unblocked）！
-      expect(blockedJids.length).toBe(0);
+      expect(realQueue.isGroupRuntimeSafetyBlocked('web:workspace-a')).toBe(
+        false,
+      );
+
+      // 等待事件循环使恢复后的队列调度排队任务
+      await new Promise((r) => setTimeout(r, 60));
+      // 验证：只有在物化完全成功、事务成功提交并解除门禁后，排队任务才被安全调度启动！
+      expect(executedTasks).toContain('safety-block-probe-task');
 
       // 验证：审计表中追加了成功的修复事件
       const logsSuccess = queryAuthAuditLogs({

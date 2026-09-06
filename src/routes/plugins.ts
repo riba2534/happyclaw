@@ -26,7 +26,6 @@ import { checkPluginDependencies } from '../plugin-dependency-check.js';
 import { getUserHomeGroup, recordAuthAuditLog } from '../db.js';
 import {
   mutateCapabilityAroundRuntimeQuiesce,
-  repairCapabilityRuntimeSafetyBlock,
   type CapabilityMutationImpact,
 } from '../capability-runtime-mutation.js';
 import {
@@ -422,12 +421,6 @@ pluginsRoutes.post(
           pluginFullId: fullId,
         };
 
-        // 修复可能残留的 safety block
-        await repairCapabilityRuntimeSafetyBlock(
-          impact,
-          `Plugin ${fullId} immediate deactivation cleanup`,
-        );
-
         const v2 =
           readUserPluginsV2(authUser.id) ??
           ({ schemaVersion: 1, enabled: {} } as UserPluginsV2);
@@ -570,11 +563,6 @@ pluginsRoutes.put('/secrets/:key', authMiddleware, async (c) => {
         ownerUserId: authUser.id,
       };
 
-      await repairCapabilityRuntimeSafetyBlock(
-        impact,
-        `Plugin secret ${key} update cleanup`,
-      );
-
       let invalidatedRuntimeJids = 0;
       try {
         const mutationResult = await mutateCapabilityAroundRuntimeQuiesce(
@@ -668,11 +656,6 @@ pluginsRoutes.delete('/secrets/:key', authMiddleware, async (c) => {
         ownerUserId: authUser.id,
       };
 
-      await repairCapabilityRuntimeSafetyBlock(
-        impact,
-        `Plugin secret ${key} revocation cleanup`,
-      );
-
       let invalidatedRuntimeJids = 0;
       try {
         const mutationResult = await mutateCapabilityAroundRuntimeQuiesce(
@@ -760,11 +743,6 @@ pluginsRoutes.post('/materialize', authMiddleware, async (c) => {
         kind: 'plugins',
         ownerUserId: authUser.id,
       };
-
-      await repairCapabilityRuntimeSafetyBlock(
-        impact,
-        `Manual materialize recovery for user ${authUser.id}`,
-      );
 
       let invalidatedRuntimeJids = 0;
       let report: any;
@@ -871,12 +849,6 @@ pluginsRoutes.delete('/marketplaces/:name', authMiddleware, async (c) => {
         kind: 'plugins',
         ownerUserId: authUser.id,
       };
-
-      // 无论 removedEnabled 是否为 0，重试路径均执行安全修复与运行时失效
-      await repairCapabilityRuntimeSafetyBlock(
-        impact,
-        `Cascade disable for marketplace ${name} cleanup`,
-      );
 
       let invalidatedRuntimeJids = 0;
       try {

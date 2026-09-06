@@ -353,23 +353,33 @@ describe('R01: 文件安全读取防 TOCTOU 回归测试', () => {
     expect(await resSecond.text()).not.toContain(outsideMarkerContent);
   });
 
-  test('流背压与取消：消费者主动取消流，底层子进程被严格销毁且绝无进程泄漏', async () => {
+  test('流背压与取消：零读取与慢读取下内存严格有界，取消时底层子进程被彻底销毁无泄漏', async () => {
     const relPath = 'stream-cancel-test.dat';
     const filePath = path.join(workspaceDir, relPath);
-    // 写入 50MB 稀疏测试文件
+    // 写入 64MB 稀疏测试文件
     const fd = fs.openSync(filePath, 'w');
     fs.writeSync(fd, Buffer.from('START'), 0, 5, 0);
-    fs.writeSync(fd, Buffer.from('END'), 0, 3, 50 * 1024 * 1024);
+    fs.writeSync(fd, Buffer.from('END'), 0, 3, 64 * 1024 * 1024 - 3);
     fs.closeSync(fd);
 
     const { safeOpenWorkspaceReadStream } =
       await import('../src/file-manager.js');
+
+    const memBefore = process.memoryUsage();
     const readResult = await safeOpenWorkspaceReadStream(folder, relPath);
     const pid = readResult.processPid;
     expect(pid).toBeDefined();
 
-    // 验证子进程此时存活
+    // 零消费者读取：等待 150ms，验证有界背压使得底层 Python 子进程暂停，绝不在无读取时吞吐全部 64MB
+    await new Promise((r) => setTimeout(r, 150));
+
+    // 验证子进程此时仍存活（被内核管道缓冲区背压暂停）
     expect(() => process.kill(pid!, 0)).not.toThrow();
+
+    const memAfterPause = process.memoryUsage();
+    // 关键安全断言：流内存有稳定上限，零消费时 ArrayBuffer 增量必须极小（不超过 512KB），绝不能暴涨几十 MB
+    const abGrowth = memAfterPause.arrayBuffers - memBefore.arrayBuffers;
+    expect(abGrowth).toBeLessThan(512 * 1024);
 
     const reader = readResult.stream.getReader();
     // 读出首块 chunk
