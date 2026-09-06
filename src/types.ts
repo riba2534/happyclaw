@@ -1440,6 +1440,10 @@ export interface EvalRunCase {
   run_id: string;
   case_id: string;
   case_name: string;
+  category: string;
+  case_input_snapshot: string;
+  case_expected_snapshot: string;
+  case_rules_snapshot: EvalCaseRule;
   version_tag: 'base' | 'target' | 'single';
   prompt_version: number;
   prompt_hash: string;
@@ -1452,6 +1456,9 @@ export interface EvalRunCase {
   tokens_input: number;
   tokens_output: number;
   tokens_total: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  reasoning_tokens: number;
   estimated_cost_usd: number;
   tools_used: EvalRunCaseToolUsage[];
   human_feedback: EvalHumanFeedback;

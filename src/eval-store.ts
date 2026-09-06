@@ -1,4 +1,7 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { DATA_DIR } from './config.js';
 import type {
   EvalCase,
   EvalHumanFeedback,
@@ -121,6 +124,7 @@ export function createEvalSchema(db: SqliteDatabase): void {
       run_id TEXT NOT NULL,
       case_id TEXT NOT NULL,
       case_name TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'general',
       case_input_snapshot TEXT NOT NULL DEFAULT '',
       case_expected_snapshot TEXT NOT NULL DEFAULT '',
       case_rules_snapshot TEXT NOT NULL DEFAULT '{}',
@@ -162,6 +166,11 @@ export function createEvalSchema(db: SqliteDatabase): void {
   try {
     db.exec(
       `ALTER TABLE eval_runs ADD COLUMN provider_id TEXT NOT NULL DEFAULT ''`,
+    );
+  } catch {}
+  try {
+    db.exec(
+      `ALTER TABLE eval_run_cases ADD COLUMN category TEXT NOT NULL DEFAULT 'general'`,
     );
   } catch {}
   try {
@@ -288,6 +297,10 @@ function mapRunCaseRow(row: Record<string, unknown>): EvalRunCase {
     run_id: String(row.run_id),
     case_id: String(row.case_id),
     case_name: String(row.case_name),
+    category: String(row.category || 'general'),
+    case_input_snapshot: String(row.case_input_snapshot || ''),
+    case_expected_snapshot: String(row.case_expected_snapshot || ''),
+    case_rules_snapshot: parseJsonSafe(row.case_rules_snapshot, {}),
     version_tag: row.version_tag as EvalRunCase['version_tag'],
     prompt_version: Number(row.prompt_version || 0),
     prompt_hash: String(row.prompt_hash || ''),
@@ -300,6 +313,9 @@ function mapRunCaseRow(row: Record<string, unknown>): EvalRunCase {
     tokens_input: Number(row.tokens_input || 0),
     tokens_output: Number(row.tokens_output || 0),
     tokens_total: Number(row.tokens_total || 0),
+    cache_read_tokens: Number(row.cache_read_tokens || 0),
+    cache_creation_tokens: Number(row.cache_creation_tokens || 0),
+    reasoning_tokens: Number(row.reasoning_tokens || 0),
     estimated_cost_usd: Number(row.estimated_cost_usd || 0),
     tools_used: parseJsonSafe(row.tools_used, []),
     human_feedback: (row.human_feedback as EvalHumanFeedback) || null,
@@ -736,6 +752,15 @@ export function deleteEvalRun(id: string, ownerUserId: string): boolean {
     db.prepare('DELETE FROM eval_run_cases WHERE run_id = ?').run(id);
     db.prepare('DELETE FROM eval_runs WHERE id = ?').run(id);
   })();
+
+  // Clean up physical workspace directory for this run
+  try {
+    const runWorkspaceDir = path.join(DATA_DIR, 'eval-workspaces', id);
+    if (fs.existsSync(runWorkspaceDir)) {
+      fs.rmSync(runWorkspaceDir, { recursive: true, force: true });
+    }
+  } catch {}
+
   return true;
 }
 
@@ -748,7 +773,7 @@ export function createEvalRunCase(
 
   db.prepare(
     `INSERT INTO eval_run_cases (
-      id, run_id, case_id, case_name,
+      id, run_id, case_id, case_name, category,
       case_input_snapshot, case_expected_snapshot, case_rules_snapshot,
       version_tag, prompt_version, prompt_hash,
       status, actual_output, auto_score, auto_verdict, eval_details, duration_ms,
@@ -757,7 +782,7 @@ export function createEvalRunCase(
       estimated_cost_usd, tools_used,
       human_feedback, human_notes, error_message, created_at, updated_at
     ) VALUES (
-      ?, ?, ?, ?,
+      ?, ?, ?, ?, ?,
       ?, ?, ?,
       ?, ?, ?,
       ?, ?, ?, ?, ?, ?,
@@ -771,9 +796,10 @@ export function createEvalRunCase(
     data.run_id,
     data.case_id,
     data.case_name,
-    (data as any).case_input_snapshot || '',
-    (data as any).case_expected_snapshot || '',
-    JSON.stringify((data as any).case_rules_snapshot || {}),
+    data.category || 'general',
+    data.case_input_snapshot || '',
+    data.case_expected_snapshot || '',
+    JSON.stringify(data.case_rules_snapshot || {}),
     data.version_tag,
     data.prompt_version,
     data.prompt_hash,
@@ -786,9 +812,9 @@ export function createEvalRunCase(
     data.tokens_input || 0,
     data.tokens_output || 0,
     data.tokens_total || 0,
-    (data as any).cache_read_tokens || 0,
-    (data as any).cache_creation_tokens || 0,
-    (data as any).reasoning_tokens || 0,
+    data.cache_read_tokens || 0,
+    data.cache_creation_tokens || 0,
+    data.reasoning_tokens || 0,
     data.estimated_cost_usd || 0,
     JSON.stringify(data.tools_used || []),
     data.human_feedback || null,

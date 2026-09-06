@@ -30,6 +30,25 @@ export const evalRoutes = new Hono<{ Variables: Variables }>();
 // All eval routes require authenticated session
 evalRoutes.use('*', authMiddleware);
 
+function validateRegexPatterns(rules: unknown): string | null {
+  if (!rules || typeof rules !== 'object') return null;
+  const patterns = (rules as Record<string, unknown>).regexPatterns;
+  if (!patterns) return null;
+  if (!Array.isArray(patterns)) return 'regexPatterns 必须为数组格式';
+  for (const p of patterns) {
+    if (typeof p !== 'string') return '正则表达式必须为字符串';
+    if (p.length > 200) {
+      return `正则表达式超出200字符限制: ${p.slice(0, 30)}...`;
+    }
+    try {
+      new RegExp(p, 'i');
+    } catch {
+      return `非法的正则表达式语法: ${p}`;
+    }
+  }
+  return null;
+}
+
 // --- 1. Eval Suites ---
 
 // List all suites visible to current user (system benchmark + user's own)
@@ -128,6 +147,11 @@ evalRoutes.post('/suites/:suiteId/cases', async (c) => {
     return c.json({ error: '案例名称与输入 Prompt 不能为空' }, 400);
   }
 
+  const regexErr = validateRegexPatterns(body.eval_rules);
+  if (regexErr) {
+    return c.json({ error: regexErr }, 400);
+  }
+
   const created = createEvalCase({
     suite_id: suiteId,
     name,
@@ -169,6 +193,13 @@ evalRoutes.put('/suites/:suiteId/cases/:caseId', async (c) => {
   }
 
   const body = await c.req.json().catch(() => ({}));
+  if (body.eval_rules !== undefined) {
+    const regexErr = validateRegexPatterns(body.eval_rules);
+    if (regexErr) {
+      return c.json({ error: regexErr }, 400);
+    }
+  }
+
   const updated = updateEvalCase(caseId, suiteId, {
     name: typeof body.name === 'string' ? body.name.trim() : undefined,
     category:

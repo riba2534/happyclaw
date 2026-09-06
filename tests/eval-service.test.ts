@@ -22,11 +22,26 @@ vi.mock('../src/logger.js', () => ({
   logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
 }));
 
+let mockSdkQueryGenerator: (() => AsyncGenerator<any, void, unknown>) | null =
+  null;
+
+vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
+  query: vi.fn(() => {
+    if (mockSdkQueryGenerator) {
+      return mockSdkQueryGenerator();
+    }
+    return (async function* () {})();
+  }),
+}));
+
 const db = await import('../src/db.js');
 const {
   evaluateOutputAgainstRules,
+  executeWithClaudeAgentSdk,
+  SdkExecutionError,
   startEvalRun,
   cancelEvalRun,
+  cleanupEvalRunWorkspace,
   getEvalRunSummary,
   generateEvalMarkdownReport,
   generateEvalJsonReport,
@@ -38,8 +53,8 @@ const { BUILTIN_EVAL_CASES, SYSTEM_EVAL_SUITE_ID } =
   await import('../src/eval-builtin-suite.js');
 
 /**
- * Explicit test-only execution provider to simulate deterministic tool and model outputs.
- * Never available in production code paths.
+ * Explicit test-only execution provider to simulate deterministic tool and model outputs
+ * for end-to-end multi-case orchestration tests.
  */
 function createTestMockProvider() {
   return async (options: {
@@ -167,7 +182,205 @@ function seedUser(id: string): void {
 }
 
 describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
-  describe('规则判定引擎 evaluateOutputAgainstRules (Hard Gates 门禁)', () => {
+  describe('真实 SDK 事件流与 Usage 解析 (executeWithClaudeAgentSdk)', () => {
+    const dummyProviderConfig = {
+      anthropicApiKey: 'sk-test-mock-key',
+    };
+
+    test('场景 A: 正常成功输出，真实提取 assistant.message.content 中的 tool_use 与 usage', async () => {
+      mockSdkQueryGenerator = async function* () {
+        // stream_event
+        yield {
+          type: 'stream_event',
+          event: {
+            type: 'message_start',
+            message: {
+              usage: { input_tokens: 150, cache_read_input_tokens: 30 },
+            },
+          },
+        };
+        // assistant message 包含真实的 message.content 结构
+        yield {
+          type: 'assistant',
+          message: {
+            content: [
+              { type: 'text', text: '正在检查代码...' },
+              { type: 'tool_use', id: 'call_1', name: 'read_file' },
+              { type: 'tool_use', id: 'call_2', name: 'read_file' }, // 另一个 id
+            ],
+          },
+        };
+        // 最终 result 包含真实累加 modelUsage
+        yield {
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          result: '重构完成代码如下...',
+          usage: {
+            input_tokens: 150,
+            output_tokens: 80,
+            cache_read_input_tokens: 30,
+          },
+          modelUsage: {
+            'claude-3-5-sonnet': {
+              inputTokens: 150,
+              outputTokens: 80,
+              cacheReadInputTokens: 30,
+              costUSD: 0.0012,
+            },
+          },
+        };
+      };
+
+      const result = await executeWithClaudeAgentSdk({
+        prompt: '测试提示词',
+        systemPrompt: '系统指令',
+        model: 'claude-3-5-sonnet',
+        providerConfig: dummyProviderConfig,
+        cwd: tmpDataDir,
+      });
+
+      expect(result.output).toBe('重构完成代码如下...');
+      expect(result.inputTokens).toBe(150);
+      expect(result.outputTokens).toBe(80);
+      expect(result.cacheReadTokens).toBe(30);
+      expect(result.reportedCostUSD).toBe(0.0012);
+      expect(result.toolsUsed).toEqual([{ name: 'read_file', count: 2 }]);
+
+      mockSdkQueryGenerator = null;
+    });
+
+    test('场景 B: API Error 拦截 (is_error: true 绝不冒充成功 output)', async () => {
+      mockSdkQueryGenerator = async function* () {
+        yield {
+          type: 'result',
+          subtype: 'success',
+          is_error: true,
+          result: 'Credit balance is too low',
+        };
+      };
+
+      await expect(
+        executeWithClaudeAgentSdk({
+          prompt: '测试',
+          systemPrompt: '系统',
+          model: 'claude-3-5-sonnet',
+          providerConfig: dummyProviderConfig,
+          cwd: tmpDataDir,
+        }),
+      ).rejects.toThrow('API Error: Credit balance is too low');
+
+      mockSdkQueryGenerator = null;
+    });
+
+    test('场景 C: tool_use_id 去重与进度事件幂等 (tool_progress duplicate)', async () => {
+      mockSdkQueryGenerator = async function* () {
+        // 重复发送同一 tool_use_id 的进度通知
+        yield {
+          type: 'tool_progress',
+          tool_use_id: 'tool_call_abc',
+          tool_name: 'search_code',
+        };
+        yield {
+          type: 'tool_progress',
+          tool_use_id: 'tool_call_abc',
+          tool_name: 'search_code',
+        };
+        yield {
+          type: 'tool_use_summary',
+          tool_use_id: 'tool_call_abc',
+          tool_name: 'search_code',
+        };
+        yield {
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          result: '搜索完成',
+        };
+      };
+
+      const result = await executeWithClaudeAgentSdk({
+        prompt: '测试去重',
+        systemPrompt: '',
+        model: 'claude-3-5-sonnet',
+        providerConfig: dummyProviderConfig,
+        cwd: tmpDataDir,
+      });
+
+      expect(result.toolsUsed).toEqual([{ name: 'search_code', count: 1 }]);
+      mockSdkQueryGenerator = null;
+    });
+
+    test('场景 D: 多模型调用 token 与费用真实累加 (multiModel 不取 max)', async () => {
+      mockSdkQueryGenerator = async function* () {
+        yield {
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          result: '多模型执行完成',
+          modelUsage: {
+            'claude-3-5-haiku': {
+              inputTokens: 100,
+              outputTokens: 50,
+              costUSD: 0.0003,
+            },
+            'claude-3-5-sonnet': {
+              inputTokens: 200,
+              outputTokens: 120,
+              costUSD: 0.002,
+            },
+          },
+        };
+      };
+
+      const result = await executeWithClaudeAgentSdk({
+        prompt: '测试多模型',
+        systemPrompt: '',
+        model: 'claude-3-5-sonnet',
+        providerConfig: dummyProviderConfig,
+        cwd: tmpDataDir,
+      });
+
+      // 累加 100 + 200 = 300, 50 + 120 = 170
+      expect(result.inputTokens).toBe(300);
+      expect(result.outputTokens).toBe(170);
+      expect(result.reportedCostUSD).toBeCloseTo(0.0023);
+      mockSdkQueryGenerator = null;
+    });
+
+    test('场景 E: 异常抛出后真实保留已产生的 Usage (防 0cost 抹零)', async () => {
+      mockSdkQueryGenerator = async function* () {
+        yield {
+          type: 'stream_event',
+          event: {
+            type: 'message_start',
+            message: {
+              usage: { input_tokens: 500, cache_read_input_tokens: 100 },
+            },
+          },
+        };
+        // 紧接着抛出网络异常
+        throw new Error('Upstream connection reset by peer');
+      };
+
+      try {
+        await executeWithClaudeAgentSdk({
+          prompt: '测试中途崩溃',
+          systemPrompt: '',
+          model: 'claude-3-5-sonnet',
+          providerConfig: dummyProviderConfig,
+          cwd: tmpDataDir,
+        });
+        expect.fail('应该抛出异常');
+      } catch (err: any) {
+        expect(err.message).toContain('Upstream connection reset');
+      } finally {
+        mockSdkQueryGenerator = null;
+      }
+    });
+  });
+
+  describe('规则判定引擎 evaluateOutputAgainstRules (Hard Gates 门禁与 ReDoS 防护)', () => {
     test('全部硬门禁满足时正确裁决通过', () => {
       const output =
         'interface User { id: number; } export function test(): number { return 1; }';
@@ -243,14 +456,20 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
       ).toBe(true);
     });
 
-    test('防 ReDoS 安全检查：检测超长或危险灾难性回溯模式', () => {
-      const outcome = evaluateOutputAgainstRules('test text', {
-        regexPatterns: ['(a+)+b'], // 典型灾难性回溯 pattern
+    test('防 ReDoS 严格超时沙箱：对恶劣交替回溯模式可靠安全返回且不阻塞主线程', () => {
+      // 50 个 a 加上 !，匹配经典恶意正则 (a|aa)+$
+      const nastyInput = 'a'.repeat(50) + '!';
+      const start = Date.now();
+      const outcome = evaluateOutputAgainstRules(nastyInput, {
+        regexPatterns: ['(a|aa)+$'],
       });
+      const elapsed = Date.now() - start;
 
+      // 必须在合理极短时间内被沙箱超时掐断，不能卡死 3 秒
+      expect(elapsed).toBeLessThan(1000);
       expect(outcome.verdict).toBe('fail');
-      expect(outcome.details.failedRegex).toContain('(a+)+b');
-      expect(outcome.details.reasons?.some((r) => r.includes('ReDoS'))).toBe(
+      expect(outcome.details.failedRegex).toContain('(a|aa)+$');
+      expect(outcome.details.reasons?.some((r) => r.includes('防 ReDoS'))).toBe(
         true,
       );
     });
@@ -358,7 +577,7 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
       seedUser(userId);
     });
 
-    test('执行双版本对比评测，验证真实快照持久化与指标汇总', async () => {
+    test('执行双版本对比评测，验证真实快照持久化、分类解析与指标汇总', async () => {
       // 1. 创建 AgentProfile v1
       const profile = db.createAgentProfile({
         ownerUserId: userId,
@@ -400,11 +619,13 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
       expect(finishedRun?.target_pass_count).toBeGreaterThan(0);
       expect(finishedRun?.target_estimated_cost_usd).toBeGreaterThan(0);
 
-      // 4. 验证案例快照持久化
+      // 4. 验证用例预落库与快照完整性
       const runCases = db.listEvalRunCases(run.id);
-      expect(runCases.length).toBe(30); // 15 base + 15 target
+      expect(runCases.length).toBe(30); // 15 base + 15 target 全部持久化
       for (const rc of runCases) {
-        expect(rc.actual_output.length).toBeGreaterThan(0);
+        expect(rc.case_input_snapshot.length).toBeGreaterThan(0);
+        expect(rc.category).not.toBe('01'); // 验证分类不是 01 错误序号
+        expect(rc.category).not.toBe('02');
         expect(rc.status).toBe('completed');
       }
 
@@ -415,10 +636,25 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
       expect(summary?.baseSummary?.version).toBe(1);
       expect(summary?.targetSummary.version).toBe(2);
       expect(summary?.delta).toBeDefined();
+
+      // 验证分类正确映射
+      const case01 = summary?.cases.find(
+        (c) => c.caseId === 'eval-case-01-refactor-boundary',
+      );
+      expect(case01?.category).toBe('code'); // 真实的 category
     }, 20000);
 
-    test('运行取消控制：能够在执行过程中终止任务', async () => {
-      const profile = db.listAgentProfilesForUser(userId)[0];
+    test('运行取消控制：中途取消时所有未完成用例原子转为 cancelled 且不丢失', async () => {
+      const cancelProfile = db.createAgentProfile({
+        ownerUserId: userId,
+        name: '取消测试智能体',
+        identityPrompt: '取消测试',
+        promptMode: 'append',
+      });
+      const cancelProfileV2 = db.updateAgentProfile(cancelProfile.id, userId, {
+        identityPrompt: '取消测试升级版',
+      });
+      expect(cancelProfileV2?.version).toBe(2);
 
       // 设置慢速 provider 测试取消
       setEvalExecutionProviderForTests(async ({ abortSignal }) => {
@@ -440,18 +676,29 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
 
       const slowRun = await startEvalRun({
         ownerUserId: userId,
-        agentProfileId: profile.id,
-        mode: 'single',
+        agentProfileId: cancelProfile.id,
+        mode: 'compare',
+        baseVersion: 1,
+        targetVersion: 2,
       });
 
       expect(slowRun.status).toBe('running');
 
+      // 验证在执行中途，30 条记录均已预写入数据库
+      const initialCases = db.listEvalRunCases(slowRun.id);
+      expect(initialCases.length).toBe(30);
+
       const cancelOk = cancelEvalRun(slowRun.id, userId);
       expect(cancelOk).toBe(true);
 
-      await new Promise((resolve) => setTimeout(resolve, 80));
+      await new Promise((resolve) => setTimeout(resolve, 100));
       const afterCancel = db.getEvalRun(slowRun.id, userId);
       expect(afterCancel?.status).toBe('cancelled');
+
+      // 验证取消后所有用例条目依然完整存在，未执行的被标记为 cancelled
+      const casesAfterCancel = db.listEvalRunCases(slowRun.id);
+      expect(casesAfterCancel.length).toBe(30);
+      expect(casesAfterCancel.some((c) => c.status === 'cancelled')).toBe(true);
 
       // 恢复常规 testMockProvider
       setEvalExecutionProviderForTests(createTestMockProvider());
@@ -459,7 +706,7 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
   });
 
   describe('服务重启与孤儿 running 状态恢复 (recoverDanglingEvalRuns)', () => {
-    test('系统启动时自动将未完成的 running 评测转为 interrupted 终态', () => {
+    test('系统启动时自动将未完成的 running 评测与用例转为 interrupted 终态', () => {
       const runId = 'dangling-test-run-1';
       db.createEvalRun({
         id: runId,
@@ -490,14 +737,48 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
         error_message: null,
       });
 
+      db.createEvalRunCase({
+        id: 'dangling-case-1',
+        run_id: runId,
+        case_id: 'case-1',
+        case_name: 'case-1',
+        category: 'general',
+        case_input_snapshot: 'prompt',
+        case_expected_snapshot: 'expected',
+        case_rules_snapshot: {},
+        version_tag: 'target',
+        prompt_version: 1,
+        prompt_hash: 'hash',
+        status: 'running',
+        actual_output: '',
+        auto_score: 0,
+        auto_verdict: 'fail',
+        eval_details: {},
+        duration_ms: 0,
+        tokens_input: 0,
+        tokens_output: 0,
+        tokens_total: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        reasoning_tokens: 0,
+        estimated_cost_usd: 0,
+        tools_used: [],
+        human_feedback: null,
+        human_notes: null,
+        error_message: null,
+      });
+
       // 执行恢复
       const result = db.recoverDanglingEvalRuns();
       expect(result.recoveredRuns).toBeGreaterThanOrEqual(1);
 
-      const recovered = db.getEvalRun(runId);
-      expect(recovered?.status).toBe('interrupted');
-      expect(recovered?.error_message).toContain('服务重启');
-      expect(recovered?.completed_at).toBeTruthy();
+      const recoveredRun = db.getEvalRun(runId);
+      expect(recoveredRun?.status).toBe('interrupted');
+      expect(recoveredRun?.error_message).toContain('服务重启');
+      expect(recoveredRun?.completed_at).toBeTruthy();
+
+      const recoveredCase = db.getEvalRunCase('dangling-case-1');
+      expect(recoveredCase?.status).toBe('interrupted');
     });
   });
 
@@ -632,6 +913,10 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
         run_id: run.id,
         case_id: 'case-1',
         case_name: 'case-1',
+        category: 'general',
+        case_input_snapshot: 'prompt',
+        case_expected_snapshot: 'expected',
+        case_rules_snapshot: {},
         version_tag: 'target',
         prompt_version: 1,
         prompt_hash: 'hash',
@@ -644,6 +929,9 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
         tokens_input: 100,
         tokens_output: 100,
         tokens_total: 200,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        reasoning_tokens: 0,
         estimated_cost_usd: 0.001,
         tools_used: [],
         human_feedback: null,

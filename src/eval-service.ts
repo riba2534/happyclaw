@@ -1,3 +1,4 @@
+import vm from 'node:vm';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -13,6 +14,7 @@ import {
   getEvalSuiteWithCases,
   listEvalRunCases,
   updateEvalRun,
+  updateEvalRunCase,
   updateEvalRunCaseFeedback,
 } from './db.js';
 import { buildAgentProfilePrompt } from './agent-profile-prompts.js';
@@ -98,6 +100,86 @@ const activeRunAbortControllers = new Map<string, AbortController>();
  *
  * Only when all hard gates pass AND score >= passThreshold can auto_verdict be 'pass'.
  */
+
+/**
+ * Custom error class carrying actual accumulated usage even across failures or aborts.
+ */
+export class SdkExecutionError extends Error {
+  accumulatedUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheCreationTokens: number;
+    reasoningTokens: number;
+  };
+  durationMs: number;
+  toolsUsed: EvalRunCaseToolUsage[];
+
+  constructor(
+    message: string,
+    options?: {
+      accumulatedUsage?: {
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadTokens: number;
+        cacheCreationTokens: number;
+        reasoningTokens: number;
+      };
+      durationMs?: number;
+      toolsUsed?: EvalRunCaseToolUsage[];
+    },
+  ) {
+    super(message);
+    this.name = 'SdkExecutionError';
+    this.accumulatedUsage = options?.accumulatedUsage;
+    this.durationMs = options?.durationMs || 0;
+    this.toolsUsed = options?.toolsUsed || [];
+  }
+}
+
+/**
+ * Execute regex test within a strictly bounded VM context to completely eliminate ReDoS thread locks.
+ */
+export function safeRegexMatch(
+  pattern: string,
+  text: string,
+  timeoutMs = 150,
+): { matched: boolean; timedOut: boolean; error?: string } {
+  if (pattern.length > 200) {
+    return {
+      matched: false,
+      timedOut: false,
+      error: '正则表达式长度超过200字符限制',
+    };
+  }
+
+  // Bounded sample to avoid infinite search spaces
+  const safeText = text.slice(0, 15000);
+
+  try {
+    const sandbox = {
+      re: new RegExp(pattern, 'i'),
+      text: safeText,
+      result: false,
+    };
+    const context = vm.createContext(sandbox);
+    const script = new vm.Script('result = re.test(text)');
+    script.runInContext(context, { timeout: timeoutMs });
+    return { matched: Boolean(sandbox.result), timedOut: false };
+  } catch (err: any) {
+    const isTimeout =
+      err?.message?.includes('timed out') ||
+      err?.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT';
+    return {
+      matched: false,
+      timedOut: isTimeout,
+      error: isTimeout
+        ? `正则匹配执行超时 (${timeoutMs}ms, 防 ReDoS)`
+        : err?.message,
+    };
+  }
+}
+
 export function evaluateOutputAgainstRules(
   output: string,
   rules: EvalCaseRule,
@@ -168,38 +250,23 @@ export function evaluateOutputAgainstRules(
     }
   }
 
-  // Gate 3: Regular expressions with ReDoS defense
+  // Gate 3: Regular expressions with bounded VM execution for absolute ReDoS safety
   if (rules.regexPatterns && rules.regexPatterns.length > 0) {
     const rxWeight = 30 / rules.regexPatterns.length;
-    const safeText = text.slice(0, 15000);
-
     for (const pattern of rules.regexPatterns) {
-      // ReDoS heuristic check: limit pattern length and prevent catastrophic nested repetition
-      const isDangerousPattern =
-        pattern.length > 200 ||
-        /(\+|\*|\{[0-9,]+\})\s*(\+|\*|\{[0-9,]+\})/.test(pattern) ||
-        /\([^)]*(\+|\*)[^)]*\)\s*(\+|\*|\{)/.test(pattern);
-
-      if (isDangerousPattern) {
+      const matchOutcome = safeRegexMatch(pattern, text, 150);
+      if (matchOutcome.matched) {
+        matchedRegex.push(pattern);
+      } else {
         failedRegex.push(pattern);
         score -= rxWeight;
-        reasons.push(`正则表达式包含潜在 ReDoS 风险或超长: /${pattern}/`);
-        continue;
-      }
-
-      try {
-        const re = new RegExp(pattern, 'i');
-        if (re.test(safeText)) {
-          matchedRegex.push(pattern);
+        if (matchOutcome.timedOut) {
+          reasons.push(`正则表达式匹配超时 (防 ReDoS): /${pattern}/`);
+        } else if (matchOutcome.error) {
+          reasons.push(`正则匹配失败: ${matchOutcome.error}`);
         } else {
-          failedRegex.push(pattern);
-          score -= rxWeight;
           reasons.push(`未匹配必需正则模式: /${pattern}/i`);
         }
-      } catch {
-        failedRegex.push(pattern);
-        score -= rxWeight;
-        reasons.push(`无效的正则表达式语法: /${pattern}/`);
       }
     }
 
@@ -369,7 +436,7 @@ export function resolveAgentModelExecutionConfig(
   };
 }
 
-async function executeWithClaudeAgentSdk(options: {
+export async function executeWithClaudeAgentSdk(options: {
   prompt: string;
   systemPrompt: string;
   model: string;
@@ -409,6 +476,7 @@ async function executeWithClaudeAgentSdk(options: {
   let reasoningTokens = 0;
   let reportedCostUSD: number | undefined;
   const toolMap = new Map<string, number>();
+  const seenToolUseIds = new Set<string>();
 
   const abortController = new AbortController();
   if (options.abortSignal) {
@@ -440,9 +508,12 @@ async function executeWithClaudeAgentSdk(options: {
   for await (const message of conversation) {
     // 1. Primary authority: Result event usage & modelUsage
     if (message.type === 'result') {
-      if (message.subtype === 'success') {
+      const isApiError =
+        (message as any).is_error === true || message.subtype !== 'success';
+      if (!isApiError) {
         resultText = message.result || '';
       }
+
       const rawUsage = (message as any).usage;
       if (rawUsage) {
         inputTokens =
@@ -464,30 +535,57 @@ async function executeWithClaudeAgentSdk(options: {
       }
       const rawModelUsage = (message as any).modelUsage;
       if (rawModelUsage && typeof rawModelUsage === 'object') {
+        let mInput = 0;
+        let mOutput = 0;
+        let mCacheRead = 0;
+        let mCacheCreate = 0;
+        let mReasoning = 0;
+        let mCost = 0;
         for (const mUsage of Object.values(rawModelUsage) as any[]) {
           if (mUsage && typeof mUsage === 'object') {
-            inputTokens = Math.max(inputTokens, mUsage.inputTokens ?? 0);
-            outputTokens = Math.max(outputTokens, mUsage.outputTokens ?? 0);
-            cacheReadTokens = Math.max(
-              cacheReadTokens,
-              mUsage.cacheReadInputTokens ?? 0,
-            );
-            cacheCreationTokens = Math.max(
-              cacheCreationTokens,
-              mUsage.cacheCreationInputTokens ?? 0,
-            );
-            reasoningTokens = Math.max(
-              reasoningTokens,
-              mUsage.reasoningTokens ?? 0,
-            );
+            mInput += mUsage.inputTokens ?? 0;
+            mOutput += mUsage.outputTokens ?? 0;
+            mCacheRead += mUsage.cacheReadInputTokens ?? 0;
+            mCacheCreate += mUsage.cacheCreationInputTokens ?? 0;
+            mReasoning += mUsage.reasoningTokens ?? 0;
             if (typeof mUsage.costUSD === 'number') {
-              reportedCostUSD = mUsage.costUSD;
+              mCost += mUsage.costUSD;
             }
           }
         }
+        if (mInput > 0) inputTokens = mInput;
+        if (mOutput > 0) outputTokens = mOutput;
+        if (mCacheRead > 0) cacheReadTokens = mCacheRead;
+        if (mCacheCreate > 0) cacheCreationTokens = mCacheCreate;
+        if (mReasoning > 0) reasoningTokens = mReasoning;
+        if (mCost > 0) reportedCostUSD = mCost;
       }
       if (typeof (message as any).total_cost_usd === 'number') {
         reportedCostUSD = (message as any).total_cost_usd;
+      }
+
+      // Intercept API errors: error text must never masquerade as completed output
+      if (isApiError) {
+        const errDetail =
+          (message as any).result ||
+          (Array.isArray((message as any).errors)
+            ? (message as any).errors.join('; ')
+            : null) ||
+          `SDK execution ended with subtype: ${message.subtype}`;
+        throw new SdkExecutionError(`API Error: ${errDetail}`, {
+          accumulatedUsage: {
+            inputTokens,
+            outputTokens,
+            cacheReadTokens,
+            cacheCreationTokens,
+            reasoningTokens,
+          },
+          durationMs: Math.max(1, Date.now() - startedAt),
+          toolsUsed: Array.from(toolMap.entries()).map(([name, count]) => ({
+            name,
+            count,
+          })),
+        });
       }
     }
 
@@ -506,21 +604,30 @@ async function executeWithClaudeAgentSdk(options: {
       }
     }
 
-    // 3. Tool use observation
+    // 3. Tool use observation with tool_use_id deduplication
     if (
       message.type === 'tool_progress' ||
       message.type === 'tool_use_summary'
     ) {
+      const toolId = (message as any).tool_use_id || (message as any).toolUseId;
       const toolName =
         (message as any).tool_name || (message as any).toolName || 'tool';
-      toolMap.set(toolName, (toolMap.get(toolName) || 0) + 1);
-    } else if (
-      message.type === 'assistant' &&
-      Array.isArray((message as any).content)
-    ) {
-      for (const block of (message as any).content) {
-        if (block?.type === 'tool_use' && block.name) {
-          toolMap.set(block.name, (toolMap.get(block.name) || 0) + 1);
+      if (toolId && toolName && !seenToolUseIds.has(toolId)) {
+        seenToolUseIds.add(toolId);
+        toolMap.set(toolName, (toolMap.get(toolName) || 0) + 1);
+      }
+    } else if (message.type === 'assistant') {
+      const assistantContent = (message as any).message?.content;
+      if (Array.isArray(assistantContent)) {
+        for (const block of assistantContent) {
+          if (block?.type === 'tool_use' && block.name) {
+            const toolId =
+              block.id || `${block.name}-${toolMap.get(block.name) || 0}`;
+            if (!seenToolUseIds.has(toolId)) {
+              seenToolUseIds.add(toolId);
+              toolMap.set(block.name, (toolMap.get(block.name) || 0) + 1);
+            }
+          }
         }
       }
     }
@@ -659,6 +766,7 @@ async function executeCase(options: {
       run_id: runId,
       case_id: evalCase.id,
       case_name: evalCase.name,
+      category: evalCase.category || 'general',
       case_input_snapshot: evalCase.input_prompt,
       case_expected_snapshot: evalCase.expected_output,
       case_rules_snapshot: evalCase.eval_rules,
@@ -686,10 +794,33 @@ async function executeCase(options: {
   } catch (err: unknown) {
     const isAborted =
       abortSignal?.aborted || (err as Error)?.message?.includes('aborted');
+
+    // Retain real accumulated usage even on failure or abort (defense against 0cost loss)
+    const sdkErr = err instanceof SdkExecutionError ? err : null;
+    const tokensInput = sdkErr?.accumulatedUsage?.inputTokens ?? 0;
+    const tokensOutput = sdkErr?.accumulatedUsage?.outputTokens ?? 0;
+    const cacheReadTokens = sdkErr?.accumulatedUsage?.cacheReadTokens ?? 0;
+    const cacheCreationTokens =
+      sdkErr?.accumulatedUsage?.cacheCreationTokens ?? 0;
+    const reasoningTokens = sdkErr?.accumulatedUsage?.reasoningTokens ?? 0;
+    const toolsUsed = sdkErr?.toolsUsed ?? [];
+
+    const estimatedCostUsd =
+      tokensInput > 0 || tokensOutput > 0
+        ? estimateKabooModelCostUSD(model, {
+            inputTokens: tokensInput,
+            outputTokens: tokensOutput,
+            cacheReadInputTokens: cacheReadTokens,
+            cacheCreationInputTokens: cacheCreationTokens,
+            reasoningTokens,
+          })
+        : 0;
+
     return {
       run_id: runId,
       case_id: evalCase.id,
       case_name: evalCase.name,
+      category: evalCase.category || 'general',
       case_input_snapshot: evalCase.input_prompt,
       case_expected_snapshot: evalCase.expected_output,
       case_rules_snapshot: evalCase.eval_rules,
@@ -707,15 +838,15 @@ async function executeCase(options: {
         gateExplanation: isAborted ? '运行被主动取消' : '执行遇到异常中断',
         reasons: [(err as Error).message || 'Execution failed'],
       },
-      duration_ms: Math.max(1, Date.now() - startedAt),
-      tokens_input: 0,
-      tokens_output: 0,
-      tokens_total: 0,
-      cache_read_tokens: 0,
-      cache_creation_tokens: 0,
-      reasoning_tokens: 0,
-      estimated_cost_usd: 0,
-      tools_used: [],
+      duration_ms: sdkErr?.durationMs || Math.max(1, Date.now() - startedAt),
+      tokens_input: tokensInput,
+      tokens_output: tokensOutput,
+      tokens_total: tokensInput + tokensOutput,
+      cache_read_tokens: cacheReadTokens,
+      cache_creation_tokens: cacheCreationTokens,
+      reasoning_tokens: reasoningTokens,
+      estimated_cost_usd: estimatedCostUsd,
+      tools_used: toolsUsed,
       human_feedback: null,
       human_notes: null,
       error_message: (err as Error).message || 'Execution failed',
@@ -727,6 +858,21 @@ async function executeCase(options: {
  * Start an evaluation run (supports both compare mode and single version mode).
  * Performs strict existence and ownership validation on all prompt versions.
  */
+
+/**
+ * Safely clean up physical isolated workspace directories for a completed/cancelled/deleted run.
+ */
+export function cleanupEvalRunWorkspace(runId: string): void {
+  try {
+    const wsDir = path.join(DATA_DIR, 'eval-workspaces', runId);
+    if (fs.existsSync(wsDir)) {
+      fs.rmSync(wsDir, { recursive: true, force: true });
+    }
+  } catch (err) {
+    logger.warn({ err, runId }, 'Failed to clean up eval workspace directory');
+  }
+}
+
 export async function startEvalRun(input: {
   ownerUserId: string;
   agentProfileId: string;
@@ -879,18 +1025,23 @@ export async function startEvalRun(input: {
     model: effectiveModel,
     provider_source: providerSource,
     capability_snapshot: {
-      provider_id: resolvedModelConfig?.providerId || 'test_injected',
-      provider_name:
-        resolvedModelConfig?.providerName || 'Test Injected Provider',
-      model: effectiveModel,
-      model_config_id: profile.model_config_id || null,
-      runtime_policy: profile.runtime_policy,
-      prompt_mode: profile.prompt_mode,
-      version: profile.version,
-      sandbox_boundary: {
-        fs: 'isolated_eval_workspace',
-        network: 'model_api_only',
-        external_side_effects: 'strictly_forbidden',
+      requested_agent_policy: {
+        runtime_policy: profile.runtime_policy,
+        prompt_mode: profile.prompt_mode,
+        version: profile.version,
+      },
+      effective_execution_boundary: {
+        provider_id: resolvedModelConfig?.providerId || 'test_injected',
+        provider_name:
+          resolvedModelConfig?.providerName || 'Test Injected Provider',
+        model: effectiveModel,
+        model_config_id: profile.model_config_id || null,
+        sandbox_isolation: {
+          fs: 'isolated_eval_workspace',
+          network: 'model_api_only',
+          tools_policy:
+            'eval_safe_isolation_sandbox: external write tools are strictly restricted',
+        },
       },
       prompts_snapshot: {
         base: basePrompts,
@@ -910,6 +1061,77 @@ export async function startEvalRun(input: {
     target_estimated_cost_usd: 0,
     error_message: null,
   });
+
+  // Pre-create all test cases with pending status so state is durable against restarts or cancellation
+  const preCreatedCaseIds = new Map<string, string>();
+  for (const c of suiteWithCases.cases) {
+    if (mode === 'compare' && baseVersion !== null) {
+      const baseCase = createEvalRunCase({
+        run_id: runId,
+        case_id: c.id,
+        case_name: c.name,
+        category: c.category || 'general',
+        case_input_snapshot: c.input_prompt,
+        case_expected_snapshot: c.expected_output,
+        case_rules_snapshot: c.eval_rules,
+        version_tag: 'base',
+        prompt_version: baseVersion,
+        prompt_hash: basePromptHash || '',
+        status: 'pending',
+        actual_output: '',
+        auto_score: 0,
+        auto_verdict: 'fail',
+        eval_details: {},
+        duration_ms: 0,
+        tokens_input: 0,
+        tokens_output: 0,
+        tokens_total: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        reasoning_tokens: 0,
+        estimated_cost_usd: 0,
+        tools_used: [],
+        human_feedback: null,
+        human_notes: null,
+        error_message: null,
+      });
+      preCreatedCaseIds.set(`${c.id}-base`, baseCase.id);
+    }
+
+    const targetCase = createEvalRunCase({
+      run_id: runId,
+      case_id: c.id,
+      case_name: c.name,
+      category: c.category || 'general',
+      case_input_snapshot: c.input_prompt,
+      case_expected_snapshot: c.expected_output,
+      case_rules_snapshot: c.eval_rules,
+      version_tag: mode === 'compare' ? 'target' : 'single',
+      prompt_version: targetVersion,
+      prompt_hash: targetPromptHash,
+      status: 'pending',
+      actual_output: '',
+      auto_score: 0,
+      auto_verdict: 'fail',
+      eval_details: {},
+      duration_ms: 0,
+      tokens_input: 0,
+      tokens_output: 0,
+      tokens_total: 0,
+      cache_read_tokens: 0,
+      cache_creation_tokens: 0,
+      reasoning_tokens: 0,
+      estimated_cost_usd: 0,
+      tools_used: [],
+      human_feedback: null,
+      human_notes: null,
+      error_message: null,
+    });
+    preCreatedCaseIds.set(
+      `${c.id}-${mode === 'compare' ? 'target' : 'single'}`,
+      targetCase.id,
+    );
+  }
 
   const abortController = new AbortController();
   activeRunAbortControllers.set(runId, abortController);
@@ -932,6 +1154,9 @@ export async function startEvalRun(input: {
 
         // 1. Run Base (if compare mode)
         if (mode === 'compare' && baseVersion !== null) {
+          const baseCaseDbId = preCreatedCaseIds.get(`${c.id}-base`)!;
+          updateEvalRunCase(baseCaseDbId, { status: 'running' });
+
           const baseResult = await executeCase({
             evalCase: c,
             systemPrompt: basePromptText,
@@ -944,7 +1169,9 @@ export async function startEvalRun(input: {
             promptHash: basePromptHash || '',
             abortSignal: abortController.signal,
           });
-          createEvalRunCase(baseResult);
+
+          updateEvalRunCase(baseCaseDbId, baseResult);
+
           if (baseResult.auto_verdict === 'pass') basePassCount++;
           baseTotalDuration += baseResult.duration_ms;
           baseTotalTokens += baseResult.tokens_total;
@@ -954,6 +1181,10 @@ export async function startEvalRun(input: {
         if (abortController.signal.aborted) break;
 
         // 2. Run Target
+        const targetTag = mode === 'compare' ? 'target' : 'single';
+        const targetCaseDbId = preCreatedCaseIds.get(`${c.id}-${targetTag}`)!;
+        updateEvalRunCase(targetCaseDbId, { status: 'running' });
+
         const targetResult = await executeCase({
           evalCase: c,
           systemPrompt: targetPromptText,
@@ -961,12 +1192,14 @@ export async function startEvalRun(input: {
           providerConfig: resolvedModelConfig?.providerConfig,
           customEnv: resolvedModelConfig?.customEnv,
           runId,
-          versionTag: mode === 'compare' ? 'target' : 'single',
+          versionTag: targetTag,
           promptVersion: targetVersion,
           promptHash: targetPromptHash,
           abortSignal: abortController.signal,
         });
-        createEvalRunCase(targetResult);
+
+        updateEvalRunCase(targetCaseDbId, targetResult);
+
         if (targetResult.auto_verdict === 'pass') targetPassCount++;
         targetTotalDuration += targetResult.duration_ms;
         targetTotalTokens += targetResult.tokens_total;
@@ -990,6 +1223,19 @@ export async function startEvalRun(input: {
         });
       }
 
+      // If aborted, mark any remaining pending cases as cancelled
+      if (abortController.signal.aborted) {
+        const remainingCases = listEvalRunCases(runId).filter(
+          (rc) => rc.status === 'pending' || rc.status === 'running',
+        );
+        for (const rc of remainingCases) {
+          updateEvalRunCase(rc.id, {
+            status: 'cancelled',
+            error_message: '运行已取消',
+          });
+        }
+      }
+
       const finalStatus = abortController.signal.aborted
         ? 'cancelled'
         : 'completed';
@@ -1007,6 +1253,7 @@ export async function startEvalRun(input: {
       });
     } finally {
       activeRunAbortControllers.delete(runId);
+      cleanupEvalRunWorkspace(runId);
     }
   })();
 
@@ -1019,7 +1266,9 @@ export async function startEvalRun(input: {
 export function cancelEvalRun(runId: string, ownerUserId: string): boolean {
   const run = getEvalRun(runId, ownerUserId);
   if (!run) return false;
-  if (['completed', 'failed', 'cancelled'].includes(run.status)) {
+  if (
+    ['completed', 'failed', 'cancelled', 'interrupted'].includes(run.status)
+  ) {
     return false;
   }
 
@@ -1033,6 +1282,19 @@ export function cancelEvalRun(runId: string, ownerUserId: string): boolean {
     status: 'cancelled',
     completed_at: new Date().toISOString(),
   });
+
+  // Mark all pending or running cases as cancelled
+  const cases = listEvalRunCases(runId).filter(
+    (rc) => rc.status === 'pending' || rc.status === 'running',
+  );
+  for (const rc of cases) {
+    updateEvalRunCase(rc.id, {
+      status: 'cancelled',
+      error_message: '用户主动取消评测',
+    });
+  }
+
+  cleanupEvalRunWorkspace(runId);
   return true;
 }
 
@@ -1065,7 +1327,7 @@ export function getEvalRunSummary(
       caseMap.set(rc.case_id, {
         caseId: rc.case_id,
         caseName: rc.case_name,
-        category: rc.case_id.split('-')[2] || 'general',
+        category: rc.category || 'general',
       });
     }
     const item = caseMap.get(rc.case_id)!;
@@ -1172,6 +1434,7 @@ export function generateEvalMarkdownReport(
     `- **对比版本**: v${run.base_version ?? '-'} vs v${run.target_version ?? '-'}`,
   );
   lines.push(`- **评测模型**: \`${run.model}\``);
+  lines.push(`- **执行来源**: \`${run.provider_source}\``);
   lines.push(
     `- **评测用例集**: \`${run.suite_id}\` (版本: v${run.suite_version})`,
   );
@@ -1258,9 +1521,15 @@ export function generateEvalMarkdownReport(
     lines.push(`### ${c.caseName} (\`${c.caseId}\`)`);
     lines.push('');
     if (c.targetResult) {
+      lines.push(`- **分类**: ${c.category}`);
       lines.push(
         `- **自动判定结果**: ${c.targetResult.auto_verdict.toUpperCase()} (得分: ${c.targetResult.auto_score}/100)`,
       );
+      if (c.targetResult.eval_details.gateExplanation) {
+        lines.push(
+          `- **门禁检验**: ${c.targetResult.eval_details.gateExplanation}`,
+        );
+      }
       if (
         c.targetResult.eval_details.reasons &&
         c.targetResult.eval_details.reasons.length > 0
@@ -1270,7 +1539,7 @@ export function generateEvalMarkdownReport(
         );
       }
       lines.push(
-        `- **Token 消耗**: ${c.targetResult.tokens_total} (输入: ${c.targetResult.tokens_input}, 输出: ${c.targetResult.tokens_output})`,
+        `- **Token 消耗**: ${c.targetResult.tokens_total} (输入: ${c.targetResult.tokens_input}, 输出: ${c.targetResult.tokens_output}, 缓存读取: ${c.targetResult.cache_read_tokens})`,
       );
       lines.push(
         `- **估算成本**: $${c.targetResult.estimated_cost_usd.toFixed(4)}`,
@@ -1334,7 +1603,10 @@ export async function waitForEvalRunCompletion(
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const run = getEvalRun(runId);
-    if (!run || ['completed', 'failed', 'cancelled'].includes(run.status)) {
+    if (
+      !run ||
+      ['completed', 'failed', 'cancelled', 'interrupted'].includes(run.status)
+    ) {
       return run;
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
