@@ -3,6 +3,11 @@ node_modules/
 
 # Build output
 dist/
+web/dist/
+container/agent-runner/dist/
+.release-candidate/
+.release-previous/
+.release-current.json
 
 # Runtime data — databases, encrypted configs, sessions, IPC, env files, agent workspaces
 # All personal data, auto-created at startup, must not be committed.

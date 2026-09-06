@@ -1,4 +1,5 @@
 import './load-env.js'; // 必须最先执行：加载 .env 到 process.env，供后续模块（config/web 等）读取
+import { readinessManager } from './readiness-manager.js';
 import { ChildProcess, execFile } from 'child_process';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -216,6 +217,7 @@ import {
   getChannelAccount,
   listChannelAccountsForUser,
   listEnabledChannelAccounts,
+  listAllChannelAccounts,
   updateChannelAccountAuthStatus,
   updateChannelAccountStatus,
   cancelQueuedFollowUpsAtCutoff,
@@ -20079,20 +20081,22 @@ async function reloadChannelAccountById(accountId: string): Promise<boolean> {
   );
   if (!account.enabled) {
     updateChannelAccountStatus(account.id, 'disconnected');
+    readinessManager.setChannelStatus(account.id, 'disabled');
     return false;
   }
   const secret = loadChannelAccountSecret(account.secret_ref);
   const workspace = resolveChannelAccountWorkspace(account);
   if (!secret || !workspace) {
-    updateChannelAccountStatus(
-      account.id,
-      'error',
-      !secret ? 'Credentials are missing' : 'Default workspace is missing',
-    );
+    const reason = !secret
+      ? 'Credentials are missing'
+      : 'Default workspace is missing';
+    updateChannelAccountStatus(account.id, 'error', reason);
+    readinessManager.setChannelStatus(account.id, 'failed', reason);
     return false;
   }
 
   updateChannelAccountStatus(account.id, 'connecting');
+  readinessManager.setChannelStatus(account.id, 'connecting');
   const baseOnNewChat = buildOnNewChat(
     account.owner_user_id,
     workspace.folder,
@@ -20522,6 +20526,11 @@ async function reloadChannelAccountById(accountId: string): Promise<boolean> {
       // source allowed to publish transport=connected.
       if (!connected) {
         updateChannelAccountStatus(account.id, 'error', 'Connection failed');
+        readinessManager.setChannelStatus(
+          account.id,
+          'failed',
+          'Connection failed',
+        );
       }
     } else if (account.provider === 'wechat') {
       // connectUserWeChat returns once the local poller is retained. Its
@@ -20529,11 +20538,21 @@ async function reloadChannelAccountById(accountId: string): Promise<boolean> {
       // connected and reconnecting transport states.
       if (!connected) {
         updateChannelAccountStatus(account.id, 'error', '微信轮询启动失败');
+        readinessManager.setChannelStatus(
+          account.id,
+          'failed',
+          '微信轮询启动失败',
+        );
       }
     } else {
       updateChannelAccountStatus(
         account.id,
         connected ? 'connected' : 'error',
+        connected ? null : 'Connection failed',
+      );
+      readinessManager.setChannelStatus(
+        account.id,
+        connected ? 'connected' : 'failed',
         connected ? null : 'Connection failed',
       );
       if (connected && account.provider === 'feishu') {
@@ -20544,6 +20563,11 @@ async function reloadChannelAccountById(accountId: string): Promise<boolean> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     updateChannelAccountStatus(account.id, 'error', message.slice(0, 1000));
+    readinessManager.setChannelStatus(
+      account.id,
+      'failed',
+      message.slice(0, 1000),
+    );
     logger.warn(
       { error, accountId: account.id, provider: account.provider },
       'Channel account connection failed',
@@ -20747,8 +20771,15 @@ function migrateDataDirectories(): void {
 
 async function main(): Promise<void> {
   migrateDataDirectories();
-  initDatabase();
-  logger.info('Database initialized');
+  try {
+    initDatabase();
+    readinessManager.setDbStatus('ready');
+    logger.info('Database initialized');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    readinessManager.setDbStatus('failed', msg);
+    throw err;
+  }
 
   const migratedAutoCompactProfiles = migrateAgentProfileAutoCompactWindow(
     getLegacySystemAutoCompactWindow(),
@@ -22547,6 +22578,16 @@ async function main(): Promise<void> {
   // Feishu records its durable Inbox before invoking these callbacks. Keep
   // execution paused while transports connect and old provider cards are
   // reconciled; messages arriving in this window remain queued for retry.
+  const allAccountsForReadiness = listAllChannelAccounts();
+  for (const account of allAccountsForReadiness) {
+    readinessManager.registerChannel({
+      id: account.id,
+      provider: account.provider,
+      name: account.name,
+      enabled: account.enabled,
+    });
+  }
+
   imManager.deferInbound();
   await Promise.allSettled(
     listEnabledChannelAccounts().map((account) =>
@@ -22560,6 +22601,7 @@ async function main(): Promise<void> {
   // invalidate expired execution fences -> only then resume Agent work.
   // Starting the message loop earlier can create a second active card for the
   // same logical turn while the provider still shows the old one as running.
+  readinessManager.setRecoveryStatus('in_progress');
   await reconcileChannelReliabilityOnStartup(imManager);
   const outboxRecovery = reconcileChannelOutboxDeliveries();
   if (outboxRecovery.uncertain > 0) {
@@ -22573,6 +22615,10 @@ async function main(): Promise<void> {
       'Channel outbox recovered retryable pre-send work',
     );
   }
+  readinessManager.setRecoveryStatus('ready', {
+    uncertain: outboxRecovery.uncertain,
+    retryable: outboxRecovery.retryable,
+  });
   channelReliabilityRecoveryLoop =
     startChannelReliabilityRecoveryLoop(imManager);
   unsubscribeChannelReadyRecovery = imManager.onChannelReady(() => {
@@ -22594,6 +22640,7 @@ async function main(): Promise<void> {
   startSchedulerLoop(schedulerDeps);
   streamingBuffer.start();
   startMessageLoop();
+  readinessManager.setConsumersStatus('ready');
 
   // Start Feishu group sync if any connection is active
   if (anyFeishuConnected) {

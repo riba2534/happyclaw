@@ -5,6 +5,7 @@ import { ContainerStatus } from '../components/monitor/ContainerStatus';
 import { QueueStatus } from '../components/monitor/QueueStatus';
 import { SystemInfo } from '../components/monitor/SystemInfo';
 import { GroupStatusCard } from '../components/monitor/GroupStatusCard';
+import { ChannelOutboxMonitor } from '../components/monitor/ChannelOutboxMonitor';
 import {
   ProviderSwitcher,
   type SimpleProvider,
@@ -383,6 +384,9 @@ export function MonitorPage() {
                 </CardContent>
               </Card>
             )}
+
+            {/* 渠道出站队列 (Outbox) 监控与异常裁决 */}
+            <ChannelOutboxMonitor />
           </div>
         )}
       </div>

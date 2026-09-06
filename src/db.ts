@@ -11129,6 +11129,16 @@ export function listEnabledChannelAccounts(): ChannelAccount[] {
   ).map(parseChannelAccountRow);
 }
 
+export function listAllChannelAccounts(): ChannelAccount[] {
+  return (
+    db
+      .prepare(
+        'SELECT * FROM channel_accounts ORDER BY owner_user_id, provider, created_at',
+      )
+      .all() as ChannelAccountRow[]
+  ).map(parseChannelAccountRow);
+}
+
 export function updateChannelAccount(
   id: string,
   ownerUserId: string,

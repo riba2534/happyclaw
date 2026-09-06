@@ -2537,3 +2537,109 @@ export const CHANNEL_RELIABILITY_TERMINAL_STATUSES = Object.freeze({
   outbox: [...OUTBOX_TERMINAL],
   cards: [...CARD_TERMINAL],
 });
+
+export interface OutboxMonitoringSummary {
+  total: number;
+  pending: number;
+  retryWait: number;
+  claimed: number;
+  uncertain: number;
+  failed: number;
+  delivered: number;
+  overdue: number;
+}
+
+export function getChannelOutboxSummary(
+  overdueThresholdMs = 60_000,
+  now?: Date | string,
+): OutboxMonitoringSummary {
+  const connection = requireDatabase();
+  const currentTime = isoNow(now);
+  const overdueBoundary = new Date(
+    new Date(currentTime).getTime() - overdueThresholdMs,
+  ).toISOString();
+
+  const rows = connection
+    .prepare(
+      `SELECT status, COUNT(*) as count
+       FROM channel_outbox
+       GROUP BY status`,
+    )
+    .all() as Array<{ status: string; count: number }>;
+
+  const counts: Record<string, number> = {};
+  let total = 0;
+  for (const r of rows) {
+    counts[r.status] = r.count;
+    total += r.count;
+  }
+
+  const overdueRow = connection
+    .prepare(
+      `SELECT COUNT(*) as count
+       FROM channel_outbox
+       WHERE status != 'delivered' AND created_at <= ?`,
+    )
+    .get(overdueBoundary) as { count: number } | undefined;
+
+  return {
+    total,
+    pending: counts['pending'] || 0,
+    retryWait: counts['retry_wait'] || 0,
+    claimed: counts['claimed'] || 0,
+    uncertain: counts['uncertain'] || 0,
+    failed: counts['failed'] || 0,
+    delivered: counts['delivered'] || 0,
+    overdue: overdueRow?.count || 0,
+  };
+}
+
+export function listChannelOutboxForMonitoring(
+  options: {
+    status?: string;
+    limit?: number;
+    overdueOnly?: boolean;
+    overdueThresholdMs?: number;
+    now?: Date | string;
+  } = {},
+): ChannelOutboxItem[] {
+  const connection = requireDatabase();
+  const boundedLimit = Math.min(
+    Math.max(Math.trunc(options.limit ?? 100) || 0, 1),
+    500,
+  );
+  const currentTime = isoNow(options.now);
+  const overdueBoundary = new Date(
+    new Date(currentTime).getTime() - (options.overdueThresholdMs ?? 60_000),
+  ).toISOString();
+
+  let sql = 'SELECT * FROM channel_outbox WHERE 1=1';
+  const params: unknown[] = [];
+
+  if (options.status) {
+    sql += ' AND status = ?';
+    params.push(options.status);
+  }
+
+  if (options.overdueOnly) {
+    sql += " AND status != 'delivered' AND created_at <= ?";
+    params.push(overdueBoundary);
+  }
+
+  sql += `
+    ORDER BY
+      CASE status
+        WHEN 'uncertain' THEN 0
+        WHEN 'failed' THEN 1
+        WHEN 'retry_wait' THEN 2
+        WHEN 'pending' THEN 3
+        ELSE 4
+      END,
+      updated_at DESC, id DESC
+    LIMIT ?
+  `;
+  params.push(boundedLimit);
+
+  const rows = connection.prepare(sql).all(...params) as OutboxRow[];
+  return rows.map(mapOutbox);
+}
