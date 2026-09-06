@@ -58,6 +58,11 @@ import {
   TaskRunStatus,
   TaskRunTrigger,
   TaskRunLog,
+  TaskTemplate,
+  NewTaskTemplate,
+  TaskRunArtifact,
+  NewTaskRunArtifact,
+  TemplateParameterDefinition,
   User,
   UserBalance,
   UserPublic,
@@ -540,6 +545,10 @@ function enforcePreMigrationBackup(dbPath: string): void {
   }
 }
 
+export function getRawDb(): any {
+  return db;
+}
+
 export function initDatabase(
   options: { requireCurrentSchema?: boolean } = {},
 ): void {
@@ -751,6 +760,48 @@ export function initDatabase(
       ON task_runs(status, available_at, lease_expires_at);
     CREATE INDEX IF NOT EXISTS idx_task_runs_task_created
       ON task_runs(task_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS task_templates (
+      id TEXT PRIMARY KEY,
+      owner_user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      prompt_template TEXT NOT NULL,
+      parameter_definitions TEXT NOT NULL DEFAULT '[]',
+      default_schedule_type TEXT NOT NULL DEFAULT 'cron',
+      default_schedule_value TEXT NOT NULL DEFAULT '0 9 * * *',
+      default_context_mode TEXT NOT NULL DEFAULT 'isolated',
+      default_execution_type TEXT NOT NULL DEFAULT 'agent',
+      default_execution_mode TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_templates_owner
+      ON task_templates(owner_user_id, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS task_run_artifacts (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      workspace_jid TEXT NOT NULL,
+      workspace_folder TEXT NOT NULL,
+      name TEXT NOT NULL,
+      original_path TEXT NOT NULL,
+      storage_path TEXT NOT NULL,
+      file_hash TEXT NOT NULL,
+      file_size INTEGER NOT NULL DEFAULT 0,
+      mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+      created_by TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_run_artifacts_run
+      ON task_run_artifacts(run_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_task_run_artifacts_task
+      ON task_run_artifacts(task_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_task_run_artifacts_workspace
+      ON task_run_artifacts(workspace_jid);
   `);
 
   // State tables (replacing JSON files)
@@ -2638,6 +2689,56 @@ export function initDatabase(
   );
   if (classifiableDirectMountSchemaVersion < 73) {
     migrateClassifiableDirectWorkspaceMountsToSessions();
+  }
+
+  // v74 -> v75: Task Templates (R18) and Run Artifacts (R19)
+  const taskTemplatesSchemaVersion = Number(
+    getRouterStateInternal('schema_version') ?? '0',
+  );
+  if (taskTemplatesSchemaVersion < 75) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS task_templates (
+        id TEXT PRIMARY KEY,
+        owner_user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        prompt_template TEXT NOT NULL,
+        parameter_definitions TEXT NOT NULL DEFAULT '[]',
+        default_schedule_type TEXT NOT NULL DEFAULT 'cron',
+        default_schedule_value TEXT NOT NULL DEFAULT '0 9 * * *',
+        default_context_mode TEXT NOT NULL DEFAULT 'isolated',
+        default_execution_type TEXT NOT NULL DEFAULT 'agent',
+        default_execution_mode TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_task_templates_owner
+        ON task_templates(owner_user_id, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS task_run_artifacts (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        workspace_jid TEXT NOT NULL,
+        workspace_folder TEXT NOT NULL,
+        name TEXT NOT NULL,
+        original_path TEXT NOT NULL,
+        storage_path TEXT NOT NULL,
+        file_hash TEXT NOT NULL,
+        file_size INTEGER NOT NULL DEFAULT 0,
+        mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+        created_by TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_task_run_artifacts_run
+        ON task_run_artifacts(run_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_task_run_artifacts_task
+        ON task_run_artifacts(task_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_task_run_artifacts_workspace
+        ON task_run_artifacts(workspace_jid);
+    `);
   }
 
   db.prepare(
@@ -8184,6 +8285,310 @@ export function cleanupOldBillingAuditLog(retentionDays = 365): number {
     .prepare('DELETE FROM billing_audit_log WHERE created_at < ?')
     .run(cutoff);
   return result.changes;
+}
+
+// --- Task Template (R18) & Run Artifact (R19) accessors ---
+
+export interface TaskTemplateRow {
+  id: string;
+  owner_user_id: string;
+  name: string;
+  description: string;
+  prompt_template: string;
+  parameter_definitions: string;
+  default_schedule_type: 'cron' | 'interval' | 'once';
+  default_schedule_value: string;
+  default_context_mode: 'group' | 'isolated';
+  default_execution_type: 'agent' | 'script';
+  default_execution_mode: 'host' | 'container' | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function parseTaskTemplateRow(row: TaskTemplateRow): TaskTemplate {
+  let parameterDefinitions: TemplateParameterDefinition[] = [];
+  try {
+    parameterDefinitions = JSON.parse(row.parameter_definitions || '[]');
+  } catch {
+    parameterDefinitions = [];
+  }
+  return {
+    id: row.id,
+    owner_user_id: row.owner_user_id,
+    name: row.name,
+    description: row.description,
+    prompt_template: row.prompt_template,
+    parameter_definitions: parameterDefinitions,
+    default_schedule_type: row.default_schedule_type,
+    default_schedule_value: row.default_schedule_value,
+    default_context_mode: row.default_context_mode,
+    default_execution_type: row.default_execution_type,
+    default_execution_mode: row.default_execution_mode,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+export function createTaskTemplate(template: NewTaskTemplate): TaskTemplate {
+  const id = template.id || crypto.randomUUID();
+  const now = new Date().toISOString();
+  const paramDefsJson = JSON.stringify(template.parameter_definitions || []);
+
+  db.prepare(
+    `
+    INSERT INTO task_templates (
+      id, owner_user_id, name, description, prompt_template,
+      parameter_definitions, default_schedule_type, default_schedule_value,
+      default_context_mode, default_execution_type, default_execution_mode,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `,
+  ).run(
+    id,
+    template.owner_user_id,
+    template.name,
+    template.description ?? '',
+    template.prompt_template,
+    paramDefsJson,
+    template.default_schedule_type || 'cron',
+    template.default_schedule_value || '0 9 * * *',
+    template.default_context_mode || 'isolated',
+    template.default_execution_type || 'agent',
+    template.default_execution_mode ?? null,
+    now,
+    now,
+  );
+
+  return getTaskTemplateById(id)!;
+}
+
+export function getTaskTemplateById(id: string): TaskTemplate | undefined {
+  const row = db
+    .prepare('SELECT * FROM task_templates WHERE id = ?')
+    .get(id) as TaskTemplateRow | undefined;
+  return row ? parseTaskTemplateRow(row) : undefined;
+}
+
+export function listTaskTemplatesByOwner(ownerUserId: string): TaskTemplate[] {
+  const rows = db
+    .prepare(
+      `
+    SELECT * FROM task_templates
+    WHERE owner_user_id = ?
+    ORDER BY updated_at DESC
+  `,
+    )
+    .all(ownerUserId) as TaskTemplateRow[];
+  return rows.map(parseTaskTemplateRow);
+}
+
+export function updateTaskTemplate(
+  id: string,
+  ownerUserId: string,
+  updates: Partial<
+    Omit<TaskTemplate, 'id' | 'owner_user_id' | 'created_at' | 'updated_at'>
+  >,
+): TaskTemplate | null {
+  const existing = getTaskTemplateById(id);
+  if (!existing || existing.owner_user_id !== ownerUserId) {
+    return null;
+  }
+  const now = new Date().toISOString();
+  const name = updates.name !== undefined ? updates.name : existing.name;
+  const description =
+    updates.description !== undefined
+      ? updates.description
+      : existing.description;
+  const promptTemplate =
+    updates.prompt_template !== undefined
+      ? updates.prompt_template
+      : existing.prompt_template;
+  const paramDefs =
+    updates.parameter_definitions !== undefined
+      ? JSON.stringify(updates.parameter_definitions)
+      : JSON.stringify(existing.parameter_definitions);
+  const defaultScheduleType =
+    updates.default_schedule_type !== undefined
+      ? updates.default_schedule_type
+      : existing.default_schedule_type;
+  const defaultScheduleValue =
+    updates.default_schedule_value !== undefined
+      ? updates.default_schedule_value
+      : existing.default_schedule_value;
+  const defaultContextMode =
+    updates.default_context_mode !== undefined
+      ? updates.default_context_mode
+      : existing.default_context_mode;
+  const defaultExecutionType =
+    updates.default_execution_type !== undefined
+      ? updates.default_execution_type
+      : existing.default_execution_type;
+  const defaultExecutionMode =
+    updates.default_execution_mode !== undefined
+      ? updates.default_execution_mode
+      : existing.default_execution_mode;
+
+  db.prepare(
+    `
+    UPDATE task_templates SET
+      name = ?,
+      description = ?,
+      prompt_template = ?,
+      parameter_definitions = ?,
+      default_schedule_type = ?,
+      default_schedule_value = ?,
+      default_context_mode = ?,
+      default_execution_type = ?,
+      default_execution_mode = ?,
+      updated_at = ?
+    WHERE id = ? AND owner_user_id = ?
+  `,
+  ).run(
+    name,
+    description,
+    promptTemplate,
+    paramDefs,
+    defaultScheduleType,
+    defaultScheduleValue,
+    defaultContextMode,
+    defaultExecutionType,
+    defaultExecutionMode,
+    now,
+    id,
+    ownerUserId,
+  );
+
+  return getTaskTemplateById(id)!;
+}
+
+export function deleteTaskTemplate(id: string, ownerUserId: string): boolean {
+  const res = db
+    .prepare(
+      `
+    DELETE FROM task_templates
+    WHERE id = ? AND owner_user_id = ?
+  `,
+    )
+    .run(id, ownerUserId);
+  return res.changes > 0;
+}
+
+export interface TaskRunArtifactRow {
+  id: string;
+  run_id: string;
+  task_id: string;
+  workspace_jid: string;
+  workspace_folder: string;
+  name: string;
+  original_path: string;
+  storage_path: string;
+  file_hash: string;
+  file_size: number;
+  mime_type: string;
+  created_by: string | null;
+  created_at: string;
+}
+
+function parseTaskRunArtifactRow(row: TaskRunArtifactRow): TaskRunArtifact {
+  return {
+    id: row.id,
+    run_id: row.run_id,
+    task_id: row.task_id,
+    workspace_jid: row.workspace_jid,
+    workspace_folder: row.workspace_folder,
+    name: row.name,
+    original_path: row.original_path,
+    storage_path: row.storage_path,
+    file_hash: row.file_hash,
+    file_size: Number(row.file_size || 0),
+    mime_type: row.mime_type,
+    created_by: row.created_by,
+    created_at: row.created_at,
+  };
+}
+
+export function createTaskRunArtifact(
+  artifact: NewTaskRunArtifact,
+): TaskRunArtifact {
+  const id = artifact.id || crypto.randomUUID();
+  const now = artifact.created_at || new Date().toISOString();
+
+  db.prepare(
+    `
+    INSERT INTO task_run_artifacts (
+      id, run_id, task_id, workspace_jid, workspace_folder,
+      name, original_path, storage_path, file_hash, file_size,
+      mime_type, created_by, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `,
+  ).run(
+    id,
+    artifact.run_id,
+    artifact.task_id,
+    artifact.workspace_jid,
+    artifact.workspace_folder,
+    artifact.name,
+    artifact.original_path,
+    artifact.storage_path,
+    artifact.file_hash,
+    artifact.file_size,
+    artifact.mime_type || 'application/octet-stream',
+    artifact.created_by ?? null,
+    now,
+  );
+
+  return getTaskRunArtifactById(id)!;
+}
+
+export function getTaskRunArtifactById(
+  id: string,
+): TaskRunArtifact | undefined {
+  const row = db
+    .prepare('SELECT * FROM task_run_artifacts WHERE id = ?')
+    .get(id) as TaskRunArtifactRow | undefined;
+  return row ? parseTaskRunArtifactRow(row) : undefined;
+}
+
+export function listTaskRunArtifactsByRunId(runId: string): TaskRunArtifact[] {
+  const rows = db
+    .prepare(
+      `
+    SELECT * FROM task_run_artifacts
+    WHERE run_id = ?
+    ORDER BY created_at ASC
+  `,
+    )
+    .all(runId) as TaskRunArtifactRow[];
+  return rows.map(parseTaskRunArtifactRow);
+}
+
+export function listTaskRunArtifactsByTaskId(
+  taskId: string,
+): TaskRunArtifact[] {
+  const rows = db
+    .prepare(
+      `
+    SELECT * FROM task_run_artifacts
+    WHERE task_id = ?
+    ORDER BY created_at DESC
+  `,
+    )
+    .all(taskId) as TaskRunArtifactRow[];
+  return rows.map(parseTaskRunArtifactRow);
+}
+
+export function deleteTaskRunArtifactsByRunId(runId: string): number {
+  const res = db
+    .prepare('DELETE FROM task_run_artifacts WHERE run_id = ?')
+    .run(runId);
+  return res.changes;
+}
+
+export function deleteTaskRunArtifactsByTaskId(taskId: string): number {
+  const res = db
+    .prepare('DELETE FROM task_run_artifacts WHERE task_id = ?')
+    .run(taskId);
+  return res.changes;
 }
 
 // --- Router state accessors ---

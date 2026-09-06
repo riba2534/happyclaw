@@ -1,5 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Loader2, Sparkles, X, SlidersHorizontal } from 'lucide-react';
+import {
+  Loader2,
+  Sparkles,
+  X,
+  SlidersHorizontal,
+  FileText,
+  AlertCircle,
+  CheckCircle2,
+} from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -22,6 +30,11 @@ import { useConnectedChannels } from '../../hooks/useConnectedChannels';
 import { useTasksStore } from '../../stores/tasks';
 import { useGroupsStore } from '../../stores/groups';
 import { formatGroupLabel } from '../settings/channel-meta';
+import type {
+  TaskTemplate,
+  TemplateParameterDefinition,
+  TaskDraft,
+} from '../../types/task-templates';
 
 interface CreateTaskFormProps {
   onSubmit: (data: {
@@ -37,17 +50,25 @@ interface CreateTaskFormProps {
   }) => Promise<void>;
   onClose: () => void;
   isAdmin?: boolean;
+  initialDraft?: TaskDraft | null;
 }
 
-type CreateMode = 'ai' | 'manual';
+type CreateMode = 'ai' | 'manual' | 'template';
 const MODAL_SELECT_CONTENT_CLASS = 'z-[11020]';
 
 export function CreateTaskForm({
   onSubmit,
   onClose,
   isAdmin,
+  initialDraft,
 }: CreateTaskFormProps) {
-  const [mode, setMode] = useState<CreateMode>('ai');
+  const [mode, setMode] = useState<CreateMode>(
+    initialDraft
+      ? initialDraft.source_type === 'template'
+        ? 'template'
+        : 'manual'
+      : 'ai',
+  );
 
   // --- AI mode state ---
   const [aiDescription, setAiDescription] = useState('');
@@ -55,27 +76,51 @@ export function CreateTaskForm({
 
   // --- Manual mode state ---
   const [formData, setFormData] = useState({
-    prompt: '',
-    scheduleType: 'cron' as 'cron' | 'interval' | 'once',
-    scheduleValue: '',
-    executionType: 'agent' as 'agent' | 'script',
-    executionMode: (isAdmin ? 'host' : 'container') as 'host' | 'container',
-    scriptCommand: '',
+    prompt: initialDraft?.prompt || '',
+    scheduleType: (initialDraft?.schedule_type || 'cron') as
+      | 'cron'
+      | 'interval'
+      | 'once',
+    scheduleValue: initialDraft?.schedule_value || '',
+    executionType: (initialDraft?.execution_type || 'agent') as
+      | 'agent'
+      | 'script',
+    executionMode: (initialDraft?.execution_mode ||
+      (isAdmin ? 'host' : 'container')) as 'host' | 'container',
+    scriptCommand: initialDraft?.script_command || '',
   });
   const [intervalNumber, setIntervalNumber] = useState('');
   const [intervalUnit, setIntervalUnit] = useState('60000');
-  const [onceDateTime, setOnceDateTime] = useState('');
+  const [onceDateTime, setOnceDateTime] = useState(
+    initialDraft?.schedule_type === 'once' && initialDraft.schedule_value
+      ? initialDraft.schedule_value.slice(0, 16)
+      : '',
+  );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
 
+  // --- Template mode state (R18) ---
+  const [templates, setTemplates] = useState<TaskTemplate[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
+  const [templateParams, setTemplateParams] = useState<Record<string, string>>(
+    {},
+  );
+  const [previewPrompt, setPreviewPrompt] = useState<string>('');
+  const [templateErrors, setTemplateErrors] = useState<string[]>([]);
+  const [missingParams, setMissingParams] = useState<string[]>([]);
+
   // --- Shared state ---
   const [notifyChannels, setNotifyChannels] = useState<string[] | null>(null);
-  const [chatJid, setChatJid] = useState<string>('');
-  const [contextMode, setContextMode] = useState<'group' | 'isolated'>(
-    'isolated',
+  const [chatJid, setChatJid] = useState<string>(
+    initialDraft?.chat_jid || initialDraft?.suggested_workspace_jid || '',
   );
-  const [executionModeExplicit, setExecutionModeExplicit] =
-    useState<boolean>(false);
+  const [contextMode, setContextMode] = useState<'group' | 'isolated'>(
+    initialDraft?.context_mode || 'isolated',
+  );
+  const [executionModeExplicit, setExecutionModeExplicit] = useState<boolean>(
+    !!initialDraft?.execution_mode,
+  );
   const connectedChannels = useConnectedChannels();
 
   const groupNames = useTasksStore((s) => s.groupNames);
@@ -91,12 +136,81 @@ export function CreateTaskForm({
     if (Object.keys(groups).length === 0) {
       loadGroups();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [groupNames, groups, loadTasks, loadGroups]);
 
-  // Sync executionMode from selected workspace when user hasn't manually overridden.
-  // For the "default" option (empty chatJid), fall back to a role-based placeholder
-  // that matches what the backend infers for the user's own home workspace.
+  // Load templates when switching to template mode
+  useEffect(() => {
+    if (mode === 'template') {
+      setTemplatesLoading(true);
+      api
+        .get<{ templates: TaskTemplate[] }>('/api/task-templates')
+        .then((res) => {
+          setTemplates(res.templates || []);
+          if (
+            res.templates &&
+            res.templates.length > 0 &&
+            !selectedTemplateId
+          ) {
+            handleSelectTemplate(res.templates[0]);
+          }
+        })
+        .catch((err) => {
+          console.error('Failed to load templates:', err);
+        })
+        .finally(() => {
+          setTemplatesLoading(false);
+        });
+    }
+  }, [mode]);
+
+  const handleSelectTemplate = (tpl: TaskTemplate) => {
+    setSelectedTemplateId(tpl.id);
+    const initialParams: Record<string, string> = {};
+    for (const def of tpl.parameter_definitions) {
+      initialParams[def.name] = def.default_value ?? '';
+    }
+    setTemplateParams(initialParams);
+    setFormData((prev) => ({
+      ...prev,
+      scheduleType: tpl.default_schedule_type,
+      scheduleValue: tpl.default_schedule_value,
+      executionType: tpl.default_execution_type,
+      executionMode:
+        tpl.default_execution_mode || (isAdmin ? 'host' : 'container'),
+      scriptCommand: '',
+    }));
+    setContextMode(tpl.default_context_mode);
+    updatePreview(tpl, initialParams);
+  };
+
+  const updatePreview = (tpl: TaskTemplate, params: Record<string, string>) => {
+    let rendered = tpl.prompt_template;
+    const missing: string[] = [];
+    for (const def of tpl.parameter_definitions) {
+      const val = params[def.name];
+      if ((val === undefined || val === '') && def.required) {
+        missing.push(def.name);
+      }
+      const pattern = new RegExp(`\\{\\{\\s*${def.name}\\s*\\}\\}`, 'g');
+      rendered = rendered.replace(
+        pattern,
+        val || `[待填写: ${def.label || def.name}]`,
+      );
+    }
+    setPreviewPrompt(rendered);
+    setMissingParams(missing);
+  };
+
+  const handleParamChange = (name: string, value: string) => {
+    const updated = { ...templateParams, [name]: value };
+    setTemplateParams(updated);
+    const tpl = templates.find((t) => t.id === selectedTemplateId);
+    if (tpl) {
+      updatePreview(tpl, updated);
+    }
+  };
+
+  // Sync executionMode from selected workspace
   useEffect(() => {
     if (!isAdmin || !adminHostOnlyMode) return;
     setExecutionModeExplicit(true);
@@ -152,7 +266,7 @@ export function CreateTaskForm({
   const renderTargetWorkspace = () => (
     <div>
       <label className="block text-sm font-medium text-foreground mb-2">
-        所属工作区
+        所属工作区 <span className="text-red-500">*</span>
       </label>
       <Select
         value={chatJid || '__default__'}
@@ -165,7 +279,7 @@ export function CreateTaskForm({
         </SelectTrigger>
         <SelectContent className={MODAL_SELECT_CONTENT_CLASS}>
           {(!isScript || defaultWorkspaceMode === 'host') && (
-            <SelectItem value="__default__">默认工作区</SelectItem>
+            <SelectItem value="__default__">默认工作区 (我的主空间)</SelectItem>
           )}
           {(isScript ? scriptGroupEntries : sortedGroupEntries).map(
             ([jid, name]) => (
@@ -179,7 +293,7 @@ export function CreateTaskForm({
       <p className="mt-1 text-xs text-muted-foreground">
         {isScript
           ? '脚本仅可选择管理员宿主机工作区，并直接在该宿主机目录中执行。'
-          : '任务会在这个工作区的目录和环境中执行，并继承该工作区的智能体。'}
+          : '任务会在这个工作区的目录和环境中执行，显式选择目标工作区（不继承旧渠道绑定）。'}
       </p>
     </div>
   );
@@ -197,61 +311,68 @@ export function CreateTaskForm({
           <SelectValue />
         </SelectTrigger>
         <SelectContent className={MODAL_SELECT_CONTENT_CLASS}>
-          <SelectItem value="isolated">独立任务会话（默认）</SelectItem>
-          <SelectItem value="group">主会话执行</SelectItem>
+          <SelectItem value="isolated">
+            独立任务会话（推荐，不污染主会话）
+          </SelectItem>
+          <SelectItem value="group">主会话上下文（群聊公共会话）</SelectItem>
         </SelectContent>
       </Select>
       <p className="mt-1 text-xs text-muted-foreground">
         {contextMode === 'isolated'
-          ? '在所属工作区内使用任务专属会话执行，不影响主会话上下文。'
-          : '把任务作为消息注入主会话，适合需要主会话连续上下文的任务。'}
+          ? '每次执行使用全新的独立会话，并在完成后归档结果。'
+          : '任务将直接运行在工作区的主会话上下文中。'}
       </p>
     </div>
   );
 
-  const connectedKeys = CHANNEL_OPTIONS.filter(
-    (c) => connectedChannels[c.key],
-  ).map((c) => c.key);
-
-  const isChannelSelected = (key: string) => {
-    if (notifyChannels === null) return true;
-    return notifyChannels.includes(key);
+  const isChannelSelected = (channelKey: string) => {
+    return notifyChannels === null || notifyChannels.includes(channelKey);
   };
 
-  const toggleChannel = (key: string) => {
-    setNotifyChannels((prev) => toggleNotifyChannel(prev, key, connectedKeys));
+  const toggleChannel = (channelKey: string) => {
+    setNotifyChannels((prev) =>
+      toggleNotifyChannel(
+        prev,
+        channelKey,
+        connectedOptions.map((ch) => ch.key),
+      ),
+    );
   };
 
-  // --- AI mode handler ---
-  const handleAiCreate = async () => {
+  // --- AI mode submit ---
+  const handleAiSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
     if (!aiDescription.trim()) return;
     setAiSubmitting(true);
     try {
-      // AI mode always sends context_mode — the execution_type (agent/script)
-      // is decided by the backend parser, not the client. If the parser
-      // resolves to script, the backend ignores context_mode server-side.
-      const body: Record<string, unknown> = {
+      const res = await api.post<{
+        success: boolean;
+        taskId?: string;
+        error?: string;
+      }>('/api/tasks/ai', {
         description: aiDescription.trim(),
-        notify_channels: notifyChannels,
+        chat_jid: chatJid || undefined,
         context_mode: contextMode,
-      };
-      if (chatJid) {
-        body.chat_jid = chatJid;
+        notify_channels: notifyChannels,
+      });
+      if (res.success) {
+        showToast('任务已创建', '后台正在解析调度规则...');
+        onClose();
+        loadTasks();
+      } else {
+        showToast('创建失败', res.error || '未知错误');
       }
-      await api.post('/api/tasks/ai', body);
-      showToast('任务已创建', 'AI 正在后台解析调度参数，稍后自动激活');
-      onClose();
-    } catch (error) {
+    } catch (err) {
       showToast(
         '创建失败',
-        error instanceof Error ? error.message : '请稍后重试',
+        err instanceof Error ? err.message : '网络请求失败',
       );
     } finally {
       setAiSubmitting(false);
     }
   };
 
-  // --- Manual mode handlers ---
+  // --- Manual mode validation ---
   const validateForm = () => {
     const newErrors: Record<string, string> = {};
     if (isScript) {
@@ -260,15 +381,10 @@ export function CreateTaskForm({
       if (formData.executionMode !== 'host') {
         newErrors.executionMode = '脚本任务只能使用宿主机模式';
       }
-      const selectedMode = chatJid
-        ? groups[chatJid]?.execution_mode
-        : defaultWorkspaceMode;
-      if (selectedMode && selectedMode !== 'host') {
-        newErrors.executionMode = '请选择管理员宿主机工作区';
-      }
     } else {
       if (!formData.prompt.trim()) newErrors.prompt = '请输入 Prompt';
     }
+
     if (formData.scheduleType === 'cron') {
       if (!formData.scheduleValue.trim()) {
         newErrors.scheduleValue = '请输入 Cron 表达式';
@@ -309,7 +425,6 @@ export function CreateTaskForm({
       finalScheduleValue = new Date(onceDateTime).toISOString();
     }
     setSubmitting(true);
-    // Clear any lingering store error so we can detect whether this submit failed.
     useTasksStore.setState({ error: null });
     try {
       await onSubmit({
@@ -325,9 +440,6 @@ export function CreateTaskForm({
         chatJid: chatJid || undefined,
         contextMode: !isScript ? contextMode : undefined,
       });
-      // The store swallows API errors into state.error; surface it as a toast
-      // so the user sees why the submit failed. TasksPage keeps the form open
-      // whenever state.error is set.
       const storeError = useTasksStore.getState().error;
       if (storeError) {
         showToast('创建失败', storeError);
@@ -339,7 +451,69 @@ export function CreateTaskForm({
     }
   };
 
-  // --- Notify channels UI (shared) ---
+  // --- Template mode submit (R18) ---
+  const handleTemplateSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const tpl = templates.find((t) => t.id === selectedTemplateId);
+    if (!tpl) {
+      showToast('请选择模板', '当前未选择任何任务模板');
+      return;
+    }
+
+    setSubmitting(true);
+    setTemplateErrors([]);
+    try {
+      const res = await api.post<{
+        success: boolean;
+        rendered_prompt: string;
+        error?: string;
+        missing_parameters?: string[];
+        validation_errors?: string[];
+      }>(`/api/task-templates/${tpl.id}/instantiate`, {
+        parameters: templateParams,
+      });
+
+      if (!res.success) {
+        setTemplateErrors(
+          res.validation_errors || [res.error || '模板实例化失败'],
+        );
+        showToast('参数校验未通过', res.error || '请检查必填参数');
+        setSubmitting(false);
+        return;
+      }
+
+      await onSubmit({
+        prompt: res.rendered_prompt,
+        scheduleType: tpl.default_schedule_type,
+        scheduleValue: tpl.default_schedule_value,
+        executionType: tpl.default_execution_type,
+        executionMode:
+          tpl.default_execution_mode || (isAdmin ? 'host' : 'container'),
+        scriptCommand: '',
+        notifyChannels,
+        chatJid: chatJid || undefined,
+        contextMode: !isScript ? contextMode : undefined,
+      });
+
+      const storeError = useTasksStore.getState().error;
+      if (storeError) {
+        showToast('创建失败', storeError);
+      }
+    } catch (err: unknown) {
+      const apiErr = err as {
+        body?: { validation_errors?: string[]; error?: string };
+        message?: string;
+      };
+      const errMsgs = apiErr.body?.validation_errors || [
+        apiErr.body?.error || apiErr.message || '实例化出错',
+      ];
+      setTemplateErrors(errMsgs);
+      showToast('模板实例化错误', errMsgs.join(', '));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const connectedOptions = CHANNEL_OPTIONS.filter(
     (ch) => connectedChannels[ch.key],
   );
@@ -369,12 +543,11 @@ export function CreateTaskForm({
           </label>
         ))}
       </div>
-      {connectedOptions.length === 0 && (
+      {connectedOptions.length === 0 ? (
         <p className="mt-1 text-xs text-muted-foreground">
           未绑定任何 IM 渠道，任务结果仅在 Web 工作区展示
         </p>
-      )}
-      {connectedOptions.length > 0 && (
+      ) : (
         <p className="mt-1 text-xs text-muted-foreground">
           选择任务结果推送的 IM 渠道，默认推送到所有已连接渠道
         </p>
@@ -382,12 +555,21 @@ export function CreateTaskForm({
     </div>
   );
 
+  const selectedTemplate = templates.find((t) => t.id === selectedTemplateId);
+
   return (
     <div className="fixed inset-0 z-[11000] flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-4">
       <div className="flex max-h-[94vh] w-full max-w-2xl flex-col overflow-hidden rounded-t-xl bg-card shadow-xl sm:max-h-[90vh] sm:rounded-xl">
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-border">
-          <h2 className="text-xl font-bold text-foreground">创建定时任务</h2>
+          <div>
+            <h2 className="text-xl font-bold text-foreground">创建定时任务</h2>
+            {initialDraft && (
+              <p className="text-xs text-brand-600 dark:text-brand-400 mt-1">
+                已从历史运行预填任务草稿（原渠道绑定已清除，请确认目标工作区与参数）
+              </p>
+            )}
+          </div>
           <button
             onClick={onClose}
             className="p-2 text-muted-foreground hover:text-foreground hover:bg-muted rounded-lg transition-colors"
@@ -411,6 +593,18 @@ export function CreateTaskForm({
             AI 智能创建
           </button>
           <button
+            onClick={() => setMode('template')}
+            className={cn(
+              'flex-1 flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium transition-colors cursor-pointer',
+              mode === 'template'
+                ? 'text-primary border-b-2 border-primary bg-brand-50/50'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted/50',
+            )}
+          >
+            <FileText className="w-4 h-4" />
+            模板复用 (R18)
+          </button>
+          <button
             onClick={() => setMode('manual')}
             className={cn(
               'flex-1 flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium transition-colors cursor-pointer',
@@ -424,10 +618,171 @@ export function CreateTaskForm({
           </button>
         </div>
 
+        {/* Template Mode */}
+        {mode === 'template' && (
+          <form
+            onSubmit={handleTemplateSubmit}
+            className="space-y-4 overflow-y-auto p-4 sm:p-6"
+          >
+            {templatesLoading ? (
+              <div className="flex items-center justify-center py-8 text-muted-foreground">
+                <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                正在加载任务模板...
+              </div>
+            ) : templates.length === 0 ? (
+              <div className="text-center py-8 text-muted-foreground">
+                <FileText className="w-10 h-10 mx-auto mb-2 opacity-50" />
+                <p>暂无私有任务模板</p>
+                <p className="text-xs mt-1">
+                  可在任务运行结果详情页中将成功运行另存为模板。
+                </p>
+              </div>
+            ) : (
+              <>
+                {/* Template Selection */}
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-2">
+                    选择任务模板 <span className="text-red-500">*</span>
+                  </label>
+                  <Select
+                    value={selectedTemplateId}
+                    onValueChange={(val) => {
+                      const found = templates.find((t) => t.id === val);
+                      if (found) handleSelectTemplate(found);
+                    }}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="请选择模板" />
+                    </SelectTrigger>
+                    <SelectContent className={MODAL_SELECT_CONTENT_CLASS}>
+                      {templates.map((t) => (
+                        <SelectItem key={t.id} value={t.id}>
+                          {t.name} {t.description ? `(${t.description})` : ''}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {selectedTemplate?.description && (
+                    <p className="mt-1.5 text-xs text-muted-foreground">
+                      {selectedTemplate.description}
+                    </p>
+                  )}
+                </div>
+
+                {/* Parameters Form */}
+                {selectedTemplate &&
+                  selectedTemplate.parameter_definitions.length > 0 && (
+                    <div className="space-y-3 rounded-lg border border-border bg-muted/20 p-4">
+                      <div className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+                        <SlidersHorizontal className="w-4 h-4 text-primary" />
+                        参数输入与校验
+                      </div>
+                      {selectedTemplate.parameter_definitions.map(
+                        (def: TemplateParameterDefinition) => (
+                          <div key={def.name}>
+                            <div className="flex items-center justify-between mb-1">
+                              <label className="text-xs font-medium text-foreground">
+                                {def.label || def.name}{' '}
+                                {def.required && (
+                                  <span className="text-red-500">*</span>
+                                )}
+                                <span className="text-muted-foreground font-mono ml-1">
+                                  ({def.type})
+                                </span>
+                              </label>
+                              {def.description && (
+                                <span className="text-xs text-muted-foreground">
+                                  {def.description}
+                                </span>
+                              )}
+                            </div>
+                            {def.type === 'date' ? (
+                              <Input
+                                type="date"
+                                value={templateParams[def.name] || ''}
+                                onChange={(e) =>
+                                  handleParamChange(def.name, e.target.value)
+                                }
+                                className={cn(
+                                  missingParams.includes(def.name) &&
+                                    'border-red-500',
+                                )}
+                              />
+                            ) : (
+                              <Input
+                                type={def.type === 'number' ? 'number' : 'text'}
+                                value={templateParams[def.name] || ''}
+                                onChange={(e) =>
+                                  handleParamChange(def.name, e.target.value)
+                                }
+                                placeholder={
+                                  def.default_value ||
+                                  `请输入 ${def.label || def.name}`
+                                }
+                                className={cn(
+                                  missingParams.includes(def.name) &&
+                                    'border-red-500',
+                                )}
+                              />
+                            )}
+                          </div>
+                        ),
+                      )}
+                    </div>
+                  )}
+
+                {/* Template Validation Errors */}
+                {templateErrors.length > 0 && (
+                  <div className="rounded-lg border border-error/20 bg-error-bg p-3 text-sm text-error">
+                    <div className="flex items-center gap-1.5 font-medium mb-1">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      参数校验未通过:
+                    </div>
+                    <ul className="list-disc list-inside text-xs space-y-0.5">
+                      {templateErrors.map((err, i) => (
+                        <li key={i}>{err}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Rendered Prompt Preview */}
+                {previewPrompt && (
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-1.5 flex items-center gap-1.5">
+                      <CheckCircle2 className="w-4 h-4 text-green-600 dark:text-green-400" />
+                      实时替换预览 Prompt
+                    </label>
+                    <div className="rounded-lg border border-border bg-muted/30 p-3 font-mono text-xs whitespace-pre-wrap text-foreground max-h-40 overflow-y-auto">
+                      {previewPrompt}
+                    </div>
+                  </div>
+                )}
+
+                {renderTargetWorkspace()}
+                {!isScript && renderContextMode()}
+                {renderNotifyChannels()}
+
+                {/* Actions */}
+                <div className="sticky bottom-0 -mx-4 flex items-center justify-end gap-3 border-t border-border bg-card px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:-mx-6 sm:px-6 sm:pb-0">
+                  <Button type="button" variant="outline" onClick={onClose}>
+                    取消
+                  </Button>
+                  <Button type="submit" disabled={submitting}>
+                    {submitting && (
+                      <Loader2 className="size-4 animate-spin mr-1.5" />
+                    )}
+                    {submitting ? '实例化并创建中...' : '使用模板创建任务'}
+                  </Button>
+                </div>
+              </>
+            )}
+          </form>
+        )}
+
         {/* AI Mode */}
         {mode === 'ai' && (
           <div className="space-y-4 overflow-y-auto p-4 sm:p-6">
-            {/* Description */}
             <div>
               <label className="block text-sm font-medium text-foreground mb-2">
                 用自然语言描述你的任务
@@ -437,38 +792,29 @@ export function CreateTaskForm({
                 onChange={(e) => setAiDescription(e.target.value)}
                 rows={4}
                 className="resize-none"
-                placeholder="例如：每天早上 9 点帮我总结最新的科技新闻&#10;每周一下午 2 点检查项目依赖是否有安全更新&#10;每隔 2 小时检查一次服务器状态"
+                placeholder="例如: 每天早上 9 点抓取 GitHub 趋势榜并总结成中文发送给我"
               />
-              <p className="mt-1.5 text-xs text-muted-foreground">
-                AI 会自动解析调度时间和任务内容，创建后在后台完成解析
+              <p className="mt-1 text-xs text-muted-foreground">
+                AI 会自动解析你的意图，提取执行内容、调度周期等参数
               </p>
             </div>
 
             {renderTargetWorkspace()}
             {renderContextMode()}
-
             {renderNotifyChannels()}
 
-            {/* Actions */}
             <div className="sticky bottom-0 -mx-4 flex items-center justify-end gap-3 border-t border-border bg-card px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:-mx-6 sm:px-6 sm:pb-0">
               <Button type="button" variant="outline" onClick={onClose}>
                 取消
               </Button>
               <Button
-                onClick={handleAiCreate}
-                disabled={aiSubmitting || !aiDescription.trim()}
+                onClick={handleAiSubmit}
+                disabled={!aiDescription.trim() || aiSubmitting}
               >
-                {aiSubmitting ? (
-                  <>
-                    <Loader2 className="size-4 animate-spin" />
-                    创建中...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="size-4" />
-                    创建任务
-                  </>
+                {aiSubmitting && (
+                  <Loader2 className="size-4 animate-spin mr-1.5" />
                 )}
+                {aiSubmitting ? '解析中...' : 'AI 解析并创建'}
               </Button>
             </div>
           </div>
@@ -480,11 +826,37 @@ export function CreateTaskForm({
             onSubmit={handleManualSubmit}
             className="space-y-4 overflow-y-auto p-4 sm:p-6"
           >
-            {/* Execution Type */}
+            {/* Prompt */}
+            {!isScript && (
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-2">
+                  任务 Prompt <span className="text-red-500">*</span>
+                </label>
+                <Textarea
+                  value={formData.prompt}
+                  onChange={(e) =>
+                    setFormData({ ...formData, prompt: e.target.value })
+                  }
+                  rows={4}
+                  className={cn(
+                    'resize-none',
+                    errors.prompt && 'border-red-500',
+                  )}
+                  placeholder="任务触发时发送给智能体的指令"
+                />
+                {errors.prompt && (
+                  <p className="mt-1 text-sm text-red-600 dark:text-red-400">
+                    {errors.prompt}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Execution Type (admin only) */}
             {isAdmin && (
               <div>
                 <label className="block text-sm font-medium text-foreground mb-2">
-                  执行方式
+                  执行类型
                 </label>
                 <Select
                   value={formData.executionType}
@@ -582,35 +954,8 @@ export function CreateTaskForm({
                     {errors.scriptCommand}
                   </p>
                 )}
-                <p className="mt-1 text-xs text-muted-foreground">
-                  命令在所属工作区目录下执行，最大 4096 字符
-                </p>
               </div>
             )}
-
-            {/* Prompt */}
-            <div>
-              <label className="block text-sm font-medium text-foreground mb-2">
-                {isScript ? '任务描述' : '任务 Prompt'}{' '}
-                {!isScript && <span className="text-red-500">*</span>}
-              </label>
-              <Textarea
-                value={formData.prompt}
-                onChange={(e) =>
-                  setFormData({ ...formData, prompt: e.target.value })
-                }
-                rows={isScript ? 2 : 4}
-                className={cn('resize-none', errors.prompt && 'border-red-500')}
-                placeholder={
-                  isScript ? '可选的任务描述...' : '输入任务的提示词...'
-                }
-              />
-              {errors.prompt && (
-                <p className="mt-1 text-sm text-red-600 dark:text-red-400">
-                  {errors.prompt}
-                </p>
-              )}
-            </div>
 
             {/* Schedule Type */}
             <div>
@@ -619,22 +964,19 @@ export function CreateTaskForm({
               </label>
               <Select
                 value={formData.scheduleType}
-                onValueChange={(value) => {
-                  setIntervalNumber('');
-                  setOnceDateTime('');
+                onValueChange={(value) =>
                   setFormData({
                     ...formData,
                     scheduleType: value as 'cron' | 'interval' | 'once',
-                    scheduleValue: '',
-                  });
-                }}
+                  })
+                }
               >
                 <SelectTrigger className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent className={MODAL_SELECT_CONTENT_CLASS}>
                   <SelectItem value="cron">Cron 表达式</SelectItem>
-                  <SelectItem value="interval">间隔执行</SelectItem>
+                  <SelectItem value="interval">固定间隔</SelectItem>
                   <SelectItem value="once">单次执行</SelectItem>
                 </SelectContent>
               </Select>
@@ -643,7 +985,7 @@ export function CreateTaskForm({
             {/* Schedule Value */}
             <div>
               <label className="block text-sm font-medium text-foreground mb-2">
-                调度值 <span className="text-red-500">*</span>
+                调度时间 <span className="text-red-500">*</span>
               </label>
               {formData.scheduleType === 'cron' && (
                 <>
@@ -660,12 +1002,7 @@ export function CreateTaskForm({
                     placeholder="例如: 0 9 * * * (每天 9 点)"
                   />
                   <p className="mt-1 text-xs text-muted-foreground">
-                    格式: 分 时 日 月 星期（北京时间 UTC+8）。常用:{' '}
-                    <code className="bg-muted px-1 rounded">*/5 * * * *</code>{' '}
-                    每5分钟,{' '}
-                    <code className="bg-muted px-1 rounded">0 9 * * 1-5</code>{' '}
-                    工作日9点,{' '}
-                    <code className="bg-muted px-1 rounded">@daily</code> 每天
+                    格式: 分 时 日 月 星期（北京时间 UTC+8）。
                   </p>
                 </>
               )}
@@ -732,7 +1069,9 @@ export function CreateTaskForm({
                 取消
               </Button>
               <Button type="submit" disabled={submitting}>
-                {submitting && <Loader2 className="size-4 animate-spin" />}
+                {submitting && (
+                  <Loader2 className="size-4 animate-spin mr-1.5" />
+                )}
                 {submitting ? '创建中...' : '创建任务'}
               </Button>
             </div>

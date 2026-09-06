@@ -27,6 +27,7 @@
 | `/api/config`                      | `src/routes/config.ts`           | Provider、系统与兼容渠道配置  |
 | `/api/config`                      | `src/routes/brand-assets.ts`     | 品牌资源上传、删除与公开读取  |
 | `/api/tasks`                       | `src/routes/tasks.ts`            | 定时任务和运行                |
+| `/api/task-templates`              | `src/routes/task-templates.ts`   | 任务模板与参数化复用          |
 | `/api/memory`                      | `src/routes/memory.ts`           | Workspace Memory v2           |
 | `/api/skills`                      | `src/routes/skills.ts`           | 用户 Skills                   |
 | `/api/mcp-servers`                 | `src/routes/mcp-servers.ts`      | 用户/系统 MCP                 |
@@ -322,6 +323,10 @@ Legacy 渠道 facade 位于 `/api/config/user-im/*`，涵盖飞书、Telegram、
 - `GET /api/tasks/:id/runs`
 - `GET /api/tasks/runs/:runId`
 - `POST /api/tasks/runs/:runId/cancel`
+- `GET /api/tasks/runs/:runId/artifacts`，列出运行交付产物 (R19)
+- `POST /api/tasks/runs/:runId/artifacts`，登记交付产物
+- `GET /api/tasks/runs/:runId/artifacts/:artifactId/download`，安全版本化下载产物（校验 SHA-256）
+- `POST /api/tasks/runs/:runId/draft-continuation`，用所选产物版本创建接续任务草稿
 - `POST /api/tasks/:id/run`，旧立即运行入口
 - `GET /api/tasks/:id/logs`，旧日志入口
 - `POST /api/tasks/ai`
@@ -336,6 +341,16 @@ Legacy 渠道 facade 位于 `/api/config/user-im/*`，涵盖飞书、Telegram、
 
 PATCH 修改 `chat_jid` 时会同时更新任务的具体 `delivery_route_jid`。已经物化的 Run
 在 `definition_snapshot` 中冻结原投递路由，不会因后续任务编辑而切换目标。
+
+## 任务模板 (R18)
+
+- `GET /api/task-templates`，列出当前登录用户的私有模板
+- `POST /api/task-templates`，创建私有模板
+- `GET /api/task-templates/:id`，获取模板详情（所有者隔离）
+- `PUT /api/task-templates/:id`，更新模板
+- `DELETE /api/task-templates/:id`，删除模板
+- `POST /api/task-templates/:id/instantiate`，带入参数实例化 Prompt 并进行类型与必填校验
+- `POST /api/task-templates/from-run/:runId`，从历史运行快照生成草稿与候选模板（清除旧渠道绑定与路由，安全目标隔离）
 
 ## Skills、MCP 和 Plugins
 

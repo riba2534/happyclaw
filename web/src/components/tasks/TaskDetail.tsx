@@ -1,6 +1,29 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Check, Eye, Pencil, RefreshCw, X } from 'lucide-react';
+import {
+  Check,
+  Eye,
+  Pencil,
+  RefreshCw,
+  X,
+  FileText,
+  Download,
+  Copy,
+  PlusCircle,
+  ArrowRight,
+  ShieldCheck,
+  Package,
+} from 'lucide-react';
+import { api } from '../../api/client';
+import { CreateTaskForm } from './CreateTaskForm';
+import type {
+  TaskRunArtifact,
+  TaskDraft,
+  TemplateParameterDefinition,
+} from '../../types/task-templates';
+import { Input } from '../ui/input';
+import { Button } from '../ui/button';
+import { Textarea } from '../ui/textarea';
 import { ScheduledTask, TaskRunLog, useTasksStore } from '../../stores/tasks';
 import type { ApiError } from '../../api/client';
 import { showToast } from '../../utils/toast';
@@ -151,6 +174,197 @@ export function TaskDetail({ task }: TaskDetailProps) {
   const taskLogs = logs[task.id] || [];
   const [logsLoading, setLogsLoading] = useState(false);
   const [selectedLog, setSelectedLog] = useState<TaskRunLog | null>(null);
+
+  // R18 & R19 states
+  const [artifacts, setArtifacts] = useState<TaskRunArtifact[]>([]);
+  const [artifactsLoading, setArtifactsLoading] = useState(false);
+  const [selectedArtifactIds, setSelectedArtifactIds] = useState<string[]>([]);
+  const [activeDraft, setActiveDraft] = useState<TaskDraft | null>(null);
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [showSaveTemplateDialog, setShowSaveTemplateDialog] = useState(false);
+  const [templateCandidate, setTemplateCandidate] = useState<{
+    name: string;
+    description: string;
+    prompt_template: string;
+    parameter_definitions: TemplateParameterDefinition[];
+  }>({
+    name: '',
+    description: '',
+    prompt_template: '',
+    parameter_definitions: [],
+  });
+  const [savingTemplate, setSavingTemplate] = useState(false);
+
+  useEffect(() => {
+    if (selectedLog && selectedLog.id) {
+      setArtifactsLoading(true);
+      setSelectedArtifactIds([]);
+      api
+        .get<{ artifacts: TaskRunArtifact[] }>(
+          `/api/tasks/runs/${selectedLog.id}/artifacts`,
+        )
+        .then((res) => {
+          setArtifacts(res.artifacts || []);
+          if (res.artifacts && res.artifacts.length > 0) {
+            setSelectedArtifactIds(res.artifacts.map((a) => a.id));
+          }
+        })
+        .catch(() => setArtifacts([]))
+        .finally(() => setArtifactsLoading(false));
+    }
+  }, [selectedLog]);
+
+  const handleDownloadArtifact = async (
+    runId: string | number,
+    artifact: TaskRunArtifact,
+  ) => {
+    try {
+      const downloadUrl = `/api/tasks/runs/${runId}/artifacts/${artifact.id}/download`;
+      const res = await fetch(downloadUrl, { credentials: 'include' });
+      if (!res.ok) {
+        let errMsg = '下载失败';
+        try {
+          const json = await res.json();
+          errMsg = json.error || errMsg;
+        } catch {
+          /* ignore */
+        }
+        showToast('下载失败', errMsg);
+        return;
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = artifact.name;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      showToast('开始下载', `已保存交付文件: ${artifact.name}`);
+    } catch (err) {
+      showToast('下载出错', err instanceof Error ? err.message : '网络异常');
+    }
+  };
+
+  const handleCreateDraftFromRun = async (runId: string | number) => {
+    try {
+      const res = await api.post<{
+        success: boolean;
+        draft: TaskDraft;
+        template_candidate: unknown;
+      }>(`/api/task-templates/from-run/${runId}`);
+      if (res.success && res.draft) {
+        setActiveDraft(res.draft);
+        setShowCreateForm(true);
+      }
+    } catch (err) {
+      showToast(
+        '生成草稿失败',
+        err instanceof Error ? err.message : '请求异常',
+      );
+    }
+  };
+
+  const handleOpenSaveTemplate = async (runId: string | number) => {
+    try {
+      const res = await api.post<{
+        success: boolean;
+        draft: TaskDraft;
+        template_candidate: {
+          prompt_template: string;
+          parameter_definitions: TemplateParameterDefinition[];
+        };
+      }>(`/api/task-templates/from-run/${runId}`);
+      if (res.success && res.template_candidate) {
+        const firstLine = (task.prompt || '')
+          .split('\n')[0]
+          .trim()
+          .slice(0, 20);
+        setTemplateCandidate({
+          name: `${firstLine || '任务'} 模板`,
+          description: `基于任务运行 (${runId}) 创建的私有模板`,
+          prompt_template: res.template_candidate.prompt_template,
+          parameter_definitions:
+            res.template_candidate.parameter_definitions || [],
+        });
+        setShowSaveTemplateDialog(true);
+      }
+    } catch (err) {
+      showToast(
+        '提取模板失败',
+        err instanceof Error ? err.message : '请求异常',
+      );
+    }
+  };
+
+  const handleSaveTemplateSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (
+      !templateCandidate.name.trim() ||
+      !templateCandidate.prompt_template.trim()
+    ) {
+      showToast('请填写必填项', '模板名称和提示词模板不能为空');
+      return;
+    }
+    setSavingTemplate(true);
+    try {
+      const res = await api.post<{ success: boolean; template?: unknown }>(
+        '/api/task-templates',
+        {
+          name: templateCandidate.name.trim(),
+          description: templateCandidate.description.trim(),
+          prompt_template: templateCandidate.prompt_template,
+          parameter_definitions: templateCandidate.parameter_definitions,
+          default_schedule_type: task.schedule_type,
+          default_schedule_value: task.schedule_value,
+          default_context_mode: task.context_mode,
+          default_execution_type: task.execution_type,
+          default_execution_mode: task.execution_mode,
+        },
+      );
+      if (res.success) {
+        showToast('保存成功', '已创建当前用户私有任务模板');
+        setShowSaveTemplateDialog(false);
+      }
+    } catch (err) {
+      showToast(
+        '保存模板失败',
+        err instanceof Error ? err.message : '网络请求失败',
+      );
+    } finally {
+      setSavingTemplate(false);
+    }
+  };
+
+  const handleCreateContinuationDraft = async (runId: string | number) => {
+    if (selectedArtifactIds.length === 0) {
+      showToast('未选择产物', '请勾选至少一个交付产物文件');
+      return;
+    }
+    try {
+      const res = await api.post<{
+        success: boolean;
+        draft: TaskDraft;
+        referenced_artifacts: unknown[];
+      }>(`/api/tasks/runs/${runId}/draft-continuation`, {
+        artifact_ids: selectedArtifactIds,
+      });
+      if (res.success && res.draft) {
+        setActiveDraft(res.draft);
+        setShowCreateForm(true);
+        showToast(
+          '已生成接续任务草稿',
+          `已准确引用 ${res.referenced_artifacts?.length || 0} 个交付产物版本`,
+        );
+      }
+    } catch (err) {
+      showToast(
+        '生成接续任务草稿失败',
+        err instanceof Error ? err.message : '请求异常',
+      );
+    }
+  };
 
   useEffect(() => {
     loadLogs(task.id);
@@ -952,6 +1166,150 @@ export function TaskDetail({ task }: TaskDetailProps) {
             )}
           </DialogHeader>
 
+          {/* Action toolbar (R18 & R19) */}
+          {selectedLog && (
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleCreateDraftFromRun(selectedLog.id)}
+                  className="flex items-center gap-1.5 text-xs cursor-pointer"
+                >
+                  <PlusCircle className="w-3.5 h-3.5 text-primary" />
+                  以本次运行创建任务草稿 (R18)
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleOpenSaveTemplate(selectedLog.id)}
+                  className="flex items-center gap-1.5 text-xs cursor-pointer"
+                >
+                  <FileText className="w-3.5 h-3.5 text-brand-600 dark:text-brand-400" />
+                  另存为任务模板 (R18)
+                </Button>
+              </div>
+
+              {artifacts.length > 0 && (
+                <Button
+                  type="button"
+                  variant="default"
+                  size="sm"
+                  disabled={selectedArtifactIds.length === 0}
+                  onClick={() => handleCreateContinuationDraft(selectedLog.id)}
+                  className="flex items-center gap-1.5 text-xs cursor-pointer"
+                >
+                  <ArrowRight className="w-3.5 h-3.5" />
+                  用所选产物创建接续任务草稿 (R19)
+                </Button>
+              )}
+            </div>
+          )}
+
+          {/* Delivery Artifacts section (R19) */}
+          {selectedLog && (
+            <div className="rounded-lg border border-border bg-card p-3 space-y-2">
+              <div className="flex items-center justify-between text-xs font-semibold text-foreground">
+                <div className="flex items-center gap-1.5">
+                  <Package className="w-4 h-4 text-primary" />
+                  <span>交付产物版本清单 ({artifacts.length})</span>
+                </div>
+                {artifactsLoading && (
+                  <span className="text-muted-foreground flex items-center gap-1">
+                    <RefreshCw className="w-3 h-3 animate-spin" /> 加载中...
+                  </span>
+                )}
+              </div>
+
+              {artifacts.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  本次运行暂未登记声明交付产物文件。智能体可在任务执行中调用
+                  declare_artifact 工具或输出交付声明标签。
+                </p>
+              ) : (
+                <div className="divide-y divide-border border border-border rounded-md overflow-hidden bg-background">
+                  {artifacts.map((art) => {
+                    const isSelected = selectedArtifactIds.includes(art.id);
+                    return (
+                      <div
+                        key={art.id}
+                        className="flex items-center justify-between p-2.5 hover:bg-muted/30 text-xs transition-colors gap-2"
+                      >
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedArtifactIds((prev) => [
+                                  ...prev,
+                                  art.id,
+                                ]);
+                              } else {
+                                setSelectedArtifactIds((prev) =>
+                                  prev.filter((id) => id !== art.id),
+                                );
+                              }
+                            }}
+                            className="rounded cursor-pointer"
+                            title="选择产物用于接续任务"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium text-foreground truncate">
+                                {art.name}
+                              </span>
+                              <span className="text-muted-foreground text-[10px] font-mono">
+                                {(art.file_size / 1024).toFixed(1)} KB
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2 text-[10px] text-muted-foreground mt-0.5">
+                              <span className="truncate">
+                                路径: {art.original_path}
+                              </span>
+                              <span>·</span>
+                              <span
+                                className="font-mono flex items-center gap-0.5 cursor-pointer hover:text-foreground"
+                                title={`完整 SHA-256: ${art.file_hash} (点击复制)`}
+                                onClick={() => {
+                                  navigator.clipboard.writeText(art.file_hash);
+                                  showToast(
+                                    '已复制',
+                                    '产物 SHA-256 哈希已复制到剪贴板',
+                                  );
+                                }}
+                              >
+                                <ShieldCheck className="w-3 h-3 text-green-600 dark:text-green-400" />
+                                {art.file_hash.slice(0, 10)}...
+                                <Copy className="w-2.5 h-2.5 opacity-60" />
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() =>
+                            handleDownloadArtifact(selectedLog.id, art)
+                          }
+                          className="h-7 px-2 text-xs flex items-center gap-1 cursor-pointer shrink-0"
+                          title="安全下载该独立版本产物文件（校验 SHA-256）"
+                        >
+                          <Download className="w-3 h-3 text-primary" />
+                          下载版本
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="min-h-0 overflow-y-auto rounded-lg border border-border bg-muted/20 p-4">
             {selectedLog?.error && (
               <div className="mb-4 rounded-lg border border-error/20 bg-error-bg p-3 text-sm text-error">
@@ -962,11 +1320,30 @@ export function TaskDetail({ task }: TaskDetailProps) {
               </div>
             )}
             {selectedLog?.result ? (
-              <MarkdownRenderer
-                content={selectedLog.result}
-                groupJid={task.chat_jid}
-                variant="docs"
-              />
+              <div>
+                {selectedLog.definition_snapshot?.chat_jid &&
+                  selectedLog.definition_snapshot.chat_jid !==
+                    task.chat_jid && (
+                    <div className="mb-3 p-2 rounded border border-brand-200 bg-brand-50/50 dark:border-brand-800 dark:bg-brand-950/30 text-xs text-muted-foreground flex items-center gap-1">
+                      <span className="font-medium text-foreground">
+                        历史运行工作区:
+                      </span>
+                      <span className="font-mono">
+                        {selectedLog.definition_snapshot.chat_jid}
+                      </span>
+                      <span>
+                        (已自动使用运行时工作区解析文件与相对资源 - UX R09)
+                      </span>
+                    </div>
+                  )}
+                <MarkdownRenderer
+                  content={selectedLog.result}
+                  groupJid={
+                    selectedLog.definition_snapshot?.chat_jid || task.chat_jid
+                  }
+                  variant="docs"
+                />
+              </div>
             ) : (
               <p className="text-sm text-muted-foreground">
                 本次运行没有留下可展示的业务结果。
@@ -975,6 +1352,139 @@ export function TaskDetail({ task }: TaskDetailProps) {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Save as Template Dialog (R18) */}
+      <Dialog
+        open={showSaveTemplateDialog}
+        onOpenChange={setShowSaveTemplateDialog}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>另存为私有任务模板 (R18)</DialogTitle>
+            <DialogDescription>
+              将本次运行的提示词与执行配置保存为私有模板，支持声明命名参数以便复用。
+            </DialogDescription>
+          </DialogHeader>
+
+          <form onSubmit={handleSaveTemplateSubmit} className="space-y-4 pt-2">
+            <div>
+              <label className="block text-xs font-medium text-foreground mb-1">
+                模板名称 <span className="text-red-500">*</span>
+              </label>
+              <Input
+                value={templateCandidate.name}
+                onChange={(e) =>
+                  setTemplateCandidate({
+                    ...templateCandidate,
+                    name: e.target.value,
+                  })
+                }
+                placeholder="例如: 日报总结模板"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-foreground mb-1">
+                模板描述
+              </label>
+              <Input
+                value={templateCandidate.description}
+                onChange={(e) =>
+                  setTemplateCandidate({
+                    ...templateCandidate,
+                    description: e.target.value,
+                  })
+                }
+                placeholder="简述模板用途"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-foreground mb-1">
+                提示词模板 (可包含 &#123;&#123;参数名&#125;&#125;){' '}
+                <span className="text-red-500">*</span>
+              </label>
+              <Textarea
+                value={templateCandidate.prompt_template}
+                onChange={(e) =>
+                  setTemplateCandidate({
+                    ...templateCandidate,
+                    prompt_template: e.target.value,
+                  })
+                }
+                rows={4}
+                className="font-mono text-xs"
+                required
+              />
+            </div>
+
+            {templateCandidate.parameter_definitions.length > 0 && (
+              <div className="rounded border border-border p-2 bg-muted/20 text-xs">
+                <div className="font-semibold mb-1">已声明的命名参数:</div>
+                <div className="space-y-1">
+                  {templateCandidate.parameter_definitions.map((p, idx) => (
+                    <div
+                      key={idx}
+                      className="flex items-center gap-2 font-mono text-[11px]"
+                    >
+                      <span className="text-primary font-bold">
+                        &#123;&#123;{p.name}&#125;&#125;
+                      </span>
+                      <span className="text-muted-foreground">({p.type})</span>
+                      <span>- {p.label || p.description}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-border">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setShowSaveTemplateDialog(false)}
+              >
+                取消
+              </Button>
+              <Button type="submit" disabled={savingTemplate}>
+                {savingTemplate ? '保存中...' : '保存为模板'}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Create Task Form Modal (when draft is generated) */}
+      {showCreateForm && (
+        <CreateTaskForm
+          initialDraft={activeDraft}
+          onSubmit={async (data) => {
+            const { createTask } = useTasksStore.getState();
+            await createTask(
+              data.prompt,
+              data.scheduleType,
+              data.scheduleValue,
+              data.executionType,
+              data.executionMode,
+              data.scriptCommand,
+              data.notifyChannels,
+              data.chatJid,
+              data.contextMode,
+            );
+            if (!useTasksStore.getState().error) {
+              setShowCreateForm(false);
+              setActiveDraft(null);
+              showToast('任务已创建', '已成功基于草稿创建任务');
+            }
+          }}
+          onClose={() => {
+            setShowCreateForm(false);
+            setActiveDraft(null);
+          }}
+          isAdmin={isAdmin}
+        />
+      )}
     </div>
   );
 }

@@ -102,6 +102,7 @@ import {
   buildAgentProfilePrompt,
   hasAgentProfilePrompts,
 } from './agent-profile-prompts.js';
+import { processCompletedRunArtifacts } from './task-artifact-service.js';
 import { stripAgentInternalTags } from './utils.js';
 import {
   markIsolatedTaskRunIpcComplete,
@@ -1424,6 +1425,26 @@ async function runTaskInner(
     // Finalize if not already done by onOutput callback
     commitDurableWorkspaceIntent();
     finalizeRunLog();
+
+    // R19: Auto-discover and register declared artifacts for this run
+    const effectiveRunId = options?.taskRunId || options?.durableRun?.id;
+    if (effectiveRunId) {
+      try {
+        await processCompletedRunArtifacts({
+          runId: effectiveRunId,
+          resultText: result,
+          ipcDir: workspace.folder
+            ? path.join(DATA_DIR, 'ipc', workspace.folder)
+            : undefined,
+          createdBy: task.created_by,
+        });
+      } catch (artifactErr) {
+        logger.warn(
+          { taskId: task.id, runId: effectiveRunId, err: artifactErr },
+          'Failed to process run artifacts',
+        );
+      }
+    }
 
     logger.info(
       { taskId: task.id, durationMs: lastOutputTime - startTime },

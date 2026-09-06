@@ -1110,6 +1110,88 @@ The actual file types and size limit are enforced by the selected provider.`,
       },
     ),
 
+    // --- declare_artifact (R19) ---
+    tool(
+      'declare_artifact',
+      'Declare a deliverable artifact file (report, summary, data file, etc.) produced by the current task run. The HappyClaw host will archive an immutable versioned copy with cryptographic hash verification.',
+      {
+        path: z
+          .string()
+          .describe(
+            'Path to the artifact file relative to workspace root (e.g., "reports/summary.md")',
+          ),
+        name: z
+          .string()
+          .optional()
+          .describe(
+            'Human-friendly display name for the artifact (optional, defaults to filename)',
+          ),
+      },
+      async (args) => {
+        const rel = args.path.trim();
+        if (rel.includes('..') || path.isAbsolute(rel)) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: 'Error: artifact path must be a relative path within the workspace and cannot contain ".."',
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const absPath = path.resolve(ctx.workspaceGroup, rel);
+        const safeRoot = ctx.workspaceGroup.endsWith(path.sep)
+          ? ctx.workspaceGroup
+          : ctx.workspaceGroup + path.sep;
+        if (absPath !== ctx.workspaceGroup && !absPath.startsWith(safeRoot)) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: 'Error: artifact path escapes workspace directory.',
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const artifactsIpcDir = path.join(ctx.workspaceIpc, 'artifacts');
+        try {
+          writeIpcFile(artifactsIpcDir, {
+            path: rel,
+            name: args.name || path.basename(absPath),
+            declaredAt: new Date().toISOString(),
+            runId: ctx.currentScheduledTaskRunId || undefined,
+            taskId: ctx.currentTaskId || undefined,
+          });
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Error declaring artifact: ${err instanceof Error ? err.message : String(err)}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const exists = fs.existsSync(absPath);
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: exists
+                ? `Artifact declared successfully: ${args.name || path.basename(absPath)} (${rel}). It will be archived with version control upon task completion.`
+                : `Artifact registered: ${args.name || path.basename(absPath)} (${rel}). Note: please ensure the file is written before the task ends.`,
+            },
+          ],
+        };
+      },
+    ),
+
     // --- schedule_task ---
     tool(
       'schedule_task',
