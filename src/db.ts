@@ -88,6 +88,10 @@ import {
   createChannelReliabilitySchema,
 } from './channel-reliability-store.js';
 import {
+  bindCapabilityMutationDatabase,
+  createCapabilityMutationSchema,
+} from './skill-install-service.js';
+import {
   bindWorkspaceMemoryDatabase,
   createWorkspaceMemorySchema,
   deleteWorkspaceMemoryData,
@@ -2510,6 +2514,10 @@ export function initDatabase(
   // schema and fenced APIs; db.ts only binds it to this process connection.
   createChannelReliabilitySchema(db);
   bindChannelReliabilityDatabase(db);
+
+  // Durable capability mutation requests (e.g. skill install/uninstall from agent turns).
+  createCapabilityMutationSchema(db);
+  bindCapabilityMutationDatabase(db);
 
   // v63 -> v64: early Feishu reply enrichment embedded quoted ancestors in
   // messages.content, leaking prompt scaffolding into Web history and then

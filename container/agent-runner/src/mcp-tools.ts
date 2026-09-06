@@ -2536,6 +2536,16 @@ Example packages: "anthropic/memory", "anthropic/think", "owner/repo", "owner/re
               120_000,
             );
             if (result.success) {
+              if (result.accepted) {
+                return {
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: `Skill installation request accepted (requestId: ${result.requestId || requestId}). The package will be installed and take effect at the end of the current turn (new container/process).`,
+                    },
+                  ],
+                };
+              }
               const installed =
                 ((result.installed as string[]) || []).join(', ') || pkg;
               return {
@@ -2611,6 +2621,16 @@ Use the skills panel in the UI to find the skill ID (directory name, e.g. "memor
               'uninstall_skill_result',
             );
             if (result.success) {
+              if (result.accepted) {
+                return {
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: `Skill uninstallation request accepted (requestId: ${result.requestId || requestId}). The skill will be uninstalled and take effect at the end of the current turn.`,
+                    },
+                  ],
+                };
+              }
               return {
                 content: [
                   {

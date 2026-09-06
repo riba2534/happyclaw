@@ -33,6 +33,12 @@ vi.mock('../src/logger.js', () => ({
 }));
 
 const db = await import('../src/db.js');
+const store = await import('../src/channel-reliability-store.js');
+const delivery = await import('../src/channel-outbox-delivery.js');
+const recovery = await import('../src/channel-reliability-recovery.js');
+const { ChannelTurnRuntime } = await import('../src/channel-turn-runtime.js');
+const { settleChannelTurnOutput } =
+  await import('../src/channel-turn-settlement.js');
 const { GroupQueue } = await import('../src/group-queue.js');
 const { stripAgentInternalTags } = await import('../src/utils.js');
 const EMPTY_CURSOR: MessageCursor = { timestamp: '', id: '' };
@@ -440,5 +446,259 @@ describe('actual message loop dispatches the unconsumed channel suffix', () => {
       releaseWarm();
       await queue.shutdown(0);
     }
+  });
+});
+
+describe('actual channel runtime and recovery under combined failure windows', () => {
+  const testRoute = {
+    provider: 'feishu' as const,
+    accountId: 'bot-window-test',
+    sourceJid: 'feishu:bot-window-test:chat-win',
+    chatId: 'chat-win',
+  };
+
+  test('reboot before lease expiry does not preempt active lease, and preserves pending cursor', async () => {
+    let now = '2026-09-07T00:00:00.000Z';
+    const runtime = ChannelTurnRuntime.start({
+      ...testRoute,
+      externalMessageId: 'msg-lease-1',
+    });
+
+    let itemId = '';
+    const base = {
+      ...testRoute,
+      turnRunId: runtime.runId,
+      ordinal: 0,
+      kind: 'text' as const,
+      payload: { text: 'Turn payload' },
+      owner: 'worker-process-1',
+      leaseMs: 60_000,
+      now: () => now,
+      delivery: {
+        mode: 'single' as const,
+        send: async () => ({ providerMessageId: 'ack-lease-1' }),
+      },
+    };
+
+    // Simulate crash at claimed phase
+    await expect(
+      delivery.deliverChannelOutboxItem({
+        ...base,
+        afterPersist: (phase, item) => {
+          if (phase === 'claimed') {
+            itemId = item.id;
+            throw new delivery.ChannelDeliveryProcessCrash();
+          }
+        },
+      }),
+    ).rejects.toBeInstanceOf(delivery.ChannelDeliveryProcessCrash);
+
+    // 10 seconds later: simulate process restart before 60s lease expires
+    now = '2026-09-07T00:00:10.000Z';
+    const dummyReconciler = {
+      reconcileStreamingCard: async () => ({
+        version: 1,
+        method: 'cardkit' as const,
+      }),
+    };
+    const startupResult = await recovery.reconcileChannelReliabilityPass(
+      dummyReconciler,
+      { mode: 'startup', now },
+    );
+    expect(startupResult.outbox).toEqual({ retryable: 0, uncertain: 0 });
+
+    const itemAt10s = store.getChannelOutboxItem(itemId)!;
+    expect(itemAt10s.status).toBe('claimed');
+    expect(itemAt10s.leaseOwner).toBe('worker-process-1');
+
+    // Attempt to claim with a new worker before lease expires -> must return undefined (no preemption)
+    const preemptClaim = store.claimChannelOutboxById(
+      itemId,
+      'new-worker',
+      60_000,
+      now,
+    );
+    expect(preemptClaim).toBeUndefined();
+
+    runtime.dispose();
+  });
+
+  test('lost ACK marks outbox uncertain, fences replay, and triggers reconciliation settlement', async () => {
+    let now = '2026-09-07T01:00:00.000Z';
+    const runtime = ChannelTurnRuntime.start({
+      ...testRoute,
+      externalMessageId: 'msg-ack-lost',
+    });
+
+    let physicalSends = 0;
+    const itemInput = {
+      ...testRoute,
+      turnRunId: runtime.runId,
+      ordinal: 0,
+      kind: 'text' as const,
+      payload: { text: 'Critical answer' },
+      owner: 'worker-process-2',
+      leaseMs: 60_000,
+      now: () => now,
+      delivery: {
+        mode: 'single' as const,
+        send: async () => {
+          physicalSends++;
+          // ACK lost after transmission
+          throw new Error('connection closed after send before ACK');
+        },
+      },
+    };
+
+    const firstResult = await delivery.deliverChannelOutboxItem(itemInput);
+    expect(firstResult.status).toBe('uncertain');
+    expect(physicalSends).toBe(1);
+
+    // Automatic replay must be blocked
+    const replayResult = await delivery.deliverChannelOutboxItem({
+      ...itemInput,
+      owner: 'worker-process-3',
+    });
+    expect(replayResult.status).toBe('uncertain');
+    expect(physicalSends).toBe(1); // Provider send was NOT repeated
+
+    // Settlement via settleChannelTurnOutput detects uncertain and calls reconciliation notice
+    const runtimes = new Map([[runtime.runId, runtime]]);
+    const outboxScopesByInput = new Map([
+      [
+        runtime.runId,
+        {
+          ...testRoute,
+          scopeKey: 'feishu:chat-win',
+          targetJid: testRoute.sourceJid,
+        },
+      ],
+    ]);
+    let noticeSent = false;
+    let manualReconCalled = false;
+
+    const settled = await settleChannelTurnOutput(
+      {
+        inputTurnCompleted: true,
+        inputTurnId: runtime.runId,
+        status: 'success',
+      },
+      {
+        chatJid: 'web:chat-win',
+        folder: 'test-folder',
+        lastProcessedId: runtime.runId,
+        runtimes,
+        outboxScopesByInput: outboxScopesByInput as any,
+        nonTerminalDeliveryAckByInput: new Map(),
+        physicalDeliveryAckByInput: new Map(),
+        clearProcessingIndicator: async () => {},
+        markOutputSettled: () => {},
+        deliverManualReconciliationNotice: async () => {
+          noticeSent = true;
+          return true;
+        },
+        deliverDefinitiveFailureNotice: async () => false,
+        onNeedsManualReconciliation: () => {
+          manualReconCalled = true;
+        },
+      },
+    );
+
+    expect(manualReconCalled).toBe(true);
+    expect(noticeSent).toBe(true);
+    expect(runtimes.has(runtime.runId)).toBe(false); // Runtime disposed
+  });
+
+  test('composite turn with delivered text and definitively failed attachment settles partial delivery', async () => {
+    const now = '2026-09-07T02:00:00.000Z';
+    const runtime = ChannelTurnRuntime.start({
+      ...testRoute,
+      externalMessageId: 'msg-composite-turn',
+    });
+
+    // 1) Deliver text successfully
+    const textResult = await delivery.deliverChannelOutboxItem({
+      ...testRoute,
+      turnRunId: runtime.runId,
+      ordinal: 0,
+      kind: 'text' as const,
+      payload: { text: 'Here is the report text' },
+      owner: 'worker-text',
+      now: () => now,
+      delivery: {
+        mode: 'single' as const,
+        send: async () => ({ providerMessageId: 'ack-text-ok' }),
+      },
+    });
+    expect(textResult.status).toBe('delivered');
+
+    // 2) Attachment rejected definitively
+    const fileResult = await delivery.deliverChannelOutboxItem({
+      ...testRoute,
+      turnRunId: runtime.runId,
+      ordinal: 1,
+      kind: 'file' as const,
+      payload: { path: 'corrupt.bin' },
+      owner: 'worker-file',
+      now: () => now,
+      delivery: {
+        mode: 'single' as const,
+        send: async () => {
+          throw new delivery.DefinitiveChannelDeliveryError(
+            'file rejected by policy',
+          );
+        },
+      },
+    });
+    expect(fileResult.status).toBe('failed');
+
+    // 3) Settle the composite turn
+    const runtimes = new Map([[runtime.runId, runtime]]);
+    const outboxScopesByInput = new Map([
+      [
+        runtime.runId,
+        {
+          ...testRoute,
+          scopeKey: 'feishu:chat-win',
+          targetJid: testRoute.sourceJid,
+        },
+      ],
+    ]);
+    let definitiveFailureNoticeSent = false;
+    let partialNoticed = false;
+    let failureSettled = false;
+
+    await settleChannelTurnOutput(
+      {
+        inputTurnCompleted: true,
+        inputTurnId: runtime.runId,
+        status: 'error',
+      },
+      {
+        chatJid: 'web:chat-win',
+        folder: 'test-folder',
+        lastProcessedId: runtime.runId,
+        runtimes,
+        outboxScopesByInput: outboxScopesByInput as any,
+        nonTerminalDeliveryAckByInput: new Map(),
+        physicalDeliveryAckByInput: new Map(),
+        clearProcessingIndicator: async () => {},
+        markOutputSettled: () => {},
+        deliverManualReconciliationNotice: async () => false,
+        deliverDefinitiveFailureNotice: async (opts) => {
+          definitiveFailureNoticeSent = true;
+          partialNoticed = opts.partial;
+          return true;
+        },
+        onDefinitiveFailureSettled: () => {
+          failureSettled = true;
+        },
+      },
+    );
+
+    expect(definitiveFailureNoticeSent).toBe(true);
+    expect(partialNoticed).toBe(true); // Recognizes that text was already delivered
+    expect(failureSettled).toBe(true);
+    expect(runtimes.has(runtime.runId)).toBe(false);
   });
 });

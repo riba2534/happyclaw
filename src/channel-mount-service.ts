@@ -20,6 +20,7 @@ import {
   createAgent,
   ensureChatExists,
   getChannelAccount,
+  getChannelMount,
   getAllRegisteredGroups,
   getDefaultChannelAccount,
   getJidsByFolder,
@@ -826,4 +827,94 @@ export function buildNativeThreadWorkspaceUpdate(
         : 'native_thread',
     conversation_nav_mode: 'vertical_threads',
   };
+}
+
+// --- Domain Commands for Channel Mount Management ---
+
+export interface BindChannelToWorkspaceCommand {
+  channelJid: string;
+  workspaceJid: string;
+  routingMode?: ChannelRoutingMode;
+  replyPolicy?: 'source_only' | 'mirror';
+  activationMode?: RegisteredGroup['activation_mode'];
+  audienceMode?: string;
+  ownerImId?: string | null;
+}
+
+export interface BindChannelToSessionCommand {
+  channelJid: string;
+  sessionId: string;
+  replyPolicy?: 'source_only' | 'mirror';
+  activationMode?: RegisteredGroup['activation_mode'];
+  audienceMode?: string;
+  ownerImId?: string | null;
+}
+
+/**
+ * Domain command to bind an IM channel to a workspace.
+ * Atomically persists the channel mount in normalized tables and synchronizes
+ * the legacy registered_groups compatibility mirror within the repository boundary.
+ */
+export function executeBindChannelToWorkspace(
+  command: BindChannelToWorkspaceCommand,
+): ChannelMount {
+  const current = getRegisteredGroup(command.channelJid) ?? {
+    jid: command.channelJid,
+    name: command.channelJid,
+    folder: command.channelJid.replace(/:/g, '_'),
+    added_at: new Date().toISOString(),
+  };
+  const updated = buildWorkspaceMountUpdate(
+    current,
+    command.workspaceJid,
+    command.routingMode ?? 'single_session',
+    {
+      replyPolicy: command.replyPolicy,
+      activationMode: command.activationMode,
+      audienceMode: command.audienceMode as any,
+      ownerImId: command.ownerImId,
+    },
+  );
+  commitChannelMountUpdate(command.channelJid, updated);
+  const mount = getChannelMount(command.channelJid);
+  if (!mount) {
+    throw new Error(`Failed to commit channel mount for ${command.channelJid}`);
+  }
+  return mount;
+}
+
+/**
+ * Domain command to bind an IM direct chat to an agent session.
+ * Atomically persists normalized agent mounts and legacy compatibility mirror.
+ */
+export function executeBindChannelToSession(
+  command: BindChannelToSessionCommand,
+): ChannelMount {
+  const current = getRegisteredGroup(command.channelJid) ?? {
+    jid: command.channelJid,
+    name: command.channelJid,
+    folder: command.channelJid.replace(/:/g, '_'),
+    added_at: new Date().toISOString(),
+  };
+  const updated = buildSessionMountUpdate(current, command.sessionId, {
+    replyPolicy: command.replyPolicy,
+    activationMode: command.activationMode,
+    audienceMode: command.audienceMode as any,
+    ownerImId: command.ownerImId,
+  });
+  commitChannelMountUpdate(command.channelJid, updated);
+  const mount = getChannelMount(command.channelJid);
+  if (!mount) {
+    throw new Error(`Failed to commit channel mount for ${command.channelJid}`);
+  }
+  return mount;
+}
+
+/**
+ * Domain command to unbind an IM channel from all targets.
+ */
+export function executeUnbindChannel(channelJid: string): void {
+  const current = getRegisteredGroup(channelJid);
+  if (!current) return;
+  unbindChannelMount(channelJid, current);
 }

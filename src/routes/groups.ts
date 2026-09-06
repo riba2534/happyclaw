@@ -1156,9 +1156,6 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
   if (!deps) return c.json({ error: 'Server not initialized' }, 500);
 
   const jid = c.req.param('jid');
-  const existing = getRegisteredGroup(jid);
-  if (!existing) return c.json({ error: 'Group not found' }, 404);
-
   const authUser = c.get('user') as AuthUser;
 
   const body = await c.req.json().catch(() => ({}));
@@ -1187,210 +1184,49 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
     return c.json({ error: 'No fields to update' }, 400);
   }
 
-  // 不允许修改 is_home=true 的主容器执行模式（主容器由 loadState 强制管理）
-  if (execution_mode !== undefined && existing.is_home) {
-    return c.json(
-      { error: 'Cannot change execution mode of home containers' },
-      403,
-    );
-  }
-
-  // member 用户不允许使用 host 模式（安全限制）
-  if (execution_mode === 'host' && !hasHostExecutionPermission(authUser)) {
-    return c.json(
-      { error: 'Insufficient permissions for host execution mode' },
-      403,
-    );
-  }
-  if (
-    execution_mode === 'container' &&
-    authUser.role === 'admin' &&
-    authUser.status === 'active' &&
-    getSystemSettings().adminHostOnlyMode
-  ) {
-    return c.json(
-      {
-        error: '管理员纯宿主机模式已开启，不能切换到 Docker 执行',
-        code: 'ADMIN_HOST_ONLY_MODE_ENABLED',
-      },
-      409,
-    );
-  }
-
-  // Pin/unpin only requires canAccessGroup (it's a per-user preference)
-  const isPinOnly =
-    is_pinned !== undefined &&
-    !name &&
-    activation_mode === undefined &&
-    execution_mode === undefined &&
-    interaction_mode === undefined;
-  if (isPinOnly) {
-    if (
-      !canAccessGroup(
-        { id: authUser.id, role: authUser.role },
-        { ...existing, jid },
-      )
-    ) {
-      return c.json({ error: 'Group not found' }, 404);
-    }
-  } else {
-    // Name/skills changes require canModifyGroup (owner only)
-    if (
-      !canModifyGroup(
-        { id: authUser.id, role: authUser.role },
-        { ...existing, jid },
-      )
-    ) {
-      return c.json({ error: 'Group not found' }, 404);
-    }
-    if (!jid.startsWith('web:') && authUser.role !== 'admin') {
-      return c.json({ error: 'This group cannot be edited' }, 403);
-    }
-    if (
-      isHostExecutionGroup(existing) &&
-      !hasHostExecutionPermission(authUser)
-    ) {
-      return c.json(
-        { error: 'Insufficient permissions for host execution mode' },
-        403,
-      );
-    }
-    if (interaction_mode !== undefined && !jid.startsWith('web:')) {
-      return c.json(
-        { error: 'Only web workspaces can change interaction mode' },
-        403,
-      );
-    }
-  }
-
-  // Handle pin/unpin (per-user, separate table)
-  let pinned_at: string | undefined;
-  if (is_pinned === true) {
-    pinned_at = pinGroup(authUser.id, jid);
-  } else if (is_pinned === false) {
-    unpinGroup(authUser.id, jid);
-  }
-
-  // interaction_mode lives on the Workspace↔AgentProfile binding row, so a
-  // workspace without one cannot store it. The startup backfill only maps
-  // web workspaces whose created_by is set, leaving legacy ownerless rows
-  // unbound. Refuse up front: throwing inside commitUpdate would surface as a
-  // 500 and, on the quiesce path, only after the runtime was already stopped.
-  if (
-    interaction_mode !== undefined &&
-    !getWorkspaceAgentProfileId(existing.folder)
-  ) {
-    return c.json(
-      {
-        error: '该工作区未绑定智能体配置，因此无法修改回复模式。',
-        code: 'WORKSPACE_AGENT_PROFILE_MISSING',
-      },
-      409,
-    );
-  }
-
-  // Interaction mode is stored on the Workspace↔AgentProfile binding rather
-  // than registered_groups. It still shares the execution-mode quiesce
-  // boundary so a warm runner can observe only the old or the new contract.
-  if (
-    name ||
-    activation_mode !== undefined ||
-    execution_mode !== undefined ||
-    interaction_mode !== undefined
-  ) {
-    // Spread `...existing` instead of rebuilding from an explicit field list.
-    // setRegisteredGroup is INSERT OR REPLACE (full-row overwrite), so every
-    // field omitted from the object gets silently nulled. The old explicit list
-    // dropped owner_im_id / sender_allowlist / conversation_source /
-    // conversation_nav_mode / binding_mode / feishu_chat_mode /
-    // feishu_group_message_type on EVERY rename — wiping the IM owner-gate's
-    // security anchor and corrupting feishu_thread workspaces. Only override
-    // what this PATCH actually changes.
-    const updated: RegisteredGroup = {
-      ...existing,
-      name: name || existing.name,
-      executionMode:
-        execution_mode !== undefined
-          ? (execution_mode as ExecutionMode)
-          : existing.executionMode,
-      activation_mode:
-        activation_mode !== undefined
-          ? activation_mode
-          : existing.activation_mode,
-    };
-
-    const commitUpdate = () => {
-      if (
-        execution_mode === 'container' &&
-        authUser.role === 'admin' &&
-        authUser.status === 'active' &&
-        getSystemSettings().adminHostOnlyMode
-      ) {
-        throw new AdminHostOnlyModeConflictError();
-      }
-      if (
-        name ||
-        activation_mode !== undefined ||
-        execution_mode !== undefined
-      ) {
-        setRegisteredGroup(jid, updated);
-        if (name) updateChatName(jid, name);
-        deps.getRegisteredGroups()[jid] = updated;
-      }
-      if (
-        interaction_mode !== undefined &&
-        !setWorkspaceInteractionMode(existing.folder, interaction_mode)
-      ) {
-        // The pre-check above already rejected unbound workspaces, so reaching
-        // here means the binding was deleted concurrently. Keep it a typed
-        // error so both commit paths answer 409 instead of leaking a 500.
-        throw new WorkspaceAgentProfileMissingError(
-          `Workspace ${jid} has no AgentProfile binding for interaction mode update`,
-        );
-      }
-      if (executionModeChanged || interactionModeChanged) {
-        // SDK resume state is environment-bound. Never carry a host session
-        // into a container, or an assistant/proactive transcript across output
-        // authorities, after the old runner is stopped.
-        deleteWorkspaceSessions(existing.folder);
-        delete deps.sessions[existing.folder];
-      }
-    };
-
-    const executionModeChanged =
-      execution_mode !== undefined &&
-      execution_mode !== (existing.executionMode || 'container');
-    const interactionModeChanged =
-      interaction_mode !== undefined &&
-      interaction_mode !== getWorkspaceInteractionMode(existing.folder);
-    const runtimeContractFieldProvided =
-      execution_mode !== undefined || interaction_mode !== undefined;
-    const runtimeWasSafetyBlocked =
-      runtimeContractFieldProvided &&
-      (deps.queue?.isGroupRuntimeSafetyBlocked?.(jid) ?? false);
-    if (
-      executionModeChanged ||
-      interactionModeChanged ||
-      (runtimeContractFieldProvided && runtimeWasSafetyBlocked)
-    ) {
-      const runtimeJids = getWorkspaceRuntimeJids(deps, existing.folder, jid);
+  const locks = ((
+    globalThis as unknown as Record<string, unknown>
+  ).__workspacePatchLocks ??= new Map<string, Promise<unknown>>()) as Map<
+    string,
+    Promise<unknown>
+  >;
+  const previous = locks.get(jid) ?? Promise.resolve();
+  let releaseLock: () => void;
+  const currentLock = new Promise<void>((resolve) => {
+    releaseLock = resolve;
+  });
+  const chain = previous
+    .catch(() => {})
+    .then(async () => {
       try {
-        await quiesceWorkspaceRunnersAroundCommit(
-          deps,
-          [{ folder: existing.folder, primaryJid: jid }],
-          {
-            reason: `Workspace ${jid} runtime interaction contract changed`,
-            onPostCommitFailure: (failedRuntimeJids) =>
-              deps.queue?.blockGroupsForRuntimeSafety?.(
-                failedRuntimeJids,
-                `Workspace ${jid} runtime cleanup failed after interaction contract commit`,
-              ),
-          },
-          commitUpdate,
-        );
-        deps.queue?.unblockGroupsForRuntimeSafety?.(runtimeJids);
-      } catch (err) {
-        if (err instanceof AdminHostOnlyModeConflictError) {
+        // Re-read latest record at lock boundary
+        const existing = getRegisteredGroup(jid);
+        if (!existing) return c.json({ error: 'Group not found' }, 404);
+
+        // 不允许修改 is_home=true 的主容器执行模式（主容器由 loadState 强制管理）
+        if (execution_mode !== undefined && existing.is_home) {
+          return c.json(
+            { error: 'Cannot change execution mode of home containers' },
+            403,
+          );
+        }
+
+        // member 用户不允许使用 host 模式（安全限制）
+        if (
+          execution_mode === 'host' &&
+          !hasHostExecutionPermission(authUser)
+        ) {
+          return c.json(
+            { error: 'Insufficient permissions for host execution mode' },
+            403,
+          );
+        }
+        if (
+          execution_mode === 'container' &&
+          authUser.role === 'admin' &&
+          authUser.status === 'active' &&
+          getSystemSettings().adminHostOnlyMode
+        ) {
           return c.json(
             {
               error: '管理员纯宿主机模式已开启，不能切换到 Docker 执行',
@@ -1399,8 +1235,70 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
             409,
           );
         }
-        if (err instanceof WorkspaceAgentProfileMissingError) {
-          deps.queue?.unblockGroupsForRuntimeSafety?.(runtimeJids);
+
+        // Pin/unpin only requires canAccessGroup (it's a per-user preference)
+        const isPinOnly =
+          is_pinned !== undefined &&
+          !name &&
+          activation_mode === undefined &&
+          execution_mode === undefined &&
+          interaction_mode === undefined;
+        if (isPinOnly) {
+          if (
+            !canAccessGroup(
+              { id: authUser.id, role: authUser.role },
+              { ...existing, jid },
+            )
+          ) {
+            return c.json({ error: 'Group not found' }, 404);
+          }
+        } else {
+          // Name/skills changes require canModifyGroup (owner only)
+          if (
+            !canModifyGroup(
+              { id: authUser.id, role: authUser.role },
+              { ...existing, jid },
+            )
+          ) {
+            return c.json({ error: 'Group not found' }, 404);
+          }
+          if (!jid.startsWith('web:') && authUser.role !== 'admin') {
+            return c.json({ error: 'This group cannot be edited' }, 403);
+          }
+          if (
+            isHostExecutionGroup(existing) &&
+            !hasHostExecutionPermission(authUser)
+          ) {
+            return c.json(
+              { error: 'Insufficient permissions for host execution mode' },
+              403,
+            );
+          }
+          if (interaction_mode !== undefined && !jid.startsWith('web:')) {
+            return c.json(
+              { error: 'Only web workspaces can change interaction mode' },
+              403,
+            );
+          }
+        }
+
+        // Handle pin/unpin (per-user, separate table)
+        let pinned_at: string | undefined;
+        if (is_pinned === true) {
+          pinned_at = pinGroup(authUser.id, jid);
+        } else if (is_pinned === false) {
+          unpinGroup(authUser.id, jid);
+        }
+
+        // interaction_mode lives on the Workspace↔AgentProfile binding row, so a
+        // workspace without one cannot store it. The startup backfill only maps
+        // web workspaces whose created_by is set, leaving legacy ownerless rows
+        // unbound. Refuse up front: throwing inside commitUpdate would surface as a
+        // 500 and, on the quiesce path, only after the runtime was already stopped.
+        if (
+          interaction_mode !== undefined &&
+          !getWorkspaceAgentProfileId(existing.folder)
+        ) {
           return c.json(
             {
               error: '该工作区未绑定智能体配置，因此无法修改回复模式。',
@@ -1409,54 +1307,189 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
             409,
           );
         }
-        if (!(err instanceof WorkspaceRuntimeQuiesceError)) throw err;
-        if (err.persisted) {
-          deps.queue?.blockGroupsForRuntimeSafety?.(
-            runtimeJids,
-            `Workspace ${jid} runtime cleanup failed after interaction contract commit`,
-          );
+
+        // Interaction mode is stored on the Workspace↔AgentProfile binding rather
+        // than registered_groups. It still shares the execution-mode quiesce
+        // boundary so a warm runner can observe only the old or the new contract.
+        if (
+          name ||
+          activation_mode !== undefined ||
+          execution_mode !== undefined ||
+          interaction_mode !== undefined
+        ) {
+          const commitUpdate = () => {
+            // Re-read latest record in commit transaction boundary to ensure only supplied fields are merged
+            const current = getRegisteredGroup(jid) || existing;
+            if (
+              execution_mode === 'container' &&
+              authUser.role === 'admin' &&
+              authUser.status === 'active' &&
+              getSystemSettings().adminHostOnlyMode
+            ) {
+              throw new AdminHostOnlyModeConflictError();
+            }
+
+            const updated: RegisteredGroup = {
+              ...current,
+              name: name || current.name,
+              executionMode:
+                execution_mode !== undefined
+                  ? (execution_mode as ExecutionMode)
+                  : current.executionMode,
+              activation_mode:
+                activation_mode !== undefined
+                  ? activation_mode
+                  : current.activation_mode,
+            };
+
+            if (
+              name ||
+              activation_mode !== undefined ||
+              execution_mode !== undefined
+            ) {
+              setRegisteredGroup(jid, updated);
+              if (name) updateChatName(jid, name);
+              deps.getRegisteredGroups()[jid] = updated;
+            }
+            if (
+              interaction_mode !== undefined &&
+              !setWorkspaceInteractionMode(current.folder, interaction_mode)
+            ) {
+              // The pre-check above already rejected unbound workspaces, so reaching
+              // here means the binding was deleted concurrently. Keep it a typed
+              // error so both commit paths answer 409 instead of leaking a 500.
+              throw new WorkspaceAgentProfileMissingError(
+                `Workspace ${jid} has no AgentProfile binding for interaction mode update`,
+              );
+            }
+            if (executionModeChanged || interactionModeChanged) {
+              // SDK resume state is environment-bound. Never carry a host session
+              // into a container, or an assistant/proactive transcript across output
+              // authorities, after the old runner is stopped.
+              deleteWorkspaceSessions(current.folder);
+              delete deps.sessions[current.folder];
+            }
+          };
+
+          const executionModeChanged =
+            execution_mode !== undefined &&
+            execution_mode !== (existing.executionMode || 'container');
+          const interactionModeChanged =
+            interaction_mode !== undefined &&
+            interaction_mode !== getWorkspaceInteractionMode(existing.folder);
+          const runtimeContractFieldProvided =
+            execution_mode !== undefined || interaction_mode !== undefined;
+          const runtimeWasSafetyBlocked =
+            runtimeContractFieldProvided &&
+            (deps.queue?.isGroupRuntimeSafetyBlocked?.(jid) ?? false);
+          if (
+            executionModeChanged ||
+            interactionModeChanged ||
+            (runtimeContractFieldProvided && runtimeWasSafetyBlocked)
+          ) {
+            const runtimeJids = getWorkspaceRuntimeJids(
+              deps,
+              existing.folder,
+              jid,
+            );
+            try {
+              await quiesceWorkspaceRunnersAroundCommit(
+                deps,
+                [{ folder: existing.folder, primaryJid: jid }],
+                {
+                  reason: `Workspace ${jid} runtime interaction contract changed`,
+                  onPostCommitFailure: (failedRuntimeJids) =>
+                    deps.queue?.blockGroupsForRuntimeSafety?.(
+                      failedRuntimeJids,
+                      `Workspace ${jid} runtime cleanup failed after interaction contract commit`,
+                    ),
+                },
+                commitUpdate,
+              );
+              deps.queue?.unblockGroupsForRuntimeSafety?.(runtimeJids);
+            } catch (err) {
+              if (err instanceof AdminHostOnlyModeConflictError) {
+                return c.json(
+                  {
+                    error: '管理员纯宿主机模式已开启，不能切换到 Docker 执行',
+                    code: 'ADMIN_HOST_ONLY_MODE_ENABLED',
+                  },
+                  409,
+                );
+              }
+              if (err instanceof WorkspaceAgentProfileMissingError) {
+                deps.queue?.unblockGroupsForRuntimeSafety?.(runtimeJids);
+                return c.json(
+                  {
+                    error: '该工作区未绑定智能体配置，因此无法修改回复模式。',
+                    code: 'WORKSPACE_AGENT_PROFILE_MISSING',
+                  },
+                  409,
+                );
+              }
+              if (!(err instanceof WorkspaceRuntimeQuiesceError)) throw err;
+              if (err.persisted) {
+                deps.queue?.blockGroupsForRuntimeSafety?.(
+                  runtimeJids,
+                  `Workspace ${jid} runtime cleanup failed after interaction contract commit`,
+                );
+              }
+              return c.json(
+                {
+                  error: err.persisted
+                    ? 'Workspace interaction contract changed, but runtime cleanup failed; retry the request'
+                    : 'Failed to stop the active workspace; interaction contract was not changed',
+                  persisted: err.persisted,
+                  retryable: true,
+                },
+                503,
+              );
+            }
+          } else {
+            try {
+              commitUpdate();
+            } catch (err) {
+              if (err instanceof AdminHostOnlyModeConflictError) {
+                return c.json(
+                  {
+                    error: '管理员纯宿主机模式已开启，不能切换到 Docker 执行',
+                    code: 'ADMIN_HOST_ONLY_MODE_ENABLED',
+                  },
+                  409,
+                );
+              }
+              if (!(err instanceof WorkspaceAgentProfileMissingError))
+                throw err;
+              return c.json(
+                {
+                  error: '该工作区未绑定智能体配置，因此无法修改回复模式。',
+                  code: 'WORKSPACE_AGENT_PROFILE_MISSING',
+                },
+                409,
+              );
+            }
+          }
         }
-        return c.json(
-          {
-            error: err.persisted
-              ? 'Workspace interaction contract changed, but runtime cleanup failed; retry the request'
-              : 'Failed to stop the active workspace; interaction contract was not changed',
-            persisted: err.persisted,
-            retryable: true,
-          },
-          503,
-        );
+
+        const finalGroup = getRegisteredGroup(jid) || existing;
+        return c.json({
+          success: true,
+          pinned_at,
+          interaction_mode: getWorkspaceInteractionMode(finalGroup.folder),
+        });
+      } finally {
+        releaseLock!();
       }
-    } else {
-      try {
-        commitUpdate();
-      } catch (err) {
-        if (err instanceof AdminHostOnlyModeConflictError) {
-          return c.json(
-            {
-              error: '管理员纯宿主机模式已开启，不能切换到 Docker 执行',
-              code: 'ADMIN_HOST_ONLY_MODE_ENABLED',
-            },
-            409,
-          );
-        }
-        if (!(err instanceof WorkspaceAgentProfileMissingError)) throw err;
-        return c.json(
-          {
-            error: '该工作区未绑定智能体配置，因此无法修改回复模式。',
-            code: 'WORKSPACE_AGENT_PROFILE_MISSING',
-          },
-          409,
-        );
-      }
+    });
+
+  locks.set(jid, currentLock);
+  try {
+    return await chain;
+  } finally {
+    if (locks.get(jid) === currentLock) {
+      locks.delete(jid);
     }
   }
-
-  return c.json({
-    success: true,
-    pinned_at,
-    interaction_mode: getWorkspaceInteractionMode(existing.folder),
-  });
 });
 
 // PATCH /api/groups/:jid/agent-profile - 切换 workspace 归属的顶层 AgentProfile

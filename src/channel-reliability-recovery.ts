@@ -10,6 +10,7 @@ import {
   interruptChannelTurnRunsWithDeliveredEffects,
   interruptExpiredChannelTurnRuns,
   listAllNonterminalStreamingCards,
+  reconcileExpiredChannelOutbox,
   releaseStreamingCardRecovery,
   type ChannelTurnRun,
   type StreamingCardRecord,
@@ -30,6 +31,7 @@ interface ReconciliationPassOptions {
   mode: 'startup' | 'live';
   /** Live passes are restricted to the boot backlog, never current work. */
   createdBefore?: string;
+  now?: Date | string;
 }
 
 const MISSING_PROVIDER_IDENTITY_ERROR = manualReconciliationError(
@@ -85,15 +87,22 @@ export function resolveStreamingCardRecoveryBody(
   return { body: streamingCardSnapshotText(card.snapshot), persisted: false };
 }
 
-async function reconcileChannelReliabilityPass(
+export async function reconcileChannelReliabilityPass(
   reconciler: StreamingCardReconciler,
   options: ReconciliationPassOptions,
-): Promise<{ reconciled: number; deferred: number; interruptedTurns: number }> {
+): Promise<{
+  reconciled: number;
+  deferred: number;
+  interruptedTurns: number;
+  outbox: { retryable: number; uncertain: number };
+}> {
   const cards = listAllNonterminalStreamingCards(1_000);
   let reconciled = 0;
   let deferred = 0;
   const fencedTurnIds = new Set<string>();
-  const now = new Date().toISOString();
+  const now = options.now
+    ? new Date(options.now).toISOString()
+    : new Date().toISOString();
 
   for (const card of cards) {
     if (card.provider !== 'feishu') {
@@ -290,21 +299,28 @@ async function reconcileChannelReliabilityPass(
     fencedTurnIds.size +
     deliveredEffectTurns +
     interruptExpiredChannelTurnRuns();
+  // Reconcile expired outbox delivery leases in continuous recovery.
+  // Pre-send rows become retry_wait; sending rows become uncertain (no auto-replay).
+  const outbox = reconcileExpiredChannelOutbox(options.now);
+
   // The live timer fires every 15s and almost always reconciles nothing;
   // logging each no-op pass at info drowned out real events (87% of all
   // production log records were all-zero lines from this call site).
   const logLevel =
-    reconciled > 0 ||
-    deferred > 0 ||
-    interruptedTurns > 0 ||
-    options.mode === 'startup'
-      ? ('info' as const)
-      : ('debug' as const);
+    outbox.uncertain > 0
+      ? ('warn' as const)
+      : reconciled > 0 ||
+          deferred > 0 ||
+          interruptedTurns > 0 ||
+          outbox.retryable > 0 ||
+          options.mode === 'startup'
+        ? ('info' as const)
+        : ('debug' as const);
   logger[logLevel](
-    { reconciled, deferred, interruptedTurns, mode: options.mode },
+    { reconciled, deferred, interruptedTurns, outbox, mode: options.mode },
     'Channel reliability reconciliation completed',
   );
-  return { reconciled, deferred, interruptedTurns };
+  return { reconciled, deferred, interruptedTurns, outbox };
 }
 
 /**
@@ -314,8 +330,17 @@ async function reconcileChannelReliabilityPass(
  */
 export async function reconcileChannelReliabilityOnStartup(
   reconciler: StreamingCardReconciler,
-): Promise<{ reconciled: number; deferred: number; interruptedTurns: number }> {
-  return reconcileChannelReliabilityPass(reconciler, { mode: 'startup' });
+  options: { now?: Date | string } = {},
+): Promise<{
+  reconciled: number;
+  deferred: number;
+  interruptedTurns: number;
+  outbox: { retryable: number; uncertain: number };
+}> {
+  return reconcileChannelReliabilityPass(reconciler, {
+    mode: 'startup',
+    now: options.now,
+  });
 }
 
 /**
