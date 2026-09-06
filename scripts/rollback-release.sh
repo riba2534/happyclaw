@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# HappyClaw 生产原子回滚脚本 (R11 规范与可靠性强化)
+# HappyClaw 生产原子回滚脚本 (R11 终极规范：不可变运行根与严格错误阻断)
 #
 # 架构与安全保证：
 # 1. 持有相同部署排他锁，防止回滚与并发发布冲突；
-# 2. 单步原子重命名将 .releases/current 指针切换回上一版本不可变目录 (.releases/store/<SHA>)；
-# 3. 严格镜像跟随：从上一版本不可变元数据准确读取并原地覆写还原上一版本不可变 Agent 镜像；
-# 4. 严格错误处理：服务重启或业务就绪验证失败时必须以非 0 退出码退出，绝不静默警告假成功；
+# 2. 单步原子重命名将 .releases/current 指针切回上一版本不可变根 (.releases/store/<SHA>)；
+# 3. 严格镜像跟随：从上一版本不可变元数据准确读取并内存原地覆写还原上一版本不可变 Agent 镜像；
+# 4. 严格错误阻断：wait 工具缺失、服务重启或业务就绪验证失败时必须严格以非 0 退出码退出；
 # 5. 边界说明：数据库若已不可逆向前迁移，所有者现行政策不保留数据备份，此时禁止降级数据库，
 #    必须以前向修复恢复服务。
 # ==============================================================================
@@ -71,13 +71,13 @@ acquire_lock() {
         if (info.pid && typeof info.pid === "number") {
           try {
             process.kill(info.pid, 0);
-            console.error(`[LOCK] 并发冲突：PID ${info.pid} (RunID: ${info.runId}) 正在执行中！`);
+            console.error(`[LOCK] 并发冲突：检测到部署正在执行中 (PID: ${info.pid}, RunID: ${info.runId})！`);
             process.exit(1);
           } catch (e) {
             fs.unlinkSync(lockFile);
           }
         } else {
-          console.error("[LOCK] 发现未知格式锁文件，保守 fail-closed 拒绝操作！");
+          console.error("[LOCK] 发现未知归属锁文件，保守 fail-closed 拒绝操作！");
           process.exit(1);
         }
       } catch (err) {
@@ -93,7 +93,7 @@ acquire_lock() {
       fs.closeSync(fd);
       process.exit(0);
     } catch (err) {
-      console.error("[LOCK] 原子获取排他锁失败！并发冲突！", err.message);
+      console.error("[LOCK] 获取排他锁失败！并发冲突！", err.message);
       process.exit(1);
     }
   ' "${LOCK_FILE}" "$$" "${RUN_ID}"
@@ -152,7 +152,7 @@ TARGET_STORE_DIR="${STORE_DIR}/${TARGET_SHA}"
 
 # 3. 检查不可变版本库中是否存在预编译好的完整产物
 if [ ! -d "${TARGET_STORE_DIR}/dist" ] || [ ! -d "${TARGET_STORE_DIR}/web/dist" ]; then
-  log_warn "不可变版本库 ${TARGET_STORE_DIR} 缺失产物，转入安全候选发布流程重建目标版本..."
+  log_warn "不可变版本库 ${TARGET_STORE_DIR} 缺失产物，转入独立候选发布流程重建目标版本..."
   release_lock
   HAPPYCLAW_EXPECTED_SHA="${TARGET_SHA}" \
   HAPPYCLAW_SKIP_RESTART=1 \
@@ -189,7 +189,7 @@ else
   fi
 fi
 
-# 4. 服务受控重启与业务就绪验证（失败必须非 0 退出）
+# 4. 服务受控重启与业务就绪严格验证（失败必须以非 0 退出码退出）
 if [ "${SKIP_RESTART}" != "1" ]; then
   if command -v launchctl >/dev/null 2>&1 && launchctl list | grep -q "com.riba2534.happyclaw"; then
     log_info "通过 launchctl 重启服务单元 com.riba2534.happyclaw..."
@@ -198,8 +198,12 @@ if [ "${SKIP_RESTART}" != "1" ]; then
     log_warn "未检测到 launchd 服务单元 com.riba2534.happyclaw，跳过 launchctl 重启。"
   fi
 
-  if [ "${SKIP_READINESS}" != "1" ] && [ -f "${SCRIPT_DIR}/wait-for-readiness.mjs" ]; then
-    log_info "等待回滚后业务就绪探针并严格校验目标 SHA..."
+  if [ "${SKIP_READINESS}" != "1" ]; then
+    if [ ! -f "${SCRIPT_DIR}/wait-for-readiness.mjs" ]; then
+      log_error "就绪检测工具 ${SCRIPT_DIR}/wait-for-readiness.mjs 缺失！拒绝虚假成功！"
+      exit 1
+    fi
+    log_info "等待回滚后业务就绪探针并严格校验目标 SHA: ${TARGET_SHA}..."
     "${SCRIPT_DIR}/wait-for-readiness.mjs" \
       --port "${WEB_PORT:-3000}" \
       --timeout 60 \
