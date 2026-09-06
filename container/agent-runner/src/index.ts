@@ -1784,16 +1784,22 @@ async function runQueryAttempt(
       );
       containerInput.messageTaskId = currentMessage.taskId ?? undefined;
     }
-    if (fallbackInputTurnId !== coldInputTurnId || currentMessage) {
-      const nextTurnBudgetRunId =
-        currentMessage?.receipt?.deliveryId ||
-        (currentMessage ? `turn-${fallbackInputTurnId}` : fallbackInputTurnId);
-      runnerBudget.resetForNextInput(
-        nextTurnBudgetRunId,
-        resolvedBudgetConfig,
-        null,
-      );
-    }
+    const currentInputIdentity =
+      currentMessage?.receipt?.deliveryId ||
+      (currentMessage as any)?.turnId ||
+      fallbackInputTurnId ||
+      coldInputTurnId;
+    const currentMessageBudgetConfig =
+      (currentMessage as any)?.budgetConfig ?? resolvedBudgetConfig;
+    const currentMessageParentRunId =
+      (currentMessage as any)?.budgetParentRunId ??
+      containerInput.budgetParentRunId ??
+      null;
+    runnerBudget.switchInputTurn(
+      currentInputIdentity,
+      currentMessageBudgetConfig,
+      currentMessageParentRunId,
+    );
   };
   activateCurrentInputTurn(coldInputTurnId);
   const [workspaceMemoryTurn, ownerProfileTurn] = mcpToolsContext
@@ -3327,6 +3333,38 @@ async function runQueryAttempt(
         assistantUsageCollector.ingest(
           message as unknown as Record<string, unknown>,
         );
+        const assistantRaw = (message as any).message;
+        const assistantUsage = assistantRaw?.usage;
+        if (assistantUsage && runnerBudget.getConfig()?.maxCostUsd != null) {
+          const msgId = String(assistantRaw.id || (message as any).uuid || '');
+          const inTokens = Number(
+            assistantUsage.input_tokens || assistantUsage.inputTokens || 0,
+          );
+          const outTokens = Number(
+            assistantUsage.output_tokens || assistantUsage.outputTokens || 0,
+          );
+          const cacheRead = Number(
+            assistantUsage.cache_read_input_tokens ||
+              assistantUsage.cacheReadInputTokens ||
+              0,
+          );
+          const cacheWrite = Number(
+            assistantUsage.cache_creation_input_tokens ||
+              assistantUsage.cacheCreationInputTokens ||
+              0,
+          );
+          const estimatedTurnCost =
+            (inTokens * 3 +
+              outTokens * 15 +
+              cacheRead * 0.3 +
+              cacheWrite * 3.75) /
+            1_000_000;
+          if (runnerBudget.recordIncrementalUsage(msgId, estimatedTurnCost)) {
+            log(
+              `Real-time estimated cost threshold reached during tool loop; interrupting query immediately`,
+            );
+          }
+        }
       }
       if (suppressOutputAfterInterrupt && message.type !== 'system') {
         if (message.type === 'result') {

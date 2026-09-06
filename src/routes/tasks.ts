@@ -29,6 +29,8 @@ import {
   getAllRegisteredGroups,
   getUserHomeGroup,
   getTaskBudgetsByTaskId,
+  getTaskRunsForTask,
+  requeueTaskRunForResume,
 } from '../db.js';
 import { taskBudgetService } from '../task-budget-service.js';
 import { getMergedTaskRunHistory } from '../task-run-history.js';
@@ -968,14 +970,8 @@ tasksRoutes.get('/:id/budget', authMiddleware, (c) => {
   const task = getTaskById(id);
   if (!task) return c.json({ error: 'Task not found' }, 404);
   const authUser = c.get('user') as AuthUser;
-  const group = getRegisteredGroup(task.chat_jid);
-  if (!group) {
-    if (authUser.role !== 'admin')
-      return c.json({ error: 'Task not found' }, 404);
-  } else {
-    if (!canAccessGroup({ id: authUser.id, role: authUser.role }, group)) {
-      return c.json({ error: 'Task not found' }, 404);
-    }
+  if (!canViewTask(task, authUser)) {
+    return c.json({ error: 'Task not found' }, 404);
   }
 
   const budgets = getTaskBudgetsByTaskId(id);
@@ -995,21 +991,25 @@ tasksRoutes.get('/:id/budget', authMiddleware, (c) => {
 
 /**
  * POST /api/tasks/:id/budget/resume
- * Explicitly resume a task whose budget limit was reached, optionally granting additional budget.
+ * Explicitly resume an exceeded task run, putting the original run back into queued
+ * with additional budget and preserving its accumulated partial results and usage.
  */
 tasksRoutes.post('/:id/budget/resume', authMiddleware, async (c) => {
   const id = c.req.param('id');
   const task = getTaskById(id);
   if (!task) return c.json({ error: 'Task not found' }, 404);
   const authUser = c.get('user') as AuthUser;
-  const group = getRegisteredGroup(task.chat_jid);
-  if (!group) {
-    if (authUser.role !== 'admin')
-      return c.json({ error: 'Task not found' }, 404);
-  } else {
-    if (!canAccessGroup({ id: authUser.id, role: authUser.role }, group)) {
-      return c.json({ error: 'Task not found' }, 404);
-    }
+
+  // Strict ACL check: verify view rights and execution permissions (guards host execution, scripts, soft-deleted)
+  if (!canViewTask(task, authUser)) {
+    return c.json({ error: 'Task not found' }, 404);
+  }
+  const perms = taskPermissions(task, authUser);
+  if (!perms.can_run || !perms.can_edit) {
+    return c.json(
+      { error: perms.execution_blocked_reason || '没有执行或恢复该任务的权限' },
+      403,
+    );
   }
 
   const body = await c.req.json().catch(() => ({}));
@@ -1022,28 +1022,45 @@ tasksRoutes.post('/:id/budget/resume', authMiddleware, async (c) => {
   }
 
   const reqData = validation.data;
-  const budgets = getTaskBudgetsByTaskId(id);
-  const targetBudget = reqData.run_id
-    ? budgets.find((b) => b.run_id === reqData.run_id)
-    : budgets[0];
+  const runs = getTaskRunsForTask(id, 50);
+  const targetRun = reqData.run_id
+    ? runs.find((r) => String(r.id) === reqData.run_id)
+    : runs.find((r) => r.status === 'budget_exceeded');
 
-  let resumedStatus:
-    | ReturnType<typeof taskBudgetService.resumeBudget>
-    | undefined;
-  if (targetBudget) {
-    const additionalBudget = {
-      maxDurationMs:
-        reqData.additionalDurationMs ?? reqData.budget?.maxDurationMs,
-      maxToolCalls: reqData.additionalToolCalls ?? reqData.budget?.maxToolCalls,
-      maxCostUsd: reqData.additionalCostUsd ?? reqData.budget?.maxCostUsd,
-    };
-    resumedStatus = taskBudgetService.resumeBudget(
-      targetBudget.run_id,
-      additionalBudget,
+  if (!targetRun) {
+    return c.json(
+      { error: '未找到处于预算超限 (budget_exceeded) 状态的运行记录' },
+      400,
+    );
+  }
+  if (targetRun.status !== 'budget_exceeded') {
+    return c.json(
+      {
+        error: `仅允许恢复预算超限状态的运行；该记录当前状态为 ${targetRun.status}`,
+      },
+      400,
     );
   }
 
-  // If task was paused or completed because of once-run limit, reactivate it
+  // Atomic CAS transition: move run from budget_exceeded back to queued
+  const requeueRes = requeueTaskRunForResume(String(targetRun.id), task.id);
+  if (!requeueRes.success) {
+    return c.json({ error: requeueRes.error }, 409);
+  }
+
+  // Resume and augment persistent budget ledger
+  const additionalBudget = {
+    maxDurationMs:
+      reqData.additionalDurationMs ?? reqData.budget?.maxDurationMs,
+    maxToolCalls: reqData.additionalToolCalls ?? reqData.budget?.maxToolCalls,
+    maxCostUsd: reqData.additionalCostUsd ?? reqData.budget?.maxCostUsd,
+  };
+  const resumedStatus = taskBudgetService.resumeBudget(
+    String(targetRun.id),
+    additionalBudget,
+  );
+
+  // If task definition was paused or completed, reactivate it
   let updatedTask = task;
   if (task.status === 'paused' || task.status === 'completed') {
     const nextRun = computeNextRunForTaskResume(
@@ -1071,7 +1088,8 @@ tasksRoutes.post('/:id/budget/resume', authMiddleware, async (c) => {
 
   return c.json({
     success: true,
-    message: 'Task budget resumed successfully',
+    message: '任务运行已成功恢复并重新排队执行',
+    run: requeueRes.run,
     task: updatedTask,
     budgetStatus: resumedStatus ?? null,
   });

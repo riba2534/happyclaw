@@ -4,6 +4,8 @@ import {
   getTaskBudget,
   getTaskBudgetStatus,
   updateTaskBudgetUsage,
+  getAncestorBudgetExceeded,
+  syncTaskBudgetSnapshot,
   resumeTaskBudget as dbResumeTaskBudget,
 } from './db.js';
 import type {
@@ -125,35 +127,22 @@ export class TaskBudgetService {
       };
     }
 
-    // If parent budget exists, check parent status too
-    if (current.parent_run_id) {
-      const parent = getTaskBudget(current.parent_run_id);
-      if (parent && parent.status !== 'active') {
-        const status = getTaskBudgetStatus(runId)!;
-        return {
-          allowed: false,
-          status,
-          reason: parent.exceeded_reason ?? undefined,
-          message: `Parent task budget exceeded (${parent.exceeded_reason ?? parent.status}); delegated tool execution blocked`,
-        };
-      }
-      if (
-        parent &&
-        parent.max_tool_calls != null &&
-        parent.current_tool_calls >= parent.max_tool_calls
-      ) {
-        updateTaskBudgetUsage(current.parent_run_id, {
-          status: 'exceeded',
-          exceededReason: 'tool_calls',
-        });
-        const status = getTaskBudgetStatus(runId)!;
-        return {
-          allowed: false,
-          status,
-          reason: 'tool_calls',
-          message: `Parent task budget tool limit (${parent.max_tool_calls}) reached; tool execution blocked`,
-        };
-      }
+    // Check ancestor hierarchy (handles arbitrary spawn depth and concurrent child executions)
+    const ancestorCheck = getAncestorBudgetExceeded(runId);
+    if (ancestorCheck.exceeded) {
+      updateTaskBudgetUsage(runId, {
+        status: 'exceeded',
+        exceededReason: ancestorCheck.reason ?? 'tool_calls',
+      });
+      const status = getTaskBudgetStatus(runId)!;
+      return {
+        allowed: false,
+        status,
+        reason: ancestorCheck.reason ?? 'tool_calls',
+        message:
+          ancestorCheck.message ||
+          'Task or ancestor budget exceeded; tool execution blocked',
+      };
     }
 
     // Check own tool limit
@@ -322,6 +311,19 @@ export class TaskBudgetService {
    * Returns current budget status for a run ID.
    */
   public getStatus(runId: string): TaskBudgetStatus | undefined {
+    return getTaskBudgetStatus(runId);
+  }
+
+  /**
+   * Synchronizes budget snapshot emitted by Runner directly into persistent storage.
+   * Ensures the persistent database tracks real-time progress of tool calls, duration,
+   * estimated cost, and terminal states, ensuring reboot/query recovery is reliable.
+   */
+  public syncSnapshotFromRunner(
+    runId: string,
+    snapshot: TaskBudgetSnapshot,
+  ): TaskBudgetStatus | undefined {
+    syncTaskBudgetSnapshot(runId, snapshot);
     return getTaskBudgetStatus(runId);
   }
 

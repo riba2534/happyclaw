@@ -1139,6 +1139,7 @@ async function runTaskInner(
       config: taskBudgetConfig,
     });
   }
+  const existingBudget = taskBudgetService.getStatus(taskBudgetRunId);
   // Track the time of last meaningful output from the agent.
   // duration_ms should measure actual work time, not include idle wait.
   let lastOutputTime = startTime;
@@ -1174,9 +1175,16 @@ async function runTaskInner(
         latestOutput?.result ||
         latestOutput?.budgetSnapshot?.partialResult ||
         budgetStatus?.partialResult;
-      const cleanedResult = effectiveRawResult
+      const rawCleanedResult = effectiveRawResult
         ? stripAgentInternalTags(effectiveRawResult)
         : null;
+      const previousPartial = existingBudget?.partialResult?.trim();
+      const cleanedResult =
+        previousPartial &&
+        rawCleanedResult?.trim() &&
+        !rawCleanedResult.includes(previousPartial)
+          ? `${previousPartial}\n\n---\n\n${rawCleanedResult.trim()}`
+          : rawCleanedResult;
       const durableOutcomeError = isBudgetExceeded
         ? null
         : error ||
@@ -1327,11 +1335,16 @@ async function runTaskInner(
       ? getUserHomeGroup(workspaceOwnerId)?.folder || workspace.folder
       : workspace.folder;
 
+    let effectiveTaskPrompt = task.prompt;
+    if (existingBudget?.resumedAt && existingBudget.partialResult?.trim()) {
+      effectiveTaskPrompt = `${task.prompt}\n\n[续跑恢复提示：此前执行已产出以下阶段性成果，请在此基础上继续完成后续任务，不要重复已完成的工作：\n${existingBudget.partialResult.trim()}]`;
+    }
+
     const output = await runAgentWithModelFallback(
       runAgent,
       workspaceGroup,
       {
-        prompt: task.prompt,
+        prompt: effectiveTaskPrompt,
         sessionId,
         groupFolder: workspace.folder,
         chatJid: workspace.jid,

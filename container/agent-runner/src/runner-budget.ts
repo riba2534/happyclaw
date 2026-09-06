@@ -37,6 +37,8 @@ export class RunnerBudgetTracker {
   private partialResult: string | null = null;
   private startedAt: number;
   private durationTimer: NodeJS.Timeout | null = null;
+  private activeInputId: string | null = null;
+  private seenUsageEventIds = new Set<string>();
   private onExceededCallback?: (
     reason: BudgetExceededReason,
     snapshot: TaskBudgetSnapshot,
@@ -44,6 +46,7 @@ export class RunnerBudgetTracker {
 
   constructor(options: RunnerBudgetOptions) {
     this.runId = options.runId;
+    this.activeInputId = options.runId;
     this.parentRunId = options.parentRunId ?? null;
     this.config = options.config ?? null;
     this.currentDurationMs = options.initialUsage?.currentDurationMs ?? 0;
@@ -186,6 +189,30 @@ export class RunnerBudgetTracker {
     }
   }
 
+  /**
+   * Records incremental usage event idempotently. If the new usage causes total cost
+   * to reach or exceed the estimated limit, triggers exceeded status immediately.
+   */
+  public recordIncrementalUsage(
+    eventId: string,
+    estimatedCostUsd: number,
+  ): boolean {
+    if (this.seenUsageEventIds.has(eventId)) {
+      return false; // Idempotency check: do not double-count replayed events
+    }
+    this.seenUsageEventIds.add(eventId);
+    if (estimatedCostUsd <= 0) return false;
+    this.currentCostUsd += estimatedCostUsd;
+    if (
+      this.config?.maxCostUsd != null &&
+      this.currentCostUsd >= this.config.maxCostUsd
+    ) {
+      this.triggerExceeded('cost');
+      return true;
+    }
+    return false;
+  }
+
   public recordRetry(): void {
     this.retryCount++;
   }
@@ -201,6 +228,25 @@ export class RunnerBudgetTracker {
     }
   }
 
+  /**
+   * Safely switches the tracker to a new input turn.
+   * Only resets when the logical input ID actually changes, preserving
+   * accumulated usage during retries or within the same turn.
+   */
+  public switchInputTurn(
+    newInputId: string,
+    newConfig?: TaskBudgetConfig | null,
+    parentRunId?: string | null,
+  ): boolean {
+    if (this.activeInputId === newInputId) {
+      return false; // Same input: do not reset
+    }
+    this.activeInputId = newInputId;
+    this.seenUsageEventIds.clear();
+    this.resetForNextInput(newInputId, newConfig, parentRunId);
+    return true;
+  }
+
   public resetForNextInput(
     newRunId: string,
     newConfig?: TaskBudgetConfig | null,
@@ -211,6 +257,7 @@ export class RunnerBudgetTracker {
       this.durationTimer = null;
     }
     this.runId = newRunId;
+    this.activeInputId = newRunId;
     this.parentRunId = parentRunId ?? null;
     this.config = newConfig ?? null;
     this.currentDurationMs = 0;

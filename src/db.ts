@@ -61,6 +61,7 @@ import {
   TaskBudgetConfig,
   TaskBudgetRecord,
   TaskBudgetStatus,
+  TaskBudgetSnapshot,
   User,
   UserBalance,
   UserPublic,
@@ -6239,8 +6240,32 @@ export function updateTaskBudgetUsage(
   },
 ): TaskBudgetRecord | undefined {
   return db.transaction(() => {
-    const current = getTaskBudget(runId);
-    if (!current) return undefined;
+    let current = getTaskBudget(runId);
+    if (!current) {
+      const now = new Date().toISOString();
+      current = {
+        run_id: runId,
+        parent_run_id: null,
+        task_id: null,
+        chat_jid: null,
+        group_folder: null,
+        user_id: null,
+        max_duration_ms: null,
+        max_tool_calls: null,
+        max_cost_usd: null,
+        current_duration_ms: 0,
+        current_tool_calls: 0,
+        current_cost_usd: 0,
+        retry_count: 0,
+        status: 'active',
+        exceeded_reason: null,
+        partial_result: null,
+        resumed_at: null,
+        created_at: now,
+        updated_at: now,
+      };
+      createTaskBudget(current);
+    }
 
     const newDuration = Math.max(
       0,
@@ -6334,8 +6359,32 @@ export function resumeTaskBudget(
   additionalBudget?: TaskBudgetConfig,
 ): TaskBudgetRecord | undefined {
   return db.transaction(() => {
-    const current = getTaskBudget(runId);
-    if (!current) return undefined;
+    let current = getTaskBudget(runId);
+    if (!current) {
+      const now = new Date().toISOString();
+      current = {
+        run_id: runId,
+        parent_run_id: null,
+        task_id: null,
+        chat_jid: null,
+        group_folder: null,
+        user_id: null,
+        max_duration_ms: null,
+        max_tool_calls: null,
+        max_cost_usd: null,
+        current_duration_ms: 0,
+        current_tool_calls: 0,
+        current_cost_usd: 0,
+        retry_count: 0,
+        status: 'active',
+        exceeded_reason: null,
+        partial_result: null,
+        resumed_at: null,
+        created_at: now,
+        updated_at: now,
+      };
+      createTaskBudget(current);
+    }
 
     const now = new Date().toISOString();
     let newMaxDuration = current.max_duration_ms;
@@ -6381,6 +6430,217 @@ export function resumeTaskBudget(
     ).run(newMaxDuration, newMaxToolCalls, newMaxCost, now, now, runId);
 
     return getTaskBudget(runId);
+  })();
+}
+
+export function getAncestorBudgetExceeded(runId: string): {
+  exceeded: boolean;
+  exceededRunId?: string;
+  reason?: TaskBudgetRecord['exceeded_reason'];
+  message?: string;
+} {
+  const visited = new Set<string>();
+  let currId: string | null = runId;
+
+  while (currId && !visited.has(currId)) {
+    visited.add(currId);
+    const b = getTaskBudget(currId);
+    if (!b) break;
+    if (b.status === 'exceeded') {
+      return {
+        exceeded: true,
+        exceededRunId: currId,
+        reason: b.exceeded_reason,
+        message:
+          currId === runId
+            ? `Task budget exceeded (${b.exceeded_reason})`
+            : `Ancestor task budget [${currId}] exceeded (${b.exceeded_reason})`,
+      };
+    }
+    if (b.max_tool_calls != null && b.current_tool_calls >= b.max_tool_calls) {
+      return {
+        exceeded: true,
+        exceededRunId: currId,
+        reason: 'tool_calls',
+        message:
+          currId === runId
+            ? `Task tool calls limit reached (${b.max_tool_calls})`
+            : `Ancestor task budget [${currId}] tool calls limit reached (${b.max_tool_calls})`,
+      };
+    }
+    if (
+      b.max_duration_ms != null &&
+      b.current_duration_ms >= b.max_duration_ms
+    ) {
+      return {
+        exceeded: true,
+        exceededRunId: currId,
+        reason: 'duration',
+        message:
+          currId === runId
+            ? `Task duration limit reached (${b.max_duration_ms}ms)`
+            : `Ancestor task budget [${currId}] duration limit reached (${b.max_duration_ms}ms)`,
+      };
+    }
+    if (b.max_cost_usd != null && b.current_cost_usd >= b.max_cost_usd) {
+      return {
+        exceeded: true,
+        exceededRunId: currId,
+        reason: 'cost',
+        message:
+          currId === runId
+            ? `Task cost threshold exceeded ($${b.max_cost_usd})`
+            : `Ancestor task budget [${currId}] cost threshold exceeded ($${b.max_cost_usd})`,
+      };
+    }
+    currId = b.parent_run_id;
+  }
+  return { exceeded: false };
+}
+
+export function syncTaskBudgetSnapshot(
+  runId: string,
+  snapshot: TaskBudgetSnapshot,
+): TaskBudgetRecord | undefined {
+  return db.transaction(() => {
+    const current = getTaskBudget(runId);
+    const now = new Date().toISOString();
+    if (!current) {
+      const newRec: TaskBudgetRecord = {
+        run_id: runId,
+        parent_run_id: null,
+        task_id: null,
+        chat_jid: null,
+        group_folder: null,
+        user_id: null,
+        max_duration_ms: snapshot.maxDurationMs ?? null,
+        max_tool_calls: snapshot.maxToolCalls ?? null,
+        max_cost_usd: snapshot.maxCostUsd ?? null,
+        current_duration_ms: snapshot.currentDurationMs,
+        current_tool_calls: snapshot.currentToolCalls,
+        current_cost_usd: snapshot.currentCostUsd,
+        retry_count: snapshot.retryCount ?? 0,
+        status: snapshot.status,
+        exceeded_reason: snapshot.exceededReason ?? null,
+        partial_result: snapshot.partialResult ?? null,
+        resumed_at: null,
+        created_at: now,
+        updated_at: now,
+      };
+      createTaskBudget(newRec);
+      return getTaskBudget(runId);
+    }
+
+    const durationDelta = Math.max(
+      0,
+      snapshot.currentDurationMs - current.current_duration_ms,
+    );
+    const toolCallsDelta = Math.max(
+      0,
+      snapshot.currentToolCalls - current.current_tool_calls,
+    );
+    const costDelta = Math.max(
+      0,
+      snapshot.currentCostUsd - current.current_cost_usd,
+    );
+
+    const finalStatus =
+      current.status === 'exceeded' || snapshot.status === 'exceeded'
+        ? 'exceeded'
+        : snapshot.status;
+    const finalReason =
+      current.exceeded_reason || snapshot.exceededReason || null;
+    const finalPartial = snapshot.partialResult ?? current.partial_result;
+
+    db.prepare(
+      `
+      UPDATE task_budgets
+      SET current_duration_ms = MAX(current_duration_ms, ?),
+          current_tool_calls = MAX(current_tool_calls, ?),
+          current_cost_usd = MAX(current_cost_usd, ?),
+          retry_count = MAX(retry_count, ?),
+          status = ?,
+          exceeded_reason = ?,
+          partial_result = COALESCE(?, partial_result),
+          updated_at = ?
+      WHERE run_id = ?
+    `,
+    ).run(
+      snapshot.currentDurationMs,
+      snapshot.currentToolCalls,
+      snapshot.currentCostUsd,
+      snapshot.retryCount ?? current.retry_count,
+      finalStatus,
+      finalReason,
+      finalPartial,
+      now,
+      runId,
+    );
+
+    if (
+      current.parent_run_id &&
+      (durationDelta > 0 || toolCallsDelta > 0 || costDelta > 0)
+    ) {
+      updateTaskBudgetUsage(current.parent_run_id, {
+        durationMsDelta: durationDelta,
+        toolCallsDelta: toolCallsDelta,
+        costUsdDelta: costDelta,
+      });
+    }
+
+    return getTaskBudget(runId);
+  })();
+}
+
+export function requeueTaskRunForResume(
+  runId: string,
+  taskId: string,
+): { success: boolean; run?: TaskRun; error?: string } {
+  return db.transaction(() => {
+    const current = db
+      .prepare('SELECT * FROM task_runs WHERE id = ?')
+      .get(runId) as TaskRunRow | undefined;
+    if (!current) {
+      return { success: false, error: 'Run not found' };
+    }
+    if (current.task_id !== taskId) {
+      return { success: false, error: 'Run does not belong to this task' };
+    }
+    if (current.status !== 'budget_exceeded') {
+      return {
+        success: false,
+        error: `Only budget_exceeded runs can be resumed; current status is ${current.status}`,
+      };
+    }
+
+    const now = new Date().toISOString();
+    const result = db
+      .prepare(
+        `
+      UPDATE task_runs
+      SET status = 'queued',
+          available_at = ?,
+          lease_owner = NULL,
+          lease_expires_at = NULL,
+          lease_token = lease_token + 1,
+          error = NULL,
+          updated_at = ?
+      WHERE id = ? AND status = 'budget_exceeded'
+    `,
+      )
+      .run(now, now, runId);
+
+    if (result.changes !== 1) {
+      return {
+        success: false,
+        error: 'Concurrent modification: run was already resumed or modified',
+      };
+    }
+
+    const updated = db
+      .prepare('SELECT * FROM task_runs WHERE id = ?')
+      .get(runId) as TaskRunRow;
+    return { success: true, run: mapTaskRunRow(updated) };
   })();
 }
 

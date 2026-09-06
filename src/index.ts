@@ -112,6 +112,7 @@ import {
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
+import { taskBudgetService } from './task-budget-service.js';
 import { resolveRunnerLivenessTimeouts } from './runner-liveness.js';
 import {
   decideStuckRunnerRecovery,
@@ -7727,6 +7728,20 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               }
               return;
             }
+            if (
+              result.streamEvent.eventType === 'budget_status' &&
+              result.streamEvent.budgetSnapshot
+            ) {
+              const bRunId =
+                result.streamEvent.turnId ||
+                outputTurnId ||
+                result.inputTurnId ||
+                lastProcessed.id;
+              taskBudgetService.syncSnapshotFromRunner(
+                bRunId,
+                result.streamEvent.budgetSnapshot,
+              );
+            }
             // Claude SDK 的 costUSD 只是上游估算。实时 Web/飞书展示前先走
             // 与账本相同的 Kaboo 计价入口，确保流式金额和最终统计一致。
             // 后面的持久化调用会被 eventId 幂等去重，并负责关联最终消息。
@@ -7747,6 +7762,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                 });
                 result.streamEvent.usage.costUSD =
                   accounting.providerEstimatedCostUSD;
+                const bRunId =
+                  result.streamEvent.turnId ||
+                  outputTurnId ||
+                  result.inputTurnId ||
+                  lastProcessed.id;
+                taskBudgetService.recordCost(
+                  bRunId,
+                  accounting.providerEstimatedCostUSD,
+                );
               } catch (err) {
                 logger.warn(
                   { err, chatJid },
@@ -10245,6 +10269,19 @@ async function runAgent(
 
     const ownerHomeFolder = resolveOwnerHomeFolder(group);
 
+    const sessionBudgetConfig =
+      (resolvedAgentProfile?.runtime_policy as any)?.budget ?? null;
+    const sessionBudgetRunId = turnId || `group:${chatJid}:${Date.now()}`;
+    if (sessionBudgetConfig) {
+      taskBudgetService.initBudget({
+        runId: sessionBudgetRunId,
+        chatJid,
+        groupFolder: group.folder,
+        userId: group.created_by,
+        config: sessionBudgetConfig,
+      });
+    }
+
     let output: ContainerOutput;
 
     if (executionMode === 'host') {
@@ -10268,6 +10305,8 @@ async function runAgent(
           prompt,
           sessionId,
           turnId,
+          budgetConfig: sessionBudgetConfig,
+          budgetRunId: sessionBudgetRunId,
           currentBatchMessageIds,
           queryRunId: queue.getActiveQueryId(chatJid) ?? undefined,
           groupFolder: group.folder,
@@ -10298,6 +10337,8 @@ async function runAgent(
           prompt,
           sessionId,
           turnId,
+          budgetConfig: sessionBudgetConfig,
+          budgetRunId: sessionBudgetRunId,
           currentBatchMessageIds,
           queryRunId: queue.getActiveQueryId(chatJid) ?? undefined,
           groupFolder: group.folder,
@@ -16353,6 +16394,31 @@ async function processAgentConversation(
         };
         pendingAgentLedgerUsageBatch = null;
       }
+      if (
+        output.streamEvent.eventType === 'budget_status' &&
+        output.streamEvent.budgetSnapshot
+      ) {
+        const bRunId =
+          output.streamEvent.turnId ||
+          output.turnId ||
+          output.inputTurnId ||
+          lastProcessed.id;
+        taskBudgetService.syncSnapshotFromRunner(
+          bRunId,
+          output.streamEvent.budgetSnapshot,
+        );
+      }
+      if (
+        output.streamEvent.eventType === 'usage' &&
+        output.streamEvent.usage
+      ) {
+        const bRunId =
+          output.streamEvent.turnId ||
+          output.turnId ||
+          output.inputTurnId ||
+          lastProcessed.id;
+        taskBudgetService.recordCost(bRunId, output.streamEvent.usage.costUSD);
+      }
       const agentStreamInputTurnId = output.inputTurnId ?? lastProcessed.id;
       // Native-message mode has no framework-owned Assistant answer lane.
       // Keeping hidden deltas out of the reducer also prevents a later empty
@@ -17304,10 +17370,28 @@ async function processAgentConversation(
         runtimeAgentKind: agent.kind,
       },
     );
+    const agentBudgetConfig =
+      (agentProfile?.runtime_policy as any)?.budget ?? null;
+    const agentBudgetRunId = `agent:${agentId}:${lastProcessed.id}`;
+    const agentParentRunId = agent.spawned_from_jid || null;
+    if (agentBudgetConfig || agentParentRunId) {
+      taskBudgetService.initBudget({
+        runId: agentBudgetRunId,
+        parentRunId: agentParentRunId,
+        chatJid,
+        groupFolder: effectiveGroup.folder,
+        userId: effectiveGroup.created_by,
+        config: agentBudgetConfig,
+      });
+    }
+
     const containerInput: ContainerInput = {
       prompt,
       sessionId,
       turnId: lastProcessed.id,
+      budgetConfig: agentBudgetConfig,
+      budgetRunId: agentBudgetRunId,
+      budgetParentRunId: agentParentRunId,
       currentBatchMessageIds: missedMessages.map((message) => message.id),
       queryRunId: queue.getActiveQueryId(virtualJid) ?? undefined,
       groupFolder: effectiveGroup.folder,

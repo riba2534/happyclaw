@@ -114,7 +114,7 @@ describe('HappyClaw R16 Task Budget Service & Invariants', () => {
     );
     expect(blockedCall.allowed).toBe(false);
     expect(blockedCall.reason).toBe('tool_calls');
-    expect(blockedCall.message).toContain('Parent task budget');
+    expect(blockedCall.message).toMatch(/(Parent|Ancestor) task budget/);
 
     parentStatus = budgetService.getStatus(parentRunId);
     expect(parentStatus?.status).toBe('exceeded');
