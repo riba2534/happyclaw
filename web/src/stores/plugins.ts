@@ -45,6 +45,9 @@ interface PluginsState {
   loadPlugins: () => Promise<void>;
   scanCatalog: () => Promise<ImportReport>;
   toggleEnabled: (pluginFullId: string, enabled: boolean) => Promise<void>;
+  deactivateImmediately: (
+    pluginFullId: string,
+  ) => Promise<{ stoppedSessionsCount: number }>;
   deleteMarketplace: (name: string) => Promise<{ removedEnabled: string[] }>;
 }
 
@@ -57,7 +60,9 @@ export const usePluginsStore = create<PluginsState>((set, get) => ({
   loadPlugins: async () => {
     set({ loading: true });
     try {
-      const data = await api.get<{ marketplaces: MarketplaceEntry[] }>('/api/plugins');
+      const data = await api.get<{ marketplaces: MarketplaceEntry[] }>(
+        '/api/plugins',
+      );
       set({ marketplaces: data.marketplaces, loading: false, error: null });
     } catch (err) {
       set({
@@ -87,9 +92,26 @@ export const usePluginsStore = create<PluginsState>((set, get) => ({
 
   toggleEnabled: async (pluginFullId, enabled) => {
     try {
-      await api.patch(`/api/plugins/enabled/${encodeURIComponent(pluginFullId)}`, { enabled });
+      await api.patch(
+        `/api/plugins/enabled/${encodeURIComponent(pluginFullId)}`,
+        { enabled },
+      );
       set({ error: null });
       await get().loadPlugins();
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : String(err) });
+      throw err;
+    }
+  },
+
+  deactivateImmediately: async (pluginFullId) => {
+    try {
+      const data = await api.post<{ stoppedSessionsCount: number }>(
+        `/api/plugins/deactivate-immediately/${encodeURIComponent(pluginFullId)}`,
+      );
+      set({ error: null });
+      await get().loadPlugins();
+      return data;
     } catch (err) {
       set({ error: err instanceof Error ? err.message : String(err) });
       throw err;

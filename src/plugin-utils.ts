@@ -67,6 +67,40 @@ export function getUserPluginRuntimePath(
   );
 }
 
+export function getUserPluginSecretsPath(userId: string): string {
+  return path.join(getUserRuntimeRoot(userId), 'secrets.json');
+}
+
+export function getUserPluginSecrets(userId: string): Record<string, string> {
+  const filePath = getUserPluginSecretsPath(userId);
+  try {
+    if (!fs.existsSync(filePath)) return {};
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, string>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+export function setUserPluginSecret(
+  userId: string,
+  key: string,
+  value: string | undefined,
+): void {
+  const secrets = getUserPluginSecrets(userId);
+  if (value === undefined || value === null) {
+    delete secrets[key];
+  } else {
+    secrets[key] = value;
+  }
+  const filePath = getUserPluginSecretsPath(userId);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify(secrets, null, 2), 'utf-8');
+}
+
 // --- v2 read/write -----------------------------------------------------------
 
 /**
@@ -136,7 +170,10 @@ function coerceEnableRef(value: unknown): UserPluginEnableRefV2 | null {
   };
 }
 
-export function writeUserPluginsV2(userId: string, config: UserPluginsV2): void {
+export function writeUserPluginsV2(
+  userId: string,
+  config: UserPluginsV2,
+): void {
   if (!isValidNameSegment(userId)) {
     throw new Error(`Invalid userId: ${userId}`);
   }
@@ -148,7 +185,11 @@ export function writeUserPluginsV2(userId: string, config: UserPluginsV2): void 
   try {
     fs.renameSync(tmp, file);
   } catch (err) {
-    try { fs.unlinkSync(tmp); } catch { /* already gone */ }
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* already gone */
+    }
     throw err;
   }
 }

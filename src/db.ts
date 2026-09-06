@@ -13691,6 +13691,7 @@ export function logAuthEvent(event: {
     new Date().toISOString(),
   );
 }
+export { logAuthEvent as recordAuthAuditLog };
 
 export interface AuthAuditLogQuery {
   limit?: number;

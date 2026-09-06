@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs';
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
+import { Readable } from 'stream';
 import { fileURLToPath } from 'url';
 import { DATA_DIR, GROUPS_DIR, MAX_FILE_SIZE } from './config.js';
 import { deleteContainerEnvConfig } from './runtime-config.js';
@@ -212,6 +213,363 @@ export function safeCreateWorkspaceDirectory(
     root: fs.realpathSync(getFileRoot(folder, rootOverride)),
     path: relativePath,
   });
+}
+
+export interface SafeWorkspaceReadResult {
+  size: number;
+  mtimeMs: number;
+  isRangeRequest: boolean;
+  rangeSatisfiable?: boolean;
+  start?: number;
+  end?: number;
+  contentLength: number;
+  stream: ReadableStream<Uint8Array>;
+  destroy: () => void;
+}
+
+export async function safeOpenWorkspaceReadStream(
+  folder: string,
+  relativePath: string,
+  options?: {
+    rootOverride?: string;
+    rangeHeader?: string;
+    maxBytes?: number;
+  },
+): Promise<SafeWorkspaceReadResult> {
+  const rootPath = getFileRoot(folder, options?.rootOverride);
+  if (!fs.existsSync(rootPath)) {
+    throw new Error('File not found');
+  }
+  const root = fs.realpathSync(rootPath);
+
+  if (process.platform === 'win32') {
+    const target = path.resolve(root, relativePath);
+    const relative = path.relative(root, target);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      throw new Error('Path traversal detected');
+    }
+    const realRoot = fs.realpathSync(root);
+    let check = target;
+    while (check !== root && check !== path.dirname(check)) {
+      if (fs.existsSync(check)) {
+        const real = fs.realpathSync(check);
+        if (real !== realRoot && !real.startsWith(realRoot + path.sep)) {
+          throw new Error('Symlink traversal detected');
+        }
+        break;
+      }
+      check = path.dirname(check);
+    }
+    if (!fs.existsSync(target)) {
+      throw new Error('File not found');
+    }
+    const stats = fs.statSync(target);
+    if (stats.isSymbolicLink()) {
+      throw new Error('Symlink traversal detected');
+    }
+    if (!stats.isFile()) {
+      throw new Error('Target is not a regular file');
+    }
+    const size = stats.size;
+    const mtimeMs = stats.mtimeMs;
+    if (options?.maxBytes && size > options.maxBytes) {
+      throw new Error(`File too large to read (max ${options.maxBytes} bytes)`);
+    }
+    let isRangeRequest = false;
+    let rangeSatisfiable = true;
+    let start = 0;
+    let end = Math.max(0, size - 1);
+    let contentLength = size;
+
+    if (options?.rangeHeader?.trim()) {
+      isRangeRequest = true;
+      const normalizedRange = options.rangeHeader.trim();
+      if (
+        normalizedRange.toLowerCase().startsWith('bytes=') &&
+        !normalizedRange.includes(',')
+      ) {
+        const m = /^bytes=(\d*)-(\d*)$/.exec(normalizedRange);
+        if (!m || size <= 0) {
+          rangeSatisfiable = false;
+        } else {
+          const [, rawStart, rawEnd] = m;
+          if (!rawStart && !rawEnd) {
+            rangeSatisfiable = false;
+          } else if (!rawStart) {
+            const suffix = Number(rawEnd);
+            if (!Number.isInteger(suffix) || suffix <= 0) {
+              rangeSatisfiable = false;
+            } else if (suffix >= size) {
+              start = 0;
+              end = size - 1;
+              contentLength = size;
+            } else {
+              start = size - suffix;
+              end = size - 1;
+              contentLength = suffix;
+            }
+          } else {
+            const parsedStart = Number(rawStart);
+            if (
+              !Number.isInteger(parsedStart) ||
+              parsedStart < 0 ||
+              parsedStart >= size
+            ) {
+              rangeSatisfiable = false;
+            } else {
+              start = parsedStart;
+              if (rawEnd) {
+                const parsedEnd = Number(rawEnd);
+                if (!Number.isInteger(parsedEnd) || parsedEnd < start) {
+                  rangeSatisfiable = false;
+                } else {
+                  end = Math.min(parsedEnd, size - 1);
+                  contentLength = end - start + 1;
+                }
+              } else {
+                end = size - 1;
+                contentLength = size - start;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (isRangeRequest && !rangeSatisfiable) {
+      return {
+        size,
+        mtimeMs,
+        isRangeRequest: true,
+        rangeSatisfiable: false,
+        contentLength: 0,
+        stream: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        destroy: () => {},
+      };
+    }
+
+    const nodeStream = fs.createReadStream(
+      target,
+      isRangeRequest ? { start, end } : undefined,
+    );
+    const stream = Readable.toWeb(nodeStream) as ReadableStream<Uint8Array>;
+    return {
+      size,
+      mtimeMs,
+      isRangeRequest,
+      rangeSatisfiable: true,
+      start,
+      end,
+      contentLength,
+      stream,
+      destroy: () => {
+        nodeStream.destroy();
+      },
+    };
+  }
+
+  const python =
+    process.env.HAPPYCLAW_PYTHON3?.trim() ||
+    process.env.PYTHON3?.trim() ||
+    'python3';
+
+  const request = {
+    operation: 'read_file',
+    root,
+    path: relativePath,
+    rangeHeader: options?.rangeHeader,
+    maxBytes: options?.maxBytes,
+  };
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(python, [SAFE_WORKSPACE_FS_HELPER], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let stderrBuffer = '';
+    child.stderr.on('data', (chunk) => {
+      stderrBuffer += chunk.toString();
+    });
+
+    child.stdin.on('error', () => {
+      // 避免子进程快速退出引发未捕获的 EPIPE
+    });
+
+    let settled = false;
+    let accumulated = Buffer.alloc(0);
+
+    const onHeaderFailure = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      try {
+        child.kill('SIGTERM');
+      } catch {}
+      reject(err);
+    };
+
+    child.on('error', (err) => {
+      onHeaderFailure(
+        new Error(`Failed to launch safe read helper: ${err.message}`),
+      );
+    });
+
+    child.on('close', () => {
+      if (!settled) {
+        let errorMsg = 'Safe read helper exited before header';
+        try {
+          const parsed = JSON.parse(accumulated.toString('utf-8'));
+          if (parsed && parsed.error) errorMsg = parsed.error;
+        } catch {
+          if (stderrBuffer.trim()) errorMsg = stderrBuffer.trim();
+        }
+        onHeaderFailure(new Error(errorMsg));
+      }
+    });
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      if (!settled) {
+        accumulated = Buffer.concat([accumulated, chunk]);
+        const newlineIndex = accumulated.indexOf(0x0a);
+        if (newlineIndex !== -1) {
+          const headerRaw = accumulated
+            .subarray(0, newlineIndex)
+            .toString('utf-8');
+          const remainder = accumulated.subarray(newlineIndex + 1);
+
+          let header: any;
+          try {
+            header = JSON.parse(headerRaw);
+          } catch {
+            onHeaderFailure(
+              new Error(`Invalid header from safe read helper: ${headerRaw}`),
+            );
+            return;
+          }
+
+          if (!header.ok) {
+            onHeaderFailure(new Error(header.error || 'Safe read failed'));
+            return;
+          }
+
+          settled = true;
+
+          let isDestroyed = false;
+          const destroy = () => {
+            if (!isDestroyed) {
+              isDestroyed = true;
+              try {
+                child.kill('SIGTERM');
+              } catch {}
+            }
+          };
+
+          if (header.isRangeRequest && header.rangeSatisfiable === false) {
+            resolve({
+              size: header.size,
+              mtimeMs: header.mtimeMs,
+              isRangeRequest: true,
+              rangeSatisfiable: false,
+              contentLength: 0,
+              stream: new ReadableStream<Uint8Array>({
+                start(controller) {
+                  controller.close();
+                },
+              }),
+              destroy,
+            });
+            return;
+          }
+
+          const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              if (remainder.length > 0) {
+                controller.enqueue(
+                  new Uint8Array(
+                    remainder.buffer,
+                    remainder.byteOffset,
+                    remainder.byteLength,
+                  ),
+                );
+              }
+              child.stdout.on('data', (dataChunk: Buffer) => {
+                try {
+                  controller.enqueue(
+                    new Uint8Array(
+                      dataChunk.buffer,
+                      dataChunk.byteOffset,
+                      dataChunk.byteLength,
+                    ),
+                  );
+                } catch {
+                  destroy();
+                }
+              });
+              child.stdout.on('end', () => {
+                try {
+                  controller.close();
+                } catch {}
+              });
+              child.stdout.on('error', (err) => {
+                try {
+                  controller.error(err);
+                } catch {}
+                destroy();
+              });
+            },
+            cancel() {
+              destroy();
+            },
+          });
+
+          resolve({
+            size: header.size,
+            mtimeMs: header.mtimeMs,
+            isRangeRequest: !!header.isRangeRequest,
+            rangeSatisfiable: true,
+            start: header.start,
+            end: header.end,
+            contentLength: header.contentLength,
+            stream,
+            destroy,
+          });
+        }
+      }
+    });
+
+    child.stdin.end(JSON.stringify(request));
+  });
+}
+
+export async function safeReadWorkspaceFileText(
+  folder: string,
+  relativePath: string,
+  rootOverride?: string,
+  maxBytes: number = 10 * 1024 * 1024,
+): Promise<{ content: string; size: number }> {
+  const result = await safeOpenWorkspaceReadStream(folder, relativePath, {
+    rootOverride,
+    maxBytes,
+  });
+  const reader = result.stream.getReader();
+  const chunks: Uint8Array[] = [];
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) chunks.push(value);
+    }
+  } finally {
+    result.destroy();
+  }
+  const totalBuf = Buffer.concat(chunks);
+  return {
+    content: totalBuf.toString('utf-8'),
+    size: result.size,
+  };
 }
 
 /**

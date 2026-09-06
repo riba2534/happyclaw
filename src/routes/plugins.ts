@@ -11,6 +11,7 @@ import { Hono } from 'hono';
 import fs from 'fs/promises';
 
 import type { Variables } from '../web-context.js';
+import { getWebDeps } from '../web-context.js';
 import type { AuthUser } from '../types.js';
 import { authMiddleware } from '../middleware/auth.js';
 import {
@@ -21,7 +22,12 @@ import {
   type UserPluginsV2,
 } from '../plugin-utils.js';
 import { checkPluginDependencies } from '../plugin-dependency-check.js';
-import { getUserHomeGroup } from '../db.js';
+import {
+  getUserHomeGroup,
+  getAllRegisteredGroups,
+  recordAuthAuditLog,
+} from '../db.js';
+import { quiesceWorkspaceRunnersAroundCommit } from '../agent-profile-runtime.js';
 import { scanHostMarketplaces, isScanInFlight } from '../plugin-importer.js';
 import {
   readCatalogIndex,
@@ -43,6 +49,19 @@ const pluginsRoutes = new Hono<{ Variables: Variables }>();
 /** Sanity-check a marketplace / plugin name to prevent path traversal. */
 function validateNameSegment(name: string): boolean {
   return /^[\w.-]+$/.test(name) && name !== '.' && name !== '..';
+}
+
+function getUserWorkspaceRuntimeTargets(userId: string) {
+  const seenFolders = new Set<string>();
+  return Object.entries(getAllRegisteredGroups())
+    .filter(([, group]) => {
+      if (group.created_by !== userId || seenFolders.has(group.folder)) {
+        return false;
+      }
+      seenFolders.add(group.folder);
+      return true;
+    })
+    .map(([jid, group]) => ({ folder: group.folder, primaryJid: jid }));
 }
 
 // --- Routes ---
@@ -300,6 +319,28 @@ pluginsRoutes.patch('/enabled/:pluginFullId', authMiddleware, async (c) => {
     }
     invalidateUserCommandIndex(authUser.id);
 
+    try {
+      recordAuthAuditLog({
+        event_type: 'plugin_state_changed',
+        username: authUser.username,
+        actor_username: authUser.username,
+        ip_address: c.req.header('x-forwarded-for') || null,
+        user_agent: c.req.header('user-agent') || null,
+        details: {
+          action: 'enable',
+          targetId: fullId,
+          scope: `user:${authUser.id}`,
+          snapshotId,
+          runtimeResult: { success: true },
+        },
+      });
+    } catch (auditErr) {
+      logger.warn(
+        { err: auditErr },
+        'Failed to record plugin enable audit log',
+      );
+    }
+
     return c.json({
       success: true,
       fullId,
@@ -325,6 +366,24 @@ pluginsRoutes.patch('/enabled/:pluginFullId', authMiddleware, async (c) => {
   }
   invalidateUserCommandIndex(authUser.id);
 
+  try {
+    recordAuthAuditLog({
+      event_type: 'plugin_state_changed',
+      username: authUser.username,
+      actor_username: authUser.username,
+      ip_address: c.req.header('x-forwarded-for') || null,
+      user_agent: c.req.header('user-agent') || null,
+      details: {
+        action: 'disable',
+        targetId: fullId,
+        scope: `user:${authUser.id}`,
+        runtimeResult: { success: true },
+      },
+    });
+  } catch (auditErr) {
+    logger.warn({ err: auditErr }, 'Failed to record plugin disable audit log');
+  }
+
   return c.json({
     success: true,
     fullId,
@@ -332,6 +391,142 @@ pluginsRoutes.patch('/enabled/:pluginFullId', authMiddleware, async (c) => {
     materializeWarnings,
   });
 });
+
+// POST /deactivate-immediately/:pluginFullId — 立即停用并重启受影响会话
+//
+// 限定当前用户及插件影响范围，复用 quiesce、安全 gate 以及 SDK 运行时能力失效机制；
+// 仅重启受影响的当前用户会话，失败重试修复不中断其他用户。
+pluginsRoutes.post(
+  '/deactivate-immediately/:pluginFullId',
+  authMiddleware,
+  async (c) => {
+    const authUser = c.get('user') as AuthUser;
+    const fullId = c.req.param('pluginFullId');
+    const parsed = parsePluginFullId(fullId);
+    if (!parsed) {
+      return c.json(
+        { error: 'Invalid plugin id; expected "<plugin>@<marketplace>"' },
+        400,
+      );
+    }
+    if (
+      !validateNameSegment(parsed.pluginName) ||
+      !validateNameSegment(parsed.marketplaceName)
+    ) {
+      return c.json({ error: 'Invalid plugin or marketplace name' }, 400);
+    }
+
+    const v2 = readUserPluginsV2(authUser.id);
+    const existingRef = v2?.enabled[fullId];
+    if (!existingRef || existingRef.enabled !== true) {
+      return c.json(
+        { error: `Plugin "${fullId}" is not currently enabled for user` },
+        400,
+      );
+    }
+    const snapshotId = existingRef.snapshot;
+
+    // 影响范围严格限定为当前用户的工作区
+    const targets = getUserWorkspaceRuntimeTargets(authUser.id);
+    const deps = getWebDeps();
+
+    let stoppedJids: string[] = [];
+    let runtimeSuccess = true;
+    let failureError: string | null = null;
+    let materializeWarnings: string[] = [];
+
+    const performCommit = () => {
+      delete v2.enabled[fullId];
+      writeUserPluginsV2(authUser.id, v2);
+
+      try {
+        const report = materializeUserRuntime(authUser.id, { force: true });
+        materializeWarnings = report.warnings;
+      } catch (err) {
+        materializeWarnings = [
+          err instanceof Error ? err.message : String(err),
+        ];
+      }
+      invalidateUserCommandIndex(authUser.id);
+      return materializeWarnings;
+    };
+
+    if (deps && targets.length > 0) {
+      try {
+        const quiesceResult = await quiesceWorkspaceRunnersAroundCommit(
+          deps,
+          targets,
+          {
+            reason: `Immediate deactivation of plugin ${fullId} for user ${authUser.id}`,
+            onPostCommitFailure: (runtimeJids) =>
+              deps.queue.blockGroupsForRuntimeSafety(
+                runtimeJids,
+                `Plugin ${fullId} immediate deactivation failed post-commit cleanup`,
+              ),
+          },
+          performCommit,
+        );
+        stoppedJids = quiesceResult.runtimeJids;
+        materializeWarnings = quiesceResult.value;
+      } catch (err) {
+        runtimeSuccess = false;
+        failureError = err instanceof Error ? err.message : String(err);
+        logger.error(
+          { err, userId: authUser.id, fullId },
+          'Failed to quiesce during immediate plugin deactivation',
+        );
+      }
+    } else {
+      materializeWarnings = performCommit();
+    }
+
+    // 记录可查询审计日志（严格不包含任何凭据值）
+    try {
+      recordAuthAuditLog({
+        event_type: 'plugin_deactivated_immediately',
+        username: authUser.username,
+        actor_username: authUser.username,
+        ip_address: c.req.header('x-forwarded-for') || null,
+        user_agent: c.req.header('user-agent') || null,
+        details: {
+          action: 'deactivate_immediately',
+          targetId: fullId,
+          scope: `user:${authUser.id}`,
+          snapshotId,
+          stoppedSessions: stoppedJids,
+          runtimeResult: {
+            success: runtimeSuccess,
+            error: failureError,
+          },
+        },
+      });
+    } catch (auditErr) {
+      logger.warn(
+        { err: auditErr },
+        'Failed to record audit log for immediate plugin deactivation',
+      );
+    }
+
+    if (!runtimeSuccess) {
+      return c.json(
+        {
+          error: `Immediate deactivation failed: ${failureError}`,
+          fullId,
+          stoppedJids,
+        },
+        500,
+      );
+    }
+
+    return c.json({
+      success: true,
+      fullId,
+      stoppedSessionsCount: stoppedJids.length,
+      stoppedSessions: stoppedJids,
+      materializeWarnings,
+    });
+  },
+);
 
 // POST /materialize — full re-materialize for the current user. Manual
 // recovery path for the UI when the runtime tree is suspected drifted (rare,

@@ -23,7 +23,8 @@ def fail(message: str) -> None:
 def relative_parts(value: object) -> list[str]:
     if not isinstance(value, str) or "\0" in value or os.path.isabs(value):
         fail("Invalid workspace-relative path")
-    parts = [part for part in value.split(os.sep) if part not in ("", ".")]
+    normalized = value.replace("\\", "/")
+    parts = [part for part in normalized.split("/") if part not in ("", ".")]
     if not parts or any(part == ".." for part in parts):
         fail("Invalid workspace-relative path")
     return parts
@@ -168,6 +169,150 @@ def delete_entry(root_fd: int, request: dict[str, object]) -> None:
         os.close(parent_fd)
 
 
+def parse_range_header(range_header: str, file_size: int) -> tuple[int, int] | None:
+    if file_size <= 0:
+        return None
+    import re
+    m = re.match(r"^bytes=(\d*)-(\d*)$", range_header.strip())
+    if not m:
+        return None
+    raw_start, raw_end = m.group(1), m.group(2)
+    if not raw_start and not raw_end:
+        return None
+    if not raw_start:
+        try:
+            suffix_length = int(raw_end)
+        except ValueError:
+            return None
+        if suffix_length <= 0:
+            return None
+        if suffix_length >= file_size:
+            return 0, file_size - 1
+        return file_size - suffix_length, file_size - 1
+    try:
+        start = int(raw_start)
+    except ValueError:
+        return None
+    if start < 0 or start >= file_size:
+        return None
+    if raw_end:
+        try:
+            parsed_end = int(raw_end)
+        except ValueError:
+            return None
+        if parsed_end < start:
+            return None
+        return start, min(parsed_end, file_size - 1)
+    else:
+        return start, file_size - 1
+
+
+def stream_bytes(file_fd: int, total_bytes: int) -> None:
+    remaining = total_bytes
+    chunk_size = 64 * 1024
+    try:
+        while remaining > 0:
+            to_read = min(chunk_size, remaining)
+            chunk = os.read(file_fd, to_read)
+            if not chunk:
+                break
+            sys.stdout.buffer.write(chunk)
+            remaining -= len(chunk)
+        sys.stdout.buffer.flush()
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+
+
+def read_file(root_fd: int, request: dict[str, object]) -> None:
+    parts = relative_parts(request.get("path"))
+    parent_fd, leaf = open_parent(root_fd, parts, False)
+    file_fd = -1
+    try:
+        try:
+            file_fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+        except (FileNotFoundError, IsADirectoryError):
+            fail("File not found")
+        except NotADirectoryError:
+            fail("Symlink traversal detected")
+        except OSError as e:
+            if e.errno == errno.ELOOP:
+                fail("Symlink traversal detected")
+            raise
+    finally:
+        os.close(parent_fd)
+
+    try:
+        info = os.fstat(file_fd)
+        if stat.S_ISLNK(info.st_mode):
+            fail("Symlink traversal detected")
+        if not stat.S_ISREG(info.st_mode):
+            fail("Target is not a regular file")
+
+        file_size = info.st_size
+        mtime_ms = int(info.st_mtime * 1000)
+
+        max_bytes = request.get("maxBytes")
+        if isinstance(max_bytes, (int, float)) and file_size > max_bytes:
+            fail(f"File too large to read (max {int(max_bytes)} bytes)")
+
+        range_header = request.get("rangeHeader")
+        is_range_request = isinstance(range_header, str) and range_header.strip() != ""
+
+        if is_range_request:
+            normalized_range = str(range_header).strip()
+            if normalized_range.lower().startswith("bytes=") and "," not in normalized_range:
+                parsed = parse_range_header(normalized_range, file_size)
+                if parsed is None:
+                    header = {
+                        "ok": True,
+                        "size": file_size,
+                        "mtimeMs": mtime_ms,
+                        "isRangeRequest": True,
+                        "rangeSatisfiable": False,
+                        "contentLength": 0,
+                    }
+                    sys.stdout.buffer.write(json.dumps(header).encode("utf-8") + b"\n")
+                    sys.stdout.buffer.flush()
+                    return
+
+                start, end = parsed
+                content_length = end - start + 1
+                header = {
+                    "ok": True,
+                    "size": file_size,
+                    "mtimeMs": mtime_ms,
+                    "isRangeRequest": True,
+                    "rangeSatisfiable": True,
+                    "start": start,
+                    "end": end,
+                    "contentLength": content_length,
+                }
+                sys.stdout.buffer.write(json.dumps(header).encode("utf-8") + b"\n")
+                sys.stdout.buffer.flush()
+
+                os.lseek(file_fd, start, os.SEEK_SET)
+                stream_bytes(file_fd, content_length)
+                return
+
+        header = {
+            "ok": True,
+            "size": file_size,
+            "mtimeMs": mtime_ms,
+            "isRangeRequest": False,
+            "rangeSatisfiable": True,
+            "start": 0,
+            "end": max(0, file_size - 1),
+            "contentLength": file_size,
+        }
+        sys.stdout.buffer.write(json.dumps(header).encode("utf-8") + b"\n")
+        sys.stdout.buffer.flush()
+
+        stream_bytes(file_fd, file_size)
+    finally:
+        if file_fd >= 0:
+            os.close(file_fd)
+
+
 def main() -> None:
     try:
         request = json.load(sys.stdin)
@@ -181,15 +326,19 @@ def main() -> None:
             operation = request.get("operation")
             if operation == "write_file":
                 write_file(root_fd, request)
+                print(json.dumps({"ok": True}))
             elif operation == "mkdir":
                 make_directory(root_fd, request)
+                print(json.dumps({"ok": True}))
             elif operation == "delete":
                 delete_entry(root_fd, request)
+                print(json.dumps({"ok": True}))
+            elif operation == "read_file":
+                read_file(root_fd, request)
             else:
                 fail("Unsupported workspace mutation")
         finally:
             os.close(root_fd)
-        print(json.dumps({"ok": True}))
     except SystemExit:
         raise
     except FileNotFoundError:

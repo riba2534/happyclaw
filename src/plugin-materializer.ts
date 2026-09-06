@@ -49,6 +49,7 @@ import { getSnapshotPath, type CatalogPluginEntry } from './plugin-catalog.js';
 import {
   getUserRuntimeRoot as getUserRuntimeRootFromUtils,
   readUserPluginsV2,
+  getUserPluginSecrets,
 } from './plugin-utils.js';
 
 /**
@@ -113,6 +114,8 @@ export interface MaterializeOptions {
    * GC without churning every caller signature.
    */
   isSnapshotInUse?: ActiveRuntimeRefCheck;
+  /** Force rebuilding the isolated runtime tree even if marker already exists. */
+  force?: boolean;
 }
 
 /** runtime/ root for a user (caller mounts this whole dir into Docker). */
@@ -166,13 +169,65 @@ export function getUserPluginRuntimeDir(
  * from the catalog. Admins can call `cleanupOrphanRuntime(userId)` directly
  * when they need to reclaim space.
  */
+function resolveUserSecretsInTree(targetDir: string, userId: string): void {
+  const secrets = getUserPluginSecrets(userId);
+
+  let entries: fs.Dirent[] = [];
+  try {
+    entries = fs.readdirSync(targetDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    if (entry.name.startsWith('.env')) {
+      const envPath = path.join(targetDir, entry.name);
+      try {
+        const content = fs.readFileSync(envPath, 'utf-8');
+        let modified = false;
+        const replaced = content.replace(
+          /\$\{([A-Za-z0-9_]+)\}/g,
+          (match, varName) => {
+            if (Object.prototype.hasOwnProperty.call(secrets, varName)) {
+              modified = true;
+              return secrets[varName];
+            }
+            return match;
+          },
+        );
+        if (modified) {
+          fs.writeFileSync(envPath, replaced, 'utf-8');
+        }
+      } catch {}
+    }
+  }
+
+  const mcpPath = path.join(targetDir, '.mcp.json');
+  if (fs.existsSync(mcpPath)) {
+    try {
+      const raw = fs.readFileSync(mcpPath, 'utf-8');
+      let modified = false;
+      const replaced = raw.replace(
+        /\$\{([A-Za-z0-9_]+)\}/g,
+        (match, varName) => {
+          if (Object.prototype.hasOwnProperty.call(secrets, varName)) {
+            modified = true;
+            return secrets[varName];
+          }
+          return match;
+        },
+      );
+      if (modified) {
+        fs.writeFileSync(mcpPath, replaced, 'utf-8');
+      }
+    } catch {}
+  }
+}
+
 export function materializeUserRuntime(
   userId: string,
-  // The options bag is currently unused; see MaterializeOptions. Keeping the
-  // parameter avoids a breaking-change ripple through call sites that already
-  // pass `{ isSnapshotInUse }`.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  _options: MaterializeOptions = {},
+  options: MaterializeOptions = {},
 ): MaterializeReport {
   const report: MaterializeReport = {
     reused: 0,
@@ -217,10 +272,9 @@ export function materializeUserRuntime(
     );
 
     // Already materialized AND tree was built with the isolated-inode
-    // strategy → skip. A manifest-only tree predates this strategy
-    // (hard-link era) and must be rebuilt so a host-mode agent's
-    // bypassPermissions write can't mutate the catalog (codex P1).
+    // strategy → skip.
     const isolatedAlready =
+      !options.force &&
       hasManifest(target) &&
       hasIsolatedRuntimeMarker(
         userId,
@@ -258,6 +312,7 @@ export function materializeUserRuntime(
         );
         continue;
       }
+      resolveUserSecretsInTree(target, userId);
       writeIsolatedRuntimeMarker(
         userId,
         ref.snapshot,

@@ -49,6 +49,7 @@ export function PluginsPage() {
     loadPlugins,
     scanCatalog,
     toggleEnabled,
+    deactivateImmediately,
     deleteMarketplace,
   } = usePluginsStore();
 
@@ -57,6 +58,10 @@ export function PluginsPage() {
     name: string;
     enabledCount: number;
   } | null>(null);
+  const [deactivateTarget, setDeactivateTarget] = useState<PluginEntry | null>(
+    null,
+  );
+  const [deactivating, setDeactivating] = useState(false);
 
   useEffect(() => {
     loadPlugins();
@@ -117,6 +122,24 @@ export function PluginsPage() {
       toast.error(
         `删除失败：${err instanceof Error ? err.message : String(err)}`,
       );
+    }
+  };
+
+  const handleDeactivateImmediately = async () => {
+    if (!deactivateTarget) return;
+    setDeactivating(true);
+    try {
+      const res = await deactivateImmediately(deactivateTarget.fullId);
+      toast.success(
+        `已立即停用 ${deactivateTarget.fullId}，已重启 ${res.stoppedSessionsCount} 个受影响会话。`,
+      );
+      setDeactivateTarget(null);
+    } catch (err) {
+      toast.error(
+        `立即停用失败：${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setDeactivating(false);
     }
   };
 
@@ -272,10 +295,24 @@ export function PluginsPage() {
                               {plugin.fullId}
                             </div>
                           </div>
-                          <Switch
-                            checked={plugin.enabled}
-                            onCheckedChange={() => handleToggle(plugin)}
-                          />
+                          <div className="flex items-center gap-3">
+                            {plugin.enabled && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="text-destructive hover:bg-destructive/10 text-xs h-8"
+                                onClick={() => setDeactivateTarget(plugin)}
+                                title="立即停止当前用户正在运行且加载了该插件的会话，并在更新配置后重启"
+                              >
+                                <PowerOff size={13} className="mr-1" />
+                                立即停用
+                              </Button>
+                            )}
+                            <Switch
+                              checked={plugin.enabled}
+                              onCheckedChange={() => handleToggle(plugin)}
+                            />
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -286,6 +323,39 @@ export function PluginsPage() {
           )}
         </div>
       </div>
+
+      <Dialog
+        open={deactivateTarget !== null}
+        onOpenChange={(o) => !o && setDeactivateTarget(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>立即停用并重启受影响会话</DialogTitle>
+            <DialogDescription>
+              将立即停用 <strong>{deactivateTarget?.fullId}</strong>
+              ，并安全停止当前用户所有加载了该插件的活跃运行中会话，随后以新配置重启。其他用户不受影响。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setDeactivateTarget(null)}
+              disabled={deactivating}
+            >
+              <X size={14} />
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDeactivateImmediately}
+              disabled={deactivating}
+            >
+              <PowerOff size={14} />
+              {deactivating ? '停用中...' : '确认立即停用'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={deleteTarget !== null}
