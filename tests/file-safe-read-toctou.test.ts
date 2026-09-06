@@ -353,36 +353,45 @@ describe('R01: 文件安全读取防 TOCTOU 回归测试', () => {
     expect(await resSecond.text()).not.toContain(outsideMarkerContent);
   });
 
-  test('流背压与取消：提前关闭/取消读取流，底层资源和子进程安全回收', async () => {
+  test('流背压与取消：消费者主动取消流，底层子进程被严格销毁且绝无进程泄漏', async () => {
     const relPath = 'stream-cancel-test.dat';
     const filePath = path.join(workspaceDir, relPath);
-    // 写入 500KB 测试数据
-    const chunk = 'A'.repeat(1024);
-    const streamWrite = fs.createWriteStream(filePath);
-    for (let i = 0; i < 500; i++) {
-      streamWrite.write(chunk);
-    }
-    await new Promise((resolve) => streamWrite.end(resolve));
+    // 写入 50MB 稀疏测试文件
+    const fd = fs.openSync(filePath, 'w');
+    fs.writeSync(fd, Buffer.from('START'), 0, 5, 0);
+    fs.writeSync(fd, Buffer.from('END'), 0, 3, 50 * 1024 * 1024);
+    fs.closeSync(fd);
 
-    const encoded = encodePath(relPath);
-    const res = await filesRoutes.request(
-      `/${encodeURIComponent(jid)}/files/download/${encoded}`,
-      { headers: { cookie: cookieHeader } },
-    );
-    expect(res.status).toBe(200);
+    const { safeOpenWorkspaceReadStream } =
+      await import('../src/file-manager.js');
+    const readResult = await safeOpenWorkspaceReadStream(folder, relPath);
+    const pid = readResult.processPid;
+    expect(pid).toBeDefined();
 
-    const reader = res.body?.getReader();
-    expect(reader).toBeDefined();
+    // 验证子进程此时存活
+    expect(() => process.kill(pid!, 0)).not.toThrow();
 
-    // 仅读取前几个 chunk 便主动取消流
-    const first = await reader!.read();
+    const reader = readResult.stream.getReader();
+    // 读出首块 chunk
+    const first = await reader.read();
     expect(first.value).toBeDefined();
 
-    // 取消流，模拟客户端连接断开
-    await reader!.cancel('client disconnected');
+    // 主动取消流（不调用显式 readResult.destroy()，直接取消 WebStream）
+    await reader.cancel('client aborted');
 
-    // 稍等 50ms 确认没有未捕获异常或进程孤立
-    await new Promise((r) => setTimeout(r, 50));
+    // 等待 100ms
+    await new Promise((r) => setTimeout(r, 100));
+
+    // 确凿断言：底层子进程必须已被销毁，向其发信号必然抛出 ESRCH 错误！
+    let processDead = false;
+    try {
+      process.kill(pid!, 0);
+    } catch (err: any) {
+      if (err.code === 'ESRCH') {
+        processDead = true;
+      }
+    }
+    expect(processDead).toBe(true);
   });
 
   test('并发截断防御（safeReadWorkspaceFileText）：文本读取途中底层文件被截断，必须拒绝抛错', async () => {

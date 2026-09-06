@@ -389,10 +389,9 @@ export function materializeUserRuntime(
     try {
       buildSnapshot(sourceDir, target, { isLegacy, isPartial });
       if (!hasManifest(target)) {
-        report.warnings.push(
+        throw new Error(
           `Built snapshot at ${target} is missing .claude-plugin/plugin.json`,
         );
-        continue;
       }
       resolveUserSecretsInTree(target, userId);
       writeIsolatedRuntimeMarker(
@@ -410,6 +409,7 @@ export function materializeUserRuntime(
         { userId, fullId, snapshot: ref.snapshot, err },
         'plugin-materializer: materialize failed',
       );
+      throw err;
     }
   }
 

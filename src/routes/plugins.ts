@@ -447,14 +447,8 @@ pluginsRoutes.post(
             writeUserPluginsV2(authUser.id, v2);
           }
 
-          try {
-            const report = materializeUserRuntime(authUser.id, { force: true });
-            materializeWarnings = report.warnings;
-          } catch (err) {
-            materializeWarnings = [
-              err instanceof Error ? err.message : String(err),
-            ];
-          }
+          const report = materializeUserRuntime(authUser.id, { force: true });
+          materializeWarnings = report.warnings;
           invalidateUserCommandIndex(authUser.id);
           return materializeWarnings;
         };
@@ -599,6 +593,26 @@ pluginsRoutes.put('/secrets/:key', authMiddleware, async (c) => {
           { err, userId: authUser.id, key },
           'Failed to update plugin secret with quiesce',
         );
+        try {
+          recordAuthAuditLog({
+            event_type: 'mcp_credential_updated',
+            username: authUser.username,
+            actor_username: authUser.username,
+            ip_address: c.req.header('x-forwarded-for') || null,
+            user_agent: c.req.header('user-agent') || null,
+            details: {
+              action: 'set_user_plugin_secret',
+              targetId: key,
+              scope: `user:${authUser.id}`,
+              sanitizedChanges: { key },
+              runtimeResult: {
+                success: false,
+                error: err instanceof Error ? err.message : String(err),
+              },
+            },
+          });
+        } catch {}
+
         return c.json(
           {
             error: `Failed to update plugin secret: ${
@@ -677,6 +691,26 @@ pluginsRoutes.delete('/secrets/:key', authMiddleware, async (c) => {
           { err, userId: authUser.id, key },
           'Failed to revoke plugin secret with quiesce',
         );
+        try {
+          recordAuthAuditLog({
+            event_type: 'mcp_credential_updated',
+            username: authUser.username,
+            actor_username: authUser.username,
+            ip_address: c.req.header('x-forwarded-for') || null,
+            user_agent: c.req.header('user-agent') || null,
+            details: {
+              action: 'revoke_user_plugin_secret',
+              targetId: key,
+              scope: `user:${authUser.id}`,
+              sanitizedChanges: { key },
+              runtimeResult: {
+                success: false,
+                error: err instanceof Error ? err.message : String(err),
+              },
+            },
+          });
+        } catch {}
+
         return c.json(
           {
             error: `Failed to revoke plugin secret: ${
@@ -722,19 +756,85 @@ pluginsRoutes.post('/materialize', authMiddleware, async (c) => {
   return withCapabilityScopeLocks(
     [userCapabilityLockKey(authUser.id)],
     async () => {
+      const impact: CapabilityMutationImpact = {
+        kind: 'plugins',
+        ownerUserId: authUser.id,
+      };
+
+      await repairCapabilityRuntimeSafetyBlock(
+        impact,
+        `Manual materialize recovery for user ${authUser.id}`,
+      );
+
+      let invalidatedRuntimeJids = 0;
+      let report: any;
       try {
-        const report = materializeUserRuntime(authUser.id, { force: true });
-        invalidateUserCommandIndex(authUser.id);
-        return c.json({ success: true, report });
+        const mutationResult = await mutateCapabilityAroundRuntimeQuiesce(
+          impact,
+          `Manual materialize for user ${authUser.id}`,
+          async () => {
+            const rep = materializeUserRuntime(authUser.id, { force: true });
+            invalidateUserCommandIndex(authUser.id);
+            return rep;
+          },
+        );
+        invalidatedRuntimeJids = mutationResult.invalidatedRuntimeJids;
+        report = mutationResult.value;
       } catch (err) {
+        logger.error(
+          { err, userId: authUser.id },
+          'Manual materialize failed during quiesce',
+        );
+        try {
+          recordAuthAuditLog({
+            event_type: 'plugin_state_changed',
+            username: authUser.username,
+            actor_username: authUser.username,
+            ip_address: c.req.header('x-forwarded-for') || null,
+            user_agent: c.req.header('user-agent') || null,
+            details: {
+              action: 'manual_materialize',
+              scope: `user:${authUser.id}`,
+              runtimeResult: {
+                success: false,
+                error: err instanceof Error ? err.message : String(err),
+              },
+            },
+          });
+        } catch {}
+
         return c.json(
           {
             success: false,
             error: err instanceof Error ? err.message : String(err),
           },
-          500,
+          503,
         );
       }
+
+      try {
+        recordAuthAuditLog({
+          event_type: 'plugin_state_changed',
+          username: authUser.username,
+          actor_username: authUser.username,
+          ip_address: c.req.header('x-forwarded-for') || null,
+          user_agent: c.req.header('user-agent') || null,
+          details: {
+            action: 'manual_materialize',
+            scope: `user:${authUser.id}`,
+            runtimeResult: {
+              success: true,
+              invalidatedRuntimeJids,
+            },
+          },
+        });
+      } catch {}
+
+      return c.json({
+        success: true,
+        report,
+        invalidated_runtime_jids: invalidatedRuntimeJids,
+      });
     },
   );
 });
@@ -758,8 +858,6 @@ pluginsRoutes.delete('/marketplaces/:name', authMiddleware, async (c) => {
     async () => {
       const v2 = readUserPluginsV2(authUser.id);
       const removedEnabled: string[] = [];
-      let invalidatedRuntimeJids = 0;
-
       if (v2) {
         for (const [id, ref] of Object.entries(v2.enabled)) {
           if (ref.marketplace === name) {
@@ -767,76 +865,101 @@ pluginsRoutes.delete('/marketplaces/:name', authMiddleware, async (c) => {
             delete v2.enabled[id];
           }
         }
-        if (removedEnabled.length > 0) {
-          const impact: CapabilityMutationImpact = {
-            kind: 'plugins',
-            ownerUserId: authUser.id,
-          };
-          await repairCapabilityRuntimeSafetyBlock(
-            impact,
-            `Cascade disable for marketplace ${name} cleanup`,
-          );
+      }
 
-          try {
-            const mutationResult = await mutateCapabilityAroundRuntimeQuiesce(
-              impact,
-              `Marketplace ${name} unenabled for user ${authUser.id}`,
-              async () => {
-                writeUserPluginsV2(authUser.id, v2);
-                const report = materializeUserRuntime(authUser.id, {
-                  force: true,
-                });
-                invalidateUserCommandIndex(authUser.id);
-                return report;
-              },
-            );
-            invalidatedRuntimeJids = mutationResult.invalidatedRuntimeJids;
-          } catch (err) {
-            logger.error(
-              { err, userId: authUser.id, marketplace: name },
-              'Failed during cascade marketplace unenable quiesce',
-            );
-            return c.json(
-              {
-                error: `Cascade disable failed: ${
-                  err instanceof Error ? err.message : String(err)
-                }`,
-              },
-              503,
-            );
-          }
+      const impact: CapabilityMutationImpact = {
+        kind: 'plugins',
+        ownerUserId: authUser.id,
+      };
 
-          try {
-            recordAuthAuditLog({
-              event_type: 'plugin_state_changed',
-              username: authUser.username,
-              actor_username: authUser.username,
-              ip_address: c.req.header('x-forwarded-for') || null,
-              user_agent: c.req.header('user-agent') || null,
-              details: {
-                action: 'cascade_disable',
-                marketplace: name,
-                removedEnabled,
-                scope: `user:${authUser.id}`,
-                runtimeResult: {
-                  success: true,
-                  invalidatedRuntimeJids,
-                },
-              },
+      // 无论 removedEnabled 是否为 0，重试路径均执行安全修复与运行时失效
+      await repairCapabilityRuntimeSafetyBlock(
+        impact,
+        `Cascade disable for marketplace ${name} cleanup`,
+      );
+
+      let invalidatedRuntimeJids = 0;
+      try {
+        const mutationResult = await mutateCapabilityAroundRuntimeQuiesce(
+          impact,
+          `Marketplace ${name} unenabled for user ${authUser.id}`,
+          async () => {
+            if (v2 && removedEnabled.length > 0) {
+              writeUserPluginsV2(authUser.id, v2);
+            }
+            const report = materializeUserRuntime(authUser.id, {
+              force: true,
             });
-          } catch {}
+            invalidateUserCommandIndex(authUser.id);
+            return report;
+          },
+        );
+        invalidatedRuntimeJids = mutationResult.invalidatedRuntimeJids;
+      } catch (err) {
+        logger.error(
+          { err, userId: authUser.id, marketplace: name },
+          'Failed during cascade marketplace unenable quiesce',
+        );
 
-          logger.info(
-            {
-              event: 'plugin_marketplace_unenabled',
-              userId: authUser.id,
+        try {
+          recordAuthAuditLog({
+            event_type: 'plugin_state_changed',
+            username: authUser.username,
+            actor_username: authUser.username,
+            ip_address: c.req.header('x-forwarded-for') || null,
+            user_agent: c.req.header('user-agent') || null,
+            details: {
+              action: 'cascade_disable',
               marketplace: name,
               removedEnabled,
+              scope: `user:${authUser.id}`,
+              runtimeResult: {
+                success: false,
+                error: err instanceof Error ? err.message : String(err),
+              },
             },
-            'plugin marketplace dropped from caller refs (catalog NOT touched)',
-          );
-        }
+          });
+        } catch {}
+
+        return c.json(
+          {
+            error: `Cascade disable failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          },
+          503,
+        );
       }
+
+      try {
+        recordAuthAuditLog({
+          event_type: 'plugin_state_changed',
+          username: authUser.username,
+          actor_username: authUser.username,
+          ip_address: c.req.header('x-forwarded-for') || null,
+          user_agent: c.req.header('user-agent') || null,
+          details: {
+            action: 'cascade_disable',
+            marketplace: name,
+            removedEnabled,
+            scope: `user:${authUser.id}`,
+            runtimeResult: {
+              success: true,
+              invalidatedRuntimeJids,
+            },
+          },
+        });
+      } catch {}
+
+      logger.info(
+        {
+          event: 'plugin_marketplace_unenabled',
+          userId: authUser.id,
+          marketplace: name,
+          removedEnabled,
+        },
+        'plugin marketplace dropped from caller refs (catalog NOT touched)',
+      );
 
       return c.json({
         success: true,

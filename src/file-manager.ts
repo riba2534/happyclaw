@@ -225,6 +225,7 @@ export interface SafeWorkspaceReadResult {
   contentLength: number;
   stream: ReadableStream<Uint8Array>;
   destroy: () => void;
+  processPid?: number;
 }
 
 export async function safeOpenWorkspaceReadStream(
@@ -341,12 +342,27 @@ export async function safeOpenWorkspaceReadStream(
           const destroy = () => {
             if (!isDestroyed) {
               isDestroyed = true;
+              child.stdout.removeAllListeners();
+              try {
+                child.stdin.destroy();
+              } catch {}
               try {
                 child.kill('SIGTERM');
               } catch {}
+              // 50ms 兜底强杀，确保子进程生命周期绝对与流取消连通
+              setTimeout(() => {
+                try {
+                  if (child.exitCode === null && child.signalCode === null) {
+                    child.kill('SIGKILL');
+                  }
+                } catch {}
+              }, 50).unref?.();
               passThrough.destroy();
             }
           };
+
+          passThrough.on('close', () => destroy());
+          passThrough.on('error', () => destroy());
 
           if (header.isRangeRequest && header.rangeSatisfiable === false) {
             destroy();
@@ -422,9 +438,47 @@ export async function safeOpenWorkspaceReadStream(
             }
           });
 
-          const webStream = Readable.toWeb(
+          const baseWebStream = Readable.toWeb(
             passThrough,
           ) as ReadableStream<Uint8Array>;
+
+          let streamReader: ReadableStreamDefaultReader<Uint8Array> | null =
+            null;
+          const cancellableWebStream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              const reader = baseWebStream.getReader();
+              streamReader = reader;
+              function pump(): void {
+                reader
+                  .read()
+                  .then(({ done, value }) => {
+                    if (done) {
+                      try {
+                        controller.close();
+                      } catch {}
+                      return;
+                    }
+                    controller.enqueue(value);
+                    pump();
+                  })
+                  .catch((err) => {
+                    destroy();
+                    try {
+                      controller.error(err);
+                    } catch {}
+                  });
+              }
+              pump();
+            },
+            cancel(reason) {
+              destroy();
+              if (streamReader) {
+                return streamReader.cancel(reason).catch(() => {});
+              }
+              return Promise.resolve();
+            },
+          });
+
           resolve({
             size: header.size,
             mtimeMs: header.mtimeMs,
@@ -433,8 +487,9 @@ export async function safeOpenWorkspaceReadStream(
             start: header.start,
             end: header.end,
             contentLength: header.contentLength,
-            stream: webStream,
+            stream: cancellableWebStream,
             destroy,
+            processPid: child.pid,
           });
         }
       }

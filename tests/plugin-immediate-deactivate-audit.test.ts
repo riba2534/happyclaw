@@ -26,9 +26,11 @@ const {
   createUser,
   createUserSession,
   setRegisteredGroup,
+  getAllRegisteredGroups,
   queryAuthAuditLogs,
 } = await import('../src/db.js');
 const { signSessionToken } = await import('../src/auth.js');
+const { setWebDeps } = await import('../src/web-context.js');
 const { scanHostMarketplaces } = await import('../src/plugin-importer.js');
 const { readUserPluginsV2 } = await import('../src/plugin-utils.js');
 const pluginsRoutes = (await import('../src/routes/plugins.js')).default;
@@ -42,6 +44,10 @@ const memberBId = 'member-b-' + Date.now();
 let adminCookie: string;
 let memberACookie: string;
 let memberBCookie: string;
+
+const stoppedJids: string[] = [];
+const blockedJids: string[] = [];
+const mockSessions: Record<string, string> = {};
 
 const fixtureSource = path.join(tmpRoot, 'fixture-marketplaces');
 const marketplaceDir = path.join(fixtureSource, 'auditmarket');
@@ -169,6 +175,34 @@ beforeAll(async () => {
   await scanHostMarketplaces({
     source: { type: 'directory', path: fixtureSource },
   });
+
+  mockSessions['workspace-a'] = 'active-session-a';
+  mockSessions['workspace-b'] = 'active-session-b';
+
+  setWebDeps({
+    queue: {
+      pauseGroupsForMutation: (jids: string[]) => ({ keys: jids }),
+      resumeGroupsAfterMutation: () => {},
+      listDescendantJids: () => [],
+      stopGroup: async (jid: string) => {
+        stoppedJids.push(jid);
+        return true;
+      },
+      blockGroupsForRuntimeSafety: (jids: string[]) => {
+        blockedJids.push(...jids);
+      },
+      unblockGroupsForRuntimeSafety: (jids: string[]) => {
+        for (const j of jids) {
+          const idx = blockedJids.indexOf(j);
+          if (idx >= 0) blockedJids.splice(idx, 1);
+        }
+      },
+      isGroupRuntimeSafetyBlocked: (jid: string) => blockedJids.includes(jid),
+    },
+    sessions: mockSessions,
+    getSessions: () => mockSessions,
+    getRegisteredGroups: () => getAllRegisteredGroups(),
+  } as any);
 });
 
 afterAll(() => {
@@ -208,6 +242,7 @@ describe('R15: 插件立即停用与能力/凭据变更审计测试', () => {
     expect(readUserPluginsV2(memberBId)?.enabled[fullId]?.enabled).toBe(true);
 
     // 3. 用户 A 调用立即停用端到端 API
+    mockSessions['workspace-a'] = 'active-session-a';
     const resDeactivateA = await pluginsRoutes.request(
       `/deactivate-immediately/${encodeURIComponent(fullId)}`,
       {
@@ -223,6 +258,10 @@ describe('R15: 插件立即停用与能力/凭据变更审计测试', () => {
     };
     expect(bodyDeactivateA.success).toBe(true);
     expect(bodyDeactivateA.fullId).toBe(fullId);
+    // 真实验证：受影响的当前用户活跃运行会话被实际失效，而用户 B 的会话不受影响！
+    expect(bodyDeactivateA.stoppedSessionsCount).toBeGreaterThanOrEqual(1);
+    expect(mockSessions['workspace-a']).toBeUndefined();
+    expect(mockSessions['workspace-b']).toBe('active-session-b');
 
     // 验证用户 A 已经彻底停用该插件
     expect(readUserPluginsV2(memberAId)?.enabled[fullId]).toBeUndefined();
@@ -259,15 +298,20 @@ describe('R15: 插件立即停用与能力/凭据变更审计测试', () => {
     );
   });
 
-  test('用户私有插件 Secret 管理 API：脱敏只返回键名，支持配置、物化更新与安全撤回', async () => {
-    // 1. 配置 Secret
+  test('用户私有插件 Secret 管理 API：脱敏只返回键名，支持配置、物化更新与安全撤回，并触发运行时会话失效', async () => {
+    mockSessions['workspace-a'] = 'active-session-a-secrets';
+
+    // 1. 配置 Secret 并触发运行时失效
     const resPut = await pluginsRoutes.request('/secrets/API_CUSTOM_KEY', {
       method: 'PUT',
       headers: { cookie: memberACookie, 'Content-Type': 'application/json' },
       body: JSON.stringify({ value: 'real-user-a-secret-plain-999' }),
     });
     expect(resPut.status).toBe(200);
-    expect(((await resPut.json()) as any).key).toBe('API_CUSTOM_KEY');
+    const bodyPut = (await resPut.json()) as any;
+    expect(bodyPut.key).toBe('API_CUSTOM_KEY');
+    expect(bodyPut.invalidated_runtime_jids).toBeGreaterThanOrEqual(1);
+    expect(mockSessions['workspace-a']).toBeUndefined();
 
     // 2. 脱敏查询已配置的键名
     const resGet = await pluginsRoutes.request('/secrets', {
@@ -281,12 +325,16 @@ describe('R15: 插件立即停用与能力/凭据变更审计测试', () => {
       'real-user-a-secret-plain-999',
     );
 
-    // 3. 安全撤回 Secret
+    // 3. 安全撤回 Secret 并触发运行时失效
+    mockSessions['workspace-a'] = 'active-session-a-revoke';
     const resDel = await pluginsRoutes.request('/secrets/API_CUSTOM_KEY', {
       method: 'DELETE',
       headers: { cookie: memberACookie },
     });
     expect(resDel.status).toBe(200);
+    const bodyDel = (await resDel.json()) as any;
+    expect(bodyDel.invalidated_runtime_jids).toBeGreaterThanOrEqual(1);
+    expect(mockSessions['workspace-a']).toBeUndefined();
 
     // 再次查询已不在列表中
     const resGetAfter = await pluginsRoutes.request('/secrets', {
@@ -294,6 +342,33 @@ describe('R15: 插件立即停用与能力/凭据变更审计测试', () => {
     });
     expect(((await resGetAfter.json()) as any).keys).not.toContain(
       'API_CUSTOM_KEY',
+    );
+  });
+
+  test('POST /materialize 手工恢复接口：纳入能力事务与持久化审计记录', async () => {
+    mockSessions['workspace-a'] = 'active-session-a-mat';
+    const resMat = await pluginsRoutes.request('/materialize', {
+      method: 'POST',
+      headers: { cookie: memberACookie },
+    });
+    expect(resMat.status).toBe(200);
+    const bodyMat = (await resMat.json()) as any;
+    expect(bodyMat.success).toBe(true);
+    expect(bodyMat.invalidated_runtime_jids).toBeGreaterThanOrEqual(1);
+    expect(mockSessions['workspace-a']).toBeUndefined();
+
+    // 验证审计日志
+    const auditLogs = queryAuthAuditLogs({
+      event_type: 'plugin_state_changed',
+      username: memberAId,
+    });
+    const matLog = auditLogs.logs.find(
+      (l) =>
+        (l.details as Record<string, unknown>)?.action === 'manual_materialize',
+    );
+    expect(matLog).toBeDefined();
+    expect((matLog?.details as Record<string, unknown>)?.scope).toBe(
+      `user:${memberAId}`,
     );
   });
 
@@ -439,6 +514,78 @@ describe('R15: 插件立即停用与能力/凭据变更审计测试', () => {
     expect((details.runtimeResult as Record<string, unknown>).success).toBe(
       true,
     );
+  });
+
+  test('Post-commit 失败注入：安装安全 gate、记录失败审计、重试成功解除 gate 并记录修复', async () => {
+    // 重新启用插件
+    await pluginsRoutes.request(`/enabled/${encodeURIComponent(fullId)}`, {
+      method: 'PATCH',
+      headers: { cookie: memberACookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: true }),
+    });
+
+    // 物化目录（精准在 commit 之后生效）
+    const runtimeDir = path.join(
+      tmpRoot,
+      'data',
+      'plugins',
+      'runtime',
+      memberAId,
+    );
+    fs.mkdirSync(runtimeDir, { recursive: true });
+
+    try {
+      // 仅将 runtime 目录设为只读：此时 plugins.json 可以成功写入（commit成功），但随后的物化写入必然抛出 EACCES（post-commit失败）！
+      fs.chmodSync(runtimeDir, 0o444);
+
+      // 1. 尝试立即停用 -> 遇到物化失败 -> 返回 503
+      const resFail = await pluginsRoutes.request(
+        `/deactivate-immediately/${encodeURIComponent(fullId)}`,
+        { method: 'POST', headers: { cookie: memberACookie } },
+      );
+      expect(resFail.status).toBe(503);
+
+      // 验证：受影响的工作区已被安装安全 gate（blocked）！
+      expect(blockedJids.length).toBeGreaterThan(0);
+
+      // 验证：审计表中记录了失败事件
+      const logsFail = queryAuthAuditLogs({
+        event_type: 'plugin_deactivated_immediately',
+        username: memberAId,
+        limit: 10,
+      });
+      const failedAudit = logsFail.logs.find(
+        (l) => (l.details as any)?.runtimeResult?.success === false,
+      );
+      expect(failedAudit).toBeDefined();
+
+      // 2. 恢复正常目录权限，执行重试停用！
+      fs.chmodSync(runtimeDir, 0o755);
+
+      const resRetry = await pluginsRoutes.request(
+        `/deactivate-immediately/${encodeURIComponent(fullId)}`,
+        { method: 'POST', headers: { cookie: memberACookie } },
+      );
+      expect(resRetry.status).toBe(200);
+
+      // 验证：安全 gate 已经被成功解除（unblocked）！
+      expect(blockedJids.length).toBe(0);
+
+      // 验证：审计表中追加了成功的修复事件
+      const logsSuccess = queryAuthAuditLogs({
+        event_type: 'plugin_deactivated_immediately',
+        username: memberAId,
+        limit: 10,
+      });
+      const successAudit = logsSuccess.logs.find(
+        (l) => (l.details as any)?.runtimeResult?.success === true,
+      );
+      expect(successAudit).toBeDefined();
+    } finally {
+      try {
+        fs.chmodSync(runtimeDir, 0o755);
+      } catch {}
+    }
   });
 });
 
