@@ -147,7 +147,7 @@ describe('R07: Session delete confirmation and binding protection', () => {
     expect(confirmBtn?.className).toContain('bg-destructive');
   });
 
-  test('clicking cancel or escape does not invoke onConfirm and triggers onClose', async () => {
+  test('clicking cancel or pressing escape does not invoke onConfirm and triggers onClose with focus protection', async () => {
     const onClose = vi.fn();
     const onConfirm = vi.fn();
 
@@ -169,11 +169,28 @@ describe('R07: Session delete confirmation and binding protection', () => {
     const cancelBtn = Array.from(document.body.querySelectorAll('button')).find(
       (b) => b.textContent?.trim() === '取消',
     );
+    expect(cancelBtn).toBeTruthy();
+
+    // 1. Click cancel button
     await act(async () => {
       cancelBtn?.click();
     });
 
-    expect(onClose).toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(mockDeleteAgentAction).not.toHaveBeenCalled();
+
+    // 2. Escape key on document dialog overlay
+    await act(async () => {
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Escape',
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+
     expect(onConfirm).not.toHaveBeenCalled();
     expect(mockDeleteAgentAction).not.toHaveBeenCalled();
   });

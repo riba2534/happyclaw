@@ -52,16 +52,45 @@ export function getMemoryValidityInfo(
     ? new Date(item.expiresAt).getTime()
     : null;
 
-  // 构造有效期区间文本
+  // 构造精确的有效期区间文本：实际有效截止必须取 validUntil 与 expiresAt 中的最早者
+  const deadlineEntries: Array<{
+    time: number;
+    label: string;
+    dateStr: string;
+  }> = [];
+  if (validUntilTime !== null && item.validUntil) {
+    deadlineEntries.push({
+      time: validUntilTime,
+      label: '有效截止',
+      dateStr: formatDate(item.validUntil),
+    });
+  }
+  if (expiresAtTime !== null && item.expiresAt) {
+    deadlineEntries.push({
+      time: expiresAtTime,
+      label: '过期淘汰(TTL)',
+      dateStr: formatDate(item.expiresAt),
+    });
+  }
+  deadlineEntries.sort((a, b) => a.time - b.time);
+
   let rangeText = '';
-  if (item.validFrom || item.validUntil || item.expiresAt) {
+  if (item.validFrom || deadlineEntries.length > 0) {
     const fromStr = item.validFrom ? formatDate(item.validFrom) : '即日起';
-    const endStr = item.validUntil
-      ? formatDate(item.validUntil)
-      : item.expiresAt
-        ? formatDate(item.expiresAt)
-        : '永久有效';
-    rangeText = `${fromStr} 至 ${endStr}`;
+    if (deadlineEntries.length === 0) {
+      rangeText = `${fromStr} 至 永久有效`;
+    } else if (deadlineEntries.length === 1) {
+      rangeText = `${fromStr} 至 ${deadlineEntries[0].dateStr}`;
+    } else {
+      // 存在两个截止时间，明确标注最早实际截止
+      const earliest = deadlineEntries[0];
+      const secondary = deadlineEntries[1];
+      if (earliest.time === secondary.time) {
+        rangeText = `${fromStr} 至 ${earliest.dateStr}`;
+      } else {
+        rangeText = `${fromStr} 至 ${earliest.dateStr} (最早截止: ${earliest.label})`;
+      }
+    }
   }
 
   // 1. 候选记忆
@@ -124,23 +153,24 @@ export function getMemoryValidityInfo(
     };
   }
 
+  const expiredReasons: string[] = [];
   if (validUntilTime !== null && validUntilTime <= now) {
-    return {
-      status: 'expired',
-      label: '已过期',
-      badgeVariant: 'destructive',
-      reason: `已过有效截止时间（截止时间：${formatDate(item.validUntil!)}），当前不可召回。`,
-      isRecalible: false,
-      validityRangeText: rangeText,
-    };
+    expiredReasons.push(
+      `已过有效截止时间（截止时间：${formatDate(item.validUntil!)}）`,
+    );
+  }
+  if (expiresAtTime !== null && expiresAtTime <= now) {
+    expiredReasons.push(
+      `已过过期淘汰时间(TTL)（过期时间：${formatDate(item.expiresAt!)}）`,
+    );
   }
 
-  if (expiresAtTime !== null && expiresAtTime <= now) {
+  if (expiredReasons.length > 0) {
     return {
       status: 'expired',
       label: '已过期',
       badgeVariant: 'destructive',
-      reason: `已过过期时间（过期时间：${formatDate(item.expiresAt!)}），当前不可召回。`,
+      reason: `${expiredReasons.join('，')}，当前不可召回。`,
       isRecalible: false,
       validityRangeText: rangeText,
     };

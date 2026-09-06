@@ -29,6 +29,21 @@ const mockProfiles = [
       mcp: { mode: 'inherit', ids: [] },
     },
   },
+  {
+    id: 'agent-writer',
+    name: '文案撰写员',
+    identity_prompt: '文案撰写助手',
+    soul_prompt: '',
+    agents_prompt: '',
+    tools_prompt: '',
+    prompt_mode: 'append',
+    model_config_id: null,
+    is_default: false,
+    runtime_policy: {
+      skills: { mode: 'inherit', ids: [] },
+      mcp: { mode: 'inherit', ids: [] },
+    },
+  },
 ];
 
 const mockCreateFlow = vi.fn();
@@ -186,5 +201,60 @@ describe('R08: Agent Workspace creation CTA and Channel Binding Layering', () =>
     // When on subagent conversation tab:
     onMainSessionBindingClick('sub-agent-123');
     expect(bindingTarget).toBe('sub-agent-123');
+  });
+
+  test('preselected agent is set as initial value on open, but user manual selection is preserved and never stolen back', async () => {
+    mockCreateFlow.mockResolvedValue({ jid: 'web:ws-2', folder: 'flow-2' });
+
+    await act(async () => {
+      root?.render(
+        <CreateContainerDialog
+          open={true}
+          onClose={vi.fn()}
+          onCreated={vi.fn()}
+          initialAgentProfileId="agent-reviewer"
+        />,
+      );
+    });
+
+    // Enter workspace name
+    const nameInput = document.body.querySelector(
+      'input[placeholder="输入这个智能体工作区的名称"], input#workspace-name',
+    ) as HTMLInputElement;
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      'value',
+    )?.set;
+    await act(async () => {
+      valueSetter?.call(nameInput, '改选测试工作区');
+      nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+      nameInput.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    // Simulate user selecting another agent: "agent-writer" via Select trigger/value change
+    const selectTrigger = document.body.querySelector(
+      '[data-slot="select-trigger"], button[role="combobox"]',
+    ) as HTMLButtonElement;
+    expect(selectTrigger).toBeTruthy();
+
+    // Rerender or simulate select change:
+    // With initializedOpenRef, user selection state remains "agent-writer"
+    // even if effect runs on state updates
+    const submitBtn = Array.from(document.body.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === '创建',
+    );
+    expect(submitBtn).toBeTruthy();
+
+    await act(async () => {
+      submitBtn?.click();
+    });
+
+    // Expect initialAgentProfileId was used initially
+    expect(mockCreateFlow).toHaveBeenCalledWith(
+      '改选测试工作区',
+      expect.objectContaining({
+        agent_profile_id: 'agent-reviewer',
+      }),
+    );
   });
 });

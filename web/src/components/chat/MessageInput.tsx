@@ -134,6 +134,8 @@ export function MessageInput({
     sessionId: sessionId || 'main',
     draftKey: currentDraftKey,
   });
+  const editRevisionRef = useRef(0);
+  const editingFollowUpSessionRef = useRef<string | null>(null);
 
   // 窄 selector：这是 1200+ 行常驻组件，无 selector 的整 store 订阅会让它在
   // 流式输出的每一帧（rAF 级 set()）都重渲染一次。actions 引用稳定。
@@ -186,6 +188,24 @@ export function MessageInput({
         clearDraft(prev.draftKey);
       }
 
+      // 如果此前在旧 Session 有未保存的排队消息编辑，将其清理并存回旧 Session 草稿，绝不污染新 Session
+      if (editingFollowUpId) {
+        const recovered = editingFollowUpContentRef.current.trim();
+        const initial = editingFollowUpInitialContentRef.current.trim();
+        if (recovered && recovered !== initial) {
+          const origDraft = drafts[prev.draftKey] || '';
+          const merged = origDraft
+            ? `${origDraft.trimEnd()}\n\n${recovered}`
+            : recovered;
+          saveDraft(prev.draftKey, merged);
+        }
+        setEditingFollowUpId(null);
+        setEditingFollowUpContent('');
+        editingFollowUpInitialContentRef.current = '';
+        editingFollowUpContentRef.current = '';
+        editingFollowUpSessionRef.current = null;
+      }
+
       // Drop pending attachments staged for the previous session (会话隔离)
       setPendingImages((prevImages) => {
         prevImages.forEach((img) => URL.revokeObjectURL(img.preview));
@@ -199,13 +219,22 @@ export function MessageInput({
       draftTimerRef.current = undefined;
     }
 
-    // Load draft for new session. Fallback to drafts[groupJid] for backwards compatibility with main session
+    // Load draft for new session with one-time legacy key migration and tombstone
     const isMain = !sessionId || sessionId === 'main';
-    const draft = currentDraftKey
-      ? drafts[currentDraftKey] ||
-        (isMain && groupJid ? drafts[groupJid] || '' : '')
-      : '';
-    setContent(draft);
+    let draft =
+      currentDraftKey && drafts[currentDraftKey] ? drafts[currentDraftKey] : '';
+    if (!draft && isMain && groupJid && drafts[groupJid]) {
+      // 一次性迁移旧 legacy key 并立即清空旧 key，防止旧草稿日后复活
+      draft = drafts[groupJid];
+      saveDraft(currentDraftKey, draft);
+      clearDraft(groupJid);
+    } else if (isMain && groupJid && drafts[groupJid]) {
+      // 当前键已有明确记录，彻底移除残留旧 legacy key
+      clearDraft(groupJid);
+    }
+
+    setContent(draft || '');
+    editRevisionRef.current += 1;
 
     sessionRef.current = {
       groupJid,
@@ -301,8 +330,9 @@ export function MessageInput({
     if (!trimmed && !hasPending && !hasImages) return;
     if (disabled || sending) return;
 
-    // 锁定当前发送时的会话身份快照，防止异步完成回调污染或清空其他 Session
+    // 锁定当前发送时的会话身份快照与编辑代次，防止异步完成回调污染或清空其他 Session 及新编辑内容
     const sendingSession = { ...sessionRef.current };
+    const sendingEditRevision = editRevisionRef.current;
     const currentImages = [...pendingImages];
     const currentFiles = [...pendingFiles];
 
@@ -337,10 +367,20 @@ export function MessageInput({
       // 发送成功：清空发起发送的 Session 的草稿
       if (sendingSession.draftKey) {
         clearDraft(sendingSession.draftKey);
+        // 若为 main 会话，同步清理旧 legacy key，防止旧草稿日后复活
+        if (sendingSession.sessionId === 'main' && sendingSession.groupJid) {
+          clearDraft(sendingSession.groupJid);
+        }
       }
-      // 只有当前用户仍停留在发起发送的同一个 Session 时，才清空输入框和待发附件
-      if (sessionRef.current.draftKey === sendingSession.draftKey) {
+      // 只有当前用户仍停留在发起发送的同一个 Session，且输入框在此期间未产生新输入修改时，才清空输入框和待发附件
+      const isSameSession =
+        sessionRef.current.draftKey === sendingSession.draftKey;
+      const isUneditedSinceSend =
+        editRevisionRef.current === sendingEditRevision;
+
+      if (isSameSession && isUneditedSinceSend) {
         setContent('');
+        editRevisionRef.current += 1;
         if (draftTimerRef.current) {
           clearTimeout(draftTimerRef.current);
           draftTimerRef.current = undefined;
@@ -351,16 +391,30 @@ export function MessageInput({
           setPendingImages([]);
         }
       } else {
-        // 用户已经切换到其他会话：绝不清空新会话，只清理先前发送的 preview URL
+        // 用户已切换到其他会话，或者用户切回后已键入新内容：绝不清空当前内容，只清理先前发送的 preview URL
         currentImages.forEach((img) => URL.revokeObjectURL(img.preview));
       }
     } else {
-      // 失败：保留输入、保留附件；为原会话保存草稿供重试
-      if (sendingSession.draftKey && trimmed) {
-        saveDraft(sendingSession.draftKey, trimmed);
-      }
-      if (sessionRef.current.draftKey === sendingSession.draftKey) {
+      // 失败分支：如果用户尚未改动输入框，保留输入与草稿；若用户已编辑新内容，绝不覆盖新草稿
+      const isSameSession =
+        sessionRef.current.draftKey === sendingSession.draftKey;
+      const isUneditedSinceSend =
+        editRevisionRef.current === sendingEditRevision;
+
+      if (isSameSession && isUneditedSinceSend) {
+        if (sendingSession.draftKey && trimmed) {
+          saveDraft(sendingSession.draftKey, trimmed);
+        }
         setSendError('发送失败，输入已保留，请重试');
+        setTimeout(() => setSendError(null), 4000);
+      } else if (!isSameSession) {
+        // 用户已切换到其他会话：为原会话保存旧草稿，不影响当前会话
+        if (sendingSession.draftKey && trimmed) {
+          saveDraft(sendingSession.draftKey, trimmed);
+        }
+      } else {
+        // 同一会话已有新编辑内容：不回滚新内容，给出明确失败提醒
+        setSendError('早先消息发送失败，请重试');
         setTimeout(() => setSendError(null), 4000);
       }
     }
@@ -390,6 +444,7 @@ export function MessageInput({
     setEditingFollowUpContent(item.content);
     editingFollowUpInitialContentRef.current = item.content;
     editingFollowUpContentRef.current = item.content;
+    editingFollowUpSessionRef.current = sessionRef.current.draftKey;
   };
 
   const saveFollowUpEdit = async (item: QueuedFollowUp) => {
@@ -403,6 +458,7 @@ export function MessageInput({
       setEditingFollowUpContent('');
       editingFollowUpInitialContentRef.current = '';
       editingFollowUpContentRef.current = '';
+      editingFollowUpSessionRef.current = null;
     }
   };
 
@@ -410,8 +466,10 @@ export function MessageInput({
   // dispatcher is then allowed to claim that item, so it disappears from the
   // queue before Save can be clicked. Never silently discard what the user
   // typed: move an unsaved edit back into the main composer and explain why.
+  // 关键会话隔离：仅在同一 Session 内排队消息被消费才恢复至输入框，跨会话绝不恢复污染其他 Session。
   useEffect(() => {
     if (!editingFollowUpId || savingFollowUpId === editingFollowUpId) return;
+    if (editingFollowUpSessionRef.current !== currentDraftKey) return;
     if (queuedFollowUps.some((item) => item.id === editingFollowUpId)) return;
 
     const recovered = editingFollowUpContentRef.current.trim();
@@ -420,18 +478,21 @@ export function MessageInput({
     setEditingFollowUpContent('');
     editingFollowUpInitialContentRef.current = '';
     editingFollowUpContentRef.current = '';
+    editingFollowUpSessionRef.current = null;
 
     if (!recovered || recovered === initial) return;
     const nextContent = content.trim()
       ? `${content.trimEnd()}\n\n${recovered}`
       : recovered;
     setContent(nextContent);
+    editRevisionRef.current += 1;
     debouncedSaveDraft(nextContent);
     setSendError('这条消息已开始处理，未保存的修改已移到输入框');
     const timer = window.setTimeout(() => setSendError(null), 5000);
     return () => window.clearTimeout(timer);
   }, [
     content,
+    currentDraftKey,
     debouncedSaveDraft,
     editingFollowUpId,
     queuedFollowUps,
@@ -1248,6 +1309,7 @@ export function MessageInput({
               value={content}
               onChange={(e) => {
                 setContent(e.target.value);
+                editRevisionRef.current += 1;
                 debouncedSaveDraft(e.target.value);
               }}
               onKeyDown={handleKeyDown}

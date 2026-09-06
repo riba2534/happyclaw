@@ -316,7 +316,24 @@ export function MemoryPage() {
   const canModify = selectedWorkspace?.can_modify === true;
 
   const visibleItems = useMemo(() => {
-    let list = searchHits ? searchHits.map((hit) => hit.item) : items;
+    const trimmed = query.trim().toLowerCase();
+    const isSpecialStatus =
+      statusFilter === 'proposed' ||
+      statusFilter === 'conflicted' ||
+      statusFilter === 'future' ||
+      statusFilter === 'expired';
+
+    let list = items;
+    if (searchHits && !isSpecialStatus) {
+      list = searchHits.map((hit) => hit.item);
+    } else if (trimmed) {
+      list = list.filter(
+        (item) =>
+          (item.title && item.title.toLowerCase().includes(trimmed)) ||
+          item.content.toLowerCase().includes(trimmed),
+      );
+    }
+
     if (kindFilter !== 'all') {
       list = list.filter((item) => item.kind === kindFilter);
     }
@@ -346,7 +363,7 @@ export function MemoryPage() {
       );
     }
     return list;
-  }, [items, kindFilter, searchHits, statusFilter]);
+  }, [items, kindFilter, query, searchHits, statusFilter]);
   const counts = useMemo(() => memoryKindCounts(items), [items]);
   const dirty = useMemo(() => {
     if (!selectedItem) return false;
@@ -546,8 +563,42 @@ export function MemoryPage() {
         }
         setStoreRevision(data.storeRevision);
         setNextCursor(data.nextCursor);
+
+        let mergedItems = data.items;
+        // 如果是 'all' 状态且非游标翻页，尝试并发拉取 proposed 与 conflicted 记忆合并展示
+        if (currentStatus === 'all' && !options?.cursor) {
+          try {
+            const [proposedData, conflictedData] = await Promise.all([
+              api
+                .get<WorkspaceMemoryCollection>(
+                  `${memoryItemsPath(workspaceJid)}?status=proposed&limit=50`,
+                )
+                .catch(() => null),
+              api
+                .get<WorkspaceMemoryCollection>(
+                  `${memoryItemsPath(workspaceJid)}?status=conflicted&limit=50`,
+                )
+                .catch(() => null),
+            ]);
+            if (
+              (proposedData?.items && proposedData.items.length > 0) ||
+              (conflictedData?.items && conflictedData.items.length > 0)
+            ) {
+              const byId = new Map<string, WorkspaceMemoryItem>();
+              for (const it of mergedItems) byId.set(it.id, it);
+              for (const it of proposedData?.items ?? []) byId.set(it.id, it);
+              for (const it of conflictedData?.items ?? []) byId.set(it.id, it);
+              mergedItems = Array.from(byId.values()).sort((a, b) =>
+                b.updatedAt.localeCompare(a.updatedAt),
+              );
+            }
+          } catch {
+            // best-effort 合并
+          }
+        }
+
         setItems((current) =>
-          append ? [...current, ...data.items] : data.items,
+          append ? [...current, ...mergedItems] : mergedItems,
         );
         setListError(null);
       } catch (error) {
@@ -944,6 +995,9 @@ export function MemoryPage() {
         {
           expectedRevision: selectedItem.revision,
           status: 'active',
+          kind: draft.kind,
+          title: draft.title.trim() || null,
+          content: draft.content.trim(),
           provenance: {
             observedAt: new Date().toISOString(),
           },
@@ -956,7 +1010,16 @@ export function MemoryPage() {
       ) {
         return;
       }
-      toast.success('已采纳候选记忆为正式有效记忆');
+      const nextValidity = getMemoryValidityInfo(result.item);
+      if (nextValidity.status === 'active_valid') {
+        toast.success('已采纳候选记忆为正式有效记忆，当前已进入召回池');
+      } else if (nextValidity.status === 'future') {
+        toast.success(`已采纳候选记忆（${nextValidity.reason}）`);
+      } else if (nextValidity.status === 'expired') {
+        toast.warning(`已采纳该记录，但当前已过期（${nextValidity.reason}）`);
+      } else {
+        toast.success('已采纳候选记忆');
+      }
       setStoreRevision(result.storeRevision);
       syncSelectedItem(result.item);
       await refreshMemoryView();
@@ -1024,7 +1087,18 @@ export function MemoryPage() {
       ) {
         return;
       }
-      toast.success('已解决冲突并保存为正式有效记忆');
+      const nextValidity = getMemoryValidityInfo(result.item);
+      if (nextValidity.status === 'active_valid') {
+        toast.success('已解决冲突并保存为正式有效记忆，当前已进入召回池');
+      } else if (nextValidity.status === 'future') {
+        toast.success(`已解决冲突并保存（${nextValidity.reason}）`);
+      } else if (nextValidity.status === 'expired') {
+        toast.warning(
+          `已解决冲突并保存，但当前已过期（${nextValidity.reason}）`,
+        );
+      } else {
+        toast.success('已解决冲突并保存');
+      }
       setStoreRevision(result.storeRevision);
       syncSelectedItem(result.item);
       await refreshMemoryView();

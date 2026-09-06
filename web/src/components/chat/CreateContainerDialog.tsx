@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ChevronDown,
   ChevronRight,
@@ -147,20 +147,30 @@ export function CreateContainerDialog({
     selectedProfile?.runtime_policy.skills.host?.mode ??
     (inheritsHostClaude ? 'inherit' : 'disabled');
 
+  const initializedOpenRef = useRef(false);
+
   useEffect(() => {
     if (open) void loadProfiles();
   }, [open, loadProfiles]);
 
+  // 仅在对话框由关闭变为打开时设置预选初值；打开期间用户手动改选其他 Agent 绝不被抢回
   useEffect(() => {
-    if (!open) return;
-    if (initialAgentProfileId) {
-      setSelectedAgentProfileId(initialAgentProfileId);
-    } else if (!selectedAgentProfileId && profiles.length > 0) {
-      const defaultProfile =
-        profiles.find((profile) => profile.is_default) ?? profiles[0];
-      setSelectedAgentProfileId(defaultProfile.id);
+    if (!open) {
+      initializedOpenRef.current = false;
+      return;
     }
-  }, [open, initialAgentProfileId, profiles, selectedAgentProfileId]);
+    if (!initializedOpenRef.current) {
+      if (initialAgentProfileId) {
+        setSelectedAgentProfileId(initialAgentProfileId);
+        initializedOpenRef.current = true;
+      } else if (profiles.length > 0) {
+        const defaultProfile =
+          profiles.find((profile) => profile.is_default) ?? profiles[0];
+        setSelectedAgentProfileId(defaultProfile.id);
+        initializedOpenRef.current = true;
+      }
+    }
+  }, [open, initialAgentProfileId, profiles]);
 
   useEffect(() => {
     if (canHostExec || executionMode === 'container') return;

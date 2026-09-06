@@ -96,6 +96,25 @@ describe('R10: Memory validity display, filtering, and CAS candidate/conflict re
     expect(expiredInfo.label).toBe('已过期');
     expect(expiredInfo.reason).toContain('已过有效截止时间');
 
+    // 3b. Comparison: validUntil is 2026-09-30, but expiresAt is earlier 2026-09-15
+    // Must respect the earliest deadline rather than falsely showing valid until 09-30!
+    const earlierExpiresItem: WorkspaceMemoryItem = {
+      ...activeItem,
+      id: 'm-3b',
+      validUntil: '2026-09-30T00:00:00.000Z',
+      expiresAt: '2026-09-15T00:00:00.000Z',
+    };
+    const earlierExpiresInfo = getMemoryValidityInfo(
+      earlierExpiresItem,
+      fixedNow,
+    );
+    expect(earlierExpiresInfo.status).toBe('active_valid');
+    // Earliest deadline is 09-15
+    expect(earlierExpiresInfo.validityRangeText).toContain('2026/09/15');
+    expect(earlierExpiresInfo.validityRangeText).toContain(
+      '最早截止: 过期淘汰(TTL)',
+    );
+
     // 4. Proposed candidate
     const proposedItem: WorkspaceMemoryItem = {
       ...activeItem,
@@ -143,16 +162,25 @@ describe('R10: Memory validity display, filtering, and CAS candidate/conflict re
       storeRevision: 10,
     });
 
-    // Simulate clicking "采纳为正式记忆"
+    // Simulate user editing title and content before clicking "采纳为正式记忆"
+    const userDraft = {
+      title: '提议的架构决策 (修改后)',
+      content: '使用集中式日志收集器并配置轮转策略',
+      kind: 'decision' as const,
+    };
+
     const handleConfirm = async () => {
       await mocks.patch(
         `/api/memory/workspaces/web:ws1/items/${proposedItem.id}`,
         {
           expectedRevision: proposedItem.revision,
           status: 'active',
+          kind: userDraft.kind,
+          title: userDraft.title,
+          content: userDraft.content,
         },
       );
-      mocks.toastSuccess('已采纳候选记忆为正式有效记忆');
+      mocks.toastSuccess('已采纳候选记忆为正式有效记忆，当前已进入召回池');
     };
 
     await handleConfirm();
@@ -162,10 +190,13 @@ describe('R10: Memory validity display, filtering, and CAS candidate/conflict re
       {
         expectedRevision: 3,
         status: 'active',
+        kind: 'decision',
+        title: '提议的架构决策 (修改后)',
+        content: '使用集中式日志收集器并配置轮转策略',
       },
     );
     expect(mocks.toastSuccess).toHaveBeenCalledWith(
-      '已采纳候选记忆为正式有效记忆',
+      '已采纳候选记忆为正式有效记忆，当前已进入召回池',
     );
   });
 

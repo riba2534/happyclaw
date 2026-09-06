@@ -297,6 +297,175 @@ describe('R04: Session draft and attachment isolation', () => {
     expect(mockDrafts['web:ws1::agent-a']).toBeUndefined();
   });
 
+  test('A -> B -> A: returning to A and typing new draft is NOT wiped by earlier in-flight send success or failure', async () => {
+    let resolveSendA: (ok: boolean) => void = () => {};
+    const onSend = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveSendA = resolve;
+        }),
+    );
+
+    // 1. In Session A, user sends
+    await act(async () => {
+      root?.render(
+        <MessageInput groupJid="web:ws1" sessionId="agent-a" onSend={onSend} />,
+      );
+    });
+
+    const textarea = () =>
+      container?.querySelector('textarea') as HTMLTextAreaElement;
+    await act(async () => {
+      typeInTextarea(textarea(), 'First message from A');
+    });
+
+    const sendBtn = () =>
+      container?.querySelector('button[title="发送消息"]') as HTMLButtonElement;
+    await act(async () => {
+      sendBtn().click();
+    });
+
+    // 2. User switches to B
+    await act(async () => {
+      root?.render(
+        <MessageInput groupJid="web:ws1" sessionId="agent-b" onSend={onSend} />,
+      );
+    });
+
+    // 3. User switches back to A and types a brand new draft
+    await act(async () => {
+      root?.render(
+        <MessageInput groupJid="web:ws1" sessionId="agent-a" onSend={onSend} />,
+      );
+    });
+
+    await act(async () => {
+      typeInTextarea(textarea(), 'Brand new draft typed in A after returning');
+    });
+
+    // 4. Now earlier in-flight send from A completes successfully
+    await act(async () => {
+      resolveSendA(true);
+    });
+
+    // Brand new draft in A must remain intact because editRevision changed!
+    expect(textarea().value).toBe('Brand new draft typed in A after returning');
+  });
+
+  test('one-time migration of legacy key (drafts[groupJid]) and permanently tombstones it so it does not resurrect', async () => {
+    const onSend = vi.fn(async () => true);
+
+    // Seed legacy draft stored at old key
+    mockDrafts['web:ws1'] = 'Legacy draft from old version';
+
+    // Mount Main session: it should migrate to web:ws1::main and clean up old key
+    await act(async () => {
+      root?.render(
+        <MessageInput groupJid="web:ws1" sessionId="main" onSend={onSend} />,
+      );
+    });
+
+    const textarea = () =>
+      container?.querySelector('textarea') as HTMLTextAreaElement;
+    expect(textarea().value).toBe('Legacy draft from old version');
+    expect(mockDrafts['web:ws1::main']).toBe('Legacy draft from old version');
+    expect(mockDrafts['web:ws1']).toBeUndefined(); // Legacy key cleared!
+
+    // User sends this draft
+    const sendBtn = () =>
+      container?.querySelector('button[title="发送消息"]') as HTMLButtonElement;
+    await act(async () => {
+      sendBtn().click();
+    });
+
+    expect(textarea().value).toBe('');
+    expect(mockDrafts['web:ws1::main']).toBeUndefined();
+    expect(mockDrafts['web:ws1']).toBeUndefined();
+
+    // Switch to another session and switch back
+    await act(async () => {
+      root?.render(
+        <MessageInput groupJid="web:ws1" sessionId="agent-x" onSend={onSend} />,
+      );
+    });
+    await act(async () => {
+      root?.render(
+        <MessageInput groupJid="web:ws1" sessionId="main" onSend={onSend} />,
+      );
+    });
+
+    // Legacy draft must NOT resurrect!
+    expect(textarea().value).toBe('');
+    expect(mockDrafts['web:ws1']).toBeUndefined();
+  });
+
+  test('editing queued message in Session A does not leak or append into Session B upon switching', async () => {
+    const onSend = vi.fn();
+    const queuedFollowUpsA = [
+      {
+        id: 'fu-a-1',
+        chat_jid: 'web:ws1#agent:agent-a',
+        sender: 'user',
+        sender_name: 'User',
+        content: 'Original queued text in A',
+        timestamp: '2026-09-07T05:00:00Z',
+        delivery_mode: 'queue' as const,
+        delivery_status: 'queued' as const,
+        delivery_priority: 0,
+      },
+    ];
+
+    // Mount Session A with queued follow up
+    await act(async () => {
+      root?.render(
+        <MessageInput
+          groupJid="web:ws1"
+          sessionId="agent-a"
+          onSend={onSend}
+          queuedFollowUps={queuedFollowUpsA}
+          onFollowUpAction={vi.fn()}
+        />,
+      );
+    });
+
+    // Start editing the queued follow up in A
+    const editBtn = container?.querySelector(
+      'button[aria-label="编辑：Original queued text in A"]',
+    ) as HTMLButtonElement;
+    expect(editBtn).toBeTruthy();
+    await act(async () => {
+      editBtn.click();
+    });
+
+    // Modify follow up content in the queued edit input
+    const followUpEditInput = container?.querySelector(
+      'textarea[aria-label="编辑排队消息"]',
+    ) as HTMLTextAreaElement;
+    expect(followUpEditInput).toBeTruthy();
+    await act(async () => {
+      typeInTextarea(followUpEditInput, 'Edited follow up text in A');
+    });
+
+    // Switch to Session B (which has no queued follow ups)
+    await act(async () => {
+      root?.render(
+        <MessageInput
+          groupJid="web:ws1"
+          sessionId="agent-b"
+          onSend={onSend}
+          queuedFollowUps={[]}
+          onFollowUpAction={vi.fn()}
+        />,
+      );
+    });
+
+    // Session B composer must NOT have the edited follow up text from A appended!
+    const textareaB = container?.querySelector(
+      'textarea',
+    ) as HTMLTextAreaElement;
+    expect(textareaB.value).toBe('');
+  });
+
   test('clearly displays error for images exceeding 5MB and keeps valid images', async () => {
     const onSend = vi.fn();
     await act(async () => {
