@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { History, Loader2, RotateCcw } from 'lucide-react';
+import { FlaskConical, History, Loader2, RotateCcw } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import type { AgentProfile, AgentProfilePromptVersion } from '@/types';
@@ -7,9 +7,11 @@ import {
   AGENT_PROMPT_SECTIONS,
   type AgentPromptParts,
 } from '@/utils/agent-prompts';
+import { AgentPromptEvalDialog } from './AgentPromptEvalDialog';
 
 interface AgentPromptVersionHistoryProps {
   profileId: string;
+  agentName?: string;
   currentVersion: number;
   currentPrompts: AgentPromptParts;
   loadVersions: (profileId: string) => Promise<AgentProfilePromptVersion[]>;
@@ -20,6 +22,7 @@ interface AgentPromptVersionHistoryProps {
 
 export function AgentPromptVersionHistory({
   profileId,
+  agentName = '智能体',
   currentVersion,
   currentPrompts,
   loadVersions,
@@ -31,6 +34,10 @@ export function AgentPromptVersionHistory({
   const [loading, setLoading] = useState(true);
   const [restoring, setRestoring] = useState<number | null>(null);
   const [comparing, setComparing] = useState<number | null>(null);
+  const [evalOpen, setEvalOpen] = useState(false);
+  const [evalCompareVersion, setEvalCompareVersion] = useState<number | null>(
+    null,
+  );
 
   useEffect(() => {
     let active = true;
@@ -64,14 +71,31 @@ export function AgentPromptVersionHistory({
 
   return (
     <section className="overflow-hidden rounded-xl border border-border bg-card">
-      <div className="flex items-start gap-3 border-b border-border px-5 py-4">
-        <History className="mt-0.5 size-4 text-muted-foreground" />
-        <div>
-          <h2 className="text-sm font-semibold text-foreground">提示词版本</h2>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            保存和恢复都会留下版本，可以安全回退四段提示词与组合模式。
-          </p>
+      <div className="flex items-center justify-between border-b border-border px-5 py-4">
+        <div className="flex items-start gap-3">
+          <History className="mt-0.5 size-4 text-muted-foreground" />
+          <div>
+            <h2 className="text-sm font-semibold text-foreground">
+              提示词版本
+            </h2>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">
+              保存和恢复都会留下版本，可按需触发典型任务效果评测与对比。
+            </p>
+          </div>
         </div>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="gap-1.5 text-xs"
+          onClick={() => {
+            setEvalCompareVersion(null);
+            setEvalOpen(true);
+          }}
+        >
+          <FlaskConical className="size-3.5 text-primary" />
+          版本效果评测
+        </Button>
       </div>
       <div className="divide-y divide-border">
         {loading ? (
@@ -127,6 +151,19 @@ export function AgentPromptVersionHistory({
                       type="button"
                       size="sm"
                       variant="ghost"
+                      className="gap-1 text-xs text-primary hover:text-primary"
+                      onClick={() => {
+                        setEvalCompareVersion(item.version);
+                        setEvalOpen(true);
+                      }}
+                    >
+                      <FlaskConical className="size-3.5" />
+                      评测
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
                       disabled={
                         item.version === currentVersion || restoring !== null
                       }
@@ -175,6 +212,15 @@ export function AgentPromptVersionHistory({
           })
         )}
       </div>
+
+      <AgentPromptEvalDialog
+        open={evalOpen}
+        onOpenChange={setEvalOpen}
+        profileId={profileId}
+        agentName={agentName}
+        currentVersion={currentVersion}
+        compareVersion={evalCompareVersion}
+      />
     </section>
   );
 }

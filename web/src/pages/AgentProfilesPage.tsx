@@ -1805,6 +1805,7 @@ export function AgentProfilesPage() {
                       />
                       <AgentPromptVersionHistory
                         profileId={selected.id}
+                        agentName={name.trim() || selected.name}
                         currentVersion={selected.version}
                         currentPrompts={currentPrompts}
                         loadVersions={loadPromptVersions}

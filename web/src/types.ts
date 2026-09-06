@@ -429,3 +429,163 @@ export interface WorkspaceDeleteImpact {
   bound_main_im_groups: WorkspaceDeleteBindingGroup[];
   bound_thread_contexts: WorkspaceDeleteThreadContext[];
 }
+
+// --- R17 Prompt Evaluation & Benchmark Types ---
+
+export type EvalRunMode = 'single' | 'compare';
+export type EvalRunStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+export type EvalVerdict = 'pass' | 'fail';
+export type EvalHumanFeedback = 'accepted' | 'rejected' | 'unresolved' | null;
+
+export interface EvalCaseRule {
+  requiredKeywords?: string[];
+  forbiddenKeywords?: string[];
+  regexPatterns?: string[];
+  requireJson?: boolean;
+  requiredJsonKeys?: string[];
+  minLength?: number;
+  maxLength?: number;
+  passThreshold?: number;
+}
+
+export interface EvalCase {
+  id: string;
+  suite_id: string;
+  name: string;
+  category: string;
+  input_prompt: string;
+  expected_output: string;
+  eval_rules: EvalCaseRule;
+  timeout_ms: number;
+  order_num: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EvalSuite {
+  id: string;
+  owner_user_id: string;
+  name: string;
+  description: string;
+  version: number;
+  is_system: boolean;
+  case_count: number;
+  created_at: string;
+  updated_at: string;
+  cases?: EvalCase[];
+}
+
+export interface EvalRun {
+  id: string;
+  owner_user_id: string;
+  agent_profile_id: string;
+  agent_name: string;
+  suite_id: string;
+  suite_version: number;
+  mode: EvalRunMode;
+  base_version: number | null;
+  base_prompt_hash: string | null;
+  target_version: number | null;
+  target_prompt_hash: string | null;
+  model: string;
+  capability_snapshot: Record<string, unknown>;
+  status: EvalRunStatus;
+  total_cases: number;
+  completed_cases: number;
+  base_pass_count: number;
+  target_pass_count: number;
+  base_avg_duration_ms: number;
+  target_avg_duration_ms: number;
+  base_total_tokens: number;
+  target_total_tokens: number;
+  base_estimated_cost_usd: number;
+  target_estimated_cost_usd: number;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+export interface EvalRunCaseToolUsage {
+  name: string;
+  count: number;
+  args_preview?: string;
+}
+
+export interface EvalRunCaseDetails {
+  matchedKeywords?: string[];
+  missingKeywords?: string[];
+  matchedForbidden?: string[];
+  matchedRegex?: string[];
+  failedRegex?: string[];
+  jsonValid?: boolean;
+  missingJsonKeys?: string[];
+  lengthValid?: boolean;
+  reasons?: string[];
+}
+
+export interface EvalRunCase {
+  id: string;
+  run_id: string;
+  case_id: string;
+  case_name: string;
+  version_tag: 'base' | 'target' | 'single';
+  prompt_version: number;
+  prompt_hash: string;
+  status: EvalRunStatus;
+  actual_output: string;
+  auto_score: number;
+  auto_verdict: EvalVerdict;
+  eval_details: EvalRunCaseDetails;
+  duration_ms: number;
+  tokens_input: number;
+  tokens_output: number;
+  tokens_total: number;
+  estimated_cost_usd: number;
+  tools_used: EvalRunCaseToolUsage[];
+  human_feedback: EvalHumanFeedback;
+  human_notes: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EvalCompareSummary {
+  run: EvalRun;
+  baseSummary?: {
+    version: number;
+    passCount: number;
+    passRate: number;
+    avgDurationMs: number;
+    totalTokens: number;
+    estimatedCostUsd: number;
+  };
+  targetSummary?: {
+    version: number;
+    passCount: number;
+    passRate: number;
+    avgDurationMs: number;
+    totalTokens: number;
+    estimatedCostUsd: number;
+  };
+  delta?: {
+    passRateDelta: number;
+    durationDeltaMs: number;
+    costDeltaUsd: number;
+    improvedCases: string[];
+    regressedCases: string[];
+    unchangedCases: string[];
+  };
+  cases: Array<{
+    caseId: string;
+    caseName: string;
+    category: string;
+    baseResult?: EvalRunCase;
+    targetResult?: EvalRunCase;
+  }>;
+}

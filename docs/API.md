@@ -14,30 +14,31 @@
 
 ## 路由模块
 
-| 前缀                               | 实现                             | 用途                          |
-| ---------------------------------- | -------------------------------- | ----------------------------- |
-| `/api/auth`                        | `src/routes/auth.ts`             | 初始化、登录、账户、设备      |
-| `/api/groups`                      | `src/routes/groups.ts`           | 工作区兼容模型、消息和环境    |
-| `/api/groups`                      | `src/routes/files.ts`            | 工作区文件                    |
-| `/api/groups`                      | `src/routes/agents.ts`           | Runtime Session 与渠道绑定    |
-| `/api/groups`                      | `src/routes/workspace-config.ts` | 项目 Skills/MCP               |
-| `/api/workspaces`                  | `src/routes/workspaces.ts`       | Agent-first 工作区投影        |
-| `/api/agent-profiles`              | `src/routes/agent-profiles.ts`   | 产品级 Agent                  |
-| `/api/channel-accounts`            | `src/routes/channel-accounts.ts` | 多渠道账号                    |
-| `/api/config`                      | `src/routes/config.ts`           | Provider、系统与兼容渠道配置  |
-| `/api/config`                      | `src/routes/brand-assets.ts`     | 品牌资源上传、删除与公开读取  |
-| `/api/tasks`                       | `src/routes/tasks.ts`            | 定时任务和运行                |
-| `/api/memory`                      | `src/routes/memory.ts`           | Workspace Memory v2           |
-| `/api/skills`                      | `src/routes/skills.ts`           | 用户 Skills                   |
-| `/api/mcp-servers`                 | `src/routes/mcp-servers.ts`      | 用户/系统 MCP                 |
-| `/api/plugins`                     | `src/routes/plugins.ts`          | Plugin Catalog 与用户启用状态 |
-| `/api/usage`                       | `src/routes/usage.ts`            | Token 用量                    |
-| `/api/billing`                     | `src/routes/billing.ts`          | 订阅、余额和计费管理          |
-| `/api/admin`                       | `src/routes/admin.ts`            | 用户、邀请和审计              |
-| `/api/bug-report`                  | `src/routes/bug-report.ts`       | 脱敏问题报告                  |
-| `/api/browse`                      | `src/routes/browse.ts`           | Host 目录选择                 |
-| `/api`                             | `src/routes/monitor.ts`          | 健康、状态和 Docker 构建      |
-| `/api/messages`、`/api/follow-ups` | `src/web.ts`                     | 消息发送和 Follow-up          |
+| 前缀                               | 实现                             | 用途                           |
+| ---------------------------------- | -------------------------------- | ------------------------------ |
+| `/api/auth`                        | `src/routes/auth.ts`             | 初始化、登录、账户、设备       |
+| `/api/groups`                      | `src/routes/groups.ts`           | 工作区兼容模型、消息和环境     |
+| `/api/groups`                      | `src/routes/files.ts`            | 工作区文件                     |
+| `/api/groups`                      | `src/routes/agents.ts`           | Runtime Session 与渠道绑定     |
+| `/api/groups`                      | `src/routes/workspace-config.ts` | 项目 Skills/MCP                |
+| `/api/workspaces`                  | `src/routes/workspaces.ts`       | Agent-first 工作区投影         |
+| `/api/agent-profiles`              | `src/routes/agent-profiles.ts`   | 产品级 Agent                   |
+| `/api/channel-accounts`            | `src/routes/channel-accounts.ts` | 多渠道账号                     |
+| `/api/config`                      | `src/routes/config.ts`           | Provider、系统与兼容渠道配置   |
+| `/api/config`                      | `src/routes/brand-assets.ts`     | 品牌资源上传、删除与公开读取   |
+| `/api/tasks`                       | `src/routes/tasks.ts`            | 定时任务和运行                 |
+| `/api/memory`                      | `src/routes/memory.ts`           | Workspace Memory v2            |
+| `/api/skills`                      | `src/routes/skills.ts`           | 用户 Skills                    |
+| `/api/mcp-servers`                 | `src/routes/mcp-servers.ts`      | 用户/系统 MCP                  |
+| `/api/plugins`                     | `src/routes/plugins.ts`          | Plugin Catalog 与用户启用状态  |
+| `/api/usage`                       | `src/routes/usage.ts`            | Token 用量                     |
+| `/api/billing`                     | `src/routes/billing.ts`          | 订阅、余额和计费管理           |
+| `/api/admin`                       | `src/routes/admin.ts`            | 用户、邀请和审计               |
+| `/api/bug-report`                  | `src/routes/bug-report.ts`       | 脱敏问题报告                   |
+| `/api/browse`                      | `src/routes/browse.ts`           | Host 目录选择                  |
+| `/api`                             | `src/routes/monitor.ts`          | 健康、状态和 Docker 构建       |
+| `/api/eval`                        | `src/routes/eval.ts`             | 提示词评测、基准对比与效果报告 |
+| `/api/messages`、`/api/follow-ups` | `src/web.ts`                     | 消息发送和 Follow-up           |
 
 ## 认证
 
@@ -560,6 +561,37 @@ Agent 镜像只由 `main` 分支的 GitHub Actions 构建并发布。该接口�
 目录浏览：
 
 - `GET|POST /api/browse/directories`
+
+## 提示词评测与基准 (R17)
+
+评测集与案例管理：
+
+- `GET /api/eval/suites`：列出评测集（包含系统内置 15 条典型基准及用户自定义集）
+- `GET /api/eval/suites/:id`：获取评测集详情与包含的案例列表
+- `POST /api/eval/suites`：创建用户自定义评测集
+- `PUT /api/eval/suites/:id`：更新自定义评测集名称与描述（系统基准只读）
+- `DELETE /api/eval/suites/:id`：删除自定义评测集（系统基准不可删）
+- `POST /api/eval/suites/:suiteId/cases`：向评测集新增案例
+- `PUT /api/eval/suites/:suiteId/cases/:caseId`：编辑案例内容与判定规则
+- `DELETE /api/eval/suites/:suiteId/cases/:caseId`：删除案例
+
+评测运行与对比：
+
+- `GET /api/eval/runs`：评测运行历史列表（支持 `agent_profile_id` 过滤）
+- `POST /api/eval/runs`：按需触发评测运行（支持单版本或 A/B 双版本对比）
+- `GET /api/eval/runs/:id`：获取评测运行详情、双版本指标汇总及用例对比明细
+- `POST /api/eval/runs/:id/cancel`：取消正在执行的评测运行
+- `DELETE /api/eval/runs/:id`：删除评测运行记录
+
+效果报告下载：
+
+- `GET /api/eval/runs/:id/report.md`：导出下载 Markdown 格式完整效果验证报告
+- `GET /api/eval/runs/:id/report.json`：导出下载完整结构化 JSON 报告
+- `GET /api/eval/runs/:id/report?format=markdown|json`：通用导出接口
+
+人工反馈与标注：
+
+- `POST /api/eval/cases/:caseRunId/feedback`：录入用例人工采纳/拒绝/缺陷反馈及批注
 
 ## WebSocket
 
