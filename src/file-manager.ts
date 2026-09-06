@@ -366,23 +366,60 @@ export async function safeOpenWorkspaceReadStream(
             return;
           }
 
+          let receivedBytes = remainder.length;
+
           if (remainder.length > 0) {
             passThrough.write(remainder);
           }
-          child.stdout.pipe(passThrough);
 
-          child.on('close', (code, signal) => {
+          child.stdout.on('data', (dataChunk: Buffer) => {
+            receivedBytes += dataChunk.length;
+          });
+
+          // 关键安全保证：阻止 child.stdout 自动结束 passThrough，
+          // 防止 Node 管道自动 EOF 早于 child close 非0到达从而掩盖并发截断异常
+          child.stdout.pipe(passThrough, { end: false });
+
+          let finalized = false;
+          const finalize = (
+            code: number | null,
+            signal: NodeJS.Signals | null,
+          ) => {
+            if (finalized) return;
+            finalized = true;
+
             if (code !== 0 && code !== null && signal !== 'SIGTERM') {
               passThrough.destroy(
                 new Error(
-                  `Safe read helper exited unexpectedly with code ${code}`,
+                  `Safe read helper exited unexpectedly with code ${code}${
+                    stderrBuffer.trim() ? `: ${stderrBuffer.trim()}` : ''
+                  }`,
                 ),
               );
+              return;
             }
+
+            if (receivedBytes < header.contentLength) {
+              passThrough.destroy(
+                new Error(
+                  `Truncated stream: received ${receivedBytes} of ${header.contentLength} bytes`,
+                ),
+              );
+              return;
+            }
+
+            passThrough.end();
+          };
+
+          child.on('close', (code, signal) => {
+            finalize(code, signal);
           });
 
           child.on('error', (err) => {
-            passThrough.destroy(err);
+            if (!finalized) {
+              finalized = true;
+              passThrough.destroy(err);
+            }
           });
 
           const webStream = Readable.toWeb(
@@ -419,15 +456,26 @@ export async function safeReadWorkspaceFileText(
   });
   const reader = result.stream.getReader();
   const chunks: Uint8Array[] = [];
+  let totalReadBytes = 0;
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (value) chunks.push(value);
+      if (value) {
+        chunks.push(value);
+        totalReadBytes += value.byteLength;
+      }
     }
   } finally {
     result.destroy();
   }
+
+  if (totalReadBytes < result.contentLength) {
+    throw new Error(
+      `File read truncated: expected ${result.contentLength} bytes, received ${totalReadBytes}`,
+    );
+  }
+
   const totalBuf = Buffer.concat(chunks);
   return {
     content: totalBuf.toString('utf-8'),

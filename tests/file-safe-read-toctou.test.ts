@@ -22,7 +22,8 @@ process.env.DISABLE_MIGRATION_BACKUPS = 'true';
 const { initDatabase, createUser, createUserSession, setRegisteredGroup } =
   await import('../src/db.js');
 const { signSessionToken } = await import('../src/auth.js');
-const { getFileRoot } = await import('../src/file-manager.js');
+const { getFileRoot, safeReadWorkspaceFileText } =
+  await import('../src/file-manager.js');
 const filesRoutes = (await import('../src/routes/files.js')).default;
 
 const userId = 'safe-member-' + Date.now();
@@ -382,5 +383,73 @@ describe('R01: 文件安全读取防 TOCTOU 回归测试', () => {
 
     // 稍等 50ms 确认没有未捕获异常或进程孤立
     await new Promise((r) => setTimeout(r, 50));
+  });
+
+  test('并发截断防御（safeReadWorkspaceFileText）：文本读取途中底层文件被截断，必须拒绝抛错', async () => {
+    const relPath = 'concurrent-truncate-text.txt';
+    const filePath = path.join(workspaceDir, relPath);
+    // 写入 2MB 数据
+    fs.writeFileSync(filePath, Buffer.alloc(2 * 1024 * 1024, 'X'));
+
+    const { safeOpenWorkspaceReadStream } =
+      await import('../src/file-manager.js');
+    // 启动安全读取：获取元数据后
+    const res = await safeOpenWorkspaceReadStream(folder, relPath);
+    expect(res.size).toBe(2 * 1024 * 1024);
+
+    // 在消费数据前或中途立即将文件截断为 100 字节
+    fs.truncateSync(filePath, 100);
+
+    const reader = res.stream.getReader();
+    let errored = false;
+    try {
+      while (true) {
+        const { done } = await reader.read();
+        if (done) break;
+      }
+    } catch (err) {
+      errored = true;
+      expect(err).toBeDefined();
+    } finally {
+      res.destroy();
+    }
+    // 必须向调用方传播 stream error，绝不静默假装成功读取！
+    expect(errored).toBe(true);
+  });
+
+  test('并发截断防御（WebStream 真实流下载）：慢消费者读取途中底层文件被截断，WebStream 必须触发 stream error', async () => {
+    const relPath = 'concurrent-truncate-stream.dat';
+    const filePath = path.join(workspaceDir, relPath);
+    // 写入 2MB 数据
+    fs.writeFileSync(filePath, Buffer.alloc(2 * 1024 * 1024, 'Y'));
+
+    const encoded = encodePath(relPath);
+    const res = await filesRoutes.request(
+      `/${encodeURIComponent(jid)}/files/download/${encoded}`,
+      { headers: { cookie: cookieHeader } },
+    );
+    expect(res.status).toBe(200);
+
+    const reader = res.body?.getReader();
+    expect(reader).toBeDefined();
+
+    // 读出首块 chunk
+    const firstChunk = await reader!.read();
+    expect(firstChunk.done).toBe(false);
+
+    // 慢消费者模拟：在读取中途，外部进程将底层文件截断为 50 字节
+    fs.truncateSync(filePath, 50);
+
+    // 继续消费流，必须触发 stream error，绝不能正常且无错地返回 done: true！
+    let streamErrored = false;
+    try {
+      while (true) {
+        const next = await reader!.read();
+        if (next.done) break;
+      }
+    } catch (err) {
+      streamErrored = true;
+    }
+    expect(streamErrored).toBe(true);
   });
 });

@@ -391,6 +391,55 @@ describe('R15: 插件立即停用与能力/凭据变更审计测试', () => {
     expect(bodyCred.logs.length).toBeGreaterThanOrEqual(1);
     expect(bodyCred.logs[0].event_type).toBe('mcp_credential_updated');
   });
+
+  test('DELETE /marketplaces 级联清理：统一能力锁保护、执行运行时失效并持久化审计日志', async () => {
+    // 确保用户 B 已启用 auditplug@auditmarket
+    const resEnable = await pluginsRoutes.request(
+      `/enabled/${encodeURIComponent(fullId)}`,
+      {
+        method: 'PATCH',
+        headers: { cookie: memberBCookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: true }),
+      },
+    );
+    expect(resEnable.status).toBe(200);
+
+    // 用户 B 级联删除该 marketplace 的所有启用项
+    const resCascade = await pluginsRoutes.request(
+      '/marketplaces/auditmarket',
+      {
+        method: 'DELETE',
+        headers: { cookie: memberBCookie },
+      },
+    );
+    expect(resCascade.status).toBe(200);
+    const bodyCascade = (await resCascade.json()) as {
+      success: boolean;
+      marketplace: string;
+      removedEnabled: string[];
+      invalidated_runtime_jids: number;
+    };
+    expect(bodyCascade.success).toBe(true);
+    expect(bodyCascade.marketplace).toBe('auditmarket');
+    expect(bodyCascade.removedEnabled).toContain(fullId);
+
+    // 验证审计日志持久化
+    const auditLogs = queryAuthAuditLogs({
+      event_type: 'plugin_state_changed',
+      username: memberBId,
+    });
+    const cascadeLog = auditLogs.logs.find(
+      (l) =>
+        (l.details as Record<string, unknown>)?.action === 'cascade_disable',
+    );
+    expect(cascadeLog).toBeDefined();
+    const details = cascadeLog?.details as Record<string, unknown>;
+    expect(details.marketplace).toBe('auditmarket');
+    expect(details.removedEnabled as string[]).toContain(fullId);
+    expect((details.runtimeResult as Record<string, unknown>).success).toBe(
+      true,
+    );
+  });
 });
 
 async function fetchAuditLog(cookie: string, eventType: string) {

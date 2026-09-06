@@ -215,7 +215,9 @@ def stream_bytes(file_fd: int, total_bytes: int) -> None:
             to_read = min(chunk_size, remaining)
             chunk = os.read(file_fd, to_read)
             if not chunk:
-                break
+                fail(
+                    f"Unexpected end of file while streaming: {remaining} bytes remaining of {total_bytes}"
+                )
             sys.stdout.buffer.write(chunk)
             remaining -= len(chunk)
         sys.stdout.buffer.flush()
