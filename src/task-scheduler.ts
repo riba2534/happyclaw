@@ -1430,12 +1430,25 @@ async function runTaskInner(
     const effectiveRunId = options?.taskRunId || options?.durableRun?.id;
     if (effectiveRunId) {
       try {
+        const candidateIpcDirs: string[] = [];
+        if (workspace.folder) {
+          candidateIpcDirs.push(path.join(DATA_DIR, 'ipc', workspace.folder));
+          if (taskSessionAgentId) {
+            candidateIpcDirs.push(
+              path.join(
+                DATA_DIR,
+                'ipc',
+                workspace.folder,
+                'agents',
+                taskSessionAgentId,
+              ),
+            );
+          }
+        }
         await processCompletedRunArtifacts({
           runId: effectiveRunId,
           resultText: result,
-          ipcDir: workspace.folder
-            ? path.join(DATA_DIR, 'ipc', workspace.folder)
-            : undefined,
+          ipcDirs: candidateIpcDirs,
           createdBy: task.created_by,
         });
       } catch (artifactErr) {

@@ -496,7 +496,206 @@ describe('R19: 每次运行产物版本化、三次同名报告隔离与接续�
       name: 'passwd',
     });
     expect(evilResult.success).toBe(false);
-    expect(evilResult.errorCode).toBe('FILE_NOT_FOUND'); // Safe resolver strips leading .. and doesn't find file in workspace
+    expect(evilResult.errorCode).toBe('PATH_TRAVERSAL');
+  });
+
+  test('安全边界：拦截指向工作区外部的符号链接 (Symlink Escape 防御)', async () => {
+    // 在临时目录外创建一个秘密文件
+    const outsideSecretDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'outside-secret-'),
+    );
+    const outsideSecretFile = path.join(
+      outsideSecretDir,
+      'host-confidential.txt',
+    );
+    fs.writeFileSync(
+      outsideSecretFile,
+      'HOST_SECRET_TOKEN=1234567890',
+      'utf-8',
+    );
+
+    // 在工作区内创建一个指向该外部文件的软链接
+    const symlinkPathInWorkspace = path.join(
+      tmpGroupsDir,
+      workspaceAFolder,
+      'reports',
+      'symlink_to_secret.txt',
+    );
+    try {
+      fs.symlinkSync(outsideSecretFile, symlinkPathInWorkspace);
+    } catch {
+      /* ignore */
+    }
+
+    const runId = 'run-symlink-test';
+    insertTestRun({
+      id: runId,
+      task_id: taskId,
+      occurrence_key: `task:${taskId}:run:symlink`,
+      trigger_type: 'scheduled',
+      scheduled_for: '2026-09-07T13:30:00Z',
+      definition_snapshot: {
+        prompt: '测试软链接逃逸',
+        group_folder: workspaceAFolder,
+        chat_jid: workspaceAJid,
+        delivery_route_jid: null,
+        context_mode: 'isolated',
+        execution_type: 'agent',
+        execution_mode: 'container',
+        script_command: null,
+        notify_channels: null,
+      },
+      status: 'success',
+    });
+
+    const symlinkResult = await registerArtifactForRun({
+      runId,
+      relativePath: 'reports/symlink_to_secret.txt',
+      name: 'symlink_secret.txt',
+    });
+
+    // 必须安全拦截，绝不能将外部敏感文件读入可下载 archive！
+    expect(symlinkResult.success).toBe(false);
+    expect(symlinkResult.errorCode).toBe('PATH_TRAVERSAL');
+    expect(symlinkResult.error).toContain('符号链接');
+
+    // 清理测试用的外部文件与软链接
+    try {
+      fs.unlinkSync(symlinkPathInWorkspace);
+      fs.rmSync(outsideSecretDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  });
+
+  test('并发与精确归属隔离：Run A 绝不消费或删除 Run B 的 IPC 声明文件', async () => {
+    const ipcDir = path.join(tmpDir, 'ipc', workspaceAFolder);
+    const artifactsIpcDir = path.join(ipcDir, 'artifacts');
+    fs.mkdirSync(artifactsIpcDir, { recursive: true });
+
+    // 准备真实交付文件
+    const fileA = 'reports/task_a.md';
+    const fileB = 'reports/task_b.md';
+    fs.writeFileSync(
+      path.join(tmpGroupsDir, workspaceAFolder, fileA),
+      'Result A',
+      'utf-8',
+    );
+    fs.writeFileSync(
+      path.join(tmpGroupsDir, workspaceAFolder, fileB),
+      'Result B',
+      'utf-8',
+    );
+
+    const runAId = 'run-concurrent-A';
+    const runBId = 'run-concurrent-B';
+
+    insertTestRun({
+      id: runAId,
+      task_id: taskId,
+      occurrence_key: `task:${taskId}:run:concurrentA`,
+      trigger_type: 'scheduled',
+      scheduled_for: '2026-09-07T13:40:00Z',
+      definition_snapshot: {
+        prompt: 'Task A',
+        group_folder: workspaceAFolder,
+        chat_jid: workspaceAJid,
+        delivery_route_jid: null,
+        context_mode: 'isolated',
+        execution_type: 'agent',
+        execution_mode: 'container',
+        script_command: null,
+        notify_channels: null,
+      },
+      status: 'success',
+    });
+
+    insertTestRun({
+      id: runBId,
+      task_id: taskId,
+      occurrence_key: `task:${taskId}:run:concurrentB`,
+      trigger_type: 'scheduled',
+      scheduled_for: '2026-09-07T13:45:00Z',
+      definition_snapshot: {
+        prompt: 'Task B',
+        group_folder: workspaceAFolder,
+        chat_jid: workspaceAJid,
+        delivery_route_jid: null,
+        context_mode: 'isolated',
+        execution_type: 'agent',
+        execution_mode: 'container',
+        script_command: null,
+        notify_channels: null,
+      },
+      status: 'success',
+    });
+
+    // 分别写入属于 Run A 和 Run B 的 IPC 声明文件
+    const ipcA = path.join(artifactsIpcDir, 'artifact-runA.json');
+    const ipcB = path.join(artifactsIpcDir, 'artifact-runB.json');
+    fs.writeFileSync(
+      ipcA,
+      JSON.stringify({
+        runId: runAId,
+        taskId,
+        path: fileA,
+        name: 'Report A',
+      }),
+      'utf-8',
+    );
+    fs.writeFileSync(
+      ipcB,
+      JSON.stringify({
+        runId: runBId,
+        taskId,
+        path: fileB,
+        name: 'Report B',
+      }),
+      'utf-8',
+    );
+
+    // 1. Run A 运行完成，执行消费归档
+    const archivedA = await processCompletedRunArtifacts({
+      runId: runAId,
+      ipcDirs: [ipcDir],
+      createdBy: 'alice',
+    });
+
+    // 验证 Run A 归档成功，ipcA 已被消费删除
+    expect(archivedA.length).toBe(1);
+    expect(archivedA[0].name).toBe('Report A');
+    expect(fs.existsSync(ipcA)).toBe(false);
+
+    // 核心隔离断言：Run B 的声明文件绝未被删除、绝未被误吞，依然完好留在磁盘上！
+    expect(fs.existsSync(ipcB)).toBe(true);
+
+    // 2. Run B 运行完成，执行消费归档
+    const archivedB = await processCompletedRunArtifacts({
+      runId: runBId,
+      ipcDirs: [ipcDir],
+      createdBy: 'alice',
+    });
+
+    // 验证 Run B 归档成功，ipcB 现在已被消费
+    expect(archivedB.length).toBe(1);
+    expect(archivedB[0].name).toBe('Report B');
+    expect(fs.existsSync(ipcB)).toBe(false);
+  });
+
+  test('下载安全：URL 中 runId 与 artifactId 归属不一致时拒绝下载', async () => {
+    const artifactsA = db.listTaskRunArtifactsByRunId('run-occurrence-001');
+    expect(artifactsA.length).toBeGreaterThan(0);
+    const artA = artifactsA[0];
+
+    // 尝试在 run-occurrence-002 的 URL 下下载属于 run-occurrence-001 的产物
+    const mismatchRes = await tasksRoutes.fetch(
+      new Request(
+        `http://localhost/runs/run-occurrence-002/artifacts/${artA.id}/download`,
+      ),
+    );
+    expect(mismatchRes.status).toBe(400);
+    const body = await mismatchRes.json();
+    expect(body.code).toBe('ARTIFACT_RUN_MISMATCH');
   });
 
   test('权限隔离：Charlie 无法下载 Alice 工作区下的产物 (跨用户横向越权防御)', async () => {
@@ -571,6 +770,35 @@ describe('R19: 每次运行产物版本化、三次同名报告隔离与接续�
     // 安全验证：清空旧渠道绑定与交付路由
     expect(draft.delivery_route_jid).toBeNull();
     expect(draft.notify_channels).toBeNull();
+
+    // 通过 REST 接口生成接续任务草稿并物化不可变文件到目标工作区
+    const draftRes = await tasksRoutes.fetch(
+      new Request(`http://localhost/runs/${runId}/draft-continuation`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          artifact_ids: [artifacts[0].id],
+          target_workspace_jid: workspaceAJid,
+        }),
+      }),
+    );
+    expect(draftRes.status).toBe(200);
+    const draftData = await draftRes.json();
+    expect(draftData.success).toBe(true);
+
+    // 验证目标工作区中的不可变接续文件真正存在，并且内容必须为原始 Version 1（不受原文件被覆盖成 Version 3 的影响！）
+    const inboundPath = path.join(
+      tmpGroupsDir,
+      workspaceAFolder,
+      'inbound_artifacts',
+      `${runId}_${artifacts[0].id}`,
+      artifacts[0].name,
+    );
+    expect(fs.existsSync(inboundPath)).toBe(true);
+    const readImmutableContent = fs.readFileSync(inboundPath, 'utf-8');
+    expect(readImmutableContent).toBe(
+      '# Daily Summary Version 1\nTimestamp: 2026-09-07 08:00:00\nMetrics: OK',
+    );
   });
 
   test('声明契约自动归档 (processCompletedRunArtifacts)', async () => {

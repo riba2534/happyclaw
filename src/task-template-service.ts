@@ -3,14 +3,21 @@
  *
  * Implements parameter declarations, validation, prompt rendering,
  * and safe task draft generation from historical runs.
+ *
+ * Security & robustness guarantees:
+ * - Strict calendar date validation (rejects invalid dates like 2026-99-99, 2026-02-31).
+ * - Default values are strictly validated against their declared types.
+ * - Single-pass token replacement using replacer function:
+ *   prevents special replacement patterns ($&, $1, etc.) from being interpreted,
+ *   and completely prevents secondary expansion attacks.
+ * - Enforces parameter name security and identifier limits.
  */
 
 import type { TemplateParameterDefinition, TaskRun } from './types.js';
 
 const PARAM_NAME_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 const PLACEHOLDER_REGEX = /\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/g;
-const DATE_FORMAT_REGEX =
-  /^\d{4}-\d{2}-\d{2}(?:[T\s]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
+const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 export interface RenderTemplateResult {
   success: boolean;
@@ -21,7 +28,144 @@ export interface RenderTemplateResult {
 }
 
 /**
- * Validate parameter definitions for uniqueness, valid identifiers, and supported types.
+ * Perform calendar semantic validation on a date string.
+ * Rejects nonexistent calendar dates like 2026-99-99 or 2026-02-31.
+ */
+export function isValidCalendarDate(str: string): boolean {
+  const match = str.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (match) {
+    const year = parseInt(match[1], 10);
+    const month = parseInt(match[2], 10);
+    const day = parseInt(match[3], 10);
+
+    if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+    if (year < 1970 || year > 2100) return false;
+
+    // Check actual days in month via UTC Date rollover
+    const d = new Date(Date.UTC(year, month - 1, day));
+    return (
+      d.getUTCFullYear() === year &&
+      d.getUTCMonth() === month - 1 &&
+      d.getUTCDate() === day
+    );
+  }
+
+  // Handle ISO 8601 full datetime strings
+  const isoMatch = str.match(
+    /^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})(?::(\d{2}))?/,
+  );
+  if (isoMatch) {
+    const year = parseInt(isoMatch[1], 10);
+    const month = parseInt(isoMatch[2], 10);
+    const day = parseInt(isoMatch[3], 10);
+    if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+    const d = new Date(Date.UTC(year, month - 1, day));
+    if (
+      d.getUTCFullYear() !== year ||
+      d.getUTCMonth() !== month - 1 ||
+      d.getUTCDate() !== day
+    ) {
+      return false;
+    }
+    const ts = Date.parse(str);
+    return Number.isFinite(ts);
+  }
+
+  return false;
+}
+
+/**
+ * Validate a parameter value against its type definition.
+ */
+export function validateParameterValue(
+  def: TemplateParameterDefinition,
+  val: unknown,
+): { valid: boolean; error?: string; normalizedValue?: string } {
+  // Empty or missing value handling
+  if (val === undefined || val === null || val === '') {
+    if (def.required) {
+      // If required, but has a valid default_value, fallback to default_value
+      if (
+        def.default_value !== undefined &&
+        def.default_value !== null &&
+        def.default_value !== ''
+      ) {
+        return validateParameterValue(
+          { ...def, required: false },
+          def.default_value,
+        );
+      }
+      return {
+        valid: false,
+        error: `缺少必要参数: "${def.name}" (${def.label || def.name})`,
+      };
+    }
+    // Optional parameter without value
+    if (
+      def.default_value !== undefined &&
+      def.default_value !== null &&
+      def.default_value !== ''
+    ) {
+      return validateParameterValue(
+        { ...def, required: false },
+        def.default_value,
+      );
+    }
+    return { valid: true, normalizedValue: '' };
+  }
+
+  const strVal = String(val).trim();
+
+  switch (def.type) {
+    case 'number': {
+      const num = Number(strVal);
+      if (!Number.isFinite(num)) {
+        return {
+          valid: false,
+          error: `参数 "${def.name}" 必须为有效数字，当前值为 "${strVal}"`,
+        };
+      }
+      return { valid: true, normalizedValue: strVal };
+    }
+    case 'date': {
+      if (!isValidCalendarDate(strVal)) {
+        return {
+          valid: false,
+          error: `参数 "${def.name}" 必须为合法日历日期 (如 YYYY-MM-DD)，当前值为 "${strVal}"`,
+        };
+      }
+      return { valid: true, normalizedValue: strVal };
+    }
+    case 'path': {
+      // Strict path safety check: reject path traversal and dangerous paths
+      if (
+        strVal.includes('..') ||
+        strVal.startsWith('/') ||
+        strVal.startsWith('\\') ||
+        strVal.includes('\0')
+      ) {
+        return {
+          valid: false,
+          error: `参数 "${def.name}" 路径不能包含 ".." 越界符、空字节或以绝对根路径开头`,
+        };
+      }
+      return { valid: true, normalizedValue: strVal };
+    }
+    case 'string':
+    default:
+      if (strVal.includes('\0')) {
+        return {
+          valid: false,
+          error: `参数 "${def.name}" 不能包含空字符`,
+        };
+      }
+      return { valid: true, normalizedValue: strVal };
+  }
+}
+
+/**
+ * Validate parameter definitions for uniqueness, valid identifiers, supported types,
+ * and ensure any default_value is type-compliant.
  */
 export function validateParameterDefinitions(
   definitions: TemplateParameterDefinition[],
@@ -29,11 +173,25 @@ export function validateParameterDefinitions(
   const errors: string[] = [];
   const seenNames = new Set<string>();
 
+  if (!Array.isArray(definitions)) {
+    return { valid: false, errors: ['参数定义必须为数组'] };
+  }
+
+  if (definitions.length > 50) {
+    return { valid: false, errors: ['参数定义数量不能超过 50 个'] };
+  }
+
   for (const def of definitions) {
     if (!def.name || !PARAM_NAME_REGEX.test(def.name)) {
       errors.push(
         `参数标识符 "${def.name}" 不合法，必须由字母、数字、下划线组成且不能以数字开头`,
       );
+    }
+    if (FORBIDDEN_KEYS.has(def.name)) {
+      errors.push(`参数标识符 "${def.name}" 是受保护的保留字，禁止使用`);
+    }
+    if (def.name && def.name.length > 50) {
+      errors.push(`参数标识符 "${def.name}" 长度不能超过 50 字符`);
     }
     if (seenNames.has(def.name)) {
       errors.push(`参数标识符 "${def.name}" 重复定义`);
@@ -44,6 +202,21 @@ export function validateParameterDefinitions(
       errors.push(
         `参数 "${def.name}" 类型 "${def.type}" 不受支持，支持类型为 string, number, date, path`,
       );
+    }
+
+    // Strict check for declared default_value
+    if (
+      def.default_value !== undefined &&
+      def.default_value !== null &&
+      def.default_value !== ''
+    ) {
+      const defaultValCheck = validateParameterValue(
+        { ...def, required: false },
+        def.default_value,
+      );
+      if (!defaultValCheck.valid) {
+        errors.push(`参数 "${def.name}" 默认值非法: ${defaultValCheck.error}`);
+      }
     }
   }
 
@@ -65,66 +238,11 @@ export function extractTemplateParameters(promptTemplate: string): string[] {
 }
 
 /**
- * Validate a parameter value against its type definition.
- */
-export function validateParameterValue(
-  def: TemplateParameterDefinition,
-  val: unknown,
-): { valid: boolean; error?: string; normalizedValue?: string } {
-  if (val === undefined || val === null || val === '') {
-    if (def.required) {
-      return {
-        valid: false,
-        error: `缺少必要参数: "${def.name}" (${def.label || def.name})`,
-      };
-    }
-    return { valid: true, normalizedValue: def.default_value ?? '' };
-  }
-
-  const strVal = String(val).trim();
-
-  switch (def.type) {
-    case 'number': {
-      const num = Number(strVal);
-      if (!Number.isFinite(num)) {
-        return {
-          valid: false,
-          error: `参数 "${def.name}" 必须为有效数字，当前值为 "${strVal}"`,
-        };
-      }
-      return { valid: true, normalizedValue: strVal };
-    }
-    case 'date': {
-      if (!DATE_FORMAT_REGEX.test(strVal)) {
-        return {
-          valid: false,
-          error: `参数 "${def.name}" 必须为日期格式 (YYYY-MM-DD 或 ISO 格式)，当前值为 "${strVal}"`,
-        };
-      }
-      return { valid: true, normalizedValue: strVal };
-    }
-    case 'path': {
-      // Prevent path traversal attempts
-      if (
-        strVal.includes('..') ||
-        strVal.startsWith('/') ||
-        strVal.includes('\\')
-      ) {
-        return {
-          valid: false,
-          error: `参数 "${def.name}" 路径不能包含 ".." 越界符或以绝对根路径开头`,
-        };
-      }
-      return { valid: true, normalizedValue: strVal };
-    }
-    case 'string':
-    default:
-      return { valid: true, normalizedValue: strVal };
-  }
-}
-
-/**
  * Render template with given parameters and validate types & completeness.
+ *
+ * Implements SINGLE-PASS function replacement:
+ * - Eliminates $& / $1 / $' replacement meta-character vulnerabilities.
+ * - Eliminates secondary / recursive expansion of user values containing {{...}}.
  */
 export function renderTemplate(
   promptTemplate: string,
@@ -133,14 +251,14 @@ export function renderTemplate(
 ): RenderTemplateResult {
   const missingParameters: string[] = [];
   const validationErrors: string[] = [];
-  const appliedParameters: Record<string, string> = {};
+  const appliedParameters: Record<string, string> = Object.create(null);
 
   const defMap = new Map<string, TemplateParameterDefinition>();
   for (const def of definitions) {
     defMap.set(def.name, def);
   }
 
-  // 1. Process all defined parameters
+  // 1. Process all declared parameter definitions
   for (const def of definitions) {
     const rawVal = values[def.name];
     const validation = validateParameterValue(def, rawVal);
@@ -154,7 +272,7 @@ export function renderTemplate(
     }
   }
 
-  // 2. Check for template placeholders that are not in definitions or supplied values
+  // 2. Check for template placeholders not covered by definitions
   const placeholders = extractTemplateParameters(promptTemplate);
   for (const p of placeholders) {
     if (!defMap.has(p)) {
@@ -172,12 +290,20 @@ export function renderTemplate(
     }
   }
 
-  // 3. Substitute values
-  let renderedPrompt = promptTemplate;
-  for (const [key, val] of Object.entries(appliedParameters)) {
-    const pattern = new RegExp(`\\{\\{\\s*${key}\\s*\\}\\}`, 'g');
-    renderedPrompt = renderedPrompt.replace(pattern, val);
-  }
+  // 3. Single-pass token replacement using replacer function.
+  // When a function is passed to String.prototype.replace, its return value
+  // is inserted as a pure literal string without interpreting any $ patterns.
+  // Also, because it's a single pass over the original template, values containing
+  // {{...}} are never re-evaluated!
+  const renderedPrompt = promptTemplate.replace(
+    PLACEHOLDER_REGEX,
+    (_match, paramName: string) => {
+      if (Object.prototype.hasOwnProperty.call(appliedParameters, paramName)) {
+        return appliedParameters[paramName];
+      }
+      return _match;
+    },
+  );
 
   const success =
     missingParameters.length === 0 && validationErrors.length === 0;
@@ -206,12 +332,10 @@ export interface TaskDraft {
   execution_type: 'agent' | 'script';
   execution_mode: 'host' | 'container' | null;
   script_command: string | null;
-  // Security boundary: old channel bindings and delivery routes are stripped
   chat_jid: string;
   suggested_workspace_jid?: string;
   notify_channels: null;
   delivery_route_jid: null;
-  // Template parameters if applicable
   template_parameters?: Record<string, string>;
   parameter_definitions?: TemplateParameterDefinition[];
 }
@@ -225,7 +349,6 @@ export function buildDraftFromRun(
   userWorkspaces: Array<{ jid: string; name: string }>,
 ): TaskDraft {
   const snapshot = run.definition_snapshot;
-  // Verify if original workspace still belongs to user; if so suggest it, else leave empty for explicit choice
   const originalWorkspace = userWorkspaces.find(
     (w) => w.jid === snapshot.chat_jid,
   );
@@ -235,7 +358,7 @@ export function buildDraftFromRun(
     source_type: 'run',
     source_id: run.id,
     prompt: snapshot.prompt || '',
-    schedule_type: 'once', // New draft defaults to one-shot or easily customizable
+    schedule_type: 'once',
     schedule_value: new Date(Date.now() + 300_000).toISOString(),
     context_mode: snapshot.context_mode || 'isolated',
     execution_type: snapshot.execution_type || 'agent',
@@ -261,7 +384,7 @@ export function extractCandidateParametersFromPrompt(prompt: string): {
 
   // 1. Detect date patterns: YYYY-MM-DD
   const dateMatch = prompt.match(/\b\d{4}-\d{2}-\d{2}\b/);
-  if (dateMatch) {
+  if (dateMatch && isValidCalendarDate(dateMatch[0])) {
     const origDate = dateMatch[0];
     templatePrompt = templatePrompt.replace(
       new RegExp(origDate, 'g'),

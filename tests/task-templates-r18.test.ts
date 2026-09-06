@@ -172,22 +172,84 @@ describe('R18: 任务模板体系、参数声明校验与草稿复用', () => {
       );
     });
 
-    test('非法类型拦截：非数字与非法日期', () => {
+    test('非法类型拦截：非数字与非法日期（含语义日期如 2026-99-99、2026-02-31）', () => {
       const tpl =
         '项目 {{project}} 日期 {{date}} 阈值 {{threshold}} 路径 {{input_dir}}';
       const badResult = renderTemplate(tpl, sampleDefs, {
         project: 'happyclaw',
-        date: 'invalid-date-format',
+        date: '2026-99-99',
         threshold: 'not-a-number',
         input_dir: 'valid/path',
       });
       expect(badResult.success).toBe(false);
       expect(
-        badResult.validationErrors.some((e) => e.includes('必须为日期格式')),
+        badResult.validationErrors.some((e) => e.includes('合法日历日期')),
       ).toBe(true);
       expect(
         badResult.validationErrors.some((e) => e.includes('必须为有效数字')),
+      );
+
+      // 验证 2 月 31 日等日历溢出假日期
+      const febResult = renderTemplate(tpl, sampleDefs, {
+        project: 'happyclaw',
+        date: '2026-02-31',
+        threshold: '10',
+        input_dir: 'valid/path',
+      });
+      expect(febResult.success).toBe(false);
+      expect(
+        febResult.validationErrors.some((e) => e.includes('合法日历日期')),
       ).toBe(true);
+    });
+
+    test('参数定义默认值同等校验：拒绝不合法的默认值 (如 number 默认 abc)', () => {
+      const badDefaultDefs: TemplateParameterDefinition[] = [
+        {
+          name: 'count',
+          label: '数量',
+          type: 'number',
+          required: false,
+          default_value: 'abc', // 非法数字默认值
+        },
+        {
+          name: 'created_date',
+          label: '日期',
+          type: 'date',
+          required: false,
+          default_value: '2026-99-99', // 非法日期默认值
+        },
+      ];
+      const res = validateParameterDefinitions(badDefaultDefs);
+      expect(res.valid).toBe(false);
+      expect(
+        res.errors.some((e) => e.includes('默认值非法') && e.includes('count')),
+      ).toBe(true);
+      expect(
+        res.errors.some(
+          (e) => e.includes('默认值非法') && e.includes('created_date'),
+        ),
+      ).toBe(true);
+    });
+
+    test('单次 Token 替换安全：保留替换元字符 ($&, $1) 字面量，彻底防止二次展开', () => {
+      // 场景 1：用户输入值包含 JavaScript 替换元字符 $&
+      const tpl1 = 'Value {{x}}';
+      const defs1: TemplateParameterDefinition[] = [
+        { name: 'x', label: 'X', type: 'string', required: true },
+      ];
+      const res1 = renderTemplate(tpl1, defs1, { x: '$&' });
+      expect(res1.success).toBe(true);
+      expect(res1.renderedPrompt).toBe('Value $&'); // 绝不能变成 "Value {{x}}"
+
+      // 场景 2：用户输入包含嵌套占位符 {{b}}，杜绝二次展开
+      const tpl2 = 'Value {{a}} then {{b}}';
+      const defs2: TemplateParameterDefinition[] = [
+        { name: 'a', label: 'A', type: 'string', required: true },
+        { name: 'b', label: 'B', type: 'string', required: true },
+      ];
+      const res2 = renderTemplate(tpl2, defs2, { a: '{{b}}', b: 'FINAL' });
+      expect(res2.success).toBe(true);
+      expect(res2.renderedPrompt).toBe('Value {{b}} then FINAL'); // 绝不能二次展开变成 "Value FINAL then FINAL"
     });
 
     test('安全防护：拦截路径穿越 (..) 攻击', () => {

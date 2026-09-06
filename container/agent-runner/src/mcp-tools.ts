@@ -1128,8 +1128,22 @@ The actual file types and size limit are enforced by the selected provider.`,
           ),
       },
       async (args) => {
+        // Enforce task execution context: fail closed for regular chat sessions
+        const effectiveRunId = ctx.currentScheduledTaskRunId || null;
+        if (!ctx.isScheduledTask || !effectiveRunId) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: 'Error: declare_artifact is only available within scheduled or manual task runs that have an active runId. In a standard chat session, artifacts cannot be version-archived.',
+              },
+            ],
+            isError: true,
+          };
+        }
+
         const rel = args.path.trim();
-        if (rel.includes('..') || path.isAbsolute(rel)) {
+        if (rel.includes('..') || path.isAbsolute(rel) || rel.includes('\0')) {
           return {
             content: [
               {
@@ -1160,11 +1174,11 @@ The actual file types and size limit are enforced by the selected provider.`,
         const artifactsIpcDir = path.join(ctx.workspaceIpc, 'artifacts');
         try {
           writeIpcFile(artifactsIpcDir, {
+            runId: effectiveRunId,
+            taskId: ctx.currentTaskId || undefined,
             path: rel,
             name: args.name || path.basename(absPath),
             declaredAt: new Date().toISOString(),
-            runId: ctx.currentScheduledTaskRunId || undefined,
-            taskId: ctx.currentTaskId || undefined,
           });
         } catch (err) {
           return {
@@ -1188,6 +1202,118 @@ The actual file types and size limit are enforced by the selected provider.`,
                 : `Artifact registered: ${args.name || path.basename(absPath)} (${rel}). Note: please ensure the file is written before the task ends.`,
             },
           ],
+        };
+      },
+    ),
+
+    // --- read_artifact (R19) ---
+    tool(
+      'read_artifact',
+      'Read the immutable text content of an archived task delivery artifact by its artifact ID or relative path.',
+      {
+        path: z
+          .string()
+          .optional()
+          .describe(
+            'Relative path to the artifact (e.g. "inbound_artifacts/.../report.md")',
+          ),
+        artifact_id: z
+          .string()
+          .optional()
+          .describe('The unique UUID of the archived artifact'),
+      },
+      async (args) => {
+        if (!args.path && !args.artifact_id) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: 'Error: either path or artifact_id must be provided.',
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        if (args.path) {
+          const rel = args.path.trim();
+          if (
+            rel.includes('..') ||
+            path.isAbsolute(rel) ||
+            rel.includes('\0')
+          ) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: 'Error: path cannot contain ".." or be absolute.',
+                },
+              ],
+              isError: true,
+            };
+          }
+          const abs = path.resolve(ctx.workspaceGroup, rel);
+          const safeRoot = ctx.workspaceGroup.endsWith(path.sep)
+            ? ctx.workspaceGroup
+            : ctx.workspaceGroup + path.sep;
+          if (abs !== ctx.workspaceGroup && !abs.startsWith(safeRoot)) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: 'Error: path escapes workspace directory.',
+                },
+              ],
+              isError: true,
+            };
+          }
+          if (!fs.existsSync(abs)) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Error: artifact file not found at ${rel}`,
+                },
+              ],
+              isError: true,
+            };
+          }
+          return {
+            content: [
+              { type: 'text' as const, text: fs.readFileSync(abs, 'utf-8') },
+            ],
+          };
+        }
+
+        const inboundRoot = path.join(ctx.workspaceGroup, 'inbound_artifacts');
+        if (fs.existsSync(inboundRoot)) {
+          const subdirs = fs.readdirSync(inboundRoot);
+          for (const sub of subdirs) {
+            if (sub.includes(args.artifact_id!)) {
+              const files = fs.readdirSync(path.join(inboundRoot, sub));
+              if (files.length > 0) {
+                const targetFile = path.join(inboundRoot, sub, files[0]);
+                return {
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: fs.readFileSync(targetFile, 'utf-8'),
+                    },
+                  ],
+                };
+              }
+            }
+          }
+        }
+
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Artifact ID ${args.artifact_id} not found in workspace inbound_artifacts.`,
+            },
+          ],
+          isError: true,
         };
       },
     ),

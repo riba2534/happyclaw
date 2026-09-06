@@ -33,9 +33,11 @@ import {
   registerArtifactForRun,
   getArtifactForDownload,
   buildContinuationDraftFromArtifacts,
+  canUserAccessHistoricRun,
+  materializeContinuationArtifacts,
 } from '../task-artifact-service.js';
 import { getMergedTaskRunHistory } from '../task-run-history.js';
-import type { AuthUser, ScheduledTask } from '../types.js';
+import type { AuthUser, ScheduledTask, TaskRunArtifact } from '../types.js';
 import { TIMEZONE } from '../config.js';
 import {
   isHostExecutionGroup,
@@ -878,9 +880,8 @@ tasksRoutes.get('/runs/:runId/artifacts', authMiddleware, (c) => {
   const runId = c.req.param('runId');
   const run = getTaskRunById(runId);
   if (!run) return c.json({ error: 'Task run not found' }, 404);
-  const task = getTaskById(run.task_id);
   const authUser = c.get('user') as AuthUser;
-  if (!task || !canViewTask(task, authUser)) {
+  if (!canUserAccessHistoricRun(run, authUser)) {
     return c.json({ error: 'Task run not found' }, 404);
   }
   const artifacts = listTaskRunArtifactsByRunId(runId);
@@ -891,9 +892,8 @@ tasksRoutes.post('/runs/:runId/artifacts', authMiddleware, async (c) => {
   const runId = c.req.param('runId');
   const run = getTaskRunById(runId);
   if (!run) return c.json({ error: 'Task run not found' }, 404);
-  const task = getTaskById(run.task_id);
   const authUser = c.get('user') as AuthUser;
-  if (!task || !canViewTask(task, authUser)) {
+  if (!canUserAccessHistoricRun(run, authUser)) {
     return c.json({ error: 'Task run not found' }, 404);
   }
 
@@ -932,15 +932,20 @@ tasksRoutes.get(
 
     const run = getTaskRunById(runId);
     if (!run) return c.json({ error: 'Task run not found' }, 404);
-    const task = getTaskById(run.task_id);
-    if (!task || !canViewTask(task, authUser)) {
+    if (!canUserAccessHistoricRun(run, authUser)) {
       return c.json({ error: 'Task run not found' }, 404);
     }
 
-    const result = getArtifactForDownload(artifactId, authUser);
+    const result = getArtifactForDownload(artifactId, authUser, runId);
 
     if (result.status === 'not_found') {
       return c.json({ error: result.error }, 404);
+    }
+    if (result.status === 'mismatch') {
+      return c.json(
+        { error: result.error, code: 'ARTIFACT_RUN_MISMATCH' },
+        400,
+      );
     }
     if (result.status === 'forbidden') {
       return c.json({ error: result.error }, 403);
@@ -982,13 +987,13 @@ tasksRoutes.post(
     const authUser = c.get('user') as AuthUser;
     const run = getTaskRunById(runId);
     if (!run) return c.json({ error: 'Task run not found' }, 404);
-    const task = getTaskById(run.task_id);
-    if (!task || !canViewTask(task, authUser)) {
+    if (!canUserAccessHistoricRun(run, authUser)) {
       return c.json({ error: 'Task run not found' }, 404);
     }
 
     const body = (await c.req.json().catch(() => ({}))) as {
       artifact_ids?: string[];
+      target_workspace_jid?: string;
     };
 
     const allRunArtifacts = listTaskRunArtifactsByRunId(runId);
@@ -1005,11 +1010,51 @@ tasksRoutes.post(
       )
       .map((g) => ({ jid: g.jid, name: g.name || g.folder }));
 
+    const targetJid =
+      body.target_workspace_jid &&
+      userWorkspaces.some((w) => w.jid === body.target_workspace_jid)
+        ? body.target_workspace_jid
+        : userWorkspaces[0]?.jid;
+
+    let materialized: Array<{
+      artifact: TaskRunArtifact;
+      relativePath: string;
+    }> = [];
+    if (targetJid) {
+      const targetGroup = allGroups[targetJid];
+      if (targetGroup) {
+        materialized = materializeContinuationArtifacts(
+          targetGroup.folder,
+          targetJid,
+          selectedArtifacts,
+        );
+      }
+    }
+
     const draft = buildContinuationDraftFromArtifacts(
       run,
       selectedArtifacts,
       userWorkspaces,
     );
+
+    if (materialized.length > 0) {
+      draft.chat_jid = targetJid || draft.chat_jid;
+      draft.suggested_workspace_jid =
+        targetJid || draft.suggested_workspace_jid;
+      const materializedList = materialized
+        .map(
+          (m) =>
+            `- 【${m.artifact.name}】不可变文件: ${m.relativePath} (版本 Hash: ${m.artifact.file_hash.slice(0, 12)}...)`,
+        )
+        .join('\n');
+      draft.prompt = [
+        `请基于前序任务运行 (Run ID: ${run.id}) 归档的不可变交付产物执行接续任务：`,
+        materializedList,
+        '',
+        '说明：上述产物已同步到当前工作区，即使原位置被覆盖也可直接稳定读取。',
+        '请阅读上述不可变文件内容，继续执行后续步骤：',
+      ].join('\n');
+    }
 
     return c.json({
       success: true,
