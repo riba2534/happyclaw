@@ -380,8 +380,8 @@ export function MessageInput({
       // 发送成功：仅当当前 store 中该 Session 的草稿内容仍等于本次发送的原内容或未设时才清理，
       // 绝不冲毁后来在该 Session 中新键入并保存的新草稿！
       const currentStoredDraft = sendingSession.draftKey
-        ? useChatStore.getState?.()?.drafts?.[sendingSession.draftKey] ??
-          drafts[sendingSession.draftKey]
+        ? (useChatStore.getState?.()?.drafts?.[sendingSession.draftKey] ??
+          drafts[sendingSession.draftKey])
         : undefined;
       if (
         sendingSession.draftKey &&
@@ -424,8 +424,8 @@ export function MessageInput({
       const isUneditedSinceSend =
         editRevisionRef.current === sendingEditRevision;
       const currentStoredDraft = sendingSession.draftKey
-        ? useChatStore.getState?.()?.drafts?.[sendingSession.draftKey] ??
-          drafts[sendingSession.draftKey]
+        ? (useChatStore.getState?.()?.drafts?.[sendingSession.draftKey] ??
+          drafts[sendingSession.draftKey])
         : undefined;
 
       if (sendingSession.draftKey && trimmed) {
