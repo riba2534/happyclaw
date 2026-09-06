@@ -79,6 +79,18 @@ export interface TaskPermissions {
   execution_blocked_reason?: string | null;
 }
 
+export interface TaskRunDefinitionSnapshot {
+  prompt?: string;
+  group_folder?: string;
+  chat_jid?: string;
+  delivery_route_jid?: string | null;
+  context_mode?: 'group' | 'isolated';
+  execution_type?: 'agent' | 'script';
+  execution_mode?: 'host' | 'container' | null;
+  script_command?: string | null;
+  notify_channels?: string[] | null;
+}
+
 export interface TaskRun {
   id: string | number;
   task_id: string;
@@ -95,6 +107,7 @@ export interface TaskRun {
   duration_ms: number;
   result?: string | null;
   error?: string | null;
+  definition_snapshot?: TaskRunDefinitionSnapshot | null;
   notification_status?: TaskNotificationStatus;
   notification_error?: string | null;
   notification_summary?: TaskNotificationSummary | null;

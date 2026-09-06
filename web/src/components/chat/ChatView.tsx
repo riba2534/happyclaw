@@ -57,6 +57,7 @@ const TerminalPanel = lazy(() =>
 );
 import { ImBindingDialog } from './ImBindingDialog';
 import { SessionSidebar } from './SessionSidebar';
+import type { AgentInfo } from '../../types';
 import { showToast } from '../../utils/toast';
 import {
   getWorkspaceLastAgent,
@@ -144,6 +145,10 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     agentId: string;
     name: string;
   } | null>(null);
+  const [deletingSession, setDeletingSession] = useState<AgentInfo | null>(
+    null,
+  );
+  const [deleteSessionLoading, setDeleteSessionLoading] = useState(false);
   const [imStatus, setImStatus] = useState<Record<string, boolean> | null>(
     null,
   );
@@ -634,7 +639,8 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const handleDeleteSession = useCallback(
     (id: string) => {
       const agent = agents.find((item) => item.id === id);
-      if (agent?.linked_im_groups && agent.linked_im_groups.length > 0) {
+      if (!agent) return;
+      if (agent.linked_im_groups && agent.linked_im_groups.length > 0) {
         const names = agent.linked_im_groups
           .map((item) => item.name)
           .join('、');
@@ -644,14 +650,25 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         });
         return;
       }
-      void deleteAgentAction(groupJid, id).then((ok) => {
-        if (!ok) {
-          toast.error(useChatStore.getState().error || '删除会话失败');
-        }
-      });
+      setDeletingSession(agent);
     },
-    [agents, deleteAgentAction, groupJid],
+    [agents],
   );
+
+  const confirmDeleteSession = useCallback(async () => {
+    if (!deletingSession) return;
+    setDeleteSessionLoading(true);
+    try {
+      const ok = await deleteAgentAction(groupJid, deletingSession.id);
+      if (!ok) {
+        toast.error(useChatStore.getState().error || '删除会话失败');
+      } else {
+        setDeletingSession(null);
+      }
+    } finally {
+      setDeleteSessionLoading(false);
+    }
+  }, [deletingSession, deleteAgentAction, groupJid]);
 
   // --- Drag resize handlers (mouse + touch) ---
   const startDrag = useCallback(
@@ -1059,16 +1076,32 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
             </button>
           )}
           {canModifyWorkspaceConfig && (
-            <button
-              type="button"
-              onClick={() => setBindingAgentId(WORKSPACE_BINDING)}
-              className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer"
-              title="管理工作区话题群绑定"
-              aria-label="管理工作区话题群绑定"
-            >
-              <Link className="h-4 w-4" />
-              <span className="hidden sm:inline">渠道绑定</span>
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => setBindingAgentId(WORKSPACE_BINDING)}
+                className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer"
+                title="管理工作区话题群绑定"
+                aria-label="管理工作区话题群绑定"
+              >
+                <Link className="h-4 w-4" />
+                <span className="hidden sm:inline">话题群绑定</span>
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setBindingAgentId(
+                    activeAgentTab ? activeAgentTab : MAIN_BINDING,
+                  )
+                }
+                className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer"
+                title={`管理当前${activeAgentTab ? '子会话' : '主会话'}普通群绑定`}
+                aria-label={`管理当前${activeAgentTab ? '子会话' : '主会话'}普通群绑定`}
+              >
+                <Link className="h-4 w-4 text-primary" />
+                <span className="hidden sm:inline">会话群绑定</span>
+              </button>
+            </>
           )}
           <button
             onClick={toggleTheme}
@@ -1171,6 +1204,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                 <MessageInput
                   onSend={handleActiveAgentSend}
                   groupJid={groupJid}
+                  sessionId={activeAgentTab}
                   contextLabel={currentContextName}
                   isRunning={currentContextWaiting}
                   onStop={
@@ -1220,6 +1254,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                 <MessageInput
                   onSend={handleSend}
                   groupJid={groupJid}
+                  sessionId="main"
                   isRunning={currentContextWaiting}
                   onStop={
                     mainInterrupted ? undefined : () => interruptQuery(groupJid)
@@ -1378,6 +1413,27 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         confirmText="清除"
         confirmVariant="danger"
         loading={resetLoading}
+      />
+
+      {/* Delete session confirm dialog (R07) */}
+      <ConfirmDialog
+        open={!!deletingSession}
+        onClose={() => {
+          if (!deleteSessionLoading) {
+            setDeletingSession(null);
+          }
+        }}
+        onConfirm={confirmDeleteSession}
+        title="删除会话"
+        message={
+          deletingSession
+            ? `确定要永久删除会话“${deletingSession.name}”吗？\n\n此操作将永久删除该会话的全部历史消息、对话记录与上下文数据，不可恢复。\n如果该会话有正在运行的任务，运行将被立即停止。`
+            : ''
+        }
+        confirmText="删除"
+        cancelText="取消"
+        confirmVariant="danger"
+        loading={deleteSessionLoading}
       />
 
       {/* IM binding dialog */}

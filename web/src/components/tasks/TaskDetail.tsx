@@ -935,24 +935,71 @@ export function TaskDetail({ task }: TaskDetailProps) {
                 ? `${formatDate(selectedLog.started_at ?? selectedLog.run_at)} · ${TRIGGER_LABEL[selectedLog.trigger_type || 'scheduled'] || selectedLog.trigger_type || '计划触发'}`
                 : '查看本次定时任务的完整业务结果'}
             </DialogDescription>
-            {selectedLog && (
-              <div className="flex flex-wrap items-center gap-2 pt-1 text-xs text-muted-foreground">
-                <RunLogStatusBadge status={selectedLog.status} />
-                <span>耗时 {formatDuration(selectedLog.duration_ms)}</span>
-                <span>
-                  通知：
-                  {NOTIFICATION_LABEL[
-                    selectedLog.notification_status || 'skipped'
-                  ] ||
-                    selectedLog.notification_status ||
-                    '无需通知'}
-                </span>
-                <span className="font-mono">Run {selectedLog.id}</span>
-              </div>
-            )}
+            {selectedLog &&
+              (() => {
+                const snapshotJid = selectedLog.definition_snapshot?.chat_jid;
+                const hasSnapshot = !!snapshotJid;
+                const currentWorkspaceName =
+                  groupNames[task.chat_jid] ||
+                  task.group_folder ||
+                  task.chat_jid;
+                const snapshotWorkspaceName = snapshotJid
+                  ? groupNames[snapshotJid] ||
+                    selectedLog.definition_snapshot?.group_folder ||
+                    snapshotJid
+                  : null;
+                const isMigratedWorkspace =
+                  hasSnapshot && snapshotJid !== task.chat_jid;
+
+                return (
+                  <div className="flex flex-wrap items-center gap-2 pt-1 text-xs text-muted-foreground">
+                    <RunLogStatusBadge status={selectedLog.status} />
+                    <span>耗时 {formatDuration(selectedLog.duration_ms)}</span>
+                    <span className="inline-flex items-center gap-1">
+                      <span>运行工作区：</span>
+                      <span className="font-medium text-foreground">
+                        {hasSnapshot
+                          ? snapshotWorkspaceName
+                          : currentWorkspaceName}
+                      </span>
+                      {isMigratedWorkspace && (
+                        <span className="text-[11px] text-amber-600 dark:text-amber-400">
+                          （当前任务已位于：{currentWorkspaceName}）
+                        </span>
+                      )}
+                      {!hasSnapshot && (
+                        <span className="text-[11px] text-muted-foreground">
+                          （未记录快照，回退当前工作区）
+                        </span>
+                      )}
+                    </span>
+                    <span>
+                      通知：
+                      {NOTIFICATION_LABEL[
+                        selectedLog.notification_status || 'skipped'
+                      ] ||
+                        selectedLog.notification_status ||
+                        '无需通知'}
+                    </span>
+                    <span className="font-mono">Run {selectedLog.id}</span>
+                  </div>
+                );
+              })()}
           </DialogHeader>
 
           <div className="min-h-0 overflow-y-auto rounded-lg border border-border bg-muted/20 p-4">
+            {selectedLog && !selectedLog.definition_snapshot?.chat_jid && (
+              <div
+                role="note"
+                className="mb-3 rounded-md border border-amber-500/20 bg-amber-50/50 p-2.5 text-xs text-amber-700 dark:border-amber-400/20 dark:bg-amber-950/20 dark:text-amber-300"
+              >
+                历史运行记录未包含工作区快照，相对图片与文件已明确回退为按当前工作区（
+                {groupNames[task.chat_jid] ||
+                  task.group_folder ||
+                  task.chat_jid}
+                ）解析。
+              </div>
+            )}
             {selectedLog?.error && (
               <div className="mb-4 rounded-lg border border-error/20 bg-error-bg p-3 text-sm text-error">
                 <div className="mb-1 font-medium">执行错误</div>
@@ -964,7 +1011,9 @@ export function TaskDetail({ task }: TaskDetailProps) {
             {selectedLog?.result ? (
               <MarkdownRenderer
                 content={selectedLog.result}
-                groupJid={task.chat_jid}
+                groupJid={
+                  selectedLog.definition_snapshot?.chat_jid || task.chat_jid
+                }
                 variant="docs"
               />
             ) : (

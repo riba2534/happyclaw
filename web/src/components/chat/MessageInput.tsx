@@ -43,6 +43,7 @@ import {
   getDefaultFollowUpMode,
 } from '../../lib/follow-up-preferences';
 import { planImageClipboardPaste } from '../../lib/mixed-paste';
+import { getDraftStorageKey } from '../../lib/draft-storage';
 
 interface PendingFile {
   /** Display name: relative path for folder uploads, file name otherwise */
@@ -71,6 +72,7 @@ interface MessageInputProps {
     followUpBehavior?: FollowUpMode,
   ) => Promise<boolean> | boolean;
   groupJid?: string;
+  sessionId?: string | null;
   disabled?: boolean;
   contextLabel?: string;
   onResetSession?: () => void;
@@ -89,6 +91,7 @@ interface MessageInputProps {
 export function MessageInput({
   onSend,
   groupJid,
+  sessionId,
   disabled = false,
   contextLabel,
   onResetSession,
@@ -125,9 +128,12 @@ export function MessageInput({
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
-  const prevGroupJidRef = useRef<string | undefined>(groupJid);
-  const groupJidRef = useRef(groupJid);
-  groupJidRef.current = groupJid;
+  const currentDraftKey = getDraftStorageKey(groupJid, sessionId);
+  const sessionRef = useRef({
+    groupJid,
+    sessionId: sessionId || 'main',
+    draftKey: currentDraftKey,
+  });
 
   // 窄 selector：这是 1200+ 行常驻组件，无 selector 的整 store 订阅会让它在
   // 流式输出的每一帧（rAF 级 set()）都重渲染一次。actions 引用稳定。
@@ -169,43 +175,58 @@ export function MessageInput({
     };
   }, []);
 
-  // Restore draft when groupJid changes (including initial mount)
+  // Restore draft when session changes (Workspace + Session)
   useEffect(() => {
-    // Save current draft before switching
-    if (prevGroupJidRef.current && prevGroupJidRef.current !== groupJid) {
+    const prev = sessionRef.current;
+    if (prev.draftKey && prev.draftKey !== currentDraftKey) {
       const currentText = content.trim();
       if (currentText) {
-        saveDraft(prevGroupJidRef.current, currentText);
+        saveDraft(prev.draftKey, currentText);
       } else {
-        clearDraft(prevGroupJidRef.current);
+        clearDraft(prev.draftKey);
       }
-    }
-    prevGroupJidRef.current = groupJid;
 
-    // Load draft for new group
-    const draft = groupJid ? drafts[groupJid] || '' : '';
-    setContent(draft);
-    // Drop pending attachments staged for the previous group — they must not
-    // leak into the newly-selected conversation (会话隔离). Release image
-    // preview object URLs to avoid a memory leak.
-    setPendingImages((prev) => {
-      prev.forEach((img) => URL.revokeObjectURL(img.preview));
-      return [];
-    });
-    setPendingFiles([]);
-    // Clear any pending debounce timer
+      // Drop pending attachments staged for the previous session (会话隔离)
+      setPendingImages((prevImages) => {
+        prevImages.forEach((img) => URL.revokeObjectURL(img.preview));
+        return [];
+      });
+      setPendingFiles([]);
+    }
+
     if (draftTimerRef.current) {
       clearTimeout(draftTimerRef.current);
       draftTimerRef.current = undefined;
     }
+
+    // Load draft for new session. Fallback to drafts[groupJid] for backwards compatibility with main session
+    const isMain = !sessionId || sessionId === 'main';
+    const draft = currentDraftKey
+      ? drafts[currentDraftKey] ||
+        (isMain && groupJid ? drafts[groupJid] || '' : '')
+      : '';
+    setContent(draft);
+
+    sessionRef.current = {
+      groupJid,
+      sessionId: sessionId || 'main',
+      draftKey: currentDraftKey,
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groupJid]);
+  }, [currentDraftKey, groupJid, sessionId]);
 
   // Cleanup debounce timer on unmount, save current draft
   useEffect(() => {
     return () => {
       if (draftTimerRef.current) {
         clearTimeout(draftTimerRef.current);
+      }
+      const active = sessionRef.current;
+      if (active.draftKey) {
+        const text = textareaRef.current?.value.trim() ?? '';
+        if (text) {
+          useChatStore.getState().saveDraft(active.draftKey, text);
+        }
       }
     };
   }, []);
@@ -216,13 +237,13 @@ export function MessageInput({
       if (draftTimerRef.current) {
         clearTimeout(draftTimerRef.current);
       }
+      const targetKey = sessionRef.current.draftKey;
+      if (!targetKey) return;
       draftTimerRef.current = setTimeout(() => {
-        if (groupJid) {
-          saveDraft(groupJid, text.trim());
-        }
+        saveDraft(targetKey, text.trim());
       }, 300);
     },
-    [groupJid, saveDraft],
+    [saveDraft],
   );
 
   // Auto-resize textarea (1-6 lines)
@@ -280,6 +301,11 @@ export function MessageInput({
     if (!trimmed && !hasPending && !hasImages) return;
     if (disabled || sending) return;
 
+    // 锁定当前发送时的会话身份快照，防止异步完成回调污染或清空其他 Session
+    const sendingSession = { ...sessionRef.current };
+    const currentImages = [...pendingImages];
+    const currentFiles = [...pendingFiles];
+
     setSending(true);
     setSendError(null);
 
@@ -287,12 +313,12 @@ export function MessageInput({
     // 让 onSend 失败时用户的附件也能保留、可以重试。
     let message = trimmed;
     if (hasPending) {
-      const list = pendingFiles.map((f) => `- ${f.label}`).join('\n');
+      const list = currentFiles.map((f) => `- ${f.label}`).join('\n');
       const prefix = `[我上传了以下文件到工作区，请查看并使用]\n${list}`;
       message = message ? `${prefix}\n\n${message}` : prefix;
     }
     const attachments = hasImages
-      ? pendingImages.map((img) => ({ data: img.data, mimeType: img.mimeType }))
+      ? currentImages.map((img) => ({ data: img.data, mimeType: img.mimeType }))
       : undefined;
 
     let ok = false;
@@ -308,22 +334,35 @@ export function MessageInput({
 
     if (ok) {
       successTap();
-      setContent('');
-      if (groupJid) clearDraft(groupJid);
-      if (draftTimerRef.current) {
-        clearTimeout(draftTimerRef.current);
-        draftTimerRef.current = undefined;
+      // 发送成功：清空发起发送的 Session 的草稿
+      if (sendingSession.draftKey) {
+        clearDraft(sendingSession.draftKey);
       }
-      if (hasPending) setPendingFiles([]);
-      if (hasImages) {
-        pendingImages.forEach((img) => URL.revokeObjectURL(img.preview));
-        setPendingImages([]);
+      // 只有当前用户仍停留在发起发送的同一个 Session 时，才清空输入框和待发附件
+      if (sessionRef.current.draftKey === sendingSession.draftKey) {
+        setContent('');
+        if (draftTimerRef.current) {
+          clearTimeout(draftTimerRef.current);
+          draftTimerRef.current = undefined;
+        }
+        if (hasPending) setPendingFiles([]);
+        if (hasImages) {
+          currentImages.forEach((img) => URL.revokeObjectURL(img.preview));
+          setPendingImages([]);
+        }
+      } else {
+        // 用户已经切换到其他会话：绝不清空新会话，只清理先前发送的 preview URL
+        currentImages.forEach((img) => URL.revokeObjectURL(img.preview));
       }
     } else {
-      // 失败：保留输入、保留附件；同步保存草稿，刷新/崩溃也能恢复。
-      if (groupJid && trimmed) saveDraft(groupJid, trimmed);
-      setSendError('发送失败，输入已保留，请重试');
-      setTimeout(() => setSendError(null), 4000);
+      // 失败：保留输入、保留附件；为原会话保存草稿供重试
+      if (sendingSession.draftKey && trimmed) {
+        saveDraft(sendingSession.draftKey, trimmed);
+      }
+      if (sessionRef.current.draftKey === sendingSession.draftKey) {
+        setSendError('发送失败，输入已保留，请重试');
+        setTimeout(() => setSendError(null), 4000);
+      }
     }
     setSending(false);
   };
@@ -415,7 +454,8 @@ export function MessageInput({
   }, [isRunning]);
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!groupJid) return;
+    const targetSession = { ...sessionRef.current };
+    if (!targetSession.groupJid) return;
     const fileList = e.target.files;
     if (fileList && fileList.length > 0) {
       const files = Array.from(fileList);
@@ -435,6 +475,7 @@ export function MessageInput({
       // Process image files
       if (imageFiles.length > 0) {
         const newImages: PendingImage[] = [];
+        const imageErrors: string[] = [];
         for (const file of imageFiles) {
           try {
             const base64 = await readFileAsBase64(file);
@@ -444,17 +485,29 @@ export function MessageInput({
               mimeType: file.type,
               preview: URL.createObjectURL(file),
             });
-          } catch {
-            // Skip failed images
+          } catch (err) {
+            const msg =
+              err instanceof Error ? err.message : `图片 ${file.name} 处理失败`;
+            imageErrors.push(msg);
           }
         }
-        setPendingImages((prev) => [...prev, ...newImages]);
+        if (imageErrors.length > 0) {
+          setSendError(imageErrors.join('；'));
+          setTimeout(() => setSendError(null), 5000);
+        }
+        if (sessionRef.current.draftKey === targetSession.draftKey) {
+          if (newImages.length > 0) {
+            setPendingImages((prev) => [...prev, ...newImages]);
+          }
+        } else {
+          newImages.forEach((img) => URL.revokeObjectURL(img.preview));
+        }
       }
 
       // Upload regular files to workspace
       if (regularFiles.length > 0) {
-        const ok = await uploadFiles(groupJid, regularFiles);
-        if (ok) {
+        const ok = await uploadFiles(targetSession.groupJid, regularFiles);
+        if (ok && sessionRef.current.draftKey === targetSession.draftKey) {
           const newPending = regularFiles.map((f) => ({
             label: f.webkitRelativePath || f.name,
           }));
@@ -467,12 +520,14 @@ export function MessageInput({
   };
 
   const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const targetSession = { ...sessionRef.current };
     const fileList = e.target.files;
     if (fileList && fileList.length > 0) {
       const files = Array.from(fileList);
       setShowActions(false);
 
       const newImages: PendingImage[] = [];
+      const imageErrors: string[] = [];
       for (const file of files) {
         if (file.type.startsWith('image/')) {
           try {
@@ -483,12 +538,24 @@ export function MessageInput({
               mimeType: file.type,
               preview: URL.createObjectURL(file),
             });
-          } catch {
-            // Skip failed images
+          } catch (err) {
+            const msg =
+              err instanceof Error ? err.message : `图片 ${file.name} 处理失败`;
+            imageErrors.push(msg);
           }
         }
       }
-      setPendingImages((prev) => [...prev, ...newImages]);
+      if (imageErrors.length > 0) {
+        setSendError(imageErrors.join('；'));
+        setTimeout(() => setSendError(null), 5000);
+      }
+      if (sessionRef.current.draftKey === targetSession.draftKey) {
+        if (newImages.length > 0) {
+          setPendingImages((prev) => [...prev, ...newImages]);
+        }
+      } else {
+        newImages.forEach((img) => URL.revokeObjectURL(img.preview));
+      }
 
       if (imageInputRef.current) imageInputRef.current.value = '';
     }
@@ -548,7 +615,9 @@ export function MessageInput({
       el.setSelectionRange(pastePlan.selectionStart, pastePlan.selectionEnd);
     });
 
+    const targetSession = { ...sessionRef.current };
     const newImages: PendingImage[] = [];
+    const imageErrors: string[] = [];
     for (const item of imageItems) {
       const file = item.getAsFile();
       if (!file) continue;
@@ -560,13 +629,26 @@ export function MessageInput({
           mimeType: file.type,
           preview: URL.createObjectURL(file),
         });
-      } catch {
-        // Skip failed images
+      } catch (err) {
+        const msg =
+          err instanceof Error
+            ? err.message
+            : `粘贴图片 ${file.name || ''} 处理失败`;
+        imageErrors.push(msg);
       }
     }
 
-    if (newImages.length > 0) {
-      setPendingImages((prev) => [...prev, ...newImages]);
+    if (imageErrors.length > 0) {
+      setSendError(imageErrors.join('；'));
+      setTimeout(() => setSendError(null), 5000);
+    }
+
+    if (sessionRef.current.draftKey === targetSession.draftKey) {
+      if (newImages.length > 0) {
+        setPendingImages((prev) => [...prev, ...newImages]);
+      }
+    } else {
+      newImages.forEach((img) => URL.revokeObjectURL(img.preview));
     }
   };
 
@@ -653,8 +735,9 @@ export function MessageInput({
       // Guard: respect disabled/sending/uploading state
       if (!groupJid || disabled || sending || uploading) return;
 
-      // Capture groupJid at drop time to prevent stale-chat attachment
-      const targetGroupJid = groupJid;
+      // Capture session state at drop time to prevent stale-chat attachment
+      const targetSession = { ...sessionRef.current };
+      if (!targetSession.groupJid) return;
 
       // Collect files, expanding directories via webkitGetAsEntry.
       // 同步提取所有 item 的 entry/file，避免 drop 事件结束后 DataTransferItemList
@@ -698,8 +781,8 @@ export function MessageInput({
       // If a directory was dropped, upload ALL files to workspace (including images)
       // to match the button-based folder upload behavior.
       if (hasDirectory) {
-        const ok = await uploadFiles(targetGroupJid, allFiles);
-        if (ok && targetGroupJid === groupJidRef.current) {
+        const ok = await uploadFiles(targetSession.groupJid, allFiles);
+        if (ok && sessionRef.current.draftKey === targetSession.draftKey) {
           const newPending = allFiles.map((f) => ({
             label:
               (f as unknown as { webkitRelativePath?: string })
@@ -724,6 +807,7 @@ export function MessageInput({
       // Process images inline (same as handleImageSelect)
       if (imageFiles.length > 0) {
         const newImages: PendingImage[] = [];
+        const imageErrors: string[] = [];
         for (const file of imageFiles) {
           try {
             const base64 = await readFileAsBase64(file);
@@ -734,12 +818,22 @@ export function MessageInput({
               preview: URL.createObjectURL(file),
             });
           } catch (err) {
-            console.warn('跳过图片:', err instanceof Error ? err.message : err);
+            const msg =
+              err instanceof Error ? err.message : `图片 ${file.name} 处理失败`;
+            imageErrors.push(msg);
           }
         }
-        // Verify groupJid hasn't changed during async processing (use ref for live value)
-        if (targetGroupJid === groupJidRef.current) {
-          setPendingImages((prev) => [...prev, ...newImages]);
+
+        if (imageErrors.length > 0) {
+          setSendError(imageErrors.join('；'));
+          setTimeout(() => setSendError(null), 5000);
+        }
+
+        // Verify session hasn't changed during async processing
+        if (sessionRef.current.draftKey === targetSession.draftKey) {
+          if (newImages.length > 0) {
+            setPendingImages((prev) => [...prev, ...newImages]);
+          }
         } else {
           // Conversation switched — revoke preview URLs to avoid memory leak
           newImages.forEach((img) => URL.revokeObjectURL(img.preview));
@@ -748,8 +842,8 @@ export function MessageInput({
 
       // Upload non-image files to workspace (same as handleFileSelect)
       if (regularFiles.length > 0) {
-        const ok = await uploadFiles(targetGroupJid, regularFiles);
-        if (ok && targetGroupJid === groupJidRef.current) {
+        const ok = await uploadFiles(targetSession.groupJid, regularFiles);
+        if (ok && sessionRef.current.draftKey === targetSession.draftKey) {
           const newPending = regularFiles.map((f) => ({ label: f.name }));
           setPendingFiles((prev) => [...prev, ...newPending]);
         }
@@ -759,13 +853,14 @@ export function MessageInput({
   );
 
   const handleFolderSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!groupJid) return;
+    const targetSession = { ...sessionRef.current };
+    if (!targetSession.groupJid) return;
     const fileList = e.target.files;
     if (fileList && fileList.length > 0) {
       const files = Array.from(fileList);
       setShowActions(false);
-      const ok = await uploadFiles(groupJid, files);
-      if (ok) {
+      const ok = await uploadFiles(targetSession.groupJid, files);
+      if (ok && sessionRef.current.draftKey === targetSession.draftKey) {
         const newPending = files.map((f) => ({
           label: f.webkitRelativePath || f.name,
         }));
@@ -1038,6 +1133,8 @@ export function MessageInput({
           {/* Send error banner */}
           {sendError && (
             <div
+              role="alert"
+              aria-live="polite"
               className={`px-4 py-2 bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 text-xs font-medium border-b border-red-100 dark:border-red-800 flex items-center gap-2 ${isCompact ? 'rounded-t-lg' : 'rounded-t-2xl'}`}
             >
               <span>{sendError}</span>
@@ -1163,6 +1260,9 @@ export function MessageInput({
               }}
               onPaste={handlePaste}
               placeholder="输入消息..."
+              aria-label={
+                contextLabel ? `输入给 ${contextLabel} 的消息` : '输入消息'
+              }
               disabled={disabled}
               className="w-full text-base leading-6 resize-none focus:outline-none placeholder:text-muted-foreground disabled:opacity-50 disabled:cursor-not-allowed bg-transparent"
               rows={1}

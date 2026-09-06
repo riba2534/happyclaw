@@ -50,6 +50,7 @@ interface CreateContainerDialogProps {
   open: boolean;
   onClose: () => void;
   onCreated: (jid: string, folder: string) => void;
+  initialAgentProfileId?: string;
 }
 
 function extractFieldErrors(error: unknown): Record<string, string> {
@@ -104,6 +105,7 @@ export function CreateContainerDialog({
   open,
   onClose,
   onCreated,
+  initialAgentProfileId,
 }: CreateContainerDialogProps) {
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(false);
@@ -115,7 +117,9 @@ export function CreateContainerDialog({
   const [initMode, setInitMode] = useState<'empty' | 'local' | 'git'>('empty');
   const [initSourcePath, setInitSourcePath] = useState('');
   const [initGitUrl, setInitGitUrl] = useState('');
-  const [selectedAgentProfileId, setSelectedAgentProfileId] = useState('');
+  const [selectedAgentProfileId, setSelectedAgentProfileId] = useState(
+    () => initialAgentProfileId || '',
+  );
   const [interactionMode, setInteractionMode] =
     useState<InteractionMode>('assistant');
   const [hostMounts, setHostMounts] = useState<HostDirectoryMountDraft[]>([]);
@@ -125,7 +129,8 @@ export function CreateContainerDialog({
   const createFlow = useChatStore((s) => s.createFlow);
   const adminHostOnlyMode = useChatStore((s) => s.adminHostOnlyMode);
   const canHostExec = useAuthStore((s) => s.user?.role === 'admin');
-  const profiles = useAgentProfilesStore((s) => s.profiles);
+  const rawProfiles = useAgentProfilesStore((s) => s.profiles);
+  const profiles = Array.isArray(rawProfiles) ? rawProfiles : [];
   const profilesLoading = useAgentProfilesStore((s) => s.loading);
   const profilesError = useAgentProfilesStore((s) => s.profilesError);
   const loadProfiles = useAgentProfilesStore((s) => s.loadProfiles);
@@ -147,11 +152,15 @@ export function CreateContainerDialog({
   }, [open, loadProfiles]);
 
   useEffect(() => {
-    if (!open || selectedAgentProfileId || profiles.length === 0) return;
-    const defaultProfile =
-      profiles.find((profile) => profile.is_default) ?? profiles[0];
-    setSelectedAgentProfileId(defaultProfile.id);
-  }, [open, profiles, selectedAgentProfileId]);
+    if (!open) return;
+    if (initialAgentProfileId) {
+      setSelectedAgentProfileId(initialAgentProfileId);
+    } else if (!selectedAgentProfileId && profiles.length > 0) {
+      const defaultProfile =
+        profiles.find((profile) => profile.is_default) ?? profiles[0];
+      setSelectedAgentProfileId(defaultProfile.id);
+    }
+  }, [open, initialAgentProfileId, profiles, selectedAgentProfileId]);
 
   useEffect(() => {
     if (canHostExec || executionMode === 'container') return;
