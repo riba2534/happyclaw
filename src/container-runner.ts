@@ -122,6 +122,7 @@ import type {
   AgentProfileRuntimePolicy,
   ChannelTurnContext,
   InteractionMode,
+  TaskBudgetConfig,
 } from './types.js';
 import { validateSkillId, validateSkillPath } from './skill-utils.js';
 import type { ClaudeContextAudit } from './stream-event.types.js';
@@ -469,6 +470,12 @@ export interface ContainerInput {
   workspaceMemoryRunnerInstanceId?: string;
   /** Isolated task run ID — determines IPC namespace (tasks-run/{taskRunId}/) */
   taskRunId?: string;
+  /** Logical task/input budget configuration. */
+  budgetConfig?: TaskBudgetConfig | null;
+  /** Unique logical execution run ID for budget tracking. */
+  budgetRunId?: string;
+  /** Parent execution run ID for shared budget tracking across subagents. */
+  budgetParentRunId?: string | null;
   /** Claude session/provider namespace. Tasks use task:<id> while IPC still uses taskRunId. */
   sessionAgentId?: string;
   /** If the last unprocessed message was emitted by a scheduled task prompt,

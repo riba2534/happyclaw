@@ -33,6 +33,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../ui/dialog';
+import type { TaskBudgetConfig, TaskBudgetStatus } from '../../types';
 
 interface TaskDetailProps {
   task: ScheduledTask;
@@ -42,6 +43,11 @@ const LOG_STATUS_STYLES: Record<
   string,
   { bg: string; text: string; label: string }
 > = {
+  budget_exceeded: {
+    bg: 'bg-amber-100 dark:bg-amber-900/40',
+    text: 'text-amber-700 dark:text-amber-300',
+    label: '预算超限（可恢复）',
+  },
   queued: {
     bg: 'bg-slate-100 dark:bg-slate-800/60',
     text: 'text-slate-700 dark:text-slate-300',
@@ -176,6 +182,58 @@ export function TaskDetail({ task }: TaskDetailProps) {
 
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [budgetStatus, setBudgetStatus] = useState<TaskBudgetStatus | null>(
+    null,
+  );
+  const [resumeDialogOpen, setResumeDialogOpen] = useState(false);
+  const [resumeExtraDuration, setResumeExtraDuration] = useState('10');
+  const [resumeExtraToolCalls, setResumeExtraToolCalls] = useState('20');
+  const [resumeExtraCost, setResumeExtraCost] = useState('0.5');
+  const [resumingBudget, setResumingBudget] = useState(false);
+  const [editBudget, setEditBudget] = useState<TaskBudgetConfig | null>(
+    task.budget ?? null,
+  );
+
+  useEffect(() => {
+    void useTasksStore
+      .getState()
+      .getTaskBudget(task.id)
+      .then((res) => {
+        if (res?.budgetStatus) {
+          setBudgetStatus(res.budgetStatus);
+        }
+      });
+  }, [
+    task.id,
+    task.current_run?.updated_at,
+    task.last_run_summary?.updated_at,
+  ]);
+
+  const handleResumeBudget = async () => {
+    setResumingBudget(true);
+    try {
+      await useTasksStore.getState().resumeTaskBudget(task.id, {
+        additionalDurationMs: resumeExtraDuration
+          ? Number(resumeExtraDuration) * 60 * 1000
+          : undefined,
+        additionalToolCalls: resumeExtraToolCalls
+          ? Number(resumeExtraToolCalls)
+          : undefined,
+        additionalCostUsd: resumeExtraCost
+          ? Number(resumeExtraCost)
+          : undefined,
+      });
+      showToast('恢复成功', '已追加预算并恢复任务执行');
+      setResumeDialogOpen(false);
+      loadLogs(task.id);
+      const updated = await useTasksStore.getState().getTaskBudget(task.id);
+      if (updated?.budgetStatus) setBudgetStatus(updated.budgetStatus);
+    } catch (err) {
+      showToast('恢复失败', String(err));
+    } finally {
+      setResumingBudget(false);
+    }
+  };
   const [editForm, setEditForm] = useState({
     prompt: task.prompt,
     script_command: task.script_command || '',
@@ -250,6 +308,8 @@ export function TaskDetail({ task }: TaskDetailProps) {
       );
       if (editForm.context_mode !== task.context_mode)
         fields.context_mode = editForm.context_mode;
+      if (JSON.stringify(editBudget) !== JSON.stringify(task.budget ?? null))
+        fields.budget = editBudget;
 
       if (Object.keys(fields).length > 0) {
         await updateTask(task.id, fields);
@@ -813,6 +873,138 @@ export function TaskDetail({ task }: TaskDetailProps) {
             renderNotifyChannelsBadges()
           )}
         </div>
+
+        {/* Budget Control & Status */}
+        <div className="md:col-span-2 border border-border/60 rounded-lg p-3 bg-muted/20 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="text-xs font-semibold text-foreground">
+              单次运行预算控制
+            </div>
+            {budgetStatus?.status === 'exceeded' && (
+              <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+                已达预算上限（
+                {budgetStatus.exceededReason === 'tool_calls'
+                  ? '工具调用数超限'
+                  : budgetStatus.exceededReason === 'duration'
+                    ? '执行时长超限'
+                    : budgetStatus.exceededReason === 'cost'
+                      ? '估算费用超限'
+                      : '已暂停'}
+                ）
+              </span>
+            )}
+          </div>
+          {editing ? (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+              <div>
+                <label className="block text-xs text-muted-foreground mb-1">
+                  时长上限（分钟）
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  placeholder="无限制"
+                  value={
+                    editBudget?.maxDurationMs
+                      ? Math.round(editBudget.maxDurationMs / 60000)
+                      : ''
+                  }
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setEditBudget((prev) => ({
+                      ...prev,
+                      maxDurationMs: val ? Number(val) * 60000 : undefined,
+                    }));
+                  }}
+                  className="w-full text-xs bg-card px-2 py-1 rounded border border-border"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-muted-foreground mb-1">
+                  工具调用上限（次）
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  placeholder="无限制"
+                  value={editBudget?.maxToolCalls ?? ''}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setEditBudget((prev) => ({
+                      ...prev,
+                      maxToolCalls: val ? Number(val) : undefined,
+                    }));
+                  }}
+                  className="w-full text-xs bg-card px-2 py-1 rounded border border-border"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-muted-foreground mb-1">
+                  估算成本上限（USD）
+                </label>
+                <input
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  placeholder="无限制"
+                  value={editBudget?.maxCostUsd ?? ''}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setEditBudget((prev) => ({
+                      ...prev,
+                      maxCostUsd: val ? Number(val) : undefined,
+                    }));
+                  }}
+                  className="w-full text-xs bg-card px-2 py-1 rounded border border-border"
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="text-xs text-muted-foreground space-y-1">
+              <div className="flex flex-wrap gap-4">
+                <span>
+                  时长上限：
+                  {task.budget?.maxDurationMs
+                    ? `${Math.round(task.budget.maxDurationMs / 60000)} 分钟`
+                    : '无限制'}
+                </span>
+                <span>
+                  工具调用上限：
+                  {task.budget?.maxToolCalls
+                    ? `${task.budget.maxToolCalls} 次`
+                    : '无限制'}
+                </span>
+                <span>
+                  成本上限：
+                  {task.budget?.maxCostUsd
+                    ? `$${task.budget.maxCostUsd}`
+                    : '无限制'}
+                </span>
+              </div>
+              {budgetStatus && (
+                <div className="pt-2 border-t border-border/40 flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-xs text-muted-foreground">
+                    当前消耗：耗时{' '}
+                    {formatDuration(budgetStatus.currentDurationMs)} · 工具{' '}
+                    {budgetStatus.currentToolCalls} 次 · 估算成本 $
+                    {budgetStatus.currentCostUsd.toFixed(4)}
+                  </div>
+                  {budgetStatus.status === 'exceeded' && (
+                    <button
+                      type="button"
+                      className="px-2.5 py-1 text-xs rounded bg-amber-100 hover:bg-amber-200 dark:bg-amber-900/50 dark:hover:bg-amber-900/70 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 cursor-pointer font-medium"
+                      onClick={() => setResumeDialogOpen(true)}
+                    >
+                      追加预算并恢复执行
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Execution Logs */}
@@ -953,6 +1145,26 @@ export function TaskDetail({ task }: TaskDetailProps) {
           </DialogHeader>
 
           <div className="min-h-0 overflow-y-auto rounded-lg border border-border bg-muted/20 p-4">
+            {selectedLog?.status === 'budget_exceeded' && (
+              <div className="mb-4 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30 p-3 text-sm text-amber-900 dark:text-amber-200 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="font-medium">任务已达到单次运行预算上限</div>
+                  <div className="text-xs text-amber-700 dark:text-amber-300">
+                    已安全中断并保存当前阶段性成果。您可以追加预算并恢复任务继续执行。
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="px-3 py-1.5 text-xs rounded bg-amber-600 hover:bg-amber-700 text-white font-medium cursor-pointer"
+                  onClick={() => {
+                    setSelectedLog(null);
+                    setResumeDialogOpen(true);
+                  }}
+                >
+                  追加预算并恢复
+                </button>
+              </div>
+            )}
             {selectedLog?.error && (
               <div className="mb-4 rounded-lg border border-error/20 bg-error-bg p-3 text-sm text-error">
                 <div className="mb-1 font-medium">执行错误</div>
@@ -972,6 +1184,78 @@ export function TaskDetail({ task }: TaskDetailProps) {
                 本次运行没有留下可展示的业务结果。
               </p>
             )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={resumeDialogOpen} onOpenChange={setResumeDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>恢复任务并追加预算</DialogTitle>
+            <DialogDescription>
+              该任务因达到单次运行预算上限已暂停，已保留阶段性成果。您可以指定追加预算额度并继续执行：
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2 text-xs">
+            <div>
+              <label className="block text-xs font-medium text-foreground mb-1">
+                追加时长（分钟）
+              </label>
+              <input
+                type="number"
+                min="1"
+                step="1"
+                value={resumeExtraDuration}
+                onChange={(e) => setResumeExtraDuration(e.target.value)}
+                className="w-full text-xs bg-card px-3 py-1.5 rounded border border-border"
+                placeholder="如 10"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-foreground mb-1">
+                追加工具调用上限（次）
+              </label>
+              <input
+                type="number"
+                min="1"
+                step="1"
+                value={resumeExtraToolCalls}
+                onChange={(e) => setResumeExtraToolCalls(e.target.value)}
+                className="w-full text-xs bg-card px-3 py-1.5 rounded border border-border"
+                placeholder="如 20"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-foreground mb-1">
+                追加估算费用（USD）
+              </label>
+              <input
+                type="number"
+                min="0.01"
+                step="0.01"
+                value={resumeExtraCost}
+                onChange={(e) => setResumeExtraCost(e.target.value)}
+                className="w-full text-xs bg-card px-3 py-1.5 rounded border border-border"
+                placeholder="如 0.50"
+              />
+            </div>
+          </div>
+          <div className="flex items-center justify-end gap-2 pt-2 border-t border-border">
+            <button
+              type="button"
+              className="px-3 py-1.5 text-xs rounded border border-border hover:bg-muted cursor-pointer"
+              onClick={() => setResumeDialogOpen(false)}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              disabled={resumingBudget}
+              onClick={handleResumeBudget}
+              className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90 cursor-pointer font-medium disabled:opacity-50"
+            >
+              {resumingBudget ? '恢复中...' : '确认追加并恢复'}
+            </button>
           </div>
         </DialogContent>
       </Dialog>

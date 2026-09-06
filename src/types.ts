@@ -1,4 +1,5 @@
 import type { StreamEvent, WorkflowRunSnapshot } from './stream-event.types.js';
+export type { TaskBudgetSnapshot } from './stream-event.types.js';
 
 export interface AdditionalMount {
   hostPath: string; // Absolute canonical path on host
@@ -42,6 +43,56 @@ export type ConversationNavMode = 'horizontal' | 'vertical_threads';
 export type ImBindingMode = 'single_context' | 'thread_map';
 export type ChannelRoutingMode = 'single_session' | 'thread_map';
 export type AudienceMode = 'everyone' | 'owner_only';
+
+export type BudgetExceededReason = 'duration' | 'tool_calls' | 'cost';
+
+export interface TaskBudgetConfig {
+  /** Optional wall-clock duration limit in milliseconds. */
+  maxDurationMs?: number;
+  /** Optional limit on total tool calls across parent and subagents. */
+  maxToolCalls?: number;
+  /** Optional estimated cost limit in USD across parent and subagents. */
+  maxCostUsd?: number;
+}
+
+export interface TaskBudgetRecord {
+  run_id: string;
+  parent_run_id: string | null;
+  task_id: string | null;
+  chat_jid: string | null;
+  group_folder: string | null;
+  user_id: string | null;
+  max_duration_ms: number | null;
+  max_tool_calls: number | null;
+  max_cost_usd: number | null;
+  current_duration_ms: number;
+  current_tool_calls: number;
+  current_cost_usd: number;
+  retry_count: number;
+  status: 'active' | 'exceeded' | 'completed' | 'cancelled';
+  exceeded_reason: BudgetExceededReason | null;
+  partial_result: string | null;
+  resumed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskBudgetStatus {
+  runId: string;
+  parentRunId?: string | null;
+  configured: boolean;
+  maxDurationMs?: number;
+  maxToolCalls?: number;
+  maxCostUsd?: number;
+  currentDurationMs: number;
+  currentToolCalls: number;
+  currentCostUsd: number;
+  retryCount: number;
+  status: 'active' | 'exceeded' | 'completed' | 'cancelled';
+  exceededReason?: BudgetExceededReason | null;
+  partialResult?: string | null;
+  resumedAt?: string | null;
+}
 
 /** Provider-proven relation between two physical inbound messages. */
 export interface ChannelContentLink {
@@ -394,6 +445,8 @@ export interface AgentProfileRuntimePolicy {
     mode: 'inherit' | 'custom' | 'disabled';
     ids: string[];
   };
+  /** Optional logical task/input budget defaults. */
+  budget?: TaskBudgetConfig;
 }
 
 export interface AgentBuilderDefinition extends AgentProfilePrompts {
@@ -526,6 +579,7 @@ export type MessageFinalizationReason =
   | 'completed'
   | 'delivery_uncertain'
   | 'interrupted'
+  | 'budget_exceeded'
   | 'error'
   | 'shutdown'
   | 'crash_recovery'
@@ -579,6 +633,8 @@ export interface ScheduledTask {
   /** Optimistic-concurrency revision for edits made through REST/MCP/UI. */
   revision: number;
   updated_at: string;
+  /** Optional logical task budget config. */
+  budget?: TaskBudgetConfig | null;
   /** Soft deletion keeps task history queryable while removing future fires. */
   deleted_at: string | null;
 }
@@ -593,7 +649,8 @@ export type TaskRunStatus =
   | 'failed'
   | 'cancelled'
   | 'missed'
-  | 'delivered';
+  | 'delivered'
+  | 'budget_exceeded';
 
 export type TaskRunNotificationStatus =
   | 'pending'
@@ -633,6 +690,8 @@ export interface TaskRunDefinitionSnapshot {
   execution_mode: 'host' | 'container' | null;
   script_command: string | null;
   notify_channels: string[] | null;
+  /** Optional frozen logical task budget config. */
+  budget?: TaskBudgetConfig | null;
   /**
    * Delivery contract frozen when a group-mode occurrence crosses the durable
    * workspace-prompt hand-off.  It is intentionally absent on historical and

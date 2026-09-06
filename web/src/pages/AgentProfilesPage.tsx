@@ -146,6 +146,27 @@ function normalizeRuntimePolicy(
       mode: policy?.mcp?.mode ?? 'inherit',
       ids: policy?.mcp?.ids ?? [],
     },
+    ...(policy?.budget
+      ? {
+          budget: {
+            maxDurationMs:
+              typeof policy.budget.maxDurationMs === 'number' &&
+              policy.budget.maxDurationMs > 0
+                ? policy.budget.maxDurationMs
+                : undefined,
+            maxToolCalls:
+              typeof policy.budget.maxToolCalls === 'number' &&
+              policy.budget.maxToolCalls > 0
+                ? policy.budget.maxToolCalls
+                : undefined,
+            maxCostUsd:
+              typeof policy.budget.maxCostUsd === 'number' &&
+              policy.budget.maxCostUsd > 0
+                ? policy.budget.maxCostUsd
+                : undefined,
+          },
+        }
+      : {}),
   };
 }
 
@@ -273,6 +294,9 @@ export function AgentProfilesPage() {
   );
   const [mcpMode, setMcpMode] = useState<RuntimePolicyMode>('inherit');
   const [mcpIds, setMcpIds] = useState<string[]>([]);
+  const [budgetMaxDuration, setBudgetMaxDuration] = useState('');
+  const [budgetMaxToolCalls, setBudgetMaxToolCalls] = useState('');
+  const [budgetMaxCost, setBudgetMaxCost] = useState('');
   const [saving, setSaving] = useState(false);
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -416,6 +440,19 @@ export function AgentProfilesPage() {
           : '80',
     );
     setLegacyAutoCompactWindow(compactWindow);
+    setBudgetMaxDuration(
+      normalized.budget?.maxDurationMs
+        ? String(Math.round(normalized.budget.maxDurationMs / 60000))
+        : '',
+    );
+    setBudgetMaxToolCalls(
+      normalized.budget?.maxToolCalls
+        ? String(normalized.budget.maxToolCalls)
+        : '',
+    );
+    setBudgetMaxCost(
+      normalized.budget?.maxCostUsd ? String(normalized.budget.maxCostUsd) : '',
+    );
   };
 
   const autoCompactError = useMemo(() => {
@@ -470,9 +507,25 @@ export function AgentProfilesPage() {
           host: { mode: hostSkillsMode, ids: hostSkillIds },
         },
         mcp: { mode: mcpMode, ids: mcpIds },
+        ...(budgetMaxDuration || budgetMaxToolCalls || budgetMaxCost
+          ? {
+              budget: {
+                maxDurationMs: budgetMaxDuration
+                  ? Number(budgetMaxDuration) * 60000
+                  : undefined,
+                maxToolCalls: budgetMaxToolCalls
+                  ? Number(budgetMaxToolCalls)
+                  : undefined,
+                maxCostUsd: budgetMaxCost ? Number(budgetMaxCost) : undefined,
+              },
+            }
+          : {}),
       }),
     [
       autoCompactPercentage,
+      budgetMaxCost,
+      budgetMaxDuration,
+      budgetMaxToolCalls,
       contextSource,
       effort,
       hostSkillIds,
@@ -2106,6 +2159,65 @@ export function AgentProfilesPage() {
                             )}
                           </div>
                         )}
+                      </div>
+
+                      <div className="border-t border-border pt-5">
+                        <div>
+                          <h3 className="text-sm font-semibold text-foreground">
+                            单次运行预算限制（可选）
+                          </h3>
+                          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                            为使用本智能体的任务提供默认单次运行限制。达到上限后停止继续执行并保留部分成果，默认无限制。
+                          </p>
+                        </div>
+                        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3 max-w-xl">
+                          <div>
+                            <label className="block text-xs font-medium text-muted-foreground mb-1">
+                              时长上限（分钟）
+                            </label>
+                            <Input
+                              type="number"
+                              min={1}
+                              step={1}
+                              placeholder="无限制"
+                              value={budgetMaxDuration}
+                              onChange={(e) =>
+                                setBudgetMaxDuration(e.target.value)
+                              }
+                              className="h-10 text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-muted-foreground mb-1">
+                              工具调用上限（次）
+                            </label>
+                            <Input
+                              type="number"
+                              min={1}
+                              step={1}
+                              placeholder="无限制"
+                              value={budgetMaxToolCalls}
+                              onChange={(e) =>
+                                setBudgetMaxToolCalls(e.target.value)
+                              }
+                              className="h-10 text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-muted-foreground mb-1">
+                              估算成本上限（USD）
+                            </label>
+                            <Input
+                              type="number"
+                              min={0.01}
+                              step={0.01}
+                              placeholder="无限制"
+                              value={budgetMaxCost}
+                              onChange={(e) => setBudgetMaxCost(e.target.value)}
+                              className="h-10 text-xs"
+                            />
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </section>

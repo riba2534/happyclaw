@@ -1,5 +1,33 @@
 export type InteractionMode = 'assistant' | 'proactive';
 
+export type BudgetExceededReason = 'duration' | 'tool_calls' | 'cost';
+
+export interface TaskBudgetConfig {
+  /** Optional wall-clock duration limit in milliseconds. */
+  maxDurationMs?: number;
+  /** Optional limit on total tool calls across parent and subagents. */
+  maxToolCalls?: number;
+  /** Optional estimated cost limit in USD across parent and subagents. */
+  maxCostUsd?: number;
+}
+
+export interface TaskBudgetStatus {
+  runId: string;
+  parentRunId?: string | null;
+  configured: boolean;
+  maxDurationMs?: number;
+  maxToolCalls?: number;
+  maxCostUsd?: number;
+  currentDurationMs: number;
+  currentToolCalls: number;
+  currentCostUsd: number;
+  retryCount: number;
+  status: 'active' | 'exceeded' | 'completed' | 'cancelled';
+  exceededReason?: BudgetExceededReason | null;
+  partialResult?: string | null;
+  resumedAt?: string | null;
+}
+
 export interface GroupInfo {
   name: string;
   folder: string;
@@ -137,6 +165,8 @@ export interface AgentProfileRuntimePolicy {
     mode: 'inherit' | 'custom' | 'disabled';
     ids: string[];
   };
+  /** Optional task/input budget defaults. */
+  budget?: TaskBudgetConfig;
 }
 
 export interface AgentProfileRuntimePolicyPatch {
@@ -148,6 +178,7 @@ export interface AgentProfileRuntimePolicyPatch {
     host?: Partial<NonNullable<AgentProfileRuntimePolicy['skills']['host']>>;
   };
   mcp?: Partial<AgentProfileRuntimePolicy['mcp']>;
+  budget?: Partial<TaskBudgetConfig>;
 }
 
 export type AgentContextSource = NonNullable<

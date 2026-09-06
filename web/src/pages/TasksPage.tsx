@@ -103,6 +103,7 @@ export function TasksPage() {
     notifyChannels: string[] | null;
     chatJid?: string;
     contextMode?: 'group' | 'isolated';
+    budget?: import('../types').TaskBudgetConfig | null;
   }) => {
     await createTask(
       data.prompt,
@@ -114,6 +115,7 @@ export function TasksPage() {
       data.notifyChannels,
       data.chatJid,
       data.contextMode,
+      data.budget,
     );
     if (!useTasksStore.getState().error) {
       setShowCreateForm(false);

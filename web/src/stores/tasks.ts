@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { api } from '../api/client';
 import { extractErrorMessage } from '../utils/error';
+import type { TaskBudgetConfig, TaskBudgetStatus } from '../types';
 import {
   acknowledgeTaskRunKey,
   getPendingTaskRunKey,
@@ -29,6 +30,7 @@ export interface ScheduledTask {
   revision?: number;
   updated_at?: string;
   deleted_at?: string | null;
+  budget?: TaskBudgetConfig | null;
   current_run?: TaskRun | null;
   last_run_summary?: TaskRun | null;
   permissions?: TaskPermissions;
@@ -44,6 +46,7 @@ export type TaskRunStatus =
   | 'cancelled'
   | 'missed'
   | 'delivered'
+  | 'budget_exceeded'
   // Legacy task_run_logs compatibility.
   | 'error';
 
@@ -95,6 +98,7 @@ export interface TaskRun {
   duration_ms: number;
   result?: string | null;
   error?: string | null;
+  budget_status?: TaskBudgetStatus | null;
   notification_status?: TaskNotificationStatus;
   notification_error?: string | null;
   notification_summary?: TaskNotificationSummary | null;
@@ -122,6 +126,7 @@ interface TasksState {
     notifyChannels?: string[] | null,
     chatJid?: string,
     contextMode?: 'group' | 'isolated',
+    budget?: TaskBudgetConfig | null,
   ) => Promise<void>;
   updateTaskStatus: (id: string, status: 'active' | 'paused') => Promise<void>;
   updateTask: (id: string, fields: Record<string, unknown>) => Promise<void>;
@@ -131,6 +136,22 @@ interface TasksState {
   loadLogs: (taskId: string) => Promise<void>;
   runTaskNow: (id: string, idempotencyKey?: string) => Promise<TaskRun>;
   stopTaskRun: (runId: string | number) => Promise<void>;
+  resumeTaskBudget: (
+    taskId: string,
+    params?: {
+      run_id?: string;
+      additionalDurationMs?: number;
+      additionalToolCalls?: number;
+      additionalCostUsd?: number;
+      budget?: TaskBudgetConfig;
+    },
+  ) => Promise<void>;
+  getTaskBudget: (taskId: string) => Promise<{
+    taskBudgetConfig: TaskBudgetConfig | null;
+    latestBudget: any;
+    budgetStatus: TaskBudgetStatus | null;
+    history: any[];
+  } | null>;
 }
 
 function normalizeOnceScheduleValue(value: string): string {
@@ -180,6 +201,7 @@ export const useTasksStore = create<TasksState>((set, get) => ({
     notifyChannels?: string[] | null,
     chatJid?: string,
     contextMode?: 'group' | 'isolated',
+    budget?: TaskBudgetConfig | null,
   ) => {
     try {
       const normalizedScheduleValue =
@@ -209,6 +231,9 @@ export const useTasksStore = create<TasksState>((set, get) => ({
       }
       if (contextMode) {
         body.context_mode = contextMode;
+      }
+      if (budget !== undefined) {
+        body.budget = budget;
       }
       await api.post('/api/tasks', body);
       set({ error: null });
@@ -352,6 +377,32 @@ export const useTasksStore = create<TasksState>((set, get) => ({
     } catch (err) {
       set({ error: extractErrorMessage(err) });
       throw err;
+    }
+  },
+
+  resumeTaskBudget: async (taskId, params) => {
+    try {
+      await api.post(`/api/tasks/${taskId}/budget/resume`, params ?? {});
+      set({ error: null });
+      await get().loadTasks();
+    } catch (err) {
+      set({ error: extractErrorMessage(err) });
+      throw err;
+    }
+  },
+
+  getTaskBudget: async (taskId) => {
+    try {
+      const data = await api.get<{
+        taskBudgetConfig: TaskBudgetConfig | null;
+        latestBudget: any;
+        budgetStatus: TaskBudgetStatus | null;
+        history: any[];
+      }>(`/api/tasks/${taskId}/budget`);
+      return data;
+    } catch (err) {
+      set({ error: extractErrorMessage(err) });
+      return null;
     }
   },
 }));

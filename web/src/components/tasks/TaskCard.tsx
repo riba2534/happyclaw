@@ -77,6 +77,8 @@ export function TaskCard({
         return '已错过';
       case 'delivered':
         return '已投递到主会话';
+      case 'budget_exceeded':
+        return '预算超限（可恢复）';
     }
   };
 

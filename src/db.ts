@@ -58,6 +58,9 @@ import {
   TaskRunStatus,
   TaskRunTrigger,
   TaskRunLog,
+  TaskBudgetConfig,
+  TaskBudgetRecord,
+  TaskBudgetStatus,
   User,
   UserBalance,
   UserPublic,
@@ -751,6 +754,31 @@ export function initDatabase(
       ON task_runs(status, available_at, lease_expires_at);
     CREATE INDEX IF NOT EXISTS idx_task_runs_task_created
       ON task_runs(task_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS task_budgets (
+      run_id TEXT PRIMARY KEY,
+      parent_run_id TEXT,
+      task_id TEXT,
+      chat_jid TEXT,
+      group_folder TEXT,
+      user_id TEXT,
+      max_duration_ms INTEGER,
+      max_tool_calls INTEGER,
+      max_cost_usd REAL,
+      current_duration_ms INTEGER NOT NULL DEFAULT 0,
+      current_tool_calls INTEGER NOT NULL DEFAULT 0,
+      current_cost_usd REAL NOT NULL DEFAULT 0,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'active',
+      exceeded_reason TEXT,
+      partial_result TEXT,
+      resumed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_budgets_parent ON task_budgets(parent_run_id);
+    CREATE INDEX IF NOT EXISTS idx_task_budgets_task ON task_budgets(task_id);
+    CREATE INDEX IF NOT EXISTS idx_task_budgets_chat ON task_budgets(chat_jid);
   `);
 
   // State tables (replacing JSON files)
@@ -2638,6 +2666,41 @@ export function initDatabase(
   );
   if (classifiableDirectMountSchemaVersion < 73) {
     migrateClassifiableDirectWorkspaceMountsToSessions();
+  }
+
+  // v74 -> v75: task_budgets durable budget tracking across logical runs, parent-child sharing,
+  // Provider retries, warm-runner isolation, and partial results preservation.
+  const taskBudgetsSchemaVersion = Number(
+    getRouterStateInternal('schema_version') ?? '0',
+  );
+  if (taskBudgetsSchemaVersion < 75) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS task_budgets (
+        run_id TEXT PRIMARY KEY,
+        parent_run_id TEXT,
+        task_id TEXT,
+        chat_jid TEXT,
+        group_folder TEXT,
+        user_id TEXT,
+        max_duration_ms INTEGER,
+        max_tool_calls INTEGER,
+        max_cost_usd REAL,
+        current_duration_ms INTEGER NOT NULL DEFAULT 0,
+        current_tool_calls INTEGER NOT NULL DEFAULT 0,
+        current_cost_usd REAL NOT NULL DEFAULT 0,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'active',
+        exceeded_reason TEXT,
+        partial_result TEXT,
+        resumed_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_task_budgets_parent ON task_budgets(parent_run_id);
+      CREATE INDEX IF NOT EXISTS idx_task_budgets_task ON task_budgets(task_id);
+      CREATE INDEX IF NOT EXISTS idx_task_budgets_chat ON task_budgets(chat_jid);
+    `);
+    ensureColumn('scheduled_tasks', 'budget_config', 'TEXT');
   }
 
   db.prepare(
@@ -4703,8 +4766,8 @@ export function createTask(task: CreateTaskInput): void {
   const updatedAt = task.updated_at ?? task.created_at;
   db.prepare(
     `
-    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, execution_type, script_command, execution_mode, next_run, status, created_at, created_by, notify_channels, revision, updated_at, deleted_at, delivery_route_jid)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, execution_type, script_command, execution_mode, next_run, status, created_at, created_by, notify_channels, revision, updated_at, deleted_at, delivery_route_jid, budget_config)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     task.id,
@@ -4730,6 +4793,7 @@ export function createTask(task: CreateTaskInput): void {
     // Fall back to chat_jid so a caller that has no concrete route still records
     // an explicit binding rather than leaving execution to re-derive one.
     task.delivery_route_jid ?? task.chat_jid,
+    task.budget ? JSON.stringify(task.budget) : null,
   );
 }
 
@@ -4761,6 +4825,15 @@ function mapTaskRow(row: unknown): ScheduledTask {
   r.prompt = toUtf8String(r.prompt);
   if (r.script_command !== undefined)
     r.script_command = toUtf8StringOrNull(r.script_command);
+  if (typeof r.budget_config === 'string') {
+    try {
+      r.budget = JSON.parse(r.budget_config);
+    } catch {
+      r.budget = null;
+    }
+  } else {
+    r.budget = null;
+  }
   return r as ScheduledTask;
 }
 
@@ -4918,6 +4991,7 @@ export function updateTask(
       | 'chat_jid'
       | 'delivery_route_jid'
       | 'group_folder'
+      | 'budget'
     >
   >,
 ): void {
@@ -4986,6 +5060,10 @@ export function updateTask(
   if (updates.group_folder !== undefined) {
     fields.push('group_folder = ?');
     values.push(updates.group_folder);
+  }
+  if (updates.budget !== undefined) {
+    fields.push('budget_config = ?');
+    values.push(updates.budget ? JSON.stringify(updates.budget) : null);
   }
 
   if (fields.length === 0) return;
@@ -5075,6 +5153,12 @@ export function updateTaskWithRevision(
     pushText('delivery_route_jid', updates.delivery_route_jid);
   if (updates.group_folder !== undefined)
     pushText('group_folder', updates.group_folder);
+  if (updates.budget !== undefined) {
+    pushText(
+      'budget_config',
+      updates.budget == null ? null : JSON.stringify(updates.budget),
+    );
+  }
 
   if (fields.length === 0) return { status: 'updated', task: current };
   fields.push('revision = revision + 1', 'updated_at = ?');
@@ -5412,6 +5496,7 @@ function taskDefinitionSnapshot(
     execution_mode: task.execution_mode ?? null,
     script_command: task.script_command,
     notify_channels: task.notify_channels ?? null,
+    budget: task.budget ?? null,
   };
 }
 
@@ -5912,7 +5997,7 @@ export function releaseTaskRunForRetry(
 export interface CompleteTaskRunInput {
   status: Extract<
     TaskRunStatus,
-    'success' | 'failed' | 'cancelled' | 'delivered'
+    'success' | 'failed' | 'cancelled' | 'delivered' | 'budget_exceeded'
   >;
   result?: string | null;
   error?: string | null;
@@ -6009,6 +6094,296 @@ export function completeTaskRun(
   })();
 }
 
+// ─────────────────────────────────────────────────────────────
+// Task Budget Persistence
+// ─────────────────────────────────────────────────────────────
+
+function mapTaskBudgetRow(row: any): TaskBudgetRecord {
+  return {
+    run_id: String(row.run_id),
+    parent_run_id: row.parent_run_id ? String(row.parent_run_id) : null,
+    task_id: row.task_id ? String(row.task_id) : null,
+    chat_jid: row.chat_jid ? String(row.chat_jid) : null,
+    group_folder: row.group_folder ? String(row.group_folder) : null,
+    user_id: row.user_id ? String(row.user_id) : null,
+    max_duration_ms:
+      row.max_duration_ms != null ? Number(row.max_duration_ms) : null,
+    max_tool_calls:
+      row.max_tool_calls != null ? Number(row.max_tool_calls) : null,
+    max_cost_usd: row.max_cost_usd != null ? Number(row.max_cost_usd) : null,
+    current_duration_ms: Number(row.current_duration_ms ?? 0),
+    current_tool_calls: Number(row.current_tool_calls ?? 0),
+    current_cost_usd: Number(row.current_cost_usd ?? 0),
+    retry_count: Number(row.retry_count ?? 0),
+    status: row.status as TaskBudgetRecord['status'],
+    exceeded_reason:
+      (row.exceeded_reason as TaskBudgetRecord['exceeded_reason']) ?? null,
+    partial_result: row.partial_result ? String(row.partial_result) : null,
+    resumed_at: row.resumed_at ? String(row.resumed_at) : null,
+    created_at: String(row.created_at),
+    updated_at: String(row.updated_at),
+  };
+}
+
+export function createTaskBudget(record: TaskBudgetRecord): void {
+  db.prepare(
+    `
+    INSERT INTO task_budgets (
+      run_id, parent_run_id, task_id, chat_jid, group_folder, user_id,
+      max_duration_ms, max_tool_calls, max_cost_usd,
+      current_duration_ms, current_tool_calls, current_cost_usd,
+      retry_count, status, exceeded_reason, partial_result, resumed_at,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(run_id) DO UPDATE SET
+      max_duration_ms = excluded.max_duration_ms,
+      max_tool_calls = excluded.max_tool_calls,
+      max_cost_usd = excluded.max_cost_usd,
+      updated_at = excluded.updated_at
+  `,
+  ).run(
+    record.run_id,
+    record.parent_run_id,
+    record.task_id,
+    record.chat_jid,
+    record.group_folder,
+    record.user_id,
+    record.max_duration_ms,
+    record.max_tool_calls,
+    record.max_cost_usd,
+    record.current_duration_ms,
+    record.current_tool_calls,
+    record.current_cost_usd,
+    record.retry_count,
+    record.status,
+    record.exceeded_reason,
+    record.partial_result,
+    record.resumed_at,
+    record.created_at,
+    record.updated_at,
+  );
+}
+
+export function getTaskBudget(runId: string): TaskBudgetRecord | undefined {
+  const row = db
+    .prepare('SELECT * FROM task_budgets WHERE run_id = ?')
+    .get(runId);
+  return row ? mapTaskBudgetRow(row) : undefined;
+}
+
+export function getTaskBudgetStatus(
+  runId: string,
+): TaskBudgetStatus | undefined {
+  const b = getTaskBudget(runId);
+  if (!b) return undefined;
+  return {
+    runId: b.run_id,
+    parentRunId: b.parent_run_id,
+    configured:
+      b.max_duration_ms != null ||
+      b.max_tool_calls != null ||
+      b.max_cost_usd != null,
+    maxDurationMs: b.max_duration_ms ?? undefined,
+    maxToolCalls: b.max_tool_calls ?? undefined,
+    maxCostUsd: b.max_cost_usd ?? undefined,
+    currentDurationMs: b.current_duration_ms,
+    currentToolCalls: b.current_tool_calls,
+    currentCostUsd: b.current_cost_usd,
+    retryCount: b.retry_count,
+    status: b.status,
+    exceededReason: b.exceeded_reason,
+    partialResult: b.partial_result,
+    resumedAt: b.resumed_at,
+  };
+}
+
+export function getTaskBudgetsByParentRunId(
+  parentRunId: string,
+): TaskBudgetRecord[] {
+  const rows = db
+    .prepare(
+      'SELECT * FROM task_budgets WHERE parent_run_id = ? ORDER BY created_at ASC',
+    )
+    .all(parentRunId);
+  return rows.map(mapTaskBudgetRow);
+}
+
+export function getTaskBudgetsByTaskId(taskId: string): TaskBudgetRecord[] {
+  const rows = db
+    .prepare(
+      'SELECT * FROM task_budgets WHERE task_id = ? ORDER BY created_at DESC',
+    )
+    .all(taskId);
+  return rows.map(mapTaskBudgetRow);
+}
+
+export function getTaskBudgetsByChatJid(chatJid: string): TaskBudgetRecord[] {
+  const rows = db
+    .prepare(
+      'SELECT * FROM task_budgets WHERE chat_jid = ? ORDER BY created_at DESC',
+    )
+    .all(chatJid);
+  return rows.map(mapTaskBudgetRow);
+}
+
+export function updateTaskBudgetUsage(
+  runId: string,
+  delta: {
+    durationMsDelta?: number;
+    toolCallsDelta?: number;
+    costUsdDelta?: number;
+    retryIncrement?: boolean;
+    partialResult?: string | null;
+    status?: TaskBudgetRecord['status'];
+    exceededReason?: TaskBudgetRecord['exceeded_reason'];
+  },
+): TaskBudgetRecord | undefined {
+  return db.transaction(() => {
+    const current = getTaskBudget(runId);
+    if (!current) return undefined;
+
+    const newDuration = Math.max(
+      0,
+      current.current_duration_ms + (delta.durationMsDelta ?? 0),
+    );
+    const newToolCalls = Math.max(
+      0,
+      current.current_tool_calls + (delta.toolCallsDelta ?? 0),
+    );
+    const newCost = Math.max(
+      0,
+      current.current_cost_usd + (delta.costUsdDelta ?? 0),
+    );
+    const newRetries = current.retry_count + (delta.retryIncrement ? 1 : 0);
+    const newPartialResult =
+      delta.partialResult !== undefined
+        ? delta.partialResult
+        : current.partial_result;
+
+    let newStatus = delta.status ?? current.status;
+    let newReason =
+      delta.exceededReason !== undefined
+        ? delta.exceededReason
+        : current.exceeded_reason;
+
+    // Check budget limit conditions automatically if currently active
+    if (newStatus === 'active') {
+      if (
+        current.max_tool_calls != null &&
+        newToolCalls >= current.max_tool_calls
+      ) {
+        newStatus = 'exceeded';
+        newReason = 'tool_calls';
+      } else if (
+        current.max_duration_ms != null &&
+        newDuration >= current.max_duration_ms
+      ) {
+        newStatus = 'exceeded';
+        newReason = 'duration';
+      } else if (
+        current.max_cost_usd != null &&
+        newCost >= current.max_cost_usd
+      ) {
+        newStatus = 'exceeded';
+        newReason = 'cost';
+      }
+    }
+
+    const now = new Date().toISOString();
+    db.prepare(
+      `
+      UPDATE task_budgets
+      SET current_duration_ms = ?,
+          current_tool_calls = ?,
+          current_cost_usd = ?,
+          retry_count = ?,
+          status = ?,
+          exceeded_reason = ?,
+          partial_result = ?,
+          updated_at = ?
+      WHERE run_id = ?
+    `,
+    ).run(
+      newDuration,
+      newToolCalls,
+      newCost,
+      newRetries,
+      newStatus,
+      newReason,
+      newPartialResult,
+      now,
+      runId,
+    );
+
+    // If there is a parent_run_id, also propagate consumption deltas to the parent budget atomically!
+    if (current.parent_run_id) {
+      updateTaskBudgetUsage(current.parent_run_id, {
+        durationMsDelta: delta.durationMsDelta,
+        toolCallsDelta: delta.toolCallsDelta,
+        costUsdDelta: delta.costUsdDelta,
+        retryIncrement: delta.retryIncrement,
+      });
+    }
+
+    return getTaskBudget(runId);
+  })();
+}
+
+export function resumeTaskBudget(
+  runId: string,
+  additionalBudget?: TaskBudgetConfig,
+): TaskBudgetRecord | undefined {
+  return db.transaction(() => {
+    const current = getTaskBudget(runId);
+    if (!current) return undefined;
+
+    const now = new Date().toISOString();
+    let newMaxDuration = current.max_duration_ms;
+    let newMaxToolCalls = current.max_tool_calls;
+    let newMaxCost = current.max_cost_usd;
+
+    if (additionalBudget) {
+      const extraDuration =
+        (additionalBudget as any).additionalDurationMs ??
+        additionalBudget.maxDurationMs;
+      const extraToolCalls =
+        (additionalBudget as any).additionalToolCalls ??
+        additionalBudget.maxToolCalls;
+      const extraCost =
+        (additionalBudget as any).additionalCostUsd ??
+        additionalBudget.maxCostUsd;
+
+      if (extraDuration !== undefined && extraDuration > 0) {
+        newMaxDuration =
+          (newMaxDuration ?? current.current_duration_ms) + extraDuration;
+      }
+      if (extraToolCalls !== undefined && extraToolCalls > 0) {
+        newMaxToolCalls =
+          (newMaxToolCalls ?? current.current_tool_calls) + extraToolCalls;
+      }
+      if (extraCost !== undefined && extraCost > 0) {
+        newMaxCost = (newMaxCost ?? current.current_cost_usd) + extraCost;
+      }
+    }
+
+    db.prepare(
+      `
+      UPDATE task_budgets
+      SET status = 'active',
+          exceeded_reason = NULL,
+          max_duration_ms = ?,
+          max_tool_calls = ?,
+          max_cost_usd = ?,
+          resumed_at = ?,
+          updated_at = ?
+      WHERE run_id = ?
+    `,
+    ).run(newMaxDuration, newMaxToolCalls, newMaxCost, now, now, runId);
+
+    return getTaskBudget(runId);
+  })();
+}
+
 /**
  * Atomically terminalize one fenced isolated execution and enqueue its
  * canonical Web workspace result.
@@ -6024,7 +6399,7 @@ export function completeIsolatedTaskRunWithWorkspaceResultIntent(input: {
   taskId: string;
   leaseOwner: string;
   leaseToken: number;
-  status: 'success' | 'failed';
+  status: 'success' | 'failed' | 'budget_exceeded';
   result?: string | null;
   error?: string | null;
   payload: TaskRunTextNotificationPayload;
@@ -8587,6 +8962,7 @@ type RuntimePolicyInput = Partial<{
       })
     | null;
   mcp: Partial<AgentProfileRuntimePolicy['mcp']> | null;
+  budget: Partial<TaskBudgetConfig> | null;
 }>;
 
 function normalizeIdList(value: unknown): string[] {
@@ -8676,6 +9052,27 @@ export function normalizeAgentProfileRuntimePolicy(
       ),
       ids: normalizeIdList(raw.mcp?.ids),
     },
+    ...(raw.budget
+      ? {
+          budget: {
+            maxDurationMs:
+              typeof raw.budget.maxDurationMs === 'number' &&
+              raw.budget.maxDurationMs > 0
+                ? Math.floor(raw.budget.maxDurationMs)
+                : undefined,
+            maxToolCalls:
+              typeof raw.budget.maxToolCalls === 'number' &&
+              raw.budget.maxToolCalls > 0
+                ? Math.floor(raw.budget.maxToolCalls)
+                : undefined,
+            maxCostUsd:
+              typeof raw.budget.maxCostUsd === 'number' &&
+              raw.budget.maxCostUsd > 0
+                ? raw.budget.maxCostUsd
+                : undefined,
+          },
+        }
+      : {}),
   };
   if (normalized.context.auto_compact_percentage > 0) {
     normalized.context.auto_compact_window = 0;
@@ -8737,6 +9134,14 @@ export function mergeAgentProfileRuntimePolicy(
       : current.context,
     skills: has('skills') ? mergeCapability('skills') : current.skills,
     mcp: has('mcp') ? mergeCapability('mcp') : current.mcp,
+    budget: has('budget')
+      ? (patch as any).budget === null
+        ? undefined
+        : {
+            ...current.budget,
+            ...(patch as any).budget,
+          }
+      : current.budget,
   });
 }
 

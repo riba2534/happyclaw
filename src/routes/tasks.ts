@@ -10,6 +10,7 @@ import {
   TaskCreateSchema,
   TaskPatchSchema,
   TaskPurgeSchema,
+  TaskBudgetResumeSchema,
 } from '../schemas.js';
 import { logger } from '../logger.js';
 import {
@@ -27,7 +28,9 @@ import {
   getRegisteredGroup,
   getAllRegisteredGroups,
   getUserHomeGroup,
+  getTaskBudgetsByTaskId,
 } from '../db.js';
+import { taskBudgetService } from '../task-budget-service.js';
 import { getMergedTaskRunHistory } from '../task-run-history.js';
 import type { AuthUser, ScheduledTask } from '../types.js';
 import { TIMEZONE } from '../config.js';
@@ -311,6 +314,7 @@ tasksRoutes.post('/', authMiddleware, async (c) => {
     created_at: now,
     created_by: authUser.id,
     notify_channels: notify_channels ?? null,
+    budget: validation.data.budget ?? null,
   });
   notifyTaskSchedulerChanged();
 
@@ -953,6 +957,124 @@ tasksRoutes.get('/:id/logs', authMiddleware, (c) => {
   );
   const logs = getTaskRunLogs(id, limit);
   return c.json({ logs });
+});
+
+/**
+ * GET /api/tasks/:id/budget
+ * Query task budget status and consumption records.
+ */
+tasksRoutes.get('/:id/budget', authMiddleware, (c) => {
+  const id = c.req.param('id');
+  const task = getTaskById(id);
+  if (!task) return c.json({ error: 'Task not found' }, 404);
+  const authUser = c.get('user') as AuthUser;
+  const group = getRegisteredGroup(task.chat_jid);
+  if (!group) {
+    if (authUser.role !== 'admin')
+      return c.json({ error: 'Task not found' }, 404);
+  } else {
+    if (!canAccessGroup({ id: authUser.id, role: authUser.role }, group)) {
+      return c.json({ error: 'Task not found' }, 404);
+    }
+  }
+
+  const budgets = getTaskBudgetsByTaskId(id);
+  const latestBudget = budgets[0];
+  const budgetStatus = latestBudget
+    ? taskBudgetService.getStatus(latestBudget.run_id)
+    : undefined;
+
+  return c.json({
+    success: true,
+    taskBudgetConfig: task.budget ?? null,
+    latestBudget: latestBudget ?? null,
+    budgetStatus: budgetStatus ?? null,
+    history: budgets,
+  });
+});
+
+/**
+ * POST /api/tasks/:id/budget/resume
+ * Explicitly resume a task whose budget limit was reached, optionally granting additional budget.
+ */
+tasksRoutes.post('/:id/budget/resume', authMiddleware, async (c) => {
+  const id = c.req.param('id');
+  const task = getTaskById(id);
+  if (!task) return c.json({ error: 'Task not found' }, 404);
+  const authUser = c.get('user') as AuthUser;
+  const group = getRegisteredGroup(task.chat_jid);
+  if (!group) {
+    if (authUser.role !== 'admin')
+      return c.json({ error: 'Task not found' }, 404);
+  } else {
+    if (!canAccessGroup({ id: authUser.id, role: authUser.role }, group)) {
+      return c.json({ error: 'Task not found' }, 404);
+    }
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  const validation = TaskBudgetResumeSchema.safeParse(body);
+  if (!validation.success) {
+    return c.json(
+      { error: 'Invalid request body', details: validation.error.format() },
+      400,
+    );
+  }
+
+  const reqData = validation.data;
+  const budgets = getTaskBudgetsByTaskId(id);
+  const targetBudget = reqData.run_id
+    ? budgets.find((b) => b.run_id === reqData.run_id)
+    : budgets[0];
+
+  let resumedStatus:
+    | ReturnType<typeof taskBudgetService.resumeBudget>
+    | undefined;
+  if (targetBudget) {
+    const additionalBudget = {
+      maxDurationMs:
+        reqData.additionalDurationMs ?? reqData.budget?.maxDurationMs,
+      maxToolCalls: reqData.additionalToolCalls ?? reqData.budget?.maxToolCalls,
+      maxCostUsd: reqData.additionalCostUsd ?? reqData.budget?.maxCostUsd,
+    };
+    resumedStatus = taskBudgetService.resumeBudget(
+      targetBudget.run_id,
+      additionalBudget,
+    );
+  }
+
+  // If task was paused or completed because of once-run limit, reactivate it
+  let updatedTask = task;
+  if (task.status === 'paused' || task.status === 'completed') {
+    const nextRun = computeNextRunForTaskResume(
+      task.schedule_type,
+      task.schedule_value,
+    );
+    const mutation = updateTaskWithRevision(task.id, task.revision, {
+      status: 'active',
+      next_run: nextRun,
+      ...(reqData.budget ? { budget: reqData.budget } : {}),
+    });
+    if (mutation.status === 'updated') {
+      updatedTask = mutation.task;
+    }
+  } else if (reqData.budget) {
+    const mutation = updateTaskWithRevision(task.id, task.revision, {
+      budget: reqData.budget,
+    });
+    if (mutation.status === 'updated') {
+      updatedTask = mutation.task;
+    }
+  }
+
+  notifyTaskSchedulerChanged();
+
+  return c.json({
+    success: true,
+    message: 'Task budget resumed successfully',
+    task: updatedTask,
+    budgetStatus: resumedStatus ?? null,
+  });
 });
 
 /** Build the AI parse prompt for a task description */

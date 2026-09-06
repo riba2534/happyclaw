@@ -20,6 +20,7 @@ import {
   runAgentWithModelFallback,
   writeTasksSnapshot,
 } from './container-runner.js';
+import { taskBudgetService } from './task-budget-service.js';
 import { PROVIDER_FAILURE_USER_NOTICE } from './provider-failure.js';
 import { isProviderQuotaControlOutput } from './provider-quota-observation.js';
 import {
@@ -1122,6 +1123,22 @@ async function runTaskInner(
   let result: string | null = null;
   let error: string | null = null;
   let scheduledInputCompleted = false;
+  let latestOutput: ContainerOutput | undefined;
+
+  const taskBudgetConfig =
+    options?.durableRun?.definition_snapshot?.budget ?? task.budget ?? null;
+  const taskBudgetRunId =
+    options?.taskRunId || `task_run_${task.id}_${Date.now()}`;
+  if (taskBudgetConfig) {
+    taskBudgetService.initBudget({
+      runId: taskBudgetRunId,
+      taskId: task.id,
+      chatJid: workspace.jid,
+      groupFolder: workspace.folder,
+      userId: workspaceOwnerId,
+      config: taskBudgetConfig,
+    });
+  }
   // Track the time of last meaningful output from the agent.
   // duration_ms should measure actual work time, not include idle wait.
   let lastOutputTime = startTime;
@@ -1142,26 +1159,57 @@ async function runTaskInner(
     if (!preparedDurableWorkspaceCommit) {
       const durableRun = options.durableRun;
       const runId = durableRun.id;
-      const cleanedResult = result ? stripAgentInternalTags(result) : null;
-      const durableOutcomeError =
-        error ||
-        (cleanedResult?.trim()
-          ? null
-          : '定时任务已结束，但 Agent 没有返回可展示的完整业务结果。');
+      const budgetStatus = taskBudgetService.getStatus(taskBudgetRunId);
+      const isBudgetExceeded =
+        budgetStatus?.status === 'exceeded' ||
+        latestOutput?.finalizationReason === 'budget_exceeded' ||
+        latestOutput?.budgetExceeded === true;
+      const budgetExceededReason =
+        budgetStatus?.exceededReason ||
+        latestOutput?.budgetSnapshot?.exceededReason ||
+        'limit_reached';
+
+      const effectiveRawResult =
+        result ||
+        latestOutput?.result ||
+        latestOutput?.budgetSnapshot?.partialResult ||
+        budgetStatus?.partialResult;
+      const cleanedResult = effectiveRawResult
+        ? stripAgentInternalTags(effectiveRawResult)
+        : null;
+      const durableOutcomeError = isBudgetExceeded
+        ? null
+        : error ||
+          (cleanedResult?.trim()
+            ? null
+            : '定时任务已结束，但 Agent 没有返回可展示的完整业务结果。');
+      const partialResultNotice = isBudgetExceeded
+        ? `\n\n[任务已达到单次运行预算上限 (${budgetExceededReason})，已保留当前部分成果。可调整预算后显式恢复继续。]`
+        : '';
+      const finalCleanedResult = cleanedResult
+        ? cleanedResult + partialResultNotice
+        : isBudgetExceeded
+          ? `[任务已达到单次运行预算上限 (${budgetExceededReason})，已保留当前部分成果]`
+          : null;
       const workspaceResult = formatScheduledTaskWorkspaceResult({
         task,
         runId,
-        result: cleanedResult,
+        result: finalCleanedResult,
         error: durableOutcomeError,
       });
+      const terminalStatus = isBudgetExceeded
+        ? 'budget_exceeded'
+        : durableOutcomeError
+          ? 'failed'
+          : 'success';
       preparedDurableWorkspaceCommit = () =>
         completeIsolatedTaskRunWithWorkspaceResultIntent({
           runId,
           taskId: task.id,
           leaseOwner: durableRun.lease_owner,
           leaseToken: durableRun.lease_token,
-          status: durableOutcomeError ? 'failed' : 'success',
-          result: cleanedResult,
+          status: terminalStatus,
+          result: finalCleanedResult,
           error: durableOutcomeError,
           payload: {
             kind: 'workspace_result',
@@ -1292,6 +1340,8 @@ async function runTaskInner(
         isAdminHome,
         isScheduledTask: true,
         taskRunId: options?.taskRunId,
+        budgetConfig: taskBudgetConfig,
+        budgetRunId: taskBudgetRunId,
         // The run ID is only an IPC/session namespace.  Routing must use the
         // stable scheduled-task ID so notify_channels and chat_jid resolve.
         messageTaskId: task.id,
@@ -1309,6 +1359,7 @@ async function runTaskInner(
           selectedProviderId,
         ),
       async (streamedOutput: ContainerOutput) => {
+        latestOutput = streamedOutput;
         if (isProviderQuotaControlOutput(streamedOutput)) {
           lastOutputTime = Date.now();
           resetIdleTimer();
@@ -1329,6 +1380,21 @@ async function runTaskInner(
           result = streamedOutput.result;
           lastOutputTime = Date.now();
           resetIdleTimer();
+        }
+        if (
+          streamedOutput.finalizationReason === 'budget_exceeded' ||
+          streamedOutput.budgetExceeded
+        ) {
+          scheduledInputCompleted = true;
+          if (
+            streamedOutput.result ||
+            streamedOutput.budgetSnapshot?.partialResult
+          ) {
+            result =
+              streamedOutput.result ||
+              streamedOutput.budgetSnapshot?.partialResult ||
+              result;
+          }
         }
         if (
           !streamedOutput.providerFailure &&
@@ -1383,6 +1449,7 @@ async function runTaskInner(
       ownerHomeFolder,
     );
 
+    latestOutput = output;
     if (idleTimer) clearTimeout(idleTimer);
 
     if (!output.providerFailure && output.inputTurnCompleted === true) {

@@ -32,11 +32,28 @@ export type StreamEventType =
   | 'context_audit'
   | 'todo_update'
   | 'usage'
+  | 'budget_status'
   | 'status'
   | 'init';
 
 export type StreamAgentScope = 'main' | 'task' | 'subagent' | 'system';
 export type StreamDisplayLevel = 'primary' | 'detail' | 'debug';
+
+export type BudgetExceededReason = 'duration' | 'tool_calls' | 'cost';
+
+export interface TaskBudgetSnapshot {
+  configured: boolean;
+  maxDurationMs?: number;
+  maxToolCalls?: number;
+  maxCostUsd?: number;
+  currentDurationMs: number;
+  currentToolCalls: number;
+  currentCostUsd: number;
+  retryCount?: number;
+  status: 'active' | 'exceeded' | 'completed' | 'cancelled';
+  exceededReason?: BudgetExceededReason | null;
+  partialResult?: string | null;
+}
 
 export interface WorkflowPhaseSnapshot {
   index: number;
@@ -366,6 +383,8 @@ export interface StreamEvent {
     content: string;
     status: 'pending' | 'in_progress' | 'completed';
   }>;
+  /** Task budget snapshot emitted during execution or when budget limit is reached */
+  budgetSnapshot?: TaskBudgetSnapshot;
   /** Token usage data emitted at query completion */
   usage?: {
     /** Stable logical run ID used to make analytics and billing idempotent. */
