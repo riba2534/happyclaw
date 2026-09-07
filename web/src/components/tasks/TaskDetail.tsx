@@ -409,14 +409,17 @@ export function TaskDetail({ task }: TaskDetailProps) {
   );
 
   useEffect(() => {
-    void useTasksStore
-      .getState()
-      .getTaskBudget(task.id)
-      .then((res) => {
-        if (res?.budgetStatus) {
-          setBudgetStatus(res.budgetStatus);
-        }
-      });
+    if (typeof useTasksStore.getState === 'function') {
+      void useTasksStore
+        .getState()
+        .getTaskBudget?.(task.id)
+        ?.then((res) => {
+          if (res?.budgetStatus) {
+            setBudgetStatus(res.budgetStatus);
+          }
+        })
+        .catch(() => {});
+    }
   }, [
     task.id,
     task.current_run?.updated_at,

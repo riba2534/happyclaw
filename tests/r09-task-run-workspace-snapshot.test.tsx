@@ -51,22 +51,30 @@ const legacyRunWithoutSnapshot: TaskRunLog = {
 vi.mock('../web/src/stores/tasks', async (importOriginal) => {
   const actual =
     await importOriginal<typeof import('../web/src/stores/tasks')>();
+  const getState = () => ({
+    groupNames: {
+      'web:workspace-a': '工作区 A (历史源)',
+      'web:workspace-b': '工作区 B (当前位置)',
+    },
+    logs: {
+      'task-100': [runWithSnapshot, legacyRunWithoutSnapshot],
+    },
+    loadLogs: vi.fn(),
+    updateTask: vi.fn(),
+    getTaskBudget: vi.fn().mockResolvedValue(null),
+    resumeTaskBudget: vi.fn().mockResolvedValue(undefined),
+    loadTasks: vi.fn().mockResolvedValue(undefined),
+    createTask: vi.fn().mockResolvedValue(undefined),
+    error: null,
+  });
+  const mockStore: any = (selector?: any) => {
+    const state = getState();
+    return typeof selector === 'function' ? selector(state) : state;
+  };
+  mockStore.getState = getState;
   return {
     ...actual,
-    useTasksStore: (selector?: any) => {
-      const state = {
-        groupNames: {
-          'web:workspace-a': '工作区 A (历史源)',
-          'web:workspace-b': '工作区 B (当前位置)',
-        },
-        logs: {
-          'task-100': [runWithSnapshot, legacyRunWithoutSnapshot],
-        },
-        loadLogs: vi.fn(),
-        updateTask: vi.fn(),
-      };
-      return typeof selector === 'function' ? selector(state) : state;
-    },
+    useTasksStore: mockStore,
   };
 });
 
