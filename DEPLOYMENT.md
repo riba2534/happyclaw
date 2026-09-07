@@ -58,14 +58,14 @@ test "$(git rev-parse "origin/$HAPPYCLAW_DEPLOY_REF")" = "$HAPPYCLAW_EXPECTED_SH
 `HAPPYCLAW_SKIP_MIGRATION_BACKUP=1`；它只关闭启动时的 schema 迁移快照，其他安装默认仍会
 在迁移前创建并校验快照。
 
-## 3. 构建与切换
+## 3. 原子构建与切换 (R11)
 
-使用远程分支的精确提交，以 detached HEAD 部署，避免意外推进 Mac mini 上的 `main`：
+为了防止原地并发构建中前端改写旧服务静态资源、后端或 Runner 编译失败导致混用前后端版本，生产环境采用**独立候选准备 + 原子切换**机制。
+所有三包（主服务 `dist/`、前端 `web/dist/`、Agent Runner `container/agent-runner/dist/`）及不可变镜像就绪前，在线运行版本、代码与静态资源分毫不动。
+
+在部署机上执行原子发布脚本：
 
 ```bash
-git switch --detach "$HAPPYCLAW_EXPECTED_SHA"
-test "$(git rev-parse HEAD)" = "$HAPPYCLAW_EXPECTED_SHA"
-
 if grep -q '^HAPPYCLAW_SKIP_MIGRATION_BACKUP=' .env 2>/dev/null; then
   sed -i '' 's/^HAPPYCLAW_SKIP_MIGRATION_BACKUP=.*$/HAPPYCLAW_SKIP_MIGRATION_BACKUP=1/' .env
 else
@@ -73,46 +73,35 @@ else
 fi
 chmod 600 .env
 
-/bin/zsh -lic 'make install'
-/bin/zsh -lic 'npm run build:all'
-/bin/zsh -lic "docker pull '$HAPPYCLAW_AGENT_IMAGE'"
+# 执行端到端原子发布
+./scripts/deploy-release.sh
 ```
 
-若本次使用不可变分支镜像，只原地更新现有 `.env` 中的 `CONTAINER_IMAGE`；不得创建
-备份副本、覆盖其他环境变量或把 `.env` 提交到 Git：
+`deploy-release.sh` 执行的原子发布流程：
 
-```bash
-if grep -q '^CONTAINER_IMAGE=' .env 2>/dev/null; then
-  sed -i '' "s|^CONTAINER_IMAGE=.*$|CONTAINER_IMAGE=$HAPPYCLAW_AGENT_IMAGE|" .env
-else
-  printf '\nCONTAINER_IMAGE=%s\n' "$HAPPYCLAW_AGENT_IMAGE" >> .env
-fi
-chmod 600 .env
-```
+1. **工作树干净预检**：校验当前目录无未提交更改，记录旧版本 `HAPPYCLAW_PREVIOUS_SHA`；
+2. **独立候选准备 (.release-candidate)**：在隔离 worktree 中签出 `HAPPYCLAW_EXPECTED_SHA`，隔离执行三包全量构建 `npm run build:all`（包括主服务、Web 前端与 Agent Runner）；
+3. **不可变镜像校验**：分支构建必须使用 `riba2534/happyclaw-agent:git-<SHA>` 不可变标签，严禁使用浮动的 `latest`；
+4. **失败零污染防护**：任一步构建或校验失败，脚本立即退出并清理候选目录，线上正运行的代码与 `web/dist` 绝不受任何影响；
+5. **原子激活 (Atomic Switch)**：三包产物全部校验成功后，将当前在线产物安全归档至 `.release-previous`（仅保留代码 SHA 与三包产物，**绝不备份 SQLite/runtime/.env 数据**），随后将 Git HEAD 与三包产物同步切换至目标版本；
+6. **配置原地更新**：若使用了不可变分支镜像，仅原地更新 `.env` 中的 `CONTAINER_IMAGE`，权限保持 `600`。
 
-构建失败时不要重启服务；旧进程仍在使用此前的 `dist/`。修复分支后重新从预检开始。
+## 4. 重启与生产业务就绪验证 (R12)
 
-## 4. 重启与生产验证
+发布脚本在 Mac mini 生产环境下会自动通过 launchd 重启服务单元，并轮询业务就绪探针：
 
 ```bash
 launchctl kickstart -k "gui/$(id -u)/com.riba2534.happyclaw"
 
-for attempt in {1..30}; do
-  if curl -fsS http://127.0.0.1:3000/api/health; then
-    break
-  fi
-  if [ "$attempt" -eq 30 ]; then
-    echo 'HappyClaw did not become healthy.' >&2
-    exit 1
-  fi
-  sleep 2
-done
+# 业务就绪探针 (Readiness)：验证 DB、恢复周期、消费者与启用渠道连接已全部就绪
+./scripts/wait-for-readiness.mjs --port 3000 --timeout 60
 
 launchctl print "gui/$(id -u)/com.riba2534.happyclaw" | head -40
 lsof -nP -iTCP:3000 -sTCP:LISTEN
 curl -fsS http://127.0.0.1:3000/api/config/appearance/public
 test "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/api/auth/me)" = 401
 curl -fsS "$HAPPYCLAW_PUBLIC_URL_PRIMARY/api/health"
+curl -fsS "$HAPPYCLAW_PUBLIC_URL_PRIMARY/api/health/readiness"
 curl -fsS "$HAPPYCLAW_PUBLIC_URL_SECONDARY/api/health"
 tail -100 "$HOME/Library/Logs/happyclaw/happyclaw.log"
 ```
@@ -125,23 +114,32 @@ tail -100 "$HOME/Library/Logs/happyclaw/happyclaw.log"
    `/api/config/appearance/public` 一致。
 4. 展开负载均衡设置，用键盘访问策略和数字字段；数字只在失焦或 Enter 后保存，快速操作
    不得回滚为旧值。
-5. 发起一个真实 Web Agent 回合；若本次涉及渠道或容器，再完成对应 IM 收发和 Container
+5. 检查系统监控页面 (`/monitor`)：
+   - 检查各启用渠道连接状态；
+   - 检查出站队列 (Outbox) 监控卡片，确认年龄计算、异常定位及来源 Bot/群/话题/Session 展示正常；
+   - 若存在待确认投递 (uncertain)，可直接在界面上查看路由身份并执行 CAS 裁决。
+6. 发起一个真实 Web Agent 回合；若本次涉及渠道或容器，再完成对应 IM 收发和 Container
    Agent 回合，确认流式输出、文件访问及最终回执正常。
-6. 检查两个生产公网入口的 `/api/health`、TLS 和静态资源加载均成功。
+7. 检查两个生产公网入口的 `/api/health` 与 `/api/health/readiness`、TLS 和静态资源加载均成功。
 
 本地通过不等于部署完成；以上生产检查未通过时不得报告完成。
 
-## 5. 回滚
+## 5. 回滚 (Rollback)
 
-应用代码或构建产物异常、且数据库仍兼容旧代码时，回到第 2 节记录的提交：
+应用代码或构建产物异常、且数据库仍兼容旧代码时，可运行回滚脚本瞬间恢复到上一版本：
 
 ```bash
-git switch --detach "$HAPPYCLAW_PREVIOUS_SHA"
-/bin/zsh -lic 'make install'
-/bin/zsh -lic 'npm run build:all'
-launchctl kickstart -k "gui/$(id -u)/com.riba2534.happyclaw"
-curl -fsS http://127.0.0.1:3000/api/health
+# 一键原子回滚至上一发布版本
+./scripts/rollback-release.sh
+
+# 或指定明确的历史 Commit SHA 进行回滚
+./scripts/rollback-release.sh "$HAPPYCLAW_PREVIOUS_SHA"
 ```
+
+回滚脚本会从 `.release-previous` 快速还原上一版本的 Git HEAD 与三包产物，并重启服务与验证就绪。
+所有者选择不保留数据备份，因此数据库迁移后不存在数据恢复路径。若迁移导致旧代码
+不兼容，应停止继续切换并以前向修复恢复服务，不得自行创建或恢复备份。回滚后重复第 4
+节的健康检查与真实功能测试，并明确报告仅发生了代码回滚。
 
 所有者选择不保留数据备份，因此数据库迁移后不存在数据恢复路径。若迁移导致旧代码
 不兼容，应停止继续切换并以前向修复恢复服务，不得自行创建或恢复备份。回滚后重复第 4

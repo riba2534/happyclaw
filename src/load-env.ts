@@ -1,8 +1,43 @@
-// 在任何其它模块读取 process.env 之前，把项目根目录的 .env 加载进环境变量。
-// 自托管部署用 .env 配置 CORS_ALLOWED_ORIGINS（公网域名白名单）、自定义 env 等。
-// 必须作为 index.ts 的第一个 import，确保 config.ts / web.ts 在求值时已能读到这些值。
-// 缺少 .env 文件属正常情况（所有 env 均有默认值），静默忽略。
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { setGlobalDispatcher, EnvHttpProxyAgent } from 'undici';
+
+// --- Release Root Bootstrap ---
+// 在加载任何业务逻辑前，识别并锚定不可变版本根，防止老进程因符号链接切换而混版
+try {
+  const currentFilePath = fs.realpathSync(fileURLToPath(import.meta.url));
+  let dir = path.dirname(currentFilePath);
+  let releaseRoot: string | null = null;
+  let commitSha: string | null = null;
+
+  for (let i = 0; i < 5; i++) {
+    const vFile = path.join(dir, 'version.json');
+    if (fs.existsSync(vFile)) {
+      try {
+        const v = JSON.parse(fs.readFileSync(vFile, 'utf8'));
+        if (v.commitSha) {
+          releaseRoot = dir;
+          commitSha = v.commitSha;
+          break;
+        }
+      } catch {}
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+
+  if (releaseRoot && commitSha) {
+    process.env.HAPPYCLAW_BOOTSTRAP_SHA = commitSha;
+    process.env.HAPPYCLAW_RELEASE_ROOT = releaseRoot;
+    if (path.resolve(process.cwd()) !== path.resolve(releaseRoot)) {
+      process.chdir(releaseRoot);
+    }
+  }
+} catch {
+  // 非版本化运行模式（如直接本地开发），保持默认当前工作目录
+}
 
 try {
   // process.loadEnvFile() 读取 cwd 下的 .env（Node 20.12+ / 21.7+ 起稳定）。

@@ -13,7 +13,12 @@ import {
 } from '../web-context.js';
 import { canAccessGroup } from '../group-acl.js';
 import {
+  getAgent,
   getAllRegisteredGroups,
+  getChannelAccount,
+  getChannelMount,
+  getImContextBinding,
+  getImContextBindingByRootMessageId,
   getRegisteredGroup,
   getRouterState,
   getUserById,
@@ -21,12 +26,18 @@ import {
 } from '../db.js';
 import {
   getChannelOutboxItem,
+  getChannelTurnRun,
+  hasUncertainChannelOutbox,
   listUncertainChannelOutbox,
+  listChannelOutboxForMonitoring,
+  getChannelOutboxSummary,
   resolveUncertainChannelOutbox,
+  type ChannelOutboxItem,
 } from '../channel-reliability-store.js';
 import { CONTAINER_IMAGE } from '../config.js';
 import { getSystemSettings, getProviders } from '../runtime-config.js';
 import { logger } from '../logger.js';
+import { readinessManager } from '../readiness-manager.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -195,7 +206,7 @@ export function injectMonitorDeps(deps: {
 
 const monitorRoutes = new Hono<{ Variables: Variables }>();
 
-// GET /api/health - 健康检查（无认证）
+// GET /api/health - 健康检查（无认证，保留现有兼容结构）
 monitorRoutes.get('/health', async (c) => {
   const checks = {
     database: false,
@@ -235,6 +246,23 @@ monitorRoutes.get('/health', async (c) => {
 
   return c.json({ status, checks }, statusCode);
 });
+
+// GET /api/health/readiness - 业务就绪探针（无认证，安全脱敏，暴露整体就绪状态、概要与运行版本 SHA，不泄漏内部账号与详细报错）
+monitorRoutes.get('/health/readiness', async (c) => {
+  const report = readinessManager.getPublicReport();
+  return c.json(report, report.statusCode);
+});
+
+// GET /api/status/readiness - 管理员业务就绪完整诊断（需系统管理权限，包含内部账号明细、连接时间与详细报错）
+monitorRoutes.get(
+  '/status/readiness',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const report = readinessManager.getAdminReport();
+    return c.json(report, report.statusCode);
+  },
+);
 
 async function checkDockerImageExists(): Promise<boolean> {
   // Skip Docker check entirely when no groups use container mode
@@ -358,7 +386,192 @@ monitorRoutes.post(
     ),
 );
 
-// GET /api/status/channel-outbox/uncertain - 列出待人工确认的投递
+function formatAge(ageMs: number): string {
+  if (ageMs < 1000) return `${ageMs}ms`;
+  const seconds = Math.floor(ageMs / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes < 60) {
+    return `${minutes}m ${remainingSeconds}s`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${hours}h ${remainingMinutes}m`;
+}
+
+function resolveWorkspaceAndAgent(item: ChannelOutboxItem) {
+  const turnRun = item.turnRunId ? getChannelTurnRun(item.turnRunId) : null;
+  const sessionId = turnRun?.sessionId ?? null;
+  let agentId = turnRun?.agentId ?? null;
+
+  let groupFolder: string | null = null;
+  let groupName: string | null = null;
+
+  // 1. 如果有 agentId，通过 agent -> parent workspace
+  if (agentId) {
+    const agent = getAgent(agentId);
+    if (agent?.chat_jid) {
+      const parentGroup = getRegisteredGroup(agent.chat_jid);
+      if (parentGroup?.folder) {
+        groupFolder = parentGroup.folder;
+        groupName = parentGroup.name;
+      }
+    }
+  }
+
+  // 2. 如果是原生话题，通过 im_context_bindings
+  if (!groupFolder && item.sourceJid) {
+    const threadContextId = item.threadId || item.rootId;
+    let binding = threadContextId
+      ? getImContextBinding(item.sourceJid, 'thread', threadContextId)
+      : undefined;
+    if (!binding && item.rootId) {
+      binding = getImContextBindingByRootMessageId(
+        item.sourceJid,
+        'thread',
+        item.rootId,
+      );
+    }
+    if (binding) {
+      if (!agentId && binding.agent_id) agentId = binding.agent_id;
+      if (binding.workspace_jid) {
+        const ws = getRegisteredGroup(binding.workspace_jid);
+        if (ws?.folder) {
+          groupFolder = ws.folder;
+          groupName = ws.name;
+        }
+      }
+    }
+  }
+
+  // 3. 通过 channel_mounts
+  if (!groupFolder && item.sourceJid) {
+    const baseJid = item.sourceJid.includes('#')
+      ? item.sourceJid.split('#')[0]
+      : item.sourceJid;
+    const mount = getChannelMount(item.sourceJid) || getChannelMount(baseJid);
+    if (mount?.workspace_jid) {
+      const ws = getRegisteredGroup(mount.workspace_jid);
+      if (ws?.folder) {
+        groupFolder = ws.folder;
+        groupName = ws.name;
+      }
+    }
+  }
+
+  // 4. 兜底通过 sourceJid 直接查 registeredGroup
+  if (!groupFolder && item.sourceJid) {
+    const baseJid = item.sourceJid.includes('#')
+      ? item.sourceJid.split('#')[0]
+      : item.sourceJid;
+    const group =
+      getRegisteredGroup(item.sourceJid) || getRegisteredGroup(baseJid);
+    if (group?.folder) {
+      groupFolder = group.folder;
+      groupName = group.name;
+    } else if (item.sourceJid.startsWith('web:')) {
+      groupFolder = item.sourceJid.replace(/^web:/, '');
+    }
+  }
+
+  // 5. 导航 URL：真实 ChatView 消费的是 ?agent=
+  let navigationUrl: string | null = null;
+  if (groupFolder) {
+    navigationUrl = agentId
+      ? `/chat/${groupFolder}?agent=${encodeURIComponent(agentId)}`
+      : `/chat/${groupFolder}`;
+  }
+
+  return {
+    sessionId,
+    agentId,
+    groupFolder,
+    groupName,
+    navigationUrl,
+  };
+}
+
+function enrichOutboxItem(item: ChannelOutboxItem, now = Date.now()) {
+  const createdTime = new Date(item.createdAt).getTime();
+  const ageMs = Math.max(0, now - createdTime);
+  const ageSeconds = Math.floor(ageMs / 1000);
+  const isOverdue = item.status !== 'delivered' && ageMs > 60_000;
+
+  // 1. Bot 名称
+  const account = item.accountId ? getChannelAccount(item.accountId) : null;
+  const botName = account?.name ?? null;
+
+  // 2. 真实 Workspace 与 Agent 路由解析
+  const { sessionId, agentId, groupFolder, groupName, navigationUrl } =
+    resolveWorkspaceAndAgent(item);
+
+  // 保持原有顶层字段兼容性，严守隐私不包含 payload
+  return {
+    id: item.id,
+    turnRunId: item.turnRunId,
+    kind: item.kind,
+    ordinal: item.ordinal,
+    revision: item.revision,
+    status: item.status,
+    provider: item.provider,
+    accountId: item.accountId,
+    chatId: item.chatId,
+    attempt: item.attempt,
+    error: item.error,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    deliveredAt: item.deliveredAt,
+    providerMessageId: item.providerMessageId,
+    ageMs,
+    ageSeconds,
+    ageFormatted: formatAge(ageMs),
+    isOverdue,
+    route: {
+      provider: item.provider,
+      accountId: item.accountId,
+      botName,
+      sourceJid: item.sourceJid,
+      chatId: item.chatId,
+      rootId: item.rootId,
+      threadId: item.threadId,
+      sessionId,
+      agentId,
+      groupFolder,
+      groupName,
+      navigationUrl,
+    },
+  };
+}
+
+// GET /api/status/channel-outbox - 查询渠道出站队列状态（支持状态过滤与超期项）
+monitorRoutes.get(
+  '/status/channel-outbox',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const statusParam = c.req.query('status');
+    const overdueOnlyParam = c.req.query('overdueOnly') === 'true';
+    const limitParam = Number(c.req.query('limit') ?? '100');
+    const limit = Number.isFinite(limitParam) ? limitParam : 100;
+
+    const summary = getChannelOutboxSummary();
+    const items = listChannelOutboxForMonitoring({
+      status: statusParam || undefined,
+      overdueOnly: overdueOnlyParam,
+      limit,
+    });
+
+    const now = Date.now();
+    return c.json({
+      summary,
+      items: items.map((i) => enrichOutboxItem(i, now)),
+      total: items.length,
+    });
+  },
+);
+
+// GET /api/status/channel-outbox/uncertain - 列出待人工确认的投递（补充路由身份与年龄）
 //
 // An outbox row goes `uncertain` when the send started but its provider ACK
 // was lost. That fences the whole turn: a sibling row could duplicate a
@@ -374,29 +587,17 @@ monitorRoutes.get(
     const items = listUncertainChannelOutbox(
       Number.isFinite(limitParam) ? limitParam : 100,
     );
+    const now = Date.now();
     // Payload is deliberately omitted: it carries user message content, and
     // the operator only needs identity plus routing to reconcile.
     return c.json({
-      items: items.map((item) => ({
-        id: item.id,
-        turnRunId: item.turnRunId,
-        kind: item.kind,
-        ordinal: item.ordinal,
-        revision: item.revision,
-        provider: item.provider,
-        accountId: item.accountId,
-        chatId: item.chatId,
-        attempt: item.attempt,
-        error: item.error,
-        createdAt: item.createdAt,
-        updatedAt: item.updatedAt,
-      })),
+      items: items.map((item) => enrichOutboxItem(item, now)),
       total: items.length,
     });
   },
 );
 
-// POST /api/status/channel-outbox/:id/resolve - 人工裁决一条待确认投递
+// POST /api/status/channel-outbox/:id/resolve - 人工裁决一条待确认投递并展示影响结果
 monitorRoutes.post(
   '/status/channel-outbox/:id/resolve',
   authMiddleware,
@@ -488,7 +689,41 @@ monitorRoutes.post(
       },
       'Uncertain channel outbox item resolved by operator',
     );
-    return c.json({ ok: true, id, resolution: body.resolution });
+
+    // 关键修正：真实复查同 Turn 是否还有其他未决 uncertain 兄弟项
+    const stillHasUncertain = hasUncertainChannelOutbox(existing.turnRunId);
+    const turnStatus = stillHasUncertain
+      ? 'fenced_by_siblings'
+      : 'fence_released';
+
+    const enriched = enrichOutboxItem(existing);
+    const impactDescription =
+      body.resolution === 'delivered'
+        ? stillHasUncertain
+          ? `投递已标记为由平台成功接收 (MessageID: ${body.providerMessageId})。但回合 ${existing.turnRunId} 仍有其他待确认兄弟项，栅栏保持有效。`
+          : `投递已标记为由平台成功接收 (MessageID: ${body.providerMessageId})。回合 ${existing.turnRunId} 栅栏已完全释放，后续队列可继续推进。`
+        : stillHasUncertain
+          ? `投递已标记失败 (原因: ${body.error || '操作员标记投递失败'})。回合 ${existing.turnRunId} 仍有其他未决条目，栅栏保持有效。`
+          : `投递已标记失败 (原因: ${body.error || '操作员标记投递失败'})。回合 ${existing.turnRunId} 不再重复发送本条目，栅栏已完全释放。`;
+
+    return c.json({
+      ok: true,
+      id,
+      resolution: body.resolution,
+      turnRunId: existing.turnRunId,
+      previousRevision: existing.revision,
+      newRevision: existing.revision + 1,
+      impact: {
+        action:
+          body.resolution === 'delivered'
+            ? 'marked_delivered'
+            : 'marked_failed',
+        turnRunId: existing.turnRunId,
+        turnStatus,
+        description: impactDescription,
+        route: enriched.route,
+      },
+    });
   },
 );
 

@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import crypto from 'node:crypto';
+import { readinessManager } from '../readiness-manager.js';
 import type { Variables } from '../web-context.js';
 import { authMiddleware } from '../middleware/auth.js';
 import type {
@@ -602,6 +603,21 @@ routes.post('/', authMiddleware, async (c) => {
             ? 'authorized'
             : 'draft',
     });
+    readinessManager.registerChannel({
+      id: account.id,
+      provider: account.provider,
+      name: account.name,
+      enabled: account.enabled,
+      status: !account.enabled
+        ? 'disabled'
+        : account.auth_mode === 'qr_session'
+          ? 'connecting'
+          : 'connecting',
+      error:
+        account.enabled && account.auth_mode === 'qr_session'
+          ? 'Awaiting QR scan authorization'
+          : null,
+    });
     if (account.enabled && account.auth_mode !== 'qr_session') {
       const connected = await deps.reloadChannelAccount?.(account.id);
       if (connected === false) {
@@ -611,8 +627,16 @@ routes.post('/', authMiddleware, async (c) => {
           'Connection failed',
         );
         updateChannelAccountStatus(account.id, 'error', 'Connection failed');
+        readinessManager.setChannelStatus(
+          account.id,
+          'failed',
+          'Connection failed',
+        );
       } else {
         updateChannelAccountAuthStatus(account.id, 'authorized');
+        if (account.provider !== 'wechat' && account.provider !== 'whatsapp') {
+          readinessManager.setChannelStatus(account.id, 'connected');
+        }
       }
     }
     return c.json(
@@ -1200,37 +1224,92 @@ routes.post('/:id/toggle', authMiddleware, async (c) => {
   if (!current) return c.json({ error: 'Channel account not found' }, 404);
   const enabled = !current.enabled;
   updateChannelAccount(id, user.id, { enabled });
-  if (enabled && current.auth_status === 'authorized') {
-    updateChannelAccountStatus(id, 'connecting');
-    try {
-      const connected = await deps.reloadChannelAccount?.(id);
-      if (connected === false) {
+  if (enabled) {
+    if (current.auth_status === 'authorized') {
+      updateChannelAccountStatus(id, 'connecting');
+      readinessManager.registerChannel({
+        id: current.id,
+        provider: current.provider,
+        name: current.name,
+        enabled: true,
+        status: 'connecting',
+      });
+      try {
+        const connected = await deps.reloadChannelAccount?.(id);
+        if (connected === false) {
+          updateChannelAccount(id, user.id, { enabled: false });
+          updateChannelAccountStatus(id, 'error', 'Connection failed');
+          readinessManager.registerChannel({
+            id: current.id,
+            provider: current.provider,
+            name: current.name,
+            enabled: false,
+            status: 'disabled',
+          });
+          syncLegacyUserImFacade(getChannelAccountForUser(id, user.id)!);
+          return c.json(
+            {
+              error: 'Connection failed',
+              account: publicAccount(getChannelAccountForUser(id, user.id)!),
+            },
+            422,
+          );
+        } else {
+          // 异步渠道 (微信、WhatsApp) 保留 connecting 等待真实 native 回调；仅同步渠道可在此处判定 connected
+          if (
+            current.provider !== 'wechat' &&
+            current.provider !== 'whatsapp'
+          ) {
+            readinessManager.setChannelStatus(id, 'connected');
+          }
+        }
+      } catch (error) {
         updateChannelAccount(id, user.id, { enabled: false });
         updateChannelAccountStatus(id, 'error', 'Connection failed');
+        readinessManager.registerChannel({
+          id: current.id,
+          provider: current.provider,
+          name: current.name,
+          enabled: false,
+          status: 'disabled',
+        });
         syncLegacyUserImFacade(getChannelAccountForUser(id, user.id)!);
+        const message = error instanceof Error ? error.message : String(error);
         return c.json(
           {
-            error: 'Connection failed',
+            error: `Connection failed: ${message}`,
             account: publicAccount(getChannelAccountForUser(id, user.id)!),
           },
-          422,
+          502,
         );
       }
-    } catch (error) {
-      updateChannelAccount(id, user.id, { enabled: false });
-      updateChannelAccountStatus(id, 'error', 'Connection failed');
-      syncLegacyUserImFacade(getChannelAccountForUser(id, user.id)!);
-      const message = error instanceof Error ? error.message : String(error);
-      return c.json(
-        {
-          error: `Connection failed: ${message}`,
-          account: publicAccount(getChannelAccountForUser(id, user.id)!),
-        },
-        502,
-      );
+    } else {
+      // 启用中的账号但未授权 (draft / awaiting_scan / expired 等)，绝不能置为 disabled 误报 ready！
+      const isAwaiting =
+        current.auth_status === 'draft' ||
+        current.auth_status === 'awaiting_scan';
+      readinessManager.registerChannel({
+        id: current.id,
+        provider: current.provider,
+        name: current.name,
+        enabled: true,
+        status: isAwaiting ? 'connecting' : 'failed',
+        error: isAwaiting
+          ? 'Awaiting authorization (QR scan / credentials)'
+          : current.last_error || 'Account authorization expired or revoked',
+      });
     }
   } else {
-    if (!enabled) cancelPendingOnboarding(current);
+    // 真实停用 (enabled === false)
+    readinessManager.registerChannel({
+      id: current.id,
+      provider: current.provider,
+      name: current.name,
+      enabled: false,
+      status: 'disabled',
+      error: null,
+    });
+    cancelPendingOnboarding(current);
     try {
       await deps.disconnectChannelAccount?.(id);
     } catch (error) {
@@ -1288,6 +1367,7 @@ routes.delete('/:id', authMiddleware, async (c) => {
   pendingWeChatQr.delete(id);
   deleteChannelAccount(id, user.id);
   deleteChannelAccountSecret(account.secret_ref);
+  readinessManager.removeChannel(id);
   return c.json({ success: true });
 });
 
