@@ -151,7 +151,7 @@ describe('database upgrade safety gate', () => {
     process.env.HAPPYCLAW_MIGRATION_BACKUP_DIR = migrationBackups;
     const backupsBeforeCurrentOnlyRefusal = fs.readdirSync(migrationBackups);
     expect(() => db.initDatabase({ requireCurrentSchema: true })).toThrow(
-      'Database must already be schema v76',
+      'Database must already be schema v77',
     );
     expect(fs.readdirSync(migrationBackups)).toEqual(
       backupsBeforeCurrentOnlyRefusal,
@@ -195,6 +195,8 @@ describe('schema version head', () => {
     // tests/schema-v74-message-ingest-sequence.test.ts.
     // v75: Prompt Evaluation & Benchmark suites, runs, and cases (R17).
     // v76: Task Templates (R18) and Run Artifacts (R19).
-    expect(db.CURRENT_SCHEMA_VERSION).toBe(76);
+    // v77: task_budgets durable budget tracking across logical runs, parent-child sharing,
+    // Provider retries, warm-runner isolation, and partial results preservation (R16).
+    expect(db.CURRENT_SCHEMA_VERSION).toBe(77);
   });
 });

@@ -1,4 +1,8 @@
-import type { MessageSourceKind, StreamEvent } from './types.js';
+import type {
+  MessageSourceKind,
+  StreamEvent,
+  TaskBudgetSnapshot,
+} from './types.js';
 
 /**
  * One passive SDK rate-limit observation. SDK `utilization` is a 0..1
@@ -51,7 +55,15 @@ export interface ContainerOutput {
   sessionId?: string;
   sdkMessageUuid?: string;
   sourceKind?: Exclude<MessageSourceKind, 'user_command'>;
-  finalizationReason?: 'completed' | 'interrupted' | 'error' | 'truncated';
+  finalizationReason?:
+    | 'completed'
+    | 'interrupted'
+    | 'error'
+    | 'truncated'
+    | 'budget_exceeded';
+  budgetExceeded?: boolean;
+  budgetSnapshot?: TaskBudgetSnapshot;
+  budgetRunId?: string;
   pendingBgTasks?: number;
   inputTurnCompleted?: boolean;
   queryIdle?: boolean;

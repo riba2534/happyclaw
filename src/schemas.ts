@@ -67,6 +67,20 @@ export const MAX_TASK_PROMPT_LENGTH = 16384;
 /** Same reasoning as MAX_TASK_PROMPT_LENGTH, for script tasks. */
 export const MAX_TASK_SCRIPT_COMMAND_LENGTH = 4096;
 
+export const TaskBudgetConfigSchema = z.object({
+  maxDurationMs: z.number().int().positive().optional(),
+  maxToolCalls: z.number().int().positive().optional(),
+  maxCostUsd: z.number().positive().optional(),
+});
+
+export const TaskBudgetResumeSchema = z.object({
+  run_id: z.string().optional(),
+  additionalDurationMs: z.number().int().positive().optional(),
+  additionalToolCalls: z.number().int().positive().optional(),
+  additionalCostUsd: z.number().positive().optional(),
+  budget: TaskBudgetConfigSchema.optional(),
+});
+
 export const TaskPatchSchema = z.object({
   chat_jid: z.string().min(1).optional(),
   // Same bound as TaskCreateSchema; an update must not be a way around it.
@@ -82,6 +96,7 @@ export const TaskPatchSchema = z.object({
     .nullable()
     .optional(),
   status: z.enum(['active', 'paused']).optional(),
+  budget: TaskBudgetConfigSchema.nullable().optional(),
   // next_run 必须是可解析的 ISO 日期。schedule_value 在 PATCH 路由里随
   // schedule_type 决定语义（cron/interval/once 各有要求），路由层会单独检查。
   // 这里只兜底 next_run 的格式，避免 garbage-in 让 scheduler computeNextRun 抛
@@ -160,6 +175,7 @@ export const TaskCreateSchema = z
       )
       .nullable()
       .optional(),
+    budget: TaskBudgetConfigSchema.nullable().optional(),
   })
   .superRefine((data, ctx) => {
     const execType = data.execution_type || 'agent';
@@ -351,6 +367,7 @@ export const AgentProfileRuntimePolicySchema = z
         ids: z.array(z.string().trim().min(1).max(128)).max(100).optional(),
       })
       .optional(),
+    budget: TaskBudgetConfigSchema.optional(),
   })
   .strict();
 

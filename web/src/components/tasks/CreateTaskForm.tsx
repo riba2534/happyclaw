@@ -35,6 +35,7 @@ import type {
   TemplateParameterDefinition,
   TaskDraft,
 } from '../../types/task-templates';
+import type { TaskBudgetConfig } from '../../types';
 
 interface CreateTaskFormProps {
   onSubmit: (data: {
@@ -47,6 +48,7 @@ interface CreateTaskFormProps {
     notifyChannels: string[] | null;
     chatJid?: string;
     contextMode?: 'group' | 'isolated';
+    budget?: TaskBudgetConfig | null;
   }) => Promise<void>;
   onClose: () => void;
   isAdmin?: boolean;
@@ -121,6 +123,10 @@ export function CreateTaskForm({
   const [executionModeExplicit, setExecutionModeExplicit] = useState<boolean>(
     !!initialDraft?.execution_mode,
   );
+  const [enableBudget, setEnableBudget] = useState(false);
+  const [maxDurationMinutes, setMaxDurationMinutes] = useState('');
+  const [maxToolCalls, setMaxToolCalls] = useState('');
+  const [maxCostUsd, setMaxCostUsd] = useState('');
   const connectedChannels = useConnectedChannels();
 
   const groupNames = useTasksStore((s) => s.groupNames);
@@ -427,6 +433,24 @@ export function CreateTaskForm({
     setSubmitting(true);
     useTasksStore.setState({ error: null });
     try {
+      const budget: TaskBudgetConfig | null = enableBudget
+        ? {
+            ...(maxDurationMinutes && Number(maxDurationMinutes) > 0
+              ? {
+                  maxDurationMs: Math.floor(
+                    Number(maxDurationMinutes) * 60 * 1000,
+                  ),
+                }
+              : {}),
+            ...(maxToolCalls && Number(maxToolCalls) > 0
+              ? { maxToolCalls: Math.floor(Number(maxToolCalls)) }
+              : {}),
+            ...(maxCostUsd && Number(maxCostUsd) > 0
+              ? { maxCostUsd: Number(maxCostUsd) }
+              : {}),
+          }
+        : null;
+
       await onSubmit({
         prompt: formData.prompt,
         scheduleType: formData.scheduleType,
@@ -439,6 +463,7 @@ export function CreateTaskForm({
         notifyChannels,
         chatJid: chatJid || undefined,
         contextMode: !isScript ? contextMode : undefined,
+        budget: budget || undefined,
       });
       const storeError = useTasksStore.getState().error;
       if (storeError) {
@@ -556,6 +581,73 @@ export function CreateTaskForm({
   );
 
   const selectedTemplate = templates.find((t) => t.id === selectedTemplateId);
+
+  const renderBudgetSettings = () => (
+    <div className="border border-border/60 rounded-lg p-3 bg-muted/20 space-y-3">
+      <div className="flex items-center justify-between">
+        <div>
+          <label className="text-sm font-medium text-foreground">
+            单次运行预算控制（可选）
+          </label>
+          <p className="text-xs text-muted-foreground">
+            达到上限后停止继续执行并保留成果，默认兼容原行为（无限制）
+          </p>
+        </div>
+        <input
+          type="checkbox"
+          checked={enableBudget}
+          onChange={(e) => setEnableBudget(e.target.checked)}
+          className="h-4 w-4 rounded border-border text-primary focus:ring-primary cursor-pointer"
+        />
+      </div>
+      {enableBudget && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">
+              时长上限（分钟）
+            </label>
+            <Input
+              type="number"
+              min="1"
+              step="1"
+              placeholder="如 10"
+              value={maxDurationMinutes}
+              onChange={(e) => setMaxDurationMinutes(e.target.value)}
+              className="text-xs h-8"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">
+              工具调用上限（次）
+            </label>
+            <Input
+              type="number"
+              min="1"
+              step="1"
+              placeholder="如 20"
+              value={maxToolCalls}
+              onChange={(e) => setMaxToolCalls(e.target.value)}
+              className="text-xs h-8"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">
+              估算成本上限（USD）
+            </label>
+            <Input
+              type="number"
+              min="0.01"
+              step="0.01"
+              placeholder="如 0.50"
+              value={maxCostUsd}
+              onChange={(e) => setMaxCostUsd(e.target.value)}
+              className="text-xs h-8"
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div className="fixed inset-0 z-[11000] flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-4">
@@ -1062,6 +1154,7 @@ export function CreateTaskForm({
             </div>
 
             {renderNotifyChannels()}
+            {!isScript && renderBudgetSettings()}
 
             {/* Actions */}
             <div className="sticky bottom-0 -mx-4 flex items-center justify-end gap-3 border-t border-border bg-card px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:-mx-6 sm:px-6 sm:pb-0">

@@ -10,6 +10,7 @@ import {
   TaskCreateSchema,
   TaskPatchSchema,
   TaskPurgeSchema,
+  TaskBudgetResumeSchema,
 } from '../schemas.js';
 import { logger } from '../logger.js';
 import {
@@ -28,6 +29,9 @@ import {
   getAllRegisteredGroups,
   getUserHomeGroup,
   listTaskRunArtifactsByRunId,
+  getTaskBudgetsByTaskId,
+  getTaskRunsForTask,
+  requeueTaskRunForResume,
 } from '../db.js';
 import {
   registerArtifactForRun,
@@ -36,6 +40,7 @@ import {
   canUserAccessHistoricRun,
   materializeContinuationArtifacts,
 } from '../task-artifact-service.js';
+import { taskBudgetService } from '../task-budget-service.js';
 import { getMergedTaskRunHistory } from '../task-run-history.js';
 import type { AuthUser, ScheduledTask, TaskRunArtifact } from '../types.js';
 import { TIMEZONE } from '../config.js';
@@ -319,6 +324,7 @@ tasksRoutes.post('/', authMiddleware, async (c) => {
     created_at: now,
     created_by: authUser.id,
     notify_channels: notify_channels ?? null,
+    budget: validation.data.budget ?? null,
   });
   notifyTaskSchedulerChanged();
 
@@ -1156,6 +1162,158 @@ tasksRoutes.get('/:id/logs', authMiddleware, (c) => {
   );
   const logs = getTaskRunLogs(id, limit);
   return c.json({ logs });
+});
+
+/**
+ * GET /api/tasks/:id/budget
+ * Query task budget status and consumption records.
+ */
+tasksRoutes.get('/:id/budget', authMiddleware, (c) => {
+  const id = c.req.param('id');
+  const task = getTaskById(id);
+  if (!task) return c.json({ error: 'Task not found' }, 404);
+  const authUser = c.get('user') as AuthUser;
+  if (!canViewTask(task, authUser)) {
+    return c.json({ error: 'Task not found' }, 404);
+  }
+
+  const budgets = getTaskBudgetsByTaskId(id);
+  const latestBudget = budgets[0];
+  const budgetStatus = latestBudget
+    ? taskBudgetService.getStatus(latestBudget.run_id)
+    : undefined;
+
+  return c.json({
+    success: true,
+    taskBudgetConfig: task.budget ?? null,
+    latestBudget: latestBudget ?? null,
+    budgetStatus: budgetStatus ?? null,
+    history: budgets,
+  });
+});
+
+/**
+ * POST /api/tasks/:id/budget/resume
+ * Explicitly resume an exceeded task run, putting the original run back into queued
+ * with additional budget and preserving its accumulated partial results and usage.
+ */
+tasksRoutes.post('/:id/budget/resume', authMiddleware, async (c) => {
+  const id = c.req.param('id');
+  const task = getTaskById(id);
+  if (!task) return c.json({ error: 'Task not found' }, 404);
+  const authUser = c.get('user') as AuthUser;
+
+  // Strict ACL check: verify view rights and execution permissions (guards host execution, scripts, soft-deleted)
+  if (!canViewTask(task, authUser)) {
+    return c.json({ error: 'Task not found' }, 404);
+  }
+  const perms = taskPermissions(task, authUser);
+  if (!perms.can_run || !perms.can_edit) {
+    return c.json(
+      { error: perms.execution_blocked_reason || '没有执行或恢复该任务的权限' },
+      403,
+    );
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  const validation = TaskBudgetResumeSchema.safeParse(body);
+  if (!validation.success) {
+    return c.json(
+      { error: 'Invalid request body', details: validation.error.format() },
+      400,
+    );
+  }
+
+  const reqData = validation.data;
+  const runs = getTaskRunsForTask(id, 50);
+  const targetRun = reqData.run_id
+    ? runs.find((r) => String(r.id) === reqData.run_id)
+    : runs.find((r) => r.status === 'budget_exceeded');
+
+  if (!targetRun) {
+    return c.json(
+      { error: '未找到处于预算超限 (budget_exceeded) 状态的运行记录' },
+      400,
+    );
+  }
+  if (targetRun.status !== 'budget_exceeded') {
+    return c.json(
+      {
+        error: `仅允许恢复预算超限状态的运行；该记录当前状态为 ${targetRun.status}`,
+      },
+      400,
+    );
+  }
+
+  // Atomic CAS transition: move run from budget_exceeded back to queued
+  const requeueRes = requeueTaskRunForResume(String(targetRun.id), task.id);
+  if (!requeueRes.success) {
+    return c.json({ error: requeueRes.error }, 409);
+  }
+
+  // Resume and augment persistent budget ledger
+  const additionalBudget = {
+    maxDurationMs:
+      reqData.additionalDurationMs ?? reqData.budget?.maxDurationMs,
+    maxToolCalls: reqData.additionalToolCalls ?? reqData.budget?.maxToolCalls,
+    maxCostUsd: reqData.additionalCostUsd ?? reqData.budget?.maxCostUsd,
+  };
+  const resumedStatus = taskBudgetService.resumeBudget(
+    String(targetRun.id),
+    additionalBudget,
+  );
+
+  // If task definition was paused or completed, reactivate it
+  let updatedTask = task;
+  if (task.status === 'paused' || task.status === 'completed') {
+    let nextRun: string;
+    try {
+      if (task.schedule_type === 'once') {
+        // Once task was paused/completed due to budget exceeded; set to run now
+        nextRun = new Date().toISOString();
+      } else {
+        nextRun = computeNextRunForTaskResume(
+          task.schedule_type,
+          task.schedule_value,
+        );
+      }
+    } catch (err) {
+      return c.json(
+        {
+          error:
+            err instanceof Error
+              ? err.message
+              : '无法计算任务恢复后的下一次执行时间',
+        },
+        400,
+      );
+    }
+    const mutation = updateTaskWithRevision(task.id, task.revision, {
+      status: 'active',
+      next_run: nextRun,
+      ...(reqData.budget ? { budget: reqData.budget } : {}),
+    });
+    if (mutation.status === 'updated') {
+      updatedTask = mutation.task;
+    }
+  } else if (reqData.budget) {
+    const mutation = updateTaskWithRevision(task.id, task.revision, {
+      budget: reqData.budget,
+    });
+    if (mutation.status === 'updated') {
+      updatedTask = mutation.task;
+    }
+  }
+
+  notifyTaskSchedulerChanged();
+
+  return c.json({
+    success: true,
+    message: '任务运行已成功恢复并重新排队执行',
+    run: requeueRes.run,
+    task: updatedTask,
+    budgetStatus: resumedStatus ?? null,
+  });
 });
 
 /** Build the AI parse prompt for a task description */

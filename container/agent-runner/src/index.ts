@@ -43,13 +43,18 @@ import type {
   ParsedMessage,
   StreamEvent,
   ChannelTurnContext,
+  TaskBudgetSnapshot,
 } from './types.js';
 import {
   formatChannelTurnContextForPrompt,
   normalizeChannelTurnContext,
 } from './types.js';
 import type { ClaudeContextAudit } from './stream-event.types.js';
-export type { StreamEventType, StreamEvent } from './types.js';
+export type {
+  StreamEventType,
+  StreamEvent,
+  TaskBudgetSnapshot,
+} from './types.js';
 
 import {
   sanitizeFilename,
@@ -70,6 +75,7 @@ import {
   createMcpTools,
   fetchHappyClawOwnerProfileTurn,
   fetchWorkspaceMemorySnapshot,
+  pollIpcResult,
   type McpContext,
   type WorkspaceMemorySnapshot,
 } from './mcp-tools.js';
@@ -163,6 +169,7 @@ import {
   shouldFailIncompleteQueryExit,
 } from './background-task-drain.js';
 import { IpcInputClaimStore } from './ipc-input-claims.js';
+import { RunnerBudgetTracker } from './runner-budget.js';
 
 // 路径解析：优先读取环境变量，降级到容器内默认路径（保持向后兼容）
 const WORKSPACE_GROUP =
@@ -1644,6 +1651,12 @@ async function runQueryAttempt(
   mcpToolsContext?: McpContext,
   logicalInputTurnIdOverride?: string,
   acceptIpcMessagesDuringQuery = true,
+  initialBudgetUsage?: {
+    currentDurationMs?: number;
+    currentToolCalls?: number;
+    currentCostUsd?: number;
+    retryCount?: number;
+  },
 ): Promise<{
   newSessionId?: string;
   lastAssistantUuid?: string;
@@ -1658,6 +1671,14 @@ async function runQueryAttempt(
     maxTokens: number;
     hardThreshold: number;
     message: string;
+  };
+  budgetExceeded?: boolean;
+  budgetSnapshot?: TaskBudgetSnapshot;
+  budgetUsage?: {
+    currentDurationMs: number;
+    currentToolCalls: number;
+    currentCostUsd: number;
+    retryCount: number;
   };
   pipedMessagesDuringQuery: IpcInputMessage[];
   suspectTruncatedTail?: string;
@@ -1691,6 +1712,85 @@ async function runQueryAttempt(
     coldInputTurnId,
     logicalInputTurnIdOverride,
   );
+  let processor: StreamEventProcessor | undefined;
+  const getAccumulatedOutputText = () => processor?.getFullText() ?? '';
+
+  const resolvedBudgetConfig =
+    containerInput.budgetConfig ??
+    (containerInput.agentProfile?.runtimePolicy as any)?.budget ??
+    null;
+  const initialBudgetRunId =
+    containerInput.budgetRunId || containerInput.taskRunId || coldInputTurnId;
+  const runnerBudget = new RunnerBudgetTracker({
+    runId: initialBudgetRunId,
+    parentRunId: containerInput.budgetParentRunId,
+    config: resolvedBudgetConfig,
+    initialUsage: initialBudgetUsage,
+    onExceeded: (reason, snapshot) => {
+      log(
+        `Task budget limit reached (${reason}); stopping query gracefully and preserving partial results`,
+      );
+      const partialText = getAccumulatedOutputText();
+      runnerBudget.setPartialResult(partialText);
+      emit({
+        status: 'stream',
+        result: null,
+        streamEvent: {
+          eventType: 'budget_status',
+          budgetSnapshot: {
+            ...snapshot,
+            partialResult: partialText,
+          },
+        },
+      });
+      if (queryRef) {
+        queryRef
+          .interrupt()
+          .catch((err: unknown) =>
+            log(`Budget exceeded interrupt failed: ${err}`),
+          );
+      }
+    },
+  });
+
+  runnerBudget.setCheckToolCallHandler(async (toolName, agentId) => {
+    if (!runnerBudget.getConfig() && !runnerBudget.getParentRunId()) {
+      return { allowed: true };
+    }
+    const tasksDir = path.join(WORKSPACE_IPC, 'tasks');
+    if (!fs.existsSync(tasksDir)) {
+      return runnerBudget.checkToolCallLocal(toolName, agentId);
+    }
+    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const request = {
+      type: 'budget_check_tool',
+      requestId,
+      runId: runnerBudget.getRunId(),
+      parentRunId: runnerBudget.getParentRunId(),
+      toolName,
+      agentId,
+      timestamp: new Date().toISOString(),
+    };
+    try {
+      const result = await pollIpcResult(
+        tasksDir,
+        request,
+        'budget_check_tool_result',
+        3000,
+        tasksDir,
+        15,
+      );
+      return {
+        allowed: result.allowed !== false,
+        reason: typeof result.reason === 'string' ? result.reason : undefined,
+        message:
+          typeof result.message === 'string' ? result.message : undefined,
+      };
+    } catch {
+      return runnerBudget.checkToolCallLocal(toolName, agentId);
+    }
+  });
+
   const activateCurrentInputTurn = (
     fallbackInputTurnId: string = outputCorrelation.currentInputTurnId,
   ): void => {
@@ -1723,6 +1823,22 @@ async function runQueryAttempt(
       );
       containerInput.messageTaskId = currentMessage.taskId ?? undefined;
     }
+    const currentInputIdentity =
+      currentMessage?.receipt?.deliveryId ||
+      (currentMessage as any)?.turnId ||
+      fallbackInputTurnId ||
+      coldInputTurnId;
+    const currentMessageBudgetConfig =
+      (currentMessage as any)?.budgetConfig ?? resolvedBudgetConfig;
+    const currentMessageParentRunId =
+      (currentMessage as any)?.budgetParentRunId ??
+      containerInput.budgetParentRunId ??
+      null;
+    runnerBudget.switchInputTurn(
+      currentInputIdentity,
+      currentMessageBudgetConfig,
+      currentMessageParentRunId,
+    );
   };
   activateCurrentInputTurn(coldInputTurnId);
   const [workspaceMemoryTurn, ownerProfileTurn] = mcpToolsContext
@@ -1824,12 +1940,14 @@ async function runQueryAttempt(
     ...event,
     queryRunId: containerInput.queryRunId,
     turnId: containerInput.turnId,
+    budgetRunId: runnerBudget.getRunId(),
     sessionId: newSessionId || sessionId,
   });
   const emit = (output: ContainerOutput): void => {
     if (output.streamEvent) {
       output = outputCorrelation.correlate({
         ...output,
+        budgetRunId: runnerBudget.getRunId(),
         streamEvent: decorateStreamEvent(output.streamEvent),
         turnId: containerInput.turnId,
         sessionId: newSessionId || sessionId,
@@ -1837,11 +1955,15 @@ async function runQueryAttempt(
     } else if (output.status === 'success' || output.status === 'error') {
       output = outputCorrelation.correlate({
         ...output,
+        budgetRunId: runnerBudget.getRunId(),
         turnId: containerInput.turnId,
         sessionId: newSessionId || sessionId,
       });
     } else {
-      output = outputCorrelation.correlate(output);
+      output = outputCorrelation.correlate({
+        ...output,
+        budgetRunId: runnerBudget.getRunId(),
+      });
     }
     if (emitOutput) writeOutput(output);
   };
@@ -2055,6 +2177,9 @@ async function runQueryAttempt(
           durationMs: isLast ? fallbackUsage?.durationMs || 0 : 0,
           numTurns: isLast ? fallbackUsage?.numTurns || 0 : 0,
         };
+        if (usage.costUSD) {
+          runnerBudget.syncFinalCost(usage.costUSD);
+        }
         emit({
           status: 'stream',
           result: null,
@@ -2067,6 +2192,9 @@ async function runQueryAttempt(
       return;
     }
     if (assistantBatchFlushedSinceLastResult || !fallbackUsage) return;
+    if (fallbackUsage.costUSD) {
+      runnerBudget.syncFinalCost(fallbackUsage.costUSD);
+    }
     emit({
       status: 'stream',
       result: null,
@@ -2322,7 +2450,7 @@ async function runQueryAttempt(
   // Initial drain to process any pre-existing files
   scheduleIpcPoll();
 
-  const processor = new StreamEventProcessor(emit, log);
+  processor = new StreamEventProcessor(emit, log);
   const backgroundProtocolDebtWatchdog = new BackgroundProtocolDebtWatchdog();
   let backgroundProtocolDebtTimer: ReturnType<typeof setTimeout> | undefined;
   let backgroundProtocolFailureExitTimer:
@@ -2463,12 +2591,20 @@ async function runQueryAttempt(
       newSessionId,
       sdkMessageUuid: candidate.sdkMessageUuid,
       sourceKind: sourceKindOverride ?? 'sdk_final',
-      finalizationReason: candidate.suspectTruncated
-        ? 'truncated'
-        : 'completed',
+      finalizationReason: runnerBudget.isExceeded()
+        ? 'budget_exceeded'
+        : candidate.suspectTruncated
+          ? 'truncated'
+          : 'completed',
       pendingBgTasks: candidate.pendingBgTasks,
       inputTurnCompleted,
       queryIdle,
+      ...(runnerBudget.isExceeded()
+        ? {
+            budgetExceeded: true,
+            budgetSnapshot: runnerBudget.getSnapshot(candidate.finalText),
+          }
+        : {}),
       ...(ipcReceipts && ipcReceipts.length > 0 ? { ipcReceipts } : {}),
       ...(activeIpcReceipts && activeIpcReceipts.length > 0
         ? { activeIpcReceipts }
@@ -2794,7 +2930,10 @@ async function runQueryAttempt(
       hooks: {
         PreToolUse: [
           {
-            hooks: [createWorkspaceMemoryWriteGuard()],
+            hooks: [
+              createWorkspaceMemoryWriteGuard(),
+              runnerBudget.createPreToolUseHook(),
+            ],
           },
         ],
         PreCompact: [
@@ -3239,6 +3378,38 @@ async function runQueryAttempt(
         assistantUsageCollector.ingest(
           message as unknown as Record<string, unknown>,
         );
+        const assistantRaw = (message as any).message;
+        const assistantUsage = assistantRaw?.usage;
+        if (assistantUsage && runnerBudget.getConfig()?.maxCostUsd != null) {
+          const msgId = String(assistantRaw.id || (message as any).uuid || '');
+          const inTokens = Number(
+            assistantUsage.input_tokens || assistantUsage.inputTokens || 0,
+          );
+          const outTokens = Number(
+            assistantUsage.output_tokens || assistantUsage.outputTokens || 0,
+          );
+          const cacheRead = Number(
+            assistantUsage.cache_read_input_tokens ||
+              assistantUsage.cacheReadInputTokens ||
+              0,
+          );
+          const cacheWrite = Number(
+            assistantUsage.cache_creation_input_tokens ||
+              assistantUsage.cacheCreationInputTokens ||
+              0,
+          );
+          const estimatedTurnCost =
+            (inTokens * 3 +
+              outTokens * 15 +
+              cacheRead * 0.3 +
+              cacheWrite * 3.75) /
+            1_000_000;
+          if (runnerBudget.recordIncrementalUsage(msgId, estimatedTurnCost)) {
+            log(
+              `Real-time estimated cost threshold reached during tool loop; interrupting query immediately`,
+            );
+          }
+        }
       }
       if (suppressOutputAfterInterrupt && message.type !== 'system') {
         if (message.type === 'result') {
@@ -3850,6 +4021,14 @@ async function runQueryAttempt(
       durableInputTurnCompleted: durableInputCompletion.isCompleted,
       providerFailureTurn,
       providerAccountFailure: false,
+      budgetExceeded: runnerBudget.isExceeded(),
+      budgetSnapshot: runnerBudget.getSnapshot(getAccumulatedOutputText()),
+      budgetUsage: {
+        currentDurationMs: runnerBudget.getSnapshot().currentDurationMs,
+        currentToolCalls: runnerBudget.getSnapshot().currentToolCalls,
+        currentCostUsd: runnerBudget.getSnapshot().currentCostUsd,
+        retryCount: runnerBudget.getSnapshot().retryCount ?? 0,
+      },
     };
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
@@ -3965,6 +4144,31 @@ async function runQueryAttempt(
       };
     }
 
+    if (runnerBudget.isExceeded()) {
+      log(
+        `runQuery ended due to budget limit (${runnerBudget.getExceededReason()}); preserving partial output`,
+      );
+      processor?.cleanup();
+      const partialText = getAccumulatedOutputText();
+      runnerBudget.setPartialResult(partialText);
+      return {
+        newSessionId,
+        lastAssistantUuid,
+        closedDuringQuery,
+        interruptedDuringQuery: true,
+        cancelledIpcReceipts,
+        pipedMessagesDuringQuery,
+        budgetExceeded: true,
+        budgetSnapshot: runnerBudget.getSnapshot(partialText),
+        budgetUsage: {
+          currentDurationMs: runnerBudget.getSnapshot().currentDurationMs,
+          currentToolCalls: runnerBudget.getSnapshot().currentToolCalls,
+          currentCostUsd: runnerBudget.getSnapshot().currentCostUsd,
+          retryCount: runnerBudget.getSnapshot().retryCount ?? 0,
+        },
+      };
+    }
+
     // SDK 在 durable result 后可能再抛异常（如检测到 result text 含错误内容）。
     // 只有当前 input 已真实越过 publishResultCandidate(..., true) 才能降级；
     // resultCount 也包含被 background debt/quiescence 暂扣的边界，不能作为
@@ -4007,6 +4211,7 @@ async function runQueryAttempt(
     // 定时器，以及旧 watcher 抢先 drain 本应进入新 query 的 IPC 消息。
     ipcPolling = false;
     ipcQueryWatcher.close();
+    runnerBudget.dispose();
   }
 }
 
@@ -4070,6 +4275,14 @@ async function runQuery(
       retryInput.channelContext,
     );
   }
+  const retryBudgetUsage = first.budgetUsage
+    ? {
+        currentDurationMs: first.budgetUsage.currentDurationMs,
+        currentToolCalls: first.budgetUsage.currentToolCalls,
+        currentCostUsd: first.budgetUsage.currentCostUsd,
+        retryCount: first.budgetUsage.retryCount + 1,
+      }
+    : undefined;
   return runQueryAttempt(
     failed.prompt,
     failed.sessionIdBeforeTurn,
@@ -4086,6 +4299,7 @@ async function runQuery(
     mcpToolsContext,
     logicalInputTurnIdOverride,
     acceptIpcMessagesDuringQuery,
+    retryBudgetUsage,
   );
 }
 

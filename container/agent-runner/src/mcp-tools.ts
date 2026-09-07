@@ -104,6 +104,7 @@ export async function pollIpcResult(
   resultFilePrefix: string,
   timeoutMs: number = 30_000,
   resultDir: string = dir,
+  pollInterval: number = 500,
 ): Promise<Record<string, unknown>> {
   const resultFileName = `${resultFilePrefix}_${data.requestId}.json`;
   const resultFilePath = path.join(resultDir, resultFileName);
@@ -111,7 +112,6 @@ export async function pollIpcResult(
   fs.mkdirSync(resultDir, { recursive: true });
   writeIpcFile(dir, data);
 
-  const pollInterval = 500;
   const deadline = Date.now() + timeoutMs;
 
   const readResult = (): Record<string, unknown> | undefined => {

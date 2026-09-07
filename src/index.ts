@@ -114,6 +114,7 @@ import {
   writeTasksSnapshot,
 } from './container-runner.js';
 import { processCompletedRunArtifacts } from './task-artifact-service.js';
+import { taskBudgetService } from './task-budget-service.js';
 import { resolveRunnerLivenessTimeouts } from './runner-liveness.js';
 import {
   decideStuckRunnerRecovery,
@@ -4847,6 +4848,10 @@ async function handleSpawnCommand(
   //    For IM: resolve to the effective web JID so results enter the web message stream
   //    For Web: use the chatJid directly (may include #agent: for agent-scoped spawn)
   const spawnedFromJid = sourceImJid ? homeChatJid : chatJid;
+  const parentBudgetRunId =
+    taskBudgetService.getActiveBudgetRunId(chatJid) ||
+    taskBudgetService.getActiveBudgetRunId(homeChatJid) ||
+    null;
 
   const now = new Date().toISOString();
   const agentId = crypto.randomUUID();
@@ -4872,6 +4877,7 @@ async function handleSpawnCommand(
     result_summary: null,
     last_im_jid: sourceImJid ?? null,
     spawned_from_jid: spawnedFromJid,
+    parent_budget_run_id: parentBudgetRunId,
   };
   createAgent(newAgent);
 
@@ -5182,7 +5188,7 @@ interface SendMessageOptions {
   scheduledGroupFinalizations?: Array<{
     runId: string;
     taskId: string;
-    status?: 'success' | 'failed' | 'cancelled';
+    status?: 'success' | 'failed' | 'cancelled' | 'budget_exceeded';
     result?: string | null;
     error?: string | null;
   }>;
@@ -5845,7 +5851,7 @@ function settleScheduledGroupWorkspaceProjection(input: {
   messageId: string;
   projected: boolean;
   projectionError?: string;
-  runStatus?: 'success' | 'failed' | 'cancelled';
+  runStatus?: 'success' | 'failed' | 'cancelled' | 'budget_exceeded';
   runResult?: string | null;
   runError?: string | null;
 }): boolean {
@@ -7644,6 +7650,25 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               }
               return;
             }
+            const groupBudgetRunId =
+              result.budgetRunId ||
+              result.streamEvent?.budgetRunId ||
+              result.streamEvent?.budgetSnapshot?.runId ||
+              `group:${effectiveGroup.folder}:${lastProcessed.id}`;
+            if (
+              result.streamEvent.eventType === 'budget_status' &&
+              result.streamEvent.budgetSnapshot
+            ) {
+              taskBudgetService.syncSnapshotFromRunner(
+                groupBudgetRunId,
+                result.streamEvent.budgetSnapshot,
+                {
+                  chatJid,
+                  groupFolder: effectiveGroup.folder,
+                  userId: effectiveGroup.created_by,
+                },
+              );
+            }
             // Claude SDK 的 costUSD 只是上游估算。实时 Web/飞书展示前先走
             // 与账本相同的 Kaboo 计价入口，确保流式金额和最终统计一致。
             // 后面的持久化调用会被 eventId 幂等去重，并负责关联最终消息。
@@ -7664,6 +7689,13 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                 });
                 result.streamEvent.usage.costUSD =
                   accounting.providerEstimatedCostUSD;
+                if (accounting.inserted) {
+                  taskBudgetService.recordCost(
+                    groupBudgetRunId,
+                    accounting.providerEstimatedCostUSD,
+                    accounting.eventId,
+                  );
+                }
               } catch (err) {
                 logger.warn(
                   { err, chatJid },
@@ -8706,13 +8738,30 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                     (run) => ({
                       runId: run.id,
                       taskId: run.task_id,
-                      status: 'success',
+                      status:
+                        result.finalizationReason === 'budget_exceeded'
+                          ? 'budget_exceeded'
+                          : 'success',
                       result: dbText,
                       error: null,
                     }),
                   ),
                 },
               );
+              const finalGroupBudgetRunId =
+                result.budgetRunId ||
+                result.streamEvent?.budgetRunId ||
+                result.budgetSnapshot?.runId ||
+                `group:${effectiveGroup.folder}:${lastProcessed.id}`;
+              if (result.finalizationReason === 'budget_exceeded') {
+                taskBudgetService.markExceededAndSavePartial(
+                  finalGroupBudgetRunId,
+                  result.budgetSnapshot?.exceededReason || 'duration',
+                  dbText,
+                );
+              } else if (result.status === 'success') {
+                taskBudgetService.completeBudget(finalGroupBudgetRunId, dbText);
+              }
               lastReplyMsgId = replySendOutcome.messageId;
               const scheduledGroupProjectionDurable =
                 scheduledGroupRuns.length > 0
@@ -8725,6 +8774,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                       projected:
                         replySendOutcome.webProjected &&
                         !!replySendOutcome.messageId,
+                      runStatus:
+                        result.finalizationReason === 'budget_exceeded'
+                          ? 'budget_exceeded'
+                          : undefined,
                     })
                   : false;
               // A final provider-card ACK is the irreversible user-visible
@@ -10162,6 +10215,19 @@ async function runAgent(
 
     const ownerHomeFolder = resolveOwnerHomeFolder(group);
 
+    const sessionBudgetConfig =
+      (resolvedAgentProfile?.runtime_policy as any)?.budget ?? null;
+    const sessionBudgetRunId = turnId || `group:${chatJid}:${Date.now()}`;
+    if (sessionBudgetConfig) {
+      taskBudgetService.initBudget({
+        runId: sessionBudgetRunId,
+        chatJid,
+        groupFolder: group.folder,
+        userId: group.created_by,
+        config: sessionBudgetConfig,
+      });
+    }
+
     let output: ContainerOutput;
 
     if (executionMode === 'host') {
@@ -10185,6 +10251,8 @@ async function runAgent(
           prompt,
           sessionId,
           turnId,
+          budgetConfig: sessionBudgetConfig,
+          budgetRunId: sessionBudgetRunId,
           currentBatchMessageIds,
           queryRunId: queue.getActiveQueryId(chatJid) ?? undefined,
           groupFolder: group.folder,
@@ -10215,6 +10283,8 @@ async function runAgent(
           prompt,
           sessionId,
           turnId,
+          budgetConfig: sessionBudgetConfig,
+          budgetRunId: sessionBudgetRunId,
           currentBatchMessageIds,
           queryRunId: queue.getActiveQueryId(chatJid) ?? undefined,
           groupFolder: group.folder,
@@ -10266,6 +10336,33 @@ async function runAgent(
 
     // Agent was interrupted by _close sentinel (home folder drain).
     // Propagate so processGroupMessages can skip cursor commit.
+    if (output.budgetSnapshot) {
+      taskBudgetService.syncSnapshotFromRunner(
+        sessionBudgetRunId,
+        output.budgetSnapshot,
+        {
+          chatJid,
+          groupFolder: group.folder,
+          userId: group.created_by,
+        },
+      );
+    }
+    if (
+      output.finalizationReason === 'budget_exceeded' ||
+      output.budgetExceeded
+    ) {
+      taskBudgetService.markExceededAndSavePartial(
+        sessionBudgetRunId,
+        output.budgetSnapshot?.exceededReason || 'duration',
+        typeof output.result === 'string' ? output.result : null,
+      );
+    } else if (output.status === 'success') {
+      taskBudgetService.completeBudget(
+        sessionBudgetRunId,
+        typeof output.result === 'string' ? output.result : null,
+      );
+    }
+
     if (output.status === 'closed') {
       return { status: 'closed' };
     }
@@ -10292,6 +10389,7 @@ async function runAgent(
     return { status: 'error', error: errorMsg };
   } finally {
     ipcWatcherManager?.unwatchRuntime(group.folder);
+    taskBudgetService.unregisterActiveBudgetRun(chatJid);
   }
 }
 
@@ -11963,6 +12061,7 @@ function startIpcWatcher(): void {
           'agent_profile_discard_result_',
           'workspace_memory_result_',
           'happyclaw_owner_profile_result_',
+          'budget_check_tool_result_',
         ];
         const isResultFile = (name: string) =>
           RESULT_FILE_PREFIXES.some((p) => name.startsWith(p));
@@ -12702,6 +12801,28 @@ async function processTaskIpc(
           },
           'HappyClaw Owner Profile IPC request failed',
         );
+      }
+      break;
+    }
+
+    case 'budget_check_tool': {
+      try {
+        const runId = String((data as any).runId || '');
+        const toolName = String((data as any).toolName || 'unknown');
+        const checkResult = taskBudgetService.checkAndConsumeToolCall(
+          runId,
+          toolName,
+        );
+        writeTaskResult(tasksDir, 'budget_check_tool', data.requestId, {
+          allowed: checkResult.allowed,
+          reason: checkResult.reason,
+          message: checkResult.message,
+          status: checkResult.status,
+        });
+      } catch (err) {
+        writeTaskResult(tasksDir, 'budget_check_tool', data.requestId, {
+          allowed: true,
+        });
       }
       break;
     }
@@ -15952,6 +16073,11 @@ async function processAgentConversation(
   const agentNonTerminalDeliveryAckByInput = new Map<string, boolean>([
     [lastProcessed.id, false],
   ]);
+  const currentAgentBudgetRunId = `agent:${agentId}:${lastProcessed.id}`;
+  const currentAgentParentRunId =
+    agent.parent_budget_run_id ||
+    taskBudgetService.getActiveBudgetRunId(agent.chat_jid) ||
+    null;
   const proactiveAgentTailNoticesDelivered = new Set<string>();
   const notifyProactiveAgentTailInterruption = async (
     inputTurnId: string,
@@ -16199,6 +16325,36 @@ async function processAgentConversation(
           batchCount,
         };
         pendingAgentLedgerUsageBatch = null;
+      }
+      const bRunId =
+        output.budgetRunId ||
+        output.streamEvent?.budgetRunId ||
+        output.streamEvent?.budgetSnapshot?.runId ||
+        currentAgentBudgetRunId;
+      if (
+        output.streamEvent.eventType === 'budget_status' &&
+        output.streamEvent.budgetSnapshot
+      ) {
+        taskBudgetService.syncSnapshotFromRunner(
+          bRunId,
+          output.streamEvent.budgetSnapshot,
+          {
+            chatJid,
+            groupFolder: effectiveGroup.folder,
+            userId: effectiveGroup.created_by,
+            parentRunId: currentAgentParentRunId,
+          },
+        );
+      }
+      if (
+        output.streamEvent.eventType === 'usage' &&
+        output.streamEvent.usage
+      ) {
+        taskBudgetService.recordCost(
+          bRunId,
+          output.streamEvent.usage.costUSD,
+          output.streamEvent.usage.eventId,
+        );
       }
       const agentStreamInputTurnId = output.inputTurnId ?? lastProcessed.id;
       // Native-message mode has no framework-owned Assistant answer lane.
@@ -17151,10 +17307,33 @@ async function processAgentConversation(
         runtimeAgentKind: agent.kind,
       },
     );
+    const agentBudgetConfig =
+      (agentProfile?.runtime_policy as any)?.budget ?? null;
+    const agentBudgetRunId = currentAgentBudgetRunId;
+    const agentParentRunId = currentAgentParentRunId;
+    if (agentBudgetConfig || agentParentRunId) {
+      taskBudgetService.initBudget({
+        runId: agentBudgetRunId,
+        parentRunId: agentParentRunId,
+        chatJid,
+        groupFolder: effectiveGroup.folder,
+        userId: effectiveGroup.created_by,
+        config: agentBudgetConfig,
+      });
+      taskBudgetService.registerActiveBudgetRun(
+        virtualChatJid,
+        agentBudgetRunId,
+      );
+      taskBudgetService.registerActiveBudgetRun(chatJid, agentBudgetRunId);
+    }
+
     const containerInput: ContainerInput = {
       prompt,
       sessionId,
       turnId: lastProcessed.id,
+      budgetConfig: agentBudgetConfig,
+      budgetRunId: agentBudgetRunId,
+      budgetParentRunId: agentParentRunId,
       currentBatchMessageIds: missedMessages.map((message) => message.id),
       queryRunId: queue.getActiveQueryId(virtualJid) ?? undefined,
       groupFolder: effectiveGroup.folder,
@@ -17236,6 +17415,34 @@ async function processAgentConversation(
         onProcessCb,
         wrappedOnOutput,
         ownerHomeFolder,
+      );
+    }
+
+    if (output.budgetSnapshot) {
+      taskBudgetService.syncSnapshotFromRunner(
+        currentAgentBudgetRunId,
+        output.budgetSnapshot,
+        {
+          chatJid,
+          groupFolder: effectiveGroup.folder,
+          userId: effectiveGroup.created_by,
+          parentRunId: currentAgentParentRunId,
+        },
+      );
+    }
+    if (
+      output.finalizationReason === 'budget_exceeded' ||
+      output.budgetExceeded
+    ) {
+      taskBudgetService.markExceededAndSavePartial(
+        currentAgentBudgetRunId,
+        output.budgetSnapshot?.exceededReason || 'duration',
+        typeof output.result === 'string' ? output.result : null,
+      );
+    } else if (output.status === 'success') {
+      taskBudgetService.completeBudget(
+        currentAgentBudgetRunId,
+        typeof output.result === 'string' ? output.result : null,
       );
     }
 
@@ -17872,6 +18079,8 @@ async function processAgentConversation(
     activeAgentBuilderTurns.delete(agentBuilderScope);
     activeChannelTurns.delete(channelTurnScope(effectiveGroup.folder, agentId));
     ipcWatcherManager?.unwatchRuntime(effectiveGroup.folder, { agentId });
+    taskBudgetService.unregisterActiveBudgetRun(virtualChatJid);
+    taskBudgetService.unregisterActiveBudgetRun(chatJid);
   }
 
   return !retryUnfinishedTurn;
