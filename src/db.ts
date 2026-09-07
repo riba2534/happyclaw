@@ -104,6 +104,33 @@ import {
   HAPPYCLAW_OWNER_INTRODUCTION_FLOW_KEY,
   reconcileLegacyOwnerProfileMemory,
 } from './owner-profile-store.js';
+import {
+  bindEvalDatabase,
+  createEvalSchema,
+  ensureBuiltinEvalSuite,
+  listEvalSuites,
+  getEvalSuite,
+  listEvalCases,
+  getEvalCase,
+  getEvalSuiteWithCases,
+  createEvalSuite,
+  updateEvalSuite,
+  deleteEvalSuite,
+  createEvalCase,
+  updateEvalCase,
+  deleteEvalCase,
+  createEvalRun,
+  getEvalRun,
+  listEvalRuns,
+  updateEvalRun,
+  deleteEvalRun,
+  createEvalRunCase,
+  getEvalRunCase,
+  listEvalRunCases,
+  updateEvalRunCase,
+  updateEvalRunCaseFeedback,
+  recoverDanglingEvalRuns,
+} from './eval-store.js';
 import { splitLegacyEmbeddedReferenceContent } from './message-prompt.js';
 
 let db: InstanceType<typeof Database>;
@@ -990,6 +1017,11 @@ export function initDatabase(
   // installed.
   createOwnerProfileSchema(db);
   bindOwnerProfileDatabase(db);
+  // v74 -> v75: R17 Prompt Evaluation & Benchmark suites, runs, and cases.
+  createEvalSchema(db);
+  bindEvalDatabase(db);
+  ensureBuiltinEvalSuite();
+  recoverDanglingEvalRuns();
   if (
     rawSchemaVersionBeforeInit !== null &&
     Number(rawSchemaVersionBeforeInit) < 66
@@ -15565,7 +15597,34 @@ export function closeDatabase(): void {
   bindChannelReliabilityDatabase(null);
   bindWorkspaceMemoryDatabase(null);
   bindOwnerProfileDatabase(null);
+  bindEvalDatabase(null as any);
   if (db) {
     db.close();
   }
 }
+
+export {
+  ensureBuiltinEvalSuite,
+  listEvalSuites,
+  getEvalSuite,
+  listEvalCases,
+  getEvalCase,
+  getEvalSuiteWithCases,
+  createEvalSuite,
+  updateEvalSuite,
+  deleteEvalSuite,
+  createEvalCase,
+  updateEvalCase,
+  deleteEvalCase,
+  createEvalRun,
+  getEvalRun,
+  listEvalRuns,
+  updateEvalRun,
+  deleteEvalRun,
+  createEvalRunCase,
+  getEvalRunCase,
+  listEvalRunCases,
+  updateEvalRunCase,
+  updateEvalRunCaseFeedback,
+  recoverDanglingEvalRuns,
+};
