@@ -285,14 +285,17 @@ function requestHash(value: unknown): string {
 
 export function listWorkspaceMemory(
   input: WorkspaceMemoryBaseRequest & {
-    status?: WorkspaceMemoryStatus;
+    status?: WorkspaceMemoryStatus | 'all';
     kind?: WorkspaceMemoryKind;
+    query?: string;
     limit?: number;
     cursor?: string;
   },
 ) {
   authorizeWorkspace(input, 'read');
-  if (input.status && !STATUSES.has(input.status)) invalid('Invalid status');
+  if (input.status && input.status !== 'all' && !STATUSES.has(input.status)) {
+    invalid('Invalid status');
+  }
   if (input.kind && !KINDS.has(input.kind)) invalid('Invalid kind');
   const limit = clampLimit(input.limit, 50);
   const before = decodeCursor<{ updatedAt: string; id: string }>(
@@ -312,6 +315,7 @@ export function listWorkspaceMemory(
       workspaceJid: input.workspaceJid,
       status: input.status,
       kind: input.kind,
+      query: input.query,
       limit: limit + 1,
       before,
     });
@@ -335,7 +339,10 @@ export function searchWorkspaceMemory(
   input: WorkspaceMemoryBaseRequest & {
     query: string;
     kind?: WorkspaceMemoryKind;
+    status?: WorkspaceMemoryStatus | 'all';
+    scope?: 'manage' | 'recall';
     limit?: number;
+    cursor?: string;
   },
 ) {
   authorizeWorkspace(input, 'read');
@@ -344,16 +351,45 @@ export function searchWorkspaceMemory(
     invalid(`query must be between 1 and ${MAX_QUERY_LENGTH} characters`);
   }
   if (input.kind && !KINDS.has(input.kind)) invalid('Invalid kind');
+  if (input.status && input.status !== 'all' && !STATUSES.has(input.status)) {
+    invalid('Invalid status');
+  }
+  const limit = clampLimit(input.limit, 50);
+  const before = decodeCursor<{ updatedAt: string; id: string }>(
+    input.cursor,
+    'search',
+  );
+  if (
+    before &&
+    (typeof before.updatedAt !== 'string' ||
+      !Number.isFinite(Date.parse(before.updatedAt)) ||
+      typeof before.id !== 'string')
+  ) {
+    invalid('Invalid search cursor');
+  }
   try {
     const result = searchWorkspaceMemoryItems({
       workspaceJid: input.workspaceJid,
       query,
       kind: input.kind,
-      limit: clampLimit(input.limit, 20),
+      status: input.status,
+      scope: input.scope,
+      limit: limit + 1,
+      before,
     });
+    const hasMore = result.hits.length > limit;
+    const hits = result.hits.slice(0, limit);
+    const last = hits.at(-1);
     return {
       storeRevision: result.store.revision,
-      hits: result.hits,
+      hits,
+      nextCursor:
+        hasMore && last
+          ? encodeCursor({
+              updatedAt: last.item.updatedAt,
+              id: last.item.id,
+            })
+          : null,
     };
   } catch (error) {
     translateStoreError(error);

@@ -553,8 +553,16 @@ interface ChatState {
   unbindWorkspaceImGroup: (jid: string, imJid: string) => Promise<boolean>;
   // Draft persistence across route navigation
   drafts: Record<string, string>;
-  saveDraft: (jid: string, text: string) => void;
-  clearDraft: (jid: string) => void;
+  draftRevisions: Record<string, number>;
+  saveDraft: (key: string, text: string) => number;
+  clearDraft: (key: string) => number;
+  clearDraftIfRevision: (key: string, expectedRevision: number) => boolean;
+  saveDraftIfRevision: (
+    key: string,
+    text: string,
+    expectedRevision: number,
+  ) => boolean;
+  getDraftRevision: (key: string) => number;
   // Unread agent replies (incremented when page is hidden or a different chat is active)
   unreadReplies: Record<string, number>;
   markChatRead: (chatJid: string) => void;
@@ -1699,6 +1707,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   agentWaiting: {},
   agentHasMore: {},
   drafts: {},
+  draftRevisions: {},
   unreadReplies: {},
 
   loadGroups: async () => {
@@ -2274,7 +2283,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
         // Reset UI-scoped state tied to this workspace jid.
         const nextDrafts = { ...s.drafts };
-        delete nextDrafts[jid];
+        const nextDraftRevisions = { ...s.draftRevisions };
+        for (const key of Object.keys(nextDrafts)) {
+          if (key === jid || key.startsWith(`${jid}::`)) {
+            delete nextDrafts[key];
+            delete nextDraftRevisions[key];
+          }
+        }
         const nextActiveAgentTab = { ...s.activeAgentTab };
         delete nextActiveAgentTab[jid];
 
@@ -3544,6 +3559,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
         delete nextAgentWaiting[agentId];
         const nextAgentHasMore = { ...s.agentHasMore };
         delete nextAgentHasMore[agentId];
+
+        const draftKey = `${chatJid}::${agentId}`;
+        const nextDrafts = { ...s.drafts };
+        delete nextDrafts[draftKey];
+        delete nextDrafts[`${chatJid}#agent:${agentId}`];
+        const nextDraftRevisions = { ...s.draftRevisions };
+        nextDraftRevisions[draftKey] = (s.draftRevisions[draftKey] ?? 0) + 1;
+        if (s.draftRevisions[`${chatJid}#agent:${agentId}`] !== undefined) {
+          nextDraftRevisions[`${chatJid}#agent:${agentId}`] =
+            s.draftRevisions[`${chatJid}#agent:${agentId}`] + 1;
+        }
+
         return {
           agents: { ...s.agents, [chatJid]: filtered },
           agentStreaming: nextAgentStreaming,
@@ -3553,6 +3580,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           agentMessages: nextAgentMessages,
           agentWaiting: nextAgentWaiting,
           agentHasMore: nextAgentHasMore,
+          drafts: nextDrafts,
+          draftRevisions: nextDraftRevisions,
         };
       }
 
@@ -3771,6 +3800,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
           s.sdkTaskAliases,
           agentId,
         );
+
+        const draftKey = `${jid}::${agentId}`;
+        const nextDrafts = { ...s.drafts };
+        delete nextDrafts[draftKey];
+        delete nextDrafts[`${jid}#agent:${agentId}`];
+
+        const nextDraftRevisions = { ...s.draftRevisions };
+        nextDraftRevisions[draftKey] = (s.draftRevisions[draftKey] ?? 0) + 1;
+        if (s.draftRevisions[`${jid}#agent:${agentId}`] !== undefined) {
+          nextDraftRevisions[`${jid}#agent:${agentId}`] =
+            s.draftRevisions[`${jid}#agent:${agentId}`] + 1;
+        }
+
         return {
           agents: { ...s.agents, [jid]: updated },
           agentMessages: nextAgentMessages,
@@ -3780,6 +3822,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           activeAgentTab: nextActiveTab,
           sdkTasks: nextSdkTasks,
           sdkTaskAliases: nextSdkTaskAliases,
+          drafts: nextDrafts,
+          draftRevisions: nextDraftRevisions,
         };
       });
       return true;
@@ -4574,26 +4618,102 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
   },
 
-  saveDraft: (jid, text) => {
+  saveDraft: (key, text) => {
+    const trimmed = text.trim();
+    let nextRevision = 0;
     set((s) => {
-      if (text) {
-        if (s.drafts[jid] === text) return s;
-        return { drafts: { ...s.drafts, [jid]: text } };
+      const currentRev = s.draftRevisions[key] ?? 0;
+      const currentText = s.drafts[key];
+      if (trimmed) {
+        if (currentText === trimmed) {
+          nextRevision = currentRev;
+          return s;
+        }
+        nextRevision = currentRev + 1;
+        return {
+          drafts: { ...s.drafts, [key]: trimmed },
+          draftRevisions: { ...s.draftRevisions, [key]: nextRevision },
+        };
       }
-      if (!(jid in s.drafts)) return s;
-      const next = { ...s.drafts };
-      delete next[jid];
-      return { drafts: next };
+      if (currentText === undefined) {
+        nextRevision = currentRev;
+        return s;
+      }
+      nextRevision = currentRev + 1;
+      const nextDrafts = { ...s.drafts };
+      delete nextDrafts[key];
+      return {
+        drafts: nextDrafts,
+        draftRevisions: { ...s.draftRevisions, [key]: nextRevision },
+      };
     });
+    return nextRevision;
   },
 
-  clearDraft: (jid) => {
+  clearDraft: (key) => {
+    let nextRevision = 0;
     set((s) => {
-      if (!(jid in s.drafts)) return s;
-      const next = { ...s.drafts };
-      delete next[jid];
-      return { drafts: next };
+      const currentRev = s.draftRevisions[key] ?? 0;
+      if (!(key in s.drafts)) {
+        nextRevision = currentRev;
+        return s;
+      }
+      nextRevision = currentRev + 1;
+      const nextDrafts = { ...s.drafts };
+      delete nextDrafts[key];
+      return {
+        drafts: nextDrafts,
+        draftRevisions: { ...s.draftRevisions, [key]: nextRevision },
+      };
     });
+    return nextRevision;
+  },
+
+  clearDraftIfRevision: (key, expectedRevision) => {
+    let succeeded = false;
+    set((s) => {
+      const currentRev = s.draftRevisions[key] ?? 0;
+      if (currentRev === expectedRevision) {
+        succeeded = true;
+        const nextDrafts = { ...s.drafts };
+        delete nextDrafts[key];
+        return {
+          drafts: nextDrafts,
+          draftRevisions: { ...s.draftRevisions, [key]: currentRev + 1 },
+        };
+      }
+      return s;
+    });
+    return succeeded;
+  },
+
+  saveDraftIfRevision: (key, text, expectedRevision) => {
+    let succeeded = false;
+    const trimmed = text.trim();
+    set((s) => {
+      const currentRev = s.draftRevisions[key] ?? 0;
+      if (currentRev === expectedRevision) {
+        succeeded = true;
+        if (trimmed) {
+          return {
+            drafts: { ...s.drafts, [key]: trimmed },
+            draftRevisions: { ...s.draftRevisions, [key]: currentRev + 1 },
+          };
+        }
+        const nextDrafts = { ...s.drafts };
+        delete nextDrafts[key];
+        return {
+          drafts: nextDrafts,
+          draftRevisions: { ...s.draftRevisions, [key]: currentRev + 1 },
+        };
+      }
+      return s;
+    });
+    return succeeded;
+  },
+
+  getDraftRevision: (key) => {
+    return get().draftRevisions[key] ?? 0;
   },
 
   markChatRead: (chatJid) => {

@@ -1017,6 +1017,13 @@ groupRoutes.post('/', authMiddleware, async (c) => {
         { folder, url: initGitUrl },
         'Workspace initialized from git clone',
       );
+    } else if (!customCwd) {
+      // R05: 新建无 customCwd 的默认空工作区（包括 host 模式）：在 publish 成功前创建目录
+      await fsp.mkdir(groupDir, { recursive: true });
+      logger.info(
+        { folder, groupDir },
+        'Workspace default directory initialized before publication',
+      );
     }
   } catch (err) {
     logger.error({ folder, err }, 'Workspace initialization failed');

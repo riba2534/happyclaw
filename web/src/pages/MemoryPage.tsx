@@ -10,8 +10,10 @@ import {
   AlertTriangle,
   ArrowLeft,
   BookOpen,
+  Check,
   CheckCircle2,
   CircleDotDashed,
+  Clock,
   FileText,
   History,
   Lightbulb,
@@ -28,6 +30,7 @@ import { api, apiFetch } from '../api/client';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { createUnsavedNavigationGuard } from '@/utils/unsaved-navigation';
 import { Badge } from '@/components/ui/badge';
+import { getMemoryValidityInfo } from '../utils/memory-status';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import {
@@ -158,6 +161,8 @@ function MemoryListItem({
   snippet?: string;
   onSelect: (item: WorkspaceMemoryItem) => void;
 }) {
+  const validity = getMemoryValidityInfo(item);
+
   return (
     <button
       type="button"
@@ -177,7 +182,12 @@ function MemoryListItem({
             {snippet || item.content}
           </p>
         </div>
-        <MemoryKindBadge kind={item.kind} />
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <MemoryKindBadge kind={item.kind} />
+          <Badge variant={validity.badgeVariant} className="text-[10px]">
+            {validity.label}
+          </Badge>
+        </div>
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
         <span>{provenanceLabel(item.provenance)}</span>
@@ -185,6 +195,17 @@ function MemoryListItem({
         <span>{formatTime(item.provenance.observedAt || item.updatedAt)}</span>
         <span aria-hidden="true">·</span>
         <span>r{item.revision}</span>
+        {validity.validityRangeText && (
+          <>
+            <span aria-hidden="true">·</span>
+            <span className="truncate max-w-[180px]">
+              {validity.validityRangeText}
+            </span>
+          </>
+        )}
+      </div>
+      <div className="mt-1 text-[11px] text-muted-foreground/80 truncate">
+        {validity.reason}
       </div>
     </button>
   );
@@ -224,15 +245,35 @@ export function MemoryPage() {
   const [loadingMore, setLoadingMore] = useState(false);
 
   const [kindFilter, setKindFilter] = useState<KindFilter>('all');
+  const [statusFilter, setStatusFilter] = useState<
+    | 'active'
+    | 'all'
+    | 'proposed'
+    | 'conflicted'
+    | 'effective'
+    | 'future'
+    | 'expired'
+  >('active');
   const [query, setQuery] = useState('');
   const queryRef = useRef('');
   const kindFilterRef = useRef<KindFilter>('all');
+  const statusFilterRef = useRef<
+    | 'active'
+    | 'all'
+    | 'proposed'
+    | 'conflicted'
+    | 'effective'
+    | 'future'
+    | 'expired'
+  >('active');
   queryRef.current = query;
   kindFilterRef.current = kindFilter;
+  statusFilterRef.current = statusFilter;
   const [searching, setSearching] = useState(false);
   const [searchHits, setSearchHits] = useState<
     WorkspaceMemorySearchResult['hits'] | null
   >(null);
+  const [searchNextCursor, setSearchNextCursor] = useState<string | null>(null);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedItem, setSelectedItem] = useState<WorkspaceMemoryItem | null>(
@@ -276,10 +317,38 @@ export function MemoryPage() {
   const canModify = selectedWorkspace?.can_modify === true;
 
   const visibleItems = useMemo(() => {
-    if (searchHits) return searchHits.map((hit) => hit.item);
-    if (kindFilter === 'all') return items;
-    return items.filter((item) => item.kind === kindFilter);
-  }, [items, kindFilter, searchHits]);
+    let list = searchHits ? searchHits.map((hit) => hit.item) : items;
+
+    if (kindFilter !== 'all') {
+      list = list.filter((item) => item.kind === kindFilter);
+    }
+    if (statusFilter === 'all') return list;
+    if (statusFilter === 'proposed') {
+      return list.filter((item) => item.status === 'proposed');
+    }
+    if (statusFilter === 'conflicted') {
+      return list.filter((item) => item.status === 'conflicted');
+    }
+    if (statusFilter === 'active') {
+      return list.filter((item) => item.status === 'active');
+    }
+    if (statusFilter === 'effective') {
+      return list.filter(
+        (item) => getMemoryValidityInfo(item).status === 'active_valid',
+      );
+    }
+    if (statusFilter === 'future') {
+      return list.filter(
+        (item) => getMemoryValidityInfo(item).status === 'future',
+      );
+    }
+    if (statusFilter === 'expired') {
+      return list.filter(
+        (item) => getMemoryValidityInfo(item).status === 'expired',
+      );
+    }
+    return list;
+  }, [items, kindFilter, searchHits, statusFilter]);
   const counts = useMemo(() => memoryKindCounts(items), [items]);
   const dirty = useMemo(() => {
     if (!selectedItem) return false;
@@ -456,10 +525,22 @@ export function MemoryPage() {
       const requestGeneration = ++listGenerationRef.current;
       append ? setLoadingMore(true) : setListLoading(true);
       try {
+        const currentStatus = statusFilterRef.current;
+        const requestedStatus =
+          currentStatus === 'all'
+            ? 'all'
+            : currentStatus === 'proposed'
+              ? 'proposed'
+              : currentStatus === 'conflicted'
+                ? 'conflicted'
+                : 'active';
         const params = new URLSearchParams({
-          status: 'active',
+          status: requestedStatus,
           limit: '100',
         });
+        if (kindFilterRef.current !== 'all') {
+          params.set('kind', kindFilterRef.current);
+        }
         if (options?.cursor) params.set('cursor', options.cursor);
         const data = await api.get<WorkspaceMemoryCollection>(
           `${memoryItemsPath(workspaceJid)}?${params}`,
@@ -472,6 +553,7 @@ export function MemoryPage() {
         }
         setStoreRevision(data.storeRevision);
         setNextCursor(data.nextCursor);
+
         setItems((current) =>
           append ? [...current, ...data.items] : data.items,
         );
@@ -498,12 +580,19 @@ export function MemoryPage() {
 
   useEffect(() => {
     if (selectedWorkspaceJid) void loadItems();
-  }, [selectedWorkspaceJid, loadItems]);
+  }, [selectedWorkspaceJid, statusFilter, loadItems]);
 
   const loadSearch = useCallback(
-    async (options?: { query?: string; kind?: KindFilter }) => {
+    async (options?: {
+      query?: string;
+      kind?: KindFilter;
+      status?: typeof statusFilter;
+      append?: boolean;
+      cursor?: string | null;
+    }) => {
       const trimmed = (options?.query ?? queryRef.current).trim();
       const requestedKind = options?.kind ?? kindFilterRef.current;
+      const requestedStatus = options?.status ?? statusFilterRef.current;
       const workspaceJid = activeWorkspaceRef.current;
       const workspaceEpoch = workspaceEpochRef.current;
       if (
@@ -513,15 +602,33 @@ export function MemoryPage() {
       ) {
         searchGenerationRef.current += 1;
         setSearchHits(null);
+        setSearchNextCursor(null);
         setSearching(false);
         return;
       }
 
+      const append = options?.append === true;
       const requestGeneration = ++searchGenerationRef.current;
-      setSearching(true);
+      append ? setLoadingMore(true) : setSearching(true);
       try {
-        const params = new URLSearchParams({ q: trimmed, limit: '100' });
+        const params = new URLSearchParams({
+          q: trimmed,
+          scope: 'manage',
+          limit: '100',
+        });
         if (requestedKind !== 'all') params.set('kind', requestedKind);
+        if (requestedStatus === 'all') {
+          params.set('status', 'all');
+        } else if (
+          requestedStatus === 'proposed' ||
+          requestedStatus === 'conflicted'
+        ) {
+          params.set('status', requestedStatus);
+        } else {
+          params.set('status', 'active');
+        }
+        if (options?.cursor) params.set('cursor', options.cursor);
+
         const data = await api.get<WorkspaceMemorySearchResult>(
           `${memoryItemsPath(workspaceJid)}/search?${params}`,
         );
@@ -532,7 +639,10 @@ export function MemoryPage() {
           return;
         }
         setStoreRevision(data.storeRevision);
-        setSearchHits(data.hits);
+        setSearchNextCursor(data.nextCursor ?? null);
+        setSearchHits((current) =>
+          append && current ? [...current, ...data.hits] : data.hits,
+        );
       } catch (error) {
         if (
           !isCurrentWorkspace(workspaceJid, workspaceEpoch) ||
@@ -540,14 +650,17 @@ export function MemoryPage() {
         ) {
           return;
         }
-        setSearchHits([]);
+        if (!append) {
+          setSearchHits([]);
+          setSearchNextCursor(null);
+        }
         toast.error(getErrorMessage(error, '搜索工作区记忆失败'));
       } finally {
         if (
           isCurrentWorkspace(workspaceJid, workspaceEpoch) &&
           searchGenerationRef.current === requestGeneration
         ) {
-          setSearching(false);
+          append ? setLoadingMore(false) : setSearching(false);
         }
       }
     },
@@ -559,19 +672,22 @@ export function MemoryPage() {
     if (!trimmed || !selectedWorkspaceJid) {
       searchGenerationRef.current += 1;
       setSearchHits(null);
+      setSearchNextCursor(null);
       setSearching(false);
       return;
     }
     const timer = window.setTimeout(() => {
-      void loadSearch({ query: trimmed, kind: kindFilter });
+      void loadSearch({
+        query: trimmed,
+        kind: kindFilter,
+        status: statusFilter,
+      });
     }, 280);
     return () => {
       window.clearTimeout(timer);
-      // Invalidate a request that may already have started before dependencies
-      // changed, so it cannot briefly repaint results for the previous query.
       searchGenerationRef.current += 1;
     };
-  }, [kindFilter, loadSearch, query, selectedWorkspaceJid]);
+  }, [kindFilter, loadSearch, query, selectedWorkspaceJid, statusFilter]);
 
   const refreshMemoryView = useCallback(async () => {
     const refreshes: Promise<void>[] = [loadItems()];
@@ -850,6 +966,162 @@ export function MemoryPage() {
     }
   };
 
+  const handleConfirmProposed = async () => {
+    if (
+      !selectedWorkspaceJid ||
+      !selectedItem ||
+      selectedItem.status !== 'proposed'
+    )
+      return;
+    const workspaceJid = selectedWorkspaceJid;
+    const workspaceEpoch = workspaceEpochRef.current;
+    const itemId = selectedItem.id;
+    if (!isCurrentWorkspace(workspaceJid, workspaceEpoch)) return;
+    const requestGeneration = ++saveGenerationRef.current;
+    setSaving(true);
+    setConflict(null);
+    try {
+      const result = await api.patch<WorkspaceMemoryItemResult>(
+        memoryItemPath(workspaceJid, itemId),
+        {
+          expectedRevision: selectedItem.revision,
+          status: 'active',
+          kind: draft.kind,
+          title: draft.title.trim() || null,
+          content: draft.content.trim(),
+          provenance: {
+            observedAt: new Date().toISOString(),
+          },
+        },
+      );
+      if (
+        !isCurrentWorkspace(workspaceJid, workspaceEpoch) ||
+        saveGenerationRef.current !== requestGeneration ||
+        detailTargetRef.current !== itemId
+      ) {
+        return;
+      }
+      const nextValidity = getMemoryValidityInfo(result.item);
+      if (nextValidity.status === 'active_valid') {
+        toast.success('已采纳候选记忆为正式有效记忆，当前已进入召回池');
+      } else if (nextValidity.status === 'future') {
+        toast.success(`已采纳候选记忆（${nextValidity.reason}）`);
+      } else if (nextValidity.status === 'expired') {
+        toast.warning(`已采纳该记录，但当前已过期（${nextValidity.reason}）`);
+      } else {
+        toast.success('已采纳候选记忆');
+      }
+      setStoreRevision(result.storeRevision);
+      syncSelectedItem(result.item);
+      await refreshMemoryView();
+      if (
+        !isCurrentWorkspace(workspaceJid, workspaceEpoch) ||
+        saveGenerationRef.current !== requestGeneration ||
+        detailTargetRef.current !== itemId
+      ) {
+        return;
+      }
+      await loadDetail(result.item.id, { discardDraft: true });
+    } catch (error) {
+      if (
+        !isCurrentWorkspace(workspaceJid, workspaceEpoch) ||
+        saveGenerationRef.current !== requestGeneration ||
+        detailTargetRef.current !== itemId
+      ) {
+        return;
+      }
+      const nextConflict = revisionConflictFrom(error);
+      if (nextConflict) {
+        setConflict(nextConflict);
+      } else {
+        toast.error(getErrorMessage(error, '采纳候选记忆失败'));
+      }
+    } finally {
+      if (saveGenerationRef.current === requestGeneration) {
+        setSaving(false);
+      }
+    }
+  };
+
+  const handleResolveConflict = async () => {
+    if (
+      !selectedWorkspaceJid ||
+      !selectedItem ||
+      selectedItem.status !== 'conflicted'
+    )
+      return;
+    const workspaceJid = selectedWorkspaceJid;
+    const workspaceEpoch = workspaceEpochRef.current;
+    const itemId = selectedItem.id;
+    if (!isCurrentWorkspace(workspaceJid, workspaceEpoch)) return;
+    const requestGeneration = ++saveGenerationRef.current;
+    setSaving(true);
+    setConflict(null);
+    try {
+      const result = await api.patch<WorkspaceMemoryItemResult>(
+        memoryItemPath(workspaceJid, itemId),
+        {
+          expectedRevision: selectedItem.revision,
+          status: 'active',
+          kind: draft.kind,
+          title: draft.title.trim() || null,
+          content: draft.content.trim(),
+          provenance: {
+            observedAt: new Date().toISOString(),
+          },
+        },
+      );
+      if (
+        !isCurrentWorkspace(workspaceJid, workspaceEpoch) ||
+        saveGenerationRef.current !== requestGeneration ||
+        detailTargetRef.current !== itemId
+      ) {
+        return;
+      }
+      const nextValidity = getMemoryValidityInfo(result.item);
+      if (nextValidity.status === 'active_valid') {
+        toast.success('已解决冲突并保存为正式有效记忆，当前已进入召回池');
+      } else if (nextValidity.status === 'future') {
+        toast.success(`已解决冲突并保存（${nextValidity.reason}）`);
+      } else if (nextValidity.status === 'expired') {
+        toast.warning(
+          `已解决冲突并保存，但当前已过期（${nextValidity.reason}）`,
+        );
+      } else {
+        toast.success('已解决冲突并保存');
+      }
+      setStoreRevision(result.storeRevision);
+      syncSelectedItem(result.item);
+      await refreshMemoryView();
+      if (
+        !isCurrentWorkspace(workspaceJid, workspaceEpoch) ||
+        saveGenerationRef.current !== requestGeneration ||
+        detailTargetRef.current !== itemId
+      ) {
+        return;
+      }
+      await loadDetail(result.item.id, { discardDraft: true });
+    } catch (error) {
+      if (
+        !isCurrentWorkspace(workspaceJid, workspaceEpoch) ||
+        saveGenerationRef.current !== requestGeneration ||
+        detailTargetRef.current !== itemId
+      ) {
+        return;
+      }
+      const nextConflict = revisionConflictFrom(error);
+      if (nextConflict) {
+        setConflict(nextConflict);
+      } else {
+        toast.error(getErrorMessage(error, '解决冲突失败'));
+      }
+    } finally {
+      if (saveGenerationRef.current === requestGeneration) {
+        setSaving(false);
+      }
+    }
+  };
+
   const handleForget = async () => {
     if (!selectedWorkspaceJid || !selectedItem) return;
     const workspaceJid = selectedWorkspaceJid;
@@ -1102,6 +1374,37 @@ export function MemoryPage() {
                     刷新
                   </Button>
                 </div>
+
+                {/* 状态与有效性筛选器 (R10) */}
+                <div className="flex flex-wrap items-center gap-1.5 border-t border-border/60 pt-3">
+                  <span className="mr-1 text-xs text-muted-foreground">
+                    状态：
+                  </span>
+                  {[
+                    { key: 'all', label: '全部状态' },
+                    { key: 'active', label: '活跃 (active)' },
+                    { key: 'proposed', label: '候选待确认 (proposed)' },
+                    { key: 'conflicted', label: '冲突待解决 (conflicted)' },
+                    { key: 'effective', label: '当前可召回' },
+                    { key: 'future', label: '未来生效' },
+                    { key: 'expired', label: '已过期' },
+                  ].map((tab) => (
+                    <Button
+                      key={tab.key}
+                      type="button"
+                      variant={statusFilter === tab.key ? 'secondary' : 'ghost'}
+                      size="sm"
+                      className="h-7 px-2.5 text-xs"
+                      onClick={() => {
+                        searchGenerationRef.current += 1;
+                        setSearchHits(null);
+                        setStatusFilter(tab.key as any);
+                      }}
+                    >
+                      {tab.label}
+                    </Button>
+                  ))}
+                </div>
               </CardContent>
             </Card>
 
@@ -1175,14 +1478,25 @@ export function MemoryPage() {
                           onSelect={(next) => void loadDetail(next.id)}
                         />
                       ))}
-                      {!searchHits && nextCursor && (
+                      {(searchHits ? searchNextCursor : nextCursor) !==
+                        null && (
                         <Button
                           variant="outline"
                           className="w-full"
                           disabled={loadingMore}
-                          onClick={() =>
-                            void loadItems({ append: true, cursor: nextCursor })
-                          }
+                          onClick={() => {
+                            if (searchHits) {
+                              void loadSearch({
+                                append: true,
+                                cursor: searchNextCursor,
+                              });
+                            } else {
+                              void loadItems({
+                                append: true,
+                                cursor: nextCursor,
+                              });
+                            }
+                          }}
                         >
                           {loadingMore && <Loader2 className="animate-spin" />}
                           加载更多
@@ -1226,231 +1540,354 @@ export function MemoryPage() {
                       </div>
                     )}
 
-                    {selectedItem && (
-                      <div className="space-y-5">
-                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                          <div>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <MemoryKindBadge kind={selectedItem.kind} />
-                              <Badge variant="outline">
-                                Revision {selectedItem.revision}
-                              </Badge>
-                            </div>
-                            <h2 className="mt-3 text-lg font-semibold text-foreground">
-                              {selectedItem.title || '无标题记忆'}
-                            </h2>
-                          </div>
-                          {canModify && (
-                            <Button
-                              variant="destructive"
-                              onClick={() => setForgetOpen(true)}
-                            >
-                              <Trash2 />
-                              忘记
-                            </Button>
-                          )}
-                        </div>
+                    {selectedItem &&
+                      (() => {
+                        const selectedValidity =
+                          getMemoryValidityInfo(selectedItem);
 
-                        {conflict && (
-                          <div
-                            role="alert"
-                            className="rounded-xl border border-warning/30 bg-warning-bg p-4"
-                          >
-                            <div className="flex items-start gap-2.5">
-                              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
-                              <div className="min-w-0 flex-1">
-                                <div className="font-medium text-foreground">
-                                  保存冲突：这条记忆已被其他会话更新
+                        return (
+                          <div className="space-y-5">
+                            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                              <div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <MemoryKindBadge kind={selectedItem.kind} />
+                                  <Badge variant="outline">
+                                    Revision {selectedItem.revision}
+                                  </Badge>
+                                  <Badge
+                                    variant={selectedValidity.badgeVariant}
+                                  >
+                                    {selectedValidity.label}
+                                  </Badge>
+                                  {selectedValidity.isRecalible ? (
+                                    <Badge
+                                      variant="secondary"
+                                      className="text-emerald-700 dark:text-emerald-300"
+                                    >
+                                      <Check className="mr-1 size-3" />
+                                      当前可召回
+                                    </Badge>
+                                  ) : (
+                                    <Badge
+                                      variant="outline"
+                                      className="text-muted-foreground"
+                                    >
+                                      <Clock className="mr-1 size-3" />
+                                      不可召回
+                                    </Badge>
+                                  )}
                                 </div>
-                                <p className="mt-1 text-sm leading-5 text-muted-foreground">
-                                  你的草稿仍保留在编辑框中。当前服务端 revision{' '}
-                                  {conflict.currentRevision ?? '未知'}，store
-                                  revision {conflict.storeRevision ?? '未知'}
-                                  。加载最新版会覆盖当前草稿。
-                                </p>
+                                <h2 className="mt-3 text-lg font-semibold text-foreground">
+                                  {selectedItem.title || '无标题记忆'}
+                                </h2>
+                              </div>
+                              {canModify && (
                                 <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="mt-3"
-                                  onClick={() => void reloadAfterConflict()}
+                                  variant="destructive"
+                                  onClick={() => setForgetOpen(true)}
                                 >
-                                  <RefreshCw />
-                                  加载服务端最新版
+                                  <Trash2 />
+                                  忘记
                                 </Button>
+                              )}
+                            </div>
+
+                            {/* 生效状态与原因说明 (R10) */}
+                            <div className="rounded-xl border border-border bg-muted/10 p-3.5 text-xs">
+                              <div className="flex items-center justify-between font-medium text-foreground">
+                                <span>生效与召回状态</span>
+                                <span className="text-muted-foreground">
+                                  {selectedValidity.label}
+                                </span>
+                              </div>
+                              <div className="mt-1.5 leading-relaxed text-muted-foreground">
+                                {selectedValidity.reason}
+                              </div>
+                              {selectedValidity.validityRangeText && (
+                                <div className="mt-1 text-muted-foreground/80">
+                                  有效区间：{selectedValidity.validityRangeText}
+                                </div>
+                              )}
+                            </div>
+
+                            {/* 候选记忆采纳确认 (R10) */}
+                            {selectedItem.status === 'proposed' &&
+                              canModify && (
+                                <div className="rounded-xl border border-purple-500/30 bg-purple-50/50 p-4 dark:border-purple-500/20 dark:bg-purple-950/20">
+                                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                    <div>
+                                      <div className="font-semibold text-purple-900 dark:text-purple-100">
+                                        这是候选记忆 (待确认)
+                                      </div>
+                                      <p className="mt-0.5 text-xs text-purple-800 dark:text-purple-300">
+                                        需经确认采纳后，方可正式生效并进入工作区智能体的召回池。
+                                      </p>
+                                    </div>
+                                    <Button
+                                      size="sm"
+                                      disabled={saving}
+                                      onClick={() =>
+                                        void handleConfirmProposed()
+                                      }
+                                      className="bg-purple-600 hover:bg-purple-700 text-white gap-1.5 shrink-0"
+                                    >
+                                      {saving ? (
+                                        <Loader2 className="size-3.5 animate-spin" />
+                                      ) : (
+                                        <Check className="size-3.5" />
+                                      )}
+                                      采纳为正式记忆
+                                    </Button>
+                                  </div>
+                                </div>
+                              )}
+
+                            {/* 冲突处理提示与解决操作 (R10) */}
+                            {selectedItem.status === 'conflicted' &&
+                              canModify && (
+                                <div
+                                  role="alert"
+                                  className="rounded-xl border border-destructive/40 bg-destructive/10 p-4 text-foreground"
+                                >
+                                  <div className="flex items-start gap-2.5">
+                                    <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" />
+                                    <div className="min-w-0 flex-1">
+                                      <div className="font-medium text-foreground">
+                                        待解决冲突：此记忆存在多方更新或版本冲突
+                                      </div>
+                                      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                                        当前不可直接参与召回。请核对下方编辑框中的内容，修改修正后点击“解决冲突并生效”完成
+                                        CAS 校验与转正。
+                                      </p>
+                                      <div className="mt-3 flex flex-wrap gap-2">
+                                        <Button
+                                          size="sm"
+                                          disabled={
+                                            saving || !draft.content.trim()
+                                          }
+                                          onClick={() =>
+                                            void handleResolveConflict()
+                                          }
+                                          className="gap-1.5"
+                                        >
+                                          {saving ? (
+                                            <Loader2 className="size-3.5 animate-spin" />
+                                          ) : (
+                                            <CheckCircle2 className="size-3.5" />
+                                          )}
+                                          解决冲突并生效
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+
+                            {conflict && (
+                              <div
+                                role="alert"
+                                className="rounded-xl border border-warning/30 bg-warning-bg p-4"
+                              >
+                                <div className="flex items-start gap-2.5">
+                                  <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
+                                  <div className="min-w-0 flex-1">
+                                    <div className="font-medium text-foreground">
+                                      保存冲突：这条记忆已被其他会话更新
+                                    </div>
+                                    <p className="mt-1 text-sm leading-5 text-muted-foreground">
+                                      你的草稿仍保留在编辑框中。当前服务端
+                                      revision{' '}
+                                      {conflict.currentRevision ?? '未知'}
+                                      ，store revision{' '}
+                                      {conflict.storeRevision ?? '未知'}
+                                      。加载最新版会覆盖当前草稿。
+                                    </p>
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      className="mt-3"
+                                      onClick={() => void reloadAfterConflict()}
+                                    >
+                                      <RefreshCw />
+                                      加载服务端最新版
+                                    </Button>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+
+                            <div className="grid gap-3 rounded-xl border border-border bg-muted/20 p-4 text-sm sm:grid-cols-3">
+                              <div>
+                                <div className="text-xs text-muted-foreground">
+                                  来源
+                                </div>
+                                <div className="mt-1 break-all font-medium text-foreground">
+                                  {provenanceLabel(selectedItem.provenance)}
+                                </div>
+                              </div>
+                              <div>
+                                <div className="text-xs text-muted-foreground">
+                                  观察时间
+                                </div>
+                                <div className="mt-1 font-medium text-foreground">
+                                  {formatTime(
+                                    selectedItem.provenance.observedAt ||
+                                      selectedItem.createdAt,
+                                  )}
+                                </div>
+                              </div>
+                              <div>
+                                <div className="text-xs text-muted-foreground">
+                                  最近修订
+                                </div>
+                                <div className="mt-1 font-medium text-foreground">
+                                  r{selectedItem.revision} ·{' '}
+                                  {formatTime(selectedItem.updatedAt)}
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        )}
 
-                        <div className="grid gap-3 rounded-xl border border-border bg-muted/20 p-4 text-sm sm:grid-cols-3">
-                          <div>
-                            <div className="text-xs text-muted-foreground">
-                              来源
-                            </div>
-                            <div className="mt-1 break-all font-medium text-foreground">
-                              {provenanceLabel(selectedItem.provenance)}
-                            </div>
-                          </div>
-                          <div>
-                            <div className="text-xs text-muted-foreground">
-                              观察时间
-                            </div>
-                            <div className="mt-1 font-medium text-foreground">
-                              {formatTime(
-                                selectedItem.provenance.observedAt ||
-                                  selectedItem.createdAt,
-                              )}
-                            </div>
-                          </div>
-                          <div>
-                            <div className="text-xs text-muted-foreground">
-                              最近修订
-                            </div>
-                            <div className="mt-1 font-medium text-foreground">
-                              r{selectedItem.revision} ·{' '}
-                              {formatTime(selectedItem.updatedAt)}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="grid gap-4 sm:grid-cols-[180px_1fr]">
-                          <div>
-                            <Label htmlFor="memory-kind">类别</Label>
-                            <Select
-                              value={draft.kind}
-                              onValueChange={(value) =>
-                                setDraft((current) => ({
-                                  ...current,
-                                  kind: value as WorkspaceMemoryKind,
-                                }))
-                              }
-                              disabled={!canModify || saving}
-                            >
-                              <SelectTrigger
-                                id="memory-kind"
-                                className="mt-1.5 w-full"
-                              >
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {WORKSPACE_MEMORY_KINDS.map((kind) => (
-                                  <SelectItem key={kind} value={kind}>
-                                    {KIND_META[kind].label}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-                          <div>
-                            <Label htmlFor="memory-title">标题</Label>
-                            <Input
-                              id="memory-title"
-                              className="mt-1.5"
-                              value={draft.title}
-                              onChange={(event) =>
-                                setDraft((current) => ({
-                                  ...current,
-                                  title: event.target.value,
-                                }))
-                              }
-                              disabled={!canModify || saving}
-                              placeholder="简短描述这条记忆"
-                            />
-                          </div>
-                        </div>
-
-                        <div>
-                          <Label htmlFor="memory-content">内容</Label>
-                          <Textarea
-                            id="memory-content"
-                            className="mt-1.5 min-h-52 resize-y text-sm leading-6"
-                            value={draft.content}
-                            onChange={(event) =>
-                              setDraft((current) => ({
-                                ...current,
-                                content: event.target.value,
-                              }))
-                            }
-                            disabled={!canModify || saving}
-                          />
-                        </div>
-
-                        {canModify && (
-                          <div className="flex flex-wrap items-center gap-3">
-                            <Button
-                              onClick={() => void handleSave()}
-                              disabled={
-                                !dirty || !draft.content.trim() || saving
-                              }
-                            >
-                              {saving && <Loader2 className="animate-spin" />}
-                              <Save />
-                              保存 revision
-                            </Button>
-                            {dirty && (
-                              <span className="text-sm text-warning">
-                                有未保存修改
-                              </span>
-                            )}
-                          </div>
-                        )}
-
-                        <div className="border-t border-border pt-5">
-                          <div className="mb-3 flex items-center gap-2">
-                            <History className="size-4 text-muted-foreground" />
-                            <h3 className="font-semibold text-foreground">
-                              修订记录
-                            </h3>
-                          </div>
-                          {versions.length === 0 ? (
-                            <p className="text-sm text-muted-foreground">
-                              暂无可用修订记录。
-                            </p>
-                          ) : (
-                            <div className="space-y-2">
-                              {versions.map((version) => (
-                                <div
-                                  key={version.revision}
-                                  className="rounded-lg border border-border px-3 py-2.5"
+                            <div className="grid gap-4 sm:grid-cols-[180px_1fr]">
+                              <div>
+                                <Label htmlFor="memory-kind">类别</Label>
+                                <Select
+                                  value={draft.kind}
+                                  onValueChange={(value) =>
+                                    setDraft((current) => ({
+                                      ...current,
+                                      kind: value as WorkspaceMemoryKind,
+                                    }))
+                                  }
+                                  disabled={!canModify || saving}
                                 >
-                                  <div className="flex flex-wrap items-center justify-between gap-2">
-                                    <div className="flex items-center gap-2">
-                                      <Badge variant="outline">
-                                        r{version.revision}
-                                      </Badge>
-                                      <span className="text-sm font-medium text-foreground">
-                                        {CHANGE_TYPE_LABELS[
-                                          version.changeType
-                                        ] || version.changeType}
-                                      </span>
-                                    </div>
-                                    <span className="text-xs text-muted-foreground">
-                                      {formatTime(version.createdAt)}
-                                    </span>
-                                  </div>
-                                  <div className="mt-1.5 text-xs text-muted-foreground">
-                                    {provenanceLabel(version.provenance)}
-                                  </div>
-                                </div>
-                              ))}
-                              {versionNextCursor && (
+                                  <SelectTrigger
+                                    id="memory-kind"
+                                    className="mt-1.5 w-full"
+                                  >
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {WORKSPACE_MEMORY_KINDS.map((kind) => (
+                                      <SelectItem key={kind} value={kind}>
+                                        {KIND_META[kind].label}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                              <div>
+                                <Label htmlFor="memory-title">标题</Label>
+                                <Input
+                                  id="memory-title"
+                                  className="mt-1.5"
+                                  value={draft.title}
+                                  onChange={(event) =>
+                                    setDraft((current) => ({
+                                      ...current,
+                                      title: event.target.value,
+                                    }))
+                                  }
+                                  disabled={!canModify || saving}
+                                  placeholder="简短描述这条记忆"
+                                />
+                              </div>
+                            </div>
+
+                            <div>
+                              <Label htmlFor="memory-content">内容</Label>
+                              <Textarea
+                                id="memory-content"
+                                className="mt-1.5 min-h-52 resize-y text-sm leading-6"
+                                value={draft.content}
+                                onChange={(event) =>
+                                  setDraft((current) => ({
+                                    ...current,
+                                    content: event.target.value,
+                                  }))
+                                }
+                                disabled={!canModify || saving}
+                              />
+                            </div>
+
+                            {canModify && (
+                              <div className="flex flex-wrap items-center gap-3">
                                 <Button
-                                  variant="outline"
-                                  className="w-full"
-                                  disabled={loadingMoreVersions}
-                                  onClick={() => void loadMoreVersions()}
+                                  onClick={() => void handleSave()}
+                                  disabled={
+                                    !dirty || !draft.content.trim() || saving
+                                  }
                                 >
-                                  {loadingMoreVersions && (
+                                  {saving && (
                                     <Loader2 className="animate-spin" />
                                   )}
-                                  加载更多修订
+                                  <Save />
+                                  保存 revision
                                 </Button>
+                                {dirty && (
+                                  <span className="text-sm text-warning">
+                                    有未保存修改
+                                  </span>
+                                )}
+                              </div>
+                            )}
+
+                            <div className="border-t border-border pt-5">
+                              <div className="mb-3 flex items-center gap-2">
+                                <History className="size-4 text-muted-foreground" />
+                                <h3 className="font-semibold text-foreground">
+                                  修订记录
+                                </h3>
+                              </div>
+                              {versions.length === 0 ? (
+                                <p className="text-sm text-muted-foreground">
+                                  暂无可用修订记录。
+                                </p>
+                              ) : (
+                                <div className="space-y-2">
+                                  {versions.map((version) => (
+                                    <div
+                                      key={version.revision}
+                                      className="rounded-lg border border-border px-3 py-2.5"
+                                    >
+                                      <div className="flex flex-wrap items-center justify-between gap-2">
+                                        <div className="flex items-center gap-2">
+                                          <Badge variant="outline">
+                                            r{version.revision}
+                                          </Badge>
+                                          <span className="text-sm font-medium text-foreground">
+                                            {CHANGE_TYPE_LABELS[
+                                              version.changeType
+                                            ] || version.changeType}
+                                          </span>
+                                        </div>
+                                        <span className="text-xs text-muted-foreground">
+                                          {formatTime(version.createdAt)}
+                                        </span>
+                                      </div>
+                                      <div className="mt-1.5 text-xs text-muted-foreground">
+                                        {provenanceLabel(version.provenance)}
+                                      </div>
+                                    </div>
+                                  ))}
+                                  {versionNextCursor && (
+                                    <Button
+                                      variant="outline"
+                                      className="w-full"
+                                      disabled={loadingMoreVersions}
+                                      onClick={() => void loadMoreVersions()}
+                                    >
+                                      {loadingMoreVersions && (
+                                        <Loader2 className="animate-spin" />
+                                      )}
+                                      加载更多修订
+                                    </Button>
+                                  )}
+                                </div>
                               )}
                             </div>
-                          )}
-                        </div>
-                      </div>
-                    )}
+                          </div>
+                        );
+                      })()}
                   </CardContent>
                 </Card>
               )}

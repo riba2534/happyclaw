@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ChevronDown,
   ChevronRight,
@@ -50,6 +50,7 @@ interface CreateContainerDialogProps {
   open: boolean;
   onClose: () => void;
   onCreated: (jid: string, folder: string) => void;
+  initialAgentProfileId?: string;
 }
 
 function extractFieldErrors(error: unknown): Record<string, string> {
@@ -104,6 +105,7 @@ export function CreateContainerDialog({
   open,
   onClose,
   onCreated,
+  initialAgentProfileId,
 }: CreateContainerDialogProps) {
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(false);
@@ -115,7 +117,9 @@ export function CreateContainerDialog({
   const [initMode, setInitMode] = useState<'empty' | 'local' | 'git'>('empty');
   const [initSourcePath, setInitSourcePath] = useState('');
   const [initGitUrl, setInitGitUrl] = useState('');
-  const [selectedAgentProfileId, setSelectedAgentProfileId] = useState('');
+  const [selectedAgentProfileId, setSelectedAgentProfileId] = useState(
+    () => initialAgentProfileId || '',
+  );
   const [interactionMode, setInteractionMode] =
     useState<InteractionMode>('assistant');
   const [hostMounts, setHostMounts] = useState<HostDirectoryMountDraft[]>([]);
@@ -125,7 +129,8 @@ export function CreateContainerDialog({
   const createFlow = useChatStore((s) => s.createFlow);
   const adminHostOnlyMode = useChatStore((s) => s.adminHostOnlyMode);
   const canHostExec = useAuthStore((s) => s.user?.role === 'admin');
-  const profiles = useAgentProfilesStore((s) => s.profiles);
+  const rawProfiles = useAgentProfilesStore((s) => s.profiles);
+  const profiles = Array.isArray(rawProfiles) ? rawProfiles : [];
   const profilesLoading = useAgentProfilesStore((s) => s.loading);
   const profilesError = useAgentProfilesStore((s) => s.profilesError);
   const loadProfiles = useAgentProfilesStore((s) => s.loadProfiles);
@@ -142,16 +147,30 @@ export function CreateContainerDialog({
     selectedProfile?.runtime_policy.skills.host?.mode ??
     (inheritsHostClaude ? 'inherit' : 'disabled');
 
+  const initializedOpenRef = useRef(false);
+
   useEffect(() => {
     if (open) void loadProfiles();
   }, [open, loadProfiles]);
 
+  // 仅在对话框由关闭变为打开时设置预选初值；打开期间用户手动改选其他 Agent 绝不被抢回
   useEffect(() => {
-    if (!open || selectedAgentProfileId || profiles.length === 0) return;
-    const defaultProfile =
-      profiles.find((profile) => profile.is_default) ?? profiles[0];
-    setSelectedAgentProfileId(defaultProfile.id);
-  }, [open, profiles, selectedAgentProfileId]);
+    if (!open) {
+      initializedOpenRef.current = false;
+      return;
+    }
+    if (!initializedOpenRef.current) {
+      if (initialAgentProfileId) {
+        setSelectedAgentProfileId(initialAgentProfileId);
+        initializedOpenRef.current = true;
+      } else if (profiles.length > 0) {
+        const defaultProfile =
+          profiles.find((profile) => profile.is_default) ?? profiles[0];
+        setSelectedAgentProfileId(defaultProfile.id);
+        initializedOpenRef.current = true;
+      }
+    }
+  }, [open, initialAgentProfileId, profiles]);
 
   useEffect(() => {
     if (canHostExec || executionMode === 'container') return;

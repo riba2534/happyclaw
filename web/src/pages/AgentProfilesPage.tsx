@@ -3,12 +3,14 @@ import {
   useBeforeUnload,
   useBlocker,
   useLocation,
+  useNavigate,
   useSearchParams,
   type BlockerFunction,
 } from 'react-router-dom';
 import {
   ArrowRight,
   Bot,
+  FolderPlus,
   Loader2,
   Plus,
   RefreshCw,
@@ -39,6 +41,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { CreateContainerDialog } from '../components/chat/CreateContainerDialog';
 import { AgentPromptAssistant } from '../components/agents/AgentPromptAssistant';
 import { AgentPromptEditor } from '../components/agents/AgentPromptEditor';
 import { AgentPromptVersionHistory } from '../components/agents/AgentPromptVersionHistory';
@@ -229,6 +232,12 @@ export function AgentProfilesPage() {
     deleteProfile,
     setWorkspaceAgentProfile,
   } = useAgentProfilesStore();
+
+  const navigate = useNavigate();
+  const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false);
+  const [createWorkspaceAgentId, setCreateWorkspaceAgentId] = useState<
+    string | null
+  >(null);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draftMode, setDraftMode] = useState(false);
@@ -800,6 +809,15 @@ export function AgentProfilesPage() {
       setAllowedSearchParams({ agent: profile.id }, { replace: true });
       toast.success(
         '已创建智能体；当前未绑定工作区，Session 与 Memory 均和 HappyClaw 隔离',
+        {
+          action: {
+            label: '为此智能体创建工作区',
+            onClick: () => {
+              setCreateWorkspaceAgentId(profile.id);
+              setCreateWorkspaceOpen(true);
+            },
+          },
+        },
       );
     } catch (err) {
       toast.error(getErrorMessage(err, '创建失败'));
@@ -1417,7 +1435,7 @@ export function AgentProfilesPage() {
             </div>
           ) : (
             <div className="space-y-6">
-              <header>
+              <header className="flex flex-wrap items-center justify-between gap-4">
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <h1 className="truncate text-2xl font-semibold tracking-tight text-foreground">
@@ -1432,6 +1450,19 @@ export function AgentProfilesPage() {
                     管理智能体的身份和能力，以及所属工作区和消息渠道。
                   </p>
                 </div>
+                {!draftMode && selected && (
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      setCreateWorkspaceAgentId(selected.id);
+                      setCreateWorkspaceOpen(true);
+                    }}
+                    className="gap-1.5 shrink-0"
+                  >
+                    <FolderPlus className="h-4 w-4" />
+                    为此智能体创建工作区
+                  </Button>
+                )}
               </header>
 
               {!draftMode && governance?.runtime_cleanup_pending && (
@@ -2195,6 +2226,19 @@ export function AgentProfilesPage() {
                     </>
                   ) : (
                     <>
+                      {selected && (
+                        <Button
+                          variant="secondary"
+                          onClick={() => {
+                            setCreateWorkspaceAgentId(selected.id);
+                            setCreateWorkspaceOpen(true);
+                          }}
+                          className="gap-1.5"
+                        >
+                          <FolderPlus className="h-4 w-4" />
+                          为此智能体创建工作区
+                        </Button>
+                      )}
                       <Button
                         onClick={handleSave}
                         disabled={
@@ -2303,6 +2347,18 @@ export function AgentProfilesPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {createWorkspaceOpen && (
+        <CreateContainerDialog
+          open={createWorkspaceOpen}
+          onClose={() => setCreateWorkspaceOpen(false)}
+          initialAgentProfileId={createWorkspaceAgentId || selected?.id}
+          onCreated={(_jid, folder) => {
+            setCreateWorkspaceOpen(false);
+            navigate(`/chat/${folder}`);
+          }}
+        />
+      )}
     </div>
   );
 }

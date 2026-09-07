@@ -1670,15 +1670,15 @@ export function forgetWorkspaceMemoryItem(input: {
 
 export function listWorkspaceMemoryItems(input: {
   workspaceJid: string;
-  status?: WorkspaceMemoryStatus;
+  status?: WorkspaceMemoryStatus | 'all';
   kind?: WorkspaceMemoryKind;
+  query?: string;
   limit: number;
   before?: { updatedAt: string; id: string } | null;
 }): { store: WorkspaceMemoryStore; items: WorkspaceMemoryItem[] } {
   const store = requireStore(input.workspaceJid);
   const clauses = [
     'i.store_id = ?',
-    'i.status = ?',
     '(i.canonical_key IS NULL OR i.canonical_key <> ?)',
     `NOT EXISTS (
       SELECT 1 FROM workspace_memory_platform_items mpi
@@ -1687,12 +1687,30 @@ export function listWorkspaceMemoryItems(input: {
   ];
   const params: unknown[] = [
     store.id,
-    input.status ?? 'active',
     HAPPYCLAW_OWNER_PREFERRED_ADDRESS_CANONICAL_KEY,
   ];
+  if (input.status && input.status !== 'all') {
+    clauses.push('i.status = ?');
+    params.push(input.status);
+  } else if (!input.status) {
+    clauses.push('i.status = ?');
+    params.push('active');
+  }
+  // status === 'all' includes all database-supported statuses without filtering!
+
   if (input.kind) {
     clauses.push('i.kind = ?');
     params.push(input.kind);
+  }
+  if (input.query?.trim()) {
+    const query = input.query.trim();
+    const pattern = `%${query.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_')}%`;
+    clauses.push(`(
+      i.title LIKE ? ESCAPE '\\'
+      OR i.content LIKE ? ESCAPE '\\'
+      OR i.canonical_key LIKE ? ESCAPE '\\'
+    )`);
+    params.push(pattern, pattern, pattern);
   }
   if (input.before) {
     clauses.push('(i.updated_at < ? OR (i.updated_at = ? AND i.id < ?))');
@@ -1761,7 +1779,10 @@ export function searchWorkspaceMemoryItems(input: {
   workspaceJid: string;
   query: string;
   kind?: WorkspaceMemoryKind;
+  status?: WorkspaceMemoryStatus | 'all';
+  scope?: 'manage' | 'recall';
   limit: number;
+  before?: { updatedAt: string; id: string } | null;
   now?: string;
 }): {
   store: WorkspaceMemoryStore;
@@ -1771,7 +1792,85 @@ export function searchWorkspaceMemoryItems(input: {
   const store = requireStore(input.workspaceJid);
   const now = input.now ?? nowIso();
   const query = input.query.trim();
+  const isManage = input.scope === 'manage';
+
+  if (isManage) {
+    const clauses = [
+      'i.store_id = ?',
+      '(i.canonical_key IS NULL OR i.canonical_key <> ?)',
+      `NOT EXISTS (
+        SELECT 1 FROM workspace_memory_platform_items mpi
+        WHERE mpi.item_id = i.id
+      )`,
+    ];
+    const params: unknown[] = [
+      store.id,
+      HAPPYCLAW_OWNER_PREFERRED_ADDRESS_CANONICAL_KEY,
+    ];
+
+    if (input.status && input.status !== 'all') {
+      clauses.push('i.status = ?');
+      params.push(input.status);
+    }
+    // all or omitted in manage mode includes all database-supported statuses!
+
+    if (input.kind) {
+      clauses.push('i.kind = ?');
+      params.push(input.kind);
+    }
+
+    if (input.before) {
+      clauses.push('(i.updated_at < ? OR (i.updated_at = ? AND i.id < ?))');
+      params.push(
+        input.before.updatedAt,
+        input.before.updatedAt,
+        input.before.id,
+      );
+    }
+
+    const pattern = `%${query.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_')}%`;
+    clauses.push(`(
+      i.title LIKE ? ESCAPE '\\'
+      OR i.content LIKE ? ESCAPE '\\'
+      OR i.canonical_key LIKE ? ESCAPE '\\'
+    )`);
+    params.push(pattern, pattern, pattern);
+    params.push(input.limit);
+
+    const rows = db
+      .prepare(
+        `SELECT i.*, p.source_type, p.source_id, p.session_id, p.observed_at,
+          0 AS search_rank,
+          substr(i.content, 1, 240) AS search_snippet
+         FROM workspace_memory_items i
+         LEFT JOIN workspace_memory_provenance p
+           ON p.item_id = i.id AND p.revision = i.revision
+         WHERE ${clauses.join(' AND ')}
+         ORDER BY i.updated_at DESC, i.id DESC
+         LIMIT ?`,
+      )
+      .all(...params) as Array<
+      MemoryItemRow & { search_rank: number; search_snippet: string }
+    >;
+
+    return {
+      store,
+      hits: rows.map((row) => ({
+        item: mapItem(row),
+        rank: Number(row.search_rank),
+        snippet: row.search_snippet || row.content.slice(0, 240),
+      })),
+    };
+  }
+
+  // Recall scope (Agent runtime) - KEEP 100% UNTOUCHED
   const kindClause = input.kind ? 'AND i.kind = ?' : '';
+  const beforeClause = input.before
+    ? 'AND (i.updated_at < ? OR (i.updated_at = ? AND i.id < ?))'
+    : '';
+  const beforeParams = input.before
+    ? [input.before.updatedAt, input.before.updatedAt, input.before.id]
+    : [];
   const params: unknown[] = [
     store.id,
     HAPPYCLAW_OWNER_PREFERRED_ADDRESS_CANONICAL_KEY,
@@ -1806,11 +1905,12 @@ export function searchWorkspaceMemoryItems(input: {
            AND (i.valid_until IS NULL OR julianday(i.valid_until) > julianday(?))
            AND (i.expires_at IS NULL OR julianday(i.expires_at) > julianday(?))
            ${kindClause}
+           ${beforeClause}
            AND workspace_memory_fts MATCH ?
          ORDER BY search_rank ASC, i.importance DESC, i.updated_at DESC
          LIMIT ?`,
       )
-      .all(...params, ftsPhrase(query), input.limit) as Array<
+      .all(...params, ...beforeParams, ftsPhrase(query), input.limit) as Array<
       MemoryItemRow & { search_rank: number; search_snippet: string }
     >;
   } else {
@@ -1834,6 +1934,7 @@ export function searchWorkspaceMemoryItems(input: {
            AND (i.valid_until IS NULL OR julianday(i.valid_until) > julianday(?))
            AND (i.expires_at IS NULL OR julianday(i.expires_at) > julianday(?))
            ${kindClause}
+           ${beforeClause}
            AND (
              i.title LIKE ? ESCAPE '\\'
              OR i.content LIKE ? ESCAPE '\\'
@@ -1842,7 +1943,14 @@ export function searchWorkspaceMemoryItems(input: {
          ORDER BY i.importance DESC, i.updated_at DESC
          LIMIT ?`,
       )
-      .all(...params, pattern, pattern, pattern, input.limit) as Array<
+      .all(
+        ...params,
+        ...beforeParams,
+        pattern,
+        pattern,
+        pattern,
+        input.limit,
+      ) as Array<
       MemoryItemRow & { search_rank: number; search_snippet: string }
     >;
   }
