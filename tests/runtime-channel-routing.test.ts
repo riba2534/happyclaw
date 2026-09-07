@@ -35,6 +35,7 @@ vi.mock('../src/logger.js', () => ({
 const db = await import('../src/db.js');
 const { GroupQueue } = await import('../src/group-queue.js');
 const { stripAgentInternalTags } = await import('../src/utils.js');
+const { taskBudgetService } = await import('../src/task-budget-service.js');
 const EMPTY_CURSOR: MessageCursor = { timestamp: '', id: '' };
 const OLD_IM = 'feishu:previous';
 
@@ -158,6 +159,7 @@ function makeOutputRuntime(lane: 'main' | 'session') {
     completeChannelRuntimesForOutput: async () => true,
     completeAgentChannelRuntimesForOutput: async () => true,
     commitCursor,
+    taskBudgetService,
   };
   const harness = createRuntimeSourceHarness(globals);
   harness.install('sendMessageWithOutcome');
