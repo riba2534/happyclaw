@@ -934,6 +934,218 @@ rm -rf "${LEGACY_TEST_DIR}"
 
 log_pass "专项 3 通过：停止旧服务超时或进程占用时部署严格拒绝更换软链接并报错！"
 
+# ==============================================================================
+# Leader 第四轮专项：旧基线仓库 scripts/ 无发布脚本时的首次外部引导与故障隔离
+# ==============================================================================
+log_test "【Leader 第四轮专项】旧基线仓库 scripts/ 无发布脚本时的首次外部引导与故障隔离"
+
+# 确保端口被完全释放
+if command -v lsof >/dev/null 2>&1; then
+  lsof -ti:${TEST_PORT} -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
+  sleep 0.5
+fi
+
+BOOTSTRAP_REPO="${TEST_TMPDIR}/bootstrap_clean_repo"
+mkdir -p "${BOOTSTRAP_REPO}"
+cd "${BOOTSTRAP_REPO}"
+git init -b main --quiet
+git config user.name "HappyClaw Specialist"
+git config user.email "specialist@happyclaw.local"
+
+# 严格模拟 7175c0d 旧基线：.gitignore 不含发布规则，scripts/ 下无发布脚本
+cat << 'EOF' > .gitignore
+node_modules/
+dist/
+/data/
+/logs/
+/store/
+/groups/
+.env
+EOF
+
+mkdir -p src dist web/src web/dist container/agent-runner/src container/agent-runner/dist container/agent-runner/prompts data config
+echo '{"allowlist": ["/shared/workspace"]}' > config/mount-allowlist.json
+echo "SQLITE_DATA_BOOTSTRAP_ROW" > data/messages.db
+echo "WEB_PORT=${TEST_PORT}" > .env
+chmod 600 .env
+
+# 创建模拟旧基线代码
+cat << EOF > src/server.js
+import http from 'http';
+const server = http.createServer((req, res) => {
+  if (req.url === '/version') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ versionTag: 'LEGACY_7175', status: 'ok' }));
+    return;
+  }
+  res.writeHead(404);
+  res.end();
+});
+server.listen(${TEST_PORT}, '127.0.0.1');
+EOF
+cp src/server.js dist/index.js
+echo "<html><body>LEGACY_WEB</body></html>" > web/dist/index.html
+echo "LEGACY_RUNNER" > container/agent-runner/dist/index.js
+echo "LEGACY_PROMPT" > container/agent-runner/prompts/identity.md
+
+cat << 'EOF' > package.json
+{
+  "name": "happyclaw-bootstrap-test",
+  "version": "1.0.0",
+  "type": "module"
+}
+EOF
+
+git add .
+git commit -m "Commit Baseline: pure legacy baseline without release scripts" --quiet
+BOOTSTRAP_BASE_SHA="$(git rev-parse HEAD)"
+
+# 确认旧仓库中绝无发布脚本
+test ! -e scripts/deploy-release.sh || log_fail "基线仓库中本不应存在 deploy-release.sh"
+# 确认旧仓库当前干净
+test -z "$(git status --porcelain)" || log_fail "基线仓库初始工作树必须完全干净"
+
+# 在基线旧仓库中将目标版本 COMMIT_B 也提交为一个远程/本地分支可访问的目标提交
+git remote add source "${TEST_TMPDIR}/repo"
+git fetch source main:refs/remotes/origin/main --quiet
+
+# 启动旧版本服务
+node dist/index.js >/dev/null 2>&1 &
+sleep 0.8
+INITIAL_BOOTSTRAP_RESP="$(curl -fsS "http://127.0.0.1:${TEST_PORT}/version")"
+if ! grep -q "LEGACY_7175" <<<"$INITIAL_BOOTSTRAP_RESP"; then
+  log_fail "旧版本服务启动未响应预期内容: $INITIAL_BOOTSTRAP_RESP"
+fi
+
+# 建立仓库外的临时引导目录
+BOOTSTRAP_TOOL_DIR="${TEST_TMPDIR}/external_bootstrap_tool"
+mkdir -p "${BOOTSTRAP_TOOL_DIR}/scripts"
+cp -f "${REAL_REPO_ROOT}/scripts/deploy-release.sh" "${BOOTSTRAP_TOOL_DIR}/scripts/"
+cp -f "${REAL_REPO_ROOT}/scripts/rollback-release.sh" "${BOOTSTRAP_TOOL_DIR}/scripts/"
+cp -f "${REAL_REPO_ROOT}/scripts/wait-for-readiness.mjs" "${BOOTSTRAP_TOOL_DIR}/scripts/"
+chmod +x "${BOOTSTRAP_TOOL_DIR}/scripts/"*.sh
+
+# 1. 模拟首次外部引导中途故障注入 (pre_build 失败)
+echo "[INFO] 1. 测试首次外部引导中途故障注入 (pre_build)..."
+set +e
+HAPPYCLAW_ROOT_DIR="${BOOTSTRAP_REPO}" \
+HAPPYCLAW_EXPECTED_SHA="${COMMIT_B}" \
+HAPPYCLAW_AGENT_IMAGE="riba2534/happyclaw-agent:git-${COMMIT_B}" \
+HAPPYCLAW_SKIP_FETCH=1 \
+HAPPYCLAW_INJECT_FAILURE="pre_build" \
+"${BOOTSTRAP_TOOL_DIR}/scripts/deploy-release.sh"
+FAIL_BOOTSTRAP_EXIT=$?
+set -e
+
+if [ "${FAIL_BOOTSTRAP_EXIT}" -ne 101 ]; then
+  log_fail "外部引导中途故障注入未返回 101，实际为: ${FAIL_BOOTSTRAP_EXIT}"
+fi
+
+# 核心严格断言：生产仓库工作树 100% 保持在旧 SHA，且没有任何未跟踪文件残留！
+if [ "$(git rev-parse HEAD)" != "${BOOTSTRAP_BASE_SHA}" ]; then
+  log_fail "引导失败后工作树 HEAD 发生漂移！"
+fi
+CLEAN_CHECK="$(git status --porcelain)"
+if [ -n "${CLEAN_CHECK}" ]; then
+  log_fail "严重缺陷：引导失败后工作树残留了未跟踪文件！清单: ${CLEAN_CHECK}"
+fi
+test ! -e ".releases" || log_fail "引导失败后残留了未激活的 .releases 目录！"
+test ! -e ".deploy.lock" || log_fail "引导失败后残留了 .deploy.lock！"
+curl -fsS "http://127.0.0.1:${TEST_PORT}/version" >/dev/null || log_fail "引导失败后旧服务未能继续对外服务！"
+log_pass "外部引导中途故障防护断言通过：生产工作树零污染、零残留，旧服务持续可用！"
+
+# 2. 正式执行外部首次引导部署
+echo "[INFO] 2. 执行正式外部首次引导部署..."
+HAPPYCLAW_ROOT_DIR="${BOOTSTRAP_REPO}" \
+HAPPYCLAW_EXPECTED_SHA="${COMMIT_B}" \
+HAPPYCLAW_AGENT_IMAGE="riba2534/happyclaw-agent:git-${COMMIT_B}" \
+HAPPYCLAW_SKIP_FETCH=1 \
+"${BOOTSTRAP_TOOL_DIR}/scripts/deploy-release.sh"
+
+# 核心严格断言：
+# a) ACTIVE_PREVIOUS_SHA 准确解析为旧基线 SHA 并封存
+cd "${BOOTSTRAP_REPO}"
+test -d ".releases/store/${BOOTSTRAP_BASE_SHA}" || log_fail "旧版本 store/${BOOTSTRAP_BASE_SHA} 未被正确封存！"
+STORE_META="$(cat ".releases/store/${BOOTSTRAP_BASE_SHA}/version.json")"
+if ! grep -q "\"commitSha\": \"${BOOTSTRAP_BASE_SHA}\"" <<<"$STORE_META" && ! grep -q "\"commitSha\":\"${BOOTSTRAP_BASE_SHA}\"" <<<"$STORE_META"; then
+  log_fail "旧版本 version.json 中的 commitSha 不是旧基线 SHA！"
+fi
+
+# b) 当前在线指针与 Git HEAD 成功指向目标新版本
+if [ "$(readlink .releases/current)" != "store/${COMMIT_B}" ]; then
+  log_fail "引导完成后 current 未指向 store/${COMMIT_B}！"
+fi
+if [ "$(git rev-parse HEAD)" != "${COMMIT_B}" ]; then
+  log_fail "引导完成后 Git HEAD 未指向目标版本 ${COMMIT_B}！"
+fi
+
+# c) 新版本服务已拉起且工作树干净
+NEW_BOOTSTRAP_RESP="$(curl -fsS "http://127.0.0.1:${TEST_PORT}/version")"
+if ! grep -q "\"bootstrapSha\":\"${COMMIT_B}\"" <<<"$NEW_BOOTSTRAP_RESP"; then
+  log_fail "新服务响应未包含目标 SHA: $NEW_BOOTSTRAP_RESP"
+fi
+
+# 确认新版本上发布脚本已正式受 Git 跟踪
+test -f "scripts/deploy-release.sh" || log_fail "引导完成后新版本 scripts/deploy-release.sh 应当已存在"
+test -z "$(git status --porcelain)" || log_fail "引导完成后工作树应当完全干净"
+
+cd "${TEST_TMPDIR}/repo"
+rm -rf "${BOOTSTRAP_REPO}" "${BOOTSTRAP_TOOL_DIR}"
+
+log_pass "【Leader 第四轮专项】旧基线无发布脚本时的首次外部引导全套断言 100% 通过！"
+
+# ==============================================================================
+# Leader P2 专项：HAPPYCLAW_PREVIOUS_SHA 非法与错位值校验阻断 (防止错位封存与回滚卡死)
+# ==============================================================================
+log_test "【Leader P2 专项】HAPPYCLAW_PREVIOUS_SHA 非法与错位值强校验阻断"
+
+P2_REPO="${TEST_TMPDIR}/p2_validation_repo"
+mkdir -p "${P2_REPO}"
+cp -a "${TEST_TMPDIR}/repo/." "${P2_REPO}/"
+cd "${P2_REPO}"
+rm -rf .releases dist dist.legacy_backup
+# 模拟首次迁移前的环境：dist 是真实物理目录，.releases 不存在
+mkdir -p dist
+cp src/server.js dist/index.js
+
+# 1. 传完全非法的 SHA: "bogus_sha_123"
+set +e
+HAPPYCLAW_EXPECTED_SHA="${COMMIT_B}" \
+HAPPYCLAW_AGENT_IMAGE="riba2534/happyclaw-agent:git-${COMMIT_B}" \
+HAPPYCLAW_PREVIOUS_SHA="bogus_sha_123" \
+HAPPYCLAW_SKIP_FETCH=1 \
+./scripts/deploy-release.sh
+BOGUS_SHA_EXIT=$?
+set -e
+
+if [ "${BOGUS_SHA_EXIT}" -eq 0 ]; then
+  log_fail "传非法 HAPPYCLAW_PREVIOUS_SHA 竟然未被拦截！"
+fi
+
+# 核心严格断言：必须在建立 store 之前就失败退出，且绝对不得在磁盘留下 .releases/store/bogus_sha_123 目录！
+test ! -e ".releases/store/bogus_sha_123" || log_fail "严重缺陷：传非法 SHA 竟然创建了 .releases/store/bogus_sha_123 目录！"
+log_pass "P2.1 通过：非法 HAPPYCLAW_PREVIOUS_SHA 在建库前直接 fail-closed 拦截，零残留！"
+
+# 2. 传存在但与当前 HEAD 不一致的合法 SHA
+# 当前处于 COMMIT_A，传入 COMMIT_B 作为 previous SHA
+git switch --detach "${COMMIT_A}" --quiet
+set +e
+HAPPYCLAW_EXPECTED_SHA="${COMMIT_B}" \
+HAPPYCLAW_AGENT_IMAGE="riba2534/happyclaw-agent:git-${COMMIT_B}" \
+HAPPYCLAW_PREVIOUS_SHA="${COMMIT_B}" \
+HAPPYCLAW_SKIP_FETCH=1 \
+./scripts/deploy-release.sh
+MISMATCH_SHA_EXIT=$?
+set -e
+
+if [ "${MISMATCH_SHA_EXIT}" -eq 0 ]; then
+  log_fail "HAPPYCLAW_PREVIOUS_SHA 与当前工作树 HEAD 不一致竟然未被拦截！"
+fi
+log_pass "P2.2 通过：HAPPYCLAW_PREVIOUS_SHA 与 HEAD 不一致严格 fail-closed 拦截，坚决杜绝错位封存！"
+
+cd "${TEST_TMPDIR}/repo"
+rm -rf "${P2_REPO}"
+
 log_test "======================================================================"
-log_test "🎉 全部场景、Leader 3 大复现失败项及 3 大新增专项测试 100% 顺利通过！"
+log_test "🎉 全部场景、Leader 全部复现及 P2 专项测试 100% 顺利通过！"
 log_test "======================================================================"

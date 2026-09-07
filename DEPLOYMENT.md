@@ -63,7 +63,7 @@ test "$(git rev-parse "origin/$HAPPYCLAW_DEPLOY_REF")" = "$HAPPYCLAW_EXPECTED_SH
 为了防止原地并发构建中前端改写旧服务静态资源、后端或 Runner 编译失败导致混用前后端版本，生产环境采用**独立候选准备 + 原子切换**机制。
 所有三包（主服务 `dist/`、前端 `web/dist/`、Agent Runner `container/agent-runner/dist/`）及不可变镜像就绪前，在线运行版本、代码与静态资源分毫不动。
 
-在部署机上执行原子发布脚本：
+在部署机上配置迁移免备份选项：
 
 ```bash
 if grep -q '^HAPPYCLAW_SKIP_MIGRATION_BACKUP=' .env 2>/dev/null; then
@@ -72,8 +72,38 @@ else
   printf '\nHAPPYCLAW_SKIP_MIGRATION_BACKUP=1\n' >> .env
 fi
 chmod 600 .env
+```
 
-# 执行端到端原子发布
+### 3.1 首次生产引导 (Bootstrap from Legacy Baseline)
+
+当生产工作树处于旧基线版本（如 `7175c0d`），`scripts/` 目录下尚未引入 `deploy-release.sh` 等发布脚本时，**绝对禁止直接拷贝脚本到生产工作树**（会产生未跟踪文件触发干净检查拒签，且会导致后续 `git switch` 产生检出覆盖冲突），也**绝对禁止提前切分支**（会导致无法正确捕获真实的旧版本 SHA 封存）。
+
+必须通过仓库外的临时引导目录执行首次引导部署：
+
+```bash
+# 1. 确保远程分支已 fetch (工作树保持在旧 SHA，不切分支，100% 干净)
+git fetch --prune origin \
+  "refs/heads/${HAPPYCLAW_DEPLOY_REF}:refs/remotes/origin/${HAPPYCLAW_DEPLOY_REF}"
+test "$(git rev-parse "origin/$HAPPYCLAW_DEPLOY_REF")" = "$HAPPYCLAW_EXPECTED_SHA"
+
+# 2. 从目标分支提取发布脚本到工作树外的临时引导目录
+BOOTSTRAP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/happyclaw-bootstrap.XXXXXX")"
+git archive "origin/${HAPPYCLAW_DEPLOY_REF}" scripts | tar -x -C "${BOOTSTRAP_DIR}"
+
+# 3. 指定生产工作树根目录并执行首次原子发布
+HAPPYCLAW_ROOT_DIR="$(pwd)" "${BOOTSTRAP_DIR}/scripts/deploy-release.sh"
+
+# 4. 清理临时引导目录
+rm -rf "${BOOTSTRAP_DIR}"
+```
+
+首次引导流程会自动识别当前旧版本 SHA，在隔离区完成候选版本构建校验后，受控停止旧服务、将旧版完整运行时资产封存入 `.releases/store/<旧SHA>`，建立软链接并无缝切到目标版本。首次引导完成后，发布工具已正式纳入 Git 跟踪，后续部署可直接按 3.2 节运行。
+
+### 3.2 日常原子发布 (Subsequent Releases)
+
+首次引导完成后，生产目录已具备版本化结构和发布工具，后续发布直接执行：
+
+```bash
 ./scripts/deploy-release.sh
 ```
 

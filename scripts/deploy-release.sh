@@ -26,8 +26,27 @@
 
 set -euo pipefail
 
+# 解析命令行参数（支持 --root-dir <path> 外部引导模式）
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --root-dir|-C)
+      if [ -n "${2:-}" ]; then
+        HAPPYCLAW_ROOT_DIR="$2"
+        shift 2
+      else
+        echo "[ERROR] $1 参数缺少路径！" >&2
+        exit 1
+      fi
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ROOT_DIR="${HAPPYCLAW_ROOT_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+ROOT_DIR="$(cd "${ROOT_DIR}" && pwd)"
 
 DEPLOY_REF="${HAPPYCLAW_DEPLOY_REF:-}"
 EXPECTED_SHA="${HAPPYCLAW_EXPECTED_SHA:-}"
@@ -43,6 +62,12 @@ STORE_DIR="${RELEASES_DIR}/store"
 CURRENT_LINK="${RELEASES_DIR}/current"
 STAGING_DIR="${ROOT_DIR}/.release-staging-${RUN_ID}"
 MARKER_FILE="${STAGING_DIR}/.release-run-marker"
+
+# 记录执行前 .releases 是否存在（首次引导失败时用于干净清理未激活临时目录）
+RELEASES_EXISTED_BEFORE=0
+if [ -d "${RELEASES_DIR}" ] || [ -L "${RELEASES_DIR}" ]; then
+  RELEASES_EXISTED_BEFORE=1
+fi
 
 # 持久化固化探针工具路径，防止 git switch 切换至旧版本时探针文件从磁盘消失 (P0 修复)
 TOOLS_STABLE_DIR="${RELEASES_DIR}/.tools"
@@ -182,6 +207,14 @@ cleanup_staging() {
       log_warn "候选目录缺少或未匹配本轮 marker，绝不误删: ${STAGING_DIR}"
     fi
   fi
+
+  # 若部署未成功且在部署前原不存在 .releases，清理可能生成的未激活空 releases 目录，保持工作树 100% 原始干净
+  if [ "${DEPLOYMENT_SUCCESS}" -eq 0 ] && [ "${RELEASES_EXISTED_BEFORE}" -eq 0 ]; then
+    if [ ! -L "${CURRENT_LINK}" ]; then
+      rm -rf "${RELEASES_DIR}"
+    fi
+  fi
+
   release_lock
 }
 
@@ -387,17 +420,36 @@ log_info "=== HappyClaw 生产原子发布开始 (RunID: ${RUN_ID}) ==="
 # 获取排他锁
 acquire_lock
 
-# 6. 校验目标提交
+# 6. 校验目标提交与工作树
 if [ -z "${EXPECTED_SHA}" ]; then
   log_error "必须提供 HAPPYCLAW_EXPECTED_SHA 参数！"
   exit 1
 fi
 
-if [ -n "$(git status --porcelain)" ]; then
+check_worktree_clean() {
+  local status_output
+  status_output="$(git status --porcelain)"
+  if [ -z "${status_output}" ]; then
+    return 0
+  fi
+
+  # 严格过滤属于发布机制自身运行必需的受控文件（锁、releases、临时 staging）
+  # 注意：旧基线 7175c0d 的 .gitignore 尚未包含 .releases / .deploy.lock，必须在此严格排除发布自身运行时文件；
+  # 任何其他未跟踪文件（?? other）或任何已跟踪文件的修改/删除/暂存（M/D/A/R/C/U）绝对拦截！
+  local non_runtime_files
+  non_runtime_files="$(echo "${status_output}" | grep -vE '^\?\? (\.deploy\.lock|\.releases(/.*)?|\.release-staging-[^/]+(/.*)?|\.release-previous(/.*)?)$' || true)"
+  if [ -z "${non_runtime_files}" ]; then
+    log_info "工作树干净度预检通过（已排除发布机制自身受控状态与排他锁）"
+    return 0
+  fi
+
   log_error "工作树不干净，存在未提交或未跟踪的更改，停止发布！"
+  echo "${non_runtime_files}" >&2
   git status --short
   exit 1
-fi
+}
+
+check_worktree_clean
 
 get_active_release_sha() {
   if [ -L "${CURRENT_LINK}" ]; then
@@ -417,6 +469,28 @@ get_active_release_sha() {
       echo "${sha}"
       return
     fi
+  fi
+  if [ -n "${HAPPYCLAW_PREVIOUS_SHA:-}" ]; then
+    local prev_sha="${HAPPYCLAW_PREVIOUS_SHA}"
+    if ! git rev-parse --verify "${prev_sha}^{commit}" >/dev/null 2>&1; then
+      log_error "提供的 HAPPYCLAW_PREVIOUS_SHA ('${prev_sha}') 不是本仓库真实存在的合法 commit！fail-closed 拒绝部署！"
+      exit 1
+    fi
+    local current_head
+    current_head="$(git rev-parse HEAD 2>/dev/null || true)"
+    if [ -n "${current_head}" ]; then
+      local full_prev_sha
+      full_prev_sha="$(git rev-parse "${prev_sha}^{commit}")"
+      if [ "${full_prev_sha}" != "${current_head}" ]; then
+        log_error "HAPPYCLAW_PREVIOUS_SHA ('${prev_sha}', SHA: ${full_prev_sha}) 与当前工作树真实 HEAD ('${current_head}') 不一致！"
+        log_error "禁止将当前磁盘内容错位封存为另一个版本标识！fail-closed 拒绝部署！"
+        exit 1
+      fi
+      echo "${full_prev_sha}"
+      return
+    fi
+    echo "${prev_sha}"
+    return
   fi
   git rev-parse HEAD
 }
