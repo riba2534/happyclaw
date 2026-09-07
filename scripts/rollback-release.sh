@@ -8,8 +8,8 @@
 # 3. 严格镜像强校验：无论 store 是否存在，均对目标不可变 Agent 镜像执行完整的拉取、OCI revision
 #    及架构核对；镜像元数据缺失或不匹配直接阻断；
 # 4. 深度 store 完整性校验：验证三包产物、完整 node_modules、prompts 以及 3 层相对数据软链接；
-# 5. 探活工具固定路径与目标健康适配：固定使用本轮探针路径，针对旧 7175 legacy 版本执行真实健康探针，
-#    针对现代版本执行严格 expectedSha 校验；
+# 5. 探活工具固定路径与目标健康适配：固定使用工作树外稳定探针路径，避免历史版本 switch 导致探针消失；
+#    针对旧 7175 legacy 版本执行真实健康探针（绝不接受 404），针对现代版本执行严格 expectedSha 校验；
 # 6. 严格错误阻断与自愈回退：若重启或业务就绪验证失败，自动回退至回滚前的版本并严格非 0 退出；
 # 7. 边界说明：数据库若已不可逆向前迁移，所有者现行政策不保留数据备份，此时禁止降级数据库，
 #    必须以前向修复恢复服务。
@@ -25,7 +25,14 @@ STORE_DIR="${RELEASES_DIR}/store"
 CURRENT_LINK="${RELEASES_DIR}/current"
 PREVIOUS_DIR="${ROOT_DIR}/.release-previous"
 LOCK_FILE="${ROOT_DIR}/.deploy.lock"
-PROBE_TOOL="${SCRIPT_DIR}/wait-for-readiness.mjs"
+
+# 固化持久探针工具路径，防止 git switch 切至历史提交时探针文件从磁盘消失 (P0 修复)
+TOOLS_STABLE_DIR="${RELEASES_DIR}/.tools"
+mkdir -p "${TOOLS_STABLE_DIR}"
+STABLE_PROBE_TOOL="${TOOLS_STABLE_DIR}/wait-for-readiness.mjs"
+if [ -f "${SCRIPT_DIR}/wait-for-readiness.mjs" ]; then
+  cp -f "${SCRIPT_DIR}/wait-for-readiness.mjs" "${STABLE_PROBE_TOOL}"
+fi
 
 RUN_ID="rollback_$(date +%s%N 2>/dev/null || date +%s)_$$"
 TARGET_SHA="${1:-${HAPPYCLAW_ROLLBACK_SHA:-}}"
@@ -145,6 +152,82 @@ release_lock() {
   ' "${LOCK_FILE}" "${RUN_ID}"
 }
 
+# 统一健全健康探针 (P0 修复)
+probe_happyclaw_health() {
+  local port="${1:-3000}"
+  local expected_sha="${2:-}"
+  local is_legacy="${3:-0}"
+  local timeout_seconds="${4:-20}"
+
+  node -e '
+    const http = require("http");
+    const port = Number(process.argv[1]);
+    const expectedSha = process.argv[2] || "";
+    const isLegacy = process.argv[3] === "1";
+    const timeoutSeconds = Number(process.argv[4]) || 20;
+    const deadline = Date.now() + timeoutSeconds * 1000;
+
+    function checkEndpoint(endpointPath) {
+      return new Promise((resolve) => {
+        const req = http.get(
+          { host: "127.0.0.1", port, path: endpointPath, timeout: 1500 },
+          (res) => {
+            let data = "";
+            res.on("data", (c) => (data += c));
+            res.on("end", () => {
+              if (res.statusCode !== 200) {
+                return resolve({ ok: false, reason: `HTTP ${res.statusCode}` });
+              }
+              try {
+                const json = JSON.parse(data);
+                if (isLegacy) {
+                  const isVersionResp = typeof json.versionTag === "string";
+                  const isHealthResp = json.status === "ok" || json.status === "ready";
+                  if (!isVersionResp && !isHealthResp) {
+                    return resolve({ ok: false, reason: "Invalid HappyClaw legacy JSON payload" });
+                  }
+                  return resolve({ ok: true, detail: json });
+                } else {
+                  const hasSha = json.currentSha || json.bootstrapSha;
+                  const isReady = json.ready === true || json.status === "ready";
+                  if (!hasSha || !isReady) {
+                    return resolve({ ok: false, reason: "Not ready or missing SHA" });
+                  }
+                  if (expectedSha && !hasSha.startsWith(expectedSha) && !expectedSha.startsWith(hasSha)) {
+                    return resolve({ ok: false, reason: `SHA mismatch: got ${hasSha}, expected ${expectedSha}` });
+                  }
+                  return resolve({ ok: true, detail: json });
+                }
+              } catch (err) {
+                return resolve({ ok: false, reason: "Invalid JSON response" });
+              }
+            });
+          }
+        );
+        req.on("error", (err) => resolve({ ok: false, reason: err.message }));
+        req.on("timeout", () => { req.destroy(); resolve({ ok: false, reason: "timeout" }); });
+      });
+    }
+
+    async function run() {
+      const endpoints = isLegacy ? ["/version", "/api/health"] : ["/api/health/readiness", "/version"];
+      while (Date.now() < deadline) {
+        for (const ep of endpoints) {
+          const res = await checkEndpoint(ep);
+          if (res.ok) {
+            console.log(`[HealthProbe] ✅ 对端服务健康验证通过 (${ep}): ${JSON.stringify(res.detail)}`);
+            process.exit(0);
+          }
+        }
+        await new Promise((r) => setTimeout(r, 600));
+      }
+      console.error(`[HealthProbe] ❌ 服务未能响应预期的 HappyClaw 健康状态（超时 ${timeoutSeconds}s）！`);
+      process.exit(1);
+    }
+    run();
+  ' "${port}" "${expected_sha}" "${is_legacy}" "${timeout_seconds}"
+}
+
 # 统一退出处理与自愈回退
 handle_exit() {
   local exit_code=$?
@@ -243,7 +326,7 @@ fi
 
 TARGET_STORE_DIR="${STORE_DIR}/${TARGET_SHA}"
 
-# 深度校验不可变 store 完整性辅助函数 (组 5)
+# 深度校验不可变 store 完整性辅助函数
 is_store_valid() {
   local store_path="$1"
   local expected_sha="$2"
@@ -307,7 +390,7 @@ if [ -z "${PREVIOUS_IMAGE}" ]; then
   exit 1
 fi
 
-# 关键：无论 store 是否存在，均对目标镜像做与 deploy 完全相同的严格校验 (组 4)
+# 关键：无论 store 是否存在，均对目标镜像做严格校验
 log_info "校验回滚目标不可变 Agent 镜像身份: ${PREVIOUS_IMAGE}..."
 local_regex="^riba2534/happyclaw-agent:git-${TARGET_SHA}(-headroom)?$"
 if ! [[ "${PREVIOUS_IMAGE}" =~ ${local_regex} ]]; then
@@ -351,6 +434,7 @@ if [ ! -d "${TARGET_STORE_DIR}" ] || ! is_store_valid "${TARGET_STORE_DIR}" "${T
   HAPPYCLAW_EXPECTED_SHA="${TARGET_SHA}" \
   HAPPYCLAW_AGENT_IMAGE="${PREVIOUS_IMAGE}" \
   HAPPYCLAW_LOCK_RUN_ID="${RUN_ID}" \
+  HAPPYCLAW_SKIP_FETCH=1 \
   HAPPYCLAW_BUILD_ONLY=1 \
   "${SCRIPT_DIR}/deploy-release.sh"
 fi
@@ -383,11 +467,12 @@ update_env_file() {
   ' "${ROOT_DIR}/.env" "${image_tag}"
 }
 
-# 真实健康探针验证函数 (适配 legacy 与现代版本)
+# 真实健康探针验证函数 (适配 legacy 与现代版本，固定探针路径)
 verify_service_health() {
   local target_store="$1"
   local target_sha="$2"
   local port="${WEB_PORT:-3000}"
+  local timeout_seconds="${HAPPYCLAW_READINESS_TIMEOUT:-60}"
 
   local is_legacy=0
   if [ -f "${target_store}/version.json" ]; then
@@ -395,35 +480,25 @@ verify_service_health() {
       is_legacy=1
     fi
   fi
+  if [ ! -f "${target_store}/scripts/wait-for-readiness.mjs" ]; then
+    is_legacy=1
+  fi
 
   if [ "${is_legacy}" -eq 1 ]; then
-    log_info "目标版本属于旧版 legacy 结构，执行真实健康与存活探针..."
-    local verified=0
-    for attempt in {1..20}; do
-      local code
-      code="$(curl --max-time 2 -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/version" 2>/dev/null || \
-              curl --max-time 2 -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/api/health" 2>/dev/null || \
-              curl --max-time 2 -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/" 2>/dev/null || true)"
-      if [ "${code}" = "200" ] || [ "${code}" = "404" ] || [ "${code}" = "401" ]; then
-        log_info "✅ 旧版本服务健康存活验证通过 (HTTP ${code}, 耗时: ${attempt}s)！"
-        verified=1
-        break
-      fi
-      sleep 1
-    done
-    if [ "${verified}" -eq 0 ]; then
-      log_error "❌ 旧版本服务未能在指定时间内响应健康探针！"
+    log_info "目标版本属于旧版 legacy 结构，执行旧服务真实健康与存活探针（绝不接受 404）..."
+    if ! probe_happyclaw_health "${port}" "" 1 "${timeout_seconds}"; then
+      log_error "❌ 旧版本服务未能通过真实 HappyClaw 健康探针！"
       return 1
     fi
   else
     log_info "调用 wait-for-readiness 等待业务完全就绪并严格校验目标 SHA: ${target_sha}..."
-    if [ ! -f "${PROBE_TOOL}" ]; then
-      log_error "就绪检测工具 ${PROBE_TOOL} 缺失！拒绝虚假成功！"
+    if [ ! -f "${STABLE_PROBE_TOOL}" ]; then
+      log_error "固化就绪检测工具 ${STABLE_PROBE_TOOL} 缺失！拒绝虚假成功！"
       return 1
     fi
-    node "${PROBE_TOOL}" \
+    node "${STABLE_PROBE_TOOL}" \
       --port "${port}" \
-      --timeout 60 \
+      --timeout "${timeout_seconds}" \
       --expected-sha "${target_sha}"
   fi
 }

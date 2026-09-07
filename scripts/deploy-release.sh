@@ -16,9 +16,11 @@
 #    必须真实 Docker 存在并 pull，且通过 docker inspect 严格核对 org.opencontainers.image.revision label、
 #    架构/操作系统兼容性与非空镜像 ID。
 # 6. 原地无副本配置更新：内存原地读写覆写 .env，严禁产生 .bak 或临时文件；强制注入 SKIP_MIGRATION_BACKUP=1。
-# 7. 首次迁移全流程事务、受控停旧与旧服务恢复：严格后置到候选构建就绪后执行；迁移前受控停止精确 launchd target，
-#    任一步骤（cp/mv/ln/产物校验）失败自动恢复原真实物理目录、清理 current 死链并重新拉起旧服务至真实 HTTP 就绪！
-# 8. 全流程激活事务保护：统一状态机与 ERR/EXIT trap，激活中任一命令失败（git/env/launchctl/readiness）
+# 7. 首次迁移全流程事务、受控停旧退出确认与旧服务恢复：严格后置到候选构建就绪后执行；迁移前受控卸载并轮询确认
+#    旧进程彻底退出，任一步骤（cp/mv/ln/产物校验/进程退出超时）失败自动恢复原真实物理目录、清理 current 死链，
+#    并重新拉起旧服务至真实 HTTP 200 就绪（绝对禁止将 404 判为健康）！
+# 8. 稳定探针工具与历史版本回滚保障：将探针工具固化在工作树外的稳定目录，避免 git switch 导致探针消失阻断回滚。
+# 9. 全流程激活事务保护：统一状态机与 ERR/EXIT trap，激活中任一命令失败（git/env/launchctl/readiness）
 #    均自动触发受控回滚事务，将 current 切回上一版本、恢复环境并退出非 0；明确数据库不降级。
 # ==============================================================================
 
@@ -41,7 +43,14 @@ STORE_DIR="${RELEASES_DIR}/store"
 CURRENT_LINK="${RELEASES_DIR}/current"
 STAGING_DIR="${ROOT_DIR}/.release-staging-${RUN_ID}"
 MARKER_FILE="${STAGING_DIR}/.release-run-marker"
-PROBE_TOOL="${SCRIPT_DIR}/wait-for-readiness.mjs"
+
+# 持久化固化探针工具路径，防止 git switch 切换至旧版本时探针文件从磁盘消失 (P0 修复)
+TOOLS_STABLE_DIR="${RELEASES_DIR}/.tools"
+mkdir -p "${TOOLS_STABLE_DIR}"
+STABLE_PROBE_TOOL="${TOOLS_STABLE_DIR}/wait-for-readiness.mjs"
+if [ -f "${SCRIPT_DIR}/wait-for-readiness.mjs" ]; then
+  cp -f "${SCRIPT_DIR}/wait-for-readiness.mjs" "${STABLE_PROBE_TOOL}"
+fi
 
 # 全流程事务状态跟踪
 MIGRATION_IN_PROGRESS=0
@@ -176,7 +185,84 @@ cleanup_staging() {
   release_lock
 }
 
-# 3. 首次迁移失败恢复事务：恢复文件布局并拉起旧服务至真实 HTTP 就绪
+# 3. 统一健全健康探针：解析验证 HappyClaw 响应体与状态，绝不接受 404！(P0 修复)
+probe_happyclaw_health() {
+  local port="${1:-3000}"
+  local expected_sha="${2:-}"
+  local is_legacy="${3:-0}"
+  local timeout_seconds="${4:-20}"
+
+  node -e '
+    const http = require("http");
+    const port = Number(process.argv[1]);
+    const expectedSha = process.argv[2] || "";
+    const isLegacy = process.argv[3] === "1";
+    const timeoutSeconds = Number(process.argv[4]) || 20;
+    const deadline = Date.now() + timeoutSeconds * 1000;
+
+    function checkEndpoint(endpointPath) {
+      return new Promise((resolve) => {
+        const req = http.get(
+          { host: "127.0.0.1", port, path: endpointPath, timeout: 1500 },
+          (res) => {
+            let data = "";
+            res.on("data", (c) => (data += c));
+            res.on("end", () => {
+              // 必须是 HTTP 200！收到 404 或任何非 200 直接拒绝
+              if (res.statusCode !== 200) {
+                return resolve({ ok: false, reason: `HTTP ${res.statusCode}` });
+              }
+              try {
+                const json = JSON.parse(data);
+                if (isLegacy) {
+                  const isVersionResp = typeof json.versionTag === "string";
+                  const isHealthResp = json.status === "ok" || json.status === "ready";
+                  if (!isVersionResp && !isHealthResp) {
+                    return resolve({ ok: false, reason: "Invalid HappyClaw legacy JSON payload" });
+                  }
+                  return resolve({ ok: true, detail: json });
+                } else {
+                  const hasSha = json.currentSha || json.bootstrapSha;
+                  const isReady = json.ready === true || json.status === "ready";
+                  if (!hasSha || !isReady) {
+                    return resolve({ ok: false, reason: "Not ready or missing SHA" });
+                  }
+                  if (expectedSha && !hasSha.startsWith(expectedSha) && !expectedSha.startsWith(hasSha)) {
+                    return resolve({ ok: false, reason: `SHA mismatch: got ${hasSha}, expected ${expectedSha}` });
+                  }
+                  return resolve({ ok: true, detail: json });
+                }
+              } catch (err) {
+                return resolve({ ok: false, reason: "Invalid JSON response" });
+              }
+            });
+          }
+        );
+        req.on("error", (err) => resolve({ ok: false, reason: err.message }));
+        req.on("timeout", () => { req.destroy(); resolve({ ok: false, reason: "timeout" }); });
+      });
+    }
+
+    async function run() {
+      const endpoints = isLegacy ? ["/version", "/api/health"] : ["/api/health/readiness", "/version"];
+      while (Date.now() < deadline) {
+        for (const ep of endpoints) {
+          const res = await checkEndpoint(ep);
+          if (res.ok) {
+            console.log(`[HealthProbe] ✅ 对端服务健康验证通过 (${ep}): ${JSON.stringify(res.detail)}`);
+            process.exit(0);
+          }
+        }
+        await new Promise((r) => setTimeout(r, 600));
+      }
+      console.error(`[HealthProbe] ❌ 服务未能响应预期的 HappyClaw 健康状态（超时 ${timeoutSeconds}s）！`);
+      process.exit(1);
+    }
+    run();
+  ' "${port}" "${expected_sha}" "${is_legacy}" "${timeout_seconds}"
+}
+
+# 4. 首次迁移失败恢复事务：恢复文件布局并拉起旧服务至真实 HTTP 200 就绪 (P0 修复)
 restore_legacy_service_state() {
   log_warn "检测到首次迁移发生故障，执行受控恢复并重新拉起旧存量服务..."
   set +e
@@ -199,8 +285,7 @@ restore_legacy_service_state() {
   # 2. 重新拉起旧服务（精确 target 启动）
   log_info "重新拉起原旧版本存量服务..."
   if command -v launchctl >/dev/null 2>&1; then
-    local uid
-    uid="$(id -u)"
+    local uid="$(id -u)"
     local target="gui/${uid}/com.riba2534.happyclaw"
     local plist="${HOME}/Library/LaunchAgents/com.riba2534.happyclaw.plist"
     if [ -f "${plist}" ]; then
@@ -214,29 +299,18 @@ restore_legacy_service_state() {
     fi
   fi
 
-  # 3. 真实 HTTP 探针验证旧服务恢复存活
+  # 3. 真实 HTTP 探针验证旧服务恢复存活（绝不接受 404）
   local port="${WEB_PORT:-3000}"
-  local verified=0
-  for attempt in {1..15}; do
-    local code
-    code="$(curl --max-time 2 -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/version" 2>/dev/null || \
-            curl --max-time 2 -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/api/health" 2>/dev/null || \
-            curl --max-time 2 -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/" 2>/dev/null || true)"
-    if [ "${code}" = "200" ] || [ "${code}" = "404" ] || [ "${code}" = "401" ]; then
-      log_info "✅ 旧版本存量服务已成功自愈恢复对外服务 (HTTP ${code})！"
-      verified=1
-      break
-    fi
-    sleep 0.5
-  done
-  if [ "${verified}" -eq 0 ]; then
-    log_error "❌ 严重：旧版本存量服务未能成功恢复对外响应！"
+  local timeout_sec="${HAPPYCLAW_READINESS_TIMEOUT:-20}"
+  log_info "探测旧服务端口 ${port} 恢复情况..."
+  if ! probe_happyclaw_health "${port}" "" 1 "${timeout_sec}"; then
+    log_error "❌ 严重：旧版本存量服务未能成功自愈恢复对外响应！"
     return 1
   fi
   return 0
 }
 
-# 4. 激活后故障回滚事务
+# 5. 激活后故障受控回滚事务
 rollback_activation() {
   local reason="$1"
   log_error "激活阶段或后续验证失败 (${reason})，执行受控回滚至上一版本 ${ACTIVE_PREVIOUS_SHA}..."
@@ -251,8 +325,7 @@ rollback_activation() {
 
     # 重启上一版本服务单元
     if command -v launchctl >/dev/null 2>&1; then
-      local uid
-      uid="$(id -u)"
+      local uid="$(id -u)"
       local target="gui/${uid}/com.riba2534.happyclaw"
       local plist="${HOME}/Library/LaunchAgents/com.riba2534.happyclaw.plist"
       if [ -f "${plist}" ]; then
@@ -314,7 +387,7 @@ log_info "=== HappyClaw 生产原子发布开始 (RunID: ${RUN_ID}) ==="
 # 获取排他锁
 acquire_lock
 
-# 5. 校验目标提交
+# 6. 校验目标提交
 if [ -z "${EXPECTED_SHA}" ]; then
   log_error "必须提供 HAPPYCLAW_EXPECTED_SHA 参数！"
   exit 1
@@ -388,7 +461,7 @@ if ! git rev-parse --verify "${EXPECTED_SHA}^{commit}" >/dev/null 2>&1; then
   exit 1
 fi
 
-# 6. 精确不可变镜像与 OCI Revision 标签强校验
+# 7. 精确不可变镜像与 OCI Revision 标签强校验
 if [ -z "${AGENT_IMAGE}" ]; then
   log_error "生产部署必须指定 HAPPYCLAW_AGENT_IMAGE 不可变镜像！严禁为空！"
   exit 1
@@ -417,14 +490,12 @@ docker pull "${AGENT_IMAGE}" || {
   exit 1
 }
 
-# 严格核对 OCI Revision 标签
 LABEL_REV="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${AGENT_IMAGE}" 2>/dev/null || echo "")"
 if [ "${LABEL_REV}" != "${EXPECTED_SHA}" ]; then
   log_error "Docker 镜像 ${AGENT_IMAGE} 的 org.opencontainers.image.revision (${LABEL_REV}) 与预期提交 SHA (${EXPECTED_SHA}) 不匹配！"
   exit 1
 fi
 
-# 核对架构与操作系统
 IMAGE_ARCH="$(docker inspect --format '{{ .Architecture }}' "${AGENT_IMAGE}" 2>/dev/null || echo "")"
 IMAGE_OS="$(docker inspect --format '{{ .Os }}' "${AGENT_IMAGE}" 2>/dev/null || echo "")"
 if [ "${IMAGE_OS}" != "linux" ] || { [ "${IMAGE_ARCH}" != "amd64" ] && [ "${IMAGE_ARCH}" != "arm64" ]; }; then
@@ -432,14 +503,13 @@ if [ "${IMAGE_OS}" != "linux" ] || { [ "${IMAGE_ARCH}" != "amd64" ] && [ "${IMAG
   exit 1
 fi
 
-# 核对镜像 ID 非空
 IMAGE_ID="$(docker inspect --format '{{ .Id }}' "${AGENT_IMAGE}" 2>/dev/null || echo "")"
 if [ -z "${IMAGE_ID}" ]; then
   log_error "无法获取 Docker 镜像 ${AGENT_IMAGE} 的 ID / Digest！"
   exit 1
 fi
 
-# 7. 全面完善的 is_store_valid 深度完整性校验函数 (组 5)
+# 8. is_store_valid 深度完整性校验函数
 is_store_valid() {
   local store_path="$1"
   local expected_sha="$2"
@@ -499,7 +569,6 @@ is_store_valid() {
 mkdir -p "${STORE_DIR}"
 TARGET_STORE="${STORE_DIR}/${EXPECTED_SHA}"
 
-# 关键检查：若目标 store 目录已存在
 NEED_BUILD=1
 if [ -d "${TARGET_STORE}" ]; then
   if is_store_valid "${TARGET_STORE}" "${EXPECTED_SHA}"; then
@@ -517,7 +586,7 @@ if [ -d "${TARGET_STORE}" ]; then
   fi
 fi
 
-# 8. 不可变运行根构建准备 (若已存在且合法则跳过)
+# 9. 不可变运行根构建准备 (若已存在且合法则跳过)
 if [ "${NEED_BUILD}" -eq 1 ]; then
   log_info "签出候选工作区至隔离目录: ${STAGING_DIR}..."
   git worktree add --detach "${STAGING_DIR}" "${EXPECTED_SHA}"
@@ -617,6 +686,9 @@ if [ "${NEED_BUILD}" -eq 1 ]; then
   fi
   if [ -d "${STAGING_DIR}/scripts" ]; then
     cp -R "${STAGING_DIR}/scripts" "${STAGING_RELEASE_BUNDLE}/scripts"
+    if [ -f "${STAGING_DIR}/scripts/wait-for-readiness.mjs" ]; then
+      cp -f "${STAGING_DIR}/scripts/wait-for-readiness.mjs" "${STABLE_PROBE_TOOL}"
+    fi
   fi
 
   cat <<EOF > "${STAGING_RELEASE_BUNDLE}/version.json"
@@ -661,19 +733,40 @@ if [ "${BUILD_ONLY}" = "1" ]; then
   exit 0
 fi
 
-# 9. 首次建立符号链接布局（在候选就绪后执行，受控停旧服务，同 SHA 避免覆写，全流程事务保护）
+# 10. 首次建立符号链接布局（受控停止旧服务并轮询确认退出，P1 修复）
 stop_legacy_services() {
-  log_info "首次迁移前，精确受控停止存量服务..."
+  log_info "首次迁移前，受控停止存量旧服务..."
+  local port="${WEB_PORT:-3000}"
+
   if command -v launchctl >/dev/null 2>&1; then
-    local uid
-    uid="$(id -u)"
+    local uid="$(id -u)"
     local target="gui/${uid}/com.riba2534.happyclaw"
     if launchctl list 2>/dev/null | grep -q "com.riba2534.happyclaw"; then
-      log_info "通过 launchctl stop 受控停止 ${target}..."
-      launchctl stop "com.riba2534.happyclaw" 2>/dev/null || true
-      sleep 0.5
+      log_info "通过 launchctl bootout 受控卸载服务单元 ${target}..."
+      launchctl bootout "${target}" 2>/dev/null || launchctl stop "com.riba2534.happyclaw" 2>/dev/null || true
     fi
   fi
+
+  # 轮询确认监听端口的旧服务进程彻底退出 (上限 10s)
+  local stopped=0
+  for attempt in {1..20}; do
+    local pids=""
+    if command -v lsof >/dev/null 2>&1; then
+      pids="$(lsof -ti:${port} -sTCP:LISTEN 2>/dev/null || true)"
+    fi
+    if [ -z "${pids}" ]; then
+      stopped=1
+      log_info "确认存量旧服务进程已彻底退出！"
+      break
+    fi
+    sleep 0.5
+  done
+
+  if [ "${stopped}" -eq 0 ]; then
+    log_error "受控停止存量旧服务超时！端口 ${port} 仍被占用，拒绝执行软链接切换！"
+    return 1
+  fi
+  return 0
 }
 
 ensure_symlink_layout() {
@@ -684,11 +777,14 @@ ensure_symlink_layout() {
   # 标记进入首次迁移关键事务
   MIGRATION_IN_PROGRESS=1
   log_info "首次建立版本化运行结构，受控停旧服务并封存当前在线版本..."
-  stop_legacy_services
+  if ! stop_legacy_services; then
+    log_error "受控停止旧存量服务失败，终止首次迁移！"
+    exit 1
+  fi
 
   local initial_store="${STORE_DIR}/${ACTIVE_PREVIOUS_SHA}"
 
-  # 同 SHA 首次迁移隔离 (组 3)：若 ACTIVE_PREVIOUS_SHA == EXPECTED_SHA，TARGET_STORE 已经由源码组装完成，无需且禁止有损 cp-R
+  # 同 SHA 首次迁移隔离：若 ACTIVE_PREVIOUS_SHA == EXPECTED_SHA，TARGET_STORE 已经由源码组装完成，无需且禁止有损 cp-R
   if [ "${ACTIVE_PREVIOUS_SHA}" != "${EXPECTED_SHA}" ]; then
     if [ ! -d "${initial_store}" ]; then
       mkdir -p "${initial_store}"
@@ -778,7 +874,7 @@ EOF
 
 ensure_symlink_layout
 
-# 10. 原地无副本更新 .env 函数
+# 11. 原地无副本更新 .env 函数
 update_env_file() {
   local image_tag="$1"
   node -e '
@@ -803,53 +899,43 @@ update_env_file() {
   ' "${ROOT_DIR}/.env" "${image_tag}"
 }
 
-# 11. 真实健康与就绪探活验证函数 (适配 legacy 与现代版本)
+# 12. 真实健康与就绪探活验证函数 (适配 legacy 与现代版本)
 verify_service_health() {
   local target_store="$1"
   local target_sha="$2"
   local port="${WEB_PORT:-3000}"
+  local timeout_seconds="${HAPPYCLAW_READINESS_TIMEOUT:-60}"
 
-  # 检查是否为旧版 legacy 目标 (组 4)
   local is_legacy=0
   if [ -f "${target_store}/version.json" ]; then
     if node -e "try { const v = JSON.parse(require('fs').readFileSync('${target_store}/version.json','utf8')); process.exit(v.initializedFromExisting ? 0 : 1); } catch { process.exit(1); }"; then
       is_legacy=1
     fi
   fi
+  if [ ! -f "${target_store}/scripts/wait-for-readiness.mjs" ]; then
+    is_legacy=1
+  fi
 
   if [ "${is_legacy}" -eq 1 ]; then
-    log_info "目标版本属于旧版 legacy 结构，执行旧服务健康与存活探针..."
-    local verified=0
-    for attempt in {1..20}; do
-      local code
-      code="$(curl --max-time 2 -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/version" 2>/dev/null || \
-              curl --max-time 2 -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/api/health" 2>/dev/null || \
-              curl --max-time 2 -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/" 2>/dev/null || true)"
-      if [ "${code}" = "200" ] || [ "${code}" = "404" ] || [ "${code}" = "401" ]; then
-        log_info "✅ 旧版本服务健康存活验证通过 (HTTP ${code}, 耗时: ${attempt}s)！"
-        verified=1
-        break
-      fi
-      sleep 1
-    done
-    if [ "${verified}" -eq 0 ]; then
-      log_error "❌ 旧版本服务未能在指定时间内响应健康探针！"
+    log_info "目标版本属于旧版 legacy 结构，执行旧服务真实健康与存活探针（绝不接受 404）..."
+    if ! probe_happyclaw_health "${port}" "" 1 "${timeout_seconds}"; then
+      log_error "❌ 旧版本服务未能通过真实 HappyClaw 健康探针！"
       return 1
     fi
   else
     log_info "调用 wait-for-readiness 等待业务完全就绪并严格校验目标 SHA: ${target_sha}..."
-    if [ ! -f "${PROBE_TOOL}" ]; then
-      log_error "就绪检测工具 ${PROBE_TOOL} 缺失！拒绝虚假成功！"
+    if [ ! -f "${STABLE_PROBE_TOOL}" ]; then
+      log_error "固化就绪检测工具 ${STABLE_PROBE_TOOL} 缺失！拒绝虚假成功！"
       return 1
     fi
-    node "${PROBE_TOOL}" \
+    node "${STABLE_PROBE_TOOL}" \
       --port "${port}" \
-      --timeout 60 \
+      --timeout "${timeout_seconds}" \
       --expected-sha "${target_sha}"
   fi
 }
 
-# 12. 进入单步原子激活阶段 (开启全事务错误保护)
+# 13. 进入单步原子激活阶段 (开启全事务错误保护)
 ACTIVATION_IN_PROGRESS=1
 
 log_info "单步原子切换当前运行指针至 store/${EXPECTED_SHA}..."
@@ -875,7 +961,7 @@ EOF
 
 log_info "版本切换单步原子完成！当前在线指针: .releases/current -> store/${EXPECTED_SHA}"
 
-# 13. 服务精确重启与业务就绪严格验证 (组 2)
+# 14. 服务精确重启与业务就绪严格验证
 if [ "${INJECT_FAILURE}" = "restart" ]; then
   log_error "[注入测试] 模拟服务重启失败"
   exit 107

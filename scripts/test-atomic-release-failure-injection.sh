@@ -117,6 +117,10 @@ case "$cmd" in
     exit 0
     ;;
   bootout)
+    if [ "${MOCK_PROCESS_STUCK:-0}" = "1" ]; then
+      echo "Mock bootout: process refuses to terminate" >&2
+      exit 0
+    fi
     port="${WEB_PORT:-3199}"
     if command -v lsof >/dev/null 2>&1; then
       lsof -ti:${port} -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
@@ -146,6 +150,10 @@ case "$cmd" in
     exit 0
     ;;
   stop)
+    if [ "${MOCK_PROCESS_STUCK:-0}" = "1" ]; then
+      echo "Mock stop: process refuses to terminate" >&2
+      exit 0
+    fi
     port="${WEB_PORT:-3199}"
     if command -v lsof >/dev/null 2>&1; then
       lsof -ti:${port} -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
@@ -187,13 +195,11 @@ data/
 dist.legacy_backup
 web/dist.legacy_backup
 container/agent-runner/dist.legacy_backup
-scripts/wait-for-readiness.mjs
 EOF
 
 mkdir -p scripts
 cp "${REAL_REPO_ROOT}/scripts/deploy-release.sh" scripts/
 cp "${REAL_REPO_ROOT}/scripts/rollback-release.sh" scripts/
-cp "${REAL_REPO_ROOT}/scripts/wait-for-readiness.mjs" scripts/
 chmod +x scripts/*.sh
 
 # 创建支持构建与测试的 package.json
@@ -279,6 +285,11 @@ try {
 }
 
 const server = http.createServer((req, res) => {
+  if (process.env.MOCK_SERVER_RETURNS_404 === '1') {
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('Mock Server Forced 404');
+    return;
+  }
   if (req.url === '/version') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
@@ -368,19 +379,21 @@ echo "PERSISTENT_SQLITE_MESSAGES_ROW_1" > data/messages.db
 echo "WEB_PORT=${TEST_PORT}" > .env
 chmod 600 .env
 
-# 创建 Commit A
+# 创建 Commit A (旧版基线，不含 scripts/wait-for-readiness.mjs)
 create_server_source "VERSION_A" "DEP_A"
+rm -f scripts/wait-for-readiness.mjs
 git add .
-git commit -m "Commit A: Initial production baseline" --quiet
+git commit -m "Commit A: Initial legacy baseline without wait-for-readiness" --quiet
 COMMIT_A="$(git rev-parse HEAD)"
 
-# 创建 Commit B
+# 创建 Commit B (引入 scripts/wait-for-readiness.mjs)
 create_server_source "VERSION_B" "DEP_B"
+cp "${REAL_REPO_ROOT}/scripts/wait-for-readiness.mjs" scripts/
 git add .
-git commit -m "Commit B: Target production release" --quiet
+git commit -m "Commit B: Target production release with wait-for-readiness" --quiet
 COMMIT_B="$(git rev-parse HEAD)"
 
-# 切回 Commit A
+# 切回 Commit A (工作树中无 scripts/wait-for-readiness.mjs)
 git switch --detach "${COMMIT_A}" --quiet
 create_server_source "VERSION_A" "DEP_A"
 
@@ -746,34 +759,39 @@ log_pass "场景 8 通过：A -> B -> A 原子回滚全流程成功，镜像精�
 # ==============================================================================
 log_test "场景 9: 就绪探针工具缺失或超时严格阻断"
 
-cat << 'EOF' > scripts/wait-for-readiness.mjs
-#!/usr/bin/env node
-console.error("Mock readiness check error: service not ready");
-process.exit(1);
-EOF
-
+# 9.1 模拟就绪探针执行失败/超时
+export MOCK_SERVER_RETURNS_404=1
+export HAPPYCLAW_READINESS_TIMEOUT=3
 set +e
 ./scripts/rollback-release.sh "${COMMIT_B}"
 ROLLBACK_READY_EXIT=$?
 set -e
+unset MOCK_SERVER_RETURNS_404
+unset HAPPYCLAW_READINESS_TIMEOUT
 
 if [ "${ROLLBACK_READY_EXIT}" -eq 0 ]; then
   log_fail "就绪探针失败时回滚脚本竟然返回 0！违背契约！"
 fi
 log_pass "9.1 通过：就绪探针失败严格以非 0 退出码 (${ROLLBACK_READY_EXIT}) 阻断！"
 
-rm -f scripts/wait-for-readiness.mjs
+# 9.2 模拟固化就绪探针工具缺失
+mv ".releases/.tools/wait-for-readiness.mjs" ".releases/.tools/wait-for-readiness.mjs.bak"
 set +e
 ./scripts/rollback-release.sh "${COMMIT_B}"
 MISSING_TOOL_EXIT=$?
 set -e
+mv ".releases/.tools/wait-for-readiness.mjs.bak" ".releases/.tools/wait-for-readiness.mjs"
 
 if [ "${MISSING_TOOL_EXIT}" -eq 0 ]; then
   log_fail "就绪探针工具缺失时回滚脚本竟然返回 0！违背契约！"
 fi
 log_pass "9.2 通过：就绪探针工具缺失严格以非 0 退出码 (${MISSING_TOOL_EXIT}) 阻断！"
 
-cp "${REAL_REPO_ROOT}/scripts/wait-for-readiness.mjs" scripts/
+# 确保当前在线处于完整就绪的 COMMIT_B
+HAPPYCLAW_EXPECTED_SHA="${COMMIT_B}" \
+HAPPYCLAW_AGENT_IMAGE="riba2534/happyclaw-agent:git-${COMMIT_B}" \
+HAPPYCLAW_SKIP_FETCH=1 \
+./scripts/deploy-release.sh >/dev/null 2>&1
 
 # ==============================================================================
 # 场景 10: 禁止数据备份与安全合规性检查
@@ -795,6 +813,127 @@ if ! grep -q "^HAPPYCLAW_SKIP_MIGRATION_BACKUP=1" .env; then
 fi
 log_pass "场景 10 通过：完全符合零数据备份与安全权限约束！"
 
+# ==============================================================================
+# Leader 第三轮专项 1：端口存在仅返回 404 的假服务，回滚探针必须判定失败而非假成功
+# ==============================================================================
+log_test "【Leader 第三轮专项 1】端口存在仅返回 404 的假服务，回滚探针必须判定失败而非假成功"
+
+export MOCK_SERVER_RETURNS_404=1
+export HAPPYCLAW_READINESS_TIMEOUT=3
+
+set +e
+./scripts/rollback-release.sh "${COMMIT_A}"
+FAKE_404_ROLLBACK_EXIT=$?
+set -e
+
+unset MOCK_SERVER_RETURNS_404
+unset HAPPYCLAW_READINESS_TIMEOUT
+
+if [ "${FAKE_404_ROLLBACK_EXIT}" -eq 0 ]; then
+  log_fail "严重缺陷：端口返回 404 时回滚探针竟然误判通过返回 0！未满足契约！"
+fi
+log_pass "专项 1 通过：端口返回 404 假服务时回滚探针严格识别并阻断，绝不接受 404 为健康！"
+
+# 恢复在线为正常的 COMMIT_B (含 wait-for-readiness.mjs)
+HAPPYCLAW_EXPECTED_SHA="${COMMIT_B}" \
+HAPPYCLAW_AGENT_IMAGE="riba2534/happyclaw-agent:git-${COMMIT_B}" \
+HAPPYCLAW_SKIP_FETCH=1 \
+./scripts/deploy-release.sh >/dev/null 2>&1
+
+# ==============================================================================
+# Leader 第三轮专项 2：回滚至不含 wait-for-readiness.mjs 的历史提交，回滚必须成功完成
+# ==============================================================================
+log_test "【Leader 第三轮专项 2】回滚至不含 wait-for-readiness.mjs 的历史提交，回滚必须成功完成"
+
+# 确保当前在线处于 COMMIT_B (含 wait-for-readiness.mjs)
+test -f "scripts/wait-for-readiness.mjs" || log_fail "当前在线必须包含 scripts/wait-for-readiness.mjs"
+
+# 执行回滚至不含探针的历史提交 COMMIT_A
+./scripts/rollback-release.sh "${COMMIT_A}"
+
+if [ "$(git rev-parse HEAD)" != "${COMMIT_A}" ]; then
+  log_fail "回滚至不含探针的历史提交后 Git HEAD 不匹配！"
+fi
+if [ "$(readlink .releases/current)" != "store/${COMMIT_A}" ]; then
+  log_fail "回滚后 current 指针未指向 store/${COMMIT_A}！"
+fi
+
+# 核心严格断言：回滚后工作树切到了 COMMIT_A，当前工作树中确实已被 Git 清除 wait-for-readiness.mjs，但回滚成功完成！
+if [ -f "scripts/wait-for-readiness.mjs" ]; then
+  log_fail "严重回归：回滚至 COMMIT_A 后工作树中竟然仍残留 wait-for-readiness.mjs！"
+fi
+log_pass "专项 2 通过：工作树缺失 wait-for-readiness.mjs 时回滚依然顺利成功完成，固化探针保障历史回滚！"
+
+# 切回 COMMIT_B 以继续后续测试
+HAPPYCLAW_EXPECTED_SHA="${COMMIT_B}" \
+HAPPYCLAW_AGENT_IMAGE="riba2534/happyclaw-agent:git-${COMMIT_B}" \
+HAPPYCLAW_SKIP_FETCH=1 \
+./scripts/deploy-release.sh >/dev/null 2>&1
+
+# ==============================================================================
+# Leader 第三轮专项 3：停止后进程仍占用端口时，必须失败并报错，绝对禁止更换软链接
+# ==============================================================================
+log_test "【Leader 第三轮专项 3】停止后进程仍占用端口时，必须失败并报错，绝对禁止更换软链接"
+
+LEGACY_TEST_DIR="${TEST_TMPDIR}/legacy_stuck_repo"
+mkdir -p "${LEGACY_TEST_DIR}"
+# 完整复制测试仓库并确保脚本就绪
+cp -a "${TEST_TMPDIR}/repo/." "${LEGACY_TEST_DIR}/"
+cd "${LEGACY_TEST_DIR}"
+mkdir -p scripts
+cp -f "${REAL_REPO_ROOT}/scripts/deploy-release.sh" scripts/
+cp -f "${REAL_REPO_ROOT}/scripts/rollback-release.sh" scripts/
+chmod +x scripts/*.sh
+
+rm -rf .releases dist web/dist container/agent-runner/dist
+mkdir -p dist web/dist container/agent-runner/dist
+cp src/server.js dist/index.js
+cp web/src/index.html web/dist/index.html
+cp container/agent-runner/src/runner.js container/agent-runner/dist/index.js
+
+local_port="${TEST_PORT}"
+# 启动一个外部死死占用端口的僵尸进程
+node -e "
+  const http = require('http');
+  const server = http.createServer((req, res) => res.end('stuck'));
+  server.listen(${local_port}, '127.0.0.1');
+" >/dev/null 2>&1 &
+STUCK_PID=$!
+sleep 0.8
+
+export MOCK_PROCESS_STUCK=1
+export HAPPYCLAW_READINESS_TIMEOUT=3
+
+set +e
+HAPPYCLAW_EXPECTED_SHA="${COMMIT_A}" \
+HAPPYCLAW_AGENT_IMAGE="riba2534/happyclaw-agent:git-${COMMIT_A}" \
+HAPPYCLAW_SKIP_FETCH=1 \
+./scripts/deploy-release.sh
+STUCK_PROCESS_EXIT=$?
+set -e
+
+unset MOCK_PROCESS_STUCK
+unset HAPPYCLAW_READINESS_TIMEOUT
+kill -9 "${STUCK_PID}" 2>/dev/null || true
+wait "${STUCK_PID}" 2>/dev/null || true
+
+if [ "${STUCK_PROCESS_EXIT}" -eq 0 ]; then
+  log_fail "进程停止超时仍占用端口时，部署竟然返回 0！"
+fi
+
+# 核心严格断言：绝不更换软链接！
+if [ -L "dist" ]; then
+  log_fail "严重缺陷：停止旧服务超时时，竟然强行将 dist 更换成了软链接！"
+fi
+if [ ! -d "dist" ]; then
+  log_fail "严重缺陷：停止旧服务超时后 dist 目录丢失！"
+fi
+
+cd "${TEST_TMPDIR}/repo"
+rm -rf "${LEGACY_TEST_DIR}"
+
+log_pass "专项 3 通过：停止旧服务超时或进程占用时部署严格拒绝更换软链接并报错！"
+
 log_test "======================================================================"
-log_test "🎉 全部场景、Leader 3 大复现失败项及自愈健康探活测试 100% 顺利通过！"
+log_test "🎉 全部场景、Leader 3 大复现失败项及 3 大新增专项测试 100% 顺利通过！"
 log_test "======================================================================"
