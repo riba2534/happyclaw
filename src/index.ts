@@ -7738,15 +7738,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               result.streamEvent?.budgetRunId ||
               result.streamEvent?.budgetSnapshot?.runId ||
               `group:${effectiveGroup.folder}:${lastProcessed.id}`;
-            const activeBudgetSvc =
-              typeof taskBudgetService !== 'undefined'
-                ? taskBudgetService
-                : undefined;
             if (
               result.streamEvent.eventType === 'budget_status' &&
               result.streamEvent.budgetSnapshot
             ) {
-              activeBudgetSvc?.syncSnapshotFromRunner(
+              taskBudgetService.syncSnapshotFromRunner(
                 groupBudgetRunId,
                 result.streamEvent.budgetSnapshot,
                 {
@@ -7777,7 +7773,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                 result.streamEvent.usage.costUSD =
                   accounting.providerEstimatedCostUSD;
                 if (accounting.inserted) {
-                  activeBudgetSvc?.recordCost(
+                  taskBudgetService.recordCost(
                     groupBudgetRunId,
                     accounting.providerEstimatedCostUSD,
                     accounting.eventId,
@@ -8840,18 +8836,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                 result.streamEvent?.budgetRunId ||
                 result.budgetSnapshot?.runId ||
                 `group:${effectiveGroup.folder}:${lastProcessed.id}`;
-              const finalBudgetSvc =
-                typeof taskBudgetService !== 'undefined'
-                  ? taskBudgetService
-                  : undefined;
               if (result.finalizationReason === 'budget_exceeded') {
-                finalBudgetSvc?.markExceededAndSavePartial(
+                taskBudgetService.markExceededAndSavePartial(
                   finalGroupBudgetRunId,
                   result.budgetSnapshot?.exceededReason || 'duration',
                   dbText,
                 );
               } else if (result.status === 'success') {
-                finalBudgetSvc?.completeBudget(finalGroupBudgetRunId, dbText);
+                taskBudgetService.completeBudget(finalGroupBudgetRunId, dbText);
               }
               lastReplyMsgId = replySendOutcome.messageId;
               const scheduledGroupProjectionDurable =
@@ -16492,15 +16484,11 @@ async function processAgentConversation(
         output.streamEvent?.budgetRunId ||
         output.streamEvent?.budgetSnapshot?.runId ||
         currentAgentBudgetRunId;
-      const agentBudgetSvc =
-        typeof taskBudgetService !== 'undefined'
-          ? taskBudgetService
-          : undefined;
       if (
         output.streamEvent.eventType === 'budget_status' &&
         output.streamEvent.budgetSnapshot
       ) {
-        agentBudgetSvc?.syncSnapshotFromRunner(
+        taskBudgetService.syncSnapshotFromRunner(
           bRunId,
           output.streamEvent.budgetSnapshot,
           {
@@ -16515,7 +16503,7 @@ async function processAgentConversation(
         output.streamEvent.eventType === 'usage' &&
         output.streamEvent.usage
       ) {
-        agentBudgetSvc?.recordCost(
+        taskBudgetService.recordCost(
           bRunId,
           output.streamEvent.usage.costUSD,
           output.streamEvent.usage.eventId,
