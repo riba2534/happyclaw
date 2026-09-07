@@ -17,8 +17,31 @@
 
 set -euo pipefail
 
+# 解析命令行参数（支持 --root-dir <path> 以及回滚目标 SHA）
+ROLLBACK_ARG_SHA=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --root-dir|-C)
+      if [ -n "${2:-}" ]; then
+        HAPPYCLAW_ROOT_DIR="$2"
+        shift 2
+      else
+        echo "[ERROR] $1 参数缺少路径！" >&2
+        exit 1
+      fi
+      ;;
+    *)
+      if [ -z "${ROLLBACK_ARG_SHA}" ]; then
+        ROLLBACK_ARG_SHA="$1"
+      fi
+      shift
+      ;;
+  esac
+done
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ROOT_DIR="${HAPPYCLAW_ROOT_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+ROOT_DIR="$(cd "${ROOT_DIR}" && pwd)"
 
 RELEASES_DIR="${ROOT_DIR}/.releases"
 STORE_DIR="${RELEASES_DIR}/store"
@@ -35,7 +58,7 @@ if [ -f "${SCRIPT_DIR}/wait-for-readiness.mjs" ]; then
 fi
 
 RUN_ID="rollback_$(date +%s%N 2>/dev/null || date +%s)_$$"
-TARGET_SHA="${1:-${HAPPYCLAW_ROLLBACK_SHA:-}}"
+TARGET_SHA="${ROLLBACK_ARG_SHA:-${HAPPYCLAW_ROLLBACK_SHA:-}}"
 
 ACTIVATION_IN_PROGRESS=0
 ACTIVATION_SUCCESS=0
@@ -318,11 +341,28 @@ if ! git rev-parse --verify "${TARGET_SHA}^{commit}" >/dev/null 2>&1; then
   exit 1
 fi
 
-if [ -n "$(git status --porcelain)" ]; then
+check_worktree_clean() {
+  local status_output
+  status_output="$(git status --porcelain)"
+  if [ -z "${status_output}" ]; then
+    return 0
+  fi
+
+  # 严格过滤属于发布机制自身运行必需的受控文件（锁、releases、临时 staging）
+  local non_runtime_files
+  non_runtime_files="$(echo "${status_output}" | grep -vE '^\?\? (\.deploy\.lock|\.releases(/.*)?|\.release-staging-[^/]+(/.*)?|\.release-previous(/.*)?)$' || true)"
+  if [ -z "${non_runtime_files}" ]; then
+    log_info "工作树干净度预检通过（已排除发布机制自身受控状态与排他锁）"
+    return 0
+  fi
+
   log_error "工作树不干净，存在未提交文件，拒绝回滚！"
+  echo "${non_runtime_files}" >&2
   git status --short
   exit 1
-fi
+}
+
+check_worktree_clean
 
 TARGET_STORE_DIR="${STORE_DIR}/${TARGET_SHA}"
 
@@ -431,6 +471,7 @@ fi
 # 检查不可变版本库中是否存在预编译好的完整产物，若缺失则委托构建入库
 if [ ! -d "${TARGET_STORE_DIR}" ] || ! is_store_valid "${TARGET_STORE_DIR}" "${TARGET_SHA}"; then
   log_warn "不可变版本库 ${TARGET_STORE_DIR} 缺失完整产物，转入独立候选发布流程重建目标版本..."
+  HAPPYCLAW_ROOT_DIR="${ROOT_DIR}" \
   HAPPYCLAW_EXPECTED_SHA="${TARGET_SHA}" \
   HAPPYCLAW_AGENT_IMAGE="${PREVIOUS_IMAGE}" \
   HAPPYCLAW_LOCK_RUN_ID="${RUN_ID}" \
