@@ -1017,11 +1017,7 @@ export function initDatabase(
   // installed.
   createOwnerProfileSchema(db);
   bindOwnerProfileDatabase(db);
-  // v74 -> v75: R17 Prompt Evaluation & Benchmark suites, runs, and cases.
-  createEvalSchema(db);
   bindEvalDatabase(db);
-  ensureBuiltinEvalSuite();
-  recoverDanglingEvalRuns();
   if (
     rawSchemaVersionBeforeInit !== null &&
     Number(rawSchemaVersionBeforeInit) < 66
@@ -2680,9 +2676,21 @@ export function initDatabase(
     migrateClassifiableDirectWorkspaceMountsToSessions();
   }
 
+  // v74 -> v75: R17 Prompt Evaluation & Benchmark suites, runs, and cases.
+  const evalSchemaVersion = Number(
+    getRouterStateInternal('schema_version') ?? '0',
+  );
+  if (evalSchemaVersion < 75) {
+    createEvalSchema(db);
+  }
+
   db.prepare(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', String(CURRENT_SCHEMA_VERSION));
+
+  // Post-migration bootstrap: seed builtin eval suite and recover dangling runs
+  ensureBuiltinEvalSuite();
+  recoverDanglingEvalRuns();
 }
 
 /**

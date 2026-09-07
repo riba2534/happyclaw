@@ -158,51 +158,70 @@ export function createEvalSchema(db: SqliteDatabase): void {
   `);
 
   // Ensure columns for existing installations
-  try {
-    db.exec(
-      `ALTER TABLE eval_runs ADD COLUMN provider_source TEXT NOT NULL DEFAULT 'live_provider'`,
-    );
-  } catch {}
-  try {
-    db.exec(
-      `ALTER TABLE eval_runs ADD COLUMN provider_id TEXT NOT NULL DEFAULT ''`,
-    );
-  } catch {}
-  try {
-    db.exec(
-      `ALTER TABLE eval_run_cases ADD COLUMN category TEXT NOT NULL DEFAULT 'general'`,
-    );
-  } catch {}
-  try {
-    db.exec(
-      `ALTER TABLE eval_run_cases ADD COLUMN case_input_snapshot TEXT NOT NULL DEFAULT ''`,
-    );
-  } catch {}
-  try {
-    db.exec(
-      `ALTER TABLE eval_run_cases ADD COLUMN case_expected_snapshot TEXT NOT NULL DEFAULT ''`,
-    );
-  } catch {}
-  try {
-    db.exec(
-      `ALTER TABLE eval_run_cases ADD COLUMN case_rules_snapshot TEXT NOT NULL DEFAULT '{}'`,
-    );
-  } catch {}
-  try {
-    db.exec(
-      `ALTER TABLE eval_run_cases ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0`,
-    );
-  } catch {}
-  try {
-    db.exec(
-      `ALTER TABLE eval_run_cases ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0`,
-    );
-  } catch {}
-  try {
-    db.exec(
-      `ALTER TABLE eval_run_cases ADD COLUMN reasoning_tokens INTEGER NOT NULL DEFAULT 0`,
-    );
-  } catch {}
+  ensureColumn(
+    db,
+    'eval_runs',
+    'provider_source',
+    "TEXT NOT NULL DEFAULT 'live_provider'",
+  );
+  ensureColumn(db, 'eval_runs', 'provider_id', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(
+    db,
+    'eval_run_cases',
+    'category',
+    "TEXT NOT NULL DEFAULT 'general'",
+  );
+  ensureColumn(
+    db,
+    'eval_run_cases',
+    'case_input_snapshot',
+    "TEXT NOT NULL DEFAULT ''",
+  );
+  ensureColumn(
+    db,
+    'eval_run_cases',
+    'case_expected_snapshot',
+    "TEXT NOT NULL DEFAULT ''",
+  );
+  ensureColumn(
+    db,
+    'eval_run_cases',
+    'case_rules_snapshot',
+    "TEXT NOT NULL DEFAULT '{}'",
+  );
+  ensureColumn(
+    db,
+    'eval_run_cases',
+    'cache_read_tokens',
+    'INTEGER NOT NULL DEFAULT 0',
+  );
+  ensureColumn(
+    db,
+    'eval_run_cases',
+    'cache_creation_tokens',
+    'INTEGER NOT NULL DEFAULT 0',
+  );
+  ensureColumn(
+    db,
+    'eval_run_cases',
+    'reasoning_tokens',
+    'INTEGER NOT NULL DEFAULT 0',
+  );
+}
+
+function ensureColumn(
+  db: SqliteDatabase,
+  tableName: string,
+  columnName: string,
+  sqlTypeWithDefault: string,
+): void {
+  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{
+    name: string;
+  }>;
+  if (columns.some((c) => c.name === columnName)) return;
+  db.exec(
+    `ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${sqlTypeWithDefault}`,
+  );
 }
 
 function parseJsonSafe<T>(val: unknown, fallback: T): T {
