@@ -84,22 +84,16 @@ export function setEvalExecutionProviderForTests(
 // Backward compatibility alias for test suites
 export const setEvalExecutionProvider = setEvalExecutionProviderForTests;
 
-// In-memory active runs AbortControllers for cancellation
-const activeRunAbortControllers = new Map<string, AbortController>();
+interface ActiveRunExecution {
+  controller: AbortController;
+  promise: Promise<void>;
+  status: 'running' | 'cancelling' | 'settled';
+}
+const activeRunExecutions = new Map<string, ActiveRunExecution>();
 
-/**
- * Hard-gated rule-based evaluation engine.
- *
- * Requirements act as strict acceptance gates:
- * 1. Missing required keywords => Hard Gate Fail.
- * 2. Matched forbidden keywords => Immediate Disqualification.
- * 3. Invalid JSON or non-plain-object (when requireJson is true) => Hard Gate Fail.
- * 4. Missing required JSON keys => Hard Gate Fail.
- * 5. Failed regex match or ReDoS-dangerous pattern => Hard Gate Fail.
- * 6. Empty output or length violation => Hard Gate Fail.
- *
- * Only when all hard gates pass AND score >= passThreshold can auto_verdict be 'pass'.
- */
+export function isEvalRunActive(runId: string): boolean {
+  return activeRunExecutions.has(runId);
+}
 
 /**
  * Custom error class carrying actual accumulated usage even across failures or aborts.
@@ -183,6 +177,19 @@ export function safeRegexMatch(
   }
 }
 
+/**
+ * Hard-gated rule-based evaluation engine.
+ *
+ * Requirements act as strict acceptance gates:
+ * 1. Missing required keywords => Hard Gate Fail.
+ * 2. Matched forbidden keywords => Immediate Disqualification.
+ * 3. Invalid JSON or non-plain-object (when requireJson is true) => Hard Gate Fail.
+ * 4. Missing required JSON keys => Hard Gate Fail.
+ * 5. Failed regex match or ReDoS-dangerous pattern => Hard Gate Fail.
+ * 6. Empty output or length violation => Hard Gate Fail.
+ *
+ * Only when all hard gates pass AND score >= passThreshold can auto_verdict be "pass".
+ */
 export function evaluateOutputAgainstRules(
   output: string,
   rules: EvalCaseRule,
@@ -472,71 +479,128 @@ export async function executeWithClaudeAgentSdk(options: {
 
   const startedAt = Date.now();
   let resultText = '';
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let cacheReadTokens = 0;
-  let cacheCreationTokens = 0;
-  let reasoningTokens = 0;
   let reportedCostUSD: number | undefined;
   const toolMap = new Map<string, number>();
   const seenToolUseIds = new Set<string>();
 
+  // Track assistant usage per messageId to prevent double counting or overwriting
+  const assistantUsageByMsgId = new Map<
+    string,
+    {
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      cacheCreationTokens: number;
+    }
+  >();
+
+  let hasReceivedResult = false;
+  const resultUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    reasoningTokens: 0,
+  };
+
+  const getCurrentUsage = () => {
+    if (hasReceivedResult) {
+      return resultUsage;
+    }
+    let sumIn = 0;
+    let sumOut = 0;
+    let sumCr = 0;
+    let sumCc = 0;
+    for (const u of assistantUsageByMsgId.values()) {
+      sumIn += u.inputTokens;
+      sumOut += u.outputTokens;
+      sumCr += u.cacheReadTokens;
+      sumCc += u.cacheCreationTokens;
+    }
+    return {
+      inputTokens: sumIn,
+      outputTokens: sumOut,
+      cacheReadTokens: sumCr,
+      cacheCreationTokens: sumCc,
+      reasoningTokens: 0,
+    };
+  };
+
+  const getToolsUsed = (): EvalRunCaseToolUsage[] =>
+    Array.from(toolMap.entries()).map(([name, count]) => ({ name, count }));
+
   const abortController = new AbortController();
   if (options.abortSignal) {
-    options.abortSignal.addEventListener(
-      'abort',
-      () => abortController.abort(),
-      { once: true },
-    );
+    if (options.abortSignal.aborted) {
+      abortController.abort();
+    } else {
+      options.abortSignal.addEventListener(
+        'abort',
+        () => abortController.abort(),
+        { once: true },
+      );
+    }
   }
 
-  const conversation = query({
-    prompt: options.prompt,
-    options: {
-      model: options.model,
-      systemPrompt: options.systemPrompt,
-      cwd: options.cwd,
-      env,
-      maxTurns: 3,
-      tools: [],
-      skills: [],
-      settingSources: [],
-      allowedTools: [],
-      permissionMode: 'bypassPermissions' as const,
-      allowDangerouslySkipPermissions: true,
-      abortController,
-    },
-  });
-
   try {
+    if (abortController.signal.aborted) {
+      throw new SdkExecutionError(
+        'Operation was aborted before SDK execution started',
+        {
+          accumulatedUsage: getCurrentUsage(),
+          durationMs: Math.max(1, Date.now() - startedAt),
+          toolsUsed: getToolsUsed(),
+          reportedCostUSD,
+        },
+      );
+    }
+
+    const conversation = query({
+      prompt: options.prompt,
+      options: {
+        model: options.model,
+        systemPrompt: options.systemPrompt,
+        cwd: options.cwd,
+        env,
+        maxTurns: 3,
+        tools: [],
+        skills: [],
+        settingSources: [],
+        allowedTools: [],
+        permissionMode: 'bypassPermissions' as const,
+        allowDangerouslySkipPermissions: true,
+        abortController,
+      },
+    });
+
     for await (const message of conversation) {
-      // 1. Primary authority: Result event usage & modelUsage
+      // 1. Result event: authoritative final totals
       if (message.type === 'result') {
+        hasReceivedResult = true;
         const isApiError =
           (message as any).is_error === true || message.subtype !== 'success';
         if (!isApiError) {
-          resultText = message.result || '';
+          resultText = (message as any).result || '';
         }
 
         const rawUsage = (message as any).usage;
         if (rawUsage) {
-          inputTokens =
-            rawUsage.input_tokens ?? rawUsage.inputTokens ?? inputTokens;
-          outputTokens =
-            rawUsage.output_tokens ?? rawUsage.outputTokens ?? outputTokens;
-          cacheReadTokens =
+          resultUsage.inputTokens =
+            rawUsage.input_tokens ?? rawUsage.inputTokens ?? 0;
+          resultUsage.outputTokens =
+            rawUsage.output_tokens ?? rawUsage.outputTokens ?? 0;
+          resultUsage.cacheReadTokens =
             rawUsage.cache_read_input_tokens ??
             rawUsage.cacheReadInputTokens ??
-            cacheReadTokens;
-          cacheCreationTokens =
+            0;
+          resultUsage.cacheCreationTokens =
             rawUsage.cache_creation_input_tokens ??
             rawUsage.cacheCreationInputTokens ??
-            cacheCreationTokens;
-          reasoningTokens =
-            rawUsage.reasoning_output_tokens ??
-            rawUsage.reasoningTokens ??
-            reasoningTokens;
+            0;
+          resultUsage.reasoningTokens =
+            rawUsage.reasoning_output_tokens ?? rawUsage.reasoningTokens ?? 0;
         }
+
         const rawModelUsage = (message as any).modelUsage;
         if (rawModelUsage && typeof rawModelUsage === 'object') {
           let mInput = 0;
@@ -557,13 +621,16 @@ export async function executeWithClaudeAgentSdk(options: {
               }
             }
           }
-          if (mInput > 0) inputTokens = mInput;
-          if (mOutput > 0) outputTokens = mOutput;
-          if (mCacheRead > 0) cacheReadTokens = mCacheRead;
-          if (mCacheCreate > 0) cacheCreationTokens = mCacheCreate;
-          if (mReasoning > 0) reasoningTokens = mReasoning;
+          if (mInput > 0 || mOutput > 0) {
+            resultUsage.inputTokens = mInput;
+            resultUsage.outputTokens = mOutput;
+            resultUsage.cacheReadTokens = mCacheRead;
+            resultUsage.cacheCreationTokens = mCacheCreate;
+            resultUsage.reasoningTokens = mReasoning;
+          }
           if (mCost > 0) reportedCostUSD = mCost;
         }
+
         if (typeof (message as any).total_cost_usd === 'number') {
           reportedCostUSD = (message as any).total_cost_usd;
         }
@@ -577,18 +644,10 @@ export async function executeWithClaudeAgentSdk(options: {
               : null) ||
             `SDK execution ended with subtype: ${message.subtype}`;
           throw new SdkExecutionError(`API Error: ${errDetail}`, {
-            accumulatedUsage: {
-              inputTokens,
-              outputTokens,
-              cacheReadTokens,
-              cacheCreationTokens,
-              reasoningTokens,
-            },
+            accumulatedUsage: getCurrentUsage(),
             durationMs: Math.max(1, Date.now() - startedAt),
-            toolsUsed: Array.from(toolMap.entries()).map(([name, count]) => ({
-              name,
-              count,
-            })),
+            toolsUsed: getToolsUsed(),
+            reportedCostUSD,
           });
         }
       }
@@ -596,19 +655,94 @@ export async function executeWithClaudeAgentSdk(options: {
       // 2. Stream events usage observation
       if (message.type === 'stream_event') {
         const ev = (message as any).event;
-        if (ev?.type === 'message_start' && ev.message?.usage) {
-          inputTokens = ev.message.usage.input_tokens ?? inputTokens;
-          cacheReadTokens =
-            ev.message.usage.cache_read_input_tokens ?? cacheReadTokens;
-          cacheCreationTokens =
-            ev.message.usage.cache_creation_input_tokens ?? cacheCreationTokens;
+        if (ev?.type === 'message_start' && ev.message) {
+          const msgId = ev.message.id || 'stream_msg';
+          if (ev.message.usage) {
+            const prev = assistantUsageByMsgId.get(msgId) || {
+              inputTokens: 0,
+              outputTokens: 0,
+              cacheReadTokens: 0,
+              cacheCreationTokens: 0,
+            };
+            assistantUsageByMsgId.set(msgId, {
+              ...prev,
+              inputTokens:
+                ev.message.usage.input_tokens ??
+                ev.message.usage.inputTokens ??
+                prev.inputTokens,
+              cacheReadTokens:
+                ev.message.usage.cache_read_input_tokens ??
+                ev.message.usage.cacheReadInputTokens ??
+                prev.cacheReadTokens,
+              cacheCreationTokens:
+                ev.message.usage.cache_creation_input_tokens ??
+                ev.message.usage.cacheCreationInputTokens ??
+                prev.cacheCreationTokens,
+            });
+          }
         }
         if (ev?.type === 'message_delta' && ev.usage) {
-          outputTokens = ev.usage.output_tokens ?? outputTokens;
+          const msgId = 'stream_msg';
+          const prev = assistantUsageByMsgId.get(msgId) || {
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+          };
+          assistantUsageByMsgId.set(msgId, {
+            ...prev,
+            outputTokens:
+              ev.usage.output_tokens ??
+              ev.usage.outputTokens ??
+              prev.outputTokens,
+          });
         }
       }
 
-      // 3. Tool use observation with tool_use_id deduplication
+      // 3. Assistant message structure & usage
+      if (message.type === 'assistant') {
+        const assistantMsg = (message as any).message;
+        if (assistantMsg) {
+          const msgId =
+            assistantMsg.id || `msg_${assistantUsageByMsgId.size + 1}`;
+          if (assistantMsg.usage) {
+            assistantUsageByMsgId.set(msgId, {
+              inputTokens:
+                assistantMsg.usage.input_tokens ??
+                assistantMsg.usage.inputTokens ??
+                0,
+              outputTokens:
+                assistantMsg.usage.output_tokens ??
+                assistantMsg.usage.outputTokens ??
+                0,
+              cacheReadTokens:
+                assistantMsg.usage.cache_read_input_tokens ??
+                assistantMsg.usage.cacheReadInputTokens ??
+                0,
+              cacheCreationTokens:
+                assistantMsg.usage.cache_creation_input_tokens ??
+                assistantMsg.usage.cacheCreationInputTokens ??
+                0,
+            });
+          }
+
+          const assistantContent = assistantMsg.content;
+          if (Array.isArray(assistantContent)) {
+            for (const block of assistantContent) {
+              if (block?.type === 'tool_use' && block.name) {
+                const toolId =
+                  block.id || `${block.name}-${toolMap.get(block.name) || 0}`;
+                if (!seenToolUseIds.has(toolId)) {
+                  seenToolUseIds.add(toolId);
+                  toolMap.set(block.name, (toolMap.get(block.name) || 0) + 1);
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // 4. Tool progress/summary observation with deduplication
       if (
         message.type === 'tool_progress' ||
         message.type === 'tool_use_summary'
@@ -621,20 +755,6 @@ export async function executeWithClaudeAgentSdk(options: {
           seenToolUseIds.add(toolId);
           toolMap.set(toolName, (toolMap.get(toolName) || 0) + 1);
         }
-      } else if (message.type === 'assistant') {
-        const assistantContent = (message as any).message?.content;
-        if (Array.isArray(assistantContent)) {
-          for (const block of assistantContent) {
-            if (block?.type === 'tool_use' && block.name) {
-              const toolId =
-                block.id || `${block.name}-${toolMap.get(block.name) || 0}`;
-              if (!seenToolUseIds.has(toolId)) {
-                seenToolUseIds.add(toolId);
-                toolMap.set(block.name, (toolMap.get(block.name) || 0) + 1);
-              }
-            }
-          }
-        }
       }
     }
   } catch (err: unknown) {
@@ -642,54 +762,34 @@ export async function executeWithClaudeAgentSdk(options: {
       throw err;
     }
     throw new SdkExecutionError((err as Error).message || 'SDK Query Failure', {
-      accumulatedUsage: {
-        inputTokens,
-        outputTokens,
-        cacheReadTokens,
-        cacheCreationTokens,
-        reasoningTokens,
-      },
+      accumulatedUsage: getCurrentUsage(),
       durationMs: Math.max(1, Date.now() - startedAt),
-      toolsUsed: Array.from(toolMap.entries()).map(([name, count]) => ({
-        name,
-        count,
-      })),
+      toolsUsed: getToolsUsed(),
       reportedCostUSD,
     });
   }
 
   if (!resultText.trim() && !abortController.signal.aborted) {
     throw new SdkExecutionError('模型执行未产生有效输出内容', {
-      accumulatedUsage: {
-        inputTokens,
-        outputTokens,
-        cacheReadTokens,
-        cacheCreationTokens,
-        reasoningTokens,
-      },
+      accumulatedUsage: getCurrentUsage(),
       durationMs: Math.max(1, Date.now() - startedAt),
-      toolsUsed: Array.from(toolMap.entries()).map(([name, count]) => ({
-        name,
-        count,
-      })),
+      toolsUsed: getToolsUsed(),
       reportedCostUSD,
     });
   }
 
+  const finalUsage = getCurrentUsage();
   const durationMs = Math.max(1, Date.now() - startedAt);
-  const toolsUsed: EvalRunCaseToolUsage[] = Array.from(toolMap.entries()).map(
-    ([name, count]) => ({ name, count }),
-  );
 
   return {
     output: resultText.trim(),
     durationMs,
-    inputTokens,
-    outputTokens,
-    cacheReadTokens,
-    cacheCreationTokens,
-    reasoningTokens,
-    toolsUsed,
+    inputTokens: finalUsage.inputTokens,
+    outputTokens: finalUsage.outputTokens,
+    cacheReadTokens: finalUsage.cacheReadTokens,
+    cacheCreationTokens: finalUsage.cacheCreationTokens,
+    reasoningTokens: finalUsage.reasoningTokens,
+    toolsUsed: getToolsUsed(),
     reportedCostUSD,
   };
 }
@@ -783,8 +883,66 @@ async function executeCase(options: {
       });
     }
 
-    if (!execResult.output && !abortSignal?.aborted) {
+    const isAborted = Boolean(abortSignal?.aborted);
+
+    if (!execResult.output && !isAborted) {
       throw new Error('模型执行未产生有效输出内容');
+    }
+
+    const hasAnyTokens =
+      execResult.inputTokens > 0 ||
+      execResult.outputTokens > 0 ||
+      (execResult.cacheReadTokens || 0) > 0 ||
+      (execResult.cacheCreationTokens || 0) > 0 ||
+      (execResult.reasoningTokens || 0) > 0;
+
+    let estimatedCostUsd = 0;
+    if (typeof execResult.reportedCostUSD === 'number') {
+      estimatedCostUsd = execResult.reportedCostUSD;
+    } else if (hasAnyTokens) {
+      estimatedCostUsd = estimateKabooModelCostUSD(model, {
+        inputTokens: execResult.inputTokens,
+        outputTokens: execResult.outputTokens,
+        cacheReadInputTokens: execResult.cacheReadTokens,
+        cacheCreationInputTokens: execResult.cacheCreationTokens,
+        reasoningTokens: execResult.reasoningTokens,
+      });
+    }
+
+    if (isAborted) {
+      return {
+        run_id: runId,
+        case_id: evalCase.id,
+        case_name: evalCase.name,
+        category: evalCase.category || 'general',
+        case_input_snapshot: evalCase.input_prompt,
+        case_expected_snapshot: evalCase.expected_output,
+        case_rules_snapshot: evalCase.eval_rules,
+        version_tag: versionTag,
+        prompt_version: promptVersion,
+        prompt_hash: promptHash,
+        status: 'cancelled',
+        actual_output: '',
+        auto_score: 0,
+        auto_verdict: 'fail',
+        eval_details: {
+          failedHardGates: ['用户取消运行'],
+          gateExplanation: '运行被主动取消',
+          reasons: ['用户取消运行'],
+        },
+        duration_ms: execResult.durationMs,
+        tokens_input: execResult.inputTokens,
+        tokens_output: execResult.outputTokens,
+        tokens_total: execResult.inputTokens + execResult.outputTokens,
+        cache_read_tokens: execResult.cacheReadTokens || 0,
+        cache_creation_tokens: execResult.cacheCreationTokens || 0,
+        reasoning_tokens: execResult.reasoningTokens || 0,
+        estimated_cost_usd: estimatedCostUsd,
+        tools_used: execResult.toolsUsed,
+        human_feedback: null,
+        human_notes: null,
+        error_message: null,
+      };
     }
 
     // Score against rules
@@ -792,18 +950,6 @@ async function executeCase(options: {
       execResult.output,
       evalCase.eval_rules,
     );
-
-    // Cost estimation
-    const estimatedCostUsd =
-      execResult.reportedCostUSD !== undefined
-        ? execResult.reportedCostUSD
-        : estimateKabooModelCostUSD(model, {
-            inputTokens: execResult.inputTokens,
-            outputTokens: execResult.outputTokens,
-            cacheReadInputTokens: execResult.cacheReadTokens,
-            cacheCreationInputTokens: execResult.cacheCreationTokens,
-            reasoningTokens: execResult.reasoningTokens,
-          });
 
     return {
       run_id: runId,
@@ -838,7 +984,6 @@ async function executeCase(options: {
     const isAborted =
       abortSignal?.aborted || (err as Error)?.message?.includes('aborted');
 
-    // Retain real accumulated usage even on failure or abort (defense against 0cost loss)
     const sdkErr = err instanceof SdkExecutionError ? err : null;
     const tokensInput = sdkErr?.accumulatedUsage?.inputTokens ?? 0;
     const tokensOutput = sdkErr?.accumulatedUsage?.outputTokens ?? 0;
@@ -848,16 +993,25 @@ async function executeCase(options: {
     const reasoningTokens = sdkErr?.accumulatedUsage?.reasoningTokens ?? 0;
     const toolsUsed = sdkErr?.toolsUsed ?? [];
 
-    const estimatedCostUsd =
-      tokensInput > 0 || tokensOutput > 0
-        ? estimateKabooModelCostUSD(model, {
-            inputTokens: tokensInput,
-            outputTokens: tokensOutput,
-            cacheReadInputTokens: cacheReadTokens,
-            cacheCreationInputTokens: cacheCreationTokens,
-            reasoningTokens,
-          })
-        : 0;
+    const hasAnyTokens =
+      tokensInput > 0 ||
+      tokensOutput > 0 ||
+      cacheReadTokens > 0 ||
+      cacheCreationTokens > 0 ||
+      reasoningTokens > 0;
+
+    let estimatedCostUsd = 0;
+    if (typeof sdkErr?.reportedCostUSD === 'number') {
+      estimatedCostUsd = sdkErr.reportedCostUSD;
+    } else if (hasAnyTokens) {
+      estimatedCostUsd = estimateKabooModelCostUSD(model, {
+        inputTokens: tokensInput,
+        outputTokens: tokensOutput,
+        cacheReadInputTokens: cacheReadTokens,
+        cacheCreationInputTokens: cacheCreationTokens,
+        reasoningTokens,
+      });
+    }
 
     return {
       run_id: runId,
@@ -898,9 +1052,57 @@ async function executeCase(options: {
 }
 
 /**
- * Start an evaluation run (supports both compare mode and single version mode).
- * Performs strict existence and ownership validation on all prompt versions.
+ * Synchronize run totals and averages from the latest persisted case records.
+ * Protects against loss of base metrics if target fails or gets cancelled.
  */
+export function syncEvalRunMetricsFromCases(runId: string): void {
+  const cases = listEvalRunCases(runId);
+  let basePassCount = 0;
+  let targetPassCount = 0;
+  let baseTotalDuration = 0;
+  let targetTotalDuration = 0;
+  let baseCount = 0;
+  let targetCount = 0;
+  let baseTotalTokens = 0;
+  let targetTotalTokens = 0;
+  let baseTotalCost = 0;
+  let targetTotalCost = 0;
+  let completedTargetCases = 0;
+
+  for (const c of cases) {
+    if (c.version_tag === 'base') {
+      baseTotalTokens += c.tokens_total;
+      baseTotalCost += c.estimated_cost_usd;
+      if (c.status === 'completed') {
+        baseCount++;
+        baseTotalDuration += c.duration_ms;
+        if (c.auto_verdict === 'pass') basePassCount++;
+      }
+    } else {
+      targetTotalTokens += c.tokens_total;
+      targetTotalCost += c.estimated_cost_usd;
+      if (c.status === 'completed') {
+        targetCount++;
+        completedTargetCases++;
+        targetTotalDuration += c.duration_ms;
+        if (c.auto_verdict === 'pass') targetPassCount++;
+      }
+    }
+  }
+
+  updateEvalRun(runId, {
+    completed_cases: completedTargetCases,
+    base_pass_count: basePassCount,
+    target_pass_count: targetPassCount,
+    base_avg_duration_ms: baseCount > 0 ? baseTotalDuration / baseCount : 0,
+    target_avg_duration_ms:
+      targetCount > 0 ? targetTotalDuration / targetCount : 0,
+    base_total_tokens: baseTotalTokens,
+    target_total_tokens: targetTotalTokens,
+    base_estimated_cost_usd: baseTotalCost,
+    target_estimated_cost_usd: targetTotalCost,
+  });
+}
 
 /**
  * Safely clean up physical isolated workspace directories for a completed/cancelled/deleted run.
@@ -916,6 +1118,10 @@ export function cleanupEvalRunWorkspace(runId: string): void {
   }
 }
 
+/**
+ * Start an evaluation run (supports both compare mode and single version mode).
+ * Performs strict existence and ownership validation on all prompt versions.
+ */
 export async function startEvalRun(input: {
   ownerUserId: string;
   agentProfileId: string;
@@ -1177,21 +1383,13 @@ export async function startEvalRun(input: {
   }
 
   const abortController = new AbortController();
-  activeRunAbortControllers.set(runId, abortController);
+  let executionResolve!: () => void;
+  const executionSettledPromise = new Promise<void>((resolve) => {
+    executionResolve = resolve;
+  });
 
-  // Asynchronous background execution
-  void (async () => {
+  const backgroundTask = async () => {
     try {
-      let completedCases = 0;
-      let basePassCount = 0;
-      let targetPassCount = 0;
-      let baseTotalDuration = 0;
-      let targetTotalDuration = 0;
-      let baseTotalTokens = 0;
-      let targetTotalTokens = 0;
-      let baseTotalCost = 0;
-      let targetTotalCost = 0;
-
       for (const c of suiteWithCases.cases) {
         if (abortController.signal.aborted) break;
 
@@ -1214,11 +1412,7 @@ export async function startEvalRun(input: {
           });
 
           updateEvalRunCase(baseCaseDbId, baseResult);
-
-          if (baseResult.auto_verdict === 'pass') basePassCount++;
-          baseTotalDuration += baseResult.duration_ms;
-          baseTotalTokens += baseResult.tokens_total;
-          baseTotalCost += baseResult.estimated_cost_usd;
+          syncEvalRunMetricsFromCases(runId);
         }
 
         if (abortController.signal.aborted) break;
@@ -1242,31 +1436,16 @@ export async function startEvalRun(input: {
         });
 
         updateEvalRunCase(targetCaseDbId, targetResult);
-
-        if (targetResult.auto_verdict === 'pass') targetPassCount++;
-        targetTotalDuration += targetResult.duration_ms;
-        targetTotalTokens += targetResult.tokens_total;
-        targetTotalCost += targetResult.estimated_cost_usd;
-
-        completedCases++;
-
-        // Incremental state update in DB
-        updateEvalRun(runId, {
-          completed_cases: completedCases,
-          base_pass_count: basePassCount,
-          target_pass_count: targetPassCount,
-          base_avg_duration_ms:
-            completedCases > 0 ? baseTotalDuration / completedCases : 0,
-          target_avg_duration_ms:
-            completedCases > 0 ? targetTotalDuration / completedCases : 0,
-          base_total_tokens: baseTotalTokens,
-          target_total_tokens: targetTotalTokens,
-          base_estimated_cost_usd: baseTotalCost,
-          target_estimated_cost_usd: targetTotalCost,
-        });
+        syncEvalRunMetricsFromCases(runId);
       }
-
-      // If aborted, mark any remaining pending cases as cancelled
+    } catch (err: unknown) {
+      logger.error({ err }, 'Eval run execution failed');
+      updateEvalRun(runId, {
+        status: 'failed',
+        error_message: (err as Error).message || 'Run execution failed',
+      });
+    } finally {
+      // Mark any remaining pending cases as cancelled if aborted
       if (abortController.signal.aborted) {
         const remainingCases = listEvalRunCases(runId).filter(
           (rc) => rc.status === 'pending' || rc.status === 'running',
@@ -1279,65 +1458,108 @@ export async function startEvalRun(input: {
         }
       }
 
+      syncEvalRunMetricsFromCases(runId);
+
+      const latestRun = getEvalRun(runId);
       const finalStatus = abortController.signal.aborted
         ? 'cancelled'
-        : 'completed';
+        : latestRun?.status === 'failed'
+          ? 'failed'
+          : 'completed';
+
       updateEvalRun(runId, {
         status: finalStatus,
-        completed_cases: completedCases,
         completed_at: new Date().toISOString(),
       });
-    } catch (err: unknown) {
-      logger.error({ err }, 'Eval run execution failed');
-      updateEvalRun(runId, {
-        status: 'failed',
-        error_message: (err as Error).message || 'Run execution failed',
-        completed_at: new Date().toISOString(),
-      });
-    } finally {
-      activeRunAbortControllers.delete(runId);
+
       cleanupEvalRunWorkspace(runId);
+      const execution = activeRunExecutions.get(runId);
+      if (execution) {
+        execution.status = 'settled';
+      }
+      activeRunExecutions.delete(runId);
+      executionResolve();
     }
-  })();
+  };
+
+  activeRunExecutions.set(runId, {
+    controller: abortController,
+    promise: executionSettledPromise,
+    status: 'running',
+  });
+
+  void backgroundTask();
 
   return run;
 }
 
 /**
- * Cancel an ongoing eval run.
+ * Cancel an ongoing eval run with asynchronous await until fully settled.
  */
-export function cancelEvalRun(runId: string, ownerUserId: string): boolean {
+export async function cancelEvalRunAsync(
+  runId: string,
+  ownerUserId: string,
+  timeoutMs = 20000,
+): Promise<boolean> {
   const run = getEvalRun(runId, ownerUserId);
   if (!run) return false;
+
+  const execution = activeRunExecutions.get(runId);
   if (
+    !execution &&
     ['completed', 'failed', 'cancelled', 'interrupted'].includes(run.status)
   ) {
     return false;
   }
 
-  const controller = activeRunAbortControllers.get(runId);
-  if (controller) {
-    controller.abort();
-    activeRunAbortControllers.delete(runId);
-  }
-
-  updateEvalRun(runId, {
-    status: 'cancelled',
-    completed_at: new Date().toISOString(),
-  });
-
-  // Mark all pending or running cases as cancelled
-  const cases = listEvalRunCases(runId).filter(
-    (rc) => rc.status === 'pending' || rc.status === 'running',
-  );
-  for (const rc of cases) {
-    updateEvalRunCase(rc.id, {
+  if (execution) {
+    execution.status = 'cancelling';
+    execution.controller.abort();
+    updateEvalRun(runId, { status: 'cancelling' });
+    try {
+      await Promise.race([
+        execution.promise,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Cancel timeout')), timeoutMs),
+        ),
+      ]);
+    } catch {}
+  } else {
+    updateEvalRun(runId, {
       status: 'cancelled',
-      error_message: '用户主动取消评测',
+      completed_at: new Date().toISOString(),
     });
   }
 
-  cleanupEvalRunWorkspace(runId);
+  return true;
+}
+
+/**
+ * Cancel an ongoing eval run synchronously.
+ */
+export function cancelEvalRun(runId: string, ownerUserId: string): boolean {
+  const run = getEvalRun(runId, ownerUserId);
+  if (!run) return false;
+
+  const execution = activeRunExecutions.get(runId);
+  if (
+    !execution &&
+    ['completed', 'failed', 'cancelled', 'interrupted'].includes(run.status)
+  ) {
+    return false;
+  }
+
+  if (execution) {
+    execution.status = 'cancelling';
+    execution.controller.abort();
+    updateEvalRun(runId, { status: 'cancelling' });
+  } else {
+    updateEvalRun(runId, {
+      status: 'cancelled',
+      completed_at: new Date().toISOString(),
+    });
+  }
+
   return true;
 }
 
@@ -1641,15 +1863,27 @@ export function submitCaseFeedback(options: {
  */
 export async function waitForEvalRunCompletion(
   runId: string,
-  timeoutMs = 15000,
+  timeoutMs = 20000,
 ): Promise<EvalRun | null> {
+  const execution = activeRunExecutions.get(runId);
+  if (execution) {
+    try {
+      await Promise.race([
+        execution.promise,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Run timeout')), timeoutMs),
+        ),
+      ]);
+    } catch {}
+  }
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const run = getEvalRun(runId);
-    if (
-      !run ||
-      ['completed', 'failed', 'cancelled', 'interrupted'].includes(run.status)
-    ) {
+    const isTerminal =
+      run &&
+      ['completed', 'failed', 'cancelled', 'interrupted'].includes(run.status);
+    const isStillActive = activeRunExecutions.has(runId);
+    if (isTerminal && !isStillActive) {
       return run;
     }
     await new Promise((resolve) => setTimeout(resolve, 20));

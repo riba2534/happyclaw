@@ -1331,9 +1331,11 @@ export type EvalRunMode = 'single' | 'compare';
 export type EvalRunStatus =
   | 'pending'
   | 'running'
+  | 'cancelling'
   | 'completed'
   | 'failed'
-  | 'cancelled';
+  | 'cancelled'
+  | 'interrupted';
 export type EvalVerdict = 'pass' | 'fail';
 export type EvalHumanFeedback = 'accepted' | 'rejected' | 'unresolved' | null;
 

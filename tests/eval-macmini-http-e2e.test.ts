@@ -331,7 +331,7 @@ describe('R17: 生产 HTTP API 客户端脚本协议与生命周期端到端测�
 
     expect(res.status).toBe(409);
     const body = (await res.json()) as any;
-    expect(body.error).toContain('评测正在执行中');
+    expect(body.error).toContain('评测正在执行');
 
     db.updateEvalRun(runningRun.id, { status: 'completed' });
     db.deleteEvalRun(runningRun.id, 'user-macmini-test-1');

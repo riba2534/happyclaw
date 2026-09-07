@@ -18,7 +18,8 @@ import {
   updateEvalSuite,
 } from '../db.js';
 import {
-  cancelEvalRun,
+  cancelEvalRunAsync,
+  isEvalRunActive,
   generateEvalJsonReport,
   generateEvalMarkdownReport,
   getEvalRunSummary,
@@ -297,10 +298,10 @@ evalRoutes.get('/runs/:id', (c) => {
 });
 
 // Cancel a run
-evalRoutes.post('/runs/:id/cancel', (c) => {
+evalRoutes.post('/runs/:id/cancel', async (c) => {
   const user = c.get('user') as AuthUser;
   const id = c.req.param('id');
-  const ok = cancelEvalRun(id, user.id);
+  const ok = await cancelEvalRunAsync(id, user.id);
   if (!ok) {
     return c.json({ error: '无法取消该评测运行（可能已终态或不存在）' }, 400);
   }
@@ -315,9 +316,12 @@ evalRoutes.delete('/runs/:id', (c) => {
   if (!run) {
     return c.json({ error: '评测记录不存在或无权删除' }, 404);
   }
-  if (['pending', 'running'].includes(run.status)) {
+  if (
+    isEvalRunActive(id) ||
+    ['pending', 'running', 'cancelling'].includes(run.status)
+  ) {
     return c.json(
-      { error: '评测正在执行中，请先取消评测并等待结束后再删除记录' },
+      { error: '评测正在执行或正在收尾中，请等待其完全停止后再删除记录' },
       409,
     );
   }

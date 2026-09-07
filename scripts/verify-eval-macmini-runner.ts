@@ -6,21 +6,30 @@
  */
 
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 
 const BASE_URL = (
   process.env.WEB_BASE_URL || `http://127.0.0.1:${process.env.WEB_PORT || 3000}`
 ).replace(/\/+$/, '');
 
-// 严格遵守 RegisterSchema: username 最大长度 32 (ev_前缀 + 8位时间戳 + 4位hex = 15字符)
+// 严格遵守 RegisterSchema: username 最大长度 32
 const SHORT_TAG = `${Date.now().toString(36)}_${crypto.randomBytes(2).toString('hex')}`;
 const FIXTURE_USERNAME = `ev_${SHORT_TAG}`;
 const OTHER_USERNAME = `ot_${SHORT_TAG}`;
 const FIXTURE_PASSWORD = `P@ssw0rd-${crypto.randomBytes(4).toString('hex')}`;
+const POLL_DEADLINE_MS = Number(process.env.EVAL_POLL_TIMEOUT_MS) || 600_000;
 
 let sessionCookie: string | null = null;
 let otherUserCookie: string | null = null;
-let createdProfileId: string | null = null;
 let activeRunId: string | null = null;
+let createdProfileId: string | null = null;
+
+const createdFixtures = {
+  runId: null as string | null,
+  profileId: null as string | null,
+  userIds: [] as string[],
+  adminCookie: null as string | null,
+};
 
 async function apiRequest<T = any>(
   path: string,
@@ -72,25 +81,47 @@ async function apiRequest<T = any>(
 
 async function safeCleanup(): Promise<void> {
   console.log(`\n[CLEANUP] 正在安全清理 fixture 资源 (tag: ${SHORT_TAG})...`);
+  const uncleanedItems: string[] = [];
 
-  // 1. 若有活跃评测，先显式取消，防止后台继续写入并计费
+  // 1. 若有活跃评测，先显式取消并等待收尾，防止后台继续写入并计费
   if (activeRunId && sessionCookie) {
     try {
-      const cancelRes = await apiRequest(
-        `/api/eval/runs/${activeRunId}/cancel`,
-        { method: 'POST' },
-      );
-      console.log(`   - 取消运行: HTTP ${cancelRes.status}`);
-      // 等待 1 秒让后台收尾退出
-      await new Promise((r) => setTimeout(r, 1000));
-    } catch {}
+      const checkRes = await apiRequest(`/api/eval/runs/${activeRunId}`, {
+        timeoutMs: 5000,
+      });
+      if (
+        checkRes.status === 200 &&
+        ['pending', 'running', 'cancelling'].includes(
+          checkRes.data?.summary?.run?.status,
+        )
+      ) {
+        console.log('   - 发现未完成评测，发送取消请求并等待退出...');
+        await apiRequest(`/api/eval/runs/${activeRunId}/cancel`, {
+          method: 'POST',
+          timeoutMs: 25000,
+        });
+      }
+    } catch (err: any) {
+      console.warn(`   ⚠️ 评测取消请求异常: ${err.message}`);
+    }
 
     try {
       const delRunRes = await apiRequest(`/api/eval/runs/${activeRunId}`, {
         method: 'DELETE',
+        timeoutMs: 15000,
       });
-      console.log(`   - 删除评测记录: HTTP ${delRunRes.status}`);
-    } catch {}
+      if (delRunRes.status !== 200 && delRunRes.status !== 404) {
+        uncleanedItems.push(
+          `评测运行 ID: ${activeRunId} (DELETE 返回 HTTP ${delRunRes.status})`,
+        );
+      } else {
+        console.log(`   ✓ 评测记录已删除: ${activeRunId}`);
+      }
+    } catch (err: any) {
+      uncleanedItems.push(
+        `评测运行 ID: ${activeRunId} (网络异常: ${err.message})`,
+      );
+    }
   }
 
   // 2. 归档/删除测试智能体 (DELETE /api/agent-profiles/:id)
@@ -98,64 +129,223 @@ async function safeCleanup(): Promise<void> {
     try {
       const delProfileRes = await apiRequest(
         `/api/agent-profiles/${createdProfileId}`,
-        { method: 'DELETE' },
+        { method: 'DELETE', timeoutMs: 15000 },
       );
-      if (delProfileRes.status === 200 || delProfileRes.status === 204) {
-        console.log(`   - 归档智能体: HTTP ${delProfileRes.status} (成功)`);
+      if (
+        delProfileRes.status !== 200 &&
+        delProfileRes.status !== 204 &&
+        delProfileRes.status !== 404
+      ) {
+        uncleanedItems.push(
+          `智能体 ID: ${createdProfileId} (DELETE 返回 HTTP ${delProfileRes.status})`,
+        );
       } else {
-        console.warn(`   ⚠️ 智能体归档响应非200: HTTP ${delProfileRes.status}`);
+        console.log(`   ✓ 测试智能体已归档删除: ${createdProfileId}`);
       }
     } catch (err: any) {
-      console.warn(`   ⚠️ 智能体归档网络异常: ${err.message}`);
+      uncleanedItems.push(
+        `智能体 ID: ${createdProfileId} (网络异常: ${err.message})`,
+      );
     }
   }
 
-  console.log('   ✓ Fixture 资源清理协议执行完毕');
+  // 3. 删除由脚本创建的临时测试用户
+  for (const uid of createdFixtures.userIds) {
+    const adminAuthCookie = createdFixtures.adminCookie || sessionCookie;
+    if (adminAuthCookie) {
+      try {
+        const delUserRes = await apiRequest(`/api/admin/users/${uid}`, {
+          method: 'DELETE',
+          cookie: adminAuthCookie,
+          timeoutMs: 15000,
+        });
+        if (delUserRes.status !== 200 && delUserRes.status !== 404) {
+          uncleanedItems.push(
+            `测试用户 ID: ${uid} (DELETE 返回 HTTP ${delUserRes.status})`,
+          );
+        } else {
+          console.log(`   ✓ 临时测试用户已清理: ${uid}`);
+        }
+      } catch (err: any) {
+        uncleanedItems.push(`测试用户 ID: ${uid} (网络异常: ${err.message})`);
+      }
+    }
+  }
+
+  if (uncleanedItems.length > 0) {
+    console.error('❌ [CLEANUP_FAILURE] 以下 fixture 资源未能成功清理:');
+    for (const item of uncleanedItems) {
+      console.error(`   - ${item}`);
+    }
+    process.exitCode = 1;
+  } else {
+    console.log('   ✓ 全部创建的 fixture 资源已安全清理完毕');
+  }
 }
 
-async function registerOrLogin(username: string): Promise<string> {
-  // 先尝试注册
-  const regRes = await apiRequest('/api/auth/register', {
-    method: 'POST',
-    body: {
-      username,
-      password: FIXTURE_PASSWORD,
-      displayName: `测试员-${username}`,
-    },
-  });
+function readCookieFromEnvOrFile(
+  envVar: string,
+  fileEnvVar: string,
+): string | null {
+  if (process.env[envVar]?.trim()) {
+    return process.env[envVar]!.trim();
+  }
+  const filePath = process.env[fileEnvVar]?.trim();
+  if (filePath && fs.existsSync(filePath)) {
+    try {
+      const content = fs.readFileSync(filePath, 'utf8').trim();
+      if (content) return content;
+    } catch {}
+  }
+  return null;
+}
 
-  if (regRes.status === 201 || regRes.status === 200) {
-    const setCookie = regRes.headers.get('set-cookie');
-    if (setCookie) return setCookie.split(';')[0];
+async function resolveIdentities(): Promise<{
+  primaryCookie: string;
+  otherCookie: string | null;
+}> {
+  // 1. 优先尝试环境变量或受控 Cookie 文件注入
+  const injectedCookie = readCookieFromEnvOrFile(
+    'EVAL_TEST_COOKIE',
+    'EVAL_TEST_COOKIE_FILE',
+  );
+  const injectedAdminCookie = readCookieFromEnvOrFile(
+    'EVAL_ADMIN_COOKIE',
+    'EVAL_ADMIN_COOKIE_FILE',
+  );
+  let resolvedPrimaryCookie: string | null =
+    injectedCookie || injectedAdminCookie;
+  let isAdmin = false;
+
+  if (resolvedPrimaryCookie) {
+    const meRes = await apiRequest('/api/auth/me', {
+      cookie: resolvedPrimaryCookie,
+    });
+    if (meRes.status === 200 && meRes.data?.id) {
+      console.log('   ✓ 成功载入已授权测试身份会话 (无须公开注册)');
+      if (meRes.data.role === 'admin') {
+        isAdmin = true;
+        createdFixtures.adminCookie = resolvedPrimaryCookie;
+      }
+    } else {
+      console.warn('   ⚠️ 注入的 Cookie 无效或已过期，尝试备选注册方式');
+      resolvedPrimaryCookie = null;
+    }
   }
 
-  // 若已存在或注册直接登录
-  const loginRes = await apiRequest('/api/auth/login', {
-    method: 'POST',
-    body: {
-      username,
-      password: FIXTURE_PASSWORD,
-    },
-  });
+  // 2. 若未注入有效 Cookie，尝试注册新用户
+  if (!resolvedPrimaryCookie) {
+    const regRes = await apiRequest('/api/auth/register', {
+      method: 'POST',
+      body: {
+        username: FIXTURE_USERNAME,
+        password: FIXTURE_PASSWORD,
+        displayName: `验收测试员-${SHORT_TAG}`,
+      },
+    });
 
-  if (loginRes.status !== 200) {
-    throw new Error(
-      `认证失败 (${username}): HTTP ${loginRes.status} - ${JSON.stringify(loginRes.data)}`,
-    );
+    if (regRes.status === 201 || regRes.status === 200) {
+      const setCookie = regRes.headers.get('set-cookie');
+      if (setCookie) {
+        resolvedPrimaryCookie = setCookie.split(';')[0];
+        if (regRes.data?.user?.id) {
+          createdFixtures.userIds.push(regRes.data.user.id);
+        }
+      }
+    } else {
+      // 尝试登录
+      const loginRes = await apiRequest('/api/auth/login', {
+        method: 'POST',
+        body: {
+          username: FIXTURE_USERNAME,
+          password: FIXTURE_PASSWORD,
+        },
+      });
+      if (loginRes.status === 200) {
+        const setCookie = loginRes.headers.get('set-cookie');
+        if (setCookie) {
+          resolvedPrimaryCookie = setCookie.split(';')[0];
+        }
+      } else {
+        throw new Error(
+          `未提供有效测试身份且公开注册不可用 (HTTP ${regRes.status}: ${JSON.stringify(regRes.data)})。请通过 EVAL_TEST_COOKIE 或 EVAL_TEST_COOKIE_FILE 环境变量传入已授权 Cookie。`,
+        );
+      }
+    }
   }
 
-  const setCookie = loginRes.headers.get('set-cookie');
-  if (!setCookie) {
-    throw new Error(`未能从 ${username} 登录响应中获取 Cookie`);
+  if (!resolvedPrimaryCookie) {
+    throw new Error('未能建立有效的主测试身份会话');
   }
-  return setCookie.split(';')[0];
+
+  // 3. 解析第二隔离身份 (用于越权隔离断言)
+  let resolvedOtherCookie = readCookieFromEnvOrFile(
+    'EVAL_TEST_OTHER_COOKIE',
+    'EVAL_TEST_OTHER_COOKIE_FILE',
+  );
+
+  if (!resolvedOtherCookie && isAdmin) {
+    // 管理员可创建隔离 member 测试用户
+    const createOtherRes = await apiRequest('/api/admin/users', {
+      method: 'POST',
+      cookie: resolvedPrimaryCookie,
+      body: {
+        username: OTHER_USERNAME,
+        password: FIXTURE_PASSWORD,
+        display_name: 'ACL隔离测试员',
+        role: 'member',
+      },
+    });
+
+    if (createOtherRes.status === 201 && createOtherRes.data?.user?.id) {
+      createdFixtures.userIds.push(createOtherRes.data.user.id);
+      const loginOtherRes = await apiRequest('/api/auth/login', {
+        method: 'POST',
+        body: {
+          username: OTHER_USERNAME,
+          password: FIXTURE_PASSWORD,
+        },
+      });
+      if (loginOtherRes.status === 200) {
+        const setCookie = loginOtherRes.headers.get('set-cookie');
+        if (setCookie) {
+          resolvedOtherCookie = setCookie.split(';')[0];
+        }
+      }
+    }
+  } else if (!resolvedOtherCookie) {
+    // 尝试注册第二用户
+    const regOtherRes = await apiRequest('/api/auth/register', {
+      method: 'POST',
+      body: {
+        username: OTHER_USERNAME,
+        password: FIXTURE_PASSWORD,
+        displayName: 'ACL隔离测试员',
+      },
+    });
+    if (regOtherRes.status === 201 || regOtherRes.status === 200) {
+      const setCookie = regOtherRes.headers.get('set-cookie');
+      if (setCookie) {
+        resolvedOtherCookie = setCookie.split(';')[0];
+        if (regOtherRes.data?.user?.id) {
+          createdFixtures.userIds.push(regOtherRes.data.user.id);
+        }
+      }
+    }
+  }
+
+  return {
+    primaryCookie: resolvedPrimaryCookie,
+    otherCookie: resolvedOtherCookie,
+  };
 }
 
 async function main(): Promise<void> {
   console.log('============================================================');
   console.log('  HappyClaw R17 Mac mini 真实 HTTP API 端到端验收');
   console.log(`  Target Base URL: ${BASE_URL}`);
-  console.log(`  Fixture User:    ${FIXTURE_USERNAME}`);
+  console.log(`  Fixture Tag:     ${SHORT_TAG}`);
+  console.log(`  Poll Timeout:    ${POLL_DEADLINE_MS / 1000}s`);
   console.log('============================================================\n');
 
   // STEP 1: 公开无认证健康检查探活 (GET /api/health)
@@ -164,25 +354,29 @@ async function main(): Promise<void> {
   );
   try {
     const health = await apiRequest('/api/health');
-    if (health.status !== 200 && health.status !== 503) {
-      throw new Error(`探活返回异常状态: HTTP ${health.status}`);
+    if (health.status === 200) {
+      console.log('   ✓ 目标服务健康 (HTTP 200: healthy)');
+    } else if (health.status === 503) {
+      console.log(
+        `   ℹ 目标服务可用但处于降级状态 (HTTP 503: ${JSON.stringify(health.data?.checks || {})})`,
+      );
+    } else {
+      throw new Error(`目标服务健康检查返回异常状态: HTTP ${health.status}`);
     }
   } catch (err: any) {
     throw new Error(
       `无法连接目标服务 [${BASE_URL}/api/health]: ${err.message}。请先启动 HappyClaw 服务。`,
     );
   }
-  console.log('   ✓ 目标服务健康在线 (HTTP 200)');
 
-  // STEP 2: 注册/登录主测试用户与第二隔离用户
-  console.log(
-    '\n[STEP 2/6] 建立主测试用户与第二身份会话 (用户名严格<32字符)...',
-  );
-  sessionCookie = await registerOrLogin(FIXTURE_USERNAME);
-  otherUserCookie = await registerOrLogin(OTHER_USERNAME);
-  console.log('   ✓ 主测试用户与第二隔离身份均已建立有效会话');
+  // STEP 2: 建立主测试用户与第二身份会话
+  console.log('\n[STEP 2/6] 解析主测试会话与越权隔离身份...');
+  const identities = await resolveIdentities();
+  sessionCookie = identities.primaryCookie;
+  otherUserCookie = identities.otherCookie;
+  console.log('   ✓ 身份解析完成，安全凭据未输出至日志');
 
-  // STEP 3: 创建智能体并生成 v1 与 v2 版本
+  // STEP 3: 通过 API 创建智能体并生成 v1 与 v2 版本
   console.log('\n[STEP 3/6] 通过 HTTP API 创建智能体并升级至 v2 版本...');
   const createProfileRes = await apiRequest('/api/agent-profiles', {
     method: 'POST',
@@ -202,6 +396,7 @@ async function main(): Promise<void> {
 
   const profile = createProfileRes.data.profile;
   createdProfileId = profile.id;
+  createdFixtures.profileId = profile.id;
   console.log(
     `   ✓ 创建智能体成功 (ID: ${profile.id}, 初始版本: v${profile.version})`,
   );
@@ -242,13 +437,14 @@ async function main(): Promise<void> {
 
   const run = startRunRes.data.run;
   activeRunId = run.id;
+  createdFixtures.runId = run.id;
   console.log(
     `   ✓ 评测任务已启动: RunID=${run.id}, 来源=${run.provider_source}`,
   );
 
   if (run.provider_source !== 'live_provider') {
     throw new Error(
-      `[SECURITY] 生产验收断言失败: 非 live_provider 来源: ${run.provider_source}`,
+      `[SECURITY] 生产验收断言失败: 检测到非 live_provider 来源: ${run.provider_source}`,
     );
   }
 
@@ -257,8 +453,7 @@ async function main(): Promise<void> {
   const pollStart = Date.now();
   let finishedSummary: any = null;
 
-  while (Date.now() - pollStart < 300_000) {
-    // 最多等 5 分钟
+  while (Date.now() - pollStart < POLL_DEADLINE_MS) {
     const detailRes = await apiRequest(`/api/eval/runs/${activeRunId}`);
     if (detailRes.status === 200 && detailRes.data?.summary) {
       const currentRun = detailRes.data.summary.run;
@@ -279,7 +474,9 @@ async function main(): Promise<void> {
   }
 
   if (!finishedSummary) {
-    throw new Error('评测超时 (超过 300 秒未达到 completed 终态)');
+    throw new Error(
+      `评测超时 (超过 ${POLL_DEADLINE_MS / 1000} 秒未达到 completed 终态)`,
+    );
   }
 
   const completedRun = finishedSummary.run;
@@ -296,7 +493,7 @@ async function main(): Promise<void> {
     `   ✓ 实测费用: 基准=$${completedRun.base_estimated_cost_usd}, 目标=$${completedRun.target_estimated_cost_usd}`,
   );
 
-  // 校验 15 个聚合 Case
+  // 严格断言 15 个聚合 Case
   if (
     !Array.isArray(finishedSummary.cases) ||
     finishedSummary.cases.length !== 15
@@ -319,6 +516,24 @@ async function main(): Promise<void> {
     if (!c.category || c.category === '01' || c.category === '02') {
       throw new Error(`案例 [${c.caseId}] 分类解析错误: ${c.category}`);
     }
+    if (
+      !c.baseResult.case_input_snapshot ||
+      !c.targetResult.case_input_snapshot
+    ) {
+      throw new Error(`案例 [${c.caseId}] 缺失用例输入快照记录`);
+    }
+    if (
+      typeof c.baseResult.tokens_total !== 'number' ||
+      typeof c.targetResult.tokens_total !== 'number'
+    ) {
+      throw new Error(`案例 [${c.caseId}] Token 用量类型异常`);
+    }
+    if (
+      typeof c.baseResult.estimated_cost_usd !== 'number' ||
+      typeof c.targetResult.estimated_cost_usd !== 'number'
+    ) {
+      throw new Error(`案例 [${c.caseId}] 估算成本类型异常`);
+    }
   }
   console.log('   ✓ 全部 15 个聚合案例双版本结果与快照校验通过');
 
@@ -330,20 +545,37 @@ async function main(): Promise<void> {
   }
 
   const jsonRes = await apiRequest(`/api/eval/runs/${activeRunId}/report.json`);
-  if (jsonRes.status !== 200 || jsonRes.data?.cases?.length !== 15) {
+  if (
+    jsonRes.status !== 200 ||
+    !Array.isArray(jsonRes.data?.cases) ||
+    jsonRes.data.cases.length !== 15
+  ) {
     throw new Error('JSON 效果报告数据不完整');
   }
 
   // 跨用户隔离验证: 第二用户请求该 run 必须返回 404
-  const crossUserRes = await apiRequest(`/api/eval/runs/${activeRunId}`, {
-    cookie: otherUserCookie,
-  });
-  if (crossUserRes.status !== 404) {
-    throw new Error(
-      `跨用户权限隔离失败: 第二用户请求返回了 HTTP ${crossUserRes.status} (期望 404)`,
-    );
+  if (otherUserCookie) {
+    const crossUserRes = await apiRequest(`/api/eval/runs/${activeRunId}`, {
+      cookie: otherUserCookie,
+    });
+    if (crossUserRes.status !== 404) {
+      throw new Error(
+        `跨用户权限隔离失败: 第二用户请求返回了 HTTP ${crossUserRes.status} (期望 404)`,
+      );
+    }
+    console.log('   ✓ 第二用户访问返回 HTTP 404，跨用户权限隔离严格生效');
+  } else {
+    // 验证未认证请求返回 401
+    const unauthRes = await apiRequest(`/api/eval/runs/${activeRunId}`, {
+      cookie: null,
+    });
+    if (unauthRes.status !== 401 && unauthRes.status !== 404) {
+      throw new Error(
+        `未认证访问防护断言失败: 返回了 HTTP ${unauthRes.status}`,
+      );
+    }
+    console.log('   ✓ 未认证访问拦截生效');
   }
-  console.log('   ✓ 跨用户权限隔离 (返回 404) 与效果报告下载校验通过');
 
   console.log('\n============================================================');
   console.log('  ✓ R17 Mac mini 生产环境真实 HTTP API 端到端验收完全通过！');

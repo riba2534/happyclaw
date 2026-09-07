@@ -381,6 +381,69 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
         mockSdkQueryGenerator = null;
       }
     });
+
+    test('Leader: SDK error result preserves provider reported cost', async () => {
+      mockSdkQueryGenerator = async function* () {
+        yield {
+          type: 'result',
+          subtype: 'error_during_execution',
+          is_error: true,
+          errors: ['fixture failure'],
+          usage: { input_tokens: 42, output_tokens: 5 },
+          total_cost_usd: 0.375,
+        };
+      };
+      try {
+        await executeWithClaudeAgentSdk({
+          prompt: 'test',
+          systemPrompt: '',
+          model: 'claude-3-5-sonnet',
+          providerConfig: dummyProviderConfig,
+          cwd: tmpDataDir,
+        });
+        expect.fail('expected error');
+      } catch (err: any) {
+        expect(err.reportedCostUSD).toBe(0.375);
+        expect(err.accumulatedUsage.inputTokens).toBe(42);
+        expect(err.accumulatedUsage.outputTokens).toBe(5);
+      } finally {
+        mockSdkQueryGenerator = null;
+      }
+    });
+
+    test('Leader: actual default assistant usage survives iterator failure', async () => {
+      mockSdkQueryGenerator = async function* () {
+        yield {
+          type: 'assistant',
+          message: {
+            id: 'fixture-message',
+            content: [{ type: 'text', text: 'partial' }],
+            usage: {
+              input_tokens: 42,
+              output_tokens: 5,
+              cache_read_input_tokens: 7,
+            },
+          },
+        };
+        throw Error('fixture network failure');
+      };
+      try {
+        await executeWithClaudeAgentSdk({
+          prompt: 'test',
+          systemPrompt: '',
+          model: 'claude-3-5-sonnet',
+          providerConfig: dummyProviderConfig,
+          cwd: tmpDataDir,
+        });
+        expect.fail('expected error');
+      } catch (err: any) {
+        expect(err.accumulatedUsage.inputTokens).toBe(42);
+        expect(err.accumulatedUsage.outputTokens).toBe(5);
+        expect(err.accumulatedUsage.cacheReadTokens).toBe(7);
+      } finally {
+        mockSdkQueryGenerator = null;
+      }
+    });
   });
 
   describe('规则判定引擎 evaluateOutputAgainstRules (Hard Gates 门禁与 ReDoS 防护)', () => {
@@ -694,8 +757,7 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
       const cancelOk = cancelEvalRun(slowRun.id, userId);
       expect(cancelOk).toBe(true);
 
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      const afterCancel = db.getEvalRun(slowRun.id, userId);
+      const afterCancel = await waitForEvalRunCompletion(slowRun.id, 5000);
       expect(afterCancel?.status).toBe('cancelled');
 
       // 验证取消后所有用例条目依然完整存在，未执行的被标记为 cancelled
@@ -704,6 +766,117 @@ describe('R17: 提示词版本任务评测核心服务 (eval-service)', () => {
       expect(casesAfterCancel.some((c) => c.status === 'cancelled')).toBe(true);
 
       // 恢复常规 testMockProvider
+      setEvalExecutionProviderForTests(createTestMockProvider());
+    });
+
+    test('Provider 延迟响应 abort 且晚到 success：状态保持 cancelled，不覆盖取消终态且保留已消费用量', async () => {
+      const p = db.createAgentProfile({
+        ownerUserId: userId,
+        name: '晚到成功智能体',
+        identityPrompt: '测试晚到成功',
+        promptMode: 'append',
+      });
+
+      // 模拟延迟响应 abort 且在 abort 后依然返回 success 的 provider
+      setEvalExecutionProviderForTests(async ({ abortSignal }) => {
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        // 尽管 abortSignal 已经触发，仍然返回了 output（模拟慢速或迟到回复）
+        return {
+          output: 'Late successful output',
+          durationMs: 80,
+          inputTokens: 250,
+          outputTokens: 60,
+          cacheReadTokens: 10,
+          toolsUsed: [],
+          reportedCostUSD: 0.0008,
+        };
+      });
+
+      const lateRun = await startEvalRun({
+        ownerUserId: userId,
+        agentProfileId: p.id,
+        mode: 'single',
+      });
+
+      // 立即触发取消
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const cancelOk = cancelEvalRun(lateRun.id, userId);
+      expect(cancelOk).toBe(true);
+
+      const finalRun = await waitForEvalRunCompletion(lateRun.id, 5000);
+      expect(finalRun?.status).toBe('cancelled');
+
+      // 验证第一个用例的状态是 cancelled 而非 completed，且用量和费用得到保留
+      const cases = db.listEvalRunCases(lateRun.id);
+      const firstCase = cases[0];
+      expect(firstCase.status).toBe('cancelled');
+      expect(firstCase.actual_output).toBe('');
+      expect(firstCase.tokens_input).toBe(250);
+      expect(firstCase.estimated_cost_usd).toBe(0.0008);
+
+      setEvalExecutionProviderForTests(createTestMockProvider());
+    });
+
+    test('Base 完成有实际 usage 后取消在 target 前 break：run 总用量与费用正确写入，不调下一个 Case', async () => {
+      const p = db.createAgentProfile({
+        ownerUserId: userId,
+        name: '中途取消保留基准智能体',
+        identityPrompt: '测试基准用量保留',
+        promptMode: 'append',
+      });
+      const pV2 = db.updateAgentProfile(p.id, userId, {
+        identityPrompt: '测试基准用量保留升级版',
+      });
+      expect(pV2?.version).toBe(2);
+
+      let caseExecCount = 0;
+      let runIdToCancel = '';
+
+      setEvalExecutionProviderForTests(async (options) => {
+        caseExecCount++;
+        if (options.versionTag === 'base') {
+          // base 执行时立即触发取消，使循环在进入 target 前 break
+          if (runIdToCancel) {
+            cancelEvalRun(runIdToCancel, userId);
+          }
+          return {
+            output: 'Base version done',
+            durationMs: 15,
+            inputTokens: 300,
+            outputTokens: 100,
+            cacheReadTokens: 50,
+            toolsUsed: [],
+            reportedCostUSD: 0.0015,
+          };
+        }
+        return {
+          output: 'Target should not run',
+          durationMs: 10,
+          inputTokens: 0,
+          outputTokens: 0,
+          toolsUsed: [],
+        };
+      });
+
+      const breakRun = await startEvalRun({
+        ownerUserId: userId,
+        agentProfileId: p.id,
+        mode: 'compare',
+        baseVersion: 1,
+        targetVersion: 2,
+      });
+      runIdToCancel = breakRun.id;
+
+      const finalRun = await waitForEvalRunCompletion(breakRun.id, 5000);
+      expect(finalRun?.status).toBe('cancelled');
+
+      // 验证 base 已经执行并记录的 tokens 和 cost 正确写入 eval_runs 表
+      expect(finalRun?.base_total_tokens).toBeGreaterThanOrEqual(400);
+      expect(finalRun?.base_estimated_cost_usd).toBeGreaterThan(0);
+
+      // 验证后续案例不再被调用
+      expect(caseExecCount).toBeLessThan(5);
+
       setEvalExecutionProviderForTests(createTestMockProvider());
     });
   });
