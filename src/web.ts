@@ -48,6 +48,7 @@ import groupRoutes from './routes/groups.js';
 import memoryRoutes from './routes/memory.js';
 import configRoutes, { injectConfigDeps } from './routes/config.js';
 import tasksRoutes from './routes/tasks.js';
+import { taskTemplatesRoutes } from './routes/task-templates.js';
 import adminRoutes from './routes/admin.js';
 import fileRoutes from './routes/files.js';
 import monitorRoutes, { injectMonitorDeps } from './routes/monitor.js';
@@ -270,6 +271,7 @@ app.route('/api/groups', fileRoutes); // File routes also under /api/groups
 app.route('/api/memory', memoryRoutes);
 app.route('/api/config', configRoutes);
 app.route('/api/tasks', tasksRoutes);
+app.route('/api/task-templates', taskTemplatesRoutes);
 app.route('/api/skills', skillsRoutes);
 app.route('/api/admin', adminRoutes);
 app.route('/api/browse', browseRoutes);

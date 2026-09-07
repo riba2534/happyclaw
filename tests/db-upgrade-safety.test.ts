@@ -151,7 +151,7 @@ describe('database upgrade safety gate', () => {
     process.env.HAPPYCLAW_MIGRATION_BACKUP_DIR = migrationBackups;
     const backupsBeforeCurrentOnlyRefusal = fs.readdirSync(migrationBackups);
     expect(() => db.initDatabase({ requireCurrentSchema: true })).toThrow(
-      'Database must already be schema v74',
+      'Database must already be schema v76',
     );
     expect(fs.readdirSync(migrationBackups)).toEqual(
       backupsBeforeCurrentOnlyRefusal,
@@ -193,6 +193,8 @@ describe('schema version head', () => {
     // v74: introduces the host-owned monotonic message ingest sequence used by
     // durable consumption and stable Web pagination. See
     // tests/schema-v74-message-ingest-sequence.test.ts.
-    expect(db.CURRENT_SCHEMA_VERSION).toBe(74);
+    // v75: Prompt Evaluation & Benchmark suites, runs, and cases (R17).
+    // v76: Task Templates (R18) and Run Artifacts (R19).
+    expect(db.CURRENT_SCHEMA_VERSION).toBe(76);
   });
 });

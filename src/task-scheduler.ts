@@ -50,6 +50,7 @@ import {
   getSession,
   getTaskById,
   getUserById,
+  getRegisteredGroup,
   getUserHomeGroup,
   getAgentProfileForWorkspace,
   getWorkspaceInteractionMode,
@@ -81,6 +82,7 @@ import { runScript } from './script-runner.js';
 import type { StreamEvent } from './stream-event.types.js';
 import {
   AgentProfile,
+  AuthUser,
   ClaimedTaskRun,
   ExecutionMode,
   InteractionMode,
@@ -102,6 +104,10 @@ import {
   buildAgentProfilePrompt,
   hasAgentProfilePrompts,
 } from './agent-profile-prompts.js';
+import {
+  processCompletedRunArtifacts,
+  prepareTaskContinuationArtifacts,
+} from './task-artifact-service.js';
 import { stripAgentInternalTags } from './utils.js';
 import {
   markIsolatedTaskRunIpcComplete,
@@ -1100,6 +1106,26 @@ async function runTaskInner(
     })),
   );
 
+  const taskCreator = taskOwnerId ? getUserById(taskOwnerId) : null;
+  const authUser: AuthUser | null = taskCreator
+    ? {
+        id: taskCreator.id,
+        username: taskCreator.username,
+        role: taskCreator.role,
+        status: taskCreator.status,
+        permissions: taskCreator.permissions || [],
+        display_name: taskCreator.display_name,
+        must_change_password: false,
+      }
+    : null;
+
+  prepareTaskContinuationArtifacts(
+    task.prompt,
+    workspace.folder,
+    workspace.jid,
+    authUser,
+  );
+
   // Store task prompt as a user message in workspace chat so it's visible in
   // conversation. Sender attribution/audit must use the task's actual
   // creator (taskOwnerId), NOT workspaceOwner — otherwise an admin-created
@@ -1107,7 +1133,6 @@ async function runTaskInner(
   // trail as if the target workspace's own member had typed the prompt
   // themselves.
   if (deps.storePromptMessage) {
-    const taskCreator = taskOwnerId ? getUserById(taskOwnerId) : null;
     const senderName =
       taskCreator?.display_name || taskCreator?.username || '定时任务';
     deps.storePromptMessage(
@@ -1424,6 +1449,40 @@ async function runTaskInner(
     // Finalize if not already done by onOutput callback
     commitDurableWorkspaceIntent();
     finalizeRunLog();
+
+    // R19: Auto-discover and register declared artifacts for this run
+    const effectiveRunId = options?.taskRunId || options?.durableRun?.id;
+    if (effectiveRunId) {
+      try {
+        const candidateIpcDirs: string[] = [];
+        if (workspace.folder) {
+          candidateIpcDirs.push(path.join(DATA_DIR, 'ipc', workspace.folder));
+          if (taskSessionAgentId) {
+            candidateIpcDirs.push(
+              path.join(
+                DATA_DIR,
+                'ipc',
+                workspace.folder,
+                'agents',
+                taskSessionAgentId,
+              ),
+            );
+          }
+        }
+        await processCompletedRunArtifacts({
+          runId: effectiveRunId,
+          taskId: task.id,
+          resultText: result,
+          ipcDirs: candidateIpcDirs,
+          createdBy: task.created_by,
+        });
+      } catch (artifactErr) {
+        logger.warn(
+          { taskId: task.id, runId: effectiveRunId, err: artifactErr },
+          'Failed to process run artifacts',
+        );
+      }
+    }
 
     logger.info(
       { taskId: task.id, durationMs: lastOutputTime - startTime },
@@ -2240,6 +2299,31 @@ async function runGroupModeTask(
       { agentKind: 'main' },
     );
     const promptText = `${buildScheduledGroupTriggerFraming(interactionMode)}\n\n${task.prompt}`;
+
+    // Resolve the real target execution workspace
+    const targetGroup =
+      deps.registeredGroups()[targetGroupJid] ??
+      getRegisteredGroup(targetGroupJid);
+    const targetFolder = targetGroup?.folder ?? task.group_folder;
+
+    const groupAuthUser: AuthUser | null = owner
+      ? {
+          id: owner.id,
+          username: owner.username,
+          role: owner.role,
+          status: owner.status,
+          permissions: owner.permissions || [],
+          display_name: owner.display_name,
+          must_change_password: false,
+        }
+      : null;
+
+    prepareTaskContinuationArtifacts(
+      task.prompt,
+      targetFolder,
+      targetGroupJid,
+      groupAuthUser,
+    );
     if (durableRun) {
       if (!deps.storeGroupPromptAndDeliverRun) {
         throw new Error(

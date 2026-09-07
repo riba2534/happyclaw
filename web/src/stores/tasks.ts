@@ -100,6 +100,16 @@ export interface TaskRun {
   notification_summary?: TaskNotificationSummary | null;
   notification_attempt?: number;
   notification_available_at?: string | null;
+  definition_snapshot?: {
+    prompt: string;
+    group_folder: string;
+    chat_jid: string;
+    context_mode: 'group' | 'isolated';
+    execution_type: 'agent' | 'script';
+    execution_mode: 'host' | 'container' | null;
+    script_command: string | null;
+    notify_channels: string[] | null;
+  };
 }
 
 export type TaskRunLog = TaskRun;

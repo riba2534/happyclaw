@@ -4201,9 +4201,13 @@ async function main(): Promise<void> {
     agentBuilderEnabled,
     ownerProfileEnabled: containerInput.happyClawOwnerProfileEnabled === true,
     interactionMode: containerInput.interactionMode ?? 'assistant',
-    isScheduledTask: containerInput.isScheduledTask || false,
+    isScheduledTask:
+      containerInput.isScheduledTask ||
+      Boolean(containerInput.messageTaskId) ||
+      Boolean(containerInput.taskRunId) ||
+      false,
     currentTaskId: containerInput.messageTaskId ?? null,
-    currentScheduledTaskRunId: null,
+    currentScheduledTaskRunId: containerInput.taskRunId ?? null,
     currentInputTurnId: containerInput.turnId,
     workspaceMemoryMutationAuth:
       containerInput.workspaceMemoryMutationSigningSecret &&

@@ -1,0 +1,214 @@
+{
+  "categories": [
+    {
+      "category_id": "system_log_inspection",
+      "category_name": "系统运维与日志巡检任务",
+      "template": {
+        "name": "系统运维日志巡检模板",
+        "description": "用于定时分析指定项目的应用日志，发现异常堆栈并生成巡检报告",
+        "prompt_template": "请对项目 {{project}} 在 {{date}} 的运行日志进行巡检，读取目录 {{input_dir}} 下的日志文件。关注级别 {{log_level}} 以上的异常堆栈，错误阈值设为 {{threshold}} 次。将巡检结果写入交付产物 reports/inspection_{{project}}_{{date}}.md，并在结束时显式声明该交付产物。",
+        "parameter_definitions": [
+          {
+            "name": "project",
+            "label": "项目标识",
+            "type": "string",
+            "required": true,
+            "description": "目标微服务或子系统名称"
+          },
+          {
+            "name": "date",
+            "label": "巡检日期",
+            "type": "date",
+            "required": true,
+            "description": "执行巡检的目标业务日期 (YYYY-MM-DD)"
+          },
+          {
+            "name": "input_dir",
+            "label": "日志输入目录",
+            "type": "path",
+            "required": true,
+            "description": "工作区内的相对日志目录"
+          },
+          {
+            "name": "log_level",
+            "label": "日志级别",
+            "type": "string",
+            "required": false,
+            "default_value": "ERROR",
+            "description": "最低告警过滤日志级别 (INFO, WARN, ERROR, FATAL)"
+          },
+          {
+            "name": "threshold",
+            "label": "告警阈值",
+            "type": "number",
+            "required": false,
+            "default_value": "10",
+            "description": "触发高危告警的错误频次阈值"
+          }
+        ],
+        "default_schedule_type": "cron",
+        "default_schedule_value": "0 9 * * *",
+        "default_context_mode": "isolated",
+        "default_execution_type": "agent",
+        "default_execution_mode": "container"
+      },
+      "fixtures": [
+        {
+          "fixture_id": "sys_fix_1",
+          "params": {
+            "project": "happyclaw-core",
+            "date": "2026-09-01",
+            "input_dir": "logs/core",
+            "log_level": "ERROR",
+            "threshold": "5"
+          }
+        },
+        {
+          "fixture_id": "sys_fix_2",
+          "params": {
+            "project": "happyclaw-agent",
+            "date": "2026-09-02",
+            "input_dir": "logs/agent",
+            "log_level": "WARN",
+            "threshold": "20"
+          }
+        },
+        {
+          "fixture_id": "sys_fix_3",
+          "params": {
+            "project": "happyclaw-web",
+            "date": "2026-09-03",
+            "input_dir": "logs/web",
+            "log_level": "ERROR",
+            "threshold": "10"
+          }
+        },
+        {
+          "fixture_id": "sys_fix_4",
+          "params": {
+            "project": "auth-gateway",
+            "date": "2026-09-04",
+            "input_dir": "logs/gateway",
+            "log_level": "FATAL",
+            "threshold": "1"
+          }
+        },
+        {
+          "fixture_id": "sys_fix_5",
+          "params": {
+            "project": "scheduler-daemon",
+            "date": "2026-09-05",
+            "input_dir": "logs/scheduler",
+            "log_level": "ERROR",
+            "threshold": "15"
+          }
+        }
+      ]
+    },
+    {
+      "category_id": "business_metrics_report",
+      "category_name": "业务指标报表与数据聚合任务",
+      "template": {
+        "name": "每日业务指标报表统计模板",
+        "description": "用于定时聚合业务线核心指标，输出结构化报表交付文件",
+        "prompt_template": "请统计业务线 {{business_line}} 在 {{report_date}} 的业务运行指标。数据源目录为 {{source_dir}}，按维度 {{aggregate_dimension}} 进行汇总，导出格式为 {{output_format}}。最终生成每日交付报告 reports/daily_metrics_{{report_date}}.{{output_format}}，并显式声明该交付文件。",
+        "parameter_definitions": [
+          {
+            "name": "business_line",
+            "label": "业务线标识",
+            "type": "string",
+            "required": true,
+            "description": "所属业务单元标识"
+          },
+          {
+            "name": "report_date",
+            "label": "报表日期",
+            "type": "date",
+            "required": true,
+            "description": "统计数据的业务日期 (YYYY-MM-DD)"
+          },
+          {
+            "name": "source_dir",
+            "label": "数据源目录",
+            "type": "path",
+            "required": true,
+            "description": "工作区内的数据文件相对目录"
+          },
+          {
+            "name": "aggregate_dimension",
+            "label": "汇总维度",
+            "type": "string",
+            "required": false,
+            "default_value": "hourly",
+            "description": "聚合粒度 (hourly, daily, channel, user)"
+          },
+          {
+            "name": "output_format",
+            "label": "输出格式",
+            "type": "string",
+            "required": false,
+            "default_value": "json",
+            "description": "报表文件后缀格式 (json, csv, md)"
+          }
+        ],
+        "default_schedule_type": "cron",
+        "default_schedule_value": "0 2 * * *",
+        "default_context_mode": "isolated",
+        "default_execution_type": "agent",
+        "default_execution_mode": "container"
+      },
+      "fixtures": [
+        {
+          "fixture_id": "biz_fix_1",
+          "params": {
+            "business_line": "user-growth",
+            "report_date": "2026-09-01",
+            "source_dir": "data/raw/growth",
+            "aggregate_dimension": "hourly",
+            "output_format": "json"
+          }
+        },
+        {
+          "fixture_id": "biz_fix_2",
+          "params": {
+            "business_line": "billing-settlement",
+            "report_date": "2026-09-02",
+            "source_dir": "data/raw/billing",
+            "aggregate_dimension": "daily",
+            "output_format": "csv"
+          }
+        },
+        {
+          "fixture_id": "biz_fix_3",
+          "params": {
+            "business_line": "im-delivery",
+            "report_date": "2026-09-03",
+            "source_dir": "data/raw/im",
+            "aggregate_dimension": "channel",
+            "output_format": "json"
+          }
+        },
+        {
+          "fixture_id": "biz_fix_4",
+          "params": {
+            "business_line": "token-usage",
+            "report_date": "2026-09-04",
+            "source_dir": "data/raw/tokens",
+            "aggregate_dimension": "user",
+            "output_format": "csv"
+          }
+        },
+        {
+          "fixture_id": "biz_fix_5",
+          "params": {
+            "business_line": "task-execution",
+            "report_date": "2026-09-05",
+            "source_dir": "data/raw/tasks",
+            "aggregate_dimension": "status",
+            "output_format": "json"
+          }
+        }
+      ]
+    }
+  ]
+}
