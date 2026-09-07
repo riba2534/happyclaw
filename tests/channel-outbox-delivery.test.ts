@@ -10,10 +10,15 @@ const groupsDir = path.join(root, 'groups');
 fs.mkdirSync(storeDir, { recursive: true });
 fs.mkdirSync(groupsDir, { recursive: true });
 
-vi.mock('../src/config.js', () => ({
-  STORE_DIR: storeDir,
-  GROUPS_DIR: groupsDir,
-}));
+vi.mock('../src/config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/config.js')>();
+  return {
+    ...actual,
+    DATA_DIR: root,
+    STORE_DIR: storeDir,
+    GROUPS_DIR: groupsDir,
+  };
+});
 vi.mock('../src/logger.js', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
@@ -21,6 +26,7 @@ vi.mock('../src/logger.js', () => ({
 const db = await import('../src/db.js');
 const store = await import('../src/channel-reliability-store.js');
 const delivery = await import('../src/channel-outbox-delivery.js');
+const recovery = await import('../src/channel-reliability-recovery.js');
 const runtimeScope = await import('../src/channel-outbox-runtime-scope.js');
 const { ChannelTurnRuntime } = await import('../src/channel-turn-runtime.js');
 
@@ -484,5 +490,144 @@ describe('channel outbox physical delivery transaction', () => {
     const replay = await delivery.deliverChannelOutboxItem(base);
     expect(replay.status).toBe('uncertain');
     expect(sends).toBe(0);
+  });
+
+  test('R02: continuous recovery loop reconciles expired leases and distinguishes pre-send retry_wait vs sending uncertain', async () => {
+    // 1) Test pre-send crash (claimed phase) with 60s lease
+    let now = '2026-09-06T00:00:00.000Z';
+    const runClaimed = createRun('r02-claimed-crash', now);
+    let fakeSendsClaimed = 0;
+    const baseClaimed = {
+      ...route,
+      turnRunId: runClaimed.id,
+      ordinal: 0,
+      kind: 'text' as const,
+      payload: 'synthetic-claimed',
+      owner: 'dead-worker-1',
+      leaseMs: 60_000,
+      now: () => now,
+      delivery: {
+        mode: 'single' as const,
+        send: async () => {
+          fakeSendsClaimed++;
+          return { providerMessageId: 'fake-ack-1' };
+        },
+      },
+    };
+    let itemIdClaimed = '';
+    await expect(
+      delivery.deliverChannelOutboxItem({
+        ...baseClaimed,
+        afterPersist: (phase, item) => {
+          if (phase === 'claimed') {
+            itemIdClaimed = item.id;
+            throw new delivery.ChannelDeliveryProcessCrash();
+          }
+        },
+      }),
+    ).rejects.toBeInstanceOf(delivery.ChannelDeliveryProcessCrash);
+
+    // 2) Test sending crash with 60s lease
+    const runSending = createRun('r02-sending-crash', now);
+    let fakeSendsSending = 0;
+    const baseSending = {
+      ...route,
+      turnRunId: runSending.id,
+      ordinal: 0,
+      kind: 'text' as const,
+      payload: 'synthetic-sending',
+      owner: 'dead-worker-2',
+      leaseMs: 60_000,
+      now: () => now,
+      delivery: {
+        mode: 'single' as const,
+        send: async () => {
+          fakeSendsSending++;
+          return { providerMessageId: 'fake-ack-2' };
+        },
+      },
+    };
+    let itemIdSending = '';
+    await expect(
+      delivery.deliverChannelOutboxItem({
+        ...baseSending,
+        afterPersist: (phase, item) => {
+          if (phase === 'sending') {
+            itemIdSending = item.id;
+            throw new delivery.ChannelDeliveryProcessCrash();
+          }
+        },
+      }),
+    ).rejects.toBeInstanceOf(delivery.ChannelDeliveryProcessCrash);
+
+    // Step A: 10 seconds later (reboot before lease expires)
+    now = '2026-09-06T00:00:10.000Z';
+    const dummyReconciler = {
+      reconcileStreamingCard: async () => ({
+        version: 1,
+        method: 'cardkit' as const,
+      }),
+    };
+    const startupRec = await recovery.reconcileChannelReliabilityPass(
+      dummyReconciler,
+      {
+        mode: 'startup',
+        now,
+        includeOutbox: true,
+      },
+    );
+    // Nothing expired yet (60s lease > 10s elapsed)
+    expect(startupRec.outbox).toEqual({ retryable: 0, uncertain: 0 });
+
+    const itemClaimedAt10s = store.getChannelOutboxItem(itemIdClaimed)!;
+    expect(itemClaimedAt10s.status).toBe('claimed');
+    expect(itemClaimedAt10s.leaseOwner).toBe('dead-worker-1');
+
+    const itemSendingAt10s = store.getChannelOutboxItem(itemIdSending)!;
+    expect(itemSendingAt10s.status).toBe('sending');
+    expect(itemSendingAt10s.leaseOwner).toBe('dead-worker-2');
+
+    // Step B: 61 seconds later (lease expired)
+    now = '2026-09-06T00:01:01.000Z';
+    // Continuous recovery pass running live
+    const liveRec = await recovery.reconcileChannelReliabilityPass(
+      dummyReconciler,
+      {
+        mode: 'live',
+        now,
+        includeOutbox: true,
+      },
+    );
+    // Should have reconciled 1 retryable (claimed) and 1 uncertain (sending)
+    expect(liveRec.outbox).toEqual({ retryable: 1, uncertain: 1 });
+
+    const itemClaimedAt61s = store.getChannelOutboxItem(itemIdClaimed)!;
+    expect(itemClaimedAt61s.status).toBe('retry_wait');
+    expect(itemClaimedAt61s.leaseOwner).toBeNull();
+
+    const itemSendingAt61s = store.getChannelOutboxItem(itemIdSending)!;
+    expect(itemSendingAt61s.status).toBe('uncertain');
+    expect(itemSendingAt61s.leaseOwner).toBeNull();
+    // Verify it is listed in listUncertainChannelOutbox
+    expect(
+      store.listUncertainChannelOutbox().some((x) => x.id === itemIdSending),
+    ).toBe(true);
+
+    // Step C: Verify new worker can safely claim and deliver the retryable item
+    const retryClaimed = await delivery.deliverChannelOutboxItem({
+      ...baseClaimed,
+      owner: 'new-worker-1',
+    });
+    expect(retryClaimed.status).toBe('delivered');
+    expect(retryClaimed.receipt?.providerMessageId).toBe('fake-ack-1');
+    expect(fakeSendsClaimed).toBe(1);
+
+    // Step D: Verify sending item is NEVER auto-resent
+    const retrySending = await delivery.deliverChannelOutboxItem({
+      ...baseSending,
+      owner: 'new-worker-2',
+    });
+    expect(retrySending.status).toBe('uncertain');
+    expect(fakeSendsSending).toBe(0); // Provider was NOT invoked again!
   });
 });

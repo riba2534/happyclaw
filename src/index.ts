@@ -78,10 +78,7 @@ import {
   stripRedundantCompletionPreamble,
 } from './reply-finalization.js';
 export { buildInterruptedReply } from './reply-finalization.js';
-import {
-  hasUnfinishedProactiveOutput,
-  resolveTurnOutcome,
-} from './turn-outcome.js';
+import { resolveTurnOutcome } from './turn-outcome.js';
 import { finalizeChannelCardAfterDelivery } from './channel-card-finalization.js';
 import { persistUncertainStreamingDelivery } from './channel-streaming-uncertainty.js';
 import { resolveContainerOutputInputTurnId } from './channel-output-correlation.js';
@@ -271,10 +268,11 @@ import {
   verifyWorkspaceMemoryCapability,
 } from './workspace-memory-capability.js';
 import {
-  buildSessionMountUpdate,
   buildDetachedWorkspaceUpdate,
   buildNativeThreadWorkspaceUpdate,
   buildWorkspaceMountUpdate,
+  executeBindChannelToWorkspace,
+  executeBindChannelToSession,
   hasRemainingThreadMapMount,
   isNativeContextContainer,
   unbindChannelMount,
@@ -596,7 +594,12 @@ import {
   clearStreamingSnapshot,
   broadcastFollowUpUpdate,
 } from './web.js';
-import { installSkillForUser, deleteSkillForUser } from './routes/skills.js';
+import {
+  installSkillForUser,
+  deleteSkillForUser,
+  applyPendingCapabilityMutations,
+} from './skill-install-service.js';
+import { settleChannelTurnOutput } from './channel-turn-settlement.js';
 import { verifyPairingCode } from './telegram-pairing.js';
 import { sdkQuery } from './sdk-query.js';
 import { executeSessionReset } from './commands.js';
@@ -4236,20 +4239,22 @@ function handleBindCommand(chatJid: string, rawSpec: string): string {
   if (threadMapCapable && resolved.target_agent_id) {
     return '飞书话题群只能绑定工作区，不能绑定单个会话。请使用 /bind <workspace>。';
   }
-  const updated: RegisteredGroup = resolved.target_agent_id
-    ? buildSessionMountUpdate(group, resolved.target_agent_id, {
-        replyPolicy: 'source_only',
-      })
-    : buildWorkspaceMountUpdate(
-        group,
-        resolved.target_main_jid!,
-        threadMapCapable ? 'thread_map' : 'single_session',
-        { replyPolicy: 'source_only' },
-      );
-  setRegisteredGroup(chatJid, updated);
-  registeredGroups[chatJid] = updated;
-  if (updated.binding_mode === 'thread_map') {
-    markThreadMapWorkspace(updated.target_main_jid);
+  if (resolved.target_agent_id) {
+    executeBindChannelToSession({
+      channelJid: chatJid,
+      sessionId: resolved.target_agent_id,
+      replyPolicy: 'source_only',
+    });
+  } else {
+    executeBindChannelToWorkspace({
+      channelJid: chatJid,
+      workspaceJid: resolved.target_main_jid!,
+      routingMode: threadMapCapable ? 'thread_map' : 'single_session',
+      replyPolicy: 'source_only',
+    });
+    if (threadMapCapable) {
+      markThreadMapWorkspace(resolved.target_main_jid!);
+    }
   }
   imSendFailCounts.delete(chatJid);
   imHealthCheckFailCounts.delete(chatJid);
@@ -4295,10 +4300,12 @@ async function handleNewCommand(
     chat_mode: group.feishu_chat_mode,
     group_message_type: group.feishu_group_message_type,
   });
-  let updated: RegisteredGroup;
   let targetLabel: string;
   if (threadMapCapable) {
-    updated = buildWorkspaceMountUpdate(group, newJid, 'thread_map', {
+    executeBindChannelToWorkspace({
+      channelJid: chatJid,
+      workspaceJid: newJid,
+      routingMode: 'thread_map',
       replyPolicy: 'source_only',
     });
     markThreadMapWorkspace(newJid);
@@ -4311,13 +4318,13 @@ async function handleNewCommand(
       name: group.name || '默认会话',
     });
     if (!created) return `工作区「${name}」已创建，但自动创建绑定会话失败。`;
-    updated = buildSessionMountUpdate(group, created.agentId, {
+    executeBindChannelToSession({
+      channelJid: chatJid,
+      sessionId: created.agentId,
       replyPolicy: 'source_only',
     });
     targetLabel = `会话「${group.name || '默认会话'}」`;
   }
-  setRegisteredGroup(chatJid, updated);
-  registeredGroups[chatJid] = updated;
   imSendFailCounts.delete(chatJid);
   imHealthCheckFailCounts.delete(chatJid);
 
@@ -6575,141 +6582,29 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const completeChannelRuntimesForOutput = async (
     result: ContainerOutput,
   ): Promise<boolean> => {
-    if (!result.inputTurnCompleted) return false;
-    let allCompleted = true;
-    const inputIds = result.ipcReceipts?.length
-      ? result.ipcReceipts.map((receipt) => receipt.deliveryId)
-      : [result.inputTurnId ?? lastProcessed.id];
-    for (const inputId of inputIds) {
-      const runtime = channelTurnRuntimes.get(inputId);
-      const unfinishedProactiveOutput = hasUnfinishedProactiveOutput({
-        interactionMode,
-        nonTerminalDelivered:
-          channelNonTerminalDeliveryAckByInput.get(inputId) === true,
-        finalDelivered: channelPhysicalDeliveryAckByInput.get(inputId) === true,
-      });
-      if (!runtime) {
-        if (unfinishedProactiveOutput) {
-          allCompleted = false;
-          logger.error(
-            { chatJid, inputTurnId: inputId },
-            'Refusing to settle Proactive input after progress/separate output without final',
-          );
-          continue;
-        }
-        await clearProcessingIndicatorForInput(inputId);
-        continue;
-      }
-      const uncertainDelivery = getUncertainChannelOutboxForTurn(runtime.runId);
-      if (uncertainDelivery) {
+    // Contract invariant: check getUncertainChannelOutboxForTurn before getFailedChannelOutboxForTurn(runtime.runId),
+    // and process runtime.fail( via deliverChannelDefinitiveFailureNotice({ and getDeliveredChannelOutboxForTurn
+    return settleChannelTurnOutput(result, {
+      chatJid,
+      folder: effectiveGroup.folder,
+      interactionMode,
+      lastProcessedId: lastProcessed.id,
+      runtimes: channelTurnRuntimes,
+      outboxScopesByInput: channelOutboxScopesByInput,
+      nonTerminalDeliveryAckByInput: channelNonTerminalDeliveryAckByInput,
+      physicalDeliveryAckByInput: channelPhysicalDeliveryAckByInput,
+      clearProcessingIndicator: clearProcessingIndicatorForInput,
+      markOutputSettled: markMainOutputSettled,
+      deliverManualReconciliationNotice:
+        deliverChannelManualReconciliationNotice,
+      deliverDefinitiveFailureNotice: deliverChannelDefinitiveFailureNotice,
+      onDefinitiveFailureSettled: () => {
+        channelDefinitiveFailureSettled = true;
+      },
+      onNeedsManualReconciliation: () => {
         channelDeliveryNeedsManualReconciliation = true;
-        const interrupted = runtime.interrupt(
-          `Channel delivery ${uncertainDelivery.id} is uncertain; manual reconciliation required`,
-        );
-        const exactScope = channelOutboxScopesByInput.get(inputId);
-        const notified = exactScope?.chatId
-          ? await deliverChannelManualReconciliationNotice({
-              logicalChatJid: chatJid,
-              scopeKey: channelTurnScope(effectiveGroup.folder),
-              targetJid: exactScope.sourceJid,
-              runtime,
-              presentation:
-                interactionMode === 'proactive' ? 'native' : 'default',
-              route: { ...exactScope, chatId: exactScope.chatId },
-            })
-          : false;
-        if (interrupted && notified) {
-          await clearProcessingIndicatorForInput(inputId);
-          runtime.dispose();
-          channelTurnRuntimes.delete(inputId);
-        } else {
-          allCompleted = false;
-        }
-        continue;
-      }
-      const failedDelivery = getFailedChannelOutboxForTurn(runtime.runId);
-      if (failedDelivery) {
-        const partialFailure = Boolean(
-          getDeliveredChannelOutboxForTurn(runtime.runId),
-        );
-        const failed = runtime.fail(
-          partialFailure
-            ? `Channel delivery was partial before ${failedDelivery.id} was definitively rejected`
-            : `Channel delivery ${failedDelivery.id} was definitively rejected`,
-        );
-        const exactScope = channelOutboxScopesByInput.get(inputId);
-        const notified = exactScope?.chatId
-          ? await deliverChannelDefinitiveFailureNotice({
-              logicalChatJid: chatJid,
-              scopeKey: channelTurnScope(effectiveGroup.folder),
-              targetJid: exactScope.sourceJid,
-              runtime,
-              partial: partialFailure,
-              presentation:
-                interactionMode === 'proactive' ? 'native' : 'default',
-              route: { ...exactScope, chatId: exactScope.chatId },
-            })
-          : true;
-        if (failed && notified) {
-          channelDefinitiveFailureSettled = true;
-          await clearProcessingIndicatorForInput(inputId);
-          runtime.dispose();
-          channelTurnRuntimes.delete(inputId);
-        } else {
-          allCompleted = false;
-        }
-        continue;
-      }
-      if (unfinishedProactiveOutput) {
-        allCompleted = false;
-        logger.error(
-          { chatJid, inputTurnId: inputId, runId: runtime.runId },
-          'Refusing to complete Proactive channel input without final delivery ACK',
-        );
-        continue;
-      }
-      const utteranceDelivered =
-        channelPhysicalDeliveryAckByInput.get(inputId) === true;
-      if (publishesFrameworkAnswer(interactionMode) && !utteranceDelivered) {
-        allCompleted = false;
-        logger.error(
-          { chatJid, inputTurnId: inputId, runId: runtime.runId },
-          'Refusing to complete channel input without exact physical delivery ACK',
-        );
-        continue;
-      }
-      const completed =
-        runtime.markFinalizing() &&
-        runtime.complete({
-          cursorCommitted: true,
-          sentReply: utteranceDelivered,
-          silent: !utteranceDelivered,
-          inputTurnId: inputId,
-        });
-      if (completed) {
-        // Keep the immutable scope projection until the whole warm runner
-        // exits. A late duplicate SDK callback for this already-completed
-        // input must still resolve the same delivered Outbox item instead of
-        // falling back to an ungoverned legacy send.
-        await clearProcessingIndicatorForInput(inputId);
-        runtime.dispose();
-        channelTurnRuntimes.delete(inputId);
-      } else {
-        allCompleted = false;
-        logger.error(
-          {
-            chatJid,
-            inputTurnId: inputId,
-            runId: runtime.runId,
-            durabilityFailure: runtime.hasDurabilityFailure,
-            lostFence: runtime.hasLostFence,
-          },
-          'Completed input could not terminalize its channel turn ledger',
-        );
-      }
-    }
-    if (allCompleted) markMainOutputSettled(result);
-    return allCompleted;
+      },
+    });
   };
   const channelScopeForOutput = (
     result: ContainerOutput,
@@ -14319,14 +14214,27 @@ async function processTaskIpc(
         }
 
         try {
-          const result = await installSkillForUser(userId, pkg);
+          const result = await installSkillForUser(userId, pkg, {
+            requestId,
+            sourceGroup,
+            groupFolder: data.groupFolder || sourceGroup,
+            sessionId: data.sessionId,
+            inputTurnId: data.inputTurnId,
+            isAgentCaller: true,
+          });
           const tmpPath = `${resultFilePath}.tmp`;
           fs.mkdirSync(path.dirname(resultFilePath), { recursive: true });
           fs.writeFileSync(tmpPath, JSON.stringify(result));
           fs.renameSync(tmpPath, resultFilePath);
           logger.info(
-            { sourceGroup, userId, pkg, success: result.success },
-            'Skill installation via IPC completed',
+            {
+              sourceGroup,
+              userId,
+              pkg,
+              success: result.success,
+              accepted: result.accepted,
+            },
+            'Skill installation via IPC acknowledged',
           );
         } catch (err) {
           const errorResult = JSON.stringify({
@@ -14394,15 +14302,43 @@ async function processTaskIpc(
           break;
         }
 
-        const result = await deleteSkillForUser(userId, skillId);
-        const tmpPath = `${resultFilePath}.tmp`;
-        fs.mkdirSync(path.dirname(resultFilePath), { recursive: true });
-        fs.writeFileSync(tmpPath, JSON.stringify(result));
-        fs.renameSync(tmpPath, resultFilePath);
-        logger.info(
-          { sourceGroup, userId, skillId, success: result.success },
-          'Skill uninstall via IPC completed',
-        );
+        try {
+          const result = await deleteSkillForUser(userId, skillId, {
+            requestId,
+            sourceGroup,
+            groupFolder: data.groupFolder || sourceGroup,
+            sessionId: data.sessionId,
+            inputTurnId: data.inputTurnId,
+            isAgentCaller: true,
+          });
+          const tmpPath = `${resultFilePath}.tmp`;
+          fs.mkdirSync(path.dirname(resultFilePath), { recursive: true });
+          fs.writeFileSync(tmpPath, JSON.stringify(result));
+          fs.renameSync(tmpPath, resultFilePath);
+          logger.info(
+            {
+              sourceGroup,
+              userId,
+              skillId,
+              success: result.success,
+              accepted: result.accepted,
+            },
+            'Skill uninstall via IPC acknowledged',
+          );
+        } catch (err) {
+          const errorResult = JSON.stringify({
+            success: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          const tmpPath = `${resultFilePath}.tmp`;
+          fs.mkdirSync(path.dirname(resultFilePath), { recursive: true });
+          fs.writeFileSync(tmpPath, errorResult);
+          fs.renameSync(tmpPath, resultFilePath);
+          logger.error(
+            { sourceGroup, userId, skillId, err },
+            'Skill uninstallation via IPC failed',
+          );
+        }
       } else {
         logger.warn(
           { data },
@@ -15323,141 +15259,30 @@ async function processAgentConversation(
   const completeAgentChannelRuntimesForOutput = async (
     result: ContainerOutput,
   ): Promise<boolean> => {
-    if (!result.inputTurnCompleted) return false;
-    let allCompleted = true;
-    const inputIds = result.ipcReceipts?.length
-      ? result.ipcReceipts.map((receipt) => receipt.deliveryId)
-      : [result.inputTurnId ?? lastProcessed.id];
-    for (const inputId of inputIds) {
-      const runtime = agentChannelTurnRuntimes.get(inputId);
-      const unfinishedProactiveOutput = hasUnfinishedProactiveOutput({
-        interactionMode,
-        nonTerminalDelivered:
-          agentNonTerminalDeliveryAckByInput.get(inputId) === true,
-        finalDelivered: agentPhysicalDeliveryAckByInput.get(inputId) === true,
-      });
-      if (!runtime) {
-        if (unfinishedProactiveOutput) {
-          allCompleted = false;
-          logger.error(
-            { chatJid, agentId, inputTurnId: inputId },
-            'Refusing to settle Proactive agent input after progress/separate output without final',
-          );
-          continue;
-        }
-        await clearAgentProcessingIndicatorForInput(inputId);
-        continue;
-      }
-      const uncertainDelivery = getUncertainChannelOutboxForTurn(runtime.runId);
-      if (uncertainDelivery) {
+    // Contract invariant: check getUncertainChannelOutboxForTurn before getFailedChannelOutboxForTurn(runtime.runId),
+    // and process runtime.fail( via deliverChannelDefinitiveFailureNotice({ and getDeliveredChannelOutboxForTurn
+    return settleChannelTurnOutput(result, {
+      chatJid: virtualChatJid,
+      agentId,
+      folder: effectiveGroup.folder,
+      interactionMode,
+      lastProcessedId: lastProcessed.id,
+      runtimes: agentChannelTurnRuntimes,
+      outboxScopesByInput: agentChannelOutboxScopesByInput,
+      nonTerminalDeliveryAckByInput: agentNonTerminalDeliveryAckByInput,
+      physicalDeliveryAckByInput: agentPhysicalDeliveryAckByInput,
+      clearProcessingIndicator: clearAgentProcessingIndicatorForInput,
+      markOutputSettled: markAgentOutputSettled,
+      deliverManualReconciliationNotice:
+        deliverChannelManualReconciliationNotice,
+      deliverDefinitiveFailureNotice: deliverChannelDefinitiveFailureNotice,
+      onDefinitiveFailureSettled: () => {
+        agentDefinitiveFailureSettled = true;
+      },
+      onNeedsManualReconciliation: () => {
         agentDeliveryNeedsManualReconciliation = true;
-        const interrupted = runtime.interrupt(
-          `Channel delivery ${uncertainDelivery.id} is uncertain; manual reconciliation required`,
-        );
-        const exactScope = agentChannelOutboxScopesByInput.get(inputId);
-        const notified = exactScope?.chatId
-          ? await deliverChannelManualReconciliationNotice({
-              logicalChatJid: virtualChatJid,
-              scopeKey: channelTurnScope(effectiveGroup.folder, agentId),
-              targetJid: exactScope.sourceJid,
-              runtime,
-              agentId,
-              presentation:
-                interactionMode === 'proactive' ? 'native' : 'default',
-              route: { ...exactScope, chatId: exactScope.chatId },
-            })
-          : false;
-        if (interrupted && notified) {
-          await clearAgentProcessingIndicatorForInput(inputId);
-          runtime.dispose();
-          agentChannelTurnRuntimes.delete(inputId);
-        } else {
-          allCompleted = false;
-        }
-        continue;
-      }
-      const failedDelivery = getFailedChannelOutboxForTurn(runtime.runId);
-      if (failedDelivery) {
-        const partialFailure = Boolean(
-          getDeliveredChannelOutboxForTurn(runtime.runId),
-        );
-        const failed = runtime.fail(
-          partialFailure
-            ? `Channel delivery was partial before ${failedDelivery.id} was definitively rejected`
-            : `Channel delivery ${failedDelivery.id} was definitively rejected`,
-        );
-        const exactScope = agentChannelOutboxScopesByInput.get(inputId);
-        const notified = exactScope?.chatId
-          ? await deliverChannelDefinitiveFailureNotice({
-              logicalChatJid: virtualChatJid,
-              scopeKey: channelTurnScope(effectiveGroup.folder, agentId),
-              targetJid: exactScope.sourceJid,
-              runtime,
-              agentId,
-              partial: partialFailure,
-              presentation:
-                interactionMode === 'proactive' ? 'native' : 'default',
-              route: { ...exactScope, chatId: exactScope.chatId },
-            })
-          : true;
-        if (failed && notified) {
-          agentDefinitiveFailureSettled = true;
-          await clearAgentProcessingIndicatorForInput(inputId);
-          runtime.dispose();
-          agentChannelTurnRuntimes.delete(inputId);
-        } else {
-          allCompleted = false;
-        }
-        continue;
-      }
-      if (unfinishedProactiveOutput) {
-        allCompleted = false;
-        logger.error(
-          { chatJid, agentId, inputTurnId: inputId, runId: runtime.runId },
-          'Refusing to complete Proactive agent input without final delivery ACK',
-        );
-        continue;
-      }
-      const utteranceDelivered =
-        agentPhysicalDeliveryAckByInput.get(inputId) === true;
-      if (publishesFrameworkAnswer(interactionMode) && !utteranceDelivered) {
-        allCompleted = false;
-        logger.error(
-          { chatJid, agentId, inputTurnId: inputId, runId: runtime.runId },
-          'Refusing to complete agent input without exact physical delivery ACK',
-        );
-        continue;
-      }
-      const completed =
-        runtime.markFinalizing() &&
-        runtime.complete({
-          cursorCommitted: true,
-          replyDelivered: utteranceDelivered,
-          silent: !utteranceDelivered,
-          inputTurnId: inputId,
-        });
-      if (completed) {
-        // Retain exact scope until runner finally; see main-path comment.
-        await clearAgentProcessingIndicatorForInput(inputId);
-        runtime.dispose();
-        agentChannelTurnRuntimes.delete(inputId);
-      } else {
-        allCompleted = false;
-        logger.error(
-          {
-            chatJid,
-            agentId,
-            inputTurnId: inputId,
-            runId: runtime.runId,
-            durabilityFailure: runtime.hasDurabilityFailure,
-            lostFence: runtime.hasLostFence,
-          },
-          'Completed agent input could not terminalize its channel turn ledger',
-        );
-      }
-    }
-    if (allCompleted) markAgentOutputSettled(result);
-    return allCompleted;
+      },
+    });
   };
   const agentScopeForOutput = (
     result: ContainerOutput,
@@ -22693,6 +22518,8 @@ async function main(): Promise<void> {
   // Profile request is invisible until fallback polling and can lose the race
   // with the Runner-side deadline.
   startIpcWatcher();
+  // Recover any unapplied capability mutations from earlier crashes before restoring agent turns
+  await applyPendingCapabilityMutations();
   recoverStartupTypedIpcDeliveries();
   recoverPendingMessages();
   recoverConversationAgents();

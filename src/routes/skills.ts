@@ -41,6 +41,15 @@ import {
   scanSkillDirectory,
 } from '../skill-utils.js';
 import { resolveEffectiveSkills } from '../effective-skill-resolver.js';
+import {
+  installSkillForUser as serviceInstallSkillForUser,
+  deleteSkillForUser as serviceDeleteSkillForUser,
+  getCapabilityMutationRequest,
+  listPendingCapabilityMutations,
+  applyPendingCapabilityMutations,
+  type SkillInstallResult,
+  type SkillDeleteResult,
+} from '../skill-install-service.js';
 
 const execFileAsync = promisify(execFile);
 const MAX_SKILL_INSTALL_BYTES = 64 * 1024 * 1024;
@@ -1064,84 +1073,14 @@ function deleteSkillForUserUnlocked(
 async function deleteSkillForUser(
   userId: string,
   skillId: string,
-): Promise<{
-  success: boolean;
-  error?: string;
-  retryable?: boolean;
-  invalidatedRuntimeJids?: number;
-}> {
-  if (!validateSkillId(skillId)) {
-    return { success: false, error: 'Invalid skill ID' };
-  }
-  return withUserSkillMutationLock(userId, async () => {
-    const impact = {
-      kind: 'skills' as const,
-      ownerUserId: userId,
-      ids: [skillId],
-    };
-    let repairedRuntimeJids = 0;
-    try {
-      repairedRuntimeJids = await repairCapabilityRuntimeSafetyBlock(
-        impact,
-        `Skill ${skillId} deletion cleanup`,
-      );
-    } catch (error) {
-      const failure = skillRuntimeMutationFailure(error, 'Skill deletion');
-      return {
-        success: false,
-        error: failure?.error ?? 'Failed to repair Skill runtime cleanup',
-        retryable: failure?.retryable ?? true,
-      };
-    }
-
-    const userDir = getUserSkillsDir(userId);
-    const skillDir = path.join(userDir, skillId);
-    if (!fs.existsSync(skillDir)) {
-      if (repairedRuntimeJids > 0) {
-        return {
-          success: true,
-          invalidatedRuntimeJids: repairedRuntimeJids,
-        };
-      }
-      return {
-        success: false,
-        error: 'Skill not found or is a project-level skill',
-      };
-    }
-    const referencedByProfiles = referencedByCustomSkillProfiles(userId, [
-      skillId,
-    ]);
-    if (referencedByProfiles.length > 0) {
-      return {
-        success: false,
-        error: `以下智能体正在使用该 Skill：${referencedByProfiles
-          .map((profile) => profile.name)
-          .join(', ')}`,
-      };
-    }
-    if (!validateSkillPath(userDir, skillDir)) {
-      return { success: false, error: 'Invalid skill path' };
-    }
-
-    try {
-      const result = await mutateCapabilityAroundRuntimeQuiesce(
-        impact,
-        `Skill ${skillId} deleted`,
-        () => deleteSkillForUserUnlocked(userId, skillId),
-      );
-      return {
-        ...result.value,
-        invalidatedRuntimeJids: result.invalidatedRuntimeJids,
-      };
-    } catch (error) {
-      const failure = skillRuntimeMutationFailure(error, 'Skill deletion');
-      return {
-        success: false,
-        error: failure?.error ?? 'Failed to delete Skill safely',
-        retryable: failure?.retryable ?? true,
-      };
-    }
-  });
+  options?: {
+    requestId?: string;
+    sourceGroup?: string;
+    groupFolder?: string;
+    isAgentCaller?: boolean;
+  },
+): Promise<SkillDeleteResult> {
+  return serviceDeleteSkillForUser(userId, skillId, options);
 }
 
 // 批量删除所有用户级技能（清理旧的同步副本）
@@ -1356,32 +1295,14 @@ async function installSkillForUserUnlocked(
 async function installSkillForUser(
   userId: string,
   pkg: string,
-): Promise<{
-  success: boolean;
-  installed?: string[];
-  error?: string;
-  retryable?: boolean;
-  invalidatedRuntimeJids?: number;
-}> {
-  try {
-    const result = await withUserSkillRuntimeMutation(
-      userId,
-      undefined,
-      'Skill package installation changed managed capabilities',
-      () => installSkillForUserUnlocked(userId, pkg),
-    );
-    return {
-      ...result.value,
-      invalidatedRuntimeJids: result.invalidatedRuntimeJids,
-    };
-  } catch (error) {
-    const failure = skillRuntimeMutationFailure(error, 'Skill installation');
-    return {
-      success: false,
-      error: failure?.error ?? 'Failed to install Skill safely',
-      retryable: failure?.retryable ?? true,
-    };
-  }
+  options?: {
+    requestId?: string;
+    sourceGroup?: string;
+    groupFolder?: string;
+    isAgentCaller?: boolean;
+  },
+): Promise<SkillInstallResult> {
+  return serviceInstallSkillForUser(userId, pkg, options);
 }
 
 /**
@@ -1415,6 +1336,20 @@ skillsRoutes.post('/install', authMiddleware, async (c) => {
     installed: result.installed,
     invalidated_runtime_jids: result.invalidatedRuntimeJids ?? 0,
   });
+});
+
+// GET /api/skills/requests/:requestId - 查询能力变更执行状态
+skillsRoutes.get('/requests/:requestId', authMiddleware, (c) => {
+  const requestId = c.req.param('requestId');
+  const authUser = c.get('user') as AuthUser;
+  const request = getCapabilityMutationRequest(requestId);
+  if (!request) {
+    return c.json({ error: 'Mutation request not found' }, 404);
+  }
+  if (request.userId !== authUser.id && authUser.role !== 'admin') {
+    return c.json({ error: 'Forbidden' }, 403);
+  }
+  return c.json({ success: true, request });
 });
 
 // Reinstall a skill by its ID — requires the skill to have a packageName in the manifest.
@@ -1596,5 +1531,17 @@ skillsRoutes.post('/:id/reinstall', authMiddleware, async (c) => {
   });
 });
 
-export { getUserSkillsDir, installSkillForUser, deleteSkillForUser };
+export {
+  getUserSkillsDir,
+  installSkillForUser,
+  deleteSkillForUser,
+  installSkillForUserUnlocked,
+  deleteSkillForUserUnlocked,
+  withUserSkillRuntimeMutation,
+  withUserSkillMutationLock,
+  skillRuntimeMutationFailure,
+  getCapabilityMutationRequest,
+  listPendingCapabilityMutations,
+  applyPendingCapabilityMutations,
+};
 export default skillsRoutes;

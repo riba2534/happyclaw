@@ -52,6 +52,8 @@ vi.mock('../src/agent-profile-runtime.js', () => ({
 }));
 
 const runtime = await import('../src/capability-runtime-mutation.js');
+const skillService = await import('../src/skill-install-service.js');
+const Database = (await import('better-sqlite3')).default;
 
 function profile(id: string, mcp: { mode: string; ids: string[] }) {
   return {
@@ -138,5 +140,96 @@ describe('capability runtime mutation invalidation', () => {
     expect(repaired).toBe(1);
     expect(state.deletedFolders).toEqual(['u1-inherit-folder']);
     expect(state.unblocked).toEqual([['web:u1-inherit-folder']]);
+  });
+
+  test('R06: agent caller mutation persists accepted requestId without killing caller immediately, and executes at turn boundary', async () => {
+    const memDb = new Database(':memory:');
+    skillService.createCapabilityMutationSchema(memDb);
+    skillService.bindCapabilityMutationDatabase(memDb);
+
+    state.profiles.set('u1', [
+      {
+        id: 'u1-inherit',
+        runtime_policy: {
+          mcp: { mode: 'inherit', ids: [] },
+          skills: { mode: 'inherit', ids: [] },
+        },
+      },
+    ]);
+    state.workspaces.set('u1-inherit', workspace('u1-inherit-folder'));
+
+    const requestId = 'req-test-r06-1';
+    // 1. Agent calls installSkillForUser in its own turn
+    const agentCallResult = await skillService.installSkillForUser(
+      'u1',
+      'owner/skill-test',
+      {
+        requestId,
+        sourceGroup: 'web:u1-inherit-folder',
+        groupFolder: 'u1-inherit-folder',
+        isAgentCaller: true,
+      },
+    );
+
+    // Verify it is accepted immediately
+    expect(agentCallResult).toMatchObject({
+      success: true,
+      accepted: true,
+      requestId,
+    });
+    // Caller is NOT killed immediately!
+    expect(state.deletedFolders).toEqual([]);
+
+    // Check DB persistence
+    const saved = skillService.getCapabilityMutationRequest(requestId);
+    expect(saved).toMatchObject({
+      requestId,
+      userId: 'u1',
+      status: 'accepted',
+      target: 'owner/skill-test',
+    });
+
+    // 2. Turn completion boundary: apply pending mutations
+    // Mock installer commit
+    vi.spyOn(
+      skillService.skillMutationExecutor,
+      'installSkillForUserUnlocked',
+    ).mockResolvedValueOnce({
+      success: true,
+      installed: ['skill-test'],
+    });
+
+    const applied = await skillService.applyPendingCapabilityMutations({
+      groupFolder: 'u1-inherit-folder',
+    });
+    expect(applied).toEqual({ applied: 1, failed: 0, skipped: 0 });
+
+    // After turn boundary execution, caller workspace is quiesced
+    expect(state.deletedFolders).toEqual(['u1-inherit-folder']);
+
+    // Check final status in DB
+    const finalReq = skillService.getCapabilityMutationRequest(requestId);
+    expect(finalReq?.status).toBe('applied');
+    expect(JSON.parse(finalReq?.resultJson || '[]')).toEqual(['skill-test']);
+
+    // 3. Idempotent check: calling with same requestId returns existing applied result
+    const idempotentCall = await skillService.installSkillForUser(
+      'u1',
+      'owner/skill-test',
+      {
+        requestId,
+        sourceGroup: 'web:u1-inherit-folder',
+        groupFolder: 'u1-inherit-folder',
+        isAgentCaller: true,
+      },
+    );
+    expect(idempotentCall).toMatchObject({
+      success: true,
+      accepted: false,
+      installed: ['skill-test'],
+    });
+
+    skillService.bindCapabilityMutationDatabase(null);
+    memDb.close();
   });
 });

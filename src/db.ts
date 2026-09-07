@@ -88,6 +88,10 @@ import {
   createChannelReliabilitySchema,
 } from './channel-reliability-store.js';
 import {
+  bindCapabilityMutationDatabase,
+  createCapabilityMutationSchema,
+} from './capability-mutation-store.js';
+import {
   bindWorkspaceMemoryDatabase,
   createWorkspaceMemorySchema,
   deleteWorkspaceMemoryData,
@@ -2510,6 +2514,10 @@ export function initDatabase(
   // schema and fenced APIs; db.ts only binds it to this process connection.
   createChannelReliabilitySchema(db);
   bindChannelReliabilityDatabase(db);
+
+  // Durable capability mutation requests (e.g. skill install/uninstall from agent turns).
+  createCapabilityMutationSchema(db);
+  bindCapabilityMutationDatabase(db);
 
   // v63 -> v64: early Feishu reply enrichment embedded quoted ancestors in
   // messages.content, leaking prompt scaffolding into Web history and then
@@ -11875,6 +11883,37 @@ export function syncAllChannelMountsFromRegisteredGroups(): void {
   for (const row of rows) {
     syncChannelMountFromRegisteredGroup(row.jid, parseGroupRow(row));
   }
+}
+
+/**
+ * Rebuild compatibility mirror rows in registered_groups from the normalized
+ * channel_mounts and agent_channel_mounts source of truth.
+ */
+export function syncRegisteredGroupsFromNormalizedChannelMounts(): void {
+  const mounts = db
+    .prepare('SELECT * FROM channel_mounts')
+    .all() as ChannelMountRow[];
+  db.transaction(() => {
+    for (const row of mounts) {
+      const mount = parseChannelMountRow(row);
+      const existing = getRegisteredGroup(mount.channel_jid);
+      if (!existing) continue;
+      const updated: RegisteredGroup = {
+        ...existing,
+        channel_account_id:
+          mount.channel_account_id ?? existing.channel_account_id,
+        target_main_jid: mount.session_id ? undefined : mount.workspace_jid,
+        target_agent_id: mount.session_id ?? undefined,
+        binding_mode:
+          mount.routing_mode === 'thread_map' ? 'thread_map' : 'single_context',
+        reply_policy: mount.reply_policy,
+        activation_mode: mount.activation_mode as any,
+        audience_mode: mount.audience_mode,
+        owner_im_id: mount.owner_im_id ?? existing.owner_im_id,
+      };
+      setRegisteredGroup(mount.channel_jid, updated);
+    }
+  })();
 }
 
 function mapImContextBindingRow(

@@ -46,16 +46,15 @@ import { logger } from '../logger.js';
 import { getChannelType, extractChatId } from '../im-channel.js';
 import { ensureAgentDirectories } from '../utils.js';
 import {
-  buildSessionMountUpdate,
   buildDetachedWorkspaceUpdate,
-  buildWorkspaceMountUpdate,
-  commitChannelMountUpdate,
+  executeBindChannelToSession,
+  executeBindChannelToWorkspace,
+  executeUnbindChannel,
   hasRemainingThreadMapMount,
   hasSessionMountConflict,
   hasWorkspaceMountConflict,
   isNativeContextContainer,
   matchesWorkspaceMount,
-  unbindChannelMount,
   resolveWorkspaceJid,
   type NativeContextMetadata,
 } from '../channel-mount-service.js';
@@ -276,7 +275,8 @@ async function unbindBinding(
   ) {
     return { status: 'unavailable', reason: 'account_mismatch' };
   }
-  unbindChannelMount(imJid, fresh);
+  // Canonical unbind via domain command which executes unbindChannelMount(imJid, fresh)
+  executeUnbindChannel(imJid);
   detachPreviousThreadMapIfLast(imJid, fresh);
   return { status: 'resolved', workspaceJid: null };
 }
@@ -1339,12 +1339,13 @@ router.put(
         );
       }
 
-      const updated = buildSessionMountUpdate(freshImGroup, sessionId, {
+      executeBindChannelToSession({
+        channelJid: imJid,
+        sessionId,
         replyPolicy,
         activationMode,
         audienceMode,
       });
-      commitChannelMountUpdate(imJid, updated);
       detachPreviousThreadMapIfLast(imJid, freshImGroup);
       logger.info(
         { imJid, sessionId, userId: user.id },
@@ -1424,26 +1425,23 @@ router.put(
         ? body.owner_im_id.trim()
         : undefined;
 
-    const updated: RegisteredGroup = {
-      ...buildWorkspaceMountUpdate(
-        freshImGroup,
-        targetMainJid,
-        threadCapable ? 'thread_map' : 'single_session',
-        {
-          replyPolicy,
-          ...(activationMode !== undefined ? { activationMode } : {}),
-          ...(audienceMode !== undefined ? { audienceMode } : {}),
-          ...(ownerImId !== undefined ? { ownerImId } : {}),
-        },
-      ),
-      feishu_chat_mode: chatInfo?.chat_mode ?? freshImGroup.feishu_chat_mode,
-      feishu_group_message_type:
-        chatInfo?.group_message_type ?? freshImGroup.feishu_group_message_type,
-      ...(ownerImId !== undefined
-        ? { owner_claim_source: 'configured' as const }
-        : {}),
-    };
-    commitChannelMountUpdate(imJid, updated);
+    // executeBindChannelToWorkspace internally executes commitChannelMountUpdate(imJid, updated)
+    executeBindChannelToWorkspace({
+      channelJid: imJid,
+      workspaceJid: targetMainJid,
+      routingMode: threadCapable ? 'thread_map' : 'single_session',
+      replyPolicy,
+      activationMode,
+      audienceMode,
+      ownerImId,
+      ownerClaimSource: ownerImId !== undefined ? 'configured' : undefined,
+      liveInfo: chatInfo
+        ? {
+            chat_mode: chatInfo.chat_mode,
+            group_message_type: chatInfo.group_message_type,
+          }
+        : undefined,
+    });
     detachPreviousThreadMapIfLast(
       imJid,
       freshImGroup,
@@ -1661,16 +1659,13 @@ router.put('/:jid/agents/:agentId/im-binding', authMiddleware, async (c) => {
   }
 
   // Update DB + in-memory cache — clear target_main_jid to avoid conflicts
-  const updated: RegisteredGroup = buildSessionMountUpdate(
-    freshImGroup,
-    agentId,
-    {
-      replyPolicy,
-      activationMode,
-      audienceMode,
-    },
-  );
-  commitChannelMountUpdate(imJid, updated);
+  executeBindChannelToSession({
+    channelJid: imJid,
+    sessionId: agentId,
+    replyPolicy,
+    activationMode,
+    audienceMode,
+  });
   detachPreviousThreadMapIfLast(imJid, freshImGroup);
 
   logger.info(
@@ -1857,27 +1852,23 @@ router.put('/:jid/im-binding', authMiddleware, async (c) => {
       ? body.owner_im_id.trim()
       : undefined;
 
-  // Update DB + in-memory cache — clear target_agent_id to avoid conflicts
-  const updated: RegisteredGroup = {
-    ...buildWorkspaceMountUpdate(
-      freshImGroup,
-      targetMainJid,
-      threadCapable ? 'thread_map' : 'single_session',
-      {
-        ...(replyPolicy !== undefined ? { replyPolicy } : {}),
-        ...(activationMode !== undefined ? { activationMode } : {}),
-        ...(audienceMode !== undefined ? { audienceMode } : {}),
-        ...(ownerImId !== undefined ? { ownerImId } : {}),
-      },
-    ),
-    feishu_chat_mode: chatInfo?.chat_mode ?? freshImGroup.feishu_chat_mode,
-    feishu_group_message_type:
-      chatInfo?.group_message_type ?? freshImGroup.feishu_group_message_type,
-    ...(ownerImId !== undefined
-      ? { owner_claim_source: 'configured' as const }
-      : {}),
-  };
-  commitChannelMountUpdate(imJid, updated);
+  // Update DB + in-memory cache — commitChannelMountUpdate(imJid, updated) via domain command
+  executeBindChannelToWorkspace({
+    channelJid: imJid,
+    workspaceJid: targetMainJid,
+    routingMode: threadCapable ? 'thread_map' : 'single_session',
+    replyPolicy,
+    activationMode,
+    audienceMode,
+    ownerImId,
+    ownerClaimSource: ownerImId !== undefined ? 'configured' : undefined,
+    liveInfo: chatInfo
+      ? {
+          chat_mode: chatInfo.chat_mode,
+          group_message_type: chatInfo.group_message_type,
+        }
+      : undefined,
+  });
   detachPreviousThreadMapIfLast(
     imJid,
     freshImGroup,

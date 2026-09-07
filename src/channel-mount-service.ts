@@ -20,6 +20,7 @@ import {
   createAgent,
   ensureChatExists,
   getChannelAccount,
+  getChannelMount,
   getAllRegisteredGroups,
   getDefaultChannelAccount,
   getJidsByFolder,
@@ -826,4 +827,169 @@ export function buildNativeThreadWorkspaceUpdate(
         : 'native_thread',
     conversation_nav_mode: 'vertical_threads',
   };
+}
+
+// --- Domain Commands for Channel Mount Management ---
+
+export interface BindChannelToWorkspaceCommand {
+  channelJid: string;
+  workspaceJid: string;
+  routingMode?: ChannelRoutingMode;
+  replyPolicy?: 'source_only' | 'mirror';
+  activationMode?: RegisteredGroup['activation_mode'];
+  audienceMode?: string;
+  ownerImId?: string | null;
+  ownerClaimSource?: RegisteredGroup['owner_claim_source'];
+  liveInfo?: NativeContextMetadata;
+}
+
+export interface BindChannelToSessionCommand {
+  channelJid: string;
+  sessionId: string;
+  replyPolicy?: 'source_only' | 'mirror';
+  activationMode?: RegisteredGroup['activation_mode'];
+  audienceMode?: string;
+  ownerImId?: string | null;
+  ownerClaimSource?: RegisteredGroup['owner_claim_source'];
+  liveInfo?: NativeContextMetadata;
+}
+
+/**
+ * Domain command to bind an IM channel to a workspace.
+ * Atomically persists the channel mount in normalized tables and synchronizes
+ * the legacy registered_groups compatibility mirror within the repository boundary.
+ */
+export function executeBindChannelToWorkspace(
+  command: BindChannelToWorkspaceCommand,
+): ChannelMount {
+  const current = getRegisteredGroup(command.channelJid) ?? {
+    jid: command.channelJid,
+    name: command.channelJid,
+    folder: command.channelJid.replace(/:/g, '_'),
+    added_at: new Date().toISOString(),
+  };
+  const updated: RegisteredGroup = {
+    ...buildWorkspaceMountUpdate(
+      current,
+      command.workspaceJid,
+      command.routingMode ?? 'single_session',
+      {
+        replyPolicy: command.replyPolicy,
+        activationMode: command.activationMode,
+        audienceMode: command.audienceMode as any,
+        ownerImId: command.ownerImId,
+      },
+    ),
+    ...(command.ownerClaimSource
+      ? { owner_claim_source: command.ownerClaimSource }
+      : {}),
+    ...(command.liveInfo?.chat_mode
+      ? { feishu_chat_mode: command.liveInfo.chat_mode }
+      : {}),
+    ...(command.liveInfo?.group_message_type
+      ? { feishu_group_message_type: command.liveInfo.group_message_type }
+      : {}),
+  };
+  commitChannelMountUpdate(command.channelJid, updated);
+  const mount = getChannelMount(command.channelJid);
+  if (!mount) {
+    throw new Error(`Failed to commit channel mount for ${command.channelJid}`);
+  }
+  return mount;
+}
+
+/**
+ * Domain command to bind an IM direct chat to an agent session.
+ * Atomically persists normalized agent mounts and legacy compatibility mirror.
+ */
+export function executeBindChannelToSession(
+  command: BindChannelToSessionCommand,
+): ChannelMount {
+  const current = getRegisteredGroup(command.channelJid) ?? {
+    jid: command.channelJid,
+    name: command.channelJid,
+    folder: command.channelJid.replace(/:/g, '_'),
+    added_at: new Date().toISOString(),
+  };
+  const updated: RegisteredGroup = {
+    ...buildSessionMountUpdate(current, command.sessionId, {
+      replyPolicy: command.replyPolicy,
+      activationMode: command.activationMode,
+      audienceMode: command.audienceMode as any,
+      ownerImId: command.ownerImId,
+    }),
+    ...(command.ownerClaimSource
+      ? { owner_claim_source: command.ownerClaimSource }
+      : {}),
+    ...(command.liveInfo?.chat_mode
+      ? { feishu_chat_mode: command.liveInfo.chat_mode }
+      : {}),
+    ...(command.liveInfo?.group_message_type
+      ? { feishu_group_message_type: command.liveInfo.group_message_type }
+      : {}),
+  };
+  commitChannelMountUpdate(command.channelJid, updated);
+  const mount = getChannelMount(command.channelJid);
+  if (!mount) {
+    throw new Error(`Failed to commit channel mount for ${command.channelJid}`);
+  }
+  return mount;
+}
+
+/**
+ * Domain command to unbind an IM channel from all targets.
+ */
+export function executeUnbindChannel(
+  channelJid: string,
+  options: {
+    clearMatchingMainOwnerFolder?: string;
+    resetActivation?: boolean;
+  } = {},
+): void {
+  const current = getRegisteredGroup(channelJid);
+  if (!current) return;
+  const updated = buildUnmountUpdate(current, options);
+  commitChannelMountUpdate(channelJid, updated, options);
+}
+
+export interface RepairLeftoverDirectMountCommand {
+  channelJid: string;
+  group: RegisteredGroup;
+  workspaceJid: string;
+  workspaceFolder: string;
+  userId: string;
+  onCreating?: (agent: SubAgent, workspaceJid: string) => void;
+}
+
+/**
+ * Dedicated domain command to repair leftover classifiable direct mounts
+ * into isolated channel_direct sessions with matching owner folder clearing.
+ */
+export function executeRepairLeftoverDirectMount(
+  command: RepairLeftoverDirectMountCommand,
+): ChannelMount {
+  const mounted = ensureDirectChannelSessionMount({
+    sourceJid: command.channelJid,
+    group: command.group,
+    workspaceJid: command.workspaceJid,
+    userId: command.userId,
+    force: true,
+    mountOptions: { replyPolicy: 'source_only' },
+    onCreating: command.onCreating,
+  });
+  if (!mounted.target_agent_id || mounted.target_main_jid) {
+    throw new Error(
+      `Failed to remount leftover DM onto channel_direct: ${command.channelJid}`,
+    );
+  }
+  commitChannelMountUpdate(command.channelJid, mounted, {
+    clearMatchingMainOwnerFolder: command.workspaceFolder,
+  });
+  const mount = getChannelMount(command.channelJid);
+  if (!mount) {
+    throw new Error(
+      `Failed to commit repaired channel mount for ${command.channelJid}`,
+    );
+  }
+  return mount;
 }

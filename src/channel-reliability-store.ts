@@ -1816,6 +1816,7 @@ function claimChannelOutbox(
   const now = isoNow(options.now);
   const expires = addMilliseconds(now, leaseMs);
   return connection.transaction(() => {
+    reconcileExpiredChannelOutbox(now);
     const candidate = connection
       .prepare(
         `SELECT * FROM channel_outbox

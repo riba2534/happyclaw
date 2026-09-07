@@ -18,10 +18,15 @@ const tmpGroupsDir = path.join(tmpDir, 'groups');
 fs.mkdirSync(tmpStoreDir, { recursive: true });
 fs.mkdirSync(tmpGroupsDir, { recursive: true });
 
-vi.mock('../src/config.js', async () => ({
-  STORE_DIR: tmpStoreDir,
-  GROUPS_DIR: tmpGroupsDir,
-}));
+vi.mock('../src/config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/config.js')>();
+  return {
+    ...actual,
+    DATA_DIR: tmpDir,
+    STORE_DIR: tmpStoreDir,
+    GROUPS_DIR: tmpGroupsDir,
+  };
+});
 
 vi.mock('../src/logger.js', () => ({
   logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
