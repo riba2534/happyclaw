@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# HappyClaw 生产原子回滚脚本 (R11 规范：不可变运行根、事务锁继承与严格错误阻断)
+# HappyClaw 生产原子回滚脚本 (R11 规范：不可变运行根、事务锁继承与全事务错误阻断)
 #
 # 架构与安全保证：
 # 1. 持有相同部署排他锁，支持父子事务继承锁 (HAPPYCLAW_LOCK_RUN_ID)，防止回滚与并发发布冲突；
 # 2. 单步原子重命名将 .releases/current 指针切回目标不可变版本根 (.releases/store/<SHA>)；
-# 3. 严格镜像跟随：从不可变元数据准确读取并内存原地覆写还原目标不可变 Agent 镜像；镜像元数据缺失直接阻断；
-# 4. 严格错误阻断：wait 工具缺失、服务重启或业务就绪验证失败时必须严格以非 0 退出码退出；
+# 3. 严格镜像强校验：无论 store 是否存在，均对目标不可变 Agent 镜像执行完整的拉取、OCI revision
+#    及架构核对；镜像元数据缺失或不匹配直接阻断；
+# 4. 严格错误阻断与事务回退：若重启或业务就绪验证失败，自动回退至回滚前的版本并严格非 0 退出；
 # 5. 边界说明：数据库若已不可逆向前迁移，所有者现行政策不保留数据备份，此时禁止降级数据库，
 #    必须以前向修复恢复服务。
 # ==============================================================================
@@ -24,8 +25,10 @@ LOCK_FILE="${ROOT_DIR}/.deploy.lock"
 
 RUN_ID="rollback_$(date +%s%N 2>/dev/null || date +%s)_$$"
 TARGET_SHA="${1:-${HAPPYCLAW_ROLLBACK_SHA:-}}"
-SKIP_RESTART="${HAPPYCLAW_SKIP_RESTART:-0}"
-SKIP_READINESS="${HAPPYCLAW_SKIP_READINESS:-0}"
+
+ACTIVATION_IN_PROGRESS=0
+ACTIVATION_SUCCESS=0
+ROLLBACK_IN_PROGRESS=0
 
 log_info() {
   printf "[INFO] %s\n" "$*"
@@ -138,13 +141,75 @@ release_lock() {
   ' "${LOCK_FILE}" "${RUN_ID}"
 }
 
-trap release_lock EXIT INT TERM
+# 统一退出处理与回退
+handle_exit() {
+  local exit_code=$?
+  if [ "${ACTIVATION_IN_PROGRESS}" -eq 1 ] && [ "${ACTIVATION_SUCCESS}" -eq 0 ] && [ "${ROLLBACK_IN_PROGRESS}" -eq 0 ]; then
+    ROLLBACK_IN_PROGRESS=1
+    log_error "回滚流程在激活或验证阶段发生故障（退出码: ${exit_code}），执行自愈回退事务..."
+    set +e
+    if [ -n "${CURRENT_ACTIVE_SHA}" ] && [ -d "${STORE_DIR}/${CURRENT_ACTIVE_SHA}" ]; then
+      atomic_symlink_switch "store/${CURRENT_ACTIVE_SHA}" "${CURRENT_LINK}"
+      git switch --detach "${CURRENT_ACTIVE_SHA}" 2>/dev/null || true
+      if [ -n "${CURRENT_ACTIVE_IMAGE}" ]; then
+        update_env_file "${CURRENT_ACTIVE_IMAGE}"
+      fi
+      if command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -q "com.riba2534.happyclaw"; then
+        launchctl kickstart -k "gui/$(id -u)/com.riba2534.happyclaw" 2>/dev/null || true
+      fi
+    fi
+  fi
+  release_lock
+  if [ "${exit_code}" -ne 0 ]; then
+    exit "${exit_code}"
+  fi
+}
+
+trap handle_exit EXIT INT TERM
 
 cd "${ROOT_DIR}"
 
 log_info "=== HappyClaw 原子回滚流程开始 ==="
 
 acquire_lock
+
+# 记录当前在线版本，便于自愈回退
+get_active_release_sha() {
+  if [ -L "${CURRENT_LINK}" ]; then
+    local link_target
+    link_target="$(readlink "${CURRENT_LINK}" 2>/dev/null || true)"
+    local base
+    base="$(basename "${link_target}")"
+    if [ -n "${base}" ] && [ "${base}" != "current" ]; then
+      echo "${base}"
+      return
+    fi
+  fi
+  git rev-parse HEAD
+}
+
+get_active_release_image() {
+  if [ -f "${CURRENT_LINK}/version.json" ]; then
+    local img
+    img="$(node -e "try { const v = JSON.parse(require('fs').readFileSync('${CURRENT_LINK}/version.json','utf8')); process.stdout.write(v.agentImage || ''); } catch {}")"
+    if [ -n "${img}" ]; then
+      echo "${img}"
+      return
+    fi
+  fi
+  if [ -f "${ROOT_DIR}/.env" ]; then
+    local img_env
+    img_env="$(grep '^CONTAINER_IMAGE=' "${ROOT_DIR}/.env" 2>/dev/null | cut -d'=' -f2- | tr -d '"'\'' ' || true)"
+    if [ -n "${img_env}" ]; then
+      echo "${img_env}"
+      return
+    fi
+  fi
+  echo ""
+}
+
+CURRENT_ACTIVE_SHA="$(get_active_release_sha)"
+CURRENT_ACTIVE_IMAGE="$(get_active_release_image)"
 
 if [ -z "${TARGET_SHA}" ]; then
   if [ -f "${PREVIOUS_DIR}/meta.json" ]; then
@@ -191,12 +256,12 @@ is_store_valid() {
 }
 
 # 3. 读取目标回滚版本的镜像身份
-PREVIOUS_IMAGE=""
-if [ -f "${TARGET_STORE_DIR}/version.json" ]; then
+PREVIOUS_IMAGE="${HAPPYCLAW_AGENT_IMAGE:-}"
+if [ -z "${PREVIOUS_IMAGE}" ] && [ -f "${TARGET_STORE_DIR}/version.json" ]; then
   PREVIOUS_IMAGE="$(node -e "try { const m = JSON.parse(require('fs').readFileSync('${TARGET_STORE_DIR}/version.json','utf8')); process.stdout.write(m.agentImage || ''); } catch {}")"
 fi
 if [ -z "${PREVIOUS_IMAGE}" ] && [ -f "${PREVIOUS_DIR}/meta.json" ]; then
-  PREVIOUS_IMAGE="$(node -e "try { const m = JSON.parse(require('fs').readFileSync('${PREVIOUS_DIR}/meta.json','utf8')); if (m.previousSha === '${TARGET_SHA}') process.stdout.write(m.previousImage || m.agentImage || ''); } catch {}")"
+  PREVIOUS_IMAGE="$(node -e "try { const m = JSON.parse(require('fs').readFileSync('${PREVIOUS_DIR}/meta.json','utf8')); if (m.previousSha === '${TARGET_SHA}' || m.currentSha === '${TARGET_SHA}') process.stdout.write(m.previousImage || m.agentImage || ''); } catch {}")"
 fi
 
 if [ -z "${PREVIOUS_IMAGE}" ]; then
@@ -204,22 +269,62 @@ if [ -z "${PREVIOUS_IMAGE}" ]; then
   exit 1
 fi
 
-# 检查不可变版本库中是否存在预编译好的完整产物
+# 关键：无论 store 是否存在，均对目标镜像做与 deploy 完全相同的严格校验
+log_info "校验回滚目标不可变 Agent 镜像身份: ${PREVIOUS_IMAGE}..."
+local_regex="^riba2534/happyclaw-agent:git-${TARGET_SHA}(-headroom)?$"
+if ! [[ "${PREVIOUS_IMAGE}" =~ ${local_regex} ]]; then
+  log_error "镜像 '${PREVIOUS_IMAGE}' 违背规范！回滚镜像必须精确对应目标提交: riba2534/happyclaw-agent:git-${TARGET_SHA}[-headroom]"
+  exit 1
+fi
+
+if ! command -v docker >/dev/null 2>&1; then
+  log_error "未检测到 Docker CLI！回滚必须验证容器 Agent 镜像完整性！"
+  exit 1
+fi
+
+log_info "拉取 Docker 镜像并校验 OCI revision 标签..."
+docker pull "${PREVIOUS_IMAGE}" || {
+  log_error "拉取 Docker 镜像 ${PREVIOUS_IMAGE} 失败！"
+  exit 1
+}
+
+LABEL_REV="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${PREVIOUS_IMAGE}" 2>/dev/null || echo "")"
+if [ "${LABEL_REV}" != "${TARGET_SHA}" ]; then
+  log_error "Docker 镜像 ${PREVIOUS_IMAGE} 的 org.opencontainers.image.revision (${LABEL_REV}) 与目标提交 SHA (${TARGET_SHA}) 不匹配！"
+  exit 1
+fi
+
+IMAGE_ARCH="$(docker inspect --format '{{ .Architecture }}' "${PREVIOUS_IMAGE}" 2>/dev/null || echo "")"
+IMAGE_OS="$(docker inspect --format '{{ .Os }}' "${PREVIOUS_IMAGE}" 2>/dev/null || echo "")"
+if [ "${IMAGE_OS}" != "linux" ] || { [ "${IMAGE_ARCH}" != "amd64" ] && [ "${IMAGE_ARCH}" != "arm64" ]; }; then
+  log_error "Docker 镜像 ${PREVIOUS_IMAGE} 操作系统/架构 (${IMAGE_OS}/${IMAGE_ARCH}) 不符合要求（必须为 linux/amd64 或 linux/arm64）！"
+  exit 1
+fi
+
+IMAGE_ID="$(docker inspect --format '{{ .Id }}' "${PREVIOUS_IMAGE}" 2>/dev/null || echo "")"
+if [ -z "${IMAGE_ID}" ]; then
+  log_error "无法获取 Docker 镜像 ${PREVIOUS_IMAGE} 的 ID / Digest！"
+  exit 1
+fi
+
+# 检查不可变版本库中是否存在预编译好的完整产物，若缺失则委托构建入库
 if [ ! -d "${TARGET_STORE_DIR}" ] || ! is_store_valid "${TARGET_STORE_DIR}" "${TARGET_SHA}"; then
   log_warn "不可变版本库 ${TARGET_STORE_DIR} 缺失完整产物，转入独立候选发布流程重建目标版本..."
-  # 关键：透传 HAPPYCLAW_LOCK_RUN_ID，全程保持同一排他锁！
   HAPPYCLAW_EXPECTED_SHA="${TARGET_SHA}" \
   HAPPYCLAW_AGENT_IMAGE="${PREVIOUS_IMAGE}" \
   HAPPYCLAW_LOCK_RUN_ID="${RUN_ID}" \
-  HAPPYCLAW_SKIP_RESTART=1 \
-  HAPPYCLAW_SKIP_READINESS=1 \
+  HAPPYCLAW_BUILD_ONLY=1 \
   "${SCRIPT_DIR}/deploy-release.sh"
-else
-  log_info "从不可变版本库 store/${TARGET_SHA} 单步原子切换当前运行指针..."
-  atomic_symlink_switch "store/${TARGET_SHA}" "${CURRENT_LINK}"
-  git switch --detach "${TARGET_SHA}"
+fi
 
-  log_info "还原目标版本不可变镜像: ${PREVIOUS_IMAGE}..."
+# 再次验证目标 store 合法性
+if ! is_store_valid "${TARGET_STORE_DIR}" "${TARGET_SHA}"; then
+  log_error "回滚目标不可变运行库 ${TARGET_STORE_DIR} 校验失败！拒绝切换！"
+  exit 1
+fi
+
+update_env_file() {
+  local image_tag="$1"
   node -e '
     const fs = require("fs");
     const envPath = process.argv[1];
@@ -237,37 +342,43 @@ else
       content += `\nHAPPYCLAW_SKIP_MIGRATION_BACKUP=1\n`;
     }
     fs.writeFileSync(envPath, content, { mode: 0o600 });
-  ' "${ROOT_DIR}/.env" "${PREVIOUS_IMAGE}"
-fi
+  ' "${ROOT_DIR}/.env" "${image_tag}"
+}
+
+# 进入激活事务保护阶段
+ACTIVATION_IN_PROGRESS=1
+
+log_info "从不可变版本库 store/${TARGET_SHA} 单步原子切换当前运行指针..."
+atomic_symlink_switch "store/${TARGET_SHA}" "${CURRENT_LINK}"
+git switch --detach "${TARGET_SHA}"
+
+log_info "还原目标版本不可变镜像: ${PREVIOUS_IMAGE}..."
+update_env_file "${PREVIOUS_IMAGE}"
 
 # 4. 服务受控重启与业务就绪严格验证（失败必须以非 0 退出码退出）
-if [ "${SKIP_RESTART}" != "1" ]; then
-  if command -v launchctl >/dev/null 2>&1; then
-    if launchctl list | grep -q "com.riba2534.happyclaw"; then
-      log_info "通过 launchctl 重启服务单元 com.riba2534.happyclaw..."
-      launchctl kickstart -k "gui/$(id -u)/com.riba2534.happyclaw"
-    else
-      log_error "未检测到运行中的 launchd 服务单元 com.riba2534.happyclaw！"
-      exit 1
-    fi
+if command -v launchctl >/dev/null 2>&1; then
+  if launchctl list 2>/dev/null | grep -q "com.riba2534.happyclaw"; then
+    log_info "通过 launchctl 重启服务单元 com.riba2534.happyclaw..."
+    launchctl kickstart -k "gui/$(id -u)/com.riba2534.happyclaw"
   else
-    log_warn "未检测到 launchctl 命令，跳过 launchctl 重启（非 macOS/生产环境）。"
-  fi
-fi
-
-if [ "${SKIP_READINESS}" != "1" ]; then
-  if [ ! -f "${SCRIPT_DIR}/wait-for-readiness.mjs" ]; then
-    log_error "就绪检测工具 ${SCRIPT_DIR}/wait-for-readiness.mjs 缺失！拒绝虚假成功！"
+    log_error "未检测到运行中的 launchd 服务单元 com.riba2534.happyclaw！"
     exit 1
   fi
-  log_info "等待回滚后业务就绪探针并严格校验目标 SHA: ${TARGET_SHA}..."
-  "${SCRIPT_DIR}/wait-for-readiness.mjs" \
-    --port "${WEB_PORT:-3000}" \
-    --timeout 60 \
-    --expected-sha "${TARGET_SHA}" || {
-      log_error "回滚后业务就绪探针检查失败！服务未达到就绪状态！"
-      exit 1
-    }
+else
+  log_error "未检测到 launchctl 命令！回滚必须在 launchd 托管环境执行！"
+  exit 1
 fi
 
+if [ ! -f "${SCRIPT_DIR}/wait-for-readiness.mjs" ]; then
+  log_error "就绪检测工具 ${SCRIPT_DIR}/wait-for-readiness.mjs 缺失！拒绝虚假成功！"
+  exit 1
+fi
+
+log_info "等待回滚后业务就绪探针并严格校验目标 SHA: ${TARGET_SHA}..."
+node "${SCRIPT_DIR}/wait-for-readiness.mjs" \
+  --port "${WEB_PORT:-3000}" \
+  --timeout 60 \
+  --expected-sha "${TARGET_SHA}"
+
+ACTIVATION_SUCCESS=1
 log_info "=== 原子回滚成功完成！当前版本: $(git rev-parse HEAD) ==="
