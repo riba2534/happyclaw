@@ -11,7 +11,6 @@ import {
   updateTaskTemplate,
   deleteTaskTemplate,
   getTaskRunById,
-  getRegisteredGroup,
   getAllRegisteredGroups,
 } from '../db.js';
 import { canAccessGroup } from '../group-acl.js';
@@ -21,6 +20,7 @@ import {
   buildDraftFromRun,
   extractCandidateParametersFromPrompt,
 } from '../task-template-service.js';
+import { canUserAccessHistoricRun } from '../task-artifact-service.js';
 
 export const taskTemplatesRoutes = new Hono<{ Variables: Variables }>();
 
@@ -301,11 +301,15 @@ taskTemplatesRoutes.post('/from-run/:runId', (c) => {
     return c.json({ error: '运行记录未找到' }, 404);
   }
 
-  // Permission check: user must have access to the run's workspace
-  const workspace = getRegisteredGroup(run.definition_snapshot.chat_jid);
+  // Permission check: fail closed via canUserAccessHistoricRun
+  if (!canUserAccessHistoricRun(run, authUser)) {
+    return c.json({ error: '运行记录未找到' }, 404);
+  }
+
+  // Host mode check: non-admin cannot view/use host execution run details
   if (
-    workspace &&
-    !canAccessGroup({ id: authUser.id, role: authUser.role }, workspace)
+    run.definition_snapshot.execution_mode === 'host' &&
+    authUser.role !== 'admin'
   ) {
     return c.json({ error: '运行记录未找到' }, 404);
   }

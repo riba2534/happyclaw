@@ -102,7 +102,10 @@ import {
   buildAgentProfilePrompt,
   hasAgentProfilePrompts,
 } from './agent-profile-prompts.js';
-import { processCompletedRunArtifacts } from './task-artifact-service.js';
+import {
+  processCompletedRunArtifacts,
+  prepareTaskContinuationArtifacts,
+} from './task-artifact-service.js';
 import { stripAgentInternalTags } from './utils.js';
 import {
   markIsolatedTaskRunIpcComplete,
@@ -1101,6 +1104,12 @@ async function runTaskInner(
     })),
   );
 
+  prepareTaskContinuationArtifacts(
+    task.prompt,
+    workspace.folder,
+    workspace.jid,
+  );
+
   // Store task prompt as a user message in workspace chat so it's visible in
   // conversation. Sender attribution/audit must use the task's actual
   // creator (taskOwnerId), NOT workspaceOwner — otherwise an admin-created
@@ -1447,6 +1456,7 @@ async function runTaskInner(
         }
         await processCompletedRunArtifacts({
           runId: effectiveRunId,
+          taskId: task.id,
           resultText: result,
           ipcDirs: candidateIpcDirs,
           createdBy: task.created_by,
@@ -2274,6 +2284,12 @@ async function runGroupModeTask(
       { agentKind: 'main' },
     );
     const promptText = `${buildScheduledGroupTriggerFraming(interactionMode)}\n\n${task.prompt}`;
+
+    prepareTaskContinuationArtifacts(
+      task.prompt,
+      task.group_folder,
+      targetGroupJid,
+    );
     if (durableRun) {
       if (!deps.storeGroupPromptAndDeliverRun) {
         throw new Error(

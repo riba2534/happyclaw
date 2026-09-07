@@ -435,5 +435,114 @@ describe('R18: 任务模板体系、参数声明校验与草稿复用', () => {
       ).toBe(true);
       expect(candidates.templatePrompt).toContain('{{date}}');
     });
+
+    test('POST /from-run/:runId 权限 fail-closed：历史工作区删除或无权访问时严格返回 404', async () => {
+      const now = new Date().toISOString();
+      const ghostRunId = 'run-ghost-workspace';
+      const secretTaskId = 'task-secret-other';
+      db.createTask({
+        id: secretTaskId,
+        group_folder: 'ws-deleted',
+        chat_jid: 'web:deleted_workspace',
+        prompt: '机密任务',
+        schedule_type: 'cron',
+        schedule_value: '0 9 * * *',
+        context_mode: 'isolated',
+        execution_type: 'agent',
+        execution_mode: 'container',
+        status: 'active',
+        created_at: now,
+        created_by: 'charlie', // created by charlie
+      });
+
+      db.getRawDb()
+        .prepare(
+          `
+        INSERT INTO task_runs (
+          id, task_id, occurrence_key, trigger_type, scheduled_for,
+          definition_revision, definition_snapshot, status, attempt,
+          available_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 1, ?, 'success', 1, ?, ?, ?)
+      `,
+        )
+        .run(
+          ghostRunId,
+          secretTaskId,
+          'key:ghost',
+          'manual',
+          now,
+          JSON.stringify({
+            prompt: '机密运行记录',
+            group_folder: 'ws-deleted',
+            chat_jid: 'web:deleted_workspace',
+            execution_mode: 'container',
+          }),
+          now,
+          now,
+          now,
+        );
+
+      // 用户 Bob 并非该任务创建者，且工作区已不存在 -> 必须 fail-closed 返回 404
+      currentAuthUserId = 'bob';
+      const res = await taskTemplatesRoutes.fetch(
+        new Request(`http://localhost/from-run/${ghostRunId}`, {
+          method: 'POST',
+        }),
+      );
+      expect(res.status).toBe(404);
+
+      // 非管理员试图查看 host execution_mode 运行记录 -> 必须返回 404
+      const hostTaskId = 'task-host';
+      const hostRunId = 'run-host-admin';
+      db.createTask({
+        id: hostTaskId,
+        group_folder: 'ws-host',
+        chat_jid: 'web:ws_host',
+        prompt: '宿主机执行脚本',
+        schedule_type: 'cron',
+        schedule_value: '0 9 * * *',
+        context_mode: 'isolated',
+        execution_type: 'agent',
+        execution_mode: 'host',
+        status: 'active',
+        created_at: now,
+        created_by: 'alice',
+      });
+
+      db.getRawDb()
+        .prepare(
+          `
+        INSERT INTO task_runs (
+          id, task_id, occurrence_key, trigger_type, scheduled_for,
+          definition_revision, definition_snapshot, status, attempt,
+          available_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 1, ?, 'success', 1, ?, ?, ?)
+      `,
+        )
+        .run(
+          hostRunId,
+          hostTaskId,
+          'key:host',
+          'manual',
+          now,
+          JSON.stringify({
+            prompt: '宿主机执行脚本',
+            group_folder: 'ws-host',
+            chat_jid: 'web:ws_host',
+            execution_mode: 'host',
+          }),
+          now,
+          now,
+          now,
+        );
+
+      currentAuthUserId = 'alice'; // alice is member
+      const hostRes = await taskTemplatesRoutes.fetch(
+        new Request(`http://localhost/from-run/${hostRunId}`, {
+          method: 'POST',
+        }),
+      );
+      expect(hostRes.status).toBe(404);
+    });
   });
 });

@@ -1129,18 +1129,25 @@ The actual file types and size limit are enforced by the selected provider.`,
       },
       async (args) => {
         // Enforce task execution context: fail closed for regular chat sessions
-        const effectiveRunId = ctx.currentScheduledTaskRunId || null;
-        if (!ctx.isScheduledTask || !effectiveRunId) {
+        const isTaskContext = Boolean(
+          ctx.isScheduledTask ||
+          ctx.currentTaskId ||
+          ctx.currentScheduledTaskRunId,
+        );
+        if (!isTaskContext) {
           return {
             content: [
               {
                 type: 'text' as const,
-                text: 'Error: declare_artifact is only available within scheduled or manual task runs that have an active runId. In a standard chat session, artifacts cannot be version-archived.',
+                text: 'Error: declare_artifact is only available within task execution context (scheduled or manual task runs). Standard chat turns cannot declare task artifacts.',
               },
             ],
             isError: true,
           };
         }
+
+        const effectiveRunId =
+          ctx.currentScheduledTaskRunId || ctx.currentTaskId || 'task-run';
 
         const rel = args.path.trim();
         if (rel.includes('..') || path.isAbsolute(rel) || rel.includes('\0')) {

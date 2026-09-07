@@ -112,6 +112,7 @@ import {
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
+import { processCompletedRunArtifacts } from './task-artifact-service.js';
 import { resolveRunnerLivenessTimeouts } from './runner-liveness.js';
 import {
   decideStuckRunnerRecovery,
@@ -5851,6 +5852,22 @@ function settleScheduledGroupWorkspaceProjection(input: {
           { runId: run.id, taskId: run.task_id, chatJid: input.chatJid },
           'Failed to finalize group scheduled-task workspace result',
         );
+      } else if (input.workspaceFolder) {
+        const ipcDirs = [path.join(DATA_DIR, 'ipc', input.workspaceFolder)];
+        const task = getTaskById(run.task_id);
+        void processCompletedRunArtifacts({
+          runId: run.id,
+          taskId: run.task_id,
+          resultText:
+            input.runResult === undefined ? input.text : input.runResult,
+          ipcDirs,
+          createdBy: task?.created_by,
+        }).catch((err) => {
+          logger.warn(
+            { runId: run.id, err },
+            'Failed to process group task artifacts',
+          );
+        });
       }
       continue;
     }

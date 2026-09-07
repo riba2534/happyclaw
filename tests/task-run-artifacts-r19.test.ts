@@ -841,4 +841,178 @@ describe('R19: 每次运行产物版本化、三次同名报告隔离与接续�
     expect(archived[0].name).toBe('自动归档报告');
     expect(archived[0].original_path).toBe(declaredRel);
   });
+
+  test('Leader: leaf replacement after verification must not escape workspace', async () => {
+    const runId = 'proof-swap';
+    insertTestRun({
+      id: runId,
+      task_id: taskId,
+      occurrence_key: 'proof:swap',
+      trigger_type: 'manual',
+      scheduled_for: new Date().toISOString(),
+      definition_snapshot: {
+        group_folder: workspaceAFolder,
+        chat_jid: workspaceAJid,
+        execution_mode: 'container',
+      },
+      status: 'success',
+    });
+    const outside = path.join(tmpDir, 'outside-swap-fixture.txt');
+    fs.writeFileSync(outside, 'NON_SECRET_SWAPPED_OUTSIDE');
+    const leaf = path.join(tmpGroupsDir, workspaceAFolder, 'swap.txt');
+    fs.writeFileSync(leaf, 'SAFE_INSIDE');
+
+    const realOpen = fs.openSync.bind(fs);
+    let swapped = false;
+    const spy = vi.spyOn(fs, 'openSync').mockImplementation(((
+      file: any,
+      ...args: any[]
+    ) => {
+      if (file === leaf && !swapped) {
+        swapped = true;
+        fs.unlinkSync(leaf);
+        fs.symlinkSync(outside, leaf);
+      }
+      return realOpen(file, ...(args as [any]));
+    }) as any);
+
+    let result;
+    try {
+      result = await registerArtifactForRun({
+        runId,
+        relativePath: 'swap.txt',
+        createdBy: 'alice',
+      });
+    } finally {
+      spy.mockRestore();
+    }
+
+    if (result?.artifact) {
+      const d = getArtifactForDownload(result.artifact.id, {
+        id: 'alice',
+        role: 'member',
+      } as any);
+      console.log(
+        'SWAP_ARCHIVE_RESULT',
+        result.success,
+        d.status,
+        d.status === 'ok' ? d.data.toString() : null,
+      );
+    }
+    expect(result?.success).toBe(false);
+  });
+
+  test('Leader: display name cannot write continuation outside target workspace', async () => {
+    const runId = 'proof-name';
+    insertTestRun({
+      id: runId,
+      task_id: taskId,
+      occurrence_key: 'proof:name',
+      trigger_type: 'manual',
+      scheduled_for: new Date().toISOString(),
+      definition_snapshot: {
+        group_folder: workspaceAFolder,
+        chat_jid: workspaceAJid,
+        execution_mode: 'container',
+      },
+      status: 'success',
+    });
+    const leaf = path.join(tmpGroupsDir, workspaceAFolder, 'name.txt');
+    fs.writeFileSync(leaf, 'DISPLAY_NAME_ESCAPE_MARKER');
+    const result = await registerArtifactForRun({
+      runId,
+      relativePath: 'name.txt',
+      name: '../../../escaped-materialize.txt',
+      createdBy: 'alice',
+    });
+    expect(result.success).toBe(true);
+
+    const dest = path.join(tmpGroupsDir, 'escaped-materialize.txt');
+    try {
+      const { materializeContinuationArtifacts } =
+        await import('../src/task-artifact-service.js');
+      materializeContinuationArtifacts(workspaceAFolder, workspaceAJid, [
+        result.artifact!,
+      ]);
+    } catch {
+      /* ignore */
+    }
+    console.log('OUTSIDE_MATERIALIZE_EXISTS', fs.existsSync(dest));
+    expect(fs.existsSync(dest)).toBe(false);
+  });
+
+  test('Task purge 清理物理产物目录：仅删除该任务的 run 目录，绝不影响其他任务', async () => {
+    // 建立一个独立任务用于测试 purge
+    const purgeTaskId = 'task-to-be-purged';
+    const purgeRunId = 'run-for-purge-test';
+    const now = new Date().toISOString();
+    db.createTask({
+      id: purgeTaskId,
+      group_folder: workspaceAFolder,
+      chat_jid: workspaceAJid,
+      prompt: '待物理清理任务',
+      schedule_type: 'interval',
+      schedule_value: '3600000',
+      context_mode: 'isolated',
+      execution_type: 'agent',
+      execution_mode: 'container',
+      status: 'active',
+      created_at: now,
+      created_by: 'alice',
+    });
+
+    insertTestRun({
+      id: purgeRunId,
+      task_id: purgeTaskId,
+      occurrence_key: `task:${purgeTaskId}:run:1`,
+      trigger_type: 'manual',
+      scheduled_for: now,
+      definition_snapshot: {
+        group_folder: workspaceAFolder,
+        chat_jid: workspaceAJid,
+      },
+      status: 'success',
+    });
+
+    const fileRel = 'reports/purge_test.md';
+    fs.writeFileSync(
+      path.join(tmpGroupsDir, workspaceAFolder, fileRel),
+      'Purge Content',
+      'utf-8',
+    );
+    const reg = await registerArtifactForRun({
+      runId: purgeRunId,
+      relativePath: fileRel,
+      name: 'purge_test.md',
+      createdBy: 'alice',
+    });
+    expect(reg.success).toBe(true);
+
+    const runDir = path.join(tmpStoreDir, 'artifacts', 'runs', purgeRunId);
+    expect(fs.existsSync(runDir)).toBe(true);
+
+    // 软删除
+    const softDel = db.softDeleteTaskWithRevision(purgeTaskId, 1);
+    expect(softDel.status).toBe('updated');
+    // 软删除时不清理物理文件（供历史查询）
+    expect(fs.existsSync(runDir)).toBe(true);
+
+    // 彻底清空 (purge)
+    const purgeRes = db.permanentlyDeleteTasksWithRevisions([
+      { id: purgeTaskId, expectedRevision: 2 },
+    ]);
+    expect(purgeRes.status).toBe('deleted');
+
+    // 物理目录被彻底受控清理！
+    expect(fs.existsSync(runDir)).toBe(false);
+
+    // 其他任务的运行物理产物目录仍然完好保留！
+    const otherRunDir = path.join(
+      tmpStoreDir,
+      'artifacts',
+      'runs',
+      'run-occurrence-001',
+    );
+    expect(fs.existsSync(otherRunDir)).toBe(true);
+  });
 });

@@ -802,6 +802,8 @@ export function initDatabase(
       ON task_run_artifacts(task_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_task_run_artifacts_workspace
       ON task_run_artifacts(workspace_jid);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_task_run_artifacts_run_path
+      ON task_run_artifacts(run_id, original_path);
   `);
 
   // State tables (replacing JSON files)
@@ -2738,6 +2740,8 @@ export function initDatabase(
         ON task_run_artifacts(task_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_task_run_artifacts_workspace
         ON task_run_artifacts(workspace_jid);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_task_run_artifacts_run_path
+        ON task_run_artifacts(run_id, original_path);
     `);
   }
 
@@ -5304,7 +5308,15 @@ export function permanentlyDeleteTasksWithRevisions(
         `DELETE FROM scheduled_tasks
          WHERE id = ? AND revision = ? AND deleted_at IS NOT NULL`,
       );
+      const allDeletedRunIds: string[] = [];
       for (const task of currentTasks) {
+        const runRows = db
+          .prepare('SELECT id FROM task_runs WHERE task_id = ?')
+          .all(task.id) as Array<{ id: string }>;
+        for (const r of runRows) {
+          allDeletedRunIds.push(r.id);
+        }
+        deleteTaskRunArtifactsByTaskId(task.id);
         deleteRunLogs.run(task.id);
         deleteRuns.run(task.id);
         const result = deleteDefinition.run(task.id, task.revision);
@@ -5314,6 +5326,8 @@ export function permanentlyDeleteTasksWithRevisions(
           );
         }
       }
+
+      cleanupTaskRunArtifactFiles(allDeletedRunIds);
 
       return {
         status: 'deleted',
@@ -8510,6 +8524,37 @@ function parseTaskRunArtifactRow(row: TaskRunArtifactRow): TaskRunArtifact {
 export function createTaskRunArtifact(
   artifact: NewTaskRunArtifact,
 ): TaskRunArtifact {
+  // Idempotency: if an artifact with (run_id, original_path) already exists, update and return it
+  const existing = db
+    .prepare(
+      'SELECT id FROM task_run_artifacts WHERE run_id = ? AND original_path = ?',
+    )
+    .get(artifact.run_id, artifact.original_path) as { id: string } | undefined;
+
+  if (existing) {
+    db.prepare(
+      `
+      UPDATE task_run_artifacts SET
+        name = ?,
+        storage_path = ?,
+        file_hash = ?,
+        file_size = ?,
+        mime_type = ?,
+        created_at = ?
+      WHERE id = ?
+    `,
+    ).run(
+      artifact.name,
+      artifact.storage_path,
+      artifact.file_hash,
+      artifact.file_size,
+      artifact.mime_type || 'application/octet-stream',
+      artifact.created_at || new Date().toISOString(),
+      existing.id,
+    );
+    return getTaskRunArtifactById(existing.id)!;
+  }
+
   const id = artifact.id || crypto.randomUUID();
   const now = artifact.created_at || new Date().toISOString();
 
@@ -8577,17 +8622,50 @@ export function listTaskRunArtifactsByTaskId(
   return rows.map(parseTaskRunArtifactRow);
 }
 
+export function cleanupTaskRunArtifactFiles(runIds: string[]): number {
+  let cleaned = 0;
+  for (const runId of runIds) {
+    if (
+      !runId ||
+      typeof runId !== 'string' ||
+      runId.includes('..') ||
+      runId.includes('/') ||
+      runId.includes('\\')
+    ) {
+      continue;
+    }
+    const runDir = path.join(STORE_DIR, 'artifacts', 'runs', runId);
+    if (fs.existsSync(runDir)) {
+      try {
+        fs.rmSync(runDir, { recursive: true, force: true });
+        cleaned++;
+      } catch (err) {
+        logger.warn(
+          { runId, err },
+          'Failed to clean up task run artifact files',
+        );
+      }
+    }
+  }
+  return cleaned;
+}
+
 export function deleteTaskRunArtifactsByRunId(runId: string): number {
   const res = db
     .prepare('DELETE FROM task_run_artifacts WHERE run_id = ?')
     .run(runId);
+  cleanupTaskRunArtifactFiles([runId]);
   return res.changes;
 }
 
 export function deleteTaskRunArtifactsByTaskId(taskId: string): number {
+  const rows = db
+    .prepare('SELECT DISTINCT run_id FROM task_run_artifacts WHERE task_id = ?')
+    .all(taskId) as Array<{ run_id: string }>;
   const res = db
     .prepare('DELETE FROM task_run_artifacts WHERE task_id = ?')
     .run(taskId);
+  cleanupTaskRunArtifactFiles(rows.map((r) => r.run_id));
   return res.changes;
 }
 
