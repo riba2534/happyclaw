@@ -4,8 +4,7 @@ import path from 'node:path';
 import { channelConversationJid } from './channel-address.js';
 import { resolveChannelConversationKind } from './channel-conversation-kind.js';
 import {
-  commitChannelMountUpdate,
-  ensureDirectChannelSessionMount,
+  executeRepairLeftoverDirectMount,
   resolveWorkspaceJid,
 } from './channel-mount-service.js';
 import {
@@ -193,22 +192,13 @@ function remountLeftoverDirect(
     );
   }
 
-  const mounted = ensureDirectChannelSessionMount({
-    sourceJid: leftover.channelJid,
+  executeRepairLeftoverDirectMount({
+    channelJid: leftover.channelJid,
     group,
     workspaceJid: leftover.workspaceJid,
+    workspaceFolder: leftover.workspaceFolder,
     userId: group.created_by ?? workspace.created_by ?? '',
-    force: true,
-    mountOptions: { replyPolicy: 'source_only' },
     onCreating,
-  });
-  if (!mounted.target_agent_id || mounted.target_main_jid) {
-    throw new Error(
-      `Failed to remount leftover DM onto channel_direct: ${leftover.channelJid}`,
-    );
-  }
-  commitChannelMountUpdate(leftover.channelJid, mounted, {
-    clearMatchingMainOwnerFolder: leftover.workspaceFolder,
   });
 }
 

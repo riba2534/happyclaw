@@ -1275,13 +1275,8 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
     }
   }
 
-  // Handle pin/unpin (per-user, separate table)
+  // Handle pin/unpin (per-user, separate table) inside commit transaction
   let pinned_at: string | undefined;
-  if (is_pinned === true) {
-    pinned_at = pinGroup(authUser.id, jid);
-  } else if (is_pinned === false) {
-    unpinGroup(authUser.id, jid);
-  }
 
   if (
     interaction_mode !== undefined &&
@@ -1296,246 +1291,194 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
     );
   }
 
-  if (
-    name ||
-    activation_mode !== undefined ||
-    execution_mode !== undefined ||
-    interaction_mode !== undefined
-  ) {
-    let executionModeChanged = false;
-    let interactionModeChanged = false;
+  let executionModeChanged = false;
+  let interactionModeChanged = false;
 
-    const commitUpdate = () => {
-      return runImmediateTransaction(() => {
-        // 在提交事务边界重读，绝不回退至旧记录现有快照
-        const current = getRegisteredGroup(jid);
-        if (!current) {
-          throw new WorkspaceNotFoundError(
-            `Workspace ${jid} was deleted before commit`,
-          );
+  const commitUpdate = () => {
+    return runImmediateTransaction(() => {
+      // 在提交事务边界重读，绝不回退至旧记录现有快照
+      const current = getRegisteredGroup(jid);
+      if (!current) {
+        throw new WorkspaceNotFoundError(
+          `Workspace ${jid} was deleted before commit`,
+        );
+      }
+
+      // Revalidate 最新 ACL 与当前权限
+      if (isPinOnly) {
+        if (
+          !canAccessGroup(
+            { id: authUser.id, role: authUser.role },
+            { ...current, jid },
+          )
+        ) {
+          throw new WorkspaceNotFoundError(`Group not found`);
         }
-
-        // Revalidate 最新 ACL 与当前权限
-        if (isPinOnly) {
-          if (
-            !canAccessGroup(
-              { id: authUser.id, role: authUser.role },
-              { ...current, jid },
-            )
-          ) {
-            throw new WorkspacePermissionDeniedError(
-              `Access denied to workspace ${jid}`,
-            );
-          }
-        } else {
-          if (
-            !canModifyGroup(
-              { id: authUser.id, role: authUser.role },
-              { ...current, jid },
-            )
-          ) {
-            throw new WorkspacePermissionDeniedError(
-              `Cannot modify workspace ${jid}`,
-            );
-          }
-          if (!jid.startsWith('web:') && authUser.role !== 'admin') {
-            throw new WorkspacePermissionDeniedError(
-              `This group cannot be edited`,
-            );
-          }
-          if (
-            isHostExecutionGroup(current) &&
-            !hasHostExecutionPermission(authUser)
-          ) {
-            throw new WorkspacePermissionDeniedError(
-              `Insufficient permissions for host execution mode`,
-            );
-          }
-          if (interaction_mode !== undefined && !jid.startsWith('web:')) {
-            throw new WorkspacePermissionDeniedError(
-              `Only web workspaces can change interaction mode`,
-            );
-          }
+      } else {
+        if (
+          !canModifyGroup(
+            { id: authUser.id, role: authUser.role },
+            { ...current, jid },
+          )
+        ) {
+          throw new WorkspaceNotFoundError(`Group not found`);
         }
-
-        if (execution_mode !== undefined && current.is_home) {
+        if (!jid.startsWith('web:') && authUser.role !== 'admin') {
           throw new WorkspacePermissionDeniedError(
-            `Cannot change execution mode of home containers`,
+            `This group cannot be edited`,
           );
         }
         if (
-          execution_mode === 'host' &&
+          isHostExecutionGroup(current) &&
           !hasHostExecutionPermission(authUser)
         ) {
           throw new WorkspacePermissionDeniedError(
             `Insufficient permissions for host execution mode`,
           );
         }
-        if (
-          execution_mode === 'container' &&
-          authUser.role === 'admin' &&
-          authUser.status === 'active' &&
-          getSystemSettings().adminHostOnlyMode
-        ) {
-          throw new AdminHostOnlyModeConflictError();
-        }
-        if (
-          interaction_mode !== undefined &&
-          !getWorkspaceAgentProfileId(current.folder)
-        ) {
-          throw new WorkspaceAgentProfileMissingError(
-            `Workspace ${jid} has no AgentProfile binding for interaction mode update`,
+        if (interaction_mode !== undefined && !jid.startsWith('web:')) {
+          throw new WorkspacePermissionDeniedError(
+            `Only web workspaces can change interaction mode`,
           );
         }
+      }
 
-        const nextExecutionMode =
-          execution_mode !== undefined
-            ? (execution_mode as ExecutionMode)
-            : current.executionMode;
-        executionModeChanged =
-          execution_mode !== undefined &&
-          nextExecutionMode !== (current.executionMode || 'container');
-
-        const currentInteractionMode = getWorkspaceInteractionMode(
-          current.folder,
-        );
-        interactionModeChanged =
-          interaction_mode !== undefined &&
-          interaction_mode !== currentInteractionMode;
-
-        // 仅合并本次 PATCH 提供的字段
-        const updated: RegisteredGroup = {
-          ...current,
-          name: name || current.name,
-          executionMode: nextExecutionMode,
-          activation_mode:
-            activation_mode !== undefined
-              ? activation_mode
-              : current.activation_mode,
-        };
-
-        if (
-          name ||
-          activation_mode !== undefined ||
-          execution_mode !== undefined
-        ) {
-          setRegisteredGroup(jid, updated);
-          if (name) updateChatName(jid, name);
-          deps.getRegisteredGroups()[jid] = updated;
-        }
-        if (
-          interaction_mode !== undefined &&
-          !setWorkspaceInteractionMode(current.folder, interaction_mode)
-        ) {
-          throw new WorkspaceAgentProfileMissingError(
-            `Workspace ${jid} has no AgentProfile binding for interaction mode update`,
-          );
-        }
-        if (executionModeChanged || interactionModeChanged) {
-          deleteWorkspaceSessions(current.folder);
-          delete deps.sessions[current.folder];
-        }
-        return updated;
-      });
-    };
-
-    const initialModeChanged =
-      execution_mode !== undefined &&
-      execution_mode !== (existing.executionMode || 'container');
-    const initialInteractionModeChanged =
-      interaction_mode !== undefined &&
-      interaction_mode !== getWorkspaceInteractionMode(existing.folder);
-    const runtimeContractFieldProvided =
-      execution_mode !== undefined || interaction_mode !== undefined;
-    const runtimeWasSafetyBlocked =
-      runtimeContractFieldProvided &&
-      (deps.queue?.isGroupRuntimeSafetyBlocked?.(jid) ?? false);
-
-    if (
-      initialModeChanged ||
-      initialInteractionModeChanged ||
-      (runtimeContractFieldProvided && runtimeWasSafetyBlocked)
-    ) {
-      const runtimeJids = getWorkspaceRuntimeJids(deps, existing.folder, jid);
-      try {
-        await quiesceWorkspaceRunnersAroundCommit(
-          deps,
-          [{ folder: existing.folder, primaryJid: jid }],
-          {
-            reason: `Workspace ${jid} runtime interaction contract changed`,
-            onPostCommitFailure: (failedRuntimeJids) =>
-              deps.queue?.blockGroupsForRuntimeSafety?.(
-                failedRuntimeJids,
-                `Workspace ${jid} runtime cleanup failed after interaction contract commit`,
-              ),
-          },
-          commitUpdate,
-        );
-        deps.queue?.unblockGroupsForRuntimeSafety?.(runtimeJids);
-      } catch (err) {
-        if (err instanceof WorkspaceNotFoundError) {
-          return c.json({ error: 'Group not found' }, 404);
-        }
-        if (err instanceof WorkspacePermissionDeniedError) {
-          return c.json({ error: err.message }, 403);
-        }
-        if (err instanceof AdminHostOnlyModeConflictError) {
-          return c.json(
-            {
-              error: '管理员纯宿主机模式已开启，不能切换到 Docker 执行',
-              code: 'ADMIN_HOST_ONLY_MODE_ENABLED',
-            },
-            409,
-          );
-        }
-        if (err instanceof WorkspaceAgentProfileMissingError) {
-          deps.queue?.unblockGroupsForRuntimeSafety?.(runtimeJids);
-          return c.json(
-            {
-              error: '该工作区未绑定智能体配置，因此无法修改回复模式。',
-              code: 'WORKSPACE_AGENT_PROFILE_MISSING',
-            },
-            409,
-          );
-        }
-        if (!(err instanceof WorkspaceRuntimeQuiesceError)) throw err;
-        if (err.persisted) {
-          deps.queue?.blockGroupsForRuntimeSafety?.(
-            runtimeJids,
-            `Workspace ${jid} runtime cleanup failed after interaction contract commit`,
-          );
-        }
-        return c.json(
-          {
-            error: err.persisted
-              ? 'Workspace interaction contract changed, but runtime cleanup failed; retry the request'
-              : 'Failed to stop the active workspace; interaction contract was not changed',
-            persisted: err.persisted,
-            retryable: true,
-          },
-          503,
+      if (execution_mode !== undefined && current.is_home) {
+        throw new WorkspacePermissionDeniedError(
+          `Cannot change execution mode of home containers`,
         );
       }
-    } else {
-      try {
-        commitUpdate();
-      } catch (err) {
-        if (err instanceof WorkspaceNotFoundError) {
-          return c.json({ error: 'Group not found' }, 404);
-        }
-        if (err instanceof WorkspacePermissionDeniedError) {
-          return c.json({ error: err.message }, 403);
-        }
-        if (err instanceof AdminHostOnlyModeConflictError) {
-          return c.json(
-            {
-              error: '管理员纯宿主机模式已开启，不能切换到 Docker 执行',
-              code: 'ADMIN_HOST_ONLY_MODE_ENABLED',
-            },
-            409,
-          );
-        }
-        if (!(err instanceof WorkspaceAgentProfileMissingError)) throw err;
+      if (execution_mode === 'host' && !hasHostExecutionPermission(authUser)) {
+        throw new WorkspacePermissionDeniedError(
+          `Insufficient permissions for host execution mode`,
+        );
+      }
+      if (
+        execution_mode === 'container' &&
+        authUser.role === 'admin' &&
+        authUser.status === 'active' &&
+        getSystemSettings().adminHostOnlyMode
+      ) {
+        throw new AdminHostOnlyModeConflictError();
+      }
+      if (
+        interaction_mode !== undefined &&
+        !getWorkspaceAgentProfileId(current.folder)
+      ) {
+        throw new WorkspaceAgentProfileMissingError(
+          `Workspace ${jid} has no AgentProfile binding for interaction mode update`,
+        );
+      }
+
+      // Pin/unpin 仅在权限与存在性验证通过后，在同一事务内执行
+      if (is_pinned === true) {
+        pinned_at = pinGroup(authUser.id, jid);
+      } else if (is_pinned === false) {
+        unpinGroup(authUser.id, jid);
+      }
+
+      const nextExecutionMode =
+        execution_mode !== undefined
+          ? (execution_mode as ExecutionMode)
+          : current.executionMode;
+      executionModeChanged =
+        execution_mode !== undefined &&
+        nextExecutionMode !== (current.executionMode || 'container');
+
+      const currentInteractionMode = getWorkspaceInteractionMode(
+        current.folder,
+      );
+      interactionModeChanged =
+        interaction_mode !== undefined &&
+        interaction_mode !== currentInteractionMode;
+
+      // 仅合并本次 PATCH 提供的字段
+      const updated: RegisteredGroup = {
+        ...current,
+        name: name || current.name,
+        executionMode: nextExecutionMode,
+        activation_mode:
+          activation_mode !== undefined
+            ? activation_mode
+            : current.activation_mode,
+      };
+
+      if (
+        name ||
+        activation_mode !== undefined ||
+        execution_mode !== undefined
+      ) {
+        setRegisteredGroup(jid, updated);
+        if (name) updateChatName(jid, name);
+        deps.getRegisteredGroups()[jid] = updated;
+      }
+      if (
+        interaction_mode !== undefined &&
+        !setWorkspaceInteractionMode(current.folder, interaction_mode)
+      ) {
+        throw new WorkspaceAgentProfileMissingError(
+          `Workspace ${jid} has no AgentProfile binding for interaction mode update`,
+        );
+      }
+      if (executionModeChanged || interactionModeChanged) {
+        deleteWorkspaceSessions(current.folder);
+        delete deps.sessions[current.folder];
+      }
+      return updated;
+    });
+  };
+
+  const initialModeChanged =
+    execution_mode !== undefined &&
+    execution_mode !== (existing.executionMode || 'container');
+  const initialInteractionModeChanged =
+    interaction_mode !== undefined &&
+    interaction_mode !== getWorkspaceInteractionMode(existing.folder);
+  const runtimeContractFieldProvided =
+    execution_mode !== undefined || interaction_mode !== undefined;
+  const runtimeWasSafetyBlocked =
+    runtimeContractFieldProvided &&
+    (deps.queue?.isGroupRuntimeSafetyBlocked?.(jid) ?? false);
+
+  if (
+    initialModeChanged ||
+    initialInteractionModeChanged ||
+    (runtimeContractFieldProvided && runtimeWasSafetyBlocked)
+  ) {
+    const runtimeJids = getWorkspaceRuntimeJids(deps, existing.folder, jid);
+    try {
+      await quiesceWorkspaceRunnersAroundCommit(
+        deps,
+        [{ folder: existing.folder, primaryJid: jid }],
+        {
+          reason: `Workspace ${jid} runtime interaction contract changed`,
+          onPostCommitFailure: (failedRuntimeJids) =>
+            deps.queue?.blockGroupsForRuntimeSafety?.(
+              failedRuntimeJids,
+              `Workspace ${jid} runtime cleanup failed after interaction contract commit`,
+            ),
+        },
+        commitUpdate,
+      );
+      deps.queue?.unblockGroupsForRuntimeSafety?.(runtimeJids);
+    } catch (err) {
+      if (err instanceof WorkspaceNotFoundError) {
+        return c.json({ error: 'Group not found' }, 404);
+      }
+      if (err instanceof WorkspacePermissionDeniedError) {
+        return c.json({ error: err.message }, 403);
+      }
+      if (err instanceof AdminHostOnlyModeConflictError) {
+        return c.json(
+          {
+            error: '管理员纯宿主机模式已开启，不能切换到 Docker 执行',
+            code: 'ADMIN_HOST_ONLY_MODE_ENABLED',
+          },
+          409,
+        );
+      }
+      if (err instanceof WorkspaceAgentProfileMissingError) {
+        deps.queue?.unblockGroupsForRuntimeSafety?.(runtimeJids);
         return c.json(
           {
             error: '该工作区未绑定智能体配置，因此无法修改回复模式。',
@@ -1544,6 +1487,51 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
           409,
         );
       }
+      if (!(err instanceof WorkspaceRuntimeQuiesceError)) throw err;
+      if (err.persisted) {
+        deps.queue?.blockGroupsForRuntimeSafety?.(
+          runtimeJids,
+          `Workspace ${jid} runtime cleanup failed after interaction contract commit`,
+        );
+      }
+      return c.json(
+        {
+          error: err.persisted
+            ? 'Workspace interaction contract changed, but runtime cleanup failed; retry the request'
+            : 'Failed to stop the active workspace; interaction contract was not changed',
+          persisted: err.persisted,
+          retryable: true,
+        },
+        503,
+      );
+    }
+  } else {
+    try {
+      commitUpdate();
+    } catch (err) {
+      if (err instanceof WorkspaceNotFoundError) {
+        return c.json({ error: 'Group not found' }, 404);
+      }
+      if (err instanceof WorkspacePermissionDeniedError) {
+        return c.json({ error: err.message }, 403);
+      }
+      if (err instanceof AdminHostOnlyModeConflictError) {
+        return c.json(
+          {
+            error: '管理员纯宿主机模式已开启，不能切换到 Docker 执行',
+            code: 'ADMIN_HOST_ONLY_MODE_ENABLED',
+          },
+          409,
+        );
+      }
+      if (!(err instanceof WorkspaceAgentProfileMissingError)) throw err;
+      return c.json(
+        {
+          error: '该工作区未绑定智能体配置，因此无法修改回复模式。',
+          code: 'WORKSPACE_AGENT_PROFILE_MISSING',
+        },
+        409,
+      );
     }
   }
 

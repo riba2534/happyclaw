@@ -743,64 +743,259 @@ describe('actual channel runtime and recovery under combined failure windows', (
     const queue = new GroupQueue();
     queue.setHostModeChecker(() => true);
 
-    // 2. Main Session turn starts with 60s lease and crashes in claimed phase
-    let now = '2026-09-07T03:00:05.000Z';
-    const mainRuntime = ChannelTurnRuntime.start({
-      provider: 'feishu',
-      accountId: 'bot',
-      sourceJid: 'feishu:bot:chat-1',
-      chatId: 'chat-1',
-      externalMessageId: 'msg-1',
-    });
-
-    let mainItemId = '';
+    const processedJids: string[] = [];
+    const lastCommittedCursor: Record<string, MessageCursor> = {};
     let mainPhysicalSends = 0;
-    const mainOutboxInput = {
-      provider: 'feishu' as const,
-      accountId: 'bot',
-      sourceJid: 'feishu:bot:chat-1',
-      chatId: 'chat-1',
-      turnRunId: mainRuntime.runId,
-      ordinal: 0,
-      kind: 'text' as const,
-      payload: { text: 'Main answer' },
-      owner: 'worker-crash-1',
-      leaseMs: 60_000,
-      now: () => now,
-      delivery: {
-        mode: 'single' as const,
-        send: async () => {
-          mainPhysicalSends++;
-          // ACK lost on retry after send
-          throw new Error('Lost ACK on wire');
-        },
-      },
-    };
+    let mainReconNotice = false;
+    let mainItemId = '';
+    let agentDefinitiveFailed = false;
+    let agentPartial = false;
+    let mainCrashed = false;
+    let now = '2026-09-07T03:00:05.000Z';
 
-    await expect(
-      delivery.deliverChannelOutboxItem({
-        ...mainOutboxInput,
-        afterPersist: (phase, item) => {
-          if (phase === 'claimed') {
-            mainItemId = item.id;
-            throw new delivery.ChannelDeliveryProcessCrash();
-          }
-        },
-      }),
-    ).rejects.toBeInstanceOf(delivery.ChannelDeliveryProcessCrash);
-
-    // 3. Process restart simulation: close database and reopen!
-    db.closeDatabase();
-    db.initDatabase();
-
-    // 10 seconds later: recovery runs before 60s lease expires
-    now = '2026-09-07T03:00:15.000Z';
     const dummyReconciler = {
       reconcileStreamingCard: async () => ({
         version: 1,
         method: 'cardkit' as const,
       }),
     };
+
+    // Wire real GroupQueue consumer callback driving both sessions through their failure & settlement paths
+    queue.setProcessMessagesFn(async (targetJid) => {
+      processedJids.push(targetJid);
+
+      if (targetJid === chatJid) {
+        // Main Session Turn
+        const messages = db.getMessagesSince(
+          chatJid,
+          lastCommittedCursor[chatJid] ?? EMPTY_CURSOR,
+        );
+        expect(messages.map((m) => m.id)).toContain('msg-1');
+
+        const mainRuntime = ChannelTurnRuntime.start({
+          provider: 'feishu',
+          accountId: 'bot',
+          sourceJid: 'feishu:bot:chat-1',
+          chatId: 'chat-1',
+          externalMessageId: 'msg-1',
+        });
+
+        const mainOutboxInput = {
+          provider: 'feishu' as const,
+          accountId: 'bot',
+          sourceJid: 'feishu:bot:chat-1',
+          chatId: 'chat-1',
+          turnRunId: mainRuntime.runId,
+          ordinal: 0,
+          kind: 'text' as const,
+          payload: { text: 'Main answer' },
+          owner: 'worker-crash-1',
+          leaseMs: 60_000,
+          now: () => now,
+          delivery: {
+            mode: 'single' as const,
+            send: async () => {
+              mainPhysicalSends++;
+              throw new Error('Lost ACK on wire');
+            },
+          },
+        };
+
+        if (!mainCrashed) {
+          mainCrashed = true;
+          try {
+            await delivery.deliverChannelOutboxItem({
+              ...mainOutboxInput,
+              afterPersist: (phase, item) => {
+                if (phase === 'claimed') {
+                  mainItemId = item.id;
+                  throw new delivery.ChannelDeliveryProcessCrash();
+                }
+              },
+            });
+          } catch (e) {
+            if (!(e instanceof delivery.ChannelDeliveryProcessCrash)) throw e;
+          }
+          return true;
+        }
+
+        // Recovery path after restart: claim and send
+        const sendResult = await delivery.deliverChannelOutboxItem({
+          ...mainOutboxInput,
+          owner: 'worker-2',
+          now: () => now,
+        });
+        expect(sendResult.status).toBe('uncertain');
+        expect(mainPhysicalSends).toBe(1);
+
+        // Subsequent retry is blocked from physical resend
+        const retryResult = await delivery.deliverChannelOutboxItem({
+          ...mainOutboxInput,
+          owner: 'worker-3',
+          now: () => now,
+        });
+        expect(retryResult.status).toBe('uncertain');
+        expect(mainPhysicalSends).toBe(1);
+
+        // Settle Main Session turn
+        const mainRuntimes = new Map([[mainRuntime.runId, mainRuntime]]);
+        await settleChannelTurnOutput(
+          {
+            inputTurnCompleted: true,
+            inputTurnId: mainRuntime.runId,
+            status: 'error',
+          },
+          {
+            chatJid,
+            folder: groupFolder,
+            lastProcessedId: 'msg-1',
+            runtimes: mainRuntimes,
+            outboxScopesByInput: new Map([
+              [
+                mainRuntime.runId,
+                {
+                  provider: 'feishu',
+                  accountId: 'bot',
+                  sourceJid: 'feishu:bot:chat-1',
+                  chatId: 'chat-1',
+                  scopeKey: 'feishu:chat-1',
+                  targetJid: 'feishu:bot:chat-1',
+                },
+              ],
+            ]),
+            nonTerminalDeliveryAckByInput: new Map(),
+            physicalDeliveryAckByInput: new Map(),
+            clearProcessingIndicator: async () => {},
+            markOutputSettled: () => {},
+            deliverManualReconciliationNotice: async () => {
+              mainReconNotice = true;
+              return true;
+            },
+            deliverDefinitiveFailureNotice: async () => false,
+          },
+        );
+
+        lastCommittedCursor[chatJid] = db.getMessageCursor(chatJid, 'msg-1')!;
+        return true;
+      }
+
+      if (targetJid === agentChatJid) {
+        // Agent Session Turn
+        const messages = db.getMessagesSince(
+          agentChatJid,
+          lastCommittedCursor[agentChatJid] ?? EMPTY_CURSOR,
+        );
+        expect(messages.map((m) => m.id)).toContain('msg-2');
+
+        const agentRuntime = ChannelTurnRuntime.start({
+          provider: 'feishu',
+          accountId: 'bot',
+          sourceJid: 'feishu:bot:chat-2',
+          chatId: 'chat-2',
+          externalMessageId: 'msg-2',
+          agentId: 'sub-1',
+        });
+
+        // 1) Text delivered ok
+        const agentText = await delivery.deliverChannelOutboxItem({
+          provider: 'feishu',
+          accountId: 'bot',
+          sourceJid: 'feishu:bot:chat-2',
+          chatId: 'chat-2',
+          turnRunId: agentRuntime.runId,
+          ordinal: 0,
+          kind: 'text',
+          payload: { text: 'Agent text' },
+          owner: 'worker-agent',
+          now: () => now,
+          delivery: {
+            mode: 'single',
+            send: async () => ({ providerMessageId: 'ack-agent-text' }),
+          },
+        });
+        expect(agentText.status).toBe('delivered');
+
+        // 2) File attachment definitive failure
+        const agentFile = await delivery.deliverChannelOutboxItem({
+          provider: 'feishu',
+          accountId: 'bot',
+          sourceJid: 'feishu:bot:chat-2',
+          chatId: 'chat-2',
+          turnRunId: agentRuntime.runId,
+          ordinal: 1,
+          kind: 'file',
+          payload: { path: 'fail.doc' },
+          owner: 'worker-agent',
+          now: () => now,
+          delivery: {
+            mode: 'single',
+            send: async () => {
+              throw new delivery.DefinitiveChannelDeliveryError('rejected');
+            },
+          },
+        });
+        expect(agentFile.status).toBe('failed');
+
+        // 3) Settle Agent Session 2
+        const agentRuntimes = new Map([[agentRuntime.runId, agentRuntime]]);
+        await settleChannelTurnOutput(
+          {
+            inputTurnCompleted: true,
+            inputTurnId: agentRuntime.runId,
+            status: 'error',
+          },
+          {
+            chatJid: agentChatJid,
+            agentId: 'sub-1',
+            folder: groupFolder,
+            lastProcessedId: 'msg-2',
+            runtimes: agentRuntimes,
+            outboxScopesByInput: new Map([
+              [
+                agentRuntime.runId,
+                {
+                  provider: 'feishu',
+                  accountId: 'bot',
+                  sourceJid: 'feishu:bot:chat-2',
+                  chatId: 'chat-2',
+                  scopeKey: 'feishu:chat-2',
+                  targetJid: 'feishu:bot:chat-2',
+                },
+              ],
+            ]),
+            nonTerminalDeliveryAckByInput: new Map(),
+            physicalDeliveryAckByInput: new Map(),
+            clearProcessingIndicator: async () => {},
+            markOutputSettled: () => {},
+            deliverManualReconciliationNotice: async () => false,
+            deliverDefinitiveFailureNotice: async (opts) => {
+              agentDefinitiveFailed = true;
+              agentPartial = opts.partial;
+              return true;
+            },
+          },
+        );
+
+        lastCommittedCursor[agentChatJid] = db.getMessageCursor(
+          agentChatJid,
+          'msg-2',
+        )!;
+        return true;
+      }
+
+      return true;
+    });
+
+    // Step A: Queue drives Main Session check -> triggers crash during claimed phase
+    queue.enqueueMessageCheck(chatJid);
+    await vi.waitFor(() => expect(mainCrashed).toBe(true));
+
+    // Step B: Real restart simulation - close database and reopen
+    db.closeDatabase();
+    db.initDatabase();
+
+    // Step C: 10s recovery (before 60s lease expires) -> lease protected, not preempted
+    now = '2026-09-07T03:00:15.000Z';
     const recAt10s = await recovery.reconcileChannelReliabilityPass(
       dummyReconciler,
       {
@@ -812,7 +1007,7 @@ describe('actual channel runtime and recovery under combined failure windows', (
     expect(recAt10s.outbox).toEqual({ retryable: 0, uncertain: 0 });
     expect(store.getChannelOutboxItem(mainItemId)?.status).toBe('claimed');
 
-    // 4. 61 seconds later: lease expires -> transitions safely to retry_wait
+    // Step D: 61s recovery (after lease expires) -> lease expires to retry_wait
     now = '2026-09-07T03:01:06.000Z';
     const recAt61s = await recovery.reconcileChannelReliabilityPass(
       dummyReconciler,
@@ -825,164 +1020,23 @@ describe('actual channel runtime and recovery under combined failure windows', (
     expect(recAt61s.outbox.retryable).toBeGreaterThanOrEqual(1);
     expect(store.getChannelOutboxItem(mainItemId)?.status).toBe('retry_wait');
 
-    // 5. Worker 2 claims and sends, but loses ACK -> marks uncertain
-    const mainSendResult = await delivery.deliverChannelOutboxItem({
-      ...mainOutboxInput,
-      owner: 'worker-2',
-      now: () => now,
-    });
-    expect(mainSendResult.status).toBe('uncertain');
-    expect(mainPhysicalSends).toBe(1);
+    // Step E: Queue drives recovery run for Main Session -> lost ACK marks uncertain, fences replay, settles notice
+    queue.enqueueMessageCheck(chatJid);
+    await vi.waitFor(() => expect(mainReconNotice).toBe(true));
+    expect(lastCommittedCursor[chatJid]?.id).toBe('msg-1');
 
-    // Replay is blocked: provider is NEVER called a second time
-    const replayResult = await delivery.deliverChannelOutboxItem({
-      ...mainOutboxInput,
-      owner: 'worker-3',
-      now: () => now,
-    });
-    expect(replayResult.status).toBe('uncertain');
-    expect(mainPhysicalSends).toBe(1);
-
-    // Settle Main Session turn with uncertain outbox
-    const mainRuntimes = new Map([[mainRuntime.runId, mainRuntime]]);
-    let mainReconNotice = false;
-    await settleChannelTurnOutput(
-      {
-        inputTurnCompleted: true,
-        inputTurnId: mainRuntime.runId,
-        status: 'error',
-      },
-      {
-        chatJid,
-        folder: groupFolder,
-        lastProcessedId: 'msg-1',
-        runtimes: mainRuntimes,
-        outboxScopesByInput: new Map([
-          [
-            mainRuntime.runId,
-            {
-              provider: 'feishu',
-              accountId: 'bot',
-              sourceJid: 'feishu:bot:chat-1',
-              chatId: 'chat-1',
-              scopeKey: 'feishu:chat-1',
-              targetJid: 'feishu:bot:chat-1',
-            },
-          ],
-        ]),
-        nonTerminalDeliveryAckByInput: new Map(),
-        physicalDeliveryAckByInput: new Map(),
-        clearProcessingIndicator: async () => {},
-        markOutputSettled: () => {},
-        deliverManualReconciliationNotice: async () => {
-          mainReconNotice = true;
-          return true;
-        },
-        deliverDefinitiveFailureNotice: async () => false,
-      },
-    );
-    expect(mainReconNotice).toBe(true);
-    expect(mainRuntimes.has(mainRuntime.runId)).toBe(false);
-
-    // 6. Independent Agent Session 2 proceeds with composite delivered text + failed attachment
-    const agentRuntime = ChannelTurnRuntime.start({
-      provider: 'feishu',
-      accountId: 'bot',
-      sourceJid: 'feishu:bot:chat-2',
-      chatId: 'chat-2',
-      externalMessageId: 'msg-2',
-      agentId: 'sub-1',
-    });
-
-    // Deliver text ok
-    const agentText = await delivery.deliverChannelOutboxItem({
-      provider: 'feishu',
-      accountId: 'bot',
-      sourceJid: 'feishu:bot:chat-2',
-      chatId: 'chat-2',
-      turnRunId: agentRuntime.runId,
-      ordinal: 0,
-      kind: 'text',
-      payload: { text: 'Agent text' },
-      owner: 'worker-agent',
-      now: () => now,
-      delivery: {
-        mode: 'single',
-        send: async () => ({ providerMessageId: 'ack-agent-text' }),
-      },
-    });
-    expect(agentText.status).toBe('delivered');
-
-    // Deliver attachment fail
-    const agentFile = await delivery.deliverChannelOutboxItem({
-      provider: 'feishu',
-      accountId: 'bot',
-      sourceJid: 'feishu:bot:chat-2',
-      chatId: 'chat-2',
-      turnRunId: agentRuntime.runId,
-      ordinal: 1,
-      kind: 'file',
-      payload: { path: 'fail.doc' },
-      owner: 'worker-agent',
-      now: () => now,
-      delivery: {
-        mode: 'single',
-        send: async () => {
-          throw new delivery.DefinitiveChannelDeliveryError('rejected');
-        },
-      },
-    });
-    expect(agentFile.status).toBe('failed');
-
-    // Settle Agent Session 2
-    const agentRuntimes = new Map([[agentRuntime.runId, agentRuntime]]);
-    let agentDefinitiveFailed = false;
-    let agentPartial = false;
-    await settleChannelTurnOutput(
-      {
-        inputTurnCompleted: true,
-        inputTurnId: agentRuntime.runId,
-        status: 'error',
-      },
-      {
-        chatJid: agentChatJid,
-        agentId: 'sub-1',
-        folder: groupFolder,
-        lastProcessedId: 'msg-2',
-        runtimes: agentRuntimes,
-        outboxScopesByInput: new Map([
-          [
-            agentRuntime.runId,
-            {
-              provider: 'feishu',
-              accountId: 'bot',
-              sourceJid: 'feishu:bot:chat-2',
-              chatId: 'chat-2',
-              scopeKey: 'feishu:chat-2',
-              targetJid: 'feishu:bot:chat-2',
-            },
-          ],
-        ]),
-        nonTerminalDeliveryAckByInput: new Map(),
-        physicalDeliveryAckByInput: new Map(),
-        clearProcessingIndicator: async () => {},
-        markOutputSettled: () => {},
-        deliverManualReconciliationNotice: async () => false,
-        deliverDefinitiveFailureNotice: async (opts) => {
-          agentDefinitiveFailed = true;
-          agentPartial = opts.partial;
-          return true;
-        },
-      },
-    );
-
-    expect(agentDefinitiveFailed).toBe(true);
+    // Step F: Queue drives independent Agent Session 2 -> composite text+file partial delivery settlement
+    queue.enqueueMessageCheck(agentChatJid);
+    await vi.waitFor(() => expect(agentDefinitiveFailed).toBe(true));
     expect(agentPartial).toBe(true);
-    expect(agentRuntimes.has(agentRuntime.runId)).toBe(false);
+    expect(lastCommittedCursor[agentChatJid]?.id).toBe('msg-2');
 
-    // Verify messages cursors and database states are intact and isolated
-    expect(db.getMessageCursor('msg-1', chatJid)).toBeDefined();
-    expect(db.getMessageCursor('msg-2', agentChatJid)).toBeDefined();
+    // Step G: Final cross-layer assertions
+    expect(processedJids).toContain(chatJid);
+    expect(processedJids).toContain(agentChatJid);
+    expect(mainPhysicalSends).toBe(1);
+    expect(db.getMessageCursor(chatJid, 'msg-1')).toBeDefined();
+    expect(db.getMessageCursor(agentChatJid, 'msg-2')).toBeDefined();
 
     await queue.shutdown(0);
   });

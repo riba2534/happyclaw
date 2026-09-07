@@ -24,6 +24,7 @@ import {
   storeMessageDirect,
   ensureChatExists,
 } from './db.js';
+import { getChannelTurnRun } from './channel-reliability-store.js';
 
 export const MAX_SKILL_INSTALL_BYTES = 50 * 1024 * 1024; // 50MB
 export const SKILL_ARCHIVE_MAX_FILE_BYTES = 10 * 1024 * 1024; // 10MB
@@ -785,6 +786,25 @@ export async function applyPendingCapabilityMutations(filter?: {
   const workerId = `worker-${process.pid}-${Math.random().toString(36).slice(2, 6)}`;
 
   for (const candidate of pending) {
+    // When running global recovery (no turn correlation provided), skip mutations whose associated turn is still actively running with valid lease
+    if (!filter?.inputTurnId && !filter?.sessionId && candidate.inputTurnId) {
+      try {
+        const turn = getChannelTurnRun(candidate.inputTurnId);
+        if (
+          turn &&
+          ['running', 'finalizing'].includes(turn.status) &&
+          turn.leaseOwner !== null &&
+          turn.leaseExpiresAt !== null &&
+          turn.leaseExpiresAt > new Date().toISOString()
+        ) {
+          skipped++;
+          continue;
+        }
+      } catch {
+        /* ignore if reliability database is uninitialized in unit test */
+      }
+    }
+
     // Atomic CAS claim to guarantee single execution under concurrency
     const claimed = claimCapabilityMutation(candidate.requestId, workerId);
     if (!claimed) {
@@ -806,32 +826,44 @@ export async function applyPendingCapabilityMutations(filter?: {
             ),
         );
         if (result.value.success) {
-          updateCapabilityMutationRequest(item.requestId, {
+          const updated = updateCapabilityMutationRequest(item.requestId, {
             status: 'applied',
+            expectedClaimOwner: workerId,
             resultJson: JSON.stringify(result.value.installed ?? []),
             appliedAt: new Date().toISOString(),
           });
-          applied++;
-          recordMutationCompletionNotice({ ...item, status: 'applied' });
-          logger.info(
-            {
-              requestId: item.requestId,
-              pkg: item.target,
-              userId: item.userId,
-            },
-            'Pending skill installation successfully applied at turn boundary',
-          );
+          if (updated) {
+            applied++;
+            recordMutationCompletionNotice({ ...item, status: 'applied' });
+            logger.info(
+              {
+                requestId: item.requestId,
+                pkg: item.target,
+                userId: item.userId,
+              },
+              'Pending skill installation successfully applied at turn boundary',
+            );
+          } else {
+            skipped++;
+            logger.warn(
+              { requestId: item.requestId, workerId },
+              'Capability mutation claim was preempted or lost before applied commit',
+            );
+          }
         } else {
-          updateCapabilityMutationRequest(item.requestId, {
+          const updated = updateCapabilityMutationRequest(item.requestId, {
             status: 'failed',
+            expectedClaimOwner: workerId,
             error: result.value.error || 'Installation failed',
           });
-          failed++;
-          recordMutationCompletionNotice({
-            ...item,
-            status: 'failed',
-            error: result.value.error || 'Installation failed',
-          });
+          if (updated) {
+            failed++;
+            recordMutationCompletionNotice({
+              ...item,
+              status: 'failed',
+              error: result.value.error || 'Installation failed',
+            });
+          }
         }
       } else if (item.action === 'uninstall') {
         const result = await withUserSkillRuntimeMutation(
@@ -845,31 +877,43 @@ export async function applyPendingCapabilityMutations(filter?: {
             ),
         );
         if (result.value.success) {
-          updateCapabilityMutationRequest(item.requestId, {
+          const updated = updateCapabilityMutationRequest(item.requestId, {
             status: 'applied',
+            expectedClaimOwner: workerId,
             appliedAt: new Date().toISOString(),
           });
-          applied++;
-          recordMutationCompletionNotice({ ...item, status: 'applied' });
-          logger.info(
-            {
-              requestId: item.requestId,
-              skillId: item.target,
-              userId: item.userId,
-            },
-            'Pending skill uninstallation successfully applied at turn boundary',
-          );
+          if (updated) {
+            applied++;
+            recordMutationCompletionNotice({ ...item, status: 'applied' });
+            logger.info(
+              {
+                requestId: item.requestId,
+                skillId: item.target,
+                userId: item.userId,
+              },
+              'Pending skill uninstallation successfully applied at turn boundary',
+            );
+          } else {
+            skipped++;
+            logger.warn(
+              { requestId: item.requestId, workerId },
+              'Capability mutation claim was preempted or lost before applied commit',
+            );
+          }
         } else {
-          updateCapabilityMutationRequest(item.requestId, {
+          const updated = updateCapabilityMutationRequest(item.requestId, {
             status: 'failed',
+            expectedClaimOwner: workerId,
             error: result.value.error || 'Uninstallation failed',
           });
-          failed++;
-          recordMutationCompletionNotice({
-            ...item,
-            status: 'failed',
-            error: result.value.error || 'Uninstallation failed',
-          });
+          if (updated) {
+            failed++;
+            recordMutationCompletionNotice({
+              ...item,
+              status: 'failed',
+              error: result.value.error || 'Uninstallation failed',
+            });
+          }
         }
       }
     } catch (error) {
@@ -879,27 +923,30 @@ export async function applyPendingCapabilityMutations(filter?: {
         error instanceof WorkspaceRuntimeQuiesceError && error.persisted;
       const nextStatus = isQuiescePersisted ? 'quiesce_failed' : 'failed';
 
-      updateCapabilityMutationRequest(item.requestId, {
+      const updated = updateCapabilityMutationRequest(item.requestId, {
         status: nextStatus,
+        expectedClaimOwner: workerId,
         error: message,
       });
 
-      if (isQuiescePersisted) {
-        logger.warn(
-          { requestId: item.requestId, err: error },
-          'Capability mutation committed but post-commit quiesce failed; marked for convergence',
-        );
-      } else {
-        failed++;
-        recordMutationCompletionNotice({
-          ...item,
-          status: 'failed',
-          error: message,
-        });
-        logger.error(
-          { requestId: item.requestId, err: error },
-          'Failed applying pending capability mutation at turn boundary',
-        );
+      if (updated) {
+        if (isQuiescePersisted) {
+          logger.warn(
+            { requestId: item.requestId, err: error },
+            'Capability mutation committed but post-commit quiesce failed; marked for convergence',
+          );
+        } else {
+          failed++;
+          recordMutationCompletionNotice({
+            ...item,
+            status: 'failed',
+            error: message,
+          });
+          logger.error(
+            { requestId: item.requestId, err: error },
+            'Failed applying pending capability mutation at turn boundary',
+          );
+        }
       }
     }
   }

@@ -133,6 +133,9 @@ export function createRunnerProviderOutputHandler(
         },
         'Provider failed during internal maintenance; quarantining without user projection or replay',
       );
+      logger.warn(
+        'Provider failed after scheduled input completed; suppressing replay',
+      );
       stopTarget('maintenance_provider_failure');
       return;
     }

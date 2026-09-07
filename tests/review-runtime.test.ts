@@ -300,6 +300,43 @@ describe('R03: Real Workspace PATCH route endpoint concurrency, ACL revalidation
       currentAuthUser = originalUser;
     }
   });
+
+  test('composite PATCH with is_pinned fails at permission boundary without altering pin state', async () => {
+    const jid = `web:ws-pin-${Date.now()}`;
+    const folder = `folder-pin-${Date.now()}`;
+    db.setRegisteredGroup(jid, {
+      jid,
+      name: 'Pinned Target',
+      folder,
+      added_at: new Date().toISOString(),
+      created_by: 'other-owner',
+      executionMode: 'container' as const,
+    });
+
+    const originalUser = currentAuthUser;
+    currentAuthUser = {
+      id: 'unauthorized-pinner',
+      username: 'pinner',
+      role: 'member',
+      status: 'active',
+    };
+
+    try {
+      // Member tries to both pin and rename a workspace they don't own
+      const res = await app.request(`/api/groups/${jid}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_pinned: true, name: 'Illegal Name Change' }),
+      });
+
+      expect([403, 404]).toContain(res.status);
+      // Verify user_pinned_groups was NOT modified in db
+      const pinned = db.getUserPinnedGroups('unauthorized-pinner');
+      expect(pinned[jid]).toBeUndefined();
+    } finally {
+      currentAuthUser = originalUser;
+    }
+  });
 });
 
 describe('R06: Agent self-capability mutation safety, cross-session isolation and convergence', () => {
@@ -446,6 +483,132 @@ describe('R06: Agent self-capability mutation safety, cross-session isolation an
     expect(conflictResult.success).toBe(false);
     expect(conflictResult.error).toContain('Request ID conflict');
   });
+
+  test('owner fence: late worker completion cannot overwrite newly claimed mutation', () => {
+    const requestId = `req-fence-${Date.now()}`;
+    skillService.recordCapabilityMutationRequest({
+      requestId,
+      userId: 'user-fence',
+      groupFolder: 'folder-fence',
+      capabilityKind: 'skills',
+      action: 'install',
+      target: 'pkg-fence',
+      status: 'accepted',
+    });
+
+    // Worker 1 claims with a short lease
+    const claim1 = skillService.claimCapabilityMutation(
+      requestId,
+      'worker-1',
+      10,
+    );
+    expect(claim1?.claimOwner).toBe('worker-1');
+
+    // Simulate expiry: Worker 2 claims it
+    const rawDb = new Database(path.join(storeDir, 'messages.db'));
+    rawDb
+      .prepare(
+        "UPDATE capability_mutation_requests SET claim_expires_at='2000-01-01T00:00:00.000Z' WHERE request_id = ?",
+      )
+      .run(requestId);
+    rawDb.close();
+
+    const claim2 = skillService.claimCapabilityMutation(
+      requestId,
+      'worker-2',
+      60_000,
+    );
+    expect(claim2?.claimOwner).toBe('worker-2');
+
+    // Worker 1 wakes up late and attempts to complete -> FENCE BLOCKS IT!
+    const lateUpdateSuccess = skillService.updateCapabilityMutationRequest(
+      requestId,
+      {
+        status: 'failed',
+        expectedClaimOwner: 'worker-1',
+        error: 'Worker 1 timeout error',
+      },
+    );
+    expect(lateUpdateSuccess).toBe(false); // Worker 1 was rejected!
+
+    // Verify record is still owned by worker-2
+    const current = skillService.getCapabilityMutationRequest(requestId)!;
+    expect(current.status).toBe('applying');
+    expect(current.claimOwner).toBe('worker-2');
+
+    // Worker 2 successfully completes
+    const worker2Success = skillService.updateCapabilityMutationRequest(
+      requestId,
+      {
+        status: 'applied',
+        expectedClaimOwner: 'worker-2',
+        resultJson: JSON.stringify(['pkg-fence']),
+      },
+    );
+    expect(worker2Success).toBe(true);
+    expect(skillService.getCapabilityMutationRequest(requestId)?.status).toBe(
+      'applied',
+    );
+  });
+
+  test('crash recovery: expired applying and accepted mutations recover after real SQLite close and reopen', async () => {
+    const requestId = `req-crash-${Date.now()}`;
+    const folder = `folder-crash-${Date.now()}`;
+    skillService.recordCapabilityMutationRequest({
+      requestId,
+      userId: 'user-crash',
+      groupFolder: folder,
+      sessionId: 'session-crash',
+      inputTurnId: 'turn-crash',
+      capabilityKind: 'skills',
+      action: 'install',
+      target: 'pkg-crash',
+      status: 'accepted',
+    });
+
+    // Dead worker claimed before process death
+    skillService.claimCapabilityMutation(
+      requestId,
+      'dead-worker-before-crash',
+      10,
+    );
+
+    // Simulate crash and time advance past lease expiry
+    const rawDb = new Database(path.join(storeDir, 'messages.db'));
+    rawDb
+      .prepare(
+        "UPDATE capability_mutation_requests SET claim_expires_at='2000-01-01T00:00:00.000Z' WHERE request_id = ?",
+      )
+      .run(requestId);
+    rawDb.close();
+
+    // Close and reopen SQLite to simulate real restart
+    db.closeDatabase();
+    db.initDatabase();
+
+    // Verify listPendingCapabilityMutations finds the expired applying mutation
+    const pendingList = skillService.listPendingCapabilityMutations({
+      groupFolder: folder,
+      sessionId: 'session-crash',
+      inputTurnId: 'turn-crash',
+    });
+    expect(pendingList.some((x) => x.requestId === requestId)).toBe(true);
+
+    vi.spyOn(
+      skillService.skillMutationExecutor,
+      'installSkillForUserUnlocked',
+    ).mockResolvedValueOnce({
+      success: true,
+      installed: ['pkg-crash'],
+    });
+
+    // Global recovery on startup successfully applies it
+    const recovered = await skillService.applyPendingCapabilityMutations();
+    expect(recovered.applied).toBeGreaterThanOrEqual(1);
+
+    const afterRecovery = skillService.getCapabilityMutationRequest(requestId)!;
+    expect(afterRecovery.status).toBe('applied');
+  });
 });
 
 describe('R13: Production domain commands, mirror rebuild, and shared output state machine', () => {
@@ -496,42 +659,79 @@ describe('R13: Production domain commands, mirror rebuild, and shared output sta
     expect(db.getRegisteredGroup(channelJid)?.target_main_jid).toBeUndefined();
   });
 
-  test('createRunnerProviderOutputHandler executes identical state transitions across host and container modes', async () => {
+  test('createRunnerProviderOutputHandler executes identical state transitions across host and container modes for full event sequence', async () => {
     for (const mode of ['host', 'container'] as const) {
       const state = initialRunnerProviderOutputState();
-      let stoppedReason = '';
-      const outputsDispatched: any[] = [];
+      const stoppedReasons: string[] = [];
+      const dispatchedOutputs: any[] = [];
+      const quarantinedProfiles: string[] = [];
+      let timeoutResets = 0;
 
       const handler = createRunnerProviderOutputHandler(state, {
         groupName: 'test-group',
         identifier: mode === 'container' ? 'container-1' : 'proc-1',
         mode,
         selectedProfileId: 'provider-1',
-        resetTimeout: () => {},
+        resetTimeout: () => {
+          timeoutResets++;
+        },
         stopTarget: (reason) => {
-          stoppedReason = reason;
+          stoppedReasons.push(reason);
         },
         onOutput: (out) => {
-          outputsDispatched.push(out);
+          dispatchedOutputs.push(out);
         },
-        quarantineFromOutput: () => {},
+        quarantineFromOutput: (profileId) => {
+          quarantinedProfiles.push(profileId);
+        },
         applyDisposition: () => true,
         dispositionLogMessage: () => 'terminal provider failure',
       });
 
-      // 1. Normal output
-      await handler({ status: 'success', inputTurnCompleted: true });
-      expect(state.healthyInputTurnCompleted).toBe(true);
-      expect(outputsDispatched).toHaveLength(1);
+      // Event 1: quota control event
+      await handler({
+        providerQuotaObservation: { resetsAt: 1234567890 } as any,
+      } as any);
+      expect(dispatchedOutputs).toHaveLength(1);
+      expect(timeoutResets).toBe(1);
+      expect(stoppedReasons).toHaveLength(0); // Quota does not stop runner
 
-      // 2. Terminal provider failure output
+      // Event 2: providerFailureRetrying event
+      await handler({
+        providerFailure: true,
+        providerFailureRetrying: true,
+        result: 'Transient network failure',
+      } as any);
+      expect(state.providerFailureReported).toBe(true);
+      expect(quarantinedProfiles).toContain('provider-1');
+      expect(stoppedReasons).toHaveLength(0); // Retrying does not stop runner
+
+      // Event 3: healthy input turn completed
+      await handler({
+        status: 'success',
+        inputTurnCompleted: true,
+        result: 'Turn completed',
+      } as any);
+      expect(state.healthyInputTurnCompleted).toBe(true);
+      expect(stoppedReasons).toHaveLength(0);
+
+      // Event 4: maintenance provider failure after completed input
+      await handler({
+        providerFailure: true,
+        providerFailureMaintenance: true,
+        result: 'Maintenance failed',
+      } as any);
+      expect(state.providerFailureMaintenance).toBe(true);
+      expect(stoppedReasons).toContain('maintenance_provider_failure');
+
+      // Event 5: terminal providerFailure
       await handler({
         status: 'error',
         providerFailure: true,
-        result: 'Rate limited',
-      });
+        result: 'Rate limit exceeded',
+      } as any);
       expect(state.providerFailureTerminal).toBe(true);
-      expect(stoppedReason).toBe('provider_failure');
+      expect(stoppedReasons).toContain('provider_failure');
     }
   });
 });

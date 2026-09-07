@@ -951,3 +951,45 @@ export function executeUnbindChannel(
   const updated = buildUnmountUpdate(current, options);
   commitChannelMountUpdate(channelJid, updated, options);
 }
+
+export interface RepairLeftoverDirectMountCommand {
+  channelJid: string;
+  group: RegisteredGroup;
+  workspaceJid: string;
+  workspaceFolder: string;
+  userId: string;
+  onCreating?: (agent: SubAgent, workspaceJid: string) => void;
+}
+
+/**
+ * Dedicated domain command to repair leftover classifiable direct mounts
+ * into isolated channel_direct sessions with matching owner folder clearing.
+ */
+export function executeRepairLeftoverDirectMount(
+  command: RepairLeftoverDirectMountCommand,
+): ChannelMount {
+  const mounted = ensureDirectChannelSessionMount({
+    sourceJid: command.channelJid,
+    group: command.group,
+    workspaceJid: command.workspaceJid,
+    userId: command.userId,
+    force: true,
+    mountOptions: { replyPolicy: 'source_only' },
+    onCreating: command.onCreating,
+  });
+  if (!mounted.target_agent_id || mounted.target_main_jid) {
+    throw new Error(
+      `Failed to remount leftover DM onto channel_direct: ${command.channelJid}`,
+    );
+  }
+  commitChannelMountUpdate(command.channelJid, mounted, {
+    clearMatchingMainOwnerFolder: command.workspaceFolder,
+  });
+  const mount = getChannelMount(command.channelJid);
+  if (!mount) {
+    throw new Error(
+      `Failed to commit repaired channel mount for ${command.channelJid}`,
+    );
+  }
+  return mount;
+}

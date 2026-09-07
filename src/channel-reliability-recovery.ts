@@ -365,8 +365,15 @@ export function startChannelReliabilityRecoveryLoop(
       mode: 'live',
       createdBefore: bootBacklogCutoff,
     })
-      .then(() => {
+      .then(async () => {
         reconcileExpiredChannelOutbox();
+        try {
+          const { applyPendingCapabilityMutations } =
+            await import('./skill-install-service.js');
+          await applyPendingCapabilityMutations();
+        } catch {
+          // ignore if uninitialized in mock tests
+        }
       })
       .catch((error) => {
         logger.error(

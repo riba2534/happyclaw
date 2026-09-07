@@ -195,6 +195,7 @@ export function updateCapabilityMutationRequest(
       | 'applied'
       | 'failed'
       | 'quiesce_failed';
+    expectedClaimOwner?: string;
     resultJson?: string | null;
     error?: string | null;
     appliedAt?: string | null;
@@ -212,7 +213,8 @@ export function updateCapabilityMutationRequest(
            error = COALESCE(?, error),
            applied_at = COALESCE(?, applied_at),
            updated_at = ?
-       WHERE request_id = ?`,
+       WHERE request_id = ?
+         AND (? IS NULL OR (claim_owner = ? AND status = 'applying'))`,
     )
     .run(
       update.status,
@@ -221,6 +223,8 @@ export function updateCapabilityMutationRequest(
       update.appliedAt ?? (update.status === 'applied' ? now : null),
       now,
       requestId,
+      update.expectedClaimOwner ?? null,
+      update.expectedClaimOwner ?? null,
     );
   return res.changes === 1;
 }
@@ -230,11 +234,16 @@ export function listPendingCapabilityMutations(filter?: {
   sessionId?: string;
   inputTurnId?: string;
   userId?: string;
+  now?: string;
 }): CapabilityMutationRecord[] {
   const db = requireDatabase();
-  let query =
-    "SELECT * FROM capability_mutation_requests WHERE status IN ('pending', 'accepted', 'quiesce_failed')";
-  const params: any[] = [];
+  const now = filter?.now ?? new Date().toISOString();
+  let query = `SELECT * FROM capability_mutation_requests
+     WHERE (
+       status IN ('pending', 'accepted', 'quiesce_failed')
+       OR (status = 'applying' AND claim_expires_at IS NOT NULL AND claim_expires_at <= ?)
+     )`;
+  const params: any[] = [now];
   if (filter?.groupFolder) {
     query += ' AND group_folder = ?';
     params.push(filter.groupFolder);
