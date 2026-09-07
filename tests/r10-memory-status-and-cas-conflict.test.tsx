@@ -769,4 +769,237 @@ describe('R10: Memory validity display, filtering, and CAS candidate/conflict re
     // Latest search result must NOT be clobbered by the delayed older response!
     expect(document.body.textContent).toContain('Memory title 1');
   });
+
+  test('search on future and expired tabs passes scope=manage&status=active, renders items, and cursor pagination appends distinct hits', async () => {
+    const now = new Date('2026-09-07T12:00:00.000Z');
+    const futureDate = new Date(now.getTime() + 48 * 3600 * 1000).toISOString();
+    const pastDate = new Date(now.getTime() - 48 * 3600 * 1000).toISOString();
+
+    const futureItem: WorkspaceMemoryItem = {
+      id: 'item-future',
+      workspaceJid: 'workspace:alpha',
+      kind: 'fact',
+      title: 'Future deployment schedule',
+      content: 'Scheduled maintenance in future',
+      status: 'active',
+      importance: 0.8,
+      confidence: 1,
+      validFrom: futureDate,
+      validUntil: null,
+      expiresAt: null,
+      revision: 1,
+      createdAt: '2026-09-01T00:00:00Z',
+      updatedAt: '2026-09-01T00:00:00Z',
+      deletedAt: null,
+      provenance: { sourceType: 'web_user', sourceId: 'u1' },
+    };
+
+    const expiredItem: WorkspaceMemoryItem = {
+      id: 'item-expired',
+      workspaceJid: 'workspace:alpha',
+      kind: 'fact',
+      title: 'Expired token credential',
+      content: 'Old token expired last week',
+      status: 'active',
+      importance: 0.8,
+      confidence: 1,
+      validFrom: null,
+      validUntil: null,
+      expiresAt: pastDate,
+      revision: 1,
+      createdAt: '2026-08-01T00:00:00Z',
+      updatedAt: '2026-08-01T00:00:00Z',
+      deletedAt: null,
+      provenance: { sourceType: 'web_user', sourceId: 'u1' },
+    };
+
+    const extraSearchItem: WorkspaceMemoryItem = {
+      id: 'item-future-page2',
+      workspaceJid: 'workspace:alpha',
+      kind: 'fact',
+      title: 'Future deployment schedule page 2',
+      content: 'Scheduled maintenance in future page 2',
+      status: 'active',
+      importance: 0.8,
+      confidence: 1,
+      validFrom: futureDate,
+      validUntil: null,
+      expiresAt: null,
+      revision: 1,
+      createdAt: '2026-09-01T00:00:00Z',
+      updatedAt: '2026-09-01T00:00:00Z',
+      deletedAt: null,
+      provenance: { sourceType: 'web_user', sourceId: 'u1' },
+    };
+
+    const requestedSearchUrls: string[] = [];
+    mocks.get.mockImplementation(async (path: string) => {
+      if (path === '/api/workspaces') {
+        return {
+          workspaces: [
+            {
+              jid: 'workspace:alpha',
+              folder: 'alpha-folder',
+              name: 'Alpha Workspace',
+              status: 'active',
+              is_home: true,
+              can_modify: true,
+              updated_at: '2026-09-01T00:00:00Z',
+            },
+          ],
+        };
+      }
+      if (path.includes('/items?')) {
+        return {
+          storeRevision: 1,
+          items: [futureItem, expiredItem],
+          nextCursor: null,
+        };
+      }
+      if (path.includes('/search?')) {
+        requestedSearchUrls.push(path);
+        if (path.includes('cursor=search-cursor-p2')) {
+          return {
+            storeRevision: 1,
+            hits: [
+              {
+                item: extraSearchItem,
+                rank: 1,
+                snippet: extraSearchItem.content,
+              },
+            ],
+            nextCursor: null,
+          };
+        }
+        if (path.includes('q=deployment')) {
+          return {
+            storeRevision: 1,
+            hits: [{ item: futureItem, rank: 1, snippet: futureItem.content }],
+            nextCursor: 'search-cursor-p2',
+          };
+        }
+        if (path.includes('q=token')) {
+          return {
+            storeRevision: 1,
+            hits: [
+              { item: expiredItem, rank: 1, snippet: expiredItem.content },
+            ],
+            nextCursor: null,
+          };
+        }
+        return { storeRevision: 1, hits: [], nextCursor: null };
+      }
+      return {};
+    });
+
+    const router = createMemoryRouter(
+      [{ path: '/memory', element: <MemoryPage /> }],
+      { initialEntries: ['/memory?workspace=workspace:alpha'] },
+    );
+
+    await act(async () => {
+      root?.render(<RouterProvider router={router} />);
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    const searchInput = document.body.querySelector(
+      'input[placeholder="搜索当前工作区的记忆"]',
+    ) as HTMLInputElement;
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      'value',
+    )?.set;
+
+    // 1. Switch to "未来生效" tab
+    const futureTab = Array.from(document.body.querySelectorAll('button')).find(
+      (b) => b.textContent?.includes('未来生效'),
+    );
+    expect(futureTab).toBeTruthy();
+    await act(async () => {
+      futureTab?.click();
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    // Type search query "deployment"
+    await act(async () => {
+      valueSetter?.call(searchInput, 'deployment');
+      searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 350));
+    });
+
+    // Check that search URL contained scope=manage and status=active!
+    const futureSearchUrl = requestedSearchUrls.find((u) =>
+      u.includes('q=deployment'),
+    );
+    expect(futureSearchUrl).toBeTruthy();
+    expect(futureSearchUrl).toContain('scope=manage');
+    expect(futureSearchUrl).toContain('status=active');
+
+    // Future item must be rendered!
+    expect(document.body.textContent).toContain('Future deployment schedule');
+
+    // Test cursor pagination on search:
+    const loadMoreBtn = Array.from(
+      document.body.querySelectorAll('button'),
+    ).find((b) => b.textContent?.includes('加载更多'));
+    expect(loadMoreBtn).toBeTruthy();
+
+    await act(async () => {
+      loadMoreBtn?.click();
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    // Check that page 2 search URL contained cursor
+    const p2SearchUrl = requestedSearchUrls.find((u) =>
+      u.includes('cursor=search-cursor-p2'),
+    );
+    expect(p2SearchUrl).toBeTruthy();
+    expect(p2SearchUrl).toContain('scope=manage');
+
+    // Both items from page 1 and page 2 are visible without duplicating!
+    expect(document.body.textContent).toContain('Future deployment schedule');
+    expect(document.body.textContent).toContain(
+      'Future deployment schedule page 2',
+    );
+
+    // 2. Switch to "已过期" tab
+    const expiredTab = Array.from(
+      document.body.querySelectorAll('button'),
+    ).find((b) => b.textContent?.includes('已过期'));
+    expect(expiredTab).toBeTruthy();
+    await act(async () => {
+      expiredTab?.click();
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    // Type search query "token"
+    await act(async () => {
+      valueSetter?.call(searchInput, 'token');
+      searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 350));
+    });
+
+    // Check that search URL contained scope=manage and status=active
+    const expiredSearchUrl = requestedSearchUrls.find((u) =>
+      u.includes('q=token'),
+    );
+    expect(expiredSearchUrl).toBeTruthy();
+    expect(expiredSearchUrl).toContain('scope=manage');
+    expect(expiredSearchUrl).toContain('status=active');
+
+    // Expired item rendered!
+    expect(document.body.textContent).toContain('Expired token credential');
+  });
 });

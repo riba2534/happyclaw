@@ -436,8 +436,9 @@ describe('Workspace Memory v2 page', () => {
         };
       }
       if (
-        path ===
-        '/api/memory/workspaces/workspace%3Aalpha/items/search?q=SQLite&limit=100'
+        path.startsWith(
+          '/api/memory/workspaces/workspace%3Aalpha/items/search?q=SQLite',
+        )
       ) {
         searchCalls += 1;
         return {

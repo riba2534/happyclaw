@@ -613,18 +613,19 @@ export function MemoryPage() {
       try {
         const params = new URLSearchParams({
           q: trimmed,
+          scope: 'manage',
           limit: '100',
         });
         if (requestedKind !== 'all') params.set('kind', requestedKind);
         if (requestedStatus === 'all') {
           params.set('status', 'all');
-          params.set('scope', 'manage');
         } else if (
           requestedStatus === 'proposed' ||
           requestedStatus === 'conflicted'
         ) {
           params.set('status', requestedStatus);
-          params.set('scope', 'manage');
+        } else {
+          params.set('status', 'active');
         }
         if (options?.cursor) params.set('cursor', options.cursor);
 

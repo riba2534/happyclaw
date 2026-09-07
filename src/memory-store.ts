@@ -1865,6 +1865,12 @@ export function searchWorkspaceMemoryItems(input: {
 
   // Recall scope (Agent runtime) - KEEP 100% UNTOUCHED
   const kindClause = input.kind ? 'AND i.kind = ?' : '';
+  const beforeClause = input.before
+    ? 'AND (i.updated_at < ? OR (i.updated_at = ? AND i.id < ?))'
+    : '';
+  const beforeParams = input.before
+    ? [input.before.updatedAt, input.before.updatedAt, input.before.id]
+    : [];
   const params: unknown[] = [
     store.id,
     HAPPYCLAW_OWNER_PREFERRED_ADDRESS_CANONICAL_KEY,
@@ -1899,11 +1905,12 @@ export function searchWorkspaceMemoryItems(input: {
            AND (i.valid_until IS NULL OR julianday(i.valid_until) > julianday(?))
            AND (i.expires_at IS NULL OR julianday(i.expires_at) > julianday(?))
            ${kindClause}
+           ${beforeClause}
            AND workspace_memory_fts MATCH ?
          ORDER BY search_rank ASC, i.importance DESC, i.updated_at DESC
          LIMIT ?`,
       )
-      .all(...params, ftsPhrase(query), input.limit) as Array<
+      .all(...params, ...beforeParams, ftsPhrase(query), input.limit) as Array<
       MemoryItemRow & { search_rank: number; search_snippet: string }
     >;
   } else {
@@ -1927,6 +1934,7 @@ export function searchWorkspaceMemoryItems(input: {
            AND (i.valid_until IS NULL OR julianday(i.valid_until) > julianday(?))
            AND (i.expires_at IS NULL OR julianday(i.expires_at) > julianday(?))
            ${kindClause}
+           ${beforeClause}
            AND (
              i.title LIKE ? ESCAPE '\\'
              OR i.content LIKE ? ESCAPE '\\'
@@ -1935,7 +1943,14 @@ export function searchWorkspaceMemoryItems(input: {
          ORDER BY i.importance DESC, i.updated_at DESC
          LIMIT ?`,
       )
-      .all(...params, pattern, pattern, pattern, input.limit) as Array<
+      .all(
+        ...params,
+        ...beforeParams,
+        pattern,
+        pattern,
+        pattern,
+        input.limit,
+      ) as Array<
       MemoryItemRow & { search_rank: number; search_snippet: string }
     >;
   }

@@ -579,4 +579,97 @@ describe('Workspace Memory v2 routes', () => {
     expect(recallSearch.status).toBe(200);
     expect(recallSearch.body.hits).toHaveLength(0);
   });
+
+  test('future and expired items are searchable under scope=manage while excluded from agent recall, and multi-page search cursor does not duplicate', async () => {
+    const now = new Date();
+    const past = new Date(now.getTime() - 48 * 3600 * 1000).toISOString();
+    const future = new Date(now.getTime() + 48 * 3600 * 1000).toISOString();
+
+    // 1. Create future item (validFrom in future)
+    const futureRes = await create(
+      WORKSPACE_A,
+      'Future feature plan for quantum_temporal_key',
+      {
+        status: 'active',
+        validFrom: future,
+      },
+    );
+    expect(futureRes.status).toBe(201);
+    const futureId = futureRes.body.item.id;
+
+    // 2. Create expired item (expiresAt in past)
+    const expiredRes = await create(
+      WORKSPACE_A,
+      'Expired feature config for quantum_temporal_key',
+      {
+        status: 'active',
+        expiresAt: past,
+      },
+    );
+    expect(expiredRes.status).toBe(201);
+    const expiredId = expiredRes.body.item.id;
+
+    // 3. Create effective item (validFrom past, validUntil future)
+    const effectiveRes = await create(
+      WORKSPACE_A,
+      'Effective active feature config for quantum_temporal_key',
+      {
+        status: 'active',
+        validFrom: past,
+        validUntil: future,
+      },
+    );
+    expect(effectiveRes.status).toBe(201);
+    const effectiveId = effectiveRes.body.item.id;
+
+    // 4. Management search (scope=manage&status=active) MUST find all 3 items (future, expired, effective)
+    const manageSearch = await request(
+      route(
+        WORKSPACE_A,
+        '/search?q=quantum_temporal_key&scope=manage&status=active&limit=100',
+      ),
+    );
+    expect(manageSearch.status).toBe(200);
+    expect(manageSearch.body.hits).toHaveLength(3);
+    const manageIds = manageSearch.body.hits.map((h: any) => h.item.id);
+    expect(manageIds).toContain(futureId);
+    expect(manageIds).toContain(expiredId);
+    expect(manageIds).toContain(effectiveId);
+
+    // 5. Agent recall search (default scope=recall) MUST ONLY find the effective item, excluding future and expired!
+    const recallSearch = await request(
+      route(WORKSPACE_A, '/search?q=quantum_temporal_key'),
+    );
+    expect(recallSearch.status).toBe(200);
+    expect(recallSearch.body.hits).toHaveLength(1);
+    expect(recallSearch.body.hits[0].item.id).toBe(effectiveId);
+
+    // 6. Test multi-page search cursor:
+    // Query page 1 with limit=2
+    const searchP1 = await request(
+      route(
+        WORKSPACE_A,
+        '/search?q=quantum_temporal_key&scope=manage&status=active&limit=2',
+      ),
+    );
+    expect(searchP1.status).toBe(200);
+    expect(searchP1.body.hits).toHaveLength(2);
+    expect(searchP1.body.nextCursor).toBeTruthy();
+    const p1Ids = new Set(searchP1.body.hits.map((h: any) => h.item.id));
+
+    // Query page 2 with cursor
+    const searchP2 = await request(
+      route(
+        WORKSPACE_A,
+        `/search?q=quantum_temporal_key&scope=manage&status=active&limit=2&cursor=${encodeURIComponent(searchP1.body.nextCursor)}`,
+      ),
+    );
+    expect(searchP2.status).toBe(200);
+    expect(searchP2.body.hits).toHaveLength(1);
+    expect(searchP2.body.nextCursor).toBeNull();
+    // Verify page 2 item does not duplicate any page 1 item!
+    for (const h of searchP2.body.hits) {
+      expect(p1Ids.has(h.item.id)).toBe(false);
+    }
+  });
 });

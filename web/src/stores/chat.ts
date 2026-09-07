@@ -3559,6 +3559,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
         delete nextAgentWaiting[agentId];
         const nextAgentHasMore = { ...s.agentHasMore };
         delete nextAgentHasMore[agentId];
+
+        const draftKey = `${chatJid}::${agentId}`;
+        const nextDrafts = { ...s.drafts };
+        delete nextDrafts[draftKey];
+        delete nextDrafts[`${chatJid}#agent:${agentId}`];
+        const nextDraftRevisions = { ...s.draftRevisions };
+        nextDraftRevisions[draftKey] = (s.draftRevisions[draftKey] ?? 0) + 1;
+        if (s.draftRevisions[`${chatJid}#agent:${agentId}`] !== undefined) {
+          nextDraftRevisions[`${chatJid}#agent:${agentId}`] =
+            s.draftRevisions[`${chatJid}#agent:${agentId}`] + 1;
+        }
+
         return {
           agents: { ...s.agents, [chatJid]: filtered },
           agentStreaming: nextAgentStreaming,
@@ -3568,6 +3580,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           agentMessages: nextAgentMessages,
           agentWaiting: nextAgentWaiting,
           agentHasMore: nextAgentHasMore,
+          drafts: nextDrafts,
+          draftRevisions: nextDraftRevisions,
         };
       }
 
@@ -3786,6 +3800,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
           s.sdkTaskAliases,
           agentId,
         );
+
+        const draftKey = `${jid}::${agentId}`;
+        const nextDrafts = { ...s.drafts };
+        delete nextDrafts[draftKey];
+        delete nextDrafts[`${jid}#agent:${agentId}`];
+
+        const nextDraftRevisions = { ...s.draftRevisions };
+        nextDraftRevisions[draftKey] = (s.draftRevisions[draftKey] ?? 0) + 1;
+        if (s.draftRevisions[`${jid}#agent:${agentId}`] !== undefined) {
+          nextDraftRevisions[`${jid}#agent:${agentId}`] =
+            s.draftRevisions[`${jid}#agent:${agentId}`] + 1;
+        }
+
         return {
           agents: { ...s.agents, [jid]: updated },
           agentMessages: nextAgentMessages,
@@ -3795,6 +3822,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           activeAgentTab: nextActiveTab,
           sdkTasks: nextSdkTasks,
           sdkTaskAliases: nextSdkTaskAliases,
+          drafts: nextDrafts,
+          draftRevisions: nextDraftRevisions,
         };
       });
       return true;

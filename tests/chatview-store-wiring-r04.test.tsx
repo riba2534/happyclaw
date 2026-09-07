@@ -824,4 +824,43 @@ describe('R04: Real ChatView and Zustand store integration test', () => {
     ) as HTMLTextAreaElement;
     expect(reloadedTextarea.value).toBe('');
   });
+
+  test('deleteAgentAction cleans store drafts and tombstone increments draftRevisions, preventing stale resurrect callbacks', async () => {
+    // 1. Set draft and revision for AGENT_ALPHA
+    const alphaKey = `${WS_JID}::${AGENT_ALPHA}`;
+    const initialRev = useChatStore
+      .getState()
+      .saveDraft(alphaKey, 'Pending alpha draft');
+    expect(useChatStore.getState().drafts[alphaKey]).toBe(
+      'Pending alpha draft',
+    );
+    expect(useChatStore.getState().draftRevisions[alphaKey]).toBe(initialRev);
+
+    // 2. Execute deleteAgentAction
+    let deleteSuccess = false;
+    await act(async () => {
+      deleteSuccess = await useChatStore
+        .getState()
+        .deleteAgentAction(WS_JID, AGENT_ALPHA);
+    });
+    expect(deleteSuccess).toBe(true);
+
+    // 3. Draft must be removed and revision incremented (tombstone)
+    expect(useChatStore.getState().drafts[alphaKey]).toBeUndefined();
+    expect(useChatStore.getState().draftRevisions[alphaKey]).toBe(
+      initialRev + 1,
+    );
+
+    // 4. Stale callback attempting saveDraftIfRevision or clearDraftIfRevision with old initialRev MUST fail (CAS)
+    const resurrectAttempt = useChatStore
+      .getState()
+      .saveDraftIfRevision(alphaKey, 'Zombie alpha draft', initialRev);
+    expect(resurrectAttempt).toBe(false);
+    expect(useChatStore.getState().drafts[alphaKey]).toBeUndefined();
+
+    const clearAttempt = useChatStore
+      .getState()
+      .clearDraftIfRevision(alphaKey, initialRev);
+    expect(clearAttempt).toBe(false);
+  });
 });
