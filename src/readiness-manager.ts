@@ -113,6 +113,8 @@ export function setChannelAuthoritativeSyncSource(
 function detectBootstrapReleaseSha(): string {
   // 1. 显式环境变量优先
   if (process.env.HAPPYCLAW_GIT_SHA) return process.env.HAPPYCLAW_GIT_SHA;
+  if (process.env.HAPPYCLAW_BOOTSTRAP_SHA)
+    return process.env.HAPPYCLAW_BOOTSTRAP_SHA;
 
   // 2. 通过 import.meta.url 真实物理路径反查所属不可变 release 根中的 version.json
   try {
@@ -130,13 +132,13 @@ function detectBootstrapReleaseSha(): string {
     }
   } catch {}
 
-  // 3. 启动时刻读取 .releases/current/meta.json 或 .release-current.json
+  // 3. 启动时刻读取 .releases/current/version.json 或 .release-current.json
   try {
     const metaPath = path.join(
       process.cwd(),
       '.releases',
       'current',
-      'meta.json',
+      'version.json',
     );
     if (fs.existsSync(metaPath)) {
       const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));

@@ -28,7 +28,7 @@ export HAPPYCLAW_DEPLOY_REF='codex/replace-with-remote-branch'
 export HAPPYCLAW_EXPECTED_SHA='replace-with-full-commit-sha'
 export HAPPYCLAW_PUBLIC_URL_PRIMARY='https://claw.riba2534.cn'
 export HAPPYCLAW_PUBLIC_URL_SECONDARY='https://claw.home.riba2534.cn:23333'
-export HAPPYCLAW_AGENT_IMAGE='riba2534/happyclaw-agent:latest'
+export HAPPYCLAW_AGENT_IMAGE="riba2534/happyclaw-agent:git-${HAPPYCLAW_EXPECTED_SHA}"
 # 分支不可变镜像会自动派生同 SHA 的 `-headroom` 能力标签；只有实际配置
 # headroom MCP 时 Docker 才按需拉取它。
 ```
@@ -79,12 +79,13 @@ chmod 600 .env
 
 `deploy-release.sh` 执行的原子发布流程：
 
-1. **工作树干净预检**：校验当前目录无未提交更改，记录旧版本 `HAPPYCLAW_PREVIOUS_SHA`；
-2. **独立候选准备 (.release-candidate)**：在隔离 worktree 中签出 `HAPPYCLAW_EXPECTED_SHA`，隔离执行三包全量构建 `npm run build:all`（包括主服务、Web 前端与 Agent Runner）；
-3. **不可变镜像校验**：分支构建必须使用 `riba2534/happyclaw-agent:git-<SHA>` 不可变标签，严禁使用浮动的 `latest`；
-4. **失败零污染防护**：任一步构建或校验失败，脚本立即退出并清理候选目录，线上正运行的代码与 `web/dist` 绝不受任何影响；
-5. **原子激活 (Atomic Switch)**：三包产物全部校验成功后，将当前在线产物安全归档至 `.release-previous`（仅保留代码 SHA 与三包产物，**绝不备份 SQLite/runtime/.env 数据**），随后将 Git HEAD 与三包产物同步切换至目标版本；
-6. **配置原地更新**：若使用了不可变分支镜像，仅原地更新 `.env` 中的 `CONTAINER_IMAGE`，权限保持 `600`。
+1. **工作树干净预检**：校验当前目录无未提交更改，记录旧版本 `ACTIVE_PREVIOUS_SHA`；
+2. **目标不可变运行库检查与复用**：若 `.releases/store/<SHA>` 已存在且完整，直接安全复用（零删除、零断链）；若存在但损坏直接 fail-closed 阻断；
+3. **独立候选准备 (.release-staging-<runId>)**：在隔离 worktree 中签出 `HAPPYCLAW_EXPECTED_SHA`，隔离执行三包全量构建 `npm run build:all` 并封存不可变运行根；
+4. **不可变镜像强校验**：分支构建必须匹配 `riba2534/happyclaw-agent:git-<SHA>[-headroom]`，必须通过 Docker pull 及 inspect 校验 revision、架构与 ID；
+5. **失败零污染防护**：任一步构建或校验失败，脚本立即退出并清理候选目录，线上正运行的代码与 `web/dist` 绝不受任何影响；
+6. **首次平滑迁移保护（若当前为旧环境）**：严格在候选版本准备完毕后，受控停止存量旧服务，将当前在线旧代码封存入 `.releases/store/<PREVIOUS_SHA>`（包含旧版全部运行资产与 3 层相对数据软链接），原子切换软链接，绝不造成新旧混版；任何迁移失败原样恢复原物理目录；用户的现有 launchd 单元名 `com.riba2534.happyclaw` 及其配置保持原样，无需变更；
+7. **全流程激活事务保护**：单步原子重命名切换 `.releases/current` 指针至不可变目标根，原地无副本更新 `.env` 中的 `CONTAINER_IMAGE`；在激活与重启就绪阶段设置统一错误 trap 保护，任何命令非 0 失败自动安全回滚至上一版本代码与配置，并以非 0 退出码明确报警。
 
 ## 4. 重启与生产业务就绪验证 (R12)
 
@@ -136,11 +137,7 @@ tail -100 "$HOME/Library/Logs/happyclaw/happyclaw.log"
 ./scripts/rollback-release.sh "$HAPPYCLAW_PREVIOUS_SHA"
 ```
 
-回滚脚本会从 `.release-previous` 快速还原上一版本的 Git HEAD 与三包产物，并重启服务与验证就绪。
-所有者选择不保留数据备份，因此数据库迁移后不存在数据恢复路径。若迁移导致旧代码
-不兼容，应停止继续切换并以前向修复恢复服务，不得自行创建或恢复备份。回滚后重复第 4
-节的健康检查与真实功能测试，并明确报告仅发生了代码回滚。
-
+回滚脚本会从不可变版本库中快速单步原子切换当前运行指针，还原上一版本不可变镜像并严格拉取/校验镜像完整性，随后通过 launchd 重启服务并严格校验就绪探针。
 所有者选择不保留数据备份，因此数据库迁移后不存在数据恢复路径。若迁移导致旧代码
 不兼容，应停止继续切换并以前向修复恢复服务，不得自行创建或恢复备份。回滚后重复第 4
 节的健康检查与真实功能测试，并明确报告仅发生了代码回滚。
