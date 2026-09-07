@@ -608,4 +608,220 @@ describe('R04: Real ChatView and Zustand store integration test', () => {
     ) as HTMLTextAreaElement;
     expect(newTextarea.value).toBe('');
   });
+
+  test('ABA Scenario: A sends X -> switch B -> switch A -> edit to Y then back to X -> switch B -> old send X succeeds: store draft X is NOT deleted and restores on reload', async () => {
+    let resolveSendMain: (ok: boolean) => void = () => {};
+    vi.spyOn(useChatStore.getState(), 'sendMessage').mockImplementation(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveSendMain = resolve;
+        }),
+    );
+
+    await act(async () => {
+      root?.render(
+        <MemoryRouter initialEntries={[`/chat/flow-integrated`]}>
+          <Routes>
+            <Route
+              path="/chat/:groupFolder"
+              element={<ChatView groupJid={WS_JID} />}
+            />
+          </Routes>
+        </MemoryRouter>,
+      );
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    const textarea = () =>
+      container?.querySelector('textarea') as HTMLTextAreaElement;
+    const clickSession = async (name: string) => {
+      const btn = Array.from(
+        container?.querySelectorAll('[data-hc-session-sidebar] button') ?? [],
+      ).find((b) => b.textContent?.includes(name));
+      expect(btn).toBeTruthy();
+      await act(async () => {
+        btn?.click();
+      });
+    };
+
+    // 1. A sends text 'X'
+    await act(async () => {
+      typeInTextarea(textarea(), 'X');
+    });
+    const sendBtn = () =>
+      container?.querySelector('button[title="发送消息"]') as HTMLButtonElement;
+    await act(async () => {
+      sendBtn().click();
+    });
+
+    // 2. Switch B
+    await clickSession('Alpha Agent');
+
+    // 3. Switch A
+    await clickSession('Integrated Test Workspace 对话');
+
+    // 4. Edit to Y and wait debounce
+    await act(async () => {
+      typeInTextarea(textarea(), 'Y');
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 350));
+    });
+    expect(useChatStore.getState().drafts[`${WS_JID}::main`]).toBe('Y');
+
+    // 5. Edit back to X (identical text as original send!) and wait debounce
+    await act(async () => {
+      typeInTextarea(textarea(), 'X');
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 350));
+    });
+    expect(useChatStore.getState().drafts[`${WS_JID}::main`]).toBe('X');
+
+    // 6. Switch B
+    await clickSession('Alpha Agent');
+
+    // 7. Old send of X succeeds now!
+    await act(async () => {
+      resolveSendMain(true);
+    });
+
+    // CAS protection check: store revision is higher, so clearDraftIfRevision failed to delete the new 'X'!
+    expect(useChatStore.getState().drafts[`${WS_JID}::main`]).toBe('X');
+
+    // 8. Refresh / remount simulation
+    await act(async () => {
+      root?.unmount();
+      root = createRoot(container!);
+    });
+    await act(async () => {
+      root?.render(
+        <MemoryRouter initialEntries={[`/chat/flow-integrated`]}>
+          <Routes>
+            <Route
+              path="/chat/:groupFolder"
+              element={<ChatView groupJid={WS_JID} />}
+            />
+          </Routes>
+        </MemoryRouter>,
+      );
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    // Check Main conversation draft
+    await clickSession('Integrated Test Workspace 对话');
+
+    const reloadedTextarea = container?.querySelector(
+      'textarea',
+    ) as HTMLTextAreaElement;
+    expect(reloadedTextarea.value).toBe('X');
+  });
+
+  test('Empty Scenario: A sends X -> switch B -> switch A -> delete all text to empty -> switch B -> old send X fails: does NOT resurrect X into store or DOM', async () => {
+    let rejectSendMain: (ok: boolean) => void = () => {};
+    vi.spyOn(useChatStore.getState(), 'sendMessage').mockImplementation(
+      () =>
+        new Promise<boolean>((resolve) => {
+          rejectSendMain = resolve;
+        }),
+    );
+
+    await act(async () => {
+      root?.render(
+        <MemoryRouter initialEntries={[`/chat/flow-integrated`]}>
+          <Routes>
+            <Route
+              path="/chat/:groupFolder"
+              element={<ChatView groupJid={WS_JID} />}
+            />
+          </Routes>
+        </MemoryRouter>,
+      );
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    const textarea = () =>
+      container?.querySelector('textarea') as HTMLTextAreaElement;
+    const clickSession = async (name: string) => {
+      const btn = Array.from(
+        container?.querySelectorAll('[data-hc-session-sidebar] button') ?? [],
+      ).find((b) => b.textContent?.includes(name));
+      expect(btn).toBeTruthy();
+      await act(async () => {
+        btn?.click();
+      });
+    };
+
+    // 1. A sends text 'X'
+    await act(async () => {
+      typeInTextarea(textarea(), 'X');
+    });
+    const sendBtn = () =>
+      container?.querySelector('button[title="发送消息"]') as HTMLButtonElement;
+    await act(async () => {
+      sendBtn().click();
+    });
+
+    // 2. Switch B
+    await clickSession('Alpha Agent');
+
+    // 3. Switch A
+    await clickSession('Integrated Test Workspace 对话');
+
+    // 4. Delete all text (empty) and wait debounce to persist deletion
+    await act(async () => {
+      typeInTextarea(textarea(), '');
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 350));
+    });
+    expect(useChatStore.getState().drafts[`${WS_JID}::main`]).toBeUndefined();
+
+    // 5. Switch B
+    await clickSession('Alpha Agent');
+
+    // 6. Old send of X fails now!
+    await act(async () => {
+      rejectSendMain(false);
+    });
+
+    // CAS protection check: store revision is higher, so saveDraftIfRevision refused to save old X!
+    expect(useChatStore.getState().drafts[`${WS_JID}::main`]).toBeUndefined();
+
+    // 7. Switch back to A: still empty!
+    await clickSession('Integrated Test Workspace 对话');
+    expect(textarea().value).toBe('');
+
+    // 8. Refresh / remount simulation: still empty!
+    await act(async () => {
+      root?.unmount();
+      root = createRoot(container!);
+    });
+    await act(async () => {
+      root?.render(
+        <MemoryRouter initialEntries={[`/chat/flow-integrated`]}>
+          <Routes>
+            <Route
+              path="/chat/:groupFolder"
+              element={<ChatView groupJid={WS_JID} />}
+            />
+          </Routes>
+        </MemoryRouter>,
+      );
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    const reloadedTextarea = container?.querySelector(
+      'textarea',
+    ) as HTMLTextAreaElement;
+    expect(reloadedTextarea.value).toBe('');
+  });
 });

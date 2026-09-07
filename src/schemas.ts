@@ -580,10 +580,20 @@ export const WorkspaceMemoryForgetSchema = z
   })
   .strict();
 
+export const WorkspaceMemoryStatusFilterSchema = z.enum([
+  'all',
+  'active',
+  'proposed',
+  'conflicted',
+  'superseded',
+  'deleted',
+]);
+
 export const WorkspaceMemoryListQuerySchema = z
   .object({
-    status: WorkspaceMemoryStatusSchema.optional(),
+    status: WorkspaceMemoryStatusFilterSchema.optional(),
     kind: WorkspaceMemoryKindSchema.optional(),
+    q: z.string().trim().max(500).optional(),
     limit: z.coerce.number().int().min(1).max(100).optional(),
     cursor: z.string().min(1).max(2048).optional(),
   })
@@ -593,7 +603,10 @@ export const WorkspaceMemorySearchQuerySchema = z
   .object({
     q: z.string().trim().min(1).max(500),
     kind: WorkspaceMemoryKindSchema.optional(),
+    status: WorkspaceMemoryStatusFilterSchema.optional(),
+    scope: z.enum(['manage', 'recall']).optional(),
     limit: z.coerce.number().int().min(1).max(100).optional(),
+    cursor: z.string().min(1).max(2048).optional(),
   })
   .strict();
 

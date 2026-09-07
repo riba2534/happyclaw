@@ -469,4 +469,114 @@ describe('Workspace Memory v2 routes', () => {
       expect((await request(url, method)).status).toBe(410);
     }
   });
+
+  test('management list/search covers all statuses, supports multi-page cursor pagination and page 2 keyword search while preserving agent recall semantics', async () => {
+    // 1. Seed 55 items with various statuses:
+    // Items 1..40: active
+    // Items 41..48: proposed
+    // Items 49..52: conflicted
+    // Item 53: active but expired (validUntil in past)
+    // Item 54: proposed with unique keyword "canary_deploy_pipeline"
+    // Item 55: active with unique keyword "canary_deploy_pipeline" but expired (expiresAt in past)
+    const now = new Date();
+    const past = new Date(now.getTime() - 24 * 3600 * 1000).toISOString();
+    const future = new Date(now.getTime() + 24 * 3600 * 1000).toISOString();
+
+    for (let i = 1; i <= 40; i++) {
+      const res = await create(
+        WORKSPACE_A,
+        `Active background fact item ${i}`,
+        {
+          status: 'active',
+        },
+      );
+      expect(res.status).toBe(201);
+    }
+    for (let i = 41; i <= 48; i++) {
+      const res = await create(WORKSPACE_A, `Candidate proposed item ${i}`, {
+        status: 'proposed',
+      });
+      expect(res.status).toBe(201);
+    }
+    for (let i = 49; i <= 52; i++) {
+      const res = await create(WORKSPACE_A, `Conflicted issue item ${i}`, {
+        status: 'conflicted',
+      });
+      expect(res.status).toBe(201);
+    }
+    // Item 53: expired by validUntil
+    await create(WORKSPACE_A, 'Expired item 53', {
+      status: 'active',
+      validUntil: past,
+    });
+    // Item 54: proposed with target keyword on page 2
+    await create(
+      WORKSPACE_A,
+      'Candidate decision for canary_deploy_pipeline v2',
+      {
+        status: 'proposed',
+      },
+    );
+    // Item 55: active with target keyword but expired (TTL in past)
+    await create(
+      WORKSPACE_A,
+      'Old expired config for canary_deploy_pipeline v1',
+      {
+        status: 'active',
+        expiresAt: past,
+      },
+    );
+
+    // 2. Query page 1 with status=all and limit=50:
+    // Must return exactly 50 items and a non-null nextCursor!
+    const page1 = await request(route(WORKSPACE_A, '?status=all&limit=50'));
+    expect(page1.status).toBe(200);
+    expect(page1.body.items).toHaveLength(50);
+    expect(page1.body.nextCursor).toBeTruthy();
+
+    // 3. Query page 2 with cursor:
+    // Must return the remaining 5 items without error!
+    const page2 = await request(
+      route(
+        WORKSPACE_A,
+        `?status=all&limit=50&cursor=${encodeURIComponent(page1.body.nextCursor)}`,
+      ),
+    );
+    expect(page2.status).toBe(200);
+    expect(page2.body.items).toHaveLength(5);
+    expect(page2.body.nextCursor).toBeNull();
+
+    // 4. Query proposed filter with cursor:
+    const proposedList = await request(
+      route(WORKSPACE_A, '?status=proposed&limit=50'),
+    );
+    expect(proposedList.status).toBe(200);
+    expect(proposedList.body.items.length).toBeGreaterThanOrEqual(9);
+    expect(
+      proposedList.body.items.every((it: any) => it.status === 'proposed'),
+    ).toBe(true);
+
+    // 5. Management Search (scope=manage):
+    // Searching for "canary_deploy_pipeline" must return both the proposed and expired items!
+    const manageSearch = await request(
+      route(
+        WORKSPACE_A,
+        '/search?q=canary_deploy_pipeline&scope=manage&status=all',
+      ),
+    );
+    expect(manageSearch.status).toBe(200);
+    expect(manageSearch.body.hits.length).toBeGreaterThanOrEqual(2);
+    const hitStatuses = manageSearch.body.hits.map((h: any) => h.item.status);
+    expect(hitStatuses).toContain('proposed');
+    expect(hitStatuses).toContain('active');
+
+    // 6. Agent Recall Search (scope=recall / default):
+    // Agent recall must STRICTLY filter out proposed and expired items!
+    // Since item 54 is proposed and item 55 is expired, Agent recall MUST return 0 hits!
+    const recallSearch = await request(
+      route(WORKSPACE_A, '/search?q=canary_deploy_pipeline'),
+    );
+    expect(recallSearch.status).toBe(200);
+    expect(recallSearch.body.hits).toHaveLength(0);
+  });
 });

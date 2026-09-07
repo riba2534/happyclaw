@@ -246,26 +246,26 @@ export function MemoryPage() {
 
   const [kindFilter, setKindFilter] = useState<KindFilter>('all');
   const [statusFilter, setStatusFilter] = useState<
-    | 'all'
     | 'active'
+    | 'all'
     | 'proposed'
     | 'conflicted'
     | 'effective'
     | 'future'
     | 'expired'
-  >('all');
+  >('active');
   const [query, setQuery] = useState('');
   const queryRef = useRef('');
   const kindFilterRef = useRef<KindFilter>('all');
   const statusFilterRef = useRef<
-    | 'all'
     | 'active'
+    | 'all'
     | 'proposed'
     | 'conflicted'
     | 'effective'
     | 'future'
     | 'expired'
-  >('all');
+  >('active');
   queryRef.current = query;
   kindFilterRef.current = kindFilter;
   statusFilterRef.current = statusFilter;
@@ -273,6 +273,7 @@ export function MemoryPage() {
   const [searchHits, setSearchHits] = useState<
     WorkspaceMemorySearchResult['hits'] | null
   >(null);
+  const [searchNextCursor, setSearchNextCursor] = useState<string | null>(null);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedItem, setSelectedItem] = useState<WorkspaceMemoryItem | null>(
@@ -316,40 +317,7 @@ export function MemoryPage() {
   const canModify = selectedWorkspace?.can_modify === true;
 
   const visibleItems = useMemo(() => {
-    const trimmed = query.trim().toLowerCase();
-    let list = items;
-
-    if (trimmed) {
-      if (statusFilter === 'all') {
-        // 在全部状态下搜索：以 searchHits 命中文档为基础，同时合入匹配关键词的候选/冲突记录，防止被仅活跃召回接口冲掉
-        const matchedActive = searchHits
-          ? searchHits.map((hit) => hit.item)
-          : items.filter(
-              (it) =>
-                (it.title && it.title.toLowerCase().includes(trimmed)) ||
-                it.content.toLowerCase().includes(trimmed),
-            );
-        const matchedNonActive = items.filter(
-          (it) =>
-            it.status !== 'active' &&
-            ((it.title && it.title.toLowerCase().includes(trimmed)) ||
-              it.content.toLowerCase().includes(trimmed)),
-        );
-        const byId = new Map<string, WorkspaceMemoryItem>();
-        for (const it of matchedActive) byId.set(it.id, it);
-        for (const it of matchedNonActive) byId.set(it.id, it);
-        list = Array.from(byId.values());
-      } else if (statusFilter === 'active' || statusFilter === 'effective') {
-        list = searchHits ? searchHits.map((hit) => hit.item) : items;
-      } else {
-        // proposed, conflicted, future, expired 等：在对应集合中按关键词检索
-        list = list.filter(
-          (item) =>
-            (item.title && item.title.toLowerCase().includes(trimmed)) ||
-            item.content.toLowerCase().includes(trimmed),
-        );
-      }
-    }
+    let list = searchHits ? searchHits.map((hit) => hit.item) : items;
 
     if (kindFilter !== 'all') {
       list = list.filter((item) => item.kind === kindFilter);
@@ -380,7 +348,7 @@ export function MemoryPage() {
       );
     }
     return list;
-  }, [items, kindFilter, query, searchHits, statusFilter]);
+  }, [items, kindFilter, searchHits, statusFilter]);
   const counts = useMemo(() => memoryKindCounts(items), [items]);
   const dirty = useMemo(() => {
     if (!selectedItem) return false;
@@ -559,15 +527,20 @@ export function MemoryPage() {
       try {
         const currentStatus = statusFilterRef.current;
         const requestedStatus =
-          currentStatus === 'proposed'
-            ? 'proposed'
-            : currentStatus === 'conflicted'
-              ? 'conflicted'
-              : 'active';
+          currentStatus === 'all'
+            ? 'all'
+            : currentStatus === 'proposed'
+              ? 'proposed'
+              : currentStatus === 'conflicted'
+                ? 'conflicted'
+                : 'active';
         const params = new URLSearchParams({
           status: requestedStatus,
           limit: '100',
         });
+        if (kindFilterRef.current !== 'all') {
+          params.set('kind', kindFilterRef.current);
+        }
         if (options?.cursor) params.set('cursor', options.cursor);
         const data = await api.get<WorkspaceMemoryCollection>(
           `${memoryItemsPath(workspaceJid)}?${params}`,
@@ -581,49 +554,8 @@ export function MemoryPage() {
         setStoreRevision(data.storeRevision);
         setNextCursor(data.nextCursor);
 
-        let mergedItems = data.items;
-        // 如果是 'all' 状态且非游标翻页，尝试并发拉取 proposed 与 conflicted 记忆合并展示
-        if (currentStatus === 'all' && !options?.cursor) {
-          try {
-            const [proposedData, conflictedData] = await Promise.all([
-              api
-                .get<WorkspaceMemoryCollection>(
-                  `${memoryItemsPath(workspaceJid)}?status=proposed&limit=50`,
-                )
-                .catch(() => null),
-              api
-                .get<WorkspaceMemoryCollection>(
-                  `${memoryItemsPath(workspaceJid)}?status=conflicted&limit=50`,
-                )
-                .catch(() => null),
-            ]);
-            if (
-              (proposedData?.items && proposedData.items.length > 0) ||
-              (conflictedData?.items && conflictedData.items.length > 0)
-            ) {
-              const byId = new Map<string, WorkspaceMemoryItem>();
-              for (const it of mergedItems) byId.set(it.id, it);
-              for (const it of proposedData?.items ?? []) byId.set(it.id, it);
-              for (const it of conflictedData?.items ?? []) byId.set(it.id, it);
-              mergedItems = Array.from(byId.values()).sort((a, b) =>
-                b.updatedAt.localeCompare(a.updatedAt),
-              );
-            }
-          } catch {
-            // best-effort 合并
-          }
-        }
-
-        // 第二段异步结束后重新校验 workspace 与代次，防止切换工作区或筛选后旧请求覆盖
-        if (
-          !isCurrentWorkspace(workspaceJid, workspaceEpoch) ||
-          listGenerationRef.current !== requestGeneration
-        ) {
-          return;
-        }
-
         setItems((current) =>
-          append ? [...current, ...mergedItems] : mergedItems,
+          append ? [...current, ...data.items] : data.items,
         );
         setListError(null);
       } catch (error) {
@@ -651,9 +583,16 @@ export function MemoryPage() {
   }, [selectedWorkspaceJid, statusFilter, loadItems]);
 
   const loadSearch = useCallback(
-    async (options?: { query?: string; kind?: KindFilter }) => {
+    async (options?: {
+      query?: string;
+      kind?: KindFilter;
+      status?: typeof statusFilter;
+      append?: boolean;
+      cursor?: string | null;
+    }) => {
       const trimmed = (options?.query ?? queryRef.current).trim();
       const requestedKind = options?.kind ?? kindFilterRef.current;
+      const requestedStatus = options?.status ?? statusFilterRef.current;
       const workspaceJid = activeWorkspaceRef.current;
       const workspaceEpoch = workspaceEpochRef.current;
       if (
@@ -663,15 +602,32 @@ export function MemoryPage() {
       ) {
         searchGenerationRef.current += 1;
         setSearchHits(null);
+        setSearchNextCursor(null);
         setSearching(false);
         return;
       }
 
+      const append = options?.append === true;
       const requestGeneration = ++searchGenerationRef.current;
-      setSearching(true);
+      append ? setLoadingMore(true) : setSearching(true);
       try {
-        const params = new URLSearchParams({ q: trimmed, limit: '100' });
+        const params = new URLSearchParams({
+          q: trimmed,
+          limit: '100',
+        });
         if (requestedKind !== 'all') params.set('kind', requestedKind);
+        if (requestedStatus === 'all') {
+          params.set('status', 'all');
+          params.set('scope', 'manage');
+        } else if (
+          requestedStatus === 'proposed' ||
+          requestedStatus === 'conflicted'
+        ) {
+          params.set('status', requestedStatus);
+          params.set('scope', 'manage');
+        }
+        if (options?.cursor) params.set('cursor', options.cursor);
+
         const data = await api.get<WorkspaceMemorySearchResult>(
           `${memoryItemsPath(workspaceJid)}/search?${params}`,
         );
@@ -682,7 +638,10 @@ export function MemoryPage() {
           return;
         }
         setStoreRevision(data.storeRevision);
-        setSearchHits(data.hits);
+        setSearchNextCursor(data.nextCursor ?? null);
+        setSearchHits((current) =>
+          append && current ? [...current, ...data.hits] : data.hits,
+        );
       } catch (error) {
         if (
           !isCurrentWorkspace(workspaceJid, workspaceEpoch) ||
@@ -690,14 +649,17 @@ export function MemoryPage() {
         ) {
           return;
         }
-        setSearchHits([]);
+        if (!append) {
+          setSearchHits([]);
+          setSearchNextCursor(null);
+        }
         toast.error(getErrorMessage(error, '搜索工作区记忆失败'));
       } finally {
         if (
           isCurrentWorkspace(workspaceJid, workspaceEpoch) &&
           searchGenerationRef.current === requestGeneration
         ) {
-          setSearching(false);
+          append ? setLoadingMore(false) : setSearching(false);
         }
       }
     },
@@ -709,19 +671,22 @@ export function MemoryPage() {
     if (!trimmed || !selectedWorkspaceJid) {
       searchGenerationRef.current += 1;
       setSearchHits(null);
+      setSearchNextCursor(null);
       setSearching(false);
       return;
     }
     const timer = window.setTimeout(() => {
-      void loadSearch({ query: trimmed, kind: kindFilter });
+      void loadSearch({
+        query: trimmed,
+        kind: kindFilter,
+        status: statusFilter,
+      });
     }, 280);
     return () => {
       window.clearTimeout(timer);
-      // Invalidate a request that may already have started before dependencies
-      // changed, so it cannot briefly repaint results for the previous query.
       searchGenerationRef.current += 1;
     };
-  }, [kindFilter, loadSearch, query, selectedWorkspaceJid]);
+  }, [kindFilter, loadSearch, query, selectedWorkspaceJid, statusFilter]);
 
   const refreshMemoryView = useCallback(async () => {
     const refreshes: Promise<void>[] = [loadItems()];
@@ -1512,14 +1477,25 @@ export function MemoryPage() {
                           onSelect={(next) => void loadDetail(next.id)}
                         />
                       ))}
-                      {!searchHits && nextCursor && (
+                      {(searchHits ? searchNextCursor : nextCursor) !==
+                        null && (
                         <Button
                           variant="outline"
                           className="w-full"
                           disabled={loadingMore}
-                          onClick={() =>
-                            void loadItems({ append: true, cursor: nextCursor })
-                          }
+                          onClick={() => {
+                            if (searchHits) {
+                              void loadSearch({
+                                append: true,
+                                cursor: searchNextCursor,
+                              });
+                            } else {
+                              void loadItems({
+                                append: true,
+                                cursor: nextCursor,
+                              });
+                            }
+                          }}
                         >
                           {loadingMore && <Loader2 className="animate-spin" />}
                           加载更多

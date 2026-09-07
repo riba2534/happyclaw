@@ -93,6 +93,7 @@ export interface WorkspaceMemorySearchResult {
     rank: number;
     snippet: string;
   }>;
+  nextCursor?: string | null;
 }
 
 export interface WorkspaceMemoryVersionsResult {

@@ -4,38 +4,6 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
-const mockDrafts: Record<string, string> = {};
-const mockSaveDraft = vi.fn((key: string, text: string) => {
-  if (text) {
-    mockDrafts[key] = text;
-  } else {
-    delete mockDrafts[key];
-  }
-});
-const mockClearDraft = vi.fn((key: string) => {
-  delete mockDrafts[key];
-});
-
-vi.mock('../web/src/stores/chat', () => {
-  return {
-    useChatStore: Object.assign(
-      (selector: (value: any) => unknown) =>
-        selector({
-          drafts: mockDrafts,
-          saveDraft: mockSaveDraft,
-          clearDraft: mockClearDraft,
-        }),
-      {
-        getState: () => ({
-          drafts: mockDrafts,
-          saveDraft: mockSaveDraft,
-          clearDraft: mockClearDraft,
-        }),
-      },
-    ),
-  };
-});
-
 vi.mock('../web/src/stores/files', () => ({
   useFileStore: (selector: (value: any) => unknown) =>
     selector({
@@ -71,6 +39,7 @@ vi.mock('../web/src/lib/follow-up-preferences', () => ({
     mode === 'queue' ? 'steer' : 'queue',
 }));
 
+import { useChatStore } from '../web/src/stores/chat';
 import { MessageInput } from '../web/src/components/chat/MessageInput';
 import { getDraftStorageKey } from '../web/src/lib/draft-storage';
 
@@ -93,11 +62,7 @@ function typeInTextarea(textarea: HTMLTextAreaElement, text: string) {
 }
 
 beforeEach(() => {
-  for (const key of Object.keys(mockDrafts)) {
-    delete mockDrafts[key];
-  }
-  mockSaveDraft.mockClear();
-  mockClearDraft.mockClear();
+  useChatStore.setState({ drafts: {}, draftRevisions: {} });
   createdUrls.length = 0;
   revokedUrls.length = 0;
 
@@ -162,7 +127,9 @@ describe('R04: Session draft and attachment isolation', () => {
       );
     });
 
-    expect(mockDrafts['web:ws1::main']).toBe('Draft for Main Session');
+    expect(useChatStore.getState().drafts['web:ws1::main']).toBe(
+      'Draft for Main Session',
+    );
     expect(textarea().value).toBe('');
 
     // User types draft in Session A
@@ -177,7 +144,9 @@ describe('R04: Session draft and attachment isolation', () => {
       );
     });
 
-    expect(mockDrafts['web:ws1::agent-a']).toBe('Draft for Session A');
+    expect(useChatStore.getState().drafts['web:ws1::agent-a']).toBe(
+      'Draft for Session A',
+    );
     expect(textarea().value).toBe('');
 
     // 4. Switch back to Main: Main draft restored!
@@ -294,7 +263,7 @@ describe('R04: Session draft and attachment isolation', () => {
     // Session B's content must NOT be cleared!
     expect(textarea().value).toBe('Important work in Session B');
     // Session A's draft in store should be cleared
-    expect(mockDrafts['web:ws1::agent-a']).toBeUndefined();
+    expect(useChatStore.getState().drafts['web:ws1::agent-a']).toBeUndefined();
   });
 
   test('A -> B -> A: returning to A and typing new draft is NOT wiped by earlier in-flight send success or failure', async () => {
@@ -356,7 +325,11 @@ describe('R04: Session draft and attachment isolation', () => {
     const onSend = vi.fn(async () => true);
 
     // Seed legacy draft stored at old key
-    mockDrafts['web:ws1'] = 'Legacy draft from old version';
+    useChatStore.setState({
+      drafts: {
+        'web:ws1': 'Legacy draft from old version',
+      },
+    });
 
     // Mount Main session: it should migrate to web:ws1::main and clean up old key
     await act(async () => {
@@ -368,8 +341,10 @@ describe('R04: Session draft and attachment isolation', () => {
     const textarea = () =>
       container?.querySelector('textarea') as HTMLTextAreaElement;
     expect(textarea().value).toBe('Legacy draft from old version');
-    expect(mockDrafts['web:ws1::main']).toBe('Legacy draft from old version');
-    expect(mockDrafts['web:ws1']).toBeUndefined(); // Legacy key cleared!
+    expect(useChatStore.getState().drafts['web:ws1::main']).toBe(
+      'Legacy draft from old version',
+    );
+    expect(useChatStore.getState().drafts['web:ws1']).toBeUndefined(); // Legacy key cleared!
 
     // User sends this draft
     const sendBtn = () =>
@@ -379,8 +354,8 @@ describe('R04: Session draft and attachment isolation', () => {
     });
 
     expect(textarea().value).toBe('');
-    expect(mockDrafts['web:ws1::main']).toBeUndefined();
-    expect(mockDrafts['web:ws1']).toBeUndefined();
+    expect(useChatStore.getState().drafts['web:ws1::main']).toBeUndefined();
+    expect(useChatStore.getState().drafts['web:ws1']).toBeUndefined();
 
     // Switch to another session and switch back
     await act(async () => {
@@ -396,7 +371,7 @@ describe('R04: Session draft and attachment isolation', () => {
 
     // Legacy draft must NOT resurrect!
     expect(textarea().value).toBe('');
-    expect(mockDrafts['web:ws1']).toBeUndefined();
+    expect(useChatStore.getState().drafts['web:ws1']).toBeUndefined();
   });
 
   test('editing queued message in Session A does not leak or append into Session B upon switching', async () => {

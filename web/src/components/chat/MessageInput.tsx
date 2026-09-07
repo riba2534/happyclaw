@@ -349,6 +349,11 @@ export function MessageInput({
     const currentImages = [...pendingImages];
     const currentFiles = [...pendingFiles];
 
+    // 发送前将当前 draftKey 确保持久化，并捕获该发送版本对应的 store revision (CAS 凭证)
+    const sendingDraftRevision = sendingSession.draftKey
+      ? useChatStore.getState().saveDraft(sendingSession.draftKey, trimmed)
+      : 0;
+
     setSending(true);
     setSendError(null);
 
@@ -377,20 +382,15 @@ export function MessageInput({
 
     if (ok) {
       successTap();
-      // 发送成功：仅当当前 store 中该 Session 的草稿内容仍等于本次发送的原内容或未设时才清理，
-      // 绝不冲毁后来在该 Session 中新键入并保存的新草稿！
-      const currentStoredDraft = sendingSession.draftKey
-        ? (useChatStore.getState?.()?.drafts?.[sendingSession.draftKey] ??
-          drafts[sendingSession.draftKey])
-        : undefined;
-      if (
-        sendingSession.draftKey &&
-        (currentStoredDraft === undefined || currentStoredDraft === trimmed)
-      ) {
-        clearDraft(sendingSession.draftKey);
+      // 发送成功：通过 store CAS 条件更新，仅当该 session 的 draft revision 仍等于提交前版本时才清空，
+      // 绝不冲毁后来在该 Session 中新键入（无论是同文 ABA 还是新内容）并保存的新草稿！
+      if (sendingSession.draftKey) {
+        useChatStore
+          .getState()
+          .clearDraftIfRevision(sendingSession.draftKey, sendingDraftRevision);
         // 若为 main 会话，同步清理旧 legacy key，防止旧草稿日后复活
         if (sendingSession.sessionId === 'main' && sendingSession.groupJid) {
-          clearDraft(sendingSession.groupJid);
+          useChatStore.getState().clearDraft(sendingSession.groupJid);
         }
       }
 
@@ -418,22 +418,22 @@ export function MessageInput({
         currentImages.forEach((img) => URL.revokeObjectURL(img.preview));
       }
     } else {
-      // 失败分支：绝不能用旧的 trimmed 覆盖后来输入并保存的新草稿！
+      // 失败分支：通过 store CAS 条件更新，仅当该 session 的 draft revision 仍等于提交前版本时才保留旧草稿供重试，
+      // 绝不覆盖后来用户编辑的新草稿或删空操作！
+      if (sendingSession.draftKey && trimmed) {
+        useChatStore
+          .getState()
+          .saveDraftIfRevision(
+            sendingSession.draftKey,
+            trimmed,
+            sendingDraftRevision,
+          );
+      }
+
       const isSameSession =
         sessionRef.current.draftKey === sendingSession.draftKey;
       const isUneditedSinceSend =
         editRevisionRef.current === sendingEditRevision;
-      const currentStoredDraft = sendingSession.draftKey
-        ? (useChatStore.getState?.()?.drafts?.[sendingSession.draftKey] ??
-          drafts[sendingSession.draftKey])
-        : undefined;
-
-      if (sendingSession.draftKey && trimmed) {
-        // 仅在当前未被后来新草稿覆盖时才允许保留旧草稿供重试
-        if (!currentStoredDraft || currentStoredDraft === trimmed) {
-          saveDraft(sendingSession.draftKey, trimmed);
-        }
-      }
 
       if (isSameSession && isUneditedSinceSend) {
         setSendError('发送失败，输入已保留，请重试');

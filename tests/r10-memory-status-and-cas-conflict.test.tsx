@@ -252,7 +252,19 @@ describe('R10: Memory validity display, filtering, and CAS candidate/conflict re
       await new Promise((r) => setTimeout(r, 50));
     });
 
-    // 1. Click proposed item in list
+    // 1. Switch to "候选待确认 (proposed)" tab in real DOM
+    const proposedTab = Array.from(
+      document.body.querySelectorAll('button'),
+    ).find((b) => b.textContent?.includes('候选待确认'));
+    expect(proposedTab).toBeTruthy();
+    await act(async () => {
+      proposedTab?.click();
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    // 2. Click proposed item in list
     const itemCard = Array.from(document.body.querySelectorAll('button')).find(
       (b) => b.textContent?.includes('提议的架构决策'),
     );
@@ -264,7 +276,7 @@ describe('R10: Memory validity display, filtering, and CAS candidate/conflict re
       await new Promise((r) => setTimeout(r, 50));
     });
 
-    // 2. Real DOM should show candidate card and button
+    // 3. Real DOM should show candidate card and button
     expect(document.body.textContent).toContain('这是候选记忆 (待确认)');
     const confirmBtn = Array.from(
       document.body.querySelectorAll('button'),
@@ -375,7 +387,19 @@ describe('R10: Memory validity display, filtering, and CAS candidate/conflict re
       await new Promise((r) => setTimeout(r, 50));
     });
 
-    // Select conflicted item
+    // 1. Switch to "冲突待解决 (conflicted)" tab in real DOM
+    const conflictedTab = Array.from(
+      document.body.querySelectorAll('button'),
+    ).find((b) => b.textContent?.includes('冲突待解决'));
+    expect(conflictedTab).toBeTruthy();
+    await act(async () => {
+      conflictedTab?.click();
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    // 2. Select conflicted item
     const itemCard = Array.from(document.body.querySelectorAll('button')).find(
       (b) => b.textContent?.includes('团队人数冲突'),
     );
@@ -504,6 +528,18 @@ describe('R10: Memory validity display, filtering, and CAS candidate/conflict re
       await new Promise((r) => setTimeout(r, 50));
     });
 
+    // Switch to "冲突待解决 (conflicted)" tab in real DOM
+    const conflictedTab = Array.from(
+      document.body.querySelectorAll('button'),
+    ).find((b) => b.textContent?.includes('冲突待解决'));
+    expect(conflictedTab).toBeTruthy();
+    await act(async () => {
+      conflictedTab?.click();
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
     const itemCard = Array.from(document.body.querySelectorAll('button')).find(
       (b) => b.textContent?.includes('团队人数冲突2'),
     );
@@ -527,5 +563,210 @@ describe('R10: Memory validity display, filtering, and CAS candidate/conflict re
       '保存冲突：这条记忆已被其他会话更新',
     );
     expect(document.body.textContent).toContain('加载服务端最新版');
+  });
+
+  test('multi-page cursor pagination in real MemoryPage, page 2 keyword search and search race protection', async () => {
+    // Generate 55 items: 50 items on page 1, 5 items on page 2 (item 54 has special keyword)
+    const page1Items: WorkspaceMemoryItem[] = Array.from(
+      { length: 50 },
+      (_, i) => ({
+        id: `item-${i + 1}`,
+        workspaceJid: 'workspace:alpha',
+        kind: 'fact',
+        title: `Memory title ${i + 1}`,
+        content: `Content of memory ${i + 1}`,
+        status: 'active',
+        importance: 0.5,
+        confidence: 1,
+        validFrom: null,
+        validUntil: null,
+        expiresAt: null,
+        revision: 1,
+        createdAt: '2026-09-01T00:00:00Z',
+        updatedAt: `2026-09-01T00:${String(50 - i).padStart(2, '0')}:00Z`,
+        deletedAt: null,
+        provenance: { sourceType: 'web_user', sourceId: 'u1' },
+      }),
+    );
+
+    const page2Items: WorkspaceMemoryItem[] = Array.from(
+      { length: 5 },
+      (_, i) => ({
+        id: `item-${51 + i}`,
+        workspaceJid: 'workspace:alpha',
+        kind: 'decision',
+        title:
+          i === 3
+            ? 'Target decision with deep_canary_deploy keyword'
+            : `Memory title ${51 + i}`,
+        content:
+          i === 3
+            ? 'Special canary deployment instructions for production'
+            : `Content of memory ${51 + i}`,
+        status: 'active',
+        importance: 0.9,
+        confidence: 1,
+        validFrom: null,
+        validUntil: null,
+        expiresAt: null,
+        revision: 1,
+        createdAt: '2026-08-30T00:00:00Z',
+        updatedAt: `2026-08-30T00:${String(10 - i).padStart(2, '0')}:00Z`,
+        deletedAt: null,
+        provenance: { sourceType: 'web_user', sourceId: 'u1' },
+      }),
+    );
+
+    mocks.get.mockImplementation(async (path: string) => {
+      if (path === '/api/workspaces') {
+        return {
+          workspaces: [
+            {
+              jid: 'workspace:alpha',
+              folder: 'alpha-folder',
+              name: 'Alpha Workspace',
+              status: 'active',
+              is_home: true,
+              can_modify: true,
+              updated_at: '2026-09-01T00:00:00Z',
+            },
+          ],
+        };
+      }
+      if (path.includes('/items?')) {
+        if (path.includes('cursor=page-2-cursor')) {
+          return { storeRevision: 5, items: page2Items, nextCursor: null };
+        }
+        return {
+          storeRevision: 5,
+          items: page1Items,
+          nextCursor: 'page-2-cursor',
+        };
+      }
+      if (path.includes('/search?')) {
+        if (path.includes('q=deep_canary_deploy')) {
+          return {
+            storeRevision: 5,
+            hits: [
+              {
+                item: page2Items[3],
+                rank: 1,
+                snippet: page2Items[3].content,
+              },
+            ],
+            nextCursor: null,
+          };
+        }
+        return { storeRevision: 5, hits: [], nextCursor: null };
+      }
+      return {};
+    });
+
+    const router = createMemoryRouter(
+      [{ path: '/memory', element: <MemoryPage /> }],
+      { initialEntries: ['/memory?workspace=workspace:alpha'] },
+    );
+
+    await act(async () => {
+      root?.render(<RouterProvider router={router} />);
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    // 1. Page 1 rendered with 50 items and "加载更多" button
+    expect(document.body.textContent).toContain('Memory title 1');
+    expect(document.body.textContent).toContain('Memory title 50');
+    expect(document.body.textContent).not.toContain('deep_canary_deploy');
+
+    const loadMoreBtn = Array.from(
+      document.body.querySelectorAll('button'),
+    ).find((b) => b.textContent?.includes('加载更多'));
+    expect(loadMoreBtn).toBeTruthy();
+
+    // 2. Click "加载更多": loads page 2 and renders page 2 items!
+    await act(async () => {
+      loadMoreBtn?.click();
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    expect(document.body.textContent).toContain('deep_canary_deploy');
+    expect(document.body.textContent).toContain('Memory title 55');
+
+    // 3. Search for keyword "deep_canary_deploy" located on page 2:
+    const searchInput = document.body.querySelector(
+      'input[placeholder="搜索当前工作区的记忆"]',
+    ) as HTMLInputElement;
+    expect(searchInput).toBeTruthy();
+
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      'value',
+    )?.set;
+    await act(async () => {
+      valueSetter?.call(searchInput, 'deep_canary_deploy');
+      searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 350));
+    });
+
+    // Verify search finds the target item
+    expect(document.body.textContent).toContain(
+      'Target decision with deep_canary_deploy keyword',
+    );
+
+    // 4. Verify search race condition protection:
+    // When query is changed rapidly to "nonexistent", an earlier in-flight search must not overwrite the latest empty result
+    let resolveSearch1: (val: any) => void = () => {};
+    mocks.get.mockImplementation(async (path: string) => {
+      if (path.includes('q=first_slow_query')) {
+        return new Promise((res) => {
+          resolveSearch1 = res;
+        });
+      }
+      if (path.includes('q=second_fast_query')) {
+        return {
+          storeRevision: 5,
+          hits: [{ item: page1Items[0], rank: 1, snippet: 'fast hit' }],
+          nextCursor: null,
+        };
+      }
+      return {};
+    });
+
+    await act(async () => {
+      valueSetter?.call(searchInput, 'first_slow_query');
+      searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 300));
+    });
+
+    // Rapidly type second query before first finishes
+    await act(async () => {
+      valueSetter?.call(searchInput, 'second_fast_query');
+      searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 300));
+    });
+
+    // Fast second query has completed
+    expect(document.body.textContent).toContain('Memory title 1');
+
+    // Now first slow query resolves with old data
+    await act(async () => {
+      resolveSearch1({
+        storeRevision: 5,
+        hits: [{ item: page2Items[3], rank: 1, snippet: 'slow hit' }],
+        nextCursor: null,
+      });
+    });
+
+    // Latest search result must NOT be clobbered by the delayed older response!
+    expect(document.body.textContent).toContain('Memory title 1');
   });
 });

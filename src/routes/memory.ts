@@ -83,7 +83,10 @@ memoryRoutes.get('/workspaces/:workspaceJid/items/search', (c) => {
         workspaceJid: c.req.param('workspaceJid'),
         query: parsed.data.q,
         kind: parsed.data.kind,
+        status: parsed.data.status,
+        scope: parsed.data.scope ?? 'recall',
         limit: parsed.data.limit,
+        cursor: parsed.data.cursor,
       }),
     );
   } catch (error) {
@@ -136,6 +139,7 @@ memoryRoutes.get('/workspaces/:workspaceJid/items', (c) => {
         workspaceJid: c.req.param('workspaceJid'),
         status: parsed.data.status,
         kind: parsed.data.kind,
+        query: parsed.data.q,
         limit: parsed.data.limit,
         cursor: parsed.data.cursor,
       }),
