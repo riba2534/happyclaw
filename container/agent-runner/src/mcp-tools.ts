@@ -1294,12 +1294,17 @@ The actual file types and size limit are enforced by the selected provider.`,
 
         const inboundRoot = path.join(ctx.workspaceGroup, 'inbound_artifacts');
         if (fs.existsSync(inboundRoot)) {
+          const targetId = args.artifact_id!.trim();
+          const expectedSuffix = `_${targetId}`;
           const subdirs = fs.readdirSync(inboundRoot);
           for (const sub of subdirs) {
-            if (sub.includes(args.artifact_id!)) {
-              const files = fs.readdirSync(path.join(inboundRoot, sub));
+            // Strict match: directory must end with `_${targetId}` or equal targetId
+            // Eliminates substring false-positives when targetId is short or a common prefix
+            if (sub === targetId || sub.endsWith(expectedSuffix)) {
+              const dirPath = path.join(inboundRoot, sub);
+              const files = fs.readdirSync(dirPath);
               if (files.length > 0) {
-                const targetFile = path.join(inboundRoot, sub, files[0]);
+                const targetFile = path.join(dirPath, files[0]);
                 return {
                   content: [
                     {

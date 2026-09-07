@@ -636,11 +636,17 @@ export function materializeContinuationArtifacts(
 /**
  * Scan a task prompt for immutable continuation artifact references and materialize them
  * into the executing workspace before the task run begins.
+ *
+ * Enforces strict fail-closed ACL:
+ * Verifies that the task execution owner (authUser) has permission to read the historic run
+ * of each referenced artifact. Unauthorized references are skipped with a security warning
+ * and NEVER materialized or leaked into the executing workspace.
  */
 export function prepareTaskContinuationArtifacts(
   taskPrompt: string,
   targetWorkspaceFolder: string,
   targetWorkspaceJid: string,
+  authUser?: AuthUser | null,
 ): void {
   if (!taskPrompt || !taskPrompt.includes('<artifact_ref')) return;
 
@@ -654,18 +660,66 @@ export function prepareTaskContinuationArtifacts(
   }
   if (ids.length === 0) return;
 
-  const artifacts: TaskRunArtifact[] = [];
+  const authorizedArtifacts: TaskRunArtifact[] = [];
   for (const id of ids) {
     const art = getTaskRunArtifactById(id);
-    if (art) artifacts.push(art);
+    if (!art) {
+      logger.warn(
+        { artifactId: id },
+        'Referenced continuation artifact not found, skipping',
+      );
+      continue;
+    }
+
+    const run = getTaskRunById(art.run_id);
+    if (!run) {
+      logger.warn(
+        { artifactId: id, runId: art.run_id },
+        'Historic run for artifact not found, skipping materialization',
+      );
+      continue;
+    }
+
+    // Fail-closed authorization check
+    if (!authUser || !canUserAccessHistoricRun(run, authUser)) {
+      logger.warn(
+        {
+          artifactId: art.id,
+          runId: art.run_id,
+          userId: authUser?.id,
+          targetWorkspaceJid,
+        },
+        'Security check failed: unauthorized artifact reference skipped during materialization',
+      );
+      continue;
+    }
+
+    // Host execution mode check: non-admin cannot access host run artifacts
+    if (
+      run.definition_snapshot.execution_mode === 'host' &&
+      authUser.role !== 'admin'
+    ) {
+      logger.warn(
+        {
+          artifactId: art.id,
+          runId: art.run_id,
+          userId: authUser.id,
+          targetWorkspaceJid,
+        },
+        'Security check failed: non-admin user cannot access host execution artifact',
+      );
+      continue;
+    }
+
+    authorizedArtifacts.push(art);
   }
 
-  if (artifacts.length > 0) {
+  if (authorizedArtifacts.length > 0) {
     try {
       materializeContinuationArtifacts(
         targetWorkspaceFolder,
         targetWorkspaceJid,
-        artifacts,
+        authorizedArtifacts,
       );
     } catch (err) {
       logger.warn(

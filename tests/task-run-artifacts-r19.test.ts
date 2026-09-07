@@ -55,7 +55,10 @@ const {
   getArtifactForDownload,
   processCompletedRunArtifacts,
   buildContinuationDraftFromArtifacts,
+  prepareTaskContinuationArtifacts,
 } = await import('../src/task-artifact-service.js');
+const { createMcpTools } =
+  await import('../container/agent-runner/src/mcp-tools.js');
 const tasksRoutes = tasksRoutesModule.default;
 
 describe('R19: 每次运行产物版本化、三次同名报告隔离与接续任务', () => {
@@ -1014,5 +1017,329 @@ describe('R19: 每次运行产物版本化、三次同名报告隔离与接续�
       'run-occurrence-001',
     );
     expect(fs.existsSync(otherRunDir)).toBe(true);
+  });
+
+  test('跨用户产物越权防御：普通用户引用其他用户的 artifact_id 时严格跳过物化，零泄露，且自己的合法引用正常物化', async () => {
+    const now = new Date().toISOString();
+    // 1. Charlie 拥有的私有工作区和产物
+    const charlieRunId = 'run-charlie-private';
+    const charlieTaskId = 'task-charlie-private';
+    db.createTask({
+      id: charlieTaskId,
+      group_folder: workspaceBFolder,
+      chat_jid: workspaceBJid,
+      prompt: 'Charlie 的私有任务',
+      schedule_type: 'cron',
+      schedule_value: '0 9 * * *',
+      context_mode: 'isolated',
+      execution_type: 'agent',
+      execution_mode: 'container',
+      status: 'active',
+      created_at: now,
+      created_by: 'charlie',
+    });
+    insertTestRun({
+      id: charlieRunId,
+      task_id: charlieTaskId,
+      occurrence_key: `task:${charlieTaskId}:run:1`,
+      trigger_type: 'manual',
+      scheduled_for: now,
+      definition_snapshot: {
+        group_folder: workspaceBFolder,
+        chat_jid: workspaceBJid,
+      },
+      status: 'success',
+    });
+    const charlieFile = 'reports/charlie_secret.md';
+    fs.mkdirSync(path.join(tmpGroupsDir, workspaceBFolder, 'reports'), {
+      recursive: true,
+    });
+    fs.writeFileSync(
+      path.join(tmpGroupsDir, workspaceBFolder, charlieFile),
+      'CHARLIE_CONFIDENTIAL_DATA',
+      'utf-8',
+    );
+    const regCharlie = await registerArtifactForRun({
+      runId: charlieRunId,
+      relativePath: charlieFile,
+      name: 'charlie_secret.md',
+      createdBy: 'charlie',
+    });
+    expect(regCharlie.success).toBe(true);
+    const charlieArtifact = regCharlie.artifact!;
+
+    // 2. Alice 拥有的合法产物
+    const aliceRunId = 'run-alice-own';
+    const aliceTaskId = 'task-alice-own';
+    db.createTask({
+      id: aliceTaskId,
+      group_folder: workspaceAFolder,
+      chat_jid: workspaceAJid,
+      prompt: 'Alice 的合法任务',
+      schedule_type: 'cron',
+      schedule_value: '0 9 * * *',
+      context_mode: 'isolated',
+      execution_type: 'agent',
+      execution_mode: 'container',
+      status: 'active',
+      created_at: now,
+      created_by: 'alice',
+    });
+    insertTestRun({
+      id: aliceRunId,
+      task_id: aliceTaskId,
+      occurrence_key: `task:${aliceTaskId}:run:1`,
+      trigger_type: 'manual',
+      scheduled_for: now,
+      definition_snapshot: {
+        group_folder: workspaceAFolder,
+        chat_jid: workspaceAJid,
+      },
+      status: 'success',
+    });
+    const aliceFile = 'reports/alice_public.md';
+    fs.writeFileSync(
+      path.join(tmpGroupsDir, workspaceAFolder, aliceFile),
+      'ALICE_LEGIT_DATA',
+      'utf-8',
+    );
+    const regAlice = await registerArtifactForRun({
+      runId: aliceRunId,
+      relativePath: aliceFile,
+      name: 'alice_public.md',
+      createdBy: 'alice',
+    });
+    expect(regAlice.success).toBe(true);
+    const aliceArtifact = regAlice.artifact!;
+
+    // 3. 构造越权攻击：Alice 的任务 prompt 里试图引用 Charlie 的私有产物
+    const maliciousPrompt = [
+      '继续处理产物：',
+      `<artifact_ref id="${charlieArtifact.id}" hash="${charlieArtifact.file_hash}" path="${charlieArtifact.original_path}" name="${charlieArtifact.name}"/>`,
+      `<artifact_ref id="${aliceArtifact.id}" hash="${aliceArtifact.file_hash}" path="${aliceArtifact.original_path}" name="${aliceArtifact.name}"/>`,
+    ].join('\n');
+
+    const aliceAuthUser = {
+      id: 'alice',
+      username: 'alice',
+      role: 'member' as const,
+      status: 'active' as const,
+      permissions: [],
+      must_change_password: false,
+      display_name: 'Alice',
+    };
+
+    // 执行准备物化
+    prepareTaskContinuationArtifacts(
+      maliciousPrompt,
+      workspaceAFolder,
+      workspaceAJid,
+      aliceAuthUser,
+    );
+
+    // 断言 1：Charlie 的私有产物绝对没有被拷贝/物化到 Alice 的工作区！
+    const charlieInboundDir = path.join(
+      tmpGroupsDir,
+      workspaceAFolder,
+      'inbound_artifacts',
+      `${charlieArtifact.run_id}_${charlieArtifact.id}`,
+    );
+    expect(fs.existsSync(charlieInboundDir)).toBe(false);
+
+    // 扫描 Alice 工作区全部 inbound_artifacts，确保不存在任何含有 Charlie 产物 ID 或秘密内容的物理文件
+    const aliceInboundRoot = path.join(
+      tmpGroupsDir,
+      workspaceAFolder,
+      'inbound_artifacts',
+    );
+    if (fs.existsSync(aliceInboundRoot)) {
+      const allSubdirs = fs.readdirSync(aliceInboundRoot);
+      expect(allSubdirs.some((sub) => sub.includes(charlieArtifact.id))).toBe(
+        false,
+      );
+    }
+
+    // 断言 2：Alice 自己的合法产物被正常成功物化！
+    const aliceInboundDir = path.join(
+      tmpGroupsDir,
+      workspaceAFolder,
+      'inbound_artifacts',
+      `${aliceArtifact.run_id}_${aliceArtifact.id}`,
+    );
+    expect(fs.existsSync(aliceInboundDir)).toBe(true);
+    const materializedContent = fs.readFileSync(
+      path.join(aliceInboundDir, 'alice_public.md'),
+      'utf-8',
+    );
+    expect(materializedContent).toBe('ALICE_LEGIT_DATA');
+  });
+
+  test('runGroupModeTask 目标工作区物化：当目标工作区 != task.group_folder 时，产物物化到目标工作区而不是源工作区', async () => {
+    const now = new Date().toISOString();
+    // 建立源工作区与独立目标工作区
+    const sourceFolder = 'ws_src';
+    const sourceJid = 'web:ws_src';
+    const targetFolder = 'ws_dst';
+    const targetJid = 'web:ws_dst';
+    db.setRegisteredGroup(sourceJid, {
+      name: 'Source Workspace',
+      folder: sourceFolder,
+      added_at: now,
+      created_by: 'alice',
+    });
+    db.setRegisteredGroup(targetJid, {
+      name: 'Target Workspace',
+      folder: targetFolder,
+      added_at: now,
+      created_by: 'alice',
+    });
+    fs.mkdirSync(path.join(tmpGroupsDir, sourceFolder), { recursive: true });
+    fs.mkdirSync(path.join(tmpGroupsDir, targetFolder), { recursive: true });
+
+    // 运行产出产物
+    const runId = 'run-group-target-test';
+    const runTaskId = 'task-group-target';
+    db.createTask({
+      id: runTaskId,
+      group_folder: sourceFolder,
+      chat_jid: sourceJid,
+      prompt: '任务定义在源工作区',
+      schedule_type: 'cron',
+      schedule_value: '0 9 * * *',
+      context_mode: 'group',
+      execution_type: 'agent',
+      execution_mode: 'container',
+      status: 'active',
+      created_at: now,
+      created_by: 'alice',
+    });
+    insertTestRun({
+      id: runId,
+      task_id: runTaskId,
+      occurrence_key: `task:${runTaskId}:run:1`,
+      trigger_type: 'manual',
+      scheduled_for: now,
+      definition_snapshot: {
+        group_folder: sourceFolder,
+        chat_jid: sourceJid,
+      },
+      status: 'success',
+    });
+    const fileRel = 'reports/group_report.md';
+    fs.mkdirSync(path.join(tmpGroupsDir, sourceFolder, 'reports'), {
+      recursive: true,
+    });
+    fs.writeFileSync(
+      path.join(tmpGroupsDir, sourceFolder, fileRel),
+      'GROUP_REPORT_DATA',
+      'utf-8',
+    );
+    const reg = await registerArtifactForRun({
+      runId,
+      relativePath: fileRel,
+      name: 'group_report.md',
+      createdBy: 'alice',
+    });
+    expect(reg.success).toBe(true);
+    const art = reg.artifact!;
+
+    const prompt = `<artifact_ref id="${art.id}" hash="${art.file_hash}" path="${art.original_path}" name="${art.name}"/>`;
+    const aliceAuthUser = {
+      id: 'alice',
+      username: 'alice',
+      role: 'member' as const,
+      status: 'active' as const,
+      permissions: [],
+      must_change_password: false,
+      display_name: 'Alice',
+    };
+
+    // 调用物化，目标工作区为 targetFolder / targetJid（不同于 sourceFolder）
+    prepareTaskContinuationArtifacts(
+      prompt,
+      targetFolder,
+      targetJid,
+      aliceAuthUser,
+    );
+
+    // 产物必须成功物化到目标工作区 (targetFolder)！
+    const targetInbound = path.join(
+      tmpGroupsDir,
+      targetFolder,
+      'inbound_artifacts',
+      `${runId}_${art.id}`,
+      'group_report.md',
+    );
+    expect(fs.existsSync(targetInbound)).toBe(true);
+    expect(fs.readFileSync(targetInbound, 'utf-8')).toBe('GROUP_REPORT_DATA');
+
+    // 源工作区 (sourceFolder) 绝不应被错误写入！
+    const sourceInbound = path.join(
+      tmpGroupsDir,
+      sourceFolder,
+      'inbound_artifacts',
+      `${runId}_${art.id}`,
+    );
+    expect(fs.existsSync(sourceInbound)).toBe(false);
+  });
+
+  test('read_artifact 严格匹配：消除前缀/短 ID 误命中 (art-1 vs art-10 vs art)', async () => {
+    const wsFolder = 'ws_tools_test';
+    const wsDir = path.join(tmpGroupsDir, wsFolder);
+    const inboundRoot = path.join(wsDir, 'inbound_artifacts');
+    fs.mkdirSync(path.join(inboundRoot, 'runX_art-10'), { recursive: true });
+    fs.mkdirSync(path.join(inboundRoot, 'runX_art-1'), { recursive: true });
+
+    fs.writeFileSync(
+      path.join(inboundRoot, 'runX_art-10', 'file10.txt'),
+      'CONTENT_FOR_ART_10',
+      'utf-8',
+    );
+    fs.writeFileSync(
+      path.join(inboundRoot, 'runX_art-1', 'file1.txt'),
+      'CONTENT_FOR_ART_1',
+      'utf-8',
+    );
+
+    const mcpCtx = {
+      chatJid: 'web:ws_tools_test',
+      groupFolder: wsFolder,
+      isHome: false,
+      isAdminHome: false,
+      agentBuilderEnabled: false,
+      ownerProfileEnabled: false,
+      workspaceIpc: path.join(tmpDir, 'ipc', wsFolder),
+      workspaceGroup: wsDir,
+    };
+
+    const tools = createMcpTools(mcpCtx);
+    const readTool = tools.find((t) => t.name === 'read_artifact')!;
+    expect(readTool).toBeDefined();
+
+    // 1. 查询 art-1：必须精确返回 runX_art-1 的内容，绝不能误返回 runX_art-10！
+    const res1 = (await readTool.handler(
+      { artifact_id: 'art-1' },
+      {} as never,
+    )) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+    expect(res1.isError).toBeFalsy();
+    expect(res1.content[0].text).toBe('CONTENT_FOR_ART_1');
+
+    // 2. 查询 art：由于不存在名为 art 的产物，绝不能因子串匹配误命中 art-1 或 art-10！
+    const resShort = (await readTool.handler(
+      { artifact_id: 'art' },
+      {} as never,
+    )) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+    expect(resShort.isError).toBe(true);
+    expect(resShort.content[0].text).toContain(
+      'Artifact ID art not found in workspace inbound_artifacts',
+    );
+
+    // 3. 查询 art-10：精确返回 runX_art-10 的内容
+    const res10 = (await readTool.handler(
+      { artifact_id: 'art-10' },
+      {} as never,
+    )) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+    expect(res10.isError).toBeFalsy();
+    expect(res10.content[0].text).toBe('CONTENT_FOR_ART_10');
   });
 });
