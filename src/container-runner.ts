@@ -2680,20 +2680,18 @@ export async function runContainerAgent(
           quarantineFromOutput,
           applyDisposition: applyProviderFailureDisposition,
           dispositionLogMessage: providerFailureDispositionLogMessage,
-          onBeforeDispatch: (output) => {
-            if (
-              output.providerQuotaObservation ||
-              output.inputTurnCompleted === true ||
-              output.status === 'success' ||
-              output.status === 'error'
-            ) {
-              reconcileDockerOAuth('output');
-            }
-          },
         },
       );
 
       const handleOutput = async (output: ContainerOutput): Promise<void> => {
+        if (
+          output.providerQuotaObservation ||
+          output.inputTurnCompleted === true ||
+          output.status === 'success' ||
+          output.status === 'error'
+        ) {
+          reconcileDockerOAuth('output');
+        }
         // Contract signatures for provider fallback & quota observation:
         // consumeProviderQuotaControlOutput(selectedProfileId, output, selectedProviderQuotaEpoch,);
         // if (onOutput) await onOutput(output);
