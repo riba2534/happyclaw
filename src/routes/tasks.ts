@@ -1063,10 +1063,28 @@ tasksRoutes.post('/:id/budget/resume', authMiddleware, async (c) => {
   // If task definition was paused or completed, reactivate it
   let updatedTask = task;
   if (task.status === 'paused' || task.status === 'completed') {
-    const nextRun = computeNextRunForTaskResume(
-      task.schedule_type,
-      task.schedule_value,
-    );
+    let nextRun: string;
+    try {
+      if (task.schedule_type === 'once') {
+        // Once task was paused/completed due to budget exceeded; set to run now
+        nextRun = new Date().toISOString();
+      } else {
+        nextRun = computeNextRunForTaskResume(
+          task.schedule_type,
+          task.schedule_value,
+        );
+      }
+    } catch (err) {
+      return c.json(
+        {
+          error:
+            err instanceof Error
+              ? err.message
+              : '无法计算任务恢复后的下一次执行时间',
+        },
+        400,
+      );
+    }
     const mutation = updateTaskWithRevision(task.id, task.revision, {
       status: 'active',
       next_run: nextRun,

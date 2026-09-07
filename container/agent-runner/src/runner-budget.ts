@@ -10,6 +10,7 @@ import type {
 
 export interface RunnerBudgetOptions {
   runId: string;
+  inputTurnId?: string;
   parentRunId?: string | null;
   config?: TaskBudgetConfig | null;
   initialUsage?: {
@@ -29,7 +30,7 @@ export interface RunnerBudgetOptions {
 }
 
 export class RunnerBudgetTracker {
-  private runId: string;
+  private readonly runId: string;
   private parentRunId: string | null;
   private config: TaskBudgetConfig | null;
   private currentDurationMs: number;
@@ -54,7 +55,7 @@ export class RunnerBudgetTracker {
 
   constructor(options: RunnerBudgetOptions) {
     this.runId = options.runId;
-    this.activeInputId = options.runId;
+    this.activeInputId = options.inputTurnId || options.runId;
     this.parentRunId = options.parentRunId ?? null;
     this.config = options.config ?? null;
     this.currentDurationMs = options.initialUsage?.currentDurationMs ?? 0;
@@ -295,9 +296,9 @@ export class RunnerBudgetTracker {
   }
 
   /**
-   * Safely switches the tracker to a new input turn.
-   * Only resets when the logical input ID actually changes, preserving
-   * accumulated usage during retries or within the same turn.
+   * Switches input turn within the same logical budget run.
+   * Tracks per-turn seen events without altering the immutable runId
+   * or resetting cumulative usage across turns.
    */
   public switchInputTurn(
     newInputId: string,
@@ -309,12 +310,17 @@ export class RunnerBudgetTracker {
     }
     this.activeInputId = newInputId;
     this.seenUsageEventIds.clear();
-    this.resetForNextInput(newInputId, newConfig, parentRunId);
+    if (newConfig !== undefined && newConfig !== null) {
+      this.config = newConfig;
+    }
+    if (parentRunId !== undefined && parentRunId !== null) {
+      this.parentRunId = parentRunId;
+    }
     return true;
   }
 
   public resetForNextInput(
-    newRunId: string,
+    _newRunId?: string,
     newConfig?: TaskBudgetConfig | null,
     parentRunId?: string | null,
   ): void {
@@ -322,18 +328,13 @@ export class RunnerBudgetTracker {
       clearTimeout(this.durationTimer);
       this.durationTimer = null;
     }
-    this.runId = newRunId;
-    this.activeInputId = newRunId;
-    this.parentRunId = parentRunId ?? null;
-    this.config = newConfig ?? null;
-    this.currentDurationMs = 0;
-    this.currentToolCalls = 0;
-    this.currentCostUsd = 0;
-    this.retryCount = 0;
-    this.status = 'active';
-    this.exceededReason = null;
-    this.partialResult = null;
-    this.startedAt = Date.now();
+    if (newConfig !== undefined && newConfig !== null) {
+      this.config = newConfig;
+    }
+    if (parentRunId !== undefined && parentRunId !== null) {
+      this.parentRunId = parentRunId;
+    }
+    this.seenUsageEventIds.clear();
     this.armDurationTimer();
   }
 

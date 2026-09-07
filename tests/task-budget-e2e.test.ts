@@ -132,6 +132,12 @@ describe('HappyClaw R16 End-to-End Production Budget Tests', () => {
 
   test('E2E-3: Runner PreToolUse tool call limit enforcement and partial result preservation', async () => {
     const runId = 'e2e-run-tool-limit';
+    taskBudgetService.initBudget({
+      runId,
+      chatJid: 'web:workspace-budget',
+      groupFolder: 'workspace-budget',
+      config: { maxToolCalls: 2 },
+    });
     const tracker = new RunnerBudgetTracker({
       runId,
       config: { maxToolCalls: 2 },
@@ -616,17 +622,16 @@ describe('HappyClaw R16 End-to-End Production Budget Tests', () => {
     let bRecord = db.getTaskBudget(taskRunId);
     expect(bRecord?.current_tool_calls).toBe(2);
     expect(bRecord?.current_duration_ms).toBe(8500);
-    expect(bRecord?.current_cost_usd).toBeCloseTo(0.15);
 
     // 2. Streamed usage event arrives
     taskBudgetService.recordCost(taskRunId, 0.25, 'usage-event-1');
     bRecord = db.getTaskBudget(taskRunId);
-    expect(bRecord?.current_cost_usd).toBeCloseTo(0.4);
+    expect(bRecord?.current_cost_usd).toBeCloseTo(0.25);
 
     // Idempotent retry of same usage event does not double count
     taskBudgetService.recordCost(taskRunId, 0.25, 'usage-event-1');
     bRecord = db.getTaskBudget(taskRunId);
-    expect(bRecord?.current_cost_usd).toBeCloseTo(0.4);
+    expect(bRecord?.current_cost_usd).toBeCloseTo(0.25);
 
     // 3. Task terminates with budget_exceeded
     taskBudgetService.markExceededAndSavePartial(
@@ -692,5 +697,118 @@ describe('HappyClaw R16 End-to-End Production Budget Tests', () => {
     expect(retrievedAgent?.parent_budget_run_id).toBe(parentRunId);
 
     taskBudgetService.unregisterActiveBudgetRun('web:workspace-budget');
+  });
+
+  test('E2E-11: resumeTaskBudget safely handles expired once task with past schedule_value without 500 error', async () => {
+    const taskId = 'once-expired-budget-task';
+    const pastTime = new Date(Date.now() - 3600_000).toISOString();
+    db.createTask({
+      id: taskId,
+      group_folder: 'workspace-budget',
+      chat_jid: 'web:workspace-budget',
+      prompt: 'one shot task in the past',
+      schedule_type: 'once',
+      schedule_value: pastTime,
+      context_mode: 'isolated',
+      execution_type: 'agent',
+      status: 'completed',
+      created_by: 'user-alice',
+      created_at: new Date().toISOString(),
+      budget: { maxToolCalls: 2 },
+    });
+
+    const task = db.getTaskById(taskId)!;
+    const createdRun = db.createTaskRun({ task, triggerType: 'manual' });
+    const runId = (createdRun as any).run.id;
+
+    // Simulate task exceeding budget
+    taskBudgetService.initBudget({
+      runId,
+      taskId,
+      chatJid: task.chat_jid,
+      groupFolder: task.group_folder,
+      config: task.budget,
+    });
+    const claimed = db.claimNextTaskRun(
+      'worker-once',
+      60000,
+      new Date().toISOString(),
+    );
+    expect(claimed?.id).toBe(runId);
+    db.completeTaskRun(runId, claimed!.lease_owner, claimed!.lease_token, {
+      status: 'budget_exceeded',
+      result: 'Ran out of budget on past once task',
+    });
+
+    // Calling resume API on this expired once task must return 200 (not 500!)
+    currentAuthUser = {
+      id: 'user-alice',
+      username: 'alice',
+      role: 'member',
+      status: 'active',
+    };
+    const res = await tasksApp.request(`/${taskId}/budget/resume`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        run_id: runId,
+        additionalToolCalls: 5,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as any;
+    expect(json.success).toBe(true);
+    expect(json.task.status).toBe('active');
+    expect(new Date(json.task.next_run).getTime()).toBeGreaterThanOrEqual(
+      Date.now() - 5000,
+    );
+  });
+
+  test('E2E-12: Provider fallback retry increments retry_count in task_budgets and runner', () => {
+    const runId = 'e2e-run-retry-count-test';
+    taskBudgetService.initBudget({
+      runId,
+      config: { maxToolCalls: 10, maxCostUsd: 2.0 },
+    });
+
+    expect(db.getTaskBudget(runId)?.retry_count).toBe(0);
+
+    // Simulate provider retry in container runner
+    taskBudgetService.recordRetry(runId);
+    expect(db.getTaskBudget(runId)?.retry_count).toBe(1);
+
+    taskBudgetService.recordRetry(runId);
+    expect(db.getTaskBudget(runId)?.retry_count).toBe(2);
+  });
+
+  test('E2E-13: updateTaskBudgetUsage prevents infinite recursion on cycle and avoids orphan rows', () => {
+    const runA = 'cycle-run-a';
+    const runB = 'cycle-run-b';
+
+    taskBudgetService.initBudget({
+      runId: runA,
+      parentRunId: runB,
+      config: { maxToolCalls: 10 },
+    });
+    taskBudgetService.initBudget({
+      runId: runB,
+      parentRunId: runA,
+      config: { maxToolCalls: 10 },
+    });
+
+    // Updating A propagates to B, which should NOT recurse back into A infinitely
+    expect(() => {
+      db.updateTaskBudgetUsage(runA, { toolCallsDelta: 1 });
+    }).not.toThrow();
+
+    expect(db.getTaskBudget(runA)?.current_tool_calls).toBe(1);
+    expect(db.getTaskBudget(runB)?.current_tool_calls).toBe(1);
+
+    // Updating non-existent runId returns undefined without creating orphan row
+    const nonExistent = 'non-existent-orphan-check';
+    const res = db.updateTaskBudgetUsage(nonExistent, { toolCallsDelta: 1 });
+    expect(res).toBeUndefined();
+    expect(db.getTaskBudget(nonExistent)).toBeUndefined();
   });
 });

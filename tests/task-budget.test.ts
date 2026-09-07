@@ -120,10 +120,12 @@ describe('HappyClaw R16 Task Budget Service & Invariants', () => {
     expect(parentStatus?.status).toBe('exceeded');
   });
 
-  test('3. Warm runner isolation: next input does not inherit prior input consumption', async () => {
+  test('3. Warm runner input switching preserves logical runId and cumulative consumption', async () => {
+    const logicalRunId = 'agent:main-agent:turn-1';
     const tracker = new RunnerBudgetTracker({
-      runId: 'turn-1',
-      config: { maxToolCalls: 3, maxCostUsd: 1.0 },
+      runId: logicalRunId,
+      inputTurnId: 'input-turn-1',
+      config: { maxToolCalls: 4, maxCostUsd: 1.0 },
     });
 
     // Turn 1 executes 2 tool calls and incurs cost
@@ -134,21 +136,26 @@ describe('HappyClaw R16 Task Budget Service & Invariants', () => {
     const snapshot1 = tracker.getSnapshot();
     expect(snapshot1.currentToolCalls).toBe(2);
     expect(snapshot1.currentCostUsd).toBeCloseTo(0.45);
+    expect(tracker.getRunId()).toBe(logicalRunId);
 
-    // Warm runner finishes turn 1 and activates turn 2 (IPC message arrives)
-    tracker.resetForNextInput('turn-2', { maxToolCalls: 3, maxCostUsd: 1.0 });
+    // Warm runner activates input turn 2 (IPC message arrives)
+    tracker.switchInputTurn('input-turn-2');
 
+    // RunId is preserved and cumulative consumption is maintained
+    expect(tracker.getRunId()).toBe(logicalRunId);
     const snapshot2 = tracker.getSnapshot();
-    expect(snapshot2.currentToolCalls).toBe(0);
-    expect(snapshot2.currentCostUsd).toBe(0);
+    expect(snapshot2.currentToolCalls).toBe(2);
+    expect(snapshot2.currentCostUsd).toBeCloseTo(0.45);
     expect(snapshot2.status).toBe('active');
-    expect(snapshot2.exceededReason).toBeNull();
 
-    // Turn 2 can now safely perform 3 tool calls without being blocked by Turn 1
+    // Turn 2 can perform 2 more tool calls (reaching limit of 4)
     expect((await tracker.checkToolCall('tool_a')).allowed).toBe(true);
     expect((await tracker.checkToolCall('tool_b')).allowed).toBe(true);
-    expect((await tracker.checkToolCall('tool_c')).allowed).toBe(true);
-    expect((await tracker.checkToolCall('tool_d')).allowed).toBe(false);
+    expect(tracker.getSnapshot().currentToolCalls).toBe(4);
+
+    // 5th tool call is blocked by total budget limit!
+    expect((await tracker.checkToolCall('tool_c')).allowed).toBe(false);
+    expect(tracker.isExceeded()).toBe(true);
 
     tracker.dispose();
   });

@@ -6239,33 +6239,17 @@ export function updateTaskBudgetUsage(
     status?: TaskBudgetRecord['status'];
     exceededReason?: TaskBudgetRecord['exceeded_reason'];
   },
+  visited: Set<string> = new Set(),
 ): TaskBudgetRecord | undefined {
+  if (visited.has(runId) || visited.size > 20) {
+    return getTaskBudget(runId);
+  }
+  visited.add(runId);
+
   return db.transaction(() => {
     let current = getTaskBudget(runId);
     if (!current) {
-      const now = new Date().toISOString();
-      current = {
-        run_id: runId,
-        parent_run_id: null,
-        task_id: null,
-        chat_jid: null,
-        group_folder: null,
-        user_id: null,
-        max_duration_ms: null,
-        max_tool_calls: null,
-        max_cost_usd: null,
-        current_duration_ms: 0,
-        current_tool_calls: 0,
-        current_cost_usd: 0,
-        retry_count: 0,
-        status: 'active',
-        exceeded_reason: null,
-        partial_result: null,
-        resumed_at: null,
-        created_at: now,
-        updated_at: now,
-      };
-      createTaskBudget(current);
+      return undefined;
     }
 
     const newDuration = Math.max(
@@ -6342,13 +6326,20 @@ export function updateTaskBudgetUsage(
     );
 
     // If there is a parent_run_id, also propagate consumption deltas to the parent budget atomically!
-    if (current.parent_run_id) {
-      updateTaskBudgetUsage(current.parent_run_id, {
-        durationMsDelta: delta.durationMsDelta,
-        toolCallsDelta: delta.toolCallsDelta,
-        costUsdDelta: delta.costUsdDelta,
-        retryIncrement: delta.retryIncrement,
-      });
+    if (current.parent_run_id && !visited.has(current.parent_run_id)) {
+      const parent = getTaskBudget(current.parent_run_id);
+      if (parent) {
+        updateTaskBudgetUsage(
+          current.parent_run_id,
+          {
+            durationMsDelta: delta.durationMsDelta,
+            toolCallsDelta: delta.toolCallsDelta,
+            costUsdDelta: delta.costUsdDelta,
+            retryIncrement: delta.retryIncrement,
+          },
+          visited,
+        );
+      }
     }
 
     return getTaskBudget(runId);
@@ -6579,6 +6570,10 @@ export function syncTaskBudgetSnapshot(
         }
       }
 
+      if (!derivedChatJid && !derivedGroupFolder) {
+        return undefined;
+      }
+
       const newRec: TaskBudgetRecord = {
         run_id: runId,
         parent_run_id: derivedParentRunId,
@@ -6591,7 +6586,7 @@ export function syncTaskBudgetSnapshot(
         max_cost_usd: snapshot.maxCostUsd ?? null,
         current_duration_ms: snapshot.currentDurationMs,
         current_tool_calls: snapshot.currentToolCalls,
-        current_cost_usd: snapshot.currentCostUsd,
+        current_cost_usd: 0,
         retry_count: snapshot.retryCount ?? 0,
         status: snapshot.status,
         exceeded_reason: snapshot.exceededReason ?? null,
@@ -6612,10 +6607,6 @@ export function syncTaskBudgetSnapshot(
       0,
       snapshot.currentToolCalls - current.current_tool_calls,
     );
-    const costDelta = Math.max(
-      0,
-      snapshot.currentCostUsd - current.current_cost_usd,
-    );
 
     const finalStatus =
       current.status === 'exceeded' || snapshot.status === 'exceeded'
@@ -6630,7 +6621,6 @@ export function syncTaskBudgetSnapshot(
       UPDATE task_budgets
       SET current_duration_ms = MAX(current_duration_ms, ?),
           current_tool_calls = MAX(current_tool_calls, ?),
-          current_cost_usd = MAX(current_cost_usd, ?),
           retry_count = MAX(retry_count, ?),
           status = ?,
           exceeded_reason = ?,
@@ -6641,7 +6631,6 @@ export function syncTaskBudgetSnapshot(
     ).run(
       snapshot.currentDurationMs,
       snapshot.currentToolCalls,
-      snapshot.currentCostUsd,
       snapshot.retryCount ?? current.retry_count,
       finalStatus,
       finalReason,
@@ -6650,14 +6639,10 @@ export function syncTaskBudgetSnapshot(
       runId,
     );
 
-    if (
-      current.parent_run_id &&
-      (durationDelta > 0 || toolCallsDelta > 0 || costDelta > 0)
-    ) {
+    if (current.parent_run_id && (durationDelta > 0 || toolCallsDelta > 0)) {
       updateTaskBudgetUsage(current.parent_run_id, {
         durationMsDelta: durationDelta,
         toolCallsDelta: toolCallsDelta,
-        costUsdDelta: costDelta,
       });
     }
 

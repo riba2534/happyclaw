@@ -124,6 +124,7 @@ import type {
   InteractionMode,
   TaskBudgetConfig,
 } from './types.js';
+import { taskBudgetService } from './task-budget-service.js';
 import { validateSkillId, validateSkillPath } from './skill-utils.js';
 import type { ClaudeContextAudit } from './stream-event.types.js';
 import type { ContainerOutput } from './agent-runtime-contracts.js';
@@ -4341,6 +4342,10 @@ export async function runAgentWithModelFallback(
       return lastOutput;
     }
     availabilityState = nextAvailabilityState;
+
+    if (input.budgetRunId) {
+      taskBudgetService.recordRetry(input.budgetRunId);
+    }
 
     logger.warn(
       {
