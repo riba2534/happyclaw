@@ -200,6 +200,32 @@ function readCookieFromEnvOrFile(
   return null;
 }
 
+/**
+ * Parse and validate the response structure of GET /api/auth/me.
+ * /api/auth/me returns { user: UserPublic, appearance, setupStatus? }.
+ * Accurately extracts user identity and role from data.user, preventing false invalidations.
+ */
+export function parseAuthMeResponse(data: unknown): {
+  isValid: boolean;
+  userId?: string;
+  role?: string;
+  isAdmin: boolean;
+} {
+  const user = (data as any)?.user;
+  if (user && typeof user.id === 'string' && user.id.trim()) {
+    return {
+      isValid: true,
+      userId: user.id,
+      role: user.role,
+      isAdmin: user.role === 'admin',
+    };
+  }
+  return {
+    isValid: false,
+    isAdmin: false,
+  };
+}
+
 async function resolveIdentities(): Promise<{
   primaryCookie: string;
   otherCookie: string | null;
@@ -221,9 +247,10 @@ async function resolveIdentities(): Promise<{
     const meRes = await apiRequest('/api/auth/me', {
       cookie: resolvedPrimaryCookie,
     });
-    if (meRes.status === 200 && meRes.data?.id) {
+    const parsed = parseAuthMeResponse(meRes.data);
+    if (meRes.status === 200 && parsed.isValid) {
       console.log('   ✓ 成功载入已授权测试身份会话 (无须公开注册)');
-      if (meRes.data.role === 'admin') {
+      if (parsed.isAdmin) {
         isAdmin = true;
         createdFixtures.adminCookie = resolvedPrimaryCookie;
       }

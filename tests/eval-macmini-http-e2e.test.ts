@@ -42,6 +42,8 @@ const { setWebDeps } = await import('../src/web-context.js');
 const { generateSessionToken, signSessionToken } =
   await import('../src/auth.js');
 const { SESSION_COOKIE_NAME_PLAIN } = await import('../src/config.js');
+const { parseAuthMeResponse } =
+  await import('../scripts/verify-eval-macmini-runner.js');
 
 let serverInstance: any = null;
 const TEST_PORT = 3998;
@@ -335,5 +337,77 @@ describe('R17: 生产 HTTP API 客户端脚本协议与生命周期端到端测�
 
     db.updateEvalRun(runningRun.id, { status: 'completed' });
     db.deleteEvalRun(runningRun.id, 'user-macmini-test-1');
+  });
+
+  describe('parseAuthMeResponse 结构解析定向测试 (Leader 审查项)', () => {
+    test('正确解析 admin 身份响应夹具', () => {
+      const fixture = {
+        user: {
+          id: 'usr_admin_001',
+          username: 'superadmin',
+          display_name: 'Super Admin',
+          role: 'admin',
+          status: 'active',
+        },
+        appearance: { brandName: 'HappyClaw' },
+        setupStatus: { isComplete: true },
+      };
+
+      const parsed = parseAuthMeResponse(fixture);
+      expect(parsed.isValid).toBe(true);
+      expect(parsed.userId).toBe('usr_admin_001');
+      expect(parsed.role).toBe('admin');
+      expect(parsed.isAdmin).toBe(true);
+    });
+
+    test('正确解析 member 身份响应夹具', () => {
+      const fixture = {
+        user: {
+          id: 'usr_member_002',
+          username: 'normaluser',
+          display_name: 'Normal Member',
+          role: 'member',
+          status: 'active',
+        },
+        appearance: {},
+      };
+
+      const parsed = parseAuthMeResponse(fixture);
+      expect(parsed.isValid).toBe(true);
+      expect(parsed.userId).toBe('usr_member_002');
+      expect(parsed.role).toBe('member');
+      expect(parsed.isAdmin).toBe(false);
+    });
+
+    test('非法或错误扁平结构不能误判为有效', () => {
+      // 遗漏 user 层级的旧式扁平结构
+      const flatInvalidFixture = {
+        id: 'wrong_flat_id',
+        role: 'admin',
+      };
+      const flatResult = parseAuthMeResponse(flatInvalidFixture);
+      expect(flatResult.isValid).toBe(false);
+      expect(flatResult.isAdmin).toBe(false);
+
+      // 空或未认证返回
+      expect(parseAuthMeResponse(null).isValid).toBe(false);
+      expect(parseAuthMeResponse({ error: 'Unauthorized' }).isValid).toBe(
+        false,
+      );
+    });
+
+    test('真实 HTTP 请求 GET /api/auth/me 并通过 parseAuthMeResponse 验证', async () => {
+      const res = await fetch(`${TEST_BASE_URL}/api/auth/me`, {
+        headers: { Cookie: testCookie1 },
+      });
+      expect(res.status).toBe(200);
+      const data = await res.json();
+
+      const parsed = parseAuthMeResponse(data);
+      expect(parsed.isValid).toBe(true);
+      expect(parsed.userId).toBe('user-macmini-test-1');
+      expect(parsed.role).toBe('member');
+      expect(parsed.isAdmin).toBe(false);
+    });
   });
 });
