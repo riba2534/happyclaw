@@ -28,6 +28,7 @@
  */
 import crypto from 'crypto';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import { logger } from './logger.js';
@@ -60,9 +61,7 @@ export interface ImportReport {
 }
 
 export interface ScanOptions {
-  source?:
-    | { type: 'host-claude-dir' }
-    | { type: 'directory'; path: string };
+  source?: { type: 'host-claude-dir' } | { type: 'directory'; path: string };
 }
 
 /** Names excluded from content hash + copy (caches / VCS / OS metadata). */
@@ -160,9 +159,7 @@ async function runScan(opts: ScanOptions): Promise<ImportReport> {
       pluginEntries = fs.readdirSync(pluginsRoot);
     } catch {
       // marketplace without `plugins/` is malformed but not fatal
-      report.warnings.push(
-        `Marketplace "${mpName}" has no plugins/ directory`,
-      );
+      report.warnings.push(`Marketplace "${mpName}" has no plugins/ directory`);
       continue;
     }
 
@@ -283,8 +280,7 @@ function resolveMarketplaceDirs(
   report: ImportReport,
 ): ResolvedMarketplace[] {
   // Legacy explicit-directory source: treat the given path as a container root
-  // whose subdirectories are marketplaces. Kept for API compatibility; no
-  // production caller currently passes this.
+  // whose subdirectories are marketplaces. Kept for API compatibility and tests.
   if (opts.source && opts.source.type === 'directory') {
     return readMarketplacesRoot(opts.source.path, report);
   }
@@ -397,6 +393,222 @@ interface ImportPluginArgs {
   report: ImportReport;
 }
 
+const SENSITIVE_KEY_RE =
+  /(token|key|secret|pass(word)?|auth|cred(ential)?|api[-_]?key|access[-_]?key|sentinel|private)/i;
+
+const PLACEHOLDER_VALUE_RE =
+  /^(your[-_]?(api[-_]?key|token|secret|password|key|here)|placeholder|xxx+|<.+>|replace[-_]?me|change[-_]?me|example|dummy|\$\{.*\}|secret:\/\/.*)$/i;
+
+function isPlaintextCredentialCandidate(key: string, value: string): boolean {
+  if (!value || typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  if (trimmed === '' || trimmed.length < 3) return false;
+  if (PLACEHOLDER_VALUE_RE.test(trimmed)) return false;
+  if (SENSITIVE_KEY_RE.test(key)) return true;
+  if (
+    /^(sk-[a-zA-Z0-9_-]{10,}|gh[pousr]_[a-zA-Z0-9]{20,}|xox[baprs]-[0-9a-zA-Z-]{10,})/i.test(
+      trimmed,
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+const DANGEROUS_CREDENTIAL_EXTS = new Set([
+  '.pem',
+  '.key',
+  '.pkcs12',
+  '.p12',
+  '.pfx',
+  '.keystore',
+  '.jks',
+]);
+
+const DANGEROUS_CREDENTIAL_NAMES = new Set([
+  'id_rsa',
+  'id_dsa',
+  'id_ecdsa',
+  'id_ed25519',
+  'credentials.json',
+  'service-account.json',
+  'gcp-key.json',
+  'aws_credentials',
+]);
+
+function isDangerousCredentialFile(fileName: string, relPath: string): boolean {
+  const lowerName = fileName.toLowerCase();
+  const lowerRel = relPath.toLowerCase();
+  const ext = path.extname(lowerName);
+  if (DANGEROUS_CREDENTIAL_EXTS.has(ext)) return true;
+  if (DANGEROUS_CREDENTIAL_NAMES.has(lowerName)) return true;
+  if (lowerName.startsWith('service-account') && lowerName.endsWith('.json')) {
+    return true;
+  }
+  if (lowerRel.includes('.aws/credentials') || lowerRel.includes('.ssh/id_')) {
+    return true;
+  }
+  return false;
+}
+
+function walkAllFiles(
+  dir: string,
+  prefix = '',
+): Array<{ abs: string; rel: string; name: string }> {
+  let entries: fs.Dirent[] = [];
+  try {
+    entries = fs.readdirSync(path.join(dir, prefix), { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const results: Array<{ abs: string; rel: string; name: string }> = [];
+  for (const entry of entries) {
+    if (HASH_EXCLUDES.has(entry.name)) continue;
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    const abs = path.join(dir, rel);
+    if (entry.isDirectory()) {
+      results.push(...walkAllFiles(dir, rel));
+    } else if (entry.isFile()) {
+      results.push({ abs, rel, name: entry.name });
+    }
+  }
+  return results;
+}
+
+function detectAndSanitizeCredentials(
+  pluginDir: string,
+  pluginName: string,
+  marketplaceName: string,
+  report: ImportReport,
+): void {
+  const fullId = `${pluginName}@${marketplaceName}`;
+  const files = walkAllFiles(pluginDir);
+
+  for (const file of files) {
+    // 1. 危险敏感文件（私钥/证书/凭据文件）：彻底拦截并从共享快照中移除
+    if (isDangerousCredentialFile(file.name, file.rel)) {
+      try {
+        fs.unlinkSync(file.abs);
+        report.warnings.push(
+          `[Preflight Blocked] Plugin "${fullId}" contains dangerous credential file "${file.rel}"; removed from shared catalog snapshot.`,
+        );
+      } catch {}
+      continue;
+    }
+
+    // 2. 检查 .env* 文件（包括根目录及任意子目录下，包括 .env.example 若含有真实密钥也需脱敏）
+    if (file.name.startsWith('.env')) {
+      let content = '';
+      try {
+        content = fs.readFileSync(file.abs, 'utf-8');
+      } catch {
+        continue;
+      }
+
+      const lines = content.split(/\r?\n/);
+      const sanitizedLines: string[] = [];
+      const detectedKeys: string[] = [];
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) {
+          sanitizedLines.push(line);
+          continue;
+        }
+
+        const eqIdx = line.indexOf('=');
+        if (eqIdx === -1) {
+          sanitizedLines.push(line);
+          continue;
+        }
+
+        const key = line.slice(0, eqIdx).trim();
+        let val = line.slice(eqIdx + 1).trim();
+        if (
+          (val.startsWith('"') && val.endsWith('"')) ||
+          (val.startsWith("'") && val.endsWith("'"))
+        ) {
+          val = val.slice(1, -1);
+        }
+
+        if (isPlaintextCredentialCandidate(key, val)) {
+          detectedKeys.push(key);
+          const safeRefKey = key.replace(/[^A-Za-z0-9_]/g, '_');
+          sanitizedLines.push(`${key}=\${${safeRefKey}}`);
+        } else {
+          sanitizedLines.push(line);
+        }
+      }
+
+      if (detectedKeys.length > 0) {
+        fs.writeFileSync(file.abs, sanitizedLines.join('\n'), 'utf-8');
+        report.warnings.push(
+          `[Preflight Sanitized] Plugin "${fullId}" plaintext credential candidate in "${file.rel}" (${detectedKeys.join(', ')}); sanitized with per-user secret reference for shared catalog.`,
+        );
+      }
+    }
+
+    // 3. 检查任意路径下的 .mcp.json
+    if (file.name === '.mcp.json' || file.name.endsWith('.mcp.json')) {
+      try {
+        const raw = fs.readFileSync(file.abs, 'utf-8');
+        const mcpJson = JSON.parse(raw) as Record<string, unknown>;
+        const servers = mcpJson.mcpServers as
+          | Record<string, Record<string, unknown>>
+          | undefined;
+        const detectedMcpEntries: string[] = [];
+
+        if (servers && typeof servers === 'object') {
+          for (const [srvName, srvDef] of Object.entries(servers)) {
+            if (!srvDef || typeof srvDef !== 'object') continue;
+
+            if (srvDef.env && typeof srvDef.env === 'object') {
+              const envObj = srvDef.env as Record<string, string>;
+              for (const [k, v] of Object.entries(envObj)) {
+                if (isPlaintextCredentialCandidate(k, String(v))) {
+                  detectedMcpEntries.push(`${srvName}.env.${k}`);
+                  const safeRefKey = k.replace(/[^A-Za-z0-9_]/g, '_');
+                  envObj[k] = `\${${safeRefKey}}`;
+                }
+              }
+            }
+
+            if (srvDef.headers && typeof srvDef.headers === 'object') {
+              const headersObj = srvDef.headers as Record<string, string>;
+              for (const [k, v] of Object.entries(headersObj)) {
+                const strVal = String(v);
+                // 若已含有 ${...} 占位符引用，尊重保留原有格式（如 Bearer ${TOKEN}），绝不破坏！
+                if (/\$\{([A-Za-z0-9_-]+)\}/.test(strVal)) {
+                  continue;
+                }
+                if (
+                  SENSITIVE_KEY_RE.test(k) ||
+                  isPlaintextCredentialCandidate(k, strVal)
+                ) {
+                  detectedMcpEntries.push(`${srvName}.headers.${k}`);
+                  const safeRefKey = k.replace(/[^A-Za-z0-9_]/g, '_');
+                  if (strVal.toLowerCase().startsWith('bearer ')) {
+                    headersObj[k] = `Bearer \${${safeRefKey}_TOKEN}`;
+                  } else {
+                    headersObj[k] = `\${${safeRefKey}}`;
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        if (detectedMcpEntries.length > 0) {
+          fs.writeFileSync(file.abs, JSON.stringify(mcpJson, null, 2), 'utf-8');
+          report.warnings.push(
+            `[Preflight Sanitized] Plugin "${fullId}" plaintext credential candidate in "${file.rel}" (${detectedMcpEntries.join(', ')}); sanitized with per-user secret reference for shared catalog.`,
+          );
+        }
+      } catch {}
+    }
+  }
+}
+
 /**
  * Import one plugin: hash sources, see if catalog already has that snapshot,
  * if not copy to a tmp dir then atomic-rename into `versions/{hash}/`.
@@ -404,38 +616,40 @@ interface ImportPluginArgs {
 async function importPluginSnapshot(args: ImportPluginArgs): Promise<void> {
   const { marketplace, plugin, pluginDir, manifest, idx, report } = args;
 
-  const contentHash = await hashDirectoryContents(pluginDir);
-  // 32 hex chars (128-bit prefix) — 维持向后兼容：现有部署的 catalog 都是
-  // 32 字符目录名，切到 64 字符会让所有现有 snapshot 重复一份。128 位
-  // collision 抵抗在 per-(marketplace,plugin) scope 下已足够（攻击者还
-  // 需要同时控制 marketplace+plugin 名才能尝试碰撞），且 fs.existsSync
-  // idempotency 检查走的是 dir-name 不是哈希值。
-  const snapshotId = `sha256-${contentHash.slice(0, 32)}`;
-  const targetDir = getCatalogSnapshotDir(marketplace, plugin, snapshotId);
+  // 临时预检工作目录使用系统安全隔离目录，避免未脱敏的发布者凭据暴露在 catalog 目录树中
+  const tmpDir = path.join(
+    os.tmpdir(),
+    `happyclaw-preflight-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  );
+
+  let snapshotId: string;
+  let targetDir: string;
   const fullId = buildFullId(plugin, marketplace);
 
-  if (fs.existsSync(targetDir)) {
-    // Snapshot dir already on disk → idempotent skip. Index may still need
-    // to learn about it (e.g. fresh checkout where index.json is gone) so
-    // we update metadata below regardless.
-    report.snapshotsSkipped += 1;
-  } else {
-    fs.mkdirSync(path.dirname(targetDir), { recursive: true });
-    const tmpDir = `${targetDir}.tmp-${process.pid}-${Date.now()}`;
-    try {
-      copyDirectoryFiltered(pluginDir, tmpDir);
-      verifyManifestPresent(tmpDir);
-      // rename(2) is atomic on the same fs. Catalog snapshot is now visible.
+  try {
+    copyDirectoryFiltered(pluginDir, tmpDir);
+    verifyManifestPresent(tmpDir);
+    detectAndSanitizeCredentials(tmpDir, plugin, marketplace, report);
+
+    const contentHash = await hashDirectoryContents(tmpDir);
+    snapshotId = `sha256-${contentHash.slice(0, 32)}`;
+    targetDir = getCatalogSnapshotDir(marketplace, plugin, snapshotId);
+
+    if (fs.existsSync(targetDir)) {
+      report.snapshotsSkipped += 1;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } else {
+      fs.mkdirSync(path.dirname(targetDir), { recursive: true });
       fs.renameSync(tmpDir, targetDir);
       report.snapshotsCreated += 1;
-    } catch (err) {
-      try {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-      } catch {
-        /* already gone */
-      }
-      throw err;
     }
+  } catch (err) {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      /* already gone */
+    }
+    throw err;
   }
 
   // Refresh the per-plugin index entry. activeSnapshot is always set to the
@@ -629,11 +843,7 @@ function sweepStaleTmpDirs(catalogRoot: string, report?: ImportReport): void {
     }
     for (const pluginEntry of pluginEntries) {
       if (!pluginEntry.isDirectory()) continue;
-      const versionsRoot = path.join(
-        pluginsRoot,
-        pluginEntry.name,
-        'versions',
-      );
+      const versionsRoot = path.join(pluginsRoot, pluginEntry.name, 'versions');
       let versionEntries: fs.Dirent[];
       try {
         versionEntries = fs.readdirSync(versionsRoot, { withFileTypes: true });

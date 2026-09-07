@@ -6,12 +6,16 @@ import {
   AlertTriangle,
   Info,
   X,
+  KeyRound,
+  Trash2,
+  Plus,
 } from 'lucide-react';
 import { PageHeader } from '@/components/common/PageHeader';
 import { SkeletonCardList } from '@/components/common/Skeletons';
 import { EmptyState } from '@/components/common/EmptyState';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import {
   Dialog,
@@ -43,12 +47,17 @@ function WarningBadge({ warnings }: { warnings: PluginEntry['warnings'] }) {
 export function PluginsPage() {
   const {
     marketplaces,
+    secrets,
     loading,
     scanning,
     error,
     loadPlugins,
+    loadSecrets,
+    setSecret,
+    revokeSecret,
     scanCatalog,
     toggleEnabled,
+    deactivateImmediately,
     deleteMarketplace,
   } = usePluginsStore();
 
@@ -57,10 +66,46 @@ export function PluginsPage() {
     name: string;
     enabledCount: number;
   } | null>(null);
+  const [deactivateTarget, setDeactivateTarget] = useState<PluginEntry | null>(
+    null,
+  );
+  const [deactivating, setDeactivating] = useState(false);
+  const [newKey, setNewKey] = useState('');
+  const [newVal, setNewVal] = useState('');
+  const [savingSecret, setSavingSecret] = useState(false);
 
   useEffect(() => {
     loadPlugins();
-  }, [loadPlugins]);
+    loadSecrets();
+  }, [loadPlugins, loadSecrets]);
+
+  const handleSaveSecret = async () => {
+    if (!newKey.trim() || !newVal) return;
+    setSavingSecret(true);
+    try {
+      await setSecret(newKey.trim(), newVal);
+      toast.success(`已设置 Secret 引用 ${newKey.trim()}`);
+      setNewKey('');
+      setNewVal('');
+    } catch (err) {
+      toast.error(
+        `设置失败：${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setSavingSecret(false);
+    }
+  };
+
+  const handleRevokeSecret = async (key: string) => {
+    try {
+      await revokeSecret(key);
+      toast.success(`已撤回 Secret ${key}`);
+    } catch (err) {
+      toast.error(
+        `撤回失败：${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
 
   const totalPlugins = marketplaces.reduce(
     (acc, mp) => acc + mp.plugins.length,
@@ -117,6 +162,24 @@ export function PluginsPage() {
       toast.error(
         `删除失败：${err instanceof Error ? err.message : String(err)}`,
       );
+    }
+  };
+
+  const handleDeactivateImmediately = async () => {
+    if (!deactivateTarget) return;
+    setDeactivating(true);
+    try {
+      const res = await deactivateImmediately(deactivateTarget.fullId);
+      toast.success(
+        `已立即停用 ${deactivateTarget.fullId}，已重启 ${res.stoppedSessionsCount} 个受影响会话。`,
+      );
+      setDeactivateTarget(null);
+    } catch (err) {
+      toast.error(
+        `立即停用失败：${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setDeactivating(false);
     }
   };
 
@@ -181,6 +244,76 @@ export function PluginsPage() {
         )}
 
         <div className="p-6 space-y-6">
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between mb-3 pb-3 border-b border-border">
+                <div className="flex items-center gap-2">
+                  <KeyRound size={16} className="text-primary" />
+                  <span className="font-semibold text-sm">
+                    用户私有插件 Secret 管理
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    （用于安全替换 {'${KEY}'} 引用，不进入共享快照，按用户隔离）
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Input
+                    type="text"
+                    placeholder="变量名，如 API_KEY"
+                    value={newKey}
+                    onChange={(e) => setNewKey(e.target.value)}
+                    className="w-48 text-xs font-mono h-8"
+                  />
+                  <Input
+                    type="password"
+                    placeholder="Secret 值（敏感凭据）"
+                    value={newVal}
+                    onChange={(e) => setNewVal(e.target.value)}
+                    className="w-64 text-xs font-mono h-8"
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleSaveSecret}
+                    disabled={savingSecret || !newKey.trim() || !newVal}
+                    className="text-xs h-8"
+                  >
+                    <Plus size={13} className="mr-1" />
+                    {savingSecret ? '保存中...' : '配置 Secret'}
+                  </Button>
+                </div>
+
+                {secrets.length > 0 ? (
+                  <div className="flex flex-wrap gap-2 pt-2">
+                    {secrets.map((key) => (
+                      <div
+                        key={key}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-muted text-xs font-mono border border-border"
+                      >
+                        <span>{key}</span>
+                        <span className="text-muted-foreground">***</span>
+                        <button
+                          onClick={() => handleRevokeSecret(key)}
+                          className="text-destructive hover:text-destructive/80 ml-1"
+                          title="撤回并从私有运行目录中清除"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-xs text-muted-foreground">
+                    暂无已配置的私有 Secret
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
           {loading && marketplaces.length === 0 ? (
             <SkeletonCardList count={3} />
           ) : error ? (
@@ -272,10 +405,24 @@ export function PluginsPage() {
                               {plugin.fullId}
                             </div>
                           </div>
-                          <Switch
-                            checked={plugin.enabled}
-                            onCheckedChange={() => handleToggle(plugin)}
-                          />
+                          <div className="flex items-center gap-3">
+                            {plugin.enabled && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="text-destructive hover:bg-destructive/10 text-xs h-8"
+                                onClick={() => setDeactivateTarget(plugin)}
+                                title="立即停止当前用户正在运行且加载了该插件的会话，并在更新配置后重启"
+                              >
+                                <PowerOff size={13} className="mr-1" />
+                                立即停用
+                              </Button>
+                            )}
+                            <Switch
+                              checked={plugin.enabled}
+                              onCheckedChange={() => handleToggle(plugin)}
+                            />
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -286,6 +433,39 @@ export function PluginsPage() {
           )}
         </div>
       </div>
+
+      <Dialog
+        open={deactivateTarget !== null}
+        onOpenChange={(o) => !o && setDeactivateTarget(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>立即停用并重启受影响会话</DialogTitle>
+            <DialogDescription>
+              将立即停用 <strong>{deactivateTarget?.fullId}</strong>
+              ，并安全停止当前用户所有加载了该插件的活跃运行中会话，随后以新配置重启。其他用户不受影响。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setDeactivateTarget(null)}
+              disabled={deactivating}
+            >
+              <X size={14} />
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDeactivateImmediately}
+              disabled={deactivating}
+            >
+              <PowerOff size={14} />
+              {deactivating ? '停用中...' : '确认立即停用'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={deleteTarget !== null}

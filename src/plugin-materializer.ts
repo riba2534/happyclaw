@@ -49,6 +49,7 @@ import { getSnapshotPath, type CatalogPluginEntry } from './plugin-catalog.js';
 import {
   getUserRuntimeRoot as getUserRuntimeRootFromUtils,
   readUserPluginsV2,
+  getUserPluginSecrets,
 } from './plugin-utils.js';
 
 /**
@@ -113,6 +114,8 @@ export interface MaterializeOptions {
    * GC without churning every caller signature.
    */
   isSnapshotInUse?: ActiveRuntimeRefCheck;
+  /** Force rebuilding the isolated runtime tree even if marker already exists. */
+  force?: boolean;
 }
 
 /** runtime/ root for a user (caller mounts this whole dir into Docker). */
@@ -166,13 +169,147 @@ export function getUserPluginRuntimeDir(
  * from the catalog. Admins can call `cleanupOrphanRuntime(userId)` directly
  * when they need to reclaim space.
  */
+function replaceSecretsInString(
+  str: string,
+  secrets: Record<string, string>,
+): { result: string; modified: boolean } {
+  let modified = false;
+  const result = str.replace(/\$\{([A-Za-z0-9_-]+)\}/g, (match, varName) => {
+    const normalizedKey = varName.replace(/-/g, '_');
+    if (Object.prototype.hasOwnProperty.call(secrets, varName)) {
+      modified = true;
+      return secrets[varName];
+    }
+    if (Object.prototype.hasOwnProperty.call(secrets, normalizedKey)) {
+      modified = true;
+      return secrets[normalizedKey];
+    }
+    return match;
+  });
+  return { result, modified };
+}
+
+function recursiveReplaceObjectSecrets(
+  obj: unknown,
+  secrets: Record<string, string>,
+): boolean {
+  if (!obj || typeof obj !== 'object') return false;
+  let anyModified = false;
+  if (Array.isArray(obj)) {
+    for (let i = 0; i < obj.length; i++) {
+      if (typeof obj[i] === 'string') {
+        const { result, modified } = replaceSecretsInString(obj[i], secrets);
+        if (modified) {
+          obj[i] = result;
+          anyModified = true;
+        }
+      } else if (typeof obj[i] === 'object' && obj[i] !== null) {
+        if (recursiveReplaceObjectSecrets(obj[i], secrets)) anyModified = true;
+      }
+    }
+  } else {
+    for (const [k, v] of Object.entries(obj)) {
+      if (typeof v === 'string') {
+        const { result, modified } = replaceSecretsInString(v, secrets);
+        if (modified) {
+          (obj as Record<string, unknown>)[k] = result;
+          anyModified = true;
+        }
+      } else if (typeof v === 'object' && v !== null) {
+        if (recursiveReplaceObjectSecrets(v, secrets)) anyModified = true;
+      }
+    }
+  }
+  return anyModified;
+}
+
+function formatEnvValue(value: string): string {
+  if (
+    value.includes('\n') ||
+    value.includes('"') ||
+    value.includes(' ') ||
+    value.includes('\r')
+  ) {
+    return JSON.stringify(value);
+  }
+  return value;
+}
+
+function resolveUserSecretsInTree(targetDir: string, userId: string): void {
+  const secrets = getUserPluginSecrets(userId);
+  if (Object.keys(secrets).length === 0) return;
+
+  function walkDir(dir: string): string[] {
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    const paths: string[] = [];
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        paths.push(...walkDir(full));
+      } else if (entry.isFile()) {
+        paths.push(full);
+      }
+    }
+    return paths;
+  }
+
+  const allFiles = walkDir(targetDir);
+
+  for (const filePath of allFiles) {
+    const baseName = path.basename(filePath);
+
+    // 1. 处理 .env* 文件
+    if (baseName.startsWith('.env')) {
+      try {
+        const content = fs.readFileSync(filePath, 'utf-8');
+        const lines = content.split(/\r?\n/);
+        let modified = false;
+        const newLines = lines.map((line) => {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith('#')) return line;
+          const eqIdx = line.indexOf('=');
+          if (eqIdx === -1) return line;
+          const key = line.slice(0, eqIdx).trim();
+          const rawVal = line.slice(eqIdx + 1).trim();
+
+          const { result, modified: lineModified } = replaceSecretsInString(
+            rawVal,
+            secrets,
+          );
+          if (lineModified) {
+            modified = true;
+            return `${key}=${formatEnvValue(result)}`;
+          }
+          return line;
+        });
+
+        if (modified) {
+          fs.writeFileSync(filePath, newLines.join('\n'), 'utf-8');
+        }
+      } catch {}
+    }
+
+    // 2. 处理 .mcp.json（严格通过 JSON.parse -> 递归替换 -> JSON.stringify，杜绝结构破坏与注入）
+    if (baseName === '.mcp.json' || baseName.endsWith('.mcp.json')) {
+      try {
+        const raw = fs.readFileSync(filePath, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (recursiveReplaceObjectSecrets(parsed, secrets)) {
+          fs.writeFileSync(filePath, JSON.stringify(parsed, null, 2), 'utf-8');
+        }
+      } catch {}
+    }
+  }
+}
+
 export function materializeUserRuntime(
   userId: string,
-  // The options bag is currently unused; see MaterializeOptions. Keeping the
-  // parameter avoids a breaking-change ripple through call sites that already
-  // pass `{ isSnapshotInUse }`.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  _options: MaterializeOptions = {},
+  options: MaterializeOptions = {},
 ): MaterializeReport {
   const report: MaterializeReport = {
     reused: 0,
@@ -217,10 +354,9 @@ export function materializeUserRuntime(
     );
 
     // Already materialized AND tree was built with the isolated-inode
-    // strategy → skip. A manifest-only tree predates this strategy
-    // (hard-link era) and must be rebuilt so a host-mode agent's
-    // bypassPermissions write can't mutate the catalog (codex P1).
+    // strategy → skip.
     const isolatedAlready =
+      !options.force &&
       hasManifest(target) &&
       hasIsolatedRuntimeMarker(
         userId,
@@ -253,11 +389,11 @@ export function materializeUserRuntime(
     try {
       buildSnapshot(sourceDir, target, { isLegacy, isPartial });
       if (!hasManifest(target)) {
-        report.warnings.push(
+        throw new Error(
           `Built snapshot at ${target} is missing .claude-plugin/plugin.json`,
         );
-        continue;
       }
+      resolveUserSecretsInTree(target, userId);
       writeIsolatedRuntimeMarker(
         userId,
         ref.snapshot,
@@ -273,6 +409,7 @@ export function materializeUserRuntime(
         { userId, fullId, snapshot: ref.snapshot, err },
         'plugin-materializer: materialize failed',
       );
+      throw err;
     }
   }
 

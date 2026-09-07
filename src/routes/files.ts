@@ -22,13 +22,14 @@ import {
   invalidateGroupStorageUsage,
   getFileRoot,
   safeWriteWorkspaceFile,
+  safeOpenWorkspaceReadStream,
+  safeReadWorkspaceFileText,
 } from '../file-manager.js';
 import { checkStorageLimit, isBillingEnabled } from '../billing.js';
 import { MAX_FILE_SIZE_MB } from '../config.js';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { Readable } from 'node:stream';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
@@ -207,35 +208,6 @@ function buildAttachmentContentDisposition(fileName: string): string {
   const asciiFallback = sanitized.replace(/[^\x20-\x7E]/g, '_') || 'download';
   const encoded = encodeURIComponent(fileName);
   return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`;
-}
-
-function parseSingleRange(
-  rangeHeader: string,
-  fileSize: number,
-): { start: number; end: number } | null {
-  if (fileSize <= 0) return null;
-
-  const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
-  if (!match) return null;
-
-  const [, rawStart, rawEnd] = match;
-  if (!rawStart && !rawEnd) return null;
-
-  // Suffix bytes range (e.g. bytes=-500)
-  if (!rawStart) {
-    const suffixLength = Number(rawEnd);
-    if (!Number.isInteger(suffixLength) || suffixLength <= 0) return null;
-    if (suffixLength >= fileSize) return { start: 0, end: fileSize - 1 };
-    return { start: fileSize - suffixLength, end: fileSize - 1 };
-  }
-
-  const start = Number(rawStart);
-  if (!Number.isInteger(start) || start < 0 || start >= fileSize) return null;
-
-  const parsedEnd = rawEnd ? Number(rawEnd) : fileSize - 1;
-  if (!Number.isInteger(parsedEnd) || parsedEnd < start) return null;
-
-  return { start, end: Math.min(parsedEnd, fileSize - 1) };
 }
 
 async function openDirectoryInFileManager(targetDir: string): Promise<void> {
@@ -537,7 +509,7 @@ fileRoutes.post('/:jid/files/open-directory', authMiddleware, async (c) => {
 });
 
 // GET /api/groups/:jid/files/download/:path - 下载文件
-fileRoutes.get('/:jid/files/download/:path', authMiddleware, (c) => {
+fileRoutes.get('/:jid/files/download/:path', authMiddleware, async (c) => {
   const jid = c.req.param('jid');
   const encodedPath = c.req.param('path');
 
@@ -557,28 +529,28 @@ fileRoutes.get('/:jid/files/download/:path', authMiddleware, (c) => {
     );
   }
 
+  let relativePath: string;
   try {
-    // 解码 base64url 路径
-    const relativePath = Buffer.from(encodedPath, 'base64url').toString(
-      'utf-8',
-    );
-    const absolutePath = validateAndResolvePath(
+    relativePath = Buffer.from(encodedPath, 'base64url').toString('utf-8');
+  } catch {
+    return c.json({ error: 'Invalid path parameter' }, 400);
+  }
+
+  const rootOverride = getFileRootOverride(group);
+
+  try {
+    const rangeHeader = c.req.header('range');
+    const readResult = await safeOpenWorkspaceReadStream(
       group.folder,
       relativePath,
-      getFileRootOverride(group),
+      {
+        rootOverride,
+        rangeHeader,
+      },
     );
 
-    if (!fs.existsSync(absolutePath)) {
-      return c.json({ error: 'File not found' }, 404);
-    }
-
-    const stats = fs.statSync(absolutePath);
-    if (stats.isDirectory()) {
-      return c.json({ error: 'Cannot download directory' }, 400);
-    }
-
-    const fileName = path.basename(absolutePath);
-    const fileSize = stats.size;
+    const fileName = path.basename(relativePath);
+    const fileSize = readResult.size;
     const commonHeaders = {
       'Content-Disposition': buildAttachmentContentDisposition(fileName),
       'Content-Type': 'application/octet-stream',
@@ -587,58 +559,61 @@ fileRoutes.get('/:jid/files/download/:path', authMiddleware, (c) => {
       'Accept-Ranges': 'bytes',
     };
 
-    const rangeHeader = c.req.header('range');
-    if (rangeHeader) {
-      const normalizedRange = rangeHeader.trim();
-      const isBytesRange = normalizedRange.toLowerCase().startsWith('bytes=');
-      const isMultiRange = isBytesRange && normalizedRange.includes(',');
-
-      // 多区间请求当前未实现 multipart/byteranges，回退为完整下载响应
-      if (isBytesRange && !isMultiRange) {
-        const parsedRange = parseSingleRange(normalizedRange, fileSize);
-        if (!parsedRange) {
-          return new Response(null, {
-            status: 416,
-            headers: {
-              ...commonHeaders,
-              'Content-Range': `bytes */${fileSize}`,
-            },
-          });
-        }
-
-        const { start, end } = parsedRange;
-        const stream = Readable.toWeb(
-          fs.createReadStream(absolutePath, { start, end }),
-        ) as ReadableStream<Uint8Array>;
-        return new Response(stream, {
-          status: 206,
+    if (readResult.isRangeRequest) {
+      if (!readResult.rangeSatisfiable) {
+        return new Response(null, {
+          status: 416,
           headers: {
             ...commonHeaders,
-            'Content-Length': String(end - start + 1),
-            'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+            'Content-Range': `bytes */${fileSize}`,
           },
         });
       }
+
+      const { start = 0, end = fileSize - 1, contentLength } = readResult;
+      return new Response(readResult.stream, {
+        status: 206,
+        headers: {
+          ...commonHeaders,
+          'Content-Length': String(contentLength),
+          'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        },
+      });
     }
 
-    const stream = Readable.toWeb(
-      fs.createReadStream(absolutePath),
-    ) as ReadableStream<Uint8Array>;
-    return new Response(stream, {
+    return new Response(readResult.stream, {
       status: 200,
       headers: {
         ...commonHeaders,
-        'Content-Length': String(fileSize),
+        'Content-Length': String(readResult.contentLength),
       },
     });
   } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (msg === 'File not found' || msg === 'File or directory not found') {
+      return c.json({ error: 'File not found' }, 404);
+    }
+    if (
+      msg.includes('Symlink traversal detected') ||
+      msg.includes('Path traversal detected') ||
+      msg.includes('Invalid workspace-relative path')
+    ) {
+      logger.warn(
+        { err: error, jid, relativePath },
+        'Path traversal or symlink rejection during download',
+      );
+      return c.json({ error: 'Symlink traversal detected' }, 500);
+    }
+    if (msg.includes('Target is not a regular file')) {
+      return c.json({ error: 'Cannot download directory' }, 400);
+    }
     logger.error({ err: error }, `Failed to download file for ${jid}`);
     return c.json({ error: 'Failed to download file' }, 500);
   }
 });
 
 // GET /api/groups/:jid/files/preview/:path - 预览文件
-fileRoutes.get('/:jid/files/preview/:path', authMiddleware, (c) => {
+fileRoutes.get('/:jid/files/preview/:path', authMiddleware, async (c) => {
   const jid = c.req.param('jid');
   const encodedPath = c.req.param('path');
 
@@ -658,43 +633,41 @@ fileRoutes.get('/:jid/files/preview/:path', authMiddleware, (c) => {
     );
   }
 
+  let relativePath: string;
   try {
-    // 解码 base64url 路径
-    const relativePath = Buffer.from(encodedPath, 'base64url').toString(
-      'utf-8',
-    );
-    const absolutePath = validateAndResolvePath(
-      group.folder,
-      relativePath,
-      getFileRootOverride(group),
-    );
+    relativePath = Buffer.from(encodedPath, 'base64url').toString('utf-8');
+  } catch {
+    return c.json({ error: 'Invalid path parameter' }, 400);
+  }
 
-    if (!fs.existsSync(absolutePath)) {
-      return c.json({ error: 'File not found' }, 404);
-    }
+  const rootOverride = getFileRootOverride(group);
 
-    const stats = fs.statSync(absolutePath);
-    if (stats.isDirectory()) {
-      return c.json({ error: 'Cannot preview directory' }, 400);
-    }
-
-    // 检测 MIME 类型（基于扩展名）
-    const ext = path.extname(absolutePath).slice(1).toLowerCase();
+  try {
+    const ext = path.extname(relativePath).slice(1).toLowerCase();
     const mimeType = MIME_MAP[ext] || 'application/octet-stream';
-    const fileName = path.basename(absolutePath);
-    const fileSize = stats.size;
+    const fileName = path.basename(relativePath);
 
-    // 判断是否为流媒体类型（视频/音频），需支持 Range 请求
     const isStreamable =
       mimeType.startsWith('video/') || mimeType.startsWith('audio/');
 
-    // 安全头
+    const rangeHeader = isStreamable ? c.req.header('range') : undefined;
+
+    const readResult = await safeOpenWorkspaceReadStream(
+      group.folder,
+      relativePath,
+      {
+        rootOverride,
+        rangeHeader,
+      },
+    );
+
+    const fileSize = readResult.size;
+
     const securityHeaders: Record<string, string> = {
       'Content-Security-Policy': "default-src 'none'; sandbox",
       'X-Content-Type-Options': 'nosniff',
     };
 
-    // Content-Type 和 Content-Disposition
     let contentType: string;
     let disposition: string;
     if (SAFE_PREVIEW_MIME_TYPES.has(mimeType)) {
@@ -711,75 +684,63 @@ fileRoutes.get('/:jid/files/preview/:path', authMiddleware, (c) => {
       'Content-Disposition': disposition,
     };
 
-    // 流媒体类型：支持 Range 请求（浏览器 <video>/<audio> seek 依赖此机制）
-    if (isStreamable) {
-      const rangeHeader = c.req.header('range');
-      if (rangeHeader) {
-        const normalizedRange = rangeHeader.trim();
-        const isBytesRange = normalizedRange.toLowerCase().startsWith('bytes=');
-        const isMultiRange = isBytesRange && normalizedRange.includes(',');
-
-        if (isBytesRange && !isMultiRange) {
-          const parsedRange = parseSingleRange(normalizedRange, fileSize);
-          if (!parsedRange) {
-            return new Response(null, {
-              status: 416,
-              headers: {
-                ...commonHeaders,
-                'Content-Range': `bytes */${fileSize}`,
-              },
-            });
-          }
-
-          const { start, end } = parsedRange;
-          const stream = Readable.toWeb(
-            fs.createReadStream(absolutePath, { start, end }),
-          ) as ReadableStream<Uint8Array>;
-          return new Response(stream, {
-            status: 206,
-            headers: {
-              ...commonHeaders,
-              'Accept-Ranges': 'bytes',
-              'Content-Length': String(end - start + 1),
-              'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-            },
-          });
-        }
+    if (isStreamable && readResult.isRangeRequest) {
+      if (!readResult.rangeSatisfiable) {
+        return new Response(null, {
+          status: 416,
+          headers: {
+            ...commonHeaders,
+            'Content-Range': `bytes */${fileSize}`,
+          },
+        });
       }
 
-      // 无 Range 或多区间回退：流式返回完整文件
-      const stream = Readable.toWeb(
-        fs.createReadStream(absolutePath),
-      ) as ReadableStream<Uint8Array>;
-      return new Response(stream, {
-        status: 200,
+      const { start = 0, end = fileSize - 1, contentLength } = readResult;
+      return new Response(readResult.stream, {
+        status: 206,
         headers: {
           ...commonHeaders,
           'Accept-Ranges': 'bytes',
-          'Content-Length': String(fileSize),
+          'Content-Length': String(contentLength),
+          'Content-Range': `bytes ${start}-${end}/${fileSize}`,
         },
       });
     }
 
-    // 非流媒体类型：也使用流式响应避免大文件占满内存
-    const stream = Readable.toWeb(
-      fs.createReadStream(absolutePath),
-    ) as ReadableStream<Uint8Array>;
-    return new Response(stream, {
+    return new Response(readResult.stream, {
       status: 200,
       headers: {
         ...commonHeaders,
-        'Content-Length': String(fileSize),
+        ...(isStreamable ? { 'Accept-Ranges': 'bytes' } : {}),
+        'Content-Length': String(readResult.contentLength),
       },
     });
   } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (msg === 'File not found' || msg === 'File or directory not found') {
+      return c.json({ error: 'File not found' }, 404);
+    }
+    if (
+      msg.includes('Symlink traversal detected') ||
+      msg.includes('Path traversal detected') ||
+      msg.includes('Invalid workspace-relative path')
+    ) {
+      logger.warn(
+        { err: error, jid, relativePath },
+        'Path traversal or symlink rejection during preview',
+      );
+      return c.json({ error: 'Symlink traversal detected' }, 500);
+    }
+    if (msg.includes('Target is not a regular file')) {
+      return c.json({ error: 'Cannot preview directory' }, 400);
+    }
     logger.error({ err: error }, `Failed to preview file for ${jid}`);
     return c.json({ error: 'Failed to preview file' }, 500);
   }
 });
 
 // GET /api/groups/:jid/files/content/:path - 读取文本文件内容
-fileRoutes.get('/:jid/files/content/:path', authMiddleware, (c) => {
+fileRoutes.get('/:jid/files/content/:path', authMiddleware, async (c) => {
   const jid = c.req.param('jid');
   const encodedPath = c.req.param('path');
 
@@ -799,43 +760,48 @@ fileRoutes.get('/:jid/files/content/:path', authMiddleware, (c) => {
     );
   }
 
+  let relativePath: string;
   try {
-    const rootOverride = getFileRootOverride(group);
-    const relativePath = Buffer.from(encodedPath, 'base64url').toString(
-      'utf-8',
+    relativePath = Buffer.from(encodedPath, 'base64url').toString('utf-8');
+  } catch {
+    return c.json({ error: 'Invalid path parameter' }, 400);
+  }
+
+  const ext = path.extname(relativePath).slice(1).toLowerCase();
+  if (!TEXT_EXTENSIONS.has(ext)) {
+    return c.json(
+      { error: 'File type not supported for content reading' },
+      400,
     );
-    const absolutePath = validateAndResolvePath(
+  }
+
+  const rootOverride = getFileRootOverride(group);
+
+  try {
+    const { content, size } = await safeReadWorkspaceFileText(
       group.folder,
       relativePath,
       rootOverride,
+      10 * 1024 * 1024,
     );
-
-    if (!fs.existsSync(absolutePath)) {
+    return c.json({ content, size });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (msg === 'File not found' || msg === 'File or directory not found') {
       return c.json({ error: 'File not found' }, 404);
     }
-
-    const stats = fs.statSync(absolutePath);
-    if (stats.isDirectory()) {
-      return c.json({ error: 'Cannot read directory content' }, 400);
-    }
-
-    // 仅允许文本文件
-    const ext = path.extname(absolutePath).slice(1).toLowerCase();
-    if (!TEXT_EXTENSIONS.has(ext)) {
-      return c.json(
-        { error: 'File type not supported for content reading' },
-        400,
-      );
-    }
-
-    // 限制文件大小（10MB）
-    if (stats.size > 10 * 1024 * 1024) {
+    if (msg.includes('File too large to read')) {
       return c.json({ error: 'File too large to read (max 10MB)' }, 400);
     }
-
-    const content = fs.readFileSync(absolutePath, 'utf-8');
-    return c.json({ content, size: stats.size });
-  } catch (error) {
+    if (msg.includes('Target is not a regular file')) {
+      return c.json({ error: 'Cannot read directory content' }, 400);
+    }
+    if (
+      msg.includes('Symlink traversal detected') ||
+      msg.includes('Path traversal detected')
+    ) {
+      return c.json({ error: 'Symlink traversal detected' }, 500);
+    }
     logger.error({ err: error }, `Failed to read file content for ${jid}`);
     return c.json({ error: 'Failed to read file content' }, 500);
   }

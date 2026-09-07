@@ -6,7 +6,11 @@ import type { Variables } from '../web-context.js';
 import type { AuthUser } from '../types.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { checkMcpServerLimit } from '../billing.js';
-import { getAllUsers, listAgentProfilesForUser } from '../db.js';
+import {
+  getAllUsers,
+  listAgentProfilesForUser,
+  recordAuthAuditLog,
+} from '../db.js';
 import { getEffectiveExternalDir } from '../runtime-config.js';
 import { loadHostClaudeMcpServers } from '../mcp-context.js';
 import {
@@ -525,6 +529,54 @@ mcpServersRoutes.post('/', authMiddleware, async (c) => {
     if (failure) return c.json(failure, 503);
     throw error;
   }
+
+  try {
+    if (scope === 'system' && memberAccess !== undefined) {
+      recordAuthAuditLog({
+        event_type: 'mcp_shared',
+        username: authUser.username,
+        actor_username: authUser.username,
+        ip_address: c.req.header('x-forwarded-for') || null,
+        user_agent: c.req.header('user-agent') || null,
+        details: {
+          targetId: id,
+          scope,
+          action: 'created',
+          memberAccess: memberAccess ?? 'admin_only',
+          runtimeResult: {
+            success: true,
+            invalidatedJids: invalidatedRuntimeJids,
+          },
+        },
+      });
+    }
+    if (
+      (env && Object.keys(env).length > 0) ||
+      (headers && Object.keys(headers).length > 0)
+    ) {
+      recordAuthAuditLog({
+        event_type: 'mcp_credential_updated',
+        username: authUser.username,
+        actor_username: authUser.username,
+        ip_address: c.req.header('x-forwarded-for') || null,
+        user_agent: c.req.header('user-agent') || null,
+        details: {
+          targetId: id,
+          scope,
+          action: 'created_with_credentials',
+          sanitizedChanges: {
+            envKeys: Object.keys(env ?? {}),
+            headerKeys: Object.keys(headers ?? {}),
+          },
+          runtimeResult: {
+            success: true,
+            invalidatedJids: invalidatedRuntimeJids,
+          },
+        },
+      });
+    }
+  } catch {}
+
   return c.json({
     success: true,
     invalidated_runtime_jids: invalidatedRuntimeJids,
@@ -723,6 +775,59 @@ mcpServersRoutes.patch('/:id', authMiddleware, async (c) => {
     if (failure) return c.json(failure, 503);
     throw error;
   }
+
+  // 审计记录：严格不包含凭据明文
+  try {
+    if (memberAccess !== undefined) {
+      recordAuthAuditLog({
+        event_type: 'mcp_shared',
+        username: authUser.username,
+        actor_username: authUser.username,
+        ip_address: c.req.header('x-forwarded-for') || null,
+        user_agent: c.req.header('user-agent') || null,
+        details: {
+          targetId: id,
+          scope,
+          action: 'member_access_updated',
+          memberAccess,
+          runtimeResult: {
+            success: true,
+            invalidatedJids: invalidatedRuntimeJids,
+          },
+        },
+      });
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(body, 'env') ||
+      Object.prototype.hasOwnProperty.call(body, 'headers')
+    ) {
+      const changedEnvKeys = Object.keys(env ?? {});
+      const changedHeaderKeys = Object.keys(headers ?? {});
+      recordAuthAuditLog({
+        event_type: 'mcp_credential_updated',
+        username: authUser.username,
+        actor_username: authUser.username,
+        ip_address: c.req.header('x-forwarded-for') || null,
+        user_agent: c.req.header('user-agent') || null,
+        details: {
+          targetId: id,
+          scope,
+          action: 'credential_updated',
+          sanitizedChanges: {
+            envKeys: changedEnvKeys,
+            headerKeys: changedHeaderKeys,
+          },
+          runtimeResult: {
+            success: true,
+            invalidatedJids: invalidatedRuntimeJids,
+          },
+        },
+      });
+    }
+  } catch (auditErr) {
+    // Audit write failures must not break operational flow
+  }
+
   return c.json({
     success: true,
     invalidated_runtime_jids: invalidatedRuntimeJids,

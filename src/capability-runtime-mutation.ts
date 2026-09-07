@@ -1,6 +1,7 @@
 import {
   deleteWorkspaceSessions,
   getAllUsers,
+  getAllRegisteredGroups,
   listAgentProfilesForUser,
 } from './db.js';
 import {
@@ -24,6 +25,11 @@ export type CapabilityMutationImpact =
       scope: 'system' | 'user';
       /** Omit when a bulk import may add/update more than one MCP server. */
       ids?: string[];
+    }
+  | {
+      kind: 'plugins';
+      ownerUserId: string;
+      pluginFullId?: string;
     };
 
 export class CapabilityRuntimeCommitError extends Error {
@@ -42,6 +48,7 @@ function profileUsesCapability(
   profile: ReturnType<typeof listAgentProfilesForUser>[number],
   impact: CapabilityMutationImpact,
 ): boolean {
+  if (impact.kind === 'plugins') return true;
   const policy =
     impact.kind === 'skills'
       ? profile.runtime_policy.skills
@@ -54,8 +61,9 @@ function profileUsesCapability(
   if (impact.kind === 'skills') {
     return policy.ids.some((id) => ids.has(id));
   }
+  const mcpScope = impact.scope;
   return policy.ids.some((reference) => {
-    if (impact.scope === 'system') {
+    if (mcpScope === 'system') {
       return reference.startsWith('system:') && ids.has(reference.slice(7));
     }
     // Bare MCP ids are legacy user-scope references.
@@ -68,6 +76,22 @@ function profileUsesCapability(
 export function listCapabilityMutationRuntimeTargets(
   impact: CapabilityMutationImpact,
 ): WorkspaceRuntimeQuiesceTarget[] {
+  if (impact.kind === 'plugins') {
+    const byFolder = new Map<string, WorkspaceRuntimeQuiesceTarget>();
+    for (const [jid, group] of Object.entries(getAllRegisteredGroups())) {
+      if (
+        group.created_by === impact.ownerUserId &&
+        !byFolder.has(group.folder)
+      ) {
+        byFolder.set(group.folder, {
+          folder: group.folder,
+          primaryJid: jid,
+        });
+      }
+    }
+    return Array.from(byFolder.values());
+  }
+
   const ownerIds =
     impact.kind === 'mcp' && impact.scope === 'system'
       ? getAllUsers()

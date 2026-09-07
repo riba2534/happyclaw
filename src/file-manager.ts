@@ -1,6 +1,6 @@
 import path from 'path';
 import fs from 'fs';
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { DATA_DIR, GROUPS_DIR, MAX_FILE_SIZE } from './config.js';
 import { deleteContainerEnvConfig } from './runtime-config.js';
@@ -212,6 +212,372 @@ export function safeCreateWorkspaceDirectory(
     root: fs.realpathSync(getFileRoot(folder, rootOverride)),
     path: relativePath,
   });
+}
+
+export interface SafeWorkspaceReadResult {
+  size: number;
+  mtimeMs: number;
+  isRangeRequest: boolean;
+  rangeSatisfiable?: boolean;
+  start?: number;
+  end?: number;
+  contentLength: number;
+  stream: ReadableStream<Uint8Array>;
+  destroy: () => void;
+  processPid?: number;
+}
+
+export async function safeOpenWorkspaceReadStream(
+  folder: string,
+  relativePath: string,
+  options?: {
+    rootOverride?: string;
+    rangeHeader?: string;
+    maxBytes?: number;
+  },
+): Promise<SafeWorkspaceReadResult> {
+  const rootPath = getFileRoot(folder, options?.rootOverride);
+  if (!fs.existsSync(rootPath)) {
+    throw new Error('File not found');
+  }
+  const root = fs.realpathSync(rootPath);
+
+  if (process.platform === 'win32') {
+    // Windows does not expose POSIX openat(dir_fd) in standard runtime;
+    // fail closed rather than providing a false sense of security with TOCTOU.
+    throw new Error(
+      'Descriptor-relative safe file open is unsupported on Windows; rejecting to prevent TOCTOU',
+    );
+  }
+
+  const python =
+    process.env.HAPPYCLAW_PYTHON3?.trim() ||
+    process.env.PYTHON3?.trim() ||
+    'python3';
+
+  const request = {
+    operation: 'read_file',
+    root,
+    path: relativePath,
+    rangeHeader: options?.rangeHeader,
+    maxBytes: options?.maxBytes,
+  };
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(python, [SAFE_WORKSPACE_FS_HELPER], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let stderrBuffer = '';
+    child.stderr.on('data', (chunk) => {
+      stderrBuffer += chunk.toString();
+    });
+
+    child.stdin.on('error', () => {
+      // 避免子进程快速退出引发未捕获的 EPIPE
+    });
+
+    let settled = false;
+    let accumulated = Buffer.alloc(0);
+
+    const onHeaderFailure = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      try {
+        child.kill('SIGTERM');
+      } catch {}
+      reject(err);
+    };
+
+    child.on('error', (err) => {
+      onHeaderFailure(
+        new Error(`Failed to launch safe read helper: ${err.message}`),
+      );
+    });
+
+    child.on('close', () => {
+      if (!settled) {
+        let errorMsg = 'Safe read helper exited before header';
+        try {
+          const parsed = JSON.parse(accumulated.toString('utf-8'));
+          if (parsed && parsed.error) errorMsg = parsed.error;
+        } catch {
+          if (stderrBuffer.trim()) errorMsg = stderrBuffer.trim();
+        }
+        onHeaderFailure(new Error(errorMsg));
+      }
+    });
+
+    child.stdout.pause();
+
+    const onReadable = () => {
+      if (!settled) {
+        let chunk: Buffer | null;
+        while ((chunk = child.stdout.read(1024)) !== null) {
+          accumulated = Buffer.concat([accumulated, chunk]);
+          const newlineIndex = accumulated.indexOf(0x0a);
+          if (newlineIndex !== -1) {
+            child.stdout.removeListener('readable', onReadable);
+            const headerRaw = accumulated
+              .subarray(0, newlineIndex)
+              .toString('utf-8');
+            const remainder = accumulated.subarray(newlineIndex + 1);
+
+            let header: any;
+            try {
+              header = JSON.parse(headerRaw);
+            } catch {
+              onHeaderFailure(
+                new Error(`Invalid header from safe read helper: ${headerRaw}`),
+              );
+              return;
+            }
+
+            if (!header.ok) {
+              onHeaderFailure(new Error(header.error || 'Safe read failed'));
+              return;
+            }
+
+            settled = true;
+
+            let isDestroyed = false;
+            const destroy = () => {
+              if (!isDestroyed) {
+                isDestroyed = true;
+                child.stdout.removeAllListeners();
+                try {
+                  child.stdin.destroy();
+                } catch {}
+                try {
+                  child.kill('SIGTERM');
+                } catch {}
+                setTimeout(() => {
+                  try {
+                    if (child.exitCode === null && child.signalCode === null) {
+                      child.kill('SIGKILL');
+                    }
+                  } catch {}
+                }, 50).unref?.();
+              }
+            };
+
+            if (header.isRangeRequest && header.rangeSatisfiable === false) {
+              destroy();
+              resolve({
+                size: header.size,
+                mtimeMs: header.mtimeMs,
+                isRangeRequest: true,
+                rangeSatisfiable: false,
+                contentLength: 0,
+                stream: new ReadableStream<Uint8Array>({
+                  start(controller) {
+                    controller.close();
+                  },
+                }),
+                destroy,
+                processPid: child.pid,
+              });
+              return;
+            }
+
+            let childExited = false;
+            let childExitCode: number | null = null;
+            let childSignal: NodeJS.Signals | null = null;
+            let childError: Error | null = null;
+
+            let receivedBytes = 0;
+            const leftoverQueue: Buffer[] = [];
+            if (remainder.length > 0) {
+              leftoverQueue.push(remainder);
+            }
+
+            let pendingPull: {
+              controller: ReadableStreamDefaultController<Uint8Array>;
+              resolve: () => void;
+              reject: (err: any) => void;
+            } | null = null;
+
+            function tryFulfillPull(): void {
+              if (!pendingPull) return;
+              const { controller, resolve: pResolve } = pendingPull;
+
+              if (childError) {
+                pendingPull = null;
+                destroy();
+                controller.error(childError);
+                pResolve();
+                return;
+              }
+
+              if (leftoverQueue.length > 0) {
+                const chunk = leftoverQueue.shift()!;
+                receivedBytes += chunk.length;
+                controller.enqueue(
+                  new Uint8Array(
+                    chunk.buffer,
+                    chunk.byteOffset,
+                    chunk.byteLength,
+                  ),
+                );
+                pendingPull = null;
+                pResolve();
+                return;
+              }
+
+              // 无参 read() 读取当前缓冲区所有可用字节，不强制 64KB，彻底解决小尾部挂死
+              const chunk = child.stdout.read() as Buffer | null;
+              if (chunk && chunk.length > 0) {
+                receivedBytes += chunk.length;
+                controller.enqueue(
+                  new Uint8Array(
+                    chunk.buffer,
+                    chunk.byteOffset,
+                    chunk.byteLength,
+                  ),
+                );
+                pendingPull = null;
+                pResolve();
+                return;
+              }
+
+              if (childExited || child.stdout.readableEnded) {
+                pendingPull = null;
+                destroy();
+
+                if (
+                  childExitCode !== 0 &&
+                  childExitCode !== null &&
+                  childSignal !== 'SIGTERM'
+                ) {
+                  controller.error(
+                    new Error(
+                      `Safe read helper exited unexpectedly with code ${childExitCode}${
+                        stderrBuffer.trim() ? `: ${stderrBuffer.trim()}` : ''
+                      }`,
+                    ),
+                  );
+                  pResolve();
+                  return;
+                }
+
+                if (receivedBytes < header.contentLength) {
+                  controller.error(
+                    new Error(
+                      `Truncated stream: received ${receivedBytes} of ${header.contentLength} bytes`,
+                    ),
+                  );
+                  pResolve();
+                  return;
+                }
+
+                try {
+                  controller.close();
+                } catch {}
+                pResolve();
+                return;
+              }
+            }
+
+            child.stdout.on('readable', tryFulfillPull);
+            child.stdout.on('end', () => {
+              tryFulfillPull();
+            });
+            child.on('close', (code, signal) => {
+              childExited = true;
+              childExitCode = code;
+              childSignal = signal;
+              tryFulfillPull();
+            });
+            child.on('error', (err) => {
+              childError = err;
+              tryFulfillPull();
+            });
+
+            const boundedStream = new ReadableStream<Uint8Array>(
+              {
+                pull(controller) {
+                  return new Promise<void>((pullResolve, pullReject) => {
+                    pendingPull = {
+                      controller,
+                      resolve: pullResolve,
+                      reject: pullReject,
+                    };
+                    tryFulfillPull();
+                  });
+                },
+                cancel(reason) {
+                  destroy();
+                  if (pendingPull) {
+                    pendingPull.resolve();
+                    pendingPull = null;
+                  }
+                  return Promise.resolve();
+                },
+              },
+              new ByteLengthQueuingStrategy({ highWaterMark: 64 * 1024 }),
+            );
+
+            resolve({
+              size: header.size,
+              mtimeMs: header.mtimeMs,
+              isRangeRequest: !!header.isRangeRequest,
+              rangeSatisfiable: true,
+              start: header.start,
+              end: header.end,
+              contentLength: header.contentLength,
+              stream: boundedStream,
+              destroy,
+              processPid: child.pid,
+            });
+            return;
+          }
+        }
+      }
+    };
+
+    child.stdout.on('readable', onReadable);
+
+    child.stdin.end(JSON.stringify(request));
+  });
+}
+
+export async function safeReadWorkspaceFileText(
+  folder: string,
+  relativePath: string,
+  rootOverride?: string,
+  maxBytes: number = 10 * 1024 * 1024,
+): Promise<{ content: string; size: number }> {
+  const result = await safeOpenWorkspaceReadStream(folder, relativePath, {
+    rootOverride,
+    maxBytes,
+  });
+  const reader = result.stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalReadBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        chunks.push(value);
+        totalReadBytes += value.byteLength;
+      }
+    }
+  } finally {
+    result.destroy();
+  }
+
+  if (totalReadBytes < result.contentLength) {
+    throw new Error(
+      `File read truncated: expected ${result.contentLength} bytes, received ${totalReadBytes}`,
+    );
+  }
+
+  const totalBuf = Buffer.concat(chunks);
+  return {
+    content: totalBuf.toString('utf-8'),
+    size: result.size,
+  };
 }
 
 /**

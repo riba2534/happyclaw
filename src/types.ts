@@ -830,7 +830,13 @@ export type AuthEventType =
   | 'recovery_reset'
   | 'register_success'
   | 'system_settings_updated'
-  | 'host_integration_updated';
+  | 'host_integration_updated'
+  | 'plugin_state_changed'
+  | 'plugin_deactivated_immediately'
+  | 'plugin_shared'
+  | 'mcp_shared'
+  | 'mcp_credential_updated'
+  | 'skill_shared';
 
 export interface AuthAuditLog {
   id: number;

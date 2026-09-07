@@ -18,10 +18,20 @@ import {
   readUserPluginsV2,
   writeUserPluginsV2,
   parsePluginFullId,
+  getUserPluginSecretKeys,
+  setUserPluginSecret,
   type UserPluginsV2,
 } from '../plugin-utils.js';
 import { checkPluginDependencies } from '../plugin-dependency-check.js';
-import { getUserHomeGroup } from '../db.js';
+import { getUserHomeGroup, recordAuthAuditLog } from '../db.js';
+import {
+  mutateCapabilityAroundRuntimeQuiesce,
+  type CapabilityMutationImpact,
+} from '../capability-runtime-mutation.js';
+import {
+  userCapabilityLockKey,
+  withCapabilityScopeLocks,
+} from '../capability-lock.js';
 import { scanHostMarketplaces, isScanInFlight } from '../plugin-importer.js';
 import {
   readCatalogIndex,
@@ -220,10 +230,6 @@ pluginsRoutes.get('/', authMiddleware, async (c) => {
 // Read-modify-write the v2 plugins.json (mcp pattern), then trigger
 // materialize so the runtime tree exists before the next agent spawn.
 // Body: { enabled: boolean, snapshot?: string }
-//
-// snapshot omitted → take catalog's activeSnapshot for the plugin. Snapshot
-// must already exist in the catalog (importer must have imported it once);
-// otherwise we 404 rather than write a dangling reference.
 pluginsRoutes.patch('/enabled/:pluginFullId', authMiddleware, async (c) => {
   const authUser = c.get('user') as AuthUser;
   const fullId = c.req.param('pluginFullId');
@@ -255,106 +261,560 @@ pluginsRoutes.patch('/enabled/:pluginFullId', authMiddleware, async (c) => {
     return c.json({ error: 'Invalid `snapshot` id' }, 400);
   }
 
-  const v2 =
-    readUserPluginsV2(authUser.id) ??
-    ({ schemaVersion: 1, enabled: {} } as UserPluginsV2);
+  return withCapabilityScopeLocks(
+    [userCapabilityLockKey(authUser.id)],
+    async () => {
+      const v2 =
+        readUserPluginsV2(authUser.id) ??
+        ({ schemaVersion: 1, enabled: {} } as UserPluginsV2);
 
-  if (enabled) {
-    const catalog = readCatalogIndex();
-    const catalogEntry = catalog.plugins[fullId];
-    if (!catalogEntry) {
-      return c.json(
-        {
-          error: `Plugin "${fullId}" not in catalog; run a host scan first`,
-        },
-        404,
-      );
-    }
-    const snapshotId = explicitSnapshot ?? catalogEntry.activeSnapshot;
-    if (!snapshotId || !catalogEntry.snapshots[snapshotId]) {
-      return c.json(
-        {
-          error: `Snapshot "${snapshotId}" not found in catalog for ${fullId}`,
-        },
-        404,
-      );
-    }
-    v2.enabled[fullId] = {
-      enabled: true,
-      marketplace: parsed.marketplaceName,
-      plugin: parsed.pluginName,
-      snapshot: snapshotId,
-      enabledAt: new Date().toISOString(),
-    };
-    writeUserPluginsV2(authUser.id, v2);
+      if (enabled) {
+        const catalog = readCatalogIndex();
+        const catalogEntry = catalog.plugins[fullId];
+        if (!catalogEntry) {
+          return c.json(
+            {
+              error: `Plugin "${fullId}" not in catalog; run a host scan first`,
+            },
+            404,
+          );
+        }
+        const snapshotId = explicitSnapshot ?? catalogEntry.activeSnapshot;
+        if (!snapshotId || !catalogEntry.snapshots[snapshotId]) {
+          return c.json(
+            {
+              error: `Snapshot "${snapshotId}" not found in catalog for ${fullId}`,
+            },
+            404,
+          );
+        }
+        v2.enabled[fullId] = {
+          enabled: true,
+          marketplace: parsed.marketplaceName,
+          plugin: parsed.pluginName,
+          snapshot: snapshotId,
+          enabledAt: new Date().toISOString(),
+        };
+        writeUserPluginsV2(authUser.id, v2);
 
-    // Invalidate AFTER materialize so a concurrent GET /commands cannot
-    // pin an empty index built between writeUserPluginsV2 and the runtime
-    // tree being created (codex review #8).
-    let materializeWarnings: string[] = [];
-    try {
-      const report = materializeUserRuntime(authUser.id);
-      materializeWarnings = report.warnings;
-    } catch (err) {
-      materializeWarnings = [err instanceof Error ? err.message : String(err)];
-    }
-    invalidateUserCommandIndex(authUser.id);
+        let materializeWarnings: string[] = [];
+        try {
+          const report = materializeUserRuntime(authUser.id);
+          materializeWarnings = report.warnings;
+        } catch (err) {
+          materializeWarnings = [
+            err instanceof Error ? err.message : String(err),
+          ];
+        }
+        invalidateUserCommandIndex(authUser.id);
 
-    return c.json({
-      success: true,
-      fullId,
-      enabled,
-      snapshot: snapshotId,
-      materializeWarnings,
-    });
-  }
+        try {
+          recordAuthAuditLog({
+            event_type: 'plugin_state_changed',
+            username: authUser.username,
+            actor_username: authUser.username,
+            ip_address: c.req.header('x-forwarded-for') || null,
+            user_agent: c.req.header('user-agent') || null,
+            details: {
+              action: 'enable',
+              targetId: fullId,
+              scope: `user:${authUser.id}`,
+              snapshotId,
+              runtimeResult: { success: true },
+            },
+          });
+        } catch (auditErr) {
+          logger.warn(
+            { err: auditErr },
+            'Failed to record plugin enable audit log',
+          );
+        }
 
-  // Disable: drop the entry rather than leaving it as `enabled: false` so the
-  // mapping stays small + the materializer/cleanup don't reason about
-  // tombstones.
-  delete v2.enabled[fullId];
-  writeUserPluginsV2(authUser.id, v2);
+        return c.json({
+          success: true,
+          fullId,
+          enabled,
+          snapshot: snapshotId,
+          materializeWarnings,
+        });
+      }
 
-  // Invalidate AFTER materialize for the same race-window reason as enable.
-  let materializeWarnings: string[] = [];
-  try {
-    const report = materializeUserRuntime(authUser.id);
-    materializeWarnings = report.warnings;
-  } catch (err) {
-    materializeWarnings = [err instanceof Error ? err.message : String(err)];
-  }
-  invalidateUserCommandIndex(authUser.id);
+      // Disable: drop the entry rather than leaving it as `enabled: false`
+      delete v2.enabled[fullId];
+      writeUserPluginsV2(authUser.id, v2);
 
-  return c.json({
-    success: true,
-    fullId,
-    enabled,
-    materializeWarnings,
-  });
+      let materializeWarnings: string[] = [];
+      try {
+        const report = materializeUserRuntime(authUser.id);
+        materializeWarnings = report.warnings;
+      } catch (err) {
+        materializeWarnings = [
+          err instanceof Error ? err.message : String(err),
+        ];
+      }
+      invalidateUserCommandIndex(authUser.id);
+
+      try {
+        recordAuthAuditLog({
+          event_type: 'plugin_state_changed',
+          username: authUser.username,
+          actor_username: authUser.username,
+          ip_address: c.req.header('x-forwarded-for') || null,
+          user_agent: c.req.header('user-agent') || null,
+          details: {
+            action: 'disable',
+            targetId: fullId,
+            scope: `user:${authUser.id}`,
+            runtimeResult: { success: true },
+          },
+        });
+      } catch (auditErr) {
+        logger.warn(
+          { err: auditErr },
+          'Failed to record plugin disable audit log',
+        );
+      }
+
+      return c.json({
+        success: true,
+        fullId,
+        enabled,
+        materializeWarnings,
+      });
+    },
+  );
 });
 
-// POST /materialize — full re-materialize for the current user. Manual
-// recovery path for the UI when the runtime tree is suspected drifted (rare,
-// but cheap because materialize is idempotent on no-op).
+// POST /deactivate-immediately/:pluginFullId — 立即停用并重启受影响会话
+//
+// 复用 capability-runtime-mutation 领域能力治理：
+// 1. withCapabilityScopeLocks 用户能力锁串行化
+// 2. repairCapabilityRuntimeSafetyBlock 修复历史残留 safety block
+// 3. mutateCapabilityAroundRuntimeQuiesce 原子 pause -> forceStop -> commit -> post-stop quiesce
+// 4. 支持重试：即使 v2 已删除但运行时残留或 block，重试路径仍能幂等推进并解除安全门禁
+pluginsRoutes.post(
+  '/deactivate-immediately/:pluginFullId',
+  authMiddleware,
+  async (c) => {
+    const authUser = c.get('user') as AuthUser;
+    const fullId = c.req.param('pluginFullId');
+    const parsed = parsePluginFullId(fullId);
+    if (!parsed) {
+      return c.json(
+        { error: 'Invalid plugin id; expected "<plugin>@<marketplace>"' },
+        400,
+      );
+    }
+    if (
+      !validateNameSegment(parsed.pluginName) ||
+      !validateNameSegment(parsed.marketplaceName)
+    ) {
+      return c.json({ error: 'Invalid plugin or marketplace name' }, 400);
+    }
+
+    return withCapabilityScopeLocks(
+      [userCapabilityLockKey(authUser.id)],
+      async () => {
+        const impact: CapabilityMutationImpact = {
+          kind: 'plugins',
+          ownerUserId: authUser.id,
+          pluginFullId: fullId,
+        };
+
+        const v2 =
+          readUserPluginsV2(authUser.id) ??
+          ({ schemaVersion: 1, enabled: {} } as UserPluginsV2);
+        const existingRef = v2.enabled[fullId];
+        const snapshotId = existingRef?.snapshot;
+
+        // 如果未启用且此前无该插件记录，且没有 safety block，属于正常未启用状态
+        if (!existingRef) {
+          // 允许幂等执行运行时停用以防遗漏 runner
+        }
+
+        let materializeWarnings: string[] = [];
+
+        const performCommit = () => {
+          if (v2.enabled[fullId]) {
+            delete v2.enabled[fullId];
+            writeUserPluginsV2(authUser.id, v2);
+          }
+
+          const report = materializeUserRuntime(authUser.id, { force: true });
+          materializeWarnings = report.warnings;
+          invalidateUserCommandIndex(authUser.id);
+          return materializeWarnings;
+        };
+
+        let invalidatedRuntimeJids = 0;
+        try {
+          const result = await mutateCapabilityAroundRuntimeQuiesce(
+            impact,
+            `Immediate deactivation of plugin ${fullId} for user ${authUser.id}`,
+            performCommit,
+          );
+          invalidatedRuntimeJids = result.invalidatedRuntimeJids;
+        } catch (err) {
+          logger.error(
+            { err, userId: authUser.id, fullId },
+            'Failed during immediate plugin deactivation mutation',
+          );
+
+          try {
+            recordAuthAuditLog({
+              event_type: 'plugin_deactivated_immediately',
+              username: authUser.username,
+              actor_username: authUser.username,
+              ip_address: c.req.header('x-forwarded-for') || null,
+              user_agent: c.req.header('user-agent') || null,
+              details: {
+                action: 'deactivate_immediately',
+                targetId: fullId,
+                scope: `user:${authUser.id}`,
+                snapshotId,
+                runtimeResult: {
+                  success: false,
+                  error: err instanceof Error ? err.message : String(err),
+                },
+              },
+            });
+          } catch {}
+
+          return c.json(
+            {
+              error: `Immediate deactivation failed: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+              fullId,
+            },
+            503,
+          );
+        }
+
+        // 成功审计记录
+        try {
+          recordAuthAuditLog({
+            event_type: 'plugin_deactivated_immediately',
+            username: authUser.username,
+            actor_username: authUser.username,
+            ip_address: c.req.header('x-forwarded-for') || null,
+            user_agent: c.req.header('user-agent') || null,
+            details: {
+              action: 'deactivate_immediately',
+              targetId: fullId,
+              scope: `user:${authUser.id}`,
+              snapshotId,
+              stoppedSessions: invalidatedRuntimeJids,
+              runtimeResult: {
+                success: true,
+                invalidatedRuntimeJids,
+              },
+            },
+          });
+        } catch (auditErr) {
+          logger.warn(
+            { err: auditErr },
+            'Failed to record audit log for immediate plugin deactivation',
+          );
+        }
+
+        return c.json({
+          success: true,
+          fullId,
+          stoppedSessionsCount: invalidatedRuntimeJids,
+          materializeWarnings,
+        });
+      },
+    );
+  },
+);
+
+// --- User Secret Management Routes ---
+
+// GET /secrets — 获取当前用户已配置的插件 Secret 键名列表（脱敏，严禁返回明文凭据值）
+pluginsRoutes.get('/secrets', authMiddleware, async (c) => {
+  const authUser = c.get('user') as AuthUser;
+  const keys = getUserPluginSecretKeys(authUser.id);
+  return c.json({ keys });
+});
+
+// PUT /secrets/:key — 配置/更新当前用户的某个 Secret
+pluginsRoutes.put('/secrets/:key', authMiddleware, async (c) => {
+  const authUser = c.get('user') as AuthUser;
+  const key = c.req.param('key');
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(key)) {
+    return c.json({ error: 'Invalid secret key format' }, 400);
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  const value = (body as { value?: unknown }).value;
+  if (typeof value !== 'string') {
+    return c.json({ error: 'value must be a string' }, 400);
+  }
+  if (value.length > 4096) {
+    return c.json({ error: 'value exceeds maximum length (4096)' }, 400);
+  }
+
+  return withCapabilityScopeLocks(
+    [userCapabilityLockKey(authUser.id)],
+    async () => {
+      const impact: CapabilityMutationImpact = {
+        kind: 'plugins',
+        ownerUserId: authUser.id,
+      };
+
+      let invalidatedRuntimeJids = 0;
+      try {
+        const mutationResult = await mutateCapabilityAroundRuntimeQuiesce(
+          impact,
+          `Plugin secret ${key} updated for user ${authUser.id}`,
+          async () => {
+            setUserPluginSecret(authUser.id, key, value);
+            const report = materializeUserRuntime(authUser.id, { force: true });
+            invalidateUserCommandIndex(authUser.id);
+            return report;
+          },
+        );
+        invalidatedRuntimeJids = mutationResult.invalidatedRuntimeJids;
+      } catch (err) {
+        logger.error(
+          { err, userId: authUser.id, key },
+          'Failed to update plugin secret with quiesce',
+        );
+        try {
+          recordAuthAuditLog({
+            event_type: 'mcp_credential_updated',
+            username: authUser.username,
+            actor_username: authUser.username,
+            ip_address: c.req.header('x-forwarded-for') || null,
+            user_agent: c.req.header('user-agent') || null,
+            details: {
+              action: 'set_user_plugin_secret',
+              targetId: key,
+              scope: `user:${authUser.id}`,
+              sanitizedChanges: { key },
+              runtimeResult: {
+                success: false,
+                error: err instanceof Error ? err.message : String(err),
+              },
+            },
+          });
+        } catch {}
+
+        return c.json(
+          {
+            error: `Failed to update plugin secret: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          },
+          503,
+        );
+      }
+
+      try {
+        recordAuthAuditLog({
+          event_type: 'mcp_credential_updated',
+          username: authUser.username,
+          actor_username: authUser.username,
+          ip_address: c.req.header('x-forwarded-for') || null,
+          user_agent: c.req.header('user-agent') || null,
+          details: {
+            action: 'set_user_plugin_secret',
+            targetId: key,
+            scope: `user:${authUser.id}`,
+            sanitizedChanges: { key },
+            runtimeResult: {
+              success: true,
+              invalidatedRuntimeJids,
+            },
+          },
+        });
+      } catch {}
+
+      return c.json({
+        success: true,
+        key,
+        invalidated_runtime_jids: invalidatedRuntimeJids,
+      });
+    },
+  );
+});
+
+// DELETE /secrets/:key — 撤回当前用户的某个 Secret
+pluginsRoutes.delete('/secrets/:key', authMiddleware, async (c) => {
+  const authUser = c.get('user') as AuthUser;
+  const key = c.req.param('key');
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(key)) {
+    return c.json({ error: 'Invalid secret key format' }, 400);
+  }
+
+  return withCapabilityScopeLocks(
+    [userCapabilityLockKey(authUser.id)],
+    async () => {
+      const impact: CapabilityMutationImpact = {
+        kind: 'plugins',
+        ownerUserId: authUser.id,
+      };
+
+      let invalidatedRuntimeJids = 0;
+      try {
+        const mutationResult = await mutateCapabilityAroundRuntimeQuiesce(
+          impact,
+          `Plugin secret ${key} revoked for user ${authUser.id}`,
+          async () => {
+            setUserPluginSecret(authUser.id, key, undefined);
+            const report = materializeUserRuntime(authUser.id, { force: true });
+            invalidateUserCommandIndex(authUser.id);
+            return report;
+          },
+        );
+        invalidatedRuntimeJids = mutationResult.invalidatedRuntimeJids;
+      } catch (err) {
+        logger.error(
+          { err, userId: authUser.id, key },
+          'Failed to revoke plugin secret with quiesce',
+        );
+        try {
+          recordAuthAuditLog({
+            event_type: 'mcp_credential_updated',
+            username: authUser.username,
+            actor_username: authUser.username,
+            ip_address: c.req.header('x-forwarded-for') || null,
+            user_agent: c.req.header('user-agent') || null,
+            details: {
+              action: 'revoke_user_plugin_secret',
+              targetId: key,
+              scope: `user:${authUser.id}`,
+              sanitizedChanges: { key },
+              runtimeResult: {
+                success: false,
+                error: err instanceof Error ? err.message : String(err),
+              },
+            },
+          });
+        } catch {}
+
+        return c.json(
+          {
+            error: `Failed to revoke plugin secret: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          },
+          503,
+        );
+      }
+
+      try {
+        recordAuthAuditLog({
+          event_type: 'mcp_credential_updated',
+          username: authUser.username,
+          actor_username: authUser.username,
+          ip_address: c.req.header('x-forwarded-for') || null,
+          user_agent: c.req.header('user-agent') || null,
+          details: {
+            action: 'revoke_user_plugin_secret',
+            targetId: key,
+            scope: `user:${authUser.id}`,
+            sanitizedChanges: { key },
+            runtimeResult: {
+              success: true,
+              invalidatedRuntimeJids,
+            },
+          },
+        });
+      } catch {}
+
+      return c.json({
+        success: true,
+        key,
+        invalidated_runtime_jids: invalidatedRuntimeJids,
+      });
+    },
+  );
+});
+
+// POST /materialize — full re-materialize for the current user.
 pluginsRoutes.post('/materialize', authMiddleware, async (c) => {
   const authUser = c.get('user') as AuthUser;
-  try {
-    const report = materializeUserRuntime(authUser.id);
-    // The command index can hold an empty result cached from a build that ran
-    // while the runtime tree was missing (first enable before materialize, or
-    // post-GC). Drop it so the next /commands fetch re-reads the freshly
-    // materialized tree. Mirrors PATCH /enabled and DELETE /marketplaces.
-    invalidateUserCommandIndex(authUser.id);
-    return c.json({ success: true, report });
-  } catch (err) {
-    return c.json(
-      {
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-      },
-      500,
-    );
-  }
+  return withCapabilityScopeLocks(
+    [userCapabilityLockKey(authUser.id)],
+    async () => {
+      const impact: CapabilityMutationImpact = {
+        kind: 'plugins',
+        ownerUserId: authUser.id,
+      };
+
+      let invalidatedRuntimeJids = 0;
+      let report: any;
+      try {
+        const mutationResult = await mutateCapabilityAroundRuntimeQuiesce(
+          impact,
+          `Manual materialize for user ${authUser.id}`,
+          async () => {
+            const rep = materializeUserRuntime(authUser.id, { force: true });
+            invalidateUserCommandIndex(authUser.id);
+            return rep;
+          },
+        );
+        invalidatedRuntimeJids = mutationResult.invalidatedRuntimeJids;
+        report = mutationResult.value;
+      } catch (err) {
+        logger.error(
+          { err, userId: authUser.id },
+          'Manual materialize failed during quiesce',
+        );
+        try {
+          recordAuthAuditLog({
+            event_type: 'plugin_state_changed',
+            username: authUser.username,
+            actor_username: authUser.username,
+            ip_address: c.req.header('x-forwarded-for') || null,
+            user_agent: c.req.header('user-agent') || null,
+            details: {
+              action: 'manual_materialize',
+              scope: `user:${authUser.id}`,
+              runtimeResult: {
+                success: false,
+                error: err instanceof Error ? err.message : String(err),
+              },
+            },
+          });
+        } catch {}
+
+        return c.json(
+          {
+            success: false,
+            error: err instanceof Error ? err.message : String(err),
+          },
+          503,
+        );
+      }
+
+      try {
+        recordAuthAuditLog({
+          event_type: 'plugin_state_changed',
+          username: authUser.username,
+          actor_username: authUser.username,
+          ip_address: c.req.header('x-forwarded-for') || null,
+          user_agent: c.req.header('user-agent') || null,
+          details: {
+            action: 'manual_materialize',
+            scope: `user:${authUser.id}`,
+            runtimeResult: {
+              success: true,
+              invalidatedRuntimeJids,
+            },
+          },
+        });
+      } catch {}
+
+      return c.json({
+        success: true,
+        report,
+        invalidated_runtime_jids: invalidatedRuntimeJids,
+      });
+    },
+  );
 });
 
 /**
@@ -362,11 +822,7 @@ pluginsRoutes.post('/materialize', authMiddleware, async (c) => {
  *
  * @semantics per-caller only, never touches the immutable catalog.
  * Cascade-clears `enabled.*@{name}` from the caller's v2 plugins.json
- * and re-materializes their runtime so orphan trees can be GC'd.
- *
- * NOTE: This is NOT a catalog deletion. The shared catalog (admin-imported,
- * content-hash-addressed) is intentionally untouched — other users with
- * `enabled.*@{name}` refs continue to see and use the marketplace.
+ * under the user capability lock, and quiesces live runners.
  */
 pluginsRoutes.delete('/marketplaces/:name', authMiddleware, async (c) => {
   const authUser = c.get('user') as AuthUser;
@@ -375,27 +831,98 @@ pluginsRoutes.delete('/marketplaces/:name', authMiddleware, async (c) => {
     return c.json({ error: 'Invalid marketplace name' }, 400);
   }
 
-  const v2 = readUserPluginsV2(authUser.id);
-  const removedEnabled: string[] = [];
-  if (v2) {
-    for (const [id, ref] of Object.entries(v2.enabled)) {
-      if (ref.marketplace === name) {
-        removedEnabled.push(id);
-        delete v2.enabled[id];
+  return withCapabilityScopeLocks(
+    [userCapabilityLockKey(authUser.id)],
+    async () => {
+      const v2 = readUserPluginsV2(authUser.id);
+      const removedEnabled: string[] = [];
+      if (v2) {
+        for (const [id, ref] of Object.entries(v2.enabled)) {
+          if (ref.marketplace === name) {
+            removedEnabled.push(id);
+            delete v2.enabled[id];
+          }
+        }
       }
-    }
-    if (removedEnabled.length > 0) {
-      writeUserPluginsV2(authUser.id, v2);
-      // Invalidate AFTER materialize for the same race-window reason as
-      // PATCH /enabled (codex review #8): a concurrent GET /commands
-      // could otherwise pin an empty index between writeUserPluginsV2
-      // and the cascade materialize completing.
+
+      const impact: CapabilityMutationImpact = {
+        kind: 'plugins',
+        ownerUserId: authUser.id,
+      };
+
+      let invalidatedRuntimeJids = 0;
       try {
-        materializeUserRuntime(authUser.id);
-      } catch {
-        // best-effort; user can hit POST /materialize manually
+        const mutationResult = await mutateCapabilityAroundRuntimeQuiesce(
+          impact,
+          `Marketplace ${name} unenabled for user ${authUser.id}`,
+          async () => {
+            if (v2 && removedEnabled.length > 0) {
+              writeUserPluginsV2(authUser.id, v2);
+            }
+            const report = materializeUserRuntime(authUser.id, {
+              force: true,
+            });
+            invalidateUserCommandIndex(authUser.id);
+            return report;
+          },
+        );
+        invalidatedRuntimeJids = mutationResult.invalidatedRuntimeJids;
+      } catch (err) {
+        logger.error(
+          { err, userId: authUser.id, marketplace: name },
+          'Failed during cascade marketplace unenable quiesce',
+        );
+
+        try {
+          recordAuthAuditLog({
+            event_type: 'plugin_state_changed',
+            username: authUser.username,
+            actor_username: authUser.username,
+            ip_address: c.req.header('x-forwarded-for') || null,
+            user_agent: c.req.header('user-agent') || null,
+            details: {
+              action: 'cascade_disable',
+              marketplace: name,
+              removedEnabled,
+              scope: `user:${authUser.id}`,
+              runtimeResult: {
+                success: false,
+                error: err instanceof Error ? err.message : String(err),
+              },
+            },
+          });
+        } catch {}
+
+        return c.json(
+          {
+            error: `Cascade disable failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          },
+          503,
+        );
       }
-      invalidateUserCommandIndex(authUser.id);
+
+      try {
+        recordAuthAuditLog({
+          event_type: 'plugin_state_changed',
+          username: authUser.username,
+          actor_username: authUser.username,
+          ip_address: c.req.header('x-forwarded-for') || null,
+          user_agent: c.req.header('user-agent') || null,
+          details: {
+            action: 'cascade_disable',
+            marketplace: name,
+            removedEnabled,
+            scope: `user:${authUser.id}`,
+            runtimeResult: {
+              success: true,
+              invalidatedRuntimeJids,
+            },
+          },
+        });
+      } catch {}
+
       logger.info(
         {
           event: 'plugin_marketplace_unenabled',
@@ -405,14 +932,15 @@ pluginsRoutes.delete('/marketplaces/:name', authMiddleware, async (c) => {
         },
         'plugin marketplace dropped from caller refs (catalog NOT touched)',
       );
-    }
-  }
 
-  return c.json({
-    success: true,
-    marketplace: name,
-    removedEnabled,
-  });
+      return c.json({
+        success: true,
+        marketplace: name,
+        removedEnabled,
+        invalidated_runtime_jids: invalidatedRuntimeJids,
+      });
+    },
+  );
 });
 
 // GET /commands — list slash commands contributed by the user's enabled

@@ -10,7 +10,7 @@ import type { Variables } from '../web-context.js';
 import type { AuthUser } from '../types.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { DATA_DIR } from '../config.js';
-import { listAgentProfilesForUser } from '../db.js';
+import { listAgentProfilesForUser, recordAuthAuditLog } from '../db.js';
 import {
   userCapabilityLockKey,
   withCapabilityScopeLocks,
@@ -963,6 +963,26 @@ skillsRoutes.patch('/:id', authMiddleware, async (c) => {
         `Skill ${id} ${enabled ? 'enabled' : 'disabled'}`,
         () => fs.renameSync(srcPath, dstPath),
       );
+
+      try {
+        recordAuthAuditLog({
+          event_type: 'skill_shared',
+          username: authUser.username,
+          actor_username: authUser.username,
+          ip_address: c.req.header('x-forwarded-for') || null,
+          user_agent: c.req.header('user-agent') || null,
+          details: {
+            targetId: id,
+            action: enabled ? 'enable' : 'disable',
+            scope: `user:${authUser.id}`,
+            runtimeResult: {
+              success: true,
+              invalidatedJids: result.invalidatedRuntimeJids,
+            },
+          },
+        });
+      } catch {}
+
       return c.json({
         success: true,
         invalidated_runtime_jids: result.invalidatedRuntimeJids,
