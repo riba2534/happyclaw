@@ -471,4 +471,41 @@ describe('R01: 文件安全读取防 TOCTOU 回归测试', () => {
     }
     expect(streamErrored).toBe(true);
   });
+
+  test('全尺寸边界与慢消费者读取：0, 3, 1024, 65000, 66000, 100000, 130000 各种大小延迟慢速读取均能完整无死锁完成', async () => {
+    const { safeOpenWorkspaceReadStream } =
+      await import('../src/file-manager.js');
+    const testSizes = [0, 3, 1024, 65000, 66000, 100000, 130000];
+
+    for (const size of testSizes) {
+      const relPath = `boundary-size-${size}.dat`;
+      const filePath = path.join(workspaceDir, relPath);
+      fs.writeFileSync(filePath, Buffer.alloc(size, 97));
+
+      const res = await safeOpenWorkspaceReadStream(folder, relPath);
+      expect(res.size).toBe(size);
+      expect(res.contentLength).toBe(size);
+
+      // 模拟延迟 100ms 后再开始读取，模拟网络延迟与慢消费者
+      await new Promise((r) => setTimeout(r, 100));
+
+      const reader = res.stream.getReader();
+      let totalBytes = 0;
+      let isDone = false;
+
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) {
+          isDone = true;
+          break;
+        }
+        totalBytes += chunk.value.length;
+        // 慢速消费者步进：每块之间等待 10ms
+        await new Promise((r) => setTimeout(r, 10));
+      }
+
+      expect(isDone).toBe(true);
+      expect(totalBytes).toBe(size);
+    }
+  });
 });

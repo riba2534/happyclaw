@@ -380,117 +380,137 @@ export async function safeOpenWorkspaceReadStream(
               return;
             }
 
-            let streamFinalized = false;
-            let receivedBytes = remainder.length;
+            let childExited = false;
+            let childExitCode: number | null = null;
+            let childSignal: NodeJS.Signals | null = null;
+            let childError: Error | null = null;
 
-            // 核心有界背压控制：
-            // 1. child.stdout 默认暂停，只有当 WebStream 的 pull() 被调用时才单次 resume() 拉取一个 chunk；
-            // 2. 读到一个 chunk 后立即 pause() 恢复上游背压，使内核管道填满并挂起 Python 子进程；
-            // 3. 严格使用 ByteLengthQueuingStrategy(64KB)，杜绝基于对象计数导致的内存堆积。
-            child.stdout.pause();
+            let receivedBytes = 0;
+            const leftoverQueue: Buffer[] = [];
+            if (remainder.length > 0) {
+              leftoverQueue.push(remainder);
+            }
 
-            const finalize = (
-              code: number | null,
-              signal: NodeJS.Signals | null,
-              controller: ReadableStreamDefaultController<Uint8Array>,
-            ) => {
-              if (streamFinalized) return;
-              streamFinalized = true;
+            let pendingPull: {
+              controller: ReadableStreamDefaultController<Uint8Array>;
+              resolve: () => void;
+              reject: (err: any) => void;
+            } | null = null;
 
-              if (code !== 0 && code !== null && signal !== 'SIGTERM') {
+            function tryFulfillPull(): void {
+              if (!pendingPull) return;
+              const { controller, resolve: pResolve } = pendingPull;
+
+              if (childError) {
+                pendingPull = null;
                 destroy();
-                controller.error(
-                  new Error(
-                    `Safe read helper exited unexpectedly with code ${code}${
-                      stderrBuffer.trim() ? `: ${stderrBuffer.trim()}` : ''
-                    }`,
-                  ),
-                );
+                controller.error(childError);
+                pResolve();
                 return;
               }
 
-              if (receivedBytes < header.contentLength) {
-                destroy();
-                controller.error(
-                  new Error(
-                    `Truncated stream: received ${receivedBytes} of ${header.contentLength} bytes`,
+              if (leftoverQueue.length > 0) {
+                const chunk = leftoverQueue.shift()!;
+                receivedBytes += chunk.length;
+                controller.enqueue(
+                  new Uint8Array(
+                    chunk.buffer,
+                    chunk.byteOffset,
+                    chunk.byteLength,
                   ),
                 );
+                pendingPull = null;
+                pResolve();
                 return;
               }
 
-              destroy();
-              try {
-                controller.close();
-              } catch {}
-            };
+              // 无参 read() 读取当前缓冲区所有可用字节，不强制 64KB，彻底解决小尾部挂死
+              const chunk = child.stdout.read() as Buffer | null;
+              if (chunk && chunk.length > 0) {
+                receivedBytes += chunk.length;
+                controller.enqueue(
+                  new Uint8Array(
+                    chunk.buffer,
+                    chunk.byteOffset,
+                    chunk.byteLength,
+                  ),
+                );
+                pendingPull = null;
+                pResolve();
+                return;
+              }
+
+              if (childExited || child.stdout.readableEnded) {
+                pendingPull = null;
+                destroy();
+
+                if (
+                  childExitCode !== 0 &&
+                  childExitCode !== null &&
+                  childSignal !== 'SIGTERM'
+                ) {
+                  controller.error(
+                    new Error(
+                      `Safe read helper exited unexpectedly with code ${childExitCode}${
+                        stderrBuffer.trim() ? `: ${stderrBuffer.trim()}` : ''
+                      }`,
+                    ),
+                  );
+                  pResolve();
+                  return;
+                }
+
+                if (receivedBytes < header.contentLength) {
+                  controller.error(
+                    new Error(
+                      `Truncated stream: received ${receivedBytes} of ${header.contentLength} bytes`,
+                    ),
+                  );
+                  pResolve();
+                  return;
+                }
+
+                try {
+                  controller.close();
+                } catch {}
+                pResolve();
+                return;
+              }
+            }
+
+            child.stdout.on('readable', tryFulfillPull);
+            child.stdout.on('end', () => {
+              tryFulfillPull();
+            });
+            child.on('close', (code, signal) => {
+              childExited = true;
+              childExitCode = code;
+              childSignal = signal;
+              tryFulfillPull();
+            });
+            child.on('error', (err) => {
+              childError = err;
+              tryFulfillPull();
+            });
 
             const boundedStream = new ReadableStream<Uint8Array>(
               {
-                start(controller) {
-                  if (remainder.length > 0) {
-                    controller.enqueue(
-                      new Uint8Array(
-                        remainder.buffer,
-                        remainder.byteOffset,
-                        remainder.byteLength,
-                      ),
-                    );
-                  }
-                },
                 pull(controller) {
-                  return new Promise<void>((resolve, reject) => {
-                    if (streamFinalized) {
-                      resolve();
-                      return;
-                    }
-
-                    const onData = (dataChunk: Buffer) => {
-                      receivedBytes += dataChunk.length;
-                      controller.enqueue(
-                        new Uint8Array(
-                          dataChunk.buffer,
-                          dataChunk.byteOffset,
-                          dataChunk.byteLength,
-                        ),
-                      );
-                      // 读到一个 chunk 后立即恢复暂停，严格实现有界背压
-                      child.stdout.pause();
-                      cleanup();
-                      resolve();
+                  return new Promise<void>((pullResolve, pullReject) => {
+                    pendingPull = {
+                      controller,
+                      resolve: pullResolve,
+                      reject: pullReject,
                     };
-
-                    const onClose = (
-                      code: number | null,
-                      signal: NodeJS.Signals | null,
-                    ) => {
-                      cleanup();
-                      finalize(code, signal, controller);
-                      resolve();
-                    };
-
-                    const onError = (err: Error) => {
-                      cleanup();
-                      destroy();
-                      controller.error(err);
-                      reject(err);
-                    };
-
-                    const cleanup = () => {
-                      child.stdout.removeListener('data', onData);
-                      child.removeListener('close', onClose);
-                      child.removeListener('error', onError);
-                    };
-
-                    child.stdout.once('data', onData);
-                    child.once('close', onClose);
-                    child.once('error', onError);
-
-                    child.stdout.resume();
+                    tryFulfillPull();
                   });
                 },
                 cancel(reason) {
                   destroy();
+                  if (pendingPull) {
+                    pendingPull.resolve();
+                    pendingPull = null;
+                  }
                   return Promise.resolve();
                 },
               },
