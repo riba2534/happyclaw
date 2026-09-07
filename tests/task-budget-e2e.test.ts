@@ -464,5 +464,233 @@ describe('HappyClaw R16 End-to-End Production Budget Tests', () => {
     expect(finalRun?.status).toBe('success');
     expect(finalRun?.result).toContain(partialText);
     expect(finalRun?.result).toContain(subsequentText);
+
+    // Complete budget in service & verify DB is no longer active
+    taskBudgetService.completeBudget(runId, finalReport);
+    expect(db.getTaskBudget(runId)?.status).toBe('completed');
+
+    // Trying to resume a non-exceeded run must be rejected
+    const invalidResumeRes = await tasksApp.request(
+      `/${taskId}/budget/resume`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ run_id: runId }),
+      },
+    );
+    expect(invalidResumeRes.status).toBe(400);
+  });
+
+  test('E2E-8: Two true Runner instances contend for one parent budget pool with PreToolUse interception', async () => {
+    const parentRunId = 'parent-runner-e2e-8';
+    const childRunner1Id = 'child-runner-e2e-8-1';
+    const childRunner2Id = 'child-runner-e2e-8-2';
+
+    // Parent budget allows only 3 tool calls total
+    taskBudgetService.initBudget({
+      runId: parentRunId,
+      config: { maxToolCalls: 3 },
+    });
+
+    taskBudgetService.initBudget({
+      runId: childRunner1Id,
+      parentRunId,
+    });
+    taskBudgetService.initBudget({
+      runId: childRunner2Id,
+      parentRunId,
+    });
+
+    // Create 2 real Runner instances for the children
+    const runner1 = new RunnerBudgetTracker({
+      runId: childRunner1Id,
+      parentRunId,
+      checkToolCallHandler: async (toolName, agentId) => {
+        const res = taskBudgetService.checkAndConsumeToolCall(
+          childRunner1Id,
+          toolName,
+        );
+        return {
+          allowed: res.allowed,
+          reason: res.reason,
+          message: res.message,
+        };
+      },
+    });
+
+    const runner2 = new RunnerBudgetTracker({
+      runId: childRunner2Id,
+      parentRunId,
+      checkToolCallHandler: async (toolName, agentId) => {
+        const res = taskBudgetService.checkAndConsumeToolCall(
+          childRunner2Id,
+          toolName,
+        );
+        return {
+          allowed: res.allowed,
+          reason: res.reason,
+          message: res.message,
+        };
+      },
+    });
+
+    const hook1 = runner1.createPreToolUseHook();
+    const hook2 = runner2.createPreToolUseHook();
+
+    // Runner 1 executes Tool Call 1 -> Parent consumes 1 (1/3)
+    const call1_1 = await hook1({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'bash',
+    } as any);
+    expect((call1_1 as any).hookSpecificOutput).toBeUndefined();
+
+    // Runner 2 executes Tool Call 1 -> Parent consumes 1 (2/3)
+    const call2_1 = await hook2({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'read_file',
+    } as any);
+    expect((call2_1 as any).hookSpecificOutput).toBeUndefined();
+
+    // Runner 1 executes Tool Call 2 -> Parent consumes 1 (3/3)
+    const call1_2 = await hook1({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'web_search',
+    } as any);
+    expect((call1_2 as any).hookSpecificOutput).toBeUndefined();
+
+    // Now parent budget is 3/3!
+    expect(db.getTaskBudget(parentRunId)?.current_tool_calls).toBe(3);
+
+    // Runner 2 tries to execute Tool Call 2 -> Parent has reached limit!
+    const call2_2 = await hook2({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'write_file',
+    } as any);
+    expect((call2_2 as any).hookSpecificOutput?.permissionDecision).toBe(
+      'deny',
+    );
+    expect(
+      (call2_2 as any).hookSpecificOutput?.permissionDecisionReason,
+    ).toMatch(/(Parent|Ancestor) task budget/);
+    expect(runner2.isExceeded()).toBe(true);
+
+    // Runner 1 also tries to execute Tool Call 3 -> Blocked by parent limit as well!
+    const call1_3 = await hook1({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'bash',
+    } as any);
+    expect((call1_3 as any).hookSpecificOutput?.permissionDecision).toBe(
+      'deny',
+    );
+    expect(
+      (call1_3 as any).hookSpecificOutput?.permissionDecisionReason,
+    ).toMatch(/(Parent|Ancestor) task budget/);
+    expect(runner1.isExceeded()).toBe(true);
+
+    runner1.dispose();
+    runner2.dispose();
+  });
+
+  test('E2E-9: Scheduler stream callback syncs budget snapshot, usage cost, and terminal state to task_budgets', () => {
+    const taskId = 'e2e-scheduler-sync-task';
+    const taskRunId = 'e2e-scheduler-sync-run-1';
+
+    taskBudgetService.initBudget({
+      runId: taskRunId,
+      taskId,
+      chatJid: 'web:workspace-budget',
+      groupFolder: 'workspace-budget',
+      config: { maxToolCalls: 5, maxCostUsd: 1.0 },
+    });
+
+    // 1. Runner streams a budget_status event
+    taskBudgetService.syncSnapshotFromRunner(taskRunId, {
+      runId: taskRunId,
+      configured: true,
+      currentDurationMs: 8500,
+      currentToolCalls: 2,
+      currentCostUsd: 0.15,
+      status: 'active',
+    });
+
+    let bRecord = db.getTaskBudget(taskRunId);
+    expect(bRecord?.current_tool_calls).toBe(2);
+    expect(bRecord?.current_duration_ms).toBe(8500);
+    expect(bRecord?.current_cost_usd).toBeCloseTo(0.15);
+
+    // 2. Streamed usage event arrives
+    taskBudgetService.recordCost(taskRunId, 0.25, 'usage-event-1');
+    bRecord = db.getTaskBudget(taskRunId);
+    expect(bRecord?.current_cost_usd).toBeCloseTo(0.4);
+
+    // Idempotent retry of same usage event does not double count
+    taskBudgetService.recordCost(taskRunId, 0.25, 'usage-event-1');
+    bRecord = db.getTaskBudget(taskRunId);
+    expect(bRecord?.current_cost_usd).toBeCloseTo(0.4);
+
+    // 3. Task terminates with budget_exceeded
+    taskBudgetService.markExceededAndSavePartial(
+      taskRunId,
+      'tool_calls',
+      'Preliminary work done',
+    );
+    bRecord = db.getTaskBudget(taskRunId);
+    expect(bRecord?.status).toBe('exceeded');
+    expect(bRecord?.exceeded_reason).toBe('tool_calls');
+    expect(bRecord?.partial_result).toBe('Preliminary work done');
+  });
+
+  test('E2E-10: Group-mode and conversation agent default budget wiring from AgentProfile', () => {
+    // Create AgentProfile with default budget
+    const profile = db.createAgentProfile({
+      ownerUserId: 'user-alice',
+      name: 'Budgeted Agent',
+      identityPrompt: 'You are helpful.',
+      runtimePolicy: {
+        budget: { maxToolCalls: 6, maxCostUsd: 0.8 },
+      } as any,
+    });
+
+    expect(profile.runtime_policy.budget?.maxToolCalls).toBe(6);
+    expect(profile.runtime_policy.budget?.maxCostUsd).toBe(0.8);
+
+    // Verify normalization preserves budget
+    const normalized = db.normalizeAgentProfileRuntimePolicy(
+      profile.runtime_policy,
+    );
+    expect(normalized.budget?.maxToolCalls).toBe(6);
+    expect(normalized.budget?.maxCostUsd).toBe(0.8);
+
+    // Create a spawn agent and verify parent_budget_run_id linkage
+    const parentRunId = 'parent-session-turn-999';
+    taskBudgetService.registerActiveBudgetRun(
+      'web:workspace-budget',
+      parentRunId,
+    );
+
+    const spawnAgentId = 'spawn-agent-test-10';
+    db.createAgent({
+      id: spawnAgentId,
+      group_folder: 'workspace-budget',
+      chat_jid: 'web:workspace-budget',
+      name: 'Spawn Child',
+      prompt: 'do subtask',
+      status: 'idle',
+      kind: 'spawn',
+      created_by: 'user-alice',
+      created_at: new Date().toISOString(),
+      completed_at: null,
+      result_summary: null,
+      last_im_jid: null,
+      spawned_from_jid: 'web:workspace-budget',
+      parent_budget_run_id: taskBudgetService.getActiveBudgetRunId(
+        'web:workspace-budget',
+      ),
+    });
+
+    const retrievedAgent = db.getAgent(spawnAgentId);
+    expect(retrievedAgent?.parent_budget_run_id).toBe(parentRunId);
+
+    taskBudgetService.unregisterActiveBudgetRun('web:workspace-budget');
   });
 });

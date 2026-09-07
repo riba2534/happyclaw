@@ -120,15 +120,15 @@ describe('HappyClaw R16 Task Budget Service & Invariants', () => {
     expect(parentStatus?.status).toBe('exceeded');
   });
 
-  test('3. Warm runner isolation: next input does not inherit prior input consumption', () => {
+  test('3. Warm runner isolation: next input does not inherit prior input consumption', async () => {
     const tracker = new RunnerBudgetTracker({
       runId: 'turn-1',
       config: { maxToolCalls: 3, maxCostUsd: 1.0 },
     });
 
     // Turn 1 executes 2 tool calls and incurs cost
-    expect(tracker.checkToolCall('bash').allowed).toBe(true);
-    expect(tracker.checkToolCall('edit').allowed).toBe(true);
+    expect((await tracker.checkToolCall('bash')).allowed).toBe(true);
+    expect((await tracker.checkToolCall('edit')).allowed).toBe(true);
     tracker.recordUsageCost(0.45);
 
     const snapshot1 = tracker.getSnapshot();
@@ -145,10 +145,10 @@ describe('HappyClaw R16 Task Budget Service & Invariants', () => {
     expect(snapshot2.exceededReason).toBeNull();
 
     // Turn 2 can now safely perform 3 tool calls without being blocked by Turn 1
-    expect(tracker.checkToolCall('tool_a').allowed).toBe(true);
-    expect(tracker.checkToolCall('tool_b').allowed).toBe(true);
-    expect(tracker.checkToolCall('tool_c').allowed).toBe(true);
-    expect(tracker.checkToolCall('tool_d').allowed).toBe(false);
+    expect((await tracker.checkToolCall('tool_a')).allowed).toBe(true);
+    expect((await tracker.checkToolCall('tool_b')).allowed).toBe(true);
+    expect((await tracker.checkToolCall('tool_c')).allowed).toBe(true);
+    expect((await tracker.checkToolCall('tool_d')).allowed).toBe(false);
 
     tracker.dispose();
   });

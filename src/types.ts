@@ -922,6 +922,8 @@ export interface SubAgent {
   last_im_jid: string | null;
   /** 发起 /spawn 命令的源会话 JID，用于完成后结果回注 */
   spawned_from_jid: string | null;
+  /** 发起 /spawn 命令的父级逻辑运行身份 ID，用于全祖先预算共享与级联控制 */
+  parent_budget_run_id?: string | null;
   source_kind?:
     | 'manual'
     | 'native_thread'

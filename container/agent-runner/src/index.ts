@@ -75,6 +75,7 @@ import {
   createMcpTools,
   fetchHappyClawOwnerProfileTurn,
   fetchWorkspaceMemorySnapshot,
+  pollIpcResult,
   type McpContext,
   type WorkspaceMemorySnapshot,
 } from './mcp-tools.js';
@@ -1752,6 +1753,44 @@ async function runQueryAttempt(
     },
   });
 
+  runnerBudget.setCheckToolCallHandler(async (toolName, agentId) => {
+    if (!runnerBudget.getConfig() && !runnerBudget.getParentRunId()) {
+      return { allowed: true };
+    }
+    const tasksDir = path.join(WORKSPACE_IPC, 'tasks');
+    if (!fs.existsSync(tasksDir)) {
+      return runnerBudget.checkToolCallLocal(toolName, agentId);
+    }
+    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const request = {
+      type: 'budget_check_tool',
+      requestId,
+      runId: runnerBudget.getRunId(),
+      parentRunId: runnerBudget.getParentRunId(),
+      toolName,
+      agentId,
+      timestamp: new Date().toISOString(),
+    };
+    try {
+      const result = await pollIpcResult(
+        tasksDir,
+        request,
+        'budget_check_tool_result',
+        3000,
+        tasksDir,
+        15,
+      );
+      return {
+        allowed: result.allowed !== false,
+        reason: typeof result.reason === 'string' ? result.reason : undefined,
+        message:
+          typeof result.message === 'string' ? result.message : undefined,
+      };
+    } catch {
+      return runnerBudget.checkToolCallLocal(toolName, agentId);
+    }
+  });
+
   const activateCurrentInputTurn = (
     fallbackInputTurnId: string = outputCorrelation.currentInputTurnId,
   ): void => {
@@ -1901,12 +1940,14 @@ async function runQueryAttempt(
     ...event,
     queryRunId: containerInput.queryRunId,
     turnId: containerInput.turnId,
+    budgetRunId: runnerBudget.getRunId(),
     sessionId: newSessionId || sessionId,
   });
   const emit = (output: ContainerOutput): void => {
     if (output.streamEvent) {
       output = outputCorrelation.correlate({
         ...output,
+        budgetRunId: runnerBudget.getRunId(),
         streamEvent: decorateStreamEvent(output.streamEvent),
         turnId: containerInput.turnId,
         sessionId: newSessionId || sessionId,
@@ -1914,11 +1955,15 @@ async function runQueryAttempt(
     } else if (output.status === 'success' || output.status === 'error') {
       output = outputCorrelation.correlate({
         ...output,
+        budgetRunId: runnerBudget.getRunId(),
         turnId: containerInput.turnId,
         sessionId: newSessionId || sessionId,
       });
     } else {
-      output = outputCorrelation.correlate(output);
+      output = outputCorrelation.correlate({
+        ...output,
+        budgetRunId: runnerBudget.getRunId(),
+      });
     }
     if (emitOutput) writeOutput(output);
   };
@@ -2133,7 +2178,7 @@ async function runQueryAttempt(
           numTurns: isLast ? fallbackUsage?.numTurns || 0 : 0,
         };
         if (usage.costUSD) {
-          runnerBudget.recordUsageCost(usage.costUSD);
+          runnerBudget.syncFinalCost(usage.costUSD);
         }
         emit({
           status: 'stream',
@@ -2148,7 +2193,7 @@ async function runQueryAttempt(
     }
     if (assistantBatchFlushedSinceLastResult || !fallbackUsage) return;
     if (fallbackUsage.costUSD) {
-      runnerBudget.recordUsageCost(fallbackUsage.costUSD);
+      runnerBudget.syncFinalCost(fallbackUsage.costUSD);
     }
     emit({
       status: 'stream',

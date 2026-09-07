@@ -42,6 +42,7 @@ export type StreamDisplayLevel = 'primary' | 'detail' | 'debug';
 export type BudgetExceededReason = 'duration' | 'tool_calls' | 'cost';
 
 export interface TaskBudgetSnapshot {
+  runId?: string;
   configured: boolean;
   maxDurationMs?: number;
   maxToolCalls?: number;
@@ -385,6 +386,8 @@ export interface StreamEvent {
   }>;
   /** Task budget snapshot emitted during execution or when budget limit is reached */
   budgetSnapshot?: TaskBudgetSnapshot;
+  /** Logical run identity for budget tracking and recovery */
+  budgetRunId?: string;
   /** Token usage data emitted at query completion */
   usage?: {
     /** Stable logical run ID used to make analytics and billing idempotent. */

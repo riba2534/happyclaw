@@ -63,6 +63,7 @@ export interface ContainerOutput {
     | 'budget_exceeded';
   budgetExceeded?: boolean;
   budgetSnapshot?: TaskBudgetSnapshot;
+  budgetRunId?: string;
   pendingBgTasks?: number;
   inputTurnCompleted?: boolean;
   queryIdle?: boolean;

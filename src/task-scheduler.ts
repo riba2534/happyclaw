@@ -1210,6 +1210,17 @@ async function runTaskInner(
         : durableOutcomeError
           ? 'failed'
           : 'success';
+
+      if (isBudgetExceeded) {
+        taskBudgetService.markExceededAndSavePartial(
+          taskBudgetRunId,
+          budgetExceededReason as any,
+          cleanedResult,
+        );
+      } else if (terminalStatus === 'success') {
+        taskBudgetService.completeBudget(taskBudgetRunId, cleanedResult);
+      }
+
       preparedDurableWorkspaceCommit = () =>
         completeIsolatedTaskRunWithWorkspaceResultIntent({
           runId,
@@ -1381,6 +1392,31 @@ async function runTaskInner(
         // Broadcast stream events to WebSocket clients viewing the task workspace
         if (streamedOutput.status === 'stream' && streamedOutput.streamEvent) {
           deps.broadcastStreamEvent?.(effectiveJid, streamedOutput.streamEvent);
+          if (
+            streamedOutput.streamEvent.eventType === 'budget_status' &&
+            streamedOutput.streamEvent.budgetSnapshot
+          ) {
+            taskBudgetService.syncSnapshotFromRunner(
+              taskBudgetRunId,
+              streamedOutput.streamEvent.budgetSnapshot,
+            );
+          }
+          if (
+            streamedOutput.streamEvent.eventType === 'usage' &&
+            streamedOutput.streamEvent.usage
+          ) {
+            taskBudgetService.recordCost(
+              taskBudgetRunId,
+              streamedOutput.streamEvent.usage.costUSD,
+              streamedOutput.streamEvent.usage.eventId,
+            );
+          }
+        }
+        if (streamedOutput.budgetSnapshot) {
+          taskBudgetService.syncSnapshotFromRunner(
+            taskBudgetRunId,
+            streamedOutput.budgetSnapshot,
+          );
         }
         if (streamedOutput.providerFailure) {
           if (streamedOutput.providerFailureTerminal === true) {

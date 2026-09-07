@@ -22,6 +22,10 @@ export interface RunnerBudgetOptions {
     reason: BudgetExceededReason,
     snapshot: TaskBudgetSnapshot,
   ) => void;
+  checkToolCallHandler?: (
+    toolName: string,
+    agentId?: string,
+  ) => Promise<{ allowed: boolean; reason?: string; message?: string }>;
 }
 
 export class RunnerBudgetTracker {
@@ -39,6 +43,10 @@ export class RunnerBudgetTracker {
   private durationTimer: NodeJS.Timeout | null = null;
   private activeInputId: string | null = null;
   private seenUsageEventIds = new Set<string>();
+  private checkToolCallHandler?: (
+    toolName: string,
+    agentId?: string,
+  ) => Promise<{ allowed: boolean; reason?: string; message?: string }>;
   private onExceededCallback?: (
     reason: BudgetExceededReason,
     snapshot: TaskBudgetSnapshot,
@@ -57,6 +65,7 @@ export class RunnerBudgetTracker {
     this.exceededReason = null;
     this.startedAt = Date.now();
     this.onExceededCallback = options.onExceeded;
+    this.checkToolCallHandler = options.checkToolCallHandler;
 
     this.armDurationTimer();
   }
@@ -76,6 +85,7 @@ export class RunnerBudgetTracker {
   public getSnapshot(partialResult?: string | null): TaskBudgetSnapshot {
     const elapsed = Math.max(0, Date.now() - this.startedAt);
     return {
+      runId: this.runId,
       configured: Boolean(
         this.config &&
         (this.config.maxDurationMs != null ||
@@ -151,7 +161,51 @@ export class RunnerBudgetTracker {
     }
   }
 
-  public checkToolCall(
+  public setCheckToolCallHandler(
+    handler: (
+      toolName: string,
+      agentId?: string,
+    ) => Promise<{ allowed: boolean; reason?: string; message?: string }>,
+  ): void {
+    this.checkToolCallHandler = handler;
+  }
+
+  public async checkToolCall(
+    toolName: string,
+    agentId?: string,
+  ): Promise<{ allowed: boolean; reason?: string }> {
+    if (this.status !== 'active') {
+      return {
+        allowed: false,
+        reason: `Task budget already exceeded (${this.exceededReason}); tool execution stopped`,
+      };
+    }
+
+    if (this.checkToolCallHandler) {
+      try {
+        const check = await this.checkToolCallHandler(toolName, agentId);
+        if (!check.allowed) {
+          const reason = (check.reason as BudgetExceededReason) || 'tool_calls';
+          this.triggerExceeded(reason);
+          return {
+            allowed: false,
+            reason:
+              check.message ||
+              check.reason ||
+              `Task or ancestor budget exceeded (${reason}); tool execution stopped`,
+          };
+        }
+        this.currentToolCalls++;
+        return { allowed: true };
+      } catch {
+        // Fall back to local check if remote IPC call is unavailable
+      }
+    }
+
+    return this.checkToolCallLocal(toolName, agentId);
+  }
+
+  public checkToolCallLocal(
     _toolName: string,
     _agentId?: string,
   ): { allowed: boolean; reason?: string } {
@@ -173,7 +227,7 @@ export class RunnerBudgetTracker {
       };
     }
 
-    // Atomically increment consumption for parent and child
+    // Increment local consumption
     this.currentToolCalls++;
     return { allowed: true };
   }
@@ -181,6 +235,18 @@ export class RunnerBudgetTracker {
   public recordUsageCost(costUsd: number): void {
     if (costUsd <= 0) return;
     this.currentCostUsd += costUsd;
+    if (
+      this.config?.maxCostUsd != null &&
+      this.currentCostUsd >= this.config.maxCostUsd
+    ) {
+      this.triggerExceeded('cost');
+    }
+  }
+
+  public syncFinalCost(finalCostUsd: number): void {
+    if (finalCostUsd > this.currentCostUsd) {
+      this.currentCostUsd = finalCostUsd;
+    }
     if (
       this.config?.maxCostUsd != null &&
       this.currentCostUsd >= this.config.maxCostUsd
@@ -275,7 +341,10 @@ export class RunnerBudgetTracker {
     return async (input) => {
       const preTool = input as PreToolUseHookInput;
       if (preTool.hook_event_name === 'PreToolUse') {
-        const check = this.checkToolCall(preTool.tool_name, preTool.agent_id);
+        const check = await this.checkToolCall(
+          preTool.tool_name,
+          preTool.agent_id,
+        );
         if (!check.allowed) {
           return {
             hookSpecificOutput: {

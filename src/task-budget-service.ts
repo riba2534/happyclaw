@@ -3,6 +3,7 @@ import {
   createTaskBudget,
   getTaskBudget,
   getTaskBudgetStatus,
+  getTaskBudgetsByChatJid,
   updateTaskBudgetUsage,
   getAncestorBudgetExceeded,
   syncTaskBudgetSnapshot,
@@ -27,12 +28,39 @@ export interface InitBudgetOptions {
 }
 
 export class TaskBudgetService {
+  private activeRunsByChatJid = new Map<string, string>();
+  private seenCostEventIds = new Set<string>();
+
+  public registerActiveBudgetRun(chatJid: string, runId: string): void {
+    if (chatJid && runId) {
+      this.activeRunsByChatJid.set(chatJid, runId);
+    }
+  }
+
+  public unregisterActiveBudgetRun(chatJid: string): void {
+    if (chatJid) {
+      this.activeRunsByChatJid.delete(chatJid);
+    }
+  }
+
+  public getActiveBudgetRunId(chatJid?: string | null): string | undefined {
+    if (!chatJid) return undefined;
+    const inMem = this.activeRunsByChatJid.get(chatJid);
+    if (inMem) return inMem;
+    const records = getTaskBudgetsByChatJid(chatJid);
+    const active = records.find((r) => r.status === 'active');
+    return active?.run_id ?? records[0]?.run_id;
+  }
+
   /**
    * Initializes or recovers the budget record for a logical run identity.
    * If a record already exists in the persistent store (e.g. after server restart),
    * it is recovered with its current consumption intact.
    */
   public initBudget(options: InitBudgetOptions): TaskBudgetRecord {
+    if (options.chatJid) {
+      this.registerActiveBudgetRun(options.chatJid, options.runId);
+    }
     const existing = getTaskBudget(options.runId);
     if (existing) {
       logger.info(
@@ -178,11 +206,33 @@ export class TaskBudgetService {
   public recordCost(
     runId: string,
     costUsd: number,
+    eventId?: string,
   ): {
     exceeded: boolean;
     status: TaskBudgetStatus;
     reason?: BudgetExceededReason;
   } {
+    if (eventId) {
+      const dedupKey = `${runId}:${eventId}`;
+      if (this.seenCostEventIds.has(dedupKey)) {
+        const status = getTaskBudgetStatus(runId);
+        return {
+          exceeded: status?.status === 'exceeded',
+          status: status ?? {
+            runId,
+            configured: false,
+            currentDurationMs: 0,
+            currentToolCalls: 0,
+            currentCostUsd: 0,
+            retryCount: 0,
+            status: 'active',
+          },
+          reason: status?.exceededReason ?? undefined,
+        };
+      }
+      this.seenCostEventIds.add(dedupKey);
+    }
+
     if (costUsd <= 0) {
       const status = getTaskBudgetStatus(runId);
       return {
@@ -269,6 +319,10 @@ export class TaskBudgetService {
       exceededReason: reason,
       partialResult: partialResult ?? undefined,
     });
+    const current = getTaskBudget(runId);
+    if (current?.chat_jid) {
+      this.unregisterActiveBudgetRun(current.chat_jid);
+    }
     return getTaskBudgetStatus(runId)!;
   }
 
@@ -283,6 +337,9 @@ export class TaskBudgetService {
         status: 'completed',
         partialResult: finalResult ?? undefined,
       });
+    }
+    if (current.chat_jid) {
+      this.unregisterActiveBudgetRun(current.chat_jid);
     }
   }
 
@@ -322,8 +379,15 @@ export class TaskBudgetService {
   public syncSnapshotFromRunner(
     runId: string,
     snapshot: TaskBudgetSnapshot,
+    metadata?: {
+      chatJid?: string | null;
+      groupFolder?: string | null;
+      userId?: string | null;
+      parentRunId?: string | null;
+      taskId?: string | null;
+    },
   ): TaskBudgetStatus | undefined {
-    syncTaskBudgetSnapshot(runId, snapshot);
+    syncTaskBudgetSnapshot(runId, snapshot, metadata);
     return getTaskBudgetStatus(runId);
   }
 

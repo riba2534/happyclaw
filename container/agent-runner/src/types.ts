@@ -475,6 +475,8 @@ export interface ContainerOutput {
     | 'budget_exceeded';
   /** Optional task budget snapshot emitted during execution or termination */
   budgetSnapshot?: TaskBudgetSnapshot;
+  budgetExceeded?: boolean;
+  budgetRunId?: string;
   /** 本 result 发出时仍未 settle 的后台任务数（异步 Agent / backgrounded Bash）。
    * >0 时主进程应把流式卡片保持在「后台任务运行中」而非定稿，后续 turn 的
    * 内容会继续追加到同一张卡。仅 sdk_final 类 result 携带。 */

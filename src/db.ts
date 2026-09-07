@@ -1600,6 +1600,7 @@ export function initDatabase(
   ensureColumn('agents', 'root_message_id', 'TEXT');
   ensureColumn('agents', 'title_source', 'TEXT');
   ensureColumn('agents', 'last_active_at', 'TEXT');
+  ensureColumn('agents', 'parent_budget_run_id', 'TEXT');
 
   // Add index on target_agent_id for fast lookup of IM bindings
   db.exec(
@@ -6501,18 +6502,90 @@ export function getAncestorBudgetExceeded(runId: string): {
 export function syncTaskBudgetSnapshot(
   runId: string,
   snapshot: TaskBudgetSnapshot,
+  metadata?: {
+    chatJid?: string | null;
+    groupFolder?: string | null;
+    userId?: string | null;
+    parentRunId?: string | null;
+    taskId?: string | null;
+  },
 ): TaskBudgetRecord | undefined {
   return db.transaction(() => {
     const current = getTaskBudget(runId);
     const now = new Date().toISOString();
     if (!current) {
+      let derivedChatJid = metadata?.chatJid ?? null;
+      let derivedGroupFolder = metadata?.groupFolder ?? null;
+      let derivedUserId = metadata?.userId ?? null;
+      let derivedParentRunId = metadata?.parentRunId ?? null;
+      let derivedTaskId = metadata?.taskId ?? null;
+
+      if (!derivedChatJid || !derivedGroupFolder) {
+        // Try task_runs
+        const tr = db
+          .prepare(
+            'SELECT task_id, definition_snapshot FROM task_runs WHERE id = ?',
+          )
+          .get(runId) as
+          | { task_id: string; definition_snapshot: string }
+          | undefined;
+        if (tr) {
+          derivedTaskId = tr.task_id;
+          try {
+            const snap = JSON.parse(tr.definition_snapshot);
+            derivedChatJid = snap.chat_jid ?? derivedChatJid;
+            derivedGroupFolder = snap.group_folder ?? derivedGroupFolder;
+          } catch {}
+        } else if (runId.startsWith('agent:')) {
+          const parts = runId.split(':');
+          const agentId = parts[1];
+          if (agentId) {
+            const ag = db
+              .prepare(
+                'SELECT group_folder, chat_jid, created_by, parent_budget_run_id FROM agents WHERE id = ?',
+              )
+              .get(agentId) as
+              | {
+                  group_folder: string;
+                  chat_jid: string;
+                  created_by: string | null;
+                  parent_budget_run_id: string | null;
+                }
+              | undefined;
+            if (ag) {
+              derivedGroupFolder = ag.group_folder;
+              derivedChatJid = ag.chat_jid;
+              derivedUserId = ag.created_by;
+              derivedParentRunId = ag.parent_budget_run_id;
+            }
+          }
+        } else if (runId.startsWith('group:')) {
+          const parts = runId.split(':');
+          const folder = parts[1];
+          if (folder) {
+            const rg = db
+              .prepare(
+                'SELECT jid, created_by FROM registered_groups WHERE folder = ?',
+              )
+              .get(folder) as
+              | { jid: string; created_by: string | null }
+              | undefined;
+            if (rg) {
+              derivedGroupFolder = folder;
+              derivedChatJid = rg.jid;
+              derivedUserId = rg.created_by;
+            }
+          }
+        }
+      }
+
       const newRec: TaskBudgetRecord = {
         run_id: runId,
-        parent_run_id: null,
-        task_id: null,
-        chat_jid: null,
-        group_folder: null,
-        user_id: null,
+        parent_run_id: derivedParentRunId,
+        task_id: derivedTaskId,
+        chat_jid: derivedChatJid,
+        group_folder: derivedGroupFolder,
+        user_id: derivedUserId,
         max_duration_ms: snapshot.maxDurationMs ?? null,
         max_tool_calls: snapshot.maxToolCalls ?? null,
         max_cost_usd: snapshot.maxCostUsd ?? null,
@@ -6934,7 +7007,7 @@ export function finalizeDeliveredGroupTaskRun(
   id: string,
   taskId: string,
   input: {
-    status?: 'success' | 'failed' | 'cancelled';
+    status?: 'success' | 'failed' | 'cancelled' | 'budget_exceeded';
     result?: string | null;
     error?: string | null;
   },
@@ -6948,7 +7021,7 @@ function finalizeDeliveredGroupTaskRunInTransaction(
   id: string,
   taskId: string,
   input: {
-    status?: 'success' | 'failed' | 'cancelled';
+    status?: 'success' | 'failed' | 'cancelled' | 'budget_exceeded';
     result?: string | null;
     error?: string | null;
   },
@@ -7011,7 +7084,7 @@ function finalizeDeliveredGroupTaskRunInTransaction(
 export interface ScheduledGroupWorkspaceFinalization {
   runId: string;
   taskId: string;
-  status?: 'success' | 'failed' | 'cancelled';
+  status?: 'success' | 'failed' | 'cancelled' | 'budget_exceeded';
   result?: string | null;
   error?: string | null;
 }
@@ -7306,7 +7379,7 @@ export interface TaskRunTextNotificationPayload {
   /** Optional group-mode terminal transition completed after Web persistence. */
   groupRunId?: string;
   groupTaskId?: string;
-  groupStatus?: 'success' | 'failed' | 'cancelled';
+  groupStatus?: 'success' | 'failed' | 'cancelled' | 'budget_exceeded';
   groupResult?: string | null;
   groupError?: string | null;
   options?: {
@@ -7842,7 +7915,7 @@ export function recordGroupWorkspaceProjectionFailureAndFinalize(input: {
   taskId: string;
   receipt: TaskRunNotificationReceipt;
   payload: TaskRunTextNotificationPayload;
-  status?: 'success' | 'failed' | 'cancelled';
+  status?: 'success' | 'failed' | 'cancelled' | 'budget_exceeded';
   result?: string | null;
   error?: string | null;
 }): boolean {
@@ -14438,8 +14511,8 @@ export function queryAuthAuditLogs(
 
 export function createAgent(agent: SubAgent): void {
   db.prepare(
-    `INSERT INTO agents (id, group_folder, chat_jid, name, prompt, status, kind, created_by, created_at, completed_at, result_summary, spawned_from_jid, source_kind, thread_id, root_message_id, title_source, last_active_at, last_im_jid)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO agents (id, group_folder, chat_jid, name, prompt, status, kind, created_by, created_at, completed_at, result_summary, spawned_from_jid, source_kind, thread_id, root_message_id, title_source, last_active_at, last_im_jid, parent_budget_run_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     agent.id,
     agent.group_folder,
@@ -14459,6 +14532,7 @@ export function createAgent(agent: SubAgent): void {
     agent.title_source ?? null,
     agent.last_active_at ?? null,
     agent.last_im_jid ?? null,
+    agent.parent_budget_run_id ?? null,
   );
 }
 
@@ -14708,6 +14782,10 @@ function mapAgentRow(row: Record<string, unknown>): SubAgent {
         : null,
     last_active_at:
       typeof row.last_active_at === 'string' ? row.last_active_at : null,
+    parent_budget_run_id:
+      typeof row.parent_budget_run_id === 'string'
+        ? row.parent_budget_run_id
+        : null,
   };
 }
 
