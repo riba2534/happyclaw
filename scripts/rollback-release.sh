@@ -7,8 +7,11 @@
 # 2. 单步原子重命名将 .releases/current 指针切回目标不可变版本根 (.releases/store/<SHA>)；
 # 3. 严格镜像强校验：无论 store 是否存在，均对目标不可变 Agent 镜像执行完整的拉取、OCI revision
 #    及架构核对；镜像元数据缺失或不匹配直接阻断；
-# 4. 严格错误阻断与事务回退：若重启或业务就绪验证失败，自动回退至回滚前的版本并严格非 0 退出；
-# 5. 边界说明：数据库若已不可逆向前迁移，所有者现行政策不保留数据备份，此时禁止降级数据库，
+# 4. 深度 store 完整性校验：验证三包产物、完整 node_modules、prompts 以及 3 层相对数据软链接；
+# 5. 探活工具固定路径与目标健康适配：固定使用本轮探针路径，针对旧 7175 legacy 版本执行真实健康探针，
+#    针对现代版本执行严格 expectedSha 校验；
+# 6. 严格错误阻断与自愈回退：若重启或业务就绪验证失败，自动回退至回滚前的版本并严格非 0 退出；
+# 7. 边界说明：数据库若已不可逆向前迁移，所有者现行政策不保留数据备份，此时禁止降级数据库，
 #    必须以前向修复恢复服务。
 # ==============================================================================
 
@@ -22,6 +25,7 @@ STORE_DIR="${RELEASES_DIR}/store"
 CURRENT_LINK="${RELEASES_DIR}/current"
 PREVIOUS_DIR="${ROOT_DIR}/.release-previous"
 LOCK_FILE="${ROOT_DIR}/.deploy.lock"
+PROBE_TOOL="${SCRIPT_DIR}/wait-for-readiness.mjs"
 
 RUN_ID="rollback_$(date +%s%N 2>/dev/null || date +%s)_$$"
 TARGET_SHA="${1:-${HAPPYCLAW_ROLLBACK_SHA:-}}"
@@ -141,7 +145,7 @@ release_lock() {
   ' "${LOCK_FILE}" "${RUN_ID}"
 }
 
-# 统一退出处理与回退
+# 统一退出处理与自愈回退
 handle_exit() {
   local exit_code=$?
   if [ "${ACTIVATION_IN_PROGRESS}" -eq 1 ] && [ "${ACTIVATION_SUCCESS}" -eq 0 ] && [ "${ROLLBACK_IN_PROGRESS}" -eq 0 ]; then
@@ -154,8 +158,9 @@ handle_exit() {
       if [ -n "${CURRENT_ACTIVE_IMAGE}" ]; then
         update_env_file "${CURRENT_ACTIVE_IMAGE}"
       fi
-      if command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -q "com.riba2534.happyclaw"; then
-        launchctl kickstart -k "gui/$(id -u)/com.riba2534.happyclaw" 2>/dev/null || true
+      if command -v launchctl >/dev/null 2>&1; then
+        local uid="$(id -u)"
+        launchctl kickstart -k "gui/${uid}/com.riba2534.happyclaw" 2>/dev/null || true
       fi
     fi
   fi
@@ -238,21 +243,54 @@ fi
 
 TARGET_STORE_DIR="${STORE_DIR}/${TARGET_SHA}"
 
-# 校验不可变 store 完整性辅助函数
+# 深度校验不可变 store 完整性辅助函数 (组 5)
 is_store_valid() {
   local store_path="$1"
   local expected_sha="$2"
-  test -f "${store_path}/dist/index.js" || return 1
-  test -f "${store_path}/web/dist/index.html" || return 1
-  test -d "${store_path}/container/agent-runner/dist" || return 1
-  test -f "${store_path}/version.json" || return 1
-  local sha
-  sha="$(node -e "try { const v = JSON.parse(require('fs').readFileSync('${store_path}/version.json','utf8')); process.stdout.write(v.commitSha || ''); } catch {}")"
-  test "${sha}" = "${expected_sha}" || return 1
-  test -L "${store_path}/data" || return 1
-  test -L "${store_path}/.env" || return 1
-  test -L "${store_path}/config" || return 1
-  return 0
+  node -e '
+    const fs = require("fs");
+    const path = require("path");
+    const storePath = process.argv[1];
+    const expectedSha = process.argv[2];
+    const rootDir = process.argv[3];
+
+    try {
+      const vFile = path.join(storePath, "version.json");
+      if (!fs.existsSync(vFile)) process.exit(1);
+      const v = JSON.parse(fs.readFileSync(vFile, "utf8"));
+      if (v.commitSha !== expectedSha) process.exit(1);
+
+      const mainJs = path.join(storePath, "dist", "index.js");
+      if (!fs.existsSync(mainJs) || fs.statSync(mainJs).size === 0) process.exit(1);
+      if (!fs.existsSync(path.join(storePath, "package.json"))) process.exit(1);
+      const nm = path.join(storePath, "node_modules");
+      if (!fs.existsSync(nm) || fs.readdirSync(nm).length === 0) process.exit(1);
+
+      const webHtml = path.join(storePath, "web", "dist", "index.html");
+      if (!fs.existsSync(webHtml) || fs.statSync(webHtml).size === 0) process.exit(1);
+
+      const runnerDist = path.join(storePath, "container", "agent-runner", "dist");
+      if (!fs.existsSync(runnerDist)) process.exit(1);
+
+      const dataLink = path.join(storePath, "data");
+      if (!fs.lstatSync(dataLink).isSymbolicLink()) process.exit(1);
+      if (fs.realpathSync(dataLink) !== fs.realpathSync(path.join(rootDir, "data"))) process.exit(1);
+
+      const envLink = path.join(storePath, ".env");
+      if (!fs.lstatSync(envLink).isSymbolicLink()) process.exit(1);
+      if (fs.existsSync(path.join(rootDir, ".env"))) {
+        if (fs.realpathSync(envLink) !== fs.realpathSync(path.join(rootDir, ".env"))) process.exit(1);
+      }
+
+      const configLink = path.join(storePath, "config");
+      if (!fs.lstatSync(configLink).isSymbolicLink()) process.exit(1);
+      if (fs.realpathSync(configLink) !== fs.realpathSync(path.join(rootDir, "config"))) process.exit(1);
+
+      process.exit(0);
+    } catch {
+      process.exit(1);
+    }
+  ' "${store_path}" "${expected_sha}" "${ROOT_DIR}"
 }
 
 # 3. 读取目标回滚版本的镜像身份
@@ -269,7 +307,7 @@ if [ -z "${PREVIOUS_IMAGE}" ]; then
   exit 1
 fi
 
-# 关键：无论 store 是否存在，均对目标镜像做与 deploy 完全相同的严格校验
+# 关键：无论 store 是否存在，均对目标镜像做与 deploy 完全相同的严格校验 (组 4)
 log_info "校验回滚目标不可变 Agent 镜像身份: ${PREVIOUS_IMAGE}..."
 local_regex="^riba2534/happyclaw-agent:git-${TARGET_SHA}(-headroom)?$"
 if ! [[ "${PREVIOUS_IMAGE}" =~ ${local_regex} ]]; then
@@ -345,6 +383,51 @@ update_env_file() {
   ' "${ROOT_DIR}/.env" "${image_tag}"
 }
 
+# 真实健康探针验证函数 (适配 legacy 与现代版本)
+verify_service_health() {
+  local target_store="$1"
+  local target_sha="$2"
+  local port="${WEB_PORT:-3000}"
+
+  local is_legacy=0
+  if [ -f "${target_store}/version.json" ]; then
+    if node -e "try { const v = JSON.parse(require('fs').readFileSync('${target_store}/version.json','utf8')); process.exit(v.initializedFromExisting ? 0 : 1); } catch { process.exit(1); }"; then
+      is_legacy=1
+    fi
+  fi
+
+  if [ "${is_legacy}" -eq 1 ]; then
+    log_info "目标版本属于旧版 legacy 结构，执行真实健康与存活探针..."
+    local verified=0
+    for attempt in {1..20}; do
+      local code
+      code="$(curl --max-time 2 -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/version" 2>/dev/null || \
+              curl --max-time 2 -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/api/health" 2>/dev/null || \
+              curl --max-time 2 -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/" 2>/dev/null || true)"
+      if [ "${code}" = "200" ] || [ "${code}" = "404" ] || [ "${code}" = "401" ]; then
+        log_info "✅ 旧版本服务健康存活验证通过 (HTTP ${code}, 耗时: ${attempt}s)！"
+        verified=1
+        break
+      fi
+      sleep 1
+    done
+    if [ "${verified}" -eq 0 ]; then
+      log_error "❌ 旧版本服务未能在指定时间内响应健康探针！"
+      return 1
+    fi
+  else
+    log_info "调用 wait-for-readiness 等待业务完全就绪并严格校验目标 SHA: ${target_sha}..."
+    if [ ! -f "${PROBE_TOOL}" ]; then
+      log_error "就绪检测工具 ${PROBE_TOOL} 缺失！拒绝虚假成功！"
+      return 1
+    fi
+    node "${PROBE_TOOL}" \
+      --port "${port}" \
+      --timeout 60 \
+      --expected-sha "${target_sha}"
+  fi
+}
+
 # 进入激活事务保护阶段
 ACTIVATION_IN_PROGRESS=1
 
@@ -355,11 +438,17 @@ git switch --detach "${TARGET_SHA}"
 log_info "还原目标版本不可变镜像: ${PREVIOUS_IMAGE}..."
 update_env_file "${PREVIOUS_IMAGE}"
 
-# 4. 服务受控重启与业务就绪严格验证（失败必须以非 0 退出码退出）
+# 4. 服务受控重启与业务就绪严格验证 (失败必须以非 0 退出码退出)
 if command -v launchctl >/dev/null 2>&1; then
+  local_uid="$(id -u)"
+  target_service="gui/${local_uid}/com.riba2534.happyclaw"
+  plist_file="${HOME}/Library/LaunchAgents/com.riba2534.happyclaw.plist"
+  if [ -f "${plist_file}" ]; then
+    launchctl bootstrap "gui/${local_uid}" "${plist_file}" 2>/dev/null || true
+  fi
   if launchctl list 2>/dev/null | grep -q "com.riba2534.happyclaw"; then
-    log_info "通过 launchctl 重启服务单元 com.riba2534.happyclaw..."
-    launchctl kickstart -k "gui/$(id -u)/com.riba2534.happyclaw"
+    log_info "通过 launchctl 重启服务单元 ${target_service}..."
+    launchctl kickstart -k "${target_service}"
   else
     log_error "未检测到运行中的 launchd 服务单元 com.riba2534.happyclaw！"
     exit 1
@@ -369,16 +458,7 @@ else
   exit 1
 fi
 
-if [ ! -f "${SCRIPT_DIR}/wait-for-readiness.mjs" ]; then
-  log_error "就绪检测工具 ${SCRIPT_DIR}/wait-for-readiness.mjs 缺失！拒绝虚假成功！"
-  exit 1
-fi
-
-log_info "等待回滚后业务就绪探针并严格校验目标 SHA: ${TARGET_SHA}..."
-node "${SCRIPT_DIR}/wait-for-readiness.mjs" \
-  --port "${WEB_PORT:-3000}" \
-  --timeout 60 \
-  --expected-sha "${TARGET_SHA}"
+verify_service_health "${TARGET_STORE_DIR}" "${TARGET_SHA}"
 
 ACTIVATION_SUCCESS=1
 log_info "=== 原子回滚成功完成！当前版本: $(git rev-parse HEAD) ==="

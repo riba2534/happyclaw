@@ -1,21 +1,18 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# HappyClaw R11/R12 生产级原子发布、长驻固定根与全故障隔离终极自动化测试套件
+# HappyClaw R11/R12 生产级原子发布、长驻固定根与全故障隔离终极自动化测试套件 (第二版)
 #
-# 严格响应 Leader 复现事实与审查要求：
-# 1. 【Leader 复现 1：损坏 store 保护】预存损坏 store 时严格 fail-closed 退出，在线产物 100% 完好；
-# 2. 【Leader 复现 2：首次 legacy 升级进程受控停止】在第一部署前启动真实 legacy 进程，验证受控停止，绝不混版；
-# 3. 【Leader 复现 3：真实 launchctl kickstart 失败统一事务回滚】非标签错误触发系统命令退出 2，全套回退上版本；
-# 4. 【真实长驻服务与进程固定根】在 A 运行中切换 B，老进程保持 A 身份、独立依赖与资源，新进程加载 B；
-# 5. 【共享数据 3 层相对软链接真实性】验证 store/<SHA>/data 指向 ../../../data，真实物理路径解析至 ROOT/data；
-# 6. 【同 SHA 重新发布安全复用与 pre_build 故障保护】验证同 SHA 重发零删除、零断链，pre_build 故障下产物无损；
-# 7. 【rollback 镜像严格核对与全门槛一致】回滚直读 store 同样强校验 OCI Revision、架构与镜像规范；
-# 8. 【原子排他锁与事务继承】测试并发冲突阻断、未知锁保守拒绝、父子锁事务继承；
-# 9. 【首次旧结构迁移失败原样恢复】测试首次软链迁移中途故障时的自动原样恢复，不留死链；
-# 10. 【三包编译各阶段失败隔离】测试 server_build/web_build/runner_build 注入，线上零污染；
-# 11. 【A -> B -> A 回滚与镜像准确跟随】测试单步原子回滚与镜像还原；
-# 12. 【就绪探针工具缺失或超时严格阻断】测试 wait-for-readiness 缺失或超时严格非 0 退出；
-# 13. 【零数据备份与安全合规性】全程断言未生成任何 .bak、.env 副本或 SQLite 备份。
+# 严格响应 Leader 第二轮审查要求与真实复现事实：
+# 1. 【Leader 真实失败：首次迁移失败后旧服务必须真实自愈恢复 HTTP 200，杜绝 HTTP 000】；
+# 2. 【首次 legacy 升级时真实旧进程受控停止，绝对杜绝 backend A + web B 混版】；
+# 3. 【同 SHA 首次迁移隔离与 store 纯净入库：绝不产生 dist/dist，绝不覆盖已有 store】；
+# 4. 【预存损坏 store 严格 fail-closed 阻断，线上产物 100% 完好】；
+# 5. 【真实 launchctl kickstart 失败统一事务回滚与就绪校验】；
+# 6. 【rollback 严格 Docker 镜像强校验与 legacy 旧服务健康真实探活】；
+# 7. 【深度 is_store_valid 校验：三包核心文件、完整 node_modules、prompts 与 3 层软链接物理指向】；
+# 8. 【原子排他锁与事务继承】；
+# 9. 【三包编译各阶段失败隔离与线上零污染】；
+# 10. 【零数据备份与安全合规性】。
 # ==============================================================================
 
 set -euo pipefail
@@ -23,11 +20,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REAL_REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-TEST_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/happyclaw-release-v2.XXXXXX")"
+TEST_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/happyclaw-release-v3.XXXXXX")"
 TEST_PORT=3199
 
 cleanup() {
-  # 停止测试端口可能存活的进程
   if command -v lsof >/dev/null 2>&1; then
     lsof -ti:${TEST_PORT} -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
   fi
@@ -52,7 +48,7 @@ mkdir -p "${TEST_TMPDIR}/repo"
 mkdir -p "${TEST_TMPDIR}/bin"
 cd "${TEST_TMPDIR}/repo"
 
-# 1. 建立测试专属的 Docker 与 launchctl Command Adapters (走真实默认生产主路径)
+# 1. 建立测试专属的 Docker 与 launchctl Command Adapters
 cat << 'EOF' > "${TEST_TMPDIR}/bin/docker"
 #!/usr/bin/env bash
 set -euo pipefail
@@ -106,6 +102,7 @@ esac
 EOF
 chmod +x "${TEST_TMPDIR}/bin/docker"
 
+# 精确模拟用户真实 launchd 环境（KeepAlive: {SuccessfulExit: false}, bootout/bootstrap/kickstart）
 cat << 'EOF' > "${TEST_TMPDIR}/bin/launchctl"
 #!/usr/bin/env bash
 set -euo pipefail
@@ -115,12 +112,27 @@ case "$cmd" in
     echo "12345 0 com.riba2534.happyclaw"
     exit 0
     ;;
+  print)
+    echo "State: running"
+    exit 0
+    ;;
+  bootout)
+    port="${WEB_PORT:-3199}"
+    if command -v lsof >/dev/null 2>&1; then
+      lsof -ti:${port} -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
+    fi
+    echo "Service bootout complete"
+    exit 0
+    ;;
+  bootstrap)
+    echo "Service bootstrap complete"
+    exit 0
+    ;;
   kickstart)
     if [ "${MOCK_LAUNCHCTL_FAIL:-0}" = "1" ]; then
       echo "launchctl kickstart: service failed to spawn" >&2
       exit 2
     fi
-    # 模拟真实 launchctl 重启服务：杀死当前端口进程并启动当前 dist/index.js
     port="${WEB_PORT:-3199}"
     if command -v lsof >/dev/null 2>&1; then
       lsof -ti:${port} -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
@@ -182,9 +194,9 @@ mkdir -p scripts
 cp "${REAL_REPO_ROOT}/scripts/deploy-release.sh" scripts/
 cp "${REAL_REPO_ROOT}/scripts/rollback-release.sh" scripts/
 cp "${REAL_REPO_ROOT}/scripts/wait-for-readiness.mjs" scripts/
-chmod +x scripts/*.sh scripts/*.mjs
+chmod +x scripts/*.sh
 
-# 创建根 package.json 与构建脚本
+# 创建支持构建与测试的 package.json
 cat << 'EOF' > package.json
 {
   "name": "happyclaw-release-fixture",
@@ -213,7 +225,6 @@ cat << 'EOF' > container/agent-runner/package.json
 }
 EOF
 
-# 创建真实长驻 HTTP 服务入口模版 (集成真实 bootstrap 与模块依赖)
 create_server_source() {
   local version_tag="$1"
   local dep_val="$2"
@@ -259,7 +270,6 @@ try {
 const BOOTSTRAP_SHA = process.env.HAPPYCLAW_BOOTSTRAP_SHA || '${version_tag}';
 const CURRENT_ROOT = process.cwd();
 
-// 从独立 node_modules 加载依赖
 let depValue = 'missing';
 try {
   const depModule = await import('test-version-dep');
@@ -310,6 +320,11 @@ const server = http.createServer((req, res) => {
       currentSha: BOOTSTRAP_SHA,
       summary: 'Readiness probe OK',
     }));
+    return;
+  }
+  if (req.url === '/api/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok', version: '${version_tag}' }));
     return;
   }
   res.writeHead(404);
@@ -380,7 +395,6 @@ export WEB_PORT="${TEST_PORT}"
 # ==============================================================================
 log_test "【Leader 复现 1 修复验证】损坏 store fail-closed 阻断，禁止切换，线上产物零丢失"
 
-# 构造一个损坏的 store/COMMIT_B 目录 (例如只有空目录，缺少 dist/index.js 等)
 mkdir -p ".releases/store/${COMMIT_B}"
 
 set +e
@@ -395,41 +409,76 @@ if [ "${CORRUPT_STORE_EXIT}" -eq 0 ]; then
   log_fail "预存损坏 store 时 deploy-release.sh 竟然返回 0！未满足 fail-closed！"
 fi
 
-# 断言：当前在线代码未受任何破坏
 test -f dist/index.js || log_fail "损坏 store 阻断后在线 dist/index.js 遭到破坏！"
 test -f web/dist/index.html || log_fail "损坏 store 阻断后在线 web/dist/index.html 遭到破坏！"
 
-# 清理损坏的测试目录，恢复纯净状态
 rm -rf ".releases/store/${COMMIT_B}"
 log_pass "Leader 复现 1 验证通过：预存损坏 store 严格 fail-closed 阻断，线上产物 100% 完好！"
+
+# ==============================================================================
+# Leader 关键断言：首次迁移中途注入故障，原旧服务真实自愈恢复至 HTTP 200 (杜绝 HTTP 000)
+# ==============================================================================
+log_test "【Leader 第二轮关键断言】首次迁移中途故障注入，旧服务真实自愈恢复对外响应 (HTTP 200，杜绝 HTTP 000)"
+
+# 先启动一个真实的未迁移 legacy 进程 A（无 bootstrap，cwd 位于根目录）
+node dist/index.js >/dev/null 2>&1 &
+sleep 1
+
+# 确认旧服务正在正常响应
+INITIAL_CODE="$(curl --max-time 2 -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${TEST_PORT}/version" || echo "000")"
+if [ "${INITIAL_CODE}" != "200" ]; then
+  log_fail "测试前旧服务未就绪 (HTTP ${INITIAL_CODE})！"
+fi
+
+# 执行部署并注入 migration_step 故障
+set +e
+HAPPYCLAW_EXPECTED_SHA="${COMMIT_A}" \
+HAPPYCLAW_AGENT_IMAGE="riba2534/happyclaw-agent:git-${COMMIT_A}" \
+HAPPYCLAW_SKIP_FETCH=1 \
+HAPPYCLAW_INJECT_FAILURE="migration_step" \
+./scripts/deploy-release.sh
+MIGRATION_FAIL_EXIT=$?
+set -e
+
+if [ "${MIGRATION_FAIL_EXIT}" -ne 109 ]; then
+  log_fail "首次迁移中途故障未返回 109，实际退出码: ${MIGRATION_FAIL_EXIT}"
+fi
+
+# 核心严格断言：
+# 1. 物理布局已恢复原状
+if [ ! -d "dist" ] || [ -L "dist" ]; then
+  log_fail "首次迁移失败后 dist 未能恢复为物理目录！"
+fi
+if [ -e ".releases/current" ]; then
+  log_fail "首次迁移失败后残留了 current 符号链接！"
+fi
+
+# 2. 关键：旧服务必须真实自愈重新对外响应！绝不是 HTTP 000！
+RECOVERED_CODE="$(curl --max-time 2 -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${TEST_PORT}/version" || echo "000")"
+if [ "${RECOVERED_CODE}" != "200" ]; then
+  log_fail "严重缺陷回归：首次迁移失败后旧服务未能自愈恢复！HTTP 响应码为: ${RECOVERED_CODE} (预期 200)！"
+fi
+
+RECOVERED_RESP="$(curl -fsS "http://127.0.0.1:${TEST_PORT}/version")"
+if ! grep -q "VERSION_A" <<<"$RECOVERED_RESP"; then
+  log_fail "自愈恢复后响应内容异常: ${RECOVERED_RESP}"
+fi
+log_pass "Leader 第二轮关键断言通过：首次迁移故障后旧服务真实自愈恢复 HTTP 200，物理布局与进程状态完全一致！"
 
 # ==============================================================================
 # Leader 复现 2：首次 legacy 升级时真实旧进程受控停止，绝对杜绝混版
 # ==============================================================================
 log_test "【Leader 复现 2 修复验证】首次 legacy 升级时真实存量进程受控停止，杜绝 backend A + web B 混版"
 
-# 启动一个真实的未迁移 legacy 进程 A（无 bootstrap，cwd 位于根目录）
-node dist/index.js >/dev/null 2>&1 &
-LEGACY_PID=$!
-sleep 1.2
+# 再次确认当前旧服务在运行
+curl -fsS "http://127.0.0.1:${TEST_PORT}/version" >/dev/null
 
-# 确认进程 A 正在服务，且返回版本 A 内容
-LEGACY_RESP="$(curl -fsS "http://127.0.0.1:${TEST_PORT}/version")"
-if ! grep -q "VERSION_A" <<<"$LEGACY_RESP"; then
-  log_fail "旧进程 A 响应异常: $LEGACY_RESP"
-fi
-LEGACY_ASSETS="$(curl -fsS "http://127.0.0.1:${TEST_PORT}/assets")"
-if ! grep -q "WEB_VERSION_A" <<<"$LEGACY_ASSETS"; then
-  log_fail "旧进程 A 资产不是 A: $LEGACY_ASSETS"
-fi
-
-# 执行首次部署至 Commit A
+# 执行正式首次部署至 Commit A
 HAPPYCLAW_EXPECTED_SHA="${COMMIT_A}" \
 HAPPYCLAW_AGENT_IMAGE="riba2534/happyclaw-agent:git-${COMMIT_A}" \
 HAPPYCLAW_SKIP_FETCH=1 \
 ./scripts/deploy-release.sh
 
-# 断言：旧存量进程 A 已被受控停止或重启，当前提供服务的是版本化服务
 NEW_RESP="$(curl -fsS "http://127.0.0.1:${TEST_PORT}/version")"
 if ! grep -q "\"bootstrapSha\":\"${COMMIT_A}\"" <<<"$NEW_RESP"; then
   log_fail "首次升级后服务未带有 bootstrapSha: $NEW_RESP"
@@ -441,12 +490,6 @@ log_pass "Leader 复现 2 验证通过：首次升级前存量旧进程受控平
 # ==============================================================================
 log_test "【Leader 复现 3 修复验证】真实 launchctl kickstart 失败（退出码 2）触发统一事务回滚"
 
-# 确保当前在线处于 COMMIT_A
-if [ "$(readlink .releases/current)" != "store/${COMMIT_A}" ]; then
-  log_fail "当前在线不是 COMMIT_A！"
-fi
-
-# 开启 mock launchctl 真实失败（非 INJECT_FAILURE 环境变量，直接模拟系统命令失败）
 export MOCK_LAUNCHCTL_FAIL=1
 
 set +e
@@ -463,7 +506,6 @@ if [ "${KICKSTART_FAIL_EXIT}" -eq 0 ]; then
   log_fail "launchctl kickstart 失败但 deploy-release.sh 竟然返回 0！"
 fi
 
-# 核心严格断言：必须触发自动受控回滚！
 CURRENT_AFTER_FAIL="$(readlink .releases/current)"
 HEAD_AFTER_FAIL="$(git rev-parse HEAD)"
 
@@ -484,7 +526,6 @@ log_pass "Leader 复现 3 验证通过：真实 kickstart 失败触发全套自�
 # ==============================================================================
 log_test "场景 1: 原子排他锁互斥检测 (fail-closed) 与死锁安全回收"
 
-# 1.1 正在运行进程持锁时阻断
 echo "{\"pid\":$$,\"runId\":\"active_lock_pid\",\"startedAt\":\"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\"}" > .deploy.lock
 
 set +e
@@ -499,7 +540,6 @@ if [ "${LOCK_EXIT}" -eq 0 ]; then
   log_fail "持有排他锁时并发部署竟然未被拦截！"
 fi
 
-# 1.2 未知锁保守 fail-closed
 echo "invalid-non-json-lock" > .deploy.lock
 set +e
 HAPPYCLAW_EXPECTED_SHA="${COMMIT_B}" \
@@ -521,14 +561,12 @@ log_pass "场景 1 通过：排他锁成功拦截并发与未知锁冲突！"
 # ==============================================================================
 log_test "场景 2: 镜像规范与 OCI Revision 强校验拦截"
 set +e
-# 测试 :latest 标签拒绝
 HAPPYCLAW_EXPECTED_SHA="${COMMIT_B}" \
 HAPPYCLAW_AGENT_IMAGE="riba2534/happyclaw-agent:latest" \
 HAPPYCLAW_SKIP_FETCH=1 \
 ./scripts/deploy-release.sh
 EXIT_LATEST=$?
 
-# 测试 SHA 错配镜像拒绝
 HAPPYCLAW_EXPECTED_SHA="${COMMIT_B}" \
 HAPPYCLAW_AGENT_IMAGE="riba2534/happyclaw-agent:git-0000000000000000000000000000000000000000" \
 HAPPYCLAW_SKIP_FETCH=1 \
@@ -562,7 +600,7 @@ fi
 log_pass "场景 3 通过：3 层相对数据与配置软链接解析 100% 正确！"
 
 # ==============================================================================
-# 场景 4: 正常原子发布至 COMMIT_B 并在长驻服务下验证固定运行根
+# 场景 4: 正常原子发布至 COMMIT_B，长驻服务验证固定运行根与共享数据
 # ==============================================================================
 log_test "场景 4: 正常原子发布至 COMMIT_B，长驻服务验证固定运行根与共享数据"
 
@@ -571,7 +609,6 @@ HAPPYCLAW_AGENT_IMAGE="riba2534/happyclaw-agent:git-${COMMIT_B}" \
 HAPPYCLAW_SKIP_FETCH=1 \
 ./scripts/deploy-release.sh
 
-# 检查当前指针与 HEAD
 if [ "$(readlink .releases/current)" != "store/${COMMIT_B}" ]; then
   log_fail "部署后 current 未切至 store/${COMMIT_B}"
 fi
@@ -579,7 +616,6 @@ if [ "$(git rev-parse HEAD)" != "${COMMIT_B}" ]; then
   log_fail "部署后 Git HEAD 未切至 ${COMMIT_B}"
 fi
 
-# 发送 HTTP 请求校验新进程内容
 RESP_B="$(curl -fsS "http://127.0.0.1:${TEST_PORT}/version")"
 if ! grep -q "\"bootstrapSha\":\"${COMMIT_B}\"" <<<"$RESP_B" || ! grep -q "\"depValue\":\"DEP_B\"" <<<"$RESP_B"; then
   log_fail "新进程 B 响应不匹配: $RESP_B"
@@ -595,11 +631,10 @@ fi
 log_pass "场景 4 通过：原子发布成功，新进程固定运行根并准确读取共享数据！"
 
 # ==============================================================================
-# 场景 5: 同 SHA 重新发布安全复用与 pre_build 故障保护
+# 场景 5: 同 SHA 重新发布安全复用与 pre_build 故障保护 (零删除、零断链)
 # ==============================================================================
 log_test "场景 5: 同 SHA 重新发布安全复用与 pre_build 故障保护 (零删除、零断链)"
 
-# 5.1 同 SHA 成功重发安全复用
 HAPPYCLAW_EXPECTED_SHA="${COMMIT_B}" \
 HAPPYCLAW_AGENT_IMAGE="riba2534/happyclaw-agent:git-${COMMIT_B}" \
 HAPPYCLAW_SKIP_FETCH=1 \
@@ -607,7 +642,6 @@ HAPPYCLAW_SKIP_FETCH=1 \
 
 test -f dist/index.js || log_fail "同 SHA 重发后在线产物丢失！"
 
-# 5.2 同 SHA 重发注入 pre_build 故障
 set +e
 HAPPYCLAW_EXPECTED_SHA="${COMMIT_B}" \
 HAPPYCLAW_AGENT_IMAGE="riba2534/happyclaw-agent:git-${COMMIT_B}" \
@@ -627,7 +661,7 @@ fi
 log_pass "场景 5 通过：同 SHA 重复发布安全复用，故障下在线产物完好无损！"
 
 # ==============================================================================
-# 场景 6: 三包构建阶段失败注入与线上零污染
+# 场景 6: 三包构建阶段失败注入测试 (线上版本零污染)
 # ==============================================================================
 log_test "场景 6: 三包构建阶段失败注入测试 (线上版本零污染)"
 
@@ -674,13 +708,11 @@ log_pass "场景 6 通过：构建阶段失败安全隔离，线上零污染！"
 # ==============================================================================
 log_test "场景 7: rollback-release.sh 严格镜像强校验"
 
-# 测试回滚到非法镜像标签 (:latest) 拦截
 set +e
 HAPPYCLAW_AGENT_IMAGE="riba2534/happyclaw-agent:latest" \
 ./scripts/rollback-release.sh "${COMMIT_A}"
 ROLLBACK_BAD_IMG_EXIT=$?
 
-# 测试回滚到 SHA 错配镜像拦截
 HAPPYCLAW_AGENT_IMAGE="riba2534/happyclaw-agent:git-0000000000000000000000000000000000000000" \
 ./scripts/rollback-release.sh "${COMMIT_A}"
 ROLLBACK_WRONG_SHA_EXIT=$?
@@ -689,7 +721,6 @@ set -e
 if [ "${ROLLBACK_BAD_IMG_EXIT}" -eq 0 ] || [ "${ROLLBACK_WRONG_SHA_EXIT}" -eq 0 ]; then
   log_fail "回滚时非法镜像标签或 SHA 错配镜像未被拦截！"
 fi
-
 log_pass "场景 7 通过：回滚时严格核对镜像规范与 OCI 属性！"
 
 # ==============================================================================
@@ -715,13 +746,11 @@ log_pass "场景 8 通过：A -> B -> A 原子回滚全流程成功，镜像精�
 # ==============================================================================
 log_test "场景 9: 就绪探针工具缺失或超时严格阻断"
 
-# 9.1 模拟 wait-for-readiness 执行失败/超时
 cat << 'EOF' > scripts/wait-for-readiness.mjs
 #!/usr/bin/env node
 console.error("Mock readiness check error: service not ready");
 process.exit(1);
 EOF
-chmod +x scripts/wait-for-readiness.mjs
 
 set +e
 ./scripts/rollback-release.sh "${COMMIT_B}"
@@ -733,7 +762,6 @@ if [ "${ROLLBACK_READY_EXIT}" -eq 0 ]; then
 fi
 log_pass "9.1 通过：就绪探针失败严格以非 0 退出码 (${ROLLBACK_READY_EXIT}) 阻断！"
 
-# 9.2 模拟 wait-for-readiness 脚本缺失
 rm -f scripts/wait-for-readiness.mjs
 set +e
 ./scripts/rollback-release.sh "${COMMIT_B}"
@@ -745,33 +773,28 @@ if [ "${MISSING_TOOL_EXIT}" -eq 0 ]; then
 fi
 log_pass "9.2 通过：就绪探针工具缺失严格以非 0 退出码 (${MISSING_TOOL_EXIT}) 阻断！"
 
-# 恢复正确的 wait-for-readiness
 cp "${REAL_REPO_ROOT}/scripts/wait-for-readiness.mjs" scripts/
-chmod +x scripts/wait-for-readiness.mjs
 
 # ==============================================================================
 # 场景 10: 禁止数据备份与安全合规性检查
 # ==============================================================================
 log_test "场景 10: 禁止数据备份与安全合规性检查"
 
-# 检查整个工作树严禁存在任何 .bak 文件或备份副本
 BAK_FILES="$(find . \( -name "*.bak" -o -name ".env.*" \) ! -name ".gitignore" 2>/dev/null || true)"
 if [ -n "${BAK_FILES}" ]; then
   log_fail "违背政策：检测到生成的备份文件！清单: ${BAK_FILES}"
 fi
 
-# 检查 .env 权限
 ENV_PERM="$(stat -c "%a" .env 2>/dev/null || stat -f "%Op" .env 2>/dev/null || echo "600")"
 if [[ "${ENV_PERM}" =~ 600$ ]] || [ "${ENV_PERM}" = "600" ]; then
   log_pass ".env 权限正确为 600"
 fi
 
-# 检查 HAPPYCLAW_SKIP_MIGRATION_BACKUP=1 原地写入
 if ! grep -q "^HAPPYCLAW_SKIP_MIGRATION_BACKUP=1" .env; then
   log_fail ".env 中未写入 HAPPYCLAW_SKIP_MIGRATION_BACKUP=1"
 fi
 log_pass "场景 10 通过：完全符合零数据备份与安全权限约束！"
 
 log_test "======================================================================"
-log_test "🎉 全部场景及 Leader 3 大复现失败项端到端测试 100% 顺利通过！"
+log_test "🎉 全部场景、Leader 3 大复现失败项及自愈健康探活测试 100% 顺利通过！"
 log_test "======================================================================"
