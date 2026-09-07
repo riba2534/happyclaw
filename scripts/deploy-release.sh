@@ -471,7 +471,25 @@ get_active_release_sha() {
     fi
   fi
   if [ -n "${HAPPYCLAW_PREVIOUS_SHA:-}" ]; then
-    echo "${HAPPYCLAW_PREVIOUS_SHA}"
+    local prev_sha="${HAPPYCLAW_PREVIOUS_SHA}"
+    if ! git rev-parse --verify "${prev_sha}^{commit}" >/dev/null 2>&1; then
+      log_error "提供的 HAPPYCLAW_PREVIOUS_SHA ('${prev_sha}') 不是本仓库真实存在的合法 commit！fail-closed 拒绝部署！"
+      exit 1
+    fi
+    local current_head
+    current_head="$(git rev-parse HEAD 2>/dev/null || true)"
+    if [ -n "${current_head}" ]; then
+      local full_prev_sha
+      full_prev_sha="$(git rev-parse "${prev_sha}^{commit}")"
+      if [ "${full_prev_sha}" != "${current_head}" ]; then
+        log_error "HAPPYCLAW_PREVIOUS_SHA ('${prev_sha}', SHA: ${full_prev_sha}) 与当前工作树真实 HEAD ('${current_head}') 不一致！"
+        log_error "禁止将当前磁盘内容错位封存为另一个版本标识！fail-closed 拒绝部署！"
+        exit 1
+      fi
+      echo "${full_prev_sha}"
+      return
+    fi
+    echo "${prev_sha}"
     return
   fi
   git rev-parse HEAD

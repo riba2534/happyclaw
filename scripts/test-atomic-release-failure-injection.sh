@@ -1094,6 +1094,58 @@ rm -rf "${BOOTSTRAP_REPO}" "${BOOTSTRAP_TOOL_DIR}"
 
 log_pass "【Leader 第四轮专项】旧基线无发布脚本时的首次外部引导全套断言 100% 通过！"
 
+# ==============================================================================
+# Leader P2 专项：HAPPYCLAW_PREVIOUS_SHA 非法与错位值校验阻断 (防止错位封存与回滚卡死)
+# ==============================================================================
+log_test "【Leader P2 专项】HAPPYCLAW_PREVIOUS_SHA 非法与错位值强校验阻断"
+
+P2_REPO="${TEST_TMPDIR}/p2_validation_repo"
+mkdir -p "${P2_REPO}"
+cp -a "${TEST_TMPDIR}/repo/." "${P2_REPO}/"
+cd "${P2_REPO}"
+rm -rf .releases dist dist.legacy_backup
+# 模拟首次迁移前的环境：dist 是真实物理目录，.releases 不存在
+mkdir -p dist
+cp src/server.js dist/index.js
+
+# 1. 传完全非法的 SHA: "bogus_sha_123"
+set +e
+HAPPYCLAW_EXPECTED_SHA="${COMMIT_B}" \
+HAPPYCLAW_AGENT_IMAGE="riba2534/happyclaw-agent:git-${COMMIT_B}" \
+HAPPYCLAW_PREVIOUS_SHA="bogus_sha_123" \
+HAPPYCLAW_SKIP_FETCH=1 \
+./scripts/deploy-release.sh
+BOGUS_SHA_EXIT=$?
+set -e
+
+if [ "${BOGUS_SHA_EXIT}" -eq 0 ]; then
+  log_fail "传非法 HAPPYCLAW_PREVIOUS_SHA 竟然未被拦截！"
+fi
+
+# 核心严格断言：必须在建立 store 之前就失败退出，且绝对不得在磁盘留下 .releases/store/bogus_sha_123 目录！
+test ! -e ".releases/store/bogus_sha_123" || log_fail "严重缺陷：传非法 SHA 竟然创建了 .releases/store/bogus_sha_123 目录！"
+log_pass "P2.1 通过：非法 HAPPYCLAW_PREVIOUS_SHA 在建库前直接 fail-closed 拦截，零残留！"
+
+# 2. 传存在但与当前 HEAD 不一致的合法 SHA
+# 当前处于 COMMIT_A，传入 COMMIT_B 作为 previous SHA
+git switch --detach "${COMMIT_A}" --quiet
+set +e
+HAPPYCLAW_EXPECTED_SHA="${COMMIT_B}" \
+HAPPYCLAW_AGENT_IMAGE="riba2534/happyclaw-agent:git-${COMMIT_B}" \
+HAPPYCLAW_PREVIOUS_SHA="${COMMIT_B}" \
+HAPPYCLAW_SKIP_FETCH=1 \
+./scripts/deploy-release.sh
+MISMATCH_SHA_EXIT=$?
+set -e
+
+if [ "${MISMATCH_SHA_EXIT}" -eq 0 ]; then
+  log_fail "HAPPYCLAW_PREVIOUS_SHA 与当前工作树 HEAD 不一致竟然未被拦截！"
+fi
+log_pass "P2.2 通过：HAPPYCLAW_PREVIOUS_SHA 与 HEAD 不一致严格 fail-closed 拦截，坚决杜绝错位封存！"
+
+cd "${TEST_TMPDIR}/repo"
+rm -rf "${P2_REPO}"
+
 log_test "======================================================================"
-log_test "🎉 全部场景、Leader 3 大复现失败项及 4 大专项测试 100% 顺利通过！"
+log_test "🎉 全部场景、Leader 全部复现及 P2 专项测试 100% 顺利通过！"
 log_test "======================================================================"
