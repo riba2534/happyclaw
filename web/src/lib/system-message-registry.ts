@@ -18,6 +18,16 @@ const SYSTEM_MESSAGE_RULES: SystemMessageRule[] = [
     extract: (c) => c.slice('context_reset:'.length),
   },
   {
+    match: (c) => c === 'context_fresh_window',
+    style: 'divider',
+    extract: () => '已开启新上下文窗口（零摘要换窗）',
+  },
+  {
+    match: (c) => c.startsWith('[HAPPYCLAW_FRESH_WINDOW_HANDOFF]'),
+    style: 'divider',
+    extract: () => '新窗口交接说明（零摘要）',
+  },
+  {
     match: (c) => c === 'query_interrupted',
     style: 'divider',
     extract: () => '已停止',

@@ -15,8 +15,8 @@
  *   - Each `commands/{name}.md` registers two aliases:
  *       /{name}              short
  *       /{plugin}:{name}     namespaced
- *   - When `{name}` collides with one of the 13 hardcoded built-in command
- *     names (clear / status / list / etc), we drop the short form so the
+ *   - When `{name}` collides with one of the hardcoded built-in command
+ *     names (clear / fresh / status / list / etc), we drop the short form so the
  *     built-in handler still wins on bare `/status`. The namespaced form
  *     remains addressable.
  *   - Both maps store arrays so we can detect:
@@ -52,6 +52,7 @@ import { isValidNameSegment } from './plugin-manifest.js';
 // resolveCommand is the boundary.
 const BUILTIN_COMMAND_NAMES: ReadonlySet<string> = new Set([
   'clear',
+  'fresh',
   'list',
   'ls',
   'status',

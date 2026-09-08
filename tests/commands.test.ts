@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import { isClearCommand } from '../src/commands.js';
+import {
+  isClearCommand,
+  isFreshCommand,
+  parseFreshCommand,
+} from '../src/commands.js';
 
 // Hoisted so mock factories below can reference these before module evaluation.
 const {
@@ -167,5 +171,133 @@ describe('executeSessionReset', () => {
         content: 'context_reset',
       }),
     );
+  });
+});
+
+describe('parseFreshCommand', () => {
+  test('exact match with empty notes', () => {
+    expect(isFreshCommand('/fresh')).toBe(true);
+    expect(parseFreshCommand('/fresh')).toEqual({ notes: '' });
+  });
+
+  test('case insensitive with trailing notes', () => {
+    expect(parseFreshCommand('  /Fresh 已修好登录；下一步做支付  ')).toEqual({
+      notes: '已修好登录；下一步做支付',
+    });
+  });
+
+  test('rejects lookalikes and embedded substring', () => {
+    expect(parseFreshCommand('/freshness')).toBeNull();
+    expect(parseFreshCommand('/refresh')).toBeNull();
+    expect(parseFreshCommand('hi /fresh')).toBeNull();
+    expect(parseFreshCommand('／fresh')).toBeNull();
+    expect(isFreshCommand('/clear')).toBe(false);
+  });
+});
+
+describe('executeFreshWindowReset', () => {
+  beforeEach(() => {
+    deleteSessionMock.mockReset();
+    clearSessionChannelOwnerMock.mockReset();
+    getJidsByFolderMock.mockReset();
+    storeMessageDirectMock.mockReset();
+    ensureChatExistsMock.mockReset();
+    vi.useRealTimers();
+  });
+
+  test('advances cursor to the divider, stores handoff after it, and clears the folder cache', async () => {
+    const { executeFreshWindowReset } = await import('../src/commands.js');
+    const stopGroup = vi.fn(async () => {});
+    const broadcast = vi.fn();
+    const setLastAgentTimestamp = vi.fn();
+    const sessions = {
+      'home-u1': 'session-main',
+      'other-folder': 'session-other',
+    } as Record<string, string>;
+
+    getJidsByFolderMock.mockReturnValue(['web:foo', 'feishu:bar']);
+
+    const handoff = '[HAPPYCLAW_FRESH_WINDOW_HANDOFF]\n\n## Notes\n已修好登录';
+    await executeFreshWindowReset(
+      'web:foo',
+      'home-u1',
+      {
+        queue: { stopGroup },
+        sessions,
+        broadcast,
+        setLastAgentTimestamp,
+      },
+      { handoff },
+    );
+
+    expect(storeMessageDirectMock).toHaveBeenCalledTimes(2);
+    const dividerCall = storeMessageDirectMock.mock.calls[0];
+    const handoffCall = storeMessageDirectMock.mock.calls[1];
+    expect(dividerCall[4]).toBe('context_fresh_window');
+    expect(dividerCall[6]).toBe(true);
+    expect(handoffCall[4]).toBe(handoff);
+    expect(handoffCall[6]).toBe(false);
+    expect(handoffCall[5] > dividerCall[5]).toBe(true);
+
+    const dividerId = dividerCall[0];
+    expect(setLastAgentTimestamp).toHaveBeenCalledTimes(2);
+    expect(setLastAgentTimestamp).toHaveBeenCalledWith(
+      'web:foo',
+      expect.objectContaining({ id: dividerId }),
+    );
+    expect(setLastAgentTimestamp).toHaveBeenCalledWith(
+      'feishu:bar',
+      expect.objectContaining({ id: dividerId }),
+    );
+
+    expect(broadcast).toHaveBeenCalledTimes(2);
+    expect(broadcast).toHaveBeenNthCalledWith(
+      1,
+      'web:foo',
+      expect.objectContaining({ content: 'context_fresh_window' }),
+    );
+    expect(broadcast).toHaveBeenNthCalledWith(
+      2,
+      'web:foo',
+      expect.objectContaining({ content: handoff, is_from_me: false }),
+    );
+
+    expect(sessions).not.toHaveProperty('home-u1');
+    expect(sessions).toHaveProperty('other-folder', 'session-other');
+  });
+
+  test('agent path does not dirty the parent workspace session cache', async () => {
+    const { executeFreshWindowReset } = await import('../src/commands.js');
+    const stopGroup = vi.fn(async () => {});
+    const broadcast = vi.fn();
+    const setLastAgentTimestamp = vi.fn();
+    const sessions = { 'flow-graduation': 'session-1' } as Record<
+      string,
+      string
+    >;
+
+    await executeFreshWindowReset(
+      'web:graduation-jid',
+      'flow-graduation',
+      {
+        queue: { stopGroup },
+        sessions,
+        broadcast,
+        setLastAgentTimestamp,
+      },
+      {
+        agentId: 'agent-1234',
+        handoff: '[HAPPYCLAW_FRESH_WINDOW_HANDOFF]\nnotes',
+      },
+    );
+
+    expect(stopGroup).toHaveBeenCalledWith(
+      'web:graduation-jid#agent:agent-1234',
+      { force: true },
+    );
+    expect(storeMessageDirectMock.mock.calls[0][4]).toBe(
+      'context_fresh_window',
+    );
+    expect(sessions).toHaveProperty('flow-graduation', 'session-1');
   });
 });

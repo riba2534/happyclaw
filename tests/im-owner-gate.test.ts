@@ -17,6 +17,7 @@ describe('OWNER_REQUIRED_IM_COMMANDS set', () => {
     expect([...OWNER_REQUIRED_IM_COMMANDS].sort()).toEqual([
       'bind',
       'clear',
+      'fresh',
       'new',
       'release_owner',
       'spawn',

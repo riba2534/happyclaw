@@ -215,7 +215,7 @@ Host 模式没有 `maxConcurrentHostProcesses`。旧客户端提交该字段时�
 当前命令由 `src/index.ts` 的 `handleCommand()` 分发：
 
 - 只读：`/list`、`/ls`、`/status`、`/where`、`/recall`、`/rc`、`/allowlist`
-- 变更：`/clear`、`/bind`、`/unbind`、`/new`、`/sw`、`/spawn`
+- 变更：`/clear`、`/fresh`、`/bind`、`/unbind`、`/new`、`/sw`、`/spawn`
 - Owner：`/owner_mention`、`/release_owner`、`/allow`、`/disallow`
 - 激活：`/require_mention`
 

@@ -594,7 +594,16 @@ import {
 import { installSkillForUser, deleteSkillForUser } from './routes/skills.js';
 import { verifyPairingCode } from './telegram-pairing.js';
 import { sdkQuery } from './sdk-query.js';
-import { executeSessionReset } from './commands.js';
+import {
+  executeSessionReset,
+  executeFreshWindowReset,
+  FRESH_WINDOW_FAILURE_REPLY,
+  FRESH_WINDOW_SUCCESS_REPLY,
+} from './commands.js';
+import {
+  captureWorkspaceSnapshot,
+  formatFreshWindowHandoff,
+} from './fresh-window.js';
 import {
   claimOwner,
   claimOwnerFromMention,
@@ -3909,6 +3918,8 @@ async function handleCommand(
   switch (cmd) {
     case 'clear':
       return handleClearCommand(chatJid);
+    case 'fresh':
+      return handleFreshCommand(chatJid, rawArgs);
     case 'list':
     case 'ls':
       return handleListCommand(chatJid);
@@ -3984,6 +3995,64 @@ async function handleClearCommand(chatJid: string): Promise<string> {
       'handleCommand /clear failed',
     );
     return '清除上下文失败，请稍后重试';
+  }
+}
+
+async function handleFreshCommand(
+  chatJid: string,
+  rawNotes: string,
+): Promise<string> {
+  const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
+  if (!group) return '未找到当前工作区';
+
+  const target = resolveBoundChatTarget(
+    chatJid,
+    group,
+    (jid) => registeredGroups[jid] ?? getRegisteredGroup(jid),
+    getAgent,
+    findGroupNameByFolder,
+    resolveWorkspaceJid,
+  );
+  if (!target) return '当前绑定目标不存在，请先重新绑定工作区或会话。';
+
+  try {
+    const targetGroup =
+      registeredGroups[target.baseChatJid] ??
+      getRegisteredGroup(target.baseChatJid);
+    const snapshotCwd =
+      targetGroup?.customCwd || path.join(GROUPS_DIR, target.folder);
+    const snapshot = await captureWorkspaceSnapshot(snapshotCwd);
+    const handoff = formatFreshWindowHandoff({
+      notes: rawNotes,
+      snapshot,
+    });
+    await executeFreshWindowReset(
+      target.baseChatJid,
+      target.folder,
+      {
+        queue,
+        sessions,
+        broadcast: broadcastNewMessage,
+        setLastAgentTimestamp: setCursors,
+      },
+      {
+        agentId: target.agentId ?? undefined,
+        handoff,
+      },
+    );
+    return FRESH_WINDOW_SUCCESS_REPLY;
+  } catch (err) {
+    logger.error(
+      {
+        chatJid,
+        targetChatJid: target.targetChatJid,
+        targetFolder: target.folder,
+        agentId: target.agentId,
+        err,
+      },
+      'handleCommand /fresh failed',
+    );
+    return FRESH_WINDOW_FAILURE_REPLY;
   }
 }
 
@@ -12458,6 +12527,10 @@ async function processTaskIpc(
     expectedAgentVersion?: number;
     definition?: unknown;
     assumptions?: string[];
+    // Zero-summary fresh window switch
+    notes?: string;
+    next_focus?: string;
+    handoff?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isAdminHome: boolean, // Whether source is admin home container
@@ -14754,6 +14827,71 @@ async function processTaskIpc(
         finishSendFile(false, 'Invalid send_file request.');
       }
       break;
+
+    case 'fresh_window': {
+      const failFresh = (error: string): void => {
+        logger.warn({ sourceGroup, error }, 'fresh_window rejected');
+        writeTaskResult(tasksDir, 'fresh_window', data.requestId, {
+          success: false,
+          error,
+        });
+      };
+      try {
+        const handoff =
+          typeof data.handoff === 'string' ? data.handoff.trim() : '';
+        if (!handoff) {
+          failFresh('fresh_window requires a handoff payload');
+          break;
+        }
+
+        let baseChatJid = typeof data.chatJid === 'string' ? data.chatJid : '';
+        let agentId = ipcAgentId ?? undefined;
+        const agentSep = '#agent:';
+        const agentIdx = baseChatJid.indexOf(agentSep);
+        if (agentIdx >= 0) {
+          if (!agentId) {
+            agentId =
+              baseChatJid.slice(agentIdx + agentSep.length) || undefined;
+          }
+          baseChatJid = baseChatJid.slice(0, agentIdx);
+        }
+        if (!baseChatJid) {
+          const jids = getJidsByFolder(sourceGroup);
+          baseChatJid =
+            jids.find((jid) => jid.startsWith('web:')) ?? jids[0] ?? '';
+        }
+        if (!baseChatJid) {
+          failFresh('Unable to resolve workspace chat for fresh_window');
+          break;
+        }
+
+        const targetGroup =
+          registeredGroups[baseChatJid] ?? getRegisteredGroup(baseChatJid);
+        if (targetGroup && targetGroup.folder !== sourceGroup) {
+          failFresh('fresh_window target is outside this workspace');
+          break;
+        }
+
+        // Acknowledge before stopGroup so the runner can finish the MCP tool.
+        writeTaskResult(tasksDir, 'fresh_window', data.requestId, {
+          success: true,
+        });
+        await executeFreshWindowReset(
+          baseChatJid,
+          sourceGroup,
+          {
+            queue,
+            sessions,
+            broadcast: broadcastNewMessage,
+            setLastAgentTimestamp: setCursors,
+          },
+          { agentId, handoff },
+        );
+      } catch (err) {
+        failFresh(err instanceof Error ? err.message : String(err));
+      }
+      break;
+    }
 
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');
