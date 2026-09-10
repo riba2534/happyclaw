@@ -168,6 +168,12 @@ export interface ConnectOptions {
     targetJid?: string;
     senderImId: string;
   }) => Promise<string>;
+  onSessionFresh?: (input: {
+    sourceJid: string;
+    targetJid?: string;
+    senderImId: string;
+    notes: string;
+  }) => Promise<string>;
   /** Handle buttons from legacy queued-message cards sent by older versions. */
   onFollowUpCardAction?: (input: {
     sourceJid: string;
@@ -2072,6 +2078,7 @@ export function createFeishuConnection(
       onFollowUpMessage,
       onSessionBreak,
       onSessionClear,
+      onSessionFresh,
       shouldProcessGroupMessage,
       resolveFeishuConversationPlan,
       isGroupOwnerMessage,
@@ -2278,6 +2285,7 @@ export function createFeishuConnection(
         !requestedFollowUpMode &&
         (runtimeControl?.kind === 'break' ||
           runtimeControl?.kind === 'clear' ||
+          runtimeControl?.kind === 'fresh' ||
           (onCommand && !runtimeControlLike))
       ) {
         const cmdBody = (slashMatch[1] + slashMatch[2]).trim();
@@ -2372,7 +2380,8 @@ export function createFeishuConnection(
             }
             if (
               runtimeControl?.kind === 'break' ||
-              runtimeControl?.kind === 'clear'
+              runtimeControl?.kind === 'clear' ||
+              runtimeControl?.kind === 'fresh'
             ) {
               let targetJid: string | undefined;
               // Group routes are already registered and may carry a native
@@ -2398,6 +2407,15 @@ export function createFeishuConnection(
                       senderImId: senderOpenId,
                     })
                   : '当前运行环境不支持 /break。';
+              } else if (runtimeControl?.kind === 'fresh') {
+                reply = onSessionFresh
+                  ? await onSessionFresh({
+                      sourceJid: chatJid,
+                      targetJid,
+                      senderImId: senderOpenId,
+                      notes: runtimeControl.notes,
+                    })
+                  : '当前运行环境不支持 /fresh。';
               } else {
                 reply = onSessionClear
                   ? await onSessionClear({

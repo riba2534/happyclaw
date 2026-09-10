@@ -222,7 +222,8 @@ describe('handleNonZeroExit — provider failure lifecycle', () => {
       status: 'success',
     },
     { label: 'code 137', code: 137, signal: null, status: 'success' },
-    { label: 'code 143', code: 143, signal: null, status: 'error' },
+    { label: 'code 143', code: 143, signal: null, status: 'success' },
+    { label: 'code 2 after success', code: 2, signal: null, status: 'success' },
   ])(
     'preserves providerFailure when docker stop closes with $label',
     async ({ code, signal, status }) => {
@@ -270,6 +271,41 @@ describe('handleNonZeroExit — provider failure lifecycle', () => {
       }
     },
   );
+
+  test('code 2 after a closed stream keeps closed, not a hard error', async () => {
+    const stdoutState = createStdoutParserState();
+    stdoutState.hasClosedOutput = true;
+    const resolved: ContainerOutput[] = [];
+
+    expect(
+      handleNonZeroExit(
+        {
+          groupName: 'closed-then-code-2',
+          label: 'Container',
+          filePrefix: 'container',
+          identifier: 'container-id',
+          logsDir: '/tmp',
+          input: { prompt: 'prompt', isMain: true },
+          stdoutState,
+          stderrState: createStderrState(),
+          onOutput: async () => {},
+          resolvePromise: (output) => resolved.push(output),
+          startTime: Date.now(),
+          timeoutMs: 1_000,
+        },
+        2,
+        null,
+        10,
+        '/tmp/closed-then-code-2.log',
+      ),
+    ).toBe(true);
+
+    await stdoutState.outputChain;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(resolved).toEqual([
+      expect.objectContaining({ status: 'closed', result: null }),
+    ]);
+  });
 });
 
 describe('attachStdoutHandler — framed output parsing (marker collision)', () => {

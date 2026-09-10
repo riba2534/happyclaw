@@ -624,6 +624,70 @@ describe('Feishu durable Inbox and cursor integration', () => {
     expect(controls.messageReply).not.toHaveBeenCalled();
   });
 
+  test('only a real Bot mention can execute exact lowercase /fresh on the thread session', async () => {
+    const accountId = `account-fresh-command-${Date.now()}`;
+    const onSessionFresh = vi
+      .fn()
+      .mockResolvedValue('已开启新上下文窗口（零摘要换窗）✓');
+    const executed = vi.fn();
+    const connected = await connect(accountId, executed, {
+      shouldProcessGroupMessage: () => true,
+      resolveEffectiveChatJid: (jid, meta) => ({
+        effectiveJid: meta?.threadId
+          ? 'web:durable-feishu-test#agent:thread-agent'
+          : 'web:durable-feishu-test',
+        agentId: meta?.threadId ? 'thread-agent' : null,
+        sourceJid: jid,
+      }),
+      onSessionFresh,
+    });
+    const createTime = Date.now();
+    const mentioned = {
+      key: '@_user_1',
+      name: 'Inbox Test Bot',
+      id: { open_id: 'ou_bot' },
+    };
+
+    await connected.handler({
+      ...event('om_real_fresh', createTime, ''),
+      message: {
+        ...event('om_real_fresh', createTime, '').message,
+        chat_id: 'oc_fresh_group',
+        chat_type: 'group',
+        root_id: 'om_fresh_root',
+        parent_id: 'om_fresh_root',
+        thread_id: 'omt_fresh_thread',
+        content: JSON.stringify({ text: '@_user_1 /fresh 已修好登录' }),
+        mentions: [mentioned],
+      },
+    });
+
+    expect(onSessionFresh).toHaveBeenCalledWith({
+      sourceJid: 'feishu:oc_fresh_group',
+      targetJid: 'web:durable-feishu-test#agent:thread-agent',
+      senderImId: 'ou_durable_user',
+      notes: '已修好登录',
+    });
+    expect(executed).not.toHaveBeenCalledWith('om_real_fresh');
+    expect(controls.messageReply).toHaveBeenCalledTimes(1);
+
+    controls.messageReply.mockClear();
+    await connected.handler({
+      ...event('om_fake_fresh', createTime + 1, ''),
+      message: {
+        ...event('om_fake_fresh', createTime + 1, '').message,
+        chat_id: 'oc_fresh_group',
+        chat_type: 'group',
+        content: JSON.stringify({ text: '@Inbox Test Bot /fresh later' }),
+        mentions: [],
+      },
+    });
+
+    expect(onSessionFresh).toHaveBeenCalledTimes(1);
+    expect(executed).toHaveBeenCalledWith('om_fake_fresh');
+    expect(controls.messageReply).not.toHaveBeenCalled();
+  });
+
   test.each(['p2p', 'group'] as const)(
     'an unbound %s stays silent before commands, reactions and routing',
     async (chatType) => {

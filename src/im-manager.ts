@@ -197,6 +197,12 @@ export interface ConnectFeishuOptions {
     targetJid?: string;
     senderImId: string;
   }) => Promise<string>;
+  onSessionFresh?: (input: {
+    sourceJid: string;
+    targetJid?: string;
+    senderImId: string;
+    notes: string;
+  }) => Promise<string>;
   onFollowUpCardAction?: (input: {
     sourceJid: string;
     targetJid: string;
@@ -511,6 +517,22 @@ export class IMConnectionManager {
             }) =>
               inboundAllowed()
                 ? opts.onSessionClear!({
+                    ...input,
+                    sourceJid: scope(input.sourceJid),
+                  })
+                : Promise.resolve('当前通道暂不可用。'),
+          }
+        : {}),
+      ...(opts.onSessionFresh
+        ? {
+            onSessionFresh: (input: {
+              sourceJid: string;
+              targetJid?: string;
+              senderImId: string;
+              notes: string;
+            }) =>
+              inboundAllowed()
+                ? opts.onSessionFresh!({
                     ...input,
                     sourceJid: scope(input.sourceJid),
                   })
@@ -1356,6 +1378,7 @@ export class IMConnectionManager {
         onFollowUpMessage: options?.onFollowUpMessage,
         onSessionBreak: options?.onSessionBreak,
         onSessionClear: options?.onSessionClear,
+        onSessionFresh: options?.onSessionFresh,
         onFollowUpCardAction: options?.onFollowUpCardAction,
         onBotAddedToGroup: options?.onBotAddedToGroup,
         onBotRemovedFromGroup: options?.onBotRemovedFromGroup,

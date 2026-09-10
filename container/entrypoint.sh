@@ -334,3 +334,10 @@ happyclaw_startup_metric input_buffered
 # Drop privileges and execute agent-runner as node user
 happyclaw_startup_metric runner_exec
 runuser -u node -- node "$AGENT_RUNNER_ENTRY" < /tmp/input.json
+runner_status=$?
+# EXIT cleanup (permission watcher / Chromium) must not overwrite the runner
+# exit code. A successful node 0 plus a failed cleanup previously became
+# Docker code 2 and the host retried a finished turn.
+trap - EXIT
+cleanup || true
+exit "$runner_status"

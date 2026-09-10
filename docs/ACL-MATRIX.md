@@ -260,18 +260,19 @@ Owner Claim：
 命令由主进程 `handleCommand()` 处理，不经过 Web Middleware，但使用渠道 sender ID
 执行独立 Owner Gate。
 
-| 命令                                           | 权限                                              |
-| ---------------------------------------------- | ------------------------------------------------- |
-| `/list`、`/ls`、`/status`、`/where`            | 只读                                              |
-| `/recall`、`/rc`                               | 只读，带节流                                      |
-| `/allowlist`                                   | 只读                                              |
-| `/clear`、`/fresh`、`/bind`、`/unbind`、`/new` | IM Owner                                          |
-| `/sw`、`/spawn`                                | IM Owner                                          |
-| `/release_owner`                               | IM Owner                                          |
-| `/owner_mention`                               | 未认领群的 bootstrap，不可被 Owner Gate 锁死      |
-| `/allow`、`/disallow`                          | Handler 内检查 IM Owner                           |
-| `/require_mention`                             | Handler 内按当前 owner/策略检查                   |
-| 飞书 `/steer <消息>`、`/break`                 | 必须结构化真实 @Bot，并通过当前 audience/激活策略 |
+| 命令                                                      | 权限                                              |
+| --------------------------------------------------------- | ------------------------------------------------- |
+| `/list`、`/ls`、`/status`、`/where`                       | 只读                                              |
+| `/recall`、`/rc`                                          | 只读，带节流                                      |
+| `/allowlist`                                              | 只读                                              |
+| `/clear`、`/fresh`、`/bind`、`/unbind`、`/new`            | IM Owner                                          |
+| `/sw`、`/spawn`                                           | IM Owner                                          |
+| `/release_owner`                                          | IM Owner                                          |
+| `/owner_mention`                                          | 未认领群的 bootstrap，不可被 Owner Gate 锁死      |
+| `/allow`、`/disallow`                                     | Handler 内检查 IM Owner                           |
+| `/require_mention`                                        | Handler 内按当前 owner/策略检查                   |
+| 飞书 `/steer <消息>`、`/break`、`/clear`、`/fresh [备注]` | 必须结构化真实 @Bot，并通过当前 audience/激活策略 |
+| MCP `fresh_window`                                        | 当前会话 Agent 可调用；不走斜杠 owner gate        |
 
 不同 Provider 的原生 sender ID namespace 不得混用。例如 QQ C2C 与 Group 使用不同
 ID 空间；owner 比对必须使用渠道适配器传入的规范化 ID。

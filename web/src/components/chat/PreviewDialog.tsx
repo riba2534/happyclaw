@@ -20,6 +20,22 @@ interface PreviewDialogProps extends Omit<
  * scope and place the body portal in the active modal layer. It also ensures
  * that Escape is handled by the top-most preview only.
  */
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  const tag = target.tagName;
+  return tag === 'TEXTAREA' || tag === 'INPUT';
+}
+
+function selectPreviewContents(root: HTMLElement): void {
+  const selection = window.getSelection();
+  if (!selection) return;
+  const range = document.createRange();
+  range.selectNodeContents(root);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
 export function PreviewDialog({
   title,
   onClose,
@@ -28,6 +44,7 @@ export function PreviewDialog({
   className,
   children,
   onCloseAutoFocus,
+  onKeyDown,
   ...props
 }: PreviewDialogProps) {
   const layerClass = layer === 'nested' ? 'z-[70]' : 'z-[60]';
@@ -65,6 +82,23 @@ export function PreviewDialog({
             requestAnimationFrame(() => {
               if (returnTarget.isConnected) returnTarget.focus();
             });
+          }}
+          onKeyDown={(event) => {
+            onKeyDown?.(event);
+            if (event.defaultPrevented) return;
+            if (
+              !(event.metaKey || event.ctrlKey) ||
+              event.key.toLowerCase() !== 'a'
+            ) {
+              return;
+            }
+            if (isEditableTarget(event.target)) return;
+            const root = event.currentTarget.querySelector<HTMLElement>(
+              '[data-preview-select-root]',
+            );
+            if (!root) return;
+            event.preventDefault();
+            selectPreviewContents(root);
           }}
           className={cn(
             'pointer-events-auto fixed outline-none',

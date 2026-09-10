@@ -9,6 +9,7 @@ import {
   getJidsByFolder,
   storeMessageDirect,
   ensureChatExists,
+  getMessageCursor,
 } from './db.js';
 import { logger } from './logger.js';
 import { clearSessionFiles } from './session-files.js';
@@ -104,21 +105,27 @@ function broadcastSystemMessage(
   });
 }
 
-function advanceCursors(
-  deps: CommandDeps,
+function resetTargetJids(
   folder: string,
   targetJid: string,
   agentId: string | undefined,
-  cursor: MessageCursor,
-): void {
-  if (agentId) {
-    deps.setLastAgentTimestamp(targetJid, cursor);
-    return;
-  }
+): string[] {
+  if (agentId) return [targetJid];
   const siblingJids = getJidsByFolder(folder);
-  for (const siblingJid of siblingJids) {
-    deps.setLastAgentTimestamp(siblingJid, cursor);
-  }
+  return siblingJids.length > 0 ? siblingJids : [targetJid];
+}
+
+function cursorForStoredMessage(
+  jid: string,
+  messageId: string,
+  timestamp: string,
+): MessageCursor {
+  return (
+    getMessageCursor(jid, messageId) ?? {
+      timestamp,
+      id: messageId,
+    }
+  );
 }
 
 // ─── Core reset ─────────────────────────────────────────────────
@@ -156,54 +163,55 @@ export async function executeSessionReset(
     delete deps.sessions[folder];
   }
 
-  // 4. Insert divider message into the correct JID
+  // 4. Insert a divider on every JID whose cursor we will advance. Reusing
+  //    one message id across sibling chats leaves those cursors at sequence 0
+  //    and the next turn re-ingests the whole inbound history.
+  const resetJids = resetTargetJids(folder, targetJid, agentId);
   const dividerDate = new Date();
   const timestamp = dividerDate.toISOString();
-  const dividerMessageId = storeSystemMessage(
-    targetJid,
-    dividerContent,
-    timestamp,
-    true,
-  );
+  for (const jid of resetJids) {
+    const dividerMessageId = storeSystemMessage(
+      jid,
+      dividerContent,
+      timestamp,
+      true,
+    );
+    broadcastSystemMessage(
+      deps,
+      jid,
+      dividerMessageId,
+      dividerContent,
+      timestamp,
+      true,
+    );
+    deps.setLastAgentTimestamp(
+      jid,
+      cursorForStoredMessage(jid, dividerMessageId, timestamp),
+    );
+  }
 
-  broadcastSystemMessage(
-    deps,
-    targetJid,
-    dividerMessageId,
-    dividerContent,
-    timestamp,
-    true,
-  );
-
-  // 5. Advance lastAgentTimestamp so old messages before the reset are not
-  //    re-sent to the next fresh agent session. Zero-summary fresh-window
-  //    uses the same cursor advance (no history re-injection / recovery).
-  const dividerCursor: MessageCursor = {
-    timestamp,
-    id: dividerMessageId,
-  };
-  advanceCursors(deps, folder, targetJid, agentId, dividerCursor);
-
-  // 6. Fresh-window only: store the handoff AFTER the cursor so the next
+  // 5. Fresh-window only: store the handoff AFTER the cursor so the next
   //    agent turn receives it as new input. is_from_me=false is required
   //    because getMessagesSince only pulls inbound (is_from_me=0) rows.
   const handoff = opts?.handoff?.trim();
   if (mode === 'fresh' && handoff) {
     const handoffTimestamp = new Date(dividerDate.getTime() + 1).toISOString();
-    const handoffMessageId = storeSystemMessage(
-      targetJid,
-      handoff,
-      handoffTimestamp,
-      false,
-    );
-    broadcastSystemMessage(
-      deps,
-      targetJid,
-      handoffMessageId,
-      handoff,
-      handoffTimestamp,
-      false,
-    );
+    for (const jid of resetJids) {
+      const handoffMessageId = storeSystemMessage(
+        jid,
+        handoff,
+        handoffTimestamp,
+        false,
+      );
+      broadcastSystemMessage(
+        deps,
+        jid,
+        handoffMessageId,
+        handoff,
+        handoffTimestamp,
+        false,
+      );
+    }
   }
 
   logger.info(

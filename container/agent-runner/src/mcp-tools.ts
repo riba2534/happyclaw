@@ -2767,9 +2767,20 @@ Use the skills panel in the UI to find the skill ID (directory name, e.g. "memor
                 isError: true,
               };
             }
-          } catch {
-            // Host stopGroup may kill this runner after accepting the request,
-            // so a missing result still means the switch was submitted.
+          } catch (err) {
+            console.warn(
+              '[fresh_window] IPC poll did not confirm host acceptance',
+              err,
+            );
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `零摘要换窗未确认提交：${err instanceof Error ? err.message : String(err)}`,
+                },
+              ],
+              isError: true,
+            };
           }
           return {
             content: [

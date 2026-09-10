@@ -37,6 +37,9 @@ describe('Agent runner image artifact contract', () => {
     expect(entrypoint).toContain(
       'runuser -u node -- node "$AGENT_RUNNER_ENTRY"',
     );
+    expect(entrypoint).toContain('runner_status=$?');
+    expect(entrypoint).toContain('trap - EXIT');
+    expect(entrypoint).toContain('exit "$runner_status"');
     expect(entrypoint).not.toContain(
       'runuser -u node -- node /tmp/dist/index.js',
     );

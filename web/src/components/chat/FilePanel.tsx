@@ -554,11 +554,13 @@ function MarkdownFileViewer({
               data-testid="markdown-preview-scroll"
               style={{ WebkitOverflowScrolling: 'touch', touchAction: 'pan-y' }}
             >
-              <MarkdownRenderer
-                content={content}
-                groupJid={groupJid}
-                variant="docs"
-              />
+              <div data-preview-select-root>
+                <MarkdownRenderer
+                  content={content}
+                  groupJid={groupJid}
+                  variant="docs"
+                />
+              </div>
             </div>
           ) : (
             <div className="absolute inset-0 p-2 sm:p-3">
@@ -801,7 +803,10 @@ function GenericTextPreview({
                 <p className="text-sm">此文件类型不支持预览</p>
               </div>
             ) : (
-              <pre className="text-sm text-foreground whitespace-pre-wrap break-all font-mono">
+              <pre
+                data-preview-select-root
+                className="text-sm text-foreground whitespace-pre-wrap break-all font-mono"
+              >
                 {content}
               </pre>
             )}

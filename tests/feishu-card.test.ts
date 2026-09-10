@@ -1135,7 +1135,36 @@ describe('Feishu follow-up controls', () => {
         hasAttachments: true,
       }),
     ).toBeUndefined();
+    expect(
+      parseRuntimeControl({
+        commandText: '/fresh 已修好登录',
+        eligible: true,
+        hasAttachments: false,
+      }),
+    ).toEqual({ kind: 'fresh', notes: '已修好登录' });
+    expect(
+      parseRuntimeControl({
+        commandText: '/fresh',
+        eligible: true,
+        hasAttachments: false,
+      }),
+    ).toEqual({ kind: 'fresh', notes: '' });
+    expect(
+      parseRuntimeControl({
+        commandText: '/FRESH later',
+        eligible: true,
+        hasAttachments: false,
+      }),
+    ).toBeUndefined();
+    expect(
+      parseRuntimeControl({
+        commandText: '/freshness',
+        eligible: true,
+        hasAttachments: false,
+      }),
+    ).toBeUndefined();
     expect(isRuntimeControlLike('/StEeR later')).toBe(true);
+    expect(isRuntimeControlLike('/fresh notes')).toBe(true);
   });
 
   test('uses neutral stop language on the active streaming card', () => {

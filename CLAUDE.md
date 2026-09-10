@@ -222,9 +222,10 @@ Host 模式没有 `maxConcurrentHostProcesses`。旧客户端提交该字段时�
 破坏性命令受 `OWNER_REQUIRED_IM_COMMANDS` 和渠道原生 sender ID 约束。
 响应对象策略不能因服务重启、同步聊天或恢复绑定而回退成默认值。
 
-另有三个精确的 Session 运行时控制命令，由渠道连接器在通用斜杠命令之前解析。
+另有精确的 Session 运行时控制命令，由渠道连接器在通用斜杠命令之前解析。
 群聊必须由渠道结构证明真实 `@Bot`，命令大小写敏感；私聊可直接使用。
-飞书支持全部三个；QQ 支持 `/steer` 和 `/break`，其 `/clear` 仍走通用命令处理器。
+飞书支持 `/steer`、`/break`、`/clear` 和 `/fresh`；QQ 支持 `/steer` 和 `/break`，
+其 `/clear` 与 `/fresh` 仍走通用命令处理器。
 QQ 群聊的结构证明来自平台本身 —— 网关只在真实 `@Bot` 时投递
 `GROUP_AT_MESSAGE_CREATE`：
 
@@ -236,6 +237,10 @@ QQ 群聊的结构证明来自平台本身 —— 网关只在真实 `@Bot` 时�
   `No active task to stop.`。
 - `/clear`：必须无附件且正文精确匹配；重置当前逻辑 Session 并固定回复
   `Session context cleared.`。
+- `/fresh [备注]`：必须无附件；停 runner、清 session 文件、写入
+  `context_fresh_window` divider 和交接 notes（零摘要，不调 LLM）。旧历史留库。
+  飞书按当前话题 / Runtime Session 换窗，与 `/clear` 同一破坏性边界。斜杠命令
+  要求 owner；MCP `fresh_window` 可由当前会话 Agent 自行调用。
 
 普通消息默认就是 durable queue，不存在显式 `/queue` 控制命令。旧的 `/queue ...`
 按普通 Agent 输入处理。飞书 Reaction 属于真正执行的 batch，而不是入站消息：同一 batch

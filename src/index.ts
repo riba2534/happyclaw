@@ -14867,26 +14867,39 @@ async function processTaskIpc(
 
         const targetGroup =
           registeredGroups[baseChatJid] ?? getRegisteredGroup(baseChatJid);
-        if (targetGroup && targetGroup.folder !== sourceGroup) {
+        if (!targetGroup) {
+          failFresh('Unable to resolve workspace for fresh_window');
+          break;
+        }
+        if (targetGroup.folder !== sourceGroup) {
           failFresh('fresh_window target is outside this workspace');
           break;
         }
 
         // Acknowledge before stopGroup so the runner can finish the MCP tool.
+        // Validation already passed; do not write a second terminal result.
         writeTaskResult(tasksDir, 'fresh_window', data.requestId, {
           success: true,
+          accepted: true,
         });
-        await executeFreshWindowReset(
-          baseChatJid,
-          sourceGroup,
-          {
-            queue,
-            sessions,
-            broadcast: broadcastNewMessage,
-            setLastAgentTimestamp: setCursors,
-          },
-          { agentId, handoff },
-        );
+        try {
+          await executeFreshWindowReset(
+            baseChatJid,
+            sourceGroup,
+            {
+              queue,
+              sessions,
+              broadcast: broadcastNewMessage,
+              setLastAgentTimestamp: setCursors,
+            },
+            { agentId, handoff },
+          );
+        } catch (resetErr) {
+          logger.error(
+            { sourceGroup, baseChatJid, agentId, err: resetErr },
+            'fresh_window accepted but reset failed',
+          );
+        }
       } catch (err) {
         failFresh(err instanceof Error ? err.message : String(err));
       }
@@ -20166,6 +20179,58 @@ async function handleFeishuSessionClear(input: {
   }
 }
 
+async function handleFeishuSessionFresh(input: {
+  sourceJid: string;
+  targetJid?: string;
+  senderImId: string;
+  notes: string;
+}): Promise<string> {
+  const targetJid = input.targetJid;
+  const runtime = targetJid ? resolveFollowUpRuntime(targetJid) : null;
+  if (!targetJid || !runtime) {
+    return '当前绑定目标不存在，无法执行 /fresh。';
+  }
+  try {
+    const snapshotCwd =
+      runtime.effectiveGroup.customCwd ||
+      path.join(GROUPS_DIR, runtime.effectiveGroup.folder);
+    const snapshot = await captureWorkspaceSnapshot(snapshotCwd);
+    const handoff = formatFreshWindowHandoff({
+      notes: input.notes,
+      snapshot,
+    });
+    await executeFreshWindowReset(
+      runtime.baseChatJid,
+      runtime.effectiveGroup.folder,
+      {
+        queue,
+        sessions,
+        broadcast: broadcastNewMessage,
+        setLastAgentTimestamp: setCursors,
+      },
+      {
+        agentId: runtime.agentId ?? undefined,
+        handoff,
+      },
+    );
+    logger.info(
+      {
+        sourceJid: input.sourceJid,
+        targetJid,
+        senderImId: input.senderImId,
+      },
+      'Feishu session fresh window processed',
+    );
+    return FRESH_WINDOW_SUCCESS_REPLY;
+  } catch (err) {
+    logger.error(
+      { err, sourceJid: input.sourceJid, targetJid },
+      'Feishu session fresh window failed',
+    );
+    return FRESH_WINDOW_FAILURE_REPLY;
+  }
+}
+
 function resolveChannelAccountWorkspace(account: ChannelAccount): {
   jid: string;
   folder: string;
@@ -20308,6 +20373,7 @@ async function reloadChannelAccountById(accountId: string): Promise<boolean> {
           onFollowUpMessage: handleIncomingFollowUp,
           onSessionBreak: handleSessionBreak,
           onSessionClear: handleFeishuSessionClear,
+          onSessionFresh: handleFeishuSessionFresh,
           onFollowUpCardAction: handleFollowUpCardAction,
           onCardInterrupt: handleCardInterrupt,
           onP2pSender: (senderOpenId: string) => {
@@ -21241,6 +21307,7 @@ async function main(): Promise<void> {
             onFollowUpMessage: handleIncomingFollowUp,
             onSessionBreak: handleSessionBreak,
             onSessionClear: handleFeishuSessionClear,
+            onSessionFresh: handleFeishuSessionFresh,
             onFollowUpCardAction: handleFollowUpCardAction,
             onCardInterrupt: handleCardInterrupt,
             onP2pSender: onReloadP2pSender,

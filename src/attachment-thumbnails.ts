@@ -3,6 +3,7 @@ import path from 'path';
 
 import sharp from 'sharp';
 
+import { DATA_DIR } from './config.js';
 import { logger } from './logger.js';
 
 /**
@@ -18,7 +19,7 @@ import { logger } from './logger.js';
  * client is handed.
  */
 
-const THUMBNAIL_ROOT = path.resolve(process.cwd(), 'data/thumbnails');
+const THUMBNAIL_ROOT = path.join(DATA_DIR, 'thumbnails');
 
 /** Long edge, in pixels. Comfortably above the 192px CSS box on 2x displays. */
 const THUMBNAIL_MAX_EDGE = 480;
@@ -30,6 +31,12 @@ const THUMBNAIL_QUALITY = 72;
  * emitted.
  */
 const THUMBNAIL_MIN_SOURCE_BYTES = 64 * 1024;
+
+/** Cap decode size so a decompression bomb cannot pin the list endpoint. */
+const THUMBNAIL_MAX_INPUT_PIXELS = 40_000_000;
+
+/** Bound libvips work across a page of photo-sized attachments. */
+const THUMBNAIL_RENDER_CONCURRENCY = 3;
 
 export type StoredAttachment = {
   type?: string;
@@ -63,20 +70,52 @@ function decodedByteLength(base64: string): number {
   return Math.floor((len * 3) / 4) - padding;
 }
 
-function thumbnailPath(messageId: string, index: number): string {
+function sanitizeMessageId(messageId: string): string {
   // message ids are uuids, but they reach us from request params elsewhere, so
   // keep the filename derivation total rather than trusting the shape.
-  const safeId = messageId.replace(/[^a-zA-Z0-9_-]/g, '_');
-  return path.join(THUMBNAIL_ROOT, `${safeId}_${index}.jpg`);
+  return messageId.replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+function thumbnailPath(messageId: string, index: number): string {
+  return path.join(
+    THUMBNAIL_ROOT,
+    `${sanitizeMessageId(messageId)}_${index}.jpg`,
+  );
+}
+
+let activeRenders = 0;
+const renderWaiters: Array<() => void> = [];
+
+function acquireRenderSlot(): Promise<void> {
+  if (activeRenders < THUMBNAIL_RENDER_CONCURRENCY) {
+    activeRenders += 1;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    renderWaiters.push(() => {
+      activeRenders += 1;
+      resolve();
+    });
+  });
+}
+
+function releaseRenderSlot(): void {
+  activeRenders = Math.max(0, activeRenders - 1);
+  const next = renderWaiters.shift();
+  if (next) next();
 }
 
 async function renderThumbnail(
   base64: string,
   cachePath: string,
 ): Promise<string | null> {
+  await acquireRenderSlot();
   try {
     const input = Buffer.from(base64, 'base64');
-    const output = await sharp(input)
+    const output = await sharp(input, {
+      limitInputPixels: THUMBNAIL_MAX_INPUT_PIXELS,
+      failOn: 'error',
+    })
       .rotate() // honour EXIF orientation; phone photos are frequently rotated
       .resize(THUMBNAIL_MAX_EDGE, THUMBNAIL_MAX_EDGE, {
         fit: 'inside',
@@ -95,6 +134,8 @@ async function renderThumbnail(
   } catch (err) {
     logger.warn({ err, cachePath }, 'Failed to render attachment thumbnail');
     return null;
+  } finally {
+    releaseRenderSlot();
   }
 }
 
@@ -114,7 +155,11 @@ export async function buildPresentedAttachments(
   let parsed: unknown;
   try {
     parsed = JSON.parse(attachmentsJson);
-  } catch {
+  } catch (err) {
+    logger.warn(
+      { err, messageId },
+      'Failed to parse attachments JSON for thumbnails',
+    );
     return attachmentsJson;
   }
   if (!Array.isArray(parsed)) return attachmentsJson;
@@ -195,10 +240,18 @@ export function readOriginalAttachment(
 }
 
 /** Drop cached thumbnails for a message whose attachments no longer exist. */
-export function invalidateThumbnails(messageId: string, count = 8): void {
-  for (let index = 0; index < count; index++) {
+export function invalidateThumbnails(messageId: string): void {
+  const prefix = `${sanitizeMessageId(messageId)}_`;
+  let entries: string[] = [];
+  try {
+    entries = fs.readdirSync(THUMBNAIL_ROOT);
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    if (!name.startsWith(prefix) || !name.endsWith('.jpg')) continue;
     try {
-      fs.unlinkSync(thumbnailPath(messageId, index));
+      fs.unlinkSync(path.join(THUMBNAIL_ROOT, name));
     } catch {
       // Absent cache entry is the normal case; nothing to undo.
     }

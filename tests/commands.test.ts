@@ -13,12 +13,14 @@ const {
   getJidsByFolderMock,
   storeMessageDirectMock,
   ensureChatExistsMock,
+  getMessageCursorMock,
 } = vi.hoisted(() => ({
   deleteSessionMock: vi.fn(),
   clearSessionChannelOwnerMock: vi.fn(),
   getJidsByFolderMock: vi.fn(),
   storeMessageDirectMock: vi.fn(),
   ensureChatExistsMock: vi.fn(),
+  getMessageCursorMock: vi.fn(),
 }));
 
 vi.mock('../src/db.js', () => ({
@@ -27,6 +29,7 @@ vi.mock('../src/db.js', () => ({
   getJidsByFolder: getJidsByFolderMock,
   storeMessageDirect: storeMessageDirectMock,
   ensureChatExists: ensureChatExistsMock,
+  getMessageCursor: getMessageCursorMock,
 }));
 
 vi.mock('../src/config.js', () => ({
@@ -67,6 +70,14 @@ describe('executeSessionReset', () => {
     getJidsByFolderMock.mockReset();
     storeMessageDirectMock.mockReset();
     ensureChatExistsMock.mockReset();
+    getMessageCursorMock.mockReset();
+    getMessageCursorMock.mockImplementation(
+      (jid: string, messageId: string) => ({
+        timestamp: '2026-09-10T00:00:00.000Z',
+        id: messageId,
+        sequence: jid === 'feishu:bar' ? 20 : 10,
+      }),
+    );
     vi.useRealTimers();
   });
 
@@ -145,29 +156,43 @@ describe('executeSessionReset', () => {
     expect(stopGroup).toHaveBeenCalledWith('web:foo', { force: true });
     expect(stopGroup).toHaveBeenCalledWith('feishu:bar', { force: true });
 
-    // setLastAgentTimestamp called once per sibling JID
+    // Each sibling gets its own divider and ingest-sequence cursor.
     expect(setLastAgentTimestamp).toHaveBeenCalledTimes(2);
     expect(setLastAgentTimestamp).toHaveBeenCalledWith(
       'web:foo',
-      expect.objectContaining({ id: expect.any(String) }),
+      expect.objectContaining({ sequence: 10 }),
     );
     expect(setLastAgentTimestamp).toHaveBeenCalledWith(
       'feishu:bar',
-      expect.objectContaining({ id: expect.any(String) }),
+      expect.objectContaining({ sequence: 20 }),
     );
+    const webCursor = setLastAgentTimestamp.mock.calls.find(
+      (call) => call[0] === 'web:foo',
+    )?.[1] as { id: string };
+    const feishuCursor = setLastAgentTimestamp.mock.calls.find(
+      (call) => call[0] === 'feishu:bar',
+    )?.[1] as { id: string };
+    expect(webCursor.id).not.toBe(feishuCursor.id);
 
     // sessions[folder] entry removed (in-memory cache)
     expect(sessions).not.toHaveProperty('home-u1');
     // unrelated entries preserved
     expect(sessions).toHaveProperty('other-folder', 'session-other');
 
-    // ensureChatExists / broadcast use the baseChatJid (not a virtual agent JID)
     expect(ensureChatExistsMock).toHaveBeenCalledWith('web:foo');
-    expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(ensureChatExistsMock).toHaveBeenCalledWith('feishu:bar');
+    expect(broadcast).toHaveBeenCalledTimes(2);
     expect(broadcast).toHaveBeenCalledWith(
       'web:foo',
       expect.objectContaining({
         chat_jid: 'web:foo',
+        content: 'context_reset',
+      }),
+    );
+    expect(broadcast).toHaveBeenCalledWith(
+      'feishu:bar',
+      expect.objectContaining({
+        chat_jid: 'feishu:bar',
         content: 'context_reset',
       }),
     );
@@ -202,6 +227,14 @@ describe('executeFreshWindowReset', () => {
     getJidsByFolderMock.mockReset();
     storeMessageDirectMock.mockReset();
     ensureChatExistsMock.mockReset();
+    getMessageCursorMock.mockReset();
+    getMessageCursorMock.mockImplementation(
+      (jid: string, messageId: string) => ({
+        timestamp: '2026-09-10T00:00:00.000Z',
+        id: messageId,
+        sequence: jid === 'feishu:bar' ? 20 : 10,
+      }),
+    );
     vi.useRealTimers();
   });
 
@@ -230,34 +263,45 @@ describe('executeFreshWindowReset', () => {
       { handoff },
     );
 
-    expect(storeMessageDirectMock).toHaveBeenCalledTimes(2);
-    const dividerCall = storeMessageDirectMock.mock.calls[0];
-    const handoffCall = storeMessageDirectMock.mock.calls[1];
-    expect(dividerCall[4]).toBe('context_fresh_window');
-    expect(dividerCall[6]).toBe(true);
-    expect(handoffCall[4]).toBe(handoff);
-    expect(handoffCall[6]).toBe(false);
-    expect(handoffCall[5] > dividerCall[5]).toBe(true);
+    expect(storeMessageDirectMock).toHaveBeenCalledTimes(4);
+    const dividerCalls = storeMessageDirectMock.mock.calls.filter(
+      (call) => call[4] === 'context_fresh_window',
+    );
+    const handoffCalls = storeMessageDirectMock.mock.calls.filter(
+      (call) => call[4] === handoff,
+    );
+    expect(dividerCalls).toHaveLength(2);
+    expect(handoffCalls).toHaveLength(2);
+    expect(dividerCalls[0][6]).toBe(true);
+    expect(handoffCalls[0][6]).toBe(false);
+    expect(handoffCalls[0][5] > dividerCalls[0][5]).toBe(true);
 
-    const dividerId = dividerCall[0];
     expect(setLastAgentTimestamp).toHaveBeenCalledTimes(2);
     expect(setLastAgentTimestamp).toHaveBeenCalledWith(
       'web:foo',
-      expect.objectContaining({ id: dividerId }),
+      expect.objectContaining({
+        id: dividerCalls.find((call) => call[1] === 'web:foo')?.[0],
+        sequence: 10,
+      }),
     );
     expect(setLastAgentTimestamp).toHaveBeenCalledWith(
       'feishu:bar',
-      expect.objectContaining({ id: dividerId }),
+      expect.objectContaining({
+        id: dividerCalls.find((call) => call[1] === 'feishu:bar')?.[0],
+        sequence: 20,
+      }),
     );
 
-    expect(broadcast).toHaveBeenCalledTimes(2);
-    expect(broadcast).toHaveBeenNthCalledWith(
-      1,
+    expect(broadcast).toHaveBeenCalledTimes(4);
+    expect(broadcast).toHaveBeenCalledWith(
       'web:foo',
       expect.objectContaining({ content: 'context_fresh_window' }),
     );
-    expect(broadcast).toHaveBeenNthCalledWith(
-      2,
+    expect(broadcast).toHaveBeenCalledWith(
+      'feishu:bar',
+      expect.objectContaining({ content: 'context_fresh_window' }),
+    );
+    expect(broadcast).toHaveBeenCalledWith(
       'web:foo',
       expect.objectContaining({ content: handoff, is_from_me: false }),
     );

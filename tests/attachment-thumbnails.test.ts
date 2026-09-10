@@ -4,6 +4,7 @@ import path from 'path';
 import sharp from 'sharp';
 import { afterAll, describe, expect, test } from 'vitest';
 
+import { DATA_DIR } from '../src/config.js';
 import {
   buildPresentedAttachments,
   invalidateThumbnails,
@@ -11,7 +12,7 @@ import {
   readOriginalAttachment,
 } from '../src/attachment-thumbnails.js';
 
-// The module caches under <cwd>/data/thumbnails keyed by message id. Use ids
+// The module caches under DATA_DIR/thumbnails keyed by message id. Use ids
 // unique to this file so a run never collides with real cached history, and
 // drop them afterwards.
 const ID_PREFIX = 'test-attachment-thumbnails-';
@@ -153,11 +154,7 @@ describe('web chat attachment thumbnails', () => {
     ]);
 
     const first = await buildPresentedAttachments(id, stored);
-    const cachePath = path.resolve(
-      process.cwd(),
-      'data/thumbnails',
-      `${id}_0.jpg`,
-    );
+    const cachePath = path.join(DATA_DIR, 'thumbnails', `${id}_0.jpg`);
     expect(fs.existsSync(cachePath)).toBe(true);
 
     const second = await buildPresentedAttachments(id, stored);
@@ -165,5 +162,29 @@ describe('web chat attachment thumbnails', () => {
 
     invalidateThumbnails(id);
     expect(fs.existsSync(cachePath)).toBe(false);
+  });
+
+  test('invalidateThumbnails removes every cached index, not just the first eight', async () => {
+    const id = messageId('ten-slots');
+    const original = await bigJpegBase64();
+    const stored = JSON.stringify(
+      Array.from({ length: 10 }, () => ({
+        type: 'image',
+        data: original,
+        mimeType: 'image/jpeg',
+      })),
+    );
+
+    await buildPresentedAttachments(id, stored);
+    const lastPath = path.join(DATA_DIR, 'thumbnails', `${id}_9.jpg`);
+    expect(fs.existsSync(lastPath)).toBe(true);
+
+    invalidateThumbnails(id);
+    expect(fs.existsSync(lastPath)).toBe(false);
+    expect(
+      fs
+        .readdirSync(path.join(DATA_DIR, 'thumbnails'))
+        .some((name) => name.startsWith(`${id}_`)),
+    ).toBe(false);
   });
 });

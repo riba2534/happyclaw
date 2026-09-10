@@ -14,7 +14,8 @@ export function resolveFollowUpMode(
 export type RuntimeControl =
   | { kind: 'steer'; text: string }
   | { kind: 'clear' }
-  | { kind: 'break' };
+  | { kind: 'break' }
+  | { kind: 'fresh'; notes: string };
 
 /**
  * Parse the small runtime control surface after the connector has structurally
@@ -36,6 +37,12 @@ export function parseRuntimeControl(input: {
   if (!input.hasAttachments && commandText === '/break') {
     return { kind: 'break' };
   }
+  if (!input.hasAttachments) {
+    const fresh = commandText.match(/^\/fresh(?:\s+([\s\S]*))?$/);
+    if (fresh) {
+      return { kind: 'fresh', notes: (fresh[1] ?? '').trim() };
+    }
+  }
   const followUp = commandText.match(/^\/steer\s+([\s\S]*\S)$/);
   if (!followUp) return undefined;
   return {
@@ -49,5 +56,7 @@ export function isRuntimeControlLike(commandText: string): boolean {
   // `/queue` remains a lookalike only so legacy text bypasses the generic
   // slash-command interceptor and reaches the Agent as ordinary default-queued
   // input. It is intentionally not parsed as a runtime control above.
-  return /^\/(?:queue|steer|break|clear)(?:\s|$)/i.test(commandText.trim());
+  return /^\/(?:queue|steer|break|clear|fresh)(?:\s|$)/i.test(
+    commandText.trim(),
+  );
 }

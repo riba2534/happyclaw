@@ -556,42 +556,47 @@ export function handleNonZeroExit(
     return true;
   }
 
+  // A stream terminal already reached the host. Cleanup/PID1 wrappers can
+  // still report a bogus non-zero (Docker code 2 after bash EXIT traps).
+  // Keep the streamed status instead of inventing a hard failure.
+  const hadStreamTerminal =
+    ctx.stdoutState.hasSuccessOutput || ctx.stdoutState.hasClosedOutput;
+  if (hadStreamTerminal && ctx.onOutput) {
+    const finalStatus = ctx.stdoutState.hasSuccessOutput
+      ? ('success' as const)
+      : ('closed' as const);
+    logger.info(
+      {
+        group: ctx.groupName,
+        signal,
+        code,
+        duration,
+        newSessionId,
+        finalStatus,
+      },
+      `${ctx.label} exited non-zero after stream terminal (keeping stream status)`,
+    );
+    waitForOutputChain(
+      outputChain,
+      ctx.groupName,
+      `${ctx.filePrefix} stream-terminal path`,
+      () => {
+        ctx.resolvePromise({
+          status: finalStatus,
+          result: null,
+          newSessionId,
+          providerFailure: ctx.stdoutState.hasProviderFailureOutput,
+        });
+      },
+    );
+    return true;
+  }
+
   // Graceful shutdown: agent was killed by SIGTERM/SIGKILL (e.g. user
-  // clicked stop, session reset, clear-history). Treat as normal
-  // completion instead of an error — BUT only if the agent had already
-  // produced some output. If killed before emitting ANY output markers
-  // (success/closed), it means the process died during initialization
-  // (e.g., race condition) and should be treated as an error so the UI
-  // waiting state gets cleared via sendSystemMessage('agent_error').
+  // clicked stop, session reset, clear-history) before emitting markers.
   const isForceKilled =
     signal === 'SIGTERM' || signal === 'SIGKILL' || code === 137;
   if (isForceKilled && ctx.onOutput) {
-    const hadOutput =
-      ctx.stdoutState.hasSuccessOutput || ctx.stdoutState.hasClosedOutput;
-
-    if (hadOutput) {
-      logger.info(
-        { group: ctx.groupName, signal, code, duration, newSessionId },
-        `${ctx.label} terminated by signal (user stop / graceful shutdown)`,
-      );
-      waitForOutputChain(
-        outputChain,
-        ctx.groupName,
-        `${ctx.filePrefix} force-kill path`,
-        () => {
-          ctx.resolvePromise({
-            status: 'success',
-            result: null,
-            newSessionId,
-            providerFailure: ctx.stdoutState.hasProviderFailureOutput,
-          });
-        },
-      );
-      return true;
-    }
-
-    // Agent was killed before producing any output — fall through to
-    // error path so the caller can broadcast an error and clear the UI.
     logger.warn(
       { group: ctx.groupName, signal, code, duration },
       `${ctx.label} killed before producing any output — treating as error`,

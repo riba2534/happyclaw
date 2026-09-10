@@ -4496,6 +4496,15 @@ async function main(): Promise<void> {
       // idle timer and cause a 30-min delay before the next _close).
       if (queryResult.closedDuringQuery) {
         log('Close sentinel consumed during query, exiting');
+        // If a healthy Result already completed the input, do not overwrite it
+        // with status:closed. That used to block cursor commit and trigger
+        // retries of work that had already finished.
+        if (queryResult.durableInputTurnCompleted) {
+          log(
+            'Healthy result already published; exiting without closed override',
+          );
+          break;
+        }
         // Notify host that this exit was due to _close, not a normal completion.
         // Without this marker the host treats the exit as silent success and
         // commits the message cursor, causing the in-flight IM message to be

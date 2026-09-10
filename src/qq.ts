@@ -1979,7 +1979,9 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
           // arguments) are deliberately not commands: they fall through to the
           // Agent as ordinary input rather than becoming "unknown command".
           // `/clear` is the exception -- it is a real command here.
-          (runtimeControl?.kind === 'clear' || !isRuntimeControlLike(content))
+          (runtimeControl?.kind === 'clear' ||
+            runtimeControl?.kind === 'fresh' ||
+            !isRuntimeControlLike(content))
         ) {
           const cmdBody = (
             slashMatch[1] + (slashMatch[2] ? ' ' + slashMatch[2] : '')
@@ -2250,7 +2252,9 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
           // arguments) are deliberately not commands: they fall through to the
           // Agent as ordinary input rather than becoming "unknown command".
           // `/clear` is the exception -- it is a real command here.
-          (runtimeControl?.kind === 'clear' || !isRuntimeControlLike(content))
+          (runtimeControl?.kind === 'clear' ||
+            runtimeControl?.kind === 'fresh' ||
+            !isRuntimeControlLike(content))
         ) {
           const cmdBody = (
             slashMatch[1] + (slashMatch[2] ? ' ' + slashMatch[2] : '')

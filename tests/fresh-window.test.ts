@@ -10,6 +10,10 @@ import {
   captureWorkspaceSnapshot,
   formatFreshWindowHandoff,
 } from '../container/agent-runner/src/fresh-window.js';
+import {
+  FRESH_WINDOW_HANDOFF_MARKER as HOST_HANDOFF_MARKER,
+  formatFreshWindowHandoff as formatHostFreshWindowHandoff,
+} from '../src/fresh-window.js';
 
 const tmpDirs: string[] = [];
 
@@ -24,6 +28,25 @@ function tmpDir(): string {
   tmpDirs.push(dir);
   return dir;
 }
+
+describe('host/runner fresh-window copies', () => {
+  test('keep the same marker and formatted handoff', () => {
+    const input = {
+      notes: '已修好登录',
+      nextFocus: '下一步做支付',
+      snapshot: {
+        available: true as const,
+        branch: 'main',
+        commit: 'abc1234',
+        statusLines: [' M src/foo.ts'],
+      },
+    };
+    expect(HOST_HANDOFF_MARKER).toBe(FRESH_WINDOW_HANDOFF_MARKER);
+    expect(formatHostFreshWindowHandoff(input)).toBe(
+      formatFreshWindowHandoff(input),
+    );
+  });
+});
 
 describe('formatFreshWindowHandoff', () => {
   test('includes marker, notes, next focus, and git snapshot', () => {
@@ -106,8 +129,8 @@ describe('captureWorkspaceSnapshot', () => {
         },
       );
       fs.writeFileSync(path.join(dir, 'dirty.txt'), 'x\n');
-    } catch {
-      return;
+    } catch (err) {
+      throw err instanceof Error ? err : new Error(String(err));
     }
 
     const snapshot = await captureWorkspaceSnapshot(dir);
