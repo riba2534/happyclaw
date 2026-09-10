@@ -52,9 +52,17 @@ interface MessageBubbleProps {
 
 interface MessageAttachment {
   type: 'image';
-  data: string; // base64
+  /**
+   * base64. For stored history this is a downscaled thumbnail — a page of
+   * full-resolution photos reached tens of MB and the browser failed the whole
+   * request, blanking the history. `hasOriginal` marks the ones whose full
+   * image must be fetched separately.
+   */
+  data: string;
   mimeType?: string;
   name?: string;
+  hasOriginal?: boolean;
+  originalBytes?: number;
 }
 
 /** Collapsible reasoning block for AI messages */
@@ -278,9 +286,19 @@ export const MessageBubble = memo(
           }
         })()
       : [];
-    const images = attachments.filter((att) => att.type === 'image');
-    const allImageSrcs = images.map(
-      (img) => `data:${img.mimeType || 'image/png'};base64,${img.data}`,
+    // Carry each attachment's position in the stored array: the original-image
+    // endpoint indexes the full list, so filtering to images first would point
+    // a mixed-attachment message at the wrong entry.
+    const images = attachments
+      .map((att, attachmentIndex) => ({ ...att, attachmentIndex }))
+      .filter((att) => att.type === 'image');
+    // Inline `src` stays the thumbnail; the lightbox is what needs full
+    // resolution, so it pulls the original on open instead of inflating the
+    // history payload for every image on screen.
+    const allImageSrcs = images.map((img) =>
+      img.hasOriginal
+        ? `/api/groups/${encodeURIComponent(message.chat_jid)}/messages/${encodeURIComponent(message.id)}/attachments/${img.attachmentIndex}/original`
+        : `data:${img.mimeType || 'image/png'};base64,${img.data}`,
     );
 
     // Check if content is empty (only whitespace) and we have images

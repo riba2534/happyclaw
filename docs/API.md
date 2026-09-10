@@ -75,6 +75,7 @@ Public：
 - `POST /api/groups/:jid/reset-owner`，admin break-glass
 - `GET /api/groups/:jid/messages`
 - `DELETE /api/groups/:jid/messages/:messageId`
+- `GET /api/groups/:jid/messages/:messageId/attachments/:index/original`
 - `GET|PUT /api/groups/:jid/env`
 - `GET|PUT /api/groups/:jid/mcp`，仅兼容旧客户端
 - `POST /api/messages`
@@ -83,6 +84,13 @@ Public：
 
 `POST /api/messages` 可以携带 Web 附件和 Runtime Session 标识。`/clear` 会进入与
 `reset-session` 相同的 owner 级破坏性检查。
+
+`GET /api/groups/:jid/messages` 返回的图片附件是降采样缩略图，并带
+`hasOriginal` 标记；原图由
+`GET /api/groups/:jid/messages/:messageId/attachments/:index/original`
+按需返回，`:index` 是附件在存储数组中的下标。存储的附件本身不变，Agent 仍然
+接收原分辨率图片。两个路由共用同一套工作区访问与 Host 执行权限检查，Runtime
+Session 消息使用 `{workspaceJid}#agent:{sessionId}` 作为 `:jid`。
 
 `POST /api/groups` 和 `PATCH /api/groups/:jid` 接受 `interaction_mode`
 （`assistant` 或 `proactive`），两者的响应体都会回显当前值。该字段存放在
