@@ -1177,11 +1177,63 @@ function nextMarkdownFence(
   return closingPattern.test(trimmed) ? null : current;
 }
 
+function stripLineEnding(line: string): string {
+  return line.endsWith('\n') ? line.slice(0, -1) : line;
+}
+
+function isMarkdownTableRow(line: string): boolean {
+  const trimmed = stripLineEnding(line).trim();
+  return trimmed.startsWith('|') && trimmed.includes('|', 1);
+}
+
+function isMarkdownTableSeparator(line: string): boolean {
+  const trimmed = stripLineEnding(line).trim();
+  return /^\|?[\t :|-]+\|[\t :|-]*\|?$/.test(trimmed) && /[-:]/.test(trimmed);
+}
+
+function collectMarkdownTable(
+  lines: string[],
+  start: number,
+): string[] | undefined {
+  const header = lines[start];
+  const separator = lines[start + 1];
+  if (!header || !separator) return undefined;
+  if (!isMarkdownTableRow(header) || !isMarkdownTableSeparator(separator)) {
+    return undefined;
+  }
+  const block = [header, separator];
+  for (let index = start + 2; index < lines.length; index++) {
+    const line = lines[index];
+    if (!isMarkdownTableRow(line)) break;
+    block.push(line);
+  }
+  return block;
+}
+
+function collectFenceBlock(
+  lines: string[],
+  start: number,
+): string[] | undefined {
+  const opener = nextMarkdownFence(lines[start] ?? '', null);
+  if (!opener) return undefined;
+  const block = [lines[start]];
+  let fence: MarkdownFence | null = opener;
+  for (let index = start + 1; index < lines.length; index++) {
+    const line = lines[index];
+    block.push(line);
+    fence = nextMarkdownFence(line, fence);
+    if (!fence) break;
+  }
+  return block;
+}
+
 /**
  * Split optimized Markdown into several `md` elements without creating
- * additional provider messages. UTF-8 byte accounting avoids breaking CJK or
- * emoji, and long fenced blocks are closed/reopened at node boundaries so each
- * element renders independently.
+ * additional provider messages. Each node is independently parsed by Feishu,
+ * so tables and fenced blocks must stay syntactically complete inside a node:
+ * whole lines are preferred, tables that fit stay together, oversized tables
+ * replay header + separator on each continuation, and fenced blocks are
+ * closed/reopened at node boundaries.
  */
 export function splitFeishuPostMarkdown(
   markdown: string,
@@ -1197,6 +1249,13 @@ export function splitFeishuPostMarkdown(
   const chunks: string[] = [];
   let current = '';
   let fence: MarkdownFence | null = null;
+
+  const closingReserve = (): number =>
+    fence ? Buffer.byteLength(`\n${fence.marker}`) : 0;
+
+  const availableBytes = (): number =>
+    maxBytes - Buffer.byteLength(current) - closingReserve();
+
   const flush = (): void => {
     if (!current) return;
     const closing = fence ? `\n${fence.marker}` : '';
@@ -1204,23 +1263,30 @@ export function splitFeishuPostMarkdown(
     current = fence ? `${fence.opener}\n` : '';
   };
 
-  const lines = markdown.match(/[^\n]*\n|[^\n]+$/g) ?? [markdown];
-  for (const line of lines) {
-    let remaining = line;
+  const appendFitting = (piece: string): boolean => {
+    if (Buffer.byteLength(piece) <= availableBytes()) {
+      current += piece;
+      return true;
+    }
+    return false;
+  };
+
+  const appendPiece = (piece: string): void => {
+    if (!piece) return;
+    if (appendFitting(piece)) return;
+    if (current) flush();
+    if (appendFitting(piece)) return;
+    let remaining = piece;
     while (remaining) {
-      const closingReserve = fence ? Buffer.byteLength(`\n${fence.marker}`) : 0;
-      const available = maxBytes - Buffer.byteLength(current) - closingReserve;
-      if (available <= 0) {
+      if (availableBytes() <= 0) {
         flush();
         continue;
       }
-      if (Buffer.byteLength(remaining) <= available) {
-        current += remaining;
+      if (appendFitting(remaining)) {
         remaining = '';
-        fence = nextMarkdownFence(line, fence);
         continue;
       }
-      const { prefix, rest } = takeUtf8Prefix(remaining, available);
+      const { prefix, rest } = takeUtf8Prefix(remaining, availableBytes());
       if (!prefix) {
         flush();
         continue;
@@ -1229,6 +1295,72 @@ export function splitFeishuPostMarkdown(
       remaining = rest;
       flush();
     }
+  };
+
+  const appendTable = (block: string[]): void => {
+    const joined = block.join('');
+    if (Buffer.byteLength(joined) <= maxBytes) {
+      appendPiece(joined);
+      return;
+    }
+    const header = `${block[0]}${block[1]}`;
+    const rows = block.slice(2);
+    if (rows.length === 0) {
+      appendPiece(joined);
+      return;
+    }
+    if (current) flush();
+    let section = header;
+    for (const row of rows) {
+      const candidate = `${section}${row}`;
+      if (Buffer.byteLength(candidate) <= maxBytes) {
+        section = candidate;
+        continue;
+      }
+      if (section !== header) appendPiece(section);
+      else if (current) flush();
+      section = `${header}${row}`;
+      if (Buffer.byteLength(section) > maxBytes) {
+        appendPiece(header);
+        appendPiece(row);
+        section = header;
+      }
+    }
+    if (section !== header) appendPiece(section);
+  };
+
+  const appendFence = (block: string[]): void => {
+    const joined = block.join('');
+    if (Buffer.byteLength(joined) <= maxBytes) {
+      appendPiece(joined);
+      return;
+    }
+    for (const line of block) {
+      appendPiece(line);
+      fence = nextMarkdownFence(line, fence);
+    }
+  };
+
+  const lines = markdown.match(/[^\n]*\n|[^\n]+$/g) ?? [markdown];
+  for (let index = 0; index < lines.length; ) {
+    if (!fence) {
+      const table = collectMarkdownTable(lines, index);
+      if (table) {
+        appendTable(table);
+        index += table.length;
+        continue;
+      }
+      const fenced = collectFenceBlock(lines, index);
+      if (fenced) {
+        appendFence(fenced);
+        index += fenced.length;
+        continue;
+      }
+    }
+    const line = lines[index];
+    appendPiece(line);
+    fence = nextMarkdownFence(line, fence);
+    index += 1;
   }
   flush();
   return chunks.length > 0 ? chunks : [''];
