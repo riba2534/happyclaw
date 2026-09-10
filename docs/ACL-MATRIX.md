@@ -103,7 +103,7 @@ Host Workspace 在 Access 之外还要求 admin。
 - 创建、修改、删除 Runtime Session
 - 写入工作区 Skills/MCP
 - 修改群聊绑定、激活方式、响应对象和 owner
-- `/clear` 的 HTTP 与 WebSocket 分支
+- `/clear`、`/fresh` 的 HTTP 与 WebSocket 分支
 
 Pin 是当前用户自己的偏好，只要求 Access，不修改共享工作区状态。
 
@@ -221,14 +221,14 @@ read-only 投影按 host-issued turn ID 精确匹配当前或已接纳的 queued
 连接建立时把认证用户 ID、角色和 Permission 固定到 Session；每个操作仍重新检查
 目标资源。
 
-| 操作                             | 权限                               |
-| -------------------------------- | ---------------------------------- |
-| `send_message`                   | Access；Host 再加 Host             |
-| `send_message` 中的 `/clear`     | Modify；Host 再加 Host             |
-| Runtime Session 消息             | Access + Session 属于该 Workspace  |
-| `terminal_start`                 | Access；只支持 Container Workspace |
-| `terminal_input` / resize / stop | 必须是当前 WebSocket 已拥有的终端  |
-| Docker Build 流                  | 对应系统管理权限                   |
+| 操作                                   | 权限                               |
+| -------------------------------------- | ---------------------------------- |
+| `send_message`                         | Access；Host 再加 Host             |
+| `send_message` 中的 `/clear`、`/fresh` | Modify；Host 再加 Host             |
+| Runtime Session 消息                   | Access + Session 属于该 Workspace  |
+| `terminal_start`                       | Access；只支持 Container Workspace |
+| `terminal_input` / resize / stop       | 必须是当前 WebSocket 已拥有的终端  |
+| Docker Build 流                        | 对应系统管理权限                   |
 
 不能仅依赖 `terminal_start` 的历史授权；终端 owner 映射和连接关闭清理是协议的一部分。
 
@@ -260,18 +260,18 @@ Owner Claim：
 命令由主进程 `handleCommand()` 处理，不经过 Web Middleware，但使用渠道 sender ID
 执行独立 Owner Gate。
 
-| 命令                                 | 权限                                              |
-| ------------------------------------ | ------------------------------------------------- |
-| `/list`、`/ls`、`/status`、`/where`  | 只读                                              |
-| `/recall`、`/rc`                     | 只读，带节流                                      |
-| `/allowlist`                         | 只读                                              |
-| `/clear`、`/bind`、`/unbind`、`/new` | IM Owner                                          |
-| `/sw`、`/spawn`                      | IM Owner                                          |
-| `/release_owner`                     | IM Owner                                          |
-| `/owner_mention`                     | 未认领群的 bootstrap，不可被 Owner Gate 锁死      |
-| `/allow`、`/disallow`                | Handler 内检查 IM Owner                           |
-| `/require_mention`                   | Handler 内按当前 owner/策略检查                   |
-| 飞书 `/steer <消息>`、`/break`       | 必须结构化真实 @Bot，并通过当前 audience/激活策略 |
+| 命令                                           | 权限                                              |
+| ---------------------------------------------- | ------------------------------------------------- |
+| `/list`、`/ls`、`/status`、`/where`            | 只读                                              |
+| `/recall`、`/rc`                               | 只读，带节流                                      |
+| `/allowlist`                                   | 只读                                              |
+| `/clear`、`/fresh`、`/bind`、`/unbind`、`/new` | IM Owner                                          |
+| `/sw`、`/spawn`                                | IM Owner                                          |
+| `/release_owner`                               | IM Owner                                          |
+| `/owner_mention`                               | 未认领群的 bootstrap，不可被 Owner Gate 锁死      |
+| `/allow`、`/disallow`                          | Handler 内检查 IM Owner                           |
+| `/require_mention`                             | Handler 内按当前 owner/策略检查                   |
+| 飞书 `/steer <消息>`、`/break`                 | 必须结构化真实 @Bot，并通过当前 audience/激活策略 |
 
 不同 Provider 的原生 sender ID namespace 不得混用。例如 QQ C2C 与 Group 使用不同
 ID 空间；owner 比对必须使用渠道适配器传入的规范化 ID。

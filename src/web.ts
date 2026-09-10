@@ -128,9 +128,16 @@ import { recordRunContextSnapshot } from './run-context-snapshot.js';
 import { RunStreamFence } from './run-stream-fence.js';
 import {
   executeSessionReset,
+  executeFreshWindowReset,
   isClearCommand,
+  parseFreshCommand,
   SESSION_RESET_FAILURE_MESSAGE,
+  SESSION_FRESH_WINDOW_FAILURE_MESSAGE,
 } from './commands.js';
+import {
+  captureWorkspaceSnapshot,
+  formatFreshWindowHandoff,
+} from './fresh-window.js';
 import {
   normalizeImageAttachments,
   toAgentImages,
@@ -370,6 +377,65 @@ app.post('/api/messages', authMiddleware, async (c) => {
         is_from_me: true,
       });
       return c.json({ error: '清除上下文失败' }, 500);
+    }
+  }
+
+  // /fresh [notes]: zero-summary window switch. Same owner gate as /clear.
+  const freshCommand = parseFreshCommand(content);
+  if (freshCommand) {
+    if (
+      !canModifyGroup(
+        { id: authUser.id, role: authUser.role },
+        { ...group, jid: chatJid },
+      )
+    ) {
+      return c.json({ error: 'Only the workspace owner can run /fresh' }, 403);
+    }
+    if (!deps) return c.json({ error: 'Server not initialized' }, 500);
+    try {
+      const snapshot = await captureWorkspaceSnapshot(
+        group.customCwd || path.join(GROUPS_DIR, group.folder),
+      );
+      const handoff = formatFreshWindowHandoff({
+        notes: freshCommand.notes,
+        snapshot,
+      });
+      await executeFreshWindowReset(
+        chatJid,
+        group.folder,
+        {
+          queue: deps.queue,
+          sessions: deps.getSessions(),
+          broadcast: broadcastNewMessage,
+          setLastAgentTimestamp: deps.setLastAgentTimestamp,
+        },
+        { agentId, handoff },
+      );
+      return c.json({ success: true, cleared: true, fresh: true });
+    } catch (err) {
+      logger.error({ chatJid, err }, '/fresh command failed');
+      const errId = crypto.randomUUID();
+      const errTs = new Date().toISOString();
+      ensureChatExists(chatJid);
+      storeMessageDirect(
+        errId,
+        chatJid,
+        '__system__',
+        'system',
+        SESSION_FRESH_WINDOW_FAILURE_MESSAGE,
+        errTs,
+        true,
+      );
+      broadcastNewMessage(chatJid, {
+        id: errId,
+        chat_jid: chatJid,
+        sender: '__system__',
+        sender_name: 'system',
+        content: SESSION_FRESH_WINDOW_FAILURE_MESSAGE,
+        timestamp: errTs,
+        is_from_me: true,
+      });
+      return c.json({ error: '零摘要换窗失败' }, 500);
     }
   }
 
@@ -1867,6 +1933,75 @@ function setupWebSocket(server: any): WebSocketServer {
                 sender: '__system__',
                 sender_name: 'system',
                 content: SESSION_RESET_FAILURE_MESSAGE,
+                timestamp: errTs,
+                is_from_me: true,
+              });
+            }
+            return;
+          }
+
+          // ── /fresh [notes]: zero-summary window switch ──
+          const wsFreshCommand = parseFreshCommand(content);
+          if (wsFreshCommand && deps && targetGroup) {
+            if (
+              !canModifyGroup(
+                { id: session.user_id, role: session.role },
+                { ...targetGroup, jid: chatJid },
+              )
+            ) {
+              sendWsError('Only the workspace owner can run /fresh', chatJid);
+              return;
+            }
+            if (agentId) {
+              const agent = getAgent(agentId);
+              if (!agent || agent.chat_jid !== chatJid) {
+                sendWsError('Agent not found', chatJid);
+                return;
+              }
+            }
+            const errorTargetJid = agentId
+              ? `${chatJid}#agent:${agentId}`
+              : chatJid;
+            try {
+              const snapshot = await captureWorkspaceSnapshot(
+                targetGroup.customCwd ||
+                  path.join(GROUPS_DIR, targetGroup.folder),
+              );
+              const handoff = formatFreshWindowHandoff({
+                notes: wsFreshCommand.notes,
+                snapshot,
+              });
+              await executeFreshWindowReset(
+                chatJid,
+                targetGroup.folder,
+                {
+                  queue: deps.queue,
+                  sessions: deps.getSessions(),
+                  broadcast: broadcastNewMessage,
+                  setLastAgentTimestamp: deps.setLastAgentTimestamp,
+                },
+                { agentId, handoff },
+              );
+            } catch (err) {
+              logger.error({ chatJid, agentId, err }, '/fresh command failed');
+              const errId = crypto.randomUUID();
+              const errTs = new Date().toISOString();
+              ensureChatExists(errorTargetJid);
+              storeMessageDirect(
+                errId,
+                errorTargetJid,
+                '__system__',
+                'system',
+                SESSION_FRESH_WINDOW_FAILURE_MESSAGE,
+                errTs,
+                true,
+              );
+              broadcastNewMessage(errorTargetJid, {
+                id: errId,
+                chat_jid: errorTargetJid,
+                sender: '__system__',
+                sender_name: 'system',
+                content: SESSION_FRESH_WINDOW_FAILURE_MESSAGE,
                 timestamp: errTs,
                 is_from_me: true,
               });

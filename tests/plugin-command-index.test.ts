@@ -37,10 +37,7 @@ vi.mock('../src/logger.js', () => ({
 const pluginUtils = await import('../src/plugin-utils.js');
 const cmdIndex = await import('../src/plugin-command-index.js');
 
-const {
-  writeUserPluginsV2,
-  getUserPluginRuntimePath,
-} = pluginUtils;
+const { writeUserPluginsV2, getUserPluginRuntimePath } = pluginUtils;
 const {
   buildCommandIndex,
   resolveCommand,
@@ -116,11 +113,26 @@ afterEach(() => {
 });
 
 describe('isBuiltinCommandName', () => {
-  test('covers all 17 builtin command names', () => {
+  test('covers all 18 builtin command names', () => {
     for (const name of [
-      'clear', 'list', 'ls', 'status', 'recall', 'rc', 'where',
-      'unbind', 'bind', 'new', 'require_mention', 'owner_mention',
-      'sw', 'spawn', 'allow', 'disallow', 'allowlist',
+      'clear',
+      'fresh',
+      'list',
+      'ls',
+      'status',
+      'recall',
+      'rc',
+      'where',
+      'unbind',
+      'bind',
+      'new',
+      'require_mention',
+      'owner_mention',
+      'sw',
+      'spawn',
+      'allow',
+      'disallow',
+      'allowlist',
     ]) {
       expect(isBuiltinCommandName(name)).toBe(true);
     }
@@ -194,8 +206,7 @@ describe('buildCommandIndex — YAML frontmatter parsing', () => {
         {
           name: 'broken',
           // ': : :' is invalid YAML mapping
-          content:
-            '---\n: : :\n: invalid yaml ::\n---\n\nbody text\n',
+          content: '---\n: : :\n: invalid yaml ::\n---\n\nbody text\n',
         },
       ],
     });

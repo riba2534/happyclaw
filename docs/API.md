@@ -82,8 +82,9 @@ Public：
 - `GET /api/follow-ups`
 - `POST /api/follow-ups/:messageId/action`
 
-`POST /api/messages` 可以携带 Web 附件和 Runtime Session 标识。`/clear` 会进入与
-`reset-session` 相同的 owner 级破坏性检查。
+`POST /api/messages` 可以携带 Web 附件和 Runtime Session 标识。`/clear` 与
+`/fresh` 会进入与 `reset-session` 相同的 owner 级破坏性检查。`/fresh` 会开启
+新的 SDK 窗口并写入零摘要交接说明，不删除库中的旧历史，也不关闭 auto-compact。
 
 `GET /api/groups/:jid/messages` 返回的图片附件是降采样缩略图，并带
 `hasOriginal` 标记；原图由

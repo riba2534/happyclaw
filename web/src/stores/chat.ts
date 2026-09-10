@@ -1004,6 +1004,7 @@ function isTerminalSystemMessage(
   return (
     message.sender === '__system__' &&
     (message.content === 'context_reset' ||
+      message.content === 'context_fresh_window' ||
       message.content.startsWith('agent_error:') ||
       message.content.startsWith('agent_max_retries:') ||
       message.content.startsWith('context_overflow:'))

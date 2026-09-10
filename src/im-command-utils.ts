@@ -90,7 +90,7 @@ export function formatWorkspaceList(
 
   lines.push('');
   lines.push(
-    '💡 /steer <消息> 插队 · /break 停止 · /sw <消息> 并行任务 · /clear 重置',
+    '💡 /steer <消息> 插队 · /break 停止 · /sw <消息> 并行任务 · /clear 重置 · /fresh [备注] 零摘要换窗',
   );
   return lines.join('\n');
 }
@@ -271,6 +271,7 @@ export function formatSystemStatus(
  */
 export const OWNER_REQUIRED_IM_COMMANDS: ReadonlySet<string> = new Set([
   'clear',
+  'fresh',
   'bind',
   'unbind',
   'new',

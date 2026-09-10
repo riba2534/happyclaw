@@ -17,6 +17,24 @@ describe('resolveSystemMessage', () => {
     });
   });
 
+  test('context_fresh_window 返回零摘要换窗 divider', () => {
+    expect(resolveSystemMessage('context_fresh_window')).toEqual({
+      style: 'divider',
+      text: '已开启新上下文窗口（零摘要换窗）',
+    });
+  });
+
+  test('fresh-window handoff marker 返回短 divider，不展示全文', () => {
+    expect(
+      resolveSystemMessage(
+        '[HAPPYCLAW_FRESH_WINDOW_HANDOFF]\n\n## Notes\n已修好登录',
+      ),
+    ).toEqual({
+      style: 'divider',
+      text: '新窗口交接说明（零摘要）',
+    });
+  });
+
   test('query_interrupted 返回中性的停止状态', () => {
     expect(resolveSystemMessage('query_interrupted')).toEqual({
       style: 'divider',
