@@ -920,6 +920,7 @@ agentProfileRoutes.get('/:id/workspaces', authMiddleware, async (c) => {
         session_id: mount.session_id ?? null,
         routing_mode: mount.routing_mode,
         reply_policy: mount.reply_policy,
+        interaction_mode_override: mount.interaction_mode_override ?? null,
         activation_mode: mount.activation_mode,
         audience_mode: mount.audience_mode,
         owner_im_id: mount.owner_im_id ?? null,

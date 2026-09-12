@@ -264,6 +264,12 @@ const InteractionModeSchema = z
   .enum(['assistant', 'proactive', 'persona'])
   .transform((mode) => (mode === 'persona' ? 'proactive' : mode));
 
+export const ChannelMountInteractionModePatchSchema = z
+  .object({
+    interaction_mode_override: z.enum(['assistant', 'proactive']).nullable(),
+  })
+  .strict();
+
 export const AdditionalMountCreateSchema = z
   .object({
     host_path: z.string().trim().min(1).max(4096),

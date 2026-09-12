@@ -1,43 +1,47 @@
 /**
- * Top-level Feishu v2 Agent reply card builders.
- *
- *   buildAgentReplyCard(input)
- *       Terminal (static) card. Header is status-driven: a successful `done`
- *       reply drops the header (unless an explicit title is passed) so short
- *       status messages aren't reduced to a truncated header, while
- *       running/warning/error keep a status-coloured header. Followed by body
- *       chunks + metadata row (2×2) + optional thinking/tool panels + footer.
- *       Suitable for finalized Agent replies and error cards.
- *
- *   buildStreamingAgentCard(opts)
- *       Initial streaming skeleton. Preserves the 5 slot element_ids that
- *       feishu-streaming-card.ts patches via cardElement.content(). The aux
- *       before/after slots remain plain markdown so the existing flush loop
- *       keeps working unchanged.
+ * Feishu JSON 2.0 reply cards share a stable reading order: current status,
+ * answer, optional execution details, then metadata/actions. Live cards keep
+ * independent element IDs for content updates without rebuilding the layout.
  */
 
 import { optimizeMarkdownStyle } from '../feishu-markdown-style.js';
+import { CARDKIT_MARKDOWN_MAX_CHARS } from './capacity.js';
+import { splitCardPages } from './pagination.js';
 import type { AgentCardInput, CardMeta, FeishuCardV2 } from './types.js';
 import {
   buildHeader,
   buildMetaRow,
   buildBodyChunks,
-  buildThinkingPanel,
-  buildToolsPanel,
+  buildFinalDetails,
+  buildStreamingDetails,
   buildFooter,
   buildStreamingPanels,
-  buildStatusBannerText,
   statusHeadline,
   CARD_ELEMENT_IDS,
   type StreamingPanelsInit,
 } from './sections.js';
 
 /** Per-platform typewriter tuning — mobile feels faster, PC breathes more. */
-const STREAMING_CONFIG = {
+export const STREAMING_CONFIG = {
   print_frequency_ms: { default: 30, android: 25, ios: 40, pc: 50 },
   print_step: { default: 2, android: 3, ios: 4, pc: 5 },
   print_strategy: 'fast' as const,
 };
+
+/** Several live content slots can share one card without exceeding the
+ * per-content-update character limit. Keep the first established ID stable. */
+export function buildStreamingContentElements(text: string) {
+  return splitCardPages(text, { maxChars: CARDKIT_MARKDOWN_MAX_CHARS }).map(
+    (page, index) => ({
+      tag: 'markdown' as const,
+      content: page.text,
+      element_id:
+        index === 0
+          ? CARD_ELEMENT_IDS.MAIN_CONTENT
+          : `${CARD_ELEMENT_IDS.MAIN_CONTENT}_${index}`,
+    }),
+  );
+}
 
 export function buildAgentReplyCard(input: AgentCardInput): FeishuCardV2 {
   // Apply Feishu-friendly markdown transformation once, up front.
@@ -47,7 +51,7 @@ export function buildAgentReplyCard(input: AgentCardInput): FeishuCardV2 {
     : undefined;
 
   const explicitTitle = input.title?.trim();
-  const body = optimizedText.trim();
+  const body = optimizedText;
 
   // Header policy: always render a status-coloured header so the
   // streaming→terminal transition stays visually consistent (blue「生成中」→
@@ -71,27 +75,23 @@ export function buildAgentReplyCard(input: AgentCardInput): FeishuCardV2 {
 
   const header = buildHeader(normalizedInput);
   const elements: Array<Record<string, unknown>> = [];
-  if (body) {
+  if (body.trim()) {
     elements.push(...buildBodyChunks(body));
   }
 
   const metaRow = buildMetaRow(input.meta);
-  const thinkingPanel = buildThinkingPanel(optimizedThinking);
-  const toolsPanel = buildToolsPanel(input.meta?.toolCalls);
+  const details = buildFinalDetails(normalizedInput);
   const footer = buildFooter(input.footer, input.completedAtMs);
 
-  const hasFooterArea =
-    metaRow.length + thinkingPanel.length + toolsPanel.length + footer.length >
-    0;
+  const hasFooterArea = metaRow.length + details.length + footer.length > 0;
   if (hasFooterArea) {
     // Native v2 hr — components.md §hr confirms it's a valid component outside
     // of CardKit's live-streaming patch surface.
     elements.push({ tag: 'hr' });
   }
 
+  elements.push(...details);
   elements.push(...metaRow);
-  elements.push(...thinkingPanel);
-  elements.push(...toolsPanel);
   elements.push(...footer);
 
   const config: Record<string, unknown> = {
@@ -130,8 +130,8 @@ export interface StreamingCardBuildOptions {
   /** Initial content for structured runtime panels. */
   panels?: StreamingPanelsInit;
   /**
-   * If true, use the "rich" structured skeleton (STATUS_BANNER + 4 collapsible
-   * panels). If false, use the legacy flat skeleton (AUX_BEFORE/AUX_AFTER).
+   * If true, use the answer-first skeleton with optional execution details.
+   * If false, use the legacy flat skeleton (AUX_BEFORE/AUX_AFTER).
    * Default: true.
    */
   rich?: boolean;
@@ -141,8 +141,9 @@ export function buildStreamingAgentCard(
   opts: StreamingCardBuildOptions = {},
 ): FeishuCardV2 {
   const initialText = opts.initialText ?? '';
-  const visibleInitialText =
-    initialText.trim() || '> 正在分析请求，最终结论完成后会显示在这里。';
+  const visibleInitialText = initialText.trim()
+    ? initialText
+    : '> 正在处理请求…';
   // Header/summary title follows the same status-driven policy as the terminal
   // card: an explicit title wins, otherwise a minimal status word ("生成中") —
   // never the reply's first line. This keeps the streaming→terminal transition
@@ -159,21 +160,17 @@ export function buildStreamingAgentCard(
     meta: opts.meta ? { model: opts.meta.model } : undefined,
   });
 
-  const mainContentEl = {
-    tag: 'markdown',
-    content: visibleInitialText,
-    element_id: CARD_ELEMENT_IDS.MAIN_CONTENT,
-  };
+  const mainContentElements = buildStreamingContentElements(visibleInitialText);
   const interruptBtn = {
     tag: 'button',
     text: { tag: 'plain_text', content: '⏹ 停止回复' },
     type: 'danger',
-    value: { action: 'interrupt_stream' },
+    behaviors: [{ type: 'callback', value: { action: 'interrupt_stream' } }],
     element_id: CARD_ELEMENT_IDS.INTERRUPT_BTN,
   };
   const footerNote = {
     tag: 'markdown',
-    content: `<font color='grey'>${buildStatusBannerText({ phase: 'streaming' })}</font>`,
+    content: '',
     element_id: CARD_ELEMENT_IDS.FOOTER_NOTE,
     text_size: 'notation',
   };
@@ -202,7 +199,7 @@ export function buildStreamingAgentCard(
             element_id: CARD_ELEMENT_IDS.AUX_BEFORE,
             text_size: 'notation',
           },
-          mainContentEl,
+          ...mainContentElements,
           {
             tag: 'markdown',
             content: '',
@@ -241,7 +238,8 @@ export function buildStreamingAgentCard(
       vertical_spacing: 'medium',
       elements: [
         ...buildStreamingPanels(panelsInit),
-        mainContentEl,
+        ...mainContentElements,
+        ...buildStreamingDetails(panelsInit),
         interruptBtn,
         footerNote,
       ],

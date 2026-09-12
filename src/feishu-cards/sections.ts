@@ -46,6 +46,7 @@ export const CARD_ELEMENT_IDS = {
   ASK_CONTENT: 'ask_md',
   TIMELINE_PANEL: 'timeline_panel',
   TIMELINE_CONTENT: 'timeline_md',
+  DETAILS_PANEL: 'runtime_details',
 
   // Shared core slots
   MAIN_CONTENT: 'main_content',
@@ -191,14 +192,22 @@ export function buildHeader(input: AgentCardInput): El {
   return header;
 }
 
-/** 2×2 metadata row via div.fields. Returns [] when no meta is useful. */
+/** Compact metadata columns that wrap into rows on narrow clients. */
 export function buildMetaRow(meta: CardMeta | undefined): El[] {
   if (!meta) return [];
   const fields: El[] = [];
   const push = (title: string, value: string): void => {
     fields.push({
-      is_short: true,
-      text: { tag: 'lark_md', content: `**${title}**\n${value}` },
+      tag: 'column',
+      width: 'weighted',
+      weight: 1,
+      elements: [
+        {
+          tag: 'markdown',
+          content: `**${title}**\n${value}`,
+          text_size: 'notation',
+        },
+      ],
     });
   };
   if (meta.durationMs !== undefined)
@@ -219,7 +228,16 @@ export function buildMetaRow(meta: CardMeta | undefined): El[] {
   if (toolCount !== undefined && toolCount > 0)
     push('🛠 工具', `${toolCount} 次`);
   if (fields.length === 0) return [];
-  return [{ tag: 'div', fields, element_id: CARD_ELEMENT_IDS.META_ROW }];
+  return [
+    {
+      tag: 'column_set',
+      flex_mode: 'stretch',
+      background_style: 'default',
+      horizontal_spacing: '8px',
+      columns: fields,
+      element_id: CARD_ELEMENT_IDS.META_ROW,
+    },
+  ];
 }
 
 /** Main content + collapsible "continue reading" sections for overflow. */
@@ -234,16 +252,14 @@ export function buildBodyChunks(bodyText: string): El[] {
       },
     ];
   }
-  // Flatten all sections into consecutive markdown elements — no collapsible
-  // "继续阅读" wrappers. Splitting is only a hard necessity because each
-  // markdown element caps around 4000 chars; we want every chunk visible by
-  // default so users can read the full reply without clicking.
+  // Keep all body sections visible. The 4K target is a layout choice; actual
+  // provider byte limits and continuation cards belong to the delivery layer.
   const els: El[] = sections.map((section, i) => ({
     tag: 'markdown',
     content: section.text,
     // Only the first chunk keeps the streaming element_id so cardElement.content()
     // patches continue to target it; follow-up chunks are static.
-    ...(i === 0 ? { element_id: CARD_ELEMENT_IDS.MAIN_CONTENT } : {}),
+    element_id: i === 0 ? CARD_ELEMENT_IDS.MAIN_CONTENT : `body_${i}`,
   }));
   return els;
 }
@@ -603,72 +619,75 @@ export interface StreamingPanelsInit {
   expandTimeline?: boolean;
 }
 
-/**
- * Build the full runtime panel column for the streaming skeleton (ordered).
- *
- * Panel order aligns with the web StreamingDisplay component:
- *   status banner → ask slot (invisible until a real question exists) →
- *   progress → tasks → tools → thinking → timeline
- * Each panel's inner markdown has its own element_id so the controller can
- * patch it via cardElement.content() without touching the panel structure.
- */
+/** Stable detail slots share one optional, collapsed execution panel. */
+const DETAIL_SLOTS = [
+  ['progressContent', CARD_ELEMENT_IDS.PROGRESS_CONTENT, '任务进度'],
+  ['taskContent', CARD_ELEMENT_IDS.TASK_CONTENT, '子任务'],
+  ['toolsContent', CARD_ELEMENT_IDS.TOOLS_CONTENT, '工具调用'],
+  ['thinkingContent', CARD_ELEMENT_IDS.THINKING_CONTENT, '思考摘要'],
+  ['timelineContent', CARD_ELEMENT_IDS.TIMELINE_CONTENT, '最近活动'],
+] as const;
+
+/** Apply the same labels when creating a slot and updating its content. */
+export function formatRuntimeDetail(
+  elementId: string,
+  content: string,
+): string {
+  if (!content.trim()) return '';
+  const slot = DETAIL_SLOTS.find((entry) => entry[1] === elementId);
+  return slot ? `**${slot[2]}**\n${content}` : content;
+}
+
+export function buildStreamingDetails(init: StreamingPanelsInit): El[] {
+  if (!DETAIL_SLOTS.some(([key]) => init[key]?.trim())) return [];
+  return [
+    collapsiblePanel({
+      elementId: CARD_ELEMENT_IDS.DETAILS_PANEL,
+      title: '**执行详情**',
+      expanded:
+        init.expandProgress ||
+        init.expandTools ||
+        init.expandThinking ||
+        init.expandTimeline ||
+        false,
+      backgroundColor: 'grey-50',
+      elements: DETAIL_SLOTS.map(([key, elementId]) => ({
+        tag: 'markdown',
+        element_id: elementId,
+        content: formatRuntimeDetail(elementId, init[key] ?? ''),
+        text_size: 'notation',
+      })),
+    }),
+  ];
+}
+
+/** The caller places the main answer between these fixed slots and details. */
 export function buildStreamingPanels(init: StreamingPanelsInit): El[] {
   return [
     {
       tag: 'markdown',
       element_id: CARD_ELEMENT_IDS.STATUS_BANNER,
       content: init.statusBanner ?? buildStatusBannerText({ phase: 'idle' }),
+      text_size: 'notation',
     },
-    // Keep one patchable markdown slot in the streaming skeleton, but do not
-    // render a fake 「等待你的回复 / 暂无提问」panel before the agent
-    // has actually invoked AskUserQuestion. CardKit streaming mode can patch
-    // element content but cannot safely insert/remove a collapsible panel, so
-    // the real prompt (including its heading) is written into this blank slot.
     {
       tag: 'markdown',
       element_id: CARD_ELEMENT_IDS.ASK_CONTENT,
       content: init.askContent ?? '',
     },
-    buildRuntimePanel({
-      elementId: CARD_ELEMENT_IDS.PROGRESS_PANEL,
-      contentElementId: CARD_ELEMENT_IDS.PROGRESS_CONTENT,
-      title: '**📋 任务进度**',
-      expanded: init.expandProgress ?? false,
-      content:
-        init.progressContent ?? "<font color='grey'>等待任务规划…</font>",
-    }),
-    buildRuntimePanel({
-      elementId: CARD_ELEMENT_IDS.TASK_PANEL,
-      contentElementId: CARD_ELEMENT_IDS.TASK_CONTENT,
-      title: '**🤖 子 Agent / Task**',
-      expanded: init.expandProgress ?? false,
-      content: init.taskContent ?? "<font color='grey'>暂无子任务…</font>",
-    }),
-    buildRuntimePanel({
-      elementId: CARD_ELEMENT_IDS.TOOLS_PANEL,
-      contentElementId: CARD_ELEMENT_IDS.TOOLS_CONTENT,
-      title: '**🛠 工具时间轴**',
-      expanded: init.expandTools ?? false,
-      backgroundColor: PANEL_TINT.tools,
-      content: init.toolsContent ?? "<font color='grey'>尚未调用工具…</font>",
-    }),
-    buildRuntimePanel({
-      elementId: CARD_ELEMENT_IDS.THINKING_PANEL,
-      contentElementId: CARD_ELEMENT_IDS.THINKING_CONTENT,
-      title: '**💭 思考过程**',
-      expanded: init.expandThinking ?? false,
-      backgroundColor: PANEL_TINT.thinking,
-      content:
-        init.thinkingContent ?? "<font color='grey'>尚未开始思考…</font>",
-    }),
-    buildRuntimePanel({
-      elementId: CARD_ELEMENT_IDS.TIMELINE_PANEL,
-      contentElementId: CARD_ELEMENT_IDS.TIMELINE_CONTENT,
-      title: '**📝 调用轨迹**',
-      expanded: init.expandTimeline ?? false,
-      content: init.timelineContent ?? "<font color='grey'>暂无调用记录</font>",
-    }),
   ];
+}
+
+/** Keep the completed reply's answer → details → metadata reading order. */
+export function buildFinalDetails(input: AgentCardInput): El[] {
+  const tools = input.meta?.toolCalls;
+  const toolsContent = tools?.length
+    ? tools.map((tool) => `- \`${tool.name}\` · ${tool.count} 次`).join('\n')
+    : '';
+  return buildStreamingDetails({
+    thinkingContent: input.thinking,
+    toolsContent,
+  });
 }
 
 /** One runtime panel (collapsible wrapping a single patchable markdown). */

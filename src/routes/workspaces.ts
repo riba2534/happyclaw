@@ -3,6 +3,7 @@ import type { Variables } from '../web-context.js';
 import {
   hasHostExecutionPermission,
   isHostExecutionGroup,
+  getWebDeps,
 } from '../web-context.js';
 import { canAccessGroup, canModifyGroup } from '../group-acl.js';
 import { authMiddleware } from '../middleware/auth.js';
@@ -10,6 +11,9 @@ import type { AuthUser, RegisteredGroup } from '../types.js';
 import {
   getAgentProfileForUser,
   getRegisteredGroup,
+  getChannelMount,
+  getAgentChannelMount,
+  setChannelMountInteractionModeOverride,
   getWorkspaceAgentProfileId,
   getWorkspaceInteractionMode,
   listAgentChannelMountsByWorkspace,
@@ -18,7 +22,10 @@ import {
   type AgentChannelMountRecord,
   type WorkspaceRecord,
 } from '../db.js';
-import { HappyClawOwnerProfileMutationSchema } from '../schemas.js';
+import {
+  HappyClawOwnerProfileMutationSchema,
+  ChannelMountInteractionModePatchSchema,
+} from '../schemas.js';
 import {
   clearHappyClawOwnerPreferredAddress,
   getHappyClawOwnerProfileProjection,
@@ -91,6 +98,10 @@ function serializeMount(mount: AgentChannelMountRecord) {
     session_id: mount.session_id ?? null,
     routing_mode: mount.routing_mode,
     reply_policy: mount.reply_policy,
+    interaction_mode_override: mount.interaction_mode_override ?? null,
+    interaction_mode:
+      mount.interaction_mode_override ??
+      getWorkspaceInteractionMode(mount.workspace_folder ?? ''),
     activation_mode: mount.activation_mode,
     audience_mode: mount.audience_mode,
     owner_im_id: mount.owner_im_id ?? null,
@@ -340,5 +351,138 @@ workspaceRoutes.get('/:jid/channel-mounts', authMiddleware, (c) => {
     listAgentChannelMountsByWorkspace(jid).map(serializeMount);
   return c.json({ channel_mounts: channelMounts });
 });
+
+workspaceRoutes.patch(
+  '/:jid/channel-mounts/:channelJid',
+  authMiddleware,
+  async (c) => {
+    const user = c.get('user') as AuthUser;
+    const jid = c.req.param('jid');
+    const channelJid = c.req.param('channelJid');
+    const workspace = listWorkspaceRecords().find(
+      (record) => record.jid === jid,
+    );
+    const access = workspace ? resolveWorkspaceAccess(user, workspace) : null;
+    const mount = getChannelMount(channelJid);
+    const channel = getRegisteredGroup(channelJid);
+    if (
+      !access ||
+      !mount ||
+      mount.workspace_jid !== jid ||
+      !channel ||
+      !canModifyGroup(user, access.group) ||
+      !canModifyGroup(user, { ...channel, jid: channelJid })
+    ) {
+      return c.json({ error: 'Channel mount not found' }, 404);
+    }
+    const parsed = ChannelMountInteractionModePatchSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success)
+      return c.json(
+        { error: 'Invalid request', details: parsed.error.format() },
+        400,
+      );
+    const deps = getWebDeps();
+    if (!deps)
+      return c.json({ error: 'Runtime is not ready', retryable: true }, 503);
+    const {
+      quiesceWorkspaceRunnersAroundCommit,
+      withAgentProfileLocks,
+      WorkspaceRuntimeQuiesceError,
+    } = await import('../agent-profile-runtime.js');
+    const mode = parsed.data.interaction_mode_override;
+    const profileId = getWorkspaceAgentProfileId(access.workspace.folder);
+    const stillOwnsBinding = () => {
+      const latestWorkspace = getRegisteredGroup(jid);
+      const latestChannel = getRegisteredGroup(channelJid);
+      return Boolean(
+        latestWorkspace &&
+        latestChannel &&
+        latestWorkspace.folder === access.workspace.folder &&
+        canModifyGroup(user, { ...latestWorkspace, jid }) &&
+        canModifyGroup(user, { ...latestChannel, jid: channelJid }),
+      );
+    };
+    return withAgentProfileLocks(
+      [profileId ?? `workspace:${jid}`],
+      async () => {
+        const current = getChannelMount(channelJid);
+        if (
+          !current ||
+          !stillOwnsBinding() ||
+          current.workspace_jid !== jid ||
+          current.session_id !== mount.session_id
+        ) {
+          return c.json(
+            { error: 'Channel binding changed; reload and retry' },
+            409,
+          );
+        }
+        const runtimeBlocked =
+          deps.queue.isGroupRuntimeSafetyBlocked?.(jid) ?? false;
+        if (
+          (current.interaction_mode_override ?? null) === mode &&
+          !runtimeBlocked
+        ) {
+          return c.json({
+            channel_mount: serializeMount(getAgentChannelMount(channelJid)!),
+          });
+        }
+        try {
+          const result = await quiesceWorkspaceRunnersAroundCommit(
+            deps,
+            [{ folder: access.workspace.folder, primaryJid: jid }],
+            {
+              reason: `Channel ${channelJid} interaction override changed`,
+              onPostCommitFailure: (jids) =>
+                deps.queue.blockGroupsForRuntimeSafety?.(
+                  jids,
+                  `Channel ${channelJid} runtime cleanup failed after interaction override commit`,
+                ),
+            },
+            () => {
+              const latest = getChannelMount(channelJid);
+              if (
+                !latest ||
+                !stillOwnsBinding() ||
+                latest.workspace_jid !== jid ||
+                latest.session_id !== current.session_id
+              ) {
+                return false;
+              }
+              // Only change the mount setting. Product conversation bindings,
+              // history and SDK resume rows remain available to runtime admission.
+              return Boolean(
+                setChannelMountInteractionModeOverride(channelJid, jid, mode),
+              );
+            },
+          );
+          if (!result.value)
+            return c.json(
+              { error: 'Channel binding changed; reload and retry' },
+              409,
+            );
+          deps.queue.unblockGroupsForRuntimeSafety?.(result.runtimeJids);
+          return c.json({
+            channel_mount: serializeMount(getAgentChannelMount(channelJid)!),
+          });
+        } catch (error) {
+          if (!(error instanceof WorkspaceRuntimeQuiesceError)) throw error;
+          return c.json(
+            {
+              error: error.persisted
+                ? 'Setting saved, but runtime cleanup failed; retry the request'
+                : 'Could not stop the active runtime; setting was not changed',
+              persisted: error.persisted,
+              retryable: true,
+            },
+            503,
+          );
+        }
+      },
+    );
+  },
+);
 
 export default workspaceRoutes;

@@ -1,11 +1,4 @@
-/**
- * Shared types for the Feishu v2 Agent reply card builder.
- *
- * The builder produces two shapes of cards from the same input surface:
- *   - Static (terminal) card: structured layout with collapsible sections.
- *   - Streaming card: slot-compatible skeleton (5 element_id slots) so the
- *     existing `feishu-streaming-card.ts` patch mechanism keeps working.
- */
+/** Shared input types for live and completed Feishu JSON 2.0 reply cards. */
 
 export type CardStatus = 'running' | 'done' | 'warning' | 'error';
 

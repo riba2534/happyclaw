@@ -1955,6 +1955,52 @@ export function completeChannelOutbox(
   return changed.changes === 1;
 }
 
+/** Retire a definitively rejected Feishu size parent only after its replacement
+ * pages have all been acknowledged. Preserve the budget and payload identity so
+ * an exact retry can traverse the same children instead of replaying the parent. */
+export function markFeishuCapacityReplacementDelivered(
+  id: string,
+  payloadHash: string,
+  replacementBudget: number,
+): boolean {
+  if (!Number.isInteger(replacementBudget) || replacementBudget < 256)
+    return false;
+  const item = getChannelOutboxItem(id);
+  if (!item || item.provider !== 'feishu' || item.payloadHash !== payloadHash)
+    return false;
+  if (item.status === 'cancelled') {
+    try {
+      const marker = JSON.parse(item.error ?? '');
+      return (
+        marker.kind === 'feishu_capacity_replaced' &&
+        marker.payloadHash === payloadHash &&
+        marker.replacementBudget === replacementBudget
+      );
+    } catch {
+      return false;
+    }
+  }
+  if (item.status !== 'failed' || !/\b230025\b/.test(item.error ?? ''))
+    return false;
+  const marker = JSON.stringify({
+    kind: 'feishu_capacity_replaced',
+    code: 230025,
+    replacementBudget,
+    payloadHash,
+    originalError: item.error,
+  });
+  return (
+    requireDatabase()
+      .prepare(
+        `UPDATE channel_outbox SET status = 'cancelled', error = ?,
+       revision = revision + 1, updated_at = ?
+     WHERE id = ? AND provider = 'feishu' AND status = 'failed'
+       AND payload_hash = ? AND error = ?`,
+      )
+      .run(marker, isoNow(), id, payloadHash, item.error).changes === 1
+  );
+}
+
 export function failChannelOutbox(
   claim: Pick<ClaimedChannelOutboxItem, 'id' | 'leaseOwner' | 'leaseToken'>,
   input: {

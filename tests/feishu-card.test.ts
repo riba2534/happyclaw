@@ -9,7 +9,6 @@ import {
   splitIntoBodySections,
   SECTION_SOFT_LIMIT,
   SECTION_HARD_LIMIT,
-  MAX_SECTIONS,
 } from '../src/feishu-cards/length.js';
 import {
   CARD_ELEMENT_IDS,
@@ -211,16 +210,18 @@ describe('splitIntoBodySections', () => {
     const text = Array.from({ length: 6 }, () => para).join('\n\n');
     const sections = splitIntoBodySections(text);
     for (const section of sections) {
-      // Allow the last bin to exceed if it's a merged tail with clipping.
       expect(section.text.length).toBeLessThanOrEqual(SECTION_HARD_LIMIT);
     }
   });
 
-  test(`never exceeds MAX_SECTIONS (${MAX_SECTIONS})`, () => {
-    const para = 'z'.repeat(3500);
-    const text = Array.from({ length: 12 }, () => para).join('\n\n');
+  test('preserves every section beyond the former four-section limit', () => {
+    const text = Array.from(
+      { length: 12 },
+      (_, i) => `${i}:` + 'z'.repeat(3500),
+    ).join('\n\n');
     const sections = splitIntoBodySections(text);
-    expect(sections.length).toBeLessThanOrEqual(MAX_SECTIONS);
+    expect(sections.length).toBeGreaterThan(4);
+    expect(sections.map((section) => section.text).join('')).toBe(text);
   });
 });
 
@@ -534,7 +535,7 @@ describe('buildAgentReplyCard', () => {
     expect(countTag(card, 'collapsible_panel')).toBe(0);
   });
 
-  test('meta renders a 2×2 div.fields row', () => {
+  test('meta uses responsive JSON 2.0 columns', () => {
     const card = buildAgentReplyCard({
       status: 'done',
       text: 'reply',
@@ -546,10 +547,12 @@ describe('buildAgentReplyCard', () => {
         toolCount: 3,
       },
     });
-    expect(countTag(card, 'div')).toBe(1);
+    expect(countTag(card, 'column_set')).toBe(1);
+    expect(countTag(card, 'column')).toBe(4);
+    expect(countTag(card, 'div')).toBe(0);
   });
 
-  test('thinking + toolCalls render dedicated collapsible panels', () => {
+  test('thinking + toolCalls share one execution details panel', () => {
     const card = buildAgentReplyCard({
       status: 'done',
       text: 'reply',
@@ -562,8 +565,10 @@ describe('buildAgentReplyCard', () => {
       },
     });
     const ids = collectElementIds(card);
-    expect(ids).toContain(CARD_ELEMENT_IDS.THINKING_PANEL_FINAL);
-    expect(ids).toContain(CARD_ELEMENT_IDS.TOOLS_PANEL_FINAL);
+    expect(ids).toContain(CARD_ELEMENT_IDS.DETAILS_PANEL);
+    expect(ids).toContain(CARD_ELEMENT_IDS.THINKING_CONTENT);
+    expect(ids).toContain(CARD_ELEMENT_IDS.TOOLS_CONTENT);
+    expect(countTag(card, 'collapsible_panel')).toBe(1);
   });
 
   test('footer renders as grey notation markdown', () => {
@@ -600,27 +605,20 @@ describe('buildAgentReplyCard', () => {
     expect(footerContent).toContain("millisecond='1700000000000'");
   });
 
-  test('tools panel title carries a number_tag badge', () => {
+  test('execution details keep exact tool counts, including zero', () => {
     const card = buildAgentReplyCard({
       status: 'done',
       text: 'reply',
-      meta: { toolCalls: [{ name: 'Read', count: 5 }] },
+      meta: {
+        toolCalls: [
+          { name: 'Read', count: 105 },
+          { name: 'Write', count: 0 },
+        ],
+      },
     });
-    const findPanel = (node: unknown): Record<string, unknown> | null => {
-      if (!node || typeof node !== 'object') return null;
-      const obj = node as Record<string, unknown>;
-      if (obj.element_id === CARD_ELEMENT_IDS.TOOLS_PANEL_FINAL) return obj;
-      for (const v of Object.values(obj)) {
-        const found = findPanel(v);
-        if (found) return found;
-      }
-      return null;
-    };
-    const panel = findPanel(card);
-    expect(panel).not.toBeNull();
-    const header = panel!.header as Record<string, unknown>;
-    const title = header.title as Record<string, unknown>;
-    expect(title.content).toContain('<number_tag');
+    expect(JSON.stringify(card)).toContain('Read');
+    expect(JSON.stringify(card)).toContain('105 次');
+    expect(JSON.stringify(card)).toContain('0 次');
   });
 
   test('uses native hr component (not markdown ---)', () => {
@@ -669,7 +667,7 @@ describe('buildAgentReplyCard', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  test('tool breakdown compresses tail into a single "… 其余" line', () => {
+  test('execution details preserve all aggregated tool records', () => {
     const toolCalls = Array.from({ length: 15 }, (_, i) => ({
       name: `tool_${i}`,
       count: 1,
@@ -679,30 +677,15 @@ describe('buildAgentReplyCard', () => {
       text: 'reply',
       meta: { toolCalls },
     });
-    // Walk the tools panel to find its inner markdown content.
-    const findContent = (node: unknown): string | null => {
-      if (node && typeof node === 'object') {
-        const obj = node as Record<string, unknown>;
-        if (obj.element_id === CARD_ELEMENT_IDS.TOOLS_PANEL_FINAL) {
-          const elements = obj.elements as Array<Record<string, unknown>>;
-          return (elements[0]?.content as string) ?? null;
-        }
-        for (const v of Object.values(obj)) {
-          const found = findContent(v);
-          if (found) return found;
-        }
-      }
-      return null;
-    };
-    const content = findContent(card);
-    expect(content).toContain('其余');
+    for (const tool of toolCalls)
+      expect(JSON.stringify(card)).toContain(tool.name);
   });
 });
 
 // ─── buildStreamingAgentCard shape ─────────────────────────────
 
 describe('buildStreamingAgentCard', () => {
-  test('rich streaming card has v2 schema, blue template, and all runtime slots', () => {
+  test('rich streaming card starts with answer slots and no empty details', () => {
     const card = buildStreamingAgentCard({ initialText: 'starting…' });
     expect(card.schema).toBe('2.0');
     const config = card.config as Record<string, unknown>;
@@ -712,19 +695,11 @@ describe('buildStreamingAgentCard', () => {
     const header = card.header as Record<string, unknown>;
     expect(header.template).toBe('blue');
 
-    // Rich skeleton: STATUS_BANNER + invisible ASK slot + 5 collapsible
-    // runtime panels + MAIN_CONTENT + BUTTON + FOOTER_NOTE.
     const ids = new Set(collectElementIds(card));
+    expect(ids.has(CARD_ELEMENT_IDS.DETAILS_PANEL)).toBe(false);
     for (const required of [
       CARD_ELEMENT_IDS.STATUS_BANNER,
-      CARD_ELEMENT_IDS.PROGRESS_PANEL,
-      CARD_ELEMENT_IDS.PROGRESS_CONTENT,
-      CARD_ELEMENT_IDS.TASK_PANEL,
-      CARD_ELEMENT_IDS.TASK_CONTENT,
-      CARD_ELEMENT_IDS.TOOLS_PANEL,
-      CARD_ELEMENT_IDS.TOOLS_CONTENT,
-      CARD_ELEMENT_IDS.THINKING_PANEL,
-      CARD_ELEMENT_IDS.THINKING_CONTENT,
+      CARD_ELEMENT_IDS.ASK_CONTENT,
       CARD_ELEMENT_IDS.MAIN_CONTENT,
       CARD_ELEMENT_IDS.INTERRUPT_BTN,
       CARD_ELEMENT_IDS.FOOTER_NOTE,
@@ -736,7 +711,7 @@ describe('buildStreamingAgentCard', () => {
   test('rich streaming card keeps ask invisible until a real question exists', () => {
     const card = buildStreamingAgentCard({ initialText: 'x' });
     const serialized = JSON.stringify(card);
-    expect(countTag(card, 'collapsible_panel')).toBe(5);
+    expect(countTag(card, 'collapsible_panel')).toBe(0);
     expect(serialized).not.toContain('等待你的回复');
     expect(serialized).not.toContain('暂无提问');
   });
@@ -1056,18 +1031,59 @@ describe('buildTimelineText', () => {
   });
 });
 
-describe('buildStreamingAgentCard rich skeleton (Phase F)', () => {
-  test('includes an invisible ASK content slot and the TIMELINE panel', () => {
-    const card = buildStreamingAgentCard({ initialText: 'x' });
-    const ids = new Set(collectElementIds(card));
-    expect(ids.has(CARD_ELEMENT_IDS.ASK_CONTENT)).toBe(true);
-    expect(ids.has(CARD_ELEMENT_IDS.TIMELINE_PANEL)).toBe(true);
-    expect(ids.has(CARD_ELEMENT_IDS.TIMELINE_CONTENT)).toBe(true);
+describe('streaming execution details', () => {
+  test('inserts one details panel after the answer only when activity exists', () => {
+    const card = buildStreamingAgentCard({
+      initialText: 'answer',
+      panels: { toolsContent: 'Read · 完成' },
+    });
+    const body = card.body as { elements: Array<Record<string, unknown>> };
+    const ids = body.elements.map((element) => element.element_id);
+    expect(ids.indexOf(CARD_ELEMENT_IDS.MAIN_CONTENT)).toBeLessThan(
+      ids.indexOf(CARD_ELEMENT_IDS.DETAILS_PANEL),
+    );
+    expect(ids.indexOf(CARD_ELEMENT_IDS.DETAILS_PANEL)).toBeLessThan(
+      ids.indexOf(CARD_ELEMENT_IDS.INTERRUPT_BTN),
+    );
+    expect(countTag(card, 'collapsible_panel')).toBe(1);
+    expect(JSON.stringify(card)).not.toContain('暂无');
+    expect(JSON.stringify(card)).not.toContain('尚未');
+    expect(new Set(collectElementIds(card)).size).toBe(
+      collectElementIds(card).length,
+    );
   });
 
-  test('rich skeleton has 5 collapsible panels while ask remains hidden', () => {
-    const card = buildStreamingAgentCard({ initialText: 'x' });
-    expect(countTag(card, 'collapsible_panel')).toBe(5);
+  test('live and completed cards preserve answer-before-details ordering', () => {
+    for (const card of [
+      buildStreamingAgentCard({
+        initialText: 'answer',
+        panels: { thinkingContent: 'summary' },
+      }),
+      buildAgentReplyCard({
+        text: 'answer',
+        status: 'done',
+        thinking: 'summary',
+      }),
+    ]) {
+      const body = card.body as { elements: Array<Record<string, unknown>> };
+      const ids = body.elements.map((element) => element.element_id);
+      expect(ids.indexOf(CARD_ELEMENT_IDS.MAIN_CONTENT)).toBeLessThan(
+        ids.indexOf(CARD_ELEMENT_IDS.DETAILS_PANEL),
+      );
+    }
+  });
+
+  test('footer does not duplicate the current phase and stop uses a v2 callback', () => {
+    const card = buildStreamingAgentCard();
+    const body = card.body as { elements: Array<Record<string, unknown>> };
+    expect(
+      body.elements.find((e) => e.element_id === CARD_ELEMENT_IDS.FOOTER_NOTE)
+        ?.content,
+    ).toBe('');
+    expect(
+      body.elements.find((e) => e.element_id === CARD_ELEMENT_IDS.INTERRUPT_BTN)
+        ?.behaviors,
+    ).toEqual([{ type: 'callback', value: { action: 'interrupt_stream' } }]);
   });
 });
 

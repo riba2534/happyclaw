@@ -151,7 +151,7 @@ describe('database upgrade safety gate', () => {
     process.env.HAPPYCLAW_MIGRATION_BACKUP_DIR = migrationBackups;
     const backupsBeforeCurrentOnlyRefusal = fs.readdirSync(migrationBackups);
     expect(() => db.initDatabase({ requireCurrentSchema: true })).toThrow(
-      'Database must already be schema v74',
+      'Database must already be schema v75',
     );
     expect(fs.readdirSync(migrationBackups)).toEqual(
       backupsBeforeCurrentOnlyRefusal,
@@ -190,9 +190,9 @@ describe('schema version head', () => {
     // one assertion that fails when the head moves, forcing whoever bumps it
     // to confirm the matching migration block — and a test covering it —
     // actually landed. Update the literal in the same commit as the migration.
-    // v74: introduces the host-owned monotonic message ingest sequence used by
-    // durable consumption and stable Web pagination. See
-    // tests/schema-v74-message-ingest-sequence.test.ts.
-    expect(db.CURRENT_SCHEMA_VERSION).toBe(74);
+    // v75: adds mount-specific interaction overrides and records the SDK
+    // session's interaction contract without changing workspace defaults.
+    // Migration and restart coverage: channel-mount-interaction-mode.test.ts.
+    expect(db.CURRENT_SCHEMA_VERSION).toBe(75);
   });
 });

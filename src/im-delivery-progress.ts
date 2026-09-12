@@ -24,7 +24,12 @@ export class PartialChannelDeliveryError extends Error {
 export class PhysicalDeliveryTracker {
   private deliveredOutputs = 0;
 
-  constructor(private readonly totalOutputs: number) {}
+  constructor(private totalOutputs: number) {}
+
+  /** A rejected, unsent output can become several capacity-bounded pages. */
+  addOutputs(count: number): void {
+    this.totalOutputs += count;
+  }
 
   async send(operation: () => Promise<void>): Promise<void> {
     try {

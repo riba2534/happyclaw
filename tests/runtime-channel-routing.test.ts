@@ -4,6 +4,8 @@ import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 
 import * as replyDelivery from '../src/reply-delivery.js';
 import * as interactionRuntime from '../src/workspace-interaction-runtime.js';
+import * as channelInteraction from '../src/channel-interaction-mode.js';
+import { channelConversationJid } from '../src/channel-address.js';
 import * as replySource from '../src/channel-reply-source.js';
 import { resolveContainerOutputInputTurnId } from '../src/channel-output-correlation.js';
 import { stripRedundantCompletionPreamble } from '../src/reply-finalization.js';
@@ -349,6 +351,9 @@ describe('actual message loop dispatches the unconsumed channel suffix', () => {
     const globals: Record<string, any> = {
       ...replySource,
       ...interactionRuntime,
+      ...channelInteraction,
+      channelConversationJid,
+      resolveScheduledGroupPromptInteractionMode: () => null,
       ...db,
       getChannelType,
       EMPTY_CURSOR,
@@ -362,13 +367,6 @@ describe('actual message loop dispatches the unconsumed channel suffix', () => {
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       resolveEffectiveGroup: () => ({ effectiveGroup: group }),
       getWorkspaceInteractionMode: () => 'assistant',
-      selectInteractionModeCompatibleMessagePrefix: (
-        messages: NewMessage[],
-      ) => ({
-        messages,
-        interactionMode: 'assistant',
-        hasDeferredMessages: false,
-      }),
       resolveBatchChannelContext: () => null,
       queue,
       buildExpandContext: () => ({ executionMode: 'host' }),
@@ -394,6 +392,8 @@ describe('actual message loop dispatches the unconsumed channel suffix', () => {
     };
     const harness = createRuntimeSourceHarness(globals);
     for (const name of [
+      'resolveTrustedInteractionMode',
+      'selectRuntimeInteractionBatch',
       'isCursorAfter',
       'createIpcDeliveryTarget',
       'advanceNextPullCursorOnly',
@@ -440,5 +440,123 @@ describe('actual message loop dispatches the unconsumed channel suffix', () => {
       releaseWarm();
       await queue.shutdown(0);
     }
+  });
+});
+
+describe('actual runtime mount-mode admission and resume safety', () => {
+  test('cold source batch freezes one mode and leaves a different Home source behind', () => {
+    const homeJid = 'web:mode-home';
+    const group = { folder: 'mode-home' };
+    const research = 'feishu:mode-research';
+    const globals: Record<string, any> = {
+      ...interactionRuntime,
+      ...channelInteraction,
+      channelConversationJid,
+      registeredGroups: { [homeJid]: group },
+      getRegisteredGroup: () => undefined,
+      getWorkspaceInteractionMode: () => 'proactive',
+      getChannelMount: (jid: string) =>
+        jid === research
+          ? { workspace_jid: homeJid, interaction_mode_override: 'assistant' }
+          : undefined,
+      getTaskRunById: () => undefined,
+      resolveScheduledGroupPromptInteractionMode: (message: NewMessage) =>
+        message.task_id ? 'proactive' : null,
+    };
+    const harness = createRuntimeSourceHarness(globals);
+    harness.install('resolveTrustedInteractionMode');
+    harness.install('selectRuntimeInteractionBatch');
+    const messages = [
+      { id: 'a', chat_jid: homeJid, source_jid: research },
+      { id: 'b', chat_jid: homeJid, source_jid: 'feishu:mode-other' },
+      { id: 'c', chat_jid: homeJid, source_jid: research },
+    ];
+    const selected = globals.selectRuntimeInteractionBatch(
+      messages,
+      group,
+      homeJid,
+    );
+    expect(selected.interactionMode).toBe('assistant');
+    expect(selected.messages.map((message: NewMessage) => message.id)).toEqual([
+      'a',
+    ]);
+    expect(selected.hasDeferredMessages).toBe(true);
+    const next = globals.selectRuntimeInteractionBatch(
+      messages.slice(1),
+      group,
+      homeJid,
+    );
+    expect(next.interactionMode).toBe('proactive');
+    expect(next.messages.map((message: NewMessage) => message.id)).toEqual([
+      'b',
+    ]);
+    const frozen = globals.selectRuntimeInteractionBatch(
+      [
+        {
+          ...messages[0],
+          task_id: 'frozen-task',
+          source_kind: 'scheduled_task_prompt',
+        },
+        messages[2],
+      ],
+      group,
+      homeJid,
+    );
+    expect(frozen.interactionMode).toBe('proactive');
+    expect(frozen.messages).toHaveLength(1);
+    const spawned = globals.selectRuntimeInteractionBatch(
+      messages,
+      group,
+      homeJid,
+      'spawn',
+    );
+    expect(spawned.interactionMode).toBe('assistant');
+    expect(spawned.messages).toHaveLength(3);
+  });
+
+  test('a source-mode switch resets only its SDK namespace and preserves stored conversation history', () => {
+    const folder = `resume-mode-${crypto.randomUUID()}`;
+    const jid = `web:${folder}`;
+    db.ensureChatExists(jid);
+    db.storeMessageDirect(
+      'history',
+      jid,
+      'owner',
+      'Owner',
+      '既有历史不变',
+      '2026-09-13T00:00:00Z',
+      false,
+    );
+    db.setSession(folder, 'sdk-main');
+    db.setSessionInteractionMode(folder, undefined, 'proactive');
+    db.setSession(folder, 'sdk-agent', 'agent-sibling');
+    db.setSessionInteractionMode(folder, 'agent-sibling', 'proactive');
+    const globals: Record<string, any> = {
+      ...db,
+      ...interactionRuntime,
+      ...channelInteraction,
+      sessions: { [folder]: 'sdk-main' },
+      getWorkspaceInteractionMode: () => 'proactive',
+      logger: { info: vi.fn() },
+    };
+    const harness = createRuntimeSourceHarness(globals);
+    harness.install('resetSessionForInteractionModeMismatch');
+    expect(
+      globals.resetSessionForInteractionModeMismatch({ folder }, 'assistant'),
+    ).toBe(true);
+    expect(db.getSession(folder)).toBeUndefined();
+    expect(globals.sessions[folder]).toBeUndefined();
+    expect(db.getSession(folder, 'agent-sibling')).toBe('sdk-agent');
+    expect(db.getMessagesPage(jid)[0].content).toBe('既有历史不变');
+    db.setSession(folder, 'sdk-new');
+    db.setSessionInteractionMode(folder, undefined, 'assistant');
+    expect(
+      globals.resetSessionForInteractionModeMismatch({ folder }, 'assistant'),
+    ).toBe(false);
+    expect(db.getSession(folder)).toBe('sdk-new');
+    expect(
+      globals.resetSessionForInteractionModeMismatch({ folder }, 'proactive'),
+    ).toBe(true);
+    expect(db.getSession(folder, 'agent-sibling')).toBe('sdk-agent');
   });
 });

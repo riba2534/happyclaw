@@ -2273,3 +2273,157 @@ describe('Feishu durable Inbox and cursor integration', () => {
     });
   });
 });
+
+describe('Feishu ordinary reply capacity', () => {
+  const postText = (request: { data: { content: string } }): string => {
+    const parsed = JSON.parse(request.data.content);
+    return parsed.zh_cn.content
+      .flat()
+      .map((node: { text: string }) => node.text)
+      .join('');
+  };
+
+  test('keeps a 120KB ordinary reply in one native post', async () => {
+    const { connection } = await connect(
+      `native-capacity-${Date.now()}`,
+      vi.fn(),
+    );
+    const text = 'a'.repeat(120_000);
+    await connection.sendMessage('ou_durable_user', text, [], {
+      presentation: 'native',
+    });
+    expect(controls.messageCreate).toHaveBeenCalledTimes(1);
+    expect(controls.messageCreate.mock.calls[0][0].data.msg_type).toBe('post');
+    expect(postText(controls.messageCreate.mock.calls[0][0])).toBe(text);
+  });
+
+  test('splits only beyond total post capacity and preserves every source character', async () => {
+    const { connection } = await connect(`native-pages-${Date.now()}`, vi.fn());
+    const text = '中🙂'.repeat(45_000) + 'END_NATIVE';
+    await connection.sendMessage('ou_durable_user', text, [], {
+      presentation: 'native',
+    });
+    const calls = controls.messageCreate.mock.calls.map(([request]) => request);
+    expect(calls).toHaveLength(3);
+    expect(
+      calls.every(
+        (request) => Buffer.byteLength(request.data.content) <= 150_000,
+      ),
+    ).toBe(true);
+    expect(calls.map(postText).join('')).toBe(text);
+  });
+
+  test('avoids oversized inline cards and keeps their fallback in one post', async () => {
+    const { connection } = await connect(
+      `default-capacity-${Date.now()}`,
+      vi.fn(),
+    );
+    const text = 'a'.repeat(120_000);
+    await connection.sendMessage('ou_durable_user', text);
+    expect(controls.messageCreate).toHaveBeenCalledTimes(1);
+    expect(controls.messageCreate.mock.calls[0][0].data.msg_type).toBe('post');
+    expect(postText(controls.messageCreate.mock.calls[0][0])).toBe(text);
+  });
+
+  test('reflows only explicitly rejected size pages without replaying accepted text', async () => {
+    const { connection } = await connect(
+      `native-shrink-${Date.now()}`,
+      vi.fn(),
+    );
+    const accepted: string[] = [];
+    controls.messageCreate.mockImplementation(async (request) => {
+      if (Buffer.byteLength(request.data.content) > 80_000)
+        return { code: 230025, msg: 'message content reaches its limit' };
+      accepted.push(postText(request));
+      return { code: 0, data: { message_id: `om_${accepted.length}` } };
+    });
+    const text = 'a'.repeat(190_000);
+    await connection.sendMessage('ou_durable_user', text, [], {
+      presentation: 'native',
+    });
+    expect(accepted.length).toBeGreaterThan(2);
+    expect(accepted.join('')).toBe(text);
+  });
+
+  test('hands a scoped physical size rejection back to the durable page planner', async () => {
+    const { connection } = await connect(
+      `native-physical-${Date.now()}`,
+      vi.fn(),
+    );
+    controls.messageCreate.mockResolvedValue({
+      code: 230025,
+      msg: 'message content reaches its limit',
+    });
+    await expect(
+      connection.sendMessage('ou_durable_user', 'a'.repeat(120_000), [], {
+        presentation: 'native',
+        physicalOutput: true,
+      }),
+    ).rejects.toThrow('230025');
+    expect(controls.messageCreate).toHaveBeenCalledTimes(1);
+  });
+
+  test('fences an unknown second-page ACK and reports the actual physical progress', async () => {
+    const { connection } = await connect(
+      `native-unknown-${Date.now()}`,
+      vi.fn(),
+    );
+    controls.messageCreate
+      .mockResolvedValueOnce({ code: 0, data: { message_id: 'om_first' } })
+      .mockResolvedValueOnce(undefined);
+    await expect(
+      connection.sendMessage('ou_durable_user', 'a'.repeat(320_000), [], {
+        presentation: 'native',
+      }),
+    ).rejects.toMatchObject({
+      code: 'CHANNEL_DELIVERY_PARTIAL',
+      deliveredOutputs: 1,
+      totalOutputs: 3,
+    });
+    expect(controls.messageCreate).toHaveBeenCalledTimes(2);
+  });
+
+  test('does not start later pages after a timeout even when the first ACK arrives late', async () => {
+    const { connection } = await connect(
+      `native-late-ack-${Date.now()}`,
+      vi.fn(),
+    );
+    vi.useFakeTimers();
+    let acknowledge!: (value: unknown) => void;
+    controls.messageCreate.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          acknowledge = resolve;
+        }),
+    );
+    const pending = connection.sendMessage(
+      'ou_durable_user',
+      'a'.repeat(320_000),
+      [],
+      { presentation: 'native' },
+    );
+    const failed = expect(pending).rejects.toThrow(/timed out/i);
+    await vi.advanceTimersByTimeAsync(15_001);
+    await failed;
+    acknowledge({ code: 0, data: { message_id: 'om_late' } });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(controls.messageCreate).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not misclassify schema errors as capacity failures', async () => {
+    const { connection } = await connect(
+      `native-schema-${Date.now()}`,
+      vi.fn(),
+    );
+    controls.messageCreate.mockResolvedValue({
+      code: 230001,
+      msg: 'invalid md user id',
+    });
+    await expect(
+      connection.sendMessage('ou_durable_user', 'a'.repeat(120_000), [], {
+        presentation: 'native',
+      }),
+    ).rejects.toThrow('230001');
+    expect(controls.messageCreate).toHaveBeenCalledTimes(1);
+  });
+});

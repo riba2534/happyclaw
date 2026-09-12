@@ -2235,6 +2235,20 @@ export function initDatabase(
   ensureColumn('registered_groups', 'channel_account_id', 'TEXT');
   ensureColumn('channel_mounts', 'channel_account_id', 'TEXT');
   ensureColumn('agent_channel_mounts', 'channel_account_id', 'TEXT');
+  // v74 → v75: one channel can override the workspace interaction contract.
+  for (const table of ['channel_mounts', 'agent_channel_mounts']) {
+    ensureColumn(
+      table,
+      'interaction_mode_override',
+      "TEXT CHECK (interaction_mode_override IS NULL OR interaction_mode_override IN ('assistant', 'proactive'))",
+    );
+  }
+  ensureColumn(
+    'sessions',
+    'interaction_mode',
+    "TEXT CHECK (interaction_mode IS NULL OR interaction_mode IN ('assistant', 'proactive'))",
+  );
+
   ensureColumn(
     'channel_accounts',
     'is_legacy_default',
@@ -8239,6 +8253,34 @@ export function getRouterStateByPrefix(
 
 // --- Session accessors ---
 
+export function getSessionInteractionMode(
+  groupFolder: string,
+  agentId?: string | null,
+): InteractionMode | null {
+  const row = db
+    .prepare(
+      'SELECT interaction_mode FROM sessions WHERE group_folder = ? AND agent_id = ?',
+    )
+    .get(groupFolder, agentId || '') as
+    | { interaction_mode: string | null }
+    | undefined;
+  return row?.interaction_mode === 'assistant' ||
+    row?.interaction_mode === 'proactive'
+    ? row.interaction_mode
+    : null;
+}
+
+/** Annotate an existing SDK resume record; never create a placeholder session. */
+export function setSessionInteractionMode(
+  groupFolder: string,
+  agentId: string | null | undefined,
+  mode: InteractionMode,
+): void {
+  db.prepare(
+    'UPDATE sessions SET interaction_mode = ? WHERE group_folder = ? AND agent_id = ?',
+  ).run(mode, groupFolder, agentId || '');
+}
+
 export function getSession(
   groupFolder: string,
   agentId?: string | null,
@@ -10438,8 +10480,8 @@ function syncAgentChannelMountFromMount(mount: ChannelMount): void {
     `INSERT INTO agent_channel_mounts (
       channel_jid, channel_account_id, agent_profile_id, owner_user_id, channel_type,
       workspace_jid, workspace_folder, session_id, routing_mode, reply_policy,
-      activation_mode, audience_mode, owner_im_id, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      activation_mode, audience_mode, owner_im_id, interaction_mode_override, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(channel_jid) DO UPDATE SET
       channel_account_id = excluded.channel_account_id,
       agent_profile_id = excluded.agent_profile_id,
@@ -10453,6 +10495,7 @@ function syncAgentChannelMountFromMount(mount: ChannelMount): void {
       activation_mode = excluded.activation_mode,
       audience_mode = excluded.audience_mode,
       owner_im_id = excluded.owner_im_id,
+      interaction_mode_override = excluded.interaction_mode_override,
       updated_at = excluded.updated_at`,
   ).run(
     mount.channel_jid,
@@ -10468,6 +10511,7 @@ function syncAgentChannelMountFromMount(mount: ChannelMount): void {
     mount.activation_mode,
     mount.audience_mode,
     mount.owner_im_id ?? null,
+    mount.interaction_mode_override ?? null,
     mount.created_at,
     mount.updated_at,
   );
@@ -11668,6 +11712,7 @@ type ChannelMountRow = {
   activation_mode: string | null;
   audience_mode: string | null;
   owner_im_id: string | null;
+  interaction_mode_override: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -11685,6 +11730,11 @@ function parseChannelMountRow(row: ChannelMountRow): ChannelMount {
     activation_mode: parseActivationMode(row.activation_mode),
     audience_mode: parseAudienceMode(row.audience_mode),
     owner_im_id: row.owner_im_id,
+    interaction_mode_override:
+      row.interaction_mode_override === 'assistant' ||
+      row.interaction_mode_override === 'proactive'
+        ? row.interaction_mode_override
+        : null,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -11758,13 +11808,22 @@ export function upsertChannelMount(
   return db.transaction(() => {
     const now = new Date().toISOString();
     const existing = getChannelMount(mount.channel_jid);
+    // Legacy group projections do not own this setting. Preserve it across
+    // renames/activation changes; a new binding starts by inheriting its target.
+    const interactionModeOverride =
+      mount.interaction_mode_override !== undefined
+        ? mount.interaction_mode_override
+        : existing?.workspace_jid === mount.workspace_jid &&
+            (existing.session_id ?? null) === (mount.session_id ?? null)
+          ? (existing.interaction_mode_override ?? null)
+          : null;
     const createdAt = mount.created_at ?? existing?.created_at ?? now;
     const updatedAt = mount.updated_at ?? now;
     db.prepare(
       `INSERT INTO channel_mounts (
         channel_jid, channel_account_id, channel_type, workspace_jid, session_id, routing_mode,
-        reply_policy, activation_mode, audience_mode, owner_im_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        reply_policy, activation_mode, audience_mode, owner_im_id, interaction_mode_override, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(channel_jid) DO UPDATE SET
         channel_account_id = excluded.channel_account_id,
         channel_type = excluded.channel_type,
@@ -11775,6 +11834,7 @@ export function upsertChannelMount(
         activation_mode = excluded.activation_mode,
         audience_mode = excluded.audience_mode,
         owner_im_id = excluded.owner_im_id,
+        interaction_mode_override = excluded.interaction_mode_override,
         updated_at = excluded.updated_at`,
     ).run(
       mount.channel_jid,
@@ -11787,6 +11847,7 @@ export function upsertChannelMount(
       mount.activation_mode,
       mount.audience_mode ?? 'everyone',
       mount.owner_im_id ?? null,
+      interactionModeOverride,
       createdAt,
       updatedAt,
     );
@@ -11857,14 +11918,66 @@ export function syncChannelMountFromRegisteredGroup(
 }
 
 export function syncAllChannelMountsFromRegisteredGroups(): void {
-  db.prepare('DELETE FROM channel_mounts').run();
-  db.prepare('DELETE FROM agent_channel_mounts').run();
-  const rows = db
-    .prepare('SELECT * FROM registered_groups')
-    .all() as RegisteredGroupRow[];
-  for (const row of rows) {
-    syncChannelMountFromRegisteredGroup(row.jid, parseGroupRow(row));
-  }
+  db.transaction(() => {
+    const previous = new Map(
+      (
+        db.prepare('SELECT * FROM channel_mounts').all() as ChannelMountRow[]
+      ).map((row) => [row.channel_jid, parseChannelMountRow(row)]),
+    );
+    db.prepare('DELETE FROM channel_mounts').run();
+    db.prepare('DELETE FROM agent_channel_mounts').run();
+    const rows = db
+      .prepare('SELECT * FROM registered_groups')
+      .all() as RegisteredGroupRow[];
+    for (const row of rows) {
+      const mount = channelMountFromRegisteredGroup(
+        row.jid,
+        parseGroupRow(row),
+      );
+      if (!mount) continue;
+      const old = previous.get(row.jid);
+      const sameBinding =
+        old?.workspace_jid === mount.workspace_jid &&
+        (old.session_id ?? null) === (mount.session_id ?? null);
+      upsertChannelMount({
+        ...mount,
+        ...(sameBinding
+          ? {
+              interaction_mode_override: old.interaction_mode_override ?? null,
+              created_at: old.created_at,
+            }
+          : {}),
+      });
+    }
+  })();
+}
+
+/** Read only a persisted mount setting; callers must validate route ownership. */
+export function getChannelMountInteractionModeOverride(
+  channelJid: string,
+): InteractionMode | null {
+  return getChannelMount(channelJid)?.interaction_mode_override ?? null;
+}
+
+/** The runtime must be quiesced by the API before changing the contract. */
+export function setChannelMountInteractionModeOverride(
+  channelJid: string,
+  workspaceJid: string,
+  mode: InteractionMode | null,
+): ChannelMount | undefined {
+  return db.transaction(() => {
+    const result = db
+      .prepare(
+        `UPDATE channel_mounts
+      SET interaction_mode_override = ?, updated_at = ?
+      WHERE channel_jid = ? AND workspace_jid = ?`,
+      )
+      .run(mode, new Date().toISOString(), channelJid, workspaceJid);
+    if (!result.changes) return undefined;
+    const saved = getChannelMount(channelJid)!;
+    syncAgentChannelMountFromMount(saved);
+    return saved;
+  })();
 }
 
 function mapImContextBindingRow(

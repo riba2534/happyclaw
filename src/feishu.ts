@@ -24,7 +24,18 @@ import {
 import { notifyNewImMessage } from './message-notifier.js';
 import { detectImageMimeType } from './image-detector.js';
 import { resolveJidByMessageId } from './feishu-streaming-card.js';
-import { optimizeMarkdownStyle } from './feishu-markdown-style.js';
+import { buildPostMdFallback } from './feishu-message-format.js';
+export {
+  buildPostMdFallback,
+  FEISHU_POST_MD_NODE_MAX_BYTES,
+  splitFeishuPostMarkdown,
+} from './feishu-message-format.js';
+import {
+  FEISHU_POST_MAX_BYTES,
+  FEISHU_TEXT_MAX_BYTES,
+  prepareFeishuPostTextPages,
+  prepareFeishuPlainTextPages,
+} from './feishu-message-capacity.js';
 import {
   buildAgentReplyCard,
   buildFollowUpActionResultCard,
@@ -226,7 +237,7 @@ export interface FeishuConnection {
     chatId: string,
     text: string,
     localImagePaths?: string[],
-    options?: { presentation?: 'default' | 'native' },
+    options?: { presentation?: 'default' | 'native'; physicalOutput?: boolean },
   ): Promise<void>;
   sendImage(
     chatId: string,
@@ -1128,256 +1139,6 @@ function getFileType(
  * - Code block / table spacing with <br>
  * - Invalid image cleanup
  */
-// Feishu documents a generous total post limit, but large single `md` elements
-// have produced provider-side 2200 errors in real threads. Keep one physical
-// message/Outbox row while using smaller rich-text nodes inside that message.
-export const FEISHU_POST_MD_NODE_MAX_BYTES = 2_400;
-
-function takeUtf8Prefix(
-  value: string,
-  maxBytes: number,
-): { prefix: string; rest: string } {
-  let bytes = 0;
-  let consumedCodeUnits = 0;
-  for (const character of value) {
-    const nextBytes = Buffer.byteLength(character);
-    if (bytes + nextBytes > maxBytes) break;
-    bytes += nextBytes;
-    consumedCodeUnits += character.length;
-  }
-  return {
-    prefix: value.slice(0, consumedCodeUnits),
-    rest: value.slice(consumedCodeUnits),
-  };
-}
-
-interface MarkdownFence {
-  marker: string;
-  opener: string;
-}
-
-function nextMarkdownFence(
-  line: string,
-  current: MarkdownFence | null,
-): MarkdownFence | null {
-  const trimmed = line.trim();
-  if (!current) {
-    const opener = trimmed.match(/^(`{3,}|~{3,})(.*)$/);
-    if (!opener) return null;
-    return {
-      marker: opener[1],
-      // Language identifiers are short in valid Markdown. Bounding an
-      // adversarial opener keeps continuation overhead below the node budget.
-      opener: Buffer.byteLength(trimmed) <= 128 ? trimmed : opener[1],
-    };
-  }
-  const closingPattern = new RegExp(
-    `^${current.marker[0]}{${current.marker.length},}\\s*$`,
-  );
-  return closingPattern.test(trimmed) ? null : current;
-}
-
-function stripLineEnding(line: string): string {
-  return line.endsWith('\n') ? line.slice(0, -1) : line;
-}
-
-function isMarkdownTableRow(line: string): boolean {
-  const trimmed = stripLineEnding(line).trim();
-  return trimmed.startsWith('|') && trimmed.includes('|', 1);
-}
-
-function isMarkdownTableSeparator(line: string): boolean {
-  const trimmed = stripLineEnding(line).trim();
-  return /^\|?[\t :|-]+\|[\t :|-]*\|?$/.test(trimmed) && /[-:]/.test(trimmed);
-}
-
-function collectMarkdownTable(
-  lines: string[],
-  start: number,
-): string[] | undefined {
-  const header = lines[start];
-  const separator = lines[start + 1];
-  if (!header || !separator) return undefined;
-  if (!isMarkdownTableRow(header) || !isMarkdownTableSeparator(separator)) {
-    return undefined;
-  }
-  const block = [header, separator];
-  for (let index = start + 2; index < lines.length; index++) {
-    const line = lines[index];
-    if (!isMarkdownTableRow(line)) break;
-    block.push(line);
-  }
-  return block;
-}
-
-function collectFenceBlock(
-  lines: string[],
-  start: number,
-): string[] | undefined {
-  const opener = nextMarkdownFence(lines[start] ?? '', null);
-  if (!opener) return undefined;
-  const block = [lines[start]];
-  let fence: MarkdownFence | null = opener;
-  for (let index = start + 1; index < lines.length; index++) {
-    const line = lines[index];
-    block.push(line);
-    fence = nextMarkdownFence(line, fence);
-    if (!fence) break;
-  }
-  return block;
-}
-
-/**
- * Split optimized Markdown into several `md` elements without creating
- * additional provider messages. Each node is independently parsed by Feishu,
- * so tables and fenced blocks must stay syntactically complete inside a node:
- * whole lines are preferred, tables that fit stay together, oversized tables
- * replay header + separator on each continuation, and fenced blocks are
- * closed/reopened at node boundaries.
- */
-export function splitFeishuPostMarkdown(
-  markdown: string,
-  maxBytes = FEISHU_POST_MD_NODE_MAX_BYTES,
-): string[] {
-  if (!Number.isInteger(maxBytes) || maxBytes < 256) {
-    throw new Error(
-      'Feishu post Markdown node budget must be at least 256 bytes',
-    );
-  }
-  if (!markdown) return [''];
-
-  const chunks: string[] = [];
-  let current = '';
-  let fence: MarkdownFence | null = null;
-
-  const closingReserve = (): number =>
-    fence ? Buffer.byteLength(`\n${fence.marker}`) : 0;
-
-  const availableBytes = (): number =>
-    maxBytes - Buffer.byteLength(current) - closingReserve();
-
-  const flush = (): void => {
-    if (!current) return;
-    const closing = fence ? `\n${fence.marker}` : '';
-    chunks.push(`${current}${closing}`);
-    current = fence ? `${fence.opener}\n` : '';
-  };
-
-  const appendFitting = (piece: string): boolean => {
-    if (Buffer.byteLength(piece) <= availableBytes()) {
-      current += piece;
-      return true;
-    }
-    return false;
-  };
-
-  const appendPiece = (piece: string): void => {
-    if (!piece) return;
-    if (appendFitting(piece)) return;
-    if (current) flush();
-    if (appendFitting(piece)) return;
-    let remaining = piece;
-    while (remaining) {
-      if (availableBytes() <= 0) {
-        flush();
-        continue;
-      }
-      if (appendFitting(remaining)) {
-        remaining = '';
-        continue;
-      }
-      const { prefix, rest } = takeUtf8Prefix(remaining, availableBytes());
-      if (!prefix) {
-        flush();
-        continue;
-      }
-      current += prefix;
-      remaining = rest;
-      flush();
-    }
-  };
-
-  const appendTable = (block: string[]): void => {
-    const joined = block.join('');
-    if (Buffer.byteLength(joined) <= maxBytes) {
-      appendPiece(joined);
-      return;
-    }
-    const header = `${block[0]}${block[1]}`;
-    const rows = block.slice(2);
-    if (rows.length === 0) {
-      appendPiece(joined);
-      return;
-    }
-    if (current) flush();
-    let section = header;
-    for (const row of rows) {
-      const candidate = `${section}${row}`;
-      if (Buffer.byteLength(candidate) <= maxBytes) {
-        section = candidate;
-        continue;
-      }
-      if (section !== header) appendPiece(section);
-      else if (current) flush();
-      section = `${header}${row}`;
-      if (Buffer.byteLength(section) > maxBytes) {
-        appendPiece(header);
-        appendPiece(row);
-        section = header;
-      }
-    }
-    if (section !== header) appendPiece(section);
-  };
-
-  const appendFence = (block: string[]): void => {
-    const joined = block.join('');
-    if (Buffer.byteLength(joined) <= maxBytes) {
-      appendPiece(joined);
-      return;
-    }
-    for (const line of block) {
-      appendPiece(line);
-      fence = nextMarkdownFence(line, fence);
-    }
-  };
-
-  const lines = markdown.match(/[^\n]*\n|[^\n]+$/g) ?? [markdown];
-  for (let index = 0; index < lines.length; ) {
-    if (!fence) {
-      const table = collectMarkdownTable(lines, index);
-      if (table) {
-        appendTable(table);
-        index += table.length;
-        continue;
-      }
-      const fenced = collectFenceBlock(lines, index);
-      if (fenced) {
-        appendFence(fenced);
-        index += fenced.length;
-        continue;
-      }
-    }
-    const line = lines[index];
-    appendPiece(line);
-    fence = nextMarkdownFence(line, fence);
-    index += 1;
-  }
-  flush();
-  return chunks.length > 0 ? chunks : [''];
-}
-
-/** Build a post+md fallback content string for when interactive card send fails. */
-export function buildPostMdFallback(text: string): string {
-  const optimized = optimizeMarkdownStyle(text, 1);
-  return JSON.stringify({
-    zh_cn: {
-      content: splitFeishuPostMarkdown(optimized).map((chunk) => [
-        { tag: 'md', text: chunk },
-      ]),
-    },
-  });
-}
-
 function buildInteractiveCard(text: string): object {
   return buildAgentReplyCard({ status: 'done', text });
 }
@@ -2094,6 +1855,66 @@ export function createFeishuConnection(
     );
   }
 
+  /** Send each accepted page once; only explicit size rejections reflow it. */
+  async function sendOrdinaryPages(
+    chatId: string,
+    text: string,
+    kind: 'post' | 'text',
+    tracker: PhysicalDeliveryTracker,
+    physicalOutput = false,
+  ): Promise<void> {
+    const prepare =
+      kind === 'post'
+        ? prepareFeishuPostTextPages
+        : prepareFeishuPlainTextPages;
+    const initialBudget =
+      kind === 'post' ? FEISHU_POST_MAX_BYTES : FEISHU_TEXT_MAX_BYTES;
+    const pages = (physicalOutput ? [text] : prepare(text)).map((page) => ({
+      text: page,
+      budget: initialBudget,
+    }));
+    tracker.addOutputs(pages.length - 1);
+    while (pages.length) {
+      const page = pages[0];
+      const content =
+        kind === 'post'
+          ? buildPostMdFallback(page.text)
+          : JSON.stringify({ text: page.text });
+      try {
+        await tracker.send(() =>
+          withFeishuHardTimeout(
+            sendToFeishu(chatId, kind, content),
+            FEISHU_RESOURCE_REQUEST_TIMEOUT_MS,
+            'Feishu ordinary reply page',
+          ),
+        );
+      } catch (error) {
+        const rejection =
+          error instanceof PartialChannelDeliveryError ? error.cause : error;
+        // Scoped physical pages belong to the durable outbox planner. Let it
+        // assign separate stable identities before sending smaller pages.
+        if (
+          !physicalOutput &&
+          feishuApiErrorCode(rejection) === 230025 &&
+          definitiveFeishuChannelDeliveryError(rejection) &&
+          page.budget > 4096
+        ) {
+          const budget = Math.floor(page.budget * 0.8);
+          const smaller = prepare(page.text, { maxBytes: budget });
+          tracker.addOutputs(smaller.length - 1);
+          pages.splice(
+            0,
+            1,
+            ...smaller.map((part) => ({ text: part, budget })),
+          );
+          continue;
+        }
+        throw error;
+      }
+      pages.shift();
+    }
+  }
+
   async function sendTextToChat(chatId: string, text: string): Promise<void> {
     if (!client) {
       throw new FeishuTextDeliveryError(
@@ -2102,10 +1923,11 @@ export function createFeishuConnection(
       );
     }
     try {
-      await withFeishuHardTimeout(
-        sendToFeishu(chatId, 'text', JSON.stringify({ text })),
-        FEISHU_RESOURCE_REQUEST_TIMEOUT_MS,
-        'Feishu text reply',
+      await sendOrdinaryPages(
+        chatId,
+        text,
+        'text',
+        new PhysicalDeliveryTracker(1),
       );
     } catch (err) {
       logger.error({ chatId, err }, 'Failed to send Feishu text reply');
@@ -4125,6 +3947,17 @@ export function createFeishuConnection(
                 return;
               }
               result = connectOptions?.onCardInterrupt?.(chatJid, operatorImId);
+              // The active streaming session owns its terminal card update.
+              // Replacing this card with a follow-up receipt would erase the
+              // generated answer and race the session's CardKit finalization.
+              // Return promptly so Feishu can release the interaction lock.
+              if (!result) return;
+              return {
+                toast: {
+                  type: result.ok ? 'success' : 'warning',
+                  content: result.message,
+                },
+              };
             } else if (
               action === 'steer_queued' ||
               action === 'cancel_queued' ||
@@ -4245,7 +4078,10 @@ export function createFeishuConnection(
       chatId: string,
       text: string,
       localImagePaths?: string[],
-      options?: { presentation?: 'default' | 'native' },
+      options?: {
+        presentation?: 'default' | 'native';
+        physicalOutput?: boolean;
+      },
     ): Promise<void> {
       if (!client) {
         throw preAcceptImDeliveryError('Feishu client is not initialized');
@@ -4260,59 +4096,56 @@ export function createFeishuConnection(
       const tracker = new PhysicalDeliveryTracker(1 + imagePaths.length);
 
       try {
-        await tracker.send(async () => {
-          // Proactive-mode workspace Agents speak as ordinary native rich-text
-          // messages. They never enter the interactive-card presentation lane.
-          if (options?.presentation === 'native') {
-            await sendToFeishu(chatId, 'post', buildPostMdFallback(text));
-            return;
-          }
-
+        const sendPost = () =>
+          sendOrdinaryPages(
+            chatId,
+            text,
+            'post',
+            tracker,
+            options?.physicalOutput,
+          );
+        if (options?.presentation === 'native') {
+          await sendPost();
+        } else {
           let prebuiltCard: string | undefined;
           if (text.startsWith('{"type":"interactive"')) {
-            // Parse independently from delivery. A send rejection must never be
-            // swallowed as if the JSON itself were malformed.
             try {
               const parsed = JSON.parse(text);
-              if (parsed.type === 'interactive' && parsed.card) {
+              if (parsed.type === 'interactive' && parsed.card)
                 prebuiltCard = text;
-              }
             } catch {
-              // Not valid card JSON, fall through to normal handling.
+              // Ordinary text that happens to start with a JSON prefix.
             }
           }
-
           if (prebuiltCard) {
-            await sendToFeishu(chatId, 'interactive', prebuiltCard);
-            return;
-          }
-
-          // Count markdown tables to decide format upfront — Feishu cards have
-          // a table limit. Each table has exactly one separator row.
-          const tableCount = (text.match(/^\|[\s:-]+\|/gm) || []).length;
-          const usePostMd = tableCount > CARD_TABLE_LIMIT;
-
-          if (usePostMd) {
-            await sendToFeishu(chatId, 'post', buildPostMdFallback(text));
-            return;
-          }
-
-          const card = buildInteractiveCard(text);
-          const content = JSON.stringify(card);
-          try {
-            await sendToFeishu(chatId, 'interactive', content);
-          } catch (err) {
-            // A format fallback is a second provider mutation. It is safe only
-            // when the first mutation was authoritatively rejected (including a
-            // transport failure proven to precede TLS/request acceptance).
-            if (!definitiveFeishuChannelDeliveryError(err)) throw err;
-            logger.warn(
-              { err, chatId },
-              'Feishu interactive send was rejected, fallback to post+md',
+            await tracker.send(() =>
+              sendToFeishu(chatId, 'interactive', prebuiltCard!),
             );
-            await sendToFeishu(chatId, 'post', buildPostMdFallback(text));
+          } else {
+            const tableCount = (text.match(/^\|[\s:-]+\|/gm) || []).length;
+            const content = JSON.stringify(buildInteractiveCard(text));
+            // Inline IM cards have their own 30KB limit, unlike CardKit entities.
+            if (
+              tableCount > CARD_TABLE_LIMIT ||
+              Buffer.byteLength(content) > 30_000
+            ) {
+              await sendPost();
+            } else {
+              try {
+                await tracker.send(() =>
+                  sendToFeishu(chatId, 'interactive', content),
+                );
+              } catch (error) {
+                if (!definitiveFeishuChannelDeliveryError(error)) throw error;
+                logger.warn(
+                  { err: error, chatId },
+                  'Feishu interactive send was rejected, fallback to post+md',
+                );
+                await sendPost();
+              }
+            }
           }
-        });
+        }
         logger.debug(
           { chatId, presentation: options?.presentation ?? 'default' },
           'Sent Feishu message',
@@ -4416,9 +4249,7 @@ export function createFeishuConnection(
 
         // Step 3: If caption provided, send it as a follow-up text message
         if (caption) {
-          await tracker.send(() =>
-            sendToFeishu(chatId, 'text', JSON.stringify({ text: caption })),
-          );
+          await sendOrdinaryPages(chatId, caption, 'text', tracker);
         }
         logger.info(
           { chatId, imageKey, mimeType, size: imageBuffer.length },

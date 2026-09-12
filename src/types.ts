@@ -145,6 +145,8 @@ export interface ChannelMount {
   session_id?: string | null;
   routing_mode: ChannelRoutingMode;
   reply_policy: 'source_only' | 'mirror';
+  /** Null inherits the workspace mode; applies only to inputs from this mount. */
+  interaction_mode_override?: InteractionMode | null;
   activation_mode:
     | 'auto'
     | 'always'
