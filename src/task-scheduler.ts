@@ -116,14 +116,36 @@ export function shouldFinalizeScheduledRunOutput(
   output: Pick<
     ContainerOutput,
     'status' | 'inputTurnCompleted' | 'providerFailureTerminal'
-  >,
+  > & {
+    result?: string | null;
+    finalizationReason?: unknown;
+  },
   inputPreviouslyCompleted = false,
+  businessResultPreviouslyCompleted = false,
 ): boolean {
   return (
     output.status === 'error' ||
     output.providerFailureTerminal === true ||
-    (output.status === 'success' && output.inputTurnCompleted === true) ||
-    (output.status === 'closed' && inputPreviouslyCompleted)
+    ((output.status === 'success' || output.status === 'closed') &&
+      output.inputTurnCompleted === true) ||
+    isCompletedScheduledBusinessResult(output) ||
+    (output.status === 'closed' &&
+      (inputPreviouslyCompleted || businessResultPreviouslyCompleted))
+  );
+}
+
+function isCompletedScheduledBusinessResult(output: {
+  status?: unknown;
+  result?: unknown;
+  inputTurnCompleted?: unknown;
+  finalizationReason?: unknown;
+}): boolean {
+  return (
+    output.status === 'success' &&
+    output.inputTurnCompleted !== true &&
+    typeof output.result === 'string' &&
+    output.result.trim().length > 0 &&
+    output.finalizationReason === 'completed'
   );
 }
 
@@ -1122,6 +1144,7 @@ async function runTaskInner(
   let result: string | null = null;
   let error: string | null = null;
   let scheduledInputCompleted = false;
+  let scheduledBusinessResultCompleted = false;
   // Track the time of last meaningful output from the agent.
   // duration_ms should measure actual work time, not include idle wait.
   let lastOutputTime = startTime;
@@ -1330,6 +1353,9 @@ async function runTaskInner(
           lastOutputTime = Date.now();
           resetIdleTimer();
         }
+        if (isCompletedScheduledBusinessResult(streamedOutput)) {
+          scheduledBusinessResultCompleted = true;
+        }
         if (
           !streamedOutput.providerFailure &&
           streamedOutput.inputTurnCompleted === true
@@ -1357,7 +1383,9 @@ async function runTaskInner(
           );
         }
         const closedBeforeCompletion =
-          streamedOutput.status === 'closed' && !scheduledInputCompleted;
+          streamedOutput.status === 'closed' &&
+          !scheduledInputCompleted &&
+          !scheduledBusinessResultCompleted;
         if (closedBeforeCompletion) {
           error = 'Agent closed before completing the scheduled task input';
           lastOutputTime = Date.now();
@@ -1370,6 +1398,7 @@ async function runTaskInner(
           shouldFinalizeScheduledRunOutput(
             streamedOutput,
             scheduledInputCompleted,
+            scheduledBusinessResultCompleted,
           )
         ) {
           // Cross the durable business/workspace boundary as soon as the SDK
@@ -1388,10 +1417,17 @@ async function runTaskInner(
     if (!output.providerFailure && output.inputTurnCompleted === true) {
       scheduledInputCompleted = true;
     }
+    if (isCompletedScheduledBusinessResult(output)) {
+      scheduledBusinessResultCompleted = true;
+    }
     if (output.providerFailure) {
       error = output.providerFailureNotice || PROVIDER_FAILURE_USER_NOTICE;
       lastOutputTime = Date.now();
-    } else if (output.status === 'closed' && !scheduledInputCompleted) {
+    } else if (
+      output.status === 'closed' &&
+      !scheduledInputCompleted &&
+      !scheduledBusinessResultCompleted
+    ) {
       error = 'Agent closed before completing the scheduled task input';
       lastOutputTime = Date.now();
     } else if (output.status === 'error') {
@@ -1400,6 +1436,7 @@ async function runTaskInner(
     } else if (
       output.status === 'success' &&
       !scheduledInputCompleted &&
+      !scheduledBusinessResultCompleted &&
       output.inputTurnCompleted !== true
     ) {
       error = 'Agent exited before completing the scheduled task input';
@@ -1437,7 +1474,12 @@ async function runTaskInner(
     logger.error({ taskId: task.id, error }, 'Task failed');
   } finally {
     // Safety net: finalize run log if not already done by onOutput callback
-    if (runLogFinalized || error || scheduledInputCompleted) {
+    if (
+      runLogFinalized ||
+      error ||
+      scheduledInputCompleted ||
+      scheduledBusinessResultCompleted
+    ) {
       commitDurableWorkspaceIntent();
     }
     finalizeRunLog();

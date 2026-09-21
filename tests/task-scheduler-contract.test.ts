@@ -39,6 +39,17 @@ vi.mock('../src/logger.js', () => ({
   logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
 }));
 
+vi.mock('cron-parser', () => ({
+  CronExpressionParser: {
+    parse: vi.fn(() => ({
+      fields: { second: { values: [0] } },
+      next: () => ({
+        toDate: () => new Date(Date.now() + 60_000),
+      }),
+    })),
+  },
+}));
+
 const { runContainerAgentMock, runHostAgentMock, runScriptMock } = vi.hoisted(
   () => ({
     runContainerAgentMock: vi.fn(async (_group, input, onProcess, onOutput) => {
@@ -525,6 +536,80 @@ describe('scheduled task workspace/session contract', () => {
         true,
       ),
     ).toBe(true);
+    expect(
+      shouldFinalizeScheduledRunOutput({
+        status: 'closed',
+        inputTurnCompleted: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldFinalizeScheduledRunOutput(
+        {
+          status: 'closed',
+        },
+        false,
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      shouldFinalizeScheduledRunOutput({
+        status: 'success',
+        result: 'complete scheduled result',
+        finalizationReason: 'completed',
+        inputTurnCompleted: false,
+      }),
+    ).toBe(true);
+  });
+
+  test('does not classify a run that already streamed its complete business result as closed before completing when a later close sentinel lacks inputTurnCompleted', async () => {
+    const taskId = createTask({ id: 'task-streamed-complete-close' });
+    const groups = {
+      [GROUP_JID]: db.getRegisteredGroup(GROUP_JID)!,
+    };
+    runContainerAgentMock.mockImplementationOnce(
+      async (_group, input, onProcess, onOutput) => {
+        onProcess?.({} as never, `container-${input.taskRunId}`, null);
+        await onOutput?.({
+          status: 'success',
+          result: 'complete business result',
+          inputTurnCompleted: true,
+        });
+        await onOutput?.({
+          status: 'closed',
+          result: null,
+        });
+        return {
+          status: 'closed',
+          result: null,
+        };
+      },
+    );
+    const { deps, waitForRun } = makeDeps(groups);
+
+    const trigger = triggerTaskNow(taskId, deps);
+    expect(trigger.success).toBe(true);
+    await waitForRun();
+
+    expect(db.getTaskRunById(trigger.runId!)).toMatchObject({
+      status: 'success',
+      result: 'complete business result',
+      error: null,
+      notification_status: 'success',
+    });
+    expect(db.getTaskRunLogs(taskId, 1)[0]).toMatchObject({
+      status: 'success',
+      result: 'complete business result',
+      error: null,
+    });
+    expect(deps.storeResultAndNotify).toHaveBeenCalledWith(
+      GROUP_JID,
+      expect.stringContaining('complete business result'),
+      expect.objectContaining({
+        sourceKind: 'scheduled_task_result',
+        messageId: `scheduled-task-result:${trigger.runId}`,
+        skipStore: false,
+      }),
+    );
   });
 
   test('records an early close after an incomplete partial as an error', async () => {
@@ -560,6 +645,59 @@ describe('scheduled task workspace/session contract', () => {
       result: 'partial only',
       error: expect.stringContaining('before completing'),
     });
+  });
+
+  test('keeps a completed scheduled business result successful before close', async () => {
+    const taskId = createTask({ id: 'task-completed-result-close' });
+    const groups = {
+      [GROUP_JID]: db.getRegisteredGroup(GROUP_JID)!,
+    };
+    runContainerAgentMock.mockImplementationOnce(
+      async (_group, input, onProcess, onOutput) => {
+        onProcess?.({} as never, `container-${input.taskRunId}`, null);
+        await onOutput?.({
+          status: 'success',
+          result: 'complete scheduled result',
+          sourceKind: 'sdk_final',
+          finalizationReason: 'completed',
+          inputTurnCompleted: false,
+        });
+        await onOutput?.({
+          status: 'closed',
+          result: null,
+        });
+        return {
+          status: 'closed',
+          result: null,
+        };
+      },
+    );
+    const { deps, waitForRun } = makeDeps(groups);
+
+    const trigger = triggerTaskNow(taskId, deps);
+    expect(trigger.success).toBe(true);
+    await waitForRun();
+
+    expect(db.getTaskRunById(trigger.runId!)).toMatchObject({
+      status: 'success',
+      result: 'complete scheduled result',
+      error: null,
+      notification_status: 'success',
+    });
+    expect(db.getTaskRunLogs(taskId, 1)[0]).toMatchObject({
+      status: 'success',
+      result: 'complete scheduled result',
+      error: null,
+    });
+    expect(deps.storeResultAndNotify).toHaveBeenCalledWith(
+      GROUP_JID,
+      expect.stringContaining('complete scheduled result'),
+      expect.objectContaining({
+        sourceKind: 'scheduled_task_result',
+        messageId: `scheduled-task-result:${trigger.runId}`,
+        skipStore: false,
+      }),
+    );
   });
 
   test('fails an isolated occurrence whose completed Agent turn has no full business result', async () => {
