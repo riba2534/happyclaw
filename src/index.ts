@@ -79,6 +79,7 @@ import {
   resolveTurnOutcome,
 } from './turn-outcome.js';
 import { finalizeChannelCardAfterDelivery } from './channel-card-finalization.js';
+import { finalizeSilentSuccessCard } from './silent-success-card-finalize.js';
 import { persistUncertainStreamingDelivery } from './channel-streaming-uncertainty.js';
 import { resolveContainerOutputInputTurnId } from './channel-output-correlation.js';
 import { SteeringTransitionRegistry } from './steering-transition.js';
@@ -18018,15 +18019,16 @@ async function processAgentConversation(
           // side-channel or produced an empty result, so the card was never
           // completed. complete() 收口 (空正文由 buildStructuredFinalCard 兜底)
           // 而非裸 dispose 留下「生成中」僵尸卡。
-          try {
-            await agentStreamingSession.complete(agentStreamingAccText);
-          } catch (err) {
-            logger.warn(
-              { err, chatJid, agentId },
-              'Agent streaming card silent-success finalize failed, disposing',
-            );
-            agentStreamingSession.dispose();
-          }
+          await finalizeSilentSuccessCard(
+            agentStreamingSession,
+            agentStreamingAccText,
+            (err) => {
+              logger.warn(
+                { err, chatJid, agentId },
+                'Agent streaming card silent-success finalize failed, aborting card',
+              );
+            },
+          );
         } else {
           agentStreamingSession.dispose();
         }
