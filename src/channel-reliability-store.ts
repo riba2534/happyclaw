@@ -1184,6 +1184,28 @@ export const DELIVERED_EFFECT_RECONCILIATION_REASON = manualReconciliationError(
   'A channel side effect was already delivered before Turn completion; manual reconciliation required',
 );
 
+// Progress text is an intermediate projection and must not make a crashed
+// turn permanently unreplayable. File/image receipts and final text remain
+// durable user-visible effects; completed streaming cards are fenced below.
+const DELIVERED_OUTBOX_EFFECT_PREDICATE = `
+                 (
+                   channel_outbox.kind IN ('file','image')
+                   OR (
+                     channel_outbox.kind = 'text'
+                     AND (
+                       NOT json_valid(channel_outbox.payload)
+                       OR COALESCE(
+                         json_extract(channel_outbox.payload, '$.deliveryRole'),
+                         json_extract(
+                           channel_outbox.payload,
+                           '$.outboxMetadata.deliveryRole'
+                         ),
+                         'final'
+                       ) = 'final'
+                     )
+                   )
+                 )`;
+
 /**
  * Fence one non-terminal Turn when durable state proves that a user-visible
  * side effect already completed. This must run before a new execution claim:
@@ -1210,6 +1232,7 @@ export function interruptChannelTurnRunWithDeliveredEffect(
                SELECT 1 FROM channel_outbox
                WHERE channel_outbox.turn_run_id = turn_runs.id
                  AND channel_outbox.status = 'delivered'
+                 AND ${DELIVERED_OUTBOX_EFFECT_PREDICATE}
              )
              OR EXISTS (
                SELECT 1 FROM streaming_cards
@@ -1249,6 +1272,7 @@ export function interruptChannelTurnRunsWithDeliveredEffects(
              SELECT 1 FROM channel_outbox
              WHERE channel_outbox.turn_run_id = turn_runs.id
                AND channel_outbox.status = 'delivered'
+                 AND ${DELIVERED_OUTBOX_EFFECT_PREDICATE}
            )
            OR EXISTS (
              SELECT 1 FROM streaming_cards

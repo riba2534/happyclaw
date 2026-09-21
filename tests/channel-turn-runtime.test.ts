@@ -1391,4 +1391,42 @@ describe('persisted assistant recovery', () => {
     );
     vi.useRealTimers();
   });
+
+  test('restart continues after a delivered progress projection', () => {
+    const input = {
+      ...route,
+      externalMessageId: 'msg-crash-after-progress',
+      agentId: 'agent-crash-after-progress',
+    };
+    const first = ChannelTurnRuntime.start(input);
+    const outbox = reliability.enqueueChannelOutbox({
+      ...route,
+      turnRunId: first.runId,
+      ordinal: 0,
+      kind: 'text',
+      payload: { text: 'still working', deliveryRole: 'progress' },
+    }).item;
+    const claim = reliability.claimChannelOutboxById(
+      outbox.id,
+      'progress-delivery-worker',
+      60_000,
+    )!;
+    expect(reliability.markChannelOutboxSending(claim)).toBe(true);
+    expect(
+      reliability.completeChannelOutbox(claim, {
+        providerMessageId: 'provider-progress-ack',
+      }),
+    ).toBe(true);
+    first.dispose(); // crash before the final answer is delivered
+
+    const replay = ChannelTurnRuntime.start(input);
+    expect(replay.executionDisposition).toBe('execute');
+    expect(replay.isClaimed).toBe(true);
+    expect(reliability.getChannelTurnRun(first.runId)).toMatchObject({
+      status: 'running',
+      attempt: 2,
+    });
+    expect(replay.complete({ finalDelivered: true })).toBe(true);
+    replay.dispose();
+  });
 });
