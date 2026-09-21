@@ -345,3 +345,146 @@ describe('executeFreshWindowReset', () => {
     expect(sessions).toHaveProperty('flow-graduation', 'session-1');
   });
 });
+
+describe('executeFreshWindowReset IPC beforeStop ordering', () => {
+  beforeEach(() => {
+    deleteSessionMock.mockReset();
+    clearSessionChannelOwnerMock.mockReset();
+    getJidsByFolderMock.mockReset();
+    storeMessageDirectMock.mockReset();
+    ensureChatExistsMock.mockReset();
+    getMessageCursorMock.mockReset();
+    getMessageCursorMock.mockImplementation(
+      (jid: string, messageId: string) => ({
+        timestamp: '2026-09-10T00:00:00.000Z',
+        id: messageId,
+        sequence: 10,
+      }),
+    );
+    vi.useRealTimers();
+  });
+
+  test('live fail-then-pass: prep failure skips beforeStop; retry writes success before stop', async () => {
+    const { executeFreshWindowReset } = await import('../src/commands.js');
+    const order: string[] = [];
+    const stopGroup = vi.fn(async () => {
+      order.push('stop');
+    });
+    const broadcast = vi.fn();
+    const setLastAgentTimestamp = vi.fn();
+    const sessions = { 'home-u1': 'session-main' } as Record<string, string>;
+    getJidsByFolderMock.mockReturnValue(['web:foo']);
+
+    deleteSessionMock.mockImplementationOnce(() => {
+      order.push('prep-fail');
+      throw new Error('session delete failed');
+    });
+
+    await expect(
+      executeFreshWindowReset(
+        'web:foo',
+        'home-u1',
+        {
+          queue: { stopGroup },
+          sessions,
+          broadcast,
+          setLastAgentTimestamp,
+        },
+        {
+          handoff: '[HAPPYCLAW_FRESH_WINDOW_HANDOFF]\nnotes',
+          beforeStop: () => {
+            order.push('result-success');
+          },
+        },
+      ),
+    ).rejects.toThrow('session delete failed');
+
+    expect(order).toEqual(['prep-fail']);
+    expect(stopGroup).not.toHaveBeenCalled();
+    // Prep failed before beforeStop: no success result and session cache intact.
+    expect(sessions).toHaveProperty('home-u1', 'session-main');
+
+    // Pass on retry with healthy prep.
+    deleteSessionMock.mockImplementation(() => undefined);
+    sessions['home-u1'] = 'session-main';
+    order.length = 0;
+
+    await executeFreshWindowReset(
+      'web:foo',
+      'home-u1',
+      {
+        queue: { stopGroup },
+        sessions,
+        broadcast,
+        setLastAgentTimestamp,
+      },
+      {
+        handoff: '[HAPPYCLAW_FRESH_WINDOW_HANDOFF]\nnotes',
+        beforeStop: () => {
+          order.push('result-success');
+        },
+      },
+    );
+
+    expect(order).toEqual(['result-success', 'stop']);
+    expect(stopGroup).toHaveBeenCalledWith('web:foo', { force: true });
+    expect(sessions).not.toHaveProperty('home-u1');
+  });
+
+  test('stopGroup failure after beforeStop does not reject committed success', async () => {
+    const { executeFreshWindowReset } = await import('../src/commands.js');
+    const order: string[] = [];
+    const stopGroup = vi.fn(async () => {
+      order.push('stop');
+      throw new Error('force stop failed');
+    });
+    getJidsByFolderMock.mockReturnValue(['web:foo']);
+
+    await executeFreshWindowReset(
+      'web:foo',
+      'home-u1',
+      {
+        queue: { stopGroup },
+        sessions: { 'home-u1': 'session-main' },
+        broadcast: vi.fn(),
+        setLastAgentTimestamp: vi.fn(),
+      },
+      {
+        handoff: '[HAPPYCLAW_FRESH_WINDOW_HANDOFF]\nnotes',
+        beforeStop: () => {
+          order.push('result-success');
+        },
+      },
+    );
+
+    expect(order).toEqual(['result-success', 'stop']);
+    expect(stopGroup).toHaveBeenCalled();
+  });
+
+  test('without beforeStop, slash path still stops before durable prep', async () => {
+    const { executeFreshWindowReset } = await import('../src/commands.js');
+    const order: string[] = [];
+    const stopGroup = vi.fn(async () => {
+      order.push('stop');
+    });
+    storeMessageDirectMock.mockImplementation(() => {
+      order.push('prep');
+    });
+    getJidsByFolderMock.mockReturnValue(['web:foo']);
+
+    await executeFreshWindowReset(
+      'web:foo',
+      'home-u1',
+      {
+        queue: { stopGroup },
+        sessions: { 'home-u1': 's' },
+        broadcast: vi.fn(),
+        setLastAgentTimestamp: vi.fn(),
+      },
+      { handoff: '[HAPPYCLAW_FRESH_WINDOW_HANDOFF]\nnotes' },
+    );
+
+    expect(order[0]).toBe('stop');
+    expect(order.slice(1).every((step) => step === 'prep')).toBe(true);
+  });
+});

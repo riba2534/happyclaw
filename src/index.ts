@@ -15119,12 +15119,11 @@ async function processTaskIpc(
           break;
         }
 
-        // Acknowledge before stopGroup so the runner can finish the MCP tool.
+        // Publish the terminal IPC result only after durable reset prep
+        // succeeds, via beforeStop (still before force-stopGroup) so the
+        // runner can finish the MCP tool without a false success ack.
         // Validation already passed; do not write a second terminal result.
-        writeTaskResult(tasksDir, 'fresh_window', data.requestId, {
-          success: true,
-          accepted: true,
-        });
+        let accepted = false;
         try {
           await executeFreshWindowReset(
             baseChatJid,
@@ -15135,13 +15134,28 @@ async function processTaskIpc(
               broadcast: broadcastNewMessage,
               setLastAgentTimestamp: setCursors,
             },
-            { agentId, handoff },
+            {
+              agentId,
+              handoff,
+              beforeStop: () => {
+                writeTaskResult(tasksDir, 'fresh_window', data.requestId, {
+                  success: true,
+                  accepted: true,
+                });
+                accepted = true;
+              },
+            },
           );
         } catch (resetErr) {
           logger.error(
             { sourceGroup, baseChatJid, agentId, err: resetErr },
-            'fresh_window accepted but reset failed',
+            'fresh_window reset failed',
           );
+          if (!accepted) {
+            failFresh(
+              resetErr instanceof Error ? resetErr.message : String(resetErr),
+            );
+          }
         }
       } catch (err) {
         failFresh(err instanceof Error ? err.message : String(err));
