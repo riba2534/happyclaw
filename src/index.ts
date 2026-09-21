@@ -79,6 +79,7 @@ import {
   resolveTurnOutcome,
 } from './turn-outcome.js';
 import { finalizeChannelCardAfterDelivery } from './channel-card-finalization.js';
+import { abandonStreamingCardOnRouteChange } from './reply-route-cross-jid-abandon.js';
 import { persistUncertainStreamingDelivery } from './channel-streaming-uncertainty.js';
 import { resolveContainerOutputInputTurnId } from './channel-output-correlation.js';
 import { SteeringTransitionRegistry } from './steering-transition.js';
@@ -7715,7 +7716,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         newStreamingJid !== streamingSessionJid
       ) {
         if (streamingSession) {
-          if (streamingSession.isActive()) streamingSession.dispose();
+          // Cross-jid rebuild: abort before dispose so the old IM card shows
+          // 「已中断」 instead of permanent 「生成中」(dispose only clears timers).
+          await abandonStreamingCardOnRouteChange(streamingSession);
           unregisterStreamingSession(streamingSessionJid);
         }
         streamingSessionJid = newStreamingJid;
