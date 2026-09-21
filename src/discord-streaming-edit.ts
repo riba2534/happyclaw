@@ -166,10 +166,40 @@ export class DiscordStreamingEditController {
     }
     this.accumulatedText = finalText;
 
-    // If there's no text at all, skip message creation entirely
+    // Empty final: never leave a thinking placeholder behind with a false ACK.
+    // Mirror abort() by awaiting in-flight create, then terminalize any visible
+    // message (edit to empty-notice) before success. Mutation failure surfaces
+    // Partial/uncertain so the host does not skip static fallback.
     if (!finalText.trim()) {
-      this.state = 'completed';
-      return;
+      if (this.messageCreationPromise) {
+        await this.messageCreationPromise.catch(() => {});
+      }
+      if (this.terminalDeliveryError !== undefined) {
+        this.state = 'aborted';
+        throw this.terminalDeliveryError;
+      }
+
+      if (this.messages.length === 0) {
+        this.state = 'completed';
+        return;
+      }
+
+      this.thinkingText = '';
+      this.thinking = false;
+      const emptyNotice = '> ⚠️ 本次运行没有生成可展示的最终内容。';
+      try {
+        const lastMsg = this.messages[this.messages.length - 1];
+        await lastMsg.edit(emptyNotice);
+        this.lastPushedContent = emptyNotice;
+        this.state = 'completed';
+        return;
+      } catch (err: any) {
+        logger.warn(
+          { err: err.message },
+          'Discord empty-complete placeholder terminalize failed',
+        );
+        throw this.terminalizeDeliveryFailure(err);
+      }
     }
 
     logger.info(
