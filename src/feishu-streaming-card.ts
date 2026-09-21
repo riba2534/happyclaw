@@ -1239,13 +1239,11 @@ class CardKitBackend {
         },
       });
 
+      assertCardKitAcknowledged(resp, 'CardKit card.create');
       const rawCardId = resp?.data?.card_id;
       if (!rawCardId) {
         const code = (resp as any)?.code;
         const msg = (resp as any)?.msg;
-        if (typeof code === 'number' && code !== 0) {
-          throw new CardKitRejectedError('CardKit card.create', code, msg);
-        }
         throw new Error(
           `CardKit card.create returned no card_id (code=${code}, msg=${msg})`,
         );
@@ -1453,13 +1451,11 @@ class StreamingModeBackend {
         },
       });
 
+      assertCardKitAcknowledged(resp, 'Streaming card.create');
       const rawCardId = resp?.data?.card_id;
       if (!rawCardId) {
         const code = (resp as any)?.code;
         const msg = (resp as any)?.msg;
-        if (typeof code === 'number' && code !== 0) {
-          throw new CardKitRejectedError('Streaming card.create', code, msg);
-        }
         throw new Error(
           `Streaming card.create returned no card_id (code=${code}, msg=${msg})`,
         );

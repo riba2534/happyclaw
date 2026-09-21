@@ -383,7 +383,7 @@ describe('Feishu CardKit streaming controller', () => {
         if (createCount === 1 || mode === 'legacy') {
           throw new Error('CardKit mode unavailable');
         }
-        return { data: { card_id: 'card_v1' } };
+        return { code: 0, data: { card_id: 'card_v1' } };
       });
       const client = {
         cardkit: {
@@ -536,6 +536,96 @@ describe('Feishu CardKit streaming controller', () => {
     expect(controller.currentState).toBe('aborted');
     expect(mock.client.im.v1.message.create).toHaveBeenCalledOnce();
     expect(mock.cardUpdate).toHaveBeenCalledOnce();
+    controller.dispose();
+  });
+
+  test('StreamingMode createCard with missing code+card_id stays uncertain and never mints', async () => {
+    const mock = makeClient();
+    mock.cardCreate.mockResolvedValue({ data: { card_id: 'cid_nocode' } });
+    const controller = new StreamingCardController({
+      client: mock.client as any,
+      chatId: 'oc_stream_create_missing_code',
+    });
+
+    controller.append('answer');
+    await vi.waitFor(() => expect(controller.currentState).toBe('error'));
+
+    expect(mock.client.im.v1.message.create).not.toHaveBeenCalled();
+    expect(controller.currentMessageId).toBeNull();
+    await expect(controller.complete('answer')).rejects.toMatchObject({
+      deliveryPhase: 'uncertain',
+    });
+    controller.dispose();
+  });
+
+  test('StreamingMode createCard with non-zero code+card_id never mints that card_id', async () => {
+    const mock = makeClient();
+    mock.cardCreate.mockResolvedValue({
+      code: 230099,
+      msg: 'fail',
+      data: { card_id: 'cid_bad' },
+    });
+    const controller = new StreamingCardController({
+      client: mock.client as any,
+      chatId: 'oc_stream_create_nonzero',
+    });
+
+    controller.append('answer');
+    await vi.waitFor(() => expect(controller.currentState).toBe('streaming'));
+
+    const bodies = mock.client.im.v1.message.create.mock.calls.map(
+      (call: any) => String(call?.[0]?.data?.content ?? ''),
+    );
+    expect(bodies.some((body: string) => body.includes('cid_bad'))).toBe(false);
+    expect((controller as any).backendMode).toBe('legacy');
+    controller.dispose();
+  });
+
+  test('CardKitBackend createCard with missing code+card_id stays uncertain and never mints', async () => {
+    const mock = makeClient();
+    mock.cardCreate
+      .mockRejectedValueOnce(new Error('streaming resource unavailable'))
+      .mockResolvedValueOnce({ data: { card_id: 'cid_v1_nocode' } });
+    const controller = new StreamingCardController({
+      client: mock.client as any,
+      chatId: 'oc_v1_create_missing_code',
+    });
+
+    controller.append('answer');
+    await vi.waitFor(() => expect(controller.currentState).toBe('error'));
+
+    expect(mock.client.im.v1.message.create).not.toHaveBeenCalled();
+    expect(controller.currentMessageId).toBeNull();
+    await expect(controller.complete('answer')).rejects.toMatchObject({
+      deliveryPhase: 'uncertain',
+    });
+    controller.dispose();
+  });
+
+  test('CardKitBackend createCard with non-zero code+card_id never mints that card_id', async () => {
+    const mock = makeClient();
+    mock.cardCreate
+      .mockRejectedValueOnce(new Error('streaming resource unavailable'))
+      .mockResolvedValueOnce({
+        code: 230099,
+        msg: 'fail',
+        data: { card_id: 'cid_v1_bad' },
+      });
+    const controller = new StreamingCardController({
+      client: mock.client as any,
+      chatId: 'oc_v1_create_nonzero',
+    });
+
+    controller.append('answer');
+    await vi.waitFor(() => expect(controller.currentState).toBe('streaming'));
+
+    const bodies = mock.client.im.v1.message.create.mock.calls.map(
+      (call: any) => String(call?.[0]?.data?.content ?? ''),
+    );
+    expect(bodies.some((body: string) => body.includes('cid_v1_bad'))).toBe(
+      false,
+    );
+    expect((controller as any).backendMode).toBe('legacy');
     controller.dispose();
   });
 
