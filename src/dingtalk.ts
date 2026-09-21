@@ -2499,8 +2499,9 @@ export function createDingTalkConnection(
             'DingTalk richText processing complete',
           );
           if (!content && !attachmentsJson) {
-            // All richText entries were pictures with no text
-            content = attachmentsJson ? '[图片]' : '';
+            // Picture-only richText with every download null — salvage like
+            // standalone picture/audio so Stream ACK is not a silent drop.
+            content = imageEntries.length > 0 ? '[图片消息（下载失败）]' : '';
           }
         } else if (data.msgtype === 'picture' && 'content' in data) {
           // Picture message: download via downloadCode API (short or long form)
@@ -2532,14 +2533,17 @@ export function createDingTalkConnection(
             signal,
           );
           if (!normalized) {
+            // Sibling of audio/video: persist a salvage label so Stream ACK
+            // after handle does not permanently drop a picture-only inbound.
             logger.warn(
               { msgId },
-              'DingTalk picture download failed, skipping',
+              'DingTalk picture download failed, salvaging label',
             );
-            return;
+            content = '[图片消息（下载失败）]';
+          } else {
+            content = normalized.content;
+            attachmentsJson = normalized.attachmentsJson;
           }
-          content = normalized.content;
-          attachmentsJson = normalized.attachmentsJson;
         } else if (data.msgtype === 'file' && 'content' in data) {
           // File message: download via downloadCode, same API as picture
           interface FileContent {
@@ -2596,8 +2600,13 @@ export function createDingTalkConnection(
               content = `[文件: ${sanitizeFileName(fileName)}（未注册群组）]`;
             }
           } else {
-            logger.warn({ msgId }, 'DingTalk file download failed, skipping');
-            return;
+            // Sibling of audio/video: salvage so ACK-after-handle is not a
+            // silent permanent drop of a file-only inbound.
+            logger.warn(
+              { msgId, fileName },
+              'DingTalk file download failed, salvaging label',
+            );
+            content = `[文件: ${sanitizeFileName(fileName)}（下载失败）]`;
           }
         } else if (data.msgtype === 'audio' && 'content' in data) {
           // Official C2C: { duration, downloadCode, recognition }
@@ -2719,11 +2728,17 @@ export function createDingTalkConnection(
             signal,
           );
           if (!normalized) {
-            logger.warn({ msgId }, 'DingTalk image download failed, skipping');
-            return;
+            // Sibling of audio/video: salvage label instead of early return so
+            // socketCallBackResponse success cannot silent-drop the message.
+            logger.warn(
+              { msgId },
+              'DingTalk image download failed, salvaging label',
+            );
+            content = '[图片消息（下载失败）]';
+          } else {
+            content = normalized.content;
+            attachmentsJson = normalized.attachmentsJson;
           }
-          content = normalized.content;
-          attachmentsJson = normalized.attachmentsJson;
         }
 
         // Skip empty messages (text without content, or failed image)
