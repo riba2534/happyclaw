@@ -2512,34 +2512,37 @@ export function createDingTalkConnection(
           const downloadCode =
             pictureContent?.downloadCode || pictureContent?.pictureDownloadCode;
           if (!downloadCode) {
+            // Sibling of audio missing-code default [语音消息]: salvage so
+            // Stream ACK after handle is not a silent permanent drop.
             logger.warn(
               { msgId },
-              'DingTalk picture message missing both downloadCode and pictureDownloadCode',
+              'DingTalk picture message missing both downloadCode and pictureDownloadCode, salvaging label',
             );
-            return;
-          }
-          const normalized = await normalizeDingTalkImage(
-            jid,
-            opts,
-            () =>
-              downloadDingTalkImageByDownloadCode(
-                downloadCode,
-                data.robotCode ?? '',
-                generation,
-                signal,
-              ),
-            generation,
-            signal,
-          );
-          if (!normalized) {
-            logger.warn(
-              { msgId },
-              'DingTalk picture download failed, skipping',
+            content = '[图片消息（缺少下载码）]';
+          } else {
+            const normalized = await normalizeDingTalkImage(
+              jid,
+              opts,
+              () =>
+                downloadDingTalkImageByDownloadCode(
+                  downloadCode,
+                  data.robotCode ?? '',
+                  generation,
+                  signal,
+                ),
+              generation,
+              signal,
             );
-            return;
+            if (!normalized) {
+              logger.warn(
+                { msgId },
+                'DingTalk picture download failed, skipping',
+              );
+              return;
+            }
+            content = normalized.content;
+            attachmentsJson = normalized.attachmentsJson;
           }
-          content = normalized.content;
-          attachmentsJson = normalized.attachmentsJson;
         } else if (data.msgtype === 'file' && 'content' in data) {
           // File message: download via downloadCode, same API as picture
           interface FileContent {
@@ -2551,53 +2554,55 @@ export function createDingTalkConnection(
           const downloadCode = fileContent?.downloadCode;
           const fileName = fileContent?.fileName || 'file';
           if (!downloadCode) {
+            // Sibling of audio missing-code default: salvage label, fall through.
             logger.warn(
-              { msgId },
-              'DingTalk file message missing downloadCode',
+              { msgId, fileName },
+              'DingTalk file message missing downloadCode, salvaging label',
             );
-            return;
-          }
-          const fileBuffer = await downloadDingTalkFileByDownloadCode(
-            downloadCode,
-            data.robotCode ?? '',
-            generation,
-            signal,
-          );
-          assertInboundGeneration(generation, signal);
-          if (fileBuffer) {
-            const groupFolder = opts.resolveGroupFolder?.(jid);
-            if (groupFolder) {
-              try {
-                assertInboundGeneration(generation, signal);
-                const ext = path.extname(fileName).slice(1).toLowerCase();
-                const savedFilename = ext
-                  ? `file_${Date.now()}.${ext}`
-                  : `file_${Date.now()}`;
-                const savedPath = await saveDownloadedFile(
-                  groupFolder,
-                  'dingtalk',
-                  savedFilename,
-                  fileBuffer,
-                );
-                assertInboundGeneration(generation, signal);
-                content = await buildFileContentBlock({
-                  fileName,
-                  savedRelPath: savedPath,
-                  groupFolder,
-                  prefixLabel: '文件',
-                });
-                assertInboundGeneration(generation, signal);
-              } catch (err) {
-                assertInboundGeneration(generation, signal);
-                logger.warn({ err }, 'Failed to save DingTalk file to disk');
-                content = `[文件: ${sanitizeFileName(fileName)}（保存失败）]`;
+            content = `[文件: ${sanitizeFileName(fileName)}（缺少下载码）]`;
+          } else {
+            const fileBuffer = await downloadDingTalkFileByDownloadCode(
+              downloadCode,
+              data.robotCode ?? '',
+              generation,
+              signal,
+            );
+            assertInboundGeneration(generation, signal);
+            if (fileBuffer) {
+              const groupFolder = opts.resolveGroupFolder?.(jid);
+              if (groupFolder) {
+                try {
+                  assertInboundGeneration(generation, signal);
+                  const ext = path.extname(fileName).slice(1).toLowerCase();
+                  const savedFilename = ext
+                    ? `file_${Date.now()}.${ext}`
+                    : `file_${Date.now()}`;
+                  const savedPath = await saveDownloadedFile(
+                    groupFolder,
+                    'dingtalk',
+                    savedFilename,
+                    fileBuffer,
+                  );
+                  assertInboundGeneration(generation, signal);
+                  content = await buildFileContentBlock({
+                    fileName,
+                    savedRelPath: savedPath,
+                    groupFolder,
+                    prefixLabel: '文件',
+                  });
+                  assertInboundGeneration(generation, signal);
+                } catch (err) {
+                  assertInboundGeneration(generation, signal);
+                  logger.warn({ err }, 'Failed to save DingTalk file to disk');
+                  content = `[文件: ${sanitizeFileName(fileName)}（保存失败）]`;
+                }
+              } else {
+                content = `[文件: ${sanitizeFileName(fileName)}（未注册群组）]`;
               }
             } else {
-              content = `[文件: ${sanitizeFileName(fileName)}（未注册群组）]`;
+              logger.warn({ msgId }, 'DingTalk file download failed, skipping');
+              return;
             }
-          } else {
-            logger.warn({ msgId }, 'DingTalk file download failed, skipping');
-            return;
           }
         } else if (data.msgtype === 'audio' && 'content' in data) {
           // Official C2C: { duration, downloadCode, recognition }
@@ -2708,22 +2713,32 @@ export function createDingTalkConnection(
           // Image message via contentUrl (legacy/native format)
           const contentUrl = (data as DingTalkRobotMessage).image?.contentUrl;
           if (!contentUrl) {
-            logger.warn({ msgId }, 'DingTalk image message missing contentUrl');
-            return;
+            // Sibling of picture missing-code: salvage so Stream ACK is not a
+            // silent permanent drop of an image-only inbound.
+            logger.warn(
+              { msgId },
+              'DingTalk image message missing contentUrl, salvaging label',
+            );
+            content = '[图片消息（缺少 contentUrl）]';
+          } else {
+            const normalized = await normalizeDingTalkImage(
+              jid,
+              opts,
+              () =>
+                downloadDingTalkImageAsBase64(contentUrl, generation, signal),
+              generation,
+              signal,
+            );
+            if (!normalized) {
+              logger.warn(
+                { msgId },
+                'DingTalk image download failed, skipping',
+              );
+              return;
+            }
+            content = normalized.content;
+            attachmentsJson = normalized.attachmentsJson;
           }
-          const normalized = await normalizeDingTalkImage(
-            jid,
-            opts,
-            () => downloadDingTalkImageAsBase64(contentUrl, generation, signal),
-            generation,
-            signal,
-          );
-          if (!normalized) {
-            logger.warn({ msgId }, 'DingTalk image download failed, skipping');
-            return;
-          }
-          content = normalized.content;
-          attachmentsJson = normalized.attachmentsJson;
         }
 
         // Skip empty messages (text without content, or failed image)
