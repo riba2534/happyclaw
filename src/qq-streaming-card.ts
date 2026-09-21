@@ -613,7 +613,7 @@ export class QQStreamingController {
     content: string,
     inputState: number,
   ): Promise<void> {
-    await this.sendStreamChunk(this.openid, {
+    const resp = await this.sendStreamChunk(this.openid, {
       input_mode: 'replace',
       input_state: inputState,
       content_type: 'markdown',
@@ -624,6 +624,17 @@ export class QQStreamingController {
       msg_id: this.passiveMsgId,
       event_id: this.passiveMsgId,
     });
+    // Beyond #702 (/messages): subsequent GENERATING/DONE stream_messages
+    // chunks must also carry an official provider receipt. apiRequest maps
+    // empty/HTML/broken-JSON 2xx to {} and passes through biz-error JSON
+    // without an id — those must NOT increment sentChunkCount or let
+    // complete() mark the stream completed (which suppresses plain fallback).
+    const id = resp?.id;
+    if (typeof id !== 'string' || id.trim() === '') {
+      throw new Error(
+        'QQ stream chunk returned no provider receipt; delivery outcome is uncertain',
+      );
+    }
     this.sentChunkCount++;
   }
 

@@ -230,4 +230,134 @@ describe('QQ streaming passive rejection fallback', () => {
       vi.useRealTimers();
     }
   });
+
+  test.each([
+    { label: 'empty object', resp: {} },
+    { label: 'missing id', resp: { timestamp: 1 } },
+    { label: 'blank id', resp: { id: '' } },
+    { label: 'whitespace id', resp: { id: '   ' } },
+    {
+      label: 'biz-error JSON without id',
+      resp: { code: 40034001, message: 'fail' },
+    },
+    { label: 'numeric id', resp: { id: 123 } },
+  ])(
+    'visible stream DONE with non-official receipt ($label) is not completed',
+    async ({ resp }) => {
+      vi.useFakeTimers();
+      try {
+        let calls = 0;
+        const send = vi.fn(async () => {
+          calls += 1;
+          if (calls === 1) return { id: 'stream-visible' };
+          return resp as any;
+        });
+        const fallback = vi.fn(async () => {});
+        const controller = new QQStreamingController({
+          openid: 'user',
+          msgSeq: 1,
+          passiveMsgId: 'message',
+          sendStreamChunk: send,
+          fallbackSend: fallback,
+        });
+
+        controller.append('visible preview');
+        await vi.advanceTimersByTimeAsync(600);
+        const finalized = await finalizeChannelCardAfterDelivery(
+          controller,
+          'visible preview and final',
+          true,
+          'delivery failed',
+        );
+
+        expect(finalized.acknowledged).toBe(false);
+        expect(finalized.error).toMatchObject({
+          code: 'CHANNEL_DELIVERY_PARTIAL',
+        });
+        expect(
+          String((finalized.error as any)?.cause?.message ?? finalized.error),
+        ).toMatch(/provider receipt|official id/i);
+        expect(fallback).not.toHaveBeenCalled();
+        expect(controller.getAcknowledgedProviderOutputCount()).toBe(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  test('visible stream subsequent GENERATING without official id is partial-visible', async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const send = vi.fn(async () => {
+        calls += 1;
+        if (calls === 1) return { id: 'stream-visible' };
+        return {};
+      });
+      const fallback = vi.fn(async () => {});
+      const controller = new QQStreamingController({
+        openid: 'user',
+        msgSeq: 1,
+        passiveMsgId: 'message',
+        sendStreamChunk: send,
+        fallbackSend: fallback,
+      });
+
+      controller.append('visible');
+      await vi.advanceTimersByTimeAsync(600);
+      controller.append('visible more');
+      await vi.advanceTimersByTimeAsync(600);
+
+      const finalized = await finalizeChannelCardAfterDelivery(
+        controller,
+        'visible more and final',
+        true,
+        'delivery failed',
+      );
+
+      expect(finalized.acknowledged).toBe(false);
+      expect(finalized.error).toMatchObject({
+        code: 'CHANNEL_DELIVERY_PARTIAL',
+      });
+      expect(fallback).not.toHaveBeenCalled();
+      // start counted; subsequent GENERATING without id must not inflate ACK count
+      expect(controller.getAcknowledgedProviderOutputCount()).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('visible stream DONE with official id completes and acknowledges', async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const send = vi.fn(async () => {
+        calls += 1;
+        return { id: calls === 1 ? 'stream-visible' : 'stream-done' };
+      });
+      const fallback = vi.fn(async () => {});
+      const controller = new QQStreamingController({
+        openid: 'user',
+        msgSeq: 1,
+        passiveMsgId: 'message',
+        sendStreamChunk: send,
+        fallbackSend: fallback,
+      });
+
+      controller.append('visible preview');
+      await vi.advanceTimersByTimeAsync(600);
+      const finalized = await finalizeChannelCardAfterDelivery(
+        controller,
+        'visible preview and final',
+        true,
+        'delivery failed',
+      );
+
+      expect(finalized).toEqual({ acknowledged: true });
+      expect(fallback).not.toHaveBeenCalled();
+      expect(controller.getAcknowledgedProviderOutputCount()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
