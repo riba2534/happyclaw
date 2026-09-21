@@ -17964,8 +17964,7 @@ async function processAgentConversation(
     const wasInterrupted =
       publishesFrameworkAnswer(interactionMode) &&
       agentStreamInterrupted &&
-      !agentInterruptFinalized &&
-      !isCursorCommitted();
+      !agentInterruptFinalized;
     const wasSteered = wasInterrupted && agentStreamSteered;
 
     // ── Streaming card cleanup ──
