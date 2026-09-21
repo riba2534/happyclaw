@@ -648,6 +648,9 @@ export function createDiscordConnection(
               } else {
                 if (!content) content = '[图片]';
               }
+            } else {
+              // Download null (!ok / oversize / non-abort) — salvage like save-fail
+              if (!content) content = '[图片]';
             }
           } else {
             // Non-image file: download and save to workspace
@@ -678,6 +681,9 @@ export function createDiscordConnection(
               } else {
                 if (!content) content = `[文件: ${attachName}]`;
               }
+            } else {
+              // Download null (!ok / oversize / non-abort) — salvage like save-fail
+              if (!content) content = `[文件: ${attachName}]`;
             }
           }
         }
