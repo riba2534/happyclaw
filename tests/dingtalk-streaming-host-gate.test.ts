@@ -136,7 +136,7 @@ const dingtalkHttps = vi.hoisted(() => {
                 if (error !== undefined) {
                   emitRequestError(requestListeners, error);
                 } else {
-                  emitResponse(cb, { code: 'success' });
+                  emitResponse(cb, { code: 'success', success: true });
                 }
               });
               return;
@@ -147,7 +147,7 @@ const dingtalkHttps = vi.hoisted(() => {
             }
           }
 
-          emitResponse(cb, { code: 'success' });
+          emitResponse(cb, { code: 'success', success: true });
         },
       };
       return req;

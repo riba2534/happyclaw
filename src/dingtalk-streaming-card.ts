@@ -235,6 +235,17 @@ async function apiRequest(
   });
 }
 
+function echoCreatedOutTrackId(resp: ApiResponse): string | undefined {
+  const nested =
+    resp.result && typeof resp.result === 'object'
+      ? (resp.result as { outTrackId?: unknown }).outTrackId
+      : undefined;
+  if (typeof nested === 'string' && nested.trim()) return nested;
+  const top = resp.outTrackId;
+  if (typeof top === 'string' && top.trim()) return top;
+  return undefined;
+}
+
 // ─── Build deliver body ──────────────────────────────────────
 
 function buildDeliverBody(
@@ -774,6 +785,12 @@ export class DingTalkStreamingCardController {
     // If card creation is already in progress, await for it to finish
     if (this.cardCreationPromise) {
       await this.cardCreationPromise;
+      if (!this.cardInstanceId) {
+        throw (
+          this.cardCreationError ??
+          preAcceptImDeliveryError('DingTalk streaming card was not created')
+        );
+      }
       return;
     }
     // Don't check this.state here — appendThinking() sets state='creating'
@@ -819,9 +836,23 @@ export class DingTalkStreamingCardController {
         }
         logger.info({ cardId, createResp }, 'DingTalk AI Card create response');
 
+        // CREATE is the only card call that mints a visible ACK. Empty /
+        // HTML / broken-JSON 2xx must not count as success: apiRequest still
+        // resolves {} on parse fail so PUT streaming/inputing/status keep
+        // working, but ensureCard requires official success===true.
+        if (createResp.success !== true) {
+          throw preAcceptImDeliveryError(
+            'DingTalk card resource creation failed before visible delivery',
+            dingTalkCardApiError(
+              'DingTalk Card API card-create 2xx missing success:true',
+            ),
+          );
+        }
+        const officialCardId = echoCreatedOutTrackId(createResp) ?? cardId;
+
         // 2. Deliver to target
         const deliverBody = buildDeliverBody(
-          cardId,
+          officialCardId,
           this.target,
           this.config.clientId,
         );
@@ -833,15 +864,18 @@ export class DingTalkStreamingCardController {
           'card-deliver',
         );
         logger.info(
-          { cardId, target: this.target, deliverResp },
+          { cardId: officialCardId, target: this.target, deliverResp },
           'DingTalk AI Card deliver response',
         );
 
-        this.cardInstanceId = cardId;
+        this.cardInstanceId = officialCardId;
         this.cardCreationError = undefined;
         if (this.state === 'creating') this.state = 'streaming';
-        this.onCardCreated?.(cardId);
-        logger.info({ cardId }, 'DingTalk AI Card created and delivered');
+        this.onCardCreated?.(officialCardId);
+        logger.info(
+          { cardId: officialCardId },
+          'DingTalk AI Card created and delivered',
+        );
       } catch (err: any) {
         this.cardCreationError = err;
         this.terminalizeDeliveryFailure(err);
@@ -858,6 +892,12 @@ export class DingTalkStreamingCardController {
       await this.cardCreationPromise;
     } catch {
       // Already handled inside the promise
+    }
+    if (!this.cardInstanceId) {
+      throw (
+        this.cardCreationError ??
+        preAcceptImDeliveryError('DingTalk streaming card was not created')
+      );
     }
   }
 
