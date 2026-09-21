@@ -235,6 +235,16 @@ async function apiRequest(
   });
 }
 
+function isOfficialCardDeliverAck(resp: ApiResponse): boolean {
+  // DELIVER is the visible IM ACK. Keep apiRequest soft-resolve({}) for PUT
+  // streaming/inputing/status, but do not mint cardInstanceId without an
+  // official deliver envelope (success===true or code 0/200/success).
+  if (resp.success === true) return true;
+  if (resp.success === false) return false;
+  const code = resp.code;
+  return code === '0' || code === '200' || code === 'success';
+}
+
 // ─── Build deliver body ──────────────────────────────────────
 
 function buildDeliverBody(
@@ -836,6 +846,19 @@ export class DingTalkStreamingCardController {
           { cardId, target: this.target, deliverResp },
           'DingTalk AI Card deliver response',
         );
+
+        // DELIVER is the only call that proves a visible card preview.
+        // Empty / HTML / broken-JSON / {success:false} 2xx must not mint
+        // cardInstanceId (apiRequest still soft-resolves {} so PUT streaming
+        // stays soft; CREATE ACK hardening is #730 — do not restack here).
+        if (!isOfficialCardDeliverAck(deliverResp)) {
+          throw preAcceptImDeliveryError(
+            'DingTalk card delivery failed before visible presentation',
+            dingTalkCardApiError(
+              'DingTalk Card API card-deliver 2xx missing official success envelope',
+            ),
+          );
+        }
 
         this.cardInstanceId = cardId;
         this.cardCreationError = undefined;
