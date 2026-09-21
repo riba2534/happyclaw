@@ -1393,10 +1393,14 @@ describe('persisted assistant recovery', () => {
   });
 
   test('restart continues after a delivered progress projection', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-21T08:00:00.000Z'));
     const input = {
       ...route,
       externalMessageId: 'msg-crash-after-progress',
       agentId: 'agent-crash-after-progress',
+      leaseMs: 5_000,
+      heartbeatMs: 2_000,
     };
     const first = ChannelTurnRuntime.start(input);
     const outbox = reliability.enqueueChannelOutbox({
@@ -1417,8 +1421,19 @@ describe('persisted assistant recovery', () => {
         providerMessageId: 'provider-progress-ack',
       }),
     ).toBe(true);
-    first.dispose(); // crash before the final answer is delivered
+    first.dispose(); // crash before the final answer is delivered; lease remains
 
+    // A possibly-live sibling owns the row until its bounded lease expires.
+    const blocked = ChannelTurnRuntime.start(input);
+    expect(blocked.executionDisposition).toBe('defer');
+    expect(blocked.isClaimed).toBe(false);
+    blocked.dispose();
+
+    // Real crash semantics: expire/clear the dead lease, then replay executes.
+    vi.setSystemTime(new Date('2026-09-21T08:00:06.000Z'));
+    expect(
+      reliability.interruptChannelTurnRunWithDeliveredEffect(first.runId),
+    ).toBe(false);
     const replay = ChannelTurnRuntime.start(input);
     expect(replay.executionDisposition).toBe('execute');
     expect(replay.isClaimed).toBe(true);
@@ -1428,5 +1443,6 @@ describe('persisted assistant recovery', () => {
     });
     expect(replay.complete({ finalDelivered: true })).toBe(true);
     replay.dispose();
+    vi.useRealTimers();
   });
 });

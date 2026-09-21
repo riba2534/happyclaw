@@ -1284,6 +1284,95 @@ export function interruptChannelTurnRunsWithDeliveredEffects(
     .run(now, now, DELIVERED_EFFECT_RECONCILIATION_REASON, now).changes;
 }
 
+/** Progress text is not a durable final effect; an expired crash lease must not fence replay. */
+const PROGRESS_DELIVERED_OUTBOX_PREDICATE = `
+                 channel_outbox.kind = 'text'
+                 AND json_valid(channel_outbox.payload)
+                 AND COALESCE(
+                   json_extract(channel_outbox.payload, '$.deliveryRole'),
+                   json_extract(
+                     channel_outbox.payload,
+                     '$.outboxMetadata.deliveryRole'
+                   ),
+                   'final'
+                 ) = 'progress'`;
+
+const NO_DURABLE_FINAL_EFFECT_PREDICATE = `
+         NOT EXISTS (
+           SELECT 1 FROM channel_outbox
+           WHERE channel_outbox.turn_run_id = turn_runs.id
+             AND channel_outbox.status = 'delivered'
+             AND ${DELIVERED_OUTBOX_EFFECT_PREDICATE}
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM streaming_cards
+           WHERE streaming_cards.turn_run_id = turn_runs.id
+             AND streaming_cards.status = 'completed'
+         )`;
+
+/**
+ * After a crash lease expires, progress-only deliveries stay replayable.
+ * Clears the dead owner and returns the Turn to retry_wait for a new claim.
+ */
+export function requeueExpiredProgressOnlyChannelTurnRun(
+  id: string,
+  nowInput?: Date | string,
+): boolean {
+  const now = isoNow(nowInput);
+  const changed = requireDatabase()
+    .prepare(
+      `UPDATE turn_runs
+       SET status = 'retry_wait', available_at = ?, updated_at = ?,
+           error = COALESCE(
+             error,
+             'Prior execution lease expired after progress-only delivery'
+           ),
+           lease_owner = NULL, lease_expires_at = NULL,
+           lease_token = lease_token + 1, revision = revision + 1
+       WHERE id = ?
+         AND status IN ('running','finalizing')
+         AND lease_expires_at IS NOT NULL
+         AND lease_expires_at <= ?
+         AND EXISTS (
+           SELECT 1 FROM channel_outbox
+           WHERE channel_outbox.turn_run_id = turn_runs.id
+             AND channel_outbox.status = 'delivered'
+             AND ${PROGRESS_DELIVERED_OUTBOX_PREDICATE}
+         )
+         AND ${NO_DURABLE_FINAL_EFFECT_PREDICATE}`,
+    )
+    .run(now, now, id, now);
+  return changed.changes === 1;
+}
+
+export function requeueExpiredProgressOnlyChannelTurnRuns(
+  nowInput?: Date | string,
+): number {
+  const now = isoNow(nowInput);
+  return requireDatabase()
+    .prepare(
+      `UPDATE turn_runs
+       SET status = 'retry_wait', available_at = ?, updated_at = ?,
+           error = COALESCE(
+             error,
+             'Prior execution lease expired after progress-only delivery'
+           ),
+           lease_owner = NULL, lease_expires_at = NULL,
+           lease_token = lease_token + 1, revision = revision + 1
+       WHERE status IN ('running','finalizing')
+         AND lease_expires_at IS NOT NULL
+         AND lease_expires_at <= ?
+         AND EXISTS (
+           SELECT 1 FROM channel_outbox
+           WHERE channel_outbox.turn_run_id = turn_runs.id
+             AND channel_outbox.status = 'delivered'
+             AND ${PROGRESS_DELIVERED_OUTBOX_PREDICATE}
+         )
+         AND ${NO_DURABLE_FINAL_EFFECT_PREDICATE}`,
+    )
+    .run(now, now, now).changes;
+}
+
 export function claimNextChannelTurnRun(
   owner: string,
   leaseMs: number,
@@ -1516,11 +1605,15 @@ export function completeChannelTurnRun(
   return changed.changes === 1;
 }
 
-/** Expired Agent execution is not replayed automatically because side effects are unknowable. */
+/**
+ * Expired Agent execution is not replayed automatically because side effects
+ * are unknowable — except progress-only deliveries, which stay replayable.
+ */
 export function interruptExpiredChannelTurnRuns(
   nowInput?: Date | string,
 ): number {
   const now = isoNow(nowInput);
+  requeueExpiredProgressOnlyChannelTurnRuns(now);
   const error = manualReconciliationError(
     'Process stopped after Agent execution began; manual reconciliation required',
   );

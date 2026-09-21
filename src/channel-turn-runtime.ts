@@ -12,6 +12,7 @@ import {
   heartbeatChannelTurnRun,
   interruptChannelTurnRunWithDeliveredEffect,
   interruptChannelTurnRunById,
+  requeueExpiredProgressOnlyChannelTurnRun,
   manualReconciliationError,
   markChannelTurnFinalizing,
   retryChannelTurnRun,
@@ -110,6 +111,9 @@ export class ChannelTurnRuntime {
       );
       return runtime;
     }
+    // Real crash semantics: dispose() leaves the lease, but once it expires a
+    // progress-only Turn must become claimable again instead of staying deferred.
+    requeueExpiredProgressOnlyChannelTurnRun(run.id);
     const currentRun = getChannelTurnRun(run.id);
     if (
       currentRun?.status === 'interrupted' &&
