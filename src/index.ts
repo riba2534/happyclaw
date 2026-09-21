@@ -9875,8 +9875,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             route,
           });
         },
-        webAudit: () =>
-          sendSystemMessage(chatJid, 'context_reset', resetMsg),
+        webAudit: () => sendSystemMessage(chatJid, 'context_reset', resetMsg),
       });
       if (settle === 'preserve-cursor') {
         logger.warn(
@@ -9888,9 +9887,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           },
           'Terminal system notice not acknowledged; preserving cursor for retry',
         );
-        await clearProcessingIndicatorForInput(
-          ipcReplyTurnTracker.inputTurnId,
-        );
+        await clearProcessingIndicatorForInput(ipcReplyTurnTracker.inputTurnId);
         return false;
       }
       await projectCurrentScheduledGroupTerminal(
@@ -10355,8 +10352,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                 route,
               });
             },
-            webAudit: () =>
-              sendSystemMessage(chatJid, 'context_reset', oomMsg),
+            webAudit: () => sendSystemMessage(chatJid, 'context_reset', oomMsg),
           });
           if (settle === 'preserve-cursor') {
             logger.warn(
