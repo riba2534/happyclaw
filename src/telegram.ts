@@ -786,7 +786,12 @@ export function createTelegramConnection(
     chatName: string;
     chat: TelegramChatDescriptor;
     caption?: string;
-    kind: TelegramNativeMediaKind | 'photo' | 'document';
+    kind:
+      | TelegramNativeMediaKind
+      | 'photo'
+      | 'document'
+      | 'location'
+      | 'contact';
     reply: (text: string) => Promise<unknown>;
   }): Promise<boolean> {
     if (input.opts.isChatAuthorized(input.jid)) return true;
@@ -1801,8 +1806,6 @@ export function createTelegramConnection(
                 buildTelegramRouteJid(chatId, tgMessage.message_thread_id),
               ) ?? buildTelegramRouteJid(chatId, tgMessage.message_thread_id);
             const jid = channelConversationJid(routeJid);
-            if (!opts.isChatAuthorized(jid)) return;
-
             const messageMeta = telegramMessageMeta(tgMessage);
             const chatName =
               tgChat.title ||
@@ -1812,6 +1815,19 @@ export function createTelegramConnection(
               [ctx.from?.first_name, ctx.from?.last_name]
                 .filter(Boolean)
                 .join(' ') || 'Unknown';
+
+            if (
+              !(await admitTelegramMedia({
+                opts,
+                jid,
+                chatName,
+                chat: tgChat as TelegramChatDescriptor,
+                kind,
+                reply: (replyText) => ctx.reply(replyText),
+              }))
+            ) {
+              return;
+            }
 
             const resolvedRoute = resolveAdmittedChannelRoute(
               routeJid,
