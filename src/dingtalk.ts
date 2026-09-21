@@ -1053,10 +1053,11 @@ type RobotMessage = DTRobotMessage | DingTalkRobotMessage;
  * @mentioned in a group. Some gateways coerce the flag to the string "true".
  * Missing / false means the caller must not treat the turn as directed.
  */
-export function isDingTalkBotMentioned(data: {
-  isInAtList?: unknown;
-}): boolean {
-  return data.isInAtList === true || data.isInAtList === 'true';
+export function isDingTalkBotMentioned(
+  data: RobotMessage | { isInAtList?: unknown },
+): boolean {
+  const flag = (data as { isInAtList?: unknown }).isInAtList;
+  return flag === true || flag === 'true';
 }
 
 function extractDingTalkAdmissionText(data: RobotMessage): string {
