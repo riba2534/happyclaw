@@ -63,7 +63,7 @@ describe('StreamingCardController Feishu thread reply', () => {
           card: {
             create: vi
               .fn()
-              .mockResolvedValue({ data: { card_id: 'card_life' } }),
+              .mockResolvedValue({ code: 0, data: { card_id: 'card_life' } }),
             settings: vi.fn().mockResolvedValue({ code: 0 }),
             update: vi.fn().mockResolvedValue({ code: 0 }),
             batchUpdate: vi.fn().mockResolvedValue({ code: 0 }),
@@ -119,7 +119,9 @@ describe('StreamingCardController Feishu thread reply', () => {
       cardkit: {
         v1: {
           card: {
-            create: vi.fn().mockResolvedValue({ data: { card_id: 'card_1' } }),
+            create: vi
+              .fn()
+              .mockResolvedValue({ code: 0, data: { card_id: 'card_1' } }),
           },
           cardElement: {},
         },
@@ -154,7 +156,9 @@ describe('StreamingCardController Feishu thread reply', () => {
       cardkit: {
         v1: {
           card: {
-            create: vi.fn().mockResolvedValue({ data: { card_id: 'card_1' } }),
+            create: vi
+              .fn()
+              .mockResolvedValue({ code: 0, data: { card_id: 'card_1' } }),
           },
           cardElement: {},
         },
@@ -186,7 +190,9 @@ describe('StreamingCardController Feishu thread reply', () => {
       cardkit: {
         v1: {
           card: {
-            create: vi.fn().mockResolvedValue({ data: { card_id: 'card_1' } }),
+            create: vi
+              .fn()
+              .mockResolvedValue({ code: 0, data: { card_id: 'card_1' } }),
           },
           cardElement: {},
         },

@@ -27,7 +27,10 @@ function buildMockClient() {
     if (cardSeq === 1) {
       return Promise.reject(new Error('streaming mode unavailable'));
     }
-    return Promise.resolve({ data: { card_id: `card_${cardSeq}` } });
+    return Promise.resolve({
+      code: 0,
+      data: { card_id: `card_${cardSeq}` },
+    });
   });
   return {
     client: {
