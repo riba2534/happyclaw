@@ -396,10 +396,44 @@ export class DingTalkStreamingCardController {
     }
     this.accumulatedText = finalText;
 
-    // If there's no text at all, skip card creation entirely
+    // Empty final: never leave a non-FINISHED AI Card behind with a false ACK.
+    // Mirror abort() by awaiting in-flight create, then terminalize any visible
+    // card (Feishu-like empty notice + FINISHED) before success. Mutation
+    // failure surfaces Partial/uncertain so the host does not skip static
+    // fallback.
     if (!finalText.trim()) {
-      this.state = 'completed';
-      return;
+      if (this.cardCreationPromise) {
+        await this.cardCreationPromise.catch(() => {});
+      }
+      if (this.terminalDeliveryError !== undefined) {
+        this.state = 'aborted';
+        throw this.terminalDeliveryError;
+      }
+
+      if (!this.cardInstanceId) {
+        this.state = 'completed';
+        return;
+      }
+
+      this.thinkingText = '';
+      this.thinking = false;
+      const emptyNotice = '> ⚠️ 本次运行没有生成可展示的最终内容。';
+      try {
+        await this.pushStreamingContent(emptyNotice, true);
+        await this.updateFlowStatus(FlowStatus.FINISHED, emptyNotice);
+        this.state = 'completed';
+        logger.info(
+          { cardId: this.cardInstanceId },
+          'DingTalk AI Card empty-complete terminalized',
+        );
+        return;
+      } catch (err: any) {
+        logger.warn(
+          { err: err.message, cardId: this.cardInstanceId },
+          'DingTalk AI Card empty-complete terminalize failed',
+        );
+        throw this.terminalizeDeliveryFailure(err);
+      }
     }
 
     logger.info(
