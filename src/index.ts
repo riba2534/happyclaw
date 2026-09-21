@@ -11180,6 +11180,16 @@ function startIpcWatcher(): void {
                 messageRequestId,
                 { success: false, error: 'Invalid message request.' },
               );
+              if (
+                !canDeleteAcknowledgedIpcSource(
+                  messageRequestId,
+                  messageResultWritten,
+                )
+              ) {
+                throw new Error(
+                  'Failed to acknowledge invalid message request',
+                );
+              }
               await fsp.unlink(filePath);
               continue;
             }
@@ -11273,6 +11283,16 @@ function startIpcWatcher(): void {
                     error: 'Invalid frozen interaction mode.',
                   },
                 );
+                if (
+                  !canDeleteAcknowledgedIpcSource(
+                    messageRequestId,
+                    messageResultWritten,
+                  )
+                ) {
+                  throw new Error(
+                    'Failed to acknowledge invalid frozen interaction mode',
+                  );
+                }
                 await fsp.unlink(filePath);
                 continue;
               }
@@ -11374,6 +11394,16 @@ function startIpcWatcher(): void {
                       error: 'Task run was cancelled before message delivery.',
                     },
                   );
+                  if (
+                    !canDeleteAcknowledgedIpcSource(
+                      messageRequestId,
+                      messageResultWritten,
+                    )
+                  ) {
+                    throw new Error(
+                      'Failed to acknowledge cancelled message request',
+                    );
+                  }
                   await fsp.unlink(filePath);
                   continue;
                 }
