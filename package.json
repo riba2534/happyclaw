@@ -25,7 +25,7 @@
     "build:all": "npx concurrently --group -n backend,web,agent-runner \"npm run build\" \"npm run build:web\" \"npm --prefix container/agent-runner run build\""
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.238",
+    "@anthropic-ai/claude-agent-sdk": "0.3.280",
     "@hono/node-server": "^2.0.12",
     "@larksuiteoapi/node-sdk": "^1.58.0",
     "@wecom/aibot-node-sdk": "^1.0.7",
