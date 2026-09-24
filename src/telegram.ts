@@ -515,28 +515,16 @@ function isTelegramHtmlParseError(err: unknown): boolean {
  */
 function telegramApiRejection(
   err: unknown,
-): { code: number; description: string; retryAfterSeconds?: number } | null {
+): { code: number; description: string } | null {
   let current: unknown = err;
   const seen = new Set<unknown>();
   while (current && typeof current === 'object' && !seen.has(current)) {
     seen.add(current);
     const rec = current as Record<string, unknown>;
     if (typeof rec.error_code === 'number' && Number.isFinite(rec.error_code)) {
-      const parameters = rec.parameters as
-        | { retry_after?: unknown }
-        | undefined;
-      const description = String(rec.description ?? rec.message ?? '');
-      const retryAfterRaw =
-        typeof parameters?.retry_after === 'number'
-          ? parameters.retry_after
-          : Number(/retry after (\d+)/i.exec(description)?.[1]);
       return {
         code: rec.error_code,
-        description,
-        retryAfterSeconds:
-          Number.isFinite(retryAfterRaw) && retryAfterRaw > 0
-            ? retryAfterRaw
-            : undefined,
+        description: String(rec.description ?? rec.message ?? ''),
       };
     }
     current = rec.cause ?? rec.error;
@@ -549,24 +537,28 @@ function telegramApiRejection(
  * acknowledged-prefix partial delivery must stay uncertain even when the tail
  * mutation was explicitly rejected, so it is never re-wrapped here. Only 4xx
  * answers are definitive: a 5xx `ok=false` cannot prove Telegram discarded
- * the mutation before its internal failure. 429 additionally carries
- * `retryAt` so the durable Outbox re-attempts after the flood wait instead
- * of failing the turn.
+ * the mutation before its internal failure, and 408 is commonly synthesized
+ * by an intermediary after the upstream may already have accepted it.
+ *
+ * 429 is a terminal failure as well. Telegram did not deliver the message,
+ * and production has no worker that reclaims a `retry_wait` row, so a
+ * `retryAt` would strand it; the description keeps `retry after N`.
  */
 function classifyTelegramSendError(err: unknown): unknown {
   if (err instanceof DefinitiveChannelDeliveryError) return err;
   if (err instanceof PartialChannelDeliveryError) return err;
   const rejection = telegramApiRejection(err);
-  if (!rejection || rejection.code < 400 || rejection.code >= 500) return err;
-  const retryAt =
-    rejection.code === 429
-      ? new Date(
-          Date.now() + (rejection.retryAfterSeconds ?? 5) * 1000,
-        ).toISOString()
-      : undefined;
+  if (
+    !rejection ||
+    rejection.code < 400 ||
+    rejection.code >= 500 ||
+    rejection.code === 408
+  ) {
+    return err;
+  }
   return new DefinitiveChannelDeliveryError(
     `Telegram Bot API rejected the send (${rejection.code}): ${rejection.description}`,
-    { cause: err, retryAt },
+    { cause: err },
   );
 }
 
@@ -695,6 +687,20 @@ export function createTelegramConnection(
           getProxyForUrl: () => config.proxyUrl!.trim(),
         })
       : new HttpsAgent({ keepAlive: true, family: 4 });
+
+  /**
+   * Outbound sends fail before any provider call when the bot is gone. That
+   * is a definitive non-delivery: a bare Error would fence the whole Turn as
+   * uncertain and block every later output in it.
+   */
+  function requireOutboundBot(): Bot {
+    if (!bot) {
+      throw new DefinitiveChannelDeliveryError(
+        'Telegram bot is not initialized',
+      );
+    }
+    return bot;
+  }
 
   function clearPollingWatchdog(): void {
     if (pollingWatchdogTimer) {
@@ -2175,10 +2181,7 @@ export function createTelegramConnection(
       text: string,
       localImagePaths?: string[],
     ): Promise<void> {
-      if (!bot) {
-        throw new Error('Telegram bot is not initialized');
-      }
-      const activeBot = bot;
+      const activeBot = requireOutboundBot();
 
       const target = parseTelegramProviderTarget(chatId);
       if (!target) {
@@ -2259,9 +2262,7 @@ export function createTelegramConnection(
       caption?: string,
       fileName?: string,
     ): Promise<void> {
-      if (!bot) {
-        throw new Error('Telegram bot is not initialized');
-      }
+      const activeBot = requireOutboundBot();
 
       const target = parseTelegramProviderTarget(chatId);
       if (!target) {
@@ -2302,17 +2303,17 @@ export function createTelegramConnection(
         );
 
         if (isGif) {
-          await bot.api.sendAnimation(target.chatId, inputFile, {
+          await activeBot.api.sendAnimation(target.chatId, inputFile, {
             caption: safeCaption,
             ...threadOptions,
           });
         } else if (isPhoto) {
-          await bot.api.sendPhoto(target.chatId, inputFile, {
+          await activeBot.api.sendPhoto(target.chatId, inputFile, {
             caption: safeCaption,
             ...threadOptions,
           });
         } else {
-          await bot.api.sendDocument(target.chatId, inputFile, {
+          await activeBot.api.sendDocument(target.chatId, inputFile, {
             caption: safeCaption,
             ...threadOptions,
           });
@@ -2341,9 +2342,7 @@ export function createTelegramConnection(
       filePath: string,
       fileName: string,
     ): Promise<void> {
-      if (!bot) {
-        throw new Error('Telegram bot is not initialized');
-      }
+      const activeBot = requireOutboundBot();
 
       const target = parseTelegramProviderTarget(chatId);
       if (!target) {
@@ -2353,11 +2352,16 @@ export function createTelegramConnection(
       }
 
       try {
-        // Check file size (30MB limit, same as MCP tool). This local
-        // preflight provably produced no provider mutation, so it must be a
-        // definitive rejection — a bare Error here would fence the whole turn
-        // as `uncertain` and silently swallow every later send in it.
-        const stat = await fsPromises.stat(filePath);
+        // Local preflight (readable file, 30MB limit same as the MCP tool)
+        // provably produced no provider mutation, so it must be a definitive
+        // rejection — a bare Error here would fence the whole turn as
+        // `uncertain` and silently swallow every later send in it.
+        const stat = await fsPromises.stat(filePath).catch((statErr) => {
+          throw new DefinitiveChannelDeliveryError(
+            `文件无法读取: ${statErr instanceof Error ? statErr.message : String(statErr)}`,
+            { cause: statErr },
+          );
+        });
         const MAX_SEND_FILE_SIZE = 30 * 1024 * 1024;
         if (stat.size > MAX_SEND_FILE_SIZE) {
           throw new DefinitiveChannelDeliveryError(
@@ -2371,13 +2375,29 @@ export function createTelegramConnection(
           : {};
         const fileKind = telegramOutboundFileKind(fileName);
         if (fileKind === 'video') {
-          await bot.api.sendVideo(target.chatId, inputFile, threadOptions);
+          await activeBot.api.sendVideo(
+            target.chatId,
+            inputFile,
+            threadOptions,
+          );
         } else if (fileKind === 'audio') {
-          await bot.api.sendAudio(target.chatId, inputFile, threadOptions);
+          await activeBot.api.sendAudio(
+            target.chatId,
+            inputFile,
+            threadOptions,
+          );
         } else if (fileKind === 'voice') {
-          await bot.api.sendVoice(target.chatId, inputFile, threadOptions);
+          await activeBot.api.sendVoice(
+            target.chatId,
+            inputFile,
+            threadOptions,
+          );
         } else {
-          await bot.api.sendDocument(target.chatId, inputFile, threadOptions);
+          await activeBot.api.sendDocument(
+            target.chatId,
+            inputFile,
+            threadOptions,
+          );
         }
 
         logger.info(
