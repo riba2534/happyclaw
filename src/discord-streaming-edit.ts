@@ -32,7 +32,8 @@ const MAX_THINKING_CHARS = 500;
 const MAX_TOOLS_DISPLAY = 5;
 const MAX_TOOL_SUMMARY_CHARS = 60;
 const MAX_RECENT_EVENTS = 5;
-const EMPTY_FINAL_MARKER = '✅ 已完成';
+// Same empty-final notice as the Feishu and DingTalk cards.
+const EMPTY_FINAL_NOTICE = '> ⚠️ 本次运行没有生成可展示的最终内容。';
 
 function discordMessageCreateError(error: unknown): unknown {
   if (explicitImDeliveryPhase(error) !== undefined) return error;
@@ -170,9 +171,9 @@ export class DiscordStreamingEditController {
     // send_message. Like abort(), keep the streamed body.
     if (finalText.trim()) this.accumulatedText = finalText;
 
-    // Nothing to show at all: settle any visible placeholder into a neutral
-    // completed state (tool trace kept, thinking/status dropped). A warning
-    // would misread a run whose reply went out through another path.
+    // Nothing to show at all: settle any visible placeholder into the shared
+    // empty-final notice (tool trace kept, thinking/status dropped) so no
+    // thinking placeholder is left behind.
     if (!this.accumulatedText.trim()) {
       if (this.messageCreationPromise) {
         await this.messageCreationPromise.catch(() => {});
@@ -190,7 +191,7 @@ export class DiscordStreamingEditController {
       this.thinkingText = '';
       this.thinking = false;
       this.systemStatus = null;
-      const content = this.buildAuxPrefix() + EMPTY_FINAL_MARKER;
+      const content = this.buildAuxPrefix() + EMPTY_FINAL_NOTICE;
       try {
         await this.editLastMessage(
           content.length > DISCORD_MSG_LIMIT

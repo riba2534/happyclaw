@@ -12,7 +12,7 @@ vi.mock('../src/logger.js', () => ({
 import { DiscordStreamingEditController } from '../src/discord-streaming-edit.js';
 import { finalizeChannelCardAfterDelivery } from '../src/channel-card-finalization.js';
 
-const COMPLETED_MARKER = '✅ 已完成';
+const COMPLETED_MARKER = '> ⚠️ 本次运行没有生成可展示的最终内容。';
 
 function fakeDiscordChannel(messageId = 'msg-1') {
   const state = { content: '' };
@@ -37,7 +37,7 @@ afterEach(() => {
 });
 
 describe('Discord empty complete() settles the streaming message', () => {
-  test('a bare thinking placeholder becomes a neutral completed marker', async () => {
+  test('a bare thinking placeholder becomes the shared empty-final notice', async () => {
     const { state, message, channel } = fakeDiscordChannel();
     const ctrl = new DiscordStreamingEditController(channel as any);
     ctrl.setThinking();
@@ -73,7 +73,9 @@ describe('Discord empty complete() settles the streaming message', () => {
     expect(lines[0]).toMatch(/^✅ `mcp__happyclaw__send_message` \(/);
     expect(state.content).toContain('📝 **调用轨迹**\n- 🔄 sent reply');
     expect(state.content.endsWith(`---\n\n${COMPLETED_MARKER}`)).toBe(true);
-    expect(state.content).not.toMatch(/Thinking|Reason|思考中|⏳|⚠️/);
+    expect(state.content).not.toMatch(
+      /Thinking|Reason|思考中|⏳|正在完成最终回复/,
+    );
   });
 
   test('an empty final keeps previously streamed text and only removes the aux prefix', async () => {
