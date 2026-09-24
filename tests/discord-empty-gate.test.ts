@@ -143,6 +143,34 @@ function snapshotImageOnlyMsg(id: string) {
   });
 }
 
+/**
+ * discord.js 14.27 turns each raw `message_snapshots[].message` into a full
+ * Message, so snapshot attachments sit directly on `snap.attachments`.
+ */
+async function discordJsForwardedSnapshots(rawAttachments: object[]) {
+  const actual =
+    await vi.importActual<typeof import('discord.js')>('discord.js');
+  const client = new actual.Client({ intents: [] });
+  try {
+    const wrapper = Reflect.construct(actual.Message, [
+      client,
+      {
+        id: 'forward-wrapper',
+        channel_id: 'chan-1',
+        message_reference: {
+          type: 1,
+          channel_id: 'origin-chan',
+          message_id: 'origin-msg',
+        },
+        message_snapshots: [{ message: { attachments: rawAttachments } }],
+      },
+    ]);
+    return wrapper.messageSnapshots;
+  } finally {
+    await client.destroy();
+  }
+}
+
 const PNG_BYTES = Uint8Array.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
@@ -267,6 +295,38 @@ describe('Discord empty-gate live persist', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(storeMessageDirect).not.toHaveBeenCalled();
     expect(notifyNewImMessage).not.toHaveBeenCalled();
+  });
+
+  test('snapshot attachments in the discord.js Message shape are downloaded', async () => {
+    const fetchMock = stubPngFetch();
+    await connect();
+    const handlers = discord.listeners.get('messageCreate') ?? [];
+    await handlers[0]?.(
+      fakeMsg({
+        id: 'snap-djs-1',
+        messageSnapshots: await discordJsForwardedSnapshots([
+          {
+            id: 'att-1',
+            filename: 'forward.png',
+            size: PNG_BYTES.length,
+            url: 'https://cdn.discord.test/forward.png',
+            content_type: 'image/png',
+          },
+        ]),
+      }),
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://cdn.discord.test/forward.png',
+    );
+    expect(storeMessageDirect).toHaveBeenCalledTimes(1);
+    expect(storeMessageDirect.mock.calls[0][4]).toBe('[图片]');
+    expect(storeMessageDirect.mock.calls[0][7]).toEqual(
+      expect.objectContaining({
+        attachments: expect.stringContaining('"type":"image"'),
+      }),
+    );
+    expect(notifyNewImMessage).toHaveBeenCalledTimes(1);
   });
 
   test('disconnect fences a held media callback and a new connection stores redelivery once', async () => {
