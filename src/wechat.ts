@@ -1103,7 +1103,7 @@ export function createWeChatConnection(
           return `wechat_img_${msgIdentifier}${extMap[mimeType] ?? '.jpg'}`;
         },
       );
-      if (!result) return {};
+      if (!result) return { textPrefix: '[图片]' };
 
       const textPrefix = result.savedPath
         ? `[图片: ${result.savedPath}]`
@@ -1123,8 +1123,8 @@ export function createWeChatConnection(
 
       return { attachmentEntry, textPrefix };
     } catch (err) {
-      logger.warn({ err }, 'WeChat image download/decrypt failed, skipping');
-      return {};
+      logger.warn({ err }, 'WeChat image download/decrypt failed');
+      return { textPrefix: '[图片]' };
     }
   }
 
