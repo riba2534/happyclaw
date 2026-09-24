@@ -95,6 +95,7 @@ import { resolveFollowUpMode } from './follow-up-policy.js';
 import {
   discardStartupTypedIpcDeliveries,
   isIpcInputPayloadFilename,
+  isIpcTaskResultFile,
 } from './ipc-delivery-recovery.js';
 import {
   DeferredOutOfBandCursorLedger,
@@ -12553,44 +12554,8 @@ function startIpcWatcher(): void {
         });
 
         // 清理孤儿结果文件（容器崩溃或超时后残留，超过 10 分钟自动删除）
-        const RESULT_FILE_PREFIXES = [
-          'install_skill_result_',
-          'uninstall_skill_result_',
-          'list_tasks_result_',
-          'schedule_task_result_',
-          'cancel_task_result_',
-          'pause_task_result_',
-          'resume_task_result_',
-          'update_task_result_',
-          'run_task_now_result_',
-          'stop_task_run_result_',
-          'restore_task_result_',
-          'list_task_runs_result_',
-          'send_file_result_',
-          'discord_get_history_result_',
-          'discord_get_channel_info_result_',
-          'discord_get_server_info_result_',
-          'agent_profile_list_result_',
-          'agent_profile_get_result_',
-          'agent_profile_draft_get_result_',
-          'agent_capability_catalog_result_',
-          'agent_profile_prepare_result_',
-          'agent_profile_publish_result_',
-          'agent_profile_discard_result_',
-          'workspace_memory_result_',
-          'happyclaw_owner_profile_result_',
-          'fresh_window_result_',
-          'feishu_capability_result_',
-        ];
-        const isResultFile = (name: string) =>
-          RESULT_FILE_PREFIXES.some((p) => name.startsWith(p));
-
         for (const entry of allEntries) {
-          if (
-            entry.isFile() &&
-            entry.name.endsWith('.json') &&
-            isResultFile(entry.name)
-          ) {
+          if (entry.isFile() && isIpcTaskResultFile(entry.name)) {
             try {
               const filePath = path.join(tasksDir, entry.name);
               const stat = await fsp.stat(filePath);
@@ -12612,7 +12577,7 @@ function startIpcWatcher(): void {
             (entry) =>
               entry.isFile() &&
               entry.name.endsWith('.json') &&
-              !isResultFile(entry.name),
+              !isIpcTaskResultFile(entry.name),
           )
           .map((entry) => entry.name);
         for (const file of taskFiles) {
