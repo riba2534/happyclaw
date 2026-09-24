@@ -79,10 +79,6 @@ import {
   resolveTurnOutcome,
 } from './turn-outcome.js';
 import { finalizeChannelCardAfterDelivery } from './channel-card-finalization.js';
-import {
-  resolveTerminalNoticeImJid,
-  settleTerminalSystemNotice,
-} from './terminal-system-notice.js';
 import { persistUncertainStreamingDelivery } from './channel-streaming-uncertainty.js';
 import { resolveContainerOutputInputTurnId } from './channel-output-correlation.js';
 import { SteeringTransitionRegistry } from './steering-transition.js';
@@ -95,6 +91,7 @@ import { resolveFollowUpMode } from './follow-up-policy.js';
 import {
   discardStartupTypedIpcDeliveries,
   isIpcInputPayloadFilename,
+  isIpcTaskResultFile,
 } from './ipc-delivery-recovery.js';
 import {
   DeferredOutOfBandCursorLedger,
@@ -3539,6 +3536,67 @@ async function deliverProactiveTailInterruptionNotice(input: {
     PROACTIVE_TAIL_INTERRUPTION_NOTICE,
   );
   return true;
+}
+
+/**
+ * Best-effort channel copy of a terminal failure that the caller has already
+ * recorded for Web and settled (cursor committed). Card channels also show
+ * the failure on their streaming card, but Telegram/WhatsApp/WeChat have no
+ * card and would otherwise stay silent. A lost notice is only logged: holding
+ * the cursor for it would replay the Agent, re-spend the model and could
+ * duplicate a reply that was already delivered.
+ */
+async function deliverTerminalFailureNotice(input: {
+  logicalChatJid: string;
+  scopeKey: string;
+  targetJid: string | null;
+  originalInputTurnId: string;
+  noticeKey: string;
+  text: string;
+  agentId?: string | null;
+  presentation?: 'default' | 'native';
+}): Promise<void> {
+  if (!input.targetJid) return;
+  let route: ReturnType<typeof resolveDurableChannelRoute> = null;
+  let delivered = false;
+  try {
+    route = resolveDurableChannelRoute(input.targetJid);
+    delivered = route
+      ? await deliverIndependentChannelSystemNotice({
+          logicalChatJid: input.logicalChatJid,
+          scopeKey: input.scopeKey,
+          targetJid: input.targetJid,
+          originalInputTurnId: input.originalInputTurnId,
+          originalRunId: `terminal-notice:${input.originalInputTurnId}`,
+          noticeKey: input.noticeKey,
+          text: input.text,
+          sender: '__system__',
+          senderName: 'system',
+          agentId: input.agentId,
+          presentation: input.presentation,
+          // The caller already wrote the canonical Web system record.
+          projectToWeb: false,
+          route,
+        })
+      : false;
+  } catch (err) {
+    logger.warn(
+      { err, targetJid: input.targetJid, noticeKey: input.noticeKey },
+      'Terminal failure notice threw before channel delivery',
+    );
+  }
+  if (!delivered) {
+    logger.warn(
+      {
+        chatJid: input.logicalChatJid,
+        targetJid: input.targetJid,
+        inputTurnId: input.originalInputTurnId,
+        noticeKey: input.noticeKey,
+        routeResolved: Boolean(route),
+      },
+      'Terminal failure notice not delivered to channel; Web record kept, input stays settled',
+    );
+  }
 }
 
 function resolveDurableChannelRoute(targetJid: string): {
@@ -7824,6 +7882,37 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     cursorCommittedInputTurns.add(inputTurnId);
   };
 
+  // Deterministic failures (transcript reset, static budget, context
+  // overflow, unavailable profile capability, OOM reset) can never succeed on
+  // replay and some follow a delivered reply, so they always settle the input
+  // and resolve the GroupQueue attempt. The channel notice runs only after the
+  // cursor is committed and never decides it; a delivered proactive tail
+  // notice already told the channel about this failure.
+  const settleDeterministicFailure = async (
+    noticeKey: string,
+    webType: string,
+    text: string,
+    scheduledError = text,
+  ): Promise<true> => {
+    const inputTurnId = ipcReplyTurnTracker.inputTurnId;
+    sendSystemMessage(chatJid, webType, text);
+    await projectCurrentScheduledGroupTerminal('failed', scheduledError);
+    commitCursor();
+    if (!proactiveTailNoticesDelivered.has(inputTurnId)) {
+      await deliverTerminalFailureNotice({
+        logicalChatJid: chatJid,
+        scopeKey: channelTurnScope(effectiveGroup.folder),
+        targetJid: replySourceImJid,
+        originalInputTurnId: inputTurnId,
+        noticeKey,
+        text,
+        presentation: interactionMode === 'proactive' ? 'native' : 'default',
+      });
+    }
+    await clearProcessingIndicatorForInput(inputTurnId);
+    return true;
+  };
+
   if (effectiveGroup.created_by) {
     const owner = getUserById(effectiveGroup.created_by);
     // Defense-in-depth: drop messages whose owner is no longer active
@@ -9854,50 +9943,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       );
     }
 
-    {
-      const resetMsg = `会话已自动重置：${detail}`;
-      const settle = await settleTerminalSystemNotice({
-        hasImReplyRoute: Boolean(replySourceImJid),
-        deliverImNotice: async () => {
-          const route = resolveDurableChannelRoute(replySourceImJid!);
-          if (!route) return false;
-          return deliverIndependentChannelSystemNotice({
-            logicalChatJid: chatJid,
-            scopeKey: channelTurnScope(effectiveGroup.folder),
-            targetJid: replySourceImJid!,
-            originalInputTurnId: ipcReplyTurnTracker.inputTurnId,
-            originalRunId: `terminal-notice:${ipcReplyTurnTracker.inputTurnId}`,
-            noticeKey: 'unrecoverable-transcript',
-            text: resetMsg,
-            sender: '__system__',
-            senderName: 'system',
-            projectToWeb: false,
-            route,
-          });
-        },
-        webAudit: () => sendSystemMessage(chatJid, 'context_reset', resetMsg),
-      });
-      if (settle === 'preserve-cursor') {
-        logger.warn(
-          {
-            chatJid,
-            replySourceImJid,
-            messageId: ipcReplyTurnTracker.inputTurnId,
-            noticeKey: 'unrecoverable-transcript',
-          },
-          'Terminal system notice not acknowledged; preserving cursor for retry',
-        );
-        await clearProcessingIndicatorForInput(ipcReplyTurnTracker.inputTurnId);
-        return false;
-      }
-      await projectCurrentScheduledGroupTerminal(
-        'failed',
-        `无法恢复的会话记录错误：${detail}`,
-      );
-      commitCursor();
-      await clearProcessingIndicatorForInput(ipcReplyTurnTracker.inputTurnId);
-      return true;
-    }
+    return settleDeterministicFailure(
+      'unrecoverable-transcript',
+      'context_reset',
+      `会话已自动重置：${detail}`,
+      `无法恢复的会话记录错误：${detail}`,
+    );
   }
 
   if (output.status === 'closed') {
@@ -10118,161 +10169,47 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         replyDelivered: sentReply,
         deterministicFailure: true,
       });
-      {
-        const settle = await settleTerminalSystemNotice({
-          hasImReplyRoute: Boolean(replySourceImJid),
-          deliverImNotice: async () => {
-            const route = resolveDurableChannelRoute(replySourceImJid!);
-            if (!route) return false;
-            return deliverIndependentChannelSystemNotice({
-              logicalChatJid: chatJid,
-              scopeKey: channelTurnScope(effectiveGroup.folder),
-              targetJid: replySourceImJid!,
-              originalInputTurnId: ipcReplyTurnTracker.inputTurnId,
-              originalRunId: `terminal-notice:${ipcReplyTurnTracker.inputTurnId}`,
-              noticeKey: 'context-budget',
-              text: budgetMsg,
-              sender: '__system__',
-              senderName: 'system',
-              projectToWeb: false,
-              route,
-            });
-          },
-          webAudit: () =>
-            sendSystemMessage(chatJid, 'context_overflow', budgetMsg),
-        });
-        if (settle === 'preserve-cursor') {
-          logger.warn(
-            {
-              chatJid,
-              replySourceImJid,
-              messageId: ipcReplyTurnTracker.inputTurnId,
-              noticeKey: 'context-budget',
-            },
-            'Terminal system notice not acknowledged; preserving cursor for retry',
-          );
-          await clearProcessingIndicatorForInput(
-            ipcReplyTurnTracker.inputTurnId,
-          );
-          return false;
-        }
-        await projectCurrentScheduledGroupTerminal('failed', budgetMsg);
-        logger.warn(
-          { group: group.name, error: budgetMsg, turnOutcome },
-          'Static prompt/context budget is invalid; skipping retry',
-        );
-        if (turnOutcome.cursor === 'commit') commitCursor();
-        await clearProcessingIndicatorForInput(ipcReplyTurnTracker.inputTurnId);
-        return true;
-      }
+      logger.warn(
+        { group: group.name, error: budgetMsg, turnOutcome },
+        'Static prompt/context budget is invalid; skipping retry',
+      );
+      return settleDeterministicFailure(
+        'context-budget',
+        'context_overflow',
+        budgetMsg,
+      );
     }
 
-    // 上下文溢出错误：跳过重试；IM 先 ACK 再 Web audit + 提交游标
+    // 上下文溢出错误：跳过重试，提交游标，通知用户
     if (errorDetail.startsWith('context_overflow:')) {
       const overflowMsg = errorDetail.replace(/^context_overflow:\s*/, '');
-      {
-        const settle = await settleTerminalSystemNotice({
-          hasImReplyRoute: Boolean(replySourceImJid),
-          deliverImNotice: async () => {
-            const route = resolveDurableChannelRoute(replySourceImJid!);
-            if (!route) return false;
-            return deliverIndependentChannelSystemNotice({
-              logicalChatJid: chatJid,
-              scopeKey: channelTurnScope(effectiveGroup.folder),
-              targetJid: replySourceImJid!,
-              originalInputTurnId: ipcReplyTurnTracker.inputTurnId,
-              originalRunId: `terminal-notice:${ipcReplyTurnTracker.inputTurnId}`,
-              noticeKey: 'context-overflow',
-              text: overflowMsg,
-              sender: '__system__',
-              senderName: 'system',
-              projectToWeb: false,
-              route,
-            });
-          },
-          webAudit: () =>
-            sendSystemMessage(chatJid, 'context_overflow', overflowMsg),
-        });
-        if (settle === 'preserve-cursor') {
-          logger.warn(
-            {
-              chatJid,
-              replySourceImJid,
-              messageId: ipcReplyTurnTracker.inputTurnId,
-              noticeKey: 'context-overflow',
-            },
-            'Terminal system notice not acknowledged; preserving cursor for retry',
-          );
-          await clearProcessingIndicatorForInput(
-            ipcReplyTurnTracker.inputTurnId,
-          );
-          return false;
-        }
-        await projectCurrentScheduledGroupTerminal('failed', overflowMsg);
-        logger.warn(
-          { group: group.name, error: overflowMsg },
-          'Context overflow detected, skipping retry',
-        );
-        commitCursor();
-        await clearProcessingIndicatorForInput(ipcReplyTurnTracker.inputTurnId);
-        return true;
-      }
+      logger.warn(
+        { group: group.name, error: overflowMsg },
+        'Context overflow detected, skipping retry',
+      );
+      return settleDeterministicFailure(
+        'context-overflow',
+        'context_overflow',
+        overflowMsg,
+      );
     }
 
     // AgentProfile 引用的 skill/MCP 已被删除或禁用：确定性配置错误，重试
-    // 永远不会成功；IM 先 ACK 再 Web audit + 提交游标。
+    // 永远不会成功，跳过指数退避重试，直接提交游标并告知用户。
     if (errorDetail.startsWith('agent_profile_unavailable:')) {
       const profileMsg = errorDetail.replace(
         /^agent_profile_unavailable:\s*/,
         '',
       );
-      {
-        const settle = await settleTerminalSystemNotice({
-          hasImReplyRoute: Boolean(replySourceImJid),
-          deliverImNotice: async () => {
-            const route = resolveDurableChannelRoute(replySourceImJid!);
-            if (!route) return false;
-            return deliverIndependentChannelSystemNotice({
-              logicalChatJid: chatJid,
-              scopeKey: channelTurnScope(effectiveGroup.folder),
-              targetJid: replySourceImJid!,
-              originalInputTurnId: ipcReplyTurnTracker.inputTurnId,
-              originalRunId: `terminal-notice:${ipcReplyTurnTracker.inputTurnId}`,
-              noticeKey: 'agent-profile-unavailable',
-              text: profileMsg,
-              sender: '__system__',
-              senderName: 'system',
-              projectToWeb: false,
-              route,
-            });
-          },
-          webAudit: () =>
-            sendSystemMessage(chatJid, 'system_error', profileMsg),
-        });
-        if (settle === 'preserve-cursor') {
-          logger.warn(
-            {
-              chatJid,
-              replySourceImJid,
-              messageId: ipcReplyTurnTracker.inputTurnId,
-              noticeKey: 'agent-profile-unavailable',
-            },
-            'Terminal system notice not acknowledged; preserving cursor for retry',
-          );
-          await clearProcessingIndicatorForInput(
-            ipcReplyTurnTracker.inputTurnId,
-          );
-          return false;
-        }
-        await projectCurrentScheduledGroupTerminal('failed', profileMsg);
-        logger.warn(
-          { group: group.name, error: profileMsg },
-          'AgentProfile references unavailable skill/MCP, skipping retry',
-        );
-        commitCursor();
-        await clearProcessingIndicatorForInput(ipcReplyTurnTracker.inputTurnId);
-        return true;
-      }
+      logger.warn(
+        { group: group.name, error: profileMsg },
+        'AgentProfile references unavailable skill/MCP, skipping retry',
+      );
+      return settleDeterministicFailure(
+        'agent-profile-unavailable',
+        'system_error',
+        profileMsg,
+      );
     }
 
     // ── OOM auto-recovery: detect consecutive exit code 137 (OOM) ──
@@ -10330,55 +10267,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           );
         }
 
-        {
-          const oomMsg =
-            '会话文件过大导致内存溢出（OOM），已自动重置会话。之前的对话上下文已清除，请重新描述您的需求。';
-          const settle = await settleTerminalSystemNotice({
-            hasImReplyRoute: Boolean(replySourceImJid),
-            deliverImNotice: async () => {
-              const route = resolveDurableChannelRoute(replySourceImJid!);
-              if (!route) return false;
-              return deliverIndependentChannelSystemNotice({
-                logicalChatJid: chatJid,
-                scopeKey: channelTurnScope(effectiveGroup.folder),
-                targetJid: replySourceImJid!,
-                originalInputTurnId: ipcReplyTurnTracker.inputTurnId,
-                originalRunId: `terminal-notice:${ipcReplyTurnTracker.inputTurnId}`,
-                noticeKey: 'oom-context-reset',
-                text: oomMsg,
-                sender: '__system__',
-                senderName: 'system',
-                projectToWeb: false,
-                route,
-              });
-            },
-            webAudit: () => sendSystemMessage(chatJid, 'context_reset', oomMsg),
-          });
-          if (settle === 'preserve-cursor') {
-            logger.warn(
-              {
-                chatJid,
-                replySourceImJid,
-                messageId: ipcReplyTurnTracker.inputTurnId,
-                noticeKey: 'oom-context-reset',
-              },
-              'Terminal system notice not acknowledged; preserving cursor for retry',
-            );
-            await clearProcessingIndicatorForInput(
-              ipcReplyTurnTracker.inputTurnId,
-            );
-            return false;
-          }
-          await projectCurrentScheduledGroupTerminal(
-            'failed',
-            '会话文件过大导致内存溢出（OOM），已自动重置会话。',
-          );
-          commitCursor();
-          await clearProcessingIndicatorForInput(
-            ipcReplyTurnTracker.inputTurnId,
-          );
-          return true;
-        }
+        return settleDeterministicFailure(
+          'oom-context-reset',
+          'context_reset',
+          '会话文件过大导致内存溢出（OOM），已自动重置会话。之前的对话上下文已清除，请重新描述您的需求。',
+          '会话文件过大导致内存溢出（OOM），已自动重置会话。',
+        );
       }
     } else if (consecutiveOomExits[effectiveGroup.folder]) {
       // Non-OOM error: reset the consecutive counter only if it was set
@@ -12553,44 +12447,8 @@ function startIpcWatcher(): void {
         });
 
         // 清理孤儿结果文件（容器崩溃或超时后残留，超过 10 分钟自动删除）
-        const RESULT_FILE_PREFIXES = [
-          'install_skill_result_',
-          'uninstall_skill_result_',
-          'list_tasks_result_',
-          'schedule_task_result_',
-          'cancel_task_result_',
-          'pause_task_result_',
-          'resume_task_result_',
-          'update_task_result_',
-          'run_task_now_result_',
-          'stop_task_run_result_',
-          'restore_task_result_',
-          'list_task_runs_result_',
-          'send_file_result_',
-          'discord_get_history_result_',
-          'discord_get_channel_info_result_',
-          'discord_get_server_info_result_',
-          'agent_profile_list_result_',
-          'agent_profile_get_result_',
-          'agent_profile_draft_get_result_',
-          'agent_capability_catalog_result_',
-          'agent_profile_prepare_result_',
-          'agent_profile_publish_result_',
-          'agent_profile_discard_result_',
-          'workspace_memory_result_',
-          'happyclaw_owner_profile_result_',
-          'fresh_window_result_',
-          'feishu_capability_result_',
-        ];
-        const isResultFile = (name: string) =>
-          RESULT_FILE_PREFIXES.some((p) => name.startsWith(p));
-
         for (const entry of allEntries) {
-          if (
-            entry.isFile() &&
-            entry.name.endsWith('.json') &&
-            isResultFile(entry.name)
-          ) {
+          if (entry.isFile() && isIpcTaskResultFile(entry.name)) {
             try {
               const filePath = path.join(tasksDir, entry.name);
               const stat = await fsp.stat(filePath);
@@ -12612,7 +12470,7 @@ function startIpcWatcher(): void {
             (entry) =>
               entry.isFile() &&
               entry.name.endsWith('.json') &&
-              !isResultFile(entry.name),
+              !isIpcTaskResultFile(entry.name),
           )
           .map((entry) => entry.name);
         for (const file of taskFiles) {
@@ -16786,6 +16644,42 @@ async function processAgentConversation(
     flushAcknowledgedIpcForJid(virtualChatJid);
     cursorCommittedInputTurns.add(inputTurnId);
   };
+  // Conversation twin of processGroupMessages' settleDeterministicFailure:
+  // the input fails its Turn durably and commits whether or not the channel
+  // notice lands. When a proactive utterance already reached the channel, the
+  // tail notice sent from the finally block owns the channel notification.
+  const settleAgentDeterministicFailure = async (
+    noticeKey: string,
+    webType: string,
+    text: string,
+    terminalError: string,
+  ): Promise<void> => {
+    const inputTurnId = activeAgentInputTurnId;
+    sendSystemMessage(virtualChatJid, webType, text);
+    agentDeterministicTerminalError = terminalError;
+    commitCursor(inputTurnId);
+    const tailNoticeOwnsChannel = shouldSendProactiveTailInterruptionNotice({
+      mode: interactionMode,
+      utteranceDelivered:
+        agentPhysicalDeliveryAckByInput.get(inputTurnId) === true,
+      runnerFailed: true,
+      healthyInputTurnCompleted:
+        healthyAgentCompletedInputTurns.has(inputTurnId),
+    });
+    if (!tailNoticeOwnsChannel) {
+      await deliverTerminalFailureNotice({
+        logicalChatJid: virtualChatJid,
+        scopeKey: channelTurnScope(effectiveGroup.folder, agentId),
+        targetJid: replySourceImJid,
+        originalInputTurnId: inputTurnId,
+        noticeKey,
+        text,
+        agentId,
+        presentation: interactionMode === 'proactive' ? 'native' : 'default',
+      });
+    }
+    await clearAgentProcessingIndicatorForInput(inputTurnId);
+  };
 
   const handleAgentOutput = async (output: ContainerOutput) => {
     // #547: warm-lifecycle bookkeeping — mark activity, and flag query-idle on
@@ -18100,49 +17994,12 @@ async function processAgentConversation(
         );
       }
 
-      {
-        const resetMsg = `会话已自动重置：${detail}`;
-        const settle = await settleTerminalSystemNotice({
-          hasImReplyRoute: Boolean(replySourceImJid),
-          deliverImNotice: async () => {
-            const route = resolveDurableChannelRoute(replySourceImJid!);
-            if (!route) return false;
-            return deliverIndependentChannelSystemNotice({
-              logicalChatJid: virtualChatJid,
-              scopeKey: channelTurnScope(effectiveGroup.folder, agentId),
-              targetJid: replySourceImJid!,
-              originalInputTurnId: activeAgentInputTurnId,
-              originalRunId: `terminal-notice:${activeAgentInputTurnId}`,
-              noticeKey: 'unrecoverable-transcript-agent',
-              text: resetMsg,
-              sender: '__system__',
-              senderName: 'system',
-              projectToWeb: false,
-              route,
-            });
-          },
-          webAudit: () =>
-            sendSystemMessage(virtualChatJid, 'context_reset', resetMsg),
-        });
-        if (settle === 'preserve-cursor') {
-          logger.warn(
-            {
-              chatJid,
-              agentId,
-              replySourceImJid,
-              messageId: activeAgentInputTurnId,
-              noticeKey: 'unrecoverable-transcript-agent',
-            },
-            'Terminal system notice not acknowledged; preserving cursor for retry',
-          );
-          await clearAgentProcessingIndicatorForInput(activeAgentInputTurnId);
-          // Do not commitCursor — leave inputs for retry after IM recovers.
-        } else {
-          agentDeterministicTerminalError = `Unrecoverable transcript reset: ${detail}`;
-          commitCursor();
-          await clearAgentProcessingIndicatorForInput(activeAgentInputTurnId);
-        }
-      }
+      await settleAgentDeterministicFailure(
+        'unrecoverable-transcript',
+        'context_reset',
+        `会话已自动重置：${detail}`,
+        `Unrecoverable transcript reset: ${detail}`,
+      );
     }
 
     // Only commit cursor if a reply was actually sent.  Without a reply the
@@ -18219,10 +18076,14 @@ async function processAgentConversation(
   } finally {
     if (idleTimer) clearTimeout(idleTimer);
 
+    // A committed cursor means the input was already settled by a reply, a
+    // stop or a terminal failure. The clean steer close is the exception: it
+    // commits before the partial it superseded has been saved.
     const wasInterrupted =
       publishesFrameworkAnswer(interactionMode) &&
       agentStreamInterrupted &&
-      !agentInterruptFinalized;
+      !agentInterruptFinalized &&
+      (runnerClosedBySteer || !isCursorCommitted());
     const wasSteered = wasInterrupted && agentStreamSteered;
 
     // ── Streaming card cleanup ──
@@ -18463,7 +18324,12 @@ async function processAgentConversation(
     }
 
     // ── 保存中断内容 ──
-    if (wasInterrupted) {
+    // Text already delivered as this input's reply stays in the accumulator;
+    // never save it again as a partial (the main path's !sentReply).
+    if (
+      wasInterrupted &&
+      agentReplySentByInput.get(activeAgentInputTurnId) !== true
+    ) {
       const interruptedText = wasSteered
         ? buildSteeredReply(agentStreamingAccText)
         : buildStoppedReply(agentStreamingAccText);
@@ -18518,8 +18384,10 @@ async function processAgentConversation(
     }
 
     // ── 兜底：进程异常退出导致累积文本未持久化 ──
+    // Skipped once the interrupt path above saved the same text.
     if (
       publishesFrameworkAnswer(interactionMode) &&
+      !agentInterruptFinalized &&
       !isCursorCommitted() &&
       agentStreamingAccText.trim()
     ) {
@@ -22471,14 +22339,14 @@ async function main(): Promise<void> {
           registeredGroups[groupJid] ?? getRegisteredGroup(groupJid);
         const name = group?.name || groupJid;
         const error = `${name} 处理失败，已达最大重试次数`;
-        let durable = false;
-        const exactMessages: Array<
-          NonNullable<ReturnType<typeof getAgentBuilderInputMessage>>
-        > = [];
+        let notifyChannel: (() => Promise<void>) | undefined;
         if (group && snapshot?.coveredCursors.length) {
           // Use only the immutable batch read by the final failed attempt.
           // A prompt arriving while this callback runs belongs to a future
           // attempt and must not be marked failed or consumed here.
+          const exactMessages: Array<
+            NonNullable<ReturnType<typeof getAgentBuilderInputMessage>>
+          > = [];
           for (const cursor of snapshot.coveredCursors) {
             const message = getAgentBuilderInputMessage(groupJid, cursor.id);
             if (message) exactMessages.push(message);
@@ -22492,67 +22360,48 @@ async function main(): Promise<void> {
               getAgentBuilderInputMessage(targetJid, messageId),
             getRun: getTaskRunById,
           });
-          durable = await projectTerminalScheduledGroupRuns({
+          const { effectiveGroup } = resolveEffectiveGroup(group);
+          const durable = await projectTerminalScheduledGroupRuns({
             runs,
             chatJid: groupJid,
-            workspaceFolder: resolveEffectiveGroup(group).effectiveGroup.folder,
+            workspaceFolder: effectiveGroup.folder,
             status: 'failed',
             error,
           });
-        }
-
-        const folder = group
-          ? resolveEffectiveGroup(group).effectiveGroup.folder
-          : null;
-        const imJid = resolveTerminalNoticeImJid({
-          messageSourceJids: exactMessages.map((m) => m.source_jid),
-          activeReplyRouteJid: folder
-            ? (activeImReplyRoutes.get(folder) ?? null)
-            : null,
-          chatJid: groupJid,
-          isImJid: (jid) => Boolean(getChannelType(jid)),
-        });
-
-        const settle = await settleTerminalSystemNotice({
-          hasImReplyRoute: Boolean(imJid),
-          deliverImNotice: async () => {
-            const route = resolveDurableChannelRoute(imJid!);
-            if (!route) return false;
-            return deliverIndependentChannelSystemNotice({
-              logicalChatJid: groupJid,
-              scopeKey: channelTurnScope(folder || groupJid),
-              targetJid: imJid!,
-              originalInputTurnId:
-                snapshot?.cursor.id ?? `max-retries:${groupJid}`,
-              originalRunId: `terminal-notice:max-retries:${
-                snapshot?.cursor.id ?? groupJid
-              }`,
-              noticeKey: 'agent-max-retries',
-              text: error,
-              sender: '__system__',
-              senderName: 'system',
-              projectToWeb: false,
-              route,
-            });
-          },
-          webAudit: () =>
-            sendSystemMessage(groupJid, 'agent_max_retries', error),
-        });
-        if (settle === 'preserve-cursor') {
-          logger.warn(
-            { groupJid, imJid, noticeKey: 'agent-max-retries' },
-            'Terminal system notice not acknowledged; preserving cursor for retry',
+          if (durable) {
+            // Retry exhaustion terminates this immutable final-attempt batch,
+            // including any ordinary inputs coalesced before its upper bound.
+            // Commit the whole bounded snapshot so crash recovery cannot
+            // replay the old scheduler prompt; later messages sort after this
+            // cursor and remain pending.
+            advanceCursors(groupJid, snapshot.cursor);
+          }
+          // A batch has one reply route, carried by its inputs.
+          const lastMessage = exactMessages[exactMessages.length - 1];
+          const targetJid = resolveInputChannelReplySource(
+            lastMessage?.source_jid || lastMessage?.chat_jid,
           );
-          return;
+          const inputTurnId = snapshot.cursor.id;
+          notifyChannel = () =>
+            deliverTerminalFailureNotice({
+              logicalChatJid: groupJid,
+              scopeKey: channelTurnScope(effectiveGroup.folder),
+              targetJid,
+              originalInputTurnId: inputTurnId,
+              // The same batch can exhaust its retries again after the next
+              // message; each exhaustion is a new notice, not a replay.
+              noticeKey: `agent-max-retries:${crypto.randomUUID()}`,
+              text: error,
+              presentation:
+                targetJid &&
+                resolveTrustedInteractionMode(effectiveGroup, targetJid) ===
+                  'proactive'
+                  ? 'native'
+                  : 'default',
+            });
         }
-        if (durable && snapshot?.coveredCursors.length) {
-          // Retry exhaustion terminates this immutable final-attempt batch,
-          // including any ordinary inputs coalesced before its upper bound.
-          // Commit the whole bounded snapshot so crash recovery cannot
-          // replay the old scheduler prompt; later messages sort after this
-          // cursor and remain pending.
-          advanceCursors(groupJid, snapshot.cursor);
-        }
+        sendSystemMessage(groupJid, 'agent_max_retries', error);
+        await notifyChannel?.();
       } finally {
         await clearTrackedProcessingIndicators(groupJid);
       }

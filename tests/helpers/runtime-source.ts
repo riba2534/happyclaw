@@ -33,14 +33,20 @@ function named(name: string, root: ts.Node = source): ts.Node {
   return unique(
     root,
     (node) =>
-      (ts.isFunctionDeclaration(node) || ts.isVariableDeclaration(node)) &&
+      (ts.isFunctionDeclaration(node) ||
+        ts.isVariableDeclaration(node) ||
+        ts.isClassDeclaration(node)) &&
       node.name?.getText(source) === name,
   );
 }
 
 export function createRuntimeSourceHarness(globals: Record<string, unknown>) {
   const context = vm.createContext(globals);
-  function installNode(name: string, node: ts.Node): void {
+  function installNode(
+    name: string,
+    node: ts.Node,
+    wrap = (code: string) => code,
+  ): void {
     const key = `${name}:${node.pos}`;
     let script = compiled.get(key);
     if (!script) {
@@ -48,7 +54,7 @@ export function createRuntimeSourceHarness(globals: Record<string, unknown>) {
         ? node.initializer!
         : node;
       const js = ts.transpileModule(
-        `globalThis[${JSON.stringify(name)}] = (${expression.getText(source)});`,
+        `globalThis[${JSON.stringify(name)}] = (${wrap(expression.getText(source))});`,
         { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
       ).outputText;
       script = new vm.Script(js, { filename: `index.ts:${name}` });
@@ -69,6 +75,40 @@ export function createRuntimeSourceHarness(globals: Record<string, unknown>) {
           node.expression.getText(source) === 'runAgent',
       ) as ts.CallExpression;
       installNode('handleMainOutput', call.arguments[4]);
+    },
+    /** Install the argument of the unique `callee(...)` call in `owner`. */
+    installCallArgument(
+      name: string,
+      owner: string,
+      callee: string,
+      index: number,
+    ): void {
+      const call = unique(
+        named(owner),
+        (node) =>
+          ts.isCallExpression(node) &&
+          node.expression.getText(source) === callee,
+      ) as ts.CallExpression;
+      installNode(name, call.arguments[index]);
+    },
+    /**
+     * Install the `finally` block of `owner`'s top-level try statement as an
+     * async function, so its cleanup runs against the provided state.
+     */
+    installFinally(name: string, owner: string): void {
+      const fn = named(owner) as ts.FunctionDeclaration;
+      const statement = unique(
+        fn,
+        (node) =>
+          ts.isTryStatement(node) &&
+          node.finallyBlock !== undefined &&
+          node.parent === fn.body,
+      ) as ts.TryStatement;
+      installNode(
+        name,
+        statement.finallyBlock!,
+        (block) => `async () => ${block}`,
+      );
     },
   };
 }

@@ -12,6 +12,20 @@ export function isIpcInputPayloadFilename(filename: string): boolean {
   );
 }
 
+// `<request type>_result_<requestId>.json`, as written by the host's
+// writeTaskResult and polled by the runner's pollIpcResult.
+const IPC_TASK_RESULT_FILE_RE = /^[a-z][a-z0-9_]*_result_[A-Za-z0-9_-]+\.json$/;
+
+/**
+ * Host acknowledgements share the runner's tasks/ directory with requests,
+ * which the runner names `<epoch ms>-<random>.json`. Classify results by name
+ * shape instead of a per-tool allowlist, so a new IPC tool's result can never
+ * be re-read as a request and unlinked before the runner polls it.
+ */
+export function isIpcTaskResultFile(filename: string): boolean {
+  return IPC_TASK_RESULT_FILE_RE.test(filename);
+}
+
 function parseTypedDeliveryFile(filepath: string): IpcDeliveryReceipt | null {
   try {
     const payload = JSON.parse(fs.readFileSync(filepath, 'utf8')) as {
