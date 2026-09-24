@@ -138,7 +138,11 @@ import {
   AssistantUsageCollector,
   type AssistantUsageBatch,
 } from './assistant-usage.js';
-import { buildHappyClawPromptPlan, type PromptPlan } from './prompt-plan.js';
+import {
+  buildHappyClawPromptPlan,
+  hasBackgroundTaskTools,
+  type PromptPlan,
+} from './prompt-plan.js';
 import {
   buildHappyClawSystemPrompt,
   withHappyClawSubagentContract,
@@ -214,7 +218,9 @@ const DEFAULT_ALLOWED_TOOLS = [
   'WebSearch',
   'WebFetch',
   'Task',
-  'TaskOutput',
+  // 'TaskOutput' removed: Claude Code 2.1.277 dropped the deprecated tool.
+  // Background results arrive as task notifications and Bash output files are
+  // read with Read, so the entry no longer pre-approved anything.
   'TaskStop',
   'TeamCreate',
   'TeamDelete',
@@ -2412,8 +2418,7 @@ async function runQueryAttempt(
   const hasWebTools = allowedTools.some(
     (tool) => tool === 'WebSearch' || tool === 'WebFetch',
   );
-  const hasBackgroundTaskTools =
-    allowedTools.includes('Task') && allowedTools.includes('TaskOutput');
+  const backgroundTaskToolsAvailable = hasBackgroundTaskTools(allowedTools);
   const proactiveInteractiveContract =
     usesProactiveInteractiveContract(containerInput);
   const backgroundResultGate = new QuiescentResultGate(100);
@@ -2569,7 +2574,7 @@ async function runQueryAttempt(
           ? PROACTIVE_OUTPUT_GUIDELINES
           : ASSISTANT_OUTPUT_GUIDELINES,
     ...(hasWebTools ? { web: WEB_FETCH_GUIDELINES } : {}),
-    ...(hasBackgroundTaskTools
+    ...(backgroundTaskToolsAvailable
       ? { backgroundTasks: BACKGROUND_TASK_GUIDELINES }
       : {}),
     ...(channelGuidelines
