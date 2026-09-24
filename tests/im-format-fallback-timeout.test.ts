@@ -152,8 +152,9 @@ describe('Telegram HTML format fallback must not duplicate after timeout', () =>
       throw grammyTooManyRequests();
     });
 
-    // 429 proves no message became visible, so it surfaces as a definitive
-    // rejection with a flood-wait retryAt instead of fencing the turn.
+    // 429 proves no message became visible, so it surfaces as a terminal
+    // definitive rejection instead of fencing the turn. No retryAt: nothing
+    // in production reclaims a retry_wait row.
     const failure = await telegram
       .sendMessage('12345', 'hello **world**')
       .then(() => null)
@@ -162,7 +163,7 @@ describe('Telegram HTML format fallback must not duplicate after timeout', () =>
       name: 'DefinitiveChannelDeliveryError',
       cause: { error_code: 429 },
     });
-    expect(typeof (failure as { retryAt?: unknown }).retryAt).toBe('string');
+    expect((failure as { retryAt?: unknown }).retryAt).toBeUndefined();
     expect(telegramControls.sendMessage).toHaveBeenCalledTimes(1);
   });
 });

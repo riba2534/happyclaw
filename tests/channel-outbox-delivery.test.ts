@@ -23,6 +23,7 @@ const store = await import('../src/channel-reliability-store.js');
 const delivery = await import('../src/channel-outbox-delivery.js');
 const runtimeScope = await import('../src/channel-outbox-runtime-scope.js');
 const retryPolicy = await import('../src/im-send-retry-policy.js');
+const { DingTalkPartialDeliveryError } = await import('../src/dingtalk.js');
 const { ChannelTurnRuntime } = await import('../src/channel-turn-runtime.js');
 
 const route = {
@@ -379,38 +380,40 @@ describe('channel outbox physical delivery transaction', () => {
     expect(providerAccepted).toBe(1);
   });
 
-  test('marks connector pre-accept failures as failed without fencing the turn', async () => {
+  test('keeps a code-only partial with a pre-accept tail uncertain and fenced', async () => {
     const now = '2026-07-23T04:01:30.000Z';
-    const run = createRun('pre-accept', now);
+    const run = createRun('partial-pre-accept-tail', now);
     let sends = 0;
     const input = {
       ...route,
       turnRunId: run.id,
       ordinal: 0,
-      kind: 'file' as const,
-      payload: { path: 'deliverables/huge.zip' },
-      owner: 'sender-pre-accept',
+      kind: 'text' as const,
+      payload: { text: 'two chunks' },
+      owner: 'sender-partial-pre-accept',
       now: () => now,
       delivery: {
         mode: 'single' as const,
         send: async (): Promise<{ providerMessageId: string }> => {
           sends++;
-          // Typed pre-accept evidence: the connector proved no provider
-          // mutation happened (e.g. a local size-limit preflight).
-          throw retryPolicy.preAcceptImDeliveryError(
-            '文件大小超过 30MB 限制 (47.64MB)',
+          // The first chunk is already visible. The tail never left the host,
+          // but the acknowledged prefix still forbids replaying the row.
+          throw new DingTalkPartialDeliveryError(
+            1,
+            2,
+            retryPolicy.preAcceptImDeliveryError('DingTalk token unavailable'),
           );
         },
       },
     };
     const first = await delivery.deliverChannelOutboxItem(input);
-    expect(first).toMatchObject({
-      status: 'failed',
-      error: '文件大小超过 30MB 限制 (47.64MB)',
-    });
+    expect(first.status).toBe('uncertain');
+    expect(store.getUncertainChannelOutboxForTurn(run.id)?.id).toBe(
+      first.itemId,
+    );
+    const replay = await delivery.deliverChannelOutboxItem(input);
+    expect(replay.status).toBe('uncertain');
     expect(sends).toBe(1);
-    // A definitive local failure must not block later sends in the turn.
-    expect(store.getUncertainChannelOutboxForTurn(run.id)).toBeFalsy();
   });
 
   test('reuses a persisted upload after process death before send', async () => {
