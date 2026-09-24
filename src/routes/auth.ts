@@ -65,8 +65,12 @@ const authRoutes = new Hono<{ Variables: Variables }>();
 // --- Helper Functions ---
 
 // Cookie helpers live in auth.ts (single source of truth, also used by middleware).
-import { setSessionCookie, clearSessionCookie } from '../auth.js';
-export { setSessionCookie, clearSessionCookie };
+import {
+  setSessionCookie,
+  clearSessionCookie,
+  headersWithSessionCookies,
+} from '../auth.js';
+export { setSessionCookie, clearSessionCookie, headersWithSessionCookies };
 
 export function isUsernameConflictError(err: unknown): boolean {
   return (
@@ -220,10 +224,10 @@ authRoutes.post('/setup', async (c) => {
     }),
     {
       status: 201,
-      headers: {
-        'Content-Type': 'application/json',
-        'Set-Cookie': setSessionCookie(c, token),
-      },
+      headers: headersWithSessionCookies(
+        { 'Content-Type': 'application/json' },
+        setSessionCookie(c, token),
+      ),
     },
   );
 });
@@ -345,10 +349,10 @@ authRoutes.post('/login', async (c) => {
     }),
     {
       status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Set-Cookie': setSessionCookie(c, token),
-      },
+      headers: headersWithSessionCookies(
+        { 'Content-Type': 'application/json' },
+        setSessionCookie(c, token),
+      ),
     },
   );
 });
@@ -514,10 +518,10 @@ authRoutes.post('/register', async (c) => {
     JSON.stringify({ success: true, user: toUserPublic(newUser) }),
     {
       status: 201,
-      headers: {
-        'Content-Type': 'application/json',
-        'Set-Cookie': setSessionCookie(c, token),
-      },
+      headers: headersWithSessionCookies(
+        { 'Content-Type': 'application/json' },
+        setSessionCookie(c, token),
+      ),
     },
   );
 });
@@ -535,10 +539,10 @@ authRoutes.post('/logout', authMiddleware, (c) => {
 
   return new Response(JSON.stringify({ success: true }), {
     status: 200,
-    headers: {
-      'Content-Type': 'application/json',
-      'Set-Cookie': clearSessionCookie(c),
-    },
+    headers: headersWithSessionCookies(
+      { 'Content-Type': 'application/json' },
+      clearSessionCookie(c),
+    ),
   });
 });
 
@@ -711,10 +715,10 @@ authRoutes.put('/password', authMiddleware, async (c) => {
     JSON.stringify({ success: true, user: toUserPublic(updated) }),
     {
       status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Set-Cookie': setSessionCookie(c, newToken),
-      },
+      headers: headersWithSessionCookies(
+        { 'Content-Type': 'application/json' },
+        setSessionCookie(c, newToken),
+      ),
     },
   );
 });
