@@ -106,7 +106,13 @@ export function buildTelegramRouteJid(
     : base;
 }
 
-export type TelegramNativeMediaKind = 'video' | 'voice' | 'audio' | 'animation';
+export type TelegramNativeMediaKind =
+  | 'video'
+  | 'voice'
+  | 'audio'
+  | 'animation'
+  | 'sticker'
+  | 'video_note';
 
 export interface TelegramNativeFile {
   fileId: string;
@@ -125,6 +131,13 @@ export function telegramNativeFileFromMessage(message: {
   voice?: { file_id: string; file_size?: number };
   audio?: { file_id: string; file_name?: string; file_size?: number };
   animation?: { file_id: string; file_name?: string; file_size?: number };
+  sticker?: {
+    file_id: string;
+    file_size?: number;
+    is_animated?: boolean;
+    is_video?: boolean;
+  };
+  video_note?: { file_id: string; file_size?: number };
 }): TelegramNativeFile | null {
   if (message.video) {
     return {
@@ -156,6 +169,26 @@ export function telegramNativeFileFromMessage(message: {
       fileName: message.animation.file_name || 'animation.mp4',
       fileSize: message.animation.file_size,
       kind: 'animation',
+    };
+  }
+  if (message.sticker) {
+    return {
+      fileId: message.sticker.file_id,
+      fileName: message.sticker.is_animated
+        ? 'sticker.tgs'
+        : message.sticker.is_video
+          ? 'sticker.webm'
+          : 'sticker.webp',
+      fileSize: message.sticker.file_size,
+      kind: 'sticker',
+    };
+  }
+  if (message.video_note) {
+    return {
+      fileId: message.video_note.file_id,
+      fileName: 'video_note.mp4',
+      fileSize: message.video_note.file_size,
+      kind: 'video_note',
     };
   }
   return null;
@@ -254,6 +287,39 @@ export function telegramMediaMessageText(
 ): string {
   const normalizedCaption = caption?.trim();
   return normalizedCaption ? `${fileText}\n${normalizedCaption}` : fileText;
+}
+
+export function telegramLocationMessageText(
+  location?: { latitude?: number; longitude?: number },
+  venue?: { title?: string },
+): string {
+  const lat = location?.latitude;
+  const lon = location?.longitude;
+  const coords =
+    lat != null && lon != null && Number.isFinite(lat) && Number.isFinite(lon)
+      ? `${lat}, ${lon}`
+      : '';
+  const title = venue?.title?.trim();
+  if (title && coords) return `[位置: ${title} (${coords})]`;
+  if (coords) return `[位置: ${coords}]`;
+  if (title) return `[位置: ${title}]`;
+  return '[位置]';
+}
+
+export function telegramContactMessageText(contact?: {
+  first_name?: string;
+  last_name?: string;
+  phone_number?: string;
+}): string {
+  const name = [contact?.first_name, contact?.last_name]
+    .filter((part) => typeof part === 'string' && part.trim())
+    .join(' ')
+    .trim();
+  const phone = contact?.phone_number?.trim();
+  if (name && phone) return `[联系人: ${name}] ${phone}`;
+  if (name) return `[联系人: ${name}]`;
+  if (phone) return `[联系人] ${phone}`;
+  return '[联系人]';
 }
 
 /**
@@ -720,7 +786,12 @@ export function createTelegramConnection(
     chatName: string;
     chat: TelegramChatDescriptor;
     caption?: string;
-    kind: TelegramNativeMediaKind | 'photo' | 'document';
+    kind:
+      | TelegramNativeMediaKind
+      | 'photo'
+      | 'document'
+      | 'location'
+      | 'contact';
     reply: (text: string) => Promise<unknown>;
   }): Promise<boolean> {
     if (input.opts.isChatAuthorized(input.jid)) return true;
@@ -1708,6 +1779,143 @@ export function createTelegramConnection(
       bot.on('message:voice', handleNativeTelegramMedia);
       bot.on('message:audio', handleNativeTelegramMedia);
       bot.on('message:animation', handleNativeTelegramMedia);
+      bot.on('message:sticker', handleNativeTelegramMedia);
+      bot.on('message:video_note', handleNativeTelegramMedia);
+
+      const handleTelegramStructuredInbound = async (
+        ctx: Context,
+        kind: 'location' | 'contact',
+        text: string,
+      ): Promise<void> => {
+        try {
+          const tgMessage = ctx.message;
+          const tgChat = ctx.chat;
+          if (!tgMessage || !tgChat) return;
+          const msgId = String(tgMessage.message_id) + ':' + String(tgChat.id);
+          if (isGloballyStale(tgMessage.date * 1000)) return;
+          if (dedup.isDuplicate(msgId)) return;
+          if (!processingLock.acquire(msgId)) return;
+          dedup.markSeen(msgId);
+          try {
+            if (isStaleMessage(tgMessage.date, opts.ignoreMessagesBefore))
+              return;
+
+            const chatId = String(tgChat.id);
+            const routeJid =
+              opts.normalizeIncomingJid?.(
+                buildTelegramRouteJid(chatId, tgMessage.message_thread_id),
+              ) ?? buildTelegramRouteJid(chatId, tgMessage.message_thread_id);
+            const jid = channelConversationJid(routeJid);
+            const messageMeta = telegramMessageMeta(tgMessage);
+            const chatName =
+              tgChat.title ||
+              [tgChat.first_name, tgChat.last_name].filter(Boolean).join(' ') ||
+              `Telegram ${chatId}`;
+            const senderName =
+              [ctx.from?.first_name, ctx.from?.last_name]
+                .filter(Boolean)
+                .join(' ') || 'Unknown';
+
+            if (
+              !(await admitTelegramMedia({
+                opts,
+                jid,
+                chatName,
+                chat: tgChat as TelegramChatDescriptor,
+                kind,
+                reply: (replyText) => ctx.reply(replyText),
+              }))
+            ) {
+              return;
+            }
+
+            const resolvedRoute = resolveAdmittedChannelRoute(
+              routeJid,
+              opts.resolveEffectiveChatJid
+                ? () => opts.resolveEffectiveChatJid!(jid, messageMeta)
+                : undefined,
+            );
+            if (!resolvedRoute) {
+              logger.warn(
+                { jid, routeJid, kind },
+                'Telegram structured inbound dropped: binding resolver rejected route',
+              );
+              return;
+            }
+            const { targetJid, routing: agentRouting } = resolvedRoute;
+            const sourceJid = agentRouting?.sourceJid ?? routeJid;
+
+            await reportNativeContext(opts, jid, tgMessage.message_thread_id);
+            storeChatMetadata(jid, new Date().toISOString());
+            updateChatName(jid, chatName);
+            opts.onNewChat(jid, chatName);
+
+            const id = crypto.randomUUID();
+            const timestamp = new Date(tgMessage.date * 1000).toISOString();
+            const senderId = ctx.from?.id ? `tg:${ctx.from.id}` : 'tg:unknown';
+            persistTelegramNativeMediaMessage({
+              id,
+              targetJid,
+              sourceJid,
+              senderId,
+              senderName,
+              text,
+              timestamp,
+              agentId: agentRouting?.agentId ?? undefined,
+              storeMessageDirect,
+              notifyNewImMessage,
+              onMessagePersisted: opts.onMessagePersisted,
+            });
+
+            if (agentRouting?.agentId) {
+              opts.onAgentMessage?.(jid, agentRouting.agentId);
+            }
+
+            logger.info(
+              {
+                jid,
+                sender: senderName,
+                msgId,
+                kind,
+                routed: !!agentRouting,
+              },
+              'Telegram structured inbound stored',
+            );
+          } finally {
+            processingLock.release(msgId);
+          }
+        } catch (err) {
+          logger.error(
+            { err, kind },
+            'Error handling Telegram structured inbound',
+          );
+        }
+      };
+
+      bot.on('message:location', async (ctx) => {
+        const location =
+          ctx.message && 'location' in ctx.message
+            ? ctx.message.location
+            : undefined;
+        const venue =
+          ctx.message && 'venue' in ctx.message ? ctx.message.venue : undefined;
+        await handleTelegramStructuredInbound(
+          ctx,
+          'location',
+          telegramLocationMessageText(location, venue),
+        );
+      });
+      bot.on('message:contact', async (ctx) => {
+        const contact =
+          ctx.message && 'contact' in ctx.message
+            ? ctx.message.contact
+            : undefined;
+        await handleTelegramStructuredInbound(
+          ctx,
+          'contact',
+          telegramContactMessageText(contact),
+        );
+      });
 
       // ── my_chat_member: Bot 加入/离开群聊检测 ──
       bot.on('my_chat_member', async (ctx) => {
