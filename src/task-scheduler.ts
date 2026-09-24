@@ -1781,6 +1781,12 @@ async function runScriptTaskInner(
       error = '脚本执行已取消';
     } else if (scriptResult.timedOut) {
       error = `脚本执行超时 (${Math.round(scriptResult.durationMs / 1000)}s)`;
+    } else if (scriptResult.signal) {
+      // External SIGKILL/OOM (and other signals) must not be treated as success
+      // even when stdout captured a partial payload before death.
+      error =
+        scriptResult.stderr.trim() || `脚本被信号终止: ${scriptResult.signal}`;
+      result = scriptResult.stdout.trim() || null;
     } else if (scriptResult.exitCode !== 0) {
       error = scriptResult.stderr.trim() || `退出码: ${scriptResult.exitCode}`;
       result = scriptResult.stdout.trim() || null;

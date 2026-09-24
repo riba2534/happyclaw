@@ -9,6 +9,8 @@ export interface ScriptRunResult {
   stdout: string;
   stderr: string;
   exitCode: number | null;
+  /** Set when the process was terminated by a signal (e.g. SIGKILL/OOM). */
+  signal: string | null;
   timedOut: boolean;
   aborted: boolean;
   durationMs: number;
@@ -130,7 +132,11 @@ export async function runScript(
       child.stderr?.on('data', (chunk: Buffer | string) => {
         if (stderr.length < MAX_BUFFER) stderr += chunk.toString();
       });
-      const finish = (exitCode: number | null, spawnError?: Error) => {
+      const finish = (
+        exitCode: number | null,
+        closeSignal: NodeJS.Signals | null = null,
+        spawnError?: Error,
+      ) => {
         if (finished) return;
         finished = true;
         clearTimeout(timeout);
@@ -147,18 +153,32 @@ export async function runScript(
           );
         }
 
+        // Never coalesce a missing exit code to 0 unless we intentionally
+        // aborted or timed out. External SIGKILL/OOM delivers close(null,
+        // signal) with aborted=false; mapping that to 0 marks SUCCESS.
+        let resolvedExit: number | null;
+        if (timedOut || aborted) {
+          resolvedExit = null;
+        } else if (exitCode != null) {
+          resolvedExit = exitCode;
+        } else if (spawnError) {
+          resolvedExit = 1;
+        } else {
+          resolvedExit = null;
+        }
+
         resolve({
           stdout: stdout.slice(0, MAX_BUFFER),
           stderr: (spawnError?.message || stderr).slice(0, MAX_BUFFER),
-          exitCode:
-            timedOut || aborted ? null : (exitCode ?? (spawnError ? 1 : 0)),
+          exitCode: resolvedExit,
+          signal: closeSignal ?? null,
           timedOut,
           aborted,
           durationMs,
         });
       };
-      child.once('error', (err) => finish(1, err));
-      child.once('close', (code) => finish(code));
+      child.once('error', (err) => finish(1, null, err));
+      child.once('close', (code, closeSignal) => finish(code, closeSignal));
       activeScriptRuns.set(runId, {
         child,
         ownerId: options?.ownerId,
@@ -178,6 +198,7 @@ export async function runScript(
       stdout: '',
       stderr: err instanceof Error ? err.message : String(err),
       exitCode: 1,
+      signal: null,
       timedOut: false,
       aborted: false,
       durationMs,

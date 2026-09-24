@@ -106,6 +106,7 @@ const { runContainerAgentMock, runHostAgentMock, runScriptMock } = vi.hoisted(
       stdout: 'script result',
       stderr: '',
       exitCode: 0,
+      signal: null,
       timedOut: false,
       aborted: false,
       durationMs: 10,
@@ -2431,6 +2432,7 @@ describe('scheduled task workspace/session contract', () => {
       stdout: '',
       stderr: '',
       exitCode: null,
+      signal: 'SIGKILL',
       timedOut: false,
       aborted: true,
       durationMs: 25,
@@ -2454,6 +2456,70 @@ describe('scheduled task workspace/session contract', () => {
     });
     expect(deps.sendMessage).not.toHaveBeenCalled();
     expect(deps.storeResultAndNotify).not.toHaveBeenCalled();
+  });
+
+  test('external SIGKILL / close(null, signal) script death is failed, not SUCCESS', async () => {
+    const ownerId = 'sigkill-script-owner';
+    const sourceJid = 'web:sigkill-script';
+    const now = new Date().toISOString();
+    db.createUser({
+      id: ownerId,
+      username: ownerId,
+      password_hash: 'hash',
+      display_name: ownerId,
+      role: 'admin',
+      status: 'active',
+      must_change_password: false,
+      created_at: now,
+      updated_at: now,
+    });
+    const scriptGroup = {
+      ...db.getRegisteredGroup(GROUP_JID)!,
+      jid: sourceJid,
+      created_by: ownerId,
+      executionMode: 'host' as const,
+    };
+    db.setRegisteredGroup(sourceJid, scriptGroup);
+    const taskId = createTask({
+      id: 'external-sigkill-script',
+      execution_type: 'script',
+      execution_mode: 'host',
+      script_command: 'sleep 60',
+      created_by: ownerId,
+      chat_jid: sourceJid,
+    });
+    // Live runScript close(null, 'SIGKILL') shape — aborted/timedOut false.
+    runScriptMock.mockResolvedValueOnce({
+      stdout: 'partial before death',
+      stderr: '',
+      exitCode: null,
+      signal: 'SIGKILL',
+      timedOut: false,
+      aborted: false,
+      durationMs: 40,
+    });
+    const { deps, waitForRun } = makeDeps({ [sourceJid]: scriptGroup });
+
+    const trigger = triggerTaskNow(taskId, deps);
+    await waitForRun();
+    await vi.waitFor(() => {
+      expect(db.getTaskRunById(trigger.runId!)?.status).not.toBe('running');
+    });
+
+    expect(db.getTaskRunById(trigger.runId!)).toMatchObject({
+      status: 'failed',
+      error: '脚本被信号终止: SIGKILL',
+    });
+    expect(db.getTaskRunLogs(taskId, 1)[0]).toMatchObject({
+      status: 'error',
+      error: '脚本被信号终止: SIGKILL',
+      result: 'partial before death',
+    });
+    // Failure notify may include partial stdout, but must not be a bare success.
+    expect(deps.sendMessage).toHaveBeenCalled();
+    const sent = String(deps.sendMessage.mock.calls[0]?.[1] ?? '');
+    expect(sent).toContain('执行失败');
+    expect(sent).toContain('SIGKILL');
   });
 
   test('persists a strict source failure before finish and fallback success consumes only that retry item', async () => {
