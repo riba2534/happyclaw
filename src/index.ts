@@ -641,8 +641,8 @@ import { makeExpandContext } from './plugin-expander-context.js';
 import type { ExpandContext } from './plugin-expander-context.js';
 import { persistPluginExpansion } from './plugin-expander-store.js';
 
-// Set timezone so all child processes (host agents, containers) inherit it
-process.env.TZ = process.env.TZ || TIMEZONE;
+// Export the resolved zone (not raw TZ) so children share the scheduler clock
+process.env.TZ = TIMEZONE;
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const execFileAsync = promisify(execFile);

@@ -322,7 +322,7 @@ HappyClaw 优先通过 Web 设置管理配置，不要求用户维护一组庞�
 | `MAX_FILE_SIZE_MB`                   | `50`                              | Web 和 IM 入站文件大小上限                                                         |
 | `CORS_ALLOWED_ORIGINS`               | 仅 localhost                      | 公网部署的 WebSocket Origin 白名单                                                 |
 | `TRUST_PROXY`                        | `false`                           | 位于可信反向代理后时设为 `true`                                                    |
-| `TZ`                                 | 系统时区                          | 日志与定时任务时区                                                                 |
+| `TZ`                                 | 系统时区                          | 日志与定时任务时区（建议 IANA 名称，如 `Asia/Shanghai`）；无效值回退并告警         |
 | `HTTPS_PROXY` / `HTTP_PROXY`         | 未设置                            | 独立配置 HTTPS/HTTP 出站代理；主进程与每个智能体容器都会使用，也接受对应的小写变量 |
 | `NO_PROXY`                           | 未设置                            | 独立配置不走代理的地址列表，也接受 `no_proxy`                                      |
 
