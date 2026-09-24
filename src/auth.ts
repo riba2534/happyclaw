@@ -80,10 +80,13 @@ export function verifySessionToken(signedValue: string): VerifiedToken | null {
   return { token, legacy: false };
 }
 
-/** Build Set-Cookie header values for a session token (signs + flags secure/plain).
- * Always clears the alternate cookie name so dual-name residue cannot accumulate
- * across HTTP↔HTTPS (plain `happyclaw_session` vs `__Host-happyclaw_session`). */
-export function setSessionCookie(c: any, token: string): string[] {
+// The session lives under `__Host-happyclaw_session` on HTTPS and under
+// `happyclaw_session` on plain HTTP. Every write sets one name and expires the
+// other, so a browser that moved between schemes cannot keep a stale session
+// under the other name. Each value must be its own Set-Cookie line: several
+// cookies joined into one header value are unparseable for browsers, which is
+// why the raw values stay private to the helpers below.
+function sessionCookieValues(c: any, token: string): string[] {
   const signed = signSessionToken(token);
   const maxAge = 30 * 24 * 60 * 60;
 
@@ -100,28 +103,43 @@ export function setSessionCookie(c: any, token: string): string[] {
   ];
 }
 
-/** Build Set-Cookie header values that clear BOTH session cookie names.
- * Logout / forced clears must expire `__Host-` and plain variants together;
- * middleware accepts SECURE then falls back to PLAIN, so a one-name clear
- * leaves the other live. */
-export function clearSessionCookie(_c: any): string[] {
+function clearedSessionCookieValues(): string[] {
   return [
     `${SESSION_COOKIE_NAME_SECURE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0; Secure`,
     `${SESSION_COOKIE_NAME_PLAIN}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`,
   ];
 }
 
-/** Attach one or more Set-Cookie values without comma-joining (Fetch forbids that). */
-export function headersWithSessionCookies(
-  base: ConstructorParameters<typeof Headers>[0],
-  cookies: string | string[],
+type HeadersInitValue = ConstructorParameters<typeof Headers>[0];
+
+function headersWithSetCookies(
+  init: HeadersInitValue,
+  cookies: string[],
 ): Headers {
-  const headers = new Headers(base);
-  const list = Array.isArray(cookies) ? cookies : [cookies];
-  for (const cookie of list) {
-    headers.append('Set-Cookie', cookie);
-  }
+  const headers = new Headers(init);
+  for (const cookie of cookies) headers.append('Set-Cookie', cookie);
   return headers;
+}
+
+/** Response headers that store the signed session `token` for this request's scheme. */
+export function sessionCookieHeaders(
+  c: any,
+  token: string,
+  init?: HeadersInitValue,
+): Headers {
+  return headersWithSetCookies(init, sessionCookieValues(c, token));
+}
+
+/** Response headers that expire the session cookie under both names. */
+export function clearedSessionCookieHeaders(init?: HeadersInitValue): Headers {
+  return headersWithSetCookies(init, clearedSessionCookieValues());
+}
+
+/** Append the session cookies for `token` to the response a Hono context is building. */
+export function appendSessionCookies(c: any, token: string): void {
+  for (const cookie of sessionCookieValues(c, token)) {
+    c.header('Set-Cookie', cookie, { append: true });
+  }
 }
 
 export function generateUserId(): string {

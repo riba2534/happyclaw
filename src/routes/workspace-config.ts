@@ -24,7 +24,11 @@ import {
   validateSkillPath,
   scanSkillDirectory,
 } from '../skill-utils.js';
-import { installSkillUrlViaPinnedGit } from '../skill-import-service.js';
+import {
+  buildSkillsCliEnvironment,
+  canonicalizeGitHubSkillUrl,
+  SkillUrlRefusedError,
+} from '../skill-import-service.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -258,44 +262,17 @@ workspaceConfigRoutes.post(
     if (!isNpmName && !isUrl) {
       return c.json({ error: 'Invalid package name format' }, 400);
     }
-    // URL form: GitHub allowlist + pinned git importer (no npx redirect follow).
-    // npm `<scope>/<name>` still uses the isolated npx path below.
+    // URL form is limited to github.com and rebuilt before reaching the CLI, so
+    // `skills add` can never fetch or clone an arbitrary host (SSRF).
+    let source = pkg;
     if (isUrl) {
       try {
-        const targetDir = getWorkspaceSkillsDir(group);
-        fs.mkdirSync(targetDir, { recursive: true });
-        const imported = await installSkillUrlViaPinnedGit({
-          packageUrl: pkg,
-          targetRoot: targetDir,
-          replace: true,
-        });
-        if (imported.installed.length === 0) {
-          return c.json(
-            { error: 'No skills were installed — package may be invalid' },
-            500,
-          );
-        }
-        return c.json({ success: true, installed: imported.installed });
+        source = canonicalizeGitHubSkillUrl(pkg);
       } catch (error) {
-        const message =
-          error instanceof Error ? error.message : 'Unknown error';
-        const refused =
-          message.startsWith('Refused skill URL') ||
-          message.includes('Skill URL installs are limited to GitHub') ||
-          message.includes('Skill URLs containing credentials') ||
-          message.includes('Skill GitHub URL') ||
-          message.includes('Unsupported GitHub skill URL') ||
-          message.includes('GitHub blob URLs') ||
-          message.includes('resolves to a private') ||
-          message.includes('could not be resolved') ||
-          message.startsWith('Refused Git URL');
-        return c.json(
-          {
-            error: refused ? message : 'Failed to install skill',
-            details: refused ? undefined : message,
-          },
-          refused ? 400 : 500,
-        );
+        if (error instanceof SkillUrlRefusedError) {
+          return c.json({ error: error.message }, 400);
+        }
+        throw error;
       }
     }
 
@@ -309,10 +286,19 @@ workspaceConfigRoutes.post(
     try {
       await execFileAsync(
         'npx',
-        ['-y', 'skills', 'add', pkg, '--global', '--yes', '-a', 'claude-code'],
+        [
+          '-y',
+          'skills',
+          'add',
+          source,
+          '--global',
+          '--yes',
+          '-a',
+          'claude-code',
+        ],
         {
           timeout: 60_000,
-          env: { ...process.env, HOME: tempHome },
+          env: buildSkillsCliEnvironment(tempHome),
         },
       );
 
