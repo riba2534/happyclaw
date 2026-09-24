@@ -251,3 +251,111 @@ describe('WeChat inbound video CDN persist', () => {
     expect(db.storeMessageDirect.mock.calls[0][4]).toBe('(voice)');
   });
 });
+
+describe('WeChat inbound image CDN placeholders', () => {
+  // Minimal JPEG signature so detectImageMimeType accepts the bytes.
+  const jpeg = (size: number) => {
+    const buffer = Buffer.alloc(size);
+    buffer.set([0xff, 0xd8, 0xff]);
+    return buffer;
+  };
+  const imageItem = {
+    type: 2,
+    image_item: {
+      media: { encrypt_query_param: 'q-img', aes_key: 'k-img' },
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    downloader.saveDownloadedFile.mockImplementation(
+      async (_folder, _ch, fileName) => `ws/${fileName}`,
+    );
+  });
+
+  async function persistImageOnly(item: Record<string, unknown> = imageItem) {
+    const fetchMock = fetchOnceThenHang({
+      get_updates_buf: 'c1',
+      msgs: [inboundMsg(item, 'img-only')],
+    });
+    await connectAndDrain(fetchMock);
+    expect(db.storeMessageDirect).toHaveBeenCalledTimes(1);
+    const call = db.storeMessageDirect.mock.calls[0];
+    return {
+      content: String(call[4]),
+      attachments: (call[7] as { attachments?: string } | undefined)
+        ?.attachments,
+    };
+  }
+
+  test.each([
+    {
+      name: 'CDN download throws',
+      arrange: () =>
+        crypto.downloadAndDecryptMedia.mockRejectedValue(new Error('cdn fail')),
+    },
+    {
+      name: 'CDN returns an empty buffer',
+      arrange: () =>
+        crypto.downloadAndDecryptMedia.mockResolvedValue(Buffer.alloc(0)),
+    },
+  ])(
+    '$name: image-only message keeps a download-failed placeholder',
+    async ({ arrange }) => {
+      arrange();
+      const { content, attachments } = await persistImageOnly();
+      expect(content).toBe('[图片消息（下载失败）]');
+      expect(attachments).toBeUndefined();
+      expect(notify.notifyNewImMessage).toHaveBeenCalled();
+    },
+  );
+
+  test.each([
+    {
+      name: 'the save returns no path',
+      arrange: () => downloader.saveDownloadedFile.mockResolvedValue(null),
+    },
+    {
+      name: 'the save throws',
+      arrange: () =>
+        downloader.saveDownloadedFile.mockRejectedValue(new Error('disk full')),
+    },
+  ])(
+    'too large to inline and $name: image-only message is not dropped',
+    async ({ arrange }) => {
+      crypto.downloadAndDecryptMedia.mockResolvedValue(
+        jpeg(5 * 1024 * 1024 + 1),
+      );
+      arrange();
+      const { content, attachments } = await persistImageOnly();
+      expect(content).toBe('[图片消息（图片过大）]');
+      expect(attachments).toBeUndefined();
+      expect(notify.notifyNewImMessage).toHaveBeenCalled();
+    },
+  );
+
+  test('a large image saved to the workspace is referenced by path', async () => {
+    crypto.downloadAndDecryptMedia.mockResolvedValue(jpeg(5 * 1024 * 1024 + 1));
+    const { content, attachments } = await persistImageOnly();
+    expect(content).toBe('[图片: ws/wechat_img_img-only.jpg]');
+    expect(attachments).toBeUndefined();
+  });
+
+  test('a small image is attached inline and referenced by path', async () => {
+    crypto.downloadAndDecryptMedia.mockResolvedValue(jpeg(16));
+    const { content, attachments } = await persistImageOnly();
+    expect(content).toBe('[图片: ws/wechat_img_img-only.jpg]');
+    expect(JSON.parse(attachments!)).toEqual([
+      expect.objectContaining({ type: 'image', mimeType: 'image/jpeg' }),
+    ]);
+  });
+
+  test('an image without downloadable media keeps one placeholder', async () => {
+    const { content } = await persistImageOnly({
+      type: 2,
+      image_item: { media: { encrypt_query_param: 'missing-aes-key' } },
+    });
+    expect(crypto.downloadAndDecryptMedia).not.toHaveBeenCalled();
+    expect(content).toBe('(image)');
+  });
+});
