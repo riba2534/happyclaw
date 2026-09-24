@@ -60,6 +60,11 @@ Public：
 - `DELETE /api/auth/sessions/:id`
 - `POST /api/auth/avatar`
 
+会话 Cookie 在 HTTPS 下名为 `__Host-happyclaw_session`，HTTP 下名为
+`happyclaw_session`；每次下发会话都会同时让另一个名称过期。`POST /api/auth/logout`
+让两个名称都过期，并删除该请求在两个名称下携带、且属于同一用户的全部会话；
+其他设备的会话不受影响。
+
 ## 工作区、消息和运行控制
 
 - `GET|POST /api/groups`
