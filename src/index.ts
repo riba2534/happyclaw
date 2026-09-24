@@ -18076,10 +18076,14 @@ async function processAgentConversation(
   } finally {
     if (idleTimer) clearTimeout(idleTimer);
 
+    // A committed cursor means the input was already settled by a reply, a
+    // stop or a terminal failure. The clean steer close is the exception: it
+    // commits before the partial it superseded has been saved.
     const wasInterrupted =
       publishesFrameworkAnswer(interactionMode) &&
       agentStreamInterrupted &&
-      !agentInterruptFinalized;
+      !agentInterruptFinalized &&
+      (runnerClosedBySteer || !isCursorCommitted());
     const wasSteered = wasInterrupted && agentStreamSteered;
 
     // ── Streaming card cleanup ──
@@ -18320,7 +18324,12 @@ async function processAgentConversation(
     }
 
     // ── 保存中断内容 ──
-    if (wasInterrupted) {
+    // Text already delivered as this input's reply stays in the accumulator;
+    // never save it again as a partial (the main path's !sentReply).
+    if (
+      wasInterrupted &&
+      agentReplySentByInput.get(activeAgentInputTurnId) !== true
+    ) {
       const interruptedText = wasSteered
         ? buildSteeredReply(agentStreamingAccText)
         : buildStoppedReply(agentStreamingAccText);
@@ -18375,8 +18384,10 @@ async function processAgentConversation(
     }
 
     // ── 兜底：进程异常退出导致累积文本未持久化 ──
+    // Skipped once the interrupt path above saved the same text.
     if (
       publishesFrameworkAnswer(interactionMode) &&
+      !agentInterruptFinalized &&
       !isCursorCommitted() &&
       agentStreamingAccText.trim()
     ) {
