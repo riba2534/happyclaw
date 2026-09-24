@@ -82,11 +82,80 @@ export const CONTAINER_HTTP_PROXY = CONTAINER_PROXY_CONFIG.httpProxy;
 export const CONTAINER_NO_PROXY = CONTAINER_PROXY_CONFIG.noProxy;
 
 // Timezone for scheduled tasks (cron expressions, etc.)
-// Uses TZ env var with Asia/Shanghai fallback
-export const TIMEZONE =
-  process.env.TZ ||
-  Intl.DateTimeFormat().resolvedOptions().timeZone ||
-  'Asia/Shanghai';
+// Uses TZ env var with Asia/Shanghai fallback.
+
+/** Whether the runtime can resolve this zone name (IANA, case-insensitive). */
+export function isValidTimeZone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export type SchedulerTimezoneResolution = {
+  timezone: string;
+  source: 'env' | 'system' | 'fallback';
+  invalidValue: string | null;
+};
+
+/**
+ * Resolve the scheduler timezone to a zone name the cron parser can
+ * interpret.
+ *
+ * `TZ` accepts any string and Node silently falls back to UTC for names it does
+ * not know, but `cron-parser` throws `CronDate: unhandled timestamp` for them.
+ * Values users commonly copy from container docs (`GMT+8`, `GMT+0800`) are in
+ * that second group, and an unvalidated value would fail *every* cron task
+ * operation with an error that never mentions the timezone. Resolving the zone
+ * once keeps the scheduler, the container environment and the UI on a usable
+ * name; surrounding whitespace is normalized because it is a likely `.env`
+ * artifact (JS Date tolerates it, the cron parser does not).
+ */
+export function resolveSchedulerTimezone(
+  envValue: string | undefined,
+  systemZone: string | undefined,
+  fallbackZone: string,
+): SchedulerTimezoneResolution {
+  const candidate = envValue?.trim();
+  if (candidate) {
+    if (isValidTimeZone(candidate)) {
+      return { timezone: candidate, source: 'env', invalidValue: null };
+    }
+    const invalidValue = candidate;
+    const usableSystem = systemZone?.trim();
+    if (usableSystem && isValidTimeZone(usableSystem)) {
+      return { timezone: usableSystem, source: 'system', invalidValue };
+    }
+    return { timezone: fallbackZone, source: 'fallback', invalidValue };
+  }
+  const usableSystem = systemZone?.trim();
+  if (usableSystem && isValidTimeZone(usableSystem)) {
+    return { timezone: usableSystem, source: 'system', invalidValue: null };
+  }
+  return { timezone: fallbackZone, source: 'fallback', invalidValue: null };
+}
+
+const DEFAULT_TIMEZONE = 'Asia/Shanghai';
+const schedulerTimezone = resolveSchedulerTimezone(
+  process.env.TZ,
+  Intl.DateTimeFormat().resolvedOptions().timeZone,
+  DEFAULT_TIMEZONE,
+);
+
+export const TIMEZONE = schedulerTimezone.timezone;
+
+// config.ts is imported before the logger exists, so a misconfigured zone is
+// reported on stderr instead of silently changing the scheduling clock.
+if (schedulerTimezone.invalidValue !== null) {
+  console.error(
+    `[happyclaw] Ignoring invalid TZ="${schedulerTimezone.invalidValue}": ` +
+      `not a recognizable time zone name. Scheduled tasks now use ` +
+      `"${TIMEZONE}" (${schedulerTimezone.source}). Set TZ to an IANA name ` +
+      `such as "Asia/Shanghai" or "UTC".`,
+  );
+}
 
 // Web server configuration
 export const WEB_PORT = parseInt(process.env.WEB_PORT || '3000', 10);
