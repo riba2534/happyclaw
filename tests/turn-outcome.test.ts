@@ -203,8 +203,8 @@ describe('resolveTurnOutcome', () => {
 
     expect(branch).toContain("errorDetail.startsWith('prompt_plan_invalid:')");
     expect(branch).toContain('deterministicFailure: true');
-    expect(branch).toContain("turnOutcome.cursor === 'commit'");
-    expect(branch).toContain('return true;');
+    // Commits and resolves the attempt (see terminal-system-notice.test.ts).
+    expect(branch).toContain('return settleDeterministicFailure(');
   });
 
   test('does not treat a DB-only interrupted partial as a delivered close reply', () => {

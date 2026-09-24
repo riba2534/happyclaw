@@ -33,7 +33,9 @@ function named(name: string, root: ts.Node = source): ts.Node {
   return unique(
     root,
     (node) =>
-      (ts.isFunctionDeclaration(node) || ts.isVariableDeclaration(node)) &&
+      (ts.isFunctionDeclaration(node) ||
+        ts.isVariableDeclaration(node) ||
+        ts.isClassDeclaration(node)) &&
       node.name?.getText(source) === name,
   );
 }
@@ -69,6 +71,21 @@ export function createRuntimeSourceHarness(globals: Record<string, unknown>) {
           node.expression.getText(source) === 'runAgent',
       ) as ts.CallExpression;
       installNode('handleMainOutput', call.arguments[4]);
+    },
+    /** Install the argument of the unique `callee(...)` call in `owner`. */
+    installCallArgument(
+      name: string,
+      owner: string,
+      callee: string,
+      index: number,
+    ): void {
+      const call = unique(
+        named(owner),
+        (node) =>
+          ts.isCallExpression(node) &&
+          node.expression.getText(source) === callee,
+      ) as ts.CallExpression;
+      installNode(name, call.arguments[index]);
     },
   };
 }
