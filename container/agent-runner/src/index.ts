@@ -166,6 +166,7 @@ import { prepareMessageStreamText } from './message-stream-text.js';
 import {
   BackgroundProtocolDebtWatchdog,
   DurableInputTurnCompletion,
+  isMergedBackgroundCompletionPlaceholder,
   QuiescentResultGate,
   shouldFailIncompleteQueryExit,
 } from './background-task-drain.js';
@@ -3132,6 +3133,20 @@ async function runQueryAttempt(
       if (replayedUuids && incomingUuid && replayedUuids.has(incomingUuid)) {
         log(
           `[replay-skip] ${msgType} uuid=${incomingUuid.slice(0, 8)} (replayed from resumed session)`,
+        );
+        continue;
+      }
+      // SDK 0.3.274 起排队的后台任务完成共用一次模型调用：每条通知仍各有一条
+      // success result，但除最后一条外都是空占位（num_turns === 0、origin 为
+      // task-notification），非恢复会话同样会收到。占位只结清它所代表通知的
+      // 完成债务，既不是回复也不是输入完成边界——否则共享调用开始前的延迟
+      // （如 UserPromptSubmit hook）一旦超过静默窗口，就会发布 result=null 的
+      // 完成帧，让主进程提前把输入/查询当作已结束。放在恢复会话指纹判别之前，
+      // 使恢复会话里的占位同样结清债务。
+      if (isMergedBackgroundCompletionPlaceholder(message)) {
+        if (emitOutput) processor.observeMergedCompletionPlaceholder();
+        log(
+          '[bg-placeholder] merged background-completion result (num_turns=0); waiting for the shared reply',
         );
         continue;
       }
