@@ -22,7 +22,6 @@ import {
 } from '../capability-runtime-mutation.js';
 import { WorkspaceRuntimeQuiesceError } from '../agent-profile-runtime.js';
 import { getEffectiveExternalDir } from '../runtime-config.js';
-import { validateSafeHttpsUrl } from '../url-safety.js';
 import {
   skillArchiveUploadBodyLimit,
   SKILL_ARCHIVE_MAX_FILE_BYTES,
@@ -31,6 +30,7 @@ import {
   importSkillsFromGit,
   importSkillsFromZip,
   installSkillDirectoriesTransactionally,
+  installSkillUrlViaPinnedGit,
   runCommandWithDirectoryQuota,
 } from '../skill-import-service.js';
 import {
@@ -1250,12 +1250,30 @@ async function installSkillForUserUnlocked(
   if (!isNpmName && !isUrl) {
     return { success: false, error: 'Invalid package name format' };
   }
-  // SSRF 防护：URL 形式的 skill package 必须是 HTTPS + 非内网 hostname。
-  // 仅以 npm `<scope>/<name>` 形式不需要这层校验（npm 注册中心走 npx 自带管线）。
+  // URL form: do NOT shell `npx skills add` (redirect-following fetcher).
+  // Route through the pinned Git importer after GitHub allowlist + DNS resolve.
+  // npm `<scope>/<name>` still uses the isolated npx path below.
   if (isUrl) {
-    const reason = validateSafeHttpsUrl(pkg);
-    if (reason) {
-      return { success: false, error: `Refused skill URL: ${reason}` };
+    try {
+      const userDir = getUserSkillsDir(userId);
+      const imported = await installSkillUrlViaPinnedGit({
+        packageUrl: pkg,
+        targetRoot: userDir,
+        replace: true,
+        commit: (result) => updateSkillsManifest(userId, pkg, result.installed),
+      });
+      if (imported.installed.length === 0) {
+        return {
+          success: false,
+          error: 'No skills were installed — package may be invalid',
+        };
+      }
+      return { success: true, installed: imported.installed };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
     }
   }
 
@@ -1384,7 +1402,11 @@ skillsRoutes.post('/install', authMiddleware, async (c) => {
       { error: 'Failed to install skill', details: result.error },
       result.retryable
         ? 503
-        : result.error === 'Invalid package name format'
+        : result.error === 'Invalid package name format' ||
+            (typeof result.error === 'string' &&
+              result.error.startsWith('Refused skill URL')) ||
+            (typeof result.error === 'string' &&
+              result.error.includes('Skill URL installs are limited to GitHub'))
           ? 400
           : 500,
     );
