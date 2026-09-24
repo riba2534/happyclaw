@@ -17,7 +17,6 @@ import type { Variables } from '../web-context.js';
 import type { AuthUser, RegisteredGroup } from '../types.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { GROUPS_DIR } from '../config.js';
-import { validateSafeHttpsUrl } from '../url-safety.js';
 import { canAccessGroup, canModifyGroup } from '../group-acl.js';
 import { getRegisteredGroup } from '../db.js';
 import {
@@ -25,6 +24,7 @@ import {
   validateSkillPath,
   scanSkillDirectory,
 } from '../skill-utils.js';
+import { installSkillUrlViaPinnedGit } from '../skill-import-service.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -258,11 +258,44 @@ workspaceConfigRoutes.post(
     if (!isNpmName && !isUrl) {
       return c.json({ error: 'Invalid package name format' }, 400);
     }
+    // URL form: GitHub allowlist + pinned git importer (no npx redirect follow).
+    // npm `<scope>/<name>` still uses the isolated npx path below.
     if (isUrl) {
-      // SSRF 防护：URL 形式必须 HTTPS + 非内网（拒 169.254.169.254 等）。
-      const reason = validateSafeHttpsUrl(pkg);
-      if (reason) {
-        return c.json({ error: `Refused skill URL: ${reason}` }, 400);
+      try {
+        const targetDir = getWorkspaceSkillsDir(group);
+        fs.mkdirSync(targetDir, { recursive: true });
+        const imported = await installSkillUrlViaPinnedGit({
+          packageUrl: pkg,
+          targetRoot: targetDir,
+          replace: true,
+        });
+        if (imported.installed.length === 0) {
+          return c.json(
+            { error: 'No skills were installed — package may be invalid' },
+            500,
+          );
+        }
+        return c.json({ success: true, installed: imported.installed });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'Unknown error';
+        const refused =
+          message.startsWith('Refused skill URL') ||
+          message.includes('Skill URL installs are limited to GitHub') ||
+          message.includes('Skill URLs containing credentials') ||
+          message.includes('Skill GitHub URL') ||
+          message.includes('Unsupported GitHub skill URL') ||
+          message.includes('GitHub blob URLs') ||
+          message.includes('resolves to a private') ||
+          message.includes('could not be resolved') ||
+          message.startsWith('Refused Git URL');
+        return c.json(
+          {
+            error: refused ? message : 'Failed to install skill',
+            details: refused ? undefined : message,
+          },
+          refused ? 400 : 500,
+        );
       }
     }
 

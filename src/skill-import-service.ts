@@ -400,6 +400,108 @@ export async function importSkillsFromGit(options: {
   }
 }
 
+/**
+ * Shared SSRF gate for skill *URL* installs (POST /api/skills/install and
+ * workspace-config skills/install). Literal validateSafeHttpsUrl alone cannot
+ * stop DNS rebinding or redirect-to-private; callers must not shell a
+ * redirect-following fetcher (npx skills add) after that check.
+ *
+ * URL installs are restricted to GitHub HTTPS repos and routed through
+ * importSkillsFromGit (resolve + pinned CONNECT proxy + followRedirects=false).
+ * npm `<scope>/<name>` package form is unchanged and does not use this helper.
+ */
+export async function assertSafeSkillInstallUrl(raw: string): Promise<URL> {
+  const reason = validateSafeHttpsUrl(raw);
+  if (reason) throw new Error(`Refused skill URL: ${reason}`);
+  const parsed = new URL(raw);
+  if (parsed.username || parsed.password) {
+    throw new Error('Skill URLs containing credentials are not allowed');
+  }
+  await assertResolvesToPublicAddress(parsed.hostname, 'Skill hostname');
+  return parsed;
+}
+
+export interface SkillUrlGitInstallTarget {
+  url: string;
+  ref?: string;
+  subdirectory?: string;
+}
+
+function normalizeSkillGitHostname(hostname: string): string {
+  return hostname.toLowerCase().replace(/\.+$/, '');
+}
+
+export function isAllowedSkillUrlGitHost(hostname: string): boolean {
+  const host = normalizeSkillGitHostname(hostname);
+  return host === 'github.com' || host === 'www.github.com';
+}
+
+/**
+ * Validate + resolve a skill install URL, then map allowlisted GitHub HTTPS
+ * URLs onto importSkillsFromGit options. Non-GitHub HTTPS URLs that would
+ * previously have been handed to `npx skills add` (redirect-following) are
+ * refused here.
+ */
+export async function resolveSkillUrlGitInstall(
+  raw: string,
+): Promise<SkillUrlGitInstallTarget> {
+  const parsed = await assertSafeSkillInstallUrl(raw);
+  if (!isAllowedSkillUrlGitHost(parsed.hostname)) {
+    throw new Error(
+      'Skill URL installs are limited to GitHub HTTPS repositories; use npm package form or POST /api/skills/import/git for other hosts',
+    );
+  }
+  const parts = parsed.pathname.replace(/\/+$/, '').split('/').filter(Boolean);
+  if (parts.length < 2) {
+    throw new Error('Skill GitHub URL must include owner and repository');
+  }
+  const owner = parts[0];
+  let repo = parts[1];
+  if (repo.endsWith('.git')) repo = repo.slice(0, -4);
+  if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) {
+    throw new Error('Invalid GitHub owner or repository name');
+  }
+  const repoUrl = `https://github.com/${owner}/${repo}.git`;
+  if (parts.length === 2) {
+    return { url: repoUrl };
+  }
+  if (parts[2] === 'tree' && parts.length >= 4) {
+    const ref = parts[3];
+    if (!/^[\w./-]{1,200}$/.test(ref)) {
+      throw new Error('Invalid Git ref in skill URL');
+    }
+    const subdirectory =
+      parts.length > 4 ? parts.slice(4).join('/') : undefined;
+    return { url: repoUrl, ref, subdirectory };
+  }
+  if (parts[2] === 'blob') {
+    throw new Error(
+      'GitHub blob URLs are not supported for skill install; use a repository or tree URL',
+    );
+  }
+  throw new Error(
+    'Unsupported GitHub skill URL path; use a repository or tree URL',
+  );
+}
+
+/** Install a skill URL via the pinned Git importer (no npx / no redirect follow). */
+export async function installSkillUrlViaPinnedGit(options: {
+  packageUrl: string;
+  targetRoot: string;
+  replace?: boolean;
+  commit?: (result: SkillImportResult) => void;
+}): Promise<SkillImportResult> {
+  const target = await resolveSkillUrlGitInstall(options.packageUrl);
+  return importSkillsFromGit({
+    url: target.url,
+    ref: target.ref,
+    subdirectory: target.subdirectory,
+    targetRoot: options.targetRoot,
+    replace: options.replace,
+    commit: options.commit,
+  });
+}
+
 export function importSkillsFromZip(options: {
   archive: Buffer;
   archiveName: string;
