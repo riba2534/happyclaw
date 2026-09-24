@@ -296,4 +296,73 @@ describe('DingTalk mention-required group gate (live handleRobotMessage)', () =>
     await vi.waitFor(() => expect(storeMessageDirect).toHaveBeenCalledTimes(1));
     await connection.disconnect();
   });
+  test('disabled + @bot must drop before persisting', async () => {
+    const { client, connection } = await connect({
+      shouldProcessGroupMessage: () => false,
+      resolveRegisteredGroup: () => ({ activation_mode: 'disabled' }),
+    });
+
+    await client.listener!(
+      groupRobotDownstream({
+        msgId: 'disabled-at-1',
+        messageId: 'disabled-at-stream-1',
+        isInAtList: true,
+      }),
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(storeMessageDirect).not.toHaveBeenCalled();
+    expect(client.socketCallBackResponse).toHaveBeenCalledWith(
+      'disabled-at-stream-1',
+      { success: true },
+    );
+    await connection.disconnect();
+  });
+
+  test('owner_mentioned + owner without isInAtList must still admit', async () => {
+    const isGroupOwnerMessage = vi.fn(() => true);
+    const { client, connection } = await connect({
+      shouldProcessGroupMessage: () => false,
+      resolveRegisteredGroup: () => ({ activation_mode: 'owner_mentioned' }),
+      isGroupOwnerMessage,
+    });
+
+    await client.listener!(
+      groupRobotDownstream({
+        msgId: 'own-noflag-1',
+        messageId: 'own-noflag-stream-1',
+        omitIsInAtList: true,
+      }),
+    );
+
+    await vi.waitFor(() => expect(storeMessageDirect).toHaveBeenCalledTimes(1));
+    expect(isGroupOwnerMessage).toHaveBeenCalledWith(
+      'dingtalk:group:open-conv-group-1',
+      'staff-mentionee',
+    );
+    await connection.disconnect();
+  });
+
+  test.each([
+    ['non-owner without isInAtList', { omitIsInAtList: true }, false],
+    ['owner with isInAtList=false', { isInAtList: false }, true],
+  ])('owner_mentioned + %s must drop', async (label, mention, isOwner) => {
+    const { client, connection } = await connect({
+      shouldProcessGroupMessage: () => false,
+      resolveRegisteredGroup: () => ({ activation_mode: 'owner_mentioned' }),
+      isGroupOwnerMessage: () => isOwner,
+    });
+
+    await client.listener!(
+      groupRobotDownstream({
+        msgId: `own-drop-${label}`,
+        messageId: `own-drop-stream-${label}`,
+        ...mention,
+      }),
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(storeMessageDirect).not.toHaveBeenCalled();
+    await connection.disconnect();
+  });
 });

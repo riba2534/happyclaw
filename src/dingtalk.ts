@@ -1051,7 +1051,7 @@ type RobotMessage = DTRobotMessage | DingTalkRobotMessage;
 /**
  * DingTalk Stream / HTTP robot callbacks set `isInAtList` when the bot was
  * @mentioned in a group. Some gateways coerce the flag to the string "true".
- * Missing / false means the caller must not treat the turn as directed.
+ * Missing / false does not prove the turn was directed at the bot.
  */
 export function isDingTalkBotMentioned(
   data: RobotMessage | { isInAtList?: unknown },
@@ -2217,32 +2217,47 @@ export function createDingTalkConnection(
         // Mention/owner gating runs before routing, registration, cache writes,
         // or attachment download. A rejected group message has zero business
         // side effects.
-        if (isGroup && opts.shouldProcessGroupMessage) {
-          const shouldProcess = opts.shouldProcessGroupMessage(
-            jid,
-            data.senderId,
-          );
-          const isBotMentioned = isDingTalkBotMentioned(data);
-          // Mirror Discord/WhatsApp: shouldProcess===false means "mention
-          // required"; the caller must still admit when the bot was @mentioned
-          // (DingTalk Stream sets isInAtList on directed group turns).
-          if (!shouldProcess && !isBotMentioned) {
+        if (isGroup) {
+          const mode = opts.resolveRegisteredGroup?.(jid)?.activation_mode;
+          // Like WeCom, DingTalk only pushes group messages that @ the bot, so
+          // that @ must never reopen a paused group.
+          if (mode === 'disabled') {
+            logger.debug(
+              { jid },
+              'DingTalk group message dropped (activation disabled)',
+            );
+            return;
+          }
+          // shouldProcess===false means "mention required"; the @ recorded in
+          // isInAtList still admits the turn (mirrors Discord/WhatsApp). In
+          // owner_mentioned mode a missing flag keeps the previous behavior of
+          // trusting the platform delivery, because not every group msgtype is
+          // known to carry isInAtList; only an explicit non-mention drops it.
+          const botMentioned =
+            isDingTalkBotMentioned(data) ||
+            (mode === 'owner_mentioned' &&
+              (data as { isInAtList?: unknown }).isInAtList === undefined);
+          if (
+            opts.shouldProcessGroupMessage &&
+            !opts.shouldProcessGroupMessage(jid, data.senderId) &&
+            !botMentioned
+          ) {
             logger.debug(
               { jid },
               'DingTalk group message dropped (mention required but bot not @mentioned)',
             );
             return;
           }
-          // owner_mentioned: when the bot IS @mentioned, only the group owner
-          // may trigger. isGroupOwnerMessage itself no-ops outside that mode.
-          if (isBotMentioned && opts.isGroupOwnerMessage) {
-            if (!opts.isGroupOwnerMessage(jid, data.senderId)) {
-              logger.debug(
-                { jid, senderImId: data.senderId },
-                'DingTalk group message dropped (owner_mentioned mode, sender is not group owner)',
-              );
-              return;
-            }
+          if (
+            mode === 'owner_mentioned' &&
+            opts.isGroupOwnerMessage &&
+            !opts.isGroupOwnerMessage(jid, data.senderId)
+          ) {
+            logger.debug(
+              { jid, senderImId: data.senderId },
+              'DingTalk group message dropped (owner_mentioned mode, sender is not group owner)',
+            );
+            return;
           }
         }
 
