@@ -32,7 +32,11 @@ import type {
 import { storeChatMetadata, storeMessageDirect, updateChatName } from './db.js';
 import { notifyNewImMessage } from './message-notifier.js';
 import { logger } from './logger.js';
-import { saveDownloadedFile, MAX_FILE_SIZE } from './im-downloader.js';
+import {
+  saveDownloadedFile,
+  sanitizeImFilename,
+  MAX_FILE_SIZE,
+} from './im-downloader.js';
 import { detectImageMimeType } from './image-detector.js';
 import { splitTextChunks, createDedupCache } from './im-utils.js';
 import { ProcessingLock, isStale } from './im-safety/index.js';
@@ -622,6 +626,22 @@ export function createDiscordConnection(
           const isImage = contentType.startsWith('image/');
           const attachUrl = attachment.url;
           const attachName = attachment.name || `file_${Date.now()}`;
+          // Provider filenames reach the Agent prompt; strip newlines and
+          // brackets so a crafted name cannot break out of the marker.
+          const safeName = sanitizeImFilename(attachName);
+
+          // Discord reports the byte size up front: skip the download rather
+          // than buffering a body downloadAttachment would discard anyway.
+          if (
+            typeof attachment.size === 'number' &&
+            attachment.size > MAX_FILE_SIZE
+          ) {
+            const marker = isImage
+              ? '[图片过大，未下载]'
+              : `[文件过大，未下载: ${safeName}]`;
+            content = content ? `${content}\n${marker}` : marker;
+            continue;
+          }
 
           if (isImage) {
             // Download image for base64 and disk save
@@ -667,8 +687,13 @@ export function createDiscordConnection(
                 if (!content) content = '[图片]';
               }
             } else {
-              // Download null (!ok / oversize / non-abort) — salvage like save-fail
-              if (!content) content = '[图片]';
+              // Keep the failure visible (also beside text) and never let an
+              // image-only message fall through the empty gate unacknowledged.
+              if (!content) {
+                content = '[图片下载失败]';
+              } else {
+                content += '\n[图片下载失败]';
+              }
             }
           } else {
             // Non-image file: download and save to workspace
@@ -694,14 +719,17 @@ export function createDiscordConnection(
                 } catch (err) {
                   inboundLifecycle.assertCurrent(lease);
                   logger.warn({ err }, 'Failed to save Discord file to disk');
-                  if (!content) content = `[文件: ${attachName}]`;
+                  if (!content) content = `[文件: ${safeName}]`;
                 }
               } else {
-                if (!content) content = `[文件: ${attachName}]`;
+                if (!content) content = `[文件: ${safeName}]`;
               }
             } else {
-              // Download null (!ok / oversize / non-abort) — salvage like save-fail
-              if (!content) content = `[文件: ${attachName}]`;
+              if (!content) {
+                content = `[文件下载失败: ${safeName}]`;
+              } else {
+                content += `\n[文件下载失败: ${safeName}]`;
+              }
             }
           }
         }
