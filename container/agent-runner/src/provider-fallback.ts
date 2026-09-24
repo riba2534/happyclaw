@@ -169,6 +169,15 @@ const ACCOUNT_PROVIDER_ASSISTANT_ERRORS = new Set<SDKAssistantMessageError>([
   'authentication_failed',
   'oauth_org_not_allowed',
   'account_on_hold',
+  // 403 permission_error with error_code=verification_required: the
+  // organization behind this profile must complete verification before any
+  // request is served. Claude Code stops on it, like account_on_hold.
+  'verification_required',
+  // The cloud credentials this profile's environment points at (AWS/GCP/Azure)
+  // could not be loaded. Credentials belong to the profile, so another profile
+  // may still serve; and the config notice is about model names, which would
+  // misdirect the user here.
+  'cloud_credential_error',
   'billing_error',
   // A bare `rate_limit` assistant error carries no rateLimitType, so its blast
   // radius is unknown. classifyProviderRateLimitType() already fails safe as

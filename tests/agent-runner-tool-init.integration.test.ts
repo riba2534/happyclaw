@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { afterAll, describe, expect, test } from 'vitest';
 
 import { createMcpTools } from '../container/agent-runner/src/mcp-tools.js';
+import { hasBackgroundTaskTools } from '../container/agent-runner/src/prompt-plan.js';
 
 const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'happyclaw-tool-init-'));
 const runnerRoot = path.resolve('container/agent-runner');
@@ -238,5 +239,39 @@ describe('HappyClaw tool initialization', () => {
         'mcp__happyclaw__agent_profile_publish',
       ]),
     );
+  }, 20_000);
+
+  test('background-task guidance is gated on tools the pinned Claude CLI still exposes', async () => {
+    const stream = runnerSdk.query({
+      prompt: 'Reply with OK.',
+      options: {
+        pathToClaudeCodeExecutable: runnerClaudeExecutable,
+        cwd,
+        model: 'claude-sonnet-4-5-20250929',
+        env: {
+          ...cleanEnv(),
+          ANTHROPIC_BASE_URL: 'http://127.0.0.1:9',
+          ANTHROPIC_AUTH_TOKEN: 'happyclaw-init-test',
+          ANTHROPIC_API_KEY: '',
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+        },
+        allowedTools: ['Bash', 'Read', 'Task', 'TaskStop'],
+        permissionMode: 'bypassPermissions',
+        allowDangerouslySkipPermissions: true,
+        settingSources: [],
+      },
+    });
+
+    let initializedTools: string[] | undefined;
+    for await (const message of stream) {
+      if (message.type === 'system' && message.subtype === 'init') {
+        initializedTools = message.tools;
+        break;
+      }
+    }
+    expect(initializedTools).toBeDefined();
+    // A gate that names a tool the CLI no longer ships would silently drop the
+    // background-task prompt as soon as the dead allowlist entry is removed.
+    expect(hasBackgroundTaskTools(initializedTools ?? [])).toBe(true);
   }, 20_000);
 });

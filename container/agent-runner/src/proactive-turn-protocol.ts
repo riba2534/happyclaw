@@ -44,7 +44,7 @@ function userMessageText(message: unknown): string {
  * Match only the CLI-owned synthetic companion. A user can legitimately type
  * the same sentence, so text alone is never sufficient to consume a turn.
  * `isMeta`/turnCompanion are accepted for forward/backward-compatible CLI
- * builds; Claude Code 2.1.238 currently exposes `isSynthetic` only.
+ * builds; Claude Code 2.1.280 (like 2.1.238) exposes `isSynthetic` only.
  */
 export function isCliNoVisibleOutputCompanion(message: unknown): boolean {
   if (!message || typeof message !== 'object') return false;

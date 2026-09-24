@@ -139,6 +139,19 @@ export function createPromptPlan(inputs: PromptBlockInput[]): PromptPlan {
   };
 }
 
+/**
+ * Background work is started with Task (agents run in the background by
+ * default) or Bash `run_in_background`; its result arrives as a task
+ * notification and TaskStop cancels it. Claude Code 2.1.277 removed the
+ * deprecated TaskOutput tool (output files are read with Read), so Task alone
+ * decides whether the background-task guidance applies.
+ */
+export function hasBackgroundTaskTools(
+  allowedTools: readonly string[],
+): boolean {
+  return allowedTools.includes('Task');
+}
+
 function wrap(tag: string, text: string): string {
   if (!text.trim()) return '';
   return `<${tag}>\n${text}\n</${tag}>`;
@@ -261,7 +274,7 @@ export function buildHappyClawPromptPlan(
       scope: 'main',
       owner: 'platform',
       required: false,
-      condition: 'Task and TaskOutput are available',
+      condition: 'Task is available',
       text: wrap('background-tasks', sources.backgroundTasks),
     });
   }
