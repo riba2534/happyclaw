@@ -13,6 +13,7 @@ import {
   markChannelOutboxUploading,
   reconcileExpiredChannelOutbox,
 } from './channel-reliability-store.js';
+import { explicitImDeliveryPhase } from './im-send-retry-policy.js';
 
 export interface ChannelDeliveryReceipt {
   providerMessageId: string;
@@ -387,10 +388,13 @@ export async function deliverChannelOutboxItem(
     if (!current) return leaseLost(claim.id, claim.attempt);
 
     // Once sending started, an ordinary timeout/disconnect cannot prove that
-    // the provider rejected the message. Only an explicit rejection is safe
-    // to retry/fail without creating duplicate visible output.
+    // the provider rejected the message. Only typed evidence that no provider
+    // mutation happened — an explicit rejection, or a connector-marked
+    // pre-accept failure — is safe to fail without risking duplicate output.
     const explicitlyRejected = error instanceof DefinitiveChannelDeliveryError;
-    const uncertain = current.status === 'sending' && !explicitlyRejected;
+    const provablyNotAccepted =
+      explicitlyRejected || explicitImDeliveryPhase(error) === 'pre_accept';
+    const uncertain = current.status === 'sending' && !provablyNotAccepted;
     const retryAt = explicitlyRejected ? error.retryAt : undefined;
     const persisted = failChannelOutbox(claim, {
       error: errorMessage(error),

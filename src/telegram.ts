@@ -24,7 +24,11 @@ import {
   extractProviderTarget,
 } from './channel-address.js';
 import { resolveAdmittedChannelRoute } from './channel-admission.js';
-import { PhysicalDeliveryTracker } from './im-delivery-progress.js';
+import {
+  PartialChannelDeliveryError,
+  PhysicalDeliveryTracker,
+} from './im-delivery-progress.js';
+import { DefinitiveChannelDeliveryError } from './channel-outbox-delivery.js';
 import type { ChannelMessageMeta, NewMessage } from './types.js';
 import {
   ExactAsyncIndicatorRegistry,
@@ -500,6 +504,70 @@ function isTelegramHtmlParseError(err: unknown): boolean {
     current = rec.cause ?? rec.error;
   }
   return false;
+}
+
+/**
+ * A Bot API rejection carries a numeric `error_code` because Telegram itself
+ * answered `ok=false`: the request was received, refused, and no message
+ * became visible. grammY transport failures (HttpError, timeouts) have no
+ * `error_code` and must stay untyped — the provider may already have
+ * accepted those.
+ */
+function telegramApiRejection(
+  err: unknown,
+): { code: number; description: string; retryAfterSeconds?: number } | null {
+  let current: unknown = err;
+  const seen = new Set<unknown>();
+  while (current && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current);
+    const rec = current as Record<string, unknown>;
+    if (typeof rec.error_code === 'number' && Number.isFinite(rec.error_code)) {
+      const parameters = rec.parameters as
+        | { retry_after?: unknown }
+        | undefined;
+      const description = String(rec.description ?? rec.message ?? '');
+      const retryAfterRaw =
+        typeof parameters?.retry_after === 'number'
+          ? parameters.retry_after
+          : Number(/retry after (\d+)/i.exec(description)?.[1]);
+      return {
+        code: rec.error_code,
+        description,
+        retryAfterSeconds:
+          Number.isFinite(retryAfterRaw) && retryAfterRaw > 0
+            ? retryAfterRaw
+            : undefined,
+      };
+    }
+    current = rec.cause ?? rec.error;
+  }
+  return null;
+}
+
+/**
+ * Map outbound send errors onto the durable Outbox's failure taxonomy. An
+ * acknowledged-prefix partial delivery must stay uncertain even when the tail
+ * mutation was explicitly rejected, so it is never re-wrapped here. Only 4xx
+ * answers are definitive: a 5xx `ok=false` cannot prove Telegram discarded
+ * the mutation before its internal failure. 429 additionally carries
+ * `retryAt` so the durable Outbox re-attempts after the flood wait instead
+ * of failing the turn.
+ */
+function classifyTelegramSendError(err: unknown): unknown {
+  if (err instanceof DefinitiveChannelDeliveryError) return err;
+  if (err instanceof PartialChannelDeliveryError) return err;
+  const rejection = telegramApiRejection(err);
+  if (!rejection || rejection.code < 400 || rejection.code >= 500) return err;
+  const retryAt =
+    rejection.code === 429
+      ? new Date(
+          Date.now() + (rejection.retryAfterSeconds ?? 5) * 1000,
+        ).toISOString()
+      : undefined;
+  return new DefinitiveChannelDeliveryError(
+    `Telegram Bot API rejected the send (${rejection.code}): ${rejection.description}`,
+    { cause: err, retryAt },
+  );
 }
 
 function escapeHtml(text: string): string {
@@ -2176,7 +2244,7 @@ export function createTelegramConnection(
         logger.info({ chatId }, 'Telegram message sent');
       } catch (err) {
         logger.error({ err, chatId }, 'Failed to send Telegram message');
-        throw err;
+        throw classifyTelegramSendError(err);
       }
     },
 
@@ -2264,7 +2332,7 @@ export function createTelegramConnection(
           { err, chatId, mimeType },
           'Failed to send Telegram image',
         );
-        throw err;
+        throw classifyTelegramSendError(err);
       }
     },
 
@@ -2285,11 +2353,14 @@ export function createTelegramConnection(
       }
 
       try {
-        // Check file size (30MB limit, same as MCP tool)
+        // Check file size (30MB limit, same as MCP tool). This local
+        // preflight provably produced no provider mutation, so it must be a
+        // definitive rejection — a bare Error here would fence the whole turn
+        // as `uncertain` and silently swallow every later send in it.
         const stat = await fsPromises.stat(filePath);
         const MAX_SEND_FILE_SIZE = 30 * 1024 * 1024;
         if (stat.size > MAX_SEND_FILE_SIZE) {
-          throw new Error(
+          throw new DefinitiveChannelDeliveryError(
             `文件大小超过 30MB 限制 (${(stat.size / 1024 / 1024).toFixed(2)}MB)`,
           );
         }
@@ -2318,7 +2389,7 @@ export function createTelegramConnection(
           { err, chatId, filePath, fileName },
           'Failed to send Telegram file',
         );
-        throw err;
+        throw classifyTelegramSendError(err);
       }
     },
 
