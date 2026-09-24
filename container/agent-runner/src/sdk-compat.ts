@@ -35,8 +35,8 @@ You are executing a task delegated by a parent agent. Return the requested findi
 export interface SubagentRuntimeContractAudit {
   enabled: boolean;
   hash: string;
-  sdkCompatibility: 'claude-agent-sdk-0.3.238';
-  cliCompatibility: 'claude-code-2.1.238';
+  sdkCompatibility: 'claude-agent-sdk-0.3.280';
+  cliCompatibility: 'claude-code-2.1.280';
 }
 
 type HiddenSubagentPromptOption = {
@@ -54,7 +54,7 @@ function contractHash(): string {
 }
 
 /**
- * Isolates the SDK/CLI 0.3.238 / 2.1.238 undocumented compatibility surface.
+ * Isolates the SDK/CLI 0.3.280 / 2.1.280 undocumented compatibility surface.
  * The SDK serializes appendSubagentSystemPrompt during its initialize control
  * request, while this CLI version gates consumption behind the environment flag.
  */
@@ -74,8 +74,8 @@ export function withHappyClawSubagentContract<
   const audit: SubagentRuntimeContractAudit = {
     enabled,
     hash,
-    sdkCompatibility: 'claude-agent-sdk-0.3.238',
-    cliCompatibility: 'claude-code-2.1.238',
+    sdkCompatibility: 'claude-agent-sdk-0.3.280',
+    cliCompatibility: 'claude-code-2.1.280',
   };
 
   if (!enabled) {

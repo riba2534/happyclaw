@@ -49,8 +49,9 @@ const START = '---HAPPYCLAW_OUTPUT_START---';
 const END = '---HAPPYCLAW_OUTPUT_END---';
 const MODEL = 'stub-model';
 
-// Measured on Claude Code 2.1.238. `expect` is the providerFailureClass the
-// runner must report; null means the turn has to succeed normally.
+// Measured on Claude Code 2.1.238 and unchanged on 2.1.280. `expect` is the
+// providerFailureClass the runner must report; null means the turn has to
+// succeed normally.
 const SCENARIOS = [
   { mode: 'ok', expect: null, slow: false, note: 'healthy turn' },
   {

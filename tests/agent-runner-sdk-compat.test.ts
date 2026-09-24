@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+
 import { describe, expect, test } from 'vitest';
 
 import {
@@ -32,10 +34,26 @@ describe('Claude SDK compatibility adapter', () => {
     });
     expect(result.audit).toMatchObject({
       enabled: true,
-      sdkCompatibility: 'claude-agent-sdk-0.3.238',
-      cliCompatibility: 'claude-code-2.1.238',
+      sdkCompatibility: 'claude-agent-sdk-0.3.280',
+      cliCompatibility: 'claude-code-2.1.280',
     });
     expect(result.audit.hash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  test('audits the SDK and CLI versions pinned by the runner build', () => {
+    // The markers are persisted into run snapshots and shown in the Agent
+    // capability preview, so they must move with every SDK/CLI bump.
+    const runnerPackage = JSON.parse(
+      fs.readFileSync('container/agent-runner/package.json', 'utf8'),
+    ) as { dependencies: Record<string, string> };
+    const { audit } = withHappyClawSubagentContract({}, {});
+
+    expect(audit.sdkCompatibility).toBe(
+      `claude-agent-sdk-${runnerPackage.dependencies['@anthropic-ai/claude-agent-sdk']}`,
+    );
+    expect(audit.cliCompatibility).toBe(
+      `claude-code-${runnerPackage.dependencies['@anthropic-ai/claude-code']}`,
+    );
   });
 
   test('renders the rebuilt system prompt on every request instead of the SDK snapshot', () => {
