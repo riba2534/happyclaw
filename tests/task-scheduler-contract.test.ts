@@ -35,9 +35,13 @@ vi.mock(import('../src/config.js'), async (importOriginal) => {
   };
 });
 
-vi.mock('../src/logger.js', () => ({
-  logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+const loggerMock = vi.hoisted(() => ({
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
 }));
+vi.mock('../src/logger.js', () => ({ logger: loggerMock }));
 
 const { runContainerAgentMock, runHostAgentMock, runScriptMock } = vi.hoisted(
   () => ({
@@ -2458,69 +2462,86 @@ describe('scheduled task workspace/session contract', () => {
     expect(deps.storeResultAndNotify).not.toHaveBeenCalled();
   });
 
-  test('external SIGKILL / close(null, signal) script death is failed, not SUCCESS', async () => {
-    const ownerId = 'sigkill-script-owner';
-    const sourceJid = 'web:sigkill-script';
-    const now = new Date().toISOString();
-    db.createUser({
-      id: ownerId,
-      username: ownerId,
-      password_hash: 'hash',
-      display_name: ownerId,
-      role: 'admin',
-      status: 'active',
-      must_change_password: false,
-      created_at: now,
-      updated_at: now,
-    });
-    const scriptGroup = {
-      ...db.getRegisteredGroup(GROUP_JID)!,
-      jid: sourceJid,
-      created_by: ownerId,
-      executionMode: 'host' as const,
-    };
-    db.setRegisteredGroup(sourceJid, scriptGroup);
-    const taskId = createTask({
-      id: 'external-sigkill-script',
-      execution_type: 'script',
-      execution_mode: 'host',
-      script_command: 'sleep 60',
-      created_by: ownerId,
-      chat_jid: sourceJid,
-    });
-    // Live runScript close(null, 'SIGKILL') shape — aborted/timedOut false.
-    runScriptMock.mockResolvedValueOnce({
-      stdout: 'partial before death',
-      stderr: '',
-      exitCode: null,
-      signal: 'SIGKILL',
-      timedOut: false,
-      aborted: false,
-      durationMs: 40,
-    });
-    const { deps, waitForRun } = makeDeps({ [sourceJid]: scriptGroup });
+  test.each([
+    { name: 'without stderr', stderr: '', error: '脚本被信号终止: SIGKILL' },
+    {
+      name: 'with stderr',
+      stderr: 'worker: out of memory\n',
+      error: '脚本被信号终止: SIGKILL\nworker: out of memory',
+    },
+  ])(
+    'external SIGKILL / close(null, signal) script death $name is failed, not SUCCESS',
+    async ({ name, stderr, error }) => {
+      const suffix = name.replace(/\s+/g, '-');
+      const ownerId = `sigkill-script-owner-${suffix}`;
+      const sourceJid = `web:sigkill-script-${suffix}`;
+      const now = new Date().toISOString();
+      db.createUser({
+        id: ownerId,
+        username: ownerId,
+        password_hash: 'hash',
+        display_name: ownerId,
+        role: 'admin',
+        status: 'active',
+        must_change_password: false,
+        created_at: now,
+        updated_at: now,
+      });
+      const scriptGroup = {
+        ...db.getRegisteredGroup(GROUP_JID)!,
+        jid: sourceJid,
+        created_by: ownerId,
+        executionMode: 'host' as const,
+      };
+      db.setRegisteredGroup(sourceJid, scriptGroup);
+      const taskId = createTask({
+        id: `external-sigkill-script-${suffix}`,
+        execution_type: 'script',
+        execution_mode: 'host',
+        script_command: 'sleep 60',
+        created_by: ownerId,
+        chat_jid: sourceJid,
+      });
+      // Live runScript close(null, 'SIGKILL') shape — aborted/timedOut false.
+      runScriptMock.mockResolvedValueOnce({
+        stdout: 'partial before death',
+        stderr,
+        exitCode: null,
+        signal: 'SIGKILL',
+        timedOut: false,
+        aborted: false,
+        durationMs: 40,
+      });
+      loggerMock.info.mockClear();
+      const { deps, waitForRun } = makeDeps({ [sourceJid]: scriptGroup });
 
-    const trigger = triggerTaskNow(taskId, deps);
-    await waitForRun();
-    await vi.waitFor(() => {
-      expect(db.getTaskRunById(trigger.runId!)?.status).not.toBe('running');
-    });
+      const trigger = triggerTaskNow(taskId, deps);
+      await waitForRun();
+      await vi.waitFor(() => {
+        expect(db.getTaskRunById(trigger.runId!)?.status).not.toBe('running');
+      });
 
-    expect(db.getTaskRunById(trigger.runId!)).toMatchObject({
-      status: 'failed',
-      error: '脚本被信号终止: SIGKILL',
-    });
-    expect(db.getTaskRunLogs(taskId, 1)[0]).toMatchObject({
-      status: 'error',
-      error: '脚本被信号终止: SIGKILL',
-      result: 'partial before death',
-    });
-    // Failure notify may include partial stdout, but must not be a bare success.
-    expect(deps.sendMessage).toHaveBeenCalled();
-    const sent = String(deps.sendMessage.mock.calls[0]?.[1] ?? '');
-    expect(sent).toContain('执行失败');
-    expect(sent).toContain('SIGKILL');
-  });
+      // The signal leads even when stderr has output of its own.
+      expect(db.getTaskRunById(trigger.runId!)).toMatchObject({
+        status: 'failed',
+        error,
+      });
+      expect(db.getTaskRunLogs(taskId, 1)[0]).toMatchObject({
+        status: 'error',
+        error,
+        result: 'partial before death',
+      });
+      // Failure notify may include partial stdout, but must not be a bare success.
+      expect(deps.sendMessage).toHaveBeenCalled();
+      const sent = String(deps.sendMessage.mock.calls[0]?.[1] ?? '');
+      expect(sent).toContain('执行失败');
+      expect(sent).toContain('SIGKILL');
+      expect(loggerMock.info).toHaveBeenCalledWith(
+        expect.objectContaining({ taskId, exitCode: null, signal: 'SIGKILL' }),
+        'Script task completed',
+      );
+    },
+  );
 
   test('persists a strict source failure before finish and fallback success consumes only that retry item', async () => {
     const ownerId = 'script-source-crash-window-owner';

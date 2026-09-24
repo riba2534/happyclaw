@@ -25,15 +25,24 @@ const https = vi.hoisted(() => {
     timestamp: 1_787_808_000,
   });
   let messageRequests = 0;
+  let streamBodies: string[] = [];
+  let streamRequests = 0;
   return {
     setMessageBody(body: string) {
       messageBody = body;
     },
+    setStreamBodies(bodies: string[]) {
+      streamBodies = [...bodies];
+    },
     resetRequests() {
       messageRequests = 0;
+      streamRequests = 0;
     },
     get messageRequests() {
       return messageRequests;
+    },
+    get streamRequests() {
+      return streamRequests;
     },
     request: vi.fn(
       (
@@ -49,13 +58,17 @@ const https = vi.hoisted(() => {
         const isToken =
           hostname.includes('bots.qq.com') ||
           requestPath.includes('getAppAccessToken');
+        const isStream = requestPath.includes('/stream_messages');
         const isMessages = requestPath.includes('/messages');
         if (isMessages) messageRequests += 1;
+        if (isStream) streamRequests += 1;
         const payload = isToken
           ? JSON.stringify({ access_token: 'qq-token', expires_in: 7200 })
-          : isMessages
-            ? messageBody
-            : JSON.stringify({ file_info: 'file-info-1', ttl: 600 });
+          : isStream
+            ? (streamBodies.shift() ?? JSON.stringify({ id: 'stream-1' }))
+            : isMessages
+              ? messageBody
+              : JSON.stringify({ file_info: 'file-info-1', ttl: 600 });
         const res = {
           statusCode: 200,
           on(event: string, fn: (...args: any[]) => void) {
@@ -94,8 +107,15 @@ const store = await import('../src/channel-reliability-store.js');
 const delivery = await import('../src/channel-outbox-delivery.js');
 const { syntheticChannelProviderAck } =
   await import('../src/channel-outbox-runtime-scope.js');
-const { createQQConnection, QQOfficialSendAckError, requireQQOfficialSendId } =
-  await import('../src/qq.js');
+const {
+  createQQConnection,
+  QQApiError,
+  QQOfficialSendAckError,
+  requireQQOfficialSendId,
+} = await import('../src/qq.js');
+const { QQStreamingController } = await import('../src/qq-streaming-card.js');
+const { finalizeChannelCardAfterDelivery } =
+  await import('../src/channel-card-finalization.js');
 const { classifyImSendFailure, imSendFailurePolicy } =
   await import('../src/im-send-retry-policy.js');
 
@@ -116,6 +136,7 @@ beforeAll(() => db.initDatabase());
 beforeEach(() => {
   vi.clearAllMocks();
   https.resetRequests();
+  https.setStreamBodies([]);
   https.setMessageBody(
     JSON.stringify({ id: 'official-1', timestamp: 1_787_808_000 }),
   );
@@ -238,4 +259,69 @@ describe('QQ official send ACK', () => {
     ).rejects.toBeInstanceOf(QQOfficialSendAckError);
     expect(https.messageRequests).toBe(1);
   });
+});
+
+describe('QQ stream_messages follow-up ACK', () => {
+  // Wired exactly like the QQ channel adapter wires its streaming sessions.
+  function createStream() {
+    const fallback = vi.fn(async () => {});
+    const controller = new QQStreamingController({
+      openid: 'user-openid',
+      msgSeq: 1,
+      passiveMsgId: 'inbound-message',
+      sendStreamChunk: (openid, params) =>
+        connection!.sendStreamMessage(openid, params),
+      fallbackSend: fallback,
+    });
+    return { controller, fallback };
+  }
+
+  test.each([
+    JSON.stringify({ code: 40034001, message: 'stream rejected' }),
+    JSON.stringify({ err_code: 40034001, msg: 'stream rejected' }),
+  ])(
+    'a 2xx business error %s on DONE is partial and never re-sent',
+    async (doneBody) => {
+      https.setStreamBodies([JSON.stringify({ id: 'stream-1' }), doneBody]);
+      const { controller, fallback } = createStream();
+
+      const finalized = await finalizeChannelCardAfterDelivery(
+        controller,
+        'final answer',
+        true,
+        'delivery failed',
+      );
+
+      expect(finalized.acknowledged).toBe(false);
+      expect(finalized.error).toMatchObject({
+        code: 'CHANNEL_DELIVERY_PARTIAL',
+      });
+      const cause = (finalized.error as { cause?: unknown }).cause;
+      expect(cause).toBeInstanceOf(QQApiError);
+      expect(cause).toMatchObject({ bizCode: 40034001 });
+      expect(fallback).not.toHaveBeenCalled();
+      expect(https.streamRequests).toBe(2);
+      expect(controller.getAcknowledgedProviderOutputCount()).toBe(1);
+    },
+  );
+
+  test.each(['{}', JSON.stringify({ timestamp: 1_787_808_000 }), ''])(
+    'an id-less 2xx DONE body %j completes the stream',
+    async (doneBody) => {
+      https.setStreamBodies([JSON.stringify({ id: 'stream-1' }), doneBody]);
+      const { controller, fallback } = createStream();
+
+      const finalized = await finalizeChannelCardAfterDelivery(
+        controller,
+        'final answer',
+        true,
+        'delivery failed',
+      );
+
+      expect(finalized).toEqual({ acknowledged: true });
+      expect(fallback).not.toHaveBeenCalled();
+      expect(https.streamRequests).toBe(2);
+      expect(controller.getAcknowledgedProviderOutputCount()).toBe(2);
+    },
+  );
 });

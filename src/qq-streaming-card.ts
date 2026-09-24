@@ -89,6 +89,7 @@ export class QQStreamingController {
   private msgSeq: number;
   private streamIndex = 0;
   private sentChunkCount = 0;
+  private missingChunkIdLogged = false;
 
   // Throttle
   private lastUpdateTime = 0;
@@ -624,15 +625,27 @@ export class QQStreamingController {
       msg_id: this.passiveMsgId,
       event_id: this.passiveMsgId,
     });
-    // Beyond #702 (/messages): subsequent GENERATING/DONE stream_messages
-    // chunks must also carry an official provider receipt. apiRequest maps
-    // empty/HTML/broken-JSON 2xx to {} and passes through biz-error JSON
-    // without an id — those must NOT increment sentChunkCount or let
-    // complete() mark the stream completed (which suppresses plain fallback).
+    // QQ has not published the response of follow-up GENERATING/DONE frames
+    // (only the first frame's id, reused as stream_msg_id, is relied upon), so
+    // a 2xx without an id still counts as delivered; it is logged once per
+    // stream rather than on every throttled chunk. Explicit business errors
+    // are thrown by the transport, and callers fence them as partial delivery.
     const id = resp?.id;
-    if (typeof id !== 'string' || id.trim() === '') {
-      throw new Error(
-        'QQ stream chunk returned no provider receipt; delivery outcome is uncertain',
+    if (
+      (typeof id !== 'string' || id.trim() === '') &&
+      !this.missingChunkIdLogged
+    ) {
+      this.missingChunkIdLogged = true;
+      logger.warn(
+        {
+          openid: this.openid,
+          inputState,
+          responseKeys:
+            resp && typeof resp === 'object' && !Array.isArray(resp)
+              ? Object.keys(resp)
+              : [],
+        },
+        'QQ stream chunk ACK has no id; treating the 2xx response as delivered',
       );
     }
     this.sentChunkCount++;
