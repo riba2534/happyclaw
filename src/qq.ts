@@ -577,6 +577,27 @@ export function requireQQOfficialSendId(data: unknown): { id: string } {
   return { id: id.trim() };
 }
 
+/**
+ * QQ error bodies carry a numeric business `code` (newer endpoints mirror it
+ * as `err_code`) and a `message`/`msg`, the fields apiRequest reads for HTTP
+ * >= 400. A 2xx body in that shape with a non-zero code is an explicit
+ * provider rejection; a body that merely lacks fields is not.
+ */
+export function readQQBusinessError(
+  data: unknown,
+): { code: number; message: string } | null {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const body = data as Record<string, unknown>;
+  const code = [body.code, body.err_code].find(
+    (value): value is number => typeof value === 'number' && value !== 0,
+  );
+  if (code === undefined) return null;
+  const message = [body.message, body.msg].find(
+    (value): value is string => typeof value === 'string' && value !== '',
+  );
+  return { code, message: message ?? 'unknown error' };
+}
+
 // ─── Factory Function ───────────────────────────────────────────
 
 export function createQQConnection(config: QQConnectionConfig): QQConnection {
@@ -2607,7 +2628,18 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
       if (params.event_id) {
         body.event_id = params.event_id;
       }
-      return apiRequest<{ id?: string }>('POST', endpoint, body);
+      const resp = await apiRequest<{ id?: string }>('POST', endpoint, body);
+      // apiRequest only rejects HTTP >= 400. A 2xx business error means QQ
+      // refused this chunk, which callers must not confuse with an ACK that
+      // simply omits the id.
+      const businessError = readQQBusinessError(resp);
+      if (businessError) {
+        throw new QQApiError(
+          `QQ API POST ${endpoint} returned business error ${businessError.code}: ${businessError.message}`,
+          businessError.code,
+        );
+      }
+      return resp;
     },
 
     claimPassiveReply(

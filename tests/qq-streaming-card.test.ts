@@ -1,5 +1,13 @@
 import { describe, expect, test, vi } from 'vitest';
 
+const logger = vi.hoisted(() => ({
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+}));
+vi.mock('../src/logger.js', () => ({ logger }));
+
 import { QQStreamingController } from '../src/qq-streaming-card.js';
 import { finalizeChannelCardAfterDelivery } from '../src/channel-card-finalization.js';
 
@@ -232,19 +240,17 @@ describe('QQ streaming passive rejection fallback', () => {
   });
 
   test.each([
-    { label: 'empty object', resp: {} },
-    { label: 'missing id', resp: { timestamp: 1 } },
-    { label: 'blank id', resp: { id: '' } },
-    { label: 'whitespace id', resp: { id: '   ' } },
-    {
-      label: 'biz-error JSON without id',
-      resp: { code: 40034001, message: 'fail' },
-    },
-    { label: 'numeric id', resp: { id: 123 } },
+    { label: 'empty object', resp: {}, keys: [] },
+    { label: 'missing id', resp: { timestamp: 1 }, keys: ['timestamp'] },
+    { label: 'blank id', resp: { id: '' }, keys: ['id'] },
+    { label: 'whitespace id', resp: { id: '   ' }, keys: ['id'] },
+    { label: 'numeric id', resp: { id: 123 }, keys: ['id'] },
+    { label: 'null body', resp: null, keys: [] },
   ])(
-    'visible stream DONE with non-official receipt ($label) is not completed',
-    async ({ resp }) => {
+    'visible stream DONE 2xx without an id ($label) completes with a warning',
+    async ({ resp, keys }) => {
       vi.useFakeTimers();
+      logger.warn.mockClear();
       try {
         let calls = 0;
         const send = vi.fn(async () => {
@@ -270,23 +276,32 @@ describe('QQ streaming passive rejection fallback', () => {
           'delivery failed',
         );
 
-        expect(finalized.acknowledged).toBe(false);
-        expect(finalized.error).toMatchObject({
-          code: 'CHANNEL_DELIVERY_PARTIAL',
-        });
-        expect(
-          String((finalized.error as any)?.cause?.message ?? finalized.error),
-        ).toMatch(/provider receipt|official id/i);
+        // QQ does not document an id on follow-up frames; the user already
+        // sees the full answer, so this must not become a partial delivery.
+        expect(finalized).toEqual({ acknowledged: true });
         expect(fallback).not.toHaveBeenCalled();
-        expect(controller.getAcknowledgedProviderOutputCount()).toBe(1);
+        expect(send).toHaveBeenCalledTimes(2);
+        expect(controller.getAcknowledgedProviderOutputCount()).toBe(2);
+        const missingId = logger.warn.mock.calls.filter(
+          ([, message]) =>
+            typeof message === 'string' && /has no id/.test(message),
+        );
+        expect(missingId).toHaveLength(1);
+        // Only the response shape is logged, never its values.
+        expect(missingId[0][0]).toEqual({
+          openid: 'user',
+          inputState: 10,
+          responseKeys: keys,
+        });
       } finally {
         vi.useRealTimers();
       }
     },
   );
 
-  test('visible stream subsequent GENERATING without official id is partial-visible', async () => {
+  test('id-less GENERATING and DONE ACKs complete and warn once per stream', async () => {
     vi.useFakeTimers();
+    logger.warn.mockClear();
     try {
       let calls = 0;
       const send = vi.fn(async () => {
@@ -315,13 +330,16 @@ describe('QQ streaming passive rejection fallback', () => {
         'delivery failed',
       );
 
-      expect(finalized.acknowledged).toBe(false);
-      expect(finalized.error).toMatchObject({
-        code: 'CHANNEL_DELIVERY_PARTIAL',
-      });
+      expect(finalized).toEqual({ acknowledged: true });
       expect(fallback).not.toHaveBeenCalled();
-      // start counted; subsequent GENERATING without id must not inflate ACK count
-      expect(controller.getAcknowledgedProviderOutputCount()).toBe(1);
+      expect(send).toHaveBeenCalledTimes(3);
+      expect(controller.getAcknowledgedProviderOutputCount()).toBe(3);
+      expect(
+        logger.warn.mock.calls.filter(
+          ([, message]) =>
+            typeof message === 'string' && /has no id/.test(message),
+        ),
+      ).toHaveLength(1);
     } finally {
       vi.useRealTimers();
     }
