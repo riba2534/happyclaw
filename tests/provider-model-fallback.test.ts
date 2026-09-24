@@ -151,6 +151,8 @@ describe('provider model fallback lifecycle', () => {
       'authentication_failed',
       'oauth_org_not_allowed',
       'account_on_hold',
+      'verification_required',
+      'cloud_credential_error',
       'overloaded',
       'server_error',
       'unknown',
@@ -171,6 +173,15 @@ describe('provider model fallback lifecycle', () => {
       'account',
     );
     expect(classifyProviderAssistantError('account_on_hold')).toBe('account');
+    // SDK 0.3.280 values. An unverified organization is a verdict on the
+    // profile; unloadable cloud credentials belong to the profile's own
+    // environment, so another profile may still serve the input.
+    expect(classifyProviderAssistantError('verification_required')).toBe(
+      'account',
+    );
+    expect(classifyProviderAssistantError('cloud_credential_error')).toBe(
+      'account',
+    );
     expect(classifyProviderAssistantError('billing_error')).toBe('account');
     // A bare rate_limit carries no rateLimitType, so it fails safe as
     // account-wide — matching classifyProviderRateLimitType's unknown default.
