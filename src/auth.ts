@@ -113,7 +113,7 @@ export function clearSessionCookie(_c: any): string[] {
 
 /** Attach one or more Set-Cookie values without comma-joining (Fetch forbids that). */
 export function headersWithSessionCookies(
-  base: HeadersInit,
+  base: ConstructorParameters<typeof Headers>[0],
   cookies: string | string[],
 ): Headers {
   const headers = new Headers(base);
