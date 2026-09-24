@@ -235,25 +235,76 @@ async function apiRequest(
   });
 }
 
-function echoCreatedOutTrackId(resp: ApiResponse): string | undefined {
-  const nested =
-    resp.result && typeof resp.result === 'object'
-      ? (resp.result as { outTrackId?: unknown }).outTrackId
-      : undefined;
-  if (typeof nested === 'string' && nested.trim()) return nested;
-  const top = resp.outTrackId;
-  if (typeof top === 'string' && top.trim()) return top;
-  return undefined;
+interface CardDeliverSpaceResult {
+  spaceId?: unknown;
+  spaceType?: unknown;
+  success?: unknown;
+  errorMsg?: unknown;
 }
 
-function isOfficialCardDeliverAck(resp: ApiResponse): boolean {
-  // DELIVER is the visible IM ACK. Keep apiRequest soft-resolve({}) for PUT
-  // streaming/inputing/status, but do not mint cardInstanceId without an
-  // official deliver envelope (success===true or code 0/200/success).
-  if (resp.success === true) return true;
-  if (resp.success === false) return false;
-  const code = resp.code;
-  return code === '0' || code === '200' || code === 'success';
+/**
+ * DELIVER is the call that makes the card visible, so its envelope decides
+ * whether a cardInstanceId may be minted. DingTalk reports per-space results
+ * in `result[]` and commonly returns top-level success:true while the target
+ * space failed (robot not in the group, "spaces of card is empty"), so the
+ * per-space entries win whenever they are present.
+ *
+ * An explicit failure proves nothing became visible and releases the host's
+ * static fallback. An envelope that proves neither outcome (empty/HTML/broken
+ * JSON body, which apiRequest soft-resolves to {}) fails closed as uncertain,
+ * matching parseDingTalkGroupMessageResponse.
+ */
+function assertCardDelivered(
+  resp: ApiResponse,
+  target: DingTalkCardTarget,
+): void {
+  const results: CardDeliverSpaceResult[] = Array.isArray(resp.result)
+    ? resp.result.map((item) =>
+        item && typeof item === 'object'
+          ? (item as CardDeliverSpaceResult)
+          : {},
+      )
+    : [];
+
+  if (results.length === 0) {
+    if (resp.success === true) return;
+    if (resp.success === false) {
+      throw preAcceptImDeliveryError(
+        'DingTalk card delivery failed before visible presentation: success=false',
+      );
+    }
+    throw new ImDeliveryPhaseError(
+      'uncertain',
+      'DingTalk Card API card-deliver 2xx returned an unrecognized ACK envelope',
+    );
+  }
+
+  const [spaceType, spaceId] =
+    target.type === 'group'
+      ? ['IM_GROUP', target.openConversationId]
+      : ['IM_ROBOT', target.userId];
+  const targeted = results.filter(
+    (item) =>
+      item.spaceId === spaceId &&
+      (item.spaceType === undefined || item.spaceType === spaceType),
+  );
+  const relevant = targeted.length > 0 ? targeted : results;
+
+  if (relevant.every((item) => item.success === true)) return;
+  if (relevant.every((item) => item.success === false)) {
+    const reasons = relevant.map((item) =>
+      typeof item.errorMsg === 'string' && item.errorMsg.trim()
+        ? item.errorMsg.trim()
+        : 'unknown error',
+    );
+    throw preAcceptImDeliveryError(
+      `DingTalk card delivery failed before visible presentation: ${reasons.join('; ')}`,
+    );
+  }
+  throw new ImDeliveryPhaseError(
+    'uncertain',
+    'DingTalk Card API card-deliver 2xx returned an incomplete per-space ACK',
+  );
 }
 
 // ─── Build deliver body ──────────────────────────────────────
@@ -829,12 +880,6 @@ export class DingTalkStreamingCardController {
     // If card creation is already in progress, await for it to finish
     if (this.cardCreationPromise) {
       await this.cardCreationPromise;
-      if (!this.cardInstanceId) {
-        throw (
-          this.cardCreationError ??
-          preAcceptImDeliveryError('DingTalk streaming card was not created')
-        );
-      }
       return;
     }
     // Don't check this.state here — appendThinking() sets state='creating'
@@ -880,11 +925,15 @@ export class DingTalkStreamingCardController {
         }
         logger.info({ cardId, createResp }, 'DingTalk AI Card create response');
 
-        // CREATE is the only card call that mints a visible ACK. Empty /
-        // HTML / broken-JSON 2xx must not count as success: apiRequest still
-        // resolves {} on parse fail so PUT streaming/inputing/status keep
-        // working, but ensureCard requires official success===true.
+        // CREATE only registers an invisible card resource, so anything short
+        // of the official success:true (including an empty/HTML/broken-JSON
+        // 2xx that apiRequest soft-resolves to {}) is safe to treat as
+        // pre-accept: DELIVER is never attempted and the host may fall back.
         if (createResp.success !== true) {
+          logger.warn(
+            { cardId, responseKeys: Object.keys(createResp) },
+            'DingTalk AI Card create response missing success:true',
+          );
           throw preAcceptImDeliveryError(
             'DingTalk card resource creation failed before visible delivery',
             dingTalkCardApiError(
@@ -892,11 +941,10 @@ export class DingTalkStreamingCardController {
             ),
           );
         }
-        const officialCardId = echoCreatedOutTrackId(createResp) ?? cardId;
 
         // 2. Deliver to target
         const deliverBody = buildDeliverBody(
-          officialCardId,
+          cardId,
           this.target,
           this.config.clientId,
         );
@@ -908,31 +956,16 @@ export class DingTalkStreamingCardController {
           'card-deliver',
         );
         logger.info(
-          { cardId: officialCardId, target: this.target, deliverResp },
+          { cardId, target: this.target, deliverResp },
           'DingTalk AI Card deliver response',
         );
+        assertCardDelivered(deliverResp, this.target);
 
-        // DELIVER is the only call that proves a visible card preview.
-        // Empty / HTML / broken-JSON / {success:false} 2xx must not mint
-        // cardInstanceId (apiRequest still soft-resolves {} so PUT streaming
-        // stays soft; CREATE ACK hardening is #730 — do not restack here).
-        if (!isOfficialCardDeliverAck(deliverResp)) {
-          throw preAcceptImDeliveryError(
-            'DingTalk card delivery failed before visible presentation',
-            dingTalkCardApiError(
-              'DingTalk Card API card-deliver 2xx missing official success envelope',
-            ),
-          );
-        }
-
-        this.cardInstanceId = officialCardId;
+        this.cardInstanceId = cardId;
         this.cardCreationError = undefined;
         if (this.state === 'creating') this.state = 'streaming';
-        this.onCardCreated?.(officialCardId);
-        logger.info(
-          { cardId: officialCardId },
-          'DingTalk AI Card created and delivered',
-        );
+        this.onCardCreated?.(cardId);
+        logger.info({ cardId }, 'DingTalk AI Card created and delivered');
       } catch (err: any) {
         this.cardCreationError = err;
         this.terminalizeDeliveryFailure(err);
@@ -949,12 +982,6 @@ export class DingTalkStreamingCardController {
       await this.cardCreationPromise;
     } catch {
       // Already handled inside the promise
-    }
-    if (!this.cardInstanceId) {
-      throw (
-        this.cardCreationError ??
-        preAcceptImDeliveryError('DingTalk streaming card was not created')
-      );
     }
   }
 

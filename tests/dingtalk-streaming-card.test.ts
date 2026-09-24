@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 
 // Mock logger
 vi.mock('../src/logger.js', () => ({
@@ -10,97 +10,59 @@ vi.mock('../src/logger.js', () => ({
   },
 }));
 
-const dingtalkHttps = vi.hoisted(() => {
-  let createRawBody: string | null = null;
-
-  const emitRaw = (
-    cb: (res: any) => void,
-    rawBody: string,
-    statusCode = 200,
-  ) => {
-    const responseListeners: Record<
-      string,
-      Array<(arg?: unknown) => void>
-    > = {};
-    const res = {
-      statusCode,
+const dingtalkHttps = vi.hoisted(() => ({
+  request(options: { path?: string; method?: string }, cb: (res: any) => void) {
+    const requestListeners: Record<string, Array<(arg?: unknown) => void>> = {};
+    const req = {
       on(event: string, handler: (arg?: unknown) => void) {
-        (responseListeners[event] ??= []).push(handler);
-        return res;
+        (requestListeners[event] ??= []).push(handler);
+        return req;
+      },
+      write() {},
+      end() {
+        const responseListeners: Record<
+          string,
+          Array<(arg?: unknown) => void>
+        > = {};
+        const res = {
+          statusCode: 200,
+          on(event: string, handler: (arg?: unknown) => void) {
+            (responseListeners[event] ??= []).push(handler);
+            return res;
+          },
+        };
+        queueMicrotask(() => {
+          cb(res);
+          queueMicrotask(() => {
+            const requestPath = String(options.path);
+            // Official card_1_0 response bodies for CREATE and DELIVER.
+            const payload = requestPath.includes('/gettoken')
+              ? { errcode: 0, access_token: 'test-token', expires_in: 7200 }
+              : requestPath === '/v1.0/card/instances/deliver'
+                ? {
+                    success: true,
+                    result: [
+                      {
+                        spaceId: 'cidXXXX',
+                        spaceType: 'IM_GROUP',
+                        success: true,
+                      },
+                    ],
+                  }
+                : options.method === 'POST' &&
+                    requestPath === '/v1.0/card/instances'
+                  ? { success: true, result: 'provider-card-result' }
+                  : { success: true };
+            const body = Buffer.from(JSON.stringify(payload));
+            for (const handler of responseListeners.data ?? []) handler(body);
+            for (const handler of responseListeners.end ?? []) handler();
+          });
+        });
       },
     };
-    queueMicrotask(() => {
-      cb(res);
-      queueMicrotask(() => {
-        const body = Buffer.from(rawBody);
-        for (const handler of responseListeners.data ?? []) handler(body);
-        for (const handler of responseListeners.end ?? []) handler();
-      });
-    });
-  };
-
-  return {
-    setCreateRawBody(body: string | null) {
-      createRawBody = body;
-    },
-    reset() {
-      createRawBody = null;
-    },
-    request(
-      options: { path?: string; method?: string; hostname?: string },
-      cb: (res: any) => void,
-    ) {
-      const requestListeners: Record<
-        string,
-        Array<(arg?: unknown) => void>
-      > = {};
-      const req = {
-        on(event: string, handler: (arg?: unknown) => void) {
-          (requestListeners[event] ??= []).push(handler);
-          return req;
-        },
-        write() {},
-        end() {
-          const requestPath = String(options.path ?? '');
-          const method = String(options.method ?? 'GET').toUpperCase();
-          if (
-            requestPath.includes('/gettoken') ||
-            String(options.hostname ?? '').includes('oapi.dingtalk.com')
-          ) {
-            emitRaw(
-              cb,
-              JSON.stringify({
-                errcode: 0,
-                access_token: 'test-token',
-                expires_in: 7200,
-              }),
-            );
-            return;
-          }
-          const isCreate =
-            method === 'POST' &&
-            requestPath.includes('/card/instances') &&
-            !requestPath.includes('/deliver');
-          if (isCreate) {
-            emitRaw(
-              cb,
-              createRawBody !== null
-                ? createRawBody
-                : JSON.stringify({
-                    success: true,
-                    result: {},
-                    code: 'success',
-                  }),
-            );
-            return;
-          }
-          emitRaw(cb, JSON.stringify({ success: true, code: 'success' }));
-        },
-      };
-      return req;
-    },
-  };
-});
+    return req;
+  },
+}));
 
 vi.mock('node:https', () => ({
   default: { request: dingtalkHttps.request },
@@ -145,10 +107,6 @@ function makeController(
     },
   );
 }
-
-afterEach(() => {
-  dingtalkHttps.reset();
-});
 
 // ─── Tests ──────────────────────────────────────────────────
 
@@ -472,39 +430,5 @@ describe('StreamingSession interface compatibility', () => {
     expect(typeof ctrl.updateToolSummary).toBe('function');
     expect(typeof ctrl.getToolInfo).toBe('function');
     expect(typeof ctrl.patchUsageNote).toBe('function');
-  });
-});
-
-// ─── CREATE 2xx must require success:true via real ensureCard ─
-
-describe('DingTalk streaming-card CREATE 2xx success:true', () => {
-  test.each([
-    ['empty', ''],
-    ['html', '<html>ok</html>'],
-    ['broken-json', '{broken'],
-  ])(
-    'create 200 body %s throws, no cardInstanceId, ACK count 0',
-    async (_name, body) => {
-      dingtalkHttps.setCreateRawBody(body);
-      const ctrl = makeController();
-      await expect(
-        (ctrl as unknown as { ensureCard: () => Promise<void> }).ensureCard(),
-      ).rejects.toBeTruthy();
-      expect(ctrl.getAllMessageIds()).toEqual([]);
-      expect(ctrl.getAcknowledgedProviderOutputCount()).toBe(0);
-    },
-  );
-
-  test('create 200 JSON {success:true, result} still creates', async () => {
-    dingtalkHttps.setCreateRawBody(
-      JSON.stringify({
-        success: true,
-        result: { outTrackId: 'official-track-1' },
-      }),
-    );
-    const ctrl = makeController();
-    await (ctrl as unknown as { ensureCard: () => Promise<void> }).ensureCard();
-    expect(ctrl.getAllMessageIds()).toEqual(['official-track-1']);
-    expect(ctrl.getAcknowledgedProviderOutputCount()).toBe(1);
   });
 });

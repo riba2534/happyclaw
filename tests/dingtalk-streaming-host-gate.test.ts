@@ -126,6 +126,17 @@ const dingtalkHttps = vi.hoisted(() => {
               return;
             }
             visibleMutations.push('card-deliver');
+            emitResponse(cb, {
+              success: true,
+              result: [
+                {
+                  spaceId: 'cid-host-gate',
+                  spaceType: 'IM_GROUP',
+                  success: true,
+                },
+              ],
+            });
+            return;
           }
 
           if (requestPath.includes('/card/streaming')) {
@@ -440,6 +451,77 @@ describe.each<HostKind>(['main', 'conversation'])(
       expect(result).toMatchObject({ presentation: 'static' });
       expect(staticSend).toHaveBeenCalledOnce();
       expect(dingtalkHttps.visibleMutations).toEqual(['host-static']);
+    });
+
+    test('HTTP 200 per-space delivery failure releases exactly one static send', async () => {
+      vi.useFakeTimers();
+      dingtalkHttps.respondToDeliver(200, {
+        success: true,
+        result: [
+          {
+            spaceId: 'cid-host-gate',
+            spaceType: 'IM_GROUP',
+            success: false,
+            errorMsg: 'spaces of card is empty',
+          },
+        ],
+      });
+      const staticSend = vi.fn(async () => {
+        dingtalkHttps.visibleMutations.push('host-static');
+      });
+      const controller = makeController(staticSend);
+      controller.append('per-space rejected DingTalk card');
+      await vi.advanceTimersByTimeAsync(600);
+
+      expect(controller.isActive()).toBe(false);
+      const result = await runHostGate({
+        kind,
+        controller,
+        text: 'safe static answer',
+        staticSend,
+      });
+      expect(result).toMatchObject({ presentation: 'static' });
+      expect(staticSend).toHaveBeenCalledOnce();
+      expect(dingtalkHttps.visibleMutations).toEqual(['host-static']);
+
+      const cardError = await controller.complete('repeat').catch((e) => e);
+      expect(classifyImSendFailure(cardError)).toBe('pre_accept');
+      expect(cardError.message).toContain('spaces of card is empty');
+    });
+
+    test('HTTP 200 unrecognized deliver envelope is uncertain and never sends static', async () => {
+      vi.useFakeTimers();
+      dingtalkHttps.respondToDeliver(200, {});
+      const staticSend = vi.fn(async () => {
+        dingtalkHttps.visibleMutations.push('host-static');
+      });
+      const controller = makeController(staticSend);
+      const runtime = startRuntime(`${kind}-dingtalk-deliver-unrecognized`);
+      controller.append('unrecognized DingTalk deliver ACK');
+      await vi.advanceTimersByTimeAsync(600);
+
+      expect(controller.isActive()).toBe(true);
+      const result = await runHostGate({
+        kind,
+        controller,
+        text: 'must not send static',
+        staticSend,
+        scope: {
+          turnRunId: runtime.runId,
+          inputTurnId: runtime.inputTurnId,
+          owner: `dingtalk-${kind}-unrecognized-owner`,
+          token: `dingtalk-${kind}-unrecognized-token`,
+        },
+      });
+      expect(result).toMatchObject({
+        presentation: 'stream',
+        finalization: { acknowledged: false },
+        fenced: { status: 'uncertain' },
+      });
+      expect(staticSend).not.toHaveBeenCalled();
+      expect(dingtalkHttps.visibleMutations).toEqual([]);
+      runtime.interrupt('DingTalk deliver ACK is unrecognized');
+      runtime.dispose();
     });
 
     test('HTTP 503 deliver failure remains uncertain and never sends static', async () => {
