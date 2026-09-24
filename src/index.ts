@@ -12358,6 +12358,8 @@ function startIpcWatcher(): void {
           'agent_profile_discard_result_',
           'workspace_memory_result_',
           'happyclaw_owner_profile_result_',
+          'fresh_window_result_',
+          'feishu_capability_result_',
         ];
         const isResultFile = (name: string) =>
           RESULT_FILE_PREFIXES.some((p) => name.startsWith(p));
