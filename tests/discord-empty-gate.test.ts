@@ -117,6 +117,45 @@ describe('discordSupplementalInboundText', () => {
   });
 });
 
+function snapshotImageOnlyMsg(id: string) {
+  return fakeMsg({
+    id,
+    content: '',
+    attachments: { values: () => [] },
+    messageSnapshots: {
+      values: () => [
+        {
+          message: {
+            content: '',
+            attachments: {
+              values: () => [
+                {
+                  url: 'https://cdn.discord.test/forward.png',
+                  name: 'forward.png',
+                  contentType: 'image/png',
+                },
+              ],
+            },
+          },
+        },
+      ],
+    },
+  });
+}
+
+const PNG_BYTES = Uint8Array.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
+
+function stubPngFetch() {
+  const fetchMock = vi.fn(async () => ({
+    ok: true,
+    arrayBuffer: async () => PNG_BYTES.buffer,
+  }));
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
 describe('Discord empty-gate live persist', () => {
   let connection: ReturnType<typeof createDiscordConnection> | null = null;
 
@@ -130,6 +169,7 @@ describe('Discord empty-gate live persist', () => {
       await connection.disconnect();
       connection = null;
     }
+    vi.unstubAllGlobals();
   });
 
   async function connect(
@@ -198,6 +238,35 @@ describe('Discord empty-gate live persist', () => {
     const handlers = discord.listeners.get('messageCreate') ?? [];
     await handlers[0]?.(fakeMsg({ id: 'empty-1' }));
     expect(storeMessageDirect).not.toHaveBeenCalled();
+  });
+
+  test('snapshot-with-attachments-only persists, downloads, and notifies once', async () => {
+    const fetchMock = stubPngFetch();
+    await connect();
+    const handlers = discord.listeners.get('messageCreate') ?? [];
+    await handlers[0]?.(snapshotImageOnlyMsg('snap-att-1'));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://cdn.discord.test/forward.png',
+    );
+    expect(storeMessageDirect).toHaveBeenCalledTimes(1);
+    expect(storeMessageDirect.mock.calls[0][4]).toBe('[图片]');
+    expect(storeMessageDirect.mock.calls[0][7]).toEqual(
+      expect.objectContaining({
+        attachments: expect.stringContaining('"type":"image"'),
+      }),
+    );
+    expect(notifyNewImMessage).toHaveBeenCalledTimes(1);
+  });
+
+  test('unauthorized snapshot-with-attachments-only does not persist', async () => {
+    const fetchMock = stubPngFetch();
+    await connect(false);
+    const handlers = discord.listeners.get('messageCreate') ?? [];
+    await handlers[0]?.(snapshotImageOnlyMsg('snap-att-deny'));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(storeMessageDirect).not.toHaveBeenCalled();
+    expect(notifyNewImMessage).not.toHaveBeenCalled();
   });
 
   test('disconnect fences a held media callback and a new connection stores redelivery once', async () => {

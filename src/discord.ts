@@ -292,6 +292,24 @@ function iterDiscordCollection<T>(
   return [];
 }
 
+/** Wrapper + forwarded-snapshot attachments, fed through the same persist/download loop. */
+function collectDiscordInboundAttachments(msg: {
+  attachments?: { values?: () => Iterable<any> } | any[] | null;
+  messageSnapshots?: { values?: () => Iterable<any> } | any[] | null;
+  message_snapshots?: any[] | null;
+}): any[] {
+  const collected = [...iterDiscordCollection(msg.attachments)];
+  const snapshots = [
+    ...iterDiscordCollection(msg.messageSnapshots),
+    ...(msg.message_snapshots ?? []),
+  ];
+  for (const snap of snapshots) {
+    const inner = snap?.message ?? snap;
+    collected.push(...iterDiscordCollection(inner?.attachments));
+  }
+  return collected;
+}
+
 /** Sticker-only and forwarded-snapshot text used before the empty persist gate. */
 export function discordSupplementalInboundText(msg: {
   stickers?:
@@ -599,7 +617,7 @@ export function createDiscordConnection(
           mimeType: string;
         }[] = [];
 
-        for (const attachment of msg.attachments.values()) {
+        for (const attachment of collectDiscordInboundAttachments(msg)) {
           const contentType = attachment.contentType || '';
           const isImage = contentType.startsWith('image/');
           const attachUrl = attachment.url;
