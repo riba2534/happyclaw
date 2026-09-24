@@ -27,11 +27,13 @@ import {
   SKILL_ARCHIVE_MAX_FILE_BYTES,
 } from '../http-upload-policy.js';
 import {
+  buildSkillsCliEnvironment,
+  canonicalizeGitHubSkillUrl,
   importSkillsFromGit,
   importSkillsFromZip,
   installSkillDirectoriesTransactionally,
-  installSkillUrlViaPinnedGit,
   runCommandWithDirectoryQuota,
+  SkillUrlRefusedError,
 } from '../skill-import-service.js';
 import {
   parseFrontmatter,
@@ -1235,6 +1237,40 @@ skillsRoutes.delete('/:id', authMiddleware, async (c) => {
   });
 });
 
+interface InvalidSkillPackage {
+  success: false;
+  error: string;
+  invalidRequest: true;
+}
+
+/**
+ * Validate a package spec and return the source handed to `skills add`. URL
+ * specs are limited to github.com and rebuilt from their parsed parts, so the
+ * CLI can never fetch or clone an arbitrary host (SSRF).
+ */
+function resolveSkillPackageSource(
+  pkg: string,
+): { source: string } | InvalidSkillPackage {
+  const isNpmName = /^[\w\-]+\/[\w\-.]+(?:[@#][\w\-.\/]+)?$/.test(pkg);
+  const isUrl = /^https?:\/\//.test(pkg);
+  if (!isNpmName && !isUrl) {
+    return {
+      success: false,
+      error: 'Invalid package name format',
+      invalidRequest: true,
+    };
+  }
+  if (!isUrl) return { source: pkg };
+  try {
+    return { source: canonicalizeGitHubSkillUrl(pkg) };
+  } catch (error) {
+    if (error instanceof SkillUrlRefusedError) {
+      return { success: false, error: error.message, invalidRequest: true };
+    }
+    throw error;
+  }
+}
+
 /**
  * Install a skill package for a specific user.
  * Uses a temporary HOME directory to isolate `npx skills add --global` from
@@ -1244,38 +1280,15 @@ skillsRoutes.delete('/:id', authMiddleware, async (c) => {
 async function installSkillForUserUnlocked(
   userId: string,
   pkg: string,
-): Promise<{ success: boolean; installed?: string[]; error?: string }> {
-  const isNpmName = /^[\w\-]+\/[\w\-.]+(?:[@#][\w\-.\/]+)?$/.test(pkg);
-  const isUrl = /^https?:\/\//.test(pkg);
-  if (!isNpmName && !isUrl) {
-    return { success: false, error: 'Invalid package name format' };
-  }
-  // URL form: do NOT shell `npx skills add` (redirect-following fetcher).
-  // Route through the pinned Git importer after GitHub allowlist + DNS resolve.
-  // npm `<scope>/<name>` still uses the isolated npx path below.
-  if (isUrl) {
-    try {
-      const userDir = getUserSkillsDir(userId);
-      const imported = await installSkillUrlViaPinnedGit({
-        packageUrl: pkg,
-        targetRoot: userDir,
-        replace: true,
-        commit: (result) => updateSkillsManifest(userId, pkg, result.installed),
-      });
-      if (imported.installed.length === 0) {
-        return {
-          success: false,
-          error: 'No skills were installed — package may be invalid',
-        };
-      }
-      return { success: true, installed: imported.installed };
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      };
-    }
-  }
+): Promise<{
+  success: boolean;
+  installed?: string[];
+  error?: string;
+  invalidRequest?: boolean;
+}> {
+  const resolved = resolveSkillPackageSource(pkg);
+  if (!('source' in resolved)) return resolved;
+  const { source } = resolved;
 
   // Create an isolated temp directory to act as HOME so `--global` installs
   // into tempHome/.claude/skills/ instead of the real ~/.claude/skills/.
@@ -1291,7 +1304,7 @@ async function installSkillForUserUnlocked(
         '-y',
         'skills',
         'add',
-        pkg,
+        source,
         '--global',
         '--yes',
         '-a',
@@ -1301,7 +1314,7 @@ async function installSkillForUserUnlocked(
       maxBytes: MAX_SKILL_INSTALL_BYTES,
       timeoutMs: 60_000,
       label: 'Skill package installation',
-      env: { ...process.env, HOME: tempHome },
+      env: buildSkillsCliEnvironment(tempHome),
     });
 
     // Discover all skill directories installed into the temp location
@@ -1358,9 +1371,13 @@ async function installSkillForUser(
   success: boolean;
   installed?: string[];
   error?: string;
+  invalidRequest?: boolean;
   retryable?: boolean;
   invalidatedRuntimeJids?: number;
 }> {
+  // Reject before quiescing runtimes for an install that cannot happen.
+  const resolved = resolveSkillPackageSource(pkg);
+  if (!('source' in resolved)) return resolved;
   try {
     const result = await withUserSkillRuntimeMutation(
       userId,
@@ -1400,15 +1417,7 @@ skillsRoutes.post('/install', authMiddleware, async (c) => {
   if (!result.success) {
     return c.json(
       { error: 'Failed to install skill', details: result.error },
-      result.retryable
-        ? 503
-        : result.error === 'Invalid package name format' ||
-            (typeof result.error === 'string' &&
-              result.error.startsWith('Refused skill URL')) ||
-            (typeof result.error === 'string' &&
-              result.error.includes('Skill URL installs are limited to GitHub'))
-          ? 400
-          : 500,
+      result.retryable ? 503 : result.invalidRequest ? 400 : 500,
     );
   }
 
@@ -1456,6 +1465,13 @@ skillsRoutes.post('/:id/reinstall', authMiddleware, async (c) => {
       );
     }
     const packageName = meta.packageName;
+    const resolved = resolveSkillPackageSource(packageName);
+    if (!('source' in resolved)) {
+      return c.json(
+        { error: 'Failed to reinstall skill', details: resolved.error },
+        400,
+      );
+    }
 
     // A package can install MULTIPLE sibling skills, and installSkillForUser
     // rewrites EVERY skill dir the package ships (it rm's each destination before
