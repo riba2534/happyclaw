@@ -139,7 +139,10 @@ import {
   type AssistantUsageBatch,
 } from './assistant-usage.js';
 import { buildHappyClawPromptPlan, type PromptPlan } from './prompt-plan.js';
-import { withHappyClawSubagentContract } from './sdk-compat.js';
+import {
+  buildHappyClawSystemPrompt,
+  withHappyClawSubagentContract,
+} from './sdk-compat.js';
 import {
   isCliNoVisibleOutputCompanion,
   isProactiveFinalDeliveredSentinel,
@@ -2590,13 +2593,10 @@ async function runQueryAttempt(
     throw new Error(`prompt_plan_invalid: ${promptPlan.errors.join('; ')}`);
   }
   const systemPromptAppend = promptPlan.text;
-  const systemPrompt = includeClaudePreset
-    ? {
-        type: 'preset' as const,
-        preset: 'claude_code' as const,
-        append: systemPromptAppend,
-      }
-    : systemPromptAppend;
+  const systemPrompt = buildHappyClawSystemPrompt(
+    systemPromptAppend,
+    includeClaudePreset,
+  );
   const promptAudit = buildPromptAudit(promptPlan);
   if (agentTurnAnchor) promptAudit.turnAnchor = agentTurnAnchor.audit;
   const contextAuditBase = runtimeContextAuditBase(containerInput);

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 
 import {
+  buildHappyClawSystemPrompt,
   HAPPYCLAW_SUBAGENT_RUNTIME_CONTRACT,
   withHappyClawSubagentContract,
 } from '../container/agent-runner/src/sdk-compat.js';
@@ -35,5 +36,19 @@ describe('Claude SDK compatibility adapter', () => {
       cliCompatibility: 'claude-code-2.1.238',
     });
     expect(result.audit.hash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  test('renders the rebuilt system prompt on every request instead of the SDK snapshot', () => {
+    expect(buildHappyClawSystemPrompt('PLAN_MARKER', true)).toEqual({
+      type: 'preset',
+      preset: 'claude_code',
+      append: 'PLAN_MARKER',
+      snapshot: false,
+    });
+    expect(buildHappyClawSystemPrompt('PLAN_MARKER', false)).toEqual({
+      type: 'custom',
+      prompt: 'PLAN_MARKER',
+      snapshot: false,
+    });
   });
 });
