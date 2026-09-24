@@ -1783,9 +1783,10 @@ async function runScriptTaskInner(
       error = `脚本执行超时 (${Math.round(scriptResult.durationMs / 1000)}s)`;
     } else if (scriptResult.signal) {
       // External SIGKILL/OOM (and other signals) must not be treated as success
-      // even when stdout captured a partial payload before death.
-      error =
-        scriptResult.stderr.trim() || `脚本被信号终止: ${scriptResult.signal}`;
+      // even when stdout captured a partial payload before death. Lead with
+      // the signal: stderr alone rarely says the process was killed.
+      const stderr = scriptResult.stderr.trim();
+      error = `脚本被信号终止: ${scriptResult.signal}${stderr ? `\n${stderr}` : ''}`;
       result = scriptResult.stdout.trim() || null;
     } else if (scriptResult.exitCode !== 0) {
       error = scriptResult.stderr.trim() || `退出码: ${scriptResult.exitCode}`;
@@ -1830,6 +1831,7 @@ async function runScriptTaskInner(
         taskId: task.id,
         durationMs: Date.now() - startTime,
         exitCode: scriptResult.exitCode,
+        signal: scriptResult.signal,
       },
       'Script task completed',
     );

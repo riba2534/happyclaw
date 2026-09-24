@@ -20,7 +20,10 @@ vi.mock('../src/logger.js', () => ({
 
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
 
-describe('script runner signaled death', () => {
+// The scripts rely on /bin/sh, `kill -KILL $$` and POSIX process groups.
+const isWindows = process.platform === 'win32';
+
+describe.skipIf(isWindows)('script runner signaled death', () => {
   test('live self-SIGKILL close(null, SIGKILL) is not coalesced to exit 0', async () => {
     const { runScript } = await import('../src/script-runner.js');
     const result = await runScript('kill -KILL $$', 'workspace');

@@ -153,25 +153,14 @@ export async function runScript(
           );
         }
 
-        // Never coalesce a missing exit code to 0 unless we intentionally
-        // aborted or timed out. External SIGKILL/OOM delivers close(null,
-        // signal) with aborted=false; mapping that to 0 marks SUCCESS.
-        let resolvedExit: number | null;
-        if (timedOut || aborted) {
-          resolvedExit = null;
-        } else if (exitCode != null) {
-          resolvedExit = exitCode;
-        } else if (spawnError) {
-          resolvedExit = 1;
-        } else {
-          resolvedExit = null;
-        }
-
         resolve({
           stdout: stdout.slice(0, MAX_BUFFER),
           stderr: (spawnError?.message || stderr).slice(0, MAX_BUFFER),
-          exitCode: resolvedExit,
-          signal: closeSignal ?? null,
+          // Never coalesce a missing exit code to 0: external SIGKILL/OOM
+          // delivers close(null, signal) with aborted=false, and 0 would mark
+          // it SUCCESS. Spawn errors already arrive here as exit code 1.
+          exitCode: timedOut || aborted ? null : exitCode,
+          signal: closeSignal,
           timedOut,
           aborted,
           durationMs,
