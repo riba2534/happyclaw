@@ -71,27 +71,57 @@ export function verifySessionToken(signedValue: string): VerifiedToken | null {
     .digest('hex');
   const sigBuf = Buffer.from(sig, 'hex');
   const expectedBuf = Buffer.from(expected, 'hex');
-  if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+  if (
+    sigBuf.length !== expectedBuf.length ||
+    !crypto.timingSafeEqual(sigBuf, expectedBuf)
+  ) {
     return null;
   }
   return { token, legacy: false };
 }
 
-/** Build a Set-Cookie header value for a session token (signs + flags secure/plain). */
-export function setSessionCookie(c: any, token: string): string {
-  const secure = isSecureRequest(c);
-  const name = secure ? SESSION_COOKIE_NAME_SECURE : SESSION_COOKIE_NAME_PLAIN;
-  const secureSuffix = secure ? '; Secure' : '';
-  const signedToken = signSessionToken(token);
-  return `${name}=${signedToken}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${30 * 24 * 60 * 60}${secureSuffix}`;
+/** Build Set-Cookie header values for a session token (signs + flags secure/plain).
+ * Always clears the alternate cookie name so dual-name residue cannot accumulate
+ * across HTTP↔HTTPS (plain `happyclaw_session` vs `__Host-happyclaw_session`). */
+export function setSessionCookie(c: any, token: string): string[] {
+  const signed = signSessionToken(token);
+  const maxAge = 30 * 24 * 60 * 60;
+
+  if (isSecureRequest(c)) {
+    return [
+      `${SESSION_COOKIE_NAME_SECURE}=${signed}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}; Secure`,
+      `${SESSION_COOKIE_NAME_PLAIN}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`,
+    ];
+  }
+
+  return [
+    `${SESSION_COOKIE_NAME_PLAIN}=${signed}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}`,
+    `${SESSION_COOKIE_NAME_SECURE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0; Secure`,
+  ];
 }
 
-/** Build a Set-Cookie header value that clears the session cookie. */
-export function clearSessionCookie(c: any): string {
-  const secure = isSecureRequest(c);
-  const name = secure ? SESSION_COOKIE_NAME_SECURE : SESSION_COOKIE_NAME_PLAIN;
-  const secureSuffix = secure ? '; Secure' : '';
-  return `${name}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secureSuffix}`;
+/** Build Set-Cookie header values that clear BOTH session cookie names.
+ * Logout / forced clears must expire `__Host-` and plain variants together;
+ * middleware accepts SECURE then falls back to PLAIN, so a one-name clear
+ * leaves the other live. */
+export function clearSessionCookie(_c: any): string[] {
+  return [
+    `${SESSION_COOKIE_NAME_SECURE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0; Secure`,
+    `${SESSION_COOKIE_NAME_PLAIN}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`,
+  ];
+}
+
+/** Attach one or more Set-Cookie values without comma-joining (Fetch forbids that). */
+export function headersWithSessionCookies(
+  base: ConstructorParameters<typeof Headers>[0],
+  cookies: string | string[],
+): Headers {
+  const headers = new Headers(base);
+  const list = Array.isArray(cookies) ? cookies : [cookies];
+  for (const cookie of list) {
+    headers.append('Set-Cookie', cookie);
+  }
+  return headers;
 }
 
 export function generateUserId(): string {
@@ -195,12 +225,20 @@ export function checkLoginRateLimit(
   const windowMs = lockoutMinutes * 60 * 1000;
 
   // Check per-username:ip limit
-  const ipCheck = checkAttemptRecord(`${username}:${ip}`, maxAttempts, windowMs);
+  const ipCheck = checkAttemptRecord(
+    `${username}:${ip}`,
+    maxAttempts,
+    windowMs,
+  );
   if (!ipCheck.allowed) return ipCheck;
 
   // Check per-username global limit (higher threshold, longer window)
   const globalMax = maxAttempts * GLOBAL_USERNAME_MULTIPLIER;
-  const globalCheck = checkAttemptRecord(`user:${username}`, globalMax, GLOBAL_USERNAME_WINDOW_MS);
+  const globalCheck = checkAttemptRecord(
+    `user:${username}`,
+    globalMax,
+    GLOBAL_USERNAME_WINDOW_MS,
+  );
   if (!globalCheck.allowed) return globalCheck;
 
   return { allowed: true };

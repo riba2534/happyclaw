@@ -108,7 +108,9 @@ export const authMiddleware = async (c: any, next: any) => {
 
   // Transparently upgrade unsigned legacy cookie to HMAC-signed
   if (legacy) {
-    c.header('Set-Cookie', setSessionCookie(c, token));
+    for (const cookie of setSessionCookie(c, token)) {
+      c.header('Set-Cookie', cookie, { append: true });
+    }
     logger.info(
       'Upgraded unsigned session cookie to HMAC-signed for user %s',
       session.username,
