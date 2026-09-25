@@ -74,6 +74,26 @@ describe('exact processing indicator host contract', () => {
     );
   });
 
+  test('a new cold run releases typing leases superseded by a replayed batch', () => {
+    // A runner closed mid-turn is replayed with a larger batch keyed by a
+    // newer input id; the earlier input's lease must not keep typing alive.
+    expect(main).toMatch(
+      /await initialTypingReady;\s+await releaseSupersededTypingIndicators\(chatJid, lastProcessed\.id\)/,
+    );
+    expect(main).toMatch(
+      /await initialAgentTypingReady;\s+await releaseSupersededTypingIndicators\(virtualChatJid, lastProcessed\.id\)/,
+    );
+    const release = sourceBetween(
+      main,
+      'async function releaseSupersededTypingIndicators(',
+      'async function clearTrackedProcessingIndicators(',
+    );
+    expect(release).toMatch(/leaseId !== currentLeaseId/);
+    expect(release).toMatch(
+      /clearTrackedTypingIndicator\(logicalJid, leaseId\)/,
+    );
+  });
+
   test('queued batch hand-off waits for old provider cleanup before adding the next reaction', () => {
     expect(main).toMatch(
       /await clearTrackedProcessingIndicators\(chatJid\);\s+await beginBatchAckReactions\(chatJid, prePublishedIndicatorOwners\)/,

@@ -5427,6 +5427,36 @@ async function clearTrackedTypingIndicator(
   }
 }
 
+/**
+ * Runs on one logical chat are serialized, so any typing lease still tracked
+ * when a new run has acquired its own belongs to an earlier run that ended
+ * without a terminal clear — typically a runner closed mid-turn and replayed
+ * with a larger batch keyed by a newer input id. The replay owns the
+ * indicator now; the superseded leases would otherwise keep the IM typing
+ * pulse alive with no reply behind it until the adapter's lease expiry.
+ * Call only after the new lease is acquired so the indicator never gaps.
+ */
+async function releaseSupersededTypingIndicators(
+  logicalJid: string,
+  currentLeaseId: string,
+): Promise<void> {
+  const leases = trackedTypingIndicators.get(logicalJid);
+  if (!leases) return;
+  const superseded = [...leases.keys()].filter(
+    (leaseId) => leaseId !== currentLeaseId,
+  );
+  if (superseded.length === 0) return;
+  logger.info(
+    { logicalJid, currentLeaseId, superseded },
+    'Releasing typing leases superseded by a new run',
+  );
+  await Promise.allSettled(
+    superseded.map((leaseId) =>
+      clearTrackedTypingIndicator(logicalJid, leaseId),
+    ),
+  );
+}
+
 async function clearTrackedProcessingIndicators(
   logicalJid: string,
 ): Promise<void> {
@@ -6664,6 +6694,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     initialTypingReady,
   );
   await initialTypingReady;
+  await releaseSupersededTypingIndicators(chatJid, lastProcessed.id);
   let hadError = false;
   let sentReply = false;
   // Narrower than sentReply and fenced by immutable input id: true only for a
@@ -15676,6 +15707,7 @@ async function processAgentConversation(
     initialAgentTypingReady,
   );
   await initialAgentTypingReady;
+  await releaseSupersededTypingIndicators(virtualChatJid, lastProcessed.id);
   let activeAgentInputTurnId = lastProcessed.id;
   const agentStreamingAddress = replySourceImJid
     ? parseChannelAddress(replySourceImJid)
