@@ -17,7 +17,6 @@ import type { Variables } from '../web-context.js';
 import type { AuthUser, RegisteredGroup } from '../types.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { GROUPS_DIR } from '../config.js';
-import { validateSafeHttpsUrl } from '../url-safety.js';
 import { canAccessGroup, canModifyGroup } from '../group-acl.js';
 import { getRegisteredGroup } from '../db.js';
 import {
@@ -25,6 +24,11 @@ import {
   validateSkillPath,
   scanSkillDirectory,
 } from '../skill-utils.js';
+import {
+  buildSkillsCliEnvironment,
+  canonicalizeGitHubSkillUrl,
+  SkillUrlRefusedError,
+} from '../skill-import-service.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -258,11 +262,17 @@ workspaceConfigRoutes.post(
     if (!isNpmName && !isUrl) {
       return c.json({ error: 'Invalid package name format' }, 400);
     }
+    // URL form is limited to github.com and rebuilt before reaching the CLI, so
+    // `skills add` can never fetch or clone an arbitrary host (SSRF).
+    let source = pkg;
     if (isUrl) {
-      // SSRF 防护：URL 形式必须 HTTPS + 非内网（拒 169.254.169.254 等）。
-      const reason = validateSafeHttpsUrl(pkg);
-      if (reason) {
-        return c.json({ error: `Refused skill URL: ${reason}` }, 400);
+      try {
+        source = canonicalizeGitHubSkillUrl(pkg);
+      } catch (error) {
+        if (error instanceof SkillUrlRefusedError) {
+          return c.json({ error: error.message }, 400);
+        }
+        throw error;
       }
     }
 
@@ -276,10 +286,19 @@ workspaceConfigRoutes.post(
     try {
       await execFileAsync(
         'npx',
-        ['-y', 'skills', 'add', pkg, '--global', '--yes', '-a', 'claude-code'],
+        [
+          '-y',
+          'skills',
+          'add',
+          source,
+          '--global',
+          '--yes',
+          '-a',
+          'claude-code',
+        ],
         {
           timeout: 60_000,
-          env: { ...process.env, HOME: tempHome },
+          env: buildSkillsCliEnvironment(tempHome),
         },
       );
 

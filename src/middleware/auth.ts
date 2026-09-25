@@ -8,9 +8,9 @@ import {
 } from '../web-context.js';
 import { updateSessionLastActive, deleteUserSession } from '../db.js';
 import {
+  appendSessionCookies,
   isSessionExpired,
   verifySessionToken,
-  setSessionCookie,
 } from '../auth.js';
 import type { AuthUser, Permission } from '../types.js';
 import { hasPermission } from '../permissions.js';
@@ -55,6 +55,20 @@ export function tryVerifyAny(
     if (verified) return verified;
   }
   return null;
+}
+
+/** Every verified session token the Cookie header carries, under either cookie name. */
+export function getVerifiedSessionTokens(
+  cookieHeader: string | undefined,
+): string[] {
+  const tokens = new Set<string>();
+  for (const name of [SESSION_COOKIE_NAME_SECURE, SESSION_COOKIE_NAME_PLAIN]) {
+    for (const value of getAllCookieValues(cookieHeader, name)) {
+      const verified = verifySessionToken(value);
+      if (verified) tokens.add(verified.token);
+    }
+  }
+  return [...tokens];
 }
 
 export const authMiddleware = async (c: any, next: any) => {
@@ -108,7 +122,7 @@ export const authMiddleware = async (c: any, next: any) => {
 
   // Transparently upgrade unsigned legacy cookie to HMAC-signed
   if (legacy) {
-    c.header('Set-Cookie', setSessionCookie(c, token));
+    appendSessionCookies(c, token);
     logger.info(
       'Upgraded unsigned session cookie to HMAC-signed for user %s',
       session.username,

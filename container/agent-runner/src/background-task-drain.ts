@@ -1,4 +1,32 @@
 /**
+ * Claude Code 2.1.274 / claude-agent-sdk 0.3.274 answer background-task
+ * completions that are already queued with one shared model call. Each
+ * completion still gets its own success Result, but every one except the last
+ * is an empty placeholder (`num_turns: 0`, `origin.kind: 'task-notification'`)
+ * and only the last Result carries the reply. This arrives in fresh sessions
+ * too, not only in resumed ones.
+ */
+export function isMergedBackgroundCompletionPlaceholder(
+  message: unknown,
+): boolean {
+  if (!message || typeof message !== 'object') return false;
+  const result = message as {
+    type?: unknown;
+    subtype?: unknown;
+    num_turns?: unknown;
+    result?: unknown;
+    origin?: { kind?: unknown } | null;
+  };
+  return (
+    result.type === 'result' &&
+    result.subtype === 'success' &&
+    result.num_turns === 0 &&
+    result.origin?.kind === 'task-notification' &&
+    (typeof result.result !== 'string' || result.result.trim() === '')
+  );
+}
+
+/**
  * Tracks the protocol gap between "a background task is no longer live" and
  * "the main Agent has consumed that completion notification and finished its
  * follow-up turn".
@@ -174,6 +202,18 @@ export class BackgroundTaskDrainTracker {
     this.notificationActivityTaskIds.clear();
     this.observedResult = true;
     return this.canCompleteObservedResult();
+  }
+
+  /**
+   * A merged-completion placeholder stands for one queued notification whose
+   * reply is the shared call's final Result. It settles that notification's
+   * debt as its own Result did before the calls were merged, so completion
+   * accounting still balances when no activity can be attributed; but it is
+   * never a completion boundary, because the shared call has not run yet.
+   */
+  placeholderResultObserved(): void {
+    this.resultObserved('task-notification');
+    this.observedResult = false;
   }
 
   /**

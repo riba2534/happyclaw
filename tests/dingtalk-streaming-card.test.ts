@@ -11,7 +11,7 @@ vi.mock('../src/logger.js', () => ({
 }));
 
 const dingtalkHttps = vi.hoisted(() => ({
-  request(options: { path?: string }, cb: (res: any) => void) {
+  request(options: { path?: string; method?: string }, cb: (res: any) => void) {
     const requestListeners: Record<string, Array<(arg?: unknown) => void>> = {};
     const req = {
       on(event: string, handler: (arg?: unknown) => void) {
@@ -34,9 +34,25 @@ const dingtalkHttps = vi.hoisted(() => ({
         queueMicrotask(() => {
           cb(res);
           queueMicrotask(() => {
-            const payload = String(options.path).includes('/gettoken')
+            const requestPath = String(options.path);
+            // Official card_1_0 response bodies for CREATE and DELIVER.
+            const payload = requestPath.includes('/gettoken')
               ? { errcode: 0, access_token: 'test-token', expires_in: 7200 }
-              : { code: 'success' };
+              : requestPath === '/v1.0/card/instances/deliver'
+                ? {
+                    success: true,
+                    result: [
+                      {
+                        spaceId: 'cidXXXX',
+                        spaceType: 'IM_GROUP',
+                        success: true,
+                      },
+                    ],
+                  }
+                : options.method === 'POST' &&
+                    requestPath === '/v1.0/card/instances'
+                  ? { success: true, result: 'provider-card-result' }
+                  : { success: true };
             const body = Buffer.from(JSON.stringify(payload));
             for (const handler of responseListeners.data ?? []) handler(body);
             for (const handler of responseListeners.end ?? []) handler();

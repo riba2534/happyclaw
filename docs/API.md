@@ -60,6 +60,11 @@ Public：
 - `DELETE /api/auth/sessions/:id`
 - `POST /api/auth/avatar`
 
+会话 Cookie 在 HTTPS 下名为 `__Host-happyclaw_session`，HTTP 下名为
+`happyclaw_session`；每次下发会话都会同时让另一个名称过期。`POST /api/auth/logout`
+让两个名称都过期，并删除该请求在两个名称下携带、且属于同一用户的全部会话；
+其他设备的会话不受影响。
+
 ## 工作区、消息和运行控制
 
 - `GET|POST /api/groups`
@@ -263,6 +268,9 @@ owner 明确拒绝首次设置时可提交
 
 读操作要求访问工作区，写操作要求工作区 owner。
 
+`workspace-config/skills/install` 的 `package` 规则与 `POST /api/skills/install`
+相同：URL 形式只接受 github.com 仓库或 tree 链接，其他主机返回 400。
+
 ## 渠道账号
 
 - `GET|POST /api/channel-accounts`
@@ -359,6 +367,14 @@ Skills：
 - `DELETE /api/skills/user-all`
 - `POST /api/skills/install`
 - `POST /api/skills/:id/reinstall`
+
+`POST /api/skills/install` 的 `package` 接受 `owner/repo`、`owner/repo@skill`
+等包名，或 `https://github.com/<owner>/<repo>`、
+`https://github.com/<owner>/<repo>/tree/<ref>/<path>` 形式的 GitHub URL。URL
+按解析出的 owner、repo、ref 和路径重建后交给 `skills add`；其他主机、非默认端口、
+凭据、查询串、片段和 blob 链接在启动安装进程前返回 400。其他 Git 主机改用
+`POST /api/skills/import/git`。`skills add` 子进程继承服务进程的
+`HTTPS_PROXY`/`NO_PROXY`。Agent 的 `install_skill` 工具与 reinstall 使用同一规则。
 
 MCP：
 

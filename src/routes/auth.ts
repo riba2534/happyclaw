@@ -6,7 +6,10 @@ import path from 'path';
 import crypto from 'crypto';
 import { Hono } from 'hono';
 import type { Variables } from '../web-context.js';
-import { authMiddleware } from '../middleware/auth.js';
+import {
+  authMiddleware,
+  getVerifiedSessionTokens,
+} from '../middleware/auth.js';
 import { getClientIp } from '../utils.js';
 import { DATA_DIR } from '../config.js';
 import {
@@ -27,6 +30,7 @@ import {
   deleteUserSession,
   deleteUserSessionsByUserId,
   updateUserFields,
+  getSessionWithUser,
   getUserSessions,
   getUserCount,
   registerUserWithInvite,
@@ -44,6 +48,8 @@ import {
   verifyPassword,
   hashPassword,
   generateSessionToken,
+  sessionCookieHeaders,
+  clearedSessionCookieHeaders,
   sessionExpiresAt,
   checkLoginRateLimit,
   recordLoginAttempt,
@@ -63,10 +69,6 @@ import { getSystemSettings } from '../runtime-config.js';
 const authRoutes = new Hono<{ Variables: Variables }>();
 
 // --- Helper Functions ---
-
-// Cookie helpers live in auth.ts (single source of truth, also used by middleware).
-import { setSessionCookie, clearSessionCookie } from '../auth.js';
-export { setSessionCookie, clearSessionCookie };
 
 export function isUsernameConflictError(err: unknown): boolean {
   return (
@@ -220,10 +222,9 @@ authRoutes.post('/setup', async (c) => {
     }),
     {
       status: 201,
-      headers: {
+      headers: sessionCookieHeaders(c, token, {
         'Content-Type': 'application/json',
-        'Set-Cookie': setSessionCookie(c, token),
-      },
+      }),
     },
   );
 });
@@ -345,10 +346,9 @@ authRoutes.post('/login', async (c) => {
     }),
     {
       status: 200,
-      headers: {
+      headers: sessionCookieHeaders(c, token, {
         'Content-Type': 'application/json',
-        'Set-Cookie': setSessionCookie(c, token),
-      },
+      }),
     },
   );
 });
@@ -514,19 +514,27 @@ authRoutes.post('/register', async (c) => {
     JSON.stringify({ success: true, user: toUserPublic(newUser) }),
     {
       status: 201,
-      headers: {
+      headers: sessionCookieHeaders(c, token, {
         'Content-Type': 'application/json',
-        'Set-Cookie': setSessionCookie(c, token),
-      },
+      }),
     },
   );
 });
 
 authRoutes.post('/logout', authMiddleware, (c) => {
-  const sessionId = c.get('sessionId');
-  deleteUserSession(sessionId);
-  invalidateSessionCache(sessionId);
   const user = c.get('user') as AuthUser;
+  // A browser that moved between HTTP and HTTPS can still send a live session
+  // under the other cookie name. Expiring the cookies alone would leave that
+  // session valid server-side, so end every signed session this browser
+  // presents for the same user. Sessions on other devices are untouched.
+  const sessionIds = new Set<string>([c.get('sessionId')]);
+  for (const token of getVerifiedSessionTokens(c.req.header('cookie'))) {
+    if (getSessionWithUser(token)?.user_id === user.id) sessionIds.add(token);
+  }
+  for (const sessionId of sessionIds) {
+    deleteUserSession(sessionId);
+    invalidateSessionCache(sessionId);
+  }
   logAuthEvent({
     event_type: 'logout',
     username: user.username,
@@ -535,10 +543,9 @@ authRoutes.post('/logout', authMiddleware, (c) => {
 
   return new Response(JSON.stringify({ success: true }), {
     status: 200,
-    headers: {
+    headers: clearedSessionCookieHeaders({
       'Content-Type': 'application/json',
-      'Set-Cookie': clearSessionCookie(c),
-    },
+    }),
   });
 });
 
@@ -711,10 +718,9 @@ authRoutes.put('/password', authMiddleware, async (c) => {
     JSON.stringify({ success: true, user: toUserPublic(updated) }),
     {
       status: 200,
-      headers: {
+      headers: sessionCookieHeaders(c, newToken, {
         'Content-Type': 'application/json',
-        'Set-Cookie': setSessionCookie(c, newToken),
-      },
+      }),
     },
   );
 });

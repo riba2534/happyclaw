@@ -3,6 +3,7 @@ import { describe, expect, test } from 'vitest';
 import {
   buildHappyClawPromptPlan,
   createPromptPlan,
+  hasBackgroundTaskTools,
 } from '../container/agent-runner/src/prompt-plan.js';
 
 describe('HappyClaw PromptPlan', () => {
@@ -72,6 +73,25 @@ describe('HappyClaw PromptPlan', () => {
       'security-rules',
       'output',
     ]);
+  });
+
+  test('background-task guidance needs only Task now that TaskOutput is gone', () => {
+    // Claude Code 2.1.277 removed TaskOutput; Task still starts background
+    // agents and their completion arrives as a task notification.
+    expect(hasBackgroundTaskTools(['Bash', 'Read', 'Task', 'TaskStop'])).toBe(
+      true,
+    );
+    expect(hasBackgroundTaskTools(['Bash', 'Read', 'TaskStop'])).toBe(false);
+
+    const plan = buildHappyClawPromptPlan({
+      interaction: 'interaction',
+      security: 'security',
+      output: 'output',
+      backgroundTasks: 'background tasks',
+    });
+    expect(
+      plan.blocks.find((block) => block.id === 'background-tasks'),
+    ).toMatchObject({ condition: 'Task is available' });
   });
 
   test('hashes are deterministic and content-sensitive', () => {

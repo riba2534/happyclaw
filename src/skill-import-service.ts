@@ -400,6 +400,128 @@ export async function importSkillsFromGit(options: {
   }
 }
 
+/**
+ * A skill install URL refused before any process or network IO. Install entry
+ * points report it as a client error (HTTP 400), never as a server failure.
+ */
+export class SkillUrlRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SkillUrlRefusedError';
+  }
+}
+
+const GITHUB_OWNER_OR_REPO_RE = /^[\w.-]+$/;
+const GITHUB_REF_SEGMENT_RE = /^\w[\w.-]{0,199}$/;
+const GITHUB_PATH_SEGMENT_RE = /^[\w.-]+$/;
+
+function isAllowedSkillUrlHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/\.+$/, '');
+  return host === 'github.com' || host === 'www.github.com';
+}
+
+function isDotSegment(segment: string): boolean {
+  return segment === '.' || segment === '..';
+}
+
+/**
+ * Canonicalize a skill *URL* install source before it is handed to
+ * `npx skills add`.
+ *
+ * `skills add` treats https URLs outside GitHub/GitLab as well-known endpoints
+ * (redirect-following fetch) or as generic git remotes, so checking the literal
+ * hostname cannot stop DNS rebinding or 30x hops into private networks. URL
+ * installs are therefore limited to github.com repository and tree links, and
+ * the URL passed to the CLI is rebuilt from the parsed owner/repo/ref/path so
+ * the CLI always resolves it as a GitHub source: a git clone of
+ * `https://github.com/<owner>/<repo>.git` plus fixed GitHub/skills.sh API hosts.
+ * Because the destination host is fixed, no DNS pre-check is needed and the CLI
+ * keeps honouring the operator's HTTPS_PROXY / NO_PROXY settings.
+ */
+export function canonicalizeGitHubSkillUrl(raw: string): string {
+  const reason = validateSafeHttpsUrl(raw);
+  if (reason) throw new SkillUrlRefusedError(`Refused skill URL: ${reason}`);
+  const parsed = new URL(raw);
+  if (parsed.username || parsed.password) {
+    throw new SkillUrlRefusedError(
+      'Skill URLs containing credentials are not allowed',
+    );
+  }
+  if (!isAllowedSkillUrlHost(parsed.hostname) || parsed.port) {
+    throw new SkillUrlRefusedError(
+      'Skill URL installs are limited to https://github.com repository or tree URLs; use POST /api/skills/import/git for other hosts',
+    );
+  }
+  if (parsed.search || parsed.hash) {
+    throw new SkillUrlRefusedError(
+      'Skill URLs cannot contain a query string or fragment; use https://github.com/<owner>/<repo>/tree/<ref>/<path>',
+    );
+  }
+
+  const parts = parsed.pathname.split('/').filter(Boolean);
+  if (parts.length < 2) {
+    throw new SkillUrlRefusedError(
+      'Skill GitHub URL must include owner and repository',
+    );
+  }
+  const owner = parts[0];
+  const repo = parts[1].endsWith('.git') ? parts[1].slice(0, -4) : parts[1];
+  if (
+    !GITHUB_OWNER_OR_REPO_RE.test(owner) ||
+    !GITHUB_OWNER_OR_REPO_RE.test(repo) ||
+    isDotSegment(owner) ||
+    isDotSegment(repo)
+  ) {
+    throw new SkillUrlRefusedError('Invalid GitHub owner or repository name');
+  }
+  const repoUrl = `https://github.com/${owner}/${repo}`;
+  if (parts.length === 2) return repoUrl;
+
+  if (parts[2] === 'tree' && parts.length >= 4) {
+    const ref = parts[3];
+    if (!GITHUB_REF_SEGMENT_RE.test(ref)) {
+      throw new SkillUrlRefusedError('Invalid Git ref in skill URL');
+    }
+    const subpath = parts.slice(4);
+    if (
+      subpath.some(
+        (segment) =>
+          !GITHUB_PATH_SEGMENT_RE.test(segment) || isDotSegment(segment),
+      )
+    ) {
+      throw new SkillUrlRefusedError('Invalid repository path in skill URL');
+    }
+    return [repoUrl, 'tree', ref, ...subpath].join('/');
+  }
+  if (parts[2] === 'blob') {
+    throw new SkillUrlRefusedError(
+      'GitHub blob URLs are not supported for skill install; use a repository or tree URL',
+    );
+  }
+  throw new SkillUrlRefusedError(
+    'Unsupported GitHub skill URL path; use a repository or tree URL',
+  );
+}
+
+/**
+ * Environment for `npx skills add`: an isolated HOME so `--global` installs
+ * land in a temp dir, while proxy settings are inherited unchanged. Git LFS
+ * smudge stays disabled for every clone the CLI may start (including its
+ * `gh repo clone` fallback), so a repository's `.lfsconfig` cannot point
+ * downloads at another host.
+ */
+export function buildSkillsCliEnvironment(
+  home: string,
+  base: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  return {
+    ...base,
+    HOME: home,
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_LFS_SKIP_SMUDGE: '1',
+  };
+}
+
 export function importSkillsFromZip(options: {
   archive: Buffer;
   archiveName: string;

@@ -13,11 +13,7 @@ import {
   AdminPatchUserSchema,
   InviteCreateSchema,
 } from '../schemas.js';
-import {
-  isUsernameConflictError,
-  toUserPublic,
-  setSessionCookie,
-} from './auth.js';
+import { isUsernameConflictError, toUserPublic } from './auth.js';
 import type {
   AuthUser,
   Permission,
@@ -54,6 +50,7 @@ import {
   hashPassword,
   generateInviteCode,
   generateSessionToken,
+  sessionCookieHeaders,
   sessionExpiresAt,
 } from '../auth.js';
 import {
@@ -785,10 +782,9 @@ adminRoutes.patch(
             JSON.stringify({ success: true, user: toUserPublic(updated) }),
             {
               status: 200,
-              headers: {
+              headers: sessionCookieHeaders(c, newToken, {
                 'Content-Type': 'application/json',
-                'Set-Cookie': setSessionCookie(c, newToken),
-              },
+              }),
             },
           );
         }

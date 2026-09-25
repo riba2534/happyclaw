@@ -1,5 +1,13 @@
 import { describe, expect, test, vi } from 'vitest';
 
+const logger = vi.hoisted(() => ({
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+}));
+vi.mock('../src/logger.js', () => ({ logger }));
+
 import { QQStreamingController } from '../src/qq-streaming-card.js';
 import { finalizeChannelCardAfterDelivery } from '../src/channel-card-finalization.js';
 
@@ -226,6 +234,146 @@ describe('QQ streaming passive rejection fallback', () => {
         cause: rejection,
       });
       expect(fallback).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test.each([
+    { label: 'empty object', resp: {}, keys: [] },
+    { label: 'missing id', resp: { timestamp: 1 }, keys: ['timestamp'] },
+    { label: 'blank id', resp: { id: '' }, keys: ['id'] },
+    { label: 'whitespace id', resp: { id: '   ' }, keys: ['id'] },
+    { label: 'numeric id', resp: { id: 123 }, keys: ['id'] },
+    { label: 'null body', resp: null, keys: [] },
+  ])(
+    'visible stream DONE 2xx without an id ($label) completes with a warning',
+    async ({ resp, keys }) => {
+      vi.useFakeTimers();
+      logger.warn.mockClear();
+      try {
+        let calls = 0;
+        const send = vi.fn(async () => {
+          calls += 1;
+          if (calls === 1) return { id: 'stream-visible' };
+          return resp as any;
+        });
+        const fallback = vi.fn(async () => {});
+        const controller = new QQStreamingController({
+          openid: 'user',
+          msgSeq: 1,
+          passiveMsgId: 'message',
+          sendStreamChunk: send,
+          fallbackSend: fallback,
+        });
+
+        controller.append('visible preview');
+        await vi.advanceTimersByTimeAsync(600);
+        const finalized = await finalizeChannelCardAfterDelivery(
+          controller,
+          'visible preview and final',
+          true,
+          'delivery failed',
+        );
+
+        // QQ does not document an id on follow-up frames; the user already
+        // sees the full answer, so this must not become a partial delivery.
+        expect(finalized).toEqual({ acknowledged: true });
+        expect(fallback).not.toHaveBeenCalled();
+        expect(send).toHaveBeenCalledTimes(2);
+        expect(controller.getAcknowledgedProviderOutputCount()).toBe(2);
+        const missingId = logger.warn.mock.calls.filter(
+          ([, message]) =>
+            typeof message === 'string' && /has no id/.test(message),
+        );
+        expect(missingId).toHaveLength(1);
+        // Only the response shape is logged, never its values.
+        expect(missingId[0][0]).toEqual({
+          openid: 'user',
+          inputState: 10,
+          responseKeys: keys,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  test('id-less GENERATING and DONE ACKs complete and warn once per stream', async () => {
+    vi.useFakeTimers();
+    logger.warn.mockClear();
+    try {
+      let calls = 0;
+      const send = vi.fn(async () => {
+        calls += 1;
+        if (calls === 1) return { id: 'stream-visible' };
+        return {};
+      });
+      const fallback = vi.fn(async () => {});
+      const controller = new QQStreamingController({
+        openid: 'user',
+        msgSeq: 1,
+        passiveMsgId: 'message',
+        sendStreamChunk: send,
+        fallbackSend: fallback,
+      });
+
+      controller.append('visible');
+      await vi.advanceTimersByTimeAsync(600);
+      controller.append('visible more');
+      await vi.advanceTimersByTimeAsync(600);
+
+      const finalized = await finalizeChannelCardAfterDelivery(
+        controller,
+        'visible more and final',
+        true,
+        'delivery failed',
+      );
+
+      expect(finalized).toEqual({ acknowledged: true });
+      expect(fallback).not.toHaveBeenCalled();
+      expect(send).toHaveBeenCalledTimes(3);
+      expect(controller.getAcknowledgedProviderOutputCount()).toBe(3);
+      expect(
+        logger.warn.mock.calls.filter(
+          ([, message]) =>
+            typeof message === 'string' && /has no id/.test(message),
+        ),
+      ).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('visible stream DONE with official id completes and acknowledges', async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const send = vi.fn(async () => {
+        calls += 1;
+        return { id: calls === 1 ? 'stream-visible' : 'stream-done' };
+      });
+      const fallback = vi.fn(async () => {});
+      const controller = new QQStreamingController({
+        openid: 'user',
+        msgSeq: 1,
+        passiveMsgId: 'message',
+        sendStreamChunk: send,
+        fallbackSend: fallback,
+      });
+
+      controller.append('visible preview');
+      await vi.advanceTimersByTimeAsync(600);
+      const finalized = await finalizeChannelCardAfterDelivery(
+        controller,
+        'visible preview and final',
+        true,
+        'delivery failed',
+      );
+
+      expect(finalized).toEqual({ acknowledged: true });
+      expect(fallback).not.toHaveBeenCalled();
+      expect(controller.getAcknowledgedProviderOutputCount()).toBe(2);
     } finally {
       vi.useRealTimers();
     }

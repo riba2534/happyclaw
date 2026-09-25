@@ -1,5 +1,33 @@
 import { createHash } from 'node:crypto';
 
+import type { Options } from '@anthropic-ai/claude-agent-sdk';
+
+export type HappyClawSystemPrompt = NonNullable<Options['systemPrompt']>;
+
+/**
+ * Since SDK/CLI 0.3.267 / 2.1.267 a custom prompt or a preset `append` is
+ * recorded on the conversation's first request and replayed verbatim on every
+ * later request and `resume` until compaction. HappyClaw rebuilds this text for
+ * every runner from the current AgentProfile, prompts/*.md and per-turn
+ * conditions, restarts warm runners when that identity changes, and audits the
+ * rebuilt text as the PromptPlan. A recorded prompt would keep sending the
+ * session's first text instead, so opt out and render it on every request as
+ * Claude Code did before 2.1.267.
+ */
+export function buildHappyClawSystemPrompt(
+  promptText: string,
+  includeClaudePreset: boolean,
+): HappyClawSystemPrompt {
+  return includeClaudePreset
+    ? {
+        type: 'preset',
+        preset: 'claude_code',
+        append: promptText,
+        snapshot: false,
+      }
+    : { type: 'custom', prompt: promptText, snapshot: false };
+}
+
 export const HAPPYCLAW_SUBAGENT_RUNTIME_CONTRACT = `## HappyClaw delegated-task contract
 
 You are executing a task delegated by a parent agent. Return the requested findings or work product to that parent agent; do not act as though your text is the final user-facing reply. Stay within the delegated scope. Do not independently operate HappyClaw memory or Agent Builder unless the delegated task explicitly requires it.`;
@@ -7,8 +35,8 @@ You are executing a task delegated by a parent agent. Return the requested findi
 export interface SubagentRuntimeContractAudit {
   enabled: boolean;
   hash: string;
-  sdkCompatibility: 'claude-agent-sdk-0.3.238';
-  cliCompatibility: 'claude-code-2.1.238';
+  sdkCompatibility: 'claude-agent-sdk-0.3.280';
+  cliCompatibility: 'claude-code-2.1.280';
 }
 
 type HiddenSubagentPromptOption = {
@@ -26,7 +54,7 @@ function contractHash(): string {
 }
 
 /**
- * Isolates the SDK/CLI 0.3.238 / 2.1.238 undocumented compatibility surface.
+ * Isolates the SDK/CLI 0.3.280 / 2.1.280 undocumented compatibility surface.
  * The SDK serializes appendSubagentSystemPrompt during its initialize control
  * request, while this CLI version gates consumption behind the environment flag.
  */
@@ -46,8 +74,8 @@ export function withHappyClawSubagentContract<
   const audit: SubagentRuntimeContractAudit = {
     enabled,
     hash,
-    sdkCompatibility: 'claude-agent-sdk-0.3.238',
-    cliCompatibility: 'claude-code-2.1.238',
+    sdkCompatibility: 'claude-agent-sdk-0.3.280',
+    cliCompatibility: 'claude-code-2.1.280',
   };
 
   if (!enabled) {

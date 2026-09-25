@@ -71,27 +71,75 @@ export function verifySessionToken(signedValue: string): VerifiedToken | null {
     .digest('hex');
   const sigBuf = Buffer.from(sig, 'hex');
   const expectedBuf = Buffer.from(expected, 'hex');
-  if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+  if (
+    sigBuf.length !== expectedBuf.length ||
+    !crypto.timingSafeEqual(sigBuf, expectedBuf)
+  ) {
     return null;
   }
   return { token, legacy: false };
 }
 
-/** Build a Set-Cookie header value for a session token (signs + flags secure/plain). */
-export function setSessionCookie(c: any, token: string): string {
-  const secure = isSecureRequest(c);
-  const name = secure ? SESSION_COOKIE_NAME_SECURE : SESSION_COOKIE_NAME_PLAIN;
-  const secureSuffix = secure ? '; Secure' : '';
-  const signedToken = signSessionToken(token);
-  return `${name}=${signedToken}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${30 * 24 * 60 * 60}${secureSuffix}`;
+// The session lives under `__Host-happyclaw_session` on HTTPS and under
+// `happyclaw_session` on plain HTTP. Every write sets one name and expires the
+// other, so a browser that moved between schemes cannot keep a stale session
+// under the other name. Each value must be its own Set-Cookie line: several
+// cookies joined into one header value are unparseable for browsers, which is
+// why the raw values stay private to the helpers below.
+function sessionCookieValues(c: any, token: string): string[] {
+  const signed = signSessionToken(token);
+  const maxAge = 30 * 24 * 60 * 60;
+
+  if (isSecureRequest(c)) {
+    return [
+      `${SESSION_COOKIE_NAME_SECURE}=${signed}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}; Secure`,
+      `${SESSION_COOKIE_NAME_PLAIN}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`,
+    ];
+  }
+
+  return [
+    `${SESSION_COOKIE_NAME_PLAIN}=${signed}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}`,
+    `${SESSION_COOKIE_NAME_SECURE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0; Secure`,
+  ];
 }
 
-/** Build a Set-Cookie header value that clears the session cookie. */
-export function clearSessionCookie(c: any): string {
-  const secure = isSecureRequest(c);
-  const name = secure ? SESSION_COOKIE_NAME_SECURE : SESSION_COOKIE_NAME_PLAIN;
-  const secureSuffix = secure ? '; Secure' : '';
-  return `${name}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secureSuffix}`;
+function clearedSessionCookieValues(): string[] {
+  return [
+    `${SESSION_COOKIE_NAME_SECURE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0; Secure`,
+    `${SESSION_COOKIE_NAME_PLAIN}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`,
+  ];
+}
+
+type HeadersInitValue = ConstructorParameters<typeof Headers>[0];
+
+function headersWithSetCookies(
+  init: HeadersInitValue,
+  cookies: string[],
+): Headers {
+  const headers = new Headers(init);
+  for (const cookie of cookies) headers.append('Set-Cookie', cookie);
+  return headers;
+}
+
+/** Response headers that store the signed session `token` for this request's scheme. */
+export function sessionCookieHeaders(
+  c: any,
+  token: string,
+  init?: HeadersInitValue,
+): Headers {
+  return headersWithSetCookies(init, sessionCookieValues(c, token));
+}
+
+/** Response headers that expire the session cookie under both names. */
+export function clearedSessionCookieHeaders(init?: HeadersInitValue): Headers {
+  return headersWithSetCookies(init, clearedSessionCookieValues());
+}
+
+/** Append the session cookies for `token` to the response a Hono context is building. */
+export function appendSessionCookies(c: any, token: string): void {
+  for (const cookie of sessionCookieValues(c, token)) {
+    c.header('Set-Cookie', cookie, { append: true });
+  }
 }
 
 export function generateUserId(): string {
@@ -195,12 +243,20 @@ export function checkLoginRateLimit(
   const windowMs = lockoutMinutes * 60 * 1000;
 
   // Check per-username:ip limit
-  const ipCheck = checkAttemptRecord(`${username}:${ip}`, maxAttempts, windowMs);
+  const ipCheck = checkAttemptRecord(
+    `${username}:${ip}`,
+    maxAttempts,
+    windowMs,
+  );
   if (!ipCheck.allowed) return ipCheck;
 
   // Check per-username global limit (higher threshold, longer window)
   const globalMax = maxAttempts * GLOBAL_USERNAME_MULTIPLIER;
-  const globalCheck = checkAttemptRecord(`user:${username}`, globalMax, GLOBAL_USERNAME_WINDOW_MS);
+  const globalCheck = checkAttemptRecord(
+    `user:${username}`,
+    globalMax,
+    GLOBAL_USERNAME_WINDOW_MS,
+  );
   if (!globalCheck.allowed) return globalCheck;
 
   return { allowed: true };

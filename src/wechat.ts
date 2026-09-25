@@ -1087,9 +1087,15 @@ export function createWeChatConnection(
     attachmentEntry?: { type: string; data: string; mimeType: string };
     textPrefix?: string;
   }> {
+    const media = item.image_item?.media;
+    // extractTextContent already emitted "(image)" for undownloadable media.
+    if (!hasDownloadableCdnMedia(media)) return {};
+    // Same "[X消息]" family as the voice/video fallbacks, but naming why no
+    // image is attached so the agent does not assume it can see one.
+    const downloadFailed = '[图片消息（下载失败）]';
     try {
       const result = await downloadCdnMediaItem(
-        item.image_item?.media,
+        media,
         groupFolder,
         'image',
         (buffer) => {
@@ -1103,11 +1109,7 @@ export function createWeChatConnection(
           return `wechat_img_${msgIdentifier}${extMap[mimeType] ?? '.jpg'}`;
         },
       );
-      if (!result) return {};
-
-      const textPrefix = result.savedPath
-        ? `[图片: ${result.savedPath}]`
-        : undefined;
+      if (!result) return { textPrefix: downloadFailed };
 
       let attachmentEntry:
         | { type: string; data: string; mimeType: string }
@@ -1121,10 +1123,22 @@ export function createWeChatConnection(
         };
       }
 
-      return { attachmentEntry, textPrefix };
+      if (result.savedPath) {
+        return { attachmentEntry, textPrefix: `[图片: ${result.savedPath}]` };
+      }
+      if (!attachmentEntry) {
+        // Too large to inline and not on disk (no workspace, or the save
+        // failed): an image-only message would otherwise be dropped as empty.
+        logger.warn(
+          { size: result.buffer.length },
+          'WeChat image too large to inline and not saved to the workspace',
+        );
+        return { textPrefix: '[图片消息（图片过大）]' };
+      }
+      return { attachmentEntry };
     } catch (err) {
-      logger.warn({ err }, 'WeChat image download/decrypt failed, skipping');
-      return {};
+      logger.warn({ err }, 'WeChat image download/decrypt failed');
+      return { textPrefix: downloadFailed };
     }
   }
 

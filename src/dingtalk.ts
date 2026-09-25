@@ -1031,6 +1031,8 @@ interface DingTalkRobotMessage {
   senderId?: string;
   sessionWebhook?: string;
   robotCode?: string;
+  /** True when this callback was delivered because the bot was @mentioned. */
+  isInAtList?: boolean | string;
   msgtype: string;
   originalMsgId?: string;
   text?: {
@@ -1045,6 +1047,18 @@ interface DingTalkRobotMessage {
 }
 
 type RobotMessage = DTRobotMessage | DingTalkRobotMessage;
+
+/**
+ * DingTalk Stream / HTTP robot callbacks set `isInAtList` when the bot was
+ * @mentioned in a group. Some gateways coerce the flag to the string "true".
+ * Missing / false does not prove the turn was directed at the bot.
+ */
+export function isDingTalkBotMentioned(
+  data: RobotMessage | { isInAtList?: unknown },
+): boolean {
+  const flag = (data as { isInAtList?: unknown }).isInAtList;
+  return flag === true || flag === 'true';
+}
 
 function extractDingTalkAdmissionText(data: RobotMessage): string {
   if (data.msgtype === 'text' && 'text' in data) {
@@ -2203,21 +2217,47 @@ export function createDingTalkConnection(
         // Mention/owner gating runs before routing, registration, cache writes,
         // or attachment download. A rejected group message has zero business
         // side effects.
-        if (isGroup && opts.shouldProcessGroupMessage) {
-          const shouldProcess = opts.shouldProcessGroupMessage(
-            jid,
-            data.senderId,
-          );
-          if (!shouldProcess) {
-            const group = opts.resolveRegisteredGroup?.(jid);
-            const mode = group?.activation_mode ?? 'auto';
-            if (mode !== 'owner_mentioned') return;
-            if (
-              opts.isGroupOwnerMessage &&
-              !opts.isGroupOwnerMessage(jid, data.senderId)
-            ) {
-              return;
-            }
+        if (isGroup) {
+          const mode = opts.resolveRegisteredGroup?.(jid)?.activation_mode;
+          // Like WeCom, DingTalk only pushes group messages that @ the bot, so
+          // that @ must never reopen a paused group.
+          if (mode === 'disabled') {
+            logger.debug(
+              { jid },
+              'DingTalk group message dropped (activation disabled)',
+            );
+            return;
+          }
+          // shouldProcess===false means "mention required"; the @ recorded in
+          // isInAtList still admits the turn (mirrors Discord/WhatsApp). In
+          // owner_mentioned mode a missing flag keeps the previous behavior of
+          // trusting the platform delivery, because not every group msgtype is
+          // known to carry isInAtList; only an explicit non-mention drops it.
+          const botMentioned =
+            isDingTalkBotMentioned(data) ||
+            (mode === 'owner_mentioned' &&
+              (data as { isInAtList?: unknown }).isInAtList === undefined);
+          if (
+            opts.shouldProcessGroupMessage &&
+            !opts.shouldProcessGroupMessage(jid, data.senderId) &&
+            !botMentioned
+          ) {
+            logger.debug(
+              { jid },
+              'DingTalk group message dropped (mention required but bot not @mentioned)',
+            );
+            return;
+          }
+          if (
+            mode === 'owner_mentioned' &&
+            opts.isGroupOwnerMessage &&
+            !opts.isGroupOwnerMessage(jid, data.senderId)
+          ) {
+            logger.debug(
+              { jid, senderImId: data.senderId },
+              'DingTalk group message dropped (owner_mentioned mode, sender is not group owner)',
+            );
+            return;
           }
         }
 
@@ -2417,91 +2457,94 @@ export function createDingTalkConnection(
             pictureDownloadCode?: string;
           }> = data.content.richText ?? [];
           const textParts: string[] = [];
-          const imageEntries: {
-            downloadCode: string;
-            pictureDownloadCode: string;
-          }[] = [];
+          // A picture entry without a download code is still a picture the
+          // user sent; keep it so it surfaces as a failure, not as nothing.
+          const imageCodes: string[] = [];
 
           for (const entry of richText) {
             if (entry.text) {
               textParts.push(entry.text);
-            } else if (
-              entry.type === 'picture' &&
-              (entry.downloadCode || entry.pictureDownloadCode)
-            ) {
-              imageEntries.push({
-                downloadCode:
-                  entry.downloadCode || entry.pictureDownloadCode || '',
-                pictureDownloadCode: entry.pictureDownloadCode || '',
-              });
+            } else if (entry.type === 'picture') {
+              imageCodes.push(
+                entry.downloadCode || entry.pictureDownloadCode || '',
+              );
             }
           }
 
           logger.info(
-            { msgId, textParts, imageEntriesCount: imageEntries.length },
+            { msgId, textParts, imageEntriesCount: imageCodes.length },
             'DingTalk richText parsed',
           );
-          content = textParts.join('').trim();
-          if (imageEntries.length > 0) {
-            // Download each image; first one's base64 goes to Vision, all saved to disk
-            const allAttachments: Array<{
-              type: 'image';
-              data: string;
-              mimeType: string;
-            }> = [];
-            for (let i = 0; i < imageEntries.length; i++) {
-              const entry = imageEntries[i];
-              logger.info(
-                { msgId, downloadCode: entry.downloadCode, index: i },
-                'DingTalk richText downloading image',
-              );
-              const normalized = await normalizeDingTalkImage(
-                jid,
-                opts,
-                () =>
-                  downloadDingTalkImageByDownloadCode(
-                    entry.downloadCode || entry.pictureDownloadCode || '',
-                    data.robotCode ?? '',
-                    generation,
-                    signal,
-                  ),
-                generation,
-                signal,
-              );
-              logger.info(
-                { msgId, index: i, hasResult: !!normalized },
-                'DingTalk richText image download complete',
-              );
-              if (normalized?.attachmentsJson) {
-                const parsed = JSON.parse(normalized.attachmentsJson) as Array<{
+          const text = textParts.join('').trim();
+          // Vision gets every inline-sized image; each saved image keeps its
+          // own path label. Only a null normalize result is a failure — an
+          // oversized image is saved without a Vision attachment.
+          const imageLabels: string[] = [];
+          const allAttachments: Array<{
+            type: 'image';
+            data: string;
+            mimeType: string;
+          }> = [];
+          let failedImages = 0;
+          for (let i = 0; i < imageCodes.length; i++) {
+            const downloadCode = imageCodes[i];
+            logger.info(
+              { msgId, downloadCode, index: i },
+              'DingTalk richText downloading image',
+            );
+            const normalized = downloadCode
+              ? await normalizeDingTalkImage(
+                  jid,
+                  opts,
+                  () =>
+                    downloadDingTalkImageByDownloadCode(
+                      downloadCode,
+                      data.robotCode ?? '',
+                      generation,
+                      signal,
+                    ),
+                  generation,
+                  signal,
+                )
+              : null;
+            logger.info(
+              { msgId, index: i, hasResult: !!normalized },
+              'DingTalk richText image download complete',
+            );
+            if (!normalized) {
+              failedImages += 1;
+              continue;
+            }
+            imageLabels.push(normalized.content);
+            if (normalized.attachmentsJson) {
+              allAttachments.push(
+                ...(JSON.parse(normalized.attachmentsJson) as Array<{
                   type: 'image';
                   data: string;
                   mimeType: string;
-                }>;
-                allAttachments.push(...parsed);
-              }
-            }
-            if (allAttachments.length > 0) {
-              attachmentsJson = JSON.stringify(allAttachments);
-              // Prepend first image content if available
-              const firstImgContent = allAttachments[0] ? `[图片: base64]` : '';
-              content = (
-                firstImgContent + (content ? ' ' + content : '')
-              ).trim();
+                }>),
+              );
             }
           }
+          if (allAttachments.length > 0) {
+            attachmentsJson = JSON.stringify(allAttachments);
+          }
+          if (failedImages > 0) {
+            logger.warn(
+              { msgId, failedImages, totalImages: imageCodes.length },
+              'DingTalk richText image download failed for some or all images',
+            );
+            imageLabels.push(`[图片（${failedImages} 张下载失败）]`);
+          }
+          content = [...imageLabels, text].filter(Boolean).join('\n');
           logger.info(
             {
               msgId,
-              contentLen: content?.length,
+              contentLen: content.length,
               hasAttachments: !!attachmentsJson,
             },
             'DingTalk richText processing complete',
           );
-          if (!content && !attachmentsJson) {
-            // All richText entries were pictures with no text
-            content = attachmentsJson ? '[图片]' : '';
-          }
         } else if (data.msgtype === 'picture' && 'content' in data) {
           // Picture message: download via downloadCode API (short or long form)
           interface PictureContent {
@@ -2511,35 +2554,34 @@ export function createDingTalkConnection(
           const pictureContent = (data as { content: PictureContent }).content;
           const downloadCode =
             pictureContent?.downloadCode || pictureContent?.pictureDownloadCode;
-          if (!downloadCode) {
-            logger.warn(
-              { msgId },
-              'DingTalk picture message missing both downloadCode and pictureDownloadCode',
-            );
-            return;
-          }
-          const normalized = await normalizeDingTalkImage(
-            jid,
-            opts,
-            () =>
-              downloadDingTalkImageByDownloadCode(
-                downloadCode,
-                data.robotCode ?? '',
+          const normalized = downloadCode
+            ? await normalizeDingTalkImage(
+                jid,
+                opts,
+                () =>
+                  downloadDingTalkImageByDownloadCode(
+                    downloadCode,
+                    data.robotCode ?? '',
+                    generation,
+                    signal,
+                  ),
                 generation,
                 signal,
-              ),
-            generation,
-            signal,
-          );
+              )
+            : null;
           if (!normalized) {
+            // Sibling of audio/video: persist a salvage label (also when the
+            // download code is missing) so Stream ACK after handle does not
+            // permanently drop a picture-only inbound.
             logger.warn(
-              { msgId },
-              'DingTalk picture download failed, skipping',
+              { msgId, hasDownloadCode: !!downloadCode },
+              'DingTalk picture download failed, salvaging label',
             );
-            return;
+            content = '[图片消息（下载失败）]';
+          } else {
+            content = normalized.content;
+            attachmentsJson = normalized.attachmentsJson;
           }
-          content = normalized.content;
-          attachmentsJson = normalized.attachmentsJson;
         } else if (data.msgtype === 'file' && 'content' in data) {
           // File message: download via downloadCode, same API as picture
           interface FileContent {
@@ -2550,19 +2592,14 @@ export function createDingTalkConnection(
           const fileContent = (data as { content: FileContent }).content;
           const downloadCode = fileContent?.downloadCode;
           const fileName = fileContent?.fileName || 'file';
-          if (!downloadCode) {
-            logger.warn(
-              { msgId },
-              'DingTalk file message missing downloadCode',
-            );
-            return;
-          }
-          const fileBuffer = await downloadDingTalkFileByDownloadCode(
-            downloadCode,
-            data.robotCode ?? '',
-            generation,
-            signal,
-          );
+          const fileBuffer = downloadCode
+            ? await downloadDingTalkFileByDownloadCode(
+                downloadCode,
+                data.robotCode ?? '',
+                generation,
+                signal,
+              )
+            : null;
           assertInboundGeneration(generation, signal);
           if (fileBuffer) {
             const groupFolder = opts.resolveGroupFolder?.(jid);
@@ -2596,8 +2633,14 @@ export function createDingTalkConnection(
               content = `[文件: ${sanitizeFileName(fileName)}（未注册群组）]`;
             }
           } else {
-            logger.warn({ msgId }, 'DingTalk file download failed, skipping');
-            return;
+            // Sibling of audio/video: salvage (also when the download code is
+            // missing) so ACK-after-handle is not a silent permanent drop of a
+            // file-only inbound.
+            logger.warn(
+              { msgId, fileName, hasDownloadCode: !!downloadCode },
+              'DingTalk file download failed, salvaging label',
+            );
+            content = `[文件: ${sanitizeFileName(fileName)}（下载失败）]`;
           }
         } else if (data.msgtype === 'audio' && 'content' in data) {
           // Official C2C: { duration, downloadCode, recognition }
@@ -2707,23 +2750,29 @@ export function createDingTalkConnection(
         } else if (data.msgtype === 'image' && 'image' in data) {
           // Image message via contentUrl (legacy/native format)
           const contentUrl = (data as DingTalkRobotMessage).image?.contentUrl;
-          if (!contentUrl) {
-            logger.warn({ msgId }, 'DingTalk image message missing contentUrl');
-            return;
-          }
-          const normalized = await normalizeDingTalkImage(
-            jid,
-            opts,
-            () => downloadDingTalkImageAsBase64(contentUrl, generation, signal),
-            generation,
-            signal,
-          );
+          const normalized = contentUrl
+            ? await normalizeDingTalkImage(
+                jid,
+                opts,
+                () =>
+                  downloadDingTalkImageAsBase64(contentUrl, generation, signal),
+                generation,
+                signal,
+              )
+            : null;
           if (!normalized) {
-            logger.warn({ msgId }, 'DingTalk image download failed, skipping');
-            return;
+            // Sibling of audio/video: salvage label instead of early return
+            // (also when the URL is missing) so socketCallBackResponse success
+            // cannot silent-drop the message.
+            logger.warn(
+              { msgId, hasContentUrl: !!contentUrl },
+              'DingTalk image download failed, salvaging label',
+            );
+            content = '[图片消息（下载失败）]';
+          } else {
+            content = normalized.content;
+            attachmentsJson = normalized.attachmentsJson;
           }
-          content = normalized.content;
-          attachmentsJson = normalized.attachmentsJson;
         }
 
         // Skip empty messages (text without content, or failed image)

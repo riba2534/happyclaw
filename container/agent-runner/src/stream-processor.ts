@@ -1966,6 +1966,11 @@ export class StreamEventProcessor {
     return this.backgroundDrain.resultObserved(originKind);
   }
 
+  /** Settle one notification debt for a merged-completion placeholder. */
+  observeMergedCompletionPlaceholder(): void {
+    this.backgroundDrain.placeholderResultObserved();
+  }
+
   /** Used after a late authoritative level update. */
   canCompleteObservedBackgroundResult(): boolean {
     return this.backgroundDrain.canCompleteObservedResult();

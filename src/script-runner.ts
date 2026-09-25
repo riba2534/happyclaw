@@ -9,6 +9,8 @@ export interface ScriptRunResult {
   stdout: string;
   stderr: string;
   exitCode: number | null;
+  /** Set when the process was terminated by a signal (e.g. SIGKILL/OOM). */
+  signal: string | null;
   timedOut: boolean;
   aborted: boolean;
   durationMs: number;
@@ -130,7 +132,11 @@ export async function runScript(
       child.stderr?.on('data', (chunk: Buffer | string) => {
         if (stderr.length < MAX_BUFFER) stderr += chunk.toString();
       });
-      const finish = (exitCode: number | null, spawnError?: Error) => {
+      const finish = (
+        exitCode: number | null,
+        closeSignal: NodeJS.Signals | null = null,
+        spawnError?: Error,
+      ) => {
         if (finished) return;
         finished = true;
         clearTimeout(timeout);
@@ -150,15 +156,18 @@ export async function runScript(
         resolve({
           stdout: stdout.slice(0, MAX_BUFFER),
           stderr: (spawnError?.message || stderr).slice(0, MAX_BUFFER),
-          exitCode:
-            timedOut || aborted ? null : (exitCode ?? (spawnError ? 1 : 0)),
+          // Never coalesce a missing exit code to 0: external SIGKILL/OOM
+          // delivers close(null, signal) with aborted=false, and 0 would mark
+          // it SUCCESS. Spawn errors already arrive here as exit code 1.
+          exitCode: timedOut || aborted ? null : exitCode,
+          signal: closeSignal,
           timedOut,
           aborted,
           durationMs,
         });
       };
-      child.once('error', (err) => finish(1, err));
-      child.once('close', (code) => finish(code));
+      child.once('error', (err) => finish(1, null, err));
+      child.once('close', (code, closeSignal) => finish(code, closeSignal));
       activeScriptRuns.set(runId, {
         child,
         ownerId: options?.ownerId,
@@ -178,6 +187,7 @@ export async function runScript(
       stdout: '',
       stderr: err instanceof Error ? err.message : String(err),
       exitCode: 1,
+      signal: null,
       timedOut: false,
       aborted: false,
       durationMs,

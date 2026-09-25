@@ -138,8 +138,15 @@ import {
   AssistantUsageCollector,
   type AssistantUsageBatch,
 } from './assistant-usage.js';
-import { buildHappyClawPromptPlan, type PromptPlan } from './prompt-plan.js';
-import { withHappyClawSubagentContract } from './sdk-compat.js';
+import {
+  buildHappyClawPromptPlan,
+  hasBackgroundTaskTools,
+  type PromptPlan,
+} from './prompt-plan.js';
+import {
+  buildHappyClawSystemPrompt,
+  withHappyClawSubagentContract,
+} from './sdk-compat.js';
 import {
   isCliNoVisibleOutputCompanion,
   isProactiveFinalDeliveredSentinel,
@@ -159,6 +166,7 @@ import { prepareMessageStreamText } from './message-stream-text.js';
 import {
   BackgroundProtocolDebtWatchdog,
   DurableInputTurnCompletion,
+  isMergedBackgroundCompletionPlaceholder,
   QuiescentResultGate,
   shouldFailIncompleteQueryExit,
 } from './background-task-drain.js';
@@ -211,7 +219,9 @@ const DEFAULT_ALLOWED_TOOLS = [
   'WebSearch',
   'WebFetch',
   'Task',
-  'TaskOutput',
+  // 'TaskOutput' removed: Claude Code 2.1.277 dropped the deprecated tool.
+  // Background results arrive as task notifications and Bash output files are
+  // read with Read, so the entry no longer pre-approved anything.
   'TaskStop',
   'TeamCreate',
   'TeamDelete',
@@ -2409,8 +2419,7 @@ async function runQueryAttempt(
   const hasWebTools = allowedTools.some(
     (tool) => tool === 'WebSearch' || tool === 'WebFetch',
   );
-  const hasBackgroundTaskTools =
-    allowedTools.includes('Task') && allowedTools.includes('TaskOutput');
+  const backgroundTaskToolsAvailable = hasBackgroundTaskTools(allowedTools);
   const proactiveInteractiveContract =
     usesProactiveInteractiveContract(containerInput);
   const backgroundResultGate = new QuiescentResultGate(100);
@@ -2566,7 +2575,7 @@ async function runQueryAttempt(
           ? PROACTIVE_OUTPUT_GUIDELINES
           : ASSISTANT_OUTPUT_GUIDELINES,
     ...(hasWebTools ? { web: WEB_FETCH_GUIDELINES } : {}),
-    ...(hasBackgroundTaskTools
+    ...(backgroundTaskToolsAvailable
       ? { backgroundTasks: BACKGROUND_TASK_GUIDELINES }
       : {}),
     ...(channelGuidelines
@@ -2590,13 +2599,10 @@ async function runQueryAttempt(
     throw new Error(`prompt_plan_invalid: ${promptPlan.errors.join('; ')}`);
   }
   const systemPromptAppend = promptPlan.text;
-  const systemPrompt = includeClaudePreset
-    ? {
-        type: 'preset' as const,
-        preset: 'claude_code' as const,
-        append: systemPromptAppend,
-      }
-    : systemPromptAppend;
+  const systemPrompt = buildHappyClawSystemPrompt(
+    systemPromptAppend,
+    includeClaudePreset,
+  );
   const promptAudit = buildPromptAudit(promptPlan);
   if (agentTurnAnchor) promptAudit.turnAnchor = agentTurnAnchor.audit;
   const contextAuditBase = runtimeContextAuditBase(containerInput);
@@ -3127,6 +3133,20 @@ async function runQueryAttempt(
       if (replayedUuids && incomingUuid && replayedUuids.has(incomingUuid)) {
         log(
           `[replay-skip] ${msgType} uuid=${incomingUuid.slice(0, 8)} (replayed from resumed session)`,
+        );
+        continue;
+      }
+      // SDK 0.3.274 起排队的后台任务完成共用一次模型调用：每条通知仍各有一条
+      // success result，但除最后一条外都是空占位（num_turns === 0、origin 为
+      // task-notification），非恢复会话同样会收到。占位只结清它所代表通知的
+      // 完成债务，既不是回复也不是输入完成边界——否则共享调用开始前的延迟
+      // （如 UserPromptSubmit hook）一旦超过静默窗口，就会发布 result=null 的
+      // 完成帧，让主进程提前把输入/查询当作已结束。放在恢复会话指纹判别之前，
+      // 使恢复会话里的占位同样结清债务。
+      if (isMergedBackgroundCompletionPlaceholder(message)) {
+        if (emitOutput) processor.observeMergedCompletionPlaceholder();
+        log(
+          '[bg-placeholder] merged background-completion result (num_turns=0); waiting for the shared reply',
         );
         continue;
       }

@@ -235,6 +235,78 @@ async function apiRequest(
   });
 }
 
+interface CardDeliverSpaceResult {
+  spaceId?: unknown;
+  spaceType?: unknown;
+  success?: unknown;
+  errorMsg?: unknown;
+}
+
+/**
+ * DELIVER is the call that makes the card visible, so its envelope decides
+ * whether a cardInstanceId may be minted. DingTalk reports per-space results
+ * in `result[]` and commonly returns top-level success:true while the target
+ * space failed (robot not in the group, "spaces of card is empty"), so the
+ * per-space entries win whenever they are present.
+ *
+ * An explicit failure proves nothing became visible and releases the host's
+ * static fallback. An envelope that proves neither outcome (empty/HTML/broken
+ * JSON body, which apiRequest soft-resolves to {}) fails closed as uncertain,
+ * matching parseDingTalkGroupMessageResponse.
+ */
+function assertCardDelivered(
+  resp: ApiResponse,
+  target: DingTalkCardTarget,
+): void {
+  const results: CardDeliverSpaceResult[] = Array.isArray(resp.result)
+    ? resp.result.map((item) =>
+        item && typeof item === 'object'
+          ? (item as CardDeliverSpaceResult)
+          : {},
+      )
+    : [];
+
+  if (results.length === 0) {
+    if (resp.success === true) return;
+    if (resp.success === false) {
+      throw preAcceptImDeliveryError(
+        'DingTalk card delivery failed before visible presentation: success=false',
+      );
+    }
+    throw new ImDeliveryPhaseError(
+      'uncertain',
+      'DingTalk Card API card-deliver 2xx returned an unrecognized ACK envelope',
+    );
+  }
+
+  const [spaceType, spaceId] =
+    target.type === 'group'
+      ? ['IM_GROUP', target.openConversationId]
+      : ['IM_ROBOT', target.userId];
+  const targeted = results.filter(
+    (item) =>
+      item.spaceId === spaceId &&
+      (item.spaceType === undefined || item.spaceType === spaceType),
+  );
+  const relevant = targeted.length > 0 ? targeted : results;
+
+  if (relevant.every((item) => item.success === true)) return;
+  if (relevant.every((item) => item.success === false)) {
+    const reasons = relevant.map((item) =>
+      typeof item.errorMsg === 'string' && item.errorMsg.trim()
+        ? item.errorMsg.trim()
+        : 'unknown error',
+    );
+    throw preAcceptImDeliveryError(
+      `DingTalk card delivery failed before visible presentation: ${reasons.join('; ')}`,
+    );
+  }
+  throw new ImDeliveryPhaseError(
+    'uncertain',
+    'DingTalk Card API card-deliver 2xx returned an incomplete per-space ACK',
+  );
+}
+
 // ─── Build deliver body ──────────────────────────────────────
 
 function buildDeliverBody(
@@ -396,10 +468,44 @@ export class DingTalkStreamingCardController {
     }
     this.accumulatedText = finalText;
 
-    // If there's no text at all, skip card creation entirely
+    // Empty final: never leave a non-FINISHED AI Card behind with a false ACK.
+    // Mirror abort() by awaiting in-flight create, then terminalize any visible
+    // card (Feishu-like empty notice + FINISHED) before success. Mutation
+    // failure surfaces Partial/uncertain so the host does not skip static
+    // fallback.
     if (!finalText.trim()) {
-      this.state = 'completed';
-      return;
+      if (this.cardCreationPromise) {
+        await this.cardCreationPromise.catch(() => {});
+      }
+      if (this.terminalDeliveryError !== undefined) {
+        this.state = 'aborted';
+        throw this.terminalDeliveryError;
+      }
+
+      if (!this.cardInstanceId) {
+        this.state = 'completed';
+        return;
+      }
+
+      this.thinkingText = '';
+      this.thinking = false;
+      const emptyNotice = '> ⚠️ 本次运行没有生成可展示的最终内容。';
+      try {
+        await this.pushStreamingContent(emptyNotice, true);
+        await this.updateFlowStatus(FlowStatus.FINISHED, emptyNotice);
+        this.state = 'completed';
+        logger.info(
+          { cardId: this.cardInstanceId },
+          'DingTalk AI Card empty-complete terminalized',
+        );
+        return;
+      } catch (err: any) {
+        logger.warn(
+          { err: err.message, cardId: this.cardInstanceId },
+          'DingTalk AI Card empty-complete terminalize failed',
+        );
+        throw this.terminalizeDeliveryFailure(err);
+      }
     }
 
     logger.info(
@@ -819,6 +925,23 @@ export class DingTalkStreamingCardController {
         }
         logger.info({ cardId, createResp }, 'DingTalk AI Card create response');
 
+        // CREATE only registers an invisible card resource, so anything short
+        // of the official success:true (including an empty/HTML/broken-JSON
+        // 2xx that apiRequest soft-resolves to {}) is safe to treat as
+        // pre-accept: DELIVER is never attempted and the host may fall back.
+        if (createResp.success !== true) {
+          logger.warn(
+            { cardId, responseKeys: Object.keys(createResp) },
+            'DingTalk AI Card create response missing success:true',
+          );
+          throw preAcceptImDeliveryError(
+            'DingTalk card resource creation failed before visible delivery',
+            dingTalkCardApiError(
+              'DingTalk Card API card-create 2xx missing success:true',
+            ),
+          );
+        }
+
         // 2. Deliver to target
         const deliverBody = buildDeliverBody(
           cardId,
@@ -836,6 +959,7 @@ export class DingTalkStreamingCardController {
           { cardId, target: this.target, deliverResp },
           'DingTalk AI Card deliver response',
         );
+        assertCardDelivered(deliverResp, this.target);
 
         this.cardInstanceId = cardId;
         this.cardCreationError = undefined;

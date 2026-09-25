@@ -32,6 +32,8 @@ const MAX_THINKING_CHARS = 500;
 const MAX_TOOLS_DISPLAY = 5;
 const MAX_TOOL_SUMMARY_CHARS = 60;
 const MAX_RECENT_EVENTS = 5;
+// Same empty-final notice as the Feishu and DingTalk cards.
+const EMPTY_FINAL_NOTICE = '> ⚠️ 本次运行没有生成可展示的最终内容。';
 
 function discordMessageCreateError(error: unknown): unknown {
   if (explicitImDeliveryPhase(error) !== undefined) return error;
@@ -164,19 +166,54 @@ export class DiscordStreamingEditController {
       this.state = 'aborted';
       throw this.terminalDeliveryError;
     }
-    this.accumulatedText = finalText;
+    // An empty final must not erase text that was already streamed: the
+    // silent-success cleanup passes '' after the Agent answered through
+    // send_message. Like abort(), keep the streamed body.
+    if (finalText.trim()) this.accumulatedText = finalText;
 
-    // If there's no text at all, skip message creation entirely
-    if (!finalText.trim()) {
-      this.state = 'completed';
-      return;
+    // Nothing to show at all: settle any visible placeholder into the shared
+    // empty-final notice (tool trace kept, thinking/status dropped) so no
+    // thinking placeholder is left behind.
+    if (!this.accumulatedText.trim()) {
+      if (this.messageCreationPromise) {
+        await this.messageCreationPromise.catch(() => {});
+      }
+      if (this.terminalDeliveryError !== undefined) {
+        this.state = 'aborted';
+        throw this.terminalDeliveryError;
+      }
+
+      if (this.messages.length === 0) {
+        this.state = 'completed';
+        return;
+      }
+
+      this.thinkingText = '';
+      this.thinking = false;
+      this.systemStatus = null;
+      const content = this.buildAuxPrefix() + EMPTY_FINAL_NOTICE;
+      try {
+        await this.editLastMessage(
+          content.length > DISCORD_MSG_LIMIT
+            ? '...' + content.slice(-(DISCORD_MSG_LIMIT - 3))
+            : content,
+        );
+        this.state = 'completed';
+        return;
+      } catch (err: any) {
+        logger.warn(
+          { err: err.message },
+          'Discord empty-complete placeholder terminalize failed',
+        );
+        throw this.terminalizeDeliveryFailure(err);
+      }
     }
 
     logger.info(
       {
         state: this.state,
         hasMessages: this.messages.length > 0,
-        textLen: finalText.length,
+        textLen: this.accumulatedText.length,
       },
       'Discord streaming edit complete() called',
     );
@@ -210,7 +247,7 @@ export class DiscordStreamingEditController {
       this.thinking = false;
 
       // Split and send final content (clean, no aux prefix)
-      await this.splitAndSend(finalText);
+      await this.splitAndSend(this.accumulatedText);
       this.state = 'completed';
       logger.info(
         { messageCount: this.messages.length },

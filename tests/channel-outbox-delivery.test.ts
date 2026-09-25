@@ -22,6 +22,8 @@ const db = await import('../src/db.js');
 const store = await import('../src/channel-reliability-store.js');
 const delivery = await import('../src/channel-outbox-delivery.js');
 const runtimeScope = await import('../src/channel-outbox-runtime-scope.js');
+const retryPolicy = await import('../src/im-send-retry-policy.js');
+const { DingTalkPartialDeliveryError } = await import('../src/dingtalk.js');
 const { ChannelTurnRuntime } = await import('../src/channel-turn-runtime.js');
 
 const route = {
@@ -376,6 +378,42 @@ describe('channel outbox physical delivery transaction', () => {
     const replay = await delivery.deliverChannelOutboxItem(input);
     expect(replay.status).toBe('uncertain');
     expect(providerAccepted).toBe(1);
+  });
+
+  test('keeps a code-only partial with a pre-accept tail uncertain and fenced', async () => {
+    const now = '2026-07-23T04:01:30.000Z';
+    const run = createRun('partial-pre-accept-tail', now);
+    let sends = 0;
+    const input = {
+      ...route,
+      turnRunId: run.id,
+      ordinal: 0,
+      kind: 'text' as const,
+      payload: { text: 'two chunks' },
+      owner: 'sender-partial-pre-accept',
+      now: () => now,
+      delivery: {
+        mode: 'single' as const,
+        send: async (): Promise<{ providerMessageId: string }> => {
+          sends++;
+          // The first chunk is already visible. The tail never left the host,
+          // but the acknowledged prefix still forbids replaying the row.
+          throw new DingTalkPartialDeliveryError(
+            1,
+            2,
+            retryPolicy.preAcceptImDeliveryError('DingTalk token unavailable'),
+          );
+        },
+      },
+    };
+    const first = await delivery.deliverChannelOutboxItem(input);
+    expect(first.status).toBe('uncertain');
+    expect(store.getUncertainChannelOutboxForTurn(run.id)?.id).toBe(
+      first.itemId,
+    );
+    const replay = await delivery.deliverChannelOutboxItem(input);
+    expect(replay.status).toBe('uncertain');
+    expect(sends).toBe(1);
   });
 
   test('reuses a persisted upload after process death before send', async () => {
