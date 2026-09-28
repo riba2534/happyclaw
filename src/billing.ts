@@ -24,6 +24,8 @@ import {
   expireSubscriptions,
   getDailyUsageSumForMonth,
   correctMonthlyUsage,
+  toLocalDateString,
+  toLocalMonthString,
 } from './db.js';
 import { getSystemSettings } from './runtime-config.js';
 import { logger } from './logger.js';
@@ -867,7 +869,7 @@ export function reconcileMonthlyUsage(userId: string, month: string): void {
   }
 }
 
-function getQuotaUsageSnapshot(
+export function getQuotaUsageSnapshot(
   userId: string,
   plan: BillingPlan,
   now = new Date(),
@@ -883,11 +885,11 @@ function getQuotaUsageSnapshot(
   monthlyResetAt: string;
   baseUsage: NonNullable<QuotaCheckResult['usage']>;
 } {
-  const today = now.toISOString().slice(0, 10);
-  const month = now.toISOString().slice(0, 7);
+  const today = toLocalDateString(now);
+  const month = toLocalMonthString(now);
 
   const dailyUsage = getDailyUsage(userId, today);
-  const weeklySummary = getWeeklyUsageSummary(userId);
+  const weeklySummary = getWeeklyUsageSummary(userId, now);
   const monthlyUsage = getMonthlyUsage(userId, month);
 
   const dailyCost = dailyUsage?.total_cost_usd ?? 0;

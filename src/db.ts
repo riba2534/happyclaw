@@ -3990,12 +3990,19 @@ export function rebuildMessageTokenUsageFromLedger(
 /**
  * Get a local timezone date string (YYYY-MM-DD) from a Date or ISO string.
  */
-function toLocalDateString(date?: Date | string): string {
+export function toLocalDateString(date?: Date | string): string {
   const d = date ? new Date(date) : new Date();
   const year = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+/**
+ * Get a local timezone month string (YYYY-MM) from a Date or ISO string.
+ */
+export function toLocalMonthString(date?: Date | string): string {
+  return toLocalDateString(date).slice(0, 7);
 }
 
 export function getUsageDateWindow(
@@ -15319,17 +15326,19 @@ export function getDailyUsage(
   return mapDailyUsageRow(row);
 }
 
-export function getWeeklyUsageSummary(userId: string): {
+export function getWeeklyUsageSummary(
+  userId: string,
+  now: Date = new Date(),
+): {
   totalCost: number;
   totalTokens: number;
 } {
   // Align to calendar week (Monday–Sunday) to match checkQuota() reset logic
-  const now = new Date();
   const dayOfWeek = now.getDay(); // 0=Sun, 1=Mon, ...
   const daysSinceMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
   const monday = new Date(now);
   monday.setDate(now.getDate() - daysSinceMonday);
-  const startDate = monday.toISOString().slice(0, 10);
+  const startDate = toLocalDateString(monday);
 
   const row = db
     .prepare(
