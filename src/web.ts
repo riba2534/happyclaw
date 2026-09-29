@@ -62,6 +62,9 @@ import workspaceRoutes from './routes/workspaces.js';
 import { usage as usageRoutes } from './routes/usage.js';
 import billingRoutes from './routes/billing.js';
 import bugReportRoutes from './routes/bug-report.js';
+import { codexGatewayApp } from './codex-gateway/gateway.js';
+import { initCodexCatalogSync } from './codex-gateway/model-catalog-sync.js';
+import { CODEX_GATEWAY_ROUTE } from './codex-gateway/types.js';
 import channelAccountRoutes, {
   injectChannelAccountDeps,
 } from './routes/channel-accounts.js';
@@ -290,6 +293,9 @@ app.route('/api/usage', usageRoutes);
 app.route('/api/billing', billingRoutes);
 app.route('/api/bug-report', bugReportRoutes);
 app.route('/api/channel-accounts', channelAccountRoutes);
+// 不挂在 /api/* 下：网关用 provider gateway token 鉴权（x-api-key），
+// 不是浏览器 Cookie 会话，不需要也不应该套用 /api/* 的 CORS/Cookie 中间件。
+app.route(CODEX_GATEWAY_ROUTE, codexGatewayApp);
 
 // --- POST /api/messages ---
 
@@ -3519,6 +3525,8 @@ export function startWebServer(webDeps: WebDeps): void {
     broadcastDockerPullLog,
     broadcastDockerPullComplete,
   });
+  // Codex 模型目录：读磁盘缓存后后台同步上游（永不阻塞启动）。
+  initCodexCatalogSync();
 
   httpServer = serve(
     {

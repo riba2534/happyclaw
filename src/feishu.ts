@@ -295,6 +295,18 @@ const FEISHU_INBOX_GATE_RETRY_DELAY_MS = 250;
 const FEISHU_INBOX_RECOVERY_LIMIT = 500;
 const FEISHU_RESOURCE_REQUEST_TIMEOUT_MS = 15_000;
 const FEISHU_RESOURCE_STREAM_TIMEOUT_MS = 30_000;
+// `lark.Client` requests (token fetch + all OpenAPI calls, including
+// send_card/add_reaction/api_request mutations) run on the SDK's shared
+// `defaultHttpInstance`, an axios instance created with no timeout. A stalled
+// TCP/TLS handshake to Feishu therefore hangs the underlying promise forever;
+// the only thing that ever fires is the runner's own 120s IPC poll timeout,
+// which surfaces as an opaque "Timeout waiting for IPC result" with no
+// indication that the stall was network-level. Bounding it here lets
+// `deliverChannelOutboxItem` observe a real error and fence the mutation as
+// `uncertain`/`failed` well inside that 120s budget instead of leaving both
+// the promise and the outbox claim hanging past it.
+const FEISHU_CLIENT_HTTP_TIMEOUT_MS = 60_000;
+let feishuClientHttpTimeoutApplied = false;
 const FEISHU_ACK_REACTION_TIMEOUT_MS = 10_000;
 const FEISHU_CURSOR_SCOPE = 'chat_messages';
 // 启动期 bot info 拉取的最大重试次数（指数退避 1s/2s/4s）
@@ -3813,6 +3825,14 @@ export function createFeishuConnection(
       restoreDurableChatProgress();
 
       // Initialize client
+      if (!feishuClientHttpTimeoutApplied) {
+        // Set once: `defaultHttpInstance` is a module-level singleton shared
+        // by every `lark.Client` in this process, so re-applying per connect
+        // would be redundant, not incorrect.
+        lark.defaultHttpInstance.defaults.timeout =
+          FEISHU_CLIENT_HTTP_TIMEOUT_MS;
+        feishuClientHttpTimeoutApplied = true;
+      }
       client = new lark.Client({
         appId: config.appId,
         appSecret: config.appSecret,

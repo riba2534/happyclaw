@@ -2950,6 +2950,13 @@ export function createDingTalkConnection(
               'Temporarily disabled axios global proxy for dingtalk-stream SDK',
             );
           }
+          // `dingtalk-stream` calls the bare `axios` module internally (token
+          // fetch + WS endpoint resolution) with no timeout configured, same
+          // failure mode as the Feishu `defaultHttpInstance` bug — bound it
+          // once, permanently, unlike the proxy setting which is restored below.
+          if (axios.defaults && !axios.defaults.timeout) {
+            axios.defaults.timeout = DINGTALK_HTTPS_REQUEST_TIMEOUT_MS;
+          }
 
           // Create DWClient
           nextClient = new DWClient({

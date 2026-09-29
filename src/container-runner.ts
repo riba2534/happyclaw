@@ -27,6 +27,10 @@ import {
 } from './config.js';
 import { logger } from './logger.js';
 import {
+  resolveCodexGatewayBaseUrl,
+  isCodexGatewayBaseUrl,
+} from './codex-gateway/resolve-gateway-url.js';
+import {
   buildEffectiveMcpManifest,
   loadPluginMcpDefinitions,
 } from './effective-mcp-manifest.js';
@@ -1595,6 +1599,8 @@ interface PreparedVolumeMounts {
   runtimeMcpServers: Record<string, Record<string, unknown>>;
   hostPlugins: SdkPluginConfig[];
   dockerOauthLaunch: DockerOauthLaunchSnapshot | null;
+  /** Selected provider routes through the ChatGPT/Codex 订阅网关; docker run needs host.docker.internal. */
+  usesCodexGateway: boolean;
 }
 
 function prepareVolumeMounts(
@@ -1880,7 +1886,17 @@ function prepareVolumeMounts(
       : null,
   );
   fs.mkdirSync(envDir, { recursive: true });
-  const globalConfig = resolvedProvider?.config ?? getClaudeProviderConfig();
+  const rawGlobalConfig = resolvedProvider?.config ?? getClaudeProviderConfig();
+  const globalConfig = {
+    ...rawGlobalConfig,
+    anthropicBaseUrl: resolveCodexGatewayBaseUrl(
+      rawGlobalConfig.anthropicBaseUrl,
+      'container',
+    ),
+  };
+  const usesCodexGateway = isCodexGatewayBaseUrl(
+    rawGlobalConfig.anthropicBaseUrl,
+  );
   const containerOverride = getContainerEnvConfig(group.folder);
   const effectiveContainerOverride = resolvedProvider
     ? { customEnv: containerOverride.customEnv }
@@ -2054,6 +2070,7 @@ function prepareVolumeMounts(
     runtimeMcpServers,
     hostPlugins: pluginSkills,
     dockerOauthLaunch,
+    usesCodexGateway,
   };
 }
 
@@ -2495,7 +2512,10 @@ export async function runContainerAgent(
       containerName,
       TIMEZONE,
       detectContainerHostIdentity(),
-      { addHostGateway: containerProxy.addHostGateway },
+      {
+        addHostGateway:
+          containerProxy.addHostGateway || preparedLaunch.usesCodexGateway,
+      },
       containerImage,
     );
 
@@ -3529,8 +3549,15 @@ export async function runHostAgent(
   const hostModelSelectionPinned = !!resolvePinnedModelConfigId(
     input.agentProfile?.modelConfigId,
   );
-  const globalConfig =
+  const rawGlobalConfig =
     hostPoolResult?.resolved.config ?? getClaudeProviderConfig();
+  const globalConfig = {
+    ...rawGlobalConfig,
+    anthropicBaseUrl: resolveCodexGatewayBaseUrl(
+      rawGlobalConfig.anthropicBaseUrl,
+      'host',
+    ),
+  };
   let hostProviderFailureReported = false;
   let hostProviderFailureTerminal: boolean | undefined;
   let hostProviderFailureMaintenance = false;

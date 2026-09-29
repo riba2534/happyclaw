@@ -133,6 +133,24 @@ import type {
   CachedOAuthUsage,
 } from '../runtime-config.js';
 import {
+  generateCodexPkcePair,
+  buildCodexAuthorizeUrl,
+  exchangeCodexCode,
+  buildCodexCredentials,
+} from '../codex-gateway/oauth.js';
+import {
+  CODEX_GATEWAY_BASE_URL_PLACEHOLDER,
+  CODEX_OAUTH_FLOW_TTL_MS,
+} from '../codex-gateway/types.js';
+import {
+  CODEX_DEFAULT_MODEL,
+  CODEX_DEFAULT_EFFORT,
+} from '../codex-gateway/model-catalog.js';
+import {
+  getResolvedCodexCatalog,
+  maybeRefreshCodexCatalog,
+} from '../codex-gateway/model-catalog-sync.js';
+import {
   hasOAuthUsageSignals,
   parseOAuthUsageResponse,
 } from '../runtime-config.js';
@@ -769,6 +787,41 @@ setInterval(() => {
     if (flow.expiresAt < now) oauthFlows.delete(key);
   }
 }, 60_000);
+
+interface CodexOAuthFlow {
+  codeVerifier: string;
+  expiresAt: number;
+  targetProviderId?: string; // 空 = 创建新供应商
+  userId: string; // 发起者绑定：防止同权限的其他管理员消费他人挂起的流程
+}
+const codexOauthFlows = new Map<string, CodexOAuthFlow>();
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, flow] of codexOauthFlows) {
+    if (flow.expiresAt < now) codexOauthFlows.delete(key);
+  }
+}, 60_000);
+
+/** 粘贴回来的可能是完整跳转失败的 URL，也可能是裸 code；两种都接受。 */
+function extractCodexCallbackParams(
+  input: string,
+): { code: string; state: string | null } | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  try {
+    const url = new URL(trimmed);
+    // 只接受官方回调地址（localhost:1455）；其他来源的 code 一律拒绝，
+    // 防止把任意第三方 URL 里的参数误当授权码（纵深防御：伪造 code 本身
+    // 也会因 PKCE 校验失败）。
+    if (url.origin !== 'http://localhost:1455') return null;
+    const code = url.searchParams.get('code');
+    if (code) return { code, state: url.searchParams.get('state') };
+  } catch {
+    // 不是 URL，当作裸 code 处理
+  }
+  return { code: trimmed, state: null };
+}
 
 // --- OAuth Usage Cache ---
 
@@ -1799,6 +1852,145 @@ configRoutes.post(
       logger.error({ err }, 'OAuth token exchange error');
       const message =
         err instanceof Error ? err.message : 'OAuth token exchange failed';
+      return c.json({ error: message }, 500);
+    }
+  },
+);
+
+// ─── GET /codex/model-catalog — Codex 模型目录（UI 下拉数据源）──────────
+// 目录真相源是上游 openai/codex 的 models.json，由 model-catalog-sync
+// 定期同步（baked-in 目录兜底）；前端不再硬编码。
+configRoutes.get(
+  '/codex/model-catalog',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    // TTL 过期时触发后台刷新：响应不等待网络，目录在流量中自愈。
+    maybeRefreshCodexCatalog();
+    const resolved = getResolvedCodexCatalog();
+    return c.json({
+      models: resolved.models,
+      defaultModel: CODEX_DEFAULT_MODEL,
+      defaultEffort: CODEX_DEFAULT_EFFORT,
+      source: resolved.source,
+      fetchedAt: resolved.fetchedAt,
+    });
+  },
+);
+
+// ─── POST /codex/oauth/start — 启动 ChatGPT/Codex 订阅 OAuth PKCE 流程 ─────
+configRoutes.post(
+  '/codex/oauth/start',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const targetProviderId =
+      typeof (body as Record<string, unknown>).targetProviderId === 'string'
+        ? ((body as Record<string, unknown>).targetProviderId as string)
+        : undefined;
+
+    const state = randomBytes(32).toString('hex');
+    const { codeVerifier, codeChallenge } = generateCodexPkcePair();
+
+    codexOauthFlows.set(state, {
+      codeVerifier,
+      expiresAt: Date.now() + CODEX_OAUTH_FLOW_TTL_MS,
+      targetProviderId,
+      userId: (c.get('user') as AuthUser).id,
+    });
+
+    return c.json({
+      authorizeUrl: buildCodexAuthorizeUrl(state, codeChallenge),
+      state,
+      // 登录成功后浏览器会跳去 http://localhost:1455/auth/callback（本机通常没有
+      // 进程监听，页面会加载失败）——把失败页地址栏的完整 URL 粘贴回来即可。
+      redirectHint: 'http://localhost:1455/auth/callback',
+    });
+  },
+);
+
+// ─── POST /codex/oauth/callback — ChatGPT/Codex 订阅 OAuth 回调 ─────
+configRoutes.post(
+  '/codex/oauth/callback',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const { state, code: rawCode } = body as { state?: string; code?: string };
+    if (!state || !rawCode) {
+      return c.json({ error: 'Missing state or code' }, 400);
+    }
+
+    const flow = codexOauthFlows.get(state);
+    if (!flow) {
+      return c.json({ error: 'Invalid or expired OAuth state' }, 400);
+    }
+    if (flow.userId !== (c.get('user') as AuthUser).id) {
+      codexOauthFlows.delete(state);
+      return c.json({ error: 'OAuth flow was started by another user' }, 403);
+    }
+    if (flow.expiresAt < Date.now()) {
+      codexOauthFlows.delete(state);
+      return c.json({ error: 'OAuth flow expired' }, 400);
+    }
+    codexOauthFlows.delete(state);
+
+    const parsed = extractCodexCallbackParams(rawCode);
+    if (!parsed) {
+      return c.json({ error: 'Invalid code/callback URL' }, 400);
+    }
+    // 粘贴的是完整回调 URL 时优先用其中的 state 做一次一致性校验；裸 code 没有可比对项。
+    if (parsed.state && parsed.state !== state) {
+      return c.json({ error: 'State mismatch' }, 400);
+    }
+
+    try {
+      const tokenResponse = await exchangeCodexCode(
+        parsed.code,
+        flow.codeVerifier,
+      );
+      const codexCredentials = buildCodexCredentials(tokenResponse);
+
+      const actor = (c.get('user') as AuthUser).username;
+      const gatewayToken = randomBytes(32).toString('hex');
+
+      let provider;
+      if (flow.targetProviderId) {
+        provider = updateProvider(flow.targetProviderId, {
+          anthropicBaseUrl: CODEX_GATEWAY_BASE_URL_PLACEHOLDER,
+        });
+        provider = updateProviderSecrets(flow.targetProviderId, {
+          codexOAuthCredentials: codexCredentials,
+          anthropicAuthToken: gatewayToken,
+          clearAnthropicApiKey: true,
+          clearClaudeOAuthCredentials: true,
+          clearClaudeCodeOauthToken: true,
+        });
+      } else {
+        provider = createProvider({
+          name: `ChatGPT 订阅${codexCredentials.email ? ` (${codexCredentials.email})` : ''}`,
+          type: 'third_party',
+          anthropicBaseUrl: CODEX_GATEWAY_BASE_URL_PLACEHOLDER,
+          anthropicAuthToken: gatewayToken,
+          anthropicModel: 'gpt-6-sol',
+          codexOAuthCredentials: codexCredentials,
+          enabled: true,
+        });
+      }
+
+      appendClaudeConfigAudit(actor, 'codex_oauth_login', [
+        `providerId:${provider.id}`,
+        'codexOAuthCredentials:set',
+      ]);
+
+      return c.json(toPublicProvider(provider));
+    } catch (err) {
+      logger.error({ err }, 'Codex OAuth token exchange error');
+      const message =
+        err instanceof Error
+          ? err.message
+          : 'Codex OAuth token exchange failed';
       return c.json({ error: message }, 500);
     }
   },

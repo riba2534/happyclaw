@@ -8,11 +8,21 @@ interface TokenSnapshot {
   reasoningTokens: number;
 }
 
-interface CollectedAssistantUsage extends TokenSnapshot {
+export interface CollectedAssistantUsage extends TokenSnapshot {
   id: string;
   model: string;
   total: number;
 }
+
+/**
+ * Loads final assistant usage snapshots for message IDs from a source of
+ * truth (the session transcript), used to backfill zero-token stream
+ * snapshots. Returns a map keyed by message ID; missing IDs are simply
+ * absent. Must not throw.
+ */
+export type TranscriptUsageLoader = (
+  ids: string[],
+) => Map<string, CollectedAssistantUsage>;
 
 function nonNegative(value: unknown): number {
   const number = Number(value);
@@ -54,7 +64,7 @@ export function splitClaudeOutputTokens(
   );
 }
 
-function parseAssistantUsage(
+export function parseAssistantUsage(
   sdkMessage: Record<string, unknown>,
 ): CollectedAssistantUsage | undefined {
   if (sdkMessage.type !== 'assistant') return undefined;
@@ -187,15 +197,29 @@ export class AssistantUsageCollector {
     }
   }
 
-  drain(_sessionId: string | undefined): AssistantUsageBatch | undefined {
+  drain(
+    _sessionId: string | undefined,
+    transcriptLoader?: TranscriptUsageLoader,
+  ): AssistantUsageBatch | undefined {
     const entry = [...this.bestById.values()].find(
       (entry) => !this.flushedIds.has(entry.id),
     );
     if (!entry) return undefined;
+    // Compatible providers (Codex gateway, GLM proxy, ...) only reveal usage
+    // when the response completes, so every streamed assistant snapshot starts
+    // as the all-zero message_start placeholder and the CLI merges the final
+    // numbers into the transcript instead of the live SDK message. A zero
+    // snapshot therefore must not be trusted as the final bill: backfill from
+    // the transcript when available, then keep the merged reasoning split
+    // below working on the enriched snapshot.
+    const effective =
+      entry.total === 0 && transcriptLoader
+        ? (transcriptLoader([entry.id]).get(entry.id) ?? entry)
+        : entry;
     // One stable Anthropic message ID must remain one ledger event. Aggregating
     // several IDs behind the last ID would make resume/fork transcript replays
     // charge the earlier IDs again when a later new message arrives.
-    const entries = [entry];
+    const entries = [effective];
 
     const modelUsage: NonNullable<ResultUsagePayload['modelUsage']> = {};
     const root: TokenSnapshot = {

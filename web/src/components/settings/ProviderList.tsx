@@ -89,6 +89,21 @@ function CredentialBadges({ provider }: { provider: ProviderWithHealth }) {
       detail: expiry ?? undefined,
     });
   }
+  if (provider.hasCodexOAuthCredentials) {
+    const expired =
+      provider.codexOAuthCredentialsExpiresAt != null &&
+      provider.codexOAuthCredentialsExpiresAt <= Date.now();
+    const expiry = formatOAuthExpiry(provider.codexOAuthCredentialsExpiresAt);
+    badges.push({
+      label: provider.codexOAuthCredentialsPlanType
+        ? `ChatGPT ${provider.codexOAuthCredentialsPlanType}`
+        : 'ChatGPT',
+      color: expired
+        ? 'bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 border-red-200 dark:border-red-800'
+        : 'bg-green-50 dark:bg-green-950/40 text-green-700 dark:text-green-300 border-green-200 dark:border-green-800',
+      detail: expiry ?? undefined,
+    });
+  }
   if (provider.hasClaudeCodeOauthToken) {
     badges.push({
       label: 'Setup Token',
@@ -193,10 +208,16 @@ export function ProviderList({
                         className={`text-[11px] px-1.5 py-0.5 rounded shrink-0 ${
                           provider.type === 'official'
                             ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300'
-                            : 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300'
+                            : provider.hasCodexOAuthCredentials
+                              ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300'
+                              : 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300'
                         }`}
                       >
-                        {provider.type === 'official' ? '官方' : '第三方'}
+                        {provider.type === 'official'
+                          ? '官方'
+                          : provider.hasCodexOAuthCredentials
+                            ? 'ChatGPT 订阅'
+                            : '第三方'}
                       </span>
                     </div>
 
@@ -231,18 +252,19 @@ export function ProviderList({
                         <Edit3 className="size-3.5" />
                         编辑
                       </Button>
-                      {provider.type === 'third_party' && (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => onDuplicate(provider)}
-                          disabled={disabled || toggling || deleting}
-                          className="h-7 px-2 text-xs"
-                        >
-                          <Copy className="size-3.5" />
-                          复制
-                        </Button>
-                      )}
+                      {provider.type === 'third_party' &&
+                        !provider.hasCodexOAuthCredentials && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => onDuplicate(provider)}
+                            disabled={disabled || toggling || deleting}
+                            className="h-7 px-2 text-xs"
+                          >
+                            <Copy className="size-3.5" />
+                            复制
+                          </Button>
+                        )}
                       <Button
                         size="sm"
                         variant="ghost"
@@ -261,7 +283,10 @@ export function ProviderList({
 
                   {/* 第二行：关键信息摘要 */}
                   <div className="mt-1.5 ml-4 flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
-                    {provider.type === 'third_party' &&
+                    {provider.hasCodexOAuthCredentials ? (
+                      <span>ChatGPT 订阅网关（服务内嵌）</span>
+                    ) : (
+                      provider.type === 'third_party' &&
                       provider.anthropicBaseUrl && (
                         <span
                           className="font-mono truncate max-w-[200px]"
@@ -269,7 +294,8 @@ export function ProviderList({
                         >
                           {provider.anthropicBaseUrl}
                         </span>
-                      )}
+                      )
+                    )}
                     {provider.anthropicModel && (
                       <span className="font-mono text-muted-foreground">
                         {provider.anthropicModel}

@@ -17,6 +17,10 @@ export interface UnifiedProviderPublic {
   hasClaudeOAuthCredentials: boolean;
   claudeOAuthCredentialsExpiresAt: number | null;
   claudeOAuthCredentialsAccessTokenMasked: string | null;
+  hasCodexOAuthCredentials: boolean;
+  codexOAuthCredentialsExpiresAt: number | null;
+  codexOAuthCredentialsEmail: string | null;
+  codexOAuthCredentialsPlanType: string | null;
   customEnv: Record<string, string>;
   updatedAt: string;
 }

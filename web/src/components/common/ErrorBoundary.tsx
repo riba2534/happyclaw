@@ -1,4 +1,8 @@
 import { Component, ErrorInfo, ReactNode } from 'react';
+import {
+  isStaleChunkError,
+  reloadForStaleChunk,
+} from '../../utils/staleChunkReload';
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -28,6 +32,7 @@ export class ErrorBoundary extends Component<
       info.componentStack,
     );
     this.props.onError?.(error, info);
+    if (isStaleChunkError(error)) reloadForStaleChunk();
   }
 
   componentDidUpdate(previousProps: ErrorBoundaryProps) {

@@ -138,6 +138,7 @@ import {
   AssistantUsageCollector,
   type AssistantUsageBatch,
 } from './assistant-usage.js';
+import { createTranscriptUsageLoader } from './transcript-usage.js';
 import {
   buildHappyClawPromptPlan,
   hasBackgroundTaskTools,
@@ -2045,8 +2046,19 @@ async function runQueryAttempt(
       resultUsageState,
     );
     const assistantBatches: AssistantUsageBatch[] = [];
+    // Zero-token stream snapshots (message_start placeholders from providers
+    // that only reveal usage at response completion) are backfilled from the
+    // session transcript, which carries the CLI-merged final usage.
+    const transcriptUsageLoader = createTranscriptUsageLoader(() => {
+      const activeSessionId = newSessionId || sessionId;
+      if (!activeSessionId) return undefined;
+      return path.join(resolveTranscriptDir(), `${activeSessionId}.jsonl`);
+    });
     for (;;) {
-      const batch = assistantUsageCollector.drain(newSessionId || sessionId);
+      const batch = assistantUsageCollector.drain(
+        newSessionId || sessionId,
+        transcriptUsageLoader,
+      );
       if (!batch) break;
       assistantBatches.push(batch);
     }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   CheckCircle2,
   ExternalLink,
@@ -30,7 +30,7 @@ import {
 import type { ProviderWithHealth, EnvRow } from './types';
 import { getErrorMessage } from './types';
 
-type ProviderType = 'official' | 'third_party';
+type ProviderType = 'official' | 'third_party' | 'codex';
 type OfficialAuthTab = 'oauth' | 'setup_token' | 'api_key';
 
 const RESERVED_ENV_KEYS = new Set([
@@ -44,6 +44,84 @@ const RESERVED_ENV_KEYS = new Set([
 const DEFAULTED_THIRD_PARTY_ENV_KEYS = new Set(
   buildDefaultProviderEnv('', false).map((row) => row.key),
 );
+
+// ChatGPT 订阅型配置：目标 Codex 模型与推理力度（网关映射到上游请求）。
+// 目录唯一真相源在后端 src/codex-gateway/model-catalog.ts（对齐上游 codex
+// CLI 的 models.json），通过 GET /api/config/codex/model-catalog 获取；
+// 下面这份只在目录接口不可用时兜底，保证编辑器离线也能渲染。
+const CODEX_FULL_EFFORTS = [
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'ultra',
+] as const;
+const CODEX_CAPPED_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+const CODEX_LEGACY_EFFORTS = ['low', 'medium', 'high', 'xhigh'] as const;
+
+// 每个模型支持的 reasoning.effort 档位不同（如 gpt-6-luna 无 ultra、gpt-5.5 无
+// max/ultra），选了模型目录不支持的档位会被上游 Responses API 拒绝（400）。
+const CODEX_FALLBACK_MODEL_OPTIONS: ReadonlyArray<{
+  value: string;
+  label: string;
+  efforts: readonly string[];
+}> = [
+  {
+    value: 'gpt-6-sol',
+    label: 'gpt-6-sol（主力编码）',
+    efforts: CODEX_FULL_EFFORTS,
+  },
+  {
+    value: 'gpt-6-astra',
+    label: 'gpt-6-astra（旗舰·最强推理）',
+    efforts: CODEX_FULL_EFFORTS,
+  },
+  {
+    value: 'gpt-6-luna',
+    label: 'gpt-6-luna（快速轻量）',
+    efforts: CODEX_CAPPED_EFFORTS,
+  },
+  {
+    value: 'gpt-5.6-sol',
+    label: 'gpt-5.6-sol（上一代编码）',
+    efforts: CODEX_FULL_EFFORTS,
+  },
+  {
+    value: 'gpt-5.6-terra',
+    label: 'gpt-5.6-terra（上一代均衡）',
+    efforts: CODEX_FULL_EFFORTS,
+  },
+  {
+    value: 'gpt-5.6-luna',
+    label: 'gpt-5.6-luna（上一代快速）',
+    efforts: CODEX_CAPPED_EFFORTS,
+  },
+  {
+    value: 'gpt-5.5',
+    label: 'gpt-5.5（旧款）',
+    efforts: CODEX_LEGACY_EFFORTS,
+  },
+] as const;
+const CODEX_FALLBACK_DEFAULT_MODEL = 'gpt-6-sol';
+const CODEX_FALLBACK_DEFAULT_EFFORT = 'medium';
+
+interface CodexCatalog {
+  models: ReadonlyArray<{
+    value: string;
+    label: string;
+    efforts: readonly string[];
+    defaultEffort?: string;
+  }>;
+  defaultModel: string;
+  defaultEffort: string;
+}
+
+const CODEX_FALLBACK_CATALOG: CodexCatalog = {
+  models: CODEX_FALLBACK_MODEL_OPTIONS,
+  defaultModel: CODEX_FALLBACK_DEFAULT_MODEL,
+  defaultEffort: CODEX_FALLBACK_DEFAULT_EFFORT,
+};
 
 const MANAGED_ENV_SOURCE_LABELS = {
   model: '跟随模型',
@@ -120,6 +198,51 @@ export function ProviderEditor({
   const [model, setModel] = useState('');
   const [oneMillionContext, setOneMillionContext] = useState(false);
 
+  // ChatGPT 订阅型配置：目标模型与推理力度
+  const [codexModel, setCodexModel] = useState<string>(
+    CODEX_FALLBACK_DEFAULT_MODEL,
+  );
+  const [codexEffort, setCodexEffort] = useState<string>(
+    CODEX_FALLBACK_DEFAULT_EFFORT,
+  );
+  // Codex 模型目录：唯一真相源在后端，打开编辑器时拉取；接口不可用时
+  // 保留内置兜底目录（与后端当前版本一致）。
+  const [codexCatalog, setCodexCatalog] = useState<CodexCatalog>(
+    CODEX_FALLBACK_CATALOG,
+  );
+  const codexCatalogRef = useRef<CodexCatalog>(CODEX_FALLBACK_CATALOG);
+  useEffect(() => {
+    codexCatalogRef.current = codexCatalog;
+  }, [codexCatalog]);
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .get<CodexCatalog>('/api/config/codex/model-catalog')
+      .then((catalog) => {
+        if (
+          cancelled ||
+          !catalog ||
+          !Array.isArray(catalog.models) ||
+          catalog.models.length === 0
+        ) {
+          return;
+        }
+        const normalized: CodexCatalog = {
+          models: catalog.models,
+          defaultModel: catalog.defaultModel || CODEX_FALLBACK_DEFAULT_MODEL,
+          defaultEffort: catalog.defaultEffort || CODEX_FALLBACK_DEFAULT_EFFORT,
+        };
+        setCodexCatalog(normalized);
+        codexCatalogRef.current = normalized;
+      })
+      .catch(() => {
+        // 目录接口不可用：静默保留兜底目录
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // 官方认证
   const [authTab, setAuthTab] = useState<OfficialAuthTab>('oauth');
   const [setupToken, setSetupToken] = useState('');
@@ -150,6 +273,25 @@ export function ProviderEditor({
 
   const defaultProviderEnv = buildDefaultProviderEnv(model, oneMillionContext);
 
+  // 当前值不在预设里（如后端已配置其他模型，例如旧目录的 gpt-5.1-*）时，
+  // 追加为额外选项，避免 select 显示空白。
+  const selectedCodexModel = codexCatalog.models.find(
+    (option) => option.value === codexModel,
+  );
+  const codexModelChoices: readonly { value: string; label: string }[] =
+    selectedCodexModel
+      ? codexCatalog.models
+      : [{ value: codexModel, label: codexModel }, ...codexCatalog.models];
+  // 推理力度档位按所选模型的目录过滤：不同模型支持的档位不同（见上方常量），
+  // 选了模型不支持的档位会被上游拒绝。未识别的模型退回全量档位，避免选不了。
+  const codexModelEfforts: readonly string[] =
+    selectedCodexModel?.efforts ?? CODEX_FULL_EFFORTS;
+  const codexEffortChoices: readonly string[] = codexModelEfforts.includes(
+    codexEffort,
+  )
+    ? codexModelEfforts
+    : [codexEffort, ...codexModelEfforts];
+
   // 初始化表单
   useEffect(() => {
     if (!open) return;
@@ -161,6 +303,8 @@ export function ProviderEditor({
       setBaseUrl('');
       setModel('');
       setOneMillionContext(false);
+      setCodexModel(codexCatalogRef.current.defaultModel);
+      setCodexEffort(codexCatalogRef.current.defaultEffort);
       setAuthTab('oauth');
       setSetupToken('');
       setApiKey('');
@@ -172,12 +316,21 @@ export function ProviderEditor({
       setCustomEnvRows([]);
       setProviderEnvOverrides({});
     } else {
-      setProviderType(provider.type);
+      setProviderType(
+        provider.hasCodexOAuthCredentials ? 'codex' : provider.type,
+      );
       setName(provider.name);
       setBaseUrl(provider.anthropicBaseUrl || '');
       const modelSelection = parseProviderModel(provider.anthropicModel || '');
       setModel(modelSelection.model);
       setOneMillionContext(modelSelection.oneMillionContext);
+      setCodexModel(
+        provider.anthropicModel || codexCatalogRef.current.defaultModel,
+      );
+      setCodexEffort(
+        provider.customEnv?.CODEX_REASONING_EFFORT ||
+          codexCatalogRef.current.defaultEffort,
+      );
       setAuthTab('oauth');
       setSetupToken('');
       setApiKey('');
@@ -297,6 +450,57 @@ export function ProviderEditor({
     }
   }, [oauthState, oauthCode, setError, setNotice, onSave]);
 
+  // ─── Codex（ChatGPT 订阅）OAuth 流程 ────────────────────────
+  const handleCodexOAuthStart = useCallback(async () => {
+    setOauthLoading(true);
+    setError(null);
+    try {
+      const body: Record<string, unknown> = {};
+      // 编辑模式下传入目标提供商 ID（重新登录）
+      if (!isCreate && provider) {
+        body.targetProviderId = provider.id;
+      }
+      const data = await api.post<{
+        authorizeUrl: string;
+        state: string;
+        redirectHint: string;
+      }>(
+        '/api/config/codex/oauth/start',
+        Object.keys(body).length > 0 ? body : undefined,
+      );
+      setOauthState(data.state);
+      setOauthCode('');
+      window.open(data.authorizeUrl, '_blank', 'noopener,noreferrer');
+    } catch (err) {
+      setError(getErrorMessage(err, 'ChatGPT 授权启动失败'));
+    } finally {
+      setOauthLoading(false);
+    }
+  }, [isCreate, provider, setError]);
+
+  const handleCodexOAuthCallback = useCallback(async () => {
+    if (!oauthState || !oauthCode.trim()) {
+      setError('请粘贴回调地址');
+      return;
+    }
+    setOauthExchanging(true);
+    setError(null);
+    try {
+      await api.post('/api/config/codex/oauth/callback', {
+        state: oauthState,
+        code: oauthCode.trim(),
+      });
+      setOauthState(null);
+      setOauthCode('');
+      setNotice('ChatGPT 授权成功，凭据已保存。');
+      onSave();
+    } catch (err) {
+      setError(getErrorMessage(err, 'ChatGPT 授权码换取失败'));
+    } finally {
+      setOauthExchanging(false);
+    }
+  }, [oauthState, oauthCode, setError, setNotice, onSave]);
+
   // ─── 保存 ──────────────────────────────────────────────────
   const handleSave = async () => {
     const normalizedModel =
@@ -314,6 +518,35 @@ export function ProviderEditor({
         : '');
     if (!trimmedName) {
       setError('请填写模型配置名称');
+      return;
+    }
+
+    // ChatGPT 订阅型配置：端点与凭据由后端网关管理，允许改名、选模型和推理力度。
+    if (providerType === 'codex') {
+      if (isCreate) {
+        setError('请先完成 ChatGPT 授权，配置会在授权后自动创建');
+        return;
+      }
+      setSaving(true);
+      setError(null);
+      try {
+        // customEnv 为整体替换语义：保留其他既有变量，仅更新推理力度。
+        const nextCustomEnv: Record<string, string> = {
+          ...(provider?.customEnv ?? {}),
+          CODEX_REASONING_EFFORT: codexEffort,
+        };
+        await api.patch(`/api/config/claude/providers/${provider!.id}`, {
+          name: trimmedName,
+          anthropicModel: codexModel.trim() || codexCatalog.defaultModel,
+          customEnv: nextCustomEnv,
+        });
+        setNotice('模型配置已保存。');
+        onSave();
+      } catch (err) {
+        setError(getErrorMessage(err, '保存模型配置失败'));
+      } finally {
+        setSaving(false);
+      }
       return;
     }
 
@@ -521,7 +754,9 @@ export function ProviderEditor({
           <DialogDescription className="text-left text-xs leading-5">
             {providerType === 'third_party'
               ? '填写端点、密钥和模型即可；Claude Code 运行参数会自动预填，也可在高级设置中调整。'
-              : '配置 Claude 官方认证方式与默认模型。'}
+              : providerType === 'codex'
+                ? '使用 ChatGPT Plus / Pro 订阅授权；凭据保存在服务端，经内嵌网关驱动 Claude Code。'
+                : '配置 Claude 官方认证方式与默认模型。'}
           </DialogDescription>
         </DialogHeader>
 
@@ -557,27 +792,43 @@ export function ProviderEditor({
                 >
                   第三方
                 </button>
+                <button
+                  type="button"
+                  aria-pressed={providerType === 'codex'}
+                  onClick={() => setProviderType('codex')}
+                  className={`min-h-9 rounded-md px-3 py-1.5 text-sm transition-colors cursor-pointer ${
+                    providerType === 'codex'
+                      ? 'bg-background text-primary shadow-sm'
+                      : 'text-muted-foreground'
+                  }`}
+                >
+                  ChatGPT 订阅
+                </button>
               </div>
             </div>
           )}
 
-          {/* 名称 */}
-          <div>
-            <label className="block text-xs text-muted-foreground mb-1">
-              {providerType === 'third_party' ? '配置名称（可选）' : '名称'}
-            </label>
-            <Input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              disabled={saving}
-              placeholder={
-                providerType === 'official'
-                  ? '如：Claude 官方'
-                  : '留空时使用模型名称'
-              }
-            />
-          </div>
+          {/* 名称（创建 ChatGPT 订阅配置时由 OAuth 回调自动命名，隐藏） */}
+          {!(isCreate && providerType === 'codex') && (
+            <div>
+              <label className="block text-xs text-muted-foreground mb-1">
+                {providerType === 'third_party' ? '配置名称（可选）' : '名称'}
+              </label>
+              <Input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                disabled={saving}
+                placeholder={
+                  providerType === 'official'
+                    ? '如：Claude 官方'
+                    : providerType === 'codex'
+                      ? '如：ChatGPT 订阅'
+                      : '留空时使用模型名称'
+                }
+              />
+            </div>
+          )}
 
           {/* ─── 官方模式 ─── */}
           {providerType === 'official' && (
@@ -774,6 +1025,185 @@ export function ProviderEditor({
             </div>
           )}
 
+          {/* ─── ChatGPT 订阅模式 ─── */}
+          {providerType === 'codex' && (
+            <div className="rounded-lg border border-green-200 bg-green-50/50 p-4 space-y-3 dark:border-green-800 dark:bg-green-950/30">
+              <div className="text-sm font-medium text-foreground">
+                使用 ChatGPT 订阅登录
+              </div>
+              <div className="text-xs leading-5 text-muted-foreground">
+                点击按钮打开 ChatGPT 登录页（需要 Plus / Pro / Team
+                订阅）。完成授权后浏览器会跳转到{' '}
+                <code className="rounded bg-muted px-1">localhost:1455</code>{' '}
+                ——该页面打不开是正常的，把浏览器地址栏的完整地址复制粘贴到下方即可。
+              </div>
+
+              {/* 编辑模式显示现有凭据 */}
+              {!isCreate && provider?.hasCodexOAuthCredentials && (
+                <div className="space-y-1 rounded-md border border-emerald-200 bg-emerald-50/50 p-3 text-xs dark:border-emerald-800 dark:bg-emerald-950/30">
+                  {provider.codexOAuthCredentialsEmail && (
+                    <div className="text-emerald-700 dark:text-emerald-300">
+                      账号：{provider.codexOAuthCredentialsEmail}
+                      {provider.codexOAuthCredentialsPlanType
+                        ? `（${provider.codexOAuthCredentialsPlanType}）`
+                        : ''}
+                    </div>
+                  )}
+                  {provider.codexOAuthCredentialsExpiresAt && (
+                    <div
+                      className={
+                        provider.codexOAuthCredentialsExpiresAt <= Date.now()
+                          ? 'font-medium text-red-700 dark:text-red-400'
+                          : 'text-emerald-700 dark:text-emerald-300'
+                      }
+                    >
+                      过期时间:{' '}
+                      {new Date(
+                        provider.codexOAuthCredentialsExpiresAt,
+                      ).toLocaleString('zh-CN')}
+                      {provider.codexOAuthCredentialsExpiresAt > Date.now()
+                        ? ` (${Math.round((provider.codexOAuthCredentialsExpiresAt - Date.now()) / 60000)} 分钟后)`
+                        : ' (已过期)'}
+                    </div>
+                  )}
+                  <div className="text-emerald-600">
+                    网关会在 token 过期时自动刷新。
+                  </div>
+                </div>
+              )}
+
+              {/* 编辑模式：目标模型与推理力度（由网关映射到上游请求） */}
+              {!isCreate && (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label
+                      htmlFor="codex-model-select"
+                      className="block text-xs text-muted-foreground mb-1"
+                    >
+                      模型
+                    </label>
+                    <select
+                      id="codex-model-select"
+                      value={codexModel}
+                      onChange={(e) => {
+                        const nextModel = e.target.value;
+                        setCodexModel(nextModel);
+                        const nextModelEntry = codexCatalog.models.find(
+                          (option) => option.value === nextModel,
+                        );
+                        const nextEfforts =
+                          nextModelEntry?.efforts ?? CODEX_FULL_EFFORTS;
+                        if (!nextEfforts.includes(codexEffort)) {
+                          // 归位优先该模型自己的上游默认档，缺省用全局默认。
+                          const nextDefault =
+                            nextModelEntry?.defaultEffort ??
+                            codexCatalog.defaultEffort;
+                          setCodexEffort(
+                            nextEfforts.includes(nextDefault)
+                              ? nextDefault
+                              : nextEfforts[0],
+                          );
+                        }
+                      }}
+                      disabled={saving}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"
+                    >
+                      {codexModelChoices.map((m) => (
+                        <option key={m.value} value={m.value}>
+                          {m.value === codexCatalog.defaultModel
+                            ? `${m.label}·默认`
+                            : m.label}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      SDK 请求的 Claude 模型名会由网关统一映射为此模型。
+                    </p>
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="codex-effort-select"
+                      className="block text-xs text-muted-foreground mb-1"
+                    >
+                      推理力度
+                    </label>
+                    <select
+                      id="codex-effort-select"
+                      value={codexEffort}
+                      onChange={(e) => setCodexEffort(e.target.value)}
+                      disabled={saving}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"
+                    >
+                      {codexEffortChoices.map((effort) => (
+                        <option key={effort} value={effort}>
+                          {effort ===
+                          (selectedCodexModel?.defaultEffort ??
+                            codexCatalog.defaultEffort)
+                            ? `${effort}（默认）`
+                            : effort}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      对应上游 reasoning.effort，越高越慢但推理越深。
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {!oauthState ? (
+                <Button
+                  onClick={handleCodexOAuthStart}
+                  disabled={saving || oauthLoading}
+                >
+                  {oauthLoading ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <ExternalLink className="size-4" />
+                  )}
+                  {!isCreate && provider?.hasCodexOAuthCredentials
+                    ? '重新登录 ChatGPT'
+                    : '登录 ChatGPT'}
+                </Button>
+              ) : (
+                <div className="space-y-2">
+                  <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+                    授权窗口已打开，请在 ChatGPT
+                    完成登录授权后，将跳转页面的完整地址粘贴到下方。
+                  </div>
+                  <div className="flex gap-2">
+                    <Input
+                      type="text"
+                      value={oauthCode}
+                      onChange={(e) => setOauthCode(e.target.value)}
+                      disabled={oauthExchanging}
+                      placeholder="粘贴 localhost:1455 回调完整地址"
+                      className="flex-1"
+                    />
+                    <Button
+                      onClick={handleCodexOAuthCallback}
+                      disabled={oauthExchanging || !oauthCode.trim()}
+                    >
+                      {oauthExchanging && (
+                        <Loader2 className="size-4 animate-spin" />
+                      )}
+                      确认
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        setOauthState(null);
+                        setOauthCode('');
+                      }}
+                    >
+                      取消
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* ─── 第三方模式 ─── */}
           {providerType === 'third_party' && (
             <div className="space-y-5">
@@ -935,212 +1365,216 @@ export function ProviderEditor({
           )}
 
           {/* ─── 环境变量 ─── */}
-          <details className="border-t border-border pt-4">
-            <summary className="cursor-pointer text-sm font-medium text-foreground">
-              {providerType === 'third_party'
-                ? '高级设置 · 环境变量'
-                : '高级设置 · 自定义环境变量'}
-              {providerType === 'third_party' && (
-                <span className="ml-2 text-xs font-normal text-muted-foreground">
-                  {defaultProviderEnv.length} 项默认配置
-                </span>
-              )}
-              {customEnvRows.length > 0 && (
-                <span className="ml-2 text-xs font-normal text-muted-foreground">
-                  {customEnvRows.length} 项自定义
-                </span>
-              )}
-            </summary>
+          {providerType !== 'codex' && (
+            <details className="border-t border-border pt-4">
+              <summary className="cursor-pointer text-sm font-medium text-foreground">
+                {providerType === 'third_party'
+                  ? '高级设置 · 环境变量'
+                  : '高级设置 · 自定义环境变量'}
+                {providerType === 'third_party' && (
+                  <span className="ml-2 text-xs font-normal text-muted-foreground">
+                    {defaultProviderEnv.length} 项默认配置
+                  </span>
+                )}
+                {customEnvRows.length > 0 && (
+                  <span className="ml-2 text-xs font-normal text-muted-foreground">
+                    {customEnvRows.length} 项自定义
+                  </span>
+                )}
+              </summary>
 
-            <div className="mt-4 space-y-5">
-              {providerType === 'third_party' && (
-                <section aria-labelledby="default-provider-env-heading">
-                  <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+              <div className="mt-4 space-y-5">
+                {providerType === 'third_party' && (
+                  <section aria-labelledby="default-provider-env-heading">
+                    <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+                      <div>
+                        <h3
+                          id="default-provider-env-heading"
+                          className="text-xs font-medium text-foreground"
+                        >
+                          系统预填环境变量
+                        </h3>
+                        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                          默认值会随模型和上下文更新；修改后以你的自定义值为准。
+                        </p>
+                      </div>
+                      <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                        {defaultProviderEnv.length} 项
+                      </span>
+                    </div>
+
+                    <div className="overflow-hidden rounded-lg border border-border/80 bg-muted/20">
+                      {defaultProviderEnv.map((row, index) => {
+                        const hasOverride = Object.hasOwn(
+                          providerEnvOverrides,
+                          row.key,
+                        );
+                        const value = hasOverride
+                          ? providerEnvOverrides[row.key]
+                          : row.value;
+                        const inputId = `provider-env-default-${index}`;
+
+                        return (
+                          <div
+                            key={row.key}
+                            className={`grid min-w-0 gap-2 px-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_minmax(12rem,0.8fr)] sm:items-center sm:gap-4 ${
+                              index > 0 ? 'border-t border-border/70' : ''
+                            }`}
+                          >
+                            <div className="flex min-w-0 items-center justify-between gap-2">
+                              <label
+                                htmlFor={inputId}
+                                className="min-w-0 break-all font-mono text-[11px] text-foreground"
+                              >
+                                {row.key}
+                              </label>
+                              <span
+                                className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] ${
+                                  hasOverride
+                                    ? 'border-primary/25 bg-primary/5 text-primary'
+                                    : 'border-border bg-background text-muted-foreground'
+                                }`}
+                              >
+                                {hasOverride
+                                  ? '已自定义'
+                                  : MANAGED_ENV_SOURCE_LABELS[row.source]}
+                              </span>
+                            </div>
+                            <div className="flex min-w-0 items-center gap-1.5">
+                              <Input
+                                id={inputId}
+                                type="text"
+                                value={value}
+                                onChange={(event) =>
+                                  updateProviderEnv(
+                                    row.key,
+                                    event.target.value,
+                                    row.value,
+                                  )
+                                }
+                                disabled={saving}
+                                placeholder="填写模型后生成"
+                                autoComplete="off"
+                                className="h-9 min-w-0 px-2.5 font-mono text-xs"
+                              />
+                              {hasOverride && (
+                                <button
+                                  type="button"
+                                  onClick={() => resetProviderEnv(row.key)}
+                                  disabled={saving}
+                                  className="flex size-11 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50 sm:size-9"
+                                  aria-label={`恢复 ${row.key} 的默认值`}
+                                  title="恢复默认值"
+                                >
+                                  <RotateCcw className="size-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+                )}
+
+                <section
+                  aria-labelledby="custom-provider-env-heading"
+                  className={
+                    providerType === 'third_party'
+                      ? 'border-t border-border pt-4'
+                      : undefined
+                  }
+                >
+                  <div className="mb-2 flex items-start justify-between gap-3">
                     <div>
                       <h3
-                        id="default-provider-env-heading"
+                        id="custom-provider-env-heading"
                         className="text-xs font-medium text-foreground"
                       >
-                        系统预填环境变量
+                        自定义环境变量
                       </h3>
                       <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                        默认值会随模型和上下文更新；修改后以你的自定义值为准。
+                        仅用于 API 自定义 Header 等特殊需求。
                       </p>
                     </div>
-                    <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-                      {defaultProviderEnv.length} 项
-                    </span>
-                  </div>
-
-                  <div className="overflow-hidden rounded-lg border border-border/80 bg-muted/20">
-                    {defaultProviderEnv.map((row, index) => {
-                      const hasOverride = Object.hasOwn(
-                        providerEnvOverrides,
-                        row.key,
-                      );
-                      const value = hasOverride
-                        ? providerEnvOverrides[row.key]
-                        : row.value;
-                      const inputId = `provider-env-default-${index}`;
-
-                      return (
-                        <div
-                          key={row.key}
-                          className={`grid min-w-0 gap-2 px-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_minmax(12rem,0.8fr)] sm:items-center sm:gap-4 ${
-                            index > 0 ? 'border-t border-border/70' : ''
-                          }`}
-                        >
-                          <div className="flex min-w-0 items-center justify-between gap-2">
-                            <label
-                              htmlFor={inputId}
-                              className="min-w-0 break-all font-mono text-[11px] text-foreground"
-                            >
-                              {row.key}
-                            </label>
-                            <span
-                              className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] ${
-                                hasOverride
-                                  ? 'border-primary/25 bg-primary/5 text-primary'
-                                  : 'border-border bg-background text-muted-foreground'
-                              }`}
-                            >
-                              {hasOverride
-                                ? '已自定义'
-                                : MANAGED_ENV_SOURCE_LABELS[row.source]}
-                            </span>
-                          </div>
-                          <div className="flex min-w-0 items-center gap-1.5">
-                            <Input
-                              id={inputId}
-                              type="text"
-                              value={value}
-                              onChange={(event) =>
-                                updateProviderEnv(
-                                  row.key,
-                                  event.target.value,
-                                  row.value,
-                                )
-                              }
-                              disabled={saving}
-                              placeholder="填写模型后生成"
-                              autoComplete="off"
-                              className="h-9 min-w-0 px-2.5 font-mono text-xs"
-                            />
-                            {hasOverride && (
-                              <button
-                                type="button"
-                                onClick={() => resetProviderEnv(row.key)}
-                                disabled={saving}
-                                className="flex size-11 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50 sm:size-9"
-                                aria-label={`恢复 ${row.key} 的默认值`}
-                                title="恢复默认值"
-                              >
-                                <RotateCcw className="size-3.5" />
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </section>
-              )}
-
-              <section
-                aria-labelledby="custom-provider-env-heading"
-                className={
-                  providerType === 'third_party'
-                    ? 'border-t border-border pt-4'
-                    : undefined
-                }
-              >
-                <div className="mb-2 flex items-start justify-between gap-3">
-                  <div>
-                    <h3
-                      id="custom-provider-env-heading"
-                      className="text-xs font-medium text-foreground"
+                    <button
+                      type="button"
+                      onClick={addRow}
+                      className="inline-flex min-h-11 shrink-0 cursor-pointer items-center gap-1 rounded-md px-2 text-xs text-primary hover:bg-muted"
                     >
-                      自定义环境变量
-                    </h3>
-                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                      仅用于 API 自定义 Header 等特殊需求。
-                    </p>
+                      <Plus className="size-3.5" />
+                      添加
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={addRow}
-                    className="inline-flex min-h-11 shrink-0 cursor-pointer items-center gap-1 rounded-md px-2 text-xs text-primary hover:bg-muted"
-                  >
-                    <Plus className="size-3.5" />
-                    添加
-                  </button>
-                </div>
 
-                {customEnvRows.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    没有自定义环境变量，大多数配置无需添加。
-                  </p>
-                ) : (
-                  <div className="space-y-2">
-                    {customEnvRows.map((row, idx) => (
-                      <div
-                        key={idx}
-                        className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center"
-                      >
-                        <Input
-                          type="text"
-                          value={row.key}
-                          onChange={(e) =>
-                            updateRow(idx, 'key', e.target.value)
-                          }
-                          placeholder="KEY"
-                          className="h-auto w-full px-2.5 py-1.5 font-mono text-xs sm:w-[38%]"
-                        />
-                        <Input
-                          type={showCustomEnvValues[idx] ? 'text' : 'password'}
-                          value={row.value}
-                          onChange={(e) =>
-                            updateRow(idx, 'value', e.target.value)
-                          }
-                          placeholder="value"
-                          className="h-auto flex-1 px-2.5 py-1.5 font-mono text-xs"
-                        />
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setShowCustomEnvValues((current) => ({
-                              ...current,
-                              [idx]: !current[idx],
-                            }))
-                          }
-                          className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-                          aria-label={
-                            showCustomEnvValues[idx]
-                              ? '隐藏环境变量值'
-                              : '显示环境变量值'
-                          }
+                  {customEnvRows.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      没有自定义环境变量，大多数配置无需添加。
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {customEnvRows.map((row, idx) => (
+                        <div
+                          key={idx}
+                          className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center"
                         >
-                          {showCustomEnvValues[idx] ? (
-                            <EyeOff className="size-4" />
-                          ) : (
-                            <Eye className="size-4" />
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => removeRow(idx)}
-                          className="flex size-8 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-red-500"
-                          aria-label="删除环境变量"
-                        >
-                          <X className="size-4" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </section>
-            </div>
-          </details>
+                          <Input
+                            type="text"
+                            value={row.key}
+                            onChange={(e) =>
+                              updateRow(idx, 'key', e.target.value)
+                            }
+                            placeholder="KEY"
+                            className="h-auto w-full px-2.5 py-1.5 font-mono text-xs sm:w-[38%]"
+                          />
+                          <Input
+                            type={
+                              showCustomEnvValues[idx] ? 'text' : 'password'
+                            }
+                            value={row.value}
+                            onChange={(e) =>
+                              updateRow(idx, 'value', e.target.value)
+                            }
+                            placeholder="value"
+                            className="h-auto flex-1 px-2.5 py-1.5 font-mono text-xs"
+                          />
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setShowCustomEnvValues((current) => ({
+                                ...current,
+                                [idx]: !current[idx],
+                              }))
+                            }
+                            className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+                            aria-label={
+                              showCustomEnvValues[idx]
+                                ? '隐藏环境变量值'
+                                : '显示环境变量值'
+                            }
+                          >
+                            {showCustomEnvValues[idx] ? (
+                              <EyeOff className="size-4" />
+                            ) : (
+                              <Eye className="size-4" />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => removeRow(idx)}
+                            className="flex size-8 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-red-500"
+                            aria-label="删除环境变量"
+                          >
+                            <X className="size-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+              </div>
+            </details>
+          )}
 
           {/* ─── 操作按钮 ─── */}
           <div className="sticky -bottom-4 z-10 -mx-4 flex justify-end gap-2 border-t border-border bg-background/95 px-4 pb-4 pt-3 backdrop-blur supports-[backdrop-filter]:bg-background/85">
@@ -1152,10 +1586,12 @@ export function ProviderEditor({
               取消
             </Button>
             {/* OAuth 模式下创建时不需要保存按钮（OAuth 回调会自动触发 onSave） */}
-            <Button onClick={handleSave} disabled={saving || oauthExchanging}>
-              {saving && <Loader2 className="size-4 animate-spin" />}
-              {isCreate ? '创建' : '保存'}
-            </Button>
+            {!(isCreate && providerType === 'codex') && (
+              <Button onClick={handleSave} disabled={saving || oauthExchanging}>
+                {saving && <Loader2 className="size-4 animate-spin" />}
+                {isCreate ? '创建' : '保存'}
+              </Button>
+            )}
           </div>
         </div>
       </DialogContent>

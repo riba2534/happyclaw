@@ -6,6 +6,7 @@ import os from 'os';
 import { ASSISTANT_NAME, DATA_DIR } from './config.js';
 import { logger } from './logger.js';
 import { clearProviderQuotaObservation } from './provider-quota-observation.js';
+import type { CodexOAuthCredentials } from './codex-gateway/types.js';
 
 const MAX_FIELD_LENGTH = 2000;
 const DEFAULT_THIRD_PARTY_PROFILE_ID = 'default';
@@ -341,6 +342,7 @@ interface SecretPayload {
   anthropicApiKey: string;
   claudeCodeOauthToken: string;
   claudeOAuthCredentials?: ClaudeOAuthCredentials | null;
+  codexOAuthCredentials?: CodexOAuthCredentials | null;
 }
 
 interface EncryptedSecrets {
@@ -476,6 +478,7 @@ export interface UnifiedProvider {
   anthropicApiKey: string;
   claudeCodeOauthToken: string;
   claudeOAuthCredentials: ClaudeOAuthCredentials | null;
+  codexOAuthCredentials: CodexOAuthCredentials | null;
   customEnv: Record<string, string>;
   updatedAt: string;
 }
@@ -498,6 +501,10 @@ export interface UnifiedProviderPublic {
   hasClaudeOAuthCredentials: boolean;
   claudeOAuthCredentialsExpiresAt: number | null;
   claudeOAuthCredentialsAccessTokenMasked: string | null;
+  hasCodexOAuthCredentials: boolean;
+  codexOAuthCredentialsExpiresAt: number | null;
+  codexOAuthCredentialsEmail: string | null;
+  codexOAuthCredentialsPlanType: string | null;
   customEnv: Record<string, string>;
   updatedAt: string;
 }
@@ -766,6 +773,30 @@ function decryptSecrets(secrets: EncryptedSecrets): SecretPayload {
         ...(typeof creds.subscriptionType === 'string'
           ? { subscriptionType: creds.subscriptionType }
           : {}),
+      };
+    }
+  }
+  // Restore Codex (ChatGPT 订阅) OAuth credentials if present
+  if (
+    parsed.codexOAuthCredentials &&
+    typeof parsed.codexOAuthCredentials === 'object'
+  ) {
+    const creds = parsed.codexOAuthCredentials as Record<string, unknown>;
+    if (
+      typeof creds.accessToken === 'string' &&
+      typeof creds.refreshToken === 'string'
+    ) {
+      result.codexOAuthCredentials = {
+        accessToken: creds.accessToken,
+        refreshToken: creds.refreshToken,
+        expiresAt: typeof creds.expiresAt === 'number' ? creds.expiresAt : 0,
+        accountId: typeof creds.accountId === 'string' ? creds.accountId : null,
+        planType: typeof creds.planType === 'string' ? creds.planType : null,
+        email: typeof creds.email === 'string' ? creds.email : null,
+        updatedAt:
+          typeof creds.updatedAt === 'string'
+            ? creds.updatedAt
+            : new Date(0).toISOString(),
       };
     }
   }
@@ -1091,6 +1122,7 @@ function toStoredProviderV4(provider: UnifiedProvider): StoredProviderV4 {
     anthropicApiKey: provider.anthropicApiKey || '',
     claudeCodeOauthToken: provider.claudeCodeOauthToken || '',
     claudeOAuthCredentials: provider.claudeOAuthCredentials ?? null,
+    codexOAuthCredentials: provider.codexOAuthCredentials ?? null,
   };
   const sanitizedEnv = sanitizeCustomEnvMap(provider.customEnv || {}, {
     skipReservedClaudeKeys: true,
@@ -1125,6 +1157,7 @@ function fromStoredProviderV4(stored: StoredProviderV4): UnifiedProvider {
     anthropicApiKey: secrets.anthropicApiKey || '',
     claudeCodeOauthToken: secrets.claudeCodeOauthToken || '',
     claudeOAuthCredentials: secrets.claudeOAuthCredentials ?? null,
+    codexOAuthCredentials: secrets.codexOAuthCredentials ?? null,
     customEnv: sanitizeCustomEnvMap(stored.customEnv || {}, {
       skipReservedClaudeKeys: true,
     }),
@@ -1158,6 +1191,7 @@ function migrateV3toV4(v3: ClaudeStoredStateV3Resolved): {
       anthropicApiKey: v3.officialSecrets.anthropicApiKey,
       claudeCodeOauthToken: v3.officialSecrets.claudeCodeOauthToken,
       claudeOAuthCredentials: v3.officialSecrets.claudeOAuthCredentials ?? null,
+      codexOAuthCredentials: null,
       customEnv: v3.officialCustomEnv || {},
       updatedAt: v3.officialUpdatedAt || now,
     });
@@ -1178,6 +1212,7 @@ function migrateV3toV4(v3: ClaudeStoredStateV3Resolved): {
       anthropicApiKey: '',
       claudeCodeOauthToken: '',
       claudeOAuthCredentials: null,
+      codexOAuthCredentials: null,
       customEnv: profile.customEnv || {},
       updatedAt: profile.updatedAt || now,
     });
@@ -1365,6 +1400,7 @@ export function createProvider(input: {
   anthropicApiKey?: string;
   claudeCodeOauthToken?: string;
   claudeOAuthCredentials?: ClaudeOAuthCredentials | null;
+  codexOAuthCredentials?: CodexOAuthCredentials | null;
   customEnv?: Record<string, string>;
   weight?: number;
   enabled?: boolean;
@@ -1401,6 +1437,7 @@ export function createProvider(input: {
       ? normalizeSecret(input.claudeCodeOauthToken, 'claudeCodeOauthToken')
       : '',
     claudeOAuthCredentials: input.claudeOAuthCredentials ?? null,
+    codexOAuthCredentials: input.codexOAuthCredentials ?? null,
     customEnv: sanitizeCustomEnvMap(input.customEnv || {}, {
       skipReservedClaudeKeys: true,
     }),
@@ -1469,6 +1506,8 @@ export function updateProviderSecrets(
     clearClaudeCodeOauthToken?: boolean;
     claudeOAuthCredentials?: ClaudeOAuthCredentials;
     clearClaudeOAuthCredentials?: boolean;
+    codexOAuthCredentials?: CodexOAuthCredentials;
+    clearCodexOAuthCredentials?: boolean;
   },
 ): UnifiedProvider {
   const state = readStoredStateV4();
@@ -1513,6 +1552,12 @@ export function updateProviderSecrets(
     updated.claudeCodeOauthToken = '';
   } else if (secrets.clearClaudeOAuthCredentials) {
     updated.claudeOAuthCredentials = null;
+  }
+
+  if (secrets.codexOAuthCredentials) {
+    updated.codexOAuthCredentials = secrets.codexOAuthCredentials;
+  } else if (secrets.clearCodexOAuthCredentials) {
+    updated.codexOAuthCredentials = null;
   }
 
   state.providers[idx] = updated;
@@ -1569,6 +1614,56 @@ export function updateProviderOAuthCredentialsIfCurrent(
   };
   writeStoredStateV4(state.providers, state.balancing);
   return true;
+}
+
+function codexOAuthCredentialsSnapshot(
+  credentials: CodexOAuthCredentials,
+): string {
+  return JSON.stringify({
+    accessToken: credentials.accessToken,
+    refreshToken: credentials.refreshToken,
+    expiresAt: credentials.expiresAt,
+    accountId: credentials.accountId,
+  });
+}
+
+/**
+ * Persist a gateway-refreshed Codex (ChatGPT 订阅) OAuth credential only if the
+ * provider still holds the exact credential snapshot used to start the
+ * refresh. Same compare-and-swap boundary as
+ * updateProviderOAuthCredentialsIfCurrent above.
+ */
+export function updateProviderCodexOAuthCredentialsIfCurrent(
+  id: string,
+  expected: CodexOAuthCredentials,
+  refreshed: CodexOAuthCredentials,
+): boolean {
+  const state = readStoredStateV4();
+  if (!state) throw new Error('Claude 配置不存在');
+  const idx = state.providers.findIndex((provider) => provider.id === id);
+  if (idx < 0) throw new Error('未找到指定供应商');
+
+  const current = state.providers[idx];
+  const currentCodexOauth = current.codexOAuthCredentials;
+  if (
+    !currentCodexOauth ||
+    codexOAuthCredentialsSnapshot(currentCodexOauth) !==
+      codexOAuthCredentialsSnapshot(expected)
+  ) {
+    return false;
+  }
+
+  state.providers[idx] = {
+    ...current,
+    codexOAuthCredentials: refreshed,
+    updatedAt: new Date().toISOString(),
+  };
+  writeStoredStateV4(state.providers, state.balancing);
+  return true;
+}
+
+export function getProviderById(id: string): UnifiedProvider | null {
+  return getProviders().find((provider) => provider.id === id) ?? null;
 }
 
 export function setProviderEnabled(
@@ -1644,6 +1739,12 @@ export function toPublicProvider(
     claudeOAuthCredentialsAccessTokenMasked: provider.claudeOAuthCredentials
       ? maskSecret(provider.claudeOAuthCredentials.accessToken)
       : null,
+    hasCodexOAuthCredentials: !!provider.codexOAuthCredentials,
+    codexOAuthCredentialsExpiresAt:
+      provider.codexOAuthCredentials?.expiresAt ?? null,
+    codexOAuthCredentialsEmail: provider.codexOAuthCredentials?.email ?? null,
+    codexOAuthCredentialsPlanType:
+      provider.codexOAuthCredentials?.planType ?? null,
     customEnv: provider.customEnv || {},
     updatedAt: provider.updatedAt,
   };

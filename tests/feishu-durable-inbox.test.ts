@@ -40,6 +40,7 @@ vi.mock('../src/config.js', async (importOriginal) => ({
 vi.mock('@larksuiteoapi/node-sdk', () => ({
   AppType: { SelfBuild: 'SelfBuild' },
   LoggerLevel: { info: 'info' },
+  defaultHttpInstance: { defaults: { timeout: 0 } },
   Client: class {
     request = vi.fn().mockResolvedValue({
       bot: { open_id: 'ou_bot', app_name: 'Inbox Test Bot' },

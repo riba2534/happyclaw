@@ -8,6 +8,7 @@ const controls = vi.hoisted(() => ({
 vi.mock('@larksuiteoapi/node-sdk', () => ({
   AppType: { SelfBuild: 'SelfBuild' },
   LoggerLevel: { info: 'info' },
+  defaultHttpInstance: { defaults: { timeout: 0 } },
   Client: class {
     request = vi.fn().mockResolvedValue({ bot: { open_id: 'ou_bot' } });
     im = {
