@@ -107,7 +107,10 @@ import {
   markIsolatedTaskRunIpcComplete,
   tryCleanupCompletedIsolatedTaskRunIpc,
 } from './isolated-task-ipc.js';
-import { getScriptTaskHostExecutionError } from './script-task-policy.js';
+import {
+  getScriptTaskHostExecutionError,
+  resolveWorkspaceExecutionMode,
+} from './script-task-policy.js';
 import { resolveScheduledGroupDeliveryContract } from './reply-delivery.js';
 import { resolveRuntimeInteractionMode } from './workspace-interaction-runtime.js';
 import { explicitImDeliveryPhase } from './im-send-retry-policy.js';
@@ -165,16 +168,7 @@ function resolveTaskExecutionMode(
   // Legacy fallback: inherit from the original group
   const groups = deps.registeredGroups();
   const group = groups[task.chat_jid];
-  if (group) {
-    if (!group.is_home) {
-      const homeSibling = Object.values(groups).find(
-        (g) => g.folder === group.folder && g.is_home,
-      );
-      if (homeSibling) return homeSibling.executionMode || 'container';
-    }
-    return group.executionMode || 'container';
-  }
-  return 'container';
+  return group ? resolveWorkspaceExecutionMode(group, groups) : 'container';
 }
 
 function scriptTaskRuntimePolicyError(

@@ -242,7 +242,9 @@ describe('scheduled-task MCP V2 contract', () => {
       path.join(process.cwd(), 'src/index.ts'),
       'utf8',
     );
-    expect(hostSource).toContain('targetGroupEntry.executionMode');
+    expect(hostSource).toMatch(
+      /resolveWorkspaceExecutionMode\(\s*targetGroupEntry,/,
+    );
     expect(hostSource).toContain('resolveTaskExecutionModeForTarget(');
     expect(hostSource).toContain(
       'Only the admin home container can run script tasks.',

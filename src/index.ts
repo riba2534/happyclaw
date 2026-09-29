@@ -523,6 +523,7 @@ import { findDuplicateActiveAgentTask } from './task-definition-fingerprint.js';
 import {
   getScriptTaskHostExecutionError,
   resolveTaskExecutionModeForTarget,
+  resolveWorkspaceExecutionMode,
   SCRIPT_TASK_HOST_REQUIRED_ERROR,
 } from './script-task-policy.js';
 import {
@@ -13669,7 +13670,10 @@ async function processTaskIpc(
           executionMode = forceHostOnly
             ? 'host'
             : resolveTaskExecutionModeForTarget(
-                targetGroupEntry.executionMode,
+                resolveWorkspaceExecutionMode(
+                  targetGroupEntry,
+                  registeredGroups,
+                ),
                 data.execution_mode === 'host' ||
                   data.execution_mode === 'container'
                   ? data.execution_mode
@@ -14163,7 +14167,11 @@ async function processTaskIpc(
         }
       }
       if (finalExecutionMode === 'host') {
-        if (!targetGroup || targetGroup.executionMode !== 'host') {
+        if (
+          !targetGroup ||
+          resolveWorkspaceExecutionMode(targetGroup, registeredGroups) !==
+            'host'
+        ) {
           failUpdate(
             'Target workspace runs in container mode; host execution is not allowed.',
           );
