@@ -146,6 +146,9 @@ HappyClaw 区分不同层级的能力来源：
 
 内置 MCP 工具覆盖消息发送、定时任务、渠道查询、Skill 管理和记忆读写；实际开放的工具会根据用户权限、智能体策略、工作区模式和渠道上下文动态裁剪。
 
+添加远端服务时，参见[远端 MCP 配置与排查](docs/REMOTE-MCP.md)，按步骤填写 HTTP/SSE
+URL 与 Headers、选择作用域，并在指定智能体的最终生效能力中确认来源。
+
 ## 渠道接入
 
 每个用户都可以为同一渠道创建多个 Bot 账号，并为渠道会话显式选择绑定目标。
@@ -484,6 +487,7 @@ happyclaw/
 | [Web API](docs/API.md)                                                | REST API、认证、任务、渠道账号、智能体、用量等接口 |
 | [运行时架构](docs/RUNTIME-ARCHITECTURE.md)                            | 模块边界、依赖规则和性能预算                       |
 | [ACL 权限矩阵](docs/ACL-MATRIX.md)                                    | HTTP、WebSocket 与 IM 命令的权限要求               |
+| [远端 MCP 配置与排查](docs/REMOTE-MCP.md)                             | HTTP/SSE、Header、作用域、智能体生效确认与凭据保护 |
 | [Workspace Memory v2](docs/workspace-memory-v2.md)                    | Workspace 知识边界、数据模型、并发和 UI 语义       |
 | [智能体优先架构记录](docs/agent-first-architecture-plan.md)           | 智能体、工作区、运行会话与渠道挂载的迁移背景       |
 | [Plugin 自动化设计记录](docs/claude-code-plugin-automation-design.md) | Claude Code Plugin catalog 与运行快照的历史设计    |
