@@ -225,6 +225,48 @@ export function getQQMediaFileType(fileName: string): QQMediaFileType {
   return QQMediaFileType.FILE;
 }
 
+/** Inbound QQ attachment fields HappyClaw reads from gateway events. */
+export interface QQInboundAttachment {
+  url?: string;
+  filename?: string;
+  content_type?: string;
+  /** QQ platform-side speech recognition result for voice messages. */
+  asr_refer_text?: string;
+}
+
+const QQ_VOICE_EXTENSIONS = new Set(['.amr', '.silk', '.slk', '.wav', '.mp3']);
+
+export function isQQVoiceAttachment(attachment: QQInboundAttachment): boolean {
+  const contentType = attachment.content_type?.trim().toLowerCase() ?? '';
+  if (contentType === 'voice' || contentType.startsWith('audio/')) return true;
+  const name = attachment.filename || attachment.url?.split('?')[0] || '';
+  return QQ_VOICE_EXTENSIONS.has(path.extname(name).toLowerCase());
+}
+
+/**
+ * QQ ships its own ASR transcript on voice attachments (`asr_refer_text`).
+ * Returns the trimmed transcript, or undefined when absent / not a voice.
+ */
+export function getQQVoiceTranscript(
+  attachment: QQInboundAttachment,
+): string | undefined {
+  if (!isQQVoiceAttachment(attachment)) return undefined;
+  const text = attachment.asr_refer_text?.trim();
+  return text || undefined;
+}
+
+/**
+ * Prepend the platform transcript so the Agent reads the spoken content as
+ * text instead of an undecodable SILK file.
+ */
+export function withQQVoiceTranscript(
+  content: string,
+  transcript: string | undefined,
+): string {
+  if (!transcript) return content;
+  return `[语音转文字] ${transcript}\n${content}`.trim();
+}
+
 // ─── Chunked Upload Utilities ──────────────────────────────────
 
 async function computeFileHashes(
@@ -1436,7 +1478,7 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
    * Returns updated content string and optional attachmentsJson for vision.
    */
   async function processQQAttachment(
-    attachment: { url?: string; filename?: string },
+    attachment: QQInboundAttachment,
     msgId: string,
     jid: string,
     content: string,
@@ -1444,6 +1486,9 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
     logContext: string,
     lease: ChannelInboundLease,
   ): Promise<{ content: string; attachmentsJson?: string }> {
+    const isVoice = isQQVoiceAttachment(attachment);
+    // Platform ASR text survives even when the audio download fails.
+    content = withQQVoiceTranscript(content, getQQVoiceTranscript(attachment));
     if (!attachment.url) return { content };
 
     const attachUrl = attachment.url.startsWith('http')
@@ -1501,14 +1546,17 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
           buffer,
         );
         inboundLifecycle.assertCurrent(lease);
-        if (relPath) content = `[文件: ${relPath}]\n${content}`.trim();
+        if (relPath) {
+          const label = isVoice ? '语音' : '文件';
+          content = `[${label}: ${relPath}]\n${content}`.trim();
+        }
       } catch (err) {
         inboundLifecycle.assertCurrent(lease);
         logger.warn({ err }, `Failed to save QQ ${logContext} file`);
       }
     }
 
-    if (!content) content = '[文件]';
+    if (!content) content = isVoice ? '[语音]' : '[文件]';
     return { content };
   }
 
