@@ -72,6 +72,7 @@ import {
 } from './im-delivery-progress.js';
 import { preAcceptImDeliveryError } from './im-send-retry-policy.js';
 import { enrichFeishuInboundContent } from './feishu-rich-content.js';
+import { createFeishuSenderNameResolver } from './feishu-sender-name.js';
 import {
   FeishuForwardBundleResolver,
   type FeishuForwardCandidate,
@@ -1169,7 +1170,6 @@ export function createFeishuConnection(
   const reliabilityAccountId =
     config.channelAccountId?.trim() || `app:${config.appId}`;
   const inboxOwner = `feishu:${reliabilityAccountId}:${randomUUID()}`;
-  const senderNameCache = new Map<string, string>();
   const lastMessageIdByChat = new Map<string, string>();
   const ackReactions = new ExactAsyncIndicatorRegistry<{
     messageId: string;
@@ -1715,8 +1715,40 @@ export function createFeishuConnection(
     }
   }
 
-  function getSenderName(openId: string): string {
-    return senderNameCache.get(openId) || openId;
+  const senderNames = createFeishuSenderNameResolver({
+    lookup: async (openId) => {
+      if (!client) return undefined;
+      const response = await client.contact.v3.user.get({
+        path: { user_id: openId },
+        params: { user_id_type: 'open_id' },
+      });
+      if (response.code !== undefined && response.code !== 0) {
+        throw new Error(
+          `contact.v3.user.get failed: ${response.code} ${response.msg ?? ''}`,
+        );
+      }
+      return response.data?.user?.name;
+    },
+    onLookupError: (openId, err) => {
+      logger.debug(
+        { err, openId },
+        'Feishu sender name lookup failed; falling back to open_id',
+      );
+    },
+  });
+
+  async function resolveSenderName(
+    openId: string,
+    eventName: string | undefined,
+    senderType: string | undefined,
+  ): Promise<string> {
+    if (eventName) return eventName;
+    if (!openId) return openId;
+    // App/bot senders are not contact-directory users.
+    if (senderType && senderType !== 'user') {
+      return senderNames.peek(openId) || openId;
+    }
+    return (await senderNames.resolve(openId)) || openId;
   }
 
   function withAckReactionTimeout<T>(
@@ -2195,7 +2227,6 @@ export function createFeishuConnection(
         threadId,
         deliveryRootMessageId,
       );
-      const resolvedSenderName = senderName || getSenderName(senderOpenId);
       const cachedChatInfo = chatInfoById.get(chatId);
       const resolvedChatName =
         cachedChatInfo?.name || (chatType === 'p2p' ? '飞书私聊' : '飞书群聊');
@@ -2234,6 +2265,14 @@ export function createFeishuConnection(
           return;
         }
       }
+
+      // Resolve the display name only for messages that passed the audience
+      // and binding gates, so dropped traffic never triggers contact lookups.
+      const resolvedSenderName = await resolveSenderName(
+        senderOpenId,
+        senderName,
+        senderType,
+      );
 
       // ── 斜杠指令：拦截已知 /xxx 命令，不进入消息流 ──
       // 只有飞书结构化 mentions 证明了真实 Bot 点名，才移除开头的展示名。
