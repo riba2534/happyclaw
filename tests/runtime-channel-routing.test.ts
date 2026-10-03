@@ -273,6 +273,43 @@ describe('actual runtime callbacks preserve per-input reply destinations', () =>
   );
 
   test.each(['main', 'session'] as const)(
+    '%s still sends the final IM answer after a held background-task progress reply',
+    async (lane) => {
+      const fixture = makeOutputRuntime(lane);
+      const inputId = 'initial-im-input';
+      fixture.globals.replySourceImJid = null;
+      fixture.globals.channelOutboxScopesByInput.set(inputId, {
+        sourceJid: OLD_IM,
+        token: 'initial-scope',
+        turnRunId: 'initial-run',
+      });
+      fixture.globals.turnOutputCoordinators.set(
+        inputId,
+        new TurnOutputCoordinator(),
+      );
+      await fixture.emit({
+        status: 'success',
+        result: 'Started a background search.',
+        sourceKind: 'sdk_final',
+        finalizationReason: 'completed',
+        pendingBgTasks: 1,
+        inputTurnId: inputId,
+        sdkMessageUuid: 'sdk-held',
+      });
+      await fixture.emit(finalOutput(inputId, 'Found 16 remote roles.'));
+      expect(fixture.sendImWithRetry).toHaveBeenCalledTimes(2);
+      expect(fixture.sendImWithRetry).toHaveBeenLastCalledWith(
+        OLD_IM,
+        'Found 16 remote roles.',
+        [],
+        expect.objectContaining({ scopeToken: 'initial-scope' }),
+      );
+      expect(fixture.commitCursor).toHaveBeenCalledWith(inputId);
+      expect(fixture.globals.hadError).toBe(false);
+    },
+  );
+
+  test.each(['main', 'session'] as const)(
     '%s does not persist or acknowledge a Web input whose admission was rejected',
     async (lane) => {
       const fixture = makeOutputRuntime(lane);

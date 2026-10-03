@@ -9473,7 +9473,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
               if (occupiesPrimarySlot) {
                 sentReply = true;
-                sentReplyByInput.set(outputChannelScope.inputId, true);
+                // 挂起中的进度消息不占用首条回复名额，后台任务完成后的最终
+                // 汇总仍需投递到无流式卡片的 IM 渠道。
+                if (!holdReason) {
+                  sentReplyByInput.set(outputChannelScope.inputId, true);
+                }
               }
               // See isGenuineReplyResult's doc comment (src/reply-delivery.ts)
               // for why a held/partial result must not count. Only ever SET
@@ -17676,7 +17680,9 @@ async function processAgentConversation(
             : [output.inputTurnId ?? lastProcessed.id];
           for (const inputId of acknowledgedInputIds) {
             agentPhysicalDeliveryAckByInput.set(inputId, true);
-            agentReplySentByInput.set(inputId, true);
+            // 挂起中的进度消息（后台任务未完成）不占用首条回复名额；
+            // 否则无流式卡片的渠道（Telegram/QQ 等）会丢掉后续最终汇总。
+            if (!holdReason) agentReplySentByInput.set(inputId, true);
             if (
               !holdReason &&
               isGenuineReplyResult({
