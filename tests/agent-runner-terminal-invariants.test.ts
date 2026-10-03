@@ -10,10 +10,27 @@ const source = fs.readFileSync(
 
 describe('Agent Runner terminal invariants', () => {
   test('every non-empty Assistant error terminates independently of classification', () => {
+    // resolveAssistantErrorAttemptBoundary() returns a class for every
+    // non-empty top-level error, so this branch is the only exit for them.
     expect(source).toMatch(
-      /if \(assistantError\) \{[\s\S]*?classifyProviderAssistantError\(assistantError\) \?\? 'transient'[\s\S]*?stream\.end\(\);[\s\S]*?providerAccountFailure: true/,
+      /if \(assistantError\) \{[\s\S]*?resolveAssistantErrorAttemptBoundary\(\{[\s\S]*?if \(assistantErrorClass\) \{[\s\S]*?stream\.end\(\);[\s\S]*?providerAccountFailure: true/,
     );
     expect(source).not.toContain('if (assistantError && assistantErrorClass)');
+  });
+
+  test('sub-agent provider errors are judged before sub-agent routing', () => {
+    // processSubAgentMessage() consumes every sub-agent assistant message, so
+    // an error check placed after it can never see a sub-agent usage limit.
+    const boundary = source.indexOf('resolveAssistantErrorAttemptBoundary({');
+    const routing = source.indexOf(
+      'if (processor.processSubAgentMessage(message as any))',
+    );
+    expect(boundary).toBeGreaterThan(-1);
+    expect(routing).toBeGreaterThan(-1);
+    expect(boundary).toBeLessThan(routing);
+    expect(source).toMatch(
+      /parentToolUseId: msgParentToolUseId,[\s\S]*?if \(msgParentToolUseId\) \{[\s\S]*?q\.interrupt\(\)/,
+    );
   });
 
   test('protocol-only background debt has a bounded hard failure', () => {

@@ -244,6 +244,35 @@ export function classifyProviderAssistantError(
 }
 
 /**
+ * Decide whether an AssistantMessage error ends the current SDK attempt, and
+ * with which failure class.
+ *
+ * Every top-level error does (see classifyProviderAssistantError). A sub-agent
+ * runs on its parent's provider profile, so an account verdict there — usage
+ * limit, billing, authentication — means the parent cannot be served either.
+ * Leaving it to the parent would hand it a "you've hit your limit" tool result
+ * to narrate, and a background sub-agent would simply stop with nobody
+ * retrying it. Ending the attempt lets the host quarantine the profile and
+ * replay the still-unacknowledged input on another account, exactly as for a
+ * top-level limit.
+ *
+ * Transient and config errors stay local to the sub-agent: the parent receives
+ * them as a failed tool result and can adapt, so they must not replay the
+ * whole input.
+ *
+ * @returns the failure class, or undefined when the attempt continues.
+ */
+export function resolveAssistantErrorAttemptBoundary(input: {
+  error: SDKAssistantMessageError | (string & {}) | undefined;
+  parentToolUseId: string | null | undefined;
+}): ProviderFailureClass | undefined {
+  const failureClass = classifyProviderAssistantError(input.error);
+  if (!failureClass) return undefined;
+  if ((input.parentToolUseId ?? null) === null) return failureClass;
+  return failureClass === 'account' ? 'account' : undefined;
+}
+
+/**
  * Per-process model state. Once the primary tier is exhausted, all later warm
  * IPC turns stay on the fallback tier instead of paying one failed call each.
  */

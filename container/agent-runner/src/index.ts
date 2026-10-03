@@ -113,7 +113,7 @@ import {
 } from './provider-runtime.js';
 import { resolveAgentSdkEffort } from './agent-effort.js';
 import {
-  classifyProviderAssistantError,
+  resolveAssistantErrorAttemptBoundary,
   decideProviderLimitAction,
   ProviderFallbackModelState,
   ProviderFallbackTurnLedger,
@@ -3276,6 +3276,58 @@ async function runQueryAttempt(
         continue;
       }
 
+      // Checked before sub-agent routing: a sub-agent's account verdict (usage
+      // limit, billing, auth) must fail over like the parent's would, instead
+      // of being rendered as sub-agent text and silently ending that task.
+      const assistantError =
+        message.type === 'assistant' && 'uuid' in message
+          ? (message as { error?: SDKAssistantMessageError }).error
+          : undefined;
+      if (assistantError) {
+        // Assistant.error is itself a terminal SDK-attempt boundary for the
+        // main agent. The classifier only selects the host disposition; it
+        // must never decide whether we keep waiting for a Result which
+        // compatible endpoints may never emit.
+        const assistantErrorClass = resolveAssistantErrorAttemptBoundary({
+          error: assistantError,
+          parentToolUseId: msgParentToolUseId,
+        });
+        if (assistantErrorClass) {
+          log(
+            `Assistant provider error (${assistantError}${
+              msgParentToolUseId
+                ? `, sub-agent ${String(msgParentToolUseId).slice(0, 12)}`
+                : ''
+            }); classified as ${assistantErrorClass}`,
+          );
+          publishProviderFailure({
+            error: assistantError,
+            failureClass: assistantErrorClass,
+          });
+          processor.discardPendingTextOutput();
+          processor.cleanup();
+          assistantTextTracker.reset();
+          canonicalAssistantUuid = undefined;
+          stream.end();
+          if (msgParentToolUseId) {
+            // The parent loop is still mid-tool and would otherwise keep
+            // spending this attempt on an account the host is quarantining.
+            q.interrupt().catch((err: unknown) =>
+              log(`Sub-agent provider-error interrupt failed: ${err}`),
+            );
+          }
+          return {
+            newSessionId,
+            lastAssistantUuid,
+            closedDuringQuery,
+            interruptedDuringQuery,
+            cancelledIpcReceipts,
+            pipedMessagesDuringQuery,
+            providerAccountFailure: true,
+          };
+        }
+      }
+
       // ── 子 Agent 消息转 StreamEvent ──
       if (processor.processSubAgentMessage(message as any)) {
         continue;
@@ -3288,37 +3340,6 @@ async function runQueryAttempt(
       }
 
       if (message.type === 'assistant' && 'uuid' in message) {
-        const assistantError = (message as { error?: SDKAssistantMessageError })
-          .error;
-        if (assistantError) {
-          // Assistant.error is itself a terminal SDK-attempt boundary. The
-          // classifier only selects the host disposition; it must never decide
-          // whether we keep waiting for a Result which compatible endpoints may
-          // never emit.
-          const assistantErrorClass =
-            classifyProviderAssistantError(assistantError) ?? 'transient';
-          log(
-            `Assistant provider error (${assistantError}); classified as ${assistantErrorClass}`,
-          );
-          publishProviderFailure({
-            error: assistantError,
-            failureClass: assistantErrorClass,
-          });
-          processor.discardPendingTextOutput();
-          processor.cleanup();
-          assistantTextTracker.reset();
-          canonicalAssistantUuid = undefined;
-          stream.end();
-          return {
-            newSessionId,
-            lastAssistantUuid,
-            closedDuringQuery,
-            interruptedDuringQuery,
-            cancelledIpcReceipts,
-            pipedMessagesDuringQuery,
-            providerAccountFailure: true,
-          };
-        }
         lastAssistantUuid = (message as { uuid: string }).uuid;
         const assistantMsg = message as Record<string, unknown>;
         if ((assistantMsg.parent_tool_use_id ?? null) === null) {

@@ -82,8 +82,10 @@ describe('provider fallback source contracts', () => {
   });
 
   test('a synthetic assistant provider error cannot park the SDK stream', () => {
-    expect(agentRunner).toContain(
-      'classifyProviderAssistantError(assistantError)',
+    // The boundary helper delegates to classifyProviderAssistantError(); its
+    // unit tests pin that every top-level error still yields a class.
+    expect(agentRunner).toMatch(
+      /resolveAssistantErrorAttemptBoundary\(\{\s*error: assistantError,/,
     );
     // The published class must come from the classifier, never a hard-coded
     // label: borrowing 'server_error' is exactly how the liveness watchdog

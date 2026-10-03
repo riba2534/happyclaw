@@ -8,6 +8,7 @@ import {
   isProviderLimitNotice,
   ProviderFallbackModelState,
   ProviderFallbackTurnLedger,
+  resolveAssistantErrorAttemptBoundary,
 } from '../container/agent-runner/src/provider-fallback.js';
 import {
   resolveClaudeProviderRuntime,
@@ -208,6 +209,80 @@ describe('provider model fallback lifecycle', () => {
     // would drain the whole pool over one bad model name.
     expect(classifyProviderAssistantError('model_not_found')).toBe('config');
     expect(classifyProviderAssistantError('invalid_request')).toBe('config');
+  });
+
+  test('every top-level assistant error ends the attempt with its class', () => {
+    for (const parentToolUseId of [null, undefined]) {
+      expect(
+        resolveAssistantErrorAttemptBoundary({
+          error: 'rate_limit',
+          parentToolUseId,
+        }),
+      ).toBe('account');
+      expect(
+        resolveAssistantErrorAttemptBoundary({
+          error: 'overloaded',
+          parentToolUseId,
+        }),
+      ).toBe('transient');
+      expect(
+        resolveAssistantErrorAttemptBoundary({
+          error: 'model_not_found',
+          parentToolUseId,
+        }),
+      ).toBe('config');
+      expect(
+        resolveAssistantErrorAttemptBoundary({
+          error: 'future_sdk_error' as never,
+          parentToolUseId,
+        }),
+      ).toBe('transient');
+    }
+    expect(
+      resolveAssistantErrorAttemptBoundary({
+        error: undefined,
+        parentToolUseId: null,
+      }),
+    ).toBeUndefined();
+  });
+
+  test('a sub-agent account verdict fails over like the parent would', () => {
+    // A sub-agent shares its parent's profile: a usage limit there means the
+    // account is spent, and a background sub-agent would otherwise just stop.
+    for (const error of [
+      'rate_limit',
+      'billing_error',
+      'authentication_failed',
+      'account_on_hold',
+    ] as const) {
+      expect(
+        resolveAssistantErrorAttemptBoundary({
+          error,
+          parentToolUseId: 'toolu_subagent',
+        }),
+      ).toBe('account');
+    }
+  });
+
+  test('sub-agent transient and config errors stay with the parent', () => {
+    // The parent receives these as a failed tool result and can adapt; they
+    // must not replay the whole input or quarantine anything.
+    for (const error of [
+      'overloaded',
+      'server_error',
+      'unknown',
+      'max_output_tokens',
+      'model_not_found',
+      'invalid_request',
+      'future_sdk_error' as never,
+    ]) {
+      expect(
+        resolveAssistantErrorAttemptBoundary({
+          error,
+          parentToolUseId: 'toolu_subagent',
+        }),
+      ).toBeUndefined();
+    }
   });
 
   test('structured rejection wins over text and preserves model-only errors without fallback', () => {
