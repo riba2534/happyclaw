@@ -1318,8 +1318,8 @@ async function handleAgentConversationMessage(
         'Race: eager-expanded agent conv but runner exited before sendMessage; cold-start will re-expand',
       );
     }
-    // No running process — force close any stale state and start fresh.
-    // Mirrors the reliable IM path in buildOnAgentMessage() (#240).
+    // No running process — force close any stale state and start fresh
+    // (#240). Only reached on 'no_active'; a warm runner is never closed.
     deps.queue.closeStdin(virtualChatJid);
     if (deps.processAgentConversation) {
       const taskId = `agent-conv:${agentId}:${Date.now()}`;

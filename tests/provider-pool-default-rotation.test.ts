@@ -96,6 +96,30 @@ describe('automatic enabled-model pool', () => {
     expect(second!.resetSession).toBe(true);
   });
 
+  test('rotation never closes a runner that still holds background tasks', () => {
+    const closeRunner = vi.fn();
+    expect(
+      closeRunnerAfterRotatingProviderTurn(
+        true,
+        false,
+        { providerFailure: false, inputTurnCompleted: true, pendingBgTasks: 2 },
+        closeRunner,
+      ),
+    ).toBe(false);
+    expect(closeRunner).not.toHaveBeenCalled();
+
+    // Once the tasks settle, the next healthy completion schedules rotation.
+    expect(
+      closeRunnerAfterRotatingProviderTurn(
+        true,
+        false,
+        { providerFailure: false, inputTurnCompleted: true, pendingBgTasks: 0 },
+        closeRunner,
+      ),
+    ).toBe(true);
+    expect(closeRunner).toHaveBeenCalledOnce();
+  });
+
   test.each(['round-robin', 'weighted-round-robin'] as const)(
     'transient replay stays on its first provider under %s',
     (strategy) => {

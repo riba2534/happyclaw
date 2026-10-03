@@ -20121,139 +20121,101 @@ function buildOnAgentMessage(): (baseChatJid: string, agentId: string) => void {
     const missedMessages = selectChannelReplyBatch(interactionBatch.messages);
     const requiredInteractionMode = interactionBatch.interactionMode;
 
-    // IM messages must force-restart the agent process so reply routing
-    // (replySourceImJid) is recalculated from the latest batch.  This mirrors
-    // the home-folder force-restart for the main conversation.
-    const lastSourceJid = missedMessages[missedMessages.length - 1]?.source_jid;
-    const isImSource =
-      !!lastSourceJid && getChannelType(lastSourceJid) !== null;
+    // IM and Web share one pipe-first path, mirroring the main conversation
+    // loop: a warm runner admits the input through activeRouteAdmissions,
+    // which rebinds the exact per-input IM reply scope. Never closeStdin here:
+    // a runner held open for background Tasks would be killed mid-flight and
+    // their completion summary would never be delivered.
+    logger.debug(
+      {
+        virtualChatJid,
+        missedMessages: missedMessages.length,
+        lastSourceJid: missedMessages[missedMessages.length - 1]?.source_jid,
+      },
+      'Agent conversation messages: attempting to pipe into running agent',
+    );
+    const knownReferencedMessageIds = collectPersistedReferencedMessageIds(
+      virtualChatJid,
+      missedMessages,
+    );
+    const formatted =
+      missedMessages.length > 0
+        ? formatMessages(missedMessages, {
+            knownMessageIds: knownReferencedMessageIds,
+          })
+        : '';
+    const images = collectMessageImages(virtualChatJid, missedMessages, {
+      knownMessageIds: knownReferencedMessageIds,
+    });
+    const imagesForAgent = images.length > 0 ? images : undefined;
 
-    if (isImSource) {
-      // Force close running process then enqueue fresh start.
-      // Use a stable taskId so rapid-fire IM messages deduplicate into a
-      // single queued restart instead of N separate restarts.
-      logger.info({ virtualChatJid, taskId: `agent-im-restart:${agentId}` });
-      queue.closeStdin(virtualChatJid);
-      const taskId = `agent-im-restart:${agentId}`;
-      logger.debug(
-        { virtualChatJid, taskId },
-        'Agent IM restart: closing stdin and enqueuing task',
-      );
-      queue.enqueueTask(virtualChatJid, taskId, async () => {
-        logger.debug(
-          { homeChatJid, agentId },
-          'Agent IM restart: starting processAgentConversation',
-        );
-        logger.info(
-          { homeChatJid, agentId, taskId },
-          'sub-agent task IPC received',
-        );
-        try {
-          return await processAgentConversation(homeChatJid, agentId);
-        } catch (err) {
-          logger.error(
-            { err, homeChatJid, agentId },
-            'Agent IM restart: processAgentConversation failed',
-          );
-        }
-      });
-    } else {
-      // Web-origin: try to pipe into running agent process
-      logger.debug(
-        {
+    const lastAgentSourceJid =
+      missedMessages[missedMessages.length - 1]?.source_jid || virtualChatJid;
+    const deliveryTarget = createIpcDeliveryTarget(
+      virtualChatJid,
+      missedMessages,
+    );
+    const sendResult = formatted
+      ? queue.sendMessage(
           virtualChatJid,
-          missedMessages: missedMessages.length,
-          isImSource,
-        },
-        'Web-origin missed messages: attempting to pipe into running agent',
-      );
-      const knownReferencedMessageIds = collectPersistedReferencedMessageIds(
-        virtualChatJid,
-        missedMessages,
-      );
-      const formatted =
-        missedMessages.length > 0
-          ? formatMessages(missedMessages, {
-              knownMessageIds: knownReferencedMessageIds,
-            })
-          : '';
-      const images = collectMessageImages(virtualChatJid, missedMessages, {
-        knownMessageIds: knownReferencedMessageIds,
-      });
-      const imagesForAgent = images.length > 0 ? images : undefined;
-
-      const lastAgentSourceJid =
-        missedMessages[missedMessages.length - 1]?.source_jid || virtualChatJid;
-      const deliveryTarget = createIpcDeliveryTarget(
-        virtualChatJid,
-        missedMessages,
-      );
-      const sendResult = formatted
-        ? queue.sendMessage(
-            virtualChatJid,
-            formatted,
-            imagesForAgent,
-            (receipt) => {
-              // 用户消息注入成功 → 挂起中的 agent 卡先定稿轮换
-              activeHeldCardFinalizers.get(virtualChatJid)?.(
-                lastAgentSourceJid,
-                receipt?.deliveryId,
+          formatted,
+          imagesForAgent,
+          (receipt) => {
+            // 用户消息注入成功 → 挂起中的 agent 卡先定稿轮换
+            activeHeldCardFinalizers.get(virtualChatJid)?.(
+              lastAgentSourceJid,
+              receipt?.deliveryId,
+            );
+            if (receipt) {
+              activeAgentBuilderTurns.enqueueBatch(
+                agentBuilderTurnScope(
+                  agent?.group_folder ?? group.folder,
+                  agentId,
+                ),
+                (receipt.coveredCursors ?? [receipt.cursor]).map((cursor) => ({
+                  chatJid: receipt.chatJid,
+                  messageId: cursor.id,
+                  runtimeTurnId: receipt.deliveryId,
+                  scheduledTaskId: null,
+                })),
               );
-              if (receipt) {
-                activeAgentBuilderTurns.enqueueBatch(
-                  agentBuilderTurnScope(
-                    agent?.group_folder ?? group.folder,
-                    agentId,
-                  ),
-                  (receipt.coveredCursors ?? [receipt.cursor]).map(
-                    (cursor) => ({
-                      chatJid: receipt.chatJid,
-                      messageId: cursor.id,
-                      runtimeTurnId: receipt.deliveryId,
-                      scheduledTaskId: null,
-                    }),
-                  ),
-                );
-                grantWorkspaceMemoryTurnToCurrentRunner(
-                  {
-                    groupFolder: agent?.group_folder ?? group.folder,
-                    agentId,
-                    taskRunId: null,
-                  },
-                  receipt.deliveryId,
-                );
-              }
-            },
-            lastAgentSourceJid,
-            undefined,
-            deliveryTarget,
-            undefined,
-            (receipt) =>
-              invokeActiveRouteAdmission(
-                agent?.group_folder ?? group.folder,
-                lastAgentSourceJid,
-                receipt,
-                agentId,
-              ),
-            { interactionMode: requiredInteractionMode },
-          )
-        : 'no_active';
-      if (sendResult === 'sent' && deliveryTarget) {
-        advanceNextPullCursorOnly(virtualChatJid, deliveryTarget.cursor);
-        if (missedMessages.length < allPendingMessages.length) {
-          queue.enqueueTask(
-            virtualChatJid,
-            `agent-channel-next:${agentId}`,
-            () => processAgentConversation(homeChatJid, agentId),
-          );
-        }
+              grantWorkspaceMemoryTurnToCurrentRunner(
+                {
+                  groupFolder: agent?.group_folder ?? group.folder,
+                  agentId,
+                  taskRunId: null,
+                },
+                receipt.deliveryId,
+              );
+            }
+          },
+          lastAgentSourceJid,
+          undefined,
+          deliveryTarget,
+          undefined,
+          (receipt) =>
+            invokeActiveRouteAdmission(
+              agent?.group_folder ?? group.folder,
+              lastAgentSourceJid,
+              receipt,
+              agentId,
+            ),
+          { interactionMode: requiredInteractionMode },
+        )
+      : 'no_active';
+    if (sendResult === 'sent' && deliveryTarget) {
+      advanceNextPullCursorOnly(virtualChatJid, deliveryTarget.cursor);
+      if (missedMessages.length < allPendingMessages.length) {
+        queue.enqueueTask(virtualChatJid, `agent-channel-next:${agentId}`, () =>
+          processAgentConversation(homeChatJid, agentId),
+        );
       }
-      if (sendResult === 'no_active') {
-        const taskId = `agent-conv:${agentId}:${Date.now()}`;
-        queue.enqueueTask(virtualChatJid, taskId, async () => {
-          return processAgentConversation(homeChatJid, agentId);
-        });
-      }
+    }
+    if (sendResult === 'no_active') {
+      const taskId = `agent-conv:${agentId}:${Date.now()}`;
+      queue.enqueueTask(virtualChatJid, taskId, async () => {
+        return processAgentConversation(homeChatJid, agentId);
+      });
     }
     logger.info(
       {

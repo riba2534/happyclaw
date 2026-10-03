@@ -1089,14 +1089,21 @@ export function shouldRotatePoolProviderAfterTurn(
 export function closeRunnerAfterRotatingProviderTurn(
   rotationEnabled: boolean,
   rotationAlreadyScheduled: boolean,
-  output: Pick<ContainerOutput, 'providerFailure' | 'inputTurnCompleted'>,
+  output: Pick<
+    ContainerOutput,
+    'providerFailure' | 'inputTurnCompleted' | 'pendingBgTasks'
+  >,
   closeRunner: () => void,
 ): boolean {
   if (
     !rotationEnabled ||
     rotationAlreadyScheduled ||
     output.providerFailure ||
-    output.inputTurnCompleted !== true
+    output.inputTurnCompleted !== true ||
+    // A runner still holding background Tasks must stay alive: closing stdin
+    // would kill the sub-agents and drop their completion summary. Rotation
+    // is retried on the next healthy completion once they have settled.
+    (output.pendingBgTasks ?? 0) > 0
   ) {
     return false;
   }
