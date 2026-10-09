@@ -1,9 +1,15 @@
 import { useState, useMemo, useCallback } from 'react';
-import { Loader2, Link2, RefreshCw, MessageSquare } from 'lucide-react';
+import { Loader2, RefreshCw, MessageSquare, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from '@/components/ui/native-select';
 import { SearchInput } from '@/components/common/SearchInput';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
+import { IconButton } from '@/components/common/IconButton';
+import { ListGroup } from '@/components/common/ListRow';
+import { SettingsGroup, SettingsSection } from './SettingsLayout';
 import { useImBindings } from './hooks/useImBindings';
 import { ImBindingRow } from './ImBindingRow';
 import { BindingTargetDialog } from './BindingTargetDialog';
@@ -295,18 +301,10 @@ export function BindingsSection() {
 
   return (
     <div>
-      <div className="space-y-4">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
-              <Link2 className="w-6 h-6" />
-              渠道绑定
-            </h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              私聊和普通群绑定会话，话题群绑定工作区。回复返回当前消息所在渠道或话题；未绑定时不响应。
-            </p>
-          </div>
+      <SettingsSection
+        title="渠道绑定"
+        description="私聊和普通群绑定会话，话题群绑定工作区。回复返回当前消息所在渠道或话题；未绑定时不响应。"
+        actions={
           <Button
             variant="outline"
             size="sm"
@@ -314,16 +312,16 @@ export function BindingsSection() {
             disabled={loading || syncing}
           >
             <RefreshCw
-              className={`w-3.5 h-3.5 mr-1.5 ${loading || syncing ? 'animate-spin' : ''}`}
+              className={`size-3.5 ${loading || syncing ? 'motion-safe:animate-spin' : ''}`}
             />
             {syncing ? '正在同步 Bot 聊天' : '同步聊天'}
           </Button>
-        </div>
-
+        }
+      >
         {syncError && bindings.length > 0 && (
           <div
             role="status"
-            className="rounded-lg border border-amber-300/70 bg-amber-50/60 px-4 py-2.5 text-sm text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/20 dark:text-amber-200"
+            className="rounded-lg bg-warning/10 px-3 py-2 text-caption text-warning"
           >
             同步未完成，当前显示本地记录：{syncError}
           </div>
@@ -331,150 +329,167 @@ export function BindingsSection() {
 
         {/* Error banner */}
         {errorMsg && (
-          <div className="bg-error-bg border border-error/20 text-error text-sm rounded-lg px-4 py-2.5 flex items-center justify-between">
+          <div
+            role="alert"
+            className="flex items-center justify-between gap-3 rounded-lg bg-error/10 py-1.5 pr-1.5 pl-3 text-caption text-error"
+          >
             <span>{errorMsg}</span>
-            <button
+            <IconButton
+              label="关闭"
+              size="icon-xs"
+              className="text-error hover:text-error"
               onClick={() => {
                 setLocalError(null);
                 clearHookError();
               }}
-              className="text-error hover:text-error ml-2 text-xs"
-            >
-              ✕
-            </button>
+              icon={<X />}
+            />
           </div>
         )}
 
         {/* Toolbar: channel filter + search */}
         {bindings.length > 0 && (
-          <div className="flex items-center gap-3 flex-wrap">
-            <div className="flex items-center gap-1 flex-wrap">
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="min-w-[200px] flex-1">
+                <SearchInput
+                  value={search}
+                  onChange={setSearch}
+                  placeholder="搜索渠道名称..."
+                  debounce={200}
+                />
+              </div>
+              {accountOptions.length > 1 && (
+                <div className="flex items-center gap-2">
+                  <label
+                    htmlFor="settings-binding-bot-account"
+                    className="text-caption text-muted-foreground"
+                  >
+                    机器人身份
+                  </label>
+                  <NativeSelect
+                    id="settings-binding-bot-account"
+                    value={accountFilter}
+                    onChange={(event) => setAccountFilter(event.target.value)}
+                    aria-label="筛选机器人身份"
+                  >
+                    <NativeSelectOption value="all">
+                      全部机器人
+                    </NativeSelectOption>
+                    {accountOptions.map((account) => (
+                      <NativeSelectOption key={account.id} value={account.id}>
+                        {account.name}
+                      </NativeSelectOption>
+                    ))}
+                  </NativeSelect>
+                </div>
+              )}
+            </div>
+            <div
+              role="group"
+              aria-label="按渠道筛选"
+              className="flex flex-wrap items-center gap-1"
+            >
               {channels.map((ch) => (
-                <button
+                <Button
                   key={ch.key}
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  aria-pressed={channelFilter === ch.key}
                   onClick={() => setChannelFilter(ch.key)}
-                  className={`px-3 py-1 text-xs font-medium rounded-full transition-colors cursor-pointer ${
+                  className={
                     channelFilter === ch.key
-                      ? 'bg-primary text-white'
-                      : 'bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground'
-                  }`}
+                      ? 'bg-surface-selected text-foreground hover:bg-surface-selected'
+                      : 'text-muted-foreground'
+                  }
                 >
                   {ch.label}
-                  <span
-                    className={`ml-1 ${channelFilter === ch.key ? 'text-white/80' : 'text-muted-foreground/70'}`}
-                  >
+                  <span className="text-faint-foreground tabular-nums">
                     {ch.count}
                   </span>
-                </button>
+                </Button>
               ))}
             </div>
-            <div className="flex-1 min-w-[200px]">
-              <SearchInput
-                value={search}
-                onChange={setSearch}
-                placeholder="搜索渠道名称..."
-                debounce={200}
-              />
-            </div>
-            {accountOptions.length > 1 && (
-              <div className="flex items-center gap-2">
-                <label
-                  htmlFor="settings-binding-bot-account"
-                  className="text-xs text-muted-foreground"
-                >
-                  机器人身份
-                </label>
-                <select
-                  id="settings-binding-bot-account"
-                  value={accountFilter}
-                  onChange={(event) => setAccountFilter(event.target.value)}
-                  aria-label="筛选机器人身份"
-                  className="h-9 rounded-md border border-border bg-background px-2 text-xs text-foreground"
-                >
-                  <option value="all">全部机器人</option>
-                  {accountOptions.map((account) => (
-                    <option key={account.id} value={account.id}>
-                      {account.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
           </div>
         )}
 
         {/* List */}
         {loading ? (
-          <div className="flex items-center justify-center py-16 text-muted-foreground">
-            <Loader2 className="w-5 h-5 animate-spin mr-2" />
+          <div className="flex items-center justify-center py-16 text-body text-muted-foreground">
+            <Loader2 className="mr-2 size-4 animate-spin" />
             加载中...
           </div>
         ) : bindingsLoadError ? (
-          <Card>
-            <CardContent className="space-y-3 text-center">
-              <MessageSquare className="w-10 h-10 mx-auto text-error" />
-              <p className="text-sm text-error">
+          <SettingsGroup>
+            <div className="flex flex-col items-center gap-3 px-6 py-10 text-center">
+              <span className="flex size-9 items-center justify-center rounded-lg bg-error/10 text-error">
+                <MessageSquare className="size-4.5" />
+              </span>
+              <p className="text-body text-error">
                 消息渠道加载失败：{bindingsLoadError}
               </p>
               <Button variant="outline" size="sm" onClick={reload}>
-                <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                <RefreshCw className="size-3.5" />
                 重试
               </Button>
-            </CardContent>
-          </Card>
+            </div>
+          </SettingsGroup>
         ) : bindings.length === 0 ? (
-          <Card>
-            <CardContent className="text-center">
-              <MessageSquare className="w-10 h-10 mx-auto text-muted-foreground mb-3" />
-              <p className="text-sm text-muted-foreground">
+          <SettingsGroup>
+            <div className="flex flex-col items-center gap-3 px-6 py-10 text-center">
+              <span className="flex size-9 items-center justify-center rounded-lg bg-muted text-muted-foreground ring-1 ring-surface-border">
+                <MessageSquare className="size-4.5" />
+              </span>
+              <p className="max-w-md text-caption leading-5 text-muted-foreground">
                 暂无 IM 渠道。在飞书、Telegram、QQ、微信、钉钉、Discord 或
                 WhatsApp 中向 Bot 发送消息后，渠道会自动出现在这里。
               </p>
-            </CardContent>
-          </Card>
+            </div>
+          </SettingsGroup>
         ) : filtered.length === 0 ? (
-          <div className="text-center py-10 text-muted-foreground text-sm">
+          <div className="rounded-xl px-6 py-10 text-center text-caption text-muted-foreground ring-1 ring-surface-border ring-inset">
             {selectedChannelLabel && !search.trim()
               ? `暂无 ${selectedChannelLabel} 渠道。请先完成该渠道配置，并向 Bot 发送一条消息。`
               : '没有匹配的渠道'}
           </div>
         ) : (
-          <div className="space-y-5">
+          <div className="space-y-6 pt-2">
             {bindingSections.map((section) =>
               section.items.length > 0 ? (
                 <section key={section.key} className="space-y-2">
-                  <div className="flex items-end justify-between px-1">
-                    <div>
-                      <h2 className="text-sm font-semibold text-foreground">
-                        {section.title}
-                        <span className="ml-1.5 text-xs font-normal text-muted-foreground">
-                          {section.items.length}
-                        </span>
-                      </h2>
-                      <p className="mt-0.5 text-xs text-muted-foreground">
-                        {section.description}
-                      </p>
-                    </div>
+                  <div className="px-1">
+                    <h4 className="flex items-baseline gap-1.5 text-title-sm text-foreground">
+                      {section.title}
+                      <span className="text-caption font-normal text-muted-foreground tabular-nums">
+                        {section.items.length}
+                      </span>
+                    </h4>
+                    <p className="mt-0.5 text-caption text-muted-foreground">
+                      {section.description}
+                    </p>
                   </div>
-                  {section.items.map((group) => (
-                    <ImBindingRow
-                      key={group.jid}
-                      group={group}
-                      isActioning={actioningJid === group.jid}
-                      onRebind={handleRebind}
-                      onUnbind={handleUnbind}
-                      onResetAllowlist={handleResetAllowlist}
-                      onActivationModeChange={handleActivationModeChange}
-                      onAudienceModeChange={handleAudienceModeChange}
-                      onDelete={handleDelete}
-                    />
-                  ))}
+                  <ListGroup>
+                    {section.items.map((group) => (
+                      <ImBindingRow
+                        key={group.jid}
+                        group={group}
+                        isActioning={actioningJid === group.jid}
+                        onRebind={handleRebind}
+                        onUnbind={handleUnbind}
+                        onResetAllowlist={handleResetAllowlist}
+                        onActivationModeChange={handleActivationModeChange}
+                        onAudienceModeChange={handleAudienceModeChange}
+                        onDelete={handleDelete}
+                      />
+                    ))}
+                  </ListGroup>
                 </section>
               ) : null,
             )}
           </div>
         )}
-      </div>
+      </SettingsSection>
 
       {/* Rebind target dialog */}
       <BindingTargetDialog
