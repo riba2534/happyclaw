@@ -65,6 +65,12 @@ Public：
 （6 倍/同一窗口，IPv6 按 /64 合并；loopback 与未知地址不计）。客户端 IP 取自
 `getClientIp`，部署在反向代理后需设置 `TRUST_PROXY=true`。用户名超过 64 字符直接按无效凭据返回 401。
 
+`POST /api/auth/avatar` 接受 jpg、png、gif、webp（≤3MB），以文件头识别真实格式；
+服务端按最长边 256px 缩小（不放大）、按 EXIF 校正方向、去除元数据，统一存为 WebP。
+动图缩放后不超过 512KB 时保留动画，否则取首帧。无法解码或超过 4000 万像素的内容返回 400。
+每次上传生成新文件名，`GET /api/auth/avatars/:filename` 以 `immutable` 缓存返回；
+此前上传的头像按原文件提供，所有者下次上传时才会被替换。
+
 会话 Cookie 在 HTTPS 下名为 `__Host-happyclaw_session`，HTTP 下名为
 `happyclaw_session`；每次下发会话都会同时让另一个名称过期。`POST /api/auth/logout`
 让两个名称都过期，并删除该请求在两个名称下携带、且属于同一用户的全部会话；

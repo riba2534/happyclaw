@@ -1,7 +1,9 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Hono } from 'hono';
+import sharp from 'sharp';
 import {
   afterAll,
   afterEach,
@@ -231,12 +233,21 @@ describe('auth JSON body limit', () => {
     expect(login.status).toBe(200);
     const cookie = sessionCookie(login);
 
+    // A real, decodable PNG above the 64KB JSON cap (noise keeps it large).
+    // The route re-encodes avatars, so the stored file is a small WebP; what
+    // this pins is that the upload is not cut off at the auth JSON budget.
+    const side = 220;
+    const png = await sharp(crypto.randomBytes(side * side * 3), {
+      raw: { width: side, height: side, channels: 3 },
+    })
+      .png()
+      .toBuffer();
+    expect(png.length).toBeGreaterThan(OVERSIZE_BYTES);
+
     const form = new FormData();
     form.append(
       'avatar',
-      new File([new Uint8Array(OVERSIZE_BYTES)], 'avatar.png', {
-        type: 'image/png',
-      }),
+      new File([new Uint8Array(png)], 'avatar.png', { type: 'image/png' }),
     );
     const response = await app.request(
       'http://happyclaw.test/api/auth/avatar?target=user',
@@ -254,8 +265,28 @@ describe('auth JSON body limit', () => {
     };
     expect(payload.success).toBe(true);
     const filename = payload.avatarUrl.replace(/^\/api\/auth\/avatars\//, '');
-    expect(fs.statSync(path.join(tmp, 'avatars', filename)).size).toBe(
-      OVERSIZE_BYTES,
+    expect(filename).toMatch(/\.webp$/);
+    expect(fs.existsSync(path.join(tmp, 'avatars', filename))).toBe(true);
+
+    // Same body budget, but bytes that are not an image are now refused.
+    const junk = new FormData();
+    junk.append(
+      'avatar',
+      new File([new Uint8Array(OVERSIZE_BYTES)], 'avatar.png', {
+        type: 'image/png',
+      }),
     );
+    const rejected = await app.request(
+      'http://happyclaw.test/api/auth/avatar?target=user',
+      {
+        method: 'POST',
+        headers: { cookie, 'x-forwarded-for': '198.51.100.10' },
+        body: junk,
+      },
+    );
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toEqual({
+      error: 'Invalid image file. Use a valid jpg, png, gif or webp image',
+    });
   });
 });

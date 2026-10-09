@@ -66,6 +66,11 @@ import {
   invalidateUserSessions,
 } from '../web-context.js';
 import { getSystemSettings } from '../runtime-config.js';
+import {
+  AvatarImageError,
+  normalizeAvatarImage,
+  type NormalizedAvatar,
+} from '../avatar-image.js';
 
 const authRoutes = new Hono<{ Variables: Variables }>();
 
@@ -775,12 +780,15 @@ authRoutes.delete('/sessions/:id', authMiddleware, (c) => {
 // --- Avatar Upload ---
 
 const AVATARS_DIR = path.join(DATA_DIR, 'avatars');
-const ALLOWED_AVATAR_TYPES: Record<string, string> = {
-  'image/jpeg': '.jpg',
-  'image/png': '.png',
-  'image/gif': '.gif',
-  'image/webp': '.webp',
-};
+// Declared types accepted at the door. Stored avatars are always re-encoded
+// (see normalizeAvatarImage), so the declared type no longer picks the stored
+// extension; the decoded bytes must still be one of these formats.
+const ALLOWED_AVATAR_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+]);
 authRoutes.post('/avatar', authMiddleware, avatarUploadBodyLimit, async (c) => {
   const user = c.get('user') as AuthUser;
   const contentType = c.req.header('content-type') || '';
@@ -799,12 +807,23 @@ authRoutes.post('/avatar', authMiddleware, avatarUploadBodyLimit, async (c) => {
     return c.json({ error: 'File too large (max 3MB)' }, 413);
   }
 
-  const ext = ALLOWED_AVATAR_TYPES[file.type];
-  if (!ext) {
+  if (!ALLOWED_AVATAR_TYPES.has(file.type)) {
     return c.json(
       { error: 'Unsupported image type. Use jpg, png, gif or webp' },
       400,
     );
+  }
+
+  // Resize/strip before touching the avatars directory so a rejected upload
+  // leaves no trace and never reaps the user's current avatar.
+  let avatar: NormalizedAvatar;
+  try {
+    avatar = await normalizeAvatarImage(Buffer.from(await file.arrayBuffer()));
+  } catch (err) {
+    if (err instanceof AvatarImageError) {
+      return c.json({ error: err.message }, 400);
+    }
+    throw err;
   }
 
   fs.mkdirSync(AVATARS_DIR, { recursive: true });
@@ -826,11 +845,12 @@ authRoutes.post('/avatar', authMiddleware, avatarUploadBodyLimit, async (c) => {
     ? otherUrl.replace(/^\/api\/auth\/avatars\//, '')
     : null;
 
-  const filename = `${prefix}${crypto.randomBytes(4).toString('hex')}${ext}`;
+  // A fresh random name per upload: avatars are served `immutable`, so new
+  // bytes must never reuse a URL a browser may already have cached.
+  const filename = `${prefix}${crypto.randomBytes(4).toString('hex')}${avatar.ext}`;
   const filePath = path.join(AVATARS_DIR, filename);
-  const buffer = Buffer.from(await file.arrayBuffer());
   const tmpPath = filePath + '.tmp';
-  fs.writeFileSync(tmpPath, buffer);
+  fs.writeFileSync(tmpPath, avatar.data);
   fs.renameSync(tmpPath, filePath);
 
   const avatarUrl = `/api/auth/avatars/${filename}`;
@@ -865,6 +885,9 @@ authRoutes.post('/avatar', authMiddleware, avatarUploadBodyLimit, async (c) => {
 });
 
 // Serve avatar files (public, no auth required)
+// Avatars uploaded before server-side resizing are served exactly as stored:
+// the URL is `immutable`, so swapping smaller bytes in behind it would be a
+// silent content change. They shrink on the owner's next upload (new URL).
 authRoutes.get('/avatars/:filename', async (c) => {
   const filename = c.req.param('filename');
 
