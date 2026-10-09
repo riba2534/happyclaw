@@ -4,7 +4,7 @@
  *
  * Manages:
  * - Text/thinking buffering and flushing
- * - Tool use start/end tracking (top-level, nested, Skill, Task)
+ * - Tool use start/end tracking (top-level, nested, Skill, Agent/Task)
  * - Sub-agent message conversion to StreamEvents
  * - Cleanup of residual tool states
  */

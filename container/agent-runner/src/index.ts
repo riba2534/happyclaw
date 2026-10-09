@@ -2978,9 +2978,9 @@ async function runQueryAttempt(
       skills:
         containerInput.skillManifest?.selectedSkillIds ?? ('all' as const),
       includePartialMessages: true,
-      // Forward sub-agent (Task) text/thinking as stream events so the card's
-      // sub-agent transcript lights up live instead of only filling in when the
-      // Task completes.
+      // Forward sub-agent (Agent tool, legacy name Task) text/thinking as
+      // stream events so the card's sub-agent transcript lights up live
+      // instead of only filling in when the subagent completes.
       forwardSubagentText: true,
       ...(Object.keys(flagSettings).length > 0
         ? { settings: flagSettings as any }
