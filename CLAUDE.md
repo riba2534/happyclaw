@@ -97,6 +97,24 @@ Radix UI。路由以 `web/src/App.tsx` 为准：
 
 `/groups`、`/skills`、`/mcp-servers` 和 `/plugins` 是兼容重定向，不应新增独立页面。
 
+桌面端外壳是一条可拖宽、可折叠（⌘B）的侧栏加嵌入式页面画布；侧栏包含导航和
+工作区 → 会话树，⌘K 打开命令面板。移动端使用底部导航和独立的工作区/会话列表。
+
+Web UI 约定：
+
+- 三套配色（teal / orange / neutral）× 亮暗模式的色值只在 `globals.css` 的方案块中定义；
+  层级色（`app-shell`、`surface-raised`、`surface-hover`、`surface-selected`、
+  `surface-border`、`faint-foreground`）和阴影由这些色值派生，组件不得写死调色板颜色。
+- 字号使用角色化 token（`text-micro`、`text-caption`、`text-label`、`text-body`、
+  `text-body-lg`、`text-title*`、`text-display*`）；状态用 `Badge` 变体或语义色
+  （`success`、`warning`、`error`）。
+- 优先复用 `components/ui` 原语和 `components/common` 组合组件（`PageContainer`、
+  `PageHeader`、`ListRow`、`DataTable`、`IconButton`、`SegmentedControl` 等），
+  设置类页面使用 `components/settings/SettingsLayout`。
+- 破坏性确认使用 `confirmDialog()`；未保存离开守卫保持同步的原生 `confirm()`。
+- 快捷键在 `lib/shortcuts.ts` 注册并用 `Shortcut` 渲染键帽；动画用 `motion` 的 `m.*`，
+  经 `MotionProvider` 懒加载并遵循减少动态效果设置。
+
 ### 3.3 Agent Runner
 
 `container/agent-runner/` 同时服务 Host 和 Container 两种执行模式：
