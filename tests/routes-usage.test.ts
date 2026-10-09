@@ -381,3 +381,54 @@ describe('/api/usage payload and caching', () => {
     expect(filtersAfter.models[0].runCount).toBe(2);
   });
 });
+
+describe('usage records ordering', () => {
+  test('pages stay newest-first by created_at across usage dates', () => {
+    const yesterday = new Date(Date.now() - 86_400_000);
+    const ymd = (d: Date) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    for (const [eventId, createdAt] of [
+      ['order-old', `${ymd(yesterday)}T08:00:00.000Z`],
+      ['order-new', `${today}T13:00:00.000Z`],
+      ['order-mid', `${today}T12:30:00.000Z`],
+    ] as const) {
+      db.recordUsageEventBatch({
+        eventId,
+        userId: 'order-user',
+        groupFolder: 'order-ws',
+        agentId: null,
+        source: 'main-agent',
+        createdAt,
+        inputTokens: 1,
+        outputTokens: 1,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        providerEstimatedCostUSD: 0,
+        billedCostUSD: 0,
+        models: [
+          {
+            model: 'order-model',
+            inputTokens: 1,
+            outputTokens: 1,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            providerEstimatedCostUSD: 0,
+            billedCostUSD: 0,
+          },
+        ],
+      });
+    }
+    const page = db.getUsageRecordsPage(
+      { from: ymd(yesterday), to: today, userId: 'order-user' },
+      1,
+      10,
+    );
+    const created = page.records.map((r) => String(r.createdAt));
+    expect(created).toEqual([...created].sort().reverse());
+    expect(page.records.map((r) => r.eventId)).toEqual([
+      'order-new',
+      'order-mid',
+      'order-old',
+    ]);
+  });
+});

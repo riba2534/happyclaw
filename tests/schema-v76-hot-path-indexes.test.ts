@@ -31,6 +31,7 @@ const NEW_INDEXES = [
   'idx_messages_chat_turn_ts',
   'idx_messages_status_chat',
   'idx_rg_folder',
+  'idx_usage_date_created',
 ];
 
 function indexNames(conn: Database.Database): string[] {
@@ -143,6 +144,17 @@ describe('schema v76 hot-path indexes', () => {
           'main',
         ),
       ).toContain('idx_rg_folder');
+      const usagePagePlan = plan(
+        conn,
+        `SELECT r.id FROM usage_records r
+         WHERE r.usage_date >= ? AND r.usage_date <= ?
+         ORDER BY r.usage_date DESC, r.created_at DESC, r.id DESC
+         LIMIT 50 OFFSET 0`,
+        '2026-01-01',
+        '2026-12-31',
+      );
+      expect(usagePagePlan).toContain('idx_usage_date_created');
+      expect(usagePagePlan).not.toContain('TEMP B-TREE');
     } finally {
       conn.close();
     }
