@@ -423,6 +423,7 @@ authRoutes.post('/register', authJsonBodyLimit, async (c) => {
     ip,
     regMaxAttempts,
     regLockoutMin,
+    { perIp: false },
   );
   if (!rateCheck.allowed) {
     return c.json(
@@ -466,7 +467,7 @@ authRoutes.post('/register', authJsonBodyLimit, async (c) => {
       });
 
   if (!result.ok) {
-    recordLoginAttempt(`register:${ip}`, ip);
+    recordLoginAttempt(`register:${ip}`, ip, { perIp: false });
     if (result.reason === 'username_taken') {
       return c.json(
         { error: 'Registration failed. Username may already be taken.' },
@@ -495,7 +496,7 @@ authRoutes.post('/register', authJsonBodyLimit, async (c) => {
   // 计入注册成功次数：registerLimit 仅记录失败时，攻击者可用同 IP 不停换合法
   // username 无限创建账号（auto-create home group / IM channel 槽位 / 数据库
   // 行）。把成功也计入同一个 bucket，让 maxLoginAttempts 同时约束失败 + 成功。
-  recordLoginAttempt(`register:${ip}`, ip);
+  recordLoginAttempt(`register:${ip}`, ip, { perIp: false });
 
   // Create home group for new user
   try {

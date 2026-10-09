@@ -60,6 +60,11 @@ Public：
 - `DELETE /api/auth/sessions/:id`
 - `POST /api/auth/avatar`
 
+`POST /api/auth/login` 的失败次数按三个桶计数，任一超限返回 429：用户名+IP
+（`maxLoginAttempts`/`loginLockoutMinutes`）、用户名（4 倍/1 小时）、客户端 IP
+（6 倍/同一窗口，IPv6 按 /64 合并；loopback 与未知地址不计）。客户端 IP 取自
+`getClientIp`，部署在反向代理后需设置 `TRUST_PROXY=true`。用户名超过 64 字符直接按无效凭据返回 401。
+
 会话 Cookie 在 HTTPS 下名为 `__Host-happyclaw_session`，HTTP 下名为
 `happyclaw_session`；每次下发会话都会同时让另一个名称过期。`POST /api/auth/logout`
 让两个名称都过期，并删除该请求在两个名称下携带、且属于同一用户的全部会话；

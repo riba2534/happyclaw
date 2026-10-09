@@ -1,25 +1,31 @@
 import crypto from 'crypto';
-import bcrypt from 'bcryptjs';
+import net from 'net';
 import {
   WEB_SESSION_SECRET,
   SESSION_COOKIE_NAME_SECURE,
   SESSION_COOKIE_NAME_PLAIN,
 } from './config.js';
+import {
+  comparePasswordOffThread,
+  hashPasswordOffThread,
+} from './password-hash-worker.js';
 import { isSecureRequest } from './utils.js';
 
 const BCRYPT_ROUNDS = 12;
 
 // --- Password hashing ---
+// bcryptjs runs in a worker pool (see password-hash-worker.ts) so a login
+// burst doesn't stall the event loop; hashes and cost factor are unchanged.
 
 export async function hashPassword(password: string): Promise<string> {
-  return bcrypt.hash(password, BCRYPT_ROUNDS);
+  return hashPasswordOffThread(password, BCRYPT_ROUNDS);
 }
 
 export async function verifyPassword(
   password: string,
   hash: string,
 ): Promise<boolean> {
-  return bcrypt.compare(password, hash);
+  return comparePasswordOffThread(password, hash);
 }
 
 // --- Session token generation & HMAC signing ---
@@ -179,12 +185,30 @@ interface AttemptRecord {
   lastAttempt: number;
 }
 
+// Insertion order == firstAttempt order: records are mutated in place and only
+// re-inserted after their window expired, so the first key is always the
+// oldest. That makes oldest-first eviction a single iterator step.
 const loginAttempts = new Map<string, AttemptRecord>();
 
 // Per-username global rate limit (防分布式暴力破解)
 // 阈值为 per-ip 限制的 4 倍，窗口为 1 小时
 const GLOBAL_USERNAME_MULTIPLIER = 4;
 const GLOBAL_USERNAME_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
+// Per-client-IP bucket (防用户名轮换喷洒): the username-keyed buckets above are
+// bypassed by trying a new username per attempt, so failures from one client
+// are also counted regardless of username. Scales with the admin's
+// maxLoginAttempts over the same lockout window: 5 × 6 = 30 failures / 15 min
+// by default — loose enough for a shared office NAT, tight enough to stop
+// spraying from a single address.
+const PER_IP_MULTIPLIER = 6;
+
+// Hard cap on tracked keys. Each failed attempt can insert up to three keys and
+// records live up to 24h, so without a cap a spraying client could grow the
+// map without bound. With the per-IP bucket one address adds at most
+// ~2 × 30 + 1 keys per window, so filling the cap takes hundreds of addresses
+// each paying a full bcrypt compare per key.
+export const LOGIN_ATTEMPTS_MAX_ENTRIES = 10_000;
 
 // Memory reclamation only. The authoritative expiry check is in
 // checkAttemptRecord (based on firstAttempt + the relevant window). This TTL
@@ -234,26 +258,102 @@ function checkAttemptRecord(
   return { allowed: true };
 }
 
+// Usernames are capped by LoginSchema, but with TRUST_PROXY the client IP is
+// the first X-Forwarded-For entry — client-supplied and up to the header size
+// limit. Over-long key parts are replaced by a digest so a single key stays
+// small; real IPs and usernames are far below the bound and stay verbatim.
+const MAX_KEY_PART_LENGTH = 64;
+
+function boundedKeyPart(value: string): string {
+  if (value.length <= MAX_KEY_PART_LENGTH) return value;
+  return `#${crypto.createHash('sha256').update(value).digest('hex').slice(0, 32)}`;
+}
+
+export interface LoginRateLimitOptions {
+  /**
+   * Also apply the per-client-IP bucket. Default true (login). Registration
+   * keeps its own `register:${ip}` bucket and opts out so sign-ups and failed
+   * logins don't drain each other's budget.
+   */
+  perIp?: boolean;
+}
+
+/**
+ * Key for the per-IP bucket. IPv6 clients usually control a whole /64, so
+ * rotating the interface ID must not mint a fresh bucket; IPv4-mapped IPv6
+ * collapses to its IPv4 form. Returns null when the address can't identify a
+ * client: `unknown` (no socket address) and loopback, which is what every
+ * request looks like behind a same-host reverse proxy without TRUST_PROXY —
+ * bucketing that would lock the whole site out after a few dozen failures.
+ */
+function ipBucketKey(ip: string): string | null {
+  const raw = boundedKeyPart(ip.trim().toLowerCase());
+  if (!raw || raw === 'unknown') return null;
+  const mapped = raw.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  const addr = mapped ? mapped[1] : raw;
+  if (net.isIPv4(addr)) {
+    return addr.startsWith('127.') ? null : `ip:${addr}`;
+  }
+  if (net.isIPv6(addr)) {
+    if (addr === '::1') return null;
+    const [head, tail = ''] = addr.split('::');
+    const headGroups = head ? head.split(':') : [];
+    const tailGroups = tail ? tail.split(':') : [];
+    const missing = 8 - headGroups.length - tailGroups.length;
+    const groups = addr.includes('::')
+      ? [...headGroups, ...Array(Math.max(0, missing)).fill('0'), ...tailGroups]
+      : headGroups;
+    const prefix = groups
+      .slice(0, 4)
+      .map((g) => g.replace(/^0+(?=.)/, ''))
+      .join(':');
+    return `ip:${prefix}::/64`;
+  }
+  return `ip:${addr}`;
+}
+
+/** The three bucket keys one login attempt is counted under. */
+function attemptKeys(
+  username: string,
+  ip: string,
+  options: LoginRateLimitOptions,
+): { ipKey: string | null; pairKey: string; userKey: string } {
+  const user = boundedKeyPart(username);
+  return {
+    ipKey: options.perIp === false ? null : ipBucketKey(ip),
+    pairKey: `${user}:${boundedKeyPart(ip)}`,
+    userKey: `user:${user}`,
+  };
+}
+
 export function checkLoginRateLimit(
   username: string,
   ip: string,
   maxAttempts: number,
   lockoutMinutes: number,
+  options: LoginRateLimitOptions = {},
 ): { allowed: boolean; retryAfterSeconds?: number } {
   const windowMs = lockoutMinutes * 60 * 1000;
+  const { ipKey, pairKey, userKey } = attemptKeys(username, ip, options);
+
+  // Per-client-IP bucket first: it is the one username rotation can't dodge.
+  if (ipKey) {
+    const ipBucketCheck = checkAttemptRecord(
+      ipKey,
+      maxAttempts * PER_IP_MULTIPLIER,
+      windowMs,
+    );
+    if (!ipBucketCheck.allowed) return ipBucketCheck;
+  }
 
   // Check per-username:ip limit
-  const ipCheck = checkAttemptRecord(
-    `${username}:${ip}`,
-    maxAttempts,
-    windowMs,
-  );
+  const ipCheck = checkAttemptRecord(pairKey, maxAttempts, windowMs);
   if (!ipCheck.allowed) return ipCheck;
 
   // Check per-username global limit (higher threshold, longer window)
   const globalMax = maxAttempts * GLOBAL_USERNAME_MULTIPLIER;
   const globalCheck = checkAttemptRecord(
-    `user:${username}`,
+    userKey,
     globalMax,
     GLOBAL_USERNAME_WINDOW_MS,
   );
@@ -267,23 +367,51 @@ function incrementAttempt(key: string, now: number): void {
   if (record) {
     record.count += 1;
     record.lastAttempt = now;
-  } else {
-    loginAttempts.set(key, { count: 1, firstAttempt: now, lastAttempt: now });
+    return;
   }
+  // Oldest-first eviction: the front of the map is the record closest to (or
+  // past) expiry. TTL reclamation below still runs for everything else.
+  while (loginAttempts.size >= LOGIN_ATTEMPTS_MAX_ENTRIES) {
+    const oldest = loginAttempts.keys().next().value;
+    if (oldest === undefined) break;
+    loginAttempts.delete(oldest);
+  }
+  loginAttempts.set(key, { count: 1, firstAttempt: now, lastAttempt: now });
 }
 
-export function recordLoginAttempt(username: string, ip: string): void {
+export function recordLoginAttempt(
+  username: string,
+  ip: string,
+  options: LoginRateLimitOptions = {},
+): void {
   const now = Date.now();
-  incrementAttempt(`${username}:${ip}`, now);
-  incrementAttempt(`user:${username}`, now);
+  const { ipKey, pairKey, userKey } = attemptKeys(username, ip, options);
+  if (ipKey) incrementAttempt(ipKey, now);
+  incrementAttempt(pairKey, now);
+  incrementAttempt(userKey, now);
 }
 
 export function clearLoginAttempts(username: string, ip: string): void {
   // Only clear the per-IP record. The global per-username counter
   // (`user:${username}`) is intentionally left to expire via its TTL,
   // preventing an attacker from resetting the global rate limit by
-  // successfully logging in from a known IP.
-  loginAttempts.delete(`${username}:${ip}`);
+  // successfully logging in from a known IP. The per-client-IP bucket is
+  // likewise left alone, or one valid account would reset spraying limits.
+  loginAttempts.delete(attemptKeys(username, ip, {}).pairKey);
+}
+
+/** Tracked rate-limit keys, for tests and diagnostics. */
+export function loginAttemptStats(): { entries: number; maxKeyLength: number } {
+  let maxKeyLength = 0;
+  for (const key of loginAttempts.keys()) {
+    maxKeyLength = Math.max(maxKeyLength, key.length);
+  }
+  return { entries: loginAttempts.size, maxKeyLength };
+}
+
+/** Test-only: forget all rate-limit state. */
+export function resetLoginAttemptsForTest(): void {
+  loginAttempts.clear();
 }
 
 // --- Session expiry ---
