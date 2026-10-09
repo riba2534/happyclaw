@@ -745,10 +745,10 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
       activeSessionId={activeAgentTab}
       canModify={canModifyWorkspaceConfig}
       isTopicWorkspace={isTopicWorkspace}
-      title={group.is_my_home ? '直接对话' : group.name}
-      mainLabel={
-        group.is_my_home ? `${agentProfileLabel} 对话` : `${group.name} 对话`
-      }
+      // Same naming as the desktop session tree: the list is titled by its
+      // workspace and the first row is the main conversation.
+      title={group.is_my_home ? agentProfileLabel : group.name}
+      mainLabel={mainConversationLabel}
       mainMeta={group.lastMessage || '暂无消息'}
       onClose={mobile ? onBack : undefined}
       onSelectSession={(id) => {
