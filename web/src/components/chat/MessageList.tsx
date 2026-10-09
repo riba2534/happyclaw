@@ -159,6 +159,9 @@ export function MessageList({
   const smoothScrollUntilRef = useRef(0);
   const smoothCatchUpTimerRef = useRef<number | null>(null);
   const SMOOTH_SCROLL_LOCK_MS = 600;
+  // While the first page settles, bottom pinning ignores scroll events caused
+  // by rows measuring taller than estimated. Any user scroll ends it early.
+  const settleUntilRef = useRef(0);
 
   const scheduleSmoothCatchUp = useCallback(() => {
     if (smoothCatchUpTimerRef.current !== null) {
@@ -326,8 +329,20 @@ export function MessageList({
       }
     };
 
+    const endSettle = () => {
+      settleUntilRef.current = 0;
+    };
+
     parent.addEventListener('scroll', handleScroll);
-    return () => parent.removeEventListener('scroll', handleScroll);
+    parent.addEventListener('wheel', endSettle, { passive: true });
+    parent.addEventListener('touchstart', endSettle, { passive: true });
+    parent.addEventListener('keydown', endSettle);
+    return () => {
+      parent.removeEventListener('scroll', handleScroll);
+      parent.removeEventListener('wheel', endSettle);
+      parent.removeEventListener('touchstart', endSettle);
+      parent.removeEventListener('keydown', endSettle);
+    };
   }, [hasMore, loading, onLoadMore, groupJid]);
 
   // 新消息自动滚到底部
@@ -389,15 +404,30 @@ export function MessageList({
   // Safety net: initialOffset relies on estimated sizes which may be inaccurate.
   // After mount (or when messages load asynchronously), verify we're actually at
   // the bottom and correct if not. Depends on flatMessages.length so that async
-  // message loading triggers a fresh round of corrections.
+  // message loading triggers a fresh round of corrections. After the first
+  // page has settled this only runs while the reader is pinned to the bottom:
+  // a new message or an older page must not pull someone reading history back
+  // down. While the first page settles, rows measuring taller than estimated
+  // fire scroll events that look like "left the bottom", so ignore those.
+  const hadRowsRef = useRef(false);
   useEffect(() => {
     if (flatMessages.length === 0) return;
+    if (!hadRowsRef.current) {
+      hadRowsRef.current = true;
+      settleUntilRef.current = Date.now() + 700;
+    }
     const timers: number[] = [];
     for (const delay of [50, 150, 300, 500]) {
       timers.push(
         window.setTimeout(() => {
           const el = parentRef.current;
           if (!el) return;
+          if (
+            !scrollStateRef.current.autoScroll &&
+            Date.now() > settleUntilRef.current
+          ) {
+            return;
+          }
           const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
           if (gap > 100) {
             el.scrollTop = el.scrollHeight;
@@ -408,6 +438,73 @@ export function MessageList({
     return () => timers.forEach(clearTimeout);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flatMessages.length]);
+
+  // Loading an older page inserts rows above the ones being read. Shift the
+  // scroll position by the height they add so the visible rows stay put, and
+  // keep paging if the reader is still at the very top (no further scroll
+  // event would fire there).
+  // The loading row above the list shifts it too; count it in the offset.
+  const loadingRowHeightRef = useRef(0);
+  const measureLoadingRow = useCallback((node: HTMLDivElement | null) => {
+    loadingRowHeightRef.current = node ? node.offsetHeight : 0;
+  }, []);
+  const totalSize = virtualizer.getTotalSize();
+  const committedTotalRef = useRef(totalSize);
+  const firstMessageIdRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const parent = parentRef.current;
+    const firstId = timelineMessages[0]?.id ?? null;
+    const previousFirstId = firstMessageIdRef.current;
+    firstMessageIdRef.current = firstId;
+    if (
+      !parent ||
+      !previousFirstId ||
+      previousFirstId === firstId ||
+      scrollStateRef.current.autoScroll ||
+      !timelineMessages.some((m) => m.id === previousFirstId)
+    ) {
+      return;
+    }
+    const added =
+      totalSize + loadingRowHeightRef.current - committedTotalRef.current;
+    if (added > 0) parent.scrollTop += added;
+    if (parent.scrollTop < 100 && hasMore && !loading) onLoadMore();
+    // Only a change of the first row is a prepend; size changes alone are not.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timelineMessages]);
+  // Declared after the prepend check so it still sees the previous commit.
+  useLayoutEffect(() => {
+    committedTotalRef.current = totalSize + loadingRowHeightRef.current;
+  });
+
+  // Keep a reader who is pinned to the bottom there while rows below grow
+  // after their first measurement (images, Mermaid, late code highlighting).
+  const contentRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const content = contentRef.current;
+    const parent = parentRef.current;
+    if (!content || !parent || typeof ResizeObserver === 'undefined') return;
+    let lastHeight = content.offsetHeight;
+    const observer = new ResizeObserver(() => {
+      const height = content.offsetHeight;
+      const grew = height > lastHeight;
+      lastHeight = height;
+      if (!grew) return;
+      if (
+        !scrollStateRef.current.autoScroll &&
+        Date.now() > settleUntilRef.current
+      ) {
+        return;
+      }
+      if (Date.now() < smoothScrollUntilRef.current) {
+        scheduleSmoothCatchUp();
+        return;
+      }
+      parent.scrollTop = parent.scrollHeight;
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [scheduleSmoothCatchUp]);
 
   // Auto-scroll when streaming content is active. Subscribes directly to the
   // chat store (no React re-render) and schedules a single rAF-coalesced
@@ -485,6 +582,7 @@ export function MessageList({
         className="h-full overflow-y-auto overflow-x-hidden pb-10 pt-6"
       >
         <div
+          ref={contentRef}
           className={
             displayMode === 'compact'
               ? 'mx-auto px-4 min-w-0'
@@ -492,7 +590,7 @@ export function MessageList({
           }
         >
           {loading && hasMore && (
-            <div className="flex justify-center py-4">
+            <div ref={measureLoadingRow} className="flex justify-center py-4">
               <Loader2
                 className="animate-spin text-muted-foreground"
                 size={18}
