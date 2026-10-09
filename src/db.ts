@@ -1597,6 +1597,20 @@ export function initDatabase(
     CREATE INDEX IF NOT EXISTS idx_messages_history_recovery
       ON messages(chat_jid, history_recovery_allowed, timestamp);
   `);
+  // v75 -> v76: hot-path indexes measured on a 300k-message database.
+  // - (chat_jid, turn_id, timestamp): storeMessageDirect looks up the final
+  //   row of a turn on every sdk_final write. Without it each write walked
+  //   the whole chat on idx_messages_jid_ts (110ms in a 100k-message chat;
+  //   0.02ms with it).
+  // - (delivery_status, chat_jid): queued follow-up discovery runs after
+  //   every query and the startup 'promoting' reset below; both scanned all
+  //   messages (28ms at 300k rows; 0.02ms with it).
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_messages_chat_turn_ts
+      ON messages(chat_jid, turn_id, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_messages_status_chat
+      ON messages(delivery_status, chat_jid);
+  `);
   // A process may have crashed after reserving a queued message for a card
   // action but before injecting it. Reservations are process-local, so make
   // those rows claimable again on startup.
@@ -2327,6 +2341,8 @@ export function initDatabase(
       WHERE transport_status = 'disconnected' AND status != 'disconnected';
   `);
   db.exec(`
+    -- v75 -> v76: folder lookups back group, IPC and usage-attribution paths.
+    CREATE INDEX IF NOT EXISTS idx_rg_folder ON registered_groups(folder);
     CREATE INDEX IF NOT EXISTS idx_rg_channel_account
       ON registered_groups(channel_account_id);
     CREATE INDEX IF NOT EXISTS idx_channel_mounts_account
