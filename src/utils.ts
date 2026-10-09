@@ -26,8 +26,14 @@ export function isInternalOnlyAgentOutput(
   text: string | null | undefined,
 ): boolean {
   if (!text?.trim() || stripAgentInternalTags(text) !== '') return false;
-  return /<(internal|process)>\s*\S[\s\S]*?<\/\1>/.test(text);
+  // Nothing outside the blocks survived, so any non-tag text left is block
+  // content. Empty or nested-empty blocks leave only whitespace.
+  return text.replace(/<\/?(?:internal|process)>/g, '').trim() !== '';
 }
+
+/** Workspace notice for a scheduled run that ended silently on purpose. */
+export const SCHEDULED_TASK_SILENT_COMPLETION_NOTICE =
+  'Agent 已按任务要求以内部确认静默完成，没有面向用户的输出。';
 
 /**
  * Detect whether an agent output is system-maintenance noise that should

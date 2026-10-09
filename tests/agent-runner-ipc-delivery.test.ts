@@ -15,6 +15,7 @@ import {
   requeueIpcInputMessages,
   resolveLogicalQueryInputTurnId,
   scheduledGroupRunIdFromIpcMessages,
+  sdkResultAnsweredUserMessageUuids,
   sdkResultConsumedUserMessageUuids,
   shouldAcceptIpcMessagesDuringQuery,
   serializeIpcInputMessage,
@@ -265,6 +266,51 @@ describe('agent-runner IPC delivery turn tracker', () => {
       sdkResultConsumedUserMessageUuids({ user_message_uuid: 'a' }),
     ).toEqual(['a']);
     expect(sdkResultConsumedUserMessageUuids({})).toEqual([]);
+  });
+
+  test('only a successful result answers the user messages it consumed', () => {
+    const consumed = { user_message_uuids: ['a', 'b'] };
+    expect(
+      sdkResultAnsweredUserMessageUuids({
+        ...consumed,
+        subtype: 'success',
+        is_error: false,
+      }),
+    ).toEqual(['a', 'b']);
+    expect(
+      sdkResultAnsweredUserMessageUuids({
+        ...consumed,
+        subtype: 'success',
+        is_error: true,
+      }),
+    ).toEqual([]);
+    expect(
+      sdkResultAnsweredUserMessageUuids({
+        ...consumed,
+        subtype: 'error_during_execution',
+      }),
+    ).toEqual([]);
+  });
+
+  test('inputs merged into an API-error result stay replayable', () => {
+    const a = message('1');
+    const b = message('2');
+    const tracker = new IpcTurnDeliveryTracker([a]);
+    tracker.bindSdkMessageUuid([a], 'uuid-a');
+    tracker.acceptTurn([b]);
+    tracker.bindSdkMessageUuid([b], 'uuid-b');
+    tracker.observeAnsweredSdkUuids(
+      sdkResultAnsweredUserMessageUuids({
+        subtype: 'success',
+        is_error: true,
+        user_message_uuids: ['uuid-a', 'uuid-b'],
+      }),
+    );
+    // A later healthy result still completes the head turn, but B was never
+    // answered and must remain pending.
+    expect(tracker.completeAnsweredTurns()).toEqual([a.receipt]);
+    expect(tracker.pendingTurnCount).toBe(1);
+    expect(tracker.unacknowledgedMessages).toEqual([b]);
   });
 
   test('after interrupt, exposes only the next turn and not every later turn', () => {

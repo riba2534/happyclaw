@@ -1933,12 +1933,16 @@ export class StreamEventProcessor {
    * non-null parent_tool_use_id, or it is a depth>1 agent spawn) delivers its
    * completion notification to that sub-agent. The main Agent will never run
    * a notification turn for it; the parent Task's own notification is the
-   * main-Agent obligation.
+   * main-Agent obligation. The CLI's own `owned_by_subagent` flag (set on
+   * task_started for a sub-agent's local_bash, absent from the public d.ts)
+   * is trusted first; the tool-use heuristic covers everything else.
    */
   private isSubAgentOwnedTask(message: {
     tool_use_id?: string;
     spawn_depth?: number;
+    owned_by_subagent?: unknown;
   }): boolean {
+    if (message.owned_by_subagent === true) return true;
     if (typeof message.spawn_depth === 'number' && message.spawn_depth > 1) {
       return true;
     }

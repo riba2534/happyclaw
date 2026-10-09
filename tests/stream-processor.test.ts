@@ -306,6 +306,46 @@ describe('StreamEventProcessor observability mapping', () => {
     expect(processor.getBlockingBackgroundProtocolCount()).toBe(0);
   });
 
+  test('trusts the CLI owned_by_subagent flag before any sub-agent tool call is seen', () => {
+    const { processor } = makeProcessor();
+    // Claude Code marks a sub-agent's local_bash on task_started even when the
+    // sub-agent's tool_use frame never reached the main stream.
+    processor.processSystemMessage({
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 'bash-sub',
+      tool_use_id: 'toolu_unseen',
+      description: 'sub-agent bash',
+      task_type: 'local_bash',
+      is_backgrounded: true,
+      owned_by_subagent: true,
+    });
+    // The main Agent's own background Bash carries no flag and stays a debt.
+    processor.processSystemMessage({
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 'bash-main',
+      tool_use_id: 'toolu_main',
+      description: 'main bash',
+      task_type: 'local_bash',
+      is_backgrounded: true,
+    });
+    for (const [taskId, toolUseId] of [
+      ['bash-sub', 'toolu_unseen'],
+      ['bash-main', 'toolu_main'],
+    ]) {
+      processor.processSystemMessage({
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: taskId,
+        tool_use_id: toolUseId,
+        status: 'completed',
+        summary: `${taskId} done`,
+      });
+    }
+    expect(processor.getBlockingBackgroundCompletionDebtCount()).toBe(1);
+  });
+
   test('treats stopped and aborted task_updated as terminal SDK statuses', () => {
     const { processor } = makeProcessor();
 

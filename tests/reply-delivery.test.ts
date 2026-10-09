@@ -8,6 +8,7 @@ import {
   isGenuineReplyResult,
   occupiesPrimaryReplyDeliverySlot,
   resolveScheduledGroupDeliveryContract,
+  resolveScheduledGroupCompletion,
   resolveScheduledProactiveArchiveCandidate,
   resolveHeldReplyDbText,
   setIpcReplyInputTurn,
@@ -93,6 +94,51 @@ describe('scheduled Proactive archive candidate', () => {
         hasScheduledGroupRuns: false,
       }),
     ).toBe('');
+  });
+});
+
+describe('scheduled group completion text', () => {
+  test('keeps the visible final and strips internal blocks', () => {
+    expect(
+      resolveScheduledGroupCompletion(
+        '<internal>checked inputs</internal>\nDaily report ready.',
+      ),
+    ).toEqual({ text: 'Daily report ready.', internalOnly: false });
+  });
+
+  test('settles a deliberate <internal>-only final with the silent notice', () => {
+    for (const final of [
+      '<internal>Stage 3 done</internal>',
+      ' <process>step 1</process>\n<internal>done</internal> ',
+      '<internal><process>done</process></internal>',
+    ]) {
+      expect(resolveScheduledGroupCompletion(final)).toEqual({
+        text: expect.stringContaining('以内部确认静默完成'),
+        internalOnly: true,
+      });
+    }
+  });
+
+  test('treats empty and empty-block finals as no business result', () => {
+    for (const final of [
+      '',
+      '   ',
+      '<internal></internal>',
+      '<internal> </internal><internal>\n</internal>',
+      '<internal><process></process></internal>',
+    ]) {
+      expect(resolveScheduledGroupCompletion(final)).toEqual({
+        text: '',
+        internalOnly: false,
+      });
+    }
+  });
+
+  test('never treats an unclosed internal tag as a silent completion', () => {
+    expect(resolveScheduledGroupCompletion('<internal>unclosed')).toEqual({
+      text: '<internal>unclosed',
+      internalOnly: false,
+    });
   });
 });
 

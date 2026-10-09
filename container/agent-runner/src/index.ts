@@ -87,7 +87,7 @@ import {
 } from './runtime-mcp-policy.js';
 import {
   IpcTurnDeliveryTracker,
-  sdkResultConsumedUserMessageUuids,
+  sdkResultAnsweredUserMessageUuids,
   ipcReceiptInputIdentity,
   IpcTurnOutputCorrelation,
   isHealthyInputTurnCompletion,
@@ -3565,11 +3565,9 @@ async function runQueryAttempt(
           `Result #${resultCount}: subtype=${resultSubtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`,
         );
         const resultMsg = message as unknown as Record<string, unknown>;
-        if (resultSubtype === 'success') {
-          ipcDeliveryTracker.observeAnsweredSdkUuids(
-            sdkResultConsumedUserMessageUuids(resultMsg),
-          );
-        }
+        ipcDeliveryTracker.observeAnsweredSdkUuids(
+          sdkResultAnsweredUserMessageUuids(resultMsg),
+        );
         const limitDecision = decideProviderLimitAction({
           result: textResult ?? null,
           canFallback: PROVIDER_FALLBACK_MODELS.canActivateFallback,

@@ -102,7 +102,11 @@ import {
   buildAgentProfilePrompt,
   hasAgentProfilePrompts,
 } from './agent-profile-prompts.js';
-import { isInternalOnlyAgentOutput, stripAgentInternalTags } from './utils.js';
+import {
+  isInternalOnlyAgentOutput,
+  SCHEDULED_TASK_SILENT_COMPLETION_NOTICE,
+  stripAgentInternalTags,
+} from './utils.js';
 import {
   markIsolatedTaskRunIpcComplete,
   tryCleanupCompletedIsolatedTaskRunIpc,
@@ -552,7 +556,7 @@ export function formatScheduledTaskWorkspaceResult(input: {
       : input.error
         ? '本次运行没有留下可展示的业务结果，请查看执行日志。'
         : input.internalOnly
-          ? 'Agent 已按任务要求以内部确认静默完成，没有面向用户的输出。'
+          ? SCHEDULED_TASK_SILENT_COMPLETION_NOTICE
           : '本次运行已结束，但 Agent 没有返回可展示的业务结果。';
   return `${title}\n\n${metadata.join('\n')}\n\n${emptyNotice}`;
 }
@@ -1519,6 +1523,7 @@ async function runTaskInner(
         runId,
         result: cleanedResult,
         error,
+        internalOnly: isInternalOnlyAgentOutput(result),
       });
       try {
         await deps.storeResultAndNotify(workspace.jid, workspaceResult, {

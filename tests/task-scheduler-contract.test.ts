@@ -640,6 +640,44 @@ describe('scheduled task workspace/session contract', () => {
     );
   });
 
+  test('labels an <internal>-only final as silent on the non-durable isolated path too', async () => {
+    // The legacy path only claims a task that is already due.
+    const taskId = createTask({
+      id: 'task-internal-only-legacy-isolated',
+      next_run: new Date(Date.now() - 60_000).toISOString(),
+    });
+    const groups = {
+      [GROUP_JID]: db.getRegisteredGroup(GROUP_JID)!,
+    };
+    runContainerAgentMock.mockImplementationOnce(
+      async (_group, input, onProcess) => {
+        onProcess?.({} as never, `container-${input.taskRunId}`, null);
+        return {
+          status: 'success',
+          result: '<internal>Stage 3 done</internal>',
+          inputTurnCompleted: true,
+        };
+      },
+    );
+    const { deps, waitForRun } = makeDeps(groups);
+
+    expect(enqueueIsolatedScheduledTask(db.getTaskById(taskId)!, deps)).toBe(
+      true,
+    );
+    await waitForRun();
+
+    expect(deps.storeResultAndNotify).toHaveBeenCalledWith(
+      GROUP_JID,
+      expect.stringContaining('以内部确认静默完成'),
+      expect.objectContaining({ sourceKind: 'scheduled_task_result' }),
+    );
+    expect(deps.storeResultAndNotify).not.toHaveBeenCalledWith(
+      GROUP_JID,
+      expect.stringContaining('没有返回可展示的业务结果'),
+      expect.anything(),
+    );
+  });
+
   test('resume accepts only future one-shot schedules', () => {
     const future = new Date(Date.now() + 60_000).toISOString();
     const past = new Date(Date.now() - 60_000).toISOString();

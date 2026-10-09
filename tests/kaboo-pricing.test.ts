@@ -32,6 +32,15 @@ describe('Kaboo-aligned model pricing', () => {
       cacheCreationPricePerMTok: 12.5,
       reasoningPricePerMTok: 50,
     });
+    expect(matchKabooModelPricing('claude-opus-5')).toMatchObject({
+      pattern: 'claude-opus-5%',
+      displayName: 'Claude Opus 5',
+      inputPricePerMTok: 5,
+      outputPricePerMTok: 25,
+      cacheReadPricePerMTok: 0.5,
+      cacheCreationPricePerMTok: 6.25,
+      reasoningPricePerMTok: 25,
+    });
     expect(matchKabooModelPricing('claude-opus-5-5[1m]')).toMatchObject({
       pattern: 'claude-opus-5-5%',
       displayName: 'Claude Opus 5.5',

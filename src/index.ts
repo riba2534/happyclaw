@@ -44,6 +44,7 @@ import {
   isGenuineReplyResult,
   occupiesPrimaryReplyDeliverySlot,
   resolveScheduledGroupDeliveryContract,
+  resolveScheduledGroupCompletion,
   resolveScheduledProactiveArchiveCandidate,
   resolveStreamingCardReplyAcknowledgement,
   resolveHeldReplyDbText,
@@ -8750,9 +8751,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                 proactiveFinalCandidate: result.proactiveFinalCandidate,
                 result: result.result,
               });
-            const completedScheduledCandidate = scheduledArchiveCandidate
-              ? stripAgentInternalTags(scheduledArchiveCandidate).trim()
-              : '';
+            const scheduledCompletion = resolveScheduledGroupCompletion(
+              scheduledArchiveCandidate,
+            );
+            const completedScheduledCandidate = scheduledCompletion.text;
             if (
               scheduledRuns.length > 0 &&
               result.inputTurnCompleted === true
@@ -8786,7 +8788,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                       runId: run.id,
                       taskId: run.task_id,
                       status: 'success',
-                      result: completedScheduledCandidate,
+                      result: scheduledCompletion.internalOnly
+                        ? null
+                        : completedScheduledCandidate,
                       error: null,
                     })),
                   },

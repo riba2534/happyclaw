@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -11,6 +12,11 @@ import {
   isMergedBackgroundCompletionPlaceholder,
   isSdkBookkeepingFrame,
 } from '../container/agent-runner/src/background-task-drain.js';
+import {
+  IpcTurnDeliveryTracker,
+  sdkResultAnsweredUserMessageUuids,
+  type IpcInputMessage,
+} from '../container/agent-runner/src/ipc-delivery.js';
 
 const runnerRoot = path.resolve('container/agent-runner');
 const runnerRequire = createRequire(path.join(runnerRoot, 'package.json'));
@@ -362,11 +368,11 @@ describe('Claude Code merged background-task completions', () => {
       });
       let resultSeen = false;
       for await (const message of conversation) {
-        types.push(
-          isSdkBookkeepingFrame(message) ? 'command_lifecycle' : message.type,
-        );
-        if (message.type === 'result') resultSeen = true;
-        if (resultSeen && isSdkBookkeepingFrame(message)) closeInput();
+        // command_lifecycle is not in the public SDKMessage union.
+        const type = (message as { type: string }).type;
+        types.push(type);
+        if (type === 'result') resultSeen = true;
+        if (resultSeen && type === 'command_lifecycle') closeInput();
       }
     } finally {
       clearTimeout(guard);
@@ -380,6 +386,7 @@ describe('Claude Code merged background-task completions', () => {
     expect(types.lastIndexOf('command_lifecycle')).toBeGreaterThan(
       types.indexOf('result'),
     );
+    expect(isSdkBookkeepingFrame({ type: 'command_lifecycle' })).toBe(true);
     expect(isSdkBookkeepingFrame({ type: 'result' })).toBe(false);
     expect(
       isSdkBookkeepingFrame({ type: 'system', subtype: 'hook_response' }),
@@ -388,4 +395,164 @@ describe('Claude Code merged background-task completions', () => {
       isSdkBookkeepingFrame({ type: 'system', subtype: 'task_notification' }),
     ).toBe(false);
   }, 30_000);
+
+  test('user messages queued behind a busy turn come back as one Result that completes every merged IPC turn', async () => {
+    let releaseFirstReply: () => void = () => {};
+    const followUpsQueued = new Promise<void>((resolve) => {
+      releaseFirstReply = resolve;
+    });
+    let firstRequestInFlight: () => void = () => {};
+    const firstRequestStarted = new Promise<void>((resolve) => {
+      firstRequestInFlight = resolve;
+    });
+    let mainCalls = 0;
+    const server = http.createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+      request.on('end', () => {
+        const url = request.url ?? '';
+        if (!url.includes('/v1/messages') || url.includes('count_tokens')) {
+          response.writeHead(200, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ input_tokens: 1 }));
+          return;
+        }
+        let body: { tools?: unknown[] } = {};
+        try {
+          body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        } catch {
+          // Answered below as an auxiliary call.
+        }
+        if (!Array.isArray(body.tools) || body.tools.length === 0) {
+          sendMessage(
+            response,
+            'msg_aux',
+            [{ type: 'text', text: 'aux' }],
+            'end_turn',
+          );
+          return;
+        }
+        mainCalls += 1;
+        const call = mainCalls;
+        if (call === 1) {
+          // Hold turn A until B and C are queued inside the CLI.
+          firstRequestInFlight();
+          void followUpsQueued.then(() =>
+            sendMessage(
+              response,
+              'msg_reply_a',
+              [{ type: 'text', text: 'REPLY_A' }],
+              'end_turn',
+            ),
+          );
+          return;
+        }
+        sendMessage(
+          response,
+          `msg_reply_${call}`,
+          [{ type: 'text', text: `REPLY_${call}` }],
+          'end_turn',
+        );
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => resolve());
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('fake Anthropic server did not expose a TCP port');
+    }
+    fs.mkdirSync(cwd, { recursive: true });
+    fs.mkdirSync(configDir, { recursive: true });
+
+    // Three accepted IPC turns, each stamped with its own client uuid the way
+    // the runner does before pushing it into the SDK stream.
+    const turns = ['a', 'b', 'c'].map((id, index) => ({
+      sdkUuid: randomUUID(),
+      message: {
+        text: `message ${id}`,
+        receipt: {
+          deliveryId: `delivery-${id}`,
+          chatJid: 'web:main',
+          cursor: { timestamp: `2026-10-09T00:00:0${index}.000Z`, id },
+        },
+      } satisfies IpcInputMessage,
+    }));
+    const tracker = new IpcTurnDeliveryTracker([turns[0]!.message]);
+    tracker.bindSdkMessageUuid([turns[0]!.message], turns[0]!.sdkUuid);
+    for (const turn of turns.slice(1)) {
+      tracker.acceptTurn([turn.message]);
+      tracker.bindSdkMessageUuid([turn.message], turn.sdkUuid);
+    }
+
+    let closeInput: () => void = () => {};
+    const inputClosed = new Promise<void>((resolve) => {
+      closeInput = resolve;
+    });
+    const userMessage = (turn: (typeof turns)[number]) => ({
+      type: 'user' as const,
+      message: { role: 'user' as const, content: turn.message.text },
+      parent_tool_use_id: null,
+      session_id: '',
+      uuid: turn.sdkUuid,
+    });
+    async function* input() {
+      yield userMessage(turns[0]!);
+      await firstRequestStarted;
+      yield userMessage(turns[1]!);
+      yield userMessage(turns[2]!);
+      // Let the CLI read both follow-ups into its queue before A finishes.
+      setTimeout(() => releaseFirstReply(), 750);
+      await inputClosed;
+    }
+
+    const results: Array<Record<string, unknown>> = [];
+    const completions: string[][] = [];
+    const guard = setTimeout(() => closeInput(), 25_000);
+    try {
+      const conversation = runnerSdk.query({
+        prompt: input(),
+        options: {
+          pathToClaudeCodeExecutable: runnerClaudeExecutable,
+          cwd,
+          model: 'claude-sonnet-4-5-20250929',
+          env: fakeProviderEnv(`http://127.0.0.1:${address.port}`),
+          permissionMode: 'bypassPermissions',
+          allowDangerouslySkipPermissions: true,
+          settingSources: [],
+        },
+      });
+      for await (const message of conversation) {
+        if (message.type !== 'result') continue;
+        const result = message as unknown as Record<string, unknown>;
+        results.push(result);
+        // Same sequence the runner applies to each healthy Result.
+        tracker.observeAnsweredSdkUuids(
+          sdkResultAnsweredUserMessageUuids(result),
+        );
+        completions.push(
+          tracker.completeAnsweredTurns().map((receipt) => receipt.deliveryId),
+        );
+        if (!tracker.hasPendingTurns) closeInput();
+      }
+    } finally {
+      clearTimeout(guard);
+      closeInput();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+
+    // Three user messages, two model calls, two Results: the CLI merged the
+    // two follow-ups queued behind A into one turn.
+    expect(mainCalls).toBe(2);
+    expect(results.map((result) => result.result)).toEqual([
+      'REPLY_A',
+      'REPLY_2',
+    ]);
+    expect(results[1]!.user_message_uuids).toEqual(
+      expect.arrayContaining([turns[1]!.sdkUuid, turns[2]!.sdkUuid]),
+    );
+    // Counting one Result per turn would leave C pending until the idle close.
+    expect(completions).toEqual([['delivery-a'], ['delivery-b', 'delivery-c']]);
+    expect(tracker.pendingTurnCount).toBe(0);
+  }, 40_000);
 });

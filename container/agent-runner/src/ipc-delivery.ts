@@ -222,6 +222,16 @@ export function sdkResultConsumedUserMessageUuids(
   return uuids;
 }
 
+/** Client uuids a finished SDK turn actually answered. Only a successful
+ * result counts: `success` with is_error=true is an API error, and inputs
+ * merged into it must stay replayable. */
+export function sdkResultAnsweredUserMessageUuids(
+  result: Record<string, unknown>,
+): string[] {
+  if (result.subtype !== 'success' || result.is_error === true) return [];
+  return sdkResultConsumedUserMessageUuids(result);
+}
+
 /** Associates each accepted IPC batch with a subsequent healthy SDK result:
  * one result per batch, except that batches the SDK merged into an already
  * finished turn complete together (see completeAnsweredTurns). Errors,

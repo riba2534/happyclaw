@@ -211,6 +211,7 @@ export const KABOO_MODEL_PRICING: readonly KabooModelPricing[] = Object.freeze([
     12.5,
     50,
   ),
+  price('claude-opus-5%', 'Claude Opus 5', 'anthropic', 5, 25, 0.5, 6.25, 25),
   price('claude-opus-5-5%', 'Claude Opus 5.5', 'anthropic', 4, 20, 0.2, 5, 20),
   price(
     'claude-sonnet-5%',

@@ -9,6 +9,11 @@
  */
 
 import type { InteractionMode } from './types.js';
+import {
+  isInternalOnlyAgentOutput,
+  SCHEDULED_TASK_SILENT_COMPLETION_NOTICE,
+  stripAgentInternalTags,
+} from './utils.js';
 
 export interface ScheduledGroupDeliveryContract {
   /** SDK final is the one physical IM delivery lane. */
@@ -39,6 +44,22 @@ export function resolveScheduledProactiveArchiveCandidate(
     return '';
   }
   return (input.proactiveFinalCandidate ?? input.result ?? '').trim();
+}
+
+/**
+ * Workspace text that settles a completed scheduled group turn as success:
+ * the visible final, or a silent-completion notice when the Agent ended with
+ * only `<internal>` blocks on purpose. Empty text means no business result.
+ */
+export function resolveScheduledGroupCompletion(candidate: string): {
+  text: string;
+  internalOnly: boolean;
+} {
+  const visible = candidate ? stripAgentInternalTags(candidate).trim() : '';
+  if (visible) return { text: visible, internalOnly: false };
+  return isInternalOnlyAgentOutput(candidate)
+    ? { text: SCHEDULED_TASK_SILENT_COMPLETION_NOTICE, internalOnly: true }
+    : { text: '', internalOnly: false };
 }
 
 /** Exactly one lane owns physical IM delivery for a scheduled group turn. */
