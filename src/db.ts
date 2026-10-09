@@ -131,6 +131,32 @@ let _stmts: {
 
 const _newMsgStmtCache = new Map<number, any>();
 
+// Statement cache for static SQL on hot accessors. better-sqlite3 compiles on
+// every prepare() — 25-35µs for a wide `SELECT *` — while a cached statement
+// runs the same lookup 4-5x faster. Bound to the current connection so a
+// re-initialized database never reuses statements of a closed one. Only use
+// it with get/all/run: an iterating statement cannot be re-entered.
+const MAX_CACHED_STATEMENTS = 512;
+const _sqlStmtCache = new Map<string, any>();
+let _sqlStmtCacheDb: unknown = null;
+
+function prepareCached(sql: string): any {
+  if (_sqlStmtCacheDb !== db) {
+    _sqlStmtCache.clear();
+    _sqlStmtCacheDb = db;
+  }
+  let stmt = _sqlStmtCache.get(sql);
+  if (!stmt) {
+    stmt = db.prepare(sql);
+    if (_sqlStmtCache.size >= MAX_CACHED_STATEMENTS) {
+      const oldest = _sqlStmtCache.keys().next().value as string | undefined;
+      if (oldest !== undefined) _sqlStmtCache.delete(oldest);
+    }
+    _sqlStmtCache.set(sql, stmt);
+  }
+  return stmt;
+}
+
 function stmts() {
   if (!_stmts) {
     _stmts = {
@@ -11696,6 +11722,41 @@ export function getGroupsByTargetAgent(
   return rows.map((row) => ({ jid: row.jid, group: parseGroupRow(row) }));
 }
 
+/** Batched {@link getGroupsByTargetAgent}, preserving per-agent row order. */
+export function getGroupsByTargetAgents(
+  agentIds: string[],
+): Map<string, Array<{ jid: string; group: RegisteredGroup }>> {
+  const result = new Map<
+    string,
+    Array<{ jid: string; group: RegisteredGroup }>
+  >();
+  if (agentIds.length === 0) return result;
+  const rows = prepareCached(
+    `SELECT * FROM registered_groups
+     WHERE target_agent_id IN (SELECT value FROM json_each(?))
+     ORDER BY rowid`,
+  ).all(JSON.stringify(agentIds)) as RegisteredGroupRow[];
+  for (const row of rows) {
+    const agentId = row.target_agent_id;
+    if (!agentId) continue;
+    const entry = { jid: row.jid, group: parseGroupRow(row) };
+    const list = result.get(agentId);
+    if (list) list.push(entry);
+    else result.set(agentId, [entry]);
+  }
+  return result;
+}
+
+/** Display names for many registered chats in one query. */
+export function getRegisteredGroupNames(jids: string[]): Map<string, string> {
+  if (jids.length === 0) return new Map();
+  const rows = prepareCached(
+    `SELECT jid, name FROM registered_groups
+     WHERE jid IN (SELECT value FROM json_each(?))`,
+  ).all(JSON.stringify(jids)) as Array<{ jid: string; name: string }>;
+  return new Map(rows.map((row) => [row.jid, row.name]));
+}
+
 /**
  * Get all registered groups that route to a specific workspace's main conversation.
  */
@@ -11906,6 +11967,28 @@ export function listChannelMountsBySession(sessionId: string): ChannelMount[] {
     )
     .all(sessionId) as ChannelMountRow[];
   return rows.map(parseChannelMountRow);
+}
+
+/** Batched {@link listChannelMountsBySession} for session lists. */
+export function listChannelMountsBySessions(
+  sessionIds: string[],
+): Map<string, ChannelMount[]> {
+  const result = new Map<string, ChannelMount[]>();
+  if (sessionIds.length === 0) return result;
+  const rows = prepareCached(
+    `SELECT * FROM channel_mounts
+     WHERE session_id IN (SELECT value FROM json_each(?))
+     ORDER BY updated_at DESC`,
+  ).all(JSON.stringify(sessionIds)) as ChannelMountRow[];
+  for (const row of rows) {
+    const mount = parseChannelMountRow(row);
+    const sessionId = row.session_id;
+    if (!sessionId) continue;
+    const list = result.get(sessionId);
+    if (list) list.push(mount);
+    else result.set(sessionId, [mount]);
+  }
+  return result;
 }
 
 export function syncChannelMountFromRegisteredGroup(
@@ -12775,32 +12858,42 @@ export function getMessagesAfter(
 /**
  * 多 JID 分页查询（用于主容器合并 web:main + feishu:xxx 消息）。
  */
+/** Sidebar and session-list previews show one line; never ship whole replies. */
+export const MESSAGE_PREVIEW_MAX_CHARS = 280;
+
 /**
  * Latest-message preview per chat. Callers previously shared one global
  * top-N window over all requested chats, which a single busy chat exhausts —
  * 13 of 18 production workspaces silently lost their sidebar preview.
- * Partitioning by chat fixes that, and previews deliberately skip the
- * attachments column: it is irrelevant for a preview yet dominated row bytes
- * in production (single rows up to 6.4MB of embedded attachment JSON).
+ * Previews deliberately skip the attachments column: it is irrelevant for a
+ * preview yet dominated row bytes in production (single rows up to 6.4MB of
+ * embedded attachment JSON).
+ *
+ * One index probe per chat: a window function over `chat_jid IN (...)`
+ * materialized every message of every requested chat (652ms for 61 chats
+ * when one holds 100k messages; 0.8ms this way). INDEXED BY keeps the
+ * (timestamp, id) order on idx_messages_jid_ts instead of a planner choice
+ * that sorts the whole chat, and the content is cut in SQL so long replies
+ * are neither read into JS nor sent (a 380-session list was 2MB).
  */
 export function getLatestMessagePreviewPerChat(
   chatJids: string[],
+  maxChars: number = MESSAGE_PREVIEW_MAX_CHARS,
 ): Map<string, { content: string; timestamp: string }> {
   const result = new Map<string, { content: string; timestamp: string }>();
   if (chatJids.length === 0) return result;
-  const placeholders = chatJids.map(() => '?').join(',');
-  const rows = db
-    .prepare(
-      `SELECT chat_jid, content, timestamp FROM (
-         SELECT chat_jid, content, timestamp,
-                ROW_NUMBER() OVER (
-                  PARTITION BY chat_jid ORDER BY timestamp DESC, id DESC
-                ) AS rn
-         FROM messages
-         WHERE chat_jid IN (${placeholders})
-       ) WHERE rn = 1`,
-    )
-    .all(...chatJids) as Array<{
+  const rows = prepareCached(
+    `SELECT m.chat_jid AS chat_jid,
+            substr(CAST(m.content AS TEXT), 1, ?) AS content,
+            m.timestamp AS timestamp
+     FROM json_each(?) j
+     JOIN messages m ON m.rowid = (
+       SELECT x.rowid FROM messages x INDEXED BY idx_messages_jid_ts
+       WHERE x.chat_jid = j.value
+       ORDER BY x.timestamp DESC, x.id DESC
+       LIMIT 1
+     )`,
+  ).all(Math.max(1, Math.trunc(maxChars)), JSON.stringify(chatJids)) as Array<{
     chat_jid: string;
     content: unknown;
     timestamp: string;
@@ -15643,6 +15736,8 @@ export function tryIncrementRedeemCodeUsage(
 export function closeDatabase(): void {
   _stmts = null;
   _newMsgStmtCache.clear();
+  _sqlStmtCache.clear();
+  _sqlStmtCacheDb = null;
   bindChannelReliabilityDatabase(null);
   bindWorkspaceMemoryDatabase(null);
   bindOwnerProfileDatabase(null);

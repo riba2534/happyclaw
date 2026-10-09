@@ -23,6 +23,7 @@ import {
   deleteMessagesForChatJid,
   deleteSession,
   getGroupsByTargetAgent,
+  getGroupsByTargetAgents,
   setRegisteredGroup,
   getJidsByFolder,
   updateAgentLastImJid,
@@ -32,6 +33,8 @@ import {
   getLatestMessagePreviewPerChat,
   listImContextBindingsByAgent,
   listChannelMountsBySession,
+  listChannelMountsBySessions,
+  getRegisteredGroupNames,
   getChannelAccount,
   VALID_ACTIVATION_MODES,
 } from '../db.js';
@@ -306,6 +309,9 @@ router.get('/:jid/agents', authMiddleware, async (c) => {
     .filter((a) => a.kind === 'conversation')
     .map((a) => `${jid}#agent:${a.id}`);
   const latestByChatJid = getLatestMessagePreviewPerChat(virtualChatJids);
+  const linkedByAgent = getGroupsByTargetAgents(
+    agents.filter((a) => a.kind === 'conversation').map((a) => a.id),
+  );
   return c.json({
     agents: agents.map((a) => {
       const base = {
@@ -324,7 +330,7 @@ router.get('/:jid/agents', authMiddleware, async (c) => {
         last_active_at: a.last_active_at ?? null,
       };
       if (a.kind === 'conversation') {
-        const linked = getGroupsByTargetAgent(a.id);
+        const linked = linkedByAgent.get(a.id) ?? [];
         const latest = latestByChatJid.get(`${jid}#agent:${a.id}`);
         return {
           ...base,
@@ -361,6 +367,12 @@ router.get('/:jid/sessions', authMiddleware, async (c) => {
   const agents = listAgentsByJid(jid).filter((a) => a.kind === 'conversation');
   const virtualChatJids = agents.map((a) => `${jid}#agent:${a.id}`);
   const latestByChatJid = getLatestMessagePreviewPerChat(virtualChatJids);
+  const mountsBySession = listChannelMountsBySessions(agents.map((a) => a.id));
+  const mountNames = getRegisteredGroupNames([
+    ...new Set(
+      [...mountsBySession.values()].flat().map((mount) => mount.channel_jid),
+    ),
+  ]);
 
   return c.json({
     sessions: [
@@ -404,13 +416,10 @@ router.get('/:jid/sessions', authMiddleware, async (c) => {
                 timestamp: latest.timestamp,
               }
             : null,
-          linked_im_groups: listChannelMountsBySession(a.id).map((mount) => {
-            const imGroup = getRegisteredGroup(mount.channel_jid);
-            return {
-              jid: mount.channel_jid,
-              name: imGroup?.name ?? mount.channel_jid,
-            };
-          }),
+          linked_im_groups: (mountsBySession.get(a.id) ?? []).map((mount) => ({
+            jid: mount.channel_jid,
+            name: mountNames.get(mount.channel_jid) ?? mount.channel_jid,
+          })),
         };
       }),
     ],
