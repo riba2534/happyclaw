@@ -210,6 +210,11 @@ describe('hashSkillDirectory memoization', () => {
     fs.utimesSync(script, pinned, pinned);
     const before = fs.statSync(script);
     expect(check()).toBe([...seen].at(-1));
+    // settleClock() fakes "now" so fresh files count as settled; real ctime
+    // has coarse (kernel tick) granularity, so let it tick before the edit
+    // or both writes can share one ctime — the racy case production avoids
+    // by never caching trees changed within the last 3s.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
     fs.writeFileSync(script, 'export const v = 20;\n');
     fs.utimesSync(script, pinned, pinned);
     expect(fs.statSync(script).size).toBe(before.size);
