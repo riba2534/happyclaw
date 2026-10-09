@@ -58,6 +58,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
+import { useVisibleInterval } from '../../hooks/useVisibleInterval';
 import { FileUploadZone } from './FileUploadZone';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { PreviewDialog } from './PreviewDialog';
@@ -891,14 +892,12 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupJid]);
 
-  // Agent 运行期间定时刷新文件列表；结束时做最终刷新
+  // Agent 运行期间定时刷新文件列表（仅页面可见时）；结束时做最终刷新
+  useVisibleInterval(() => loadFiles(groupJid, currentDir), 5000, isStreaming);
   useEffect(() => {
     if (isStreaming) {
       prevStreamingRef.current = true;
-      const timer = setInterval(() => {
-        loadFiles(groupJid, currentDir);
-      }, 5000);
-      return () => clearInterval(timer);
+      return;
     }
     // streaming 刚结束 → 最终刷新
     if (prevStreamingRef.current) {

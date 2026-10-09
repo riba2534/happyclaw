@@ -272,10 +272,22 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         .catch(() => {});
     };
     fetchStatus();
-    const timer = setInterval(fetchStatus, 30_000); // refresh every 30s
+    // Refresh every 30s while the tab is visible.
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const sync = () => {
+      if (timer) clearInterval(timer);
+      timer = document.hidden ? undefined : setInterval(fetchStatus, 30_000);
+    };
+    const onVisibility = () => {
+      if (!document.hidden) fetchStatus();
+      sync();
+    };
+    sync();
+    document.addEventListener('visibilitychange', onVisibility);
     return () => {
       active = false;
-      clearInterval(timer);
+      if (timer) clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [isOwnHome]);
 
@@ -338,8 +350,12 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   // WS 重连时恢复正在运行的 agent 状态（独立于 groupJid，避免切换会话时重复调用）
   // wsManager.connect() 已提升到 AppLayout 级别
   const restoreActiveState = useChatStore((s) => s.restoreActiveState);
+  // Run state is global; restore it once per mount, not on every workspace
+  // switch. Reconnects restore it again below.
   useEffect(() => {
     restoreActiveState();
+  }, [restoreActiveState]);
+  useEffect(() => {
     const unsub = wsManager.on('connected', () => {
       restoreActiveState();
       // Reconcile agent list with backend truth — picks up any agent_status

@@ -1,6 +1,17 @@
 import { create } from 'zustand';
 import { api } from '../api/client';
 
+// Several billing cards mount together and each asks for the same data;
+// concurrent calls share one request.
+const inFlight = new Map<string, Promise<void>>();
+function shared(key: string, load: () => Promise<void>): Promise<void> {
+  const pending = inFlight.get(key);
+  if (pending) return pending;
+  const request = load().finally(() => inFlight.delete(key));
+  inFlight.set(key, request);
+  return request;
+}
+
 // --- Types ---
 
 export interface BillingPlan {
@@ -264,12 +275,22 @@ interface BillingState {
 
   // Admin actions
   loadAllPlans: () => Promise<void>;
-  createPlan: (plan: Partial<BillingPlan> & { id: string; name: string }) => Promise<void>;
+  createPlan: (
+    plan: Partial<BillingPlan> & { id: string; name: string },
+  ) => Promise<void>;
   updatePlan: (id: string, updates: Partial<BillingPlan>) => Promise<void>;
   deletePlan: (id: string) => Promise<boolean>;
   loadAllUsers: () => Promise<void>;
-  assignPlan: (userId: string, planId: string, durationDays?: number) => Promise<void>;
-  adjustBalance: (userId: string, amount: number, description: string) => Promise<void>;
+  assignPlan: (
+    userId: string,
+    planId: string,
+    durationDays?: number,
+  ) => Promise<void>;
+  adjustBalance: (
+    userId: string,
+    amount: number,
+    description: string,
+  ) => Promise<void>;
   loadRedeemCodes: () => Promise<void>;
   createRedeemCodes: (params: {
     type: 'balance' | 'subscription' | 'trial';
@@ -283,15 +304,30 @@ interface BillingState {
     notes?: string;
   }) => Promise<RedeemCode[]>;
   deleteRedeemCode: (code: string) => Promise<void>;
-  loadAuditLog: (limit?: number, offset?: number, userId?: string, eventType?: string) => Promise<void>;
+  loadAuditLog: (
+    limit?: number,
+    offset?: number,
+    userId?: string,
+    eventType?: string,
+  ) => Promise<void>;
   loadRevenue: () => Promise<void>;
   cancelUserSubscription: (userId: string) => Promise<void>;
-  batchAssignPlan: (userIds: string[], planId: string, durationDays?: number) => Promise<void>;
+  batchAssignPlan: (
+    userIds: string[],
+    planId: string,
+    durationDays?: number,
+  ) => Promise<void>;
   exportRedeemCodesCSV: () => Promise<void>;
-  getRedeemCodeUsage: (code: string) => Promise<Array<{ user_id: string; username: string; redeemed_at: string }>>;
+  getRedeemCodeUsage: (
+    code: string,
+  ) => Promise<
+    Array<{ user_id: string; username: string; redeemed_at: string }>
+  >;
   loadDashboard: () => Promise<void>;
   loadRevenueTrend: (months?: number) => Promise<void>;
-  getUserSubscriptionHistory: (userId: string) => Promise<SubscriptionHistoryItem[]>;
+  getUserSubscriptionHistory: (
+    userId: string,
+  ) => Promise<SubscriptionHistoryItem[]>;
 }
 
 export const useBillingStore = create<BillingState>((set, get) => ({
@@ -326,34 +362,35 @@ export const useBillingStore = create<BillingState>((set, get) => ({
 
   // --- User actions ---
 
-  loadBillingStatus: async () => {
-    try {
-      const data = await api.get<{
-        enabled: boolean;
-        mode?: 'wallet_first';
-        minStartBalanceUsd?: number;
-        currency?: string;
-        currencyRate?: number;
-      }>('/api/billing/status');
-      set({
-        billingEnabled: data.enabled,
-        billingStatusLoaded: true,
-        billingMode: data.mode ?? 'wallet_first',
-        billingMinStartBalanceUsd: data.minStartBalanceUsd ?? 0.01,
-        billingCurrency: data.currency ?? 'USD',
-        billingCurrencyRate: data.currencyRate ?? 1,
-      });
-    } catch {
-      set({
-        billingEnabled: false,
-        billingStatusLoaded: true,
-        billingMode: 'wallet_first',
-        billingMinStartBalanceUsd: 0.01,
-        billingCurrency: 'USD',
-        billingCurrencyRate: 1,
-      });
-    }
-  },
+  loadBillingStatus: () =>
+    shared('status', async () => {
+      try {
+        const data = await api.get<{
+          enabled: boolean;
+          mode?: 'wallet_first';
+          minStartBalanceUsd?: number;
+          currency?: string;
+          currencyRate?: number;
+        }>('/api/billing/status');
+        set({
+          billingEnabled: data.enabled,
+          billingStatusLoaded: true,
+          billingMode: data.mode ?? 'wallet_first',
+          billingMinStartBalanceUsd: data.minStartBalanceUsd ?? 0.01,
+          billingCurrency: data.currency ?? 'USD',
+          billingCurrencyRate: data.currencyRate ?? 1,
+        });
+      } catch {
+        set({
+          billingEnabled: false,
+          billingStatusLoaded: true,
+          billingMode: 'wallet_first',
+          billingMinStartBalanceUsd: 0.01,
+          billingCurrency: 'USD',
+          billingCurrencyRate: 1,
+        });
+      }
+    }),
 
   loadMySubscription: async () => {
     set({ loading: true });
@@ -369,7 +406,10 @@ export const useBillingStore = create<BillingState>((set, get) => ({
         error: null,
       });
     } catch (err) {
-      set({ loading: false, error: err instanceof Error ? err.message : String(err) });
+      set({
+        loading: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   },
 
@@ -382,33 +422,36 @@ export const useBillingStore = create<BillingState>((set, get) => ({
     }
   },
 
-  loadMyAccess: async () => {
-    try {
-      const data = await api.get<BillingAccessResult>('/api/billing/my/access');
-      set((state) => ({
-        access: data,
-        balance: state.balance
-          ? {
-              ...state.balance,
-              balance_usd: data.balanceUsd,
-              updated_at: new Date().toISOString(),
-            }
-          : state.balance,
-        quota: data.usage
-          ? {
-              allowed: data.allowed,
-              reason: data.reason,
-              exceededWindow: data.exceededWindow,
-              resetAt: data.resetAt,
-              warningPercent: data.warningPercent,
-              usage: data.usage,
-            }
-          : null,
-      }));
-    } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err) });
-    }
-  },
+  loadMyAccess: () =>
+    shared('access', async () => {
+      try {
+        const data = await api.get<BillingAccessResult>(
+          '/api/billing/my/access',
+        );
+        set((state) => ({
+          access: data,
+          balance: state.balance
+            ? {
+                ...state.balance,
+                balance_usd: data.balanceUsd,
+                updated_at: new Date().toISOString(),
+              }
+            : state.balance,
+          quota: data.usage
+            ? {
+                allowed: data.allowed,
+                reason: data.reason,
+                exceededWindow: data.exceededWindow,
+                resetAt: data.resetAt,
+                warningPercent: data.warningPercent,
+                usage: data.usage,
+              }
+            : null,
+        }));
+      } catch (err) {
+        set({ error: err instanceof Error ? err.message : String(err) });
+      }
+    }),
 
   loadMyUsage: async () => {
     try {
@@ -451,7 +494,10 @@ export const useBillingStore = create<BillingState>((set, get) => ({
 
   redeemCode: async (code: string) => {
     try {
-      const data = await api.post<{ message: string }>('/api/billing/my/redeem', { code });
+      const data = await api.post<{ message: string }>(
+        '/api/billing/my/redeem',
+        { code },
+      );
       // Refresh all billing state after redeem
       get().loadMyBalance();
       get().loadMyAccess();
@@ -467,7 +513,9 @@ export const useBillingStore = create<BillingState>((set, get) => ({
 
   loadPlans: async () => {
     try {
-      const data = await api.get<{ plans: BillingPlan[] }>('/api/billing/plans');
+      const data = await api.get<{ plans: BillingPlan[] }>(
+        '/api/billing/plans',
+      );
       set({ plans: data.plans });
     } catch (err) {
       set({ error: err instanceof Error ? err.message : String(err) });
@@ -536,10 +584,15 @@ export const useBillingStore = create<BillingState>((set, get) => ({
   loadAllPlans: async () => {
     set({ loading: true });
     try {
-      const data = await api.get<{ plans: BillingPlan[] }>('/api/billing/admin/plans');
+      const data = await api.get<{ plans: BillingPlan[] }>(
+        '/api/billing/admin/plans',
+      );
       set({ plans: data.plans, loading: false, error: null });
     } catch (err) {
-      set({ loading: false, error: err instanceof Error ? err.message : String(err) });
+      set({
+        loading: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   },
 
@@ -613,16 +666,25 @@ export const useBillingStore = create<BillingState>((set, get) => ({
   },
 
   deleteRedeemCode: async (code) => {
-    await api.delete(`/api/billing/admin/redeem-codes/${encodeURIComponent(code)}`);
+    await api.delete(
+      `/api/billing/admin/redeem-codes/${encodeURIComponent(code)}`,
+    );
     get().loadRedeemCodes();
   },
 
-  loadAuditLog: async (limit = 50, offset = 0, userId?: string, eventType?: string) => {
+  loadAuditLog: async (
+    limit = 50,
+    offset = 0,
+    userId?: string,
+    eventType?: string,
+  ) => {
     try {
       let url = `/api/billing/admin/audit-log?limit=${limit}&offset=${offset}`;
       if (userId) url += `&user_id=${userId}`;
       if (eventType) url += `&event_type=${encodeURIComponent(eventType)}`;
-      const data = await api.get<{ logs: BillingAuditLog[]; total: number }>(url);
+      const data = await api.get<{ logs: BillingAuditLog[]; total: number }>(
+        url,
+      );
       set({ auditLogs: data.logs, auditLogsTotal: data.total });
     } catch (err) {
       set({ error: err instanceof Error ? err.message : String(err) });
@@ -639,7 +701,10 @@ export const useBillingStore = create<BillingState>((set, get) => ({
   },
 
   cancelUserSubscription: async (userId) => {
-    await api.post(`/api/billing/admin/users/${userId}/cancel-subscription`, {});
+    await api.post(
+      `/api/billing/admin/users/${userId}/cancel-subscription`,
+      {},
+    );
     get().loadAllUsers();
   },
 
@@ -668,7 +733,11 @@ export const useBillingStore = create<BillingState>((set, get) => ({
 
   getRedeemCodeUsage: async (code) => {
     const data = await api.get<{
-      details: Array<{ user_id: string; username: string; redeemed_at: string }>;
+      details: Array<{
+        user_id: string;
+        username: string;
+        redeemed_at: string;
+      }>;
     }>(`/api/billing/admin/redeem-codes/${encodeURIComponent(code)}/usage`);
     return data.details;
   },

@@ -27,6 +27,7 @@ import { useClearWorkspace } from '../hooks/useClearWorkspace';
 import type { GroupEntry } from '../utils/group-utils';
 import { useDeleteWorkspace } from '../hooks/useDeleteWorkspace';
 import { useWorkspaceTree } from '../hooks/useWorkspaceTree';
+import { useMediaQuery } from '../hooks/useMediaQuery';
 import { useNewConversation } from '../hooks/useNewConversation';
 import { useShellStore } from '../stores/shell';
 import { Button } from '@/components/ui/button';
@@ -73,6 +74,7 @@ export function ChatPage() {
   const user = useAuthStore((s) => s.user);
   const appearance = useAuthStore((s) => s.appearance);
   const appName = appearance?.appName || 'HappyClaw';
+  const isDesktop = useMediaQuery('(min-width: 1024px)');
   const [showBugReport, setShowBugReport] = useState(false);
   const userInitial = (user?.display_name ||
     user?.username ||
@@ -95,12 +97,8 @@ export function ChatPage() {
   }, [groupFolder, groups]);
   const hasGroups = Object.keys(groups).length > 0;
 
-  // 移动端唯一的工作区列表入口：桌面侧边栏改为条件挂载后，/chat 落地页
-  // 不再有其他组件触发 loadGroups（store 内部有 in-flight 去重，桌面端
-  // 与侧边栏的并发调用只会发一个请求）。
-  useEffect(() => {
-    void loadGroups();
-  }, [loadGroups]);
+  // The workspace list is loaded once by AppLayout for every route and kept
+  // fresh over WebSocket, so returning to /chat does not refetch it.
 
   // Mobile and desktop share the same Agent-first navigation contract.
   const { agentSections, agentPartitions } = useWorkspaceTree();
@@ -259,7 +257,11 @@ export function ChatPage() {
           ref={chatViewRef}
           className={`${groupFolder ? 'flex-1 min-w-0 h-full overflow-hidden' : 'hidden lg:block flex-1 min-w-0 h-full overflow-hidden'}`}
         >
-          <ChatView groupJid={activeGroupJid} onBack={handleBackToList} />
+          {/* The phone list view hides this pane; skip mounting it there so
+              its message polling and subscriptions don't run unseen. */}
+          {(groupFolder || isDesktop) && (
+            <ChatView groupJid={activeGroupJid} onBack={handleBackToList} />
+          )}
         </div>
       ) : (
         <Empty className="hidden flex-1 lg:flex">

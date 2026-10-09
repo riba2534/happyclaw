@@ -177,6 +177,17 @@ export function TerminalPanel({
       }
     });
 
+    // Auto-reconnect timers must not outlive the panel: a late
+    // terminal_start would reopen a terminal nobody is looking at.
+    const reconnectTimers = new Set<ReturnType<typeof setTimeout>>();
+    const scheduleReconnect = (run: () => void, delayMs: number) => {
+      const timer = setTimeout(() => {
+        reconnectTimers.delete(timer);
+        run();
+      }, delayMs);
+      reconnectTimers.add(timer);
+    };
+
     const unsubStopped = wsManager.on('terminal_stopped', (data: any) => {
       if (data.chatJid === groupJid) {
         syncConnState('disconnected');
@@ -186,7 +197,7 @@ export function TerminalPanel({
         // Auto-reconnect after unexpected stop (not user-initiated)
         if (data.reason !== '用户关闭终端') {
           terminal.write('\x1b[33m[3 秒后自动重连...]\x1b[0m\r\n');
-          setTimeout(() => {
+          scheduleReconnect(() => {
             if (
               connStateRef.current === 'disconnected' &&
               wsManager.isConnected()
@@ -209,7 +220,7 @@ export function TerminalPanel({
           terminal.write(
             `\r\n\x1b[33m[工作区启动中，5 秒后自动重连...]\x1b[0m\r\n`,
           );
-          setTimeout(() => {
+          scheduleReconnect(() => {
             if (
               connStateRef.current === 'disconnected' &&
               wsManager.isConnected()
@@ -306,6 +317,7 @@ export function TerminalPanel({
         wsManager.send({ type: 'terminal_stop', chatJid: groupJid });
       }
       themeObserver.disconnect();
+      reconnectTimers.forEach((timer) => clearTimeout(timer));
       terminal.dispose();
       xtermRef.current = null;
       fitAddonRef.current = null;

@@ -9,7 +9,10 @@ import {
 import { lazy, Suspense, type ReactNode } from 'react';
 import { AuthGuard } from './components/auth/AuthGuard';
 import { APP_BASE, shouldUseHashRouter } from './utils/url';
-import { shouldPreloadChatRoute } from './utils/chat-route-preload';
+import {
+  shouldPreloadAppShell,
+  shouldPreloadChatRoute,
+} from './utils/chat-route-preload';
 import { Toaster } from '@/components/ui/sonner';
 import { ConfirmHost } from '@/components/common/ConfirmHost';
 
@@ -40,11 +43,16 @@ const SetupChannelsPage = lazy(() =>
     default: m.SetupChannelsPage,
   })),
 );
-const AppLayout = lazy(() =>
-  import('./components/layout/AppLayout').then((m) => ({
+let appLayoutPromise:
+  | Promise<{
+      default: typeof import('./components/layout/AppLayout').AppLayout;
+    }>
+  | undefined;
+const loadAppLayout = () =>
+  (appLayoutPromise ??= import('./components/layout/AppLayout').then((m) => ({
     default: m.AppLayout,
-  })),
-);
+  })));
+const AppLayout = lazy(loadAppLayout);
 
 // Start the expensive chat split as soon as the entry executes, but only for
 // the default/chat routes. Static HTML modulepreloads made login, setup, tasks,
@@ -58,6 +66,16 @@ if (
   )
 ) {
   void loadChatPage();
+}
+if (
+  typeof window !== 'undefined' &&
+  shouldPreloadAppShell(
+    window.location.pathname,
+    window.location.hash,
+    APP_BASE,
+  )
+) {
+  void loadAppLayout();
 }
 const TasksPage = lazy(() =>
   import('./pages/TasksPage').then((m) => ({ default: m.TasksPage })),

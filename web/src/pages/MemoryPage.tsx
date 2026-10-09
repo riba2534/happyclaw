@@ -410,6 +410,10 @@ export function MemoryPage() {
     [searchParams, setAllowedSearchParams],
   );
 
+  // Load the workspace list once. Selection follows the URL in the effect
+  // below; keying the fetch on the URL param refetched the list right after
+  // the page wrote the default workspace into it.
+  const [workspacesLoaded, setWorkspacesLoaded] = useState(false);
   useEffect(() => {
     let cancelled = false;
     setWorkspaceLoading(true);
@@ -417,27 +421,11 @@ export function MemoryPage() {
       .get<{ workspaces: WorkspaceSummary[] }>('/api/workspaces')
       .then(({ workspaces: loaded }) => {
         if (cancelled) return;
-        const active = loaded.filter(
-          (workspace) => workspace.status === 'active',
+        setWorkspaces(
+          loaded.filter((workspace) => workspace.status === 'active'),
         );
-        setWorkspaces(active);
         setWorkspaceError(null);
-
-        const requested = requestedWorkspace
-          ? active.find((workspace) => workspace.jid === requestedWorkspace)
-          : undefined;
-        const legacy = legacyFolder
-          ? active.find((workspace) => workspace.folder === legacyFolder)
-          : undefined;
-        const next =
-          requested ||
-          legacy ||
-          active.find((workspace) => workspace.is_home) ||
-          active[0];
-        activateWorkspace(next?.jid || '');
-        if (next && next.jid !== requestedWorkspace) {
-          updateWorkspaceParam(next.jid);
-        }
+        setWorkspacesLoaded(true);
       })
       .catch((error) => {
         if (!cancelled) {
@@ -450,11 +438,32 @@ export function MemoryPage() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  useEffect(() => {
+    if (!workspacesLoaded) return;
+    const requested = requestedWorkspace
+      ? workspaces.find((workspace) => workspace.jid === requestedWorkspace)
+      : undefined;
+    const legacy = legacyFolder
+      ? workspaces.find((workspace) => workspace.folder === legacyFolder)
+      : undefined;
+    const next =
+      requested ||
+      legacy ||
+      workspaces.find((workspace) => workspace.is_home) ||
+      workspaces[0];
+    activateWorkspace(next?.jid || '');
+    if (next && next.jid !== requestedWorkspace) {
+      updateWorkspaceParam(next.jid);
+    }
   }, [
     activateWorkspace,
     legacyFolder,
     requestedWorkspace,
     updateWorkspaceParam,
+    workspaces,
+    workspacesLoaded,
   ]);
 
   const loadItems = useCallback(

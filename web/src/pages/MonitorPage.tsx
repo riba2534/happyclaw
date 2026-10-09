@@ -39,6 +39,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
 import { wsManager } from '../api/ws';
 import { api } from '@/api/client';
+import { useVisibleInterval } from '../hooks/useVisibleInterval';
 
 type ClaudeStatusIndicator = 'none' | 'minor' | 'major' | 'critical';
 
@@ -92,13 +93,8 @@ export function MonitorPage({ embedded = false }: MonitorPageProps) {
 
   useEffect(() => {
     loadStatus();
-
-    const interval = setInterval(() => {
-      loadStatus();
-    }, 10000);
-
-    return () => clearInterval(interval);
   }, [loadStatus]);
+  useVisibleInterval(loadStatus, 10_000);
 
   useEffect(() => {
     let cancelled = false;

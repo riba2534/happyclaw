@@ -3518,27 +3518,8 @@ export function broadcastDockerPullComplete(
   safeBroadcast({ type: 'docker_pull_complete', success, error }, true);
 }
 
-function broadcastStatus(): void {
-  if (!deps) return;
-
-  const queueStatus = deps.queue.getStatus();
-  // Broadcast aggregate system metrics only to admin users.
-  // Non-admin users get per-user filtered metrics via REST /api/status.
-  safeBroadcast(
-    {
-      type: 'status_update',
-      activeContainers: queueStatus.activeContainerCount,
-      activeHostProcesses: queueStatus.activeHostProcessCount,
-      activeTotal: queueStatus.activeCount,
-      queueLength: queueStatus.waitingCount,
-    },
-    /* adminOnly */ true,
-  );
-}
-
 // --- Server Startup ---
 
-let statusInterval: ReturnType<typeof setInterval> | null = null;
 let httpServer: ReturnType<typeof serve> | null = null;
 let wss: WebSocketServer | null = null;
 
@@ -3548,7 +3529,7 @@ let wss: WebSocketServer | null = null;
  * module load) so integration tests can exercise HTTP routes via
  * `app.request(...)` — most notably `POST /api/messages` and its `/clear`
  * interception — without starting the HTTP server, WebSocket server, container
- * exit callbacks, or the status-broadcast interval.
+ * exit callbacks or other runtime timers.
  *
  * Mirrors the dependency wiring in {@link startWebServer} minus all the
  * runtime side effects. NOT for production use.
@@ -3638,10 +3619,6 @@ export function startWebServer(webDeps: WebDeps): void {
   webDeps.queue.setOnRunnerStateChange(broadcastRunnerState);
   webDeps.queue.setOnQueryStart(broadcastRunStarted);
   webDeps.queue.setOnQueryFinish(broadcastRunFinished);
-
-  // Broadcast status every 5 seconds
-  if (statusInterval) clearInterval(statusInterval);
-  statusInterval = setInterval(broadcastStatus, 5000);
 }
 
 // --- Exports ---
@@ -3651,10 +3628,6 @@ export function shutdownTerminals(): void {
 }
 
 export async function shutdownWebServer(): Promise<void> {
-  if (statusInterval) {
-    clearInterval(statusInterval);
-    statusInterval = null;
-  }
   // Close all WebSocket connections
   for (const client of wsClients.keys()) {
     try {

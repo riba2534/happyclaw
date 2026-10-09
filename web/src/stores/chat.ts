@@ -329,6 +329,7 @@ function messageSequenceBoundary(
 
 const MAX_THINKING_CACHE_SIZE = 500;
 const loadMessagesInFlight = new Map<string, Promise<void>>();
+const loadAgentsInFlight = new Map<string, Promise<void>>();
 let loadGroupsInFlight: Promise<void> | null = null;
 
 /** Evict oldest entries when cache exceeds capacity (relies on insertion order) */
@@ -3759,108 +3760,119 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!opts?.force && get().agents[jid]) {
       return;
     }
-    try {
-      const data = await api.get<{ agents: AgentInfo[] }>(
-        `/api/groups/${encodeURIComponent(jid)}/agents`,
-      );
-      set((s) => {
-        const visibleAgents = data.agents.filter(
-          (a) =>
-            a.kind === 'conversation' ||
-            (a.kind === 'spawn' && a.status !== 'completed') ||
-            a.status === 'running',
+    // Sidebar and ChatView both ask for the same workspace on mount; share
+    // one request instead of fetching it twice.
+    const inFlight = loadAgentsInFlight.get(jid);
+    if (inFlight && !opts?.force) return inFlight;
+    const request = (async () => {
+      try {
+        const data = await api.get<{ agents: AgentInfo[] }>(
+          `/api/groups/${encodeURIComponent(jid)}/agents`,
         );
-        const runningTasks = data.agents.filter(
-          (a) => a.kind === 'task' && a.status === 'running',
-        );
-        const runningTaskIds = new Set(runningTasks.map((a) => a.id));
-        const runningTaskMap = new Map(runningTasks.map((a) => [a.id, a]));
-
-        const nextSdkTasks: ChatState['sdkTasks'] = {};
-        for (const [id, task] of Object.entries(s.sdkTasks)) {
-          if (task.chatJid !== jid) {
-            nextSdkTasks[id] = task;
-            continue;
-          }
-          if (runningTaskIds.has(id)) {
-            const agent = runningTaskMap.get(id)!;
-            nextSdkTasks[id] = {
-              ...task,
-              chatJid: jid,
-              description: agent.prompt || agent.name,
-              status: 'running',
-            };
-          } else {
-            clearSdkTaskCleanupTimer(id);
-            clearSdkTaskStaleTimer(id);
-          }
-        }
-
-        for (const agent of runningTasks) {
-          if (!nextSdkTasks[agent.id]) {
-            nextSdkTasks[agent.id] = {
-              chatJid: jid,
-              description: agent.prompt || agent.name,
-              status: 'running',
-            };
-          }
-        }
-
-        const nextAgentStreaming = { ...s.agentStreaming };
-        for (const [id, task] of Object.entries(s.sdkTasks)) {
-          if (task.chatJid === jid && !runningTaskIds.has(id)) {
-            delete nextAgentStreaming[id];
-          }
-        }
-
-        const nextActiveTab = { ...s.activeAgentTab };
-        if (nextActiveTab[jid] && !runningTaskIds.has(nextActiveTab[jid]!)) {
-          const stillExists = visibleAgents.some(
-            (a) => a.id === nextActiveTab[jid],
+        set((s) => {
+          const visibleAgents = data.agents.filter(
+            (a) =>
+              a.kind === 'conversation' ||
+              (a.kind === 'spawn' && a.status !== 'completed') ||
+              a.status === 'running',
           );
-          if (!stillExists) nextActiveTab[jid] = null;
-        }
-
-        const nextSdkTaskAliases: Record<string, string> = {};
-        for (const [alias, target] of Object.entries(s.sdkTaskAliases)) {
-          const task = nextSdkTasks[target];
-          if (!task) continue;
-          if (task.chatJid === jid && task.status !== 'running') continue;
-          if (alias === target && task.status !== 'running') continue;
-          nextSdkTaskAliases[alias] = target;
-        }
-
-        // Apply saved conversation order from localStorage (only to conversations)
-        let orderedAgents = visibleAgents;
-        try {
-          const savedOrder = localStorage.getItem(
-            `happyclaw-agent-order-${jid}`,
+          const runningTasks = data.agents.filter(
+            (a) => a.kind === 'task' && a.status === 'running',
           );
-          if (savedOrder) {
-            const ids: string[] = JSON.parse(savedOrder);
-            const conversations = visibleAgents.filter(
-              (a) => a.kind === 'conversation',
-            );
-            const others = visibleAgents.filter(
-              (a) => a.kind !== 'conversation',
-            );
-            orderedAgents = [...sortByIdOrder(conversations, ids), ...others];
-          }
-        } catch {
-          /* ignore */
-        }
+          const runningTaskIds = new Set(runningTasks.map((a) => a.id));
+          const runningTaskMap = new Map(runningTasks.map((a) => [a.id, a]));
 
-        return {
-          agents: { ...s.agents, [jid]: orderedAgents },
-          sdkTasks: nextSdkTasks,
-          sdkTaskAliases: nextSdkTaskAliases,
-          agentStreaming: nextAgentStreaming,
-          activeAgentTab: nextActiveTab,
-        };
-      });
-    } catch {
-      // Silent fail
-    }
+          const nextSdkTasks: ChatState['sdkTasks'] = {};
+          for (const [id, task] of Object.entries(s.sdkTasks)) {
+            if (task.chatJid !== jid) {
+              nextSdkTasks[id] = task;
+              continue;
+            }
+            if (runningTaskIds.has(id)) {
+              const agent = runningTaskMap.get(id)!;
+              nextSdkTasks[id] = {
+                ...task,
+                chatJid: jid,
+                description: agent.prompt || agent.name,
+                status: 'running',
+              };
+            } else {
+              clearSdkTaskCleanupTimer(id);
+              clearSdkTaskStaleTimer(id);
+            }
+          }
+
+          for (const agent of runningTasks) {
+            if (!nextSdkTasks[agent.id]) {
+              nextSdkTasks[agent.id] = {
+                chatJid: jid,
+                description: agent.prompt || agent.name,
+                status: 'running',
+              };
+            }
+          }
+
+          const nextAgentStreaming = { ...s.agentStreaming };
+          for (const [id, task] of Object.entries(s.sdkTasks)) {
+            if (task.chatJid === jid && !runningTaskIds.has(id)) {
+              delete nextAgentStreaming[id];
+            }
+          }
+
+          const nextActiveTab = { ...s.activeAgentTab };
+          if (nextActiveTab[jid] && !runningTaskIds.has(nextActiveTab[jid]!)) {
+            const stillExists = visibleAgents.some(
+              (a) => a.id === nextActiveTab[jid],
+            );
+            if (!stillExists) nextActiveTab[jid] = null;
+          }
+
+          const nextSdkTaskAliases: Record<string, string> = {};
+          for (const [alias, target] of Object.entries(s.sdkTaskAliases)) {
+            const task = nextSdkTasks[target];
+            if (!task) continue;
+            if (task.chatJid === jid && task.status !== 'running') continue;
+            if (alias === target && task.status !== 'running') continue;
+            nextSdkTaskAliases[alias] = target;
+          }
+
+          // Apply saved conversation order from localStorage (only to conversations)
+          let orderedAgents = visibleAgents;
+          try {
+            const savedOrder = localStorage.getItem(
+              `happyclaw-agent-order-${jid}`,
+            );
+            if (savedOrder) {
+              const ids: string[] = JSON.parse(savedOrder);
+              const conversations = visibleAgents.filter(
+                (a) => a.kind === 'conversation',
+              );
+              const others = visibleAgents.filter(
+                (a) => a.kind !== 'conversation',
+              );
+              orderedAgents = [...sortByIdOrder(conversations, ids), ...others];
+            }
+          } catch {
+            /* ignore */
+          }
+
+          return {
+            agents: { ...s.agents, [jid]: orderedAgents },
+            sdkTasks: nextSdkTasks,
+            sdkTaskAliases: nextSdkTaskAliases,
+            agentStreaming: nextAgentStreaming,
+            activeAgentTab: nextActiveTab,
+          };
+        });
+      } catch {
+        // Silent fail
+      }
+    })().finally(() => {
+      if (loadAgentsInFlight.get(jid) === request)
+        loadAgentsInFlight.delete(jid);
+    });
+    loadAgentsInFlight.set(jid, request);
+    return request;
   },
 
   // 删除子 Agent
@@ -4333,7 +4345,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           queryInFlight?: boolean;
           queryId?: string | null;
         }>;
-      }>('/api/status');
+      }>('/api/status/groups');
       const knownJids = new Set(data.groups.map((g) => g.jid));
       const activeAgentIds = new Set(
         data.groups

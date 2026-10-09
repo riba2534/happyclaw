@@ -8,6 +8,7 @@ import { useAuthStore } from '../stores/auth';
 import { useGroupsStore } from '../stores/groups';
 import { showToast } from '../utils/toast';
 import { confirmDialog } from '@/stores/confirm';
+import { useVisibleInterval } from '../hooks/useVisibleInterval';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { EmptyState } from '@/components/common/EmptyState';
 import { IconButton } from '@/components/common/IconButton';
@@ -97,11 +98,14 @@ export function TasksPage() {
       (task) =>
         task.current_run && liveRunStatuses.has(task.current_run.status),
     );
-  const hasNotificationWork = tasks.some(
-    (task) =>
-      task.last_run_summary?.notification_status === 'pending' ||
-      !!task.last_run_summary?.notification_available_at,
-  );
+  // Settled runs keep their notification_available_at timestamp; only pending
+  // notifications or a retry scheduled in the future need polling.
+  const hasNotificationWork = tasks.some((task) => {
+    const summary = task.last_run_summary;
+    if (summary?.notification_status === 'pending') return true;
+    const availableAt = summary?.notification_available_at;
+    return !!availableAt && Date.parse(availableAt) > Date.now();
+  });
   const liveRunCount = new Set([
     ...runningTaskIds,
     ...tasks
@@ -111,11 +115,11 @@ export function TasksPage() {
       )
       .map((task) => task.id),
   ]).size;
-  useEffect(() => {
-    if (!hasParsing && !hasRunning && !hasNotificationWork) return;
-    const interval = setInterval(loadTasks, 3000);
-    return () => clearInterval(interval);
-  }, [hasParsing, hasRunning, hasNotificationWork, loadTasks]);
+  useVisibleInterval(
+    loadTasks,
+    3000,
+    hasParsing || hasRunning || hasNotificationWork,
+  );
 
   const handleCreateTask = async (data: {
     prompt: string;

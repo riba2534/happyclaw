@@ -14,6 +14,7 @@ import { getErrorMessage } from './types';
 import { ProviderList } from './ProviderList';
 import { ProviderEditor } from './ProviderEditor';
 import { BalancingSettings } from './BalancingSettings';
+import { useVisibleInterval } from '../../hooks/useVisibleInterval';
 import { SettingsSection } from './SettingsLayout';
 
 interface ClaudeProviderSectionProps {
@@ -63,9 +64,6 @@ export function ClaudeProviderSection({
   const [pendingDeleteProvider, setPendingDeleteProvider] =
     useState<ProviderWithHealth | null>(null);
 
-  // 健康轮询标记
-  const healthTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
   // ─── 加载提供商列表 ──────────────────────────────────────────
   const loadProviders = useCallback(async () => {
     try {
@@ -86,39 +84,23 @@ export function ClaudeProviderSection({
     loadProviders();
   }, [loadProviders]);
 
-  // ─── 健康状态轮询（启用 >= 2 个提供商时） ────────────────────
-  useEffect(() => {
-    if (healthTimerRef.current) {
-      clearInterval(healthTimerRef.current);
-      healthTimerRef.current = null;
+  // ─── 健康状态轮询（启用 >= 2 个提供商时，仅页面可见时） ──────
+  const pollHealth = useCallback(async () => {
+    try {
+      const data = await api.get<{ statuses: ProviderHealthStatus[] }>(
+        '/api/config/claude/providers/health',
+      );
+      setProviders((prev) =>
+        prev.map((p) => {
+          const updated = data.statuses.find((s) => s.profileId === p.id);
+          return updated ? { ...p, health: updated } : p;
+        }),
+      );
+    } catch {
+      // 静默忽略
     }
-
-    if (enabledCount < 2) return;
-
-    const pollHealth = async () => {
-      try {
-        const data = await api.get<{ statuses: ProviderHealthStatus[] }>(
-          '/api/config/claude/providers/health',
-        );
-        setProviders((prev) =>
-          prev.map((p) => {
-            const updated = data.statuses.find((s) => s.profileId === p.id);
-            return updated ? { ...p, health: updated } : p;
-          }),
-        );
-      } catch {
-        // 静默忽略
-      }
-    };
-
-    healthTimerRef.current = setInterval(pollHealth, 10000);
-    return () => {
-      if (healthTimerRef.current) {
-        clearInterval(healthTimerRef.current);
-        healthTimerRef.current = null;
-      }
-    };
-  }, [enabledCount]);
+  }, []);
+  useVisibleInterval(pollHealth, 10000, enabledCount >= 2);
 
   // ─── 切换提供商启用/禁用 ──────────────────────────────────────
   const handleToggle = useCallback(

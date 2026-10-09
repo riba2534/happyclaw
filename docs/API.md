@@ -578,6 +578,8 @@ Web 和 Runtime 不再把它们当作第二个可写真相源。
 
 - `GET /api/health`，Public
 - `GET /api/status`
+- `GET /api/status/groups`：只返回队列运行状态，供聊天页恢复运行态；可见范围与
+  `/api/status` 相同，不做 Docker 与版本探测
 - `POST /api/status/groups/:folder/switch-provider`
 - `GET /api/status/channel-outbox/uncertain`
 - `POST /api/status/channel-outbox/:id/resolve`

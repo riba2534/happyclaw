@@ -940,13 +940,6 @@ export type WsMessageOut =
     }
   | { type: 'typing'; chatJid: string; isTyping: boolean; agentId?: string }
   | {
-      type: 'status_update';
-      activeContainers: number;
-      activeHostProcesses: number;
-      activeTotal: number;
-      queueLength: number;
-    }
-  | {
       type: 'stream_event';
       chatJid: string;
       event: StreamEvent;

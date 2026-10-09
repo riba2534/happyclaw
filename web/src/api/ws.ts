@@ -86,16 +86,25 @@ class WsManager {
   }
 
   private emit(type: string, data: any) {
-    this.handlers.get(type)?.forEach(h => h(data));
+    this.handlers.get(type)?.forEach((h) => h(data));
   }
 
   private scheduleReconnect() {
     if (this.reconnectTimer) return;
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
-      this.connect();
-    }, this.reconnectDelay);
+    // ±30% jitter so tabs dropped together (e.g. a server restart) don't
+    // all reconnect and refetch in the same second.
+    const jitter = 0.7 + Math.random() * 0.6;
+    this.reconnectTimer = setTimeout(
+      () => {
+        this.reconnectTimer = null;
+        this.reconnectDelay = Math.min(
+          this.reconnectDelay * 2,
+          this.maxReconnectDelay,
+        );
+        this.connect();
+      },
+      Math.round(this.reconnectDelay * jitter),
+    );
   }
 
   /** Listen for network status changes to reconnect immediately or pause retries. */
