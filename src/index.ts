@@ -153,6 +153,7 @@ import {
   getMessage,
   getUserById,
   getMessagesSince,
+  getMessagesSinceBounded,
   getNewMessages,
   resolveMessageCursorSequence,
   getRouterState,
@@ -6504,9 +6505,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const resolved = resolveEffectiveGroup(group);
   const effectiveGroup = resolved.effectiveGroup;
 
-  // Get all messages since last agent interaction
+  // Get the oldest pending messages since last agent interaction. A backlog
+  // beyond one turn's bound is consumed by the follow-up check below.
   const sinceCursor = lastAgentTimestamp[chatJid] || EMPTY_CURSOR;
-  let missedMessages = getMessagesSince(chatJid, sinceCursor);
+  const pendingWindow = getMessagesSinceBounded(chatJid, sinceCursor);
+  let missedMessages = pendingWindow.messages;
 
   if (missedMessages.length === 0) return true;
 
@@ -6531,7 +6534,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     missedMessages = missedMessages.filter(
       (message) => !terminalIds.has(message.id),
     );
-    if (missedMessages.length === 0) return true;
+    if (missedMessages.length === 0) {
+      if (pendingWindow.truncated) queue.enqueueMessageCheck(chatJid);
+      return true;
+    }
   }
 
   const interactionBatch = selectRuntimeInteractionBatch(
@@ -6544,6 +6550,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const scheduledGroupDeliveryContract =
     resolveScheduledGroupDeliveryContract(interactionMode);
   if (
+    pendingWindow.truncated ||
     interactionBatch.hasDeferredMessages ||
     missedMessages.length < interactionBatch.messages.length
   ) {
@@ -15570,9 +15577,11 @@ async function processAgentConversation(
     agentId,
   );
 
-  // Get pending messages
+  // Get the oldest pending messages; a longer backlog is consumed by the
+  // agent-channel-next task enqueued below.
   const sinceCursor = lastAgentTimestamp[virtualChatJid] || EMPTY_CURSOR;
-  let missedMessages = getMessagesSince(virtualChatJid, sinceCursor);
+  const pendingWindow = getMessagesSinceBounded(virtualChatJid, sinceCursor);
+  let missedMessages = pendingWindow.messages;
 
   // Owner gate (single chokepoint for all 5 call sites: normal dispatch,
   // IM-restart recovery, unconsumed-IPC recovery, /spawn). The main message
@@ -15583,10 +15592,14 @@ async function processAgentConversation(
   if (effectiveGroup.created_by) {
     const ownerGate = checkOwnerActive(getUserById(effectiveGroup.created_by));
     if (!ownerGate.allowed) {
-      completeOutOfBandMessages(virtualChatJid, missedMessages);
+      // Dropping is linear, so drop the whole backlog in one pass.
+      const droppedMessages = pendingWindow.truncated
+        ? getMessagesSince(virtualChatJid, sinceCursor)
+        : missedMessages;
+      completeOutOfBandMessages(virtualChatJid, droppedMessages);
       await clearStandaloneProcessingIndicatorsForMessages(
         virtualChatJid,
-        missedMessages,
+        droppedMessages,
       );
       logger.info(
         {
@@ -15629,6 +15642,7 @@ async function processAgentConversation(
   const interactionMode = interactionBatch.interactionMode;
   const replyBatch = selectChannelReplyBatch(interactionBatch.messages);
   if (
+    pendingWindow.truncated ||
     interactionBatch.hasDeferredMessages ||
     replyBatch.length < interactionBatch.messages.length
   ) {

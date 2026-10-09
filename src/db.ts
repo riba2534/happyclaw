@@ -126,6 +126,7 @@ let _stmts: {
   updateTokenUsageById: any;
   updateTokenUsageLatest: any;
   getMessagesSince: any;
+  getMessagesSinceLimited: any;
   getExpiredSessionIds: any;
 } | null = null;
 
@@ -235,6 +236,18 @@ function stmts() {
          WHERE m.chat_jid = ? AND seq.sequence > ? AND m.is_from_me = 0
            AND COALESCE(m.delivery_status, '') NOT IN ('queued', 'promoting', 'cancelled', 'awaiting_companion', 'subsumed')
          ORDER BY seq.sequence ASC`,
+      ),
+      getMessagesSinceLimited: db.prepare(
+        `SELECT m.id, m.chat_jid, m.source_jid, m.sender, m.sender_name, m.content, m.timestamp,
+                m.attachments, m.channel_context, m.source_kind, m.task_id,
+                m.delivery_mode, m.delivery_status, m.delivery_run_id, m.delivery_priority,
+                m.delivery_updated_at, seq.sequence AS ingest_sequence
+         FROM message_ingest_sequences seq
+         JOIN messages m ON m.chat_jid = seq.chat_jid AND m.id = seq.message_id
+         WHERE m.chat_jid = ? AND seq.sequence > ? AND m.is_from_me = 0
+           AND COALESCE(m.delivery_status, '') NOT IN ('queued', 'promoting', 'cancelled', 'awaiting_companion', 'subsumed')
+         ORDER BY seq.sequence ASC
+         LIMIT ?`,
       ),
       getExpiredSessionIds: db.prepare(
         'SELECT id FROM user_sessions WHERE expires_at < ?',
@@ -4674,6 +4687,39 @@ export function getMessagesSince(
     resolvedCursor.sequence,
   ) as NewMessage[];
   return rows.map((row) => normalizeMessageRow(row));
+}
+
+/**
+ * Most input messages one cold-start turn takes from the durable backlog.
+ * Large enough that ordinary catch-up (an IM backfill is at most a few
+ * hundred messages per chat) stays one batch; a legacy replay from an empty
+ * cursor is consumed in successive turns instead of one unbounded prompt.
+ */
+export const MAX_TURN_INPUT_MESSAGES = 500;
+
+/**
+ * The oldest `limit` pending inputs after `cursor`, in ingest order, plus
+ * whether more remain behind them. Callers must re-enqueue when `truncated`.
+ */
+export function getMessagesSinceBounded(
+  chatJid: string,
+  cursor: MessageCursor,
+  limit: number = MAX_TURN_INPUT_MESSAGES,
+): { messages: NewMessage[]; truncated: boolean } {
+  const resolvedCursor = resolveMessageCursorSequence(cursor, chatJid);
+  const cap = Math.max(1, Math.trunc(limit));
+  const rows = stmts().getMessagesSinceLimited.all(
+    chatJid,
+    resolvedCursor.sequence,
+    cap + 1,
+  ) as NewMessage[];
+  const truncated = rows.length > cap;
+  return {
+    messages: (truncated ? rows.slice(0, cap) : rows).map((row) =>
+      normalizeMessageRow(row),
+    ),
+    truncated,
+  };
 }
 
 /**
