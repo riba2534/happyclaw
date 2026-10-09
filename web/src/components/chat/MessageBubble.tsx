@@ -507,7 +507,9 @@ export const MessageBubble = memo(
               <IconButton
                 label="复制"
                 size="icon-xs"
-                icon={copied ? <Check className="text-primary-text" /> : <Copy />}
+                icon={
+                  copied ? <Check className="text-primary-text" /> : <Copy />
+                }
                 onClick={handleCopy}
                 className="text-muted-foreground"
               />
