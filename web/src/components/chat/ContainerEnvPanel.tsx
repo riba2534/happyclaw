@@ -4,6 +4,7 @@ import { useContainerEnvStore } from '../../stores/container-env';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { ScrollEdgeAffordance } from '../common/ScrollEdgeAffordance';
+import { confirmDialog } from '../../stores/confirm';
 
 interface ContainerEnvPanelProps {
   groupJid: string;
@@ -92,7 +93,13 @@ export function ContainerEnvPanel({
   };
 
   const handleClear = async () => {
-    if (!window.confirm('确定要清空所有覆盖配置并重建工作区吗？')) return;
+    const confirmed = await confirmDialog({
+      title: '清空覆盖配置',
+      message: '确定要清空所有覆盖配置并重建工作区吗？',
+      confirmText: '清空并重建',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
     setClearing(true);
     const ok = await saveConfig(groupJid, {
       anthropicBaseUrl: '',
@@ -258,7 +265,7 @@ export function ContainerEnvPanel({
                     />
                     <button
                       onClick={() => removeCustomEnv(i)}
-                      className="flex-shrink-0 p-1 text-muted-foreground hover:text-red-500 cursor-pointer"
+                      className="flex-shrink-0 p-1 text-muted-foreground cursor-pointer hover:text-destructive"
                     >
                       <X className="w-3.5 h-3.5" />
                     </button>
