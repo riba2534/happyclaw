@@ -181,7 +181,6 @@ export const SessionTreeList = memo(function SessionTreeList({
                 // Search results appear and disappear instantly: animating
                 // dozens of rows in and out on every keystroke was a third of
                 // the per-key cost in long lists.
-                layout={searching ? false : 'position'}
                 initial={searching ? false : { opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: 'auto' }}
                 exit={searching ? undefined : { opacity: 0, height: 0 }}
