@@ -114,20 +114,35 @@ describe('AssistantUsageCollector transcript backfill', () => {
     });
   });
 
-  test('does not call the loader for non-zero snapshots', () => {
+  // Non-zero live snapshots used to skip the transcript. Their output count
+  // is message_start's placeholder, so the transcript's final value must win.
+  test('merges the transcript final into a non-zero live snapshot', () => {
     const collector = new AssistantUsageCollector();
     collector.ingest(
       assistantLine('msg-3', {
         input_tokens: 100,
-        output_tokens: 20,
+        output_tokens: 1,
       }) as never,
     );
-    const loader = vi.fn(() => new Map());
+    const loader = vi.fn(() => {
+      const map = new Map();
+      map.set('msg-3', {
+        id: 'msg-3',
+        model: 'gpt-6-sol',
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        reasoningTokens: 0,
+        total: 120,
+      });
+      return map;
+    });
     expect(collector.drain('session-1', loader)).toMatchObject({
       eventId: 'claude-code:msg-3',
       tokens: { inputTokens: 100, outputTokens: 20 },
     });
-    expect(loader).not.toHaveBeenCalled();
+    expect(loader).toHaveBeenCalledOnce();
   });
 });
 

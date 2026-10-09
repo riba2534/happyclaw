@@ -2067,6 +2067,14 @@ async function runQueryAttempt(
   // snapshot was observed.
   const resultUsageState = createResultUsageState();
   const assistantUsageCollector = new AssistantUsageCollector();
+  // Live assistant snapshots carry message_start's placeholder output count;
+  // the main and sidechain transcripts carry the CLI-merged final usage. The
+  // loader reads only appended bytes, so every flushed message consults it.
+  const transcriptUsageLoader = createTranscriptUsageLoader(() => {
+    const activeSessionId = newSessionId || sessionId;
+    if (!activeSessionId) return undefined;
+    return path.join(resolveTranscriptDir(), `${activeSessionId}.jsonl`);
+  });
   let assistantBatchFlushedSinceLastResult = false;
   const emitResultUsage = (
     resultMessage: Record<string, unknown>,
@@ -2092,14 +2100,6 @@ async function runQueryAttempt(
       resultUsageState,
     );
     const assistantBatches: AssistantUsageBatch[] = [];
-    // Zero-token stream snapshots (message_start placeholders from providers
-    // that only reveal usage at response completion) are backfilled from the
-    // session transcript, which carries the CLI-merged final usage.
-    const transcriptUsageLoader = createTranscriptUsageLoader(() => {
-      const activeSessionId = newSessionId || sessionId;
-      if (!activeSessionId) return undefined;
-      return path.join(resolveTranscriptDir(), `${activeSessionId}.jsonl`);
-    });
     for (;;) {
       const batch = assistantUsageCollector.drain(
         newSessionId || sessionId,
@@ -3104,6 +3104,11 @@ async function runQueryAttempt(
         // 重放消息是完整消息、不产生 partial stream_event——见到 stream_event
         // 即说明新 turn 的 LLM 调用已开始。
         sawLiveTurnActivity = true;
+        // message_delta carries the final output count of the call; record
+        // it even when the superseded reply is hidden, its usage is real.
+        assistantUsageCollector.observeStreamEvent(
+          message as unknown as Record<string, unknown>,
+        );
         if (!suppressOutputAfterInterrupt) {
           visibleOutputStarted = true;
         }
