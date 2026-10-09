@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { Loader2 } from 'lucide-react';
 
 /**
@@ -135,7 +136,7 @@ export function describeToolActivity(toolName: string): string {
   }
 }
 
-export function ToolActivityCard({
+export const ToolActivityCard = memo(function ToolActivityCard({
   tool,
   localElapsed,
 }: ToolActivityCardProps) {
@@ -176,4 +177,4 @@ export function ToolActivityCard({
       </div>
     </div>
   );
-}
+});

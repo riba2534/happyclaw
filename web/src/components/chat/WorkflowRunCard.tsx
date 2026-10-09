@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CheckCircle2,
   ChevronDown,
@@ -162,7 +162,11 @@ function AgentRow({ agent }: { agent: WorkflowAgentSnapshot }) {
   );
 }
 
-export function WorkflowRunCard({ run }: { run: WorkflowRunSnapshot }) {
+export const WorkflowRunCard = memo(function WorkflowRunCard({
+  run,
+}: {
+  run: WorkflowRunSnapshot;
+}) {
   const [expanded, setExpanded] = useState(run.status === 'running');
   const previousStatus = useRef(run.status);
   useEffect(() => {
@@ -379,4 +383,4 @@ export function WorkflowRunCard({ run }: { run: WorkflowRunSnapshot }) {
       )}
     </section>
   );
-}
+});

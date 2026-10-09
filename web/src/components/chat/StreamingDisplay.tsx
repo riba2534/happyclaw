@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronDown,
   ChevronRight,
@@ -133,7 +133,7 @@ function formatRunElapsed(seconds: number): string {
 }
 
 /** Codex-style run status: current phase plus time since the run started. */
-function RunStatus({
+const RunStatus = memo(function RunStatus({
   runtimeJid,
   phase,
 }: {
@@ -161,7 +161,7 @@ function RunStatus({
       )}
     </span>
   );
-}
+});
 
 function TaskAgentBlock({
   agent,
@@ -303,7 +303,7 @@ function TaskAgentBlock({
   );
 }
 
-function SdkTaskRuntimeBlock({
+const SdkTaskRuntimeBlock = memo(function SdkTaskRuntimeBlock({
   task,
   groupJid,
 }: {
@@ -403,16 +403,20 @@ function SdkTaskRuntimeBlock({
       )}
     </div>
   );
-}
+});
 
-function TracePanel({
-  streaming,
+// The trace and permission panels take the event list rather than the whole
+// streaming state, so they skip the re-renders caused by streamed text.
+const TracePanel = memo(function TracePanel({
+  traceEvents,
+  taskCount,
 }: {
-  streaming: import('../../stores/chat').StreamingState;
+  traceEvents: import('../../stores/chat').StreamingState['traceEvents'];
+  taskCount: number;
 }) {
   const [expanded, setExpanded] = useState(false);
   const seenTrace = new Set<string>();
-  const visibleTrace = streaming.traceEvents
+  const visibleTrace = traceEvents
     .filter((e) => e.displayLevel !== 'debug' && e.kind !== 'context')
     .filter((event) => {
       const key = `${event.kind}\u0000${event.taskId ?? ''}\u0000${event.title}\u0000${event.summary ?? ''}\u0000${event.detail ?? ''}`;
@@ -420,11 +424,7 @@ function TracePanel({
       seenTrace.add(key);
       return true;
     });
-  if (
-    visibleTrace.length === 0 &&
-    Object.keys(streaming.taskStates).length === 0
-  )
-    return null;
+  if (visibleTrace.length === 0 && taskCount === 0) return null;
 
   const groups = [
     {
@@ -500,7 +500,7 @@ function TracePanel({
       )}
     </div>
   );
-}
+});
 
 /** A single trace row. Rows carrying a `detail` (e.g. recalled memory, compaction
  *  summary) become click-to-expand so the trace stays scannable but the full
@@ -546,12 +546,12 @@ function TraceRow({
 /** Prominent red banner listing denied tool calls — a denied permission is a
  *  real signal the user should see at a glance, not something buried in the
  *  collapsed trace panel. */
-function PermissionAlert({
-  streaming,
+const PermissionAlert = memo(function PermissionAlert({
+  traceEvents,
 }: {
-  streaming: import('../../stores/chat').StreamingState;
+  traceEvents: import('../../stores/chat').StreamingState['traceEvents'];
 }) {
-  const denied = streaming.traceEvents.filter((e) => e.kind === 'permission');
+  const denied = traceEvents.filter((e) => e.kind === 'permission');
   if (denied.length === 0) return null;
   return (
     <div className="mb-2 rounded-lg bg-error/5 p-2.5 font-sans ring-1 ring-error/20">
@@ -577,7 +577,7 @@ function PermissionAlert({
       </div>
     </div>
   );
-}
+});
 
 /** Shared streaming content — used by both compact and chat modes to eliminate duplication. */
 function StreamingContent({
@@ -734,10 +734,13 @@ function StreamingContent({
       )}
 
       {/* Permission denials — surfaced prominently in red, not buried in trace */}
-      <PermissionAlert streaming={streaming} />
+      <PermissionAlert traceEvents={streaming.traceEvents} />
 
       {/* Full trace */}
-      <TracePanel streaming={streaming} />
+      <TracePanel
+        traceEvents={streaming.traceEvents}
+        taskCount={Object.keys(streaming.taskStates).length}
+      />
 
       {/* Hook */}
       {streaming.activeHook && (

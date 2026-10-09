@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { Check, Circle, ListChecks, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -12,7 +13,9 @@ interface TodoProgressPanelProps {
 }
 
 /** The agent's plan as a neutral checklist (Codex-style), progress on top. */
-export function TodoProgressPanel({ todos }: TodoProgressPanelProps) {
+export const TodoProgressPanel = memo(function TodoProgressPanel({
+  todos,
+}: TodoProgressPanelProps) {
   const completed = todos.filter((t) => t.status === 'completed').length;
   const total = todos.length;
   const progress = total > 0 ? (completed / total) * 100 : 0;
@@ -64,4 +67,4 @@ export function TodoProgressPanel({ todos }: TodoProgressPanelProps) {
       </ul>
     </div>
   );
-}
+});
