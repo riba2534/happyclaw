@@ -4,6 +4,7 @@ import {
   useEffect,
   useLayoutEffect,
   useCallback,
+  memo,
 } from 'react';
 import { toast } from 'sonner';
 import { useKeyboardHeight } from '@/hooks/useKeyboardHeight';
@@ -105,7 +106,9 @@ interface MessageInputProps {
   ) => Promise<boolean> | boolean;
 }
 
-export function MessageInput({
+// Memoized: ChatView re-renders for dialogs, panels and run status; the
+// transcript and composer only need to when their own props change.
+export const MessageInput = memo(function MessageInput({
   onSend,
   groupJid,
   disabled = false,
@@ -1301,4 +1304,4 @@ export function MessageInput({
       />
     </div>
   );
-}
+});

@@ -8,6 +8,8 @@ class WsManager {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
   private maxReconnectDelay = 30000;
+  /** Whether a socket of this page has opened before (later opens are reconnects). */
+  private openedBefore = false;
 
   connect() {
     if (
@@ -30,7 +32,11 @@ class WsManager {
     ws.onopen = () => {
       if (this.ws !== ws) return;
       this.reconnectDelay = 1000;
-      this.emit('connected', {});
+      // Listeners reconcile state missed while the socket was down; the
+      // page's first open follows the initial HTTP loads, so it says so.
+      const reconnect = this.openedBefore;
+      this.openedBefore = true;
+      this.emit('connected', { reconnect });
     };
 
     ws.onmessage = (event) => {

@@ -12,6 +12,8 @@ import { toast } from 'sonner';
 import {
   useChatStore,
   type FollowUpMode,
+  type FollowUpQueueAction,
+  type Message,
   type QueuedFollowUp,
 } from '../../stores/chat';
 import { useAuthStore } from '../../stores/auth';
@@ -63,6 +65,7 @@ const TerminalPanel = lazy(() =>
 import { ImBindingDialog } from './ImBindingDialog';
 import { SessionSidebar } from './SessionSidebar';
 import { useSessionActions } from '../../hooks/useSessionActions';
+import { useStableCallback } from '../../hooks/useStableCallback';
 import { useShellStore } from '../../stores/shell';
 import { buildConversationSessions } from '../../lib/session-presentation';
 import { showToast } from '../../utils/toast';
@@ -90,6 +93,7 @@ const TERMINAL_MAX_RATIO = 0.7;
 // Stable empty references to avoid infinite re-render loops in Zustand selectors
 const EMPTY_AGENTS: import('../../types').AgentInfo[] = [];
 const EMPTY_FOLLOW_UPS: QueuedFollowUp[] = [];
+const EMPTY_MESSAGES: Message[] = [];
 
 interface ChatViewProps {
   groupJid: string;
@@ -225,16 +229,34 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     [groupJid, setSearchParams],
   );
   const loadAgents = useChatStore((s) => s.loadAgents);
-  const agentStreaming = useChatStore((s) => s.agentStreaming);
+  // Session ids with an active query, joined: streaming deltas of any session
+  // must not re-render the whole view, only a start or stop does.
+  const activeQueryIds = useChatStore((s) =>
+    (s.agents[groupJid] ?? EMPTY_AGENTS)
+      .filter((a) => s.agentWaiting[a.id] || s.agentStreaming[a.id])
+      .map((a) => a.id)
+      .join(','),
+  );
   const { creatingSession, createSession, deleteSession } = useSessionActions();
   const renameConversation = useChatStore((s) => s.renameConversation);
   const loadAgentMessages = useChatStore((s) => s.loadAgentMessages);
   const hydrateAgentMessages = useChatStore((s) => s.hydrateAgentMessages);
   const refreshAgentMessages = useChatStore((s) => s.refreshAgentMessages);
   const sendAgentMessage = useChatStore((s) => s.sendAgentMessage);
-  const agentMessages = useChatStore((s) => s.agentMessages);
-  const agentWaiting = useChatStore((s) => s.agentWaiting);
-  const agentHasMore = useChatStore((s) => s.agentHasMore);
+  const activeAgentMessages = useChatStore((s) =>
+    activeAgentTab ? s.agentMessages[activeAgentTab] : undefined,
+  );
+  const activeAgentHasMore = useChatStore((s) =>
+    activeAgentTab ? !!s.agentHasMore[activeAgentTab] : false,
+  );
+  const activeAgentWaiting = useChatStore((s) =>
+    activeAgentTab
+      ? !!s.agentWaiting[activeAgentTab] || !!s.agentStreaming[activeAgentTab]
+      : false,
+  );
+  const activeAgentInterrupted = useChatStore((s) =>
+    activeAgentTab ? !!s.agentStreaming[activeAgentTab]?.interrupted : false,
+  );
 
   const markChatRead = useChatStore((s) => s.markChatRead);
 
@@ -383,7 +405,11 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     restoreActiveState();
   }, [restoreActiveState]);
   useEffect(() => {
-    const unsub = wsManager.on('connected', () => {
+    const unsub = wsManager.on('connected', (data: { reconnect?: boolean }) => {
+      // The first open of a page follows the mount-time loads above; only a
+      // reconnect can have missed events. A forced agent reload on the first
+      // open fetched the whole session list a second time on every page load.
+      if (!data?.reconnect) return;
       restoreActiveState();
       // Reconcile agent list with backend truth — picks up any agent_status
       // events that were missed during WS disconnection.  Force-refresh
@@ -422,11 +448,10 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     );
   const conversationAgents = useMemo(
     () =>
-      buildConversationSessions(
-        agents,
-        (id) => !!agentWaiting[id] || !!agentStreaming[id],
+      buildConversationSessions(agents, (id) =>
+        activeQueryIds.split(',').includes(id),
       ),
-    [agents, agentStreaming, agentWaiting],
+    [agents, activeQueryIds],
   );
   const mainConversationLabel = group?.is_my_home ? '直接对话' : '当前对话';
   const currentContextName =
@@ -434,9 +459,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
       ? activeAgent.name
       : mainConversationLabel;
   const currentContextWaiting =
-    activeAgentTab && isConversationTab
-      ? !!agentWaiting[activeAgentTab] || !!agentStreaming[activeAgentTab]
-      : isWaiting;
+    activeAgentTab && isConversationTab ? activeAgentWaiting : isWaiting;
   const agentProfileLabel = group?.agent_profile_name
     ? getAgentProfileDisplayName(group.agent_profile_name)
     : group?.is_home
@@ -510,7 +533,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   // 「用户是否仍停留在这个 conversation tab」。
   useEffect(() => {
     if (!activeAgentTab || !isConversationTab) return;
-    if (agentMessages[activeAgentTab]) return;
+    if (activeAgentMessages) return;
     const agentId = activeAgentTab;
     void (async () => {
       await hydrateAgentMessages(groupJid, agentId);
@@ -523,7 +546,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     groupJid,
     hydrateAgentMessages,
     loadAgentMessages,
-    agentMessages,
+    activeAgentMessages,
   ]);
 
   // 监听 WebSocket 流式事件
@@ -590,8 +613,8 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
 
   useEffect(() => {
     void loadFollowUps(followUpChatJid);
-    const unsub = wsManager.on('connected', () => {
-      void loadFollowUps(followUpChatJid);
+    const unsub = wsManager.on('connected', (data: { reconnect?: boolean }) => {
+      if (data?.reconnect) void loadFollowUps(followUpChatJid);
     });
     return () => {
       unsub();
@@ -638,6 +661,44 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
       loadMessages(groupJid, true);
     }
   };
+
+  // Stable handlers for the memoized transcript and composer: this view also
+  // re-renders for dialogs, panels and run status, which must not re-render
+  // a long transcript or the composer.
+  const loadMoreMain = useStableCallback(handleLoadMore);
+  const loadMoreActiveAgent = useStableCallback(() => {
+    if (activeAgentTab) void loadAgentMessages(groupJid, activeAgentTab, true);
+  });
+  const sendMain = useStableCallback(handleSend);
+  const sendActiveAgent = useStableCallback(handleActiveAgentSend);
+  const sendStarterMain = useStableCallback((content: string) => {
+    void handleSend(content);
+  });
+  const sendStarterActiveAgent = useStableCallback((content: string) => {
+    void handleActiveAgentSend(content);
+  });
+  const stopMain = useStableCallback(() => interruptQuery(groupJid));
+  const stopActiveAgent = useStableCallback(() =>
+    interruptQuery(`${groupJid}#agent:${activeAgentTab}`),
+  );
+  const handleFollowUpAction = useStableCallback(
+    (item: QueuedFollowUp, action: FollowUpQueueAction, content?: string) =>
+      actOnFollowUp(
+        followUpChatJid,
+        item.id,
+        action,
+        item.delivery_run_id,
+        content,
+      ),
+  );
+  const requestResetMain = useStableCallback(() => {
+    setResetAgentId(null);
+    setShowResetConfirm(true);
+  });
+  const requestResetActiveAgent = useStableCallback(() => {
+    setResetAgentId(activeAgentTab);
+    setShowResetConfirm(true);
+  });
 
   const handleResetSession = async () => {
     setResetLoading(true);
@@ -1146,12 +1207,10 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
               <>
                 <MessageList
                   key={`conv-${activeAgentTab}`}
-                  messages={agentMessages[activeAgentTab] || []}
+                  messages={activeAgentMessages || EMPTY_MESSAGES}
                   loading={false}
-                  hasMore={!!agentHasMore[activeAgentTab]}
-                  onLoadMore={() =>
-                    loadAgentMessages(groupJid, activeAgentTab, true)
-                  }
+                  hasMore={activeAgentHasMore}
+                  onLoadMore={loadMoreActiveAgent}
                   scrollTrigger={scrollTrigger}
                   groupJid={groupJid}
                   isWaiting={currentContextWaiting}
@@ -1162,38 +1221,20 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                   agentAvatarEmoji={group?.agent_profile_avatar_emoji}
                   agentAvatarColor={group?.agent_profile_avatar_color}
                   interactionMode={interactionMode}
-                  onSend={(content) => {
-                    handleActiveAgentSend(content);
-                  }}
+                  onSend={sendStarterActiveAgent}
                 />
                 <MessageInput
                   placeholder={`向 ${agentProfileLabel} 发送消息…`}
-                  onSend={handleActiveAgentSend}
+                  onSend={sendActiveAgent}
                   groupJid={groupJid}
                   contextLabel={currentContextName}
                   isRunning={currentContextWaiting}
-                  onStop={
-                    agentStreaming[activeAgentTab]?.interrupted
-                      ? undefined
-                      : () =>
-                          interruptQuery(`${groupJid}#agent:${activeAgentTab}`)
-                  }
+                  onStop={activeAgentInterrupted ? undefined : stopActiveAgent}
                   queuedFollowUps={queuedFollowUps}
-                  onFollowUpAction={(item, action, content) =>
-                    actOnFollowUp(
-                      followUpChatJid,
-                      item.id,
-                      action,
-                      item.delivery_run_id,
-                      content,
-                    )
-                  }
+                  onFollowUpAction={handleFollowUpAction}
                   onResetSession={
                     canModifyWorkspaceConfig
-                      ? () => {
-                          setResetAgentId(activeAgentTab);
-                          setShowResetConfirm(true);
-                        }
+                      ? requestResetActiveAgent
                       : undefined
                   }
                 />
@@ -1202,10 +1243,10 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
               <>
                 <MessageList
                   key={`main-${groupJid}`}
-                  messages={groupMessages || []}
+                  messages={groupMessages || EMPTY_MESSAGES}
                   loading={loading}
                   hasMore={hasMoreMessages}
-                  onLoadMore={handleLoadMore}
+                  onLoadMore={loadMoreMain}
                   scrollTrigger={scrollTrigger}
                   groupJid={groupJid}
                   isWaiting={isWaiting}
@@ -1214,33 +1255,18 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                   agentAvatarEmoji={group?.agent_profile_avatar_emoji}
                   agentAvatarColor={group?.agent_profile_avatar_color}
                   interactionMode={interactionMode}
-                  onSend={(content) => handleSend(content)}
+                  onSend={sendStarterMain}
                 />
                 <MessageInput
                   placeholder={`向 ${agentProfileLabel} 发送消息…`}
-                  onSend={handleSend}
+                  onSend={sendMain}
                   groupJid={groupJid}
                   isRunning={currentContextWaiting}
-                  onStop={
-                    mainInterrupted ? undefined : () => interruptQuery(groupJid)
-                  }
+                  onStop={mainInterrupted ? undefined : stopMain}
                   queuedFollowUps={queuedFollowUps}
-                  onFollowUpAction={(item, action, content) =>
-                    actOnFollowUp(
-                      followUpChatJid,
-                      item.id,
-                      action,
-                      item.delivery_run_id,
-                      content,
-                    )
-                  }
+                  onFollowUpAction={handleFollowUpAction}
                   onResetSession={
-                    canModifyWorkspaceConfig
-                      ? () => {
-                          setResetAgentId(null);
-                          setShowResetConfirm(true);
-                        }
-                      : undefined
+                    canModifyWorkspaceConfig ? requestResetMain : undefined
                   }
                   onToggleTerminal={
                     canUseTerminal ? handleTerminalToggle : undefined

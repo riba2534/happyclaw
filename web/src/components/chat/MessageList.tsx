@@ -5,6 +5,7 @@ import {
   useState,
   useMemo,
   useCallback,
+  memo,
 } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Message, useChatStore } from '../../stores/chat';
@@ -84,7 +85,9 @@ const quickPrompts = [
   { icon: Wrench, title: '调试问题', desc: '帮我定位和修复一个 Bug' },
 ];
 
-export function MessageList({
+// Memoized: ChatView re-renders for dialogs, panels and run status; the
+// transcript and composer only need to when their own props change.
+export const MessageList = memo(function MessageList({
   messages,
   loading,
   hasMore,
@@ -881,4 +884,4 @@ export function MessageList({
       )}
     </div>
   );
-}
+});
