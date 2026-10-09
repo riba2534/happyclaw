@@ -1,15 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
-import { Loader2, Trash2, Upload, User } from 'lucide-react';
+import { Loader2, Trash2, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { ColorPicker } from '@/components/common/ColorPicker';
 import { EmojiAvatar } from '@/components/common/EmojiAvatar';
 import { EmojiPicker } from '@/components/common/EmojiPicker';
 import { useAuthStore } from '../../stores/auth';
-import { SettingsCard as Section } from './SettingsCard';
+import {
+  SettingsField,
+  SettingsGroup,
+  SettingsRow,
+  SettingsSection,
+} from './SettingsLayout';
 import { getErrorMessage } from './types';
 
 export function ProfileSection() {
@@ -96,13 +100,9 @@ export function ProfileSection() {
   };
 
   return (
-    <div className="space-y-4">
-      <Section
-        icon={User}
-        title="个人资料"
-        desc="用于标识当前登录用户，不会改变 HappyClaw 或自定义智能体的名称"
-      >
-        <div className="flex items-center gap-4">
+    <div className="space-y-8">
+      <SettingsGroup>
+        <div className="flex items-center gap-3 px-4 py-4">
           <EmojiAvatar
             imageUrl={avatarUrl}
             emoji={avatarEmoji}
@@ -111,49 +111,47 @@ export function ProfileSection() {
             size="lg"
           />
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-medium text-foreground">
+            <div className="truncate text-body font-medium text-foreground">
               {displayName || username || '未设置'}
             </div>
-            <div className="mt-0.5 text-xs text-muted-foreground">
+            <div className="mt-0.5 text-caption text-muted-foreground">
               {currentUser?.role === 'admin' ? '管理员' : '普通成员'} ·{' '}
               {currentUser?.status === 'active' ? '已启用' : '已禁用'}
             </div>
           </div>
         </div>
-
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div>
-            <Label
-              htmlFor="profile-username"
-              className="mb-1 text-xs text-muted-foreground"
-            >
-              登录用户名
-            </Label>
+        <SettingsRow
+          label="登录用户名"
+          htmlFor="profile-username"
+          control={
             <Input
               id="profile-username"
               value={username}
               onChange={(event) => setUsername(event.target.value)}
               autoComplete="username"
+              className="sm:w-64"
             />
-          </div>
-          <div>
-            <Label
-              htmlFor="profile-display-name"
-              className="mb-1 text-xs text-muted-foreground"
-            >
-              显示名称
-            </Label>
+          }
+        />
+        <SettingsRow
+          label="显示名称"
+          htmlFor="profile-display-name"
+          control={
             <Input
               id="profile-display-name"
               value={displayName}
               onChange={(event) => setDisplayName(event.target.value)}
+              className="sm:w-64"
             />
-          </div>
-        </div>
+          }
+        />
+      </SettingsGroup>
 
-        <div className="space-y-3">
-          <Label className="text-xs text-muted-foreground">头像</Label>
-          <div>
+      <SettingsSection
+        title="头像"
+        description="jpg、png、gif 或 webp，最大 3MB；图片优先于 Emoji 显示。"
+        actions={
+          <>
             <input
               ref={avatarInputRef}
               type="file"
@@ -161,69 +159,58 @@ export function ProfileSection() {
               className="hidden"
               onChange={handleAvatarUpload}
             />
-            <div className="flex flex-wrap items-center gap-2">
+            {avatarUrl && (
               <Button
                 type="button"
-                variant="outline"
+                variant="ghost"
                 size="sm"
-                disabled={uploading}
-                onClick={() => avatarInputRef.current?.click()}
+                onClick={handleRemoveAvatar}
               >
-                {uploading ? (
-                  <Loader2 className="size-3.5 animate-spin" />
-                ) : (
-                  <Upload className="size-3.5" />
-                )}
-                上传图片
+                <Trash2 className="size-3.5" />
+                移除图片
               </Button>
-              {avatarUrl && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleRemoveAvatar}
-                >
-                  <Trash2 className="size-3.5" />
-                  移除图片
-                </Button>
+            )}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={uploading}
+              onClick={() => avatarInputRef.current?.click()}
+            >
+              {uploading ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Upload className="size-3.5" />
               )}
-            </div>
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              jpg、png、gif 或 webp，最大 3MB；图片优先于 Emoji 显示。
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div>
-              <Label className="mb-1.5 text-[11px] text-muted-foreground">
-                Emoji
-              </Label>
+              上传图片
+            </Button>
+          </>
+        }
+      >
+        <SettingsGroup>
+          <div className="grid gap-6 px-4 py-4 sm:grid-cols-2">
+            <SettingsField label="Emoji">
               <EmojiPicker
                 value={avatarEmoji ?? undefined}
                 onChange={setAvatarEmoji}
               />
-            </div>
-            <div>
-              <Label className="mb-1.5 text-[11px] text-muted-foreground">
-                背景色
-              </Label>
+            </SettingsField>
+            <SettingsField label="背景色">
               <ColorPicker
                 value={avatarColor ?? undefined}
                 onChange={setAvatarColor}
               />
-            </div>
+            </SettingsField>
           </div>
-        </div>
+        </SettingsGroup>
+      </SettingsSection>
 
-        <Button
-          onClick={handleSave}
-          disabled={saving || !username.trim()}
-          size="sm"
-        >
+      <div className="flex justify-end">
+        <Button onClick={handleSave} disabled={saving || !username.trim()}>
           {saving && <Loader2 className="size-4 animate-spin" />}
           保存个人资料
         </Button>
-      </Section>
+      </div>
     </div>
   );
 }
