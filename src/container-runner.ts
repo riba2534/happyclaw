@@ -2422,6 +2422,11 @@ export function buildContainerArgs(
   containerImage = CONTAINER_IMAGE,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
+  // Hardening from the Agent SDK secure-deployment guidance that this image
+  // tolerates: the entrypoint drops root with runuser and Chromium runs with
+  // --no-sandbox, so nothing needs a setuid privilege gain; the pids limit
+  // only stops runaway forks and stays far above browser and build loads.
+  args.push('--security-opt', 'no-new-privileges', '--pids-limit', '4096');
 
   // Set timezone so container Node.js processes use local time (Asia/Shanghai)
   args.push('-e', `TZ=${tz}`);
