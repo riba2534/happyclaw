@@ -122,6 +122,15 @@ export type QueryFinishReason =
 
 const MAX_RETRIES = 5;
 const BASE_RETRY_MS = 5000;
+const RETRY_JITTER_RATIO = 0.2;
+let retryJitterSource: () => number = Math.random;
+
+/** Test hook: make retry delays deterministic (0 = exact base backoff). */
+export function setRetryJitterSourceForTesting(
+  source: (() => number) | null,
+): void {
+  retryJitterSource = source ?? Math.random;
+}
 const RUNNER_TEARDOWN_TIMEOUT_MS = 15_000;
 
 interface GroupState {
@@ -3050,7 +3059,13 @@ export class GroupQueue {
       return;
     }
 
-    const delayMs = BASE_RETRY_MS * Math.pow(2, state.retryCount - 1);
+    // Up to +20% jitter: a provider outage fails many workspaces at once, and
+    // identical delays would replay them all in the same instant.
+    const delayMs = Math.round(
+      BASE_RETRY_MS *
+        Math.pow(2, state.retryCount - 1) *
+        (1 + RETRY_JITTER_RATIO * retryJitterSource()),
+    );
     logger.info(
       {
         groupJid,

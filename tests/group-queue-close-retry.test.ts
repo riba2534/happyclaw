@@ -18,7 +18,8 @@ vi.mock('../src/runtime-config.js', () => ({
 }));
 vi.mock('../src/db.js', () => ({ getTaskById: () => undefined }));
 
-const { GroupQueue } = await import('../src/group-queue.js');
+const { GroupQueue, setRetryJitterSourceForTesting } =
+  await import('../src/group-queue.js');
 
 const JID = 'web:close-retry';
 const flushPromises = async () => {
@@ -31,11 +32,14 @@ let queue: InstanceType<typeof GroupQueue>;
 
 beforeEach(() => {
   vi.useFakeTimers();
+  // Exact base backoff; jitter bounds are covered separately below.
+  setRetryJitterSourceForTesting(() => 0);
   queue = new GroupQueue();
 });
 
 afterEach(async () => {
   await queue.shutdown(0);
+  setRetryJitterSourceForTesting(null);
   vi.useRealTimers();
 });
 
@@ -298,5 +302,25 @@ describe('GroupQueue close outcome retry lifecycle', () => {
     await flushPromises();
     expect(taskRuns).toBe(1);
     expect(queue.getRetryCount(agentJid)).toBe(0);
+  });
+});
+
+describe('GroupQueue retry jitter', () => {
+  test('delays a retry by at most 20% beyond the base backoff', async () => {
+    setRetryJitterSourceForTesting(() => 1);
+    let runs = 0;
+    queue.setProcessMessagesFn(async () => {
+      runs += 1;
+      return runs > 1;
+    });
+    queue.enqueueMessageCheck(JID);
+    await flushPromises();
+    expect(runs).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(5_999);
+    expect(runs).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await flushPromises();
+    expect(runs).toBe(2);
   });
 });

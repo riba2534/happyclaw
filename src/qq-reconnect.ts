@@ -49,6 +49,17 @@ export function getReconnectDelay(
   return delays[idx]!;
 }
 
+/**
+ * Spread reconnects of many accounts (or many workspaces after one network
+ * blip) by up to ±20% so they do not hit the gateway in lockstep.
+ */
+export function withReconnectJitter(
+  delayMs: number,
+  random: () => number = Math.random,
+): number {
+  return Math.max(0, Math.round(delayMs * (0.8 + 0.4 * random())));
+}
+
 export type CloseCodeAction =
   | { kind: 'normal' }
   | { kind: 'refresh-token' }

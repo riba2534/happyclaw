@@ -34,6 +34,7 @@ import { ProcessingLock, isStale } from './im-safety/index.js';
 import {
   isTransientError,
   getReconnectDelay,
+  withReconnectJitter,
   classifyCloseCode,
 } from './qq-reconnect.js';
 import {
@@ -666,6 +667,10 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
   let lastConnectTime = 0;
   let keepaliveMode = false;
   let lastErrorIsTransient = false;
+  // Transient failures do not spend the attempt budget, but they still back
+  // off: DNS/refused errors fail instantly, and a fixed 1s retry polled the
+  // gateway once a second per account for the whole outage.
+  let transientAttempts = 0;
 
   // Message deduplication
   // LRU deduplication cache（共享 helper）
@@ -1595,6 +1600,7 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
         'QQ watchdog detected stale disconnected state, kicking fresh reconnect',
       );
       reconnectAttempts = 0;
+      transientAttempts = 0;
       keepaliveMode = false;
       lastErrorIsTransient = false;
       scheduleReconnect(opts);
@@ -1636,6 +1642,7 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
         connectionEstablished = true;
         lastConnectTime = Date.now();
         reconnectAttempts = 0;
+        transientAttempts = 0;
         keepaliveMode = false;
         if (!settled) {
           settled = true;
@@ -1892,10 +1899,15 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
     } else if (keepaliveMode) {
       delay = KEEPALIVE_INTERVAL_MS;
     } else {
-      delay = getReconnectDelay(reconnectAttempts);
       // Transient errors (DNS hiccups, brief TCP resets) shouldn't burn our
-      // attempt budget — otherwise a 3-minute network blip kills the bot.
-      if (!lastErrorIsTransient) {
+      // attempt budget — otherwise a 3-minute network blip kills the bot —
+      // but they walk the same delay ladder through their own counter.
+      delay = withReconnectJitter(
+        getReconnectDelay(Math.max(reconnectAttempts, transientAttempts)),
+      );
+      if (lastErrorIsTransient) {
+        transientAttempts++;
+      } else {
         reconnectAttempts++;
       }
     }
@@ -1903,7 +1915,13 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
     lastErrorIsTransient = false;
 
     logger.info(
-      { delay, attempt: reconnectAttempts, keepaliveMode, wasTransient },
+      {
+        delay,
+        attempt: reconnectAttempts,
+        transientAttempts,
+        keepaliveMode,
+        wasTransient,
+      },
       'QQ scheduling reconnect',
     );
     reconnectTimer = setTimeout(async () => {
