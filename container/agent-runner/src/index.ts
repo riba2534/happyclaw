@@ -104,11 +104,11 @@ import {
   type IpcDeliveryReceipt,
   type IpcInputMessage,
 } from './ipc-delivery.js';
+import { isExtendedContextModel } from './context-window.js';
 import {
-  isExtendedContextModel,
-  resolveAutoCompactWindow,
-  resolveLegacyAutoCompactWindow,
-} from './context-window.js';
+  resolveAutoCompactEnv,
+  type ClaudeRuntimeEnv,
+} from './claude-runtime-env.js';
 import {
   resolveClaudeProviderRuntime,
   resolveClaudeQueryModelRuntime,
@@ -2743,24 +2743,12 @@ async function runQueryAttempt(
     };
   }
 
-  // No override = SDK model-aware default: normally 200K; [1m] requests 1M.
-  // Percentage policy takes precedence over the legacy absolute-token setting.
-  const autoCompactPercentage = parseInt(
-    process.env.AUTO_COMPACT_PERCENTAGE ?? '0',
-    10,
-  );
-  const percentageWindow = resolveAutoCompactWindow(
-    queryModelRuntime.model,
-    autoCompactPercentage,
-  );
-  const legacyAutoCompactWindow = parseInt(
-    process.env.AUTO_COMPACT_WINDOW ?? '0',
-    10,
-  );
-  const safeLegacyAutoCompactWindow = resolveLegacyAutoCompactWindow(
-    queryModelRuntime.model,
-    legacyAutoCompactWindow,
-  );
+  // Auto-compaction is configured through Claude Code's own environment
+  // variables: they outrank the `autoCompactWindow` setting and apply to the
+  // window Claude Code resolved for the model, 1M-native models included.
+  const claudeRuntimeEnv: ClaudeRuntimeEnv = {
+    ...resolveAutoCompactEnv(process.env),
+  };
   const flagSettings: Record<string, unknown> = {};
   const claudeMdExcludes = resolveManagedHostClaudeMdExcludes({
     executionMode: contextAuditBase.executionMode,
@@ -2772,16 +2760,6 @@ async function runQueryAttempt(
   if (claudeMdExcludes.length > 0) {
     flagSettings.claudeMdExcludes = claudeMdExcludes;
     contextAuditBase.claudeMdExcludes = claudeMdExcludes;
-  }
-  if (percentageWindow !== undefined) {
-    flagSettings.autoCompactWindow = percentageWindow;
-  } else if (safeLegacyAutoCompactWindow !== undefined) {
-    flagSettings.autoCompactWindow = safeLegacyAutoCompactWindow;
-    if (safeLegacyAutoCompactWindow !== legacyAutoCompactWindow) {
-      log(
-        `[WARN] AUTO_COMPACT_WINDOW=${legacyAutoCompactWindow} exceeds the safe window for ${queryModelRuntime.model}; clamped to ${safeLegacyAutoCompactWindow}`,
-      );
-    }
   }
   // Resolve the actual claude CLI path for the SDK.
   // Container builds remove the SDK's duplicate native optionalDependencies,
@@ -2863,10 +2841,19 @@ async function runQueryAttempt(
         ? `Agent effort override: ${agentEffort}`
         : 'Agent effort: inherit Provider/SDK default',
     );
+    if (Object.keys(claudeRuntimeEnv).length > 0) {
+      log(
+        `Claude runtime env: ${Object.entries(claudeRuntimeEnv)
+          .map(([key, value]) => `${key}=${value}`)
+          .join(' ')}`,
+      );
+    }
     const sdkCompat = withHappyClawSubagentContract({
       ...(pathToClaudeCodeExecutable && { pathToClaudeCodeExecutable }),
       ...queryModelRuntime.queryModelOptions,
       cwd: WORKSPACE_GROUP,
+      // `env` replaces the child environment, so it starts from ours.
+      env: { ...process.env, ...claudeRuntimeEnv },
       resume: sessionId,
       ...(sessionId && resumeAt ? { resumeSessionAt: resumeAt } : {}),
       systemPrompt,

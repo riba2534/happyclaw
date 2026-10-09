@@ -1,37 +1,72 @@
 import { describe, expect, test } from 'vitest';
 
-import {
-  isExtendedContextModel,
-  resolveAutoCompactWindow,
-  resolveLegacyAutoCompactWindow,
-  resolveModelContextWindow,
-} from '../container/agent-runner/src/context-window.js';
+import { resolveAutoCompactEnv } from '../container/agent-runner/src/claude-runtime-env.js';
+import { isExtendedContextModel } from '../container/agent-runner/src/context-window.js';
 
-describe('Claude model-aware context compression', () => {
-  test('uses 200K for ordinary models and 1M for [1m] models', () => {
-    expect(resolveModelContextWindow('claude-sonnet-4-5')).toBe(200_000);
-    expect(resolveModelContextWindow('model_hub/glm-5.2[1m]')).toBe(1_000_000);
-    expect(resolveModelContextWindow('model[1m][1m]')).toBe(1_000_000);
+describe('extended context detection', () => {
+  test('recognises only an explicit [1m] suffix', () => {
+    expect(isExtendedContextModel('model_hub/glm-5.2[1m]')).toBe(true);
+    expect(isExtendedContextModel('model[1m][1m]')).toBe(true);
     expect(isExtendedContextModel('model[1M]')).toBe(true);
     expect(isExtendedContextModel('model[1m] trailing')).toBe(false);
+    expect(isExtendedContextModel('claude-sonnet-5')).toBe(false);
+  });
+});
+
+// The runner used to turn these policies into the `autoCompactWindow`
+// setting, computed against an assumed 200K window. Third-party providers set
+// CLAUDE_CODE_AUTO_COMPACT_WINDOW, which outranks that setting, and 1M-native
+// models made the 200K assumption compact at a fraction of the real window.
+describe('auto-compact policy to Claude Code environment', () => {
+  test('a percentage becomes CLAUDE_AUTOCOMPACT_PCT_OVERRIDE and wins over a window', () => {
+    expect(
+      resolveAutoCompactEnv({
+        AUTO_COMPACT_PERCENTAGE: '80',
+        AUTO_COMPACT_WINDOW: '500000',
+        CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000',
+      }),
+    ).toEqual({ CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '80' });
   });
 
-  test('clamps legacy fixed thresholds to the active model window', () => {
-    expect(resolveLegacyAutoCompactWindow('sonnet', 800_000)).toBe(180_000);
-    expect(resolveLegacyAutoCompactWindow('sonnet', 120_000)).toBe(120_000);
-    expect(resolveLegacyAutoCompactWindow('glm[1M]', 950_000)).toBe(900_000);
-    expect(resolveLegacyAutoCompactWindow('glm[1m]', 800_000)).toBe(800_000);
-    expect(resolveLegacyAutoCompactWindow('sonnet', 0)).toBeUndefined();
+  test('an absolute window never exceeds the provider cap', () => {
+    expect(
+      resolveAutoCompactEnv({
+        AUTO_COMPACT_WINDOW: '500000',
+        CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000',
+      }),
+    ).toEqual({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000' });
+    expect(
+      resolveAutoCompactEnv({
+        AUTO_COMPACT_WINDOW: '150000',
+        CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000',
+      }),
+    ).toEqual({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: '150000' });
   });
 
-  test('converts the same percentage relative to the effective model window', () => {
-    expect(resolveAutoCompactWindow('claude-sonnet-4-5', 80)).toBe(160_000);
-    expect(resolveAutoCompactWindow('glm-5.2[1m]', 80)).toBe(800_000);
+  test('an absolute window applies as is without a provider cap', () => {
+    expect(resolveAutoCompactEnv({ AUTO_COMPACT_WINDOW: '800000' })).toEqual({
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: '800000',
+    });
   });
 
-  test('rejects percentages outside the supported safety range', () => {
-    expect(resolveAutoCompactWindow('claude-sonnet-4-5', 49)).toBeUndefined();
-    expect(resolveAutoCompactWindow('claude-sonnet-4-5', 91)).toBeUndefined();
-    expect(resolveAutoCompactWindow('claude-sonnet-4-5', 80.5)).toBeUndefined();
+  test('out-of-range percentages fall back to the window policy', () => {
+    for (const percentage of ['49', '91', '80.5', 'abc']) {
+      expect(
+        resolveAutoCompactEnv({
+          AUTO_COMPACT_PERCENTAGE: percentage,
+          AUTO_COMPACT_WINDOW: '300000',
+        }),
+      ).toEqual({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: '300000' });
+    }
+  });
+
+  test('no policy leaves the provider and model defaults untouched', () => {
+    expect(
+      resolveAutoCompactEnv({
+        AUTO_COMPACT_PERCENTAGE: '0',
+        AUTO_COMPACT_WINDOW: '0',
+        CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000',
+      }),
+    ).toEqual({});
   });
 });

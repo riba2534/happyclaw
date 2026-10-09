@@ -139,6 +139,33 @@ describe('buildClaudeEnvLines', () => {
     expect(lines).toContain('API_TIMEOUT_MS=3000000');
   });
 
+  test('defaults the compact window to 1M only for 1M-native or [1m] models', () => {
+    const windowFor = (anthropicModel: string) =>
+      buildClaudeEnvLines(config({ anthropicModel }), NO_CUSTOM_ENV).find(
+        (line) => line.startsWith('CLAUDE_CODE_AUTO_COMPACT_WINDOW='),
+      );
+    for (const model of [
+      'claude-sonnet-5',
+      'anthropic/claude-sonnet-5-20260101',
+      'claude-opus-4-7',
+      'us.anthropic.claude-opus-5-5-v1:0',
+      'claude-haiku-5-5',
+      'claude-fable-5-1',
+      'claude-opus-4-6[1m]',
+    ]) {
+      expect(windowFor(model)).toBe('CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000');
+    }
+    for (const model of [
+      'claude-opus-4-6',
+      'claude-haiku-4-5-20251001',
+      'claude-3-5-sonnet-20241022',
+      'glm-5.2',
+      'k3',
+    ]) {
+      expect(windowFor(model)).toBe('CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000');
+    }
+  });
+
   test('uses defaults but lets provider settings override third-party values', () => {
     const lines = buildClaudeEnvLines(config({ anthropicModel: 'k3' }), {
       CLAUDE_CODE_AUTO_COMPACT_WINDOW: '999999',
