@@ -584,6 +584,9 @@ function enforcePreMigrationBackup(dbPath: string): void {
   }
 }
 
+const FK_CHECK_CLEAN_AT_KEY = 'foreign_key_check_clean_at';
+const FK_CHECK_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 export function initDatabase(
   options: { requireCurrentSchema?: boolean } = {},
 ): void {
@@ -638,39 +641,67 @@ export function initDatabase(
   // safe and keeps enforcement on. Any other violation class (e.g. billing
   // rows deliberately preserved for operator review) still resets enforcement
   // to OFF, because turning it on with violations would refuse the next write.
+  //
+  // The check scans every FK child table (278ms at 300k messages with a warm
+  // page cache, a full read of the file when cold), so it runs only after a
+  // schema change, after a check that found violations, or once a week.
+  // While enforcement is on SQLite refuses new violations, so a clean result
+  // stays valid until something switches enforcement off.
+  const lastCleanCheck = tableExists('router_state')
+    ? getRouterStateInternal(FK_CHECK_CLEAN_AT_KEY)
+    : undefined;
+  const fkCheckFresh =
+    rawSchemaVersionBeforeInit === String(CURRENT_SCHEMA_VERSION) &&
+    lastCleanCheck !== undefined &&
+    Date.now() - Date.parse(lastCleanCheck) < FK_CHECK_MAX_AGE_MS;
   try {
     db.exec('PRAGMA foreign_keys = ON');
-    let violations = prepareCached('PRAGMA foreign_key_check').all() as Array<{
-      table: string;
-      rowid: number;
-      parent: string;
-      fkid: number;
-    }>;
-    const messageOrphans = violations.filter(
-      (v) => v.table === 'messages' && v.parent === 'chats',
-    );
-    if (messageOrphans.length > 0 && tableExists('chats')) {
-      const repaired = prepareCached(
-        'DELETE FROM messages WHERE chat_jid NOT IN (SELECT jid FROM chats)',
-      ).run().changes;
-      logger.info(
-        { repaired },
-        'Removed orphaned messages left behind by an interrupted chat deletion',
-      );
-      violations = prepareCached(
+    if (!fkCheckFresh) {
+      let violations = prepareCached(
         'PRAGMA foreign_key_check',
-      ).all() as typeof violations;
-    }
-    if (violations.length > 0) {
-      const summary = violations
-        .slice(0, 10)
-        .map((v) => `${v.table} → ${v.parent}`)
-        .join(', ');
-      logger.warn(
-        { violationCount: violations.length, sample: summary },
-        'Foreign-key violations detected; disabling enforcement to avoid blocking writes. Clean up orphans (PRAGMA foreign_key_check) and restart to re-enable.',
+      ).all() as Array<{
+        table: string;
+        rowid: number;
+        parent: string;
+        fkid: number;
+      }>;
+      const messageOrphans = violations.filter(
+        (v) => v.table === 'messages' && v.parent === 'chats',
       );
-      db.exec('PRAGMA foreign_keys = OFF');
+      if (messageOrphans.length > 0 && tableExists('chats')) {
+        const repaired = prepareCached(
+          'DELETE FROM messages WHERE chat_jid NOT IN (SELECT jid FROM chats)',
+        ).run().changes;
+        logger.info(
+          { repaired },
+          'Removed orphaned messages left behind by an interrupted chat deletion',
+        );
+        violations = prepareCached(
+          'PRAGMA foreign_key_check',
+        ).all() as typeof violations;
+      }
+      if (violations.length > 0) {
+        const summary = violations
+          .slice(0, 10)
+          .map((v) => `${v.table} → ${v.parent}`)
+          .join(', ');
+        logger.warn(
+          { violationCount: violations.length, sample: summary },
+          'Foreign-key violations detected; disabling enforcement to avoid blocking writes. Clean up orphans (PRAGMA foreign_key_check) and restart to re-enable.',
+        );
+        db.exec('PRAGMA foreign_keys = OFF');
+      }
+      if (tableExists('router_state')) {
+        if (violations.length === 0) {
+          prepareCached(
+            'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
+          ).run(FK_CHECK_CLEAN_AT_KEY, new Date().toISOString());
+        } else {
+          prepareCached('DELETE FROM router_state WHERE key = ?').run(
+            FK_CHECK_CLEAN_AT_KEY,
+          );
+        }
+      }
     }
   } catch (err) {
     logger.error({ err }, 'Failed to enable foreign-key enforcement');
