@@ -7,12 +7,35 @@ import {
   Check,
   Trash2,
   Eye,
-  Loader2,
+  Plus,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { useBillingStore, type RedeemCode } from '../../stores/billing';
 import { useCurrency } from './utils';
-import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Spinner } from '@/components/ui/spinner';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  DataTable,
+  EmptyState,
+  IconButton,
+  SearchInput,
+  type DataTableColumn,
+} from '@/components/common';
+import { SettingsSection } from '@/components/settings/SettingsLayout';
+import { confirmDialog } from '@/stores/confirm';
 import RedeemCodeCreateDialog from './RedeemCodeCreateDialog';
 
 const TYPE_LABELS: Record<string, string> = {
@@ -61,7 +84,13 @@ export default function AdminRedeemCodesList() {
   };
 
   const handleDelete = async (code: RedeemCode) => {
-    if (!confirm(`确定删除兑换码 ${code.code}？`)) return;
+    const confirmed = await confirmDialog({
+      title: '删除兑换码',
+      message: `确定删除兑换码 ${code.code}？`,
+      confirmText: '删除',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
     await deleteRedeemCode(code.code);
   };
 
@@ -86,180 +115,249 @@ export default function AdminRedeemCodesList() {
     try {
       await exportRedeemCodesCSV();
     } catch {
-      alert('导出失败');
+      toast.error('导出失败');
     }
   };
 
-  return (
-    <div className="space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <h3 className="font-semibold flex items-center gap-2">
-          <Gift className="w-5 h-5 text-primary" />
-          兑换码管理
-        </h3>
-        <div className="flex items-center gap-2">
-          <Button size="sm" onClick={() => setShowCreate(true)}>
-            创建兑换码
-          </Button>
-          <Button variant="outline" size="sm" onClick={handleExport}>
-            <Download className="w-4 h-4" />
-            CSV 导出
-          </Button>
+  const columns: DataTableColumn<RedeemCode>[] = [
+    {
+      key: 'code',
+      header: '兑换码',
+      cell: (code) => (
+        <div className="min-w-0">
+          <code className="font-mono text-label text-foreground">
+            {code.code}
+          </code>
+          {code.notes && (
+            <div className="mt-0.5 max-w-64 truncate text-caption text-muted-foreground">
+              {code.notes}
+            </div>
+          )}
+          <div className="mt-1 flex items-center gap-1.5 text-caption tabular-nums text-muted-foreground sm:hidden">
+            <Badge variant="neutral">
+              {TYPE_LABELS[code.type] ?? code.type}
+            </Badge>
+            已用 {code.used_count}/{code.max_uses}
+          </div>
         </div>
-      </div>
-
-      {/* Filters */}
-      <div className="flex flex-col sm:flex-row gap-2">
-        <select
-          value={typeFilter}
-          onChange={(e) => setTypeFilter(e.target.value)}
-          className="h-9 px-3 text-sm border border-zinc-300 dark:border-zinc-600 rounded-md bg-transparent"
-        >
-          <option value="all">全部类型</option>
-          <option value="balance">余额充值</option>
-          <option value="subscription">套餐激活</option>
-          <option value="trial">试用</option>
-        </select>
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
-          <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="搜索码值"
-            className="pl-9"
+      ),
+    },
+    {
+      key: 'type',
+      header: '类型',
+      className: 'hidden sm:table-cell',
+      headerClassName: 'hidden sm:table-cell',
+      cell: (code) => {
+        const isExpired =
+          code.expires_at && new Date(code.expires_at) < new Date();
+        return (
+          <div className="flex items-center gap-1">
+            <Badge variant="neutral">
+              {TYPE_LABELS[code.type] ?? code.type}
+            </Badge>
+            {isExpired && <Badge variant="error">已过期</Badge>}
+          </div>
+        );
+      },
+    },
+    {
+      key: 'value',
+      header: '内容',
+      className: 'hidden md:table-cell',
+      headerClassName: 'hidden md:table-cell',
+      cell: (code) => (
+        <span className="text-caption tabular-nums text-muted-foreground">
+          {code.type === 'balance' && <>面值: {fmt(code.value_usd ?? 0)}</>}
+          {code.type === 'subscription' && (
+            <>
+              套餐: {code.plan_id}
+              {code.duration_days != null && ` / ${code.duration_days}天`}
+            </>
+          )}
+          {code.type === 'trial' &&
+            code.duration_days != null &&
+            `试用: ${code.duration_days}天`}
+        </span>
+      ),
+    },
+    {
+      key: 'uses',
+      header: '已用',
+      align: 'right',
+      className: 'hidden sm:table-cell',
+      headerClassName: 'hidden sm:table-cell',
+      cell: (code) => (
+        <span className="tabular-nums">
+          {code.used_count}/{code.max_uses}
+        </span>
+      ),
+    },
+    {
+      key: 'expires',
+      header: '过期时间',
+      className: 'hidden md:table-cell',
+      headerClassName: 'hidden md:table-cell',
+      cell: (code) =>
+        code.expires_at ? (
+          <span className="text-caption tabular-nums text-muted-foreground">
+            {new Date(code.expires_at).toLocaleDateString()}
+          </span>
+        ) : (
+          <span className="text-faint-foreground">—</span>
+        ),
+    },
+    {
+      key: 'batch',
+      header: '批次',
+      className: 'hidden lg:table-cell',
+      headerClassName: 'hidden lg:table-cell',
+      cell: (code) =>
+        code.batch_id ? (
+          <span className="font-mono text-caption text-muted-foreground">
+            {code.batch_id}
+          </span>
+        ) : (
+          <span className="text-faint-foreground">—</span>
+        ),
+    },
+    {
+      key: 'actions',
+      header: <span className="sr-only">操作</span>,
+      align: 'right',
+      cell: (code) => (
+        <div className="flex items-center justify-end gap-0.5">
+          <Popover
+            open={expandedCode === code.code}
+            onOpenChange={(open) => {
+              if (!open && expandedCode === code.code) setExpandedCode(null);
+            }}
+          >
+            <PopoverTrigger asChild>
+              <IconButton
+                label="查看使用明细"
+                icon={<Eye />}
+                className="text-muted-foreground"
+                onClick={(event) => {
+                  event.preventDefault();
+                  void handleViewUsage(code.code);
+                }}
+              />
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-72">
+              <div className="text-label text-foreground">使用明细</div>
+              {loadingUsage ? (
+                <div className="flex items-center gap-2 text-caption text-muted-foreground">
+                  <Spinner className="size-3.5" />
+                  加载中...
+                </div>
+              ) : usageDetail.length === 0 ? (
+                <p className="text-caption text-muted-foreground">
+                  暂无使用记录
+                </p>
+              ) : (
+                <div className="max-h-56 space-y-1 overflow-y-auto">
+                  {usageDetail.map((d, i) => (
+                    <div
+                      key={i}
+                      className="flex justify-between gap-3 text-caption"
+                    >
+                      <span className="truncate text-foreground">
+                        @{d.username}
+                      </span>
+                      <span className="shrink-0 tabular-nums text-muted-foreground">
+                        {new Date(d.redeemed_at).toLocaleString()}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </PopoverContent>
+          </Popover>
+          <IconButton
+            label="复制"
+            icon={
+              copiedCode === code.code ? (
+                <Check className="text-success" />
+              ) : (
+                <Copy />
+              )
+            }
+            onClick={() => handleCopy(code.code)}
+            className="text-muted-foreground"
+          />
+          <IconButton
+            label="删除"
+            icon={<Trash2 />}
+            onClick={() => void handleDelete(code)}
+            className="text-muted-foreground hover:text-error"
           />
         </div>
+      ),
+    },
+  ];
+
+  return (
+    <SettingsSection
+      title="兑换码管理"
+      actions={
+        <>
+          <Button variant="outline" onClick={handleExport}>
+            <Download />
+            CSV 导出
+          </Button>
+          <Button onClick={() => setShowCreate(true)}>
+            <Plus />
+            创建兑换码
+          </Button>
+        </>
+      }
+    >
+      {/* Filters */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <Select value={typeFilter} onValueChange={setTypeFilter}>
+          <SelectTrigger className="w-full sm:w-36" aria-label="兑换码类型">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">全部类型</SelectItem>
+            <SelectItem value="balance">余额充值</SelectItem>
+            <SelectItem value="subscription">套餐激活</SelectItem>
+            <SelectItem value="trial">试用</SelectItem>
+          </SelectContent>
+        </Select>
+        <SearchInput
+          value={search}
+          onChange={setSearch}
+          placeholder="搜索码值"
+          debounce={150}
+          className="w-full sm:max-w-xs"
+        />
       </div>
 
       {/* List */}
-      <div className="space-y-2">
-        {filtered.map((code) => {
+      <DataTable
+        columns={columns}
+        rows={filtered}
+        rowKey={(code) => code.code}
+        rowClassName={(code) => {
           const isExpired =
             code.expires_at && new Date(code.expires_at) < new Date();
           const isFull = code.used_count >= code.max_uses;
-
-          return (
-            <div key={code.code}>
-              <div
-                className={`flex items-center justify-between p-3 bg-white dark:bg-zinc-800 rounded-lg border border-zinc-200 dark:border-zinc-700 ${
-                  isExpired || isFull ? 'opacity-60' : ''
-                }`}
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <code className="text-sm font-mono">{code.code}</code>
-                    <span className="px-1.5 py-0.5 text-[10px] rounded-full bg-zinc-100 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-400">
-                      {TYPE_LABELS[code.type] ?? code.type}
-                    </span>
-                    {isExpired && (
-                      <span className="px-1.5 py-0.5 text-[10px] rounded-full bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400">
-                        已过期
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-xs text-zinc-500 mt-0.5 space-x-2">
-                    {code.type === 'balance' && (
-                      <span>面值: {fmt(code.value_usd ?? 0)}</span>
-                    )}
-                    {code.type === 'subscription' && (
-                      <span>
-                        套餐: {code.plan_id}
-                        {code.duration_days != null &&
-                          ` / ${code.duration_days}天`}
-                      </span>
-                    )}
-                    {code.type === 'trial' && code.duration_days != null && (
-                      <span>试用: {code.duration_days}天</span>
-                    )}
-                    <span>
-                      已用 {code.used_count}/{code.max_uses}
-                    </span>
-                    {code.expires_at && (
-                      <span>
-                        过期{' '}
-                        {new Date(code.expires_at).toLocaleDateString()}
-                      </span>
-                    )}
-                    {code.batch_id && <span>批次: {code.batch_id}</span>}
-                  </div>
-                  {code.notes && (
-                    <div className="text-[10px] text-zinc-400 mt-0.5">
-                      {code.notes}
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-1 shrink-0 ml-2">
-                  <button
-                    onClick={() => handleViewUsage(code.code)}
-                    className="p-1.5 text-zinc-400 hover:text-primary"
-                    title="查看使用明细"
-                  >
-                    <Eye className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => handleCopy(code.code)}
-                    className="p-1.5 text-zinc-400 hover:text-primary"
-                    title="复制"
-                  >
-                    {copiedCode === code.code ? (
-                      <Check className="w-4 h-4 text-green-500" />
-                    ) : (
-                      <Copy className="w-4 h-4" />
-                    )}
-                  </button>
-                  <button
-                    onClick={() => handleDelete(code)}
-                    className="p-1.5 text-zinc-400 hover:text-red-500"
-                    title="删除"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-
-              {/* Usage detail expand */}
-              {expandedCode === code.code && (
-                <div className="ml-4 mt-1 p-3 bg-zinc-50 dark:bg-zinc-900 rounded-md border border-zinc-200 dark:border-zinc-700">
-                  {loadingUsage ? (
-                    <div className="flex items-center gap-2 text-xs text-zinc-500">
-                      <Loader2 className="w-3 h-3 animate-spin" />
-                      加载中...
-                    </div>
-                  ) : usageDetail.length === 0 ? (
-                    <p className="text-xs text-zinc-500">暂无使用记录</p>
-                  ) : (
-                    <div className="space-y-1">
-                      {usageDetail.map((d, i) => (
-                        <div
-                          key={i}
-                          className="flex justify-between text-xs"
-                        >
-                          <span>@{d.username}</span>
-                          <span className="text-zinc-400">
-                            {new Date(d.redeemed_at).toLocaleString()}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {filtered.length === 0 && (
-        <p className="text-sm text-zinc-500 text-center py-8">
-          {search || typeFilter !== 'all'
-            ? '未找到匹配的兑换码'
-            : '暂无兑换码'}
-        </p>
-      )}
+          return isExpired || isFull ? 'opacity-60' : undefined;
+        }}
+        empty={
+          <EmptyState
+            icon={search || typeFilter !== 'all' ? Search : Gift}
+            title={
+              search || typeFilter !== 'all'
+                ? '未找到匹配的兑换码'
+                : '暂无兑换码'
+            }
+          />
+        }
+      />
 
       <RedeemCodeCreateDialog open={showCreate} onOpenChange={setShowCreate} />
-    </div>
+    </SettingsSection>
   );
 }

@@ -2,17 +2,27 @@ import { useEffect, useState, useCallback } from 'react';
 import {
   Sheet,
   SheetContent,
+  SheetDescription,
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Spinner } from '@/components/ui/spinner';
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from '@/components/ui/native-select';
+import {
+  SettingsField,
+  SettingsGroup,
+  SettingsSection,
+} from '@/components/settings/SettingsLayout';
 import {
   Package,
   Wallet,
-  History,
   XCircle,
-  Loader2,
   AlertTriangle,
   ShieldCheck,
 } from 'lucide-react';
@@ -25,6 +35,8 @@ import {
 import { useCurrency } from './utils';
 import { ProgressBar } from './ProgressBar';
 import { api } from '../../api/client';
+import { confirmDialog } from '@/stores/confirm';
+import { cn } from '@/lib/utils';
 
 const TX_SOURCE_LABELS: Record<string, string> = {
   admin_manual_recharge: '后台充值',
@@ -49,6 +61,30 @@ interface UserDetail extends UserBillingOverview {
   weekly_cost_used?: number;
   weekly_cost_quota?: number | null;
   monthly_cost_quota?: number | null;
+}
+
+function UsageMeter({
+  label,
+  used,
+  quota,
+  fmt,
+}: {
+  label: string;
+  used: number;
+  quota: number;
+  fmt: (v: number) => string;
+}) {
+  return (
+    <div className="px-4 py-3">
+      <div className="mb-1.5 flex justify-between gap-3 text-caption">
+        <span className="text-muted-foreground">{label}</span>
+        <span className="tabular-nums text-foreground">
+          {fmt(used)} / {fmt(quota)}
+        </span>
+      </div>
+      <ProgressBar value={used} max={quota} />
+    </div>
+  );
 }
 
 export default function UserBillingDrawer({
@@ -78,27 +114,30 @@ export default function UserBillingDrawer({
   const [adjDesc, setAdjDesc] = useState('');
   const [adjusting, setAdjusting] = useState(false);
 
-  const loadDetail = useCallback(async (uid: string) => {
-    setLoading(true);
-    try {
-      const [d, tx] = await Promise.all([
-        api.get<UserDetail>(`/api/billing/admin/users/${uid}/detail`),
-        api.get<{ transactions: BalanceTransaction[] }>(
-          `/api/billing/admin/users/${uid}/transactions?limit=20`,
-        ),
-      ]);
-      setDetail(d);
-      setTransactions(tx.transactions);
-      const hist = await getUserSubscriptionHistory(uid);
-      setSubHistory(hist);
-    } catch {
-      setDetail(null);
-      setTransactions([]);
-      setSubHistory([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [getUserSubscriptionHistory]);
+  const loadDetail = useCallback(
+    async (uid: string) => {
+      setLoading(true);
+      try {
+        const [d, tx] = await Promise.all([
+          api.get<UserDetail>(`/api/billing/admin/users/${uid}/detail`),
+          api.get<{ transactions: BalanceTransaction[] }>(
+            `/api/billing/admin/users/${uid}/transactions?limit=20`,
+          ),
+        ]);
+        setDetail(d);
+        setTransactions(tx.transactions);
+        const hist = await getUserSubscriptionHistory(uid);
+        setSubHistory(hist);
+      } catch {
+        setDetail(null);
+        setTransactions([]);
+        setSubHistory([]);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [getUserSubscriptionHistory],
+  );
 
   useEffect(() => {
     if (userId) {
@@ -138,268 +177,282 @@ export default function UserBillingDrawer({
 
   const handleCancelSub = async () => {
     if (!userId) return;
-    if (!confirm('确定撤销该用户的订阅？')) return;
+    const confirmed = await confirmDialog({
+      title: '撤销订阅',
+      message: '确定撤销该用户的订阅？',
+      confirmText: '撤销订阅',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
     await cancelUserSubscription(userId);
     await loadDetail(userId);
   };
 
+  const hasQuota =
+    !!detail &&
+    (detail.daily_cost_quota != null ||
+      detail.weekly_cost_quota != null ||
+      detail.monthly_cost_quota != null);
+
   return (
     <Sheet open={!!userId} onOpenChange={(open) => !open && onClose()}>
-      <SheetContent className="overflow-y-auto">
-        <SheetHeader>
-          <SheetTitle>
+      <SheetContent className="gap-0 data-[side=right]:w-full data-[side=right]:sm:max-w-xl">
+        <SheetHeader className="border-b border-surface-border pr-12">
+          <SheetTitle className="truncate text-title">
             {detail
               ? `${detail.display_name || detail.username} 的账单`
               : '用户详情'}
           </SheetTitle>
+          <SheetDescription className="truncate text-caption">
+            {detail ? `@${detail.username}` : '用户账单详情'}
+          </SheetDescription>
         </SheetHeader>
 
-        {loading ? (
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="w-6 h-6 animate-spin text-primary" />
-          </div>
-        ) : !detail ? (
-          <p className="text-sm text-zinc-500 p-4">无法加载用户信息</p>
-        ) : (
-          <div className="space-y-6 p-4">
-            {/* Current plan */}
-            <div>
-              <div className="flex items-center gap-2 text-sm font-medium mb-2">
-                <Package className="w-4 h-4 text-primary" />
-                当前套餐
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="text-lg font-bold">
-                  {detail.plan_name || '无套餐'}
-                </div>
-                {detail.is_fallback && (
-                  <span className="px-1.5 py-0.5 text-xs rounded bg-zinc-100 dark:bg-zinc-700 text-zinc-500">
-                    默认
-                  </span>
-                )}
-              </div>
-              {detail.subscription_status && detail.subscription_status !== 'default' && (
-                <span className="text-xs text-zinc-400">
-                  状态: {detail.subscription_status}
-                </span>
-              )}
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {loading ? (
+            <div className="flex items-center justify-center py-16">
+              <Spinner className="size-5 text-muted-foreground" />
             </div>
-
-            {/* Balance */}
-            <div>
-              <div className="flex items-center gap-2 text-sm font-medium mb-2">
-                <Wallet className="w-4 h-4 text-primary" />
-                余额
-              </div>
-              <div className="text-2xl font-bold text-primary">
-                {fmt(detail.balance_usd)}
-              </div>
-              <div
-                className={`mt-2 rounded-md border px-3 py-2 text-xs ${
-                  detail.access_allowed
-                    ? 'border-green-200 bg-green-50 text-green-700 dark:border-green-900/60 dark:bg-green-950/30 dark:text-green-300'
-                    : 'border-red-200 bg-red-50 text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300'
-                }`}
-              >
-                <div className="flex items-center gap-1.5 font-medium">
-                  {detail.access_allowed ? (
-                    <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
-                  ) : (
-                    <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-                  )}
-                  <span>{detail.access_allowed ? '当前可用' : detail.access_reason || '当前被计费阻断'}</span>
-                </div>
-                <p className="mt-1 opacity-80">
-                  最低起用余额 {fmt(detail.min_balance_usd ?? 0)}
-                </p>
-              </div>
-            </div>
-
-            {/* Usage progress (3 windows) */}
-            <div>
-              <div className="text-sm font-medium mb-2">用量进度</div>
+          ) : !detail ? (
+            <p className="p-4 text-body text-muted-foreground">
+              无法加载用户信息
+            </p>
+          ) : (
+            <div className="space-y-6 p-4">
+              {/* Current plan + balance */}
               <div className="space-y-3">
-                {detail.daily_cost_quota != null && (
-                  <div>
-                    <div className="flex justify-between text-xs text-zinc-500 mb-1">
-                      <span>日度费用</span>
-                      <span>
-                        {fmt(detail.daily_cost_used ?? 0)} /{' '}
-                        {fmt(detail.daily_cost_quota)}
-                      </span>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="min-w-0 rounded-xl p-4 ring-1 ring-surface-border">
+                    <div className="flex items-center gap-1.5 text-caption text-muted-foreground">
+                      <Package className="size-3.5 text-faint-foreground" />
+                      当前套餐
                     </div>
-                    <ProgressBar
-                      value={detail.daily_cost_used ?? 0}
-                      max={detail.daily_cost_quota}
-                    />
-                  </div>
-                )}
-                {detail.weekly_cost_quota != null && (
-                  <div>
-                    <div className="flex justify-between text-xs text-zinc-500 mb-1">
-                      <span>周度费用</span>
-                      <span>
-                        {fmt(detail.weekly_cost_used ?? 0)} /{' '}
-                        {fmt(detail.weekly_cost_quota)}
+                    <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-1.5">
+                      <span className="truncate text-title text-foreground">
+                        {detail.plan_name || '无套餐'}
                       </span>
+                      {detail.is_fallback && (
+                        <Badge variant="neutral">默认</Badge>
+                      )}
                     </div>
-                    <ProgressBar
-                      value={detail.weekly_cost_used ?? 0}
-                      max={detail.weekly_cost_quota}
-                    />
-                  </div>
-                )}
-                {detail.monthly_cost_quota != null && (
-                  <div>
-                    <div className="flex justify-between text-xs text-zinc-500 mb-1">
-                      <span>月度费用</span>
-                      <span>
-                        {fmt(detail.current_month_cost)} /{' '}
-                        {fmt(detail.monthly_cost_quota)}
-                      </span>
-                    </div>
-                    <ProgressBar
-                      value={detail.current_month_cost}
-                      max={detail.monthly_cost_quota}
-                    />
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Actions */}
-            <div className="space-y-4 pt-2 border-t border-zinc-200 dark:border-zinc-700">
-              {/* Assign plan */}
-              <div>
-                <label className="text-xs text-zinc-500">分配套餐</label>
-                <div className="flex gap-2 mt-1">
-                  <select
-                    value={assignPlanId}
-                    onChange={(e) => setAssignPlanId(e.target.value)}
-                    className="flex-1 h-9 px-3 text-sm border border-zinc-300 dark:border-zinc-600 rounded-md bg-transparent"
-                  >
-                    <option value="">选择套餐</option>
-                    {plans.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
-                  </select>
-                  <Button
-                    size="sm"
-                    onClick={handleAssign}
-                    disabled={!assignPlanId || assigning}
-                  >
-                    确认
-                  </Button>
-                </div>
-              </div>
-
-              {/* Adjust balance */}
-              <div>
-                <label className="text-xs text-zinc-500">充值 / 扣减额度</label>
-                <div className="flex gap-2 mt-1">
-                  <Input
-                    type="number"
-                    placeholder="金额 (正数充值，负数扣减)"
-                    value={adjAmount}
-                    onChange={(e) => setAdjAmount(e.target.value)}
-                    className="flex-1"
-                  />
-                  <Input
-                    placeholder="备注说明"
-                    value={adjDesc}
-                    onChange={(e) => setAdjDesc(e.target.value)}
-                    className="flex-1"
-                  />
-                </div>
-                <Button
-                  size="sm"
-                  className="mt-1"
-                  onClick={handleAdjust}
-                  disabled={adjusting}
-                >
-                  提交资金调整
-                </Button>
-              </div>
-
-              {/* Cancel subscription — only for real subscriptions, not fallback */}
-              {detail.has_real_subscription && (
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  onClick={handleCancelSub}
-                >
-                  <XCircle className="w-4 h-4" />
-                  撤销订阅
-                </Button>
-              )}
-            </div>
-
-            {/* Subscription history */}
-            {subHistory.length > 0 && (
-              <div className="pt-2 border-t border-zinc-200 dark:border-zinc-700">
-                <div className="text-sm font-medium mb-2">订阅历史</div>
-                <div className="space-y-1 max-h-32 overflow-y-auto">
-                  {subHistory.map((h) => (
-                    <div
-                      key={h.id}
-                      className="flex justify-between text-xs py-1"
-                    >
-                      <span>{h.plan_name}</span>
-                      <span className="text-zinc-400">
-                        {h.status} /{' '}
-                        {new Date(h.started_at).toLocaleDateString()}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Recent transactions */}
-            <div className="pt-2 border-t border-zinc-200 dark:border-zinc-700">
-              <div className="flex items-center gap-2 text-sm font-medium mb-2">
-                <History className="w-4 h-4 text-primary" />
-                交易记录
-              </div>
-              {transactions.length === 0 ? (
-                <p className="text-xs text-zinc-500">暂无记录</p>
-              ) : (
-                <div className="space-y-1 max-h-48 overflow-y-auto">
-                  {transactions.map((tx) => (
-                    <div
-                      key={tx.id}
-                      className="flex justify-between items-center py-1.5 border-b border-zinc-100 dark:border-zinc-700 last:border-0"
-                    >
-                      <div>
-                        <div className="text-xs">{tx.description || tx.type}</div>
-                        <div className="flex items-center gap-1.5 text-[10px] text-zinc-400">
-                          {new Date(tx.created_at).toLocaleString()}
-                          {(tx.source || tx.type) && (
-                            <span className="rounded bg-zinc-100 px-1 py-0.5 text-zinc-500 dark:bg-zinc-700 dark:text-zinc-400">
-                              {TX_SOURCE_LABELS[tx.source || ''] || tx.type}
-                            </span>
-                          )}
+                    {detail.subscription_status &&
+                      detail.subscription_status !== 'default' && (
+                        <div className="mt-1 text-caption text-muted-foreground">
+                          状态: {detail.subscription_status}
                         </div>
-                      </div>
-                      <span
-                        className={`text-xs font-medium ${
-                          tx.amount_usd > 0
-                            ? 'text-green-600'
-                            : 'text-red-500'
-                        }`}
+                      )}
+                    {/* Cancel subscription — only for real subscriptions, not fallback */}
+                    {detail.has_real_subscription && (
+                      <Button
+                        variant="destructive"
+                        size="xs"
+                        className="mt-2"
+                        onClick={handleCancelSub}
                       >
-                        {tx.amount_usd > 0 ? '+' : ''}
-                        {fmt(tx.amount_usd)}
-                      </span>
+                        <XCircle />
+                        撤销订阅
+                      </Button>
+                    )}
+                  </div>
+                  <div className="min-w-0 rounded-xl p-4 ring-1 ring-surface-border">
+                    <div className="flex items-center gap-1.5 text-caption text-muted-foreground">
+                      <Wallet className="size-3.5 text-faint-foreground" />
+                      余额
                     </div>
-                  ))}
+                    <div className="mt-1 truncate text-display-sm tabular-nums text-foreground">
+                      {fmt(detail.balance_usd)}
+                    </div>
+                  </div>
                 </div>
+                <div
+                  className={cn(
+                    'rounded-lg px-3 py-2 text-caption',
+                    detail.access_allowed
+                      ? 'bg-success/10 text-success'
+                      : 'bg-error/10 text-error',
+                  )}
+                >
+                  <div className="flex items-center gap-1.5 font-medium">
+                    {detail.access_allowed ? (
+                      <ShieldCheck className="size-3.5 shrink-0" />
+                    ) : (
+                      <AlertTriangle className="size-3.5 shrink-0" />
+                    )}
+                    <span>
+                      {detail.access_allowed
+                        ? '当前可用'
+                        : detail.access_reason || '当前被计费阻断'}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 opacity-80">
+                    最低起用余额 {fmt(detail.min_balance_usd ?? 0)}
+                  </p>
+                </div>
+              </div>
+
+              {/* Usage progress (3 windows) */}
+              {hasQuota && (
+                <SettingsSection title="用量进度">
+                  <SettingsGroup>
+                    {detail.daily_cost_quota != null && (
+                      <UsageMeter
+                        label="日度费用"
+                        used={detail.daily_cost_used ?? 0}
+                        quota={detail.daily_cost_quota}
+                        fmt={fmt}
+                      />
+                    )}
+                    {detail.weekly_cost_quota != null && (
+                      <UsageMeter
+                        label="周度费用"
+                        used={detail.weekly_cost_used ?? 0}
+                        quota={detail.weekly_cost_quota}
+                        fmt={fmt}
+                      />
+                    )}
+                    {detail.monthly_cost_quota != null && (
+                      <UsageMeter
+                        label="月度费用"
+                        used={detail.current_month_cost}
+                        quota={detail.monthly_cost_quota}
+                        fmt={fmt}
+                      />
+                    )}
+                  </SettingsGroup>
+                </SettingsSection>
               )}
+
+              {/* Actions */}
+              <SettingsGroup>
+                <div className="px-4 py-3">
+                  <SettingsField
+                    label="分配套餐"
+                    htmlFor="billing-drawer-assign-plan"
+                  >
+                    <div className="flex gap-2">
+                      <NativeSelect
+                        id="billing-drawer-assign-plan"
+                        value={assignPlanId}
+                        onChange={(e) => setAssignPlanId(e.target.value)}
+                        className="min-w-0 flex-1"
+                      >
+                        <NativeSelectOption value="">
+                          选择套餐
+                        </NativeSelectOption>
+                        {plans.map((p) => (
+                          <NativeSelectOption key={p.id} value={p.id}>
+                            {p.name}
+                          </NativeSelectOption>
+                        ))}
+                      </NativeSelect>
+                      <Button
+                        onClick={handleAssign}
+                        disabled={!assignPlanId || assigning}
+                      >
+                        确认
+                      </Button>
+                    </div>
+                  </SettingsField>
+                </div>
+
+                <div className="px-4 py-3">
+                  <SettingsField
+                    label="充值 / 扣减额度"
+                    htmlFor="billing-drawer-adjust-amount"
+                  >
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <Input
+                        id="billing-drawer-adjust-amount"
+                        type="number"
+                        placeholder="金额 (正数充值，负数扣减)"
+                        value={adjAmount}
+                        onChange={(e) => setAdjAmount(e.target.value)}
+                      />
+                      <Input
+                        placeholder="备注说明"
+                        aria-label="备注说明"
+                        value={adjDesc}
+                        onChange={(e) => setAdjDesc(e.target.value)}
+                      />
+                    </div>
+                    <div className="flex justify-end pt-1">
+                      <Button
+                        variant="outline"
+                        onClick={handleAdjust}
+                        disabled={adjusting}
+                      >
+                        提交资金调整
+                      </Button>
+                    </div>
+                  </SettingsField>
+                </div>
+              </SettingsGroup>
+
+              {/* Subscription history */}
+              {subHistory.length > 0 && (
+                <SettingsSection title="订阅历史">
+                  <SettingsGroup>
+                    {subHistory.map((h) => (
+                      <div
+                        key={h.id}
+                        className="flex items-center justify-between gap-3 px-4 py-2.5 text-body"
+                      >
+                        <span className="truncate text-foreground">
+                          {h.plan_name}
+                        </span>
+                        <span className="shrink-0 text-caption tabular-nums text-muted-foreground">
+                          {h.status} /{' '}
+                          {new Date(h.started_at).toLocaleDateString()}
+                        </span>
+                      </div>
+                    ))}
+                  </SettingsGroup>
+                </SettingsSection>
+              )}
+
+              {/* Recent transactions */}
+              <SettingsSection title="交易记录">
+                {transactions.length === 0 ? (
+                  <p className="text-caption text-muted-foreground">暂无记录</p>
+                ) : (
+                  <SettingsGroup>
+                    {transactions.map((tx) => (
+                      <div
+                        key={tx.id}
+                        className="flex items-center justify-between gap-3 px-4 py-2.5"
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate text-body text-foreground">
+                            {tx.description || tx.type}
+                          </div>
+                          <div className="mt-0.5 flex items-center gap-1.5 text-caption text-muted-foreground">
+                            <span className="tabular-nums">
+                              {new Date(tx.created_at).toLocaleString()}
+                            </span>
+                            {(tx.source || tx.type) && (
+                              <Badge variant="neutral">
+                                {TX_SOURCE_LABELS[tx.source || ''] || tx.type}
+                              </Badge>
+                            )}
+                          </div>
+                        </div>
+                        <span
+                          className={cn(
+                            'shrink-0 text-body font-medium tabular-nums',
+                            tx.amount_usd > 0 ? 'text-success' : 'text-error',
+                          )}
+                        >
+                          {tx.amount_usd > 0 ? '+' : ''}
+                          {fmt(tx.amount_usd)}
+                        </span>
+                      </div>
+                    ))}
+                  </SettingsGroup>
+                )}
+              </SettingsSection>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </SheetContent>
     </Sheet>
   );

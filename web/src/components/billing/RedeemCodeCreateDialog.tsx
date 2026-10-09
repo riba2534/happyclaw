@@ -10,6 +10,12 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from '@/components/ui/native-select';
+import { IconButton, SegmentedControl } from '@/components/common';
+import { SettingsField } from '@/components/settings/SettingsLayout';
 import { useBillingStore, type RedeemCode } from '../../stores/billing';
 import { useCurrency } from './utils';
 
@@ -128,7 +134,7 @@ export default function RedeemCodeCreateDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-lg" aria-describedby={undefined}>
         <DialogHeader>
           <DialogTitle>
             {generatedCodes.length > 0 ? '生成完成' : '创建兑换码'}
@@ -138,36 +144,40 @@ export default function RedeemCodeCreateDialog({
         {generatedCodes.length > 0 ? (
           /* Show generated codes */
           <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-zinc-500">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-body text-muted-foreground">
                 已生成 {generatedCodes.length} 个兑换码
               </span>
-              <Button variant="outline" size="xs" onClick={handleCopyAll}>
+              <Button variant="outline" size="sm" onClick={handleCopyAll}>
                 {copiedIdx === -1 ? (
-                  <Check className="w-3 h-3 text-green-500" />
+                  <Check className="text-success" />
                 ) : (
-                  <Copy className="w-3 h-3" />
+                  <Copy />
                 )}
                 复制全部
               </Button>
             </div>
-            <div className="max-h-64 overflow-y-auto space-y-1">
+            <div className="max-h-64 divide-y divide-surface-border overflow-y-auto rounded-lg ring-1 ring-surface-border">
               {generatedCodes.map((c, i) => (
                 <div
                   key={c.code}
-                  className="flex items-center justify-between px-3 py-2 bg-zinc-50 dark:bg-zinc-900 rounded-md"
+                  className="flex items-center justify-between gap-3 py-1 pr-1 pl-3"
                 >
-                  <code className="text-sm font-mono">{c.code}</code>
-                  <button
+                  <code className="truncate font-mono text-label text-foreground">
+                    {c.code}
+                  </code>
+                  <IconButton
+                    label="复制"
+                    icon={
+                      copiedIdx === i ? (
+                        <Check className="text-success" />
+                      ) : (
+                        <Copy />
+                      )
+                    }
                     onClick={() => handleCopy(c.code, i)}
-                    className="p-1 text-zinc-400 hover:text-primary"
-                  >
-                    {copiedIdx === i ? (
-                      <Check className="w-4 h-4 text-green-500" />
-                    ) : (
-                      <Copy className="w-4 h-4" />
-                    )}
-                  </button>
+                    tooltipSide="left"
+                  />
                 </div>
               ))}
             </div>
@@ -179,146 +189,132 @@ export default function RedeemCodeCreateDialog({
           /* Creation form */
           <div className="space-y-4">
             {/* Type selector */}
-            <div className="flex gap-1 p-1 bg-zinc-100 dark:bg-zinc-900 rounded-md">
-              {TYPE_OPTIONS.map((opt) => (
-                <button
-                  key={opt.value}
-                  onClick={() => setType(opt.value)}
-                  className={`flex-1 px-3 py-1.5 text-sm rounded transition-colors ${
-                    type === opt.value
-                      ? 'bg-white dark:bg-zinc-800 shadow-sm font-medium'
-                      : 'text-zinc-500 hover:text-zinc-700'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
+            <SegmentedControl
+              label="兑换码类型"
+              value={type}
+              options={TYPE_OPTIONS}
+              onChange={setType}
+            />
 
             {/* Type-specific fields */}
             {type === 'balance' && (
-              <div>
-                <label className="block text-xs text-zinc-500 mb-1">
-                  面值 (USD)
-                </label>
+              <SettingsField
+                label="面值 (USD)"
+                htmlFor="redeem-create-value"
+                description={`转换后: ${fmt(valueUsd)}`}
+              >
                 <Input
+                  id="redeem-create-value"
                   type="number"
                   step="0.01"
                   min={0}
                   value={valueUsd}
                   onChange={(e) => setValueUsd(Number(e.target.value))}
                 />
-                <span className="text-xs text-zinc-400 mt-1 block">
-                  转换后: {fmt(valueUsd)}
-                </span>
-              </div>
+              </SettingsField>
             )}
 
             {type === 'subscription' && (
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs text-zinc-500 mb-1">
-                    套餐
-                  </label>
-                  <select
+              <div className="grid gap-3 sm:grid-cols-2">
+                <SettingsField label="套餐" htmlFor="redeem-create-plan">
+                  <NativeSelect
+                    id="redeem-create-plan"
                     value={planId}
                     onChange={(e) => setPlanId(e.target.value)}
-                    className="w-full h-9 px-3 text-sm border border-zinc-300 dark:border-zinc-600 rounded-md bg-transparent"
+                    className="w-full"
                   >
-                    <option value="">选择套餐</option>
+                    <NativeSelectOption value="">选择套餐</NativeSelectOption>
                     {plans.map((p) => (
-                      <option key={p.id} value={p.id}>
+                      <NativeSelectOption key={p.id} value={p.id}>
                         {p.name}
-                      </option>
+                      </NativeSelectOption>
                     ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs text-zinc-500 mb-1">
-                    有效天数
-                  </label>
+                  </NativeSelect>
+                </SettingsField>
+                <SettingsField
+                  label="有效天数"
+                  htmlFor="redeem-create-duration"
+                >
                   <Input
+                    id="redeem-create-duration"
                     type="number"
                     min={1}
                     value={durationDays}
                     onChange={(e) => setDurationDays(Number(e.target.value))}
                   />
-                </div>
+                </SettingsField>
               </div>
             )}
 
             {type === 'trial' && (
-              <div>
-                <label className="block text-xs text-zinc-500 mb-1">
-                  试用天数
-                </label>
+              <SettingsField label="试用天数" htmlFor="redeem-create-trial">
                 <Input
+                  id="redeem-create-trial"
                   type="number"
                   min={1}
                   value={durationDays}
                   onChange={(e) => setDurationDays(Number(e.target.value))}
                 />
-              </div>
+              </SettingsField>
             )}
 
             {/* Common fields */}
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs text-zinc-500 mb-1">
-                  生成数量
-                </label>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <SettingsField label="生成数量" htmlFor="redeem-create-count">
                 <Input
+                  id="redeem-create-count"
                   type="number"
                   min={1}
                   max={100}
                   value={count}
                   onChange={(e) => setCount(Number(e.target.value))}
                 />
-              </div>
-              <div>
-                <label className="block text-xs text-zinc-500 mb-1">
-                  每码可用次数
-                </label>
+              </SettingsField>
+              <SettingsField
+                label="每码可用次数"
+                htmlFor="redeem-create-max-uses"
+              >
                 <Input
+                  id="redeem-create-max-uses"
                   type="number"
                   min={1}
                   value={maxUses}
                   onChange={(e) => setMaxUses(Number(e.target.value))}
                 />
-              </div>
-              <div>
-                <label className="block text-xs text-zinc-500 mb-1">
-                  前缀（可选）
-                </label>
+              </SettingsField>
+              <SettingsField
+                label="前缀（可选）"
+                htmlFor="redeem-create-prefix"
+              >
                 <Input
+                  id="redeem-create-prefix"
                   value={prefix}
                   onChange={(e) => setPrefix(e.target.value.toUpperCase())}
                   placeholder="如 VIP"
                 />
-              </div>
-              <div>
-                <label className="block text-xs text-zinc-500 mb-1">
-                  过期时间（小时，留空=不过期）
-                </label>
+              </SettingsField>
+              <SettingsField
+                label="过期时间（小时，留空=不过期）"
+                htmlFor="redeem-create-expires"
+              >
                 <Input
+                  id="redeem-create-expires"
                   type="number"
                   min={1}
                   value={expiresHours}
                   onChange={(e) => setExpiresHours(e.target.value)}
                 />
-              </div>
+              </SettingsField>
             </div>
 
-            <div>
-              <label className="block text-xs text-zinc-500 mb-1">
-                备注（可选）
-              </label>
+            <SettingsField label="备注（可选）" htmlFor="redeem-create-notes">
               <Input
+                id="redeem-create-notes"
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
                 placeholder="内部备注"
               />
-            </div>
+            </SettingsField>
 
             <DialogFooter>
               <Button
