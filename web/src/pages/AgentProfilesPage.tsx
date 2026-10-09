@@ -349,6 +349,7 @@ export function AgentProfilesPage() {
   const [createPanelOpen, setCreatePanelOpen] = useState(false);
   const [draftStep, setDraftStep] = useState(1);
   const [listQuery, setListQuery] = useState('');
+  const stepperRef = useRef<HTMLElement>(null);
   const currentPrompts = useMemo<AgentPromptParts>(
     () => ({
       identity_prompt: identityPrompt,
@@ -668,6 +669,17 @@ export function AgentProfilesPage() {
     setCreatePanelOpen(true);
     setAllowedSearchParams(next, { replace: true });
   }, [searchParams, setAllowedSearchParams]);
+
+  useEffect(() => {
+    // Keep the current wizard step visible when the stepper scrolls sideways.
+    const stepper = stepperRef.current;
+    const current = stepper?.querySelector('[aria-current="step"]');
+    if (!stepper || !current) return;
+    const bounds = stepper.getBoundingClientRect();
+    const step = current.getBoundingClientRect();
+    stepper.scrollLeft +=
+      step.left - bounds.left - (bounds.width - step.width) / 2;
+  }, [draftMode, draftStep]);
 
   const getErrorMessage = (err: unknown, fallback: string) => {
     if (err instanceof Error) return err.message;
@@ -1649,6 +1661,7 @@ export function AgentProfilesPage() {
 
               {draftMode && (
                 <nav
+                  ref={stepperRef}
                   aria-label="创建智能体步骤"
                   className="-mt-2 overflow-x-auto"
                 >
