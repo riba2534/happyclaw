@@ -1279,6 +1279,26 @@ export class StreamEventProcessor {
       });
       return true;
     }
+    // Claude Code 2.1.283+ forwards turn warnings and notices it used to drop
+    // (hook feedback, MCP sign-in notices, ...). prevent_continuation marks a
+    // turn that a hook stopped.
+    if (message.subtype === 'informational') {
+      const content =
+        typeof message.content === 'string' ? message.content : '';
+      const stopsTurn = message.prevent_continuation === true;
+      this.emitStreamEvent({
+        eventType: 'notification',
+        agentScope: 'system',
+        title: stopsTurn ? 'Claude Code stopped the turn' : 'Claude Code',
+        summary: content.slice(0, 500),
+        detail: content,
+        displayLevel:
+          stopsTurn || message.level === 'warning' ? 'primary' : 'detail',
+        messageUuid: message.uuid,
+        sessionId: message.session_id,
+      });
+      return true;
+    }
     if (message.subtype === 'local_command_output') {
       this.emitStreamEvent({
         eventType: 'notification',

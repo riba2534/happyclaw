@@ -1751,6 +1751,8 @@ async function runQueryAttempt(
   durableInputTurnCompleted?: boolean;
   providerFailureTurn?: ProviderFallbackRetryTurn;
   providerAccountFailure?: boolean;
+  /** A hook stopped the last turn; the runner must not continue it. */
+  continuationPrevented?: boolean;
 }> {
   const queryModelRuntime = resolveClaudeQueryModelRuntime(
     CLAUDE_PROVIDER_RUNTIME,
@@ -2062,6 +2064,9 @@ async function runQueryAttempt(
 
   // Poll IPC for follow-up messages and _close/_interrupt sentinel during the query
   let ipcPolling = true;
+  // Set by a system/informational frame with prevent_continuation (a hook
+  // stopped the turn); cleared when the next input turn becomes current.
+  let continuationPrevented = false;
   let closedDuringQuery = false;
   let interruptedDuringQuery = false;
   let cancelledIpcReceipts: IpcDeliveryReceipt[] = [];
@@ -2359,6 +2364,7 @@ async function runQueryAttempt(
       if (accepted.length === 0) continue;
       acceptedMessages.push(...accepted);
       if (becomesCurrentTurn) {
+        continuationPrevented = false;
         durableInputCompletion.activateInput();
         providerFallbackTurns.acceptCurrentTurn([msg]);
         activateCurrentInputTurn(
@@ -3241,6 +3247,15 @@ async function runQueryAttempt(
       // System messages
       if (message.type === 'system') {
         const sys = message as any;
+        if (
+          sys.subtype === 'informational' &&
+          sys.prevent_continuation === true
+        ) {
+          continuationPrevented = true;
+          logWarn(
+            `Claude Code stopped the turn: ${String(sys.content ?? '').slice(0, 300)}`,
+          );
+        }
         const handled = processor.processSystemMessage(sys);
         if (
           sys.subtype === 'background_tasks_changed' ||
@@ -3869,6 +3884,7 @@ async function runQueryAttempt(
           sawPendingBackgroundTasks = true;
         }
         if (
+          !continuationPrevented &&
           shouldForceBackgroundTaskSummary({
             emitOutput,
             sawPendingBackgroundTasks,
@@ -4051,6 +4067,7 @@ async function runQueryAttempt(
       durableInputTurnCompleted: durableInputCompletion.isCompleted,
       providerFailureTurn,
       providerAccountFailure: false,
+      continuationPrevented,
     };
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
@@ -4842,6 +4859,10 @@ async function main(): Promise<void> {
       // nearly fills the context window), stop auto-continuing to avoid an
       // infinite loop that burns API tokens without producing useful work.
       let ranCompactionContinue = false;
+      if (compactionAwaitingCompletion && queryResult.continuationPrevented) {
+        compactionAwaitingCompletion = false;
+        log('A hook stopped the compacted turn; not auto-continuing it');
+      }
       if (compactionAwaitingCompletion) {
         compactionAwaitingCompletion = false;
         consecutiveCompactions++;
@@ -4998,9 +5019,10 @@ async function main(): Promise<void> {
       // 半截回复会被当成完整回复交付，进程空转到 IDLE_TIMEOUT 才死。
       // 上限 2 次防止网关持续断流时无限烧 token；压缩 auto-continue 本轮已跑过
       // 新 query 时跳过（模型已经继续过了）。
-      let truncatedTail = ranCompactionContinue
-        ? undefined
-        : queryResult.suspectTruncatedTail;
+      let truncatedTail =
+        ranCompactionContinue || queryResult.continuationPrevented
+          ? undefined
+          : queryResult.suspectTruncatedTail;
       const truncationLogicalInputTurnId = activeOutputInputTurnId;
       const initialTruncationInputs = partitionIpcMessagesForLogicalTurn(
         queryResult.pipedMessagesDuringQuery,

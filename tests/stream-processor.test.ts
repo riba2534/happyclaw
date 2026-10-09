@@ -158,6 +158,44 @@ describe('StreamEventProcessor observability mapping', () => {
     expect(processor.getBlockingPendingSdkTaskCount()).toBe(0);
   });
 
+  test('maps informational frames to notifications and surfaces turn stops', () => {
+    const { processor, outputs } = makeProcessor();
+    expect(
+      processor.processSystemMessage({
+        type: 'system',
+        subtype: 'informational',
+        level: 'info',
+        content: 'MCP server docs needs authentication',
+        uuid: 'info-1',
+        session_id: 's',
+      }),
+    ).toBe(true);
+    processor.processSystemMessage({
+      type: 'system',
+      subtype: 'informational',
+      level: 'notice',
+      content: 'Stop hook prevented continuation',
+      prevent_continuation: true,
+      uuid: 'info-2',
+      session_id: 's',
+    });
+    const events = outputs.map((output) => output.streamEvent);
+    expect(events).toEqual([
+      expect.objectContaining({
+        eventType: 'notification',
+        summary: 'MCP server docs needs authentication',
+        displayLevel: 'detail',
+        messageUuid: 'info-1',
+      }),
+      expect.objectContaining({
+        eventType: 'notification',
+        title: 'Claude Code stopped the turn',
+        summary: 'Stop hook prevented continuation',
+        displayLevel: 'primary',
+      }),
+    ]);
+  });
+
   test('merged background-completion placeholders settle their own debt but never complete the input', () => {
     const { processor } = makeProcessor();
     // Message order observed from Claude Code 2.1.280 when two background
