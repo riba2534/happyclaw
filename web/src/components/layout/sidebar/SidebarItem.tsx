@@ -44,12 +44,7 @@ export function SidebarItem({
         <>
           <span className="min-w-0 flex-1 truncate">{label}</span>
           {trailing}
-          {shortcut && (
-            <Shortcut
-              keys={shortcut}
-              className="opacity-0 transition-opacity group-hover/sidebar-row:opacity-100"
-            />
-          )}
+          {shortcut && <Shortcut keys={shortcut} className="opacity-80" />}
         </>
       )}
     </>

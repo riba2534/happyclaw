@@ -9,6 +9,7 @@ import {
   PanelLeft,
   Palette,
   Plus,
+  Search,
   SquarePen,
   Sun,
   UserCog,
@@ -87,6 +88,7 @@ export function UnifiedSidebar() {
   const setWorkspaceExpanded = useShellStore((s) => s.setWorkspaceExpanded);
   const createOpen = useShellStore((s) => s.createWorkspaceOpen);
   const setCreateOpen = useShellStore((s) => s.setCreateWorkspaceOpen);
+  const setPaletteOpen = useShellStore((s) => s.setPaletteOpen);
   const { theme, colorScheme, setTheme, setColorScheme } = useTheme();
   const { startNewConversation, creatingSession } = useNewConversation();
   const [showBugReport, setShowBugReport] = useState(false);
@@ -297,6 +299,13 @@ export function UnifiedSidebar() {
               collapsed
             />
           )}
+          <SidebarItem
+            icon={Search}
+            label="搜索"
+            shortcut={SHORTCUTS.commandPalette}
+            onClick={() => setPaletteOpen(true)}
+            collapsed={collapsed}
+          />
           <SidebarItem
             icon={SquarePen}
             label="新对话"

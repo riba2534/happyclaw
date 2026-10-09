@@ -14,6 +14,7 @@ import {
   UserCog,
   UserPlus,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 
 import {
   Sheet,
@@ -24,57 +25,58 @@ import {
 } from '@/components/ui/sheet';
 import type { SettingsTab } from './types';
 
-interface NavItem {
+export interface SettingsNavItem {
   key: SettingsTab;
   label: string;
-  icon: React.ReactNode;
+  icon: LucideIcon;
 }
+type NavItem = SettingsNavItem;
 
 const accountItems: NavItem[] = [
-  { key: 'profile', label: '个人资料', icon: <User className="size-4" /> },
+  { key: 'profile', label: '个人资料', icon: User },
   {
     key: 'preferences',
     label: '常规',
-    icon: <Settings2 className="size-4" />,
+    icon: Settings2,
   },
   {
     key: 'my-channels',
     label: '消息渠道',
-    icon: <MessageSquare className="size-4" />,
+    icon: MessageSquare,
   },
-  { key: 'security', label: '安全与设备', icon: <Shield className="size-4" /> },
+  { key: 'security', label: '安全与设备', icon: Shield },
 ];
 
 const systemItems: NavItem[] = [
   {
     key: 'appearance',
     label: '常规与品牌',
-    icon: <Palette className="size-4" />,
+    icon: Palette,
   },
   {
     key: 'claude',
     label: '模型配置',
-    icon: <ShieldCheck className="size-4" />,
+    icon: ShieldCheck,
   },
   {
     key: 'main-agent',
     label: '主 HappyClaw',
-    icon: <Bot className="size-4" />,
+    icon: Bot,
   },
   {
     key: 'system',
     label: '执行与容量',
-    icon: <SlidersHorizontal className="size-4" />,
+    icon: SlidersHorizontal,
   },
   {
     key: 'host-integration',
     label: '宿主机集成',
-    icon: <ServerCog className="size-4" />,
+    icon: ServerCog,
   },
   {
     key: 'billing',
     label: '计费管理',
-    icon: <CreditCard className="size-4" />,
+    icon: CreditCard,
   },
 ];
 
@@ -82,17 +84,49 @@ const managementItems: NavItem[] = [
   {
     key: 'registration',
     label: '注册策略',
-    icon: <UserPlus className="size-4" />,
+    icon: UserPlus,
   },
-  { key: 'users', label: '用户与访问', icon: <UserCog className="size-4" /> },
-  { key: 'monitor', label: '运行状态', icon: <Gauge className="size-4" /> },
+  { key: 'users', label: '用户与访问', icon: UserCog },
+  { key: 'monitor', label: '运行状态', icon: Gauge },
 ];
 
-const aboutItem: NavItem = {
+export const aboutItem: NavItem = {
   key: 'about',
   label: '关于 HappyClaw',
-  icon: <Info className="size-4" />,
+  icon: Info,
 };
+
+export interface SettingsPermissions {
+  canManageSystemConfig: boolean;
+  canManageBilling: boolean;
+  canManageUsers: boolean;
+  isAdmin: boolean;
+}
+
+/** Settings sections visible to the current user (also used by ⌘K). */
+export function getSettingsSections({
+  canManageSystemConfig,
+  canManageBilling,
+  canManageUsers,
+  isAdmin,
+}: SettingsPermissions): { label: string; items: NavItem[] }[] {
+  const system = systemItems.filter((item) => {
+    if (item.key === 'billing') return canManageBilling;
+    if (item.key === 'main-agent' || item.key === 'host-integration') {
+      return isAdmin;
+    }
+    return canManageSystemConfig;
+  });
+  const management = managementItems.filter((item) => {
+    if (item.key === 'users') return canManageUsers;
+    return canManageSystemConfig;
+  });
+  return [
+    { label: '账户设置', items: accountItems },
+    ...(system.length ? [{ label: '系统配置', items: system }] : []),
+    ...(management.length ? [{ label: '管理后台', items: management }] : []),
+  ];
+}
 
 interface SettingsNavProps {
   activeTab: SettingsTab;
@@ -117,22 +151,12 @@ export function SettingsNav({
   open,
   onOpenChange,
 }: SettingsNavProps) {
-  const system = systemItems.filter((item) => {
-    if (item.key === 'billing') return canManageBilling;
-    if (item.key === 'main-agent' || item.key === 'host-integration') {
-      return isAdmin;
-    }
-    return canManageSystemConfig;
+  const sections = getSettingsSections({
+    canManageSystemConfig,
+    canManageBilling,
+    canManageUsers,
+    isAdmin,
   });
-  const management = managementItems.filter((item) => {
-    if (item.key === 'users') return canManageUsers;
-    return canManageSystemConfig;
-  });
-  const sections = [
-    { label: '账户设置', items: accountItems },
-    ...(system.length ? [{ label: '系统配置', items: system }] : []),
-    ...(management.length ? [{ label: '管理后台', items: management }] : []),
-  ];
 
   const disabled = (item: NavItem) =>
     mustChangePassword && item.key !== 'security';
@@ -163,7 +187,7 @@ export function SettingsNav({
                       : 'text-muted-foreground hover:bg-muted hover:text-foreground'
                 }`}
               >
-                {item.icon}
+                <item.icon className="size-4" />
                 {item.label}
               </button>
             ))}
@@ -187,7 +211,7 @@ export function SettingsNav({
                 : 'text-muted-foreground hover:bg-muted hover:text-foreground'
           }`}
         >
-          {aboutItem.icon}
+          <aboutItem.icon className="size-4" />
           {aboutItem.label}
         </button>
       </div>

@@ -17,6 +17,7 @@ import { MotionProvider } from '@/lib/motion';
 import { SHORTCUTS, useShortcut } from '@/lib/shortcuts';
 import { useShellStore } from '../../stores/shell';
 import { useNewConversation } from '../../hooks/useNewConversation';
+import { CommandPaletteHost } from '../command/CommandPaletteHost';
 
 export function AppLayout() {
   const location = useLocation();
@@ -191,6 +192,7 @@ export function AppLayout() {
           </div>
 
           {!hideMobileTabBar && <BottomTabBar />}
+          <CommandPaletteHost />
         </div>
       </TooltipProvider>
     </MotionProvider>
