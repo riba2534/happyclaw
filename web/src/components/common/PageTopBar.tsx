@@ -20,7 +20,7 @@ export function PageTopBar({
     <div
       data-slot="page-top-bar"
       className={cn(
-        'sticky top-0 z-10 flex h-12 shrink-0 items-center gap-4 border-b border-surface-border bg-background/90 px-4 backdrop-blur supports-backdrop-filter:bg-background/75 lg:px-6',
+        'sticky top-0 z-10 flex h-12 shrink-0 items-center gap-4 border-b border-surface-border bg-background px-4 lg:px-6',
         className,
       )}
     >
