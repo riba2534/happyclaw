@@ -96,6 +96,7 @@ function fixture(surface: Surface) {
   } else if (surface === 'session-settings') {
     for (const name of [
       'REQUIRED_SETTINGS_ENV',
+      'RETIRED_SETTINGS_ENV_KEYS',
       'isSettingsRecord',
       'mergeSettingsRecord',
       'removePreviousSettingsProjection',

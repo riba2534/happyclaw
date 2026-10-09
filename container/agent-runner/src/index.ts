@@ -31,6 +31,7 @@ import {
   type SDKRateLimitInfo,
 } from '@anthropic-ai/claude-agent-sdk';
 import { detectImageMimeTypeFromBase64Strict } from './image-detector.js';
+import { isClaudeAttachmentPassDisabled } from './claude-attachments.js';
 import { pruneProcessedHistoryImagesInTranscript as pruneProcessedHistoryImagesInTranscriptFile } from './history-image-prune.js';
 import { getChannelFromJid } from './channel-prefixes.js';
 
@@ -555,6 +556,16 @@ function enrichContextAudit(
       ...source,
       tokens: tokensBySource.get(source.name) ?? source.tokens,
     }));
+  }
+
+  if (isClaudeAttachmentPassDisabled()) {
+    // getContextUsage() counts the skills Claude Code would list, but with
+    // the attachment pass disabled the listing is never sent to the model.
+    audit.skills.includedSkills = 0;
+    audit.skills.tokens = 0;
+    audit.warnings.push(
+      'CLAUDE_CODE_DISABLE_ATTACHMENTS is set: Claude Code skips the skill listing, so no Skill is visible to the model',
+    );
   }
 
   return audit;

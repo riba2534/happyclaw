@@ -337,12 +337,20 @@ const REQUIRED_SETTINGS_ENV: Record<string, string> = {
   // and Claude's native auto-memory must not create a second truth source.
   CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '0',
   CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
-  // 禁用 SDK 附件注入（token_usage, changed_files, todo_reminders 等 20+ 种动态消息）。
-  // 这些附件在每次 query() 时动态生成但不持久化到 JSONL，导致跨进程的消息数组
-  // 前缀不匹配，prompt cache 永远失效（cache_read 始终 = 11224 静态 system prompt）。
-  // 禁用后历史消息的缓存前缀跨 query() 保持一致，实现 1M 上下文下的增量缓存。
-  CLAUDE_CODE_DISABLE_ATTACHMENTS: '1',
 };
+
+/**
+ * Keys an older HappyClaw forced into session settings.json and must now be
+ * removed from it, unless the selected native layer sets them itself.
+ *
+ * CLAUDE_CODE_DISABLE_ATTACHMENTS was forced to keep the prompt-cache prefix
+ * stable across query() processes. Claude Code 2.1.296 treats it like bare
+ * mode: the turn-start attachment pass is skipped, so the skill listing,
+ * nested CLAUDE.md and todo reminders never reach the model and every
+ * selected Skill is invisible. A resumed process now replays the same message
+ * prefix with attachments on, so the old cache rationale no longer applies.
+ */
+const RETIRED_SETTINGS_ENV_KEYS = ['CLAUDE_CODE_DISABLE_ATTACHMENTS'] as const;
 
 function isSettingsRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -464,6 +472,12 @@ function ensureSettingsJson(
 
   const existingEnv = (existing.env as Record<string, string>) || {};
   const mergedEnv = { ...existingEnv, ...REQUIRED_SETTINGS_ENV };
+  const baseEnv = isSettingsRecord(options?.baseSettings?.env)
+    ? options.baseSettings.env
+    : {};
+  for (const key of RETIRED_SETTINGS_ENV_KEYS) {
+    if (!Object.hasOwn(baseEnv, key)) delete mergedEnv[key];
+  }
   const merged: Record<string, unknown> = { ...existing, env: mergedEnv };
 
   // Merge user-configured MCP servers into settings by default. AgentProfile
