@@ -132,11 +132,14 @@ import {
   SdkFirstResponseWatchdog,
 } from './sdk-control.js';
 import {
-  createResultUsageState,
-  extractResultUsage,
+  ResultUsageReconciler,
   type SdkModelUsage,
   type SdkResultUsage,
 } from './result-usage.js';
+import {
+  readUsageBaseline,
+  writeUsageBaseline,
+} from './usage-baseline-store.js';
 import {
   AssistantUsageCollector,
   type AssistantUsageBatch,
@@ -1657,6 +1660,11 @@ function setCurrentChannelTurn(
   }
 }
 
+function nonNegativeNumber(value: unknown): number {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, number) : 0;
+}
+
 function decorateChannelUserTurn(
   message: string,
   context: ChannelTurnContext | undefined,
@@ -2060,12 +2068,18 @@ async function runQueryAttempt(
   let sawPendingBackgroundTasks = false;
   let backgroundSummaryForceAttempts = 0;
   const MAX_BACKGROUND_SUMMARY_FORCE_ATTEMPTS = 2;
-  // SDK scopes vary by implementation: the official SDK exposes cumulative
-  // root/model totals, while compatible proxies may reset the root per result.
-  // Assistant message usage is the primary Kaboo-compatible source; this
-  // stateful result normalizer is only the fallback when no assistant usage
-  // snapshot was observed.
-  const resultUsageState = createResultUsageState();
+  // Per-message assistant usage is the primary Kaboo-compatible ledger. The
+  // reconciler differences each result's cumulative modelUsage against a
+  // per-session baseline (persisted next to the transcript, so a resumed
+  // process does not bill restored history again) and reports what no
+  // per-message event covered: session titles, compaction, WebFetch and
+  // subagent progress summaries.
+  const usageReconciler = new ResultUsageReconciler({
+    resumed: !!sessionId,
+    baseline: sessionId
+      ? readUsageBaseline(resolveTranscriptDir(), sessionId)
+      : null,
+  });
   const assistantUsageCollector = new AssistantUsageCollector();
   // Live assistant snapshots carry message_start's placeholder output count;
   // the main and sidechain transcripts carry the CLI-merged final usage. The
@@ -2075,74 +2089,92 @@ async function runQueryAttempt(
     if (!activeSessionId) return undefined;
     return path.join(resolveTranscriptDir(), `${activeSessionId}.jsonl`);
   });
-  let assistantBatchFlushedSinceLastResult = false;
   const emitResultUsage = (
     resultMessage: Record<string, unknown>,
     fallbackEventId: string,
   ): void => {
-    const resultUuid =
-      typeof resultMessage.uuid === 'string' ? resultMessage.uuid.trim() : '';
-    // SDK result UUID survives delivery retries and gives the host's event
-    // ledger a stronger idempotency key than a process-local generated turn.
-    const eventId = resultUuid ? `sdk-result:${resultUuid}` : fallbackEventId;
-    const fallbackUsage = extractResultUsage(
-      {
-        eventId,
-        usage: resultMessage.usage as SdkResultUsage | undefined,
-        totalCostUSD: resultMessage.total_cost_usd as number | undefined,
-        durationMs: resultMessage.duration_ms as number | undefined,
-        numTurns: resultMessage.num_turns as number | undefined,
-        modelUsage: resultMessage.modelUsage as
-          | Record<string, SdkModelUsage>
-          | undefined,
-        fallbackModelKey: queryModelRuntime.usageModelKey,
-      },
-      resultUsageState,
-    );
+    const activeSessionId = newSessionId || sessionId;
     const assistantBatches: AssistantUsageBatch[] = [];
     for (;;) {
       const batch = assistantUsageCollector.drain(
-        newSessionId || sessionId,
+        activeSessionId,
         transcriptUsageLoader,
       );
       if (!batch) break;
       assistantBatches.push(batch);
+      usageReconciler.recordAccounted(batch.tokens.modelUsage);
     }
-    if (assistantBatches.length > 0) {
-      assistantBatchFlushedSinceLastResult = true;
-      assistantBatches.forEach((assistantBatch, index) => {
-        // Result duration/turn count describe the whole SDK result, so attach
-        // them only to the final per-message event instead of multiplying them.
-        const isLast = index === assistantBatches.length - 1;
-        const usage = {
-          eventId: assistantBatch.eventId,
-          batchIndex: index,
-          batchCount: assistantBatches.length,
-          ...assistantBatch.tokens,
-          costUSD: isLast ? fallbackUsage?.costUSD || 0 : 0,
-          durationMs: isLast ? fallbackUsage?.durationMs || 0 : 0,
-          numTurns: isLast ? fallbackUsage?.numTurns || 0 : 0,
-        };
-        emit({
-          status: 'stream',
-          result: null,
-          streamEvent: { eventType: 'usage', usage },
-        });
-        log(
-          `Usage: input=${usage.inputTokens} output=${usage.outputTokens} reasoning=${usage.reasoningTokens} cacheRead=${usage.cacheReadInputTokens} cacheCreate=${usage.cacheCreationInputTokens} cost=$${usage.costUSD} turns=${usage.numTurns}`,
+    const isResult = resultMessage.type === 'result';
+    const reconciled = isResult
+      ? usageReconciler.applyResult({
+          usage: resultMessage.usage as SdkResultUsage | undefined,
+          totalCostUSD: resultMessage.total_cost_usd as number | undefined,
+          modelUsage: resultMessage.modelUsage as
+            | Record<string, SdkModelUsage>
+            | undefined,
+          fallbackModelKey: queryModelRuntime.usageModelKey,
+        })
+      : { costUSD: 0 };
+    if (isResult && activeSessionId && usageReconciler.hasBaseline) {
+      // Persist before emitting: a runner killed after this point resumes
+      // from totals that already include this result.
+      try {
+        writeUsageBaseline(
+          resolveTranscriptDir(),
+          usageReconciler.toBaseline(activeSessionId),
         );
-      });
-      return;
+      } catch (err) {
+        logWarn(
+          `Failed to persist the usage baseline: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
-    if (assistantBatchFlushedSinceLastResult || !fallbackUsage) return;
-    emit({
-      status: 'stream',
-      result: null,
-      streamEvent: { eventType: 'usage', usage: fallbackUsage },
+    if (reconciled.baselineReset) {
+      log(
+        `Usage baseline reset (${reconciled.baselineReset}); billing per-message usage only for this result`,
+      );
+    }
+    const resultUuid =
+      typeof resultMessage.uuid === 'string' ? resultMessage.uuid.trim() : '';
+    const events: Array<
+      { eventId: string } & AssistantUsageBatch['tokens'] & {
+          reasoningTokens: number;
+        }
+    > = assistantBatches.map((batch) => ({
+      eventId: batch.eventId,
+      ...batch.tokens,
+    }));
+    if (reconciled.residual) {
+      // The SDK result UUID survives delivery retries, so the host ledger can
+      // deduplicate the internal remainder like a per-message event.
+      events.push({
+        eventId: resultUuid
+          ? `claude-code-internal:${resultUuid}`
+          : `${fallbackEventId}:internal`,
+        ...reconciled.residual,
+      });
+    }
+    events.forEach((event, index) => {
+      // Result cost/duration/turn count describe the whole SDK result, so
+      // attach them only to the final event instead of multiplying them.
+      const isLast = index === events.length - 1;
+      const usage = {
+        ...event,
+        batchIndex: index,
+        batchCount: events.length,
+        costUSD: isLast ? reconciled.costUSD : 0,
+        durationMs: isLast ? nonNegativeNumber(resultMessage.duration_ms) : 0,
+        numTurns: isLast ? nonNegativeNumber(resultMessage.num_turns) : 0,
+      };
+      emit({
+        status: 'stream',
+        result: null,
+        streamEvent: { eventType: 'usage', usage },
+      });
+      log(
+        `Usage${event.eventId.startsWith('claude-code-internal:') ? ' (internal calls)' : ''}: input=${usage.inputTokens} output=${usage.outputTokens} reasoning=${usage.reasoningTokens} cacheRead=${usage.cacheReadInputTokens} cacheCreate=${usage.cacheCreationInputTokens} cost=$${usage.costUSD} turns=${usage.numTurns}`,
+      );
     });
-    log(
-      `Usage: input=${fallbackUsage.inputTokens} output=${fallbackUsage.outputTokens} reasoning=${fallbackUsage.reasoningTokens} cacheRead=${fallbackUsage.cacheReadInputTokens} cacheCreate=${fallbackUsage.cacheCreationInputTokens} cost=$${fallbackUsage.costUSD} turns=${fallbackUsage.numTurns}`,
-    );
   };
 
   // 收尾阶段中止挂起的工具调用：当 stream 准备关闭（_close/_drain/post-result-timeout）时，
@@ -2196,8 +2228,8 @@ async function runQueryAttempt(
       );
       // The SDK may abort without producing a Result. Flush already observed
       // assistant API calls now so a deliberate stop/steer cannot erase their
-      // real token usage. A later Result only advances fallback high-water
-      // state and is suppressed by assistantBatchFlushedSinceLastResult.
+      // real token usage. A later Result subtracts them before billing any
+      // internal-call remainder.
       emitResultUsage({}, containerInput.turnId || generateTurnId());
       lastInterruptRequestedAt = Date.now();
       queryRef
@@ -3269,7 +3301,6 @@ async function runQueryAttempt(
         if (completionUuid) lastAssistantUuid = completionUuid;
         cancelBackgroundResultCompletion();
         emitResultUsage({}, containerInput.turnId || generateTurnId());
-        assistantBatchFlushedSinceLastResult = false;
         processor.cleanup();
         assistantTextTracker.reset();
         canonicalAssistantUuid = undefined;
@@ -3351,7 +3382,6 @@ async function runQueryAttempt(
             message as unknown as Record<string, unknown>,
             containerInput.turnId || generateTurnId(),
           );
-          assistantBatchFlushedSinceLastResult = false;
           resultReceivedAt = Date.now();
         }
         log(`[msg #${messageCount}] suppressed after early interrupt`);
@@ -3602,7 +3632,6 @@ async function runQueryAttempt(
             failureClass: 'account',
           });
           emitResultUsage(resultMsg, containerInput.turnId || generateTurnId());
-          assistantBatchFlushedSinceLastResult = false;
           processor.discardPendingTextOutput();
           processor.cleanup();
           assistantTextTracker.reset();
@@ -3645,7 +3674,6 @@ async function runQueryAttempt(
             sessionId: newSessionId || sessionId,
           });
           emitResultUsage(resultMsg, containerInput.turnId || generateTurnId());
-          assistantBatchFlushedSinceLastResult = false;
           processor.discardPendingTextOutput();
           assistantTextTracker.reset();
           canonicalAssistantUuid = undefined;
@@ -3671,7 +3699,6 @@ async function runQueryAttempt(
             rateLimitScope: 'model',
           });
           emitResultUsage(resultMsg, containerInput.turnId || generateTurnId());
-          assistantBatchFlushedSinceLastResult = false;
           processor.discardPendingTextOutput();
           processor.cleanup();
           assistantTextTracker.reset();
@@ -3865,7 +3892,6 @@ async function runQueryAttempt(
         // Keeping it here avoids losing provider billing facts when a newer
         // notification-driven result supersedes this candidate.
         emitResultUsage(resultMsg, containerInput.turnId || generateTurnId());
-        assistantBatchFlushedSinceLastResult = false;
         assistantTextTracker.reset();
         canonicalAssistantUuid = undefined;
 

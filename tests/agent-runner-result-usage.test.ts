@@ -1,10 +1,15 @@
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test } from 'vitest';
 
-import {
-  createResultUsageState,
-  extractResultUsage,
-} from '../container/agent-runner/src/result-usage.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { ResultUsageReconciler } from '../container/agent-runner/src/result-usage.js';
 import { AssistantUsageCollector } from '../container/agent-runner/src/assistant-usage.js';
+import {
+  readUsageBaseline,
+  writeUsageBaseline,
+} from '../container/agent-runner/src/usage-baseline-store.js';
 
 function assistant(
   id: string,
@@ -203,250 +208,240 @@ describe('Kaboo-compatible assistant usage collection', () => {
   });
 });
 
-describe('Claude Agent SDK result usage scopes', () => {
-  test('keeps root usage per-result while deltaing cumulative model usage and cost', () => {
-    const state = createResultUsageState();
-    const first = extractResultUsage(
-      {
-        eventId: 'turn-1',
-        usage: {
-          input_tokens: 6_583,
-          output_tokens: 2_049,
-          cache_read_input_tokens: 50_000,
-          cache_creation_input_tokens: 20,
-        },
-        totalCostUSD: 0.488644,
-        durationMs: 20_000,
-        numTurns: 8,
-        modelUsage: {
-          'glm-5.2[1m]': {
-            inputTokens: 6_583,
-            outputTokens: 2_049,
-            cacheReadInputTokens: 50_000,
-            cacheCreationInputTokens: 20,
-            costUSD: 0.488644,
-          },
-        },
-        fallbackModelKey: 'default',
-      },
-      state,
-    );
-    expect(first).toMatchObject({
-      inputTokens: 6_583,
-      outputTokens: 2_049,
-      cacheReadInputTokens: 50_000,
-      cacheCreationInputTokens: 20,
-      costUSD: 0.488644,
-      durationMs: 20_000,
-      numTurns: 8,
-    });
+const MODEL = 'claude-sonnet-5';
 
-    // Official SDK shape: root usage, total cost and modelUsage have
-    // grown from the previous result. Only numTurns/duration are per-result.
-    const second = extractResultUsage(
-      {
-        eventId: 'turn-2',
-        usage: {
-          input_tokens: 7_107,
-          output_tokens: 2_462,
-          cache_read_input_tokens: 101_712,
-          cache_creation_input_tokens: 20,
-        },
-        totalCostUSD: 0.527445,
-        durationMs: 11_000,
-        numTurns: 1,
-        modelUsage: {
-          'glm-5.2[1m]': {
-            inputTokens: 7_107,
-            outputTokens: 2_462,
-            cacheReadInputTokens: 101_712,
-            cacheCreationInputTokens: 20,
-            costUSD: 0.527445,
-          },
-        },
-        fallbackModelKey: 'default',
-      },
-      state,
+function tokens(
+  input: number,
+  output: number,
+  extra: Record<string, number> = {},
+) {
+  return {
+    inputTokens: input,
+    outputTokens: output,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    reasoningTokens: 0,
+    costUSD: 0,
+    ...extra,
+  };
+}
+
+/** A per-message event as AssistantUsageCollector emits it. */
+function accounted(input: number, output: number, model = MODEL) {
+  return { [model]: tokens(input, output) };
+}
+
+function result(
+  modelUsage: Record<string, ReturnType<typeof tokens>> | undefined,
+  totalCostUSD = 0,
+  usage?: Record<string, number>,
+) {
+  return {
+    modelUsage,
+    totalCostUSD,
+    usage: usage ?? { input_tokens: 100, output_tokens: 321 },
+    fallbackModelKey: MODEL,
+  };
+}
+
+const dirs: string[] = [];
+afterEach(() => {
+  for (const dir of dirs.splice(0))
+    rmSync(dir, { recursive: true, force: true });
+});
+
+describe('result usage reconciliation', () => {
+  test('bills the internal remainder that per-message events did not cover', () => {
+    const reconciler = new ResultUsageReconciler();
+    // Turn 1: main call 100/321 plus a session-title call 500/77.
+    reconciler.recordAccounted(accounted(100, 321));
+    const first = reconciler.applyResult(
+      result({ [MODEL]: tokens(600, 398, { costUSD: 0.006 }) }, 0.006),
     );
-    expect(second).toMatchObject({
-      inputTokens: 524,
-      outputTokens: 413,
-      cacheReadInputTokens: 51_712,
-      cacheCreationInputTokens: 0,
-      durationMs: 11_000,
-      numTurns: 1,
-      modelUsage: {
-        'glm-5.2[1m]': {
-          inputTokens: 524,
-          outputTokens: 413,
-          cacheReadInputTokens: 51_712,
-          cacheCreationInputTokens: 0,
-        },
-      },
+    expect(first.residual?.modelUsage).toEqual({
+      [MODEL]: tokens(500, 77, { costUSD: 0.006 }),
     });
-    expect(second?.costUSD).toBeCloseTo(0.038801, 9);
-    expect(second?.modelUsage?.['glm-5.2[1m]'].costUSD).toBeCloseTo(
-      0.038801,
-      9,
+    expect(first.costUSD).toBeCloseTo(0.006, 9);
+
+    // Turn 2: modelUsage is cumulative; only the new main call happened.
+    reconciler.recordAccounted(accounted(100, 321));
+    const second = reconciler.applyResult(
+      result({ [MODEL]: tokens(700, 719, { costUSD: 0.0095 }) }, 0.0095),
     );
+    expect(second.residual).toBeUndefined();
+    expect(second.costUSD).toBeCloseTo(0.0035, 9);
   });
 
-  test('uses model deltas when a compatible provider resets root usage', () => {
-    const state = createResultUsageState();
-    extractResultUsage(
-      {
-        eventId: 'provider-1',
-        usage: {
-          input_tokens: 6_583,
-          output_tokens: 2_049,
-          cache_read_input_tokens: 50_000,
-        },
-        totalCostUSD: 0.488644,
-        modelUsage: {
-          model: {
-            inputTokens: 6_583,
-            outputTokens: 2_049,
-            cacheReadInputTokens: 50_000,
-            costUSD: 0.488644,
-          },
-        },
-        fallbackModelKey: 'default',
-      },
-      state,
-    );
-    const next = extractResultUsage(
-      {
-        eventId: 'provider-2',
-        // Observed proxy shape: root reset to the current turn while
-        // modelUsage and total cost remained cumulative.
-        usage: {
-          input_tokens: 524,
-          output_tokens: 413,
-          cache_read_input_tokens: 51_712,
-        },
-        totalCostUSD: 0.527445,
-        modelUsage: {
-          model: {
-            inputTokens: 7_107,
-            outputTokens: 2_462,
-            cacheReadInputTokens: 101_712,
-            costUSD: 0.527445,
-          },
-        },
-        fallbackModelKey: 'default',
-      },
-      state,
-    );
-    expect(next).toMatchObject({
-      inputTokens: 524,
-      outputTokens: 413,
-      cacheReadInputTokens: 51_712,
+  test('matches modelUsage thinking against carved reasoning tokens', () => {
+    const reconciler = new ResultUsageReconciler();
+    reconciler.recordAccounted({
+      [MODEL]: tokens(100, 250, { reasoningTokens: 750 }),
     });
-    expect(next?.costUSD).toBeCloseTo(0.038801, 9);
+    expect(
+      reconciler.applyResult(result({ [MODEL]: tokens(100, 1_000) })).residual,
+    ).toBeUndefined();
   });
 
-  test('omits repeated zero-delta models when a later result switches model', () => {
-    const state = createResultUsageState();
-    extractResultUsage(
-      {
-        eventId: 'first',
-        usage: { input_tokens: 10, output_tokens: 2 },
-        totalCostUSD: 0.01,
-        modelUsage: {
-          'claude-sonnet-4-5': {
-            inputTokens: 10,
-            outputTokens: 2,
-            costUSD: 0.01,
-          },
-        },
-        fallbackModelKey: 'default',
-      },
-      state,
+  test('does not bill tokens twice when a proxy answers under another model ID', () => {
+    const reconciler = new ResultUsageReconciler();
+    reconciler.recordAccounted(accounted(100, 321, 'GLM-5.2'));
+    reconciler.recordAccounted(accounted(10, 5, 'upstream-alias'));
+    const reconciled = reconciler.applyResult(
+      result({ 'glm-5.2[1m]': tokens(150, 400) }),
     );
-    const next = extractResultUsage(
-      {
-        eventId: 'second',
-        usage: { input_tokens: 3, output_tokens: 1 },
-        totalCostUSD: 0.02,
-        modelUsage: {
-          'claude-sonnet-4-5': {
-            inputTokens: 10,
-            outputTokens: 2,
-            costUSD: 0.01,
-          },
-          'claude-haiku-4-5': {
-            inputTokens: 3,
-            outputTokens: 1,
-            costUSD: 0.01,
-          },
-        },
-        fallbackModelKey: 'default',
-      },
-      state,
-    );
-    expect(Object.keys(next?.modelUsage || {})).toEqual(['claude-haiku-4-5']);
-  });
-
-  test('treats a decreasing cumulative counter as a new epoch', () => {
-    const state = createResultUsageState();
-    extractResultUsage(
-      {
-        eventId: 'before-reset',
-        usage: { input_tokens: 100, output_tokens: 10 },
-        totalCostUSD: 2,
-        modelUsage: {
-          model: { inputTokens: 100, outputTokens: 10, costUSD: 2 },
-        },
-        fallbackModelKey: 'default',
-      },
-      state,
-    );
-    const after = extractResultUsage(
-      {
-        eventId: 'after-reset',
-        usage: { input_tokens: 7, output_tokens: 3 },
-        totalCostUSD: 0.2,
-        modelUsage: {
-          model: { inputTokens: 7, outputTokens: 3, costUSD: 0.2 },
-        },
-        fallbackModelKey: 'default',
-      },
-      state,
-    );
-    expect(after).toMatchObject({
-      inputTokens: 7,
-      outputTokens: 3,
-      costUSD: 0.2,
-      modelUsage: {
-        model: { inputTokens: 7, outputTokens: 3, costUSD: 0.2 },
-      },
+    expect(reconciled.residual?.modelUsage).toEqual({
+      'glm-5.2[1m]': tokens(40, 74),
     });
   });
 
-  test('uses each root result directly when modelUsage is unavailable', () => {
-    const state = createResultUsageState();
-    extractResultUsage(
-      {
-        eventId: 'fallback-1',
-        usage: { input_tokens: 20, output_tokens: 5 },
-        totalCostUSD: 0.1,
-        fallbackModelKey: 'configured-model',
-      },
-      state,
+  test('omits models whose cumulative totals did not move', () => {
+    const reconciler = new ResultUsageReconciler();
+    reconciler.applyResult(result({ 'claude-sonnet-4-5': tokens(10, 2) }));
+    const next = reconciler.applyResult(
+      result({
+        'claude-sonnet-4-5': tokens(10, 2),
+        'claude-haiku-4-5': tokens(3, 1),
+      }),
     );
-    const next = extractResultUsage(
-      {
-        eventId: 'fallback-2',
-        usage: { input_tokens: 4, output_tokens: 1 },
-        totalCostUSD: 0.13,
-        fallbackModelKey: 'configured-model',
-      },
-      state,
+    expect(Object.keys(next.residual?.modelUsage ?? {})).toEqual([
+      'claude-haiku-4-5',
+    ]);
+  });
+
+  // The old normaliser differenced root usage against the previous result,
+  // which under-billed every turn larger than the one before it.
+  test('treats root usage as per-turn when modelUsage is unavailable', () => {
+    const reconciler = new ResultUsageReconciler();
+    const first = reconciler.applyResult(
+      result(undefined, 0, { input_tokens: 20, output_tokens: 5 }),
     );
-    expect(next?.modelUsage?.['configured-model']).toMatchObject({
-      inputTokens: 4,
-      outputTokens: 1,
-      costUSD: 0.03,
+    const second = reconciler.applyResult(
+      result(undefined, 0, { input_tokens: 30, output_tokens: 8 }),
+    );
+    expect(first.residual?.modelUsage[MODEL]).toMatchObject({
+      inputTokens: 20,
+      outputTokens: 5,
     });
+    expect(second.residual?.modelUsage[MODEL]).toMatchObject({
+      inputTokens: 30,
+      outputTokens: 8,
+    });
+  });
+
+  test('root usage already covered by per-message events is not billed again', () => {
+    const reconciler = new ResultUsageReconciler();
+    reconciler.recordAccounted(accounted(100, 321));
+    expect(
+      reconciler.applyResult(
+        result(undefined, 0, { input_tokens: 100, output_tokens: 321 }),
+      ).residual,
+    ).toBeUndefined();
+  });
+});
+
+describe('result usage across resumed processes', () => {
+  test('a persisted baseline keeps restored history out of the next bill', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'usage-baseline-'));
+    dirs.push(dir);
+    const first = new ResultUsageReconciler();
+    first.recordAccounted(accounted(100, 321));
+    first.applyResult(result({ [MODEL]: tokens(600, 398) }));
+    writeUsageBaseline(dir, first.toBaseline('session-1'));
+
+    // Claude Code restores 600/398 into the resumed process's first result.
+    const resumed = new ResultUsageReconciler({
+      resumed: true,
+      baseline: readUsageBaseline(dir, 'session-1'),
+    });
+    resumed.recordAccounted(accounted(100, 321));
+    expect(
+      resumed.applyResult(result({ [MODEL]: tokens(700, 719) })).residual,
+    ).toBeUndefined();
+    // A compaction call (900/150) later in the resumed process is billed.
+    resumed.recordAccounted(accounted(100, 321));
+    expect(
+      resumed.applyResult(result({ [MODEL]: tokens(1_700, 1_190) })).residual
+        ?.modelUsage,
+    ).toEqual({ [MODEL]: tokens(900, 150) });
+  });
+
+  test('a resumed query without a baseline only establishes one', () => {
+    const reconciler = new ResultUsageReconciler({ resumed: true });
+    reconciler.recordAccounted(accounted(100, 321));
+    const first = reconciler.applyResult(
+      result({ [MODEL]: tokens(5_000, 9_000, { costUSD: 2 }) }, 2),
+    );
+    expect(first).toEqual({ costUSD: 0, baselineReset: 'initial_resume' });
+    reconciler.recordAccounted(accounted(100, 321));
+    expect(
+      reconciler.applyResult(
+        result({ [MODEL]: tokens(5_600, 9_398, { costUSD: 2.1 }) }, 2.1),
+      ).residual?.modelUsage[MODEL],
+    ).toMatchObject({ inputTokens: 500, outputTokens: 77 });
+  });
+
+  test('a stale higher baseline re-baselines instead of billing the cumulative total', () => {
+    // The previous runner persisted 1000/800, but the killed CLI restored
+    // older totals; the shrinking counter must not be billed as new spend.
+    const seeded = new ResultUsageReconciler();
+    seeded.applyResult(result({ [MODEL]: tokens(1_000, 800) }, 1));
+    const stale = new ResultUsageReconciler({
+      resumed: true,
+      baseline: seeded.toBaseline('s'),
+    });
+    stale.recordAccounted(accounted(100, 321));
+    expect(
+      stale.applyResult(result({ [MODEL]: tokens(750, 600) }, 0.8)),
+    ).toEqual({ costUSD: 0, baselineReset: 'decrease' });
+    stale.recordAccounted(accounted(100, 321));
+    expect(
+      stale.applyResult(result({ [MODEL]: tokens(900, 1_000) }, 0.9)).residual
+        ?.modelUsage,
+    ).toEqual({ [MODEL]: tokens(50, 79) });
+  });
+
+  test('kill and restart never bills more than the session actually spent', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'usage-baseline-'));
+    dirs.push(dir);
+    let billed = { input: 0, output: 0 };
+    const bill = (input: number, output: number) => {
+      billed = { input: billed.input + input, output: billed.output + output };
+    };
+    // Process A: two turns, each one main call plus an internal 50/10 call.
+    const a = new ResultUsageReconciler();
+    for (const cumulative of [
+      [150, 331],
+      [300, 662],
+    ]) {
+      a.recordAccounted(accounted(100, 321));
+      bill(100, 321);
+      const r = a.applyResult(
+        result({ [MODEL]: tokens(cumulative[0], cumulative[1]) }),
+      );
+      bill(
+        r.residual?.inputTokens ?? 0,
+        (r.residual?.outputTokens ?? 0) + (r.residual?.reasoningTokens ?? 0),
+      );
+      writeUsageBaseline(dir, a.toBaseline('killed'));
+    }
+    // SIGKILL. Process B resumes the same session and runs one more turn.
+    const b = new ResultUsageReconciler({
+      resumed: true,
+      baseline: readUsageBaseline(dir, 'killed'),
+    });
+    b.recordAccounted(accounted(100, 321));
+    bill(100, 321);
+    const r = b.applyResult(result({ [MODEL]: tokens(450, 993) }));
+    bill(r.residual?.inputTokens ?? 0, r.residual?.outputTokens ?? 0);
+    expect(billed).toEqual({ input: 450, output: 993 });
+  });
+
+  test('ignores a baseline that belongs to another session or is torn', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'usage-baseline-'));
+    dirs.push(dir);
+    writeUsageBaseline(dir, new ResultUsageReconciler().toBaseline('a'));
+    expect(readUsageBaseline(dir, 'a')).not.toBeNull();
+    expect(readUsageBaseline(dir, 'b')).toBeNull();
+    expect(readUsageBaseline(dir, '../a')).toBeNull();
   });
 });
