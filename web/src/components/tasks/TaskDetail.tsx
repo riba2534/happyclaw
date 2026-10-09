@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
+import type { ComponentProps, ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { Check, Eye, Pencil, RefreshCw, X } from 'lucide-react';
+import { Pencil, RefreshCw, ShieldAlert } from 'lucide-react';
 import { ScheduledTask, TaskRunLog, useTasksStore } from '../../stores/tasks';
 import type { ApiError } from '../../api/client';
 import { showToast } from '../../utils/toast';
@@ -33,63 +34,79 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../ui/dialog';
+import { IconButton } from '@/components/common/IconButton';
+import { ListGroup, ListRow } from '@/components/common/ListRow';
+import { SettingsSection } from '@/components/settings/SettingsLayout';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet';
+import { Textarea } from '@/components/ui/textarea';
+import { cn } from '@/lib/utils';
 
 interface TaskDetailProps {
   task: ScheduledTask;
+  /** Start in edit mode (from the row menu's 编辑 action). */
+  initialEditing?: boolean;
 }
+
+type BadgeVariant = ComponentProps<typeof Badge>['variant'];
 
 const LOG_STATUS_STYLES: Record<
   string,
-  { bg: string; text: string; label: string }
+  { variant: BadgeVariant; label: string }
 > = {
   queued: {
-    bg: 'bg-slate-100 dark:bg-slate-800/60',
-    text: 'text-slate-700 dark:text-slate-300',
+    variant: 'neutral',
     label: '已排队',
   },
   running: {
-    bg: 'bg-blue-100 dark:bg-blue-900/40',
-    text: 'text-blue-700 dark:text-blue-300',
+    variant: 'info',
     label: '运行中',
   },
   recovering: {
-    bg: 'bg-blue-100 dark:bg-blue-900/40',
-    text: 'text-blue-700 dark:text-blue-300',
+    variant: 'info',
     label: '正在恢复',
   },
   retry_wait: {
-    bg: 'bg-amber-100 dark:bg-amber-900/40',
-    text: 'text-amber-700 dark:text-amber-300',
+    variant: 'warning',
     label: '等待重试',
   },
   success: {
-    bg: 'bg-green-100 dark:bg-green-900/40',
-    text: 'text-green-700 dark:text-green-300',
+    variant: 'success',
     label: '成功',
   },
   error: {
-    bg: 'bg-red-100 dark:bg-red-900/40',
-    text: 'text-red-700 dark:text-red-300',
+    variant: 'error',
     label: '失败',
   },
   failed: {
-    bg: 'bg-red-100 dark:bg-red-900/40',
-    text: 'text-red-700 dark:text-red-300',
+    variant: 'error',
     label: '失败',
   },
   cancelled: {
-    bg: 'bg-muted',
-    text: 'text-muted-foreground',
+    variant: 'neutral',
     label: '已取消',
   },
   missed: {
-    bg: 'bg-amber-100 dark:bg-amber-900/40',
-    text: 'text-amber-700 dark:text-amber-300',
+    variant: 'warning',
     label: '已错过',
   },
   delivered: {
-    bg: 'bg-cyan-100 dark:bg-cyan-900/40',
-    text: 'text-cyan-700 dark:text-cyan-300',
+    variant: 'info',
     label: '已投递到主会话',
   },
 };
@@ -112,17 +129,10 @@ const NOTIFICATION_LABEL: Record<string, string> = {
 
 function RunLogStatusBadge({ status }: { status: string }) {
   const style = LOG_STATUS_STYLES[status] || {
-    bg: 'bg-muted',
-    text: 'text-muted-foreground',
+    variant: 'neutral',
     label: status,
   };
-  return (
-    <span
-      className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${style.bg} ${style.text}`}
-    >
-      {style.label}
-    </span>
-  );
+  return <Badge variant={style.variant}>{style.label}</Badge>;
 }
 
 function formatDuration(ms: number): string {
@@ -134,7 +144,40 @@ function formatDuration(ms: number): string {
   return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
 }
 
-export function TaskDetail({ task }: TaskDetailProps) {
+/** Two-column property row: muted label on the left, value or control. */
+function Property({
+  label,
+  hint,
+  children,
+}: {
+  label: ReactNode;
+  hint?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-1 px-4 py-2.5 sm:flex-row sm:gap-4">
+      <dt className="shrink-0 text-caption text-muted-foreground sm:w-24 sm:pt-2">
+        {label}
+      </dt>
+      <dd className="min-w-0 flex-1 text-body text-foreground sm:flex sm:min-h-8 sm:flex-col sm:justify-center">
+        {children}
+        {hint && (
+          <div className="mt-1 text-caption text-muted-foreground">{hint}</div>
+        )}
+      </dd>
+    </div>
+  );
+}
+
+function PropertyGroup({ children }: { children: ReactNode }) {
+  return (
+    <dl className="divide-y divide-surface-border overflow-hidden rounded-xl bg-surface-raised ring-1 ring-surface-border">
+      {children}
+    </dl>
+  );
+}
+
+export function TaskDetail({ task, initialEditing = false }: TaskDetailProps) {
   const { updateTask, loadLogs, logs } = useTasksStore();
 
   const connectedChannels = useConnectedChannels();
@@ -174,7 +217,8 @@ export function TaskDetail({ task }: TaskDetailProps) {
     }
   };
 
-  const [editing, setEditing] = useState(false);
+  const canEdit = !(task.deleted_at || task.permissions?.can_edit === false);
+  const [editing, setEditing] = useState(initialEditing && canEdit);
   const [saving, setSaving] = useState(false);
   const [editForm, setEditForm] = useState({
     prompt: task.prompt,
@@ -321,6 +365,18 @@ export function TaskDetail({ task }: TaskDetailProps) {
     });
   };
 
+  // Runs usually start on the scheduled day, so only repeat the date when not.
+  const formatRunStart = (log: TaskRunLog) => {
+    const start = log.started_at ?? log.run_at;
+    if (!start) return '-';
+    const startDate = new Date(start);
+    if (Number.isNaN(startDate.getTime())) return start;
+    const scheduledDate = new Date(log.scheduled_for ?? log.run_at ?? start);
+    return startDate.toDateString() === scheduledDate.toDateString()
+      ? startDate.toLocaleTimeString('zh-CN', { hour12: false })
+      : formatDate(start);
+  };
+
   const scheduleLabel = () => {
     const type = editing ? editForm.schedule_type : task.schedule_type;
     if (type === 'cron') return 'Cron 表达式';
@@ -349,577 +405,569 @@ export function TaskDetail({ task }: TaskDetailProps) {
         .map(([k]) => k);
       return (
         <div className="flex flex-wrap gap-1">
-          <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-muted text-muted-foreground">
-            Web
-          </span>
+          <Badge variant="neutral">Web</Badge>
           {connectedKeys.map((key) => (
-            <span
-              key={key}
-              className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-primary"
-            >
+            <Badge key={key} variant="outline">
               {CHANNEL_LABEL[key] || key}
-            </span>
+            </Badge>
           ))}
         </div>
       );
     }
     if (channels.length === 0) {
-      return (
-        <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-muted text-muted-foreground">
-          仅 Web
-        </span>
-      );
+      return <Badge variant="neutral">仅 Web</Badge>;
     }
     return (
       <div className="flex flex-wrap gap-1">
-        <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-muted text-muted-foreground">
-          Web
-        </span>
+        <Badge variant="neutral">Web</Badge>
         {channels.map((ch) => (
-          <span
-            key={ch}
-            className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-primary"
-          >
+          <Badge key={ch} variant="outline">
             {CHANNEL_LABEL[ch] || ch}
-          </span>
+          </Badge>
         ))}
       </div>
     );
   };
 
+  const title =
+    (task.prompt || '').split('\n')[0].trim().slice(0, 80).trim() ||
+    task.id.slice(0, 8);
+  const workspaceName = groupNames[task.chat_jid] || task.chat_jid;
+
   return (
-    <div className="p-4 bg-background space-y-4">
-      {/* Edit Toggle */}
-      <div className="flex items-center justify-end gap-2">
-        {editing ? (
-          <>
-            <button
-              onClick={handleCancel}
-              disabled={saving}
-              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-muted-foreground bg-muted hover:bg-muted/80 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+    <>
+      <SheetHeader className="gap-1 border-b border-surface-border pr-12">
+        <div className="flex items-start justify-between gap-3">
+          <SheetTitle className="min-w-0 truncate text-title">
+            {title}
+          </SheetTitle>
+          {!editing && canEdit && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setEditing(true)}
+              className="-my-0.5 shrink-0"
             >
-              <X className="w-3.5 h-3.5" /> 取消
-            </button>
-            <button
-              onClick={handleSave}
-              disabled={saving}
-              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-white bg-primary hover:bg-primary/90 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
-            >
-              <Check className="w-3.5 h-3.5" /> {saving ? '保存中...' : '保存'}
-            </button>
-          </>
-        ) : task.deleted_at || task.permissions?.can_edit === false ? null : (
-          <button
-            onClick={() => setEditing(true)}
-            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-primary hover:bg-brand-50 rounded-lg transition-colors cursor-pointer"
-          >
-            <Pencil className="w-3.5 h-3.5" /> 编辑
-          </button>
+              <Pencil />
+              编辑
+            </Button>
+          )}
+        </div>
+        <SheetDescription className="truncate text-caption">
+          {task.execution_type === 'script' ? '脚本' : '智能体'} ·{' '}
+          {task.schedule_type === 'cron'
+            ? task.schedule_value
+            : task.schedule_type === 'interval'
+              ? `每 ${formatInterval(task.schedule_value)}`
+              : '单次执行'}{' '}
+          · {workspaceName}
+        </SheetDescription>
+      </SheetHeader>
+
+      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-4 pt-4 pb-6">
+        {task.permissions && (
+          <SettingsSection title="权限与执行范围">
+            <PropertyGroup>
+              <Property label="文件范围">当前工作区目录</Property>
+              <Property label="执行环境">
+                {task.permissions.execution_scope === 'workspace_host'
+                  ? '宿主机'
+                  : 'Docker 容器'}
+              </Property>
+              <Property label="上下文">
+                {formatContextMode(task.context_mode)}
+              </Property>
+              <Property label="可执行操作">
+                {task.permissions.can_run ? '可运行' : '仅查看'}
+              </Property>
+            </PropertyGroup>
+            {task.permissions.risk_level === 'high' && (
+              <p className="flex items-start gap-2 rounded-lg bg-warning/10 px-3 py-2 text-caption text-warning">
+                <ShieldAlert className="mt-px size-3.5 shrink-0" />
+                高权限任务：可在宿主机执行 Shell 命令，仅管理员可以修改或运行。
+              </p>
+            )}
+          </SettingsSection>
         )}
-      </div>
 
-      {task.permissions && (
-        <div className="rounded-lg border border-border bg-card p-3">
-          <div className="mb-2 text-sm font-medium text-foreground">
-            权限与执行范围
-          </div>
-          <div className="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2">
-            <div>
-              <span className="text-muted-foreground">文件范围：</span>
-              当前工作区目录
-            </div>
-            <div>
-              <span className="text-muted-foreground">执行环境：</span>
-              {task.permissions.execution_scope === 'workspace_host'
-                ? '宿主机'
-                : 'Docker 容器'}
-            </div>
-            <div>
-              <span className="text-muted-foreground">上下文：</span>
-              {formatContextMode(task.context_mode)}
-            </div>
-            <div>
-              <span className="text-muted-foreground">可执行操作：</span>
-              {task.permissions.can_run ? '可运行' : '仅查看'}
-            </div>
-          </div>
-          {task.permissions.risk_level === 'high' && (
-            <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
-              高权限任务：可在宿主机执行 Shell 命令，仅管理员可以修改或运行。
-            </p>
-          )}
-        </div>
-      )}
-
-      {/* Script Command (script mode) */}
-      {task.execution_type === 'script' && (
-        <div>
-          <div className="text-xs text-muted-foreground mb-2">脚本命令</div>
-          {editing ? (
-            <textarea
-              value={editForm.script_command}
-              onChange={(e) =>
-                setEditForm({ ...editForm, script_command: e.target.value })
-              }
-              rows={3}
-              maxLength={4096}
-              className="w-full text-sm text-foreground bg-card px-3 py-2 rounded border border-border font-mono resize-none focus:outline-none focus:ring-1 focus:ring-primary"
-            />
-          ) : (
-            task.script_command && (
-              <pre className="text-sm text-foreground bg-card px-3 py-2 rounded border border-border whitespace-pre-wrap font-mono">
-                {task.script_command}
-              </pre>
-            )
-          )}
-        </div>
-      )}
-
-      {/* Full Prompt / Description */}
-      <div>
-        <div className="text-xs text-muted-foreground mb-2">
-          {task.execution_type === 'script' ? '任务描述' : '完整 Prompt'}
-        </div>
-        {editing ? (
-          <textarea
-            value={editForm.prompt}
-            onChange={(e) =>
-              setEditForm({ ...editForm, prompt: e.target.value })
-            }
-            rows={6}
-            className="w-full text-sm text-foreground bg-card px-3 py-2 rounded border border-border resize-y min-h-[160px] max-h-[400px] overflow-y-auto focus:outline-none focus:ring-1 focus:ring-primary"
-          />
-        ) : (
-          task.prompt && (
-            <div className="text-sm text-foreground bg-card px-3 py-2 rounded border border-border whitespace-pre-wrap max-h-[300px] overflow-y-auto">
-              {task.prompt}
-            </div>
-          )
-        )}
-      </div>
-
-      {/* Schedule Details */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div>
-          <div className="text-xs text-muted-foreground mb-1">执行方式</div>
-          <div className="text-sm text-foreground">
-            {task.execution_type === 'script' ? '脚本' : '智能体'}
-          </div>
-        </div>
-
-        <div>
-          <div className="text-xs text-muted-foreground mb-1">调度类型</div>
-          {editing ? (
-            <select
-              value={editForm.schedule_type}
-              onChange={(e) =>
-                setEditForm({
-                  ...editForm,
-                  schedule_type: e.target.value as 'cron' | 'interval' | 'once',
-                })
-              }
-              className="w-full text-sm text-foreground bg-card px-2 py-1 rounded border border-border focus:outline-none focus:ring-1 focus:ring-primary"
-            >
-              <option value="cron">Cron 表达式</option>
-              <option value="interval">间隔执行</option>
-              <option value="once">单次执行</option>
-            </select>
-          ) : (
-            <div className="text-sm text-foreground">
-              {task.schedule_type === 'cron' && 'Cron 表达式'}
-              {task.schedule_type === 'interval' && '间隔执行'}
-              {task.schedule_type === 'once' && '单次执行'}
-            </div>
-          )}
-        </div>
-
-        <div>
-          <div className="text-xs text-muted-foreground mb-1">
-            {scheduleLabel()}
-          </div>
-          {editing && isAdmin ? (
-            <>
-              {editForm.schedule_type === 'interval' ? (
-                <div className="flex gap-2">
-                  <input
-                    type="number"
-                    min="1"
-                    value={intervalNum}
-                    onChange={(e) => setIntervalNum(e.target.value)}
-                    className="flex-1 text-sm text-foreground bg-card px-2 py-1 rounded border border-border font-mono focus:outline-none focus:ring-1 focus:ring-primary"
-                    placeholder="数值"
-                  />
-                  <select
-                    value={intervalUnit}
-                    onChange={(e) => setIntervalUnit(e.target.value)}
-                    className="w-20 text-sm text-foreground bg-card px-2 py-1 rounded border border-border focus:outline-none focus:ring-1 focus:ring-primary"
-                  >
-                    {INTERVAL_UNITS.map((u) => (
-                      <option key={u.ms} value={String(u.ms)}>
-                        {u.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              ) : (
-                <input
-                  type="text"
-                  value={editForm.schedule_value}
+        {/* Script Command (script mode) */}
+        {task.execution_type === 'script' &&
+          (editing || task.script_command) && (
+            <SettingsSection title="脚本命令">
+              {editing ? (
+                <Textarea
+                  value={editForm.script_command}
                   onChange={(e) =>
-                    setEditForm({ ...editForm, schedule_value: e.target.value })
+                    setEditForm({ ...editForm, script_command: e.target.value })
                   }
-                  className="w-full text-sm text-foreground bg-card px-2 py-1 rounded border border-border font-mono focus:outline-none focus:ring-1 focus:ring-primary"
+                  rows={3}
+                  maxLength={4096}
+                  aria-label="脚本命令"
+                  className="resize-none font-mono"
                 />
+              ) : (
+                <pre className="whitespace-pre-wrap break-all rounded-lg bg-muted/60 px-3 py-2 font-mono text-label text-foreground">
+                  {task.script_command}
+                </pre>
               )}
-              {editForm.schedule_type === 'cron' && (
-                <p className="mt-1 text-xs text-muted-foreground">
-                  格式: 分 时 日 月 星期（北京时间）
-                </p>
+            </SettingsSection>
+          )}
+
+        {/* Full Prompt / Description */}
+        {(editing || task.prompt) && (
+          <SettingsSection
+            title={
+              task.execution_type === 'script' ? '任务描述' : '完整 Prompt'
+            }
+          >
+            {editing ? (
+              <Textarea
+                value={editForm.prompt}
+                onChange={(e) =>
+                  setEditForm({ ...editForm, prompt: e.target.value })
+                }
+                rows={6}
+                aria-label={
+                  task.execution_type === 'script' ? '任务描述' : '完整 Prompt'
+                }
+                className="field-sizing-fixed min-h-40 max-h-[400px] resize-y overflow-y-auto"
+              />
+            ) : (
+              <div className="max-h-[300px] overflow-y-auto whitespace-pre-wrap rounded-lg bg-muted/60 px-3 py-2 text-body text-foreground">
+                {task.prompt}
+              </div>
+            )}
+          </SettingsSection>
+        )}
+
+        {/* Schedule Details */}
+        <SettingsSection title="调度">
+          <PropertyGroup>
+            <Property label="执行方式">
+              {task.execution_type === 'script' ? '脚本' : '智能体'}
+            </Property>
+
+            <Property label="调度类型">
+              {editing ? (
+                <Select
+                  value={editForm.schedule_type}
+                  onValueChange={(value) =>
+                    setEditForm({
+                      ...editForm,
+                      schedule_type: value as 'cron' | 'interval' | 'once',
+                    })
+                  }
+                >
+                  <SelectTrigger className="w-full" aria-label="调度类型">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cron">Cron 表达式</SelectItem>
+                    <SelectItem value="interval">间隔执行</SelectItem>
+                    <SelectItem value="once">单次执行</SelectItem>
+                  </SelectContent>
+                </Select>
+              ) : (
+                <>
+                  {task.schedule_type === 'cron' && 'Cron 表达式'}
+                  {task.schedule_type === 'interval' && '间隔执行'}
+                  {task.schedule_type === 'once' && '单次执行'}
+                </>
               )}
-            </>
-          ) : (
-            <div className="text-sm text-foreground">
-              {task.schedule_type === 'cron' ? (
-                <code className="text-xs bg-muted px-1.5 py-0.5 rounded text-muted-foreground">
+            </Property>
+
+            <Property
+              label={scheduleLabel()}
+              hint={
+                editing && isAdmin && editForm.schedule_type === 'cron'
+                  ? '格式: 分 时 日 月 星期（北京时间）'
+                  : undefined
+              }
+            >
+              {editing && isAdmin ? (
+                editForm.schedule_type === 'interval' ? (
+                  <div className="flex gap-2">
+                    <Input
+                      type="number"
+                      min="1"
+                      value={intervalNum}
+                      onChange={(e) => setIntervalNum(e.target.value)}
+                      className="flex-1 font-mono"
+                      placeholder="数值"
+                      aria-label="间隔数值"
+                    />
+                    <Select
+                      value={intervalUnit}
+                      onValueChange={setIntervalUnit}
+                    >
+                      <SelectTrigger className="w-24" aria-label="间隔单位">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {INTERVAL_UNITS.map((u) => (
+                          <SelectItem key={u.ms} value={String(u.ms)}>
+                            {u.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ) : (
+                  <Input
+                    type="text"
+                    value={editForm.schedule_value}
+                    onChange={(e) =>
+                      setEditForm({
+                        ...editForm,
+                        schedule_value: e.target.value,
+                      })
+                    }
+                    className="font-mono"
+                    aria-label={scheduleLabel()}
+                  />
+                )
+              ) : task.schedule_type === 'cron' ? (
+                <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-caption text-muted-foreground">
                   {task.schedule_value}
                 </code>
               ) : (
                 formatScheduleValue(task.schedule_type, task.schedule_value)
               )}
-            </div>
-          )}
-        </div>
+            </Property>
 
-        <div>
-          <div className="text-xs text-muted-foreground mb-1">下次运行</div>
-          <div className="text-sm text-foreground">
-            {formatDate(task.next_run)}
-          </div>
-        </div>
+            <Property label="下次运行">
+              <span className="tabular-nums">{formatDate(task.next_run)}</span>
+            </Property>
 
-        {task.last_run && (
-          <div>
-            <div className="text-xs text-muted-foreground mb-1">上次运行</div>
-            <div className="text-sm text-foreground">
-              {formatDate(task.last_run)}
-            </div>
-          </div>
-        )}
+            {task.last_run && (
+              <Property label="上次运行">
+                <span className="tabular-nums">
+                  {formatDate(task.last_run)}
+                </span>
+              </Property>
+            )}
 
-        <div>
-          <div className="text-xs text-muted-foreground mb-1">执行模式</div>
-          {editing && isAdmin ? (
-            <>
-              <select
-                value={editForm.execution_mode}
-                disabled={task.execution_type === 'script' || adminHostOnlyMode}
-                onChange={(event) =>
-                  setEditForm({
-                    ...editForm,
-                    execution_mode: event.target.value as TaskExecutionMode,
-                  })
-                }
-                className="w-full text-sm text-foreground bg-card px-2 py-1 rounded border border-border focus:outline-none focus:ring-1 focus:ring-primary"
-              >
-                <option value="host">宿主机</option>
-                {task.execution_type !== 'script' && !adminHostOnlyMode && (
-                  <option value="container">Docker 容器</option>
-                )}
-              </select>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {adminHostOnlyMode
-                  ? '管理员纯宿主机模式已开启，任务固定在宿主机执行。'
-                  : task.execution_type === 'script'
-                    ? '脚本固定为宿主机模式；必须同时选择管理员宿主机工作区。'
-                    : '切换工作区时会自动继承目标工作区模式，也可在保存前手动调整。'}
-              </p>
-            </>
-          ) : (
-            <>
-              <div className="text-sm text-foreground">
-                {(editing ? editForm.execution_mode : task.execution_mode) ===
-                'host'
-                  ? '宿主机'
-                  : 'Docker 容器'}
-              </div>
-              {editing && !isAdmin && (
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {editForm.execution_mode === 'host'
-                    ? '这是旧版宿主机任务；成员只能查看，执行模式仅管理员可修改。'
-                    : '成员任务固定使用 Docker 容器；宿主机模式仅管理员可用。'}
-                </p>
-              )}
-            </>
-          )}
-        </div>
-
-        <div>
-          <div className="text-xs text-muted-foreground mb-1">会话模式</div>
-          {editing ? (
-            <select
-              value={editForm.context_mode}
-              onChange={(e) =>
-                setEditForm({
-                  ...editForm,
-                  context_mode: e.target.value as 'group' | 'isolated',
-                })
-              }
-              className="w-full text-sm text-foreground bg-card px-2 py-1 rounded border border-border focus:outline-none focus:ring-1 focus:ring-primary"
-            >
-              <option value="isolated">独立任务会话</option>
-              <option value="group">主会话执行</option>
-            </select>
-          ) : (
-            <div className="text-sm text-foreground">
-              {formatContextMode(task.context_mode)}
-            </div>
-          )}
-        </div>
-
-        <div>
-          <div className="text-xs text-muted-foreground mb-1">所属工作区</div>
-          {editing ? (
-            <>
-              <select
-                value={editForm.chat_jid}
-                onChange={(event) => {
-                  const chatJid = event.target.value;
-                  const targetExecutionMode = getWorkspaceExecutionMode(
-                    groups,
-                    chatJid,
-                  );
-                  if (!targetExecutionMode) {
-                    showToast('无法切换工作区', '尚未取得目标工作区的执行模式');
-                    return;
-                  }
-                  if (
-                    !canSelectTaskExecutionMode(
-                      executionRole,
-                      targetExecutionMode,
-                    )
-                  ) {
-                    showToast(
-                      '无法切换工作区',
-                      '成员任务不能迁移到宿主机执行工作区',
-                    );
-                    return;
-                  }
-                  setEditForm({
-                    ...editForm,
-                    chat_jid: chatJid,
-                    execution_mode: targetExecutionMode,
-                  });
-                }}
-                disabled={groupsLoading || !!groupsError}
-                className="w-full text-sm text-foreground bg-card px-2 py-1 rounded border border-border focus:outline-none focus:ring-1 focus:ring-primary"
-              >
-                {Object.entries(groupNames)
-                  .filter(
-                    ([jid]) =>
-                      task.execution_type !== 'script' ||
-                      groups[jid]?.execution_mode === 'host',
-                  )
-                  .map(([jid, name]) => (
-                    <option key={jid} value={jid}>
-                      {formatGroupLabel(jid, name)}
-                    </option>
-                  ))}
-              </select>
-              {task.permissions?.execution_blocked_reason && (
-                <p className="mt-1 text-xs text-error">
-                  {task.permissions.execution_blocked_reason}
-                </p>
-              )}
-              {groupsLoading && (
-                <p className="mt-1 text-xs text-muted-foreground">
-                  正在加载工作区执行模式…
-                </p>
-              )}
-              {groupsError && (
-                <p className="mt-1 text-xs text-error">
-                  工作区信息加载失败，请关闭编辑后重试。
-                </p>
-              )}
-            </>
-          ) : (
-            <div className="text-sm text-foreground inline-flex items-center gap-1.5">
-              <ChannelBadge channelType={task.chat_jid.split(':')[0]} />
-              <span>{groupNames[task.chat_jid] || task.chat_jid}</span>
-              <span className="text-xs text-muted-foreground">
-                ({task.chat_jid.split(':').slice(1).join(':')})
+            <Property label="创建时间">
+              <span className="tabular-nums">
+                {formatDate(task.created_at)}
               </span>
-            </div>
-          )}
-        </div>
+            </Property>
+          </PropertyGroup>
+        </SettingsSection>
 
-        <div>
-          <div className="text-xs text-muted-foreground mb-1">工作区目录</div>
-          <Link
-            to={`/chat/${task.group_folder}`}
-            className="text-sm text-primary hover:underline"
-          >
-            {task.group_folder}
-          </Link>
-        </div>
-
-        {task.workspace_folder?.startsWith('task-') && (
-          <div>
-            <div className="text-xs text-muted-foreground mb-1">
-              旧版任务工作区
-            </div>
-            <Link
-              to={`/chat/${task.workspace_folder}`}
-              className="text-sm text-primary hover:underline"
+        <SettingsSection title="执行">
+          <PropertyGroup>
+            <Property
+              label="执行模式"
+              hint={
+                editing && isAdmin
+                  ? adminHostOnlyMode
+                    ? '管理员纯宿主机模式已开启，任务固定在宿主机执行。'
+                    : task.execution_type === 'script'
+                      ? '脚本固定为宿主机模式；必须同时选择管理员宿主机工作区。'
+                      : '切换工作区时会自动继承目标工作区模式，也可在保存前手动调整。'
+                  : editing && !isAdmin
+                    ? editForm.execution_mode === 'host'
+                      ? '这是旧版宿主机任务；成员只能查看，执行模式仅管理员可修改。'
+                      : '成员任务固定使用 Docker 容器；宿主机模式仅管理员可用。'
+                    : undefined
+              }
             >
-              {task.workspace_folder}
-            </Link>
-          </div>
-        )}
+              {editing && isAdmin ? (
+                <Select
+                  value={editForm.execution_mode}
+                  disabled={
+                    task.execution_type === 'script' || adminHostOnlyMode
+                  }
+                  onValueChange={(value) =>
+                    setEditForm({
+                      ...editForm,
+                      execution_mode: value as TaskExecutionMode,
+                    })
+                  }
+                >
+                  <SelectTrigger className="w-full" aria-label="执行模式">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="host">宿主机</SelectItem>
+                    {task.execution_type !== 'script' && !adminHostOnlyMode && (
+                      <SelectItem value="container">Docker 容器</SelectItem>
+                    )}
+                  </SelectContent>
+                </Select>
+              ) : (editing ? editForm.execution_mode : task.execution_mode) ===
+                'host' ? (
+                '宿主机'
+              ) : (
+                'Docker 容器'
+              )}
+            </Property>
 
-        <div>
-          <div className="text-xs text-muted-foreground mb-1">创建时间</div>
-          <div className="text-sm text-foreground">
-            {formatDate(task.created_at)}
-          </div>
-        </div>
+            <Property label="会话模式">
+              {editing ? (
+                <Select
+                  value={editForm.context_mode}
+                  onValueChange={(value) =>
+                    setEditForm({
+                      ...editForm,
+                      context_mode: value as 'group' | 'isolated',
+                    })
+                  }
+                >
+                  <SelectTrigger className="w-full" aria-label="会话模式">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="isolated">独立任务会话</SelectItem>
+                    <SelectItem value="group">主会话执行</SelectItem>
+                  </SelectContent>
+                </Select>
+              ) : (
+                formatContextMode(task.context_mode)
+              )}
+            </Property>
 
-        {/* Notify Channels */}
-        <div>
-          <div className="text-xs text-muted-foreground mb-1">通知渠道</div>
-          {editing ? (
-            <div className="flex flex-wrap gap-2">
-              <label className="inline-flex items-center gap-1 text-sm text-muted-foreground">
-                <input type="checkbox" checked disabled className="rounded" />
-                Web
-              </label>
-              {Object.entries(CHANNEL_LABEL)
-                .filter(([key]) => connectedChannels[key])
-                .map(([key, label]) => (
-                  <label
-                    key={key}
-                    className="inline-flex items-center gap-1 text-sm text-foreground cursor-pointer"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={isChannelSelected(key)}
-                      onChange={() => toggleChannel(key)}
-                      className="rounded"
-                    />
-                    {label}
+            <Property
+              label="所属工作区"
+              hint={
+                editing ? (
+                  <>
+                    {task.permissions?.execution_blocked_reason && (
+                      <span className="block text-error">
+                        {task.permissions.execution_blocked_reason}
+                      </span>
+                    )}
+                    {groupsLoading && (
+                      <span className="block">正在加载工作区执行模式…</span>
+                    )}
+                    {groupsError && (
+                      <span className="block text-error">
+                        工作区信息加载失败，请关闭编辑后重试。
+                      </span>
+                    )}
+                  </>
+                ) : undefined
+              }
+            >
+              {editing ? (
+                <Select
+                  value={editForm.chat_jid}
+                  onValueChange={(chatJid) => {
+                    const targetExecutionMode = getWorkspaceExecutionMode(
+                      groups,
+                      chatJid,
+                    );
+                    if (!targetExecutionMode) {
+                      showToast(
+                        '无法切换工作区',
+                        '尚未取得目标工作区的执行模式',
+                      );
+                      return;
+                    }
+                    if (
+                      !canSelectTaskExecutionMode(
+                        executionRole,
+                        targetExecutionMode,
+                      )
+                    ) {
+                      showToast(
+                        '无法切换工作区',
+                        '成员任务不能迁移到宿主机执行工作区',
+                      );
+                      return;
+                    }
+                    setEditForm({
+                      ...editForm,
+                      chat_jid: chatJid,
+                      execution_mode: targetExecutionMode,
+                    });
+                  }}
+                  disabled={groupsLoading || !!groupsError}
+                >
+                  <SelectTrigger className="w-full" aria-label="所属工作区">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Object.entries(groupNames)
+                      .filter(
+                        ([jid]) =>
+                          task.execution_type !== 'script' ||
+                          groups[jid]?.execution_mode === 'host',
+                      )
+                      .map(([jid, name]) => (
+                        <SelectItem key={jid} value={jid}>
+                          {formatGroupLabel(jid, name)}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <span className="inline-flex min-w-0 flex-wrap items-center gap-1.5">
+                  <ChannelBadge channelType={task.chat_jid.split(':')[0]} />
+                  <span>{workspaceName}</span>
+                  <span className="break-all text-caption text-muted-foreground">
+                    ({task.chat_jid.split(':').slice(1).join(':')})
+                  </span>
+                </span>
+              )}
+            </Property>
+
+            <Property label="工作区目录">
+              <Link
+                to={`/chat/${task.group_folder}`}
+                className="break-all text-primary hover:underline"
+              >
+                {task.group_folder}
+              </Link>
+            </Property>
+
+            {task.workspace_folder?.startsWith('task-') && (
+              <Property label="旧版任务工作区">
+                <Link
+                  to={`/chat/${task.workspace_folder}`}
+                  className="break-all text-primary hover:underline"
+                >
+                  {task.workspace_folder}
+                </Link>
+              </Property>
+            )}
+
+            {/* Notify Channels */}
+            <Property label="通知渠道">
+              {editing ? (
+                <div className="flex flex-wrap gap-x-4 gap-y-2 py-1.5">
+                  <label className="inline-flex items-center gap-1.5 text-body text-muted-foreground">
+                    <Checkbox checked disabled />
+                    Web
                   </label>
-                ))}
-            </div>
-          ) : (
-            renderNotifyChannelsBadges()
-          )}
-        </div>
-      </div>
+                  {Object.entries(CHANNEL_LABEL)
+                    .filter(([key]) => connectedChannels[key])
+                    .map(([key, label]) => (
+                      <label
+                        key={key}
+                        className="inline-flex cursor-pointer items-center gap-1.5 text-body text-foreground"
+                      >
+                        <Checkbox
+                          checked={isChannelSelected(key)}
+                          onCheckedChange={() => toggleChannel(key)}
+                        />
+                        {label}
+                      </label>
+                    ))}
+                </div>
+              ) : (
+                renderNotifyChannelsBadges()
+              )}
+            </Property>
+          </PropertyGroup>
+        </SettingsSection>
 
-      {/* Execution Logs */}
-      <div>
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-sm text-muted-foreground">执行日志</div>
-          <button
-            onClick={handleRefreshLogs}
-            disabled={logsLoading}
-            className="p-1 text-muted-foreground hover:text-foreground transition-colors cursor-pointer disabled:opacity-50"
-            title="刷新日志"
-          >
-            <RefreshCw
-              className={`w-4 h-4 ${logsLoading ? 'animate-spin' : ''}`}
+        {/* Execution Logs */}
+        <SettingsSection
+          title="执行日志"
+          actions={
+            <IconButton
+              label="刷新日志"
+              icon={<RefreshCw className={cn(logsLoading && 'animate-spin')} />}
+              onClick={handleRefreshLogs}
+              disabled={logsLoading}
             />
-          </button>
-        </div>
-
-        {taskLogs.length === 0 ? (
-          <p className="text-xs text-muted-foreground">暂无执行记录</p>
-        ) : (
-          <div className="overflow-x-auto rounded-lg border border-border">
-            <table className="w-full min-w-[980px] text-sm">
-              <thead>
-                <tr className="bg-brand-50 text-primary text-xs">
-                  <th className="text-left px-4 py-2 font-medium">计划时间</th>
-                  <th className="text-left px-4 py-2 font-medium">实际开始</th>
-                  <th className="text-left px-4 py-2 font-medium">触发来源</th>
-                  <th className="text-left px-4 py-2 font-medium">耗时</th>
-                  <th className="text-left px-4 py-2 font-medium">状态</th>
-                  <th className="text-left px-4 py-2 font-medium">尝试</th>
-                  <th className="text-left px-4 py-2 font-medium">通知</th>
-                  <th className="text-left px-4 py-2 font-medium">结果</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {taskLogs.map((log: TaskRunLog) => (
-                  <tr key={log.id}>
-                    <td className="px-4 py-2.5 text-foreground whitespace-nowrap">
-                      {formatDate(log.scheduled_for ?? log.run_at)}
-                    </td>
-                    <td className="px-4 py-2.5 text-foreground whitespace-nowrap">
-                      {formatDate(log.started_at ?? log.run_at)}
-                    </td>
-                    <td className="px-4 py-2.5 text-foreground whitespace-nowrap">
-                      {TRIGGER_LABEL[log.trigger_type || 'scheduled'] ||
-                        log.trigger_type ||
-                        '-'}
-                    </td>
-                    <td className="px-4 py-2.5 text-foreground whitespace-nowrap">
-                      {[
-                        'queued',
-                        'running',
-                        'recovering',
-                        'retry_wait',
-                      ].includes(log.status)
-                        ? '-'
-                        : formatDuration(log.duration_ms)}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <RunLogStatusBadge status={log.status} />
-                    </td>
-                    <td className="px-4 py-2.5 text-foreground whitespace-nowrap">
-                      {log.attempt ?? 1}
-                    </td>
-                    <td
-                      className={`px-4 py-2.5 whitespace-nowrap ${log.notification_status === 'uncertain' ? 'text-warning' : log.notification_status === 'failed' || log.notification_status === 'partial_failed' ? 'text-error' : 'text-foreground'}`}
-                      title={log.notification_error || ''}
-                    >
-                      {NOTIFICATION_LABEL[
-                        log.notification_status || 'skipped'
-                      ] || log.notification_status}
-                    </td>
-                    <td className="max-w-xs px-4 py-2.5 text-foreground">
-                      {log.error || log.result ? (
-                        <button
-                          type="button"
-                          onClick={() => setSelectedLog(log)}
-                          className="group/result flex w-full cursor-pointer items-center gap-2 text-left hover:text-primary"
-                          title="查看完整结果"
-                        >
+          }
+        >
+          {taskLogs.length === 0 ? (
+            <p className="rounded-xl px-4 py-6 text-center text-caption text-muted-foreground ring-1 ring-surface-border">
+              暂无执行记录
+            </p>
+          ) : (
+            <ListGroup aria-label="执行日志">
+              {taskLogs.map((log: TaskRunLog) => {
+                const live = [
+                  'queued',
+                  'running',
+                  'recovering',
+                  'retry_wait',
+                ].includes(log.status);
+                const notification =
+                  NOTIFICATION_LABEL[log.notification_status || 'skipped'] ||
+                  log.notification_status;
+                const preview = (log.error || log.result || '').slice(0, 100);
+                return (
+                  <ListRow
+                    key={log.id}
+                    className="min-h-0 py-2.5"
+                    onClick={
+                      log.error || log.result
+                        ? () => setSelectedLog(log)
+                        : undefined
+                    }
+                    title={
+                      <span className="tabular-nums">
+                        {formatDate(log.scheduled_for ?? log.run_at)}
+                      </span>
+                    }
+                    badges={<RunLogStatusBadge status={log.status} />}
+                    description={
+                      <>
+                        <span className="block truncate">
+                          {TRIGGER_LABEL[log.trigger_type || 'scheduled'] ||
+                            log.trigger_type ||
+                            '-'}
+                          {' · '}开始 {formatRunStart(log)}
+                          {' · '}尝试 {log.attempt ?? 1}
+                          {' · '}
                           <span
-                            className={`min-w-0 flex-1 truncate ${
-                              log.error ? 'text-red-600 dark:text-red-400' : ''
-                            }`}
+                            className={cn(
+                              log.notification_status === 'uncertain' &&
+                                'text-warning',
+                              (log.notification_status === 'failed' ||
+                                log.notification_status === 'partial_failed') &&
+                                'text-error',
+                            )}
+                            title={log.notification_error || ''}
                           >
-                            {(log.error || log.result || '').slice(0, 100)}
+                            通知 {notification}
                           </span>
-                          <Eye className="h-4 w-4 shrink-0 opacity-50 group-hover/result:opacity-100" />
-                        </button>
-                      ) : ['queued', 'running', 'recovering'].includes(
-                          log.status,
-                        ) ? (
-                        <span className="text-muted-foreground">
-                          {log.status === 'queued' ? '排队中...' : '执行中...'}
                         </span>
-                      ) : (
-                        ''
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+                        {preview ? (
+                          <span
+                            className={cn(
+                              'mt-0.5 block truncate',
+                              log.error ? 'text-error' : 'text-foreground/80',
+                            )}
+                          >
+                            {preview}
+                          </span>
+                        ) : ['queued', 'running', 'recovering'].includes(
+                            log.status,
+                          ) ? (
+                          <span className="mt-0.5 block">
+                            {log.status === 'queued'
+                              ? '排队中...'
+                              : '执行中...'}
+                          </span>
+                        ) : null}
+                      </>
+                    }
+                    meta={live ? '-' : formatDuration(log.duration_ms)}
+                  />
+                );
+              })}
+            </ListGroup>
+          )}
+        </SettingsSection>
       </div>
+
+      {editing && (
+        <SheetFooter className="flex-row justify-end border-t border-surface-border pb-[max(1rem,env(safe-area-inset-bottom))]">
+          <Button variant="outline" onClick={handleCancel} disabled={saving}>
+            取消
+          </Button>
+          <Button onClick={handleSave} disabled={saving}>
+            {saving ? '保存中...' : '保存'}
+          </Button>
+        </SheetFooter>
+      )}
 
       <Dialog
         open={selectedLog !== null}
@@ -936,7 +984,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
                 : '查看本次定时任务的完整业务结果'}
             </DialogDescription>
             {selectedLog && (
-              <div className="flex flex-wrap items-center gap-2 pt-1 text-xs text-muted-foreground">
+              <div className="flex flex-wrap items-center gap-2 pt-1 text-caption text-muted-foreground">
                 <RunLogStatusBadge status={selectedLog.status} />
                 <span>耗时 {formatDuration(selectedLog.duration_ms)}</span>
                 <span>
@@ -952,9 +1000,9 @@ export function TaskDetail({ task }: TaskDetailProps) {
             )}
           </DialogHeader>
 
-          <div className="min-h-0 overflow-y-auto rounded-lg border border-border bg-muted/20 p-4">
+          <div className="min-h-0 overflow-y-auto rounded-lg bg-muted/40 p-4 ring-1 ring-surface-border">
             {selectedLog?.error && (
-              <div className="mb-4 rounded-lg border border-error/20 bg-error-bg p-3 text-sm text-error">
+              <div className="mb-4 rounded-lg bg-error/10 p-3 text-body text-error">
                 <div className="mb-1 font-medium">执行错误</div>
                 <div className="whitespace-pre-wrap break-words">
                   {selectedLog.error}
@@ -968,13 +1016,13 @@ export function TaskDetail({ task }: TaskDetailProps) {
                 variant="docs"
               />
             ) : (
-              <p className="text-sm text-muted-foreground">
+              <p className="text-body text-muted-foreground">
                 本次运行没有留下可展示的业务结果。
               </p>
             )}
           </div>
         </DialogContent>
       </Dialog>
-    </div>
+    </>
   );
 }
