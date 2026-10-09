@@ -24,6 +24,19 @@ import { useDisplayMode } from '../../hooks/useDisplayMode';
 import { formatThinkingDuration } from '../../utils/thinking-duration';
 import { WorkflowRunCard } from './WorkflowRunCard';
 import { shouldShowStreamingPartialText } from '../../lib/interaction-mode';
+import { useThrottledValue } from '../../hooks/useThrottledValue';
+
+/**
+ * Streamed Markdown is re-parsed and re-rendered whole on every update, so
+ * show it at ~10 Hz instead of at frame rate. Status, tools and thinking stay
+ * live.
+ */
+const STREAMING_MARKDOWN_INTERVAL_MS = 100;
+
+/** Tail of a long streamed text: only the end is rendered while it streams. */
+function streamingTail(text: string, max: number, keep: number): string {
+  return text.length > max ? '...' + text.slice(-keep) : text;
+}
 
 /** Render AskUserQuestion options as a visual card (read-only). */
 function AskUserQuestionCard({
@@ -159,6 +172,10 @@ function TaskAgentBlock({
 }) {
   const streaming = useChatStore((s) => s.agentStreaming[agent.id]);
   const isRunning = agent.status === 'running';
+  const partialMarkdown = useThrottledValue(
+    streamingTail(streaming?.partialText ?? '', 2000, 1500),
+    STREAMING_MARKDOWN_INTERVAL_MS,
+  );
   const [expanded, setExpanded] = useState(isRunning);
   const [localElapsed, setLocalElapsed] = useState<Record<string, number>>({});
 
@@ -264,11 +281,7 @@ function TaskAgentBlock({
               {streaming.partialText && (
                 <div className="max-w-none overflow-hidden [&>div>*:first-child]:!mt-0">
                   <MarkdownRenderer
-                    content={
-                      streaming.partialText.length > 2000
-                        ? '...' + streaming.partialText.slice(-1500)
-                        : streaming.partialText
-                    }
+                    content={partialMarkdown}
                     groupJid={groupJid}
                     variant="docs"
                     streaming
@@ -299,6 +312,10 @@ function SdkTaskRuntimeBlock({
 }) {
   const [expanded, setExpanded] = useState(task.status === 'running');
   const isRunning = task.status === 'running' || task.status === 'backgrounded';
+  const textTailMarkdown = useThrottledValue(
+    streamingTail(task.textTail, 2000, 1500),
+    STREAMING_MARKDOWN_INTERVAL_MS,
+  );
   const statusLabel =
     task.status === 'completed'
       ? '已完成'
@@ -375,11 +392,7 @@ function SdkTaskRuntimeBlock({
           {task.textTail && (
             <div className="max-w-none overflow-hidden [&>div>*:first-child]:!mt-0">
               <MarkdownRenderer
-                content={
-                  task.textTail.length > 2000
-                    ? '...' + task.textTail.slice(-1500)
-                    : task.textTail
-                }
+                content={textTailMarkdown}
                 groupJid={groupJid}
                 variant="docs"
                 streaming
@@ -586,6 +599,10 @@ function StreamingContent({
   handleThinkingScroll: () => void;
   showPartialText: boolean;
 }) {
+  const partialMarkdown = useThrottledValue(
+    streamingTail(streaming.partialText, 3000, 2000),
+    STREAMING_MARKDOWN_INTERVAL_MS,
+  );
   // Classify active tools
   const cardTools = streaming.activeTools.filter(
     (t) => t.toolName !== 'AskUserQuestion',
@@ -734,11 +751,7 @@ function StreamingContent({
       {showPartialText && streaming.partialText && (
         <div className="max-w-none overflow-hidden [&>div>*:first-child]:!mt-0">
           <MarkdownRenderer
-            content={
-              streaming.partialText.length > 3000
-                ? '...' + streaming.partialText.slice(-2000)
-                : streaming.partialText
-            }
+            content={partialMarkdown}
             groupJid={groupJid}
             variant="chat"
             streaming

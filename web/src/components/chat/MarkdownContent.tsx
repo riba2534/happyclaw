@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useState } from 'react';
+import React, { lazy, Suspense, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Check, Copy } from 'lucide-react';
 import { PreviewDialog } from './PreviewDialog';
@@ -201,6 +201,121 @@ function CodeBlock({
   );
 }
 
+type MarkdownComponents = NonNullable<
+  React.ComponentProps<typeof ReactMarkdown>['components']
+>;
+
+/**
+ * Element renderers for react-markdown, memoized per variant and group. A
+ * fresh object of inline components on every render gave every element a
+ * new component type, so React tore down and rebuilt the whole rendered
+ * Markdown on each streaming update (losing text selection and copy-button
+ * state, and recreating ~1,000 DOM nodes per second).
+ */
+function markdownComponents(
+  variant: 'chat' | 'docs',
+  groupJid: string | undefined,
+  eagerImages: boolean,
+): MarkdownComponents {
+  const tableTextClass = variant === 'chat' ? 'text-[0.95em]' : 'text-sm';
+  return {
+    code: (props) => <CodeBlock {...props} variant={variant} />,
+    img: ({ src, alt }) => (
+      <MarkdownImage
+        src={src ? resolveMarkdownImageSrc(src, groupJid) : undefined}
+        alt={alt}
+        loading={eagerImages ? 'eager' : 'lazy'}
+      />
+    ),
+    a: ({ href, children }) => (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-primary-text hover:text-primary-text underline break-all"
+      >
+        {children}
+      </a>
+    ),
+    table: ({ children }) => (
+      <div
+        className="my-4 max-w-full overflow-x-auto overflow-y-hidden overscroll-x-contain [-webkit-overflow-scrolling:touch] [touch-action:pan-x_pan-y]"
+        data-swipe-back-ignore="true"
+      >
+        <table className="min-w-full border-separate border-spacing-0 overflow-hidden rounded-lg font-sans ring-1 ring-surface-border">
+          {children}
+        </table>
+      </div>
+    ),
+    thead: ({ children }) => <thead className="bg-muted/60">{children}</thead>,
+    tbody: ({ children }) => <tbody>{children}</tbody>,
+    tr: ({ children }) => (
+      <tr className="[&:not(:last-child)>td]:border-b [&>td]:border-surface-border">
+        {children}
+      </tr>
+    ),
+    th: ({ children }) => (
+      <th className="border-b border-surface-border px-3 py-2 text-left align-top text-caption font-medium whitespace-nowrap text-muted-foreground">
+        {children}
+      </th>
+    ),
+    td: ({ children }) => (
+      <td
+        className={`px-3 py-2 align-top whitespace-nowrap text-foreground ${tableTextClass}`}
+      >
+        {children}
+      </td>
+    ),
+    // GFM task lists: no bullet, a small themed checkbox instead.
+    ul: ({ children, className }) => (
+      <ul
+        className={
+          className?.includes('contains-task-list')
+            ? 'my-2 list-none space-y-1 pl-1'
+            : 'my-2 list-disc space-y-1 pl-6'
+        }
+      >
+        {children}
+      </ul>
+    ),
+    ol: ({ children }) => (
+      <ol className="list-decimal pl-6 my-2 space-y-1">{children}</ol>
+    ),
+    li: ({ children, className }) => (
+      <li
+        className={
+          className?.includes('task-list-item')
+            ? 'flex items-start gap-2 [&>input]:mt-[0.45em] [&>input]:size-3.5 [&>input]:shrink-0 [&>input]:accent-primary [&>p]:my-0'
+            : '[&>p]:inline [&>p]:my-0'
+        }
+      >
+        {children}
+      </li>
+    ),
+    p: ({ children }) => <p className="my-2">{children}</p>,
+    h1: ({ children }) => (
+      <h1 className="mt-6 mb-3 text-[1.35em] leading-tight font-semibold tracking-tight">
+        {children}
+      </h1>
+    ),
+    h2: ({ children }) => (
+      <h2 className="mt-5 mb-2.5 text-[1.2em] leading-tight font-semibold tracking-tight">
+        {children}
+      </h2>
+    ),
+    h3: ({ children }) => (
+      <h3 className="mt-4 mb-2 text-[1.05em] leading-snug font-semibold">
+        {children}
+      </h3>
+    ),
+    blockquote: ({ children }) => (
+      <blockquote className="my-4 border-l-2 border-foreground/15 pl-4 text-muted-foreground">
+        {children}
+      </blockquote>
+    ),
+  };
+}
+
 export function MarkdownContent({
   content,
   groupJid,
@@ -213,7 +328,10 @@ export function MarkdownContent({
     variant === 'chat'
       ? 'text-body-lg leading-[1.7] text-foreground'
       : 'text-sm leading-6 text-foreground';
-  const tableTextClass = variant === 'chat' ? 'text-[0.95em]' : 'text-sm';
+  const components = useMemo(
+    () => markdownComponents(variant, groupJid, eagerImages),
+    [variant, groupJid, eagerImages],
+  );
 
   return (
     <div className={textSizeClass}>
@@ -228,104 +346,7 @@ export function MarkdownContent({
             typeof ReactMarkdown
           >['rehypePlugins']
         }
-        components={{
-          code: (props) => <CodeBlock {...props} variant={variant} />,
-          img: ({ src, alt }) => (
-            <MarkdownImage
-              src={src ? resolveMarkdownImageSrc(src, groupJid) : undefined}
-              alt={alt}
-              loading={eagerImages ? 'eager' : 'lazy'}
-            />
-          ),
-          a: ({ href, children }) => (
-            <a
-              href={href}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-primary-text hover:text-primary-text underline break-all"
-            >
-              {children}
-            </a>
-          ),
-          table: ({ children }) => (
-            <div
-              className="my-4 max-w-full overflow-x-auto overflow-y-hidden overscroll-x-contain [-webkit-overflow-scrolling:touch] [touch-action:pan-x_pan-y]"
-              data-swipe-back-ignore="true"
-            >
-              <table className="min-w-full border-separate border-spacing-0 overflow-hidden rounded-lg font-sans ring-1 ring-surface-border">
-                {children}
-              </table>
-            </div>
-          ),
-          thead: ({ children }) => (
-            <thead className="bg-muted/60">{children}</thead>
-          ),
-          tbody: ({ children }) => <tbody>{children}</tbody>,
-          tr: ({ children }) => (
-            <tr className="[&:not(:last-child)>td]:border-b [&>td]:border-surface-border">
-              {children}
-            </tr>
-          ),
-          th: ({ children }) => (
-            <th className="border-b border-surface-border px-3 py-2 text-left align-top text-caption font-medium whitespace-nowrap text-muted-foreground">
-              {children}
-            </th>
-          ),
-          td: ({ children }) => (
-            <td
-              className={`px-3 py-2 align-top whitespace-nowrap text-foreground ${tableTextClass}`}
-            >
-              {children}
-            </td>
-          ),
-          // GFM task lists: no bullet, a small themed checkbox instead.
-          ul: ({ children, className }) => (
-            <ul
-              className={
-                className?.includes('contains-task-list')
-                  ? 'my-2 list-none space-y-1 pl-1'
-                  : 'my-2 list-disc space-y-1 pl-6'
-              }
-            >
-              {children}
-            </ul>
-          ),
-          ol: ({ children }) => (
-            <ol className="list-decimal pl-6 my-2 space-y-1">{children}</ol>
-          ),
-          li: ({ children, className }) => (
-            <li
-              className={
-                className?.includes('task-list-item')
-                  ? 'flex items-start gap-2 [&>input]:mt-[0.45em] [&>input]:size-3.5 [&>input]:shrink-0 [&>input]:accent-primary [&>p]:my-0'
-                  : '[&>p]:inline [&>p]:my-0'
-              }
-            >
-              {children}
-            </li>
-          ),
-          p: ({ children }) => <p className="my-2">{children}</p>,
-          h1: ({ children }) => (
-            <h1 className="mt-6 mb-3 text-[1.35em] leading-tight font-semibold tracking-tight">
-              {children}
-            </h1>
-          ),
-          h2: ({ children }) => (
-            <h2 className="mt-5 mb-2.5 text-[1.2em] leading-tight font-semibold tracking-tight">
-              {children}
-            </h2>
-          ),
-          h3: ({ children }) => (
-            <h3 className="mt-4 mb-2 text-[1.05em] leading-snug font-semibold">
-              {children}
-            </h3>
-          ),
-          blockquote: ({ children }) => (
-            <blockquote className="my-4 border-l-2 border-foreground/15 pl-4 text-muted-foreground">
-              {children}
-            </blockquote>
-          ),
-        }}
+        components={components}
       >
         {content}
       </ReactMarkdown>

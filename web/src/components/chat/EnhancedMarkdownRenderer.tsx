@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import remarkMath from 'remark-math';
-import rehypeHighlight from 'rehype-highlight';
+import { rehypeHighlightShared } from './rehypeHighlightShared';
 import rehypeKatex from 'rehype-katex';
 import rehypeRaw from 'rehype-raw';
 import rehypeSanitize from 'rehype-sanitize';
@@ -36,12 +36,12 @@ export function EnhancedMarkdownRenderer({
     () =>
       streaming
         ? features.hasCodeFence
-          ? [[rehypeHighlight, { plainText: ['mermaid'] }] as const]
+          ? [[rehypeHighlightShared, { plainText: ['mermaid'] }] as const]
           : []
         : [
             rehypeRaw,
             ...(features.hasCodeFence
-              ? [[rehypeHighlight, { plainText: ['mermaid'] }] as const]
+              ? [[rehypeHighlightShared, { plainText: ['mermaid'] }] as const]
               : []),
             ...(features.hasMath
               ? [[rehypeKatex, { throwOnError: false, strict: false }] as const]
