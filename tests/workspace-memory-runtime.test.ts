@@ -15,7 +15,10 @@ import {
   loadWorkspaceMemoryTurnContext,
 } from '../container/agent-runner/src/workspace-memory-context.js';
 import { signWorkspaceMemoryMutation } from '../container/agent-runner/src/workspace-memory-auth.js';
-import { createWorkspaceMemoryWriteGuard } from '../container/agent-runner/src/workspace-memory-runtime.js';
+import {
+  createWorkspaceMemoryWriteGuard,
+  WORKSPACE_MEMORY_WRITE_GUARD_MATCHER,
+} from '../container/agent-runner/src/workspace-memory-runtime.js';
 import {
   grantWorkspaceMemoryTurnToCurrentRunner,
   issueWorkspaceMemoryWriteCapability,
@@ -172,6 +175,56 @@ describe('Workspace Memory runtime boundary', () => {
       expect(names).not.toContain('workspace_memory_update');
       expect(names).not.toContain('workspace_memory_forget');
     }
+  });
+
+  test('the PreToolUse matcher selects exactly the tools the guard can deny', () => {
+    const matcher = new RegExp(WORKSPACE_MEMORY_WRITE_GUARD_MATCHER);
+    for (const name of [
+      'mcp__happyclaw__workspace_memory_remember',
+      'mcp__happyclaw__workspace_memory_update',
+      'mcp__happyclaw__workspace_memory_forget',
+      'mcp__happyclaw__happyclaw_owner_profile',
+    ]) {
+      expect(matcher.test(name)).toBe(true);
+    }
+    for (const name of [
+      'Bash',
+      'mcp__happyclaw__workspace_memory_search',
+      'mcp__happyclaw__workspace_memory_get',
+      'mcp__happyclaw__workspace_memory_update_extra',
+      'mcp__other__workspace_memory_update',
+    ]) {
+      expect(matcher.test(name)).toBe(false);
+    }
+  });
+
+  test('marks read-only and always-loaded HappyClaw tools for Claude Code', () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'workspace-tool-hints-'),
+    );
+    roots.push(root);
+    const tools = new Map(
+      createMcpTools(context(root)).map((tool) => [tool.name, tool]),
+    );
+    expect(tools.get('get_channel_context')).toMatchObject({
+      annotations: { readOnlyHint: true },
+      _meta: { 'anthropic/alwaysLoad': true },
+    });
+    expect(tools.get('workspace_memory_search')).toMatchObject({
+      annotations: { readOnlyHint: true },
+      _meta: { 'anthropic/alwaysLoad': true },
+    });
+    expect(tools.get('send_message')?._meta).toEqual({
+      'anthropic/alwaysLoad': true,
+    });
+    expect(
+      tools.get('send_message')?.annotations?.readOnlyHint,
+    ).toBeUndefined();
+    expect(tools.get('list_tasks')?.annotations?.readOnlyHint).toBe(true);
+    expect(tools.get('list_tasks')?._meta).toBeUndefined();
+    expect(
+      tools.get('workspace_memory_remember')?.annotations?.readOnlyHint,
+    ).toBeUndefined();
   });
 
   test('SDK sub-agent write calls are denied while top-level calls pass', async () => {

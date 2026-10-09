@@ -12,6 +12,22 @@ const OWNER_PROFILE_TOOLS = new Set([
   'mcp__happyclaw__happyclaw_owner_profile',
 ]);
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * PreToolUse matcher (a regular expression on the tool name) for the guard
+ * below. Every hook callback costs a control round-trip between Claude Code
+ * and the runner, so the guard only runs for the tools it can deny.
+ */
+export const WORKSPACE_MEMORY_WRITE_GUARD_MATCHER = `^(${[
+  ...WRITE_TOOLS,
+  ...OWNER_PROFILE_TOOLS,
+]
+  .map(escapeRegExp)
+  .join('|')})$`;
+
 /** Sub-agents inherit the MCP server, so enforce read-only access in a hook. */
 export function createWorkspaceMemoryWriteGuard(): HookCallback {
   return async (input) => {

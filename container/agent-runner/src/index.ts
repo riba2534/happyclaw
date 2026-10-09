@@ -84,7 +84,10 @@ import {
   loadWorkspaceMemoryTurnContext,
 } from './workspace-memory-context.js';
 import { loadHappyClawOwnerProfileTurnContext } from './owner-profile-context.js';
-import { createWorkspaceMemoryWriteGuard } from './workspace-memory-runtime.js';
+import {
+  createWorkspaceMemoryWriteGuard,
+  WORKSPACE_MEMORY_WRITE_GUARD_MATCHER,
+} from './workspace-memory-runtime.js';
 import {
   parseAgentMcpPolicyMode,
   resolveAgentMcpPolicy,
@@ -2955,6 +2958,7 @@ async function runQueryAttempt(
       hooks: {
         PreToolUse: [
           {
+            matcher: WORKSPACE_MEMORY_WRITE_GUARD_MATCHER,
             hooks: [createWorkspaceMemoryWriteGuard()],
           },
         ],
