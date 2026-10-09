@@ -100,14 +100,14 @@ export function SessionSidebar({
       data-hc-session-sidebar
       className="flex h-full min-h-0 w-full flex-col bg-transparent"
     >
-      <div className="border-b border-border/80 px-3 py-3">
+      <div className="border-b border-surface-border px-3 py-3">
         <div className="flex items-center justify-between gap-2">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <div className="truncate text-[13px] font-semibold text-foreground">
+              <div className="truncate text-title-sm text-foreground">
                 {title || '会话'}
               </div>
-              <span className="rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary dark:bg-brand-700/15 dark:text-brand-300">
+              <span className="rounded-md bg-muted px-1.5 py-0.5 text-micro font-medium text-muted-foreground tabular-nums">
                 {totalCount}
               </span>
             </div>
@@ -118,7 +118,7 @@ export function SessionSidebar({
                 onClick={onCreateSession}
                 disabled={isCreatingSession}
                 aria-busy={isCreatingSession}
-                className="grid min-h-9 min-w-9 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 cursor-pointer"
+                className="grid min-h-9 min-w-9 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 cursor-pointer"
                 title={createSessionLabel}
                 aria-label={
                   isCreatingSession
@@ -139,7 +139,7 @@ export function SessionSidebar({
             {onClose && (
               <button
                 onClick={onClose}
-                className="grid min-h-9 min-w-9 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer"
+                className="grid min-h-9 min-w-9 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer"
                 title="返回工作区"
                 aria-label="返回工作区"
               >
@@ -151,14 +151,14 @@ export function SessionSidebar({
 
         {showNavigationTools && (
           <>
-            <label className="mt-3 flex min-h-9 items-center gap-2 rounded-md border border-border bg-background px-2.5 focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-ring/20">
+            <label className="mt-3 flex min-h-9 items-center gap-2 rounded-lg border border-input bg-background px-2.5 focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
               <span className="sr-only">搜索{sessionNoun}</span>
               <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder={`搜索 ${totalCount} 个${sessionNoun}…`}
-                className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+                className="min-w-0 flex-1 bg-transparent text-base outline-none placeholder:text-faint-foreground"
               />
             </label>
             <div className="mt-2 flex items-center gap-1" aria-label="会话范围">
@@ -191,7 +191,7 @@ export function SessionSidebar({
         />
 
         {visibleSessions.length === 0 ? (
-          <div className="px-3 py-8 text-center text-[11px] leading-5 text-muted-foreground">
+          <div className="px-3 py-8 text-center text-caption text-muted-foreground">
             {sessions.length === 0
               ? `暂无其他${sessionNoun}`
               : `没有匹配的${sessionNoun}`}
@@ -201,7 +201,7 @@ export function SessionSidebar({
                   setQuery('');
                   setScope('all');
                 }}
-                className="mx-auto mt-2 block min-h-9 rounded-md px-3 text-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer"
+                className="mx-auto mt-2 block min-h-9 cursor-pointer rounded-md px-3 text-foreground hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
               >
                 清除筛选
               </button>
@@ -271,10 +271,10 @@ function FilterButton({
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        'min-h-7 rounded-md px-2 text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer',
+        'min-h-8 cursor-pointer rounded-md px-2.5 text-caption transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none',
         active
-          ? 'bg-secondary font-medium text-foreground'
-          : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+          ? 'bg-surface-selected font-medium text-foreground'
+          : 'text-muted-foreground hover:bg-surface-hover hover:text-foreground',
       )}
     >
       {children}
@@ -320,10 +320,10 @@ function SessionRow({
   return (
     <div
       className={cn(
-        'group flex min-h-11 items-center gap-1 rounded-md transition-colors',
+        'group flex min-h-12 items-center gap-1 rounded-lg transition-colors',
         active
-          ? 'bg-primary/10 text-primary ring-1 ring-inset ring-primary/15'
-          : 'text-foreground hover:bg-muted/70',
+          ? 'bg-surface-selected text-foreground'
+          : 'text-foreground hover:bg-surface-hover',
       )}
     >
       <button
@@ -334,27 +334,24 @@ function SessionRow({
         {titleGenerating ? (
           <Loader2 className="mt-1 h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
         ) : running ? (
-          <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-success" />
+          <span className="mt-1.5 h-2 w-2 shrink-0 animate-pulse rounded-full bg-primary" />
         ) : linkedCount > 0 ? (
           <MessageSquare className="mt-1 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         ) : (
           <span
             className={cn(
               'mt-1.5 h-2 w-2 shrink-0 rounded-full',
-              active ? 'bg-primary' : 'bg-border',
+              active ? 'bg-foreground/60' : 'bg-border',
             )}
           />
         )}
         <span className="min-w-0 flex-1">
           <span
-            className={cn(
-              'block truncate text-[12px] leading-4',
-              active && 'font-medium',
-            )}
+            className={cn('block truncate text-body', active && 'font-medium')}
           >
             {name}
           </span>
-          <span className="mt-0.5 block truncate text-[10px] leading-4 text-muted-foreground">
+          <span className="mt-0.5 block truncate text-caption text-muted-foreground">
             {meta}
           </span>
         </span>
@@ -374,29 +371,19 @@ function SessionRow({
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-36">
             {onBind && (
-              <DropdownMenuItem
-                onClick={onBind}
-                className="transition-[background-color,box-shadow] duration-150 ease-out hover:bg-accent hover:text-accent-foreground hover:shadow-md focus:shadow-md data-[highlighted]:bg-accent data-[highlighted]:shadow-md active:shadow-none"
-              >
+              <DropdownMenuItem onClick={onBind}>
                 <Link className="h-4 w-4" />
                 会话绑定
               </DropdownMenuItem>
             )}
             {!isMain && !readonlyTitle && onRename && (
-              <DropdownMenuItem
-                onClick={onRename}
-                className="transition-[background-color,box-shadow] duration-150 ease-out hover:bg-accent hover:text-accent-foreground hover:shadow-md focus:shadow-md data-[highlighted]:bg-accent data-[highlighted]:shadow-md active:shadow-none"
-              >
+              <DropdownMenuItem onClick={onRename}>
                 <Pencil className="h-4 w-4" />
                 重命名
               </DropdownMenuItem>
             )}
             {!isMain && onDelete && (
-              <DropdownMenuItem
-                variant="destructive"
-                onClick={onDelete}
-                className="transition-[background-color,box-shadow] duration-150 ease-out hover:bg-destructive/10 hover:text-destructive hover:shadow-md focus:shadow-md data-[highlighted]:bg-destructive/10 data-[highlighted]:shadow-md active:shadow-none"
-              >
+              <DropdownMenuItem variant="destructive" onClick={onDelete}>
                 <Trash2 className="h-4 w-4" />
                 删除
               </DropdownMenuItem>
