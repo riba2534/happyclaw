@@ -6,8 +6,8 @@ import { PageContainer } from '@/components/common/PageContainer';
 import { PageTopBar } from '@/components/common/PageTopBar';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
-  Callout,
   CapabilityActionsSlotContext,
+  CapabilityPageNoteContext,
 } from '@/components/capabilities/capability-ui';
 import { McpServersPage } from './McpServersPage';
 import { PluginsPage } from './PluginsPage';
@@ -55,22 +55,27 @@ export function CapabilitiesPage() {
       </PageTopBar>
 
       <PageContainer size="full" className="space-y-4 lg:px-6 lg:py-5">
-        <Callout>
-          在这里安装和管理可复用资源；到具体智能体的“能力配置”中决定是否启用。
-          工作区自带的 CLAUDE.md、.claude/skills 与项目 MCP 不在这里分配。
-        </Callout>
-
-        <CapabilityActionsSlotContext.Provider value={actionsSlot}>
-          <TabsContent value="skills">
-            <SkillsPage />
-          </TabsContent>
-          <TabsContent value="mcp">
-            <McpServersPage />
-          </TabsContent>
-          <TabsContent value="plugins">
-            <PluginsPage />
-          </TabsContent>
-        </CapabilityActionsSlotContext.Provider>
+        {/* Each tab folds this note into its own notice. */}
+        <CapabilityPageNoteContext.Provider
+          value={
+            <>
+              在这里安装和管理可复用资源；到具体智能体的“能力配置”中决定是否启用。
+              工作区自带的 CLAUDE.md、.claude/skills 与项目 MCP 不在这里分配。
+            </>
+          }
+        >
+          <CapabilityActionsSlotContext.Provider value={actionsSlot}>
+            <TabsContent value="skills">
+              <SkillsPage />
+            </TabsContent>
+            <TabsContent value="mcp">
+              <McpServersPage />
+            </TabsContent>
+            <TabsContent value="plugins">
+              <PluginsPage />
+            </TabsContent>
+          </CapabilityActionsSlotContext.Provider>
+        </CapabilityPageNoteContext.Provider>
       </PageContainer>
     </Tabs>
   );

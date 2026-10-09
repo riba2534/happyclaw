@@ -1,4 +1,4 @@
-import { Lock, Puzzle } from 'lucide-react';
+import { Lock } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import {
@@ -7,7 +7,6 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import {
-  CapabilityMedia,
   capabilityRowButtonClass,
   capabilityRowClass,
 } from '@/components/capabilities/capability-ui';
@@ -39,13 +38,12 @@ export function SkillCard({ skill, selected, onSelect }: SkillCardProps) {
         onClick={onSelect}
         className={capabilityRowButtonClass}
       >
-        <CapabilityMedia icon={Puzzle} />
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-center gap-1.5">
             <span className="truncate text-body font-medium text-foreground">
               {skill.name}
             </span>
-            {skill.userInvocable && <Badge variant="outline">可调用</Badge>}
+            {skill.userInvocable && <Badge variant="neutral">可调用</Badge>}
             {conflictLabel && (
               <Badge variant={skill.effective ? 'success' : 'warning'}>
                 {conflictLabel}

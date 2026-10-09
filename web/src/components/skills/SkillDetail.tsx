@@ -286,7 +286,7 @@ export function SkillDetail({ skillId, onDeleted }: SkillDetailProps) {
                   ? '宿主机'
                   : 'HappyClaw 内置'}
             </Badge>
-            {detail.userInvocable && <Badge variant="outline">可调用</Badge>}
+            {detail.userInvocable && <Badge variant="neutral">可调用</Badge>}
           </div>
 
           {detail.source !== 'user' ? (
@@ -385,7 +385,7 @@ export function SkillDetail({ skillId, onDeleted }: SkillDetailProps) {
       )}
 
       {/* 底部操作区 */}
-      <div className="border-t border-surface-border bg-muted/40 px-5 py-3">
+      <div className="border-t border-surface-border bg-surface-hover px-5 py-3">
         <p className="text-caption text-muted-foreground">
           {detail.source === 'user'
             ? detail.packageName

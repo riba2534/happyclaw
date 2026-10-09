@@ -1,4 +1,10 @@
-import { createContext, useContext, type ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  type ReactNode,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { AlertTriangle, CircleCheck, CircleX, Info } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -28,7 +34,7 @@ export function CapabilitySectionActions({
 }
 
 const calloutTones = {
-  muted: { className: 'bg-muted/50 text-muted-foreground', icon: Info },
+  muted: { className: 'bg-surface-hover text-muted-foreground', icon: Info },
   warning: { className: 'bg-warning/10 text-warning', icon: AlertTriangle },
   error: { className: 'bg-error/10 text-error', icon: CircleX },
   success: { className: 'bg-success/10 text-success', icon: CircleCheck },
@@ -68,6 +74,50 @@ export function Callout({
         />
       )}
       <div className="min-w-0 flex-1">{children}</div>
+    </div>
+  );
+}
+
+/**
+ * Page-level note owned by CapabilitiesPage. Each tab merges it with its own
+ * note so the page shows a single notice instead of two stacked bars.
+ */
+export const CapabilityPageNoteContext = createContext<ReactNode>(null);
+
+export function CapabilityNotice({ children }: { children: ReactNode }) {
+  const pageNote = useContext(CapabilityPageNoteContext);
+  return (
+    <Callout>
+      {pageNote && <p>{pageNote}</p>}
+      <p className={cn(pageNote && 'mt-1')}>{children}</p>
+    </Callout>
+  );
+}
+
+/**
+ * Search / filter row with the tab summary at its end. Sized by its own width
+ * so the filters never clip when the page column is narrow.
+ */
+export function CapabilityToolbar({
+  summary,
+  children,
+}: {
+  summary: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="@container">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        {children}
+        <p
+          className={cn(
+            'text-caption text-muted-foreground tabular-nums',
+            children && '@5xl:ml-auto',
+          )}
+        >
+          {summary}
+        </p>
+      </div>
     </div>
   );
 }
@@ -112,8 +162,10 @@ export function capabilityRowClass(selected: boolean) {
   );
 }
 
+// The focus ring is drawn by a pseudo-element over the whole row, so it
+// follows the row shape and also frames the trailing lock / switch.
 export const capabilityRowButtonClass =
-  'flex min-w-0 flex-1 items-start gap-3 py-3 pl-4 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:ring-inset';
+  'flex min-w-0 flex-1 items-start gap-3 py-3 pl-4 text-left outline-none after:pointer-events-none after:absolute after:inset-1 after:rounded-lg focus-visible:after:ring-2 focus-visible:after:ring-ring/50';
 
 export function CapabilityMedia({
   icon: Icon,
@@ -126,12 +178,68 @@ export function CapabilityMedia({
     <span
       aria-hidden="true"
       className={cn(
-        'grid size-8 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground',
+        'grid size-8 shrink-0 place-items-center rounded-lg text-muted-foreground ring-1 ring-surface-border',
         className,
       )}
     >
       <Icon className="size-4" />
     </span>
+  );
+}
+
+/**
+ * Desktop detail column: sticks under the top bar and makes the panel itself
+ * the scroll frame, so its border stays put while the content scrolls. The
+ * height tracks the panel's on-screen top, keeping the bottom edge visible
+ * before the page has scrolled far enough for the panel to stick.
+ */
+export function StickyDetailPane({ children }: { children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    let scroller = el.parentElement;
+    while (
+      scroller &&
+      !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)
+    ) {
+      scroller = scroller.parentElement;
+    }
+    let frame = 0;
+    const fit = () => {
+      frame = 0;
+      const bottom = scroller
+        ? scroller.getBoundingClientRect().bottom
+        : window.innerHeight;
+      const top = el.getBoundingClientRect().top;
+      el.style.maxHeight = `${Math.max(240, bottom - top - 16)}px`;
+    };
+    const schedule = () => {
+      if (!frame) frame = requestAnimationFrame(fit);
+    };
+    fit();
+    const target: HTMLElement | Window = scroller ?? window;
+    target.addEventListener('scroll', schedule, { passive: true });
+    window.addEventListener('resize', schedule);
+    // Notices above the grid can appear or wrap without any scroll event.
+    const observer = new ResizeObserver(schedule);
+    observer.observe(scroller?.firstElementChild ?? document.body);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      target.removeEventListener('scroll', schedule);
+      window.removeEventListener('resize', schedule);
+    };
+  }, []);
+
+  return (
+    <div
+      ref={ref}
+      className="sticky top-16 flex max-h-[calc(var(--app-canvas-h)-5rem)] flex-col *:data-[slot=detail-panel]:min-h-0 *:data-[slot=detail-panel]:overflow-y-auto"
+    >
+      {children}
+    </div>
   );
 }
 
@@ -147,7 +255,9 @@ export function DetailPanel({
     <div
       data-slot="detail-panel"
       className={cn(
-        'overflow-hidden rounded-xl bg-surface-raised ring-1 ring-surface-border',
+        // `clip` rounds the corners without becoming a scroll container, so
+        // the panel keeps its content height inside flex sheets.
+        'overflow-clip rounded-xl bg-surface-raised ring-1 ring-surface-border',
         className,
       )}
     >
@@ -206,10 +316,10 @@ export function ChoiceCard({
       aria-pressed={selected}
       onClick={onSelect}
       className={cn(
-        'flex items-start gap-2.5 rounded-lg px-3 py-2.5 text-left ring-1 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50',
+        'flex items-start gap-2.5 rounded-lg px-3 py-2.5 text-left ring-1 transition-colors duration-100 outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50',
         selected
-          ? 'bg-surface-selected ring-foreground/25'
-          : 'bg-background ring-surface-border hover:bg-surface-hover',
+          ? 'bg-surface-selected ring-primary/60'
+          : 'bg-transparent ring-surface-border hover:bg-surface-hover',
       )}
     >
       <span

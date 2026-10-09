@@ -4,7 +4,6 @@ import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import {
-  CapabilityMedia,
   capabilityRowButtonClass,
   capabilityRowClass,
 } from '@/components/capabilities/capability-ui';
@@ -26,6 +25,7 @@ export function McpServerCard({
   const [toggling, setToggling] = useState(false);
 
   const isHttpType = server.type === 'http' || server.type === 'sse';
+  const TypeIcon = isHttpType ? Globe : Terminal;
   const isImported = server.importedFromHost || server.syncedFromHost;
   const hasConflict = server.conflictSources.length > 1;
   const preview =
@@ -64,14 +64,17 @@ export function McpServerCard({
         onClick={onSelect}
         className={capabilityRowButtonClass}
       >
-        <CapabilityMedia icon={isHttpType ? Globe : Terminal} />
+        <TypeIcon
+          aria-hidden="true"
+          className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+        />
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-center gap-1.5">
             <span className="truncate text-body font-medium text-foreground">
               {server.id}
             </span>
             {isHttpType && (
-              <Badge variant="outline">{server.type?.toUpperCase()}</Badge>
+              <Badge variant="neutral">{server.type?.toUpperCase()}</Badge>
             )}
             {isImported && (
               <Badge variant="neutral">

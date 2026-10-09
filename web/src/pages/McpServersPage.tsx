@@ -15,8 +15,11 @@ import {
   Callout,
   CapabilityListSection,
   CapabilityListSkeleton,
+  CapabilityNotice,
   CapabilitySectionActions,
+  CapabilityToolbar,
   DetailPanel,
+  StickyDetailPane,
 } from '@/components/capabilities/capability-ui';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { useMcpServersStore } from '../stores/mcp-servers';
@@ -187,23 +190,22 @@ export function McpServersPage() {
         </Button>
       </CapabilitySectionActions>
 
-      <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:gap-3">
+      <CapabilityNotice>
+        这里管理 HappyClaw 额外提供的 MCP，再由各智能体决定是否允许使用。
+        继承宿主机 ~/.claude 的智能体会自动获得宿主机全部 MCP，无需导入或勾选。
+        密钥写入后不会再次显示；STDIO 命令会在智能体的实际运行环境中执行。
+      </CapabilityNotice>
+
+      <CapabilityToolbar
+        summary={`我的 ${servers.filter((server) => server.source === 'user').length} · 系统 ${servers.filter((server) => server.source === 'system').length} · 启用 ${enabledCount}${importedCount > 0 ? ` · 宿主机副本 ${importedCount}` : ''}`}
+      >
         <SearchInput
           value={searchQuery}
           onChange={setSearchQuery}
           placeholder="搜索 ID、命令或 URL"
-          className="w-full lg:w-72"
+          className="w-full @lg:w-72"
         />
-        <p className="text-caption text-muted-foreground tabular-nums lg:ml-auto">
-          {`我的 ${servers.filter((server) => server.source === 'user').length} · 系统 ${servers.filter((server) => server.source === 'system').length} · 启用 ${enabledCount}${importedCount > 0 ? ` · 宿主机副本 ${importedCount}` : ''}`}
-        </p>
-      </div>
-
-      <Callout>
-        这里管理 HappyClaw 额外提供的 MCP，再由各智能体决定是否允许使用。
-        继承宿主机 ~/.claude 的智能体会自动获得宿主机全部 MCP，无需导入或勾选。
-        密钥写入后不会再次显示；STDIO 命令会在智能体 的实际运行环境中执行。
-      </Callout>
+      </CapabilityToolbar>
 
       {/* Sync message toast */}
       {syncMessage && (
@@ -235,7 +237,7 @@ export function McpServersPage() {
               description={
                 searchQuery ? undefined : '点击"添加"按钮添加第一个 MCP 服务器'
               }
-              className="border"
+              className="border border-surface-border"
             />
           ) : (
             <>
@@ -261,9 +263,7 @@ export function McpServersPage() {
 
         {/* Right detail (desktop) */}
         <div className={hasRows ? 'hidden min-w-0 lg:block' : 'hidden'}>
-          <div className="sticky top-16 max-h-[calc(var(--app-canvas-h)-5rem)] overflow-y-auto p-px">
-            {isDesktop && detail}
-          </div>
+          <StickyDetailPane>{isDesktop && detail}</StickyDetailPane>
         </div>
       </div>
 

@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
@@ -138,12 +139,16 @@ export function AddMcpServerDialog({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && handleClose()}>
-      <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-lg">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>添加 MCP 服务器</DialogTitle>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form
+          id="add-mcp-server-form"
+          onSubmit={handleSubmit}
+          className="space-y-4"
+        >
           {isAdmin && (
             <div>
               <Label className="mb-1.5">归属范围</Label>
@@ -424,30 +429,30 @@ export function AddMcpServerDialog({
               disabled={submitting}
             />
           </div>
-
-          {/* Actions */}
-          <div className="flex items-center justify-end gap-3 pt-2">
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={handleClose}
-              disabled={submitting}
-            >
-              取消
-            </Button>
-            <Button
-              type="submit"
-              disabled={
-                submitting ||
-                !id.trim() ||
-                (isHttpType ? !url.trim() : !command.trim())
-              }
-            >
-              {submitting && <Loader2 className="size-4 animate-spin" />}
-              添加
-            </Button>
-          </div>
         </form>
+
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={handleClose}
+            disabled={submitting}
+          >
+            取消
+          </Button>
+          <Button
+            type="submit"
+            form="add-mcp-server-form"
+            disabled={
+              submitting ||
+              !id.trim() ||
+              (isHttpType ? !url.trim() : !command.trim())
+            }
+          >
+            {submitting && <Loader2 className="animate-spin" />}
+            添加
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

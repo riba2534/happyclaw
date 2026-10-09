@@ -437,37 +437,13 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
               </div>
             )}
           </div>
-
-          <div className="flex gap-2">
-            <Button
-              type="button"
-              disabled={
-                saving || (isHttp ? !editUrl.trim() : !editCommand.trim())
-              }
-              onClick={() => void saveEdit()}
-            >
-              <Save />
-              {saving ? '保存中…' : '保存'}
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              disabled={saving}
-              onClick={() => {
-                setEditing(false);
-                setSecretRows(null);
-              }}
-            >
-              取消
-            </Button>
-          </div>
         </div>
       ) : (
         <div className="space-y-4 border-t border-surface-border px-5 py-4">
           {server.runtimeAvailable !== false && (
             <>
               <Field label={isHttp ? '连接地址' : '命令'}>
-                <div className="break-all rounded-lg bg-muted/60 px-3 py-2 font-mono text-caption text-foreground">
+                <div className="break-all rounded-lg bg-surface-selected px-3 py-2 font-mono text-caption text-foreground">
                   {isHttp ? server.url : server.command}
                 </div>
               </Field>
@@ -477,7 +453,7 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
                     {server.args.map((arg, index) => (
                       <code
                         key={index}
-                        className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-caption text-foreground"
+                        className="rounded-md bg-surface-selected px-1.5 py-0.5 font-mono text-caption text-foreground"
                       >
                         {arg}
                       </code>
@@ -521,6 +497,33 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
               ? '这是从宿主机导入的独立副本，后续导入不会覆盖它。'
               : '修改会影响新启动的智能体运行环境。已有密钥不会通过 API 或界面再次显示。'}
           </Callout>
+        </div>
+      )}
+
+      {/* Edit actions stay pinned to the bottom of the scrolling panel. */}
+      {editing && (
+        <div className="sticky bottom-0 flex justify-end gap-2 border-t border-surface-border bg-surface-raised px-5 py-3">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={saving}
+            onClick={() => {
+              setEditing(false);
+              setSecretRows(null);
+            }}
+          >
+            取消
+          </Button>
+          <Button
+            type="button"
+            disabled={
+              saving || (isHttp ? !editUrl.trim() : !editCommand.trim())
+            }
+            onClick={() => void saveEdit()}
+          >
+            <Save />
+            {saving ? '保存中…' : '保存'}
+          </Button>
         </div>
       )}
     </DetailPanel>

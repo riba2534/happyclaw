@@ -54,6 +54,7 @@ import {
 import { cn } from '@/lib/utils';
 import { confirmDialog } from '@/stores/confirm';
 import {
+  AgentControlRow,
   AgentSection,
   AgentSubheading,
   ChoiceCardBody,
@@ -1299,7 +1300,7 @@ export function AgentProfilesPage() {
   return (
     <div className="min-h-full bg-background lg:flex">
       <aside className="border-b border-surface-border lg:sticky lg:top-0 lg:flex lg:h-(--app-canvas-h) lg:w-64 lg:flex-none lg:flex-col lg:border-r lg:border-b-0">
-        <div className="flex h-12 shrink-0 items-center gap-1 pr-2 pl-4">
+        <div className="flex h-12 shrink-0 items-center gap-1 pr-2 pl-4 lg:border-b lg:border-surface-border">
           <h2 className="min-w-0 flex-1 truncate text-title-sm text-foreground">
             智能体
             <span className="ml-1.5 text-caption font-normal text-muted-foreground tabular-nums">
@@ -1325,7 +1326,7 @@ export function AgentProfilesPage() {
         </div>
 
         {customProfiles.length > 0 && (
-          <div className="hidden px-3 pb-2 lg:block">
+          <div className="hidden px-3 py-2 lg:block">
             <SearchInput
               value={listQuery}
               onChange={setListQuery}
@@ -1549,15 +1550,15 @@ export function AgentProfilesPage() {
           </PageContainer>
         ) : (
           <>
-            <header className="sticky top-0 z-10 border-b border-surface-border bg-background/90 backdrop-blur supports-backdrop-filter:bg-background/75">
-              <div className="mx-auto flex h-14 w-full max-w-4xl items-center gap-3 px-4 sm:px-6 lg:px-8">
+            <header className="sticky top-0 z-10 h-12 border-b border-surface-border bg-background">
+              <div className="mx-auto flex h-full w-full max-w-4xl items-center gap-2.5 px-4 sm:px-6 lg:px-8">
                 <EmojiAvatar
                   {...editorAvatar}
                   fallbackChar={name || 'A'}
-                  size="md"
+                  size="sm"
                 />
                 <div className="flex min-w-0 flex-1 items-center gap-2">
-                  <h1 className="truncate text-title-lg text-foreground">
+                  <h1 className="truncate text-title-sm text-foreground">
                     {name.trim() || '新智能体'}
                   </h1>
                   {draftMode ? (
@@ -1817,7 +1818,7 @@ export function AgentProfilesPage() {
                       </p>
                     )}
                   </div>
-                  <SettingsRow
+                  <AgentControlRow
                     label="模型配置"
                     description="该智能体所属的所有工作区、会话和定时任务都会使用这里解析出的完整模型网关环境。未启用的配置不会参与系统自动选择，但仍可由智能体显式使用。"
                     control={
@@ -1827,7 +1828,7 @@ export function AgentProfilesPage() {
                       >
                         <SelectTrigger
                           aria-label="智能体模型配置"
-                          className="w-full sm:w-64"
+                          className="w-full"
                         >
                           <SelectValue placeholder="选择模型配置" />
                         </SelectTrigger>
@@ -1849,7 +1850,7 @@ export function AgentProfilesPage() {
                       </Select>
                     }
                   />
-                  <SettingsRow
+                  <AgentControlRow
                     label="推理努力档位"
                     description="“跟随模型配置”保留 Provider 高级设置中的 CLAUDE_CODE_EFFORT_LEVEL；显式档位通过 Agent SDK 传入并覆盖该环境变量。不支持所选档位的模型会由 Claude 静默降级，实际值可在会话的 CLAUDE_EFFORT 环境变量中查看。"
                     control={
@@ -1861,7 +1862,7 @@ export function AgentProfilesPage() {
                       >
                         <SelectTrigger
                           aria-label="智能体推理努力档位"
-                          className="w-full sm:w-64"
+                          className="w-full"
                         >
                           <SelectValue placeholder="选择推理努力档位" />
                         </SelectTrigger>
@@ -2127,7 +2128,7 @@ export function AgentProfilesPage() {
                         >
                           <SelectTrigger
                             aria-label="智能体 MCP"
-                            className="w-full sm:w-72"
+                            className="w-full max-w-72"
                           >
                             <SelectValue />
                           </SelectTrigger>

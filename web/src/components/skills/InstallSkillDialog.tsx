@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   Loader2,
   Search,
@@ -9,11 +9,13 @@ import {
   GitBranch,
   FileArchive,
   Package,
+  Upload,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
@@ -22,6 +24,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ListGroup } from '@/components/common/ListRow';
+import { cn } from '@/lib/utils';
 import { useSkillsStore, type SearchResult } from '@/stores/skills';
 import { MarkdownRenderer } from '../chat/MarkdownRenderer';
 
@@ -135,7 +138,7 @@ function SearchResultItem({
               )}
 
               {detail.readme && (
-                <div className="mt-2 max-h-64 overflow-y-auto rounded-lg bg-muted/40 p-3 ring-1 ring-surface-border">
+                <div className="mt-2 max-h-64 overflow-y-auto rounded-lg bg-surface-hover p-3 ring-1 ring-surface-border">
                   <MarkdownRenderer content={detail.readme} variant="docs" />
                 </div>
               )}
@@ -200,6 +203,7 @@ export function InstallSkillDialog({
   const [gitSubdirectory, setGitSubdirectory] = useState('');
   const [archive, setArchive] = useState<File | null>(null);
   const [replaceExisting, setReplaceExisting] = useState(false);
+  const archiveInputRef = useRef<HTMLInputElement>(null);
 
   const { searching, searchResults, searchSkills } = useSkillsStore();
 
@@ -284,22 +288,45 @@ export function InstallSkillDialog({
 
   const isInstalling = installing || !!installingPkg;
 
+  // The footer submit button targets the active tab's form.
+  const submit =
+    tab === 'manual'
+      ? {
+          form: 'skill-install-manual',
+          label: '安装',
+          disabled: isInstalling || !pkg.trim(),
+        }
+      : tab === 'git'
+        ? {
+            form: 'skill-install-git',
+            label: '从 Git 导入',
+            disabled: isInstalling || !gitUrl.trim(),
+          }
+        : tab === 'zip'
+          ? {
+              form: 'skill-install-zip',
+              label: '导入 ZIP',
+              disabled: isInstalling || !archive,
+            }
+          : null;
+
   return (
     <Dialog open={open} onOpenChange={(v) => !v && handleClose()}>
-      <DialogContent className="flex max-h-[80vh] flex-col overflow-hidden sm:max-w-lg">
-        <DialogHeader>
+      {/* Fixed height so switching tabs never resizes or re-centers it. */}
+      <DialogContent className="flex h-[min(30rem,calc(100dvh-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg">
+        <DialogHeader className="shrink-0 px-4 pt-4 pb-2">
           <DialogTitle>安装技能</DialogTitle>
         </DialogHeader>
 
         <Tabs
           value={tab}
           onValueChange={(next) => setTab(next as Tab)}
-          className="min-h-0 flex-1 gap-4 overflow-hidden"
+          className="min-h-0 flex-1 gap-0"
         >
           <TabsList
             variant="line"
             aria-label="技能导入方式"
-            className="w-full shrink-0 justify-start border-b border-surface-border"
+            className="w-full shrink-0 justify-start border-b border-surface-border px-2.5"
           >
             <TabsTrigger
               value="search"
@@ -338,34 +365,32 @@ export function InstallSkillDialog({
           {/* Search Tab */}
           <TabsContent
             value="search"
-            className="flex min-h-0 flex-col gap-3 overflow-hidden"
+            className="flex min-h-0 flex-col gap-3 p-4"
           >
-            <form onSubmit={handleSearch} className="flex gap-2 shrink-0">
+            <form onSubmit={handleSearch} className="flex shrink-0 gap-2">
               <Input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="搜索关键词..."
+                aria-label="搜索技能市场"
                 disabled={searching || isInstalling}
                 className="flex-1"
               />
               <Button
                 type="submit"
                 variant="outline"
+                aria-label="搜索"
                 disabled={searching || isInstalling || !searchQuery.trim()}
               >
-                {searching ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  <Search className="size-4" />
-                )}
+                {searching ? <Loader2 className="animate-spin" /> : <Search />}
               </Button>
             </form>
 
             {/* Results */}
             <div className="min-h-0 flex-1 overflow-y-auto">
               {searching && (
-                <div className="flex items-center justify-center gap-2 py-8 text-body text-muted-foreground">
+                <div className="flex h-full items-center justify-center gap-2 text-body text-muted-foreground">
                   <Loader2 className="size-4 animate-spin" />
                   搜索中...
                 </div>
@@ -374,7 +399,7 @@ export function InstallSkillDialog({
               {!searching &&
                 searchResults.length === 0 &&
                 searchQuery.trim() && (
-                  <div className="py-8 text-center text-body text-muted-foreground">
+                  <div className="flex h-full items-center justify-center text-body text-muted-foreground">
                     未找到相关技能
                   </div>
                 )}
@@ -392,20 +417,24 @@ export function InstallSkillDialog({
                   ))}
                 </ListGroup>
               )}
-            </div>
 
-            {!searching &&
-              searchResults.length === 0 &&
-              !searchQuery.trim() && (
-                <p className="py-4 text-center text-caption text-muted-foreground">
-                  在 skills.sh 市场中搜索可用的技能包
-                </p>
-              )}
+              {!searching &&
+                searchResults.length === 0 &&
+                !searchQuery.trim() && (
+                  <p className="flex h-full items-center justify-center text-caption text-muted-foreground">
+                    在 skills.sh 市场中搜索可用的技能包
+                  </p>
+                )}
+            </div>
           </TabsContent>
 
           {/* Manual Tab */}
-          <TabsContent value="manual">
-            <form onSubmit={handleManualSubmit} className="space-y-4">
+          <TabsContent value="manual" className="overflow-y-auto p-4">
+            <form
+              id="skill-install-manual"
+              onSubmit={handleManualSubmit}
+              className="space-y-4"
+            >
               <div>
                 <label
                   htmlFor="skill-pkg"
@@ -425,26 +454,15 @@ export function InstallSkillDialog({
                   支持格式：owner/repo、owner/repo@skill 或 GitHub URL
                 </p>
               </div>
-
-              <div className="flex items-center justify-end gap-3 pt-2">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={handleClose}
-                  disabled={isInstalling}
-                >
-                  取消
-                </Button>
-                <Button type="submit" disabled={isInstalling || !pkg.trim()}>
-                  {isInstalling && <Loader2 className="size-4 animate-spin" />}
-                  安装
-                </Button>
-              </div>
             </form>
           </TabsContent>
 
-          <TabsContent value="git">
-            <form onSubmit={handleGitSubmit} className="space-y-4">
+          <TabsContent value="git" className="overflow-y-auto p-4">
+            <form
+              id="skill-install-git"
+              onSubmit={handleGitSubmit}
+              className="space-y-4"
+            >
               <div>
                 <label
                   htmlFor="skill-git-url"
@@ -498,17 +516,15 @@ export function InstallSkillDialog({
                 onChange={setReplaceExisting}
                 disabled={isInstalling}
               />
-              <DialogActions
-                onCancel={handleClose}
-                disabled={!gitUrl.trim() || isInstalling}
-                loading={isInstalling}
-                submitLabel="从 Git 导入"
-              />
             </form>
           </TabsContent>
 
-          <TabsContent value="zip">
-            <form onSubmit={handleArchiveSubmit} className="space-y-4">
+          <TabsContent value="zip" className="overflow-y-auto p-4">
+            <form
+              id="skill-install-zip"
+              onSubmit={handleArchiveSubmit}
+              className="space-y-4"
+            >
               <div>
                 <label
                   htmlFor="skill-archive"
@@ -516,13 +532,52 @@ export function InstallSkillDialog({
                 >
                   技能 ZIP 文件
                 </label>
-                <Input
+                <input
+                  ref={archiveInputRef}
                   id="skill-archive"
                   type="file"
                   accept=".zip,application/zip"
                   onChange={(e) => setArchive(e.target.files?.[0] ?? null)}
                   disabled={isInstalling}
+                  className="sr-only"
+                  tabIndex={-1}
                 />
+                <div
+                  className={cn(
+                    'flex items-center gap-3 rounded-lg border border-dashed px-3 py-2.5',
+                    archive ? 'border-surface-border' : 'border-input',
+                  )}
+                >
+                  <FileArchive
+                    aria-hidden="true"
+                    className="size-4 shrink-0 text-muted-foreground"
+                  />
+                  <span
+                    className={cn(
+                      'min-w-0 flex-1 truncate text-body',
+                      archive ? 'text-foreground' : 'text-muted-foreground',
+                    )}
+                    aria-live="polite"
+                  >
+                    {archive ? archive.name : '未选择文件'}
+                  </span>
+                  {archive && (
+                    <span className="shrink-0 text-caption text-muted-foreground tabular-nums">
+                      {formatFileSize(archive.size)}
+                    </span>
+                  )}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={isInstalling}
+                    onClick={() => archiveInputRef.current?.click()}
+                    className="shrink-0"
+                  >
+                    <Upload />
+                    {archive ? '重新选择' : '选择文件'}
+                  </Button>
+                </div>
                 <p className="mt-1.5 text-caption text-muted-foreground">
                   最大 10 MB，可包含一个或多个带 SKILL.md 的技能目录。
                 </p>
@@ -532,18 +587,35 @@ export function InstallSkillDialog({
                 onChange={setReplaceExisting}
                 disabled={isInstalling}
               />
-              <DialogActions
-                onCancel={handleClose}
-                disabled={isInstalling || !archive}
-                loading={isInstalling}
-                submitLabel="导入 ZIP"
-              />
             </form>
           </TabsContent>
         </Tabs>
+
+        <DialogFooter className="m-0 shrink-0">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={handleClose}
+            disabled={isInstalling}
+          >
+            取消
+          </Button>
+          {submit && (
+            <Button type="submit" form={submit.form} disabled={submit.disabled}>
+              {isInstalling && <Loader2 className="animate-spin" />}
+              {submit.label}
+            </Button>
+          )}
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
 }
 
 function ReplaceExistingCheckbox({
@@ -565,34 +637,5 @@ function ReplaceExistingCheckbox({
       />
       <span>覆盖同名用户级技能（默认遇到冲突时停止，不修改现有技能）</span>
     </label>
-  );
-}
-
-function DialogActions({
-  onCancel,
-  disabled,
-  loading,
-  submitLabel,
-}: {
-  onCancel: () => void;
-  disabled: boolean;
-  loading: boolean;
-  submitLabel: string;
-}) {
-  return (
-    <div className="flex items-center justify-end gap-3 pt-2">
-      <Button
-        type="button"
-        variant="ghost"
-        onClick={onCancel}
-        disabled={disabled}
-      >
-        取消
-      </Button>
-      <Button type="submit" disabled={disabled}>
-        {loading && <Loader2 className="size-4 animate-spin" />}
-        {submitLabel}
-      </Button>
-    </div>
   );
 }

@@ -15,7 +15,10 @@ import {
   Callout,
   CapabilityListSection,
   CapabilityListSkeleton,
+  CapabilityNotice,
   CapabilitySectionActions,
+  CapabilityToolbar,
+  StickyDetailPane,
 } from '@/components/capabilities/capability-ui';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { confirmDialog } from '@/stores/confirm';
@@ -124,30 +127,28 @@ export function SkillsPage() {
         </Button>
       </CapabilitySectionActions>
 
-      <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:gap-3">
+      <CapabilityNotice>
+        “我的 Skills”可安装和管理；HappyClaw 内置与宿主机 Skills
+        只读。智能体可以独立选择不使用、使用部分或使用全部宿主机
+        Skills，不必同时继承宿主机 Prompt 或 Rules。不同来源的同名项会并列显示。
+      </CapabilityNotice>
+
+      <CapabilityToolbar
+        summary={`我的 ${skills.filter((item) => item.source === 'user').length} · HappyClaw 内置 ${skills.filter((item) => item.source === 'project').length} · 宿主机 ${skills.filter((item) => item.source === 'external').length} · 启用 ${enabledCount}`}
+      >
         <SearchInput
           value={searchQuery}
           onChange={setSearchQuery}
           placeholder="搜索技能名称或描述"
-          className="w-full lg:w-72"
+          className="w-full @lg:w-72"
         />
         <SegmentedControl
           label="Skill 来源筛选"
           value={sourceFilter}
           options={SOURCE_FILTERS}
           onChange={setSourceFilter}
-          className="self-start lg:self-auto"
         />
-        <p className="text-caption text-muted-foreground tabular-nums lg:ml-auto">
-          {`我的 ${skills.filter((item) => item.source === 'user').length} · HappyClaw 内置 ${skills.filter((item) => item.source === 'project').length} · 宿主机 ${skills.filter((item) => item.source === 'external').length} · 启用 ${enabledCount}`}
-        </p>
-      </div>
-
-      <Callout>
-        “我的 Skills”可安装和管理；HappyClaw 内置与宿主机 Skills
-        只读。智能体可以独立选择不使用、使用部分或使用全部宿主机
-        Skills，不必同时继承宿主机 Prompt 或 Rules。不同来源的同名项会并列显示。
-      </Callout>
+      </CapabilityToolbar>
 
       <div
         className={
@@ -167,7 +168,7 @@ export function SkillsPage() {
             <EmptyState
               icon={Puzzle}
               title={searchQuery ? '没有找到匹配的技能' : '暂无技能'}
-              className="border"
+              className="border border-surface-border"
             />
           ) : (
             <>
@@ -212,14 +213,14 @@ export function SkillsPage() {
 
         {/* 右侧详情（桌面端） */}
         <div className={hasRows ? 'hidden min-w-0 lg:block' : 'hidden'}>
-          <div className="sticky top-16 max-h-[calc(var(--app-canvas-h)-5rem)] overflow-y-auto p-px">
+          <StickyDetailPane>
             {isDesktop && (
               <SkillDetail
                 skillId={selectedId}
                 onDeleted={() => setSelectedId(null)}
               />
             )}
-          </div>
+          </StickyDetailPane>
         </div>
       </div>
 

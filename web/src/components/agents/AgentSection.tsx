@@ -76,13 +76,46 @@ export function AgentSubheading({
   );
 }
 
+/**
+ * SettingsRow variant for wide controls (selects). It stacks by its own width
+ * rather than the viewport, so the control never overflows a group that the
+ * agent list column has squeezed.
+ */
+export function AgentControlRow({
+  label,
+  description,
+  control,
+}: {
+  label: ReactNode;
+  description?: ReactNode;
+  control: ReactNode;
+}) {
+  return (
+    <div data-slot="settings-row" className="@container px-4 py-3">
+      <div className="flex min-h-9 flex-col gap-2 @xl:flex-row @xl:items-center @xl:justify-between @xl:gap-6">
+        <div className="min-w-0">
+          <div className="text-body font-medium text-foreground">{label}</div>
+          {description && (
+            <div className="mt-0.5 text-caption leading-5 text-muted-foreground">
+              {description}
+            </div>
+          )}
+        </div>
+        <div className="flex w-full max-w-64 shrink-0 items-center @xl:w-64">
+          {control}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Radio-style option card shared by every single-choice picker here. */
 export function choiceCardClassName(checked: boolean, className?: string) {
   return cn(
     'flex items-start gap-2.5 rounded-lg px-3 py-2.5 text-left ring-1 transition-colors duration-100 outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50',
     checked
-      ? 'bg-surface-selected ring-foreground/25'
-      : 'bg-background ring-surface-border hover:bg-surface-hover',
+      ? 'bg-surface-selected ring-primary/60'
+      : 'bg-transparent ring-surface-border hover:bg-surface-hover',
     className,
   );
 }

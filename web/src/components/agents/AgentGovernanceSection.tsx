@@ -97,7 +97,7 @@ export function AgentGovernanceSection({
       ) : (
         <div className="grid gap-4 xl:grid-cols-2">
           <div className="min-w-0 space-y-2">
-            <div className="px-1 text-caption font-medium text-muted-foreground">
+            <div className="text-caption font-medium text-muted-foreground">
               工作区与运行态会话
             </div>
             <ListGroup className="max-h-72 overflow-y-auto">
@@ -202,7 +202,7 @@ export function AgentGovernanceSection({
           </div>
 
           <div className="min-w-0 space-y-2">
-            <div className="px-1 text-caption font-medium text-muted-foreground">
+            <div className="text-caption font-medium text-muted-foreground">
               渠道绑定
             </div>
             <ListGroup className="max-h-72 overflow-y-auto">

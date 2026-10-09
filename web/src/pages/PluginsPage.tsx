@@ -5,7 +5,6 @@ import {
   PowerOff,
   Puzzle,
   AlertTriangle,
-  X,
 } from 'lucide-react';
 import { EmptyState } from '@/components/common/EmptyState';
 import { IconButton } from '@/components/common/IconButton';
@@ -19,7 +18,9 @@ import {
 import {
   Callout,
   CapabilityListSkeleton,
+  CapabilityNotice,
   CapabilitySectionActions,
+  CapabilityToolbar,
 } from '@/components/capabilities/capability-ui';
 import {
   Dialog,
@@ -151,26 +152,17 @@ export function PluginsPage() {
         />
       </CapabilitySectionActions>
 
-      <p className="text-caption text-muted-foreground tabular-nums">
-        {`${marketplaces.length} 个 marketplace · ${totalPlugins} 个 plugin · 启用 ${enabledPlugins}`}
-      </p>
-
-      <Callout>
+      <CapabilityNotice>
         Plugin Catalog
         由管理员从宿主机导入并全局共享；下方启用状态仅属于当前用户。
         更改会在新建会话时生效，已运行的智能体不会热加载。
-      </Callout>
+      </CapabilityNotice>
 
-      {!loading && !error && marketplaces.length === 0 && (
-        <Callout>
-          v3 升级用户首次访问看到 0 plugin 是预期。
-          {isAdmin
-            ? '请点击右上 "扫描宿主机" 触发 catalog 导入；'
-            : '等 admin 完成导入后即可启用。'}
-        </Callout>
-      )}
+      <CapabilityToolbar
+        summary={`${marketplaces.length} 个 marketplace · ${totalPlugins} 个 plugin · 启用 ${enabledPlugins}`}
+      />
 
-      <div className="space-y-8 pt-2">
+      <div className="space-y-8">
         {loading && marketplaces.length === 0 ? (
           <CapabilityListSkeleton rows={3} />
         ) : error ? (
@@ -181,12 +173,12 @@ export function PluginsPage() {
           <EmptyState
             icon={Puzzle}
             title="还没有 plugin"
-            description={
+            description={`v3 升级用户首次访问看到 0 plugin 是预期。${
               isAdmin
                 ? '尚未导入任何 marketplace。点击右上 "扫描宿主机" 触发 catalog 导入。'
                 : 'admin 还未导入任何 marketplace，请稍后再来。'
-            }
-            className="border"
+            }`}
+            className="border border-surface-border"
           />
         ) : (
           marketplaces.map((mp) => (
@@ -306,7 +298,6 @@ export function PluginsPage() {
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>
-              <X />
               取消
             </Button>
             <Button variant="destructive" onClick={handleDelete}>
