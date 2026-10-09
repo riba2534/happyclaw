@@ -769,7 +769,8 @@ export function CreateTaskForm({
 
   return (
     <Dialog open onOpenChange={handleOpenChange}>
-      <DialogContent className="flex max-h-[90vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
+      {/* A fixed height keeps the dialog still when switching tabs. */}
+      <DialogContent className="flex h-[min(42rem,90vh)] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
         <div className="shrink-0 px-5 pt-5 pb-3 pr-12">
           <DialogTitle>创建定时任务</DialogTitle>
           <DialogDescription className="sr-only">

@@ -29,6 +29,7 @@ import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { cn } from '@/lib/utils';
 import { createUnsavedNavigationGuard } from '@/utils/unsaved-navigation';
 import {
+  ConfirmDialog,
   EmptyState,
   IconButton,
   ListGroup,
@@ -46,16 +47,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -934,6 +925,10 @@ export function MemoryPage() {
     await loadDetail(selectedItem.id, { discardDraft: true });
   };
 
+  // A search without hits clears the detail pane, unless it holds unsaved
+  // edits; the selection comes back once the query changes.
+  const shownItem = searchHits?.length === 0 && !dirty ? null : selectedItem;
+
   const itemSnippet = (itemId: string): string | undefined =>
     searchHits?.find((hit) => hit.item.id === itemId)?.snippet;
 
@@ -1164,7 +1159,7 @@ export function MemoryPage() {
                 aria-label="记忆详情"
                 className="min-w-0 overflow-hidden rounded-xl bg-surface-raised ring-1 ring-surface-border"
               >
-                {(isMobile || selectedItem) && (
+                {(isMobile || shownItem) && (
                   <div className="flex min-h-12 flex-wrap items-center gap-2 border-b border-surface-border px-3 py-2">
                     {isMobile && (
                       <IconButton
@@ -1173,11 +1168,11 @@ export function MemoryPage() {
                         onClick={() => setShowDetail(false)}
                       />
                     )}
-                    {selectedItem && (
+                    {shownItem && (
                       <>
-                        <MemoryKindBadge kind={selectedItem.kind} />
+                        <MemoryKindBadge kind={shownItem.kind} />
                         <Badge variant="outline" className="tabular-nums">
-                          Revision {selectedItem.revision}
+                          Revision {shownItem.revision}
                         </Badge>
                         {dirty && (
                           <span className="text-caption text-warning">
@@ -1223,7 +1218,7 @@ export function MemoryPage() {
                   </div>
                 )}
 
-                {!selectedItem && !detailLoading && (
+                {!shownItem && !detailLoading && (
                   <EmptyState
                     icon={FileText}
                     title="选择一条工作区记忆"
@@ -1232,10 +1227,10 @@ export function MemoryPage() {
                   />
                 )}
 
-                {selectedItem && (
+                {shownItem && (
                   <div className="space-y-5 p-4 sm:p-5">
                     <h2 className="text-title text-foreground">
-                      {selectedItem.title || '无标题记忆'}
+                      {shownItem.title || '无标题记忆'}
                     </h2>
 
                     {conflict && (
@@ -1273,7 +1268,7 @@ export function MemoryPage() {
                           来源
                         </dt>
                         <dd className="mt-0.5 text-body break-all text-foreground">
-                          {provenanceLabel(selectedItem.provenance)}
+                          {provenanceLabel(shownItem.provenance)}
                         </dd>
                       </div>
                       <div className="min-w-0">
@@ -1282,8 +1277,8 @@ export function MemoryPage() {
                         </dt>
                         <dd className="mt-0.5 text-body text-foreground tabular-nums">
                           {formatTime(
-                            selectedItem.provenance.observedAt ||
-                              selectedItem.createdAt,
+                            shownItem.provenance.observedAt ||
+                              shownItem.createdAt,
                           )}
                         </dd>
                       </div>
@@ -1292,8 +1287,8 @@ export function MemoryPage() {
                           最近修订
                         </dt>
                         <dd className="mt-0.5 text-body text-foreground tabular-nums">
-                          r{selectedItem.revision} ·{' '}
-                          {formatTime(selectedItem.updatedAt)}
+                          r{shownItem.revision} ·{' '}
+                          {formatTime(shownItem.updatedAt)}
                         </dd>
                       </div>
                     </dl>
@@ -1531,32 +1526,18 @@ export function MemoryPage() {
         </DialogContent>
       </Dialog>
 
-      <AlertDialog open={forgetOpen} onOpenChange={setForgetOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>忘记这条工作区记忆？</AlertDialogTitle>
-            <AlertDialogDescription>
-              它将从未来 Session 的 Workspace Memory 检索中移除，但不会删除来源
-              Session 或聊天历史。此操作使用当前 revision{' '}
-              {selectedItem?.revision ?? '—'}，若内容已更新会先提示冲突。
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={forgetting}>取消</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              disabled={forgetting}
-              onClick={(event) => {
-                event.preventDefault();
-                void handleForget();
-              }}
-            >
-              {forgetting && <Loader2 className="animate-spin" />}
-              确认忘记
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmDialog
+        open={forgetOpen}
+        onClose={() => {
+          if (!forgetting) setForgetOpen(false);
+        }}
+        onConfirm={() => void handleForget()}
+        title="忘记这条工作区记忆？"
+        message={`它将从未来 Session 的 Workspace Memory 检索中移除，但不会删除来源 Session 或聊天历史。此操作使用当前 revision ${selectedItem?.revision ?? '—'}，若内容已更新会先提示冲突。`}
+        confirmText="确认忘记"
+        confirmVariant="danger"
+        loading={forgetting}
+      />
     </PageContainer>
   );
 }

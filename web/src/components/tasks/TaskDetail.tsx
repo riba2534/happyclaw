@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import type { ComponentProps, ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { Pencil, RefreshCw, ShieldAlert } from 'lucide-react';
+import { History, Pencil, RefreshCw, ShieldAlert } from 'lucide-react';
 import { ScheduledTask, TaskRunLog, useTasksStore } from '../../stores/tasks';
 import type { ApiError } from '../../api/client';
 import { showToast } from '../../utils/toast';
@@ -34,6 +34,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../ui/dialog';
+import { EmptyState } from '@/components/common/EmptyState';
 import { IconButton } from '@/components/common/IconButton';
 import { ListGroup, ListRow } from '@/components/common/ListRow';
 import { SettingsSection } from '@/components/settings/SettingsLayout';
@@ -144,6 +145,9 @@ function formatDuration(ms: number): string {
   return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
 }
 
+/** Whether property rows hold 32px form controls (edit mode). */
+const PropertyEditingContext = createContext(false);
+
 /** Two-column property row: muted label on the left, value or control. */
 function Property({
   label,
@@ -154,12 +158,29 @@ function Property({
   hint?: ReactNode;
   children: ReactNode;
 }) {
+  const editing = useContext(PropertyEditingContext);
   return (
-    <div className="flex flex-col gap-1 px-4 py-2.5 sm:flex-row sm:gap-4">
-      <dt className="shrink-0 text-caption text-muted-foreground sm:w-24 sm:pt-2">
+    <div
+      className={cn(
+        'flex flex-col gap-1 px-4 sm:flex-row sm:gap-4',
+        editing ? 'py-2.5' : 'py-2',
+      )}
+    >
+      <dt
+        className={cn(
+          'shrink-0 text-caption text-muted-foreground sm:w-24',
+          // Align the label with a control's text, or with a read-only value.
+          editing ? 'sm:pt-2' : 'sm:pt-0.5',
+        )}
+      >
         {label}
       </dt>
-      <dd className="min-w-0 flex-1 text-body text-foreground sm:flex sm:min-h-8 sm:flex-col sm:justify-center">
+      <dd
+        className={cn(
+          'min-w-0 flex-1 text-body text-foreground',
+          editing && 'sm:flex sm:min-h-8 sm:flex-col sm:justify-center',
+        )}
+      >
         {children}
         {hint && (
           <div className="mt-1 text-caption text-muted-foreground">{hint}</div>
@@ -169,11 +190,19 @@ function Property({
   );
 }
 
-function PropertyGroup({ children }: { children: ReactNode }) {
+function PropertyGroup({
+  editing = false,
+  children,
+}: {
+  editing?: boolean;
+  children: ReactNode;
+}) {
   return (
-    <dl className="divide-y divide-surface-border overflow-hidden rounded-xl bg-surface-raised ring-1 ring-surface-border">
-      {children}
-    </dl>
+    <PropertyEditingContext.Provider value={editing}>
+      <dl className="divide-y divide-surface-border overflow-hidden rounded-xl bg-surface-raised ring-1 ring-surface-border">
+        {children}
+      </dl>
+    </PropertyEditingContext.Provider>
   );
 }
 
@@ -542,7 +571,7 @@ export function TaskDetail({ task, initialEditing = false }: TaskDetailProps) {
 
         {/* Schedule Details */}
         <SettingsSection title="调度">
-          <PropertyGroup>
+          <PropertyGroup editing={editing}>
             <Property label="执行方式">
               {task.execution_type === 'script' ? '脚本' : '智能体'}
             </Property>
@@ -627,7 +656,7 @@ export function TaskDetail({ task, initialEditing = false }: TaskDetailProps) {
                   />
                 )
               ) : task.schedule_type === 'cron' ? (
-                <code className="rounded bg-surface-selected px-1.5 py-0.5 font-mono text-caption text-muted-foreground">
+                <code className="w-fit self-start rounded bg-surface-selected px-1.5 py-0.5 font-mono text-caption text-muted-foreground">
                   {task.schedule_value}
                 </code>
               ) : (
@@ -656,7 +685,7 @@ export function TaskDetail({ task, initialEditing = false }: TaskDetailProps) {
         </SettingsSection>
 
         <SettingsSection title="执行">
-          <PropertyGroup>
+          <PropertyGroup editing={editing}>
             <Property
               label="执行模式"
               hint={
@@ -876,9 +905,11 @@ export function TaskDetail({ task, initialEditing = false }: TaskDetailProps) {
           }
         >
           {taskLogs.length === 0 ? (
-            <p className="rounded-xl px-4 py-6 text-center text-caption text-muted-foreground ring-1 ring-surface-border">
-              暂无执行记录
-            </p>
+            <EmptyState
+              icon={History}
+              title="暂无执行记录"
+              className="bg-surface-raised py-8 ring-1 ring-surface-border"
+            />
           ) : (
             <ListGroup aria-label="执行日志">
               {taskLogs.map((log: TaskRunLog) => {

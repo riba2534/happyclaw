@@ -33,13 +33,43 @@ import {
   SettingsRow,
   SettingsSection,
 } from '@/components/settings/SettingsLayout';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
 import { wsManager } from '../api/ws';
 import { api } from '@/api/client';
 
-export function MonitorPage() {
+type ClaudeStatusIndicator = 'none' | 'minor' | 'major' | 'critical';
+
+const CLAUDE_STATUS_DOT: Record<
+  ClaudeStatusIndicator,
+  'success' | 'warning' | 'error'
+> = {
+  none: 'success',
+  minor: 'warning',
+  major: 'error',
+  critical: 'error',
+};
+
+/** Refresh control, also rendered in the settings header when embedded. */
+export function MonitorRefreshButton() {
+  const loading = useMonitorStore((s) => s.loading);
+  const loadStatus = useMonitorStore((s) => s.loadStatus);
+  return (
+    <Button variant="outline" onClick={loadStatus} disabled={loading}>
+      <RefreshCw className={cn(loading && 'animate-spin')} />
+      刷新
+    </Button>
+  );
+}
+
+interface MonitorPageProps {
+  /** Rendered inside settings, which supplies the page frame and header. */
+  embedded?: boolean;
+}
+
+export function MonitorPage({ embedded = false }: MonitorPageProps) {
   const {
     status,
     loading,
@@ -55,7 +85,10 @@ export function MonitorPage() {
   );
   const logEndRef = useRef<HTMLDivElement>(null);
   const [providers, setProviders] = useState<SimpleProvider[]>([]);
-  const [claudeStatus, setClaudeStatus] = useState<string | null>(null);
+  const [claudeStatus, setClaudeStatus] = useState<{
+    description: string;
+    indicator: ClaudeStatusIndicator | null;
+  } | null>(null);
 
   useEffect(() => {
     loadStatus();
@@ -79,8 +112,18 @@ export function MonitorPage() {
           status?: { indicator?: string; description?: string };
         };
         if (!cancelled) {
+          const indicator = data.status?.indicator;
+          const description = data.status?.description || indicator;
           setClaudeStatus(
-            data.status?.description || data.status?.indicator || null,
+            description
+              ? {
+                  description,
+                  indicator:
+                    indicator && indicator in CLAUDE_STATUS_DOT
+                      ? (indicator as ClaudeStatusIndicator)
+                      : null,
+                }
+              : null,
           );
         }
       } catch {
@@ -203,21 +246,10 @@ export function MonitorPage() {
 
   const showPullLogs = pulling && pullLogs.length > 0;
 
-  return (
-    <PageContainer className="space-y-6">
-      <PageHeader
-        title="系统监控"
-        subtitle="实时监控系统状态（10秒自动刷新）"
-        actions={
-          <Button variant="outline" onClick={loadStatus} disabled={loading}>
-            <RefreshCw className={cn(loading && 'animate-spin')} />
-            刷新
-          </Button>
-        }
-      />
-
+  const content = (
+    <div className="space-y-6">
       {loading && !status && (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-3">
           {Array.from({ length: 3 }).map((_, index) => (
             <div
               key={index}
@@ -233,7 +265,7 @@ export function MonitorPage() {
 
       {status && (
         <>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-3">
             <ContainerStatus status={status} />
             <QueueStatus status={status} />
             <SystemInfo status={status} />
@@ -244,7 +276,21 @@ export function MonitorPage() {
               <SettingsRow
                 label="Anthropic 服务状态"
                 description={
-                  claudeStatus || '暂时无法读取外部状态，请打开官方状态页确认。'
+                  claudeStatus ? (
+                    <Badge
+                      variant="outline"
+                      dot={
+                        claudeStatus.indicator
+                          ? CLAUDE_STATUS_DOT[claudeStatus.indicator]
+                          : 'muted'
+                      }
+                      className="mt-0.5"
+                    >
+                      {claudeStatus.description}
+                    </Badge>
+                  ) : (
+                    '暂时无法读取外部状态，请打开官方状态页确认。'
+                  )
                 }
                 control={
                   <Button variant="outline" size="sm" asChild>
@@ -394,6 +440,19 @@ export function MonitorPage() {
           )}
         </>
       )}
+    </div>
+  );
+
+  if (embedded) return content;
+
+  return (
+    <PageContainer size="wide" className="space-y-6">
+      <PageHeader
+        title="系统监控"
+        subtitle="实时监控系统状态（10秒自动刷新）"
+        actions={<MonitorRefreshButton />}
+      />
+      {content}
     </PageContainer>
   );
 }

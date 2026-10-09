@@ -15,7 +15,7 @@ function PlanCard({
   isCurrent: boolean;
   fmt: (n: number) => string;
 }) {
-  const isHighlighted = plan.highlight;
+  const isRecommended = plan.highlight;
 
   // Collect resource limits
   const resources: { label: string; value: string }[] = [];
@@ -61,23 +61,23 @@ function PlanCard({
     <div
       className={cn(
         'flex flex-col rounded-xl bg-surface-raised p-4 sm:p-5',
-        isHighlighted ? 'ring-2 ring-primary' : 'ring-1 ring-surface-border',
+        // Only the plan the user is on gets the accent ring; "recommended"
+        // stays a quiet badge so the two states never look alike.
+        isCurrent ? 'ring-2 ring-primary' : 'ring-1 ring-surface-border',
       )}
     >
       {/* Header */}
       <div className="mb-4">
         <div className="flex min-w-0 items-center gap-2">
           <h4 className="truncate text-title text-foreground">{plan.name}</h4>
-          {/* Recommended badge */}
-          {isHighlighted && (
-            <Badge variant="info">
+          {isRecommended && (
+            <Badge variant="outline">
               <Sparkles />
               推荐
             </Badge>
           )}
-          {/* Current plan badge */}
           {isCurrent && (
-            <Badge variant="outline" dot="primary" className="ml-auto">
+            <Badge variant="info" className="ml-auto">
               当前
             </Badge>
           )}
@@ -101,14 +101,14 @@ function PlanCard({
         (plan.trial_days != null && plan.trial_days > 0)) && (
         <div className="mb-4 space-y-1.5">
           {plan.rate_multiplier !== 1 && (
-            <div className="flex items-center gap-1.5 text-body text-warning">
-              <Zap className="size-4" />
+            <div className="flex items-center gap-1.5 text-body text-foreground">
+              <Zap className="size-4 text-muted-foreground" />
               <span>费率倍数: {plan.rate_multiplier}x</span>
             </div>
           )}
           {plan.trial_days != null && plan.trial_days > 0 && (
-            <div className="flex items-center gap-1.5 text-body text-primary-text">
-              <Clock className="size-4" />
+            <div className="flex items-center gap-1.5 text-body text-foreground">
+              <Clock className="size-4 text-muted-foreground" />
               <span>{plan.trial_days} 天免费试用</span>
             </div>
           )}
@@ -123,7 +123,7 @@ function PlanCard({
               key={i}
               className="flex items-start gap-2 text-body text-foreground"
             >
-              <Check className="mt-0.5 size-4 shrink-0 text-primary-text" />
+              <Check className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
               <span>{feature}</span>
             </li>
           ))}

@@ -55,14 +55,14 @@ export default function SubscriptionCard() {
         <div className="flex flex-1 flex-col">
           {/* Plan name + badges */}
           <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <span className="truncate text-display-sm text-foreground">
+            <span className="truncate text-title-lg text-foreground">
               {plan.name}
             </span>
             {isFallback && <Badge variant="neutral">默认</Badge>}
             {isCancelled && <Badge variant="error">已取消</Badge>}
             {isExpired && <Badge variant="neutral">已过期</Badge>}
             {isTrialing && (
-              <Badge variant="warning">
+              <Badge variant="neutral">
                 <Clock />
                 试用中
               </Badge>
@@ -84,8 +84,8 @@ export default function SubscriptionCard() {
 
           {/* Rate multiplier */}
           {plan.rate_multiplier !== 1 && (
-            <div className="mt-3 flex items-center gap-1.5 text-body text-warning">
-              <Zap className="size-4" />
+            <div className="mt-3 flex items-center gap-1.5 text-body text-foreground">
+              <Zap className="size-4 text-muted-foreground" />
               <span>费率倍数: {plan.rate_multiplier}x</span>
             </div>
           )}
@@ -109,7 +109,7 @@ export default function SubscriptionCard() {
           {/* Trial / expiry info */}
           <div className="mt-4 space-y-1">
             {isTrialing && subscription?.trial_ends_at && (
-              <p className="flex items-center gap-1 text-caption text-warning">
+              <p className="flex items-center gap-1 text-caption text-muted-foreground">
                 <Star className="size-3" />
                 试用截止:{' '}
                 {new Date(subscription.trial_ends_at).toLocaleDateString()}

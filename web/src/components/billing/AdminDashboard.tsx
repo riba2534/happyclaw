@@ -1,5 +1,12 @@
 import { useEffect, type ReactNode } from 'react';
-import { Users, CreditCard, TrendingUp, DollarSign } from 'lucide-react';
+import {
+  Users,
+  CreditCard,
+  TrendingUp,
+  DollarSign,
+  Layers,
+} from 'lucide-react';
+import { EmptyState } from '@/components/common';
 import { useBillingStore } from '../../stores/billing';
 import { useCurrency } from './utils';
 import { cn } from '@/lib/utils';
@@ -72,9 +79,7 @@ function PlanDistribution({
   return (
     <ChartCard title="套餐分布">
       {data.length === 0 ? (
-        <p className="py-10 text-center text-body text-muted-foreground">
-          暂无数据
-        </p>
+        <EmptyState icon={Layers} title="暂无数据" className="py-8" />
       ) : (
         <div className="space-y-3.5">
           {data.map((item) => {
@@ -116,9 +121,7 @@ function RevenueTrendChart({
   return (
     <ChartCard title="收入趋势">
       {data.length === 0 ? (
-        <p className="py-10 text-center text-body text-muted-foreground">
-          暂无数据
-        </p>
+        <EmptyState icon={TrendingUp} title="暂无数据" className="py-8" />
       ) : (
         <div className="flex h-44 items-end gap-1.5">
           {data.map((item) => {

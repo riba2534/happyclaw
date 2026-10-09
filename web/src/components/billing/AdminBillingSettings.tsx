@@ -14,6 +14,10 @@ import {
   SettingsRow,
   SettingsSection,
 } from '@/components/settings/SettingsLayout';
+import {
+  SettingsStickySaveBar,
+  SettingsSwitchRow,
+} from '@/components/settings/SettingsFormControls';
 
 interface BillingAdminConfig {
   enabled: boolean;
@@ -178,13 +182,13 @@ export default function AdminBillingSettings() {
     submitted || touched[key] ? errors[key] : undefined;
 
   return (
-    <div className="max-w-3xl">
+    <div>
       <SettingsSection
         title="计费设置"
         description="管理计费开关、最低起用余额和前端显示货币。套餐和默认套餐请在“套餐管理”中配置。"
       >
         <SettingsGroup>
-          <SettingsRow
+          <SettingsSwitchRow
             label="启用计费"
             htmlFor="billing-admin-enabled"
             description={
@@ -216,7 +220,7 @@ export default function AdminBillingSettings() {
             }
             control={
               <div className="w-full sm:w-48">
-                <div className="flex items-center gap-2">
+                <div className="relative">
                   <Input
                     id="billing-admin-min-balance"
                     type="number"
@@ -243,9 +247,9 @@ export default function AdminBillingSettings() {
                     }
                     aria-invalid={!!fieldError('billingMinStartBalanceUsd')}
                     aria-describedby={`billing-admin-min-balance-description${fieldError('billingMinStartBalanceUsd') ? ' billing-admin-min-balance-error' : ''}`}
-                    className="tabular-nums"
+                    className="pr-12 tabular-nums"
                   />
-                  <span className="shrink-0 text-caption text-muted-foreground">
+                  <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-caption text-muted-foreground">
                     USD
                   </span>
                 </div>
@@ -361,10 +365,16 @@ export default function AdminBillingSettings() {
         </SettingsGroup>
       </SettingsSection>
 
-      <div className="sticky bottom-0 z-10 mt-6 flex items-center justify-between gap-4 border-t border-surface-border bg-background/90 py-3 backdrop-blur supports-backdrop-filter:bg-background/75">
-        <p className="text-caption text-muted-foreground" aria-live="polite">
-          {dirty ? '有尚未保存的计费设置' : '计费设置已保存'}
-        </p>
+      <SettingsStickySaveBar
+        status={
+          <p
+            className="truncate text-caption text-muted-foreground"
+            aria-live="polite"
+          >
+            {dirty ? '有尚未保存的计费设置' : '计费设置已保存'}
+          </p>
+        }
+      >
         <Button
           onClick={() => void handleSave()}
           disabled={saving || !dirty || Object.keys(errors).length > 0}
@@ -373,7 +383,7 @@ export default function AdminBillingSettings() {
           {saving && <Spinner aria-hidden="true" />}
           保存计费设置
         </Button>
-      </div>
+      </SettingsStickySaveBar>
     </div>
   );
 }

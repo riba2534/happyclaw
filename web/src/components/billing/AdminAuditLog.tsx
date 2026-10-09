@@ -1,11 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import {
-  Braces,
-  FileText,
-  ChevronRight,
-  ChevronLeft,
-  ChevronsLeft,
-} from 'lucide-react';
+import { FileText } from 'lucide-react';
 import { useBillingStore, type BillingAuditLog } from '../../stores/billing';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -14,16 +8,14 @@ import {
   NativeSelectOption,
 } from '@/components/ui/native-select';
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover';
-import {
   DataTable,
   EmptyState,
-  IconButton,
   type DataTableColumn,
 } from '@/components/common';
+import {
+  AuditDetailsPopover,
+  AuditPagination,
+} from '@/components/shared/AuditLogParts';
 import { SettingsSection } from '@/components/settings/SettingsLayout';
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
@@ -34,9 +26,16 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
   subscription_cancelled: '取消订阅',
   subscription_expired: '订阅过期',
   balance_adjusted: '调整余额',
+  manual_recharge: '手动充值',
+  manual_deduct: '手动扣减',
+  balance_deducted: '余额扣减',
   code_created: '创建兑换码',
   code_redeemed: '使用兑换码',
   code_deleted: '删除兑换码',
+  wallet_blocked: '钱包阻断',
+  wallet_unblocked: '解除钱包阻断',
+  quota_exceeded: '超出配额',
+  billing_settings_updated: '更新计费设置',
 };
 
 const PAGE_SIZE = 20;
@@ -152,26 +151,11 @@ export default function AdminAuditLog() {
       align: 'right',
       cell: (log) =>
         log.details ? (
-          <Popover
+          <AuditDetailsPopover
+            details={log.details}
             open={expandedId === log.id}
             onOpenChange={(open) => setExpandedId(open ? log.id : null)}
-          >
-            <PopoverTrigger asChild>
-              <IconButton
-                label="查看详情"
-                icon={<Braces />}
-                className="text-muted-foreground"
-              />
-            </PopoverTrigger>
-            <PopoverContent
-              align="end"
-              className="w-96 max-w-[calc(100vw-2rem)] p-0"
-            >
-              <pre className="max-h-64 overflow-auto p-3 font-mono text-caption text-muted-foreground">
-                {JSON.stringify(log.details, null, 2)}
-              </pre>
-            </PopoverContent>
-          </Popover>
+          />
         ) : null,
     },
   ];
@@ -219,32 +203,14 @@ export default function AdminAuditLog() {
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <div className="flex items-center justify-end gap-1">
-          <IconButton
-            label="第一页"
-            variant="outline"
-            icon={<ChevronsLeft />}
-            onClick={() => setPage(0)}
-            disabled={page === 0}
-          />
-          <IconButton
-            label="上一页"
-            variant="outline"
-            icon={<ChevronLeft />}
-            onClick={() => setPage((p) => Math.max(0, p - 1))}
-            disabled={page === 0}
-          />
-          <span className="min-w-16 text-center text-caption tabular-nums text-muted-foreground">
-            {page + 1} / {totalPages}
-          </span>
-          <IconButton
-            label="下一页"
-            variant="outline"
-            icon={<ChevronRight />}
-            onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-            disabled={page >= totalPages - 1}
-          />
-        </div>
+        <AuditPagination
+          page={page}
+          totalPages={totalPages}
+          hasNext={page < totalPages - 1}
+          onPageChange={(next) =>
+            setPage(Math.min(totalPages - 1, Math.max(0, next)))
+          }
+        />
       )}
     </SettingsSection>
   );

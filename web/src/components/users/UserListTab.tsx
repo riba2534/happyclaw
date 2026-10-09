@@ -55,7 +55,7 @@ interface UserListTabProps extends TabNotification {
   currentUser: UserPublic | null;
 }
 
-function RoleBadge({ role }: { role: UserPublic['role'] }) {
+export function RoleBadge({ role }: { role: string }) {
   return (
     <Badge variant="outline" dot={role === 'admin' ? 'primary' : 'muted'}>
       {ROLE_LABELS[role] || role}

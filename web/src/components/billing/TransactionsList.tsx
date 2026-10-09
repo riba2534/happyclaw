@@ -8,26 +8,12 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { useBillingStore, type BalanceTransaction } from '../../stores/billing';
-import { useCurrency } from './utils';
-
-/** Transaction type label mapping. */
-const TYPE_LABELS: Record<string, string> = {
-  deposit: '充值',
-  deduction: '扣减',
-  consumption: '消耗',
-  adjustment: '调整',
-  refund: '退款',
-  redeem: '兑换码',
-};
-
-const SOURCE_LABELS: Record<string, string> = {
-  admin_manual_recharge: '后台充值',
-  admin_manual_deduct: '后台扣减',
-  usage_charge: '用量扣费',
-  redeem_code: '兑换码',
-  migration_opening: '初始化',
-  refund: '退款',
-};
+import {
+  amountToneClass,
+  TX_SOURCE_LABELS,
+  TX_TYPE_LABELS,
+  useCurrency,
+} from './utils';
 
 export default function TransactionsList() {
   const { transactions, transactionsTotal, loadMyTransactions } =
@@ -38,8 +24,6 @@ export default function TransactionsList() {
     loadMyTransactions();
   }, [loadMyTransactions]);
 
-  const amountClass = (tx: BalanceTransaction) =>
-    tx.amount_usd > 0 ? 'text-success' : 'text-error';
   const formatAmount = (tx: BalanceTransaction) =>
     `${tx.amount_usd > 0 ? '+' : tx.amount_usd < 0 ? '-' : ''}${fmt(Math.abs(tx.amount_usd))}`;
 
@@ -51,7 +35,7 @@ export default function TransactionsList() {
       cell: (tx) => (
         <div className="min-w-0">
           <div className="truncate text-body text-foreground">
-            {tx.description || TYPE_LABELS[tx.type] || tx.type}
+            {tx.description || TX_TYPE_LABELS[tx.type] || tx.type}
           </div>
           <div className="mt-0.5 text-caption text-muted-foreground tabular-nums">
             {new Date(tx.created_at).toLocaleString()}
@@ -67,7 +51,9 @@ export default function TransactionsList() {
       cell: (tx) =>
         tx.source || tx.type ? (
           <Badge variant="neutral">
-            {SOURCE_LABELS[tx.source || ''] || TYPE_LABELS[tx.type] || tx.type}
+            {TX_SOURCE_LABELS[tx.source || ''] ||
+              TX_TYPE_LABELS[tx.type] ||
+              tx.type}
           </Badge>
         ) : null,
     },
@@ -80,7 +66,7 @@ export default function TransactionsList() {
           <div
             className={cn(
               'text-body font-medium tabular-nums',
-              amountClass(tx),
+              amountToneClass(tx.amount_usd),
             )}
           >
             {formatAmount(tx)}

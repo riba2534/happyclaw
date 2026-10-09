@@ -25,27 +25,26 @@ import {
   XCircle,
   AlertTriangle,
   ShieldCheck,
+  History,
 } from 'lucide-react';
+import { EmptyState } from '@/components/common';
 import {
   useBillingStore,
   type UserBillingOverview,
   type BalanceTransaction,
   type SubscriptionHistoryItem,
 } from '../../stores/billing';
-import { useCurrency } from './utils';
+import {
+  amountToneClass,
+  SUBSCRIPTION_STATUS_LABELS,
+  TX_SOURCE_LABELS,
+  TX_TYPE_LABELS,
+  useCurrency,
+} from './utils';
 import { ProgressBar } from './ProgressBar';
 import { api } from '../../api/client';
 import { confirmDialog } from '@/stores/confirm';
 import { cn } from '@/lib/utils';
-
-const TX_SOURCE_LABELS: Record<string, string> = {
-  admin_manual_recharge: '后台充值',
-  admin_manual_deduct: '后台扣减',
-  usage_charge: '用量扣费',
-  redeem_code: '兑换码',
-  migration_opening: '初始化',
-  refund: '退款',
-};
 
 interface UserBillingDrawerProps {
   userId: string | null;
@@ -237,8 +236,19 @@ export default function UserBillingDrawer({
                     </div>
                     {detail.subscription_status &&
                       detail.subscription_status !== 'default' && (
-                        <div className="mt-1 text-caption text-muted-foreground">
-                          状态: {detail.subscription_status}
+                        <div className="mt-1.5">
+                          <Badge
+                            variant="outline"
+                            dot={
+                              detail.subscription_status === 'active'
+                                ? 'success'
+                                : 'muted'
+                            }
+                          >
+                            {SUBSCRIPTION_STATUS_LABELS[
+                              detail.subscription_status
+                            ] || detail.subscription_status}
+                          </Badge>
                         </div>
                       )}
                     {/* Cancel subscription — only for real subscriptions, not fallback */}
@@ -401,7 +411,7 @@ export default function UserBillingDrawer({
                           {h.plan_name}
                         </span>
                         <span className="shrink-0 text-caption tabular-nums text-muted-foreground">
-                          {h.status} /{' '}
+                          {SUBSCRIPTION_STATUS_LABELS[h.status] || h.status} /{' '}
                           {new Date(h.started_at).toLocaleDateString()}
                         </span>
                       </div>
@@ -413,7 +423,11 @@ export default function UserBillingDrawer({
               {/* Recent transactions */}
               <SettingsSection title="交易记录">
                 {transactions.length === 0 ? (
-                  <p className="text-caption text-muted-foreground">暂无记录</p>
+                  <EmptyState
+                    icon={History}
+                    title="暂无记录"
+                    className="py-8 ring-1 ring-surface-border"
+                  />
                 ) : (
                   <SettingsGroup>
                     {transactions.map((tx) => (
@@ -423,7 +437,9 @@ export default function UserBillingDrawer({
                       >
                         <div className="min-w-0">
                           <div className="truncate text-body text-foreground">
-                            {tx.description || tx.type}
+                            {tx.description ||
+                              TX_TYPE_LABELS[tx.type] ||
+                              tx.type}
                           </div>
                           <div className="mt-0.5 flex items-center gap-1.5 text-caption text-muted-foreground">
                             <span className="tabular-nums">
@@ -431,7 +447,9 @@ export default function UserBillingDrawer({
                             </span>
                             {(tx.source || tx.type) && (
                               <Badge variant="neutral">
-                                {TX_SOURCE_LABELS[tx.source || ''] || tx.type}
+                                {TX_SOURCE_LABELS[tx.source || ''] ||
+                                  TX_TYPE_LABELS[tx.type] ||
+                                  tx.type}
                               </Badge>
                             )}
                           </div>
@@ -439,11 +457,15 @@ export default function UserBillingDrawer({
                         <span
                           className={cn(
                             'shrink-0 text-body font-medium tabular-nums',
-                            tx.amount_usd > 0 ? 'text-success' : 'text-error',
+                            amountToneClass(tx.amount_usd),
                           )}
                         >
-                          {tx.amount_usd > 0 ? '+' : ''}
-                          {fmt(tx.amount_usd)}
+                          {tx.amount_usd > 0
+                            ? '+'
+                            : tx.amount_usd < 0
+                              ? '-'
+                              : ''}
+                          {fmt(Math.abs(tx.amount_usd))}
                         </span>
                       </div>
                     ))}

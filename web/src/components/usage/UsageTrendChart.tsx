@@ -17,13 +17,18 @@ export interface DailyUsagePoint {
   modelCallCount: number;
 }
 
-/** Mutually exclusive token classes, in stacking order, with chart colors. */
+/**
+ * Mutually exclusive token classes, in stacking order, with chart colors.
+ * The orange scheme's chart tokens are one light-to-dark ramp, so the slots
+ * alternate light and dark steps and end on a neutral; neighbours stay
+ * distinguishable (also for color-blind readers) in every scheme.
+ */
 export const TOKEN_SERIES = [
-  ['inputTokens', '普通输入', 'var(--chart-1)'],
-  ['cacheReadTokens', '缓存读取', 'var(--chart-2)'],
+  ['inputTokens', '普通输入', 'var(--chart-4)'],
+  ['cacheReadTokens', '缓存读取', 'var(--chart-1)'],
   ['cacheCreationTokens', '缓存写入', 'var(--chart-3)'],
-  ['outputTokens', '输出', 'var(--chart-4)'],
-  ['reasoningTokens', '推理', 'var(--chart-5)'],
+  ['outputTokens', '输出', 'var(--chart-5)'],
+  ['reasoningTokens', '推理', 'var(--muted-foreground)'],
 ] as const;
 
 const SINGLE_SERIES_COLOR = 'var(--chart-1)';

@@ -23,7 +23,7 @@ import {
 } from '../components/settings/SystemSettingsSection';
 import { UserChannelsSection } from '../components/settings/UserChannelsSection';
 import { UsersPage } from './UsersPage';
-import { MonitorPage } from './MonitorPage';
+import { MonitorPage, MonitorRefreshButton } from './MonitorPage';
 import type { SettingsTab } from '../components/settings/types';
 
 const BillingPage = lazy(() => import('./BillingPage'));
@@ -60,8 +60,9 @@ const SYSTEM_TABS: SettingsTab[] = [
   'main-agent',
   'host-integration',
 ];
-const FULLPAGE_TABS: SettingsTab[] = ['users', 'monitor', 'billing'];
-const WIDE_TABS: SettingsTab[] = ['claude'];
+// Admin pages embedded under the settings header instead of their own frame.
+const EMBEDDED_PAGE_TABS: SettingsTab[] = ['users', 'monitor', 'billing'];
+const WIDE_TABS: SettingsTab[] = ['claude', ...EMBEDDED_PAGE_TABS];
 
 const LEGACY_TAB_ROUTES: Partial<Record<SettingsTab, string>> = {
   groups: '/chat',
@@ -158,7 +159,7 @@ export function SettingsPage() {
     'mcp-servers': 'MCP 服务器',
     plugins: '插件 (Plugins)',
     users: '用户与访问',
-    about: '关于',
+    about: '关于 HappyClaw',
     bindings: '渠道绑定',
     usage: '用量统计',
     monitor: '运行状态',
@@ -178,6 +179,9 @@ export function SettingsPage() {
       '管理主智能体的头像、系统附加能力、宿主机配置继承和上下文压缩策略。',
     'host-integration':
       '管理宿主机 Claude 目录以及共享 Plugin Catalog 的来源。',
+    billing: '管理计费开关、套餐、用户账务、兑换码与计费审计。',
+    users: '管理账户、邀请码与审计日志。',
+    monitor: '实时监控系统状态（10秒自动刷新）。',
   };
 
   const sectionScope: Partial<Record<SettingsTab, string>> = {
@@ -191,6 +195,9 @@ export function SettingsPage() {
     registration: '系统 · 全局生效',
     'main-agent': '系统 · 管理员',
     'host-integration': '系统 · 管理员',
+    billing: '系统 · 全局生效',
+    users: '系统 · 管理后台',
+    monitor: '系统 · 管理后台',
   };
 
   const legacyRoute =
@@ -212,9 +219,8 @@ export function SettingsPage() {
           onClick={() => setNavOpen(true)}
           className="pointer-coarse:size-11"
         />
-        <span className="truncate text-title-sm text-foreground">
-          {sectionTitle[activeTab]}
-        </span>
+        {/* The section title is the h1 below; the bar only names the page. */}
+        <span className="truncate text-title-sm text-foreground">设置</span>
       </div>
 
       <SettingsNav
@@ -230,21 +236,9 @@ export function SettingsPage() {
       />
 
       <div data-settings-content="true" className="min-w-0 flex-1">
-        {FULLPAGE_TABS.includes(activeTab) ? (
-          <>
-            {activeTab === 'users' && <UsersPage />}
-            {activeTab === 'monitor' && <MonitorPage />}
-            {activeTab === 'billing' && (
-              <Suspense fallback={null}>
-                <BillingPage managementOnly />
-              </Suspense>
-            )}
-          </>
-        ) : (
-          <PageContainer
-            size={WIDE_TABS.includes(activeTab) ? 'wide' : 'narrow'}
-          >
-            <header className="mb-8">
+        <PageContainer size={WIDE_TABS.includes(activeTab) ? 'wide' : 'narrow'}>
+          <header className="mb-8 flex items-start justify-between gap-4">
+            <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
                 <h1 className="text-title-lg text-foreground">
                   {sectionTitle[activeTab]}
@@ -258,51 +252,62 @@ export function SettingsPage() {
                   {sectionDescription[activeTab]}
                 </p>
               )}
-            </header>
+            </div>
+            {activeTab === 'monitor' && <MonitorRefreshButton />}
+          </header>
 
-            {mustChangePassword && (
-              <div
-                role="alert"
-                className="mb-6 rounded-lg bg-warning/10 px-3 py-2.5 text-body text-warning"
-              >
-                检测到首次登录或管理员重置密码，请先在“安全与设备”中修改密码；完成前其他设置暂不可用。
-              </div>
-            )}
+          {mustChangePassword && (
+            <div
+              role="alert"
+              className="mb-6 rounded-lg bg-warning/10 px-3 py-2.5 text-body text-warning"
+            >
+              检测到首次登录或管理员重置密码，请先在“安全与设备”中修改密码；完成前其他设置暂不可用。
+            </div>
+          )}
 
-            {activeTab === 'system' ? (
-              <SystemSettingsSection scope="runtime" />
-            ) : activeTab === 'main-agent' ? (
-              <div className="space-y-10">
-                <MainAgentIdentitySection />
-                <MainAgentCapabilitiesSection />
-                <HostIntegrationSettingsSection scope="main-agent" />
-              </div>
-            ) : activeTab === 'host-integration' ? (
-              <HostIntegrationSettingsSection scope="host" />
-            ) : (
-              <>
-                {activeTab === 'claude' && (
-                  <ClaudeProviderSection
-                    setNotice={(message) => message && toast.success(message)}
-                    setError={(message) => message && toast.error(message)}
-                  />
-                )}
-                {activeTab === 'registration' && (
-                  <div className="space-y-10">
-                    <RegistrationSection />
-                    <SystemSettingsSection scope="security" />
-                  </div>
-                )}
-                {activeTab === 'appearance' && <AppearanceSection />}
-                {activeTab === 'profile' && <ProfileSection />}
-                {activeTab === 'preferences' && <PreferencesSection />}
-                {activeTab === 'my-channels' && <UserChannelsSection />}
-                {activeTab === 'security' && <SecuritySection />}
-                {activeTab === 'about' && <AboutSection />}
-              </>
-            )}
-          </PageContainer>
-        )}
+          {EMBEDDED_PAGE_TABS.includes(activeTab) ? (
+            <>
+              {activeTab === 'users' && <UsersPage embedded />}
+              {activeTab === 'monitor' && <MonitorPage embedded />}
+              {activeTab === 'billing' && (
+                <Suspense fallback={null}>
+                  <BillingPage managementOnly />
+                </Suspense>
+              )}
+            </>
+          ) : activeTab === 'system' ? (
+            <SystemSettingsSection scope="runtime" />
+          ) : activeTab === 'main-agent' ? (
+            <div className="space-y-10">
+              <MainAgentIdentitySection />
+              <MainAgentCapabilitiesSection />
+              <HostIntegrationSettingsSection scope="main-agent" />
+            </div>
+          ) : activeTab === 'host-integration' ? (
+            <HostIntegrationSettingsSection scope="host" />
+          ) : (
+            <>
+              {activeTab === 'claude' && (
+                <ClaudeProviderSection
+                  setNotice={(message) => message && toast.success(message)}
+                  setError={(message) => message && toast.error(message)}
+                />
+              )}
+              {activeTab === 'registration' && (
+                <div className="space-y-10">
+                  <RegistrationSection />
+                  <SystemSettingsSection scope="security" />
+                </div>
+              )}
+              {activeTab === 'appearance' && <AppearanceSection />}
+              {activeTab === 'profile' && <ProfileSection />}
+              {activeTab === 'preferences' && <PreferencesSection />}
+              {activeTab === 'my-channels' && <UserChannelsSection />}
+              {activeTab === 'security' && <SecuritySection />}
+              {activeTab === 'about' && <AboutSection />}
+            </>
+          )}
+        </PageContainer>
       </div>
     </div>
   );

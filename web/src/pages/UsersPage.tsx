@@ -9,7 +9,12 @@ import { AuditLogTab } from '../components/users/AuditLogTab';
 
 type Tab = 'users' | 'invites' | 'audit';
 
-export function UsersPage() {
+interface UsersPageProps {
+  /** Rendered inside settings, which supplies the page frame and header. */
+  embedded?: boolean;
+}
+
+export function UsersPage({ embedded = false }: UsersPageProps) {
   const [tab, setTab] = useState<Tab>('users');
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -42,24 +47,33 @@ export function UsersPage() {
   }, [tab, tabs]);
 
   if (tabs.length === 0) {
-    return (
-      <PageContainer size="narrow">
-        <div className="rounded-xl bg-surface-raised ring-1 ring-surface-border">
-          <EmptyState icon={ShieldOff} title="当前账户无用户管理权限。" />
-        </div>
-      </PageContainer>
+    const empty = (
+      <div className="rounded-xl bg-surface-raised ring-1 ring-surface-border">
+        <EmptyState icon={ShieldOff} title="当前账户无用户管理权限。" />
+      </div>
+    );
+    return embedded ? (
+      empty
+    ) : (
+      <PageContainer size="wide">{empty}</PageContainer>
     );
   }
 
-  return (
-    <PageContainer className="space-y-5">
-      <PageHeader title="用户管理" subtitle="账户、邀请码与审计日志" />
-
+  const content = (
+    <div className="space-y-5">
       <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
         <div className="border-b border-surface-border">
-          <TabsList variant="line" className="-mb-px">
+          <TabsList
+            variant="line"
+            aria-label="用户管理分区"
+            className="h-10 gap-4 p-0 group-data-horizontal/tabs:h-10"
+          >
             {tabs.map((item) => (
-              <TabsTrigger key={item.key} value={item.key}>
+              <TabsTrigger
+                key={item.key}
+                value={item.key}
+                className="flex-none px-0.5 group-data-horizontal/tabs:after:-bottom-px"
+              >
                 {item.label}
               </TabsTrigger>
             ))}
@@ -103,6 +117,15 @@ export function UsersPage() {
         />
       )}
       {tab === 'audit' && canViewAudit && <AuditLogTab setError={setError} />}
+    </div>
+  );
+
+  if (embedded) return content;
+
+  return (
+    <PageContainer size="wide" className="space-y-6">
+      <PageHeader title="用户管理" subtitle="账户、邀请码与审计日志" />
+      {content}
     </PageContainer>
   );
 }

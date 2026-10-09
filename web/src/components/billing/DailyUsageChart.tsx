@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { BarChart3 } from 'lucide-react';
+import { EmptyState } from '@/components/common';
 import { cn } from '@/lib/utils';
 import { useBillingStore } from '../../stores/billing';
 import { useCurrency, formatTokens } from './utils';
@@ -45,9 +46,7 @@ export default function DailyUsageChart() {
       </div>
 
       {dailyUsage.length === 0 ? (
-        <p className="py-8 text-center text-body text-muted-foreground">
-          暂无用量数据
-        </p>
+        <EmptyState icon={BarChart3} title="暂无用量数据" className="py-8" />
       ) : (
         <div className="relative">
           {/* Hover tooltip, anchored above the hovered bar */}

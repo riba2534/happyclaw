@@ -418,12 +418,22 @@ export function EditUserDialog({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="member">member</SelectItem>
-                    <SelectItem value="admin">admin</SelectItem>
+                    <SelectItem value="member">成员</SelectItem>
+                    <SelectItem value="admin">管理员</SelectItem>
                   </SelectContent>
                 </Select>
               ) : (
-                <Input id="edit-user-role" value={user?.role || ''} disabled />
+                <Input
+                  id="edit-user-role"
+                  value={
+                    user?.role === 'admin'
+                      ? '管理员'
+                      : user?.role === 'member'
+                        ? '成员'
+                        : ''
+                  }
+                  disabled
+                />
               )}
             </SettingsField>
             <SettingsField label="重置密码" htmlFor="edit-user-password">

@@ -1241,9 +1241,13 @@ function AttributionTable({
     {
       key: 'label',
       header: DIMENSION_LABELS[dimension],
-      cell: (row) => row.label,
-      className:
-        'min-w-36 max-w-[20rem] whitespace-normal break-all font-medium text-foreground',
+      // One line per row; long names truncate with the full name on hover.
+      cell: (row) => (
+        <span className="block max-w-48 truncate sm:max-w-80" title={row.label}>
+          {row.label}
+        </span>
+      ),
+      className: 'font-medium text-foreground',
     },
     {
       key: 'tokens',
@@ -1346,7 +1350,7 @@ function UsageEmptyState({
           ? '尝试扩大时间范围或清除筛选，即可继续查看成本和 Token 趋势。'
           : '完成一次 AI 对话或智能体任务后，这里会展示运行次数、Token 构成和模型成本估算。'
       }
-      className="rounded-xl ring-1 ring-surface-border"
+      className="bg-surface-raised ring-1 ring-surface-border"
       action={
         filtered ? (
           <Button className="pointer-coarse:min-h-11" onClick={onClear}>

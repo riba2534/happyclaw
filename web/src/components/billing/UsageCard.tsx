@@ -15,14 +15,12 @@ const WINDOW_LABELS: Record<WindowKey, string> = {
 };
 
 function WindowUsageBlock({
-  label,
   costUsed,
   costQuota,
   tokenUsed,
   tokenQuota,
   fmt,
 }: {
-  label: string;
   costUsed: number;
   costQuota: number | null;
   tokenUsed: number;
@@ -36,9 +34,6 @@ function WindowUsageBlock({
 
   return (
     <div className="space-y-3">
-      <h4 className="text-caption font-medium text-muted-foreground">
-        {label}
-      </h4>
       {hasCostQuota && (
         <div>
           <div className="mb-1.5 flex justify-between text-body">
@@ -119,6 +114,9 @@ export default function UsageCard() {
   if (hasMonthly) availableWindows.push('monthly');
   // Always show monthly as fallback
   if (availableWindows.length === 0) availableWindows.push('monthly');
+  const shownWindow = availableWindows.includes(activeWindow)
+    ? activeWindow
+    : availableWindows[0];
 
   return (
     <section className="flex flex-col rounded-xl bg-surface-raised p-4 ring-1 ring-surface-border sm:p-5">
@@ -127,18 +125,22 @@ export default function UsageCard() {
           <BarChart3 className="size-4 text-muted-foreground" />
           <h3 className="text-title-sm text-foreground">用量</h3>
         </div>
-        {/* Window tabs */}
-        {availableWindows.length > 1 && (
+        {/* Window tabs, or the only window's name */}
+        {availableWindows.length > 1 ? (
           <SegmentedControl
             label="用量统计周期"
             size="sm"
-            value={activeWindow}
+            value={shownWindow}
             onChange={setActiveWindow}
             options={availableWindows.map((w) => ({
               value: w,
               label: WINDOW_LABELS[w],
             }))}
           />
+        ) : (
+          <span className="text-caption text-muted-foreground">
+            {WINDOW_LABELS[shownWindow]}
+          </span>
         )}
       </div>
 
@@ -174,9 +176,8 @@ export default function UsageCard() {
 
       {/* Active window content */}
       <div className="space-y-4">
-        {activeWindow === 'daily' && (
+        {shownWindow === 'daily' && (
           <WindowUsageBlock
-            label={WINDOW_LABELS.daily}
             costUsed={dailyUsage?.costUsed ?? 0}
             costQuota={dailyUsage?.costQuota ?? plan?.daily_cost_quota ?? null}
             tokenUsed={dailyUsage?.tokenUsed ?? 0}
@@ -186,9 +187,8 @@ export default function UsageCard() {
             fmt={fmt}
           />
         )}
-        {activeWindow === 'weekly' && (
+        {shownWindow === 'weekly' && (
           <WindowUsageBlock
-            label={WINDOW_LABELS.weekly}
             costUsed={weeklyUsage?.costUsed ?? 0}
             costQuota={
               weeklyUsage?.costQuota ?? plan?.weekly_cost_quota ?? null
@@ -200,9 +200,8 @@ export default function UsageCard() {
             fmt={fmt}
           />
         )}
-        {activeWindow === 'monthly' && (
+        {shownWindow === 'monthly' && (
           <WindowUsageBlock
-            label={WINDOW_LABELS.monthly}
             costUsed={
               monthlyUsage?.costUsed ?? currentUsage?.total_cost_usd ?? 0
             }

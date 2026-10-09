@@ -22,6 +22,9 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
 
 type TaskView = 'current' | 'trash';
+
+// Page-level empty states sit in the same bordered surface as the list.
+const PAGE_EMPTY_CLASS = 'bg-surface-raised ring-1 ring-surface-border';
 type PendingTaskAction =
   | { kind: 'trash'; ids: [string] }
   | { kind: 'purge'; ids: string[] };
@@ -345,6 +348,7 @@ export function TasksPage() {
       if (normalizedQuery) {
         return (
           <EmptyState
+            className={PAGE_EMPTY_CLASS}
             icon={Search}
             title="没有匹配的当前任务"
             description="可以搜索任务名称、工作区名称或任务 ID。"
@@ -358,6 +362,7 @@ export function TasksPage() {
       }
       return (
         <EmptyState
+          className={PAGE_EMPTY_CLASS}
           icon={Clock}
           title="当前没有定时任务"
           description={
@@ -412,6 +417,7 @@ export function TasksPage() {
     if (filteredDeletedTasks.length === 0) {
       return (
         <EmptyState
+          className={PAGE_EMPTY_CLASS}
           icon={Trash2}
           title={normalizedQuery ? '没有匹配的回收站任务' : '回收站是空的'}
           description={
@@ -445,10 +451,13 @@ export function TasksPage() {
   };
 
   return (
-    <PageContainer>
+    <PageContainer size="wide">
       <PageHeader
         title="任务"
-        subtitle={`当前 ${liveTasks.length} · ${enabledTasks.length} 已启用 · ${pausedTasks.length} 已暂停 · ${liveRunCount} 执行中${retryingCount > 0 ? ` · ${retryingCount} 等待重试` : ''} · 回收站 ${deletedTasks.length}`}
+        // Non-breaking spaces and keep-all wrap the subtitle only between
+        // "·"-separated counts, never inside one of them.
+        className="[&_p]:break-keep"
+        subtitle={`当前\u00a0${liveTasks.length} · ${enabledTasks.length}\u00a0已启用 · ${pausedTasks.length}\u00a0已暂停 · ${liveRunCount}\u00a0执行中${retryingCount > 0 ? ` · ${retryingCount}\u00a0等待重试` : ''} · 回收站\u00a0${deletedTasks.length}`}
         actions={
           <>
             <IconButton

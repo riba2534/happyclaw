@@ -53,6 +53,7 @@ import {
   ROLE_LABELS,
   type TabNotification,
 } from './utils';
+import { RoleBadge } from './UserListTab';
 
 interface InviteCodesTabProps extends TabNotification {
   currentUser: UserPublic | null;
@@ -176,9 +177,7 @@ export function InviteCodesTab({
             {invite.code.slice(0, 12)}...
           </code>
           <div className="mt-1 flex items-center gap-1.5 text-caption text-muted-foreground tabular-nums sm:hidden">
-            <Badge variant="neutral">
-              {ROLE_LABELS[invite.role] || invite.role}
-            </Badge>
+            <RoleBadge role={invite.role} />
             {invite.used_count}/{invite.max_uses || '∞'}
           </div>
         </div>
@@ -187,11 +186,7 @@ export function InviteCodesTab({
     {
       key: 'role',
       header: '角色',
-      cell: (invite) => (
-        <Badge variant="neutral">
-          {ROLE_LABELS[invite.role] || invite.role}
-        </Badge>
-      ),
+      cell: (invite) => <RoleBadge role={invite.role} />,
       className: 'hidden sm:table-cell',
       headerClassName: 'hidden sm:table-cell',
     },
