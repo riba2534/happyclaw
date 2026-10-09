@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { Copy, Check, Maximize2, X } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import { PreviewDialog } from './PreviewDialog';
+import { Button } from '@/components/ui/button';
+import { IconButton } from '@/components/common/IconButton';
 
 /** 对 mermaid 渲染的 SVG 进行消毒，防止 XSS */
 function sanitizeSvg(raw: string): string {
@@ -123,12 +125,27 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const copyButton = (
+    <Button
+      type="button"
+      variant="ghost"
+      size="xs"
+      onClick={handleCopy}
+      className="-mr-1.5 font-normal text-muted-foreground [.share-card-content_&]:hidden"
+    >
+      {copied ? <Check /> : <Copy />}
+      {copied ? '已复制' : error ? '复制' : '源码'}
+    </Button>
+  );
+
+  // The diagram canvas keeps `bg-card`: Mermaid's default theme assumes a
+  // light canvas, and the share card pins --card to white for its export.
   if (loading) {
     return (
-      <div className="my-4 rounded-lg bg-muted border border-border p-8 flex items-center justify-center">
-        <div className="animate-pulse flex flex-col items-center gap-2">
-          <div className="h-24 w-48 bg-muted-foreground/20 rounded" />
-          <span className="text-sm text-muted-foreground">
+      <div className="my-4 flex items-center justify-center rounded-lg bg-card p-8 ring-1 ring-surface-border">
+        <div className="flex animate-pulse flex-col items-center gap-2">
+          <div className="h-24 w-48 rounded bg-surface-selected" />
+          <span className="text-caption text-muted-foreground">
             Mermaid 图表渲染中...
           </span>
         </div>
@@ -138,29 +155,14 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
 
   if (error) {
     return (
-      <div className="relative group my-4 overflow-hidden">
-        <div className="absolute right-2 top-2 opacity-70 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
-          <button
-            onClick={handleCopy}
-            className="p-2 rounded-lg bg-muted hover:bg-muted/80 text-foreground text-xs flex items-center gap-1"
-          >
-            {copied ? (
-              <>
-                <Check size={14} />
-                已复制
-              </>
-            ) : (
-              <>
-                <Copy size={14} />
-                复制
-              </>
-            )}
-          </button>
+      <div className="my-4 overflow-hidden rounded-lg bg-(--code-block-bg) font-sans ring-1 ring-surface-border">
+        <div className="flex h-8 items-center justify-between gap-2 border-b border-surface-border px-3">
+          <span className="truncate text-caption text-warning">
+            Mermaid 语法错误，已降级为代码展示
+          </span>
+          {copyButton}
         </div>
-        <div className="text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 rounded-t-lg px-3 py-1">
-          Mermaid 语法错误，已降级为代码展示
-        </div>
-        <pre className="!bg-[#f6f8fa] dark:!bg-[#1e1e2e] rounded-b-lg p-4 overflow-x-auto">
+        <pre className="overflow-x-auto bg-transparent! px-3.5 py-3 font-mono text-caption leading-5">
           <code className="language-mermaid text-foreground">{code}</code>
         </pre>
       </div>
@@ -169,34 +171,26 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
 
   return (
     <>
-      <div className="relative group my-4">
-        <div className="absolute right-2 top-2 opacity-70 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity z-10 flex gap-1">
-          <button
-            onClick={() => setExpanded(true)}
-            className="p-2 rounded-lg bg-muted hover:bg-muted/80 text-foreground text-xs flex items-center gap-1"
-            title="放大查看"
-          >
-            <Maximize2 size={14} />
-          </button>
-          <button
-            onClick={handleCopy}
-            className="p-2 rounded-lg bg-muted hover:bg-muted/80 text-foreground text-xs flex items-center gap-1"
-          >
-            {copied ? (
-              <>
-                <Check size={14} />
-                已复制
-              </>
-            ) : (
-              <>
-                <Copy size={14} />
-                源码
-              </>
-            )}
-          </button>
+      {/* Inside an exported share card, drop the toolbar and use the card's
+          fixed light border so the frame stays visible in dark mode. */}
+      <div className="my-4 overflow-hidden rounded-lg bg-card font-sans ring-1 ring-surface-border [.share-card-content_&]:ring-border">
+        <div className="flex h-8 items-center justify-between gap-2 border-b border-surface-border px-3 [.share-card-content_&]:hidden">
+          <span className="font-mono text-micro tracking-wide text-muted-foreground lowercase">
+            mermaid
+          </span>
+          <div className="flex items-center gap-0.5">
+            <IconButton
+              label="放大查看"
+              icon={<Maximize2 />}
+              size="icon-xs"
+              onClick={() => setExpanded(true)}
+              className="text-muted-foreground"
+            />
+            {copyButton}
+          </div>
         </div>
         <div
-          className="bg-card rounded-lg border border-border p-4 overflow-x-auto flex justify-center cursor-pointer [&>svg]:!max-w-full [&>svg]:!h-auto"
+          className="flex cursor-zoom-in justify-center overflow-x-auto p-4 [&>svg]:!h-auto [&>svg]:!max-w-full"
           onClick={() => setExpanded(true)}
           dangerouslySetInnerHTML={{ __html: svg! }}
         />
@@ -206,18 +200,18 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
           title="Mermaid 图表预览"
           onClose={() => setExpanded(false)}
           layer="nested"
-          className="left-1/2 top-1/2 h-[95dvh] w-[95vw] -translate-x-1/2 -translate-y-1/2 rounded-xl bg-card p-6"
+          className="left-1/2 top-1/2 h-[95dvh] w-[95vw] -translate-x-1/2 -translate-y-1/2 rounded-xl bg-card p-6 shadow-floating ring-1 ring-foreground/10"
         >
-          <button
+          <IconButton
+            label="关闭图表预览"
+            hideTooltip
+            icon={<X />}
+            size="icon"
             onClick={() => setExpanded(false)}
-            className="absolute top-3 right-3 z-20 p-2 rounded-full bg-black/70 text-white hover:bg-black transition-colors cursor-pointer"
-            aria-label="关闭图表预览"
-            title="关闭"
-          >
-            <X size={16} />
-          </button>
+            className="absolute top-3 right-3 z-20 text-muted-foreground"
+          />
           <div
-            className="w-full h-full overflow-auto flex items-center justify-center [touch-action:pan-x_pan-y_pinch-zoom] [&>svg]:!w-[90vw] [&>svg]:!max-w-none [&>svg]:!h-auto [&>svg]:!max-h-[90vh]"
+            className="flex h-full w-full items-center justify-center overflow-auto [touch-action:pan-x_pan-y_pinch-zoom] [&>svg]:!h-auto [&>svg]:!max-h-[90vh] [&>svg]:!w-[90vw] [&>svg]:!max-w-none"
             dangerouslySetInnerHTML={{ __html: svg! }}
           />
         </PreviewDialog>

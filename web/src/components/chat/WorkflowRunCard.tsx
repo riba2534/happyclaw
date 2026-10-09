@@ -49,7 +49,7 @@ function statusMeta(run: WorkflowRunSnapshot) {
   return {
     label: '执行中',
     icon: Loader2,
-    iconClass: 'text-primary animate-spin motion-reduce:animate-none',
+    iconClass: 'text-muted-foreground animate-spin motion-reduce:animate-none',
   };
 }
 
@@ -70,12 +70,13 @@ function agentStatus(agent: WorkflowAgentSnapshot) {
     return {
       label: '执行中',
       icon: Loader2,
-      className: 'text-primary animate-spin motion-reduce:animate-none',
+      className:
+        'text-muted-foreground animate-spin motion-reduce:animate-none',
     };
   return {
     label: '等待',
     icon: CircleDashed,
-    className: 'text-muted-foreground',
+    className: 'text-faint-foreground',
   };
 }
 
@@ -92,41 +93,41 @@ function AgentRow({ agent }: { agent: WorkflowAgentSnapshot }) {
   const elapsed = duration(agent.durationMs);
   const row = (
     <>
-      <Icon className={`h-4 w-4 shrink-0 ${meta.className}`} aria-hidden />
-      <span className="min-w-0 flex-1 truncate font-medium text-foreground">
+      <Icon className={`size-4 shrink-0 ${meta.className}`} aria-hidden />
+      <span className="min-w-0 flex-1 truncate text-foreground">
         {agent.label}
       </span>
-      <span className="text-xs text-muted-foreground">{meta.label}</span>
+      <span className="text-caption text-muted-foreground">{meta.label}</span>
       {tokens && (
-        <span className="hidden text-xs tabular-nums text-muted-foreground sm:inline">
+        <span className="hidden text-caption tabular-nums text-faint-foreground sm:inline">
           {tokens}
         </span>
       )}
       {elapsed && (
-        <span className="text-xs tabular-nums text-muted-foreground">
+        <span className="text-caption tabular-nums text-faint-foreground">
           {elapsed}
         </span>
       )}
       {hasDetails && (
-        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200 group-open/agent:rotate-180 motion-reduce:transition-none" />
+        <ChevronDown className="size-3.5 shrink-0 text-faint-foreground transition-transform duration-200 group-open/agent:rotate-180 motion-reduce:transition-none" />
       )}
     </>
   );
 
   if (!hasDetails) {
     return (
-      <div className="flex min-h-11 items-center gap-2 border-t border-border/60 px-3 py-2 text-sm first:border-t-0">
+      <div className="flex min-h-8 items-center gap-2 py-1.5 pr-3 pl-9 text-body pointer-coarse:min-h-11 sm:pr-4 sm:pl-10">
         {row}
       </div>
     );
   }
 
   return (
-    <details className="group/agent border-t border-border/60 first:border-t-0">
-      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60">
+    <details className="group/agent">
+      <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 py-1.5 pr-3 pl-9 text-body transition-colors hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none focus-visible:ring-inset motion-reduce:transition-none pointer-coarse:min-h-11 sm:pr-4 sm:pl-10 [&::-webkit-details-marker]:hidden">
         {row}
       </summary>
-      <div className="space-y-2 border-t border-border/50 bg-muted/15 px-3 py-3 text-xs leading-relaxed text-muted-foreground">
+      <div className="space-y-2 pt-0.5 pr-3 pb-2.5 pl-15 text-caption leading-5 text-muted-foreground sm:pr-4 sm:pl-16">
         <div className="flex flex-wrap gap-x-4 gap-y-1">
           {agent.model && <span>模型：{agent.model}</span>}
           {agent.attempt && <span>尝试：{agent.attempt}</span>}
@@ -138,13 +139,11 @@ function AgentRow({ agent }: { agent: WorkflowAgentSnapshot }) {
           )}
         </div>
         {agent.lastToolSummary && (
-          <p className="break-words text-foreground/75">
-            {agent.lastToolSummary}
-          </p>
+          <p className="break-words text-foreground">{agent.lastToolSummary}</p>
         )}
         {agent.promptPreview && (
           <div>
-            <div className="mb-1 font-medium text-foreground/70">任务摘要</div>
+            <div className="mb-0.5 font-medium text-foreground">任务摘要</div>
             <p className="max-h-28 overflow-y-auto whitespace-pre-wrap break-words">
               {agent.promptPreview}
             </p>
@@ -152,7 +151,7 @@ function AgentRow({ agent }: { agent: WorkflowAgentSnapshot }) {
         )}
         {agent.resultPreview && (
           <div>
-            <div className="mb-1 font-medium text-foreground/70">结果摘要</div>
+            <div className="mb-0.5 font-medium text-foreground">结果摘要</div>
             <p className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words">
               {agent.resultPreview}
             </p>
@@ -232,21 +231,24 @@ export function WorkflowRunCard({ run }: { run: WorkflowRunSnapshot }) {
 
   return (
     <section
-      className="mb-3 overflow-hidden rounded-xl border border-border/80 bg-background font-sans"
+      className="mb-3 overflow-hidden rounded-xl bg-surface-raised font-sans ring-1 ring-surface-border"
       aria-label={`动态工作流：${run.summary}`}
     >
       <button
         type="button"
         onClick={() => setExpanded((value) => !value)}
-        className="flex min-h-14 w-full items-center gap-3 px-3 py-3 text-left transition-colors duration-150 hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60 motion-reduce:transition-none sm:px-4"
+        className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left transition-colors duration-150 hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none focus-visible:ring-inset motion-reduce:transition-none sm:px-4"
         aria-expanded={expanded}
       >
-        <GitFork className="h-4 w-4 shrink-0 text-primary" aria-hidden />
+        <GitFork
+          className="size-4 shrink-0 text-muted-foreground"
+          aria-hidden
+        />
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-semibold text-foreground">
+          <span className="block truncate text-title-sm text-foreground">
             {run.summary}
           </span>
-          <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+          <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-caption text-muted-foreground tabular-nums">
             {grouped.length > 0 && currentPhase !== undefined && (
               <span>
                 阶段 {currentPhase}/{grouped.length}
@@ -262,25 +264,25 @@ export function WorkflowRunCard({ run }: { run: WorkflowRunSnapshot }) {
           </span>
         </span>
         <span
-          className="flex shrink-0 items-center gap-1.5 text-xs font-medium text-muted-foreground"
+          className="flex shrink-0 items-center gap-1.5 text-caption text-muted-foreground"
           aria-live="polite"
         >
-          <StatusIcon className={`h-4 w-4 ${meta.iconClass}`} aria-hidden />
+          <StatusIcon className={`size-4 ${meta.iconClass}`} aria-hidden />
           {meta.label}
         </span>
         <ChevronDown
-          className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 motion-reduce:transition-none ${expanded ? 'rotate-180' : ''}`}
+          className={`size-4 shrink-0 text-faint-foreground transition-transform duration-200 motion-reduce:transition-none ${expanded ? 'rotate-180' : ''}`}
           aria-hidden
         />
       </button>
 
       {expanded && (
-        <div className="border-t border-border/70">
+        <div className="border-t border-surface-border">
           {totalAgents > 0 && (
-            <div className="px-3 pb-2 pt-3 sm:px-4">
-              <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+            <div className="px-3 pt-3 pb-1 sm:px-4">
+              <div className="h-1 overflow-hidden rounded-full bg-surface-selected">
                 <div
-                  className="h-full rounded-full bg-primary transition-[width] duration-300 motion-reduce:transition-none"
+                  className={`h-full rounded-full transition-[width] duration-300 motion-reduce:transition-none ${run.status === 'running' ? 'bg-primary' : 'bg-faint-foreground'}`}
                   style={{ width: `${progress}%` }}
                   role="progressbar"
                   aria-label="工作流完成进度"
@@ -293,7 +295,7 @@ export function WorkflowRunCard({ run }: { run: WorkflowRunSnapshot }) {
           )}
 
           {grouped.length > 0 ? (
-            <div>
+            <div className="pb-1">
               {grouped.map((phase, index) => {
                 const isDone =
                   phase.agents.length > 0 &&
@@ -307,12 +309,12 @@ export function WorkflowRunCard({ run }: { run: WorkflowRunSnapshot }) {
                     : CircleDashed;
                 return (
                   <div key={`${phase.index}-${phase.title}`}>
-                    <div className="flex items-center gap-2 border-t border-border/60 bg-muted/20 px-3 py-2 first:border-t-0 sm:px-4">
+                    <div className="flex min-h-8 items-center gap-2 px-3 py-1.5 sm:px-4">
                       <PhaseIcon
-                        className={`h-4 w-4 shrink-0 ${isDone ? 'text-success' : isActive ? 'animate-spin text-primary motion-reduce:animate-none' : 'text-muted-foreground'}`}
+                        className={`size-4 shrink-0 ${isDone ? 'text-success' : isActive ? 'animate-spin text-muted-foreground motion-reduce:animate-none' : 'text-faint-foreground'}`}
                         aria-hidden
                       />
-                      <span className="min-w-0 flex-1 text-xs font-semibold text-foreground">
+                      <span className="min-w-0 flex-1 text-label text-foreground">
                         {phase.title}
                         {phase.detail && (
                           <span className="ml-2 font-normal text-muted-foreground">
@@ -320,12 +322,12 @@ export function WorkflowRunCard({ run }: { run: WorkflowRunSnapshot }) {
                           </span>
                         )}
                       </span>
-                      <span className="text-xs text-muted-foreground">
+                      <span className="text-caption text-muted-foreground">
                         {isDone ? '已完成' : isActive ? '执行中' : '等待'}
                       </span>
                     </div>
                     {phase.agents.length > 0 ? (
-                      <div className="px-1 sm:px-2">
+                      <div>
                         {phase.agents.map((agent) => (
                           <AgentRow
                             key={
@@ -336,7 +338,7 @@ export function WorkflowRunCard({ run }: { run: WorkflowRunSnapshot }) {
                         ))}
                       </div>
                     ) : (
-                      <div className="px-4 py-3 text-xs text-muted-foreground">
+                      <div className="pr-3 pb-1.5 pl-9 text-caption text-faint-foreground sm:pr-4 sm:pl-10">
                         等待运行时 Agent 信息…
                       </div>
                     )}
@@ -345,24 +347,31 @@ export function WorkflowRunCard({ run }: { run: WorkflowRunSnapshot }) {
               })}
             </div>
           ) : (
-            <div className="px-4 py-3 text-sm text-muted-foreground">
+            <div className="px-3 py-2.5 text-body text-muted-foreground sm:px-4">
               正在生成执行计划…
             </div>
           )}
 
           {hasTechnicalDetails && (
-            <details className="group/execution border-t border-border/70">
-              <summary className="flex min-h-10 cursor-pointer list-none items-center gap-2 px-3 py-2 text-xs text-muted-foreground hover:bg-muted/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60 sm:px-4">
-                <Wrench className="h-3.5 w-3.5" aria-hidden />
+            <details className="group/execution border-t border-surface-border">
+              <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 px-3 py-1.5 text-caption text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none focus-visible:ring-inset motion-reduce:transition-none pointer-coarse:min-h-11 sm:px-4 [&::-webkit-details-marker]:hidden">
+                <Wrench
+                  className="size-3.5 text-faint-foreground"
+                  aria-hidden
+                />
                 执行信息
-                <ChevronDown className="ml-auto h-3.5 w-3.5 transition-transform duration-200 group-open/execution:rotate-180 motion-reduce:transition-none" />
+                <ChevronDown className="ml-auto size-3.5 text-faint-foreground transition-transform duration-200 group-open/execution:rotate-180 motion-reduce:transition-none" />
               </summary>
-              <div className="flex flex-wrap gap-x-4 gap-y-1 border-t border-border/50 bg-muted/15 px-3 py-2 text-xs text-muted-foreground sm:px-4">
+              <div className="flex flex-wrap gap-x-4 gap-y-1 px-3 pt-0.5 pb-2.5 pl-8.5 text-caption text-muted-foreground tabular-nums sm:px-4 sm:pl-9.5">
                 {run.totalToolCalls !== undefined && run.totalToolCalls > 0 && (
                   <span>{run.totalToolCalls} 次工具调用</span>
                 )}
                 {run.workflowName && <span>工作流：{run.workflowName}</span>}
-                {run.runId && <span>Run ID：{run.runId}</span>}
+                {run.runId && (
+                  <span>
+                    Run ID：<span className="font-mono">{run.runId}</span>
+                  </span>
+                )}
               </div>
             </details>
           )}

@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 
 export interface EmojiPickerProps {
@@ -6,6 +8,8 @@ export interface EmojiPickerProps {
   onChange: (emoji: string) => void;
 }
 
+// Hand-wrapped rows scan better than one emoji per line.
+// prettier-ignore
 const EMOJI_CATEGORIES: { label: string; emojis: string[] }[] = [
   {
     label: '动物',
@@ -93,67 +97,74 @@ export function EmojiPicker({ value, onChange }: EmojiPickerProps) {
   return (
     <div className="space-y-3">
       {/* Category tabs */}
-      <div className="flex gap-1 overflow-x-auto pb-1">
+      <div className="flex gap-0.5 overflow-x-auto">
         {EMOJI_CATEGORIES.map((cat, i) => (
-          <button
+          <Button
             key={cat.label}
             type="button"
+            variant="ghost"
+            size="xs"
+            aria-pressed={activeCategory === i}
             onClick={() => setActiveCategory(i)}
             className={cn(
-              'px-2.5 py-1 text-xs rounded-md whitespace-nowrap transition-colors cursor-pointer',
+              'px-2 text-caption',
               activeCategory === i
-                ? 'bg-brand-50 text-primary font-medium'
-                : 'text-muted-foreground hover:bg-muted',
+                ? 'bg-surface-selected text-foreground'
+                : 'text-muted-foreground',
             )}
           >
             {cat.label}
-          </button>
+          </Button>
         ))}
       </div>
 
       {/* Emoji grid */}
-      <div className="grid grid-cols-8 gap-1 max-h-48 overflow-y-auto p-1">
+      <div className="grid max-h-48 grid-cols-8 gap-1 overflow-y-auto p-1">
         {EMOJI_CATEGORIES[activeCategory].emojis.map((emoji, i) => (
-          <button
+          <Button
             key={`${emoji}-${i}`}
             type="button"
+            variant="ghost"
+            size="icon"
+            aria-pressed={value === emoji}
             onClick={() => onChange(emoji)}
             className={cn(
-              'w-8 h-8 flex items-center justify-center rounded-md text-lg hover:bg-muted transition-colors cursor-pointer',
-              value === emoji && 'ring-2 ring-primary ring-offset-1 bg-brand-50',
+              'text-title-lg font-normal',
+              value === emoji && 'bg-surface-selected ring-1 ring-primary',
             )}
           >
             {emoji}
-          </button>
+          </Button>
         ))}
       </div>
 
       {/* Custom input */}
-      <div className="flex items-center gap-2 pt-1 border-t border-border">
-        <input
+      <div className="flex items-center gap-2 border-t border-surface-border pt-3">
+        <Input
           type="text"
           value={customInput}
           onChange={(e) => setCustomInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleCustomSubmit()}
           placeholder="输入任意 emoji..."
-          className="flex-1 px-2.5 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-1 focus:ring-primary"
+          aria-label="自定义 emoji"
+          className="flex-1"
           maxLength={8}
         />
-        <button
+        <Button
           type="button"
+          variant="outline"
           onClick={handleCustomSubmit}
           disabled={!customInput.trim()}
-          className="px-3 py-1.5 text-xs font-medium bg-brand-50 text-primary rounded-md hover:bg-brand-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
         >
           确认
-        </button>
+        </Button>
       </div>
 
       {/* Current selection indicator */}
       {value && (
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <div className="flex items-center gap-2 text-caption text-muted-foreground">
           <span>当前选择：</span>
-          <span className="text-lg">{value}</span>
+          <span className="text-title">{value}</span>
         </div>
       )}
     </div>

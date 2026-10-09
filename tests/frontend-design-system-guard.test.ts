@@ -51,12 +51,10 @@ describe('web design-system guard', () => {
     const palette =
       /\b(?:[a-z-]+:)*(?:bg|text|border|ring|from|to|via|fill|stroke|divide|outline)-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}\b/g;
     expectWithinAllowance(countBy(palette), {
-      // File-type icon colors, diagram/terminal themes and the exported share
-      // card are intentionally fixed and do not follow the app palette.
-      'components/chat/FilePanel.tsx': 11,
-      'components/chat/MermaidDiagram.tsx': 6,
+      // File-type icon colors and the terminal theme are intentionally fixed
+      // and do not follow the app palette.
+      'components/chat/FilePanel.tsx': 9,
       'components/chat/TerminalPanel.tsx': 9,
-      'components/chat/ShareImageDialog.tsx': 1,
     });
   });
 
@@ -78,7 +76,6 @@ describe('web design-system guard', () => {
         // Full-screen media viewers that stack above dialogs.
         'components/chat/ImageLightbox.tsx': 1,
         'components/chat/PreviewDialog.tsx': 1,
-        'components/chat/ShareImageDialog.tsx': 1,
       },
     );
   });
@@ -86,10 +83,7 @@ describe('web design-system guard', () => {
   test('uses the select primitives outside of pinned native selects', () => {
     expectWithinAllowance(
       countBy(/<select\b/g, (rel) => !rel.startsWith('components/ui/')),
-      {
-        // Token-styled native selects that tests drive directly.
-        'components/chat/ImBindingDialog.tsx': 5,
-      },
+      {},
     );
   });
 });

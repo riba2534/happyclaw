@@ -1,4 +1,5 @@
 import { Component, ErrorInfo, ReactNode } from 'react';
+import { Button } from '@/components/ui/button';
 import {
   isStaleChunkError,
   reloadForStaleChunk,
@@ -53,27 +54,23 @@ export class ErrorBoundary extends Component<
     return (
       <div
         role="alert"
-        className="my-3 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-4 text-sm text-destructive"
+        className="my-3 rounded-xl bg-error/10 px-4 py-3 text-body ring-1 ring-error/20"
       >
-        <p className="font-medium">这部分内容暂时无法显示</p>
-        <p className="mt-1 break-words text-xs leading-5 opacity-80">
+        <p className="text-title-sm text-error">这部分内容暂时无法显示</p>
+        <p className="mt-1 text-caption leading-5 break-words text-muted-foreground">
           {error.message || '发生了未知的页面渲染错误。'}
         </p>
         <div className="mt-3 flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={this.reset}
-            className="rounded-md border border-destructive/30 bg-background px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted"
-          >
+          <Button type="button" variant="outline" onClick={this.reset}>
             重试渲染
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            variant="outline"
             onClick={() => window.location.reload()}
-            className="rounded-md border border-destructive/30 bg-background px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted"
           >
             刷新页面
-          </button>
+          </Button>
         </div>
       </div>
     );

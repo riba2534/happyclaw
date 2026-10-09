@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  useMemo,
+  useCallback,
+} from 'react';
 import {
   Folder,
   FolderOpen,
@@ -35,15 +42,22 @@ import { copyToClipboard } from '../../utils/clipboard';
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
+import { IconButton } from '@/components/common/IconButton';
+import {
+  SegmentedControl,
+  type SegmentedOption,
+} from '@/components/common/SegmentedControl';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
+import { cn } from '@/lib/utils';
 import { FileUploadZone } from './FileUploadZone';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { PreviewDialog } from './PreviewDialog';
@@ -139,21 +153,21 @@ function FileIcon({ name }: { name: string }) {
   const ext = name.split('.').pop()?.toLowerCase() || '';
 
   if (IMAGE_EXTENSIONS.has(ext))
-    return <Image className="w-4 h-4 text-pink-500" />;
+    return <Image className="size-4 text-pink-500" />;
   if (VIDEO_EXTENSIONS.has(ext))
-    return <Film className="w-4 h-4 text-purple-500" />;
+    return <Film className="size-4 text-purple-500" />;
   if (AUDIO_EXTENSIONS.has(ext))
-    return <Music className="w-4 h-4 text-cyan-500" />;
+    return <Music className="size-4 text-cyan-500" />;
   if (ARCHIVE_EXTENSIONS.has(ext))
-    return <Package className="w-4 h-4 text-amber-500" />;
-  if (ext === 'pdf') return <FileText className="w-4 h-4 text-red-500" />;
-  if (ext === 'json') return <FileCode className="w-4 h-4 text-yellow-600" />;
-  if (ext === 'md') return <FileText className="w-4 h-4 text-blue-500" />;
+    return <Package className="size-4 text-amber-500" />;
+  if (ext === 'pdf') return <FileText className="size-4 text-red-500" />;
+  if (ext === 'json') return <FileCode className="size-4 text-yellow-600" />;
+  if (ext === 'md') return <FileText className="size-4 text-blue-500" />;
   if (CODE_EXTENSIONS.has(ext))
-    return <FileCode className="w-4 h-4 text-emerald-500" />;
+    return <FileCode className="size-4 text-emerald-500" />;
   if (TEXT_EXTENSIONS.has(ext))
-    return <FileText className="w-4 h-4 text-muted-foreground" />;
-  return <File className="w-4 h-4 text-muted-foreground" />;
+    return <FileText className="size-4 text-muted-foreground" />;
+  return <File className="size-4 text-muted-foreground" />;
 }
 
 function getFileExt(name: string): string {
@@ -196,6 +210,25 @@ type PreviewState =
   | { kind: 'audio'; file: FileEntry }
   | { kind: 'text'; file: FileEntry };
 
+// Shared chrome for the editor / text preview dialogs.
+const PREVIEW_SHELL_CLASS =
+  'flex h-full w-full animate-in flex-col rounded-xl bg-surface-raised shadow-floating ring-1 ring-foreground/10 duration-200 zoom-in-95';
+const PREVIEW_HEADER_CLASS =
+  'flex h-12 shrink-0 items-center justify-between gap-2 border-b border-surface-border pr-2 pl-4';
+const PREVIEW_FOOTER_CLASS =
+  'shrink-0 border-t border-surface-border px-4 py-2 text-caption text-muted-foreground';
+const PREVIEW_TEXTAREA_CLASS =
+  'h-full w-full resize-none font-mono text-body text-foreground md:text-body';
+
+const MARKDOWN_MODE_OPTIONS: SegmentedOption<'preview' | 'edit'>[] = [
+  { value: 'preview', label: '预览', icon: Eye },
+  { value: 'edit', label: '编辑', icon: FileEdit },
+];
+
+const BREADCRUMB_BUTTON_CLASS =
+  'shrink-0 px-1.5 text-caption font-normal pointer-coarse:h-8';
+const FILE_ACTION_CLASS = 'text-muted-foreground pointer-coarse:size-9';
+
 // ─── Helpers ─────────────────────────────────────────────────────
 
 function formatSize(bytes: number): string {
@@ -235,14 +268,15 @@ function MediaOverlay({
       overlayClassName={bgOpacity === '90' ? 'bg-black/90' : 'bg-black/80'}
       className="left-1/2 top-1/2 max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2"
     >
-      <button
-        className="fixed top-4 right-4 text-white/70 hover:text-white transition-colors p-2 cursor-pointer z-10"
+      <IconButton
+        label="关闭预览"
+        hideTooltip
+        icon={<X className="size-6" />}
+        size="icon-lg"
         onClick={onClose}
-        aria-label="关闭预览"
-      >
-        <X className="w-8 h-8" />
-      </button>
-      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 text-white/70 text-sm bg-black/50 px-3 py-1 rounded-full">
+        className="fixed top-4 right-4 z-10 text-white/70 hover:bg-white/10 hover:text-white"
+      />
+      <div className="fixed bottom-4 left-1/2 max-w-[calc(100vw-2rem)] -translate-x-1/2 truncate rounded-full bg-black/50 px-3 py-1 text-caption text-white/80">
         {fileName}
       </div>
       {children}
@@ -335,41 +369,41 @@ function TextEditor({
       overlayClassName="bg-black/50"
       className="left-1/2 top-1/2 h-[85vh] w-[calc(100vw-1.5rem)] max-w-4xl -translate-x-1/2 -translate-y-1/2 supports-[height:100dvh]:h-[85dvh]"
     >
-      <div className="bg-surface rounded-xl shadow-xl w-full h-full flex flex-col animate-in zoom-in-95 duration-200">
+      <div className={PREVIEW_SHELL_CLASS}>
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">
-          <div className="flex items-center gap-2 min-w-0">
+        <div className={PREVIEW_HEADER_CLASS}>
+          <div className="flex min-w-0 items-center gap-2">
             <FileIcon name={file.name} />
-            <span className="font-medium text-foreground text-sm truncate">
+            <span className="truncate text-title-sm text-foreground">
               {file.name}
             </span>
             {dirty && (
-              <span className="text-xs text-amber-500 flex-shrink-0">
+              <Badge variant="warning" className="shrink-0">
                 未保存
-              </span>
+              </Badge>
             )}
           </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <Button size="sm" onClick={handleSave_} disabled={!dirty || saving}>
-              {saving && <Loader2 className="size-4 animate-spin" />}
-              <Save className="w-3.5 h-3.5" />
+          <div className="flex shrink-0 items-center gap-1">
+            <Button onClick={handleSave_} disabled={!dirty || saving}>
+              {saving ? <Loader2 className="animate-spin" /> : <Save />}
               保存
             </Button>
-            <button
+            <IconButton
+              label="关闭编辑器"
+              hideTooltip
+              icon={<X />}
+              size="icon"
               onClick={onClose}
-              className="text-muted-foreground hover:text-foreground transition-colors p-2 rounded-md hover:bg-muted cursor-pointer"
-              aria-label="关闭编辑器"
-            >
-              <X className="w-5 h-5" />
-            </button>
+              className="text-muted-foreground"
+            />
           </div>
         </div>
 
         {/* Editor */}
-        <div className="flex-1 p-3 overflow-hidden">
+        <div className="flex-1 overflow-hidden p-3">
           {loading ? (
-            <div className="flex items-center justify-center h-full">
-              <p className="text-sm text-muted-foreground">加载中...</p>
+            <div className="flex h-full items-center justify-center">
+              <p className="text-body text-muted-foreground">加载中...</p>
             </div>
           ) : (
             <Textarea
@@ -378,16 +412,14 @@ function TextEditor({
                 setContent(e.target.value);
                 setDirty(true);
               }}
-              className="w-full h-full font-mono text-sm text-foreground resize-none bg-muted"
+              className={PREVIEW_TEXTAREA_CLASS}
               spellCheck={false}
             />
           )}
         </div>
 
         {/* Footer hint */}
-        <div className="px-4 py-2 border-t border-border text-xs text-muted-foreground flex-shrink-0">
-          Ctrl/Cmd+S 保存 · Esc 关闭
-        </div>
+        <div className={PREVIEW_FOOTER_CLASS}>Ctrl/Cmd+S 保存 · Esc 关闭</div>
       </div>
     </PreviewDialog>
   );
@@ -477,67 +509,52 @@ function MarkdownFileViewer({
       overlayClassName="bg-black/50"
       className="inset-0 h-[100dvh] w-screen sm:left-1/2 sm:top-1/2 sm:h-[90vh] sm:w-[calc(100vw-2rem)] sm:max-w-4xl sm:-translate-x-1/2 sm:-translate-y-1/2 sm:supports-[height:100dvh]:h-[90dvh]"
     >
-      <div className="bg-surface w-full h-full sm:rounded-xl sm:shadow-xl flex flex-col sm:animate-in sm:zoom-in-95 sm:duration-200">
+      <div className="flex h-full w-full flex-col bg-surface-raised sm:animate-in sm:rounded-xl sm:shadow-floating sm:ring-1 sm:ring-foreground/10 sm:duration-200 sm:zoom-in-95">
         {/* Header */}
-        <div className="flex items-center justify-between px-3 sm:px-4 py-2.5 border-b border-border flex-shrink-0">
-          <div className="flex items-center gap-2 min-w-0 flex-1">
+        <div className={cn(PREVIEW_HEADER_CLASS, 'pl-3 sm:pl-4')}>
+          <div className="flex min-w-0 flex-1 items-center gap-2">
             <FileIcon name={file.name} />
-            <span className="font-medium text-foreground text-sm truncate">
+            <span className="truncate text-title-sm text-foreground">
               {file.name}
             </span>
             {dirty && (
-              <span className="text-xs text-amber-500 flex-shrink-0">
+              <Badge variant="warning" className="shrink-0">
                 未保存
-              </span>
+              </Badge>
             )}
           </div>
-          <div className="flex items-center gap-1 sm:gap-1.5 flex-shrink-0">
-            {/* Mode toggle */}
-            <div className="flex items-center bg-muted rounded-lg p-0.5">
-              <button
-                onClick={switchToPreview}
-                aria-label="预览"
-                className={`flex items-center gap-1 px-2.5 py-1.5 sm:px-2 sm:py-1 rounded-md text-xs font-medium transition-colors touch-manipulation ${
-                  mode === 'preview'
-                    ? 'bg-background text-foreground shadow-sm'
-                    : 'text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                <Eye className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
-                <span className="hidden sm:inline">预览</span>
-              </button>
-              <button
-                onClick={switchToEdit}
-                aria-label="编辑"
-                className={`flex items-center gap-1 px-2.5 py-1.5 sm:px-2 sm:py-1 rounded-md text-xs font-medium transition-colors touch-manipulation ${
-                  mode === 'edit'
-                    ? 'bg-background text-foreground shadow-sm'
-                    : 'text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                <FileEdit className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
-                <span className="hidden sm:inline">编辑</span>
-              </button>
-            </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <SegmentedControl
+              label="查看方式"
+              value={mode}
+              options={MARKDOWN_MODE_OPTIONS}
+              onChange={(next) => {
+                if (next === 'edit') {
+                  if (mode !== 'edit') switchToEdit();
+                } else {
+                  switchToPreview();
+                }
+              }}
+            />
             {mode === 'edit' && (
               <Button
-                size="sm"
                 onClick={doSave}
                 disabled={!dirty || saving}
+                aria-label="保存"
                 className="touch-manipulation"
               >
-                {saving && <Loader2 className="size-4 animate-spin" />}
-                <Save className="w-3.5 h-3.5" />
+                {saving ? <Loader2 className="animate-spin" /> : <Save />}
                 <span className="hidden sm:inline">保存</span>
               </Button>
             )}
-            <button
+            <IconButton
+              label="关闭"
+              hideTooltip
+              icon={<X />}
+              size="icon"
               onClick={onClose}
-              className="text-muted-foreground hover:text-foreground transition-colors p-2 rounded-md hover:bg-muted touch-manipulation"
-              aria-label="关闭"
-            >
-              <X className="w-5 h-5" />
-            </button>
+              className="text-muted-foreground touch-manipulation"
+            />
           </div>
         </div>
 
@@ -545,7 +562,7 @@ function MarkdownFileViewer({
         <div className="flex-1 min-h-0 relative">
           {loading ? (
             <div className="absolute inset-0 flex items-center justify-center">
-              <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+              <Loader2 className="size-5 animate-spin text-muted-foreground" />
             </div>
           ) : mode === 'preview' ? (
             <div
@@ -571,7 +588,7 @@ function MarkdownFileViewer({
                   setEditContent(e.target.value);
                   setDirty(true);
                 }}
-                className="w-full h-full font-mono text-sm text-foreground resize-none bg-muted"
+                className={PREVIEW_TEXTAREA_CLASS}
                 style={{
                   WebkitOverflowScrolling: 'touch',
                   touchAction: 'pan-y',
@@ -586,7 +603,7 @@ function MarkdownFileViewer({
         </div>
 
         {/* Footer */}
-        <div className="px-3 sm:px-4 py-1.5 border-t border-border text-xs text-muted-foreground flex-shrink-0">
+        <div className={cn(PREVIEW_FOOTER_CLASS, 'px-3 sm:px-4')}>
           {mode === 'edit'
             ? 'Ctrl/Cmd+S 保存 · Esc 关闭'
             : '点击「编辑」修改内容 · Esc 关闭'}
@@ -690,24 +707,27 @@ function AudioPreview({
     <PreviewDialog
       title={`播放 ${file.name}`}
       onClose={onClose}
-      className="left-1/2 top-1/2 w-[calc(100vw-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl bg-surface p-6 shadow-xl"
+      className="left-1/2 top-1/2 w-[calc(100vw-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl bg-surface-raised p-4 shadow-floating ring-1 ring-foreground/10"
     >
       <div className="flex flex-col items-center gap-4">
-        <div className="flex items-center gap-3 w-full">
-          <Music className="w-10 h-10 text-cyan-500 flex-shrink-0" />
-          <div className="flex-1 min-w-0">
-            <p className="font-medium text-foreground truncate">{file.name}</p>
-            <p className="text-xs text-muted-foreground">
+        <div className="flex w-full items-center gap-3">
+          <Music className="size-8 shrink-0 text-cyan-500" />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-title-sm text-foreground">
+              {file.name}
+            </p>
+            <p className="text-caption text-muted-foreground tabular-nums">
               {formatSize(file.size)}
             </p>
           </div>
-          <button
+          <IconButton
+            label="关闭"
+            hideTooltip
+            icon={<X />}
+            size="icon"
             onClick={onClose}
-            className="text-muted-foreground hover:text-foreground transition-colors p-2 cursor-pointer"
-            aria-label="关闭"
-          >
-            <X className="w-5 h-5" />
-          </button>
+            className="text-muted-foreground"
+          />
         </div>
         <audio
           src={buildPreviewUrl(groupJid, file.path)}
@@ -768,22 +788,23 @@ function GenericTextPreview({
       overlayClassName="bg-black/50"
       className="left-1/2 top-1/2 h-[85vh] w-[calc(100vw-1.5rem)] max-w-4xl -translate-x-1/2 -translate-y-1/2 supports-[height:100dvh]:h-[85dvh]"
     >
-      <div className="bg-surface rounded-xl shadow-xl w-full h-full flex flex-col animate-in zoom-in-95 duration-200">
+      <div className={PREVIEW_SHELL_CLASS}>
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">
-          <div className="flex items-center gap-2 min-w-0">
+        <div className={PREVIEW_HEADER_CLASS}>
+          <div className="flex min-w-0 items-center gap-2">
             <FileIcon name={file.name} />
-            <span className="font-medium text-foreground text-sm truncate">
+            <span className="truncate text-title-sm text-foreground">
               {file.name}
             </span>
           </div>
-          <button
+          <IconButton
+            label="关闭预览"
+            hideTooltip
+            icon={<X />}
+            size="icon"
             onClick={onClose}
-            className="text-muted-foreground hover:text-foreground transition-colors p-2 rounded-md hover:bg-muted cursor-pointer"
-            aria-label="关闭预览"
-          >
-            <X className="w-5 h-5" />
-          </button>
+            className="text-muted-foreground"
+          />
         </div>
 
         {/* Content */}
@@ -794,18 +815,18 @@ function GenericTextPreview({
             data-testid="text-preview-scroll"
           >
             {loading ? (
-              <div className="flex items-center justify-center h-full">
-                <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+              <div className="flex h-full items-center justify-center">
+                <Loader2 className="size-5 animate-spin text-muted-foreground" />
               </div>
             ) : loadError ? (
-              <div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground">
-                <AlertCircle className="w-10 h-10" />
-                <p className="text-sm">此文件类型不支持预览</p>
+              <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
+                <AlertCircle className="size-8 text-faint-foreground" />
+                <p className="text-body">此文件类型不支持预览</p>
               </div>
             ) : (
               <pre
                 data-preview-select-root
-                className="text-sm text-foreground whitespace-pre-wrap break-all font-mono"
+                className="font-mono text-body break-all whitespace-pre-wrap text-foreground"
               >
                 {content}
               </pre>
@@ -815,9 +836,7 @@ function GenericTextPreview({
         </div>
 
         {/* Footer hint */}
-        <div className="px-4 py-2 border-t border-border text-xs text-muted-foreground flex-shrink-0">
-          Esc 关闭
-        </div>
+        <div className={PREVIEW_FOOTER_CLASS}>Esc 关闭</div>
       </div>
     </PreviewDialog>
   );
@@ -836,6 +855,7 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
     navigateTo,
   } = useFileStore();
 
+  const newDirInputId = useId();
   const [createDirModal, setCreateDirModal] = useState(false);
   const [newDirName, setNewDirName] = useState('');
   const [createDirLoading, setCreateDirLoading] = useState(false);
@@ -1023,71 +1043,83 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
   return (
     <div className="flex h-full w-full flex-col bg-background">
       {/* Header */}
-      <div className="flex h-11 shrink-0 items-center justify-between border-b border-surface-border pr-2 pl-4">
-        <h3 className="text-title-sm text-foreground">当前上下文文件</h3>
-        <div className="flex items-center gap-1">
+      <div className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-surface-border pr-2 pl-4">
+        <h3 className="truncate text-title-sm text-foreground">
+          当前上下文文件
+        </h3>
+        <div className="flex shrink-0 items-center gap-0.5">
           {canOpenLocalFolder && (
-            <button
+            <IconButton
+              label="打开工作区文件夹"
+              icon={
+                openDirLoading ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <FolderOpen />
+                )
+              }
               onClick={handleOpenLocalFolder}
               disabled={openDirLoading}
-              className="hidden size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 md:inline-flex"
-              title="打开工作区文件夹"
-              aria-label="打开工作区文件夹"
-            >
-              {openDirLoading ? (
-                <Loader2 className="size-3.5 animate-spin" />
-              ) : (
-                <FolderOpen className="size-3.5" />
-              )}
-            </button>
-          )}
-          <button
-            onClick={handleRefresh}
-            className="flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground pointer-coarse:size-9"
-            title="刷新"
-            aria-label="刷新文件列表"
-          >
-            <RefreshCw
-              className={`size-3.5 ${loading ? 'animate-spin' : ''}`}
+              className="text-muted-foreground max-md:hidden"
             />
-          </button>
+          )}
+          <IconButton
+            label="刷新文件列表"
+            icon={<RefreshCw className={cn(loading && 'animate-spin')} />}
+            onClick={handleRefresh}
+            className="text-muted-foreground pointer-coarse:size-9"
+          />
           {onClose && (
-            <button
+            <IconButton
+              label="关闭文件面板"
+              icon={<X />}
               onClick={onClose}
-              className="flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground pointer-coarse:size-9"
-              aria-label="关闭文件面板"
-            >
-              <X className="w-5 h-5" />
-            </button>
+              className="text-muted-foreground pointer-coarse:size-9"
+            />
           )}
         </div>
       </div>
 
       {/* Breadcrumb */}
-      <div className="border-b border-surface-border px-3 py-1.5">
-        <div className="flex items-center gap-0.5 overflow-x-auto text-caption">
-          <button
-            onClick={() => handleNavigate(-1)}
-            className="cursor-pointer rounded px-1 py-0.5 whitespace-nowrap text-muted-foreground hover:bg-surface-hover hover:text-foreground"
-          >
-            根目录
-          </button>
-          {breadcrumbs.map((crumb, index) => (
-            <div key={index} className="flex items-center gap-1">
-              <ChevronRight className="size-3 shrink-0 text-faint-foreground" />
-              <button
-                onClick={() => handleNavigate(index)}
-                className="cursor-pointer rounded px-1 py-0.5 whitespace-nowrap text-foreground hover:bg-surface-hover"
-              >
-                {crumb}
-              </button>
-            </div>
-          ))}
-        </div>
-      </div>
+      <nav
+        aria-label="文件路径"
+        className="flex h-9 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-surface-border px-2.5"
+      >
+        <Button
+          variant="ghost"
+          size="xs"
+          onClick={() => handleNavigate(-1)}
+          className={cn(
+            BREADCRUMB_BUTTON_CLASS,
+            breadcrumbs.length > 0
+              ? 'text-muted-foreground'
+              : 'text-foreground',
+          )}
+        >
+          根目录
+        </Button>
+        {breadcrumbs.map((crumb, index) => (
+          <div key={index} className="flex shrink-0 items-center gap-0.5">
+            <ChevronRight className="size-3 shrink-0 text-faint-foreground" />
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={() => handleNavigate(index)}
+              className={cn(
+                BREADCRUMB_BUTTON_CLASS,
+                index === breadcrumbs.length - 1
+                  ? 'text-foreground'
+                  : 'text-muted-foreground',
+              )}
+            >
+              {crumb}
+            </Button>
+          </div>
+        ))}
+      </nav>
 
       {openDirError && (
-        <div className="border-b border-error/15 bg-error/5 px-4 py-2 text-caption text-error">
+        <div className="border-b border-surface-border bg-error/10 px-4 py-2 text-caption text-error">
           {openDirError}
         </div>
       )}
@@ -1096,7 +1128,7 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
       <div className="relative min-h-0 flex-1">
         <div
           ref={fileListScrollRef}
-          className="hc-scroll-pane h-full overflow-y-auto px-1.5 py-1.5"
+          className="hc-scroll-pane h-full overflow-y-auto p-1.5"
           data-testid="file-list-scroll"
         >
           {loading && fileList.length === 0 ? (
@@ -1108,124 +1140,104 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
               <p className="text-caption text-muted-foreground">暂无文件</p>
             </div>
           ) : (
-            <div className="space-y-0.5">
+            <div role="list" className="flex flex-col gap-px">
               {sortedFiles.map((item) => {
                 const clickable =
                   item.type === 'directory' || isPreviewableFile(item);
                 const summary = (
                   <>
-                    <div className="flex-shrink-0 w-5 flex items-center justify-center">
+                    <span className="flex size-4 shrink-0 items-center justify-center">
                       {item.type === 'directory' ? (
                         <Folder className="size-4 text-muted-foreground" />
                       ) : (
                         <FileIcon name={item.name} />
                       )}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span
-                          className={`truncate text-body ${
-                            item.isSystem && !isEntryEditable(item)
-                              ? 'text-muted-foreground'
-                              : 'text-foreground'
-                          }`}
-                        >
-                          {item.name}
-                        </span>
-                        {item.isSystem && <Badge variant="neutral">系统</Badge>}
-                      </div>
-                      {item.type === 'file' && (
-                        <p className="text-micro leading-tight text-faint-foreground">
-                          {formatSize(item.size)}
-                        </p>
+                    </span>
+                    <span
+                      className={cn(
+                        'truncate text-body',
+                        item.isSystem && !isEntryEditable(item)
+                          ? 'text-muted-foreground'
+                          : 'text-foreground',
                       )}
-                    </div>
+                    >
+                      {item.name}
+                    </span>
+                    {item.isSystem && (
+                      <Badge variant="neutral" className="shrink-0">
+                        系统
+                      </Badge>
+                    )}
                   </>
                 );
                 return (
                   <div
                     key={item.path}
-                    className={`group/file flex min-h-9 items-center gap-2 rounded-md px-2 py-1 transition-colors ${
-                      clickable
-                        ? 'hover:bg-surface-hover'
-                        : item.isSystem
-                          ? 'bg-muted/40'
-                          : 'hover:bg-surface-hover'
-                    }`}
+                    role="listitem"
+                    className="group/file flex h-8 items-center gap-1 rounded-md pr-1 transition-colors hover:bg-surface-hover pointer-coarse:h-11"
                   >
                     {clickable ? (
                       <button
                         type="button"
                         onClick={() => handleItemClick(item)}
-                        className="flex min-w-0 flex-1 items-center gap-2 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer"
+                        className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md pl-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:ring-inset"
                       >
                         {summary}
                       </button>
                     ) : (
-                      <div className="flex min-w-0 flex-1 items-center gap-2">
+                      <div className="flex h-full min-w-0 flex-1 items-center gap-2 pl-2">
                         {summary}
                       </div>
                     )}
 
-                    {/* Actions */}
-                    <div className="flex shrink-0 items-center gap-0.5 transition-opacity pointer-fine:opacity-0 pointer-fine:group-hover/file:opacity-100 pointer-fine:group-focus-within/file:opacity-100">
+                    {/* Size gives way to the actions on hover / focus. */}
+                    {item.type === 'file' && (
+                      <span className="shrink-0 px-1 text-micro text-faint-foreground tabular-nums pointer-fine:group-focus-within/file:hidden pointer-fine:group-hover/file:hidden">
+                        {formatSize(item.size)}
+                      </span>
+                    )}
+
+                    {/* Actions stay focusable while collapsed so keyboard
+                        users can still Tab into them. */}
+                    <div className="flex shrink-0 items-center pointer-fine:w-0 pointer-fine:overflow-hidden pointer-fine:group-focus-within/file:w-auto pointer-fine:group-focus-within/file:overflow-visible pointer-fine:group-hover/file:w-auto pointer-fine:group-hover/file:overflow-visible">
                       {/* Copy absolute path (always available) */}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleCopyPath(item);
-                        }}
-                        className="flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-surface-selected hover:text-foreground pointer-coarse:size-9"
-                        title={
-                          item.absolutePath
-                            ? `复制路径：${item.absolutePath}`
-                            : '复制路径'
-                        }
-                        aria-label="复制绝对路径"
-                      >
-                        <Copy className="w-3.5 h-3.5" />
-                      </button>
+                      <IconButton
+                        label="复制绝对路径"
+                        icon={<Copy />}
+                        onClick={() => handleCopyPath(item)}
+                        className={FILE_ACTION_CLASS}
+                      />
                       {/* Edit button for editable text files (系统文件里的
                           CLAUDE.md 例外也可编辑，但仍然没有删除按钮) */}
                       {isEntryEditable(item) &&
                         TEXT_EXTENSIONS.has(getFileExt(item.name)) && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setPreview({ kind: 'edit', file: item });
-                            }}
-                            className="flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-surface-selected hover:text-foreground pointer-coarse:size-9"
-                            title="编辑"
-                            aria-label="编辑文件"
-                          >
-                            <Pencil className="w-3.5 h-3.5" />
-                          </button>
+                          <IconButton
+                            label="编辑文件"
+                            icon={<Pencil />}
+                            onClick={() =>
+                              setPreview({ kind: 'edit', file: item })
+                            }
+                            className={FILE_ACTION_CLASS}
+                          />
                         )}
                       {item.type === 'file' && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDownload(item);
-                          }}
-                          className="flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-surface-selected hover:text-foreground pointer-coarse:size-9"
-                          title="下载"
-                          aria-label="下载文件"
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                        </button>
+                        <IconButton
+                          label="下载文件"
+                          icon={<Download />}
+                          onClick={() => handleDownload(item)}
+                          className={FILE_ACTION_CLASS}
+                        />
                       )}
                       {!item.isSystem && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteClick(item);
-                          }}
-                          className="flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive pointer-coarse:size-9"
-                          title="删除"
-                          aria-label="删除文件"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        <IconButton
+                          label="删除文件"
+                          icon={<Trash2 />}
+                          onClick={() => handleDeleteClick(item)}
+                          className={cn(
+                            FILE_ACTION_CLASS,
+                            'hover:bg-destructive/10 hover:text-destructive',
+                          )}
+                        />
                       )}
                     </div>
                   </div>
@@ -1238,14 +1250,9 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
       </div>
 
       {/* Footer */}
-      <div className="space-y-2 border-t border-surface-border p-3">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleCreateDir}
-          className="w-full"
-        >
-          <FolderPlus className="w-4 h-4" />
+      <div className="shrink-0 space-y-2 border-t border-surface-border p-3">
+        <Button variant="outline" onClick={handleCreateDir} className="w-full">
+          <FolderPlus />
           新建文件夹
         </Button>
         <FileUploadZone groupJid={groupJid} />
@@ -1256,43 +1263,40 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
         open={createDirModal}
         onOpenChange={(v) => !v && setCreateDirModal(false)}
       >
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>新建文件夹</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4">
-            <div>
-              <Label className="mb-2">文件夹名称</Label>
-              <Input
-                type="text"
-                value={newDirName}
-                onChange={(e) => setNewDirName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleCreateDirConfirm();
-                }}
-                placeholder="输入文件夹名称"
-                autoFocus
-              />
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button
-                variant="ghost"
-                onClick={() => setCreateDirModal(false)}
-                disabled={createDirLoading}
-              >
-                取消
-              </Button>
-              <Button
-                onClick={handleCreateDirConfirm}
-                disabled={createDirLoading}
-              >
-                {createDirLoading && (
-                  <Loader2 className="size-4 animate-spin" />
-                )}
-                创建
-              </Button>
-            </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor={newDirInputId}>文件夹名称</Label>
+            <Input
+              id={newDirInputId}
+              type="text"
+              value={newDirName}
+              onChange={(e) => setNewDirName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleCreateDirConfirm();
+              }}
+              placeholder="输入文件夹名称"
+              autoFocus
+            />
           </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setCreateDirModal(false)}
+              disabled={createDirLoading}
+            >
+              取消
+            </Button>
+            <Button
+              onClick={handleCreateDirConfirm}
+              disabled={createDirLoading}
+            >
+              {createDirLoading && <Loader2 className="animate-spin" />}
+              创建
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

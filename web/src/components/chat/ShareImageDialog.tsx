@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Download, RefreshCw, Copy, Check } from 'lucide-react';
+import { Download, Copy, Check } from 'lucide-react';
 import { toCanvas } from 'html-to-image';
 import { Message } from '../../stores/chat';
 import { downloadFromDataUrl } from '../../utils/download';
@@ -14,6 +14,16 @@ import {
 } from './ShareCardRenderer';
 import { resolveAgentDisplayIdentity } from '../../utils/agent-identity';
 import { useAuthStore } from '../../stores/auth';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { Spinner } from '@/components/ui/spinner';
 
 interface ShareImageDialogProps {
   onClose: () => void;
@@ -469,116 +479,99 @@ export function ShareImageDialog({
     }
   };
 
-  return createPortal(
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
-      onClick={onClose}
-    >
-      {/* Dialog card */}
-      <div
-        className="relative flex max-h-[88vh] flex-col rounded-2xl border border-border bg-card shadow-2xl animate-in zoom-in-95 fade-in duration-200"
-        style={{ width: 'min(94vw, 1280px)' }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between border-b border-border px-4 py-3 sm:px-5 sm:py-4">
-          <h2 className="text-base font-semibold text-foreground">
-            生成分享图片
-          </h2>
-          <button
-            onClick={onClose}
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-foreground/10 transition-colors cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+  return (
+    <>
+      <Dialog open onOpenChange={(open) => !open && onClose()}>
+        <DialogContent
+          className="flex max-h-[88vh] max-w-none flex-col gap-0 p-0 sm:max-w-none"
+          style={{ width: 'min(94vw, 1280px)' }}
+        >
+          {/* Header */}
+          <DialogHeader className="border-b border-surface-border px-4 py-3 pr-12">
+            <DialogTitle>生成分享图片</DialogTitle>
+            <DialogDescription className="sr-only">
+              将这条回复渲染为长图，可复制或保存
+            </DialogDescription>
+          </DialogHeader>
 
-        {/* Body */}
-        <div className="flex-1 overflow-auto p-3 sm:p-5">
-          {state === 'generating' && (
-            <div className="flex flex-col items-center justify-center py-16 gap-3">
-              <RefreshCw className="w-6 h-6 text-primary animate-spin" />
-              <span className="text-sm text-muted-foreground">
-                正在渲染图片...
-              </span>
-            </div>
-          )}
+          {/* Body */}
+          <div className="min-h-0 flex-1 overflow-auto p-3 sm:p-4">
+            {state === 'generating' && (
+              <div className="flex flex-col items-center justify-center gap-3 py-16">
+                <Spinner className="size-5 text-muted-foreground" />
+                <span className="text-body text-muted-foreground">
+                  正在渲染图片...
+                </span>
+              </div>
+            )}
 
-          {state === 'error' && (
-            <div className="flex flex-col items-center justify-center py-16 gap-3">
-              <span className="text-sm text-destructive">{errorMsg}</span>
-              <button
-                onClick={generate}
-                className="px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:opacity-90 transition-opacity cursor-pointer"
-              >
-                重试
-              </button>
-            </div>
-          )}
+            {state === 'error' && (
+              <div className="flex flex-col items-center justify-center gap-3 py-16">
+                <span className="text-body text-error">{errorMsg}</span>
+                <Button variant="outline" onClick={generate}>
+                  重试
+                </Button>
+              </div>
+            )}
 
-          {state === 'preview' && dataUrl && (
-            <div className="flex justify-center">
-              <img
-                src={dataUrl}
-                alt="分享预览"
-                className="block rounded-lg border border-border shadow-sm"
-                style={{
-                  width: previewWidth ? `${previewWidth}px` : undefined,
-                  maxWidth: '100%',
-                  height: 'auto',
-                }}
-              />
-            </div>
-          )}
-        </div>
-
-        {/* Footer */}
-        {state === 'preview' && (
-          <div className="flex flex-col gap-2 border-t border-border px-4 py-3 sm:flex-row sm:gap-3 sm:px-5 sm:py-4">
-            <button
-              onClick={handleCopy}
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium border border-border rounded-lg hover:bg-accent transition-colors cursor-pointer"
-            >
-              {copied ? (
-                <Check className="w-4 h-4 text-emerald-500" />
-              ) : (
-                <Copy className="w-4 h-4" />
-              )}
-              {copied ? '已复制' : '复制图片'}
-            </button>
-            <button
-              onClick={handleDownload}
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium bg-primary text-primary-foreground rounded-lg hover:opacity-90 transition-opacity cursor-pointer"
-            >
-              <Download className="w-4 h-4" />
-              保存图片
-            </button>
+            {state === 'preview' && dataUrl && (
+              <div className="flex justify-center">
+                <img
+                  src={dataUrl}
+                  alt="分享预览"
+                  className="block rounded-lg ring-1 ring-surface-border"
+                  style={{
+                    width: previewWidth ? `${previewWidth}px` : undefined,
+                    maxWidth: '100%',
+                    height: 'auto',
+                  }}
+                />
+              </div>
+            )}
           </div>
-        )}
-      </div>
 
-      {/* Hidden render area — offscreen but still layouted/paintable for iOS PWA rasterization. */}
-      <div
-        aria-hidden="true"
-        style={{
-          position: 'fixed',
-          left: -10000,
-          top: 0,
-          pointerEvents: 'none',
-        }}
-      >
-        <ShareCardRenderer
-          ref={cardRef}
-          content={message.content}
-          senderName={senderName}
-          timestamp={timestamp}
-          groupJid={message.chat_jid}
-          aiImageUrl={agentIdentity.imageUrl}
-          aiEmoji={agentIdentity.emoji}
-          aiColor={agentIdentity.color}
-        />
-      </div>
-    </div>,
-    document.body,
+          {/* Footer */}
+          {state === 'preview' && (
+            <DialogFooter className="m-0 rounded-b-xl border-surface-border">
+              <Button variant="outline" onClick={handleCopy}>
+                {copied ? <Check className="text-success" /> : <Copy />}
+                {copied ? '已复制' : '复制图片'}
+              </Button>
+              <Button onClick={handleDownload}>
+                <Download />
+                保存图片
+              </Button>
+            </DialogFooter>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Hidden render area — offscreen but still layouted/paintable for iOS
+          PWA rasterization. Portaled outside the dialog so its open animation
+          (a transform) never scales the card while it is being measured. */}
+      {createPortal(
+        <div
+          aria-hidden="true"
+          style={{
+            position: 'fixed',
+            left: -10000,
+            top: 0,
+            pointerEvents: 'none',
+          }}
+        >
+          <ShareCardRenderer
+            ref={cardRef}
+            content={message.content}
+            senderName={senderName}
+            timestamp={timestamp}
+            groupJid={message.chat_jid}
+            aiImageUrl={agentIdentity.imageUrl}
+            aiEmoji={agentIdentity.emoji}
+            aiColor={agentIdentity.color}
+          />
+        </div>,
+        document.body,
+      )}
+    </>
   );
 }
