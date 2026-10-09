@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import { AppWindow, Loader2, RotateCcw, Upload } from 'lucide-react';
+import { ImageIcon, Loader2, RotateCcw, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { useAuthStore } from '../../stores/auth';
 import { api, apiFetch } from '../../api/client';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { Label } from '@/components/ui/label';
+import { cn } from '@/lib/utils';
 import { getErrorMessage } from './types';
-import { SettingsCard as Section } from './SettingsCard';
+import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
 import { withBasePath } from '../../utils/url';
 import type { AppearanceConfig } from '../../stores/auth';
 
@@ -110,24 +110,34 @@ function BrandAssetUpload({
   };
 
   return (
-    <Section icon={AppWindow} title={title} desc={desc}>
-      <div className="flex items-center gap-4">
-        <div
-          className={`flex flex-shrink-0 items-center overflow-hidden rounded-lg border border-dashed border-border bg-muted/30 ${previewClassName}`}
-        >
-          {url ? (
-            <img
-              src={withBasePath(url)}
-              alt={title}
-              className={`object-contain ${imageClassName}`}
-            />
-          ) : (
-            <span className="px-2 text-center text-[11px] text-muted-foreground">
-              使用默认
-            </span>
-          )}
-        </div>
-        <div className="flex flex-wrap gap-2">
+    <SettingsRow
+      label={title}
+      description={desc}
+      control={
+        <>
+          <div
+            className={cn(
+              'flex shrink-0 items-center overflow-hidden rounded-md bg-muted ring-1 ring-surface-border',
+              previewClassName,
+              !url && 'justify-center',
+            )}
+          >
+            {url ? (
+              <img
+                src={withBasePath(url)}
+                alt={title}
+                className={cn('object-contain', imageClassName)}
+              />
+            ) : (
+              <>
+                <ImageIcon
+                  className="size-4 text-faint-foreground"
+                  aria-hidden="true"
+                />
+                <span className="sr-only">使用默认</span>
+              </>
+            )}
+          </div>
           <input
             ref={inputRef}
             type="file"
@@ -135,22 +145,6 @@ function BrandAssetUpload({
             className="hidden"
             onChange={upload}
           />
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={
-              uploading || removing || mutationDisabled || !canManageAssets
-            }
-            onClick={() => inputRef.current?.click()}
-          >
-            {uploading ? (
-              <Loader2 className="size-3.5 animate-spin" />
-            ) : (
-              <Upload className="size-3.5" />
-            )}
-            上传图片
-          </Button>
           {url && (
             <Button
               type="button"
@@ -169,14 +163,25 @@ function BrandAssetUpload({
               恢复默认
             </Button>
           )}
-        </div>
-      </div>
-      {!canManageAssets && (
-        <p className="mt-2 text-xs text-muted-foreground">
-          品牌资源文件的上传与删除需要管理员权限。
-        </p>
-      )}
-    </Section>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={
+              uploading || removing || mutationDisabled || !canManageAssets
+            }
+            onClick={() => inputRef.current?.click()}
+          >
+            {uploading ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Upload className="size-3.5" />
+            )}
+            上传图片
+          </Button>
+        </>
+      }
+    />
   );
 }
 
@@ -280,81 +285,87 @@ export function AppearanceSection() {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
-        <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+        <Loader2 className="size-5 animate-spin text-muted-foreground" />
       </div>
     );
   }
 
   if (!canManage) {
     return (
-      <div className="text-sm text-muted-foreground">
+      <div className="text-body text-muted-foreground">
         需要系统配置权限才能修改全局外观设置。
       </div>
     );
   }
 
   return (
-    <div className="space-y-4">
-      <p className="text-sm text-muted-foreground bg-muted rounded-lg px-4 py-3">
-        系统品牌影响站点标题、欢迎文案和侧边栏 Logo，不会改变 HappyClaw
-        或自定义智能体的名称。
-      </p>
-
-      <Section
-        icon={AppWindow}
+    <div className="space-y-8">
+      <SettingsSection
         title="站点名称"
-        desc="显示在浏览器标题和欢迎页面中"
+        description="显示在浏览器标题和欢迎页面中"
       >
-        <div>
-          <Label
+        <SettingsGroup>
+          <SettingsRow
+            label="名称"
             htmlFor="system-brand-name"
-            className="text-xs text-muted-foreground mb-1"
-          >
-            名称
-          </Label>
-          <Input
-            id="system-brand-name"
-            type="text"
-            value={appName}
-            onChange={(e) => setAppName(e.target.value)}
-            maxLength={32}
-            placeholder="HappyClaw"
+            control={
+              <Input
+                id="system-brand-name"
+                type="text"
+                value={appName}
+                onChange={(e) => setAppName(e.target.value)}
+                maxLength={32}
+                placeholder="HappyClaw"
+                className="sm:w-64"
+              />
+            }
           />
-        </div>
-      </Section>
+          <div className="flex justify-end px-4 py-3">
+            <Button
+              size="sm"
+              onClick={handleSave}
+              disabled={saving || pendingMutations > 0 || !appName.trim()}
+            >
+              {saving && <Loader2 className="size-3.5 animate-spin" />}
+              保存系统品牌
+            </Button>
+          </div>
+        </SettingsGroup>
+      </SettingsSection>
 
-      <Button
-        onClick={handleSave}
-        disabled={saving || pendingMutations > 0 || !appName.trim()}
-        className="w-full sm:w-auto"
+      <SettingsSection
+        title="Logo"
+        description={
+          canManageAssets
+            ? undefined
+            : '品牌资源文件的上传与删除需要管理员权限。'
+        }
       >
-        {saving && <Loader2 className="size-4 animate-spin" />}
-        保存系统品牌
-      </Button>
-
-      <BrandAssetUpload
-        kind="icon"
-        title="图形 Logo"
-        desc="建议尺寸 400x400，显示在侧边栏折叠图标位置，支持 PNG/JPG"
-        url={brandIconUrl}
-        canManageAssets={canManageAssets}
-        mutationDisabled={pendingMutations > 0}
-        executeMutation={(request) => executeMutation(request)}
-        previewClassName="h-16 w-16 justify-center"
-        imageClassName="h-full w-full"
-      />
-
-      <BrandAssetUpload
-        kind="banner"
-        title="文字 Logo"
-        desc="建议尺寸 600x200，左对齐显示在工作区列表上方，支持 PNG/JPG"
-        url={brandBannerUrl}
-        canManageAssets={canManageAssets}
-        mutationDisabled={pendingMutations > 0}
-        executeMutation={(request) => executeMutation(request)}
-        previewClassName="h-[3.35rem] w-[10rem] justify-start px-2"
-        imageClassName="h-full w-full object-left"
-      />
+        <SettingsGroup>
+          <BrandAssetUpload
+            kind="icon"
+            title="图形 Logo"
+            desc="建议尺寸 400x400，显示在侧边栏折叠图标位置，支持 PNG/JPG"
+            url={brandIconUrl}
+            canManageAssets={canManageAssets}
+            mutationDisabled={pendingMutations > 0}
+            executeMutation={(request) => executeMutation(request)}
+            previewClassName="size-10 justify-center"
+            imageClassName="h-full w-full"
+          />
+          <BrandAssetUpload
+            kind="banner"
+            title="文字 Logo"
+            desc="建议尺寸 600x200，左对齐显示在工作区列表上方，支持 PNG/JPG"
+            url={brandBannerUrl}
+            canManageAssets={canManageAssets}
+            mutationDisabled={pendingMutations > 0}
+            executeMutation={(request) => executeMutation(request)}
+            previewClassName="h-10 w-30 justify-start px-1.5"
+            imageClassName="h-full w-full object-left"
+          />
+        </SettingsGroup>
+      </SettingsSection>
     </div>
   );
 }

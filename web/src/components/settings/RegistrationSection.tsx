@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 
+import { Switch } from '@/components/ui/switch';
 import { api } from '../../api/client';
+import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
 import { getErrorMessage } from './types';
 
 export function RegistrationSection() {
@@ -56,67 +59,62 @@ export function RegistrationSection() {
   }, []);
 
   if (loading) {
-    return <div className="text-sm text-muted-foreground">加载中...</div>;
+    return (
+      <SettingsGroup>
+        <div className="flex items-center justify-center gap-2 py-8 text-body text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" />
+          加载中...
+        </div>
+      </SettingsGroup>
+    );
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <div className="text-sm font-medium text-foreground">允许注册</div>
-          <div className="text-xs text-muted-foreground mt-0.5">
-            关闭后注册入口不可用
-          </div>
-        </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={allowRegistration}
-          disabled={saving}
-          onClick={() => saveConfig(!allowRegistration, requireInviteCode)}
-          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:opacity-50 ${
-            allowRegistration ? 'bg-primary' : 'bg-muted-foreground/40'
-          }`}
-        >
-          <span
-            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white dark:bg-foreground shadow ring-0 transition duration-200 ease-in-out ${
-              allowRegistration ? 'translate-x-5' : 'translate-x-0'
-            }`}
-          />
-        </button>
-      </div>
-
-      <div className="flex items-center justify-between">
-        <div>
-          <div className="text-sm font-medium text-foreground">需要邀请码</div>
-          <div className="text-xs text-muted-foreground mt-0.5">
-            {allowRegistration
+    <SettingsSection
+      title="用户注册"
+      description={
+        <>
+          最近保存：
+          {updatedAt ? new Date(updatedAt).toLocaleString('zh-CN') : '未记录'}
+        </>
+      }
+    >
+      <SettingsGroup>
+        <SettingsRow
+          label="允许注册"
+          htmlFor="registration-allow"
+          description="关闭后注册入口不可用"
+          control={
+            <Switch
+              id="registration-allow"
+              checked={allowRegistration}
+              disabled={saving}
+              onCheckedChange={(checked) =>
+                saveConfig(checked, requireInviteCode)
+              }
+            />
+          }
+        />
+        <SettingsRow
+          label="需要邀请码"
+          htmlFor="registration-invite"
+          description={
+            allowRegistration
               ? '关闭后任何人都可以直接注册'
-              : '注册已关闭；该规则会在重新开放注册后继续生效'}
-          </div>
-        </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={requireInviteCode}
-          disabled={saving || !allowRegistration}
-          onClick={() => saveConfig(allowRegistration, !requireInviteCode)}
-          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:opacity-50 ${
-            requireInviteCode ? 'bg-primary' : 'bg-muted-foreground/40'
-          }`}
-        >
-          <span
-            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white dark:bg-foreground shadow ring-0 transition duration-200 ease-in-out ${
-              requireInviteCode ? 'translate-x-5' : 'translate-x-0'
-            }`}
-          />
-        </button>
-      </div>
-
-      <div className="text-xs text-muted-foreground">
-        最近保存：
-        {updatedAt ? new Date(updatedAt).toLocaleString('zh-CN') : '未记录'}
-      </div>
-    </div>
+              : '注册已关闭；该规则会在重新开放注册后继续生效'
+          }
+          control={
+            <Switch
+              id="registration-invite"
+              checked={requireInviteCode}
+              disabled={saving || !allowRegistration}
+              onCheckedChange={(checked) =>
+                saveConfig(allowRegistration, checked)
+              }
+            />
+          }
+        />
+      </SettingsGroup>
+    </SettingsSection>
   );
 }

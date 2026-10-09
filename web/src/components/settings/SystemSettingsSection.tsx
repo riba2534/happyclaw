@@ -10,8 +10,8 @@ import { useGroupsStore } from '../../stores/groups';
 import { useTasksStore } from '../../stores/tasks';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
+import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
 import type { HostIntegrationSettings, SystemSettings } from './types';
 import { getErrorMessage } from './types';
 
@@ -166,21 +166,40 @@ function RetryState({
   onRetry: () => void;
 }) {
   return (
-    <div className="flex min-h-40 flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border px-6 text-center">
-      <AlertCircle className="size-6 text-destructive" aria-hidden="true" />
-      <div>
-        <p className="text-sm font-medium text-foreground">加载失败</p>
-        <p className="mt-1 text-xs text-muted-foreground">{message}</p>
+    <SettingsGroup>
+      <div className="flex min-h-40 flex-col items-center justify-center gap-3 px-6 py-8 text-center">
+        <AlertCircle className="size-5 text-error" aria-hidden="true" />
+        <div>
+          <p className="text-body font-medium text-foreground">加载失败</p>
+          <p className="mt-1 text-caption text-muted-foreground">{message}</p>
+        </div>
+        <Button variant="outline" size="sm" onClick={onRetry}>
+          <RotateCcw className="size-3.5" aria-hidden="true" />
+          重新加载
+        </Button>
       </div>
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={onRetry}
-        className="min-h-11"
+    </SettingsGroup>
+  );
+}
+
+function LoadingState({ label }: { label: string }) {
+  return (
+    <SettingsGroup>
+      <div
+        className="flex min-h-32 items-center justify-center"
+        aria-label={label}
       >
-        <RotateCcw className="size-4" aria-hidden="true" />
-        重新加载
-      </Button>
+        <Loader2 className="size-5 animate-spin text-muted-foreground" />
+      </div>
+    </SettingsGroup>
+  );
+}
+
+/** Right-aligned save footer that sticks to the bottom of the scroll root. */
+function StickySaveBar({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="sticky bottom-0 z-10 mt-8 flex h-14 items-center justify-between gap-4 border-t border-surface-border bg-background/90 backdrop-blur">
+      {children}
     </div>
   );
 }
@@ -203,49 +222,39 @@ function NumberSettingField({
   const errorId = `${inputId}-error`;
 
   return (
-    <div className="grid gap-2 py-4 first:pt-0 last:pb-0 sm:grid-cols-[minmax(0,1fr)_11rem] sm:gap-8">
-      <div className="min-w-0">
-        <Label htmlFor={inputId} className="text-sm font-medium">
-          {field.label}
-        </Label>
-        <p
-          id={descriptionId}
-          className="mt-1 text-xs leading-5 text-muted-foreground"
-        >
-          {field.description}
-        </p>
-      </div>
-      <div className="self-start">
-        <div className="flex items-center gap-2">
-          <Input
-            id={inputId}
-            type="number"
-            inputMode="numeric"
-            value={value}
-            min={field.min}
-            max={field.max}
-            step={field.step}
-            onChange={(event) => onChange(event.target.value)}
-            onBlur={onBlur}
-            aria-invalid={!!error}
-            aria-describedby={`${descriptionId}${error ? ` ${errorId}` : ''}`}
-            className="h-11 min-w-0"
-          />
-          <span className="w-16 shrink-0 text-xs text-muted-foreground">
-            {field.unit}
-          </span>
+    <SettingsRow
+      label={field.label}
+      htmlFor={inputId}
+      description={<span id={descriptionId}>{field.description}</span>}
+      control={
+        <div className="flex w-full flex-col gap-1 sm:w-auto sm:items-end">
+          <div className="flex items-center gap-2">
+            <Input
+              id={inputId}
+              type="number"
+              inputMode="numeric"
+              value={value}
+              min={field.min}
+              max={field.max}
+              step={field.step}
+              onChange={(event) => onChange(event.target.value)}
+              onBlur={onBlur}
+              aria-invalid={!!error}
+              aria-describedby={`${descriptionId}${error ? ` ${errorId}` : ''}`}
+              className="min-w-0 tabular-nums sm:w-28 pointer-coarse:min-h-11"
+            />
+            <span className="w-8 shrink-0 text-caption text-muted-foreground">
+              {field.unit}
+            </span>
+          </div>
+          {error && (
+            <p id={errorId} role="alert" className="text-caption text-error">
+              {error}
+            </p>
+          )}
         </div>
-        {error && (
-          <p
-            id={errorId}
-            role="alert"
-            className="mt-1.5 text-xs text-destructive"
-          >
-            {error}
-          </p>
-        )}
-      </div>
-    </div>
+      }
+    />
   );
 }
 
@@ -370,21 +379,14 @@ export function SystemSettingsSection({
 
   if (!canManage) {
     return (
-      <p className="text-sm text-muted-foreground">
+      <p className="text-body text-muted-foreground">
         需要系统配置权限才能查看和修改系统参数。
       </p>
     );
   }
 
   if (loading) {
-    return (
-      <div
-        className="flex min-h-40 items-center justify-center"
-        aria-label="正在加载系统参数"
-      >
-        <Loader2 className="size-6 animate-spin text-muted-foreground" />
-      </div>
-    );
+    return <LoadingState label="正在加载系统参数" />;
   }
 
   if (loadError || !values) {
@@ -398,23 +400,14 @@ export function SystemSettingsSection({
 
   return (
     <div>
-      <p className="text-sm leading-6 text-muted-foreground">
-        {scope === 'runtime' && '管理工作区运行边界、日志和执行容量。'}
-        {scope === 'security' && '管理登录与注册请求的认证限流策略。'}
-      </p>
-
-      <div className="mt-6 divide-y divide-border">
+      <div className="space-y-8">
         {activeGroups.map((group) => (
-          <section key={group.title} className="py-6 first:pt-0">
-            <header className="mb-5 max-w-2xl">
-              <h2 className="text-base font-semibold text-foreground">
-                {group.title}
-              </h2>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                {group.description}
-              </p>
-            </header>
-            <div className="divide-y divide-border/70">
+          <SettingsSection
+            key={group.title}
+            title={group.title}
+            description={group.description}
+          >
+            <SettingsGroup>
               {group.fields.map((field) => (
                 <NumberSettingField
                   key={field.key}
@@ -435,52 +428,60 @@ export function SystemSettingsSection({
                   }
                 />
               ))}
-            </div>
-          </section>
+            </SettingsGroup>
+          </SettingsSection>
         ))}
+
+        {scope === 'runtime' && (
+          <SettingsSection
+            title="额度墙回退模型"
+            description={
+              <>
+                主模型在一轮里撞到账号用量上限（如「You've reached your Fable 5
+                limit」）时，用该模型在同一轮无缝重跑一次，上限通知不外发给用户。填模型别名或完整
+                ID（如 <code className="font-mono">opus</code>、
+                <code className="font-mono">claude-opus-4-8</code>
+                ）。留空关闭，保留原行为。同一 OAuth
+                账号下不同模型有独立额度桶，因此 fable→opus
+                这类回退无需额外配置第二个 provider。
+              </>
+            }
+          >
+            <SettingsGroup>
+              <SettingsRow
+                label="回退模型"
+                htmlFor="system-setting-fallbackModel"
+                control={
+                  <Input
+                    id="system-setting-fallbackModel"
+                    type="text"
+                    value={fallbackModel}
+                    onChange={(e) => setFallbackModel(e.target.value)}
+                    placeholder="留空 = 关闭（如 opus / claude-opus-4-8）"
+                    className="sm:w-80"
+                    aria-label="额度墙回退模型"
+                  />
+                }
+              />
+            </SettingsGroup>
+          </SettingsSection>
+        )}
       </div>
 
-      {scope === 'runtime' && (
-        <section className="border-t border-border py-6">
-          <header className="mb-5 max-w-2xl">
-            <h2 className="text-base font-semibold text-foreground">
-              额度墙回退模型
-            </h2>
-            <p className="mt-1 text-xs leading-5 text-muted-foreground">
-              主模型在一轮里撞到账号用量上限（如「You've reached your Fable 5
-              limit」）时，用该模型在同一轮无缝重跑一次，上限通知不外发给用户。填模型别名或完整
-              ID（如 <code>opus</code>、<code>claude-opus-4-8</code>
-              ）。留空关闭，保留原行为。同一 OAuth
-              账号下不同模型有独立额度桶，因此 fable→opus
-              这类回退无需额外配置第二个 provider。
-            </p>
-          </header>
-          <Input
-            type="text"
-            value={fallbackModel}
-            onChange={(e) => setFallbackModel(e.target.value)}
-            placeholder="留空 = 关闭（如 opus / claude-opus-4-8）"
-            className="max-w-xs"
-            aria-label="额度墙回退模型"
-          />
-        </section>
-      )}
-
-      <div className="sticky bottom-0 z-10 -mx-4 mt-2 flex min-h-16 items-center justify-between gap-4 border-t border-border bg-background/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/85">
-        <p className="text-xs text-muted-foreground" aria-live="polite">
+      <StickySaveBar>
+        <p className="text-caption text-muted-foreground" aria-live="polite">
           {dirty ? '有尚未保存的系统参数' : '系统参数已保存'}
         </p>
         <Button
           onClick={() => void handleSave()}
           disabled={saving || !dirty || Object.keys(errors).length > 0}
-          className="min-h-11"
         >
           {saving && (
             <Loader2 className="size-4 animate-spin" aria-hidden="true" />
           )}
           保存系统参数
         </Button>
-      </div>
+      </StickySaveBar>
     </div>
   );
 }
@@ -532,14 +533,7 @@ export function HostIntegrationSettingsSection({
   if (!isAdmin) return null;
 
   if (loading) {
-    return (
-      <div
-        className="flex min-h-32 items-center justify-center"
-        aria-label="正在加载宿主机集成设置"
-      >
-        <Loader2 className="size-6 animate-spin text-muted-foreground" />
-      </div>
-    );
+    return <LoadingState label="正在加载宿主机集成设置" />;
   }
 
   if (loadError || !draft || !settings) {
@@ -621,32 +615,43 @@ export function HostIntegrationSettingsSection({
     }
   };
 
-  return (
-    <div>
-      {scope === 'host' && (
-        <div className="rounded-lg border border-warning/30 bg-warning-bg px-4 py-3 text-xs leading-5 text-warning">
-          这些设置会读取宿主机文件，只对系统管理员开放。自定义智能体
-          是否继承宿主机 Claude Code 配置，请在对应智能体的设置中管理。
-        </div>
-      )}
+  const autoCompactEnabled =
+    draft.mainAgentAutoCompactWindow === 0 &&
+    draft.mainAgentAutoCompactPercentage === 0;
 
-      <section className="mt-6 space-y-6">
-        {scope === 'main-agent' && (
-          <>
-            <div className="flex min-h-16 items-start justify-between gap-6">
-              <div className="min-w-0">
-                <Label htmlFor="host-integration-main-agent-context">
-                  主 HappyClaw 继承宿主机 Claude Code 配置
-                </Label>
-                <p
-                  id="host-integration-main-agent-context-description"
-                  className="mt-1 text-xs leading-5 text-muted-foreground"
-                >
-                  开启后自动继承宿主机提示词、Rules、全部 Skills 与 MCP，
-                  无需再逐项选择；HappyClaw 管理的能力继续附加。普通用户的 默认
-                  HappyClaw 始终使用托管配置。
-                </p>
-              </div>
+  const saveButton = (
+    <Button
+      size="sm"
+      onClick={() => void handleSave()}
+      disabled={
+        saving || !dirty || (scope === 'main-agent' && !!mainAutoCompactError)
+      }
+    >
+      {saving && (
+        <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+      )}
+      {scope === 'main-agent' ? '保存主智能体设置' : '保存宿主机设置'}
+    </Button>
+  );
+
+  if (scope === 'main-agent') {
+    return (
+      <SettingsSection
+        title="配置继承与上下文压缩"
+        description="控制主 HappyClaw 是否继承宿主机 Claude Code 配置，以及何时自动压缩上下文。"
+      >
+        <SettingsGroup>
+          <SettingsRow
+            label="主 HappyClaw 继承宿主机 Claude Code 配置"
+            htmlFor="host-integration-main-agent-context"
+            description={
+              <span id="host-integration-main-agent-context-description">
+                开启后自动继承宿主机提示词、Rules、全部 Skills 与 MCP，
+                无需再逐项选择；HappyClaw 管理的能力继续附加。普通用户的 默认
+                HappyClaw 始终使用托管配置。
+              </span>
+            }
+            control={
               <Switch
                 id="host-integration-main-agent-context"
                 checked={draft.mainAgentContextSource === 'host_claude'}
@@ -664,269 +669,252 @@ export function HostIntegrationSettingsSection({
                 }
                 aria-describedby="host-integration-main-agent-context-description"
               />
-            </div>
+            }
+          />
 
-            <div className="border-t border-border pt-6">
-              <div className="flex min-h-14 items-start justify-between gap-6">
-                <div className="min-w-0">
-                  <Label htmlFor="main-agent-auto-compact-default">
-                    SDK 自动压缩（推荐）
-                  </Label>
-                  <p
-                    id="main-agent-auto-compact-default-description"
-                    className="mt-1 text-xs leading-5 text-muted-foreground"
-                  >
-                    全局作用于所有用户的默认 HappyClaw。SDK
-                    根据当前模型决定压缩时机：普通模型通常为 200K
-                    上下文；模型名带 [1m] 时按 1M 处理。
-                  </p>
-                </div>
-                <Switch
-                  id="main-agent-auto-compact-default"
-                  checked={
-                    draft.mainAgentAutoCompactWindow === 0 &&
-                    draft.mainAgentAutoCompactPercentage === 0
-                  }
-                  onCheckedChange={(checked) => {
-                    const compactPercentage = Number(mainAutoCompactPercentage);
-                    const validCompactPercentage =
-                      Number.isInteger(compactPercentage) &&
-                      compactPercentage >= 50 &&
-                      compactPercentage <= 90
-                        ? compactPercentage
-                        : 80;
+          <SettingsRow
+            label="SDK 自动压缩（推荐）"
+            htmlFor="main-agent-auto-compact-default"
+            description={
+              <span id="main-agent-auto-compact-default-description">
+                全局作用于所有用户的默认 HappyClaw。SDK
+                根据当前模型决定压缩时机：普通模型通常为 200K 上下文；模型名带
+                [1m] 时按 1M 处理。
+              </span>
+            }
+            control={
+              <Switch
+                id="main-agent-auto-compact-default"
+                checked={autoCompactEnabled}
+                onCheckedChange={(checked) => {
+                  const compactPercentage = Number(mainAutoCompactPercentage);
+                  const validCompactPercentage =
+                    Number.isInteger(compactPercentage) &&
+                    compactPercentage >= 50 &&
+                    compactPercentage <= 90
+                      ? compactPercentage
+                      : 80;
+                  setDraft((current) =>
+                    current
+                      ? {
+                          ...current,
+                          mainAgentAutoCompactWindow: checked
+                            ? 0
+                            : current.mainAgentAutoCompactWindow,
+                          mainAgentAutoCompactPercentage: checked
+                            ? 0
+                            : current.mainAgentAutoCompactWindow > 0
+                              ? 0
+                              : validCompactPercentage,
+                        }
+                      : current,
+                  );
+                }}
+                aria-describedby="main-agent-auto-compact-default-description"
+              />
+            }
+          />
+
+          {!autoCompactEnabled &&
+            (draft.mainAgentAutoCompactWindow > 0 &&
+            draft.mainAgentAutoCompactPercentage === 0 ? (
+              <div className="flex flex-wrap items-center justify-between gap-3 bg-warning/10 px-4 py-3">
+                <p className="text-caption leading-5 text-warning">
+                  当前保留旧版固定阈值{' '}
+                  {Math.round(draft.mainAgentAutoCompactWindow / 1000)}K。
+                  固定值无法同时适配 200K 与 1M 模型。
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
                     setDraft((current) =>
                       current
                         ? {
                             ...current,
-                            mainAgentAutoCompactWindow: checked
-                              ? 0
-                              : current.mainAgentAutoCompactWindow,
-                            mainAgentAutoCompactPercentage: checked
-                              ? 0
-                              : current.mainAgentAutoCompactWindow > 0
-                                ? 0
-                                : validCompactPercentage,
+                            mainAgentAutoCompactWindow: 0,
+                            mainAgentAutoCompactPercentage: 80,
                           }
                         : current,
-                    );
-                  }}
-                  aria-describedby="main-agent-auto-compact-default-description"
-                />
+                    )
+                  }
+                >
+                  改用 80% 模型比例
+                </Button>
               </div>
-
-              {(draft.mainAgentAutoCompactWindow !== 0 ||
-                draft.mainAgentAutoCompactPercentage !== 0) && (
-                <div className="mt-4 max-w-xs">
-                  {draft.mainAgentAutoCompactWindow > 0 &&
-                  draft.mainAgentAutoCompactPercentage === 0 ? (
-                    <div className="rounded-md border border-warning/30 bg-warning-bg p-3">
-                      <p className="text-xs leading-5 text-warning">
-                        当前保留旧版固定阈值{' '}
-                        {Math.round(draft.mainAgentAutoCompactWindow / 1000)}K。
-                        固定值无法同时适配 200K 与 1M 模型。
-                      </p>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="mt-2"
-                        onClick={() =>
-                          setDraft((current) =>
-                            current
-                              ? {
-                                  ...current,
-                                  mainAgentAutoCompactWindow: 0,
-                                  mainAgentAutoCompactPercentage: 80,
-                                }
-                              : current,
-                          )
-                        }
-                      >
-                        改用 80% 模型比例
-                      </Button>
+            ) : (
+              <SettingsRow
+                label="上下文使用比例"
+                htmlFor="main-agent-auto-compact-percentage"
+                description={
+                  <span id="main-agent-auto-compact-percentage-description">
+                    可设置 50–90%。例如 80% 在普通模型下为 160K，在 [1m]
+                    模型下为 800K。
+                  </span>
+                }
+                control={
+                  <div className="flex w-full flex-col gap-1 sm:w-auto sm:items-end">
+                    <div className="flex items-center gap-2">
+                      <Input
+                        id="main-agent-auto-compact-percentage"
+                        type="number"
+                        inputMode="numeric"
+                        min={50}
+                        max={90}
+                        step={5}
+                        value={mainAutoCompactPercentage}
+                        onChange={(event) => {
+                          const rawValue = event.target.value;
+                          const value = Number(rawValue);
+                          setMainAutoCompactPercentage(rawValue);
+                          if (rawValue.trim() && Number.isInteger(value)) {
+                            setDraft((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    mainAgentAutoCompactWindow: 0,
+                                    mainAgentAutoCompactPercentage: value,
+                                  }
+                                : current,
+                            );
+                          }
+                        }}
+                        aria-invalid={!!mainAutoCompactError}
+                        aria-describedby={`main-agent-auto-compact-percentage-description${mainAutoCompactError ? ' main-agent-auto-compact-percentage-error' : ''}`}
+                        className="min-w-0 tabular-nums sm:w-28 pointer-coarse:min-h-11"
+                      />
+                      <span className="w-8 shrink-0 text-caption text-muted-foreground">
+                        %
+                      </span>
                     </div>
-                  ) : (
-                    <>
-                      <Label htmlFor="main-agent-auto-compact-percentage">
-                        上下文使用比例
-                      </Label>
-                      <div className="mt-2 flex items-center gap-2">
-                        <Input
-                          id="main-agent-auto-compact-percentage"
-                          type="number"
-                          inputMode="numeric"
-                          min={50}
-                          max={90}
-                          step={5}
-                          value={mainAutoCompactPercentage}
-                          onChange={(event) => {
-                            const rawValue = event.target.value;
-                            const value = Number(rawValue);
-                            setMainAutoCompactPercentage(rawValue);
-                            if (rawValue.trim() && Number.isInteger(value)) {
-                              setDraft((current) =>
-                                current
-                                  ? {
-                                      ...current,
-                                      mainAgentAutoCompactWindow: 0,
-                                      mainAgentAutoCompactPercentage: value,
-                                    }
-                                  : current,
-                              );
-                            }
-                          }}
-                          aria-invalid={!!mainAutoCompactError}
-                          aria-describedby={`main-agent-auto-compact-percentage-description${mainAutoCompactError ? ' main-agent-auto-compact-percentage-error' : ''}`}
-                          className="h-11"
-                        />
-                        <span className="shrink-0 text-xs text-muted-foreground">
-                          %
-                        </span>
-                      </div>
+                    {mainAutoCompactError && (
                       <p
-                        id="main-agent-auto-compact-percentage-description"
-                        className="mt-1.5 text-xs leading-5 text-muted-foreground"
+                        id="main-agent-auto-compact-percentage-error"
+                        role="alert"
+                        className="text-caption text-error"
                       >
-                        可设置 50–90%。例如 80% 在普通模型下为 160K，在 [1m]
-                        模型下为 800K。
+                        {mainAutoCompactError}
                       </p>
-                    </>
-                  )}
-                  {mainAutoCompactError && (
-                    <p
-                      id="main-agent-auto-compact-percentage-error"
-                      role="alert"
-                      className="mt-1 text-xs text-destructive"
-                    >
-                      {mainAutoCompactError}
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-          </>
-        )}
-
-        {scope === 'host' && (
-          <>
-            <div className="flex min-h-16 items-start justify-between gap-6">
-              <div className="min-w-0">
-                <Label htmlFor="admin-host-only-mode">管理员纯宿主机模式</Label>
-                <p
-                  id="admin-host-only-mode-description"
-                  className="mt-1 text-xs leading-5 text-muted-foreground"
-                >
-                  开启后，管理员拥有的工作区和定时任务会统一迁移到宿主机，并禁止再选择
-                  Docker；普通成员仍固定使用
-                  Docker。关闭后不会自动把已有工作区迁回
-                  Docker。宿主机工作区暂不支持网页终端。
-                </p>
-              </div>
-              <Switch
-                id="admin-host-only-mode"
-                checked={draft.adminHostOnlyMode}
-                onCheckedChange={(checked) =>
-                  setDraft((current) =>
-                    current
-                      ? { ...current, adminHostOnlyMode: checked }
-                      : current,
-                  )
+                    )}
+                  </div>
                 }
-                aria-describedby="admin-host-only-mode-description"
               />
-            </div>
+            ))}
 
-            <div className="border-t border-border pt-6">
-              <Label htmlFor="host-integration-claude-dir">
-                宿主机 Claude 目录
-              </Label>
-              <Input
-                id="host-integration-claude-dir"
-                value={draft.externalClaudeDir}
-                onChange={(event) =>
-                  setDraft((current) =>
-                    current
-                      ? { ...current, externalClaudeDir: event.target.value }
-                      : current,
-                  )
-                }
-                placeholder="留空使用 ~/.claude"
-                aria-describedby="host-integration-claude-dir-description"
-                className="mt-2 h-11"
-              />
-              <p
-                id="host-integration-claude-dir-description"
-                className="mt-1.5 text-xs leading-5 text-muted-foreground"
-              >
-                留空时使用当前服务用户的
-                ~/.claude；自定义目录必须是宿主机上的绝对路径。
-                当前目录同时作为提示词、Rules、Skills、MCP 与 Plugin Marketplace
-                的来源。
-              </p>
-            </div>
+          <div className="flex justify-end px-4 py-3">{saveButton}</div>
+        </SettingsGroup>
+      </SettingsSection>
+    );
+  }
 
-            <div className="flex min-h-16 items-start justify-between gap-6 border-t border-border pt-6">
-              <div className="min-w-0">
-                <Label htmlFor="host-integration-plugin-scan">
-                  自动扫描 Plugin Catalog
-                </Label>
-                <p
-                  id="host-integration-plugin-scan-description"
-                  className="mt-1 text-xs leading-5 text-muted-foreground"
-                >
-                  服务启动后扫描宿主机 marketplace，并每小时刷新共享
-                  Catalog。Catalog
-                  全局共享，但每个用户独立选择启用项；修改后需重启服务。
-                </p>
-              </div>
-              <Switch
-                id="host-integration-plugin-scan"
-                checked={draft.pluginAutoScan}
-                onCheckedChange={(checked) =>
-                  setDraft((current) =>
-                    current ? { ...current, pluginAutoScan: checked } : current,
-                  )
-                }
-                aria-describedby="host-integration-plugin-scan-description"
-              />
-            </div>
-            <div className="grid gap-2 border-t border-border pt-6 sm:grid-cols-2">
-              <Link
-                to="/capabilities/mcp"
-                className="flex min-h-11 items-center justify-between rounded-lg border border-border px-3 text-sm font-medium text-foreground hover:bg-muted"
-              >
-                导入宿主机 MCP 副本
-                <ArrowRight className="size-4 text-muted-foreground" />
-              </Link>
-              <Link
-                to="/capabilities/plugins"
-                className="flex min-h-11 items-center justify-between rounded-lg border border-border px-3 text-sm font-medium text-foreground hover:bg-muted"
-              >
-                查看共享 Plugin Catalog
-                <ArrowRight className="size-4 text-muted-foreground" />
-              </Link>
-            </div>
-          </>
-        )}
-      </section>
-
-      <div className="mt-6 flex justify-end border-t border-border pt-4">
-        <Button
-          onClick={() => void handleSave()}
-          disabled={
-            saving ||
-            !dirty ||
-            (scope === 'main-agent' && !!mainAutoCompactError)
-          }
-          className="min-h-11"
-        >
-          {saving && (
-            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-          )}
-          {scope === 'main-agent' ? '保存主智能体设置' : '保存宿主机设置'}
-        </Button>
+  return (
+    <div className="space-y-8">
+      <div className="rounded-lg bg-warning/10 px-3 py-2.5 text-caption leading-5 text-warning">
+        这些设置会读取宿主机文件，只对系统管理员开放。自定义智能体
+        是否继承宿主机 Claude Code 配置，请在对应智能体的设置中管理。
       </div>
+
+      <SettingsGroup>
+        <SettingsRow
+          label="管理员纯宿主机模式"
+          htmlFor="admin-host-only-mode"
+          description={
+            <span id="admin-host-only-mode-description">
+              开启后，管理员拥有的工作区和定时任务会统一迁移到宿主机，并禁止再选择
+              Docker；普通成员仍固定使用 Docker。关闭后不会自动把已有工作区迁回
+              Docker。宿主机工作区暂不支持网页终端。
+            </span>
+          }
+          control={
+            <Switch
+              id="admin-host-only-mode"
+              checked={draft.adminHostOnlyMode}
+              onCheckedChange={(checked) =>
+                setDraft((current) =>
+                  current
+                    ? { ...current, adminHostOnlyMode: checked }
+                    : current,
+                )
+              }
+              aria-describedby="admin-host-only-mode-description"
+            />
+          }
+        />
+
+        <SettingsRow
+          label="宿主机 Claude 目录"
+          htmlFor="host-integration-claude-dir"
+          description={
+            <span id="host-integration-claude-dir-description">
+              留空时使用当前服务用户的
+              ~/.claude；自定义目录必须是宿主机上的绝对路径。
+              当前目录同时作为提示词、Rules、Skills、MCP 与 Plugin Marketplace
+              的来源。
+            </span>
+          }
+          control={
+            <Input
+              id="host-integration-claude-dir"
+              value={draft.externalClaudeDir}
+              onChange={(event) =>
+                setDraft((current) =>
+                  current
+                    ? { ...current, externalClaudeDir: event.target.value }
+                    : current,
+                )
+              }
+              placeholder="留空使用 ~/.claude"
+              aria-describedby="host-integration-claude-dir-description"
+              className="font-mono sm:w-72 pointer-coarse:min-h-11"
+            />
+          }
+        />
+
+        <SettingsRow
+          label="自动扫描 Plugin Catalog"
+          htmlFor="host-integration-plugin-scan"
+          description={
+            <span id="host-integration-plugin-scan-description">
+              服务启动后扫描宿主机 marketplace，并每小时刷新共享
+              Catalog。Catalog
+              全局共享，但每个用户独立选择启用项；修改后需重启服务。
+            </span>
+          }
+          control={
+            <Switch
+              id="host-integration-plugin-scan"
+              checked={draft.pluginAutoScan}
+              onCheckedChange={(checked) =>
+                setDraft((current) =>
+                  current ? { ...current, pluginAutoScan: checked } : current,
+                )
+              }
+              aria-describedby="host-integration-plugin-scan-description"
+            />
+          }
+        />
+
+        <div className="flex justify-end px-4 py-3">{saveButton}</div>
+      </SettingsGroup>
+
+      <SettingsSection title="相关入口">
+        <SettingsGroup>
+          {[
+            { to: '/capabilities/mcp', label: '导入宿主机 MCP 副本' },
+            { to: '/capabilities/plugins', label: '查看共享 Plugin Catalog' },
+          ].map((link) => (
+            <Link
+              key={link.to}
+              to={link.to}
+              className="flex h-11 items-center justify-between px-4 text-body font-medium text-foreground transition-colors duration-100 outline-none hover:bg-surface-hover focus-visible:bg-surface-hover"
+            >
+              {link.label}
+              <ArrowRight className="size-4 text-muted-foreground" />
+            </Link>
+          ))}
+        </SettingsGroup>
+      </SettingsSection>
     </div>
   );
 }
