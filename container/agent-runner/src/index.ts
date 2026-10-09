@@ -32,6 +32,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import { detectImageMimeTypeFromBase64Strict } from './image-detector.js';
 import { isClaudeAttachmentPassDisabled } from './claude-attachments.js';
+import { RUNNER_DISALLOWED_BUILTIN_TOOLS } from './builtin-tool-policy.js';
 import { pruneProcessedHistoryImagesInTranscript as pruneProcessedHistoryImagesInTranscriptFile } from './history-image-prune.js';
 import { getChannelFromJid } from './channel-prefixes.js';
 
@@ -217,6 +218,13 @@ let latestSessionId: string | undefined;
 // frames cannot silently lose correlation just because they bypass emit().
 let activeOutputInputTurnId: string | undefined;
 
+/**
+ * Built-in tools listed for the session. Under bypassPermissions this list
+ * grants nothing extra; it still matters because native Claude Code builds
+ * expose Glob and Grep only when they are listed here (or in `tools`).
+ * `Task` is the legacy name of today's `Agent` subagent tool, which Claude
+ * Code still accepts.
+ */
 const DEFAULT_ALLOWED_TOOLS = [
   'Bash',
   'Read',
@@ -229,7 +237,7 @@ const DEFAULT_ALLOWED_TOOLS = [
   'Task',
   // 'TaskOutput' removed: Claude Code 2.1.277 dropped the deprecated tool.
   // Background results arrive as task notifications and Bash output files are
-  // read with Read, so the entry no longer pre-approved anything.
+  // read with Read.
   'TaskStop',
   'TeamCreate',
   'TeamDelete',
@@ -2823,10 +2831,12 @@ async function runQueryAttempt(
       `Loading ${userPlugins.length} plugin(s): ${userPlugins.map((p) => p.path).join(', ')}`,
     );
   }
-  const effectiveDisallowedTools =
-    disallowedTools && disallowedTools.length > 0
-      ? [...new Set(disallowedTools)]
-      : undefined;
+  const effectiveDisallowedTools = [
+    ...new Set([
+      ...RUNNER_DISALLOWED_BUILTIN_TOOLS,
+      ...(disallowedTools ?? []),
+    ]),
+  ];
   const userMcpServers = activeAgentMcpPolicy.includeUserMcpServers
     ? loadUserMcpServers()
     : {};
@@ -2857,9 +2867,7 @@ async function runQueryAttempt(
       ...(sessionId && resumeAt ? { resumeSessionAt: resumeAt } : {}),
       systemPrompt,
       allowedTools,
-      ...(effectiveDisallowedTools && {
-        disallowedTools: effectiveDisallowedTools,
-      }),
+      disallowedTools: effectiveDisallowedTools,
       thinking: { type: 'adaptive' as const, display: 'summarized' as const },
       ...(agentEffort ? { effort: agentEffort } : {}),
       permissionMode: 'bypassPermissions' as const,
