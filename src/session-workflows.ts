@@ -593,12 +593,19 @@ export function attachSessionWorkflowRuns<T extends MessageLike>(
       changed = true;
       return next;
     };
-    const usageBySdkUuid = loadSessionAssistantUsage({ ...input, sessionId });
-    for (const message of assistantMessages) {
-      if (!message.sdk_message_uuid || hasRecordedTokens(message.token_usage)) {
-        continue;
-      }
-      const recovered = usageBySdkUuid.get(message.sdk_message_uuid);
+    const needsRecovery = assistantMessages.filter(
+      (message) =>
+        !!message.sdk_message_uuid && !hasRecordedTokens(message.token_usage),
+    );
+    // Reading the transcript is only needed to recover missing usage; on a
+    // cold cache it is a synchronous read+parse of up to 64MB (a 40MB
+    // transcript took ~165ms) for pages whose rows already carry tokens.
+    const usageBySdkUuid =
+      needsRecovery.length > 0
+        ? loadSessionAssistantUsage({ ...input, sessionId })
+        : new Map<string, SessionAssistantUsage>();
+    for (const message of needsRecovery) {
+      const recovered = usageBySdkUuid.get(message.sdk_message_uuid!);
       if (!recovered) continue;
       ensureClone(message).token_usage = mergeRecoveredUsage(
         message.token_usage,
