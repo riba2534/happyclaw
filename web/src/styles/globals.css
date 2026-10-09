@@ -1,32 +1,11 @@
 @import 'tailwindcss';
 @import 'shadcn/tailwind.css';
-/* DM Sans is the primary UI font — loaded locally below (no CDN dependency) */
 @plugin "tailwindcss-animate";
 
 @custom-variant dark (&:is(.dark *));
 
-/* DM Sans — primary UI font (local, no CDN dependency) */
-@font-face {
-  font-family: 'DM Sans';
-  font-style: normal;
-  font-weight: 400 700;
-  font-display: swap;
-  src: url('/fonts/DMSans-latin.woff2') format('woff2');
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: 'DM Sans';
-  font-style: normal;
-  font-weight: 400 700;
-  font-display: swap;
-  src: url('/fonts/DMSans-latin-ext.woff2') format('woff2');
-  unicode-range:
-    U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
-    U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
-}
+/* Inter (UI) and Geist Mono (code) are self-hosted via @fontsource-variable,
+   imported in main.tsx so Vite fingerprints the files under the app base path. */
 
 /* Alibaba PuHuiTi 3.0 — last-resort Chinese fallback.
    Keep one regular face and let browsers synthesize occasional 500/600 text;
@@ -101,6 +80,19 @@
   --color-surface: var(--surface);
   --shadow-card: var(--card-shadow);
 
+  /* Layered surfaces derived from each scheme's palette (see :root below).
+     app-shell = frame behind the inset canvas; surface-hover/selected are the
+     neutral fills used for every hover and selected row. */
+  --color-app-shell: var(--app-shell);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-hover: var(--surface-hover);
+  --color-surface-selected: var(--surface-selected);
+  --color-surface-border: var(--surface-border);
+  --color-faint-foreground: var(--faint-foreground);
+  --shadow-canvas: var(--canvas-shadow);
+  --shadow-menu: var(--menu-shadow);
+  --shadow-floating: var(--floating-shadow);
+
   /* Border radius tokens */
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -111,17 +103,53 @@
      PuHuiTi stays as the last resort for devices with no CJK font at all —
      @font-face only downloads when a glyph actually falls through to it. */
   --font-sans:
-    'DM Sans', -apple-system, 'PingFang SC', 'Microsoft YaHei',
-    'Noto Sans CJK SC', 'Alibaba PuHuiTi 3', sans-serif;
+    'Inter Variable', -apple-system, BlinkMacSystemFont, 'PingFang SC',
+    'Microsoft YaHei', 'Noto Sans CJK SC', 'Alibaba PuHuiTi 3', sans-serif;
   --font-serif:
-    'DM Sans', -apple-system, 'PingFang SC', 'Microsoft YaHei',
-    'Noto Sans CJK SC', 'Alibaba PuHuiTi 3', sans-serif;
+    'Inter Variable', -apple-system, BlinkMacSystemFont, 'PingFang SC',
+    'Microsoft YaHei', 'Noto Sans CJK SC', 'Alibaba PuHuiTi 3', sans-serif;
   --font-mono:
-    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
-    'Courier New', monospace;
+    'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo, Monaco,
+    Consolas, 'Liberation Mono', 'Courier New', monospace;
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/* Role-based type scale. Prefer these over arbitrary text-[13px] values:
+   micro = counters/timestamps, caption = secondary text, label = dense
+   labels, body = default UI text, body-lg = chat prose. */
+@theme {
+  --text-micro: 0.6875rem;
+  --text-micro--line-height: 1rem;
+  --text-caption: 0.75rem;
+  --text-caption--line-height: 1rem;
+  --text-label: 0.8125rem;
+  --text-label--line-height: 1.25rem;
+  --text-body: 0.875rem;
+  --text-body--line-height: 1.25rem;
+  --text-body-lg: 0.9375rem;
+  --text-body-lg--line-height: 1.625rem;
+  --text-title-sm: 0.875rem;
+  --text-title-sm--line-height: 1.25rem;
+  --text-title-sm--font-weight: 600;
+  --text-title: 1rem;
+  --text-title--line-height: 1.5rem;
+  --text-title--font-weight: 600;
+  --text-title-lg: 1.25rem;
+  --text-title-lg--line-height: 1.75rem;
+  --text-title-lg--font-weight: 600;
+  --text-title-lg--letter-spacing: -0.01em;
+  --text-display-sm: 1.5rem;
+  --text-display-sm--line-height: 2rem;
+  --text-display-sm--font-weight: 600;
+  --text-display-sm--letter-spacing: -0.015em;
+  --text-display: 1.875rem;
+  --text-display--line-height: 2.25rem;
+  --text-display--font-weight: 600;
+  --text-display--letter-spacing: -0.02em;
+
+  --ease-snappy: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* =====================================================
@@ -169,7 +197,6 @@
   --chart-5: #dc2626;
 
   /* Sidebar */
-  --sidebar-background: #f8fafc;
   --sidebar-foreground: #0f172a;
   --sidebar-primary: #0d9488;
   --sidebar-primary-foreground: #ffffff;
@@ -213,7 +240,6 @@
     rgba(255, 255, 255, 0) 60%
   );
   --glass-inner-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.6);
-  --sidebar: #f8fafc;
 }
 
 /* =====================================================
@@ -247,7 +273,6 @@ html.theme-neutral {
   --brand-600: #52525b;
   --brand-700: #3f3f46;
   --surface: #ffffff;
-  --sidebar-background: #fafafa;
   --sidebar-foreground: #18181b;
   --sidebar-primary: #52525b;
   --sidebar-primary-foreground: #ffffff;
@@ -255,7 +280,6 @@ html.theme-neutral {
   --sidebar-accent-foreground: #18181b;
   --sidebar-border: #e4e4e7;
   --sidebar-ring: #a1a1aa;
-  --sidebar: #fafafa;
   --glass-bg: rgba(255, 255, 255, 0.65);
   --glass-bg-heavy: rgba(255, 255, 255, 0.85);
   --glass-border: rgba(228, 228, 231, 0.5);
@@ -288,7 +312,6 @@ html.dark.theme-neutral {
   --brand-600: #d4d4d8;
   --brand-700: #e4e4e7;
   --surface: #18181b;
-  --sidebar-background: #09090b;
   --sidebar-foreground: #fafafa;
   --sidebar-primary: #a1a1aa;
   --sidebar-primary-foreground: #09090b;
@@ -296,7 +319,6 @@ html.dark.theme-neutral {
   --sidebar-accent-foreground: #fafafa;
   --sidebar-border: #27272a;
   --sidebar-ring: #52525b;
-  --sidebar: #09090b;
   --glass-bg: rgba(9, 9, 11, 0.55);
   --glass-bg-heavy: rgba(9, 9, 11, 0.8);
   --glass-border: rgba(255, 255, 255, 0.08);
@@ -340,7 +362,6 @@ html.theme-orange {
   --chart-4: oklch(0.553 0.195 38.402);
   --chart-5: oklch(0.47 0.157 37.304);
   --surface: #fdfcfa;
-  --sidebar-background: #faf9f6;
   --sidebar-foreground: #141413;
   --sidebar-primary: oklch(0.646 0.222 41.116);
   --sidebar-primary-foreground: oklch(0.98 0.016 73.684);
@@ -348,7 +369,6 @@ html.theme-orange {
   --sidebar-accent-foreground: #141413;
   --sidebar-border: #dad9d5;
   --sidebar-ring: oklch(0.708 0 0);
-  --sidebar: oklch(0.985 0 0);
   --code-block-bg: rgba(61, 61, 58, 0.05);
   --inline-code-bg: rgba(61, 61, 58, 0.05);
   --inline-code-text: rgb(138, 36, 36);
@@ -377,7 +397,6 @@ html.dark.theme-orange {
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
-  --sidebar-background: #0f172a;
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(0.705 0.213 47.604);
   --sidebar-primary-foreground: oklch(0.98 0.016 73.684);
@@ -405,9 +424,8 @@ html.dark.theme-orange {
   --chart-3: oklch(0.646 0.222 41.116);
   --chart-4: oklch(0.553 0.195 38.402);
   --chart-5: oklch(0.47 0.157 37.304);
-  --sidebar: oklch(0.205 0 0);
-  --glass-bg: rgba(15, 23, 42, 0.55);
-  --glass-bg-heavy: rgba(15, 23, 42, 0.8);
+  --glass-bg: rgba(10, 10, 10, 0.55);
+  --glass-bg-heavy: rgba(10, 10, 10, 0.8);
   --glass-border: rgba(255, 255, 255, 0.08);
 }
 
@@ -479,7 +497,6 @@ html.font-anthropic .font-mono {
   --input: #334155;
   --ring: #2dd4bf;
 
-  --sidebar-background: #0f172a;
   --sidebar-foreground: #cbd5e1;
   --sidebar-primary: #2dd4bf;
   --sidebar-primary-foreground: #0f172a;
@@ -528,7 +545,42 @@ html.font-anthropic .font-mono {
   --chart-3: #818cf8;
   --chart-4: #c084fc;
   --chart-5: #f87171;
-  --sidebar: #0f172a;
+}
+
+/* =====================================================
+   Derived layer tokens — one definition for every scheme.
+   Custom properties resolve on <html> after the scheme classes cascade, so
+   these mix whichever palette is active without touching its colors. The
+   frame (app-shell) sits slightly darker than the page canvas in both modes.
+   ===================================================== */
+:root {
+  --app-shell: color-mix(in oklab, var(--background) 55%, var(--muted));
+  --sidebar-background: var(--app-shell);
+  --surface-raised: var(--surface);
+  --surface-hover: color-mix(in oklab, var(--foreground) 5%, transparent);
+  --surface-selected: color-mix(in oklab, var(--foreground) 8%, transparent);
+  --surface-border: color-mix(in oklab, var(--foreground) 10%, transparent);
+  --faint-foreground: color-mix(
+    in oklab,
+    var(--muted-foreground) 70%,
+    var(--background)
+  );
+  --canvas-shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 1px 1px rgb(0 0 0 / 0.02);
+  --menu-shadow:
+    0 8px 24px -4px rgb(0 0 0 / 0.1), 0 2px 6px -2px rgb(0 0 0 / 0.06);
+  --floating-shadow:
+    0 16px 48px -12px rgb(0 0 0 / 0.22), 0 4px 12px -4px rgb(0 0 0 / 0.08);
+}
+
+.dark {
+  --app-shell: color-mix(in oklab, var(--background) 80%, black);
+  --surface-hover: color-mix(in oklab, var(--foreground) 6%, transparent);
+  --surface-selected: color-mix(in oklab, var(--foreground) 10%, transparent);
+  --canvas-shadow: 0 1px 2px rgb(0 0 0 / 0.3);
+  --menu-shadow:
+    0 8px 24px -4px rgb(0 0 0 / 0.5), 0 2px 6px -2px rgb(0 0 0 / 0.3);
+  --floating-shadow:
+    0 16px 48px -12px rgb(0 0 0 / 0.6), 0 4px 12px -4px rgb(0 0 0 / 0.3);
 }
 
 /* =====================================================
@@ -913,12 +965,22 @@ pre code.hljs {
 @layer base {
   * {
     @apply border-border outline-ring/50;
+    scrollbar-width: thin;
   }
   body {
     @apply bg-background text-foreground;
+    /* Browsers that support it add a hair space between CJK and Latin runs. */
+    text-autospace: ideograph-alpha ideograph-numeric;
   }
   html {
     @apply font-sans;
+    /* scrollbar-color inherits, so one declaration themes every scroller. */
+    scrollbar-color: color-mix(
+        in oklab,
+        var(--muted-foreground) 35%,
+        transparent
+      )
+      transparent;
   }
 }
 

@@ -12,7 +12,7 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
-    <meta name="theme-color" content="#0d9488" />
+    <meta name="theme-color" content="#faf9f5" />
 
     <!-- PWA iOS Support -->
     <meta name="mobile-web-app-capable" content="yes" />
@@ -28,8 +28,6 @@
     <!-- iOS PWA 优化：保留自动识别控制（页面缩放已允许） -->
     <meta name="format-detection" content="telephone=no" />
     <meta name="format-detection" content="email=no" />
-
-    <!-- DM Sans: loaded locally via @font-face in globals.css -->
 
     <!-- 预热认证：AuthGuard 放行前整棵已登录子树都不渲染，若等入口 JS 执行后
          才发 /api/auth/me，这个 RTT 会和分片下载串行。这里在 HTML 解析阶段就
@@ -56,9 +54,18 @@
             window.matchMedia('(prefers-color-scheme: dark)').matches)
         )
           d.classList.add('dark');
+        // Mirrors readColorScheme() in src/hooks/useTheme.ts: a missing or
+        // unknown key means the default orange scheme.
         var c = localStorage.getItem('happyclaw-color-scheme');
-        if (c === 'orange') d.classList.add('theme-orange');
         if (c === 'neutral') d.classList.add('theme-neutral');
+        else if (c !== 'default') d.classList.add('theme-orange');
+        var m = document.querySelector('meta[name="theme-color"]');
+        if (m)
+          m.setAttribute(
+            'content',
+            getComputedStyle(d).getPropertyValue('--background').trim() ||
+              '#faf9f5',
+          );
         if (localStorage.getItem('happyclaw-font-style') === 'anthropic')
           d.classList.add('font-anthropic');
       })();
