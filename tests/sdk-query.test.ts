@@ -4,7 +4,10 @@ const query = vi.hoisted(() => vi.fn());
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query }));
 vi.mock('../src/runtime-config.js', () => ({
-  buildClaudeEnvLines: () => ['ANTHROPIC_API_KEY=test-key'],
+  buildClaudeEnvLines: () => [
+    'ANTHROPIC_API_KEY=test-key',
+    'CLAUDE_CODE_EFFORT_LEVEL=max',
+  ],
   clearInheritedClaudeProviderEnv: () => {},
   getClaudeProviderConfig: () => ({ anthropicModel: 'test-model' }),
 }));
@@ -14,9 +17,9 @@ vi.mock('../src/logger.js', () => ({
 
 const { sdkQuery } = await import('../src/sdk-query.js');
 
-function successfulConversation(result: string) {
+function successfulConversation(result: string, isError = false) {
   return (async function* () {
-    yield { type: 'result', subtype: 'success', result };
+    yield { type: 'result', subtype: 'success', result, is_error: isError };
   })();
 }
 
@@ -39,7 +42,20 @@ describe('sdkQuery', () => {
         skills: [],
         settingSources: [],
         allowedTools: [],
+        persistSession: false,
+        thinking: { type: 'disabled' },
+        effort: 'low',
       },
     });
+    const env = query.mock.calls[0][0].options.env;
+    expect(env.ANTHROPIC_API_KEY).toBe('test-key');
+    expect(env).not.toHaveProperty('CLAUDE_CODE_EFFORT_LEVEL');
+  });
+
+  test('never returns the API error text of an is_error result', async () => {
+    query.mockReturnValue(
+      successfulConversation('API Error: 401 invalid x-api-key', true),
+    );
+    await expect(sdkQuery('generate a title')).resolves.toBeNull();
   });
 });

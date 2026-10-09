@@ -39,6 +39,10 @@ export async function sdkQuery(
     if (eq <= 0) continue;
     env[line.slice(0, eq)] = line.slice(eq + 1);
   }
+  // Third-party providers default the Agent effort to max. These are short
+  // text utilities (titles, recall, task parsing), so the effort below must
+  // not be outranked by that provider-wide environment default.
+  delete env.CLAUDE_CODE_EFFORT_LEVEL;
 
   const abortController = new AbortController();
   const timer = setTimeout(() => abortController.abort(), timeout);
@@ -61,12 +65,23 @@ export async function sdkQuery(
         allowedTools: [],
         permissionMode: 'bypassPermissions' as const,
         allowDangerouslySkipPermissions: true,
+        // One-shot utility calls: no transcript in the service user's
+        // ~/.claude/projects, no extended thinking, minimal effort.
+        persistSession: false,
+        thinking: { type: 'disabled' as const },
+        effort: 'low' as const,
         abortController,
       },
     });
 
     for await (const event of conversation) {
-      if (event.type === 'result' && event.subtype === 'success') {
+      // A success result with is_error carries the API error text in
+      // `result`; it must not be returned as generated content.
+      if (
+        event.type === 'result' &&
+        event.subtype === 'success' &&
+        !event.is_error
+      ) {
         result = event.result;
       }
     }
