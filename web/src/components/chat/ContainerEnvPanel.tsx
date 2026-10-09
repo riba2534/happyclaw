@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import { Loader2, Save, Plus, X, RefreshCw, Trash2 } from 'lucide-react';
 import { useContainerEnvStore } from '../../stores/container-env';
 import { Input } from '@/components/ui/input';
@@ -118,6 +118,22 @@ export function ContainerEnvPanel({
       saveTimerRef.current = setTimeout(() => setSaveSuccess(false), 2000);
     }
   };
+
+  // Only meaningful edits enable saving: blank rows and system-managed keys
+  // are dropped on save, so they do not count as changes.
+  const dirty = useMemo(() => {
+    const normalize = (entries: { key: string; value: string }[]) =>
+      JSON.stringify(
+        entries
+          .map(({ key, value }) => [key.trim(), value] as const)
+          .filter(([key]) => key && !SYSTEM_MANAGED_ENV_KEYS.has(key))
+          .sort(([a], [b]) => a.localeCompare(b)),
+      );
+    const saved = Object.entries(config?.customEnv || {}).map(
+      ([key, value]) => ({ key, value }),
+    );
+    return normalize(customEnv) !== normalize(saved);
+  }, [config, customEnv]);
 
   const addCustomEnv = () => {
     setCustomEnv((prev) => [...prev, { key: '', value: '' }]);
@@ -281,15 +297,7 @@ export function ContainerEnvPanel({
 
       {/* Footer */}
       <div className="shrink-0 space-y-2 border-t border-surface-border p-3">
-        <div className="flex gap-2">
-          <Button
-            onClick={handleSave}
-            disabled={saving || clearing || !config}
-            className="flex-1"
-          >
-            {saving ? <Loader2 className="animate-spin" /> : <Save />}
-            {saveSuccess ? '已保存' : '保存并重建工作区'}
-          </Button>
+        <div className="flex items-center justify-end gap-2">
           <IconButton
             label="清空所有覆盖配置"
             icon={clearing ? <Loader2 className="animate-spin" /> : <Trash2 />}
@@ -299,6 +307,13 @@ export function ContainerEnvPanel({
             disabled={saving || clearing || !config}
             tooltipSide="top"
           />
+          <Button
+            onClick={handleSave}
+            disabled={saving || clearing || !config || !dirty}
+          >
+            {saving ? <Loader2 className="animate-spin" /> : <Save />}
+            {saveSuccess ? '已保存' : '保存并重建工作区'}
+          </Button>
         </div>
         {saveSuccess && (
           <p className="text-center text-caption text-success">

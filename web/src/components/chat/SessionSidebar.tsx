@@ -8,10 +8,13 @@ import {
   MoreHorizontal,
   Pencil,
   Plus,
-  Search,
   Trash2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { IconButton } from '@/components/common/IconButton';
+import { SearchInput } from '@/components/common/SearchInput';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -100,67 +103,57 @@ export function SessionSidebar({
       data-hc-session-sidebar
       className="flex h-full min-h-0 w-full flex-col bg-transparent"
     >
-      <div className="border-b border-surface-border px-3 py-3">
-        <div className="flex items-center justify-between gap-2">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <div className="truncate text-title-sm text-foreground">
-                {title || '会话'}
-              </div>
-              <span className="rounded-md bg-muted px-1.5 py-0.5 text-micro font-medium text-muted-foreground tabular-nums">
-                {totalCount}
-              </span>
+      <div className="border-b border-surface-border px-3 py-2.5">
+        <div className="flex min-h-9 items-center gap-1">
+          {onClose && (
+            <IconButton
+              label="返回工作区"
+              icon={<ArrowLeft />}
+              onClick={onClose}
+              hideTooltip
+              className="-ml-1.5 text-muted-foreground pointer-coarse:size-9"
+            />
+          )}
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <div className="truncate text-title-sm text-foreground">
+              {title || '会话'}
             </div>
+            <Badge variant="neutral" className="tabular-nums">
+              {totalCount}
+            </Badge>
           </div>
-          <div className="flex shrink-0 items-center gap-1">
-            {canModify && onCreateSession && (
-              <button
-                onClick={onCreateSession}
-                disabled={isCreatingSession}
-                aria-busy={isCreatingSession}
-                className="grid min-h-9 min-w-9 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 cursor-pointer"
-                title={createSessionLabel}
-                aria-label={
-                  isCreatingSession
-                    ? `正在${createSessionLabel}`
-                    : createSessionLabel
-                }
-              >
-                {isCreatingSession ? (
-                  <Loader2
-                    className="h-4 w-4 animate-spin"
-                    aria-hidden="true"
-                  />
+          {canModify && onCreateSession && (
+            <IconButton
+              label={
+                isCreatingSession
+                  ? `正在${createSessionLabel}`
+                  : createSessionLabel
+              }
+              icon={
+                isCreatingSession ? (
+                  <Loader2 className="animate-spin" aria-hidden="true" />
                 ) : (
-                  <Plus className="h-4 w-4" aria-hidden="true" />
-                )}
-              </button>
-            )}
-            {onClose && (
-              <button
-                onClick={onClose}
-                className="grid min-h-9 min-w-9 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer"
-                title="返回工作区"
-                aria-label="返回工作区"
-              >
-                <ArrowLeft className="h-4 w-4" />
-              </button>
-            )}
-          </div>
+                  <Plus aria-hidden="true" />
+                )
+              }
+              onClick={onCreateSession}
+              disabled={isCreatingSession}
+              aria-busy={isCreatingSession}
+              className="-mr-1 text-muted-foreground pointer-coarse:size-9"
+            />
+          )}
         </div>
 
         {showNavigationTools && (
           <>
-            <label className="mt-3 flex min-h-9 items-center gap-2 rounded-lg border border-input bg-background px-2.5 focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
-              <span className="sr-only">搜索{sessionNoun}</span>
-              <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder={`搜索 ${totalCount} 个${sessionNoun}…`}
-                className="min-w-0 flex-1 bg-transparent text-base outline-none placeholder:text-faint-foreground"
-              />
-            </label>
+            <SearchInput
+              value={query}
+              onChange={setQuery}
+              placeholder={`搜索 ${totalCount} 个${sessionNoun}…`}
+              ariaLabel={`搜索${sessionNoun}`}
+              debounce={0}
+              className="mt-2.5"
+            />
             <div className="mt-2 flex items-center gap-1" aria-label="会话范围">
               <FilterButton
                 active={scope === 'all'}
@@ -196,15 +189,17 @@ export function SessionSidebar({
               ? `暂无其他${sessionNoun}`
               : `没有匹配的${sessionNoun}`}
             {(query || scope !== 'all') && (
-              <button
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={() => {
                   setQuery('');
                   setScope('all');
                 }}
-                className="mx-auto mt-2 block min-h-9 cursor-pointer rounded-md px-3 text-foreground hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                className="mx-auto mt-2 flex"
               >
                 清除筛选
-              </button>
+              </Button>
             )}
           </div>
         ) : (
@@ -360,14 +355,13 @@ function SessionRow({
       {showMenu && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button
+            <IconButton
+              label={`${name}的更多操作`}
+              icon={<MoreHorizontal className="size-3.5" />}
+              hideTooltip
               onClick={(event) => event.stopPropagation()}
-              className="mr-1 grid min-h-8 min-w-8 place-items-center rounded-md text-muted-foreground opacity-100 transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 cursor-pointer"
-              title={`${name}的更多操作`}
-              aria-label={`${name}的更多操作`}
-            >
-              <MoreHorizontal className="h-3.5 w-3.5" />
-            </button>
+              className="mr-1 text-muted-foreground pointer-coarse:size-9 sm:opacity-0 sm:group-focus-within:opacity-100 sm:group-hover:opacity-100 sm:data-[state=open]:opacity-100"
+            />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-36">
             {onBind && (

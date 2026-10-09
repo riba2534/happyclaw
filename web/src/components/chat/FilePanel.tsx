@@ -210,13 +210,16 @@ type PreviewState =
   | { kind: 'audio'; file: FileEntry }
   | { kind: 'text'; file: FileEntry };
 
-// Shared chrome for the editor / text preview dialogs.
+// One frame for the text preview, Markdown viewer and editor, so switching
+// between them never moves or resizes the window. Full screen on phones.
+const PREVIEW_FRAME_CLASS =
+  'inset-0 h-[100dvh] w-screen sm:left-1/2 sm:top-1/2 sm:h-[90vh] sm:w-[calc(100vw-2rem)] sm:max-w-4xl sm:-translate-x-1/2 sm:-translate-y-1/2 sm:supports-[height:100dvh]:h-[90dvh]';
 const PREVIEW_SHELL_CLASS =
-  'flex h-full w-full animate-in flex-col rounded-xl bg-surface-raised shadow-floating ring-1 ring-foreground/10 duration-200 zoom-in-95';
+  'flex h-full w-full flex-col bg-surface-raised sm:animate-in sm:rounded-xl sm:shadow-floating sm:ring-1 sm:ring-foreground/10 sm:duration-200 sm:zoom-in-95';
 const PREVIEW_HEADER_CLASS =
-  'flex h-12 shrink-0 items-center justify-between gap-2 border-b border-surface-border pr-2 pl-4';
+  'flex h-12 shrink-0 items-center justify-between gap-2 border-b border-surface-border pr-2 pl-3 sm:pl-4';
 const PREVIEW_FOOTER_CLASS =
-  'shrink-0 border-t border-surface-border px-4 py-2 text-caption text-muted-foreground';
+  'shrink-0 border-t border-surface-border px-3 py-2 text-caption text-muted-foreground sm:px-4';
 const PREVIEW_TEXTAREA_CLASS =
   'h-full w-full resize-none font-mono text-body text-foreground md:text-body';
 
@@ -367,7 +370,7 @@ function TextEditor({
       title={`编辑 ${file.name}`}
       onClose={onClose}
       overlayClassName="bg-black/50"
-      className="left-1/2 top-1/2 h-[85vh] w-[calc(100vw-1.5rem)] max-w-4xl -translate-x-1/2 -translate-y-1/2 supports-[height:100dvh]:h-[85dvh]"
+      className={PREVIEW_FRAME_CLASS}
     >
       <div className={PREVIEW_SHELL_CLASS}>
         {/* Header */}
@@ -400,7 +403,7 @@ function TextEditor({
         </div>
 
         {/* Editor */}
-        <div className="flex-1 overflow-hidden p-3">
+        <div className="min-h-0 flex-1 overflow-hidden p-2 sm:p-3">
           {loading ? (
             <div className="flex h-full items-center justify-center">
               <p className="text-body text-muted-foreground">加载中...</p>
@@ -507,11 +510,11 @@ function MarkdownFileViewer({
       title={`预览 ${file.name}`}
       onClose={onClose}
       overlayClassName="bg-black/50"
-      className="inset-0 h-[100dvh] w-screen sm:left-1/2 sm:top-1/2 sm:h-[90vh] sm:w-[calc(100vw-2rem)] sm:max-w-4xl sm:-translate-x-1/2 sm:-translate-y-1/2 sm:supports-[height:100dvh]:h-[90dvh]"
+      className={PREVIEW_FRAME_CLASS}
     >
-      <div className="flex h-full w-full flex-col bg-surface-raised sm:animate-in sm:rounded-xl sm:shadow-floating sm:ring-1 sm:ring-foreground/10 sm:duration-200 sm:zoom-in-95">
+      <div className={PREVIEW_SHELL_CLASS}>
         {/* Header */}
-        <div className={cn(PREVIEW_HEADER_CLASS, 'pl-3 sm:pl-4')}>
+        <div className={PREVIEW_HEADER_CLASS}>
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <FileIcon name={file.name} />
             <span className="truncate text-title-sm text-foreground">
@@ -603,7 +606,7 @@ function MarkdownFileViewer({
         </div>
 
         {/* Footer */}
-        <div className={cn(PREVIEW_FOOTER_CLASS, 'px-3 sm:px-4')}>
+        <div className={PREVIEW_FOOTER_CLASS}>
           {mode === 'edit'
             ? 'Ctrl/Cmd+S 保存 · Esc 关闭'
             : '点击「编辑」修改内容 · Esc 关闭'}
@@ -786,7 +789,7 @@ function GenericTextPreview({
       title={`预览 ${file.name}`}
       onClose={onClose}
       overlayClassName="bg-black/50"
-      className="left-1/2 top-1/2 h-[85vh] w-[calc(100vw-1.5rem)] max-w-4xl -translate-x-1/2 -translate-y-1/2 supports-[height:100dvh]:h-[85dvh]"
+      className={PREVIEW_FRAME_CLASS}
     >
       <div className={PREVIEW_SHELL_CLASS}>
         {/* Header */}

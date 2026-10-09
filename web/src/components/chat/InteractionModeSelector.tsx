@@ -8,6 +8,8 @@ interface InteractionModeSelectorProps {
   disabled?: boolean;
   name: string;
   description?: string;
+  /** Keep the legend for screen readers only when a dialog title already names the choice. */
+  hideLegend?: boolean;
 }
 
 const OPTIONS: Array<{
@@ -37,14 +39,25 @@ export function InteractionModeSelector({
   onChange,
   disabled = false,
   name,
+  hideLegend = false,
   description = '选择由框架在任务结束时交付一条主回复，还是由智能体在处理过程中主动发出多条消息。身份、Skills、记忆与渠道响应范围不变。',
 }: InteractionModeSelectorProps) {
   return (
     <fieldset disabled={disabled}>
-      <legend className="text-body font-medium text-foreground">
+      <legend
+        className={cn(
+          'text-body font-medium text-foreground',
+          hideLegend && 'sr-only',
+        )}
+      >
         工作区回复模式
       </legend>
-      <p className="mt-1 text-caption leading-5 text-muted-foreground">
+      <p
+        className={cn(
+          'text-caption leading-5 text-muted-foreground',
+          !hideLegend && 'mt-1',
+        )}
+      >
         {description}
       </p>
       <div className="mt-2 grid gap-2 sm:grid-cols-2">
@@ -59,7 +72,7 @@ export function InteractionModeSelector({
                 'has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring/50',
                 selected
                   ? 'bg-surface-selected ring-foreground/25'
-                  : 'bg-background ring-surface-border hover:bg-surface-hover',
+                  : 'bg-transparent ring-surface-border hover:bg-surface-hover',
                 disabled && 'cursor-not-allowed opacity-50',
               )}
             >

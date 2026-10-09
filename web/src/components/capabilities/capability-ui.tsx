@@ -318,7 +318,7 @@ export function ChoiceCard({
       className={cn(
         'flex items-start gap-2.5 rounded-lg px-3 py-2.5 text-left ring-1 transition-colors duration-100 outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50',
         selected
-          ? 'bg-surface-selected ring-primary/60'
+          ? 'bg-surface-selected ring-foreground/25'
           : 'bg-transparent ring-surface-border hover:bg-surface-hover',
       )}
     >

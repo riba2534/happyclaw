@@ -82,7 +82,7 @@ function RadioCard({
         'has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring/50',
         checked
           ? 'bg-surface-selected ring-foreground/25'
-          : 'bg-background ring-surface-border hover:bg-surface-hover',
+          : 'bg-transparent ring-surface-border hover:bg-surface-hover',
       )}
     >
       <input
@@ -507,7 +507,7 @@ export function CreateContainerDialog({
               <div className="mt-3 space-y-5">
                 {/* Execution mode */}
                 <fieldset>
-                  <legend className="text-sm leading-none font-medium">
+                  <legend className="text-body leading-none font-medium">
                     运行位置
                   </legend>
                   <div className="mt-1.5 grid gap-2 sm:grid-cols-2">
@@ -557,7 +557,7 @@ export function CreateContainerDialog({
                 {executionMode === 'container' && (
                   <>
                     <fieldset>
-                      <legend className="text-sm leading-none font-medium">
+                      <legend className="text-body leading-none font-medium">
                         工作区来源
                       </legend>
                       <div className="mt-1.5 space-y-2">

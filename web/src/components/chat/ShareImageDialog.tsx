@@ -482,9 +482,13 @@ export function ShareImageDialog({
   return (
     <>
       <Dialog open onOpenChange={(open) => !open && onClose()}>
+        {/* Hug the card: its width plus the body padding (2 × 16px) and the
+            preview ring, capped to the viewport. */}
         <DialogContent
           className="flex max-h-[88vh] max-w-none flex-col gap-0 p-0 sm:max-w-none"
-          style={{ width: 'min(94vw, 1280px)' }}
+          style={{
+            width: `min(calc(100vw - 2rem), ${(previewWidth ?? SHARE_CARD_DEFAULT_WIDTH) + 34}px)`,
+          }}
         >
           {/* Header */}
           <DialogHeader className="border-b border-surface-border px-4 py-3 pr-12">
@@ -495,7 +499,7 @@ export function ShareImageDialog({
           </DialogHeader>
 
           {/* Body */}
-          <div className="min-h-0 flex-1 overflow-auto p-3 sm:p-4">
+          <div className="min-h-0 flex-1 overflow-auto p-4">
             {state === 'generating' && (
               <div className="flex flex-col items-center justify-center gap-3 py-16">
                 <Spinner className="size-5 text-muted-foreground" />
