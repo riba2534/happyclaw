@@ -762,11 +762,12 @@ pre code.hljs {
 }
 
 /* Bottom padding for content above floating nav — accounts for safe area */
-.pb-nav-safe {
+/* A utility (not a bare class) so responsive overrides such as lg:pb-0 win. */
+@utility pb-nav-safe {
   padding-bottom: calc(7rem + env(safe-area-inset-bottom, 0px));
 }
 
-/* Floating Navigation (Liquid Glass Capsule) */
+/* Floating mobile navigation capsule */
 .floating-nav-container {
   position: fixed;
   bottom: 24px;
