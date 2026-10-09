@@ -68,6 +68,10 @@ const KEEPALIVE_INTERVAL_MS = 5 * 60 * 1000;
 // Safety net: if we ever end up disconnected with no reconnect pending,
 // the watchdog kicks a fresh attempt instead of leaving the bot dead.
 const WATCHDOG_INTERVAL_MS = 60_000;
+// A socket whose heartbeats go unacknowledged this many times in a row is
+// half-open (readyState stays OPEN while nothing arrives); drop it so the
+// normal resume path runs instead of waiting for TCP to notice.
+const MAX_MISSED_HEARTBEAT_ACKS = 3;
 const QQ_TOKEN_REQUEST_TIMEOUT_MS = 15_000;
 const QQ_API_REQUEST_TIMEOUT_MS = 30_000;
 const QQ_MAX_JSON_RESPONSE_BYTES = 2 * 1024 * 1024;
@@ -1618,13 +1622,29 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
     }
   }
 
-  function startHeartbeat(socket: WebSocket, intervalMs: number): void {
+  function startHeartbeat(
+    socket: WebSocket,
+    intervalMs: number,
+    acks: { awaiting: boolean; missed: number },
+  ): void {
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     heartbeatTimer = setInterval(() => {
       // Bound to its socket: a heartbeat must never be credited to a newer
       // connection, nor keep firing for a socket that was superseded.
       if (socket !== ws || socket.readyState !== WebSocket.OPEN) return;
+      if (acks.awaiting) {
+        acks.missed += 1;
+        if (acks.missed >= MAX_MISSED_HEARTBEAT_ACKS) {
+          logger.warn(
+            { missed: acks.missed, intervalMs },
+            'QQ heartbeats unacknowledged; dropping the half-open socket',
+          );
+          socket.terminate();
+          return;
+        }
+      }
       socket.send(JSON.stringify({ op: OP_HEARTBEAT, d: lastSequence }));
+      acks.awaiting = true;
     }, intervalMs);
   }
 
@@ -1645,6 +1665,7 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
       let connectionEstablished = false;
       // Set once this socket sent RESUME; cleared by RESUMED.
       let resumePending = false;
+      const heartbeatAcks = { awaiting: false, missed: 0 };
 
       // Every handler below acts only while this socket is the current one.
       // A superseded socket that the gateway later drops (1006 once its
@@ -1698,6 +1719,7 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
             const payload: QQWsPayload = JSON.parse(data.toString());
             await handleWsMessage(payload, opts, gatewayUrl, lease, {
               socket,
+              heartbeatAcks,
               onSessionReady,
               onResumeSent: () => {
                 resumePending = true;
@@ -1832,6 +1854,7 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
     lease: ChannelInboundLease,
     hooks: {
       socket: WebSocket;
+      heartbeatAcks: { awaiting: boolean; missed: number };
       onSessionReady?: () => void;
       onResumeSent?: () => void;
       onResumed?: () => void;
@@ -1842,7 +1865,7 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
     switch (payload.op) {
       case OP_HELLO: {
         const heartbeatInterval = payload.d?.heartbeat_interval || 41250;
-        startHeartbeat(socket, heartbeatInterval);
+        startHeartbeat(socket, heartbeatInterval, hooks.heartbeatAcks);
 
         const token = await getAccessToken();
         if (sessionId) {
@@ -1912,7 +1935,8 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
       }
 
       case OP_HEARTBEAT_ACK:
-        // Heartbeat acknowledged, all good
+        hooks.heartbeatAcks.awaiting = false;
+        hooks.heartbeatAcks.missed = 0;
         break;
 
       case OP_RECONNECT:

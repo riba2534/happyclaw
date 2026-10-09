@@ -26,6 +26,8 @@ const harness = vi.hoisted(() => {
     answerResume: true,
     /** Gateway URL lookups fail with ECONNREFUSED. */
     failGateway: false,
+    /** The gateway answers each heartbeat with op 11. */
+    ackHeartbeats: true,
   };
   const sockets: FakeWebSocket[] = [];
   const gatewayRequests: number[] = [];
@@ -63,6 +65,9 @@ const harness = vi.hoisted(() => {
     send(raw: string) {
       const payload = JSON.parse(raw);
       this.sent.push(payload);
+      if (payload.op === 1 && config.ackHeartbeats) {
+        queueMicrotask(() => this.receive({ op: 11 }));
+      }
       if (payload.op === 2 || (payload.op === 6 && config.answerResume)) {
         queueMicrotask(() =>
           this.receive({
@@ -78,6 +83,11 @@ const harness = vi.hoisted(() => {
     close(code = 1000, reason = '') {
       if (this.readyState === FakeWebSocket.CLOSED) return;
       this.emitClose(code, reason);
+    }
+
+    terminate() {
+      if (this.readyState === FakeWebSocket.CLOSED) return;
+      this.emitClose(1006);
     }
 
     /** Server-side close, delivered even if a close was already seen. */
@@ -192,6 +202,7 @@ describe('QQ reconnect state machine', () => {
     harness.config.autoOpen = true;
     harness.config.answerResume = true;
     harness.config.failGateway = false;
+    harness.config.ackHeartbeats = true;
   });
 
   afterEach(async () => {
@@ -278,6 +289,24 @@ describe('QQ reconnect state machine', () => {
 
     harness.config.failGateway = false;
     await advance(40_000, 1_000);
+    expect(connection.isConnected()).toBe(true);
+  });
+
+  test('drops a half-open socket after three unacknowledged heartbeats', async () => {
+    connection = await connected();
+    // Acknowledged heartbeats keep one socket for many intervals.
+    await advance(150_000, 1_000);
+    expect(harness.sockets).toHaveLength(1);
+
+    harness.config.ackHeartbeats = false;
+    // Heartbeats every 30s: the third one finding the previous unacked
+    // drops the socket, and the session resumes on a new one.
+    await advance(125_000, 1_000);
+    expect(harness.sockets.length).toBeGreaterThanOrEqual(2);
+    expect(harness.sockets[0].readyState).toBe(harness.FakeWebSocket.CLOSED);
+    expect(harness.sockets[1].ops()).toContain(6);
+    harness.config.ackHeartbeats = true;
+    await advance(5_000);
     expect(connection.isConnected()).toBe(true);
   });
 });
