@@ -18,7 +18,10 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { ListGroup } from '@/components/common/ListRow';
 import { useSkillsStore, type SearchResult } from '@/stores/skills';
 import { MarkdownRenderer } from '../chat/MarkdownRenderer';
 
@@ -74,11 +77,12 @@ function SearchResultItem({
   const installCount = formatInstalls(result.installs);
 
   return (
-    <div className="rounded-lg border border-border hover:bg-muted/50 transition-colors overflow-hidden">
-      <div className="flex items-center justify-between p-3">
+    <div role="listitem" className="transition-colors hover:bg-surface-hover">
+      <div className="flex items-center justify-between gap-3 px-3 py-2.5">
         <button
           type="button"
-          className="min-w-0 flex-1 text-left flex items-center gap-2"
+          aria-expanded={expanded}
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
           onClick={handleToggle}
         >
           {expanded ? (
@@ -87,11 +91,11 @@ function SearchResultItem({
             <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
           )}
           <div className="min-w-0 flex-1">
-            <span className="text-sm font-medium text-foreground truncate block">
+            <span className="block truncate text-body font-medium text-foreground">
               {result.package}
             </span>
             {installCount && (
-              <span className="text-xs text-muted-foreground">
+              <span className="text-caption text-muted-foreground tabular-nums">
                 {installCount} 次安装
               </span>
             )}
@@ -102,36 +106,36 @@ function SearchResultItem({
           variant="outline"
           onClick={() => onInstall(result)}
           disabled={isInstalling}
-          className="ml-3 shrink-0"
+          className="shrink-0"
         >
           {installingPkg === result.package ? (
-            <Loader2 className="size-3.5 animate-spin" />
+            <Loader2 className="animate-spin" />
           ) : (
-            <Download className="size-3.5" />
+            <Download />
           )}
-          <span className="ml-1">安装</span>
+          安装
         </Button>
       </div>
 
       {expanded && (
-        <div className="px-3 pb-3 pt-0 border-t border-border/50">
+        <div className="px-3 pb-3 pl-8">
           {loading && (
-            <div className="flex items-center gap-2 py-3 text-muted-foreground text-xs">
+            <div className="flex items-center gap-2 py-2 text-caption text-muted-foreground">
               <Loader2 className="size-3 animate-spin" />
               加载详情...
             </div>
           )}
 
           {!loading && detail && (
-            <div className="space-y-2 pt-2">
+            <div className="space-y-2">
               {detail.description && (
-                <p className="text-xs text-foreground/80 leading-relaxed">
+                <p className="text-caption leading-5 text-muted-foreground">
                   {detail.description}
                 </p>
               )}
 
               {detail.readme && (
-                <div className="mt-2 border border-border/50 rounded-md p-3 max-h-64 overflow-y-auto bg-muted/30">
+                <div className="mt-2 max-h-64 overflow-y-auto rounded-lg bg-muted/40 p-3 ring-1 ring-surface-border">
                   <MarkdownRenderer content={detail.readme} variant="docs" />
                 </div>
               )}
@@ -143,9 +147,11 @@ function SearchResultItem({
                     {detail.features.map((f, i) => (
                       <li
                         key={i}
-                        className="text-xs text-muted-foreground flex gap-1.5"
+                        className="flex gap-1.5 text-caption text-muted-foreground"
                       >
-                        <span className="text-primary/60 shrink-0">-</span>
+                        <span className="shrink-0 text-faint-foreground">
+                          -
+                        </span>
                         <span>{f}</span>
                       </li>
                     ))}
@@ -155,7 +161,9 @@ function SearchResultItem({
           )}
 
           {!loading && detail === null && (
-            <p className="text-xs text-muted-foreground py-2">无法加载详情</p>
+            <p className="py-2 text-caption text-muted-foreground">
+              无法加载详情
+            </p>
           )}
 
           {result.url && (
@@ -163,7 +171,7 @@ function SearchResultItem({
               href={result.url}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-xs text-muted-foreground hover:text-primary inline-flex items-center gap-1 mt-2"
+              className="mt-2 inline-flex items-center gap-1 text-caption text-muted-foreground hover:text-foreground"
             >
               在 skills.sh 查看
               <ExternalLink className="size-3" />
@@ -278,90 +286,60 @@ export function InstallSkillDialog({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && handleClose()}>
-      <DialogContent className="sm:max-w-lg max-h-[80vh] flex flex-col overflow-hidden">
+      <DialogContent className="flex max-h-[80vh] flex-col overflow-hidden sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>安装技能</DialogTitle>
         </DialogHeader>
 
-        {/* Tabs */}
-        <div
-          className="flex overflow-x-auto border-b border-border shrink-0"
-          role="tablist"
-          aria-label="技能导入方式"
+        <Tabs
+          value={tab}
+          onValueChange={(next) => setTab(next as Tab)}
+          className="min-h-0 flex-1 gap-4 overflow-hidden"
         >
-          <button
-            type="button"
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              tab === 'search'
-                ? 'border-primary text-primary'
-                : 'border-transparent text-muted-foreground hover:text-foreground'
-            }`}
-            onClick={() => {
-              setTab('search');
-            }}
-            disabled={isInstalling}
-            role="tab"
-            aria-selected={tab === 'search'}
+          <TabsList
+            variant="line"
+            aria-label="技能导入方式"
+            className="w-full shrink-0 justify-start border-b border-surface-border"
           >
-            <Search className="size-3.5 inline-block mr-1.5 -mt-0.5" />
-            搜索市场
-          </button>
-          <button
-            type="button"
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              tab === 'manual'
-                ? 'border-primary text-primary'
-                : 'border-transparent text-muted-foreground hover:text-foreground'
-            }`}
-            onClick={() => {
-              setTab('manual');
-            }}
-            disabled={isInstalling}
-            role="tab"
-            aria-selected={tab === 'manual'}
-          >
-            <Package className="size-3.5 inline-block mr-1.5 -mt-0.5" />
-            手动安装
-          </button>
-          <button
-            type="button"
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              tab === 'git'
-                ? 'border-primary text-primary'
-                : 'border-transparent text-muted-foreground hover:text-foreground'
-            }`}
-            onClick={() => {
-              setTab('git');
-            }}
-            disabled={isInstalling}
-            role="tab"
-            aria-selected={tab === 'git'}
-          >
-            <GitBranch className="size-3.5 inline-block mr-1.5 -mt-0.5" />
-            Git
-          </button>
-          <button
-            type="button"
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              tab === 'zip'
-                ? 'border-primary text-primary'
-                : 'border-transparent text-muted-foreground hover:text-foreground'
-            }`}
-            onClick={() => {
-              setTab('zip');
-            }}
-            disabled={isInstalling}
-            role="tab"
-            aria-selected={tab === 'zip'}
-          >
-            <FileArchive className="size-3.5 inline-block mr-1.5 -mt-0.5" />
-            ZIP
-          </button>
-        </div>
+            <TabsTrigger
+              value="search"
+              disabled={isInstalling}
+              className="flex-none px-2"
+            >
+              <Search className="size-3.5" />
+              搜索市场
+            </TabsTrigger>
+            <TabsTrigger
+              value="manual"
+              disabled={isInstalling}
+              className="flex-none px-2"
+            >
+              <Package className="size-3.5" />
+              手动安装
+            </TabsTrigger>
+            <TabsTrigger
+              value="git"
+              disabled={isInstalling}
+              className="flex-none px-2"
+            >
+              <GitBranch className="size-3.5" />
+              Git
+            </TabsTrigger>
+            <TabsTrigger
+              value="zip"
+              disabled={isInstalling}
+              className="flex-none px-2"
+            >
+              <FileArchive className="size-3.5" />
+              ZIP
+            </TabsTrigger>
+          </TabsList>
 
-        {/* Search Tab */}
-        {tab === 'search' && (
-          <div className="space-y-3 min-h-0 flex flex-col overflow-hidden">
+          {/* Search Tab */}
+          <TabsContent
+            value="search"
+            className="flex min-h-0 flex-col gap-3 overflow-hidden"
+          >
             <form onSubmit={handleSearch} className="flex gap-2 shrink-0">
               <Input
                 type="text"
@@ -385,10 +363,10 @@ export function InstallSkillDialog({
             </form>
 
             {/* Results */}
-            <div className="overflow-y-auto space-y-2 min-h-0 flex-1">
+            <div className="min-h-0 flex-1 overflow-y-auto">
               {searching && (
-                <div className="flex items-center justify-center py-8 text-muted-foreground">
-                  <Loader2 className="size-4 animate-spin mr-2" />
+                <div className="flex items-center justify-center gap-2 py-8 text-body text-muted-foreground">
+                  <Loader2 className="size-4 animate-spin" />
                   搜索中...
                 </div>
               )}
@@ -396,170 +374,173 @@ export function InstallSkillDialog({
               {!searching &&
                 searchResults.length === 0 &&
                 searchQuery.trim() && (
-                  <div className="text-center py-8 text-muted-foreground text-sm">
+                  <div className="py-8 text-center text-body text-muted-foreground">
                     未找到相关技能
                   </div>
                 )}
 
-              {!searching &&
-                searchResults.map((result) => (
-                  <SearchResultItem
-                    key={result.package}
-                    result={result}
-                    isInstalling={isInstalling}
-                    installingPkg={installingPkg}
-                    onInstall={handleInstallFromSearch}
-                  />
-                ))}
+              {!searching && searchResults.length > 0 && (
+                <ListGroup>
+                  {searchResults.map((result) => (
+                    <SearchResultItem
+                      key={result.package}
+                      result={result}
+                      isInstalling={isInstalling}
+                      installingPkg={installingPkg}
+                      onInstall={handleInstallFromSearch}
+                    />
+                  ))}
+                </ListGroup>
+              )}
             </div>
 
             {!searching &&
               searchResults.length === 0 &&
               !searchQuery.trim() && (
-                <p className="text-xs text-muted-foreground text-center py-4">
+                <p className="py-4 text-center text-caption text-muted-foreground">
                   在 skills.sh 市场中搜索可用的技能包
                 </p>
               )}
-          </div>
-        )}
+          </TabsContent>
 
-        {/* Manual Tab */}
-        {tab === 'manual' && (
-          <form onSubmit={handleManualSubmit} className="space-y-4">
-            <div>
-              <label
-                htmlFor="skill-pkg"
-                className="block text-sm font-medium text-foreground mb-2"
-              >
-                技能包名称
-              </label>
-              <Input
-                id="skill-pkg"
-                type="text"
-                value={pkg}
-                onChange={(e) => setPkg(e.target.value)}
-                placeholder="owner/repo、owner/repo@skill 或 GitHub URL"
-                disabled={isInstalling}
-              />
-              <p className="mt-1 text-xs text-muted-foreground">
-                支持格式：owner/repo、owner/repo@skill 或 GitHub URL
-              </p>
-            </div>
-
-            <div className="flex items-center justify-end gap-3 pt-2">
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={handleClose}
-                disabled={isInstalling}
-              >
-                取消
-              </Button>
-              <Button type="submit" disabled={isInstalling || !pkg.trim()}>
-                {isInstalling && <Loader2 className="size-4 animate-spin" />}
-                安装
-              </Button>
-            </div>
-          </form>
-        )}
-
-        {tab === 'git' && (
-          <form onSubmit={handleGitSubmit} className="space-y-4">
-            <div>
-              <label
-                htmlFor="skill-git-url"
-                className="block text-sm font-medium text-foreground mb-2"
-              >
-                HTTPS Git 仓库地址
-              </label>
-              <Input
-                id="skill-git-url"
-                type="url"
-                value={gitUrl}
-                onChange={(e) => setGitUrl(e.target.value)}
-                placeholder="https://github.com/owner/repo.git"
-                disabled={isInstalling}
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
+          {/* Manual Tab */}
+          <TabsContent value="manual">
+            <form onSubmit={handleManualSubmit} className="space-y-4">
               <div>
                 <label
-                  htmlFor="skill-git-ref"
-                  className="block text-xs font-medium text-muted-foreground mb-1.5"
+                  htmlFor="skill-pkg"
+                  className="mb-1.5 block text-label text-foreground"
                 >
-                  分支或 Tag（可选）
+                  技能包名称
                 </label>
                 <Input
-                  id="skill-git-ref"
-                  value={gitRef}
-                  onChange={(e) => setGitRef(e.target.value)}
-                  placeholder="main"
+                  id="skill-pkg"
+                  type="text"
+                  value={pkg}
+                  onChange={(e) => setPkg(e.target.value)}
+                  placeholder="owner/repo、owner/repo@skill 或 GitHub URL"
+                  disabled={isInstalling}
+                />
+                <p className="mt-1.5 text-caption text-muted-foreground">
+                  支持格式：owner/repo、owner/repo@skill 或 GitHub URL
+                </p>
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={handleClose}
+                  disabled={isInstalling}
+                >
+                  取消
+                </Button>
+                <Button type="submit" disabled={isInstalling || !pkg.trim()}>
+                  {isInstalling && <Loader2 className="size-4 animate-spin" />}
+                  安装
+                </Button>
+              </div>
+            </form>
+          </TabsContent>
+
+          <TabsContent value="git">
+            <form onSubmit={handleGitSubmit} className="space-y-4">
+              <div>
+                <label
+                  htmlFor="skill-git-url"
+                  className="mb-1.5 block text-label text-foreground"
+                >
+                  HTTPS Git 仓库地址
+                </label>
+                <Input
+                  id="skill-git-url"
+                  type="url"
+                  value={gitUrl}
+                  onChange={(e) => setGitUrl(e.target.value)}
+                  placeholder="https://github.com/owner/repo.git"
                   disabled={isInstalling}
                 />
               </div>
-              <div>
-                <label
-                  htmlFor="skill-git-subdirectory"
-                  className="block text-xs font-medium text-muted-foreground mb-1.5"
-                >
-                  子目录（可选）
-                </label>
-                <Input
-                  id="skill-git-subdirectory"
-                  value={gitSubdirectory}
-                  onChange={(e) => setGitSubdirectory(e.target.value)}
-                  placeholder="skills/review"
-                  disabled={isInstalling}
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label
+                    htmlFor="skill-git-ref"
+                    className="mb-1.5 block text-caption font-medium text-muted-foreground"
+                  >
+                    分支或 Tag（可选）
+                  </label>
+                  <Input
+                    id="skill-git-ref"
+                    value={gitRef}
+                    onChange={(e) => setGitRef(e.target.value)}
+                    placeholder="main"
+                    disabled={isInstalling}
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="skill-git-subdirectory"
+                    className="mb-1.5 block text-caption font-medium text-muted-foreground"
+                  >
+                    子目录（可选）
+                  </label>
+                  <Input
+                    id="skill-git-subdirectory"
+                    value={gitSubdirectory}
+                    onChange={(e) => setGitSubdirectory(e.target.value)}
+                    placeholder="skills/review"
+                    disabled={isInstalling}
+                  />
+                </div>
               </div>
-            </div>
-            <ReplaceExistingCheckbox
-              checked={replaceExisting}
-              onChange={setReplaceExisting}
-              disabled={isInstalling}
-            />
-            <DialogActions
-              onCancel={handleClose}
-              disabled={!gitUrl.trim() || isInstalling}
-              loading={isInstalling}
-              submitLabel="从 Git 导入"
-            />
-          </form>
-        )}
-
-        {tab === 'zip' && (
-          <form onSubmit={handleArchiveSubmit} className="space-y-4">
-            <div>
-              <label
-                htmlFor="skill-archive"
-                className="block text-sm font-medium text-foreground mb-2"
-              >
-                技能 ZIP 文件
-              </label>
-              <Input
-                id="skill-archive"
-                type="file"
-                accept=".zip,application/zip"
-                onChange={(e) => setArchive(e.target.files?.[0] ?? null)}
+              <ReplaceExistingCheckbox
+                checked={replaceExisting}
+                onChange={setReplaceExisting}
                 disabled={isInstalling}
               />
-              <p className="mt-1 text-xs text-muted-foreground">
-                最大 10 MB，可包含一个或多个带 SKILL.md 的技能目录。
-              </p>
-            </div>
-            <ReplaceExistingCheckbox
-              checked={replaceExisting}
-              onChange={setReplaceExisting}
-              disabled={isInstalling}
-            />
-            <DialogActions
-              onCancel={handleClose}
-              disabled={isInstalling || !archive}
-              loading={isInstalling}
-              submitLabel="导入 ZIP"
-            />
-          </form>
-        )}
+              <DialogActions
+                onCancel={handleClose}
+                disabled={!gitUrl.trim() || isInstalling}
+                loading={isInstalling}
+                submitLabel="从 Git 导入"
+              />
+            </form>
+          </TabsContent>
+
+          <TabsContent value="zip">
+            <form onSubmit={handleArchiveSubmit} className="space-y-4">
+              <div>
+                <label
+                  htmlFor="skill-archive"
+                  className="mb-1.5 block text-label text-foreground"
+                >
+                  技能 ZIP 文件
+                </label>
+                <Input
+                  id="skill-archive"
+                  type="file"
+                  accept=".zip,application/zip"
+                  onChange={(e) => setArchive(e.target.files?.[0] ?? null)}
+                  disabled={isInstalling}
+                />
+                <p className="mt-1.5 text-caption text-muted-foreground">
+                  最大 10 MB，可包含一个或多个带 SKILL.md 的技能目录。
+                </p>
+              </div>
+              <ReplaceExistingCheckbox
+                checked={replaceExisting}
+                onChange={setReplaceExisting}
+                disabled={isInstalling}
+              />
+              <DialogActions
+                onCancel={handleClose}
+                disabled={isInstalling || !archive}
+                loading={isInstalling}
+                submitLabel="导入 ZIP"
+              />
+            </form>
+          </TabsContent>
+        </Tabs>
       </DialogContent>
     </Dialog>
   );
@@ -575,13 +556,12 @@ function ReplaceExistingCheckbox({
   disabled: boolean;
 }) {
   return (
-    <label className="flex items-start gap-2 text-xs text-muted-foreground">
-      <input
-        type="checkbox"
+    <label className="flex items-start gap-2 text-caption leading-5 text-muted-foreground">
+      <Checkbox
         checked={checked}
-        onChange={(event) => onChange(event.target.checked)}
+        onCheckedChange={(next) => onChange(next === true)}
         disabled={disabled}
-        className="mt-0.5 size-4 accent-primary"
+        className="mt-0.5"
       />
       <span>覆盖同名用户级技能（默认遇到冲突时停止，不修改现有技能）</span>
     </label>
