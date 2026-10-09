@@ -284,6 +284,13 @@ const FEISHU_WS_PING_TIMEOUT_SEC = 10;
 const BACKFILL_LOOKBACK_MS = 5 * 60 * 1000;
 const BACKFILL_PAGE_SIZE = 50;
 const BACKFILL_MAX_PAGES_PER_CHAT = 5;
+// Backfill runs after onReady with a few chats in flight; a sequential pass
+// over every chat ever seen held all Feishu inbound for its whole duration.
+const BACKFILL_CONCURRENCY = 4;
+// Durable cursors are never deleted, so only chats with traffic in this
+// window seed the backfill set. Current group membership (chat.list) and
+// live traffic still add chats regardless of age.
+const BACKFILL_ACTIVE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const FEISHU_INBOX_LEASE_MS = 5 * 60 * 1000;
 const FEISHU_INBOX_HEARTBEAT_MS = 60 * 1000;
 const FEISHU_INBOX_RETRY_DELAY_MS = 5_000;
@@ -1444,12 +1451,18 @@ export function createFeishuConnection(
 
   function restoreDurableChatProgress(): void {
     try {
+      const activeSince = Date.now() - BACKFILL_ACTIVE_WINDOW_MS;
       for (const cursor of listChannelCursors({
         provider: 'feishu',
         accountId: reliabilityAccountId,
         limit: 10_000,
       })) {
         if (cursor.scope !== FEISHU_CURSOR_SCOPE || !cursor.chatId) continue;
+        const lastActivity = Math.max(
+          cursor.position,
+          Date.parse(cursor.updatedAt) || 0,
+        );
+        if (lastActivity < activeSince) continue;
         rememberChatProgress(cursor.chatId, cursor.position);
       }
     } catch (err) {
@@ -3719,31 +3732,60 @@ export function createFeishuConnection(
     const chatIds = Array.from(knownChatIds);
     if (chatIds.length === 0) return;
 
+    const generation = wsConnectionGeneration;
+    const startedAt = Date.now();
     backfillRunning = true;
     try {
-      for (const chatId of chatIds) {
-        try {
-          const cursor = getChannelCursor({
-            provider: 'feishu',
-            accountId: reliabilityAccountId,
-            scope: FEISHU_CURSOR_SCOPE,
-            chatId,
-          });
-          const sinceMs = cursor
-            ? Math.max(0, cursor.position - BACKFILL_LOOKBACK_MS)
-            : Math.max(0, Date.now() - BACKFILL_LOOKBACK_MS);
-          await backfillChatMessages(chatId, sinceMs);
-        } catch (err) {
-          logger.warn({ err, chatId, reason }, 'Feishu chat backfill failed');
+      let next = 0;
+      const worker = async (): Promise<void> => {
+        while (next < chatIds.length) {
+          // stop()/reconnect retires this pass; the next one starts over.
+          if (generation !== wsConnectionGeneration || !client) return;
+          const chatId = chatIds[next++];
+          try {
+            const cursor = getChannelCursor({
+              provider: 'feishu',
+              accountId: reliabilityAccountId,
+              scope: FEISHU_CURSOR_SCOPE,
+              chatId,
+            });
+            const sinceMs = cursor
+              ? Math.max(0, cursor.position - BACKFILL_LOOKBACK_MS)
+              : Math.max(0, Date.now() - BACKFILL_LOOKBACK_MS);
+            await backfillChatMessages(chatId, sinceMs);
+          } catch (err) {
+            logger.warn({ err, chatId, reason }, 'Feishu chat backfill failed');
+          }
         }
-      }
+      };
+      await Promise.all(
+        Array.from(
+          { length: Math.min(BACKFILL_CONCURRENCY, chatIds.length) },
+          worker,
+        ),
+      );
       logger.info(
-        { reason, chatCount: chatIds.length },
+        {
+          reason,
+          chatCount: chatIds.length,
+          durationMs: Date.now() - startedAt,
+        },
         'Feishu backfill finished',
       );
     } finally {
       backfillRunning = false;
     }
+  }
+
+  /**
+   * Catch up on messages missed while disconnected without holding inbound
+   * delivery. Live events and backfilled ones meet in the same durable inbox
+   * and are deduplicated by message id there.
+   */
+  function startBackfill(reason: string): void {
+    void runBackfill(reason).catch((err) => {
+      logger.warn({ err, reason }, 'Feishu backfill pass failed');
+    });
   }
 
   async function reconnectWebSocket(reason: string): Promise<void> {
@@ -3785,8 +3827,10 @@ export function createFeishuConnection(
       lastWsStateConnected = true;
       logger.info({ reason }, 'Feishu WebSocket reconnected');
       await recoverQueuedInbox('reconnect');
-      await runBackfill('reconnect');
-      if (generation === wsConnectionGeneration) options.onReady();
+      if (generation === wsConnectionGeneration) {
+        options.onReady();
+        startBackfill('reconnect');
+      }
     } catch (err) {
       logger.error({ err, reason }, 'Feishu WebSocket reconnect failed');
     } finally {
@@ -3809,7 +3853,7 @@ export function createFeishuConnection(
       if (!lastWsStateConnected) {
         logger.info('Feishu WebSocket is back online');
         await recoverQueuedInbox('recovered');
-        await runBackfill('recovered');
+        startBackfill('recovered');
       }
       lastWsStateConnected = true;
       return;
@@ -4078,9 +4122,9 @@ export function createFeishuConnection(
         lastWsStateConnected = true;
         startHealthMonitor();
         await recoverQueuedInbox('startup');
-        await runBackfill('startup');
         if (generation !== wsConnectionGeneration) return false;
         onReady();
+        startBackfill('startup');
         return true;
       } catch (err) {
         logger.error(

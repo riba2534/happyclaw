@@ -97,6 +97,7 @@ const { createFeishuConnection } = await import('../src/feishu.js');
 const { ChannelRouteRejectedError } =
   await import('../src/channel-admission.js');
 const {
+  advanceChannelCursor,
   createChannelTurnRun,
   getChannelCursor,
   getUncertainChannelOutboxForTurn,
@@ -1794,10 +1795,13 @@ describe('Feishu durable Inbox and cursor integration', () => {
     ];
     await connect(accountId, executed);
 
-    expect(executed.mock.calls.map(([id]) => id)).toEqual([
-      'om_before_restart',
-      'om_during_downtime',
-    ]);
+    // Backfill runs in the background after onReady.
+    await vi.waitFor(() =>
+      expect(executed.mock.calls.map(([id]) => id)).toEqual([
+        'om_before_restart',
+        'om_during_downtime',
+      ]),
+    );
     const cursor = getChannelCursor({
       provider: 'feishu',
       accountId,
@@ -1836,10 +1840,12 @@ describe('Feishu durable Inbox and cursor integration', () => {
     ];
     await connect(accountId, executed);
 
-    expect(executed.mock.calls.map(([id]) => id)).toEqual([
-      'om_newest_cursor',
-      'om_late_older',
-    ]);
+    await vi.waitFor(() =>
+      expect(executed.mock.calls.map(([id]) => id)).toEqual([
+        'om_newest_cursor',
+        'om_late_older',
+      ]),
+    );
     expect(
       getChannelCursor({
         provider: 'feishu',
@@ -1850,7 +1856,7 @@ describe('Feishu durable Inbox and cursor integration', () => {
     ).toBe('om_newest_cursor');
   });
 
-  test('startup inventory makes a known group eligible for backfill before onReady', async () => {
+  test('startup inventory makes a known group eligible for backfill', async () => {
     const accountId = `account-inventory-${Date.now()}`;
     const executed = vi.fn();
     const createTime = Date.now() - 10_000;
@@ -1875,7 +1881,7 @@ describe('Feishu durable Inbox and cursor integration', () => {
 
     await connect(accountId, executed);
 
-    expect(executed).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(executed).toHaveBeenCalledTimes(1));
     expect(executed).toHaveBeenCalledWith('om_group_downtime');
     expect(
       getChannelCursor({
@@ -1885,6 +1891,80 @@ describe('Feishu durable Inbox and cursor integration', () => {
         chatId: 'oc_known_group',
       })?.cursor,
     ).toBe('om_group_downtime');
+  });
+
+  test('reports ready before the startup backfill finishes and bounds its concurrency', async () => {
+    const accountId = `account-background-${Date.now()}`;
+    const executed = vi.fn();
+    controls.chatList.mockResolvedValue({
+      data: {
+        items: Array.from({ length: 10 }, (_, index) => ({
+          chat_id: `oc_bg_${index}`,
+          name: `Group ${index}`,
+          chat_type: 'group',
+        })),
+        has_more: false,
+      },
+    });
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    controls.messageList.mockImplementation(async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await gate;
+      inFlight -= 1;
+      return { data: { items: [], has_more: false } };
+    });
+    const onReady = vi.fn();
+
+    await connect(accountId, executed, { onReady });
+
+    // connect() resolved and the account is ready while every list call is
+    // still blocked.
+    expect(onReady).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(inFlight).toBeGreaterThan(0));
+    expect(maxInFlight).toBeLessThanOrEqual(4);
+    release();
+    await vi.waitFor(() =>
+      expect(controls.messageList).toHaveBeenCalledTimes(10),
+    );
+    expect(maxInFlight).toBeLessThanOrEqual(4);
+    expect(maxInFlight).toBeGreaterThan(1);
+  });
+
+  test('dormant durable cursors no longer seed the startup backfill', async () => {
+    const accountId = `account-dormant-${Date.now()}`;
+    const executed = vi.fn();
+    const recentTime = Date.now() - 60_000;
+    const first = await connect(accountId, executed);
+    await first.handler(event('om_recent', recentTime, 'recent'));
+    await first.connection.stop();
+    openConnections.splice(openConnections.indexOf(first.connection), 1);
+    // A second chat whose last traffic is far outside the active window.
+    advanceChannelCursor({
+      provider: 'feishu',
+      accountId,
+      scope: 'chat_messages',
+      chatId: 'ou_dormant_user',
+      cursor: 'om_ancient',
+      position: Date.now() - 30 * 24 * 60 * 60 * 1000,
+      tieBreaker: 'om_ancient',
+      now: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+    });
+
+    controls.messageList.mockClear();
+    await connect(accountId, executed);
+    await vi.waitFor(() => expect(controls.messageList).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const listedChats = controls.messageList.mock.calls.map(
+      ([request]: any[]) => request.params.container_id,
+    );
+    expect(listedChats).toContain('ou_durable_user');
+    expect(listedChats).not.toContain('ou_dormant_user');
   });
 
   test('an intake exception stays queued and is automatically retried', async () => {
