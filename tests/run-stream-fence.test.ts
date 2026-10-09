@@ -91,3 +91,29 @@ describe('RunStreamFence', () => {
     });
   });
 });
+
+describe('RunStreamFence bounds', () => {
+  test('caps tracked runtime JIDs and evicts the least recently proven', () => {
+    const fence = new RunStreamFence(64, 3);
+    for (const jid of ['a', 'b', 'c']) {
+      fence.start(jid, `run-${jid}`);
+      fence.observeExact(jid, `run-${jid}`, `turn-${jid}`);
+      fence.finish(jid, `run-${jid}`);
+    }
+    // Touch "a" again so "b" becomes the oldest.
+    fence.start('a', 'run-a2');
+    fence.observeExact('a', 'run-a2', 'turn-a2');
+    fence.start('d', 'run-d');
+    fence.observeExact('d', 'run-d', 'turn-d');
+    expect(fence.trackedJidCount).toBe(3);
+    // "b" was evicted: its old turn is no longer pinned to the old run.
+    expect(fence.observe('b', 'turn-b')).toEqual({ accepted: true });
+    // "c" is still remembered and its late event stays rejected while a new
+    // run owns the JID.
+    fence.start('c', 'run-c2');
+    expect(fence.observe('c', 'turn-c')).toEqual({
+      accepted: false,
+      runId: 'run-c',
+    });
+  });
+});

@@ -132,6 +132,7 @@ import {
 } from './ws-heartbeat.js';
 import { recordRunContextSnapshot } from './run-context-snapshot.js';
 import { RunStreamFence } from './run-stream-fence.js';
+import { sweepStaleStreamingEntries } from './streaming-state-sweep.js';
 import {
   executeSessionReset,
   executeFreshWindowReset,
@@ -1459,6 +1460,7 @@ app.use(
 // 反向代理 + 公网域名场景下，管理员只能通过日志定位"为什么 WS 连不上"
 // （前端只看到 onclose、后端默认静默 destroy socket），没有这行日志运维成本极高。
 const warnedRejectedOrigins = new Set<string>();
+const MAX_WARNED_REJECTED_ORIGINS = 1_000;
 
 export function evaluateWsSpawnCommandAccess(
   user: { id: string; role: UserRole },
@@ -1543,6 +1545,10 @@ function setupWebSocket(server: any): WebSocketServer {
         const allowed = isAllowedOrigin(origin);
         if (!allowed) {
           if (!warnedRejectedOrigins.has(origin)) {
+            // Origin is client-controlled; keep the dedupe set bounded.
+            if (warnedRejectedOrigins.size >= MAX_WARNED_REJECTED_ORIGINS) {
+              warnedRejectedOrigins.clear();
+            }
             warnedRejectedOrigins.add(origin);
             logger.warn(
               {
@@ -1694,6 +1700,7 @@ function setupWebSocket(server: any): WebSocketServer {
         // See GitHub issue #241.
         if (Date.now() - snap.updatedAt > 30 * 60 * 1000) {
           streamingSnapshots.delete(jid);
+          if (!activeLogicalRuns.has(jid)) streamingFullTexts.delete(jid);
           continue;
         }
         // Skip empty or unowned snapshots. Every live query projection must
@@ -3198,6 +3205,24 @@ function updateStreamingSnapshot(
   streamingSnapshots.set(normalizedJid, snap);
 }
 
+const STREAMING_STATE_SWEEP_MS = 10 * 60 * 1000;
+let streamingStateSweepTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * The reconnect-time staleness check only removed the snapshot and only ran
+ * when a client connected, so the full-text accumulator of a run that ended
+ * without a terminal event stayed resident (rewritten to the disk buffer
+ * every 5s and replayed as an interrupt partial after a restart).
+ */
+export function sweepStaleStreamingState(now: number = Date.now()): number {
+  return sweepStaleStreamingEntries(
+    streamingSnapshots,
+    streamingFullTexts,
+    activeLogicalRuns,
+    now,
+  );
+}
+
 export function clearStreamingSnapshot(chatJid: string): void {
   const jid = normalizeHomeJid(chatJid);
   streamingSnapshots.delete(jid);
@@ -3643,6 +3668,13 @@ export function startWebServer(webDeps: WebDeps): void {
   webDeps.queue.setOnRunnerStateChange(broadcastRunnerState);
   webDeps.queue.setOnQueryStart(broadcastRunStarted);
   webDeps.queue.setOnQueryFinish(broadcastRunFinished);
+
+  if (streamingStateSweepTimer) clearInterval(streamingStateSweepTimer);
+  streamingStateSweepTimer = setInterval(
+    () => sweepStaleStreamingState(),
+    STREAMING_STATE_SWEEP_MS,
+  );
+  streamingStateSweepTimer.unref();
 }
 
 // --- Exports ---
@@ -3652,6 +3684,10 @@ export function shutdownTerminals(): void {
 }
 
 export async function shutdownWebServer(): Promise<void> {
+  if (streamingStateSweepTimer) {
+    clearInterval(streamingStateSweepTimer);
+    streamingStateSweepTimer = null;
+  }
   // Close all WebSocket connections
   for (const client of wsClients.keys()) {
     try {
