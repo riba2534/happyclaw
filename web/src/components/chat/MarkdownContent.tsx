@@ -278,14 +278,31 @@ export function MarkdownContent({
               {children}
             </td>
           ),
-          ul: ({ children }) => (
-            <ul className="list-disc pl-6 my-2 space-y-1">{children}</ul>
+          // GFM task lists: no bullet, a small themed checkbox instead.
+          ul: ({ children, className }) => (
+            <ul
+              className={
+                className?.includes('contains-task-list')
+                  ? 'my-2 list-none space-y-1 pl-1'
+                  : 'my-2 list-disc space-y-1 pl-6'
+              }
+            >
+              {children}
+            </ul>
           ),
           ol: ({ children }) => (
             <ol className="list-decimal pl-6 my-2 space-y-1">{children}</ol>
           ),
-          li: ({ children }) => (
-            <li className="[&>p]:inline [&>p]:my-0">{children}</li>
+          li: ({ children, className }) => (
+            <li
+              className={
+                className?.includes('task-list-item')
+                  ? 'flex items-start gap-2 [&>input]:mt-[0.45em] [&>input]:size-3.5 [&>input]:shrink-0 [&>input]:accent-primary [&>p]:my-0'
+                  : '[&>p]:inline [&>p]:my-0'
+              }
+            >
+              {children}
+            </li>
           ),
           p: ({ children }) => <p className="my-2">{children}</p>,
           h1: ({ children }) => (

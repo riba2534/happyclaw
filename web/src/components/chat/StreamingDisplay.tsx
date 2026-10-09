@@ -3,7 +3,9 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronUp,
+  ListTree,
   Loader2,
+  ShieldAlert,
   Sparkles,
 } from 'lucide-react';
 import { shouldRecoverStaleWaiting, useChatStore } from '../../stores/chat';
@@ -155,14 +157,16 @@ function TaskAgentBlock({
       className={`mb-3 overflow-hidden rounded-lg border font-sans ${borderColor} ${bgColor}`}
     >
       <button
+        type="button"
         onClick={() => setExpanded(!expanded)}
-        className={`w-full flex items-center gap-2 px-3 py-2 text-left ${hoverBg} transition-colors`}
+        aria-expanded={expanded}
+        className={`flex h-9 w-full cursor-pointer items-center gap-2 px-3 text-left transition-colors ${hoverBg}`}
       >
-        <span className={`w-2 h-2 rounded-full flex-shrink-0 ${dotColor}`} />
-        <span className={`text-xs font-medium ${textColor}`}>
+        <span className={`size-2 shrink-0 rounded-full ${dotColor}`} />
+        <span className={`truncate text-label font-medium ${textColor}`}>
           子 Agent: {agent.name}
         </span>
-        <span className={`text-[11px] ${textColor} opacity-70`}>
+        <span className="shrink-0 text-caption text-muted-foreground">
           {TASK_STATUS_LABELS[agent.status] || agent.status}
         </span>
         <span className="flex-1" />
@@ -175,7 +179,7 @@ function TaskAgentBlock({
       {expanded && (
         <div className={`px-3 pb-3 border-t ${contentBorderColor} space-y-2`}>
           {/* Agent prompt */}
-          <p className="text-[13px] text-foreground/60 mt-2 line-clamp-2">
+          <p className="mt-2 line-clamp-2 text-caption text-muted-foreground">
             {agent.prompt}
           </p>
 
@@ -206,7 +210,7 @@ function TaskAgentBlock({
                 </div>
               )}
               {streaming.partialText && (
-                <div className="max-w-none overflow-hidden text-sm [&>div>*:first-child]:!mt-0">
+                <div className="max-w-none overflow-hidden [&>div>*:first-child]:!mt-0">
                   <MarkdownRenderer
                     content={
                       streaming.partialText.length > 2000
@@ -214,7 +218,7 @@ function TaskAgentBlock({
                         : streaming.partialText
                     }
                     groupJid={groupJid}
-                    variant="chat"
+                    variant="docs"
                     streaming
                   />
                 </div>
@@ -224,7 +228,7 @@ function TaskAgentBlock({
 
           {/* Result summary (completed/error) */}
           {!isRunning && agent.result_summary && (
-            <p className="text-[13px] text-foreground/70">
+            <p className="text-label text-foreground/80">
               {agent.result_summary}
             </p>
           )}
@@ -253,23 +257,27 @@ function SdkTaskRuntimeBlock({
           : '执行中';
 
   return (
-    <div className="rounded-lg border border-border bg-muted/20 overflow-hidden">
+    <div className="overflow-hidden rounded-lg bg-surface-raised font-sans ring-1 ring-surface-border">
       <button
+        type="button"
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-muted/40 transition-colors"
+        aria-expanded={expanded}
+        className="flex h-9 w-full cursor-pointer items-center gap-2 px-3 text-left transition-colors hover:bg-surface-hover"
       >
         <span
           className={`size-2 rounded-full ${isRunning ? 'animate-pulse bg-primary' : task.status === 'error' ? 'bg-error' : 'bg-success'}`}
         />
-        <span className="text-xs font-medium text-foreground truncate">
+        <span className="truncate text-label font-medium text-foreground">
           {task.title}
         </span>
         {task.subagentType && (
-          <span className="text-[11px] text-muted-foreground">
+          <span className="shrink-0 text-caption text-faint-foreground">
             {task.subagentType}
           </span>
         )}
-        <span className="text-[11px] text-muted-foreground">{statusLabel}</span>
+        <span className="shrink-0 text-caption text-muted-foreground">
+          {statusLabel}
+        </span>
         <span className="flex-1" />
         {expanded ? (
           <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" />
@@ -278,9 +286,9 @@ function SdkTaskRuntimeBlock({
         )}
       </button>
       {expanded && (
-        <div className="border-t border-border px-3 py-2 space-y-2">
+        <div className="space-y-2 border-t border-surface-border px-3 py-2">
           {task.latestSummary && (
-            <div className="text-[13px] text-foreground/75 whitespace-pre-wrap break-words">
+            <div className="text-label break-words whitespace-pre-wrap text-foreground/80">
               {task.lastToolName && (
                 <span className="text-muted-foreground">
                   [{task.lastToolName}]{' '}
@@ -301,7 +309,7 @@ function SdkTaskRuntimeBlock({
             </div>
           )}
           {task.recentTools.length > 0 && (
-            <div className="text-[13px] text-muted-foreground space-y-0.5">
+            <div className="space-y-0.5 text-caption text-muted-foreground">
               {task.recentTools.slice(-5).map((item) => (
                 <div key={item.id}>{item.text}</div>
               ))}
@@ -313,7 +321,7 @@ function SdkTaskRuntimeBlock({
             </div>
           )}
           {task.textTail && (
-            <div className="max-w-none overflow-hidden text-sm [&>div>*:first-child]:!mt-0">
+            <div className="max-w-none overflow-hidden [&>div>*:first-child]:!mt-0">
               <MarkdownRenderer
                 content={
                   task.textTail.length > 2000
@@ -321,7 +329,7 @@ function SdkTaskRuntimeBlock({
                     : task.textTail
                 }
                 groupJid={groupJid}
-                variant="chat"
+                variant="docs"
                 streaming
               />
             </div>
@@ -356,17 +364,17 @@ function TracePanel({
   const groups = [
     {
       key: 'permission',
-      label: '🚫 权限拒绝',
+      label: '权限拒绝',
       items: visibleTrace.filter((e) => e.kind === 'permission'),
     },
     {
       key: 'task',
-      label: 'Task / Sub-agent',
+      label: '子任务',
       items: visibleTrace.filter((e) => e.kind === 'task'),
     },
     {
       key: 'tool',
-      label: 'Tools',
+      label: '工具',
       items: visibleTrace.filter(
         (e) => e.kind === 'tool' || e.kind === 'skill',
       ),
@@ -378,40 +386,38 @@ function TracePanel({
     },
     {
       key: 'memory',
-      label: 'Memory / Compaction',
+      label: '记忆与压缩',
       items: visibleTrace.filter((e) => e.kind === 'memory'),
     },
     {
       key: 'system',
-      label: 'System',
+      label: '系统',
       items: visibleTrace.filter((e) => e.kind === 'status'),
     },
   ].filter((g) => g.items.length > 0);
 
   return (
-    <div className="rounded-lg border border-border bg-muted/20 mb-2 overflow-hidden">
+    <div className="mb-2 font-sans">
       <button
+        type="button"
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-muted/40 transition-colors"
+        aria-expanded={expanded}
+        className="-ml-1.5 inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-caption text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground"
       >
-        <span className="text-xs font-medium text-muted-foreground">
-          执行详情
-        </span>
-        <span className="text-[11px] text-muted-foreground">
+        <ListTree className="size-3.5" />
+        <span>执行详情</span>
+        <span className="tabular-nums text-faint-foreground">
           {visibleTrace.length} 条
         </span>
-        <span className="flex-1" />
-        {expanded ? (
-          <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" />
-        ) : (
-          <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />
-        )}
+        <ChevronRight
+          className={`size-3.5 transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}
+        />
       </button>
       {expanded && (
-        <div className="border-t border-border px-3 py-2 space-y-3 max-h-72 overflow-y-auto">
+        <div className="mt-1 max-h-72 space-y-3 overflow-y-auto border-l-2 border-surface-border py-1 pl-3">
           {groups.map((group) => (
             <div key={group.key}>
-              <div className="text-[11px] font-medium text-muted-foreground mb-1">
+              <div className="mb-1 text-micro font-medium text-faint-foreground">
                 {group.label}
               </div>
               <div className="space-y-1">
@@ -443,9 +449,9 @@ function TraceRow({
 }) {
   const [open, setOpen] = useState(false);
   const hasDetail = !!item.detail && item.detail !== item.summary;
-  const base = danger ? 'text-error' : 'text-foreground/75';
+  const base = danger ? 'text-error' : 'text-foreground/80';
   return (
-    <div className={`text-[13px] ${base} break-words`}>
+    <div className={`text-label ${base} break-words`}>
       <div
         className={`flex items-start gap-1${hasDetail ? ' cursor-pointer' : ''}`}
         onClick={hasDetail ? () => setOpen((o) => !o) : undefined}
@@ -464,7 +470,7 @@ function TraceRow({
         </span>
       </div>
       {hasDetail && open && (
-        <div className="mt-0.5 ml-4 text-[12px] text-muted-foreground whitespace-pre-wrap break-all border-l-2 border-border pl-2">
+        <div className="mt-0.5 ml-4 border-l-2 border-surface-border pl-2 text-caption break-all whitespace-pre-wrap text-muted-foreground">
           {item.detail}
         </div>
       )}
@@ -484,8 +490,9 @@ function PermissionAlert({
   if (denied.length === 0) return null;
   return (
     <div className="mb-2 rounded-lg bg-error/5 p-2.5 font-sans ring-1 ring-error/20">
-      <div className="mb-1 text-caption font-medium text-error">
-        🚫 权限被拒绝 ({denied.length})
+      <div className="mb-1 flex items-center gap-1.5 text-caption font-medium text-error">
+        <ShieldAlert className="size-3.5" />
+        权限被拒绝 ({denied.length})
       </div>
       <div className="space-y-0.5 max-h-28 overflow-y-auto">
         {denied.slice(-10).map((item) => (
@@ -568,11 +575,11 @@ function StreamingContent({
             <Sparkles className="size-3.5" />
             <span className={streaming.isThinking ? 'shimmer' : undefined}>
               {streaming.isThinking
-                ? 'Reasoning...'
+                ? '思考中…'
                 : streaming.thinkingDurationMs != null &&
                     streaming.thinkingDurationMs > 0
                   ? formatThinkingDuration(streaming.thinkingDurationMs)
-                  : 'Reasoning'}
+                  : '思考过程'}
             </span>
             <ChevronRight
               className={`size-3.5 transition-transform duration-150 ${thinkingExpanded ? 'rotate-90' : ''}`}

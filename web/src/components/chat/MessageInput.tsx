@@ -83,6 +83,8 @@ interface MessageInputProps {
   groupJid?: string;
   disabled?: boolean;
   contextLabel?: string;
+  /** Composer placeholder, e.g. naming the agent being addressed. */
+  placeholder?: string;
   onResetSession?: () => void;
   onToggleTerminal?: () => void;
   /** Stop the active run when the composer has no follow-up to send. */
@@ -101,6 +103,7 @@ export function MessageInput({
   groupJid,
   disabled = false,
   contextLabel,
+  placeholder = '输入消息...',
   onResetSession,
   onToggleTerminal,
   onStop,
@@ -836,6 +839,11 @@ export function MessageInput({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      {/* Soft fade so scrolled messages don't end at a hard edge. */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-0 -top-6 h-6 bg-linear-to-b from-transparent to-background max-lg:hidden"
+      />
       {/* Drag overlay */}
       {isDragOver && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-primary/5 dark:bg-primary/10 backdrop-blur-[2px] border-2 border-dashed border-primary rounded-xl pointer-events-none">
@@ -957,14 +965,14 @@ export function MessageInput({
                         </div>
                       </div>
                     ) : (
-                      <div className="flex min-w-0 flex-1 items-start gap-2">
+                      <div className="flex min-w-0 flex-1 items-start gap-2 pointer-coarse:flex-col pointer-coarse:gap-0.5">
                         <span
-                          className="block min-w-0 flex-1 pt-1 text-caption leading-5 break-words whitespace-pre-wrap text-foreground/85"
+                          className="block min-w-0 flex-1 pt-1 text-caption leading-5 break-words whitespace-pre-wrap text-foreground/85 pointer-coarse:w-full"
                           title={item.content}
                         >
                           {item.content}
                         </span>
-                        <div className="flex shrink-0 items-center gap-0.5 transition-opacity pointer-fine:opacity-0 pointer-fine:group-hover/queued:opacity-100 pointer-fine:group-focus-within/queued:opacity-100">
+                        <div className="flex shrink-0 items-center gap-0.5 transition-opacity pointer-coarse:-mr-1.5 pointer-coarse:self-end pointer-fine:opacity-0 pointer-fine:group-hover/queued:opacity-100 pointer-fine:group-focus-within/queued:opacity-100">
                           <button
                             type="button"
                             disabled={busy || locked || index === 0}
@@ -1147,7 +1155,7 @@ export function MessageInput({
                 compositionEndTimeRef.current = Date.now();
               }}
               onPaste={handlePaste}
-              placeholder="输入消息..."
+              placeholder={placeholder}
               disabled={disabled}
               className="w-full resize-none bg-transparent text-base leading-6 placeholder:text-faint-foreground focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 lg:text-body-lg"
               rows={1}

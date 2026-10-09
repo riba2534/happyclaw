@@ -1124,6 +1124,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                   }}
                 />
                 <MessageInput
+                  placeholder={`向 ${agentProfileLabel} 发送消息…`}
                   onSend={handleActiveAgentSend}
                   groupJid={groupJid}
                   contextLabel={currentContextName}
@@ -1173,6 +1174,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                   onSend={(content) => handleSend(content)}
                 />
                 <MessageInput
+                  placeholder={`向 ${agentProfileLabel} 发送消息…`}
                   onSend={handleSend}
                   groupJid={groupJid}
                   isRunning={currentContextWaiting}

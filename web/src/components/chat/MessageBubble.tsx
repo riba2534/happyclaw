@@ -98,7 +98,7 @@ function ReasoningBlock({
   const label =
     durationMs != null && durationMs > 0
       ? formatThinkingDuration(durationMs)
-      : 'Reasoning';
+      : '思考过程';
 
   return (
     <div className="mb-2">
@@ -523,11 +523,6 @@ export const MessageBubble = memo(
             </div>
           </div>
 
-          {/* Dynamic Workflow */}
-          {completedWorkflowRuns?.map((run) => (
-            <WorkflowRunCard key={run.taskId} run={run} />
-          ))}
-
           {/* Reasoning */}
           {thinkingContent && (
             <ReasoningBlock
@@ -535,6 +530,11 @@ export const MessageBubble = memo(
               durationMs={thinkingDurationMs}
             />
           )}
+
+          {/* Dynamic Workflow */}
+          {completedWorkflowRuns?.map((run) => (
+            <WorkflowRunCard key={run.taskId} run={run} />
+          ))}
 
           {renderImages()}
 
@@ -636,16 +636,16 @@ export const MessageBubble = memo(
 
         {/* Claude-style: no card container, direct content */}
         <div className="overflow-hidden font-serif">
-          {completedWorkflowRuns?.map((run) => (
-            <WorkflowRunCard key={run.taskId} run={run} />
-          ))}
-
           {thinkingContent && (
             <ReasoningBlock
               content={thinkingContent}
               durationMs={thinkingDurationMs}
             />
           )}
+
+          {completedWorkflowRuns?.map((run) => (
+            <WorkflowRunCard key={run.taskId} run={run} />
+          ))}
 
           {renderImages('mb-3')}
 

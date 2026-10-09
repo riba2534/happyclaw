@@ -63,17 +63,17 @@ export function ToolActivityCard({
     <div
       className={isNested ? 'ml-3 border-l border-surface-border pl-2.5' : ''}
     >
-      <div className="flex min-h-7 items-start gap-2 rounded-md px-1 py-1 font-sans text-label">
+      <div className="flex min-h-7 items-center gap-2 rounded-md px-1 py-1 font-sans text-label">
         <Loader2
           aria-hidden="true"
-          className="mt-0.5 size-3.5 shrink-0 animate-spin text-muted-foreground"
+          className="size-3.5 shrink-0 animate-spin text-muted-foreground"
         />
         <span className="shrink-0 font-medium text-foreground">
           {displayName}
         </span>
         {param && (
           <span
-            className={`max-h-16 min-w-0 flex-1 overflow-y-auto break-all text-muted-foreground ${isBash ? 'font-mono text-caption leading-5' : ''}`}
+            className={`min-w-0 flex-1 truncate text-muted-foreground ${isBash ? 'font-mono text-caption leading-5' : ''}`}
             title={`${param.label}: ${param.value}`}
           >
             {param.value}
