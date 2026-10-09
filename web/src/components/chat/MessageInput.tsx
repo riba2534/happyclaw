@@ -1067,73 +1067,56 @@ export function MessageInput({
           )}
 
           {/* Pending images preview */}
-          {pendingImages.length > 0 && (
-            <div className="border-b border-surface-border px-3 pt-2.5 pb-1">
-              <div className="flex items-center gap-1 mb-1.5">
-                <ImageIcon className="w-3 h-3 text-muted-foreground" />
-                <span className="text-caption text-muted-foreground">
-                  已添加 {pendingImages.length} 张图片
-                </span>
-                <button
-                  onClick={clearPendingImages}
-                  className="ml-auto cursor-pointer text-caption text-muted-foreground hover:text-foreground"
-                >
-                  清空
-                </button>
-              </div>
-              <div className="flex flex-wrap gap-2 pb-1.5">
-                {pendingImages.map((img, i) => (
-                  <div key={i} className="relative group">
-                    <img
-                      src={img.preview}
-                      alt={img.name}
-                      className="size-16 rounded-lg object-cover ring-1 ring-surface-border"
-                    />
-                    <button
-                      onClick={() => removePendingImage(i)}
-                      className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-foreground/70 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer hover:bg-foreground/90"
-                      aria-label="移除图片"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Pending files chips */}
-          {pendingFiles.length > 0 && (
-            <div className="border-b border-surface-border px-3 pt-2.5 pb-1">
-              <div className="flex items-center gap-1 mb-1">
-                <Paperclip className="w-3 h-3 text-muted-foreground" />
-                <span className="text-caption text-muted-foreground">
-                  已上传 {pendingFiles.length} 个文件，发送时将告知 AI
-                </span>
-                <button
-                  onClick={clearPendingFiles}
-                  className="ml-auto cursor-pointer text-caption text-muted-foreground hover:text-foreground"
-                >
-                  清空
-                </button>
-              </div>
-              <div className="flex flex-wrap gap-1 pb-1">
-                {pendingFiles.map((file, i) => (
-                  <span
-                    key={i}
-                    className="inline-flex h-7 max-w-[200px] items-center gap-1 rounded-md bg-muted pl-2 text-caption text-foreground ring-1 ring-surface-border"
+          {/* Attachment tray: image thumbnails and file chips in one row */}
+          {(pendingImages.length > 0 || pendingFiles.length > 0) && (
+            <div className="flex flex-wrap items-center gap-2 px-3 pt-3">
+              {pendingImages.map((img, i) => (
+                <div key={`img-${i}`} className="group/attachment relative">
+                  <img
+                    src={img.preview}
+                    alt={img.name}
+                    className="size-14 rounded-lg object-cover ring-1 ring-surface-border"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removePendingImage(i)}
+                    className="absolute -top-1.5 -right-1.5 flex size-5 cursor-pointer items-center justify-center rounded-full bg-foreground text-background shadow-menu transition-opacity pointer-fine:opacity-0 pointer-fine:group-hover/attachment:opacity-100 focus-visible:opacity-100"
+                    aria-label="移除图片"
                   >
-                    <span className="truncate">{file.label}</span>
-                    <button
-                      onClick={() => removePendingFile(i)}
-                      className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:text-foreground"
-                      aria-label="移除文件"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </span>
-                ))}
-              </div>
+                    <X className="size-3" />
+                  </button>
+                </div>
+              ))}
+              {pendingFiles.map((file, i) => (
+                <span
+                  key={`file-${i}`}
+                  title={`${file.label}（已上传，发送时将告知 AI）`}
+                  className="inline-flex h-8 max-w-[220px] items-center gap-1.5 rounded-lg bg-muted pl-2.5 text-caption text-foreground ring-1 ring-surface-border"
+                >
+                  <Paperclip className="size-3.5 shrink-0 text-muted-foreground" />
+                  <span className="truncate">{file.label}</span>
+                  <button
+                    type="button"
+                    onClick={() => removePendingFile(i)}
+                    className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:text-foreground"
+                    aria-label="移除文件"
+                  >
+                    <X className="size-3.5" />
+                  </button>
+                </span>
+              ))}
+              {pendingImages.length + pendingFiles.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    clearPendingImages();
+                    clearPendingFiles();
+                  }}
+                  className="h-8 cursor-pointer rounded-md px-2 text-caption text-muted-foreground hover:bg-surface-hover hover:text-foreground"
+                >
+                  清空
+                </button>
+              )}
             </div>
           )}
 
