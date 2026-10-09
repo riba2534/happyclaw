@@ -1,6 +1,8 @@
+import type { ReactNode } from 'react';
 import { Activity } from 'lucide-react';
-import { Card, CardContent } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 import { SystemStatus } from '../../stores/monitor';
+import { StatTile } from './StatTile';
 
 interface SystemInfoProps {
   status: SystemStatus;
@@ -14,27 +16,39 @@ function extractVersion(raw: string | null | undefined): string | null {
 }
 
 /** Check if a version string is outdated compared to latest */
-function isOutdated(current: string | null | undefined, latest: string | null | undefined): boolean {
+function isOutdated(
+  current: string | null | undefined,
+  latest: string | null | undefined,
+): boolean {
   const cv = extractVersion(current);
   const lv = extractVersion(latest);
   if (!cv || !lv) return false;
   return cv !== lv;
 }
 
-function VersionBadge({ current, latest }: { current: string | null | undefined; latest: string | null | undefined }) {
+function VersionBadge({
+  current,
+  latest,
+}: {
+  current: string | null | undefined;
+  latest: string | null | undefined;
+}) {
   if (!current) return null;
-  const outdated = isOutdated(current, latest);
-  if (!outdated) {
-    return (
-      <span className="ml-1.5 inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300">
-        最新
-      </span>
-    );
-  }
+  return isOutdated(current, latest) ? (
+    <Badge variant="warning">可更新</Badge>
+  ) : (
+    <Badge variant="success">最新</Badge>
+  );
+}
+
+function InfoRow({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <span className="ml-1.5 inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300">
-      可更新
-    </span>
+    <div className="flex min-h-5 items-center justify-between gap-2 text-caption">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="flex items-center gap-1.5 font-medium text-foreground">
+        {children}
+      </span>
+    </div>
   );
 }
 
@@ -52,64 +66,50 @@ export function SystemInfo({ status }: SystemInfoProps) {
   const versions = status.claudeCodeVersions;
 
   return (
-    <Card>
-      <CardContent>
-        <div className="flex items-center gap-3 mb-4">
-        <div className="p-2 bg-success-bg rounded-lg">
-          <Activity className="w-6 h-6 text-success" />
-        </div>
-        <div>
-          <h3 className="text-sm font-medium text-muted-foreground">系统信息</h3>
-          <p className="text-2xl font-bold text-foreground">运行中</p>
-        </div>
-      </div>
-
-      <div className="space-y-2">
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">运行时间</span>
-          <span className="text-foreground font-medium">
-            {formatUptime(status.uptime)}
-          </span>
-        </div>
+    <StatTile label="系统信息" icon={Activity} value="运行中">
+      <div className="space-y-1.5">
+        <InfoRow label="运行时间">
+          <span className="tabular-nums">{formatUptime(status.uptime)}</span>
+        </InfoRow>
 
         {versions !== undefined && (
           <>
             {versions?.latest && (
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">最新版本</span>
-                <span className="text-foreground font-medium font-mono text-xs">
-                  {versions.latest}
-                </span>
-              </div>
+              <InfoRow label="最新版本">
+                <span className="font-mono">{versions.latest}</span>
+              </InfoRow>
             )}
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">宿主机</span>
-              <span className="text-foreground font-medium font-mono text-xs flex items-center">
+            <InfoRow label="宿主机">
+              <span className="font-mono">
                 {extractVersion(versions?.host) || '未知'}
-                <VersionBadge current={versions?.host} latest={versions?.latest} />
               </span>
-            </div>
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">容器</span>
-              <span className="text-foreground font-medium font-mono text-xs flex items-center">
-                {versions?.container ? extractVersion(versions.container) || versions.container : '未构建'}
-                {versions?.container && (
-                  <VersionBadge current={versions.container} latest={versions?.latest} />
-                )}
+              <VersionBadge
+                current={versions?.host}
+                latest={versions?.latest}
+              />
+            </InfoRow>
+            <InfoRow label="容器">
+              <span className="font-mono">
+                {versions?.container
+                  ? extractVersion(versions.container) || versions.container
+                  : '未构建'}
               </span>
-            </div>
+              {versions?.container && (
+                <VersionBadge
+                  current={versions.container}
+                  latest={versions?.latest}
+                />
+              )}
+            </InfoRow>
           </>
-
         )}
 
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">飞书连接</span>
-          <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-success-bg text-success">
+        <InfoRow label="飞书连接">
+          <Badge variant="outline" dot="success">
             已连接
-          </span>
-        </div>
-        </div>
-      </CardContent>
-    </Card>
+          </Badge>
+        </InfoRow>
+      </div>
+    </StatTile>
   );
 }

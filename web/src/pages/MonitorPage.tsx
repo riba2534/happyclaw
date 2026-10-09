@@ -4,7 +4,11 @@ import { useAuthStore } from '../stores/auth';
 import { ContainerStatus } from '../components/monitor/ContainerStatus';
 import { QueueStatus } from '../components/monitor/QueueStatus';
 import { SystemInfo } from '../components/monitor/SystemInfo';
-import { GroupStatusCard } from '../components/monitor/GroupStatusCard';
+import {
+  GroupRunBadge,
+  GroupStatusCard,
+  type MonitorGroupStatus,
+} from '../components/monitor/GroupStatusCard';
 import {
   ProviderSwitcher,
   type SimpleProvider,
@@ -17,10 +21,21 @@ import {
   Loader2,
   ExternalLink,
 } from 'lucide-react';
-import { PageHeader } from '@/components/common/PageHeader';
-import { SkeletonStatCards } from '@/components/common/Skeletons';
+import {
+  DataTable,
+  ListGroup,
+  PageContainer,
+  PageHeader,
+  type DataTableColumn,
+} from '@/components/common';
+import {
+  SettingsGroup,
+  SettingsRow,
+  SettingsSection,
+} from '@/components/settings/SettingsLayout';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+import { cn } from '@/lib/utils';
 import { wsManager } from '../api/ws';
 import { api } from '@/api/client';
 
@@ -133,259 +148,252 @@ export function MonitorPage() {
     await pullDockerImage();
   };
 
+  const groupColumns: DataTableColumn<MonitorGroupStatus>[] = [
+    {
+      key: 'jid',
+      header: '群组',
+      cell: (group) => (
+        <span className="font-medium text-foreground">{group.jid}</span>
+      ),
+    },
+    {
+      key: 'owner',
+      header: '账号',
+      cell: (group) => group.ownerUsername || '-',
+      className: 'text-muted-foreground',
+    },
+    {
+      key: 'queue',
+      header: '队列',
+      cell: (group) => (
+        <>
+          {group.pendingTasks} 个任务 /{' '}
+          {group.pendingMessages ? '有新消息' : '无新消息'}
+        </>
+      ),
+      className: 'text-muted-foreground',
+    },
+    {
+      key: 'state',
+      header: '运行状态',
+      cell: (group) => <GroupRunBadge active={group.active} />,
+    },
+    {
+      key: 'process',
+      header: '进程标识',
+      cell: (group) => group.displayName || group.containerName || '-',
+      className: 'font-mono text-caption text-muted-foreground',
+    },
+    {
+      key: 'provider',
+      header: 'Provider',
+      cell: (group) =>
+        group.active ? (
+          <ProviderSwitcher
+            groupFolder={group.groupFolder}
+            currentProviderId={group.selectedProviderId}
+            currentProviderName={group.selectedProviderName}
+            providers={providers}
+          />
+        ) : (
+          <span className="text-muted-foreground">-</span>
+        ),
+    },
+  ];
+
+  const showPullLogs = pulling && pullLogs.length > 0;
+
   return (
-    <div className="min-h-full bg-background p-4 lg:p-8">
-      <div className="max-w-7xl mx-auto">
-        <PageHeader
-          title="系统监控"
-          subtitle="实时监控系统状态（10秒自动刷新）"
-          className="mb-6"
-          actions={
-            <Button variant="outline" onClick={loadStatus} disabled={loading}>
-              <RefreshCw
-                className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`}
+    <PageContainer className="space-y-6">
+      <PageHeader
+        title="系统监控"
+        subtitle="实时监控系统状态（10秒自动刷新）"
+        actions={
+          <Button variant="outline" onClick={loadStatus} disabled={loading}>
+            <RefreshCw className={cn(loading && 'animate-spin')} />
+            刷新
+          </Button>
+        }
+      />
+
+      {loading && !status && (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          {Array.from({ length: 3 }).map((_, index) => (
+            <div
+              key={index}
+              className="space-y-3 rounded-xl bg-surface-raised p-4 ring-1 ring-surface-border"
+            >
+              <Skeleton className="h-3 w-1/3" />
+              <Skeleton className="h-7 w-1/2" />
+              <Skeleton className="h-3 w-2/3" />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {status && (
+        <>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <ContainerStatus status={status} />
+            <QueueStatus status={status} />
+            <SystemInfo status={status} />
+          </div>
+
+          <SettingsSection title="服务状态">
+            <SettingsGroup>
+              <SettingsRow
+                label="Anthropic 服务状态"
+                description={
+                  claudeStatus || '暂时无法读取外部状态，请打开官方状态页确认。'
+                }
+                control={
+                  <Button variant="outline" size="sm" asChild>
+                    <a
+                      href="https://status.claude.com"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      官方状态页
+                      <ExternalLink />
+                    </a>
+                  </Button>
+                }
               />
-              刷新
-            </Button>
-          }
-        />
 
-        {loading && !status && <SkeletonStatCards />}
-
-        {status && (
-          <div className="space-y-6">
-            <Card>
-              <CardContent className="flex items-center justify-between gap-4">
-                <div>
-                  <h2 className="text-sm font-semibold text-foreground">
-                    Anthropic 服务状态
-                  </h2>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {claudeStatus ||
-                      '暂时无法读取外部状态，请打开官方状态页确认。'}
-                  </p>
-                </div>
-                <a
-                  href="https://status.claude.com"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 text-xs font-medium text-foreground hover:bg-muted"
-                >
-                  官方状态页
-                  <ExternalLink className="size-3.5" />
-                </a>
-              </CardContent>
-            </Card>
-
-            {/* Docker 镜像状态 */}
-            {status.dockerRequired === false ? (
-              <Card>
-                <CardContent>
-                  <h2 className="text-lg font-semibold text-foreground mb-2">
-                    Docker 镜像
-                  </h2>
-                  <div className="flex items-center gap-3">
-                    <CheckCircle className="w-5 h-5 text-success" />
-                    <span className="text-sm text-muted-foreground">
+              {/* Docker 镜像状态 */}
+              {status.dockerRequired === false ? (
+                <SettingsRow
+                  label="Docker 镜像"
+                  description={
+                    <span className="flex items-center gap-1.5">
+                      <CheckCircle className="size-3.5 shrink-0 text-success" />
                       {status.adminHostOnlyMode
                         ? '管理员纯宿主机模式已开启，当前工作区无需 Docker。'
                         : '当前没有 Docker 模式的工作区，无需检查镜像。'}
                     </span>
-                  </div>
-                </CardContent>
-              </Card>
-            ) : (
-              <Card>
-                <CardContent>
-                  <h2 className="text-lg font-semibold text-foreground mb-4">
-                    Docker 镜像
-                  </h2>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      {status.dockerImageExists ? (
-                        <>
-                          <CheckCircle className="w-5 h-5 text-success" />
-                          <span className="text-sm text-success font-medium">
-                            镜像已就绪
-                          </span>
-                        </>
-                      ) : (
-                        <>
-                          <AlertTriangle className="w-5 h-5 text-error" />
-                          <span className="text-sm text-error font-medium">
-                            镜像不存在，Docker 模式的工作区将无法运行
-                          </span>
-                        </>
-                      )}
-                    </div>
+                  }
+                />
+              ) : (
+                <SettingsRow
+                  label="Docker 镜像"
+                  description={
+                    status.dockerImageExists ? (
+                      <span className="flex items-center gap-1.5 text-success">
+                        <CheckCircle className="size-3.5 shrink-0" />
+                        镜像已就绪
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1.5 text-error">
+                        <AlertTriangle className="size-3.5 shrink-0" />
+                        镜像不存在，Docker 模式的工作区将无法运行
+                      </span>
+                    )
+                  }
+                  control={
                     <Button
+                      size="sm"
                       onClick={handlePull}
                       disabled={pulling || !canManageSystem}
                       title={!canManageSystem ? '需要系统配置权限' : undefined}
                     >
                       {pulling ? (
                         <>
-                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <Loader2 className="animate-spin" />
                           拉取中...
                         </>
                       ) : (
                         <>
-                          <Download className="w-4 h-4" />
+                          <Download />
                           {status.dockerImageExists
                             ? '拉取最新镜像'
                             : '拉取镜像'}
                         </>
                       )}
                     </Button>
-                  </div>
+                  }
+                >
+                  {(showPullLogs || pullResult) && (
+                    <div className="space-y-3">
+                      {/* Pull logs */}
+                      {showPullLogs && (
+                        <div className="max-h-64 overflow-y-auto rounded-lg bg-(--code-block-bg) p-3 font-mono text-caption text-foreground ring-1 ring-surface-border">
+                          {pullLogs.map((line, i) => (
+                            <div
+                              key={i}
+                              className="whitespace-pre-wrap break-all"
+                            >
+                              {line}
+                            </div>
+                          ))}
+                          <div ref={logEndRef} />
+                        </div>
+                      )}
 
-                  {/* Pull logs */}
-                  {pulling && pullLogs.length > 0 && (
-                    <div className="mt-4">
-                      <div className="bg-[#0f172a] dark:bg-[#0a0f1a] rounded-lg p-3 max-h-64 overflow-y-auto font-mono text-xs text-green-400">
-                        {pullLogs.map((line, i) => (
-                          <div
-                            key={i}
-                            className="whitespace-pre-wrap break-all"
-                          >
-                            {line}
-                          </div>
-                        ))}
-                        <div ref={logEndRef} />
-                      </div>
-                    </div>
-                  )}
-
-                  {pullResult && (
-                    <div
-                      className={`mt-4 p-4 rounded-lg border ${pullResult.success ? 'bg-success-bg border-success/20' : 'bg-error-bg border-error/20'}`}
-                    >
-                      <div className="flex items-center gap-2 mb-2">
-                        {pullResult.success ? (
-                          <CheckCircle className="w-4 h-4 text-success" />
-                        ) : (
-                          <AlertTriangle className="w-4 h-4 text-error" />
-                        )}
-                        <span
-                          className={`text-sm font-medium ${pullResult.success ? 'text-success' : 'text-error'}`}
+                      {pullResult && (
+                        <div
+                          className={cn(
+                            'rounded-lg px-3 py-2.5',
+                            pullResult.success
+                              ? 'bg-success/10'
+                              : 'bg-error/10',
+                          )}
                         >
-                          {pullResult.success ? '镜像拉取成功' : '镜像拉取失败'}
-                        </span>
-                      </div>
-                      {pullResult.error && (
-                        <pre className="text-xs text-error bg-error-bg rounded p-3 mt-2 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap">
-                          {pullResult.error}
-                        </pre>
+                          <div
+                            className={cn(
+                              'flex items-center gap-2 text-label',
+                              pullResult.success
+                                ? 'text-success'
+                                : 'text-error',
+                            )}
+                          >
+                            {pullResult.success ? (
+                              <CheckCircle className="size-4" />
+                            ) : (
+                              <AlertTriangle className="size-4" />
+                            )}
+                            {pullResult.success
+                              ? '镜像拉取成功'
+                              : '镜像拉取失败'}
+                          </div>
+                          {pullResult.error && (
+                            <pre className="mt-2 max-h-48 overflow-auto font-mono text-caption whitespace-pre-wrap text-error">
+                              {pullResult.error}
+                            </pre>
+                          )}
+                        </div>
                       )}
                     </div>
                   )}
-                </CardContent>
-              </Card>
-            )}
+                </SettingsRow>
+              )}
+            </SettingsGroup>
+          </SettingsSection>
 
-            {/* 统计卡片 */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <ContainerStatus status={status} />
-              <QueueStatus status={status} />
-              <SystemInfo status={status} />
-            </div>
+          {/* 群组详情 */}
+          {status.groups && status.groups.length > 0 && (
+            <SettingsSection title="群组状态">
+              {/* 移动端：列表 */}
+              <ListGroup className="lg:hidden">
+                {status.groups.map((group) => (
+                  <GroupStatusCard
+                    key={group.jid}
+                    group={group}
+                    providers={providers}
+                  />
+                ))}
+              </ListGroup>
 
-            {/* 群组详情 */}
-            {status.groups && status.groups.length > 0 && (
-              <Card>
-                <CardContent>
-                  <h2 className="text-lg font-semibold text-foreground mb-4">
-                    群组状态
-                  </h2>
-
-                  {/* 移动端：卡片列表 */}
-                  <div className="lg:hidden space-y-3">
-                    {status.groups.map((group) => (
-                      <GroupStatusCard
-                        key={group.jid}
-                        group={group}
-                        providers={providers}
-                      />
-                    ))}
-                  </div>
-
-                  {/* 桌面端：表格 */}
-                  <div className="hidden lg:block overflow-x-auto">
-                    <table className="min-w-full divide-y divide-border">
-                      <thead>
-                        <tr>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase">
-                            群组
-                          </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase">
-                            账号
-                          </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase">
-                            队列
-                          </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase">
-                            运行状态
-                          </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase">
-                            进程标识
-                          </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase">
-                            Provider
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-border">
-                        {status.groups.map((group) => (
-                          <tr key={group.jid} className="hover:bg-muted/50">
-                            <td className="px-4 py-3 text-sm font-medium text-foreground">
-                              {group.jid}
-                            </td>
-                            <td className="px-4 py-3 text-sm text-muted-foreground">
-                              {group.ownerUsername || '-'}
-                            </td>
-                            <td className="px-4 py-3 text-sm text-muted-foreground">
-                              {group.pendingTasks} 个任务 /{' '}
-                              {group.pendingMessages ? '有新消息' : '无新消息'}
-                            </td>
-                            <td className="px-4 py-3 text-sm">
-                              {group.active ? (
-                                <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-success-bg text-success">
-                                  运行中
-                                </span>
-                              ) : (
-                                <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-muted text-muted-foreground">
-                                  空闲
-                                </span>
-                              )}
-                            </td>
-                            <td className="px-4 py-3 text-sm text-muted-foreground font-mono text-xs">
-                              {group.displayName || group.containerName || '-'}
-                            </td>
-                            <td className="px-4 py-3 text-sm">
-                              {group.active ? (
-                                <ProviderSwitcher
-                                  groupFolder={group.groupFolder}
-                                  currentProviderId={group.selectedProviderId}
-                                  currentProviderName={
-                                    group.selectedProviderName
-                                  }
-                                  providers={providers}
-                                />
-                              ) : (
-                                <span className="text-muted-foreground">-</span>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
+              {/* 桌面端：表格 */}
+              <DataTable
+                className="hidden lg:block"
+                columns={groupColumns}
+                rows={status.groups}
+                rowKey={(group) => group.jid}
+              />
+            </SettingsSection>
+          )}
+        </>
+      )}
+    </PageContainer>
   );
 }
