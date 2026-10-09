@@ -1,4 +1,11 @@
-import { useEffect, useId, useState, type ReactNode } from 'react';
+import {
+  memo,
+  useEffect,
+  useId,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
 import { AnimatePresence, m } from 'motion/react';
 import {
   ChevronRight,
@@ -70,10 +77,15 @@ interface WorkspaceTreeProps extends WorkspaceActions {
   primary: AgentWorkspaceSection | null;
   custom: AgentWorkspaceSection[];
   currentGroupJid: string | null;
+  /** Session open in the canvas; passed only to the current workspace row. */
+  activeSessionId?: string | null;
   /** Desktop only: whether a workspace row shows its nested sessions. */
   isExpanded?: (group: GroupEntry) => boolean;
   onToggleExpanded?: (group: GroupEntry, expanded: boolean) => void;
-  renderSessions?: (group: GroupEntry) => ReactNode;
+  renderSessions?: (
+    group: GroupEntry,
+    activeSessionId: string | null,
+  ) => ReactNode;
 }
 
 /**
@@ -81,23 +93,44 @@ interface WorkspaceTreeProps extends WorkspaceActions {
  * custom agent as a collapsible group. Desktop rows can expand to show their
  * sessions (Codex-style projects → threads).
  */
-export function WorkspaceTree({
+export const WorkspaceTree = memo(function WorkspaceTree({
   variant,
   primary,
   custom,
   currentGroupJid,
+  activeSessionId = null,
   isExpanded,
   onToggleExpanded,
   renderSessions,
-  ...actions
+  onSelect,
+  onRename,
+  onClearHistory,
+  onDelete,
+  onTogglePin,
 }: WorkspaceTreeProps) {
-  const rowProps = {
-    variant,
-    currentGroupJid,
-    isExpanded,
-    onToggleExpanded,
-    renderSessions,
-    actions,
+  // Rows are memoized and receive only primitives plus stable callbacks, so
+  // switching session or workspace re-renders the rows whose state changed
+  // instead of every row of a long tree.
+  const actions = useMemo<WorkspaceActions>(
+    () => ({ onSelect, onRename, onClearHistory, onDelete, onTogglePin }),
+    [onSelect, onRename, onClearHistory, onDelete, onTogglePin],
+  );
+  const primaryRows = useMemo(
+    () => (primary ? getPrimaryAgentWorkspaceRows(primary) : []),
+    [primary],
+  );
+  const nested = !!renderSessions && variant !== 'mobile';
+  const rowProps = (group: GroupEntry) => {
+    const isActive = currentGroupJid === group.jid;
+    return {
+      variant,
+      isActive,
+      expanded: nested && !!isExpanded?.(group),
+      activeSessionId: isActive ? activeSessionId : null,
+      onToggleExpanded,
+      renderSessions,
+      actions,
+    };
   };
 
   return (
@@ -111,12 +144,12 @@ export function WorkspaceTree({
             主智能体 · {primary.name}
           </h2>
           <ul data-hc-primary-agent-workspaces={primary.id}>
-            {getPrimaryAgentWorkspaceRows(primary).map((group) => (
+            {primaryRows.map((group) => (
               <WorkspaceRow
                 key={group.jid}
                 group={group}
                 isHome={!!group.is_my_home}
-                {...rowProps}
+                {...rowProps(group)}
               />
             ))}
           </ul>
@@ -144,7 +177,7 @@ export function WorkspaceTree({
                   group={group}
                   isHome={false}
                   indent
-                  {...rowProps}
+                  {...rowProps(group)}
                 />
               ))}
             </AgentGroup>
@@ -153,7 +186,7 @@ export function WorkspaceTree({
       )}
     </div>
   );
-}
+});
 
 function AgentGroup({
   section,
@@ -288,13 +321,14 @@ function AgentGroup({
   );
 }
 
-function WorkspaceRow({
+const WorkspaceRow = memo(function WorkspaceRow({
   group,
   isHome,
   indent = false,
   variant,
-  currentGroupJid,
-  isExpanded,
+  isActive,
+  expanded,
+  activeSessionId,
   onToggleExpanded,
   renderSessions,
   actions,
@@ -303,10 +337,14 @@ function WorkspaceRow({
   isHome: boolean;
   indent?: boolean;
   variant: WorkspaceTreeVariant;
-  currentGroupJid: string | null;
-  isExpanded?: (group: GroupEntry) => boolean;
+  isActive: boolean;
+  expanded: boolean;
+  activeSessionId: string | null;
   onToggleExpanded?: (group: GroupEntry, expanded: boolean) => void;
-  renderSessions?: (group: GroupEntry) => ReactNode;
+  renderSessions?: (
+    group: GroupEntry,
+    activeSessionId: string | null,
+  ) => ReactNode;
   actions: WorkspaceActions;
 }) {
   const currentUser = useAuthStore((s) => s.user);
@@ -314,10 +352,8 @@ function WorkspaceRow({
     (s) => s.runnerStates[group.jid] === 'running',
   );
   const unread = useChatStore((s) => s.unreadReplies[group.jid] ?? 0);
-  const isActive = currentGroupJid === group.jid;
   const touch = variant === 'mobile';
   const nested = !!renderSessions && !touch;
-  const expanded = nested && !!isExpanded?.(group);
 
   // Use the real name once renamed, otherwise the friendly home default.
   const isDefaultName =
@@ -436,16 +472,24 @@ function WorkspaceRow({
               exit={{ height: 0, opacity: 0 }}
               className="overflow-hidden"
             >
-              {renderSessions!(group)}
+              {renderSessions!(group, activeSessionId)}
             </m.div>
           )}
         </AnimatePresence>
       )}
     </li>
   );
-}
+});
 
-/** Hover-revealed "more" menu; always visible on touch screens. */
+/**
+ * Hover-revealed "more" menu; always visible on touch screens.
+ *
+ * The Radix menu mounts on first use. Every mounted menu root adds document
+ * listeners that run on each keystroke anywhere in the app, and a long tree
+ * holds one per row: with ~4,000 rows each key press in the composer cost
+ * ~200ms at 4x CPU throttle. Until then a plain button stands in, opening the
+ * menu from the pointer or keyboard the way the Radix trigger does.
+ */
 export function RowMenu({
   label,
   touch = false,
@@ -455,21 +499,56 @@ export function RowMenu({
   touch?: boolean;
   children: ReactNode;
 }) {
+  const [mounted, setMounted] = useState(false);
+  const [open, setOpen] = useState(false);
+  const className = cn(
+    'grid size-6 shrink-0 cursor-pointer place-items-center rounded text-muted-foreground outline-none transition-opacity hover:bg-surface-hover hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/40 aria-expanded:opacity-100',
+    touch
+      ? 'size-9'
+      : 'pointer-fine:opacity-0 pointer-fine:group-hover/sidebar-row:opacity-100',
+  );
+  const icon = <MoreHorizontal className="size-4" />;
+
+  if (!mounted) {
+    const openMenu = () => {
+      setMounted(true);
+      setOpen(true);
+    };
+    return (
+      <button
+        type="button"
+        aria-label={label}
+        aria-haspopup="menu"
+        aria-expanded={false}
+        onClick={(event) => event.stopPropagation()}
+        onPointerDown={(event) => {
+          if (event.button !== 0 || event.ctrlKey) return;
+          event.preventDefault();
+          openMenu();
+        }}
+        onKeyDown={(event) => {
+          if (['Enter', ' ', 'ArrowDown'].includes(event.key)) {
+            event.preventDefault();
+            openMenu();
+          }
+        }}
+        className={className}
+      >
+        {icon}
+      </button>
+    );
+  }
+
   return (
-    <DropdownMenu>
+    <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
           onClick={(event) => event.stopPropagation()}
           aria-label={label}
-          className={cn(
-            'grid size-6 shrink-0 cursor-pointer place-items-center rounded text-muted-foreground outline-none transition-opacity hover:bg-surface-hover hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/40 aria-expanded:opacity-100',
-            touch
-              ? 'size-9'
-              : 'pointer-fine:opacity-0 pointer-fine:group-hover/sidebar-row:opacity-100',
-          )}
+          className={className}
         >
-          <MoreHorizontal className="size-4" />
+          {icon}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-40">

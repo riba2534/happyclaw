@@ -1,4 +1,10 @@
-import { useMemo, useRef, useState, type CSSProperties } from 'react';
+import {
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ChevronsUpDown,
@@ -15,6 +21,7 @@ import { useClearWorkspace } from '../../hooks/useClearWorkspace';
 import { useDeleteWorkspace } from '../../hooks/useDeleteWorkspace';
 import { useNewConversation } from '../../hooks/useNewConversation';
 import { useWorkspaceTree } from '../../hooks/useWorkspaceTree';
+import { useStableCallback } from '../../hooks/useStableCallback';
 import { ConfirmDialog } from '@/components/common';
 import { EmojiAvatar } from '../common/EmojiAvatar';
 import { BugReportDialog } from '../common/BugReportDialog';
@@ -61,6 +68,7 @@ export function UnifiedSidebar() {
   const toggleSidebar = useShellStore((s) => s.toggleSidebar);
   const expandedWorkspaces = useShellStore((s) => s.expandedWorkspaces);
   const setWorkspaceExpanded = useShellStore((s) => s.setWorkspaceExpanded);
+  const revealWorkspace = useShellStore((s) => s.revealWorkspace);
   const createOpen = useShellStore((s) => s.createWorkspaceOpen);
   const setCreateOpen = useShellStore((s) => s.setCreateWorkspaceOpen);
   const setPaletteOpen = useShellStore((s) => s.setPaletteOpen);
@@ -114,13 +122,39 @@ export function UnifiedSidebar() {
   const activeSessionId = isChatRoute ? searchParams.get('agent') : null;
   const currentGroupJid = isChatRoute ? currentGroup : null;
 
-  const selectWorkspace = (group: GroupEntry) => {
+  // The tree and its rows are memoized; hand them stable callbacks. Opening
+  // a workspace expands it because it becomes current, without persisting.
+  const selectWorkspace = useStableCallback((group: GroupEntry) => {
     selectGroup(group.jid);
-    setWorkspaceExpanded(group.jid, true);
+    revealWorkspace(group.jid);
     navigate(chatHref(group.folder));
-  };
-  const isExpanded = (group: GroupEntry) =>
-    expandedWorkspaces[group.jid] ?? group.jid === currentGroupJid;
+  });
+  const isExpanded = useCallback(
+    (group: GroupEntry) =>
+      expandedWorkspaces[group.jid] ?? group.jid === currentGroupJid,
+    [expandedWorkspaces, currentGroupJid],
+  );
+  const renameWorkspace = useStableCallback((jid: string, name: string) =>
+    setRenameState({ open: true, jid, name }),
+  );
+  const clearWorkspace = useStableCallback(openClear);
+  const deleteWorkspace = useStableCallback(openDelete);
+  const pinWorkspace = useStableCallback((jid: string) => togglePin(jid));
+  const toggleExpanded = useStableCallback(
+    (group: GroupEntry, expanded: boolean) =>
+      setWorkspaceExpanded(group.jid, expanded),
+  );
+  const navigateTo = useStableCallback((to: string) => navigate(to));
+  const renderSessions = useStableCallback(
+    (group: GroupEntry, sessionId: string | null) => (
+      <SessionTreeList
+        group={group}
+        isCurrent={group.jid === currentGroupJid}
+        activeSessionId={sessionId}
+        navigate={navigateTo}
+      />
+    ),
+  );
 
   return (
     <>
@@ -282,26 +316,15 @@ export function UnifiedSidebar() {
                 primary={agentPartitions.primary}
                 custom={agentPartitions.custom}
                 currentGroupJid={currentGroupJid}
+                activeSessionId={activeSessionId}
                 onSelect={selectWorkspace}
-                onRename={(jid, name) =>
-                  setRenameState({ open: true, jid, name })
-                }
-                onClearHistory={openClear}
-                onDelete={openDelete}
-                onTogglePin={(jid) => togglePin(jid)}
+                onRename={renameWorkspace}
+                onClearHistory={clearWorkspace}
+                onDelete={deleteWorkspace}
+                onTogglePin={pinWorkspace}
                 isExpanded={isExpanded}
-                onToggleExpanded={(group, expanded) =>
-                  setWorkspaceExpanded(group.jid, expanded)
-                }
-                renderSessions={(group) => (
-                  <SessionTreeList
-                    group={group}
-                    isCurrent={group.jid === currentGroupJid}
-                    activeSessionId={
-                      group.jid === currentGroupJid ? activeSessionId : null
-                    }
-                  />
-                )}
+                onToggleExpanded={toggleExpanded}
+                renderSessions={renderSessions}
               />
             )}
           </div>
@@ -319,7 +342,7 @@ export function UnifiedSidebar() {
         onClose={() => setCreateOpen(false)}
         onCreated={(jid, folder) => {
           selectGroup(jid);
-          setWorkspaceExpanded(jid, true);
+          revealWorkspace(jid);
           navigate(`/chat/${folder}`);
         }}
       />

@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, m } from 'motion/react';
 import { Link2, Pencil, Plus, Search, Trash2 } from 'lucide-react';
 import { DropdownMenuItem } from '@/components/ui/dropdown-menu';
@@ -9,7 +8,11 @@ import { cn } from '@/lib/utils';
 import { useChatStore } from '../../../stores/chat';
 import { useShellStore } from '../../../stores/shell';
 import { useSessionActions } from '../../../hooks/useSessionActions';
-import { chatHref, openWorkspaceSession } from '../../../lib/chat-navigation';
+import {
+  chatHref,
+  openWorkspaceSession,
+  type NavigateToPath,
+} from '../../../lib/chat-navigation';
 import {
   buildConversationSessions,
   formatSessionTime,
@@ -33,15 +36,20 @@ interface SessionTreeListProps {
   isCurrent: boolean;
   /** Session open in the canvas (null = main conversation). */
   activeSessionId: string | null;
+  /**
+   * Stable navigation from the sidebar. `useNavigate()` here would re-render
+   * every expanded list on each route change.
+   */
+  navigate: NavigateToPath;
 }
 
 /** Sessions nested under an expanded workspace in the desktop sidebar. */
-export function SessionTreeList({
+export const SessionTreeList = memo(function SessionTreeList({
   group,
   isCurrent,
   activeSessionId,
+  navigate,
 }: SessionTreeListProps) {
-  const navigate = useNavigate();
   const loadAgents = useChatStore((s) => s.loadAgents);
   const renameConversation = useChatStore((s) => s.renameConversation);
   const agents = useChatStore((s) => s.agents[group.jid] ?? EMPTY_AGENTS);
@@ -59,8 +67,25 @@ export function SessionTreeList({
   const [query, setQuery] = useState('');
   const [renameTarget, setRenameTarget] = useState<AgentInfo | null>(null);
 
+  // Fetch the session list once the subtree scrolls into view: an expanded
+  // workspace far down the tree should not cost a request on every load.
+  const containerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    void loadAgents(group.jid);
+    const node = containerRef.current;
+    if (!node || typeof IntersectionObserver === 'undefined') {
+      void loadAgents(group.jid);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        observer.disconnect();
+        void loadAgents(group.jid);
+      },
+      { rootMargin: '200px' },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
   }, [group.jid, loadAgents]);
 
   const sessions = useMemo(() => {
@@ -78,11 +103,24 @@ export function SessionTreeList({
     );
   const canModify = !!group.can_modify;
   const normalizedQuery = query.trim().toLocaleLowerCase();
-  const filtered = normalizedQuery
-    ? sessions.filter(
-        (session) =>
-          session.name.toLocaleLowerCase().includes(normalizedQuery) ||
-          messagePreview(session).toLocaleLowerCase().includes(normalizedQuery),
+  // Lowercased name and preview per session, built once per list while
+  // searching instead of for every session on every keystroke.
+  const searching = normalizedQuery.length > 0;
+  const searchText = useMemo(
+    () =>
+      searching
+        ? new Map(
+            sessions.map((session) => [
+              session.id,
+              `${session.name}\n${messagePreview(session)}`.toLocaleLowerCase(),
+            ]),
+          )
+        : null,
+    [sessions, searching],
+  );
+  const filtered = searchText
+    ? sessions.filter((session) =>
+        searchText.get(session.id)?.includes(normalizedQuery),
       )
     : sessions;
   const visible = filtered.slice(0, visibleCount);
@@ -101,7 +139,7 @@ export function SessionTreeList({
   };
 
   return (
-    <div className="relative pt-0.5 pb-1 pl-4">
+    <div ref={containerRef} className="relative pt-0.5 pb-1 pl-4">
       {/* Tree guide line aligned with the workspace chevron. */}
       <span
         aria-hidden="true"
@@ -140,10 +178,13 @@ export function SessionTreeList({
             return (
               <m.li
                 key={session.id}
-                layout="position"
-                initial={{ opacity: 0, height: 0 }}
+                // Search results appear and disappear instantly: animating
+                // dozens of rows in and out on every keystroke was a third of
+                // the per-key cost in long lists.
+                layout={searching ? false : 'position'}
+                initial={searching ? false : { opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: 'auto' }}
-                exit={{ opacity: 0, height: 0 }}
+                exit={searching ? undefined : { opacity: 0, height: 0 }}
                 className="list-none overflow-hidden"
               >
                 <SessionRow
@@ -238,7 +279,7 @@ export function SessionTreeList({
       />
     </div>
   );
-}
+});
 
 function SessionRow({
   name,

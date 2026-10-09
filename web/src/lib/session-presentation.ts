@@ -88,16 +88,17 @@ export function buildConversationSessions(
   agents: AgentInfo[],
   isQueryActive: (agentId: string) => boolean,
 ): AgentInfo[] {
+  // Parse each timestamp once; sorting hundreds of sessions parsed two dates
+  // per comparison.
   return agents
     .filter((a) => a.kind === 'conversation')
-    .map((agent) =>
-      agent.status === 'running' && !isQueryActive(agent.id)
-        ? { ...agent, status: 'idle' as const }
-        : agent,
-    )
-    .sort(
-      (a, b) =>
-        new Date(sessionActivityAt(b)).getTime() -
-        new Date(sessionActivityAt(a)).getTime(),
-    );
+    .map((agent) => ({
+      agent:
+        agent.status === 'running' && !isQueryActive(agent.id)
+          ? { ...agent, status: 'idle' as const }
+          : agent,
+      at: new Date(sessionActivityAt(agent)).getTime(),
+    }))
+    .sort((a, b) => b.at - a.at)
+    .map(({ agent }) => agent);
 }

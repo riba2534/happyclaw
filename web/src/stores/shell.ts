@@ -6,7 +6,11 @@ export const SIDEBAR_DEFAULT_WIDTH = 256;
 
 const WIDTH_KEY = 'happyclaw:sidebar-width';
 const COLLAPSED_KEY = 'happyclaw:sidebar-collapsed';
-const EXPANDED_KEY = 'happyclaw:sidebar-expanded-workspaces';
+// v2 holds only explicit toggles. The unversioned key also recorded every
+// workspace ever opened as expanded, so long-lived accounts rendered (and
+// fetched sessions for) their whole history of workspaces on every load.
+const EXPANDED_KEY = 'happyclaw:sidebar-expanded-workspaces:v2';
+const LEGACY_EXPANDED_KEY = 'happyclaw:sidebar-expanded-workspaces';
 
 function read(key: string): string | null {
   try {
@@ -33,6 +37,7 @@ export function clampSidebarWidth(width: number): number {
 }
 
 function readExpanded(): Record<string, boolean> {
+  if (read(LEGACY_EXPANDED_KEY) !== null) write(LEGACY_EXPANDED_KEY, null);
   try {
     const parsed = JSON.parse(read(EXPANDED_KEY) || '{}');
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
@@ -54,7 +59,10 @@ export interface BindingRequest {
 interface ShellState {
   sidebarWidth: number;
   sidebarCollapsed: boolean;
-  /** Explicit expand/collapse choices per workspace jid in the sidebar tree. */
+  /**
+   * Explicit expand/collapse choices per workspace jid in the sidebar tree.
+   * Without one, only the open workspace is expanded.
+   */
   expandedWorkspaces: Record<string, boolean>;
   paletteOpen: boolean;
   createWorkspaceOpen: boolean;
@@ -68,6 +76,8 @@ interface ShellState {
   setSidebarCollapsed: (collapsed: boolean) => void;
   toggleSidebar: () => void;
   setWorkspaceExpanded: (jid: string, expanded: boolean) => void;
+  /** Opening a workspace drops an explicit collapse so it shows its sessions. */
+  revealWorkspace: (jid: string) => void;
   setPaletteOpen: (open: boolean) => void;
   setCreateWorkspaceOpen: (open: boolean) => void;
   requestBinding: (groupJid: string, target: string) => void;
@@ -100,6 +110,14 @@ export const useShellStore = create<ShellState>((set, get) => ({
   toggleSidebar: () => get().setSidebarCollapsed(!get().sidebarCollapsed),
   setWorkspaceExpanded: (jid, expanded) => {
     const next = { ...get().expandedWorkspaces, [jid]: expanded };
+    write(EXPANDED_KEY, JSON.stringify(next));
+    set({ expandedWorkspaces: next });
+  },
+  revealWorkspace: (jid) => {
+    const current = get().expandedWorkspaces;
+    if (current[jid] !== false) return;
+    const next = { ...current };
+    delete next[jid];
     write(EXPANDED_KEY, JSON.stringify(next));
     set({ expandedWorkspaces: next });
   },
