@@ -1,13 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { UserCog, LogOut, Plus, BarChart3 } from 'lucide-react';
+import { UserCog, LogOut, Plus, BarChart3, SquarePen } from 'lucide-react';
 import { useChatStore } from '../stores/chat';
 import { useAuthStore } from '../stores/auth';
-import { useGroupsStore } from '../stores/groups';
 import { ChatView } from '../components/chat/ChatView';
-import { ChatGroupItem } from '../components/chat/ChatGroupItem';
 import { DeleteWorkspaceDialog } from '../components/chat/DeleteWorkspaceDialog';
-import { AgentWorkspaceGroup } from '../components/layout/AgentWorkspaceGroup';
+import { WorkspaceTree } from '../components/layout/sidebar/WorkspaceTree';
 import { ConfirmDialog } from '../components/common';
 import { CreateContainerDialog } from '../components/chat/CreateContainerDialog';
 import { RenameDialog } from '../components/chat/RenameDialog';
@@ -19,15 +17,20 @@ import {
 } from '@/components/ui/popover';
 import { useSwipeBack } from '../hooks/useSwipeBack';
 import { useClearWorkspace } from '../hooks/useClearWorkspace';
-import { type GroupEntry, compareByLastActivity } from '../utils/group-utils';
-import {
-  getAgentNavigationTargets,
-  getPrimaryAgentWorkspaceRows,
-  groupWorkspacesByAgent,
-  isAgentSectionCollapsible,
-  partitionAgentWorkspaceSections,
-} from '../utils/agent-product';
+import type { GroupEntry } from '../utils/group-utils';
 import { useDeleteWorkspace } from '../hooks/useDeleteWorkspace';
+import { useWorkspaceTree } from '../hooks/useWorkspaceTree';
+import { useNewConversation } from '../hooks/useNewConversation';
+import { useShellStore } from '../stores/shell';
+import { Button } from '@/components/ui/button';
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from '@/components/ui/empty';
 
 export function ChatPage() {
   const { groupFolder } = useParams<{ groupFolder?: string }>();
@@ -81,7 +84,6 @@ export function ChatPage() {
       Object.entries(groups).find(([_, info]) => info.folder === groupFolder);
     return entry?.[0] || null;
   }, [groupFolder, groups]);
-  const runnerStates = useGroupsStore((s) => s.runnerStates);
   const hasGroups = Object.keys(groups).length > 0;
 
   // 移动端唯一的工作区列表入口：桌面侧边栏改为条件挂载后，/chat 落地页
@@ -92,25 +94,9 @@ export function ChatPage() {
   }, [loadGroups]);
 
   // Mobile and desktop share the same Agent-first navigation contract.
-  const agentSections = useMemo(() => {
-    const entries: GroupEntry[] = Object.entries(groups).map(([jid, info]) => ({
-      jid,
-      ...info,
-    }));
-    entries.sort(compareByLastActivity);
-    const home = entries.find((entry) => entry.is_my_home);
-    const defaultAgentId = home?.agent_profile_id || '__default__';
-    const prioritized = [...entries].sort((a, b) => {
-      if (a.is_my_home) return -1;
-      if (b.is_my_home) return 1;
-      return Number(!!b.pinned_at) - Number(!!a.pinned_at);
-    });
-    return groupWorkspacesByAgent(prioritized, defaultAgentId);
-  }, [groups]);
-  const agentPartitions = useMemo(
-    () => partitionAgentWorkspaceSections(agentSections),
-    [agentSections],
-  );
+  const { agentSections, agentPartitions } = useWorkspaceTree();
+  const { startNewConversation, creatingSession } = useNewConversation();
+  const setDesktopCreateOpen = useShellStore((s) => s.setCreateWorkspaceOpen);
   const hasAnyGroup = agentSections.length > 0;
 
   // Sync URL param to store selection. No auto-redirect to home container —
@@ -155,101 +141,13 @@ export function ChatPage() {
 
   useSwipeBack(chatViewRef, handleBackToList);
 
-  const renderMobileAgentSection = (
-    section: (typeof agentSections)[number],
-  ) => {
-    const { directGroup, workspaces } = getAgentNavigationTargets(section);
-    return (
-      <AgentWorkspaceGroup
-        key={section.id}
-        agentId={section.id}
-        name={section.name}
-        collapsible={isAgentSectionCollapsible(section)}
-        workspaceCount={workspaces.length}
-        workspaceNames={workspaces.map((workspace) => workspace.name)}
-        runningCount={
-          section.items.filter((item) => runnerStates[item.jid] === 'running')
-            .length
-        }
-        isDirectActive={
-          !!directGroup?.is_my_home && directGroup.jid === currentGroup
-        }
-        containsActiveWorkspace={section.items.some(
-          (item) => item.jid === currentGroup,
-        )}
-        onSelect={() => {
-          if (!directGroup) return;
-          selectGroup(directGroup.jid);
-          navigate(`/chat/${directGroup.folder}?sessions=1`);
-        }}
-        onRebuild={
-          directGroup?.is_my_home && directGroup.can_modify
-            ? () => openClear(directGroup.jid, section.name)
-            : undefined
-        }
-      >
-        {workspaces.map((workspace) => (
-          <ChatGroupItem
-            key={workspace.jid}
-            jid={workspace.jid}
-            name={workspace.name}
-            folder={workspace.folder}
-            lastMessage={workspace.lastMessage}
-            isActive={currentGroup === workspace.jid}
-            isHome={false}
-            isPinned={!!workspace.pinned_at}
-            isRunning={runnerStates[workspace.jid] === 'running'}
-            canModify={workspace.can_modify}
-            onSelect={(jid, folder) => {
-              selectGroup(jid);
-              navigate(`/chat/${folder}?sessions=1`);
-            }}
-            onRename={(jid, name) => setRenameState({ open: true, jid, name })}
-            onClearHistory={openClear}
-            onDelete={openDelete}
-            onTogglePin={(jid) => void togglePin(jid)}
-          />
-        ))}
-      </AgentWorkspaceGroup>
-    );
-  };
-
-  const renderMobilePrimaryAgentWorkspaces = (
-    section: (typeof agentSections)[number],
-  ) => {
-    const workspaces = getPrimaryAgentWorkspaceRows(section);
-    const selectWorkspace = (jid: string, folder: string) => {
-      selectGroup(jid);
-      navigate(`/chat/${folder}?sessions=1`);
-    };
-
-    return (
-      <div data-hc-primary-agent-workspaces={section.id}>
-        {workspaces.map((workspace) => (
-          <ChatGroupItem
-            key={workspace.jid}
-            jid={workspace.jid}
-            name={workspace.name}
-            folder={workspace.folder}
-            lastMessage={workspace.lastMessage}
-            isActive={currentGroup === workspace.jid}
-            isHome={!!workspace.is_my_home}
-            isPinned={!!workspace.pinned_at}
-            isRunning={runnerStates[workspace.jid] === 'running'}
-            canModify={workspace.can_modify}
-            onSelect={selectWorkspace}
-            onRename={(jid, name) => setRenameState({ open: true, jid, name })}
-            onClearHistory={openClear}
-            onDelete={openDelete}
-            onTogglePin={(jid) => void togglePin(jid)}
-          />
-        ))}
-      </div>
-    );
+  const selectMobileWorkspace = (group: GroupEntry) => {
+    selectGroup(group.jid);
+    navigate(`/chat/${group.folder}?sessions=1`);
   };
 
   return (
-    <div className="h-full flex bg-muted/30">
+    <div className="h-full flex bg-background">
       {/* Mobile workspace list when no group selected */}
       {!groupFolder && (
         <div className="block lg:hidden w-full overflow-y-auto">
@@ -316,31 +214,19 @@ export function ChatPage() {
           </div>
           {hasAnyGroup ? (
             <div className="px-2 pb-nav-safe">
-              {agentPartitions.primary && (
-                <section aria-labelledby="mobile-primary-agent-heading">
-                  <h2
-                    id="mobile-primary-agent-heading"
-                    className="px-3 pb-1 pt-1 text-[10px] font-medium tracking-[0.08em] text-muted-foreground"
-                  >
-                    主智能体 · {agentPartitions.primary.name}
-                  </h2>
-                  {renderMobilePrimaryAgentWorkspaces(agentPartitions.primary)}
-                </section>
-              )}
-              {agentPartitions.custom.length > 0 && (
-                <section
-                  aria-labelledby="mobile-custom-agent-heading"
-                  className="mt-4 border-t border-border/60 pt-3"
-                >
-                  <h2
-                    id="mobile-custom-agent-heading"
-                    className="px-3 pb-1 text-[10px] font-medium tracking-[0.08em] text-muted-foreground"
-                  >
-                    自定义智能体
-                  </h2>
-                  {agentPartitions.custom.map(renderMobileAgentSection)}
-                </section>
-              )}
+              <WorkspaceTree
+                variant="mobile"
+                primary={agentPartitions.primary}
+                custom={agentPartitions.custom}
+                currentGroupJid={currentGroup}
+                onSelect={selectMobileWorkspace}
+                onRename={(jid, name) =>
+                  setRenameState({ open: true, jid, name })
+                }
+                onClearHistory={openClear}
+                onDelete={openDelete}
+                onTogglePin={(jid) => void togglePin(jid)}
+              />
             </div>
           ) : (
             <div className="flex flex-col items-center justify-center h-64 px-4">
@@ -359,29 +245,44 @@ export function ChatPage() {
       {activeGroupJid ? (
         <div
           ref={chatViewRef}
-          className={`${groupFolder ? 'flex-1 min-w-0 h-full overflow-hidden lg:pt-4' : 'hidden lg:block flex-1 min-w-0 h-full overflow-hidden lg:pt-4'}`}
+          className={`${groupFolder ? 'flex-1 min-w-0 h-full overflow-hidden' : 'hidden lg:block flex-1 min-w-0 h-full overflow-hidden'}`}
         >
           <ChatView groupJid={activeGroupJid} onBack={handleBackToList} />
         </div>
       ) : (
-        <div className="hidden lg:flex flex-1 items-center justify-center bg-background rounded-t-3xl rounded-b-none mt-5 mr-5 mb-0 ml-3 relative">
-          <div className="text-center max-w-sm">
-            {/* Logo */}
-            <div className="w-16 h-16 rounded-2xl overflow-hidden mx-auto mb-6">
+        <Empty className="hidden flex-1 lg:flex">
+          <EmptyHeader>
+            <EmptyMedia>
               <img
                 src={`${import.meta.env.BASE_URL}icons/icon-192.png`}
-                alt="HappyClaw"
-                className="w-full h-full object-cover"
+                alt=""
+                className="size-12 rounded-xl"
               />
-            </div>
-            <h2 className="text-xl font-semibold text-foreground mb-2">
+            </EmptyMedia>
+            <EmptyTitle className="text-title">
               欢迎使用 {appearance?.appName || 'HappyClaw'}
-            </h2>
-            <p className="text-muted-foreground text-sm">
-              从左侧选择一个工作区开始对话
-            </p>
-          </div>
-        </div>
+            </EmptyTitle>
+            <EmptyDescription>
+              从左侧选择一个工作区，或者直接开始新的对话。
+            </EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent className="flex-row justify-center">
+            <Button
+              onClick={() => void startNewConversation()}
+              disabled={creatingSession}
+            >
+              <SquarePen />
+              新对话
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => setDesktopCreateOpen(true)}
+            >
+              <Plus />
+              新建工作区
+            </Button>
+          </EmptyContent>
+        </Empty>
       )}
       <ConfirmDialog
         open={clearState.open}

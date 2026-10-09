@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { UnifiedSidebar } from './UnifiedSidebar';
 import { BottomTabBar } from './BottomTabBar';
@@ -14,6 +14,9 @@ import { useAuthStore } from '../../stores/auth';
 import { ErrorBoundary } from '../common/ErrorBoundary';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { MotionProvider } from '@/lib/motion';
+import { SHORTCUTS, useShortcut } from '@/lib/shortcuts';
+import { useShellStore } from '../../stores/shell';
+import { useNewConversation } from '../../hooks/useNewConversation';
 
 export function AppLayout() {
   const location = useLocation();
@@ -23,21 +26,17 @@ export function AppLayout() {
   useTheme(); // 应用并同步持久化的主题偏好
   useRouteRestore(); // PWA 重启时恢复上次访问的路由（默认关闭，设置中启用）
 
-  // Sidebar: expanded only on chat route, collapsed on other routes
-  const [userCollapsed, setUserCollapsed] = useState(false);
-  const sidebarCollapsed = isChatRoute ? userCollapsed : true;
+  // ⌘B / Ctrl+B toggles the desktop sidebar between full width and icon rail.
+  const toggleSidebar = useShellStore((s) => s.toggleSidebar);
+  useShortcut(SHORTCUTS.toggleSidebar, toggleSidebar, { enabled: isDesktop });
+  const { startNewConversation } = useNewConversation();
+  useShortcut(SHORTCUTS.newConversation, () => void startNewConversation());
 
-  // Keyboard shortcut: Cmd+B (Mac) / Ctrl+B (Windows) to toggle sidebar
+  // The sidebar's workspace tree is visible on every route, not just /chat.
+  const loadGroups = useChatStore((s) => s.loadGroups);
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
-        e.preventDefault();
-        if (isChatRoute) setUserCollapsed((prev) => !prev);
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [isChatRoute]);
+    void loadGroups();
+  }, [loadGroups]);
 
   // 应用级别建立 WebSocket 连接，确保所有页面（非仅 ChatView）都有连接
   useEffect(() => {
@@ -170,20 +169,12 @@ export function AppLayout() {
   return (
     <MotionProvider>
       <TooltipProvider>
-        <div className="h-screen supports-[height:100dvh]:h-dvh flex flex-col lg:flex-row overflow-hidden safe-area-top">
-          {/* `hidden lg:block` 只是视觉隐藏，移动端此前仍会挂载整棵侧边栏
-          （含每个工作区一个 DropdownMenu/Tooltip）并触发数据加载；
-          条件挂载让手机只渲染真正可见的那份列表。 */}
-          {isDesktop && (
-            <div className="hidden lg:block h-full flex-shrink-0">
-              <UnifiedSidebar
-                collapsed={sidebarCollapsed}
-                onToggleCollapse={() => setUserCollapsed((prev) => !prev)}
-              />
-            </div>
-          )}
+        <div className="h-screen supports-[height:100dvh]:h-dvh flex flex-col lg:flex-row overflow-hidden safe-area-top lg:bg-app-shell">
+          {/* 条件挂载：手机只渲染真正可见的那份列表，不在后台挂整棵侧边栏。 */}
+          {isDesktop && <UnifiedSidebar />}
 
-          <div className="flex-1 min-h-0 flex flex-col overflow-hidden relative">
+          {/* Desktop: pages render on an inset canvas floating in the shell. */}
+          <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden [--app-canvas-h:100dvh] lg:my-2 lg:mr-2 lg:rounded-xl lg:bg-background lg:shadow-canvas lg:ring-1 lg:ring-surface-border lg:[--app-canvas-h:calc(100dvh-1rem)]">
             <ConnectionBanner />
             <main
               data-app-scroll-root="true"

@@ -1195,7 +1195,7 @@ export function AgentProfilesPage() {
 
   return (
     <div className="min-h-full bg-background lg:flex">
-      <aside className="border-b border-border bg-muted/20 lg:sticky lg:top-0 lg:flex lg:h-dvh lg:w-72 lg:flex-none lg:flex-col lg:border-b-0 lg:border-r">
+      <aside className="border-b border-border bg-muted/20 lg:sticky lg:top-0 lg:flex lg:h-(--app-canvas-h) lg:w-72 lg:flex-none lg:flex-col lg:border-b-0 lg:border-r">
         <div className="flex items-center gap-3 px-4 py-4 lg:px-5 lg:pt-6">
           <div className="min-w-0 flex-1">
             <h1 className="text-lg font-semibold text-foreground">

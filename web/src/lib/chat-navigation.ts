@@ -1,0 +1,23 @@
+import type { NavigateFunction } from 'react-router-dom';
+import { useChatStore } from '../stores/chat';
+import { setWorkspaceLastAgent } from '../utils/workspaceLastAgent';
+
+export function chatHref(folder: string, sessionId?: string | null): string {
+  const base = `/chat/${folder}`;
+  return sessionId ? `${base}?agent=${encodeURIComponent(sessionId)}` : base;
+}
+
+/**
+ * Open a specific conversation in a workspace. `null` opens the main
+ * conversation and clears the per-workspace "last session" memory, otherwise
+ * ChatView's restore effect would immediately jump back to that session.
+ */
+export function openWorkspaceSession(
+  navigate: NavigateFunction,
+  group: { jid: string; folder: string },
+  sessionId: string | null,
+) {
+  setWorkspaceLastAgent(group.jid, sessionId);
+  useChatStore.getState().selectGroup(group.jid);
+  navigate(chatHref(group.folder, sessionId));
+}

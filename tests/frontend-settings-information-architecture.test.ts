@@ -241,7 +241,12 @@ describe('settings information architecture', () => {
   });
 
   test('exposes main-session binding and complete mobile workspace actions', () => {
-    const sessions = read('web/src/components/chat/SessionSidebar.tsx');
+    const sessions = [
+      'web/src/components/chat/SessionSidebar.tsx',
+      'web/src/lib/session-presentation.ts',
+    ]
+      .map(read)
+      .join('\n');
     const chatView = read('web/src/components/chat/ChatView.tsx');
     const bindingDialog = read('web/src/components/chat/ImBindingDialog.tsx');
     const bindings = read('web/src/components/settings/BindingsSection.tsx');

@@ -57,6 +57,9 @@ const TerminalPanel = lazy(() =>
 );
 import { ImBindingDialog } from './ImBindingDialog';
 import { SessionSidebar } from './SessionSidebar';
+import { useSessionActions } from '../../hooks/useSessionActions';
+import { useShellStore } from '../../stores/shell';
+import { buildConversationSessions } from '../../lib/session-presentation';
 import { showToast } from '../../utils/toast';
 import {
   getWorkspaceLastAgent,
@@ -131,7 +134,6 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const [showInteractionModeDialog, setShowInteractionModeDialog] =
     useState(false);
   const [resetLoading, setResetLoading] = useState(false);
-  const [creatingSession, setCreatingSession] = useState(false);
   const [resetAgentId, setResetAgentId] = useState<string | null>(null);
   // Desktop: visible controls panel height, mounted controls terminal lifecycle.
   const [terminalVisible, setTerminalVisible] = useState(false);
@@ -216,9 +218,8 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     [groupJid, setSearchParams],
   );
   const loadAgents = useChatStore((s) => s.loadAgents);
-  const deleteAgentAction = useChatStore((s) => s.deleteAgentAction);
   const agentStreaming = useChatStore((s) => s.agentStreaming);
-  const createConversation = useChatStore((s) => s.createConversation);
+  const { creatingSession, createSession, deleteSession } = useSessionActions();
   const renameConversation = useChatStore((s) => s.renameConversation);
   const loadAgentMessages = useChatStore((s) => s.loadAgentMessages);
   const hydrateAgentMessages = useChatStore((s) => s.hydrateAgentMessages);
@@ -374,23 +375,10 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     );
   const conversationAgents = useMemo(
     () =>
-      agents
-        .filter((a) => a.kind === 'conversation')
-        .map((agent) => {
-          const queryActive =
-            !!agentWaiting[agent.id] || !!agentStreaming[agent.id];
-          return agent.status === 'running' && !queryActive
-            ? { ...agent, status: 'idle' as const }
-            : agent;
-        })
-        .slice()
-        .sort((a, b) => {
-          const aTs =
-            a.last_active_at || a.latest_message?.timestamp || a.created_at;
-          const bTs =
-            b.last_active_at || b.latest_message?.timestamp || b.created_at;
-          return new Date(bTs).getTime() - new Date(aTs).getTime();
-        }),
+      buildConversationSessions(
+        agents,
+        (id) => !!agentWaiting[id] || !!agentStreaming[id],
+      ),
     [agents, agentStreaming, agentWaiting],
   );
   const mainConversationLabel = group?.is_my_home ? '直接对话' : '当前对话';
@@ -617,41 +605,24 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   };
 
   const handleCreateSession = useCallback(async () => {
-    if (creatingSession) return;
-    setCreatingSession(true);
-    try {
-      const agent = await createConversation(groupJid, '');
-      if (!agent) {
-        toast.error(useChatStore.getState().error || '创建 Web 会话失败');
-        return;
-      }
-      selectTab(agent.id);
-    } finally {
-      setCreatingSession(false);
-    }
-  }, [createConversation, creatingSession, groupJid, selectTab]);
+    const agent = await createSession(groupJid);
+    if (agent) selectTab(agent.id);
+  }, [createSession, groupJid, selectTab]);
 
   const handleDeleteSession = useCallback(
-    (id: string) => {
-      const agent = agents.find((item) => item.id === id);
-      if (agent?.linked_im_groups && agent.linked_im_groups.length > 0) {
-        const names = agent.linked_im_groups
-          .map((item) => item.name)
-          .join('、');
-        setBindingAgentId(id);
-        toast.error('请先解绑消息渠道', {
-          description: `当前绑定：${names}`,
-        });
-        return;
-      }
-      void deleteAgentAction(groupJid, id).then((ok) => {
-        if (!ok) {
-          toast.error(useChatStore.getState().error || '删除会话失败');
-        }
-      });
-    },
-    [agents, deleteAgentAction, groupJid],
+    (id: string) => deleteSession(groupJid, id, setBindingAgentId),
+    [deleteSession, groupJid],
   );
+
+  // The sidebar session tree asks for IM binding through the shell store
+  // because the binding dialog lives here with the workspace context.
+  const bindingRequest = useShellStore((s) => s.bindingRequest);
+  const clearBindingRequest = useShellStore((s) => s.clearBindingRequest);
+  useEffect(() => {
+    if (!bindingRequest || bindingRequest.groupJid !== groupJid) return;
+    setBindingAgentId(bindingRequest.target);
+    clearBindingRequest();
+  }, [bindingRequest, clearBindingRequest, groupJid]);
 
   // --- Drag resize handlers (mouse + touch) ---
   const startDrag = useCallback(
@@ -953,12 +924,8 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     <div
       ref={containerRef}
       data-hc-chat-view
-      className="h-full flex bg-surface dark:bg-background max-lg:rounded-none lg:rounded-t-2xl lg:rounded-b-none lg:mr-5 lg:ml-3 lg:overflow-hidden"
+      className="h-full flex overflow-hidden bg-background"
     >
-      <aside className="hidden h-full w-[17rem] shrink-0 border-r border-border/70 bg-muted/15 lg:flex">
-        {renderSessionSidebar()}
-      </aside>
-
       <div
         className={cn(
           'min-w-0 flex-1 flex-col',

@@ -69,8 +69,14 @@ describe('dynamic Workflow product contract', () => {
       'web/src/components/chat/SessionSidebar.tsx',
       'utf8',
     );
+    const presentation = fs.readFileSync(
+      'web/src/lib/session-presentation.ts',
+      'utf8',
+    );
 
-    expect(sidebar).toContain('getPresentedMessageContent');
+    // Both the mobile list and the desktop tree preview through this helper.
+    expect(sidebar).toContain("from '../../lib/session-presentation'");
+    expect(presentation).toContain('getPresentedMessageContent');
   });
 
   test('keeps running Workflow state across a held background acknowledgement', () => {

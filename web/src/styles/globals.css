@@ -587,15 +587,9 @@ html.font-anthropic .font-mono {
    Base styles
    ===================================================== */
 
-/* Tailwind v4 默认 border 使用 currentColor（黑色），
-   覆盖为设计系统的 border 色 */
-*,
-::after,
-::before,
-::backdrop,
-::file-selector-button {
-  border-color: var(--border, #e2e8f0);
-}
+/* Tailwind v4 默认 border 使用 currentColor；设计系统的默认边框色在下方
+   @layer base 中设置。不要在这里写不带 layer 的 border-color：未分层样式
+   优先级高于所有 utilities，会让 border-transparent / border-primary 失效。 */
 
 /* Lucide icons: nav items set strokeWidth inline (1.75 default, 2 active).
    No global CSS override — it would conflict with inline SVG attributes. */
@@ -964,9 +958,12 @@ pre code.hljs {
 }
 
 @layer base {
-  * {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
     @apply border-border outline-ring/50;
-    scrollbar-width: thin;
   }
   body {
     @apply bg-background text-foreground;
@@ -975,13 +972,24 @@ pre code.hljs {
   }
   html {
     @apply font-sans;
-    /* scrollbar-color inherits, so one declaration themes every scroller. */
-    scrollbar-color: color-mix(
-        in oklab,
-        var(--muted-foreground) 35%,
-        transparent
-      )
-      transparent;
+  }
+
+  /* Desktop pointers get thin themed scrollbars everywhere. Touch devices
+     keep native overlay scrollbars; their scroll panes opt in through
+     .hc-scroll-pane and render in-flow edge hints instead. */
+  @media (pointer: fine) {
+    html {
+      /* scrollbar-color inherits, so one declaration themes every scroller. */
+      scrollbar-color: color-mix(
+          in oklab,
+          var(--muted-foreground) 35%,
+          transparent
+        )
+        transparent;
+    }
+    * {
+      scrollbar-width: thin;
+    }
   }
 }
 
