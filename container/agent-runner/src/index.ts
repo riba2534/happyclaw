@@ -23,6 +23,7 @@ import { createRequire } from 'module';
 import {
   query,
   HookCallback,
+  PostCompactHookInput,
   PreCompactHookInput,
   createSdkMcpServer,
   type Query,
@@ -209,7 +210,13 @@ const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_FALLBACK_POLL_MS = 5000; // 后备轮询间隔（仅防止 inotify 事件丢失）
 const ipcInputClaims = new IpcInputClaimStore(IPC_INPUT_DIR);
 
-let hadCompaction = false;
+/**
+ * Set by the main Agent's PreCompact hook and cleared once a healthy Result
+ * completes the input after it. Claude Code continues a turn by itself after
+ * an auto-compaction (verified with 2.1.296), so only a query that ended
+ * without such a Result still needs the runner's auto-continue turn.
+ */
+let compactionAwaitingCompletion = false;
 // Module-level session ID so SIGTERM handler can emit it before exit.
 // Updated in main() whenever a query returns a new session.
 let latestSessionId: string | undefined;
@@ -1029,6 +1036,14 @@ function getSessionSummary(
  * so users don't lose the response that was being generated.
  * Finally, trim the JSONL file to remove already-compacted history.
  */
+/** Ends the main Agent's compaction phase; subagent compactions never start it. */
+function createPostCompactHook(onCompactionEnd: () => void): HookCallback {
+  return async (input) => {
+    if (!(input as PostCompactHookInput).agent_id) onCompactionEnd();
+    return {};
+  };
+}
+
 function createPreCompactHook(deps: {
   emit: (output: ContainerOutput) => void;
   getFullText: () => string;
@@ -1041,7 +1056,7 @@ function createPreCompactHook(deps: {
     const sessionId = preCompact.session_id;
 
     // Skip sub-agent compactions — they'd archive the unchanged main transcript
-    // and set hadCompaction, triggering a spurious main-session auto-continue.
+    // and flag a compaction, triggering a spurious main-session auto-continue.
     if (preCompact.agent_id) {
       log(
         `PreCompact: skipping sub-agent compact (agent_id=${preCompact.agent_id})`,
@@ -1111,9 +1126,9 @@ function createPreCompactHook(deps: {
     // (CLAUDE_CODE_TRANSCRIPT_LOCAL_GC, see claude-runtime-env.ts): this hook
     // runs while the CLI is live, so it must not rewrite the transcript.
 
-    // Flag compaction so the query loop auto-continues instead of
-    // waiting for user input (non-blocking compaction #229).
-    hadCompaction = true;
+    // Flag compaction so the query loop auto-continues, instead of waiting
+    // for user input, if no healthy Result follows it (#229).
+    compactionAwaitingCompletion = true;
 
     return {};
   };
@@ -2567,6 +2582,7 @@ async function runQueryAttempt(
   ): void => {
     if (inputTurnCompleted) {
       clearBackgroundProtocolDebtWatchdog();
+      if (!candidate.suspectTruncated) compactionAwaitingCompletion = false;
     }
     const ipcReceipts = inputTurnCompleted
       ? ipcDeliveryTracker.completeAnsweredTurns()
@@ -2915,6 +2931,15 @@ async function runQueryAttempt(
             hooks: [createWorkspaceMemoryWriteGuard()],
           },
         ],
+        PostCompact: [
+          {
+            hooks: [
+              createPostCompactHook(() =>
+                firstResponseWatchdog?.endCompaction(),
+              ),
+            ],
+          },
+        ],
         PreCompact: [
           {
             hooks: [
@@ -2986,6 +3011,21 @@ async function runQueryAttempt(
     }
     for await (const message of q) {
       firstResponseWatchdog.observe(message.type);
+      if (message.type === 'system') {
+        const frame = message as {
+          subtype?: string;
+          compact_result?: string;
+          retry_delay_ms?: number;
+        };
+        if (
+          frame.subtype === 'compact_boundary' ||
+          (frame.subtype === 'status' && frame.compact_result)
+        ) {
+          firstResponseWatchdog.endCompaction();
+        } else if (frame.subtype === 'api_retry') {
+          firstResponseWatchdog.observeRetry(frame.retry_delay_ms ?? 0);
+        }
+      }
       const bookkeepingFrame = isSdkBookkeepingFrame(message);
       const preservesObservedBackgroundResult =
         bookkeepingFrame ||
@@ -4802,8 +4842,8 @@ async function main(): Promise<void> {
       // nearly fills the context window), stop auto-continuing to avoid an
       // infinite loop that burns API tokens without producing useful work.
       let ranCompactionContinue = false;
-      if (hadCompaction) {
-        hadCompaction = false;
+      if (compactionAwaitingCompletion) {
+        compactionAwaitingCompletion = false;
         consecutiveCompactions++;
         if (consecutiveCompactions <= MAX_CONSECUTIVE_COMPACTIONS) {
           ranCompactionContinue = true;
