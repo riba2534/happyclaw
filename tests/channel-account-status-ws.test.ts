@@ -111,3 +111,22 @@ describe('account-scoped channel status WebSocket event', () => {
     expect(other.send).not.toHaveBeenCalled();
   });
 });
+
+describe('broadcast backpressure', () => {
+  test('drops a client whose send buffer is backed up and keeps the others', async () => {
+    const { MAX_WS_BUFFERED_BYTES } = await import('../src/web.js');
+    const healthy = addClient('session-healthy', 'ws-owner');
+    const stalled = Object.assign(addClient('session-stalled', 'ws-owner'), {
+      bufferedAmount: MAX_WS_BUFFERED_BYTES + 1,
+      terminate: vi.fn(),
+    });
+    broadcastWhatsAppStatus('ws-owner', 'whatsapp-account-a', {
+      status: 'connected',
+    } as any);
+    expect(healthy.send).toHaveBeenCalledTimes(1);
+    expect(stalled.send).not.toHaveBeenCalled();
+    expect(stalled.terminate).toHaveBeenCalledTimes(1);
+    expect(harness.clients.has(stalled)).toBe(false);
+    expect(harness.clients.has(healthy)).toBe(true);
+  });
+});

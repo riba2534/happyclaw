@@ -2336,6 +2336,20 @@ function setupWebSocket(server: any): WebSocketServer {
 // --- Broadcast Functions ---
 
 /**
+ * A client this far behind on reads is stalled (or on a dead link the
+ * heartbeat has not caught yet); buffering every further stream frame for it
+ * only grows server memory. It is dropped and resyncs from snapshots on
+ * reconnect.
+ */
+export const MAX_WS_BUFFERED_BYTES = 16 * 1024 * 1024;
+
+export function isWsClientBackedUp(client: {
+  bufferedAmount: number;
+}): boolean {
+  return client.bufferedAmount > MAX_WS_BUFFERED_BYTES;
+}
+
+/**
  * Broadcast to all connected WebSocket clients.
  * If adminOnly is true, only send to clients whose session belongs to an admin user.
  * If ownerUserId is provided, only send to that user and admins (for group isolation).
@@ -2403,6 +2417,16 @@ function safeBroadcast(
       if (allowedUserIds === null || !allowedUserIds.has(session.user_id)) {
         continue;
       }
+    }
+
+    if (isWsClientBackedUp(client)) {
+      wsClients.delete(client);
+      try {
+        client.terminate();
+      } catch {
+        /* ignore */
+      }
+      continue;
     }
 
     try {
