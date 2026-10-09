@@ -17,6 +17,35 @@ function sanitizeSvg(raw: string): string {
 let mermaidPromise: Promise<typeof import('mermaid')> | null = null;
 let idCounter = 0;
 
+/**
+ * Rendered diagrams by source. The transcript is virtualized, so a diagram
+ * scrolled back into view used to mount fresh: placeholder, 300ms debounce
+ * and a full Mermaid render (a long task of 100-200ms at 4x CPU throttle)
+ * every time. Least recently used entries are dropped past the cap.
+ */
+type MermaidResult =
+  | { svg: string; error: null }
+  | { svg: null; error: string };
+const MERMAID_CACHE_LIMIT = 50;
+const mermaidCache = new Map<string, MermaidResult>();
+
+function cachedResult(code: string): MermaidResult | undefined {
+  const hit = mermaidCache.get(code);
+  if (hit) {
+    mermaidCache.delete(code);
+    mermaidCache.set(code, hit);
+  }
+  return hit;
+}
+
+function cacheResult(code: string, result: MermaidResult) {
+  mermaidCache.delete(code);
+  mermaidCache.set(code, result);
+  if (mermaidCache.size > MERMAID_CACHE_LIMIT) {
+    mermaidCache.delete(mermaidCache.keys().next().value!);
+  }
+}
+
 function isRetryableMermaidLoadError(error: unknown): boolean {
   const raw =
     error instanceof Error ? `${error.name} ${error.message}` : String(error);
@@ -55,20 +84,41 @@ function loadMermaid() {
 
 interface MermaidDiagramProps {
   code: string;
+  /**
+   * Show the placeholder without rendering: a diagram still being streamed is
+   * incomplete, and the final message renders it once complete.
+   */
+  deferred?: boolean;
 }
 
-export function MermaidDiagram({ code }: MermaidDiagramProps) {
+export function MermaidDiagram({
+  code,
+  deferred = false,
+}: MermaidDiagramProps) {
   const idRef = useRef(`mermaid-${++idCounter}`);
-  const [svg, setSvg] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [initial] = useState(() => cachedResult(code));
+  const [svg, setSvg] = useState<string | null>(initial?.svg ?? null);
+  const [error, setError] = useState<string | null>(initial?.error ?? null);
+  const [loading, setLoading] = useState(!initial);
   const [copied, setCopied] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const codeRef = useRef(code);
   codeRef.current = code;
+  // The first render of a diagram starts at once; only later changes of the
+  // source (a diagram still being streamed) wait out the debounce.
+  const renderedOnceRef = useRef(false);
 
   useEffect(() => {
+    if (deferred) return;
+    const cached = cachedResult(code);
+    if (cached) {
+      renderedOnceRef.current = true;
+      setSvg(cached.svg);
+      setError(cached.error);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
     clearTimeout(debounceRef.current);
@@ -95,29 +145,40 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
       }
     };
 
-    debounceRef.current = setTimeout(async () => {
-      const currentCode = codeRef.current;
-      try {
-        const rendered = await renderWithRetry(currentCode, 0);
-        if (!disposed && codeRef.current === currentCode) {
-          setSvg(sanitizeSvg(rendered));
-          setError(null);
-          setLoading(false);
+    debounceRef.current = setTimeout(
+      async () => {
+        const currentCode = codeRef.current;
+        try {
+          const rendered = sanitizeSvg(await renderWithRetry(currentCode, 0));
+          cacheResult(currentCode, { svg: rendered, error: null });
+          if (!disposed && codeRef.current === currentCode) {
+            setSvg(rendered);
+            setError(null);
+            setLoading(false);
+          }
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          // Chunk-load failures are retried on the next mount, syntax errors
+          // are not.
+          if (!isRetryableMermaidLoadError(e)) {
+            cacheResult(currentCode, { svg: null, error: message });
+          }
+          if (!disposed && codeRef.current === currentCode) {
+            setError(message);
+            setSvg(null);
+            setLoading(false);
+          }
         }
-      } catch (e) {
-        if (!disposed && codeRef.current === currentCode) {
-          setError(e instanceof Error ? e.message : String(e));
-          setSvg(null);
-          setLoading(false);
-        }
-      }
-    }, 300);
+      },
+      renderedOnceRef.current ? 300 : 0,
+    );
+    renderedOnceRef.current = true;
 
     return () => {
       disposed = true;
       clearTimeout(debounceRef.current);
     };
-  }, [code]);
+  }, [code, deferred]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(code);
@@ -140,7 +201,7 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
 
   // The diagram canvas keeps `bg-card`: Mermaid's default theme assumes a
   // light canvas, and the share card pins --card to white for its export.
-  if (loading) {
+  if (loading || deferred) {
     return (
       <div className="my-4 flex items-center justify-center rounded-lg bg-card p-8 ring-1 ring-surface-border">
         <div className="flex animate-pulse flex-col items-center gap-2">

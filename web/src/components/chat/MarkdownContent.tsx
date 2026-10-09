@@ -136,10 +136,12 @@ function CodeBlock({
   className,
   children,
   variant = 'chat',
+  streaming = false,
   ...props
 }: React.ComponentPropsWithoutRef<'code'> & {
   className?: string;
   variant?: 'chat' | 'docs';
+  streaming?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const match = /language-(\w+)/.exec(className || '');
@@ -150,7 +152,7 @@ function CodeBlock({
   if (lang === 'mermaid') {
     return (
       <Suspense fallback={<MermaidFallback code={codeString} />}>
-        <MermaidDiagram code={codeString} />
+        <MermaidDiagram code={codeString} deferred={streaming} />
       </Suspense>
     );
   }
@@ -216,10 +218,13 @@ function markdownComponents(
   variant: 'chat' | 'docs',
   groupJid: string | undefined,
   eagerImages: boolean,
+  streaming: boolean,
 ): MarkdownComponents {
   const tableTextClass = variant === 'chat' ? 'text-[0.95em]' : 'text-sm';
   return {
-    code: (props) => <CodeBlock {...props} variant={variant} />,
+    code: (props) => (
+      <CodeBlock {...props} variant={variant} streaming={streaming} />
+    ),
     img: ({ src, alt }) => (
       <MarkdownImage
         src={src ? resolveMarkdownImageSrc(src, groupJid) : undefined}
@@ -321,6 +326,7 @@ export function MarkdownContent({
   groupJid,
   variant = 'chat',
   eagerImages = false,
+  streaming = false,
   remarkPlugins,
   rehypePlugins,
 }: MarkdownContentProps) {
@@ -329,8 +335,8 @@ export function MarkdownContent({
       ? 'text-body-lg leading-[1.7] text-foreground'
       : 'text-sm leading-6 text-foreground';
   const components = useMemo(
-    () => markdownComponents(variant, groupJid, eagerImages),
-    [variant, groupJid, eagerImages],
+    () => markdownComponents(variant, groupJid, eagerImages, streaming),
+    [variant, groupJid, eagerImages, streaming],
   );
 
   return (
