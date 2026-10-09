@@ -8,8 +8,8 @@ import {
 } from 'react';
 import { AlertTriangle, Loader2, RefreshCw } from 'lucide-react';
 import { api } from '@/api/client';
+import { IconButton } from '@/components/common/IconButton';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 import {
   Select,
   SelectContent,
@@ -26,6 +26,9 @@ import type {
   RunContextStatus,
 } from '@/types';
 import { capabilitySourceLabel } from '@/utils/capability-sources';
+import { SettingsGroup } from '@/components/settings/SettingsLayout';
+import { cn } from '@/lib/utils';
+import { AgentSection } from './AgentSection';
 
 export function EffectiveCapabilitiesPreview({
   profileId,
@@ -96,20 +99,13 @@ export function EffectiveCapabilitiesPreview({
   }, [loadPreview, policyKey]);
 
   return (
-    <section className="overflow-hidden rounded-xl border border-border bg-card">
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
-        <div className="min-w-0">
-          <h2 className="text-sm font-semibold text-foreground">
-            最终生效能力
-          </h2>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            按来源展示 HappyClaw、宿主机和工作区能力，并标出同名来源冲突。
-            系统内置能力始终生效，不进入用户选择器。
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
+    <AgentSection
+      title="最终生效能力"
+      description="按来源展示 HappyClaw、宿主机和工作区能力，并标出同名来源冲突。 系统内置能力始终生效，不进入用户选择器。"
+      actions={
+        <>
           <Select value={workspaceJid} onValueChange={setWorkspaceJid}>
-            <SelectTrigger className="h-9 w-[190px]" aria-label="预览工作区">
+            <SelectTrigger className="w-[180px]" aria-label="预览工作区">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -121,43 +117,41 @@ export function EffectiveCapabilitiesPreview({
               ))}
             </SelectContent>
           </Select>
-          <Button
-            type="button"
+          <IconButton
+            label="刷新最终生效能力"
             variant="outline"
             size="icon"
             onClick={() => void loadPreview()}
             disabled={loading}
-            aria-label="刷新最终生效能力"
-          >
-            <RefreshCw className={`size-4 ${loading ? 'animate-spin' : ''}`} />
-          </Button>
-        </div>
-      </div>
-
-      <div className="px-5 py-4">
+            icon={<RefreshCw className={cn(loading && 'animate-spin')} />}
+          />
+        </>
+      }
+    >
+      <SettingsGroup>
         {loading && !preview ? (
-          <div className="flex items-center gap-2 py-5 text-sm text-muted-foreground">
+          <div className="flex items-center gap-2 px-4 py-4 text-body text-muted-foreground">
             <Loader2 className="size-4 animate-spin" />
             正在计算
           </div>
         ) : error ? (
           <div
-            className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-3 text-sm text-destructive"
+            className="flex items-center gap-2 px-4 py-3 text-body text-error"
             role="alert"
           >
             <AlertTriangle className="size-4 shrink-0" />
             {error}
           </div>
         ) : preview ? (
-          <div className="divide-y divide-border">
+          <>
             <PreviewRow label="上下文">
-              <Badge variant="secondary">
+              <Badge variant="neutral">
                 {preview.context.source === 'host_claude'
                   ? '宿主机 ~/.claude'
                   : 'HappyClaw 管理'}
               </Badge>
               {preview.context.source === 'host_claude' && (
-                <span className="text-xs text-muted-foreground">
+                <span className="text-caption text-muted-foreground">
                   提示词 {preview.context.claudeMd ? '已加载' : '缺失'} ·{' '}
                   {preview.context.rules} 项 Rules ·{' '}
                   {preview.context.nativeConfig.settingsFiles.length} 个配置文件
@@ -198,7 +192,7 @@ export function EffectiveCapabilitiesPreview({
             />
             {preview.skills.conflicts.length > 0 && (
               <PreviewRow label="Skill 覆盖">
-                <span className="text-[11px] text-warning">
+                <span className="text-caption text-warning">
                   {preview.skills.conflicts.length} 个同名覆盖：
                   {preview.skills.conflicts.join('、')}
                 </span>
@@ -214,20 +208,22 @@ export function EffectiveCapabilitiesPreview({
               status={runContextStatus}
               workspaceSelected={workspaceJid !== 'none'}
             />
-            <div className="space-y-1 py-3">
-              {preview.notes.map((note) => (
-                <p
-                  key={note}
-                  className="text-[11px] leading-5 text-muted-foreground"
-                >
-                  {note}
-                </p>
-              ))}
-            </div>
-          </div>
+            {preview.notes.length > 0 && (
+              <div className="space-y-1 px-4 py-3">
+                {preview.notes.map((note) => (
+                  <p
+                    key={note}
+                    className="text-caption leading-5 text-muted-foreground"
+                  >
+                    {note}
+                  </p>
+                ))}
+              </div>
+            )}
+          </>
         ) : null}
-      </div>
-    </section>
+      </SettingsGroup>
+    </AgentSection>
   );
 }
 
@@ -250,7 +246,7 @@ function RunContextRow({
   if (!snapshot) {
     return (
       <PreviewRow label="最近真实运行">
-        <span className="text-xs leading-5 text-muted-foreground">
+        <span className="text-caption leading-5 text-muted-foreground">
           {workspaceSelected
             ? '这个工作区还没有可用的运行快照；发送一条消息后刷新即可查看。'
             : '选择一个工作区后，可查看真实请求实际加载的提示词、Skill 和上下文总预算。'}
@@ -275,7 +271,7 @@ function RunContextRow({
       <div className="min-w-0 flex-1 space-y-3">
         <div className="flex flex-wrap items-center gap-2">
           {isStale && (
-            <Badge variant="destructive">
+            <Badge variant="error">
               {status === 'stale_profile'
                 ? '来自旧智能体配置'
                 : '来自旧能力配置'}
@@ -283,20 +279,18 @@ function RunContextRow({
           )}
           <Badge
             variant={
-              snapshot.budget?.status === 'hard_exceeded'
-                ? 'destructive'
-                : 'secondary'
+              snapshot.budget?.status === 'hard_exceeded' ? 'error' : 'neutral'
             }
           >
             {budgetLabel}
           </Badge>
-          <span className="text-xs text-muted-foreground">
+          <span className="text-caption text-muted-foreground">
             {usage
               ? `总上下文 ${compactNumber(usage.totalTokens)} / ${compactNumber(usage.maxTokens)} tokens（${usage.percentage.toFixed(1)}%）`
               : 'SDK 未返回总上下文用量'}
           </span>
           {usage && (
-            <span className="text-xs text-muted-foreground">
+            <span className="text-caption text-muted-foreground">
               MCP {usage.mcpTools.length} 个 ·{' '}
               {compactNumber(
                 usage.mcpTools.reduce((sum, tool) => sum + tool.tokens, 0),
@@ -305,41 +299,41 @@ function RunContextRow({
             </span>
           )}
           {snapshot.budget?.startupTokens !== undefined && (
-            <span className="text-xs text-muted-foreground">
+            <span className="text-caption text-muted-foreground">
               静态启动 {compactNumber(snapshot.budget.startupTokens)} /{' '}
               {compactNumber(snapshot.budget.hardThreshold)} tokens
             </span>
           )}
-          <span className="text-xs text-muted-foreground">
+          <span className="text-caption text-muted-foreground">
             {new Date(snapshot.capturedAt).toLocaleString('zh-CN')}
           </span>
         </div>
 
         <dl className="grid gap-2 sm:grid-cols-3">
           <div className="rounded-lg bg-muted/50 px-3 py-2">
-            <dt className="text-[11px] text-muted-foreground">平台提示词</dt>
-            <dd className="mt-1 text-xs font-medium text-foreground">
+            <dt className="text-caption text-muted-foreground">平台提示词</dt>
+            <dd className="mt-0.5 text-label text-foreground">
               {compactNumber(snapshot.prompt.estimatedTokens)} tokens ·{' '}
               {snapshot.prompt.blocks.length} 个区块
             </dd>
           </div>
           <div className="rounded-lg bg-muted/50 px-3 py-2">
-            <dt className="text-[11px] text-muted-foreground">Skills</dt>
-            <dd className="mt-1 text-xs font-medium text-foreground">
+            <dt className="text-caption text-muted-foreground">Skills</dt>
+            <dd className="mt-0.5 text-label text-foreground">
               {compactNumber(snapshot.skills.included)} /{' '}
               {compactNumber(snapshot.skills.total)} 已加载 ·{' '}
               {compactNumber(snapshot.skills.tokens)} tokens
             </dd>
             {snapshot.skills.manifestHash && (
-              <div className="mt-1 text-[10px] text-muted-foreground">
+              <div className="mt-0.5 text-micro text-muted-foreground">
                 Manifest {snapshot.skills.manifestHash.slice(0, 10)} ·{' '}
                 {snapshot.skills.selectedSkillIds.length} IDs
               </div>
             )}
           </div>
           <div className="rounded-lg bg-muted/50 px-3 py-2">
-            <dt className="text-[11px] text-muted-foreground">Rules</dt>
-            <dd className="mt-1 text-xs font-medium text-foreground">
+            <dt className="text-caption text-muted-foreground">Rules</dt>
+            <dd className="mt-0.5 text-label text-foreground">
               {compactNumber(snapshot.rules.loaded)} /{' '}
               {compactNumber(snapshot.rules.discovered)} 已加载
             </dd>
@@ -348,7 +342,7 @@ function RunContextRow({
 
         {snapshot.prompt.blocks.length > 0 && (
           <div>
-            <div className="text-[11px] font-medium text-muted-foreground">
+            <div className="text-caption font-medium text-muted-foreground">
               Prompt Plan
               {snapshot.prompt.planHash
                 ? ` · ${snapshot.prompt.planHash.slice(0, 10)}`
@@ -374,20 +368,20 @@ function RunContextRow({
         )}
 
         {snapshot.subagentContract?.enabled && (
-          <p className="text-[11px] leading-5 text-muted-foreground">
+          <p className="text-caption leading-5 text-muted-foreground">
             Subagent 运行契约已启用 ·{' '}
             {snapshot.subagentContract.hash.slice(0, 10)} · SDK{' '}
             {snapshot.subagentContract.sdkCompatibility}
           </p>
         )}
         {snapshot.mcp.manifestHash && (
-          <p className="text-[11px] leading-5 text-muted-foreground">
+          <p className="text-caption leading-5 text-muted-foreground">
             MCP Manifest · {snapshot.mcp.manifestHash.slice(0, 10)} ·{' '}
             {snapshot.mcp.serverIds.length} servers
           </p>
         )}
         {snapshot.warnings.length > 0 && (
-          <p className="text-[11px] leading-5 text-warning">
+          <p className="text-caption leading-5 text-warning">
             {snapshot.warnings.join('；')}
           </p>
         )}
@@ -404,8 +398,10 @@ function PreviewRow({
   children: ReactNode;
 }) {
   return (
-    <div className="grid gap-2 py-3 sm:grid-cols-[110px_1fr] sm:items-start">
-      <div className="text-xs font-medium text-muted-foreground">{label}</div>
+    <div className="grid gap-2 px-4 py-3 sm:grid-cols-[120px_1fr] sm:items-start">
+      <div className="text-caption font-medium text-muted-foreground">
+        {label}
+      </div>
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         {children}
       </div>
@@ -427,7 +423,7 @@ function CapabilityEntriesRow({
   return (
     <PreviewRow label={label}>
       {entries.length === 0 ? (
-        <span className="text-xs text-muted-foreground">{emptyText}</span>
+        <span className="text-caption text-muted-foreground">{emptyText}</span>
       ) : (
         <div className="flex max-h-28 min-w-0 flex-wrap gap-1.5 overflow-y-auto">
           {entries.map((entry) => (
@@ -447,7 +443,7 @@ function CapabilityEntriesRow({
         </div>
       )}
       {conflicts.length > 0 && (
-        <span className="basis-full text-[11px] text-warning">
+        <span className="basis-full text-caption text-warning">
           {conflicts.length} 个同名覆盖：{conflicts.join('、')}
         </span>
       )}
