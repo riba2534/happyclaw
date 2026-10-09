@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { AtSign } from 'lucide-react';
 import { toast } from 'sonner';
 
+import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { cn } from '@/lib/utils';
 import { useAuthStore } from '../../stores/auth';
+import { ChoiceCardBody, choiceCardClassName } from '../agents/AgentSection';
 import { BindingsSection } from './BindingsSection';
 import { ChannelAccountsManager } from './ChannelAccountsManager';
-import { SettingsGroup, SettingsSection } from './SettingsLayout';
+import { SettingsSection } from './SettingsLayout';
 import { getErrorMessage } from './types';
 
 export function UserChannelsSection() {
@@ -39,13 +39,15 @@ export function UserChannelsSection() {
   const responseOptions = [
     {
       value: true,
-      title: '仅在 @机器人时回复（推荐）',
+      title: '仅在 @机器人时回复',
       description: '降低误触发、无关消息处理和额外费用。',
+      recommended: true,
     },
     {
       value: false,
       title: '响应允许成员的所有消息',
       description: '实际可触发成员仍受该渠道与群聊的权限规则限制。',
+      recommended: false,
     },
   ];
 
@@ -76,7 +78,12 @@ export function UserChannelsSection() {
           title="新群默认响应方式"
           description="仅影响之后自动注册的群聊；已有群聊继续使用各自的响应设置"
         >
-          <SettingsGroup role="radiogroup" aria-label="新群默认响应方式">
+          <div
+            role="radiogroup"
+            aria-label="新群默认响应方式"
+            aria-busy={saving}
+            className="grid gap-2 sm:grid-cols-2"
+          >
             {responseOptions.map((option) => {
               const checked = requireMention === option.value;
               return (
@@ -87,34 +94,25 @@ export function UserChannelsSection() {
                   aria-checked={checked}
                   disabled={saving}
                   onClick={() => handleDefaultChange(option.value)}
-                  className="flex w-full items-start gap-3 px-4 py-3 text-left transition-colors duration-100 outline-none hover:bg-surface-hover focus-visible:bg-surface-hover focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:ring-inset disabled:cursor-not-allowed disabled:opacity-60"
+                  className={choiceCardClassName(
+                    checked,
+                    'disabled:cursor-wait disabled:opacity-60',
+                  )}
                 >
-                  <span
-                    aria-hidden="true"
-                    className={cn(
-                      'mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border transition-colors',
-                      checked ? 'border-primary bg-primary' : 'border-input',
-                    )}
-                  >
-                    {checked && (
-                      <span className="size-1.5 rounded-full bg-primary-foreground" />
-                    )}
-                  </span>
-                  <span className="min-w-0">
-                    <span className="flex items-center gap-1.5 text-body font-medium text-foreground">
-                      {option.value && (
-                        <AtSign className="size-3.5 text-muted-foreground" />
-                      )}
-                      {option.title}
-                    </span>
-                    <span className="mt-0.5 block text-caption text-muted-foreground">
-                      {option.description}
-                    </span>
-                  </span>
+                  <ChoiceCardBody
+                    checked={checked}
+                    title={option.title}
+                    description={option.description}
+                    badge={
+                      option.recommended && (
+                        <Badge variant="neutral">推荐</Badge>
+                      )
+                    }
+                  />
                 </button>
               );
             })}
-          </SettingsGroup>
+          </div>
           <p className="text-caption text-muted-foreground">
             已有群聊可在“已接入会话”中单独修改，也可在群里使用 /require_mention
             快捷命令。

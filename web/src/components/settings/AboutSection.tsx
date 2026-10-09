@@ -39,7 +39,7 @@ export function AboutSection() {
           />
           <div className="min-w-0">
             <h2 className="text-title-sm text-foreground">HappyClaw</h2>
-            <p className="mt-0.5 text-caption text-muted-foreground">
+            <p className="mt-0.5 text-caption text-balance text-muted-foreground">
               基于 Claude Agent SDK 的自托管多智能体工作平台
             </p>
             <p className="text-caption text-faint-foreground tabular-nums">

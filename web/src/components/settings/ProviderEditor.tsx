@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import {
   CheckCircle2,
   ChevronRight,
@@ -757,12 +757,12 @@ export function ProviderEditor({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && handleClose()}>
-      <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 p-0 sm:max-w-2xl">
-        <DialogHeader className="border-b border-surface-border px-5 pt-5 pb-4 pr-12">
-          <DialogTitle className="leading-6">
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>
             {isCreate ? '添加模型配置' : `编辑模型配置：${provider?.name}`}
           </DialogTitle>
-          <DialogDescription className="text-left text-caption leading-5">
+          <DialogDescription>
             {providerType === 'third_party'
               ? '填写端点、密钥和模型即可；Claude Code 运行参数会自动预填，也可在高级设置中调整。'
               : providerType === 'codex'
@@ -771,7 +771,7 @@ export function ProviderEditor({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-5">
+        <div className="space-y-5">
           {/* 类型选择（仅创建模式） */}
           {isCreate && (
             <SettingsField label="模型配置类型">
@@ -877,6 +877,7 @@ export function ProviderEditor({
 
                   {!oauthState ? (
                     <Button
+                      variant="outline"
                       onClick={handleOAuthStart}
                       disabled={saving || oauthLoading}
                     >
@@ -906,6 +907,7 @@ export function ProviderEditor({
                           className="flex-1"
                         />
                         <Button
+                          variant="outline"
                           onClick={handleOAuthCallback}
                           disabled={oauthExchanging || !oauthCode.trim()}
                         >
@@ -915,7 +917,7 @@ export function ProviderEditor({
                           确认
                         </Button>
                         <Button
-                          variant="outline"
+                          variant="ghost"
                           onClick={() => {
                             setOauthState(null);
                             setOauthCode('');
@@ -1138,6 +1140,7 @@ export function ProviderEditor({
 
               {!oauthState ? (
                 <Button
+                  variant={isCreate ? 'default' : 'outline'}
                   onClick={handleCodexOAuthStart}
                   disabled={saving || oauthLoading}
                 >
@@ -1167,6 +1170,7 @@ export function ProviderEditor({
                       className="flex-1"
                     />
                     <Button
+                      variant={isCreate ? 'default' : 'outline'}
                       onClick={handleCodexOAuthCallback}
                       disabled={oauthExchanging || !oauthCode.trim()}
                     >
@@ -1174,7 +1178,7 @@ export function ProviderEditor({
                       确认
                     </Button>
                     <Button
-                      variant="outline"
+                      variant="ghost"
                       onClick={() => {
                         setOauthState(null);
                         setOauthCode('');
@@ -1413,9 +1417,9 @@ export function ProviderEditor({
                             <div className="flex min-w-0 items-center justify-between gap-2">
                               <label
                                 htmlFor={inputId}
-                                className="min-w-0 font-mono text-micro break-all text-foreground"
+                                className="min-w-0 font-mono text-micro break-words text-foreground"
                               >
-                                {row.key}
+                                <EnvKey name={row.key} />
                               </label>
                               <Badge
                                 variant={hasOverride ? 'info' : 'outline'}
@@ -1561,7 +1565,7 @@ export function ProviderEditor({
         </div>
 
         {/* ─── 操作按钮 ─── */}
-        <DialogFooter className="mx-0 mb-0 bg-transparent px-5 py-3">
+        <DialogFooter>
           <Button
             variant="outline"
             onClick={handleClose}
@@ -1580,6 +1584,21 @@ export function ProviderEditor({
       </DialogContent>
     </Dialog>
   );
+}
+
+/** Env var name that wraps after underscores instead of mid-word. */
+function EnvKey({ name }: { name: string }) {
+  const parts = name.split('_');
+  return parts.map((part, index) => (
+    <Fragment key={index}>
+      {part}
+      {index < parts.length - 1 && (
+        <>
+          _<wbr />
+        </>
+      )}
+    </Fragment>
+  ));
 }
 
 function FieldLabel({ text, hint }: { text: string; hint: string }) {

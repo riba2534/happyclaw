@@ -4,7 +4,8 @@ import { toast } from 'sonner';
 
 import { Switch } from '@/components/ui/switch';
 import { api } from '../../api/client';
-import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
+import { SettingsGroup, SettingsSection } from './SettingsLayout';
+import { SettingsSwitchRow } from './SettingsFormControls';
 import { getErrorMessage } from './types';
 
 export function RegistrationSection() {
@@ -80,7 +81,7 @@ export function RegistrationSection() {
       }
     >
       <SettingsGroup>
-        <SettingsRow
+        <SettingsSwitchRow
           label="允许注册"
           htmlFor="registration-allow"
           description="关闭后注册入口不可用"
@@ -95,7 +96,7 @@ export function RegistrationSection() {
             />
           }
         />
-        <SettingsRow
+        <SettingsSwitchRow
           label="需要邀请码"
           htmlFor="registration-invite"
           description={

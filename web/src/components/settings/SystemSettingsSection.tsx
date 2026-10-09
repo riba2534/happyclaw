@@ -12,6 +12,11 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
+import {
+  SettingsFormFooter,
+  SettingsStickySaveBar,
+  SettingsSwitchRow,
+} from './SettingsFormControls';
 import type { HostIntegrationSettings, SystemSettings } from './types';
 import { getErrorMessage } from './types';
 
@@ -195,15 +200,6 @@ function LoadingState({ label }: { label: string }) {
   );
 }
 
-/** Right-aligned save footer that sticks to the bottom of the scroll root. */
-function StickySaveBar({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="sticky bottom-0 z-10 mt-8 flex h-14 items-center justify-between gap-4 border-t border-surface-border bg-background/90 backdrop-blur">
-      {children}
-    </div>
-  );
-}
-
 function NumberSettingField({
   field,
   value,
@@ -377,6 +373,16 @@ export function SystemSettingsSection({
     }
   };
 
+  const saveButton = (
+    <Button
+      onClick={() => void handleSave()}
+      disabled={saving || !dirty || Object.keys(errors).length > 0}
+    >
+      {saving && <Loader2 className="size-4 animate-spin" aria-hidden="true" />}
+      保存系统参数
+    </Button>
+  );
+
   if (!canManage) {
     return (
       <p className="text-body text-muted-foreground">
@@ -468,20 +474,22 @@ export function SystemSettingsSection({
         )}
       </div>
 
-      <StickySaveBar>
-        <p className="text-caption text-muted-foreground" aria-live="polite">
-          {dirty ? '有尚未保存的系统参数' : '系统参数已保存'}
-        </p>
-        <Button
-          onClick={() => void handleSave()}
-          disabled={saving || !dirty || Object.keys(errors).length > 0}
+      {scope === 'runtime' ? (
+        <SettingsStickySaveBar
+          status={
+            <p
+              className="truncate text-caption text-muted-foreground"
+              aria-live="polite"
+            >
+              {dirty ? '有尚未保存的系统参数' : '系统参数已保存'}
+            </p>
+          }
         >
-          {saving && (
-            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-          )}
-          保存系统参数
-        </Button>
-      </StickySaveBar>
+          {saveButton}
+        </SettingsStickySaveBar>
+      ) : (
+        <SettingsFormFooter className="mt-3">{saveButton}</SettingsFormFooter>
+      )}
     </div>
   );
 }
@@ -621,15 +629,12 @@ export function HostIntegrationSettingsSection({
 
   const saveButton = (
     <Button
-      size="sm"
       onClick={() => void handleSave()}
       disabled={
         saving || !dirty || (scope === 'main-agent' && !!mainAutoCompactError)
       }
     >
-      {saving && (
-        <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-      )}
+      {saving && <Loader2 className="size-4 animate-spin" aria-hidden="true" />}
       {scope === 'main-agent' ? '保存主智能体设置' : '保存宿主机设置'}
     </Button>
   );
@@ -641,7 +646,7 @@ export function HostIntegrationSettingsSection({
         description="控制主 HappyClaw 是否继承宿主机 Claude Code 配置，以及何时自动压缩上下文。"
       >
         <SettingsGroup>
-          <SettingsRow
+          <SettingsSwitchRow
             label="主 HappyClaw 继承宿主机 Claude Code 配置"
             htmlFor="host-integration-main-agent-context"
             description={
@@ -672,7 +677,7 @@ export function HostIntegrationSettingsSection({
             }
           />
 
-          <SettingsRow
+          <SettingsSwitchRow
             label="SDK 自动压缩（推荐）"
             htmlFor="main-agent-auto-compact-default"
             description={
@@ -801,9 +806,8 @@ export function HostIntegrationSettingsSection({
                 }
               />
             ))}
-
-          <div className="flex justify-end px-4 py-3">{saveButton}</div>
         </SettingsGroup>
+        <SettingsFormFooter>{saveButton}</SettingsFormFooter>
       </SettingsSection>
     );
   }
@@ -815,88 +819,90 @@ export function HostIntegrationSettingsSection({
         是否继承宿主机 Claude Code 配置，请在对应智能体的设置中管理。
       </div>
 
-      <SettingsGroup>
-        <SettingsRow
-          label="管理员纯宿主机模式"
-          htmlFor="admin-host-only-mode"
-          description={
-            <span id="admin-host-only-mode-description">
-              开启后，管理员拥有的工作区和定时任务会统一迁移到宿主机，并禁止再选择
-              Docker；普通成员仍固定使用 Docker。关闭后不会自动把已有工作区迁回
-              Docker。宿主机工作区暂不支持网页终端。
-            </span>
-          }
-          control={
-            <Switch
-              id="admin-host-only-mode"
-              checked={draft.adminHostOnlyMode}
-              onCheckedChange={(checked) =>
-                setDraft((current) =>
-                  current
-                    ? { ...current, adminHostOnlyMode: checked }
-                    : current,
-                )
-              }
-              aria-describedby="admin-host-only-mode-description"
-            />
-          }
-        />
+      <div className="space-y-3">
+        <SettingsGroup>
+          <SettingsSwitchRow
+            label="管理员纯宿主机模式"
+            htmlFor="admin-host-only-mode"
+            description={
+              <span id="admin-host-only-mode-description">
+                开启后，管理员拥有的工作区和定时任务会统一迁移到宿主机，并禁止再选择
+                Docker；普通成员仍固定使用
+                Docker。关闭后不会自动把已有工作区迁回
+                Docker。宿主机工作区暂不支持网页终端。
+              </span>
+            }
+            control={
+              <Switch
+                id="admin-host-only-mode"
+                checked={draft.adminHostOnlyMode}
+                onCheckedChange={(checked) =>
+                  setDraft((current) =>
+                    current
+                      ? { ...current, adminHostOnlyMode: checked }
+                      : current,
+                  )
+                }
+                aria-describedby="admin-host-only-mode-description"
+              />
+            }
+          />
 
-        <SettingsRow
-          label="宿主机 Claude 目录"
-          htmlFor="host-integration-claude-dir"
-          description={
-            <span id="host-integration-claude-dir-description">
-              留空时使用当前服务用户的
-              ~/.claude；自定义目录必须是宿主机上的绝对路径。
-              当前目录同时作为提示词、Rules、Skills、MCP 与 Plugin Marketplace
-              的来源。
-            </span>
-          }
-          control={
-            <Input
-              id="host-integration-claude-dir"
-              value={draft.externalClaudeDir}
-              onChange={(event) =>
-                setDraft((current) =>
-                  current
-                    ? { ...current, externalClaudeDir: event.target.value }
-                    : current,
-                )
-              }
-              placeholder="留空使用 ~/.claude"
-              aria-describedby="host-integration-claude-dir-description"
-              className="font-mono sm:w-72 pointer-coarse:min-h-11"
-            />
-          }
-        />
+          <SettingsRow
+            label="宿主机 Claude 目录"
+            htmlFor="host-integration-claude-dir"
+            description={
+              <span id="host-integration-claude-dir-description">
+                留空时使用当前服务用户的
+                ~/.claude；自定义目录必须是宿主机上的绝对路径。
+                当前目录同时作为提示词、Rules、Skills、MCP 与 Plugin Marketplace
+                的来源。
+              </span>
+            }
+            control={
+              <Input
+                id="host-integration-claude-dir"
+                value={draft.externalClaudeDir}
+                onChange={(event) =>
+                  setDraft((current) =>
+                    current
+                      ? { ...current, externalClaudeDir: event.target.value }
+                      : current,
+                  )
+                }
+                placeholder="留空使用 ~/.claude"
+                aria-describedby="host-integration-claude-dir-description"
+                className="font-mono sm:w-72 pointer-coarse:min-h-11"
+              />
+            }
+          />
 
-        <SettingsRow
-          label="自动扫描 Plugin Catalog"
-          htmlFor="host-integration-plugin-scan"
-          description={
-            <span id="host-integration-plugin-scan-description">
-              服务启动后扫描宿主机 marketplace，并每小时刷新共享
-              Catalog。Catalog
-              全局共享，但每个用户独立选择启用项；修改后需重启服务。
-            </span>
-          }
-          control={
-            <Switch
-              id="host-integration-plugin-scan"
-              checked={draft.pluginAutoScan}
-              onCheckedChange={(checked) =>
-                setDraft((current) =>
-                  current ? { ...current, pluginAutoScan: checked } : current,
-                )
-              }
-              aria-describedby="host-integration-plugin-scan-description"
-            />
-          }
-        />
-
-        <div className="flex justify-end px-4 py-3">{saveButton}</div>
-      </SettingsGroup>
+          <SettingsSwitchRow
+            label="自动扫描 Plugin Catalog"
+            htmlFor="host-integration-plugin-scan"
+            description={
+              <span id="host-integration-plugin-scan-description">
+                服务启动后扫描宿主机 marketplace，并每小时刷新共享
+                Catalog。Catalog
+                全局共享，但每个用户独立选择启用项；修改后需重启服务。
+              </span>
+            }
+            control={
+              <Switch
+                id="host-integration-plugin-scan"
+                checked={draft.pluginAutoScan}
+                onCheckedChange={(checked) =>
+                  setDraft((current) =>
+                    current ? { ...current, pluginAutoScan: checked } : current,
+                  )
+                }
+                aria-describedby="host-integration-plugin-scan-description"
+              />
+            }
+          />
+        </SettingsGroup>
+        <SettingsFormFooter>{saveButton}</SettingsFormFooter>
+      </div>
 
       <SettingsSection title="相关入口">
         <SettingsGroup>

@@ -14,6 +14,7 @@ import {
   SettingsRow,
   SettingsSection,
 } from './SettingsLayout';
+import { SettingsFormFooter } from './SettingsFormControls';
 import { getErrorMessage } from './types';
 
 export function ProfileSection() {
@@ -163,24 +164,22 @@ export function ProfileSection() {
               <Button
                 type="button"
                 variant="ghost"
-                size="sm"
                 onClick={handleRemoveAvatar}
               >
-                <Trash2 className="size-3.5" />
+                <Trash2 className="size-4" />
                 移除图片
               </Button>
             )}
             <Button
               type="button"
               variant="outline"
-              size="sm"
               disabled={uploading}
               onClick={() => avatarInputRef.current?.click()}
             >
               {uploading ? (
-                <Loader2 className="size-3.5 animate-spin" />
+                <Loader2 className="size-4 animate-spin" />
               ) : (
-                <Upload className="size-3.5" />
+                <Upload className="size-4" />
               )}
               上传图片
             </Button>
@@ -203,14 +202,13 @@ export function ProfileSection() {
             </SettingsField>
           </div>
         </SettingsGroup>
+        <SettingsFormFooter>
+          <Button onClick={handleSave} disabled={saving || !username.trim()}>
+            {saving && <Loader2 className="size-4 animate-spin" />}
+            保存个人资料
+          </Button>
+        </SettingsFormFooter>
       </SettingsSection>
-
-      <div className="flex justify-end">
-        <Button onClick={handleSave} disabled={saving || !username.trim()}>
-          {saving && <Loader2 className="size-4 animate-spin" />}
-          保存个人资料
-        </Button>
-      </div>
     </div>
   );
 }

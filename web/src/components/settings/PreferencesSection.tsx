@@ -1,5 +1,13 @@
 import { useState } from 'react';
-import { Bell, BellOff, CheckCircle2, Monitor, Moon, Sun } from 'lucide-react';
+import {
+  Bell,
+  BellOff,
+  Check,
+  CheckCircle2,
+  Monitor,
+  Moon,
+  Sun,
+} from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Kbd } from '@/components/ui/kbd';
@@ -22,6 +30,7 @@ import {
   type FollowUpPreference,
 } from '../../lib/follow-up-preferences';
 import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
+import { SettingsSwitchRow } from './SettingsFormControls';
 
 const THEME_OPTIONS: { value: Theme; label: string; icon: typeof Sun }[] = [
   { value: 'light', label: '浅色', icon: Sun },
@@ -32,23 +41,12 @@ const THEME_OPTIONS: { value: Theme; label: string; icon: typeof Sun }[] = [
 const SCHEME_OPTIONS: {
   value: ColorScheme;
   label: string;
-  preview: { bg: string; accent: string; text: string };
+  /** Brand swatch only; the preview canvas follows the current light/dark mode. */
+  accent: string;
 }[] = [
-  {
-    value: 'default',
-    label: '经典绿',
-    preview: { bg: '#f8fafc', accent: '#0d9488', text: '#0f172a' },
-  },
-  {
-    value: 'orange',
-    label: '暖橙',
-    preview: { bg: '#faf9f5', accent: '#f97316', text: '#141413' },
-  },
-  {
-    value: 'neutral',
-    label: '素白',
-    preview: { bg: '#fafafa', accent: '#52525b', text: '#18181b' },
-  },
+  { value: 'default', label: '经典绿', accent: '#0d9488' },
+  { value: 'orange', label: '暖橙', accent: '#f97316' },
+  { value: 'neutral', label: '素白', accent: '#52525b' },
 ];
 
 const FONT_OPTIONS: { value: FontStyle; label: string }[] = [
@@ -96,34 +94,37 @@ function ColorSchemePicker({
             aria-checked={active}
             onClick={() => onChange(option.value)}
             className={cn(
-              'flex min-w-0 flex-col gap-1.5 rounded-lg p-1.5 text-left ring-1 transition-[box-shadow,background-color] duration-100 outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+              'flex min-w-0 flex-col gap-1.5 rounded-lg p-1.5 text-left ring-1 transition-colors duration-100 outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
               active
-                ? 'ring-2 ring-primary'
+                ? 'bg-surface-selected ring-foreground/25'
                 : 'ring-surface-border hover:bg-surface-hover',
             )}
           >
             <span
               aria-hidden="true"
-              className="flex h-10 w-full items-end gap-1 rounded-md p-1.5 ring-1 ring-black/5"
-              style={{ background: option.preview.bg }}
+              className="flex h-10 w-full items-end gap-1.5 rounded-md bg-background p-1.5 ring-1 ring-surface-border"
             >
               <span
                 className="size-3.5 shrink-0 rounded-full"
-                style={{ background: option.preview.accent }}
+                style={{ background: option.accent }}
               />
               <span className="flex-1 space-y-0.5">
-                <span
-                  className="block h-1 w-3/4 rounded-full opacity-60"
-                  style={{ background: option.preview.text }}
-                />
-                <span
-                  className="block h-1 w-1/2 rounded-full opacity-25"
-                  style={{ background: option.preview.text }}
-                />
+                <span className="block h-1 w-3/4 rounded-full bg-foreground/50" />
+                <span className="block h-1 w-1/2 rounded-full bg-foreground/20" />
               </span>
+              <span
+                className="h-2.5 w-5 shrink-0 rounded-sm"
+                style={{ background: option.accent }}
+              />
             </span>
-            <span className="px-0.5 text-caption font-medium text-foreground">
-              {option.label}
+            <span className="flex items-center gap-1 px-0.5 text-caption font-medium text-foreground">
+              <span className="min-w-0 flex-1 truncate">{option.label}</span>
+              {active && (
+                <Check
+                  className="size-3.5 shrink-0 text-foreground"
+                  aria-hidden="true"
+                />
+              )}
             </span>
           </button>
         );
@@ -199,7 +200,7 @@ function RouteRestoreSection() {
       description="当前设备：再次打开 PWA 时回到上次访问的页面"
     >
       <SettingsGroup>
-        <SettingsRow
+        <SettingsSwitchRow
           label="记住当前设备的最后访问位置"
           htmlFor="route-restore"
           description="关闭后，每次重新打开都进入默认主页。"

@@ -166,7 +166,7 @@ export function ProviderList({
         <p className="text-body text-muted-foreground">
           暂无模型配置，请点击下方按钮添加。
         </p>
-        <Button size="sm" onClick={onAdd} disabled={disabled}>
+        <Button onClick={onAdd} disabled={disabled}>
           <Plus />
           添加模型配置
         </Button>

@@ -14,6 +14,7 @@ import {
 import { toast } from 'sonner';
 
 import { wsManager } from '@/api/ws';
+import { EmptyState } from '@/components/common/EmptyState';
 import { IconButton } from '@/components/common/IconButton';
 import { ListGroup, ListRow } from '@/components/common/ListRow';
 import { Badge } from '@/components/ui/badge';
@@ -69,6 +70,7 @@ import {
   SettingsRow,
   SettingsSection,
 } from './SettingsLayout';
+import { SettingsSwitchRow } from './SettingsFormControls';
 import { usePairedChats } from './hooks/usePairedChats';
 import { usePairingCode } from './hooks/usePairingCode';
 import { ProviderConnectionFields } from './channel-accounts/ProviderConnectionFields';
@@ -202,7 +204,7 @@ export function ChannelAccountsManager() {
           <IconButton
             label="刷新"
             variant="outline"
-            size="icon-sm"
+            size="icon"
             disabled={loading}
             onClick={() => void loadAccounts()}
             icon={
@@ -211,8 +213,8 @@ export function ChannelAccountsManager() {
               />
             }
           />
-          <Button type="button" size="sm" onClick={() => setCreateOpen(true)}>
-            <Plus className="size-3.5" />
+          <Button type="button" onClick={() => setCreateOpen(true)}>
+            <Plus className="size-4" />
             添加账号
           </Button>
         </>
@@ -245,27 +247,22 @@ export function ChannelAccountsManager() {
         </SettingsGroup>
       ) : accounts.length === 0 ? (
         <SettingsGroup>
-          <div className="flex flex-col items-center px-6 py-10 text-center">
-            <span className="flex size-9 items-center justify-center rounded-lg bg-muted text-muted-foreground ring-1 ring-surface-border">
-              <Bot className="size-4.5" />
-            </span>
-            <p className="mt-3 text-body font-medium text-foreground">
-              还没有渠道账号
-            </p>
-            <p className="mt-1 text-caption text-muted-foreground">
-              添加第一个 Bot，完成渠道自己的凭证或扫码接入流程。
-            </p>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="mt-4"
-              onClick={() => setCreateOpen(true)}
-            >
-              <Plus className="size-3.5" />
-              添加渠道账号
-            </Button>
-          </div>
+          <EmptyState
+            icon={Bot}
+            title="还没有渠道账号"
+            description="添加第一个 Bot，完成渠道自己的凭证或扫码接入流程。"
+            className="py-10"
+            action={
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setCreateOpen(true)}
+              >
+                <Plus className="size-4" />
+                添加渠道账号
+              </Button>
+            }
+          />
         </SettingsGroup>
       ) : (
         <ListGroup>
@@ -539,7 +536,7 @@ function CreateChannelAccountDialog({
       open={open}
       onOpenChange={(value) => !value && !saving && onClose()}
     >
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>添加渠道账号</DialogTitle>
           <DialogDescription>
@@ -584,7 +581,7 @@ function CreateChannelAccountDialog({
                   id="new-channel-name"
                   value={name}
                   onChange={(event) => setName(event.target.value)}
-                  placeholder={`例如：客服${definition.label} Bot`}
+                  placeholder={`例如：${spacedLabel('客服', definition.label)} Bot`}
                   autoFocus
                 />
               </div>
@@ -607,6 +604,7 @@ function CreateChannelAccountDialog({
           </div>
         ) : (
           <AccountRoutingFields
+            mode="create"
             idPrefix="new-channel-routing"
             provider={provider}
             enabled={enabled}
@@ -724,6 +722,7 @@ function AccountSettingsDialog({
               />
             </div>
             <AccountRoutingFields
+              mode="edit"
               idPrefix="channel-settings-routing"
               provider={account.provider}
               enabled={enabled}
@@ -853,9 +852,11 @@ function AccountConnectionDialog({
 
   return (
     <Dialog open onOpenChange={(value) => !value && !saving && onClose()}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+      <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>{providerLabel(account.provider)}连接</DialogTitle>
+          <DialogTitle>
+            {spacedLabel(providerLabel(account.provider), '连接')}
+          </DialogTitle>
           <DialogDescription>
             管理“{account.name}
             ”的认证和协议设置。渠道会话的绑定目标请在绑定管理中选择。
@@ -977,21 +978,6 @@ function AccountConnectionDialog({
                 </Button>
               </div>
             )}
-
-            {account.has_credentials && (
-              <div className="border-t border-surface-border pt-4">
-                <Button
-                  type="button"
-                  variant="destructive"
-                  size="sm"
-                  disabled={saving}
-                  onClick={() => void revokeCredentials()}
-                >
-                  <Trash2 className="size-3.5" />
-                  清除连接凭证
-                </Button>
-              </div>
-            )}
           </div>
         )}
 
@@ -1006,6 +992,18 @@ function AccountConnectionDialog({
           </p>
         )}
         <DialogFooter>
+          {definition.authMode !== 'qr_session' && account.has_credentials && (
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={saving}
+              onClick={() => void revokeCredentials()}
+              className="sm:mr-auto"
+            >
+              <Trash2 className="size-4" />
+              清除连接凭证
+            </Button>
+          )}
           <Button
             type="button"
             variant="outline"
@@ -1039,6 +1037,7 @@ function AccountPairingSection({ account }: { account: ChannelAccount }) {
 }
 
 function AccountRoutingFields({
+  mode,
   idPrefix,
   provider,
   enabled,
@@ -1049,6 +1048,7 @@ function AccountRoutingFields({
   onDefaultChange,
   onWorkspaceChange,
 }: {
+  mode: 'create' | 'edit';
   idPrefix: string;
   provider: ChannelProvider;
   enabled: boolean;
@@ -1064,14 +1064,14 @@ function AccountRoutingFields({
       <SettingsGroup>
         <ToggleField
           id={`${idPrefix}-enabled`}
-          label="创建后启用账号"
+          label={mode === 'create' ? '创建后启用账号' : '启用账号'}
           description="停用只会断开消息连接，不会删除凭证或扫码授权。"
           checked={enabled}
           onChange={onEnabledChange}
         />
         <ToggleField
           id={`${idPrefix}-default`}
-          label={`设为默认${providerLabel(provider)}账号`}
+          label={spacedLabel('设为默认', providerLabel(provider), '账号')}
           description="没有明确指定账号时，优先使用这个账号。"
           checked={isDefault}
           onChange={onDefaultChange}
@@ -1114,12 +1114,11 @@ function ToggleField({
   onChange: (value: boolean) => void;
 }) {
   return (
-    <SettingsRow
+    <SettingsSwitchRow
       label={label}
       description={description}
       htmlFor={id}
       control={<Switch id={id} checked={checked} onCheckedChange={onChange} />}
-      className="[&>div]:flex-row [&>div]:items-center [&>div]:justify-between"
     />
   );
 }
@@ -1201,6 +1200,15 @@ function defaultTargetLabel(
   if (account.default_workspace_jid)
     return `工作区偏好：${workspaces.find((item) => item.jid === account.default_workspace_jid)?.name ?? '已删除工作区'}`;
   return '未设置工作区偏好；渠道需单独绑定';
+}
+
+/** Joins copy fragments, spacing a Latin provider name from adjacent CJK text. */
+function spacedLabel(...parts: string[]) {
+  return parts.reduce((text, part) =>
+    /[A-Za-z0-9]$/.test(text) || /^[A-Za-z0-9]/.test(part)
+      ? `${text} ${part}`
+      : text + part,
+  );
 }
 
 function getApiMessage(error: unknown, fallback: string) {

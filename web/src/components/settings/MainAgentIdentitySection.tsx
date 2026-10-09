@@ -13,6 +13,7 @@ import {
   SettingsGroup,
   SettingsSection,
 } from './SettingsLayout';
+import { SettingsFormFooter } from './SettingsFormControls';
 import { getErrorMessage } from './types';
 
 const MAX_AVATAR_BYTES = 3 * 1024 * 1024;
@@ -37,6 +38,18 @@ export function MainAgentIdentitySection() {
     setMode(appearance?.aiAvatarMode || 'brand');
     setStyleEditorOpen(appearance?.aiAvatarMode === 'emoji');
   }, [appearance]);
+
+  const savedEmoji = appearance?.aiAvatarEmoji || '🐱';
+  const savedColor = appearance?.aiAvatarColor || '#0d9488';
+  const emojiDirty = emoji !== savedEmoji || color !== savedColor;
+
+  // Drop the unsaved Emoji draft; the editor only stays open while Emoji is
+  // the active avatar style.
+  const cancelEmojiEdit = () => {
+    setEmoji(savedEmoji);
+    setColor(savedColor);
+    if (mode !== 'emoji') setStyleEditorOpen(false);
+  };
 
   const saveFallback = async () => {
     setSaving(true);
@@ -194,29 +207,34 @@ export function MainAgentIdentitySection() {
         </div>
 
         {styleEditorOpen && (
-          <>
-            <div className="grid gap-6 px-4 py-4 sm:grid-cols-2">
-              <SettingsField label="Emoji">
-                <EmojiPicker value={emoji} onChange={setEmoji} />
-              </SettingsField>
-              <SettingsField label="背景色">
-                <ColorPicker value={color} onChange={setColor} />
-              </SettingsField>
-            </div>
-            <div className="flex justify-end px-4 py-3">
-              <Button
-                type="button"
-                size="sm"
-                onClick={saveFallback}
-                disabled={saving}
-              >
-                {saving && <Loader2 className="size-3.5 animate-spin" />}
-                保存 Emoji 头像
-              </Button>
-            </div>
-          </>
+          <div className="grid gap-6 px-4 py-4 sm:grid-cols-2">
+            <SettingsField label="Emoji">
+              <EmojiPicker value={emoji} onChange={setEmoji} />
+            </SettingsField>
+            <SettingsField label="背景色">
+              <ColorPicker value={color} onChange={setColor} />
+            </SettingsField>
+          </div>
         )}
       </SettingsGroup>
+      {styleEditorOpen && (
+        <SettingsFormFooter>
+          {(mode !== 'emoji' || emojiDirty) && (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={cancelEmojiEdit}
+              disabled={saving}
+            >
+              取消
+            </Button>
+          )}
+          <Button type="button" onClick={saveFallback} disabled={saving}>
+            {saving && <Loader2 className="size-4 animate-spin" />}
+            保存 Emoji 头像
+          </Button>
+        </SettingsFormFooter>
+      )}
     </SettingsSection>
   );
 }

@@ -54,7 +54,12 @@ export interface CommandSourceInput {
   navItems: { path: string; label: string; icon: LucideIcon }[];
   settingsSections: {
     label: string;
-    items: { key: string; label: string; icon: LucideIcon }[];
+    items: {
+      key: string;
+      label: string;
+      icon: LucideIcon;
+      keywords?: string[];
+    }[];
   }[];
   groups: Record<string, GroupInfo>;
   agents: Record<string, AgentInfo[]>;
@@ -191,7 +196,7 @@ export function buildCommandGroups(
         id: `settings:${item.key}`,
         label: item.label,
         hint: section.label,
-        keywords: ['设置', 'settings', item.key],
+        keywords: ['设置', 'settings', item.key, ...(item.keywords ?? [])],
         icon: item.icon,
         action: {
           type: 'navigate',

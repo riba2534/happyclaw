@@ -5,6 +5,7 @@ import {
   NativeSelect,
   NativeSelectOption,
 } from '@/components/ui/native-select';
+import { EmptyState } from '@/components/common/EmptyState';
 import { SearchInput } from '@/components/common/SearchInput';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { IconButton } from '@/components/common/IconButton';
@@ -307,12 +308,11 @@ export function BindingsSection() {
         actions={
           <Button
             variant="outline"
-            size="sm"
             onClick={reload}
             disabled={loading || syncing}
           >
             <RefreshCw
-              className={`size-3.5 ${loading || syncing ? 'motion-safe:animate-spin' : ''}`}
+              className={`size-4 ${loading || syncing ? 'motion-safe:animate-spin' : ''}`}
             />
             {syncing ? '正在同步 Bot 聊天' : '同步聊天'}
           </Button>
@@ -437,22 +437,25 @@ export function BindingsSection() {
           </SettingsGroup>
         ) : bindings.length === 0 ? (
           <SettingsGroup>
-            <div className="flex flex-col items-center gap-3 px-6 py-10 text-center">
-              <span className="flex size-9 items-center justify-center rounded-lg bg-muted text-muted-foreground ring-1 ring-surface-border">
-                <MessageSquare className="size-4.5" />
-              </span>
-              <p className="max-w-md text-caption leading-5 text-muted-foreground">
-                暂无 IM 渠道。在飞书、Telegram、QQ、微信、钉钉、Discord 或
-                WhatsApp 中向 Bot 发送消息后，渠道会自动出现在这里。
-              </p>
-            </div>
+            <EmptyState
+              icon={MessageSquare}
+              title="暂无 IM 渠道"
+              description="在飞书、Telegram、QQ、微信、钉钉、Discord 或 WhatsApp 中向 Bot 发送消息后，渠道会自动出现在这里。"
+              className="py-10"
+            />
           </SettingsGroup>
         ) : filtered.length === 0 ? (
-          <div className="rounded-xl px-6 py-10 text-center text-caption text-muted-foreground ring-1 ring-surface-border ring-inset">
-            {selectedChannelLabel && !search.trim()
-              ? `暂无 ${selectedChannelLabel} 渠道。请先完成该渠道配置，并向 Bot 发送一条消息。`
-              : '没有匹配的渠道'}
-          </div>
+          <SettingsGroup>
+            {selectedChannelLabel && !search.trim() ? (
+              <EmptyState
+                title={`暂无 ${selectedChannelLabel} 渠道`}
+                description="请先完成该渠道配置，并向 Bot 发送一条消息。"
+                className="py-10"
+              />
+            ) : (
+              <EmptyState title="没有匹配的渠道" className="py-10" />
+            )}
+          </SettingsGroup>
         ) : (
           <div className="space-y-6 pt-2">
             {bindingSections.map((section) =>

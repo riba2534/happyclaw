@@ -28,7 +28,15 @@ const base = {
   settingsSections: [
     {
       label: '账户设置',
-      items: [{ key: 'profile', label: '个人资料', icon: Settings }],
+      items: [
+        { key: 'profile', label: '个人资料', icon: Settings },
+        {
+          key: 'security',
+          label: '安全与设备',
+          icon: Settings,
+          keywords: ['密码'],
+        },
+      ],
     },
   ],
   groups: {
@@ -96,5 +104,9 @@ describe('command palette items', () => {
       type: 'navigate',
       to: '/settings?tab=profile',
     });
+    // Section keywords make ⌘K find "密码" under 安全与设备.
+    expect(
+      settings.find((item) => item.id === 'settings:security')?.keywords,
+    ).toContain('密码');
   });
 });

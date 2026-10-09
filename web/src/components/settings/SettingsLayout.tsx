@@ -72,6 +72,8 @@ export interface SettingsRowProps {
   children?: ReactNode;
   htmlFor?: string;
   className?: string;
+  /** Keep a compact control (e.g. a Switch) on the right on phones too. */
+  inline?: boolean;
 }
 
 export function SettingsRow({
@@ -81,11 +83,19 @@ export function SettingsRow({
   children,
   htmlFor,
   className,
+  inline = false,
 }: SettingsRowProps) {
   const Label = htmlFor ? 'label' : 'div';
   return (
     <div data-slot="settings-row" className={cn('px-4 py-3', className)}>
-      <div className="flex min-h-9 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
+      <div
+        className={cn(
+          'flex min-h-9 sm:gap-6',
+          inline
+            ? 'flex-row items-center justify-between gap-4'
+            : 'flex-col gap-2 sm:flex-row sm:items-center sm:justify-between',
+        )}
+      >
         <div className="min-w-0">
           <Label
             htmlFor={htmlFor}

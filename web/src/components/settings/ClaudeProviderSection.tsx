@@ -283,7 +283,7 @@ export function ClaudeProviderSection({
         description={`${providers.length} 个模型配置`}
         actions={
           providers.length > 0 && (
-            <Button size="sm" onClick={handleAdd} disabled={busy}>
+            <Button onClick={handleAdd} disabled={busy}>
               <Plus />
               添加模型配置
             </Button>

@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { getErrorMessage } from './types';
 import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
+import { SettingsFormFooter } from './SettingsFormControls';
 import { withBasePath } from '../../utils/url';
 import type { AppearanceConfig } from '../../stores/auth';
 
@@ -320,17 +321,16 @@ export function AppearanceSection() {
               />
             }
           />
-          <div className="flex justify-end px-4 py-3">
-            <Button
-              size="sm"
-              onClick={handleSave}
-              disabled={saving || pendingMutations > 0 || !appName.trim()}
-            >
-              {saving && <Loader2 className="size-3.5 animate-spin" />}
-              保存系统品牌
-            </Button>
-          </div>
         </SettingsGroup>
+        <SettingsFormFooter>
+          <Button
+            onClick={handleSave}
+            disabled={saving || pendingMutations > 0 || !appName.trim()}
+          >
+            {saving && <Loader2 className="size-4 animate-spin" />}
+            保存系统品牌
+          </Button>
+        </SettingsFormFooter>
       </SettingsSection>
 
       <SettingsSection

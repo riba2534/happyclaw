@@ -11,7 +11,44 @@ import { confirmDialog } from '@/stores/confirm';
 import { api } from '../../api/client';
 import { useAuthStore } from '../../stores/auth';
 import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
+import { SettingsFormFooter } from './SettingsFormControls';
 import { getErrorMessage, type SessionInfo } from './types';
+
+const COLLAPSED_SESSION_COUNT = 10;
+
+const UA_BROWSERS: Array<[RegExp, string]> = [
+  [/HeadlessChrome\//, 'Headless Chrome'],
+  [/Edg(?:e|A|iOS)?\//, 'Edge'],
+  [/OPR\/|Opera/, 'Opera'],
+  [/SamsungBrowser\//, 'Samsung Internet'],
+  [/MicroMessenger\//, '微信'],
+  [/Lark\/|Feishu/i, '飞书'],
+  [/Firefox\/|FxiOS\//, 'Firefox'],
+  [/CriOS\/|Chrome\/|Chromium\//, 'Chrome'],
+  [/Version\/[\d.]+.*Safari\//, 'Safari'],
+  [/^curl\//i, 'curl'],
+];
+
+const UA_SYSTEMS: Array<[RegExp, string]> = [
+  [/iPad/, 'iPadOS'],
+  [/iPhone|iPod/, 'iOS'],
+  [/Android/, 'Android'],
+  [/CrOS/, 'ChromeOS'],
+  [/Windows/, 'Windows'],
+  [/Macintosh|Mac OS X/, 'macOS'],
+  [/Linux|X11/, 'Linux'],
+];
+
+/** Readable device name such as "Chrome · macOS" from a User-Agent. */
+function describeUserAgent(userAgent: string | null): string {
+  const ua = userAgent?.trim();
+  if (!ua) return '未知设备';
+  const browser = UA_BROWSERS.find(([pattern]) => pattern.test(ua))?.[1];
+  const system = UA_SYSTEMS.find(([pattern]) => pattern.test(ua))?.[1];
+  const parts = [browser, system].filter(Boolean);
+  if (parts.length > 0) return parts.join(' · ');
+  return ua.split(/[\s(]/)[0] || '未知设备';
+}
 
 export function SecuritySection() {
   const { logout, changePassword } = useAuthStore();
@@ -22,6 +59,7 @@ export function SecuritySection() {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
+  const [showAllSessions, setShowAllSessions] = useState(false);
 
   const loadSessions = useCallback(async () => {
     setLoading(true);
@@ -89,6 +127,17 @@ export function SecuritySection() {
     if (confirmed) void logout();
   };
 
+  const orderedSessions = [...sessions].sort(
+    (a, b) => Number(b.is_current) - Number(a.is_current),
+  );
+  const visibleSessions = showAllSessions
+    ? orderedSessions
+    : orderedSessions.slice(0, COLLAPSED_SESSION_COUNT);
+  const hiddenSessionCount = Math.max(
+    0,
+    sessions.length - COLLAPSED_SESSION_COUNT,
+  );
+
   return (
     <div className="space-y-8">
       <SettingsSection
@@ -125,36 +174,26 @@ export function SecuritySection() {
               />
             }
           />
-          <div className="flex justify-end px-4 py-3">
-            <Button
-              onClick={handleChangePassword}
-              disabled={
-                changingPassword || !currentPassword || newPassword.length < 8
-              }
-              size="sm"
-            >
-              {changingPassword && (
-                <Loader2 className="size-3.5 animate-spin" />
-              )}
-              修改密码
-            </Button>
-          </div>
         </SettingsGroup>
+        <SettingsFormFooter>
+          <Button
+            onClick={handleChangePassword}
+            disabled={
+              changingPassword || !currentPassword || newPassword.length < 8
+            }
+          >
+            {changingPassword && <Loader2 className="size-4 animate-spin" />}
+            修改密码
+          </Button>
+        </SettingsFormFooter>
       </SettingsSection>
 
       <SettingsSection
         title="登录设备"
         description="查看并撤销当前账户在其他设备上的会话"
         actions={
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={loadSessions}
-            disabled={loading}
-          >
-            <RefreshCw
-              className={`size-3.5 ${loading ? 'animate-spin' : ''}`}
-            />
+          <Button variant="outline" onClick={loadSessions} disabled={loading}>
+            <RefreshCw className={`size-4 ${loading ? 'animate-spin' : ''}`} />
             刷新
           </Button>
         }
@@ -184,7 +223,7 @@ export function SecuritySection() {
           </SettingsGroup>
         ) : (
           <ListGroup>
-            {sessions.map((session) => (
+            {visibleSessions.map((session) => (
               <ListRow
                 key={session.shortId}
                 media={
@@ -193,8 +232,9 @@ export function SecuritySection() {
                   </div>
                 }
                 title={
-                  session.user_agent?.split(' ').slice(0, 3).join(' ') ||
-                  '未知设备'
+                  <span title={session.user_agent ?? undefined}>
+                    {describeUserAgent(session.user_agent)}
+                  </span>
                 }
                 badges={
                   session.is_current && (
@@ -205,10 +245,14 @@ export function SecuritySection() {
                 }
                 description={
                   <>
-                    IP：{session.ip_address || '未知'} · 最后活跃：
-                    {new Date(session.last_active_at).toLocaleString('zh-CN')}
+                    IP：{session.ip_address || '未知'} ·{' '}
+                    <span className="whitespace-nowrap">
+                      最后活跃：
+                      {new Date(session.last_active_at).toLocaleString('zh-CN')}
+                    </span>
                   </>
                 }
+                actionsOnHover
                 actions={
                   !session.is_current && (
                     <IconButton
@@ -229,6 +273,20 @@ export function SecuritySection() {
               />
             ))}
           </ListGroup>
+        )}
+        {!loadError && hiddenSessionCount > 0 && (
+          <div className="flex justify-center">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowAllSessions((current) => !current)}
+              aria-expanded={showAllSessions}
+              className="text-muted-foreground"
+            >
+              {showAllSessions ? '收起' : `显示全部 ${sessions.length} 个`}
+            </Button>
+          </div>
         )}
       </SettingsSection>
 
