@@ -1,17 +1,29 @@
 import { useEffect, useState } from 'react';
 import {
   Download,
+  Globe,
   KeyRound,
   Pencil,
   Plus,
   Save,
+  Server,
+  Terminal,
   Trash2,
   X,
 } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Card, CardContent } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
+import { EmptyState } from '@/components/common/EmptyState';
+import { IconButton } from '@/components/common/IconButton';
+import {
+  Callout,
+  CapabilityMedia,
+  ChoiceCard,
+  DetailPanel,
+} from '@/components/capabilities/capability-ui';
+import { confirmDialog } from '@/stores/confirm';
 import { toast } from 'sonner';
 import type { McpServer } from '../../stores/mcp-servers';
 import { useMcpServersStore } from '../../stores/mcp-servers';
@@ -48,11 +60,9 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
 
   if (!server) {
     return (
-      <Card>
-        <CardContent className="flex items-center justify-center py-8 text-center text-muted-foreground">
-          选择一个 MCP 服务器查看详情
-        </CardContent>
-      </Card>
+      <DetailPanel>
+        <EmptyState icon={Server} title="选择一个 MCP 服务器查看详情" />
+      </DetailPanel>
     );
   }
 
@@ -117,7 +127,13 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
   };
 
   const clearSecrets = async () => {
-    if (!confirm(`清空这个 MCP 的全部${secretLabel}？此操作不能撤销。`)) return;
+    const confirmed = await confirmDialog({
+      title: `清空${secretLabel}`,
+      message: `清空这个 MCP 的全部${secretLabel}？此操作不能撤销。`,
+      confirmText: '清空',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
     setSaving(true);
     try {
       await updateServer(
@@ -134,7 +150,13 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
   };
 
   const handleDelete = async () => {
-    if (!confirm(`确认删除 MCP 服务器「${server.id}」？`)) return;
+    const confirmed = await confirmDialog({
+      title: '删除 MCP 服务器',
+      message: `确认删除 MCP 服务器「${server.id}」？`,
+      confirmText: '删除',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
     setDeleting(true);
     try {
       await deleteServer(server.sourceKey);
@@ -148,87 +170,90 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
   };
 
   return (
-    <Card className="overflow-hidden">
-      <div className="flex flex-wrap items-start justify-between gap-4 border-b p-5 sm:p-6">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="truncate text-xl font-semibold">{server.id}</h2>
-            <span
-              className={`rounded px-2 py-0.5 text-xs ${
-                server.source === 'system'
-                  ? 'bg-blue-100 text-blue-700 dark:bg-blue-950/50 dark:text-blue-300'
-                  : 'bg-muted text-muted-foreground'
-              }`}
-            >
+    <DetailPanel>
+      <div className="px-5 py-4">
+        <div className="flex items-start gap-3">
+          <CapabilityMedia
+            icon={isHttp ? Globe : Terminal}
+            className="size-9"
+          />
+          <div className="flex min-h-9 min-w-0 flex-1 flex-wrap items-center gap-1.5">
+            <h2 className="min-w-0 truncate text-title text-foreground">
+              {server.id}
+            </h2>
+            <Badge variant="neutral">
               {server.source === 'system' ? '系统 MCP' : '我的 MCP'}
-            </span>
+            </Badge>
             {isImported && (
-              <span className="inline-flex items-center gap-1 rounded bg-warning-bg px-2 py-0.5 text-xs text-warning">
-                <Download size={10} /> 宿主机副本
-              </span>
+              <Badge variant="neutral">
+                <Download /> 宿主机副本
+              </Badge>
             )}
-            <span
-              className={`rounded px-2 py-0.5 text-xs ${server.enabled ? 'bg-success-bg text-success' : 'bg-muted text-muted-foreground'}`}
-            >
+            <Badge variant="outline" dot={server.enabled ? 'success' : 'muted'}>
               {server.enabled ? '已启用' : '已禁用'}
-            </span>
+            </Badge>
           </div>
-          {server.description && (
-            <p className="mt-2 text-sm text-muted-foreground">
-              {server.description}
-            </p>
-          )}
-          {server.source === 'system' && (
-            <p className="mt-2 text-xs text-muted-foreground">
-              成员访问：
-              {server.memberAccess === 'shared' ? '共享给成员' : '仅管理员'}
-            </p>
-          )}
-          {server.unavailableReason === 'system_admin_only' && (
-            <p className="mt-2 rounded-lg border border-warning/20 bg-warning-bg px-3 py-2 text-xs leading-5 text-warning">
-              此系统 MCP 仅限管理员使用。普通成员的智能体
-              无法运行它，完整运行配置也不会向普通成员公开。
-            </p>
-          )}
+          <div className="flex shrink-0 gap-1">
+            {!editing && !server.readonly && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={startEdit}
+              >
+                <Pencil />
+                编辑
+              </Button>
+            )}
+            {!server.readonly && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="text-error hover:bg-error/10 hover:text-error"
+                disabled={deleting}
+                onClick={() => void handleDelete()}
+              >
+                <Trash2 />
+                {deleting ? '删除中…' : '删除'}
+              </Button>
+            )}
+          </div>
         </div>
-        <div className="flex gap-2">
-          {!editing && !server.readonly && (
-            <Button type="button" variant="ghost" size="sm" onClick={startEdit}>
-              <Pencil size={15} />
-              编辑
-            </Button>
-          )}
-          {!server.readonly && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="text-error hover:text-error"
-              disabled={deleting}
-              onClick={() => void handleDelete()}
-            >
-              <Trash2 size={15} />
-              {deleting ? '删除中…' : '删除'}
-            </Button>
-          )}
-        </div>
+        {server.description && (
+          <p className="mt-3 text-caption leading-5 text-muted-foreground">
+            {server.description}
+          </p>
+        )}
+        {server.source === 'system' && (
+          <p className="mt-1 text-caption text-muted-foreground">
+            成员访问：
+            {server.memberAccess === 'shared' ? '共享给成员' : '仅管理员'}
+          </p>
+        )}
+        {server.unavailableReason === 'system_admin_only' && (
+          <Callout tone="warning" className="mt-3">
+            此系统 MCP 仅限管理员使用。普通成员的智能体
+            无法运行它，完整运行配置也不会向普通成员公开。
+          </Callout>
+        )}
       </div>
 
       {editing ? (
-        <div className="space-y-5 p-5 sm:p-6">
+        <div className="space-y-5 border-t border-surface-border px-5 py-5">
           {server.readonly && (
-            <p className="rounded-lg bg-muted px-3 py-2 text-xs leading-5 text-muted-foreground">
+            <Callout>
               系统 MCP 由管理员统一管理，你可以查看并在智能体
               能力中引用，但不能修改。
-            </p>
+            </Callout>
           )}
           {hasConflict && (
-            <p className="rounded-lg border border-warning/20 bg-warning-bg px-3 py-2 text-xs leading-5 text-warning">
+            <Callout tone="warning">
               存在同名的系统与用户配置。运行时按系统层、用户层顺序合并，
               {server.effective
                 ? '当前这份配置生效。'
                 : '当前由“我的 MCP”配置覆盖。'}
-            </p>
+            </Callout>
           )}
           {server.source === 'system' && (
             <Field label="成员访问">
@@ -239,31 +264,22 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
                     ['shared', '共享给成员', '允许普通成员的智能体使用'],
                   ] as const
                 ).map(([value, title, description]) => (
-                  <button
+                  <ChoiceCard
                     key={value}
-                    type="button"
                     disabled={saving}
-                    aria-pressed={editMemberAccess === value}
-                    onClick={() => setEditMemberAccess(value)}
-                    className={`rounded-lg border px-3 py-2 text-left transition-colors ${
-                      editMemberAccess === value
-                        ? 'border-primary bg-brand-50 ring-1 ring-primary'
-                        : 'border-border hover:bg-muted/60'
-                    }`}
-                  >
-                    <span className="block text-sm font-medium">{title}</span>
-                    <span className="mt-0.5 block text-[11px] text-muted-foreground">
-                      {description}
-                    </span>
-                  </button>
+                    selected={editMemberAccess === value}
+                    onSelect={() => setEditMemberAccess(value)}
+                    title={title}
+                    description={description}
+                  />
                 ))}
               </div>
               {editMemberAccess === 'shared' && (
-                <p className="mt-2 rounded-lg border border-warning/20 bg-warning-bg px-3 py-2 text-xs leading-5 text-warning">
+                <Callout tone="warning" className="mt-2">
                   共享会把完整 command、args、url、env 和 headers
                   配置交给普通成员的智能体
                   运行。请确认其中所有凭据都允许成员使用。
-                </p>
+                </Callout>
               )}
             </Field>
           )}
@@ -299,16 +315,14 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
                         }
                         className="font-mono"
                       />
-                      <Button
-                        type="button"
-                        variant="ghost"
+                      <IconButton
+                        label="移除参数"
+                        icon={<X />}
                         size="icon"
                         onClick={() =>
                           setEditArgs(editArgs.filter((_, i) => i !== index))
                         }
-                      >
-                        <X size={15} />
-                      </Button>
+                      />
                     </div>
                   ))}
                   <Button
@@ -317,7 +331,7 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
                     size="sm"
                     onClick={() => setEditArgs([...editArgs, ''])}
                   >
-                    <Plus size={14} />
+                    <Plus />
                     添加参数
                   </Button>
                 </div>
@@ -331,17 +345,17 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
             />
           </Field>
 
-          <div className="rounded-lg border p-4">
+          <div className="rounded-lg p-4 ring-1 ring-surface-border">
             <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
+              <div className="min-w-0">
                 <Label>{secretLabel}</Label>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                <p className="mt-1 text-caption leading-5 text-muted-foreground">
                   {secretRows === null
                     ? `保留当前 ${secretKeys.length} 项配置。密钥不会回填或显示。`
                     : '保存后会整组替换现有配置；请完整填写需要保留的项目。'}
                 </p>
               </div>
-              <div className="flex gap-2">
+              <div className="flex gap-1.5">
                 <Button
                   type="button"
                   variant="outline"
@@ -355,7 +369,7 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="text-error hover:text-error"
+                    className="text-error hover:bg-error/10 hover:text-error"
                     onClick={() => void clearSecrets()}
                   >
                     清空全部
@@ -399,16 +413,14 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
                       placeholder="输入新值"
                       className="font-mono"
                     />
-                    <Button
-                      type="button"
-                      variant="ghost"
+                    <IconButton
+                      label="移除此项"
+                      icon={<X />}
                       size="icon"
                       onClick={() =>
                         setSecretRows(secretRows.filter((_, i) => i !== index))
                       }
-                    >
-                      <X size={15} />
-                    </Button>
+                    />
                   </div>
                 ))}
                 <Button
@@ -419,7 +431,7 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
                     setSecretRows([...secretRows, { key: '', value: '' }])
                   }
                 >
-                  <Plus size={14} />
+                  <Plus />
                   添加一项
                 </Button>
               </div>
@@ -434,7 +446,7 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
               }
               onClick={() => void saveEdit()}
             >
-              <Save size={15} />
+              <Save />
               {saving ? '保存中…' : '保存'}
             </Button>
             <Button
@@ -451,11 +463,11 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
           </div>
         </div>
       ) : (
-        <div className="space-y-5 p-5 sm:p-6">
+        <div className="space-y-4 border-t border-surface-border px-5 py-4">
           {server.runtimeAvailable !== false && (
             <>
               <Field label={isHttp ? '连接地址' : '命令'}>
-                <div className="break-all rounded-lg bg-muted px-3 py-2 font-mono text-sm">
+                <div className="break-all rounded-lg bg-muted/60 px-3 py-2 font-mono text-caption text-foreground">
                   {isHttp ? server.url : server.command}
                 </div>
               </Field>
@@ -465,7 +477,7 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
                     {server.args.map((arg, index) => (
                       <code
                         key={index}
-                        className="rounded bg-muted px-2 py-1 text-xs"
+                        className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-caption text-foreground"
                       >
                         {arg}
                       </code>
@@ -477,39 +489,41 @@ export function McpServerDetail({ server, onDeleted }: McpServerDetailProps) {
           )}
           <Field label={secretLabel}>
             {secretKeys.length > 0 ? (
-              <div className="space-y-1.5">
+              <ul className="divide-y divide-surface-border rounded-lg ring-1 ring-surface-border">
                 {secretKeys.map((key) => (
-                  <div
+                  <li
                     key={key}
-                    className="flex items-center gap-2 rounded-lg bg-muted px-3 py-2 text-xs"
+                    className="flex items-center gap-2 px-3 py-2 text-caption"
                   >
-                    <KeyRound size={13} className="text-muted-foreground" />
-                    <code className="font-medium">{key}</code>
+                    <KeyRound className="size-3.5 text-faint-foreground" />
+                    <code className="font-mono font-medium text-foreground">
+                      {key}
+                    </code>
                     <span className="ml-auto text-muted-foreground">
                       已安全配置
                     </span>
-                  </div>
+                  </li>
                 ))}
-              </div>
+              </ul>
             ) : hasHiddenSystemSecretKeys ? (
-              <p className="text-xs text-muted-foreground">
+              <p className="text-caption text-muted-foreground">
                 已由管理员配置（名称不可见）
               </p>
             ) : (
-              <p className="text-xs text-muted-foreground">未配置</p>
+              <p className="text-caption text-muted-foreground">未配置</p>
             )}
           </Field>
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-caption text-faint-foreground tabular-nums">
             添加时间：{new Date(server.addedAt).toLocaleString()}
           </p>
-          <p className="rounded-lg bg-muted/60 px-3 py-2 text-xs leading-5 text-muted-foreground">
+          <Callout>
             {isImported
               ? '这是从宿主机导入的独立副本，后续导入不会覆盖它。'
               : '修改会影响新启动的智能体运行环境。已有密钥不会通过 API 或界面再次显示。'}
-          </p>
+          </Callout>
         </div>
       )}
-    </Card>
+    </DetailPanel>
   );
 }
 
@@ -522,7 +536,9 @@ function Field({
 }) {
   return (
     <div>
-      <Label className="mb-1.5 block">{label}</Label>
+      <Label className="mb-1.5 block text-caption font-medium text-muted-foreground">
+        {label}
+      </Label>
       {children}
     </div>
   );
