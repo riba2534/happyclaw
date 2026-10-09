@@ -163,7 +163,7 @@ describe('runner stdout tail', () => {
     expect(outputs.map((o) => o.result)).toEqual(
       Array.from({ length: 300 }, (_, i) => `r${i} ${S} ${E} }{`),
     );
-    expect(state.parseBuffer).toBe('\n');
+    expect(state.frameScanner.pendingChars).toBeLessThan(64);
   });
 
   test('stays linear and bounded under many tiny chunks', () => {

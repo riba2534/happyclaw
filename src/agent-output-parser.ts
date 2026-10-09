@@ -8,6 +8,7 @@ import type { Readable } from 'stream';
 
 import { getSystemSettings } from './runtime-config.js';
 import { logger } from './logger.js';
+import { OutputFrameScanner } from './output-frame-scanner.js';
 import type { ContainerOutput } from './agent-runtime-contracts.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
@@ -26,40 +27,6 @@ function tryParseContainerOutput(jsonStr: string): ContainerOutput | null {
     return null;
   }
   return typeof v === 'object' && v !== null ? (v as ContainerOutput) : null;
-}
-
-function isJsonWhitespace(ch: string): boolean {
-  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
-}
-
-/**
- * Find the end of the JSON object that starts at buf[start] (which must be '{').
- * Returns the index just AFTER the matching closing '}', or -1 if the object is
- * not yet complete in buf. String-aware: braces (and the literal START/END
- * marker strings the payload may quote) inside JSON string values do not affect
- * the brace depth, so this is never fooled by an embedded marker — even when a
- * second frame trails in the same buffer. O(buf length), single pass.
- */
-function findJsonObjectEnd(buf: string, start: number): number {
-  let depth = 0;
-  let inStr = false;
-  let escaped = false;
-  for (let i = start; i < buf.length; i++) {
-    const ch = buf[i];
-    if (inStr) {
-      if (escaped) escaped = false;
-      else if (ch === '\\') escaped = true;
-      else if (ch === '"') inStr = false;
-    } else if (ch === '"') {
-      inStr = true;
-    } else if (ch === '{') {
-      depth++;
-    } else if (ch === '}') {
-      depth--;
-      if (depth === 0) return i + 1;
-    }
-  }
-  return -1;
 }
 
 // ─── Stdout Stream Parser ────────────────────────────────────────────
@@ -94,7 +61,7 @@ export interface StdoutParserState {
    * `min(containerMaxOutputSize, RUNNER_OUTPUT_RETAIN_LIMIT)` chars and at
    * most twice that. A warm runner keeps this state for its whole lifetime, so
    * the full stream must not accumulate here. Frame parsing never reads it
-   * (that is `parseBuffer`).
+   * (that is `frameScanner`).
    */
   stdout: string;
   /** Total stdout chars received, including those dropped from `stdout`. */
@@ -103,7 +70,8 @@ export interface StdoutParserState {
   stdoutTruncated: boolean;
   /** Stdout prefix `parseLegacyOutput()` reads (callers without onOutput). */
   legacyHead: LegacyStdoutHead;
-  parseBuffer: string;
+  /** Incremental START/END frame extractor for `onOutput` callers. */
+  frameScanner: OutputFrameScanner;
   newSessionId: string | undefined;
   outputChain: Promise<void>;
   hasSuccessOutput: boolean;
@@ -146,7 +114,10 @@ export function createStdoutParserState(): StdoutParserState {
     stdoutTotalChars: 0,
     stdoutTruncated: false,
     legacyHead: { text: '', done: false, startIdx: -1, endIdx: -1, carry: '' },
-    parseBuffer: '',
+    frameScanner: new OutputFrameScanner(
+      OUTPUT_START_MARKER,
+      OUTPUT_END_MARKER,
+    ),
     newSessionId: undefined,
     outputChain: Promise.resolve(),
     hasSuccessOutput: false,
@@ -317,116 +288,33 @@ export function attachStdoutHandler(
       );
     }
 
-    // Stream-parse for output markers
+    // Stream-parse for output markers. The scanner is incremental: each
+    // character is examined a bounded number of times however the frames are
+    // chunked (the old buffer rescan was quadratic in frame size).
     if (opts.onOutput) {
-      state.parseBuffer += chunk;
-      const MAX_PARSE_BUFFER = 10 * 1024 * 1024; // 10MB
-      if (state.parseBuffer.length > MAX_PARSE_BUFFER) {
-        logger.warn(
-          { group: opts.groupName },
-          'Parse buffer overflow, truncating',
-        );
-        const lastMarkerIdx =
-          state.parseBuffer.lastIndexOf(OUTPUT_START_MARKER);
-        state.parseBuffer =
-          lastMarkerIdx >= 0
-            ? state.parseBuffer.slice(lastMarkerIdx)
-            : state.parseBuffer.slice(-512);
-      }
-      let startIdx: number;
-      while (
-        (startIdx = state.parseBuffer.indexOf(OUTPUT_START_MARKER)) !== -1
-      ) {
-        const contentStart = startIdx + OUTPUT_START_MARKER.length;
-        // Locate the framed JSON object by brace matching rather than by
-        // scanning for END markers. The agent's reply text can contain literal
-        // START/END marker strings inside the JSON payload; deriving the
-        // object's true end from the JSON structure is both correct (never
-        // fooled by an embedded marker — even when a second frame trails in the
-        // same buffer) and O(payload): no repeated slice+parse per candidate
-        // terminator, which would stall the shared main-process event loop. The
-        // ContainerOutput payload is always a JSON object.
-        let objStart = contentStart;
-        while (
-          objStart < state.parseBuffer.length &&
-          isJsonWhitespace(state.parseBuffer[objStart])
-        ) {
-          objStart++;
-        }
-        if (objStart >= state.parseBuffer.length) break; // only whitespace yet
-
-        // Resync past a broken/unparseable frame so the buffer never stalls
-        // until the size cap (the pre-refactor parser always advanced past a
-        // malformed frame). `knownEnd`, when given, is this frame's already
-        // located END index — used by the parse-failure path, whose object may
-        // legitimately contain literal END marker strings, so we must NOT
-        // re-scan for END from contentStart. Without it (non-object payload),
-        // skip past whichever boundary arrives first: this frame's END (frame
-        // fully delimited but malformed) or a later START. Returns false only
-        // when neither boundary exists yet, so the caller waits for more data.
-        const resyncPastBrokenFrame = (
-          reason: string,
-          knownEnd?: number,
-        ): boolean => {
-          let resyncTo = -1;
-          if (knownEnd !== undefined) {
-            resyncTo = knownEnd + OUTPUT_END_MARKER.length;
-          } else {
-            const nextStart = state.parseBuffer.indexOf(
-              OUTPUT_START_MARKER,
-              contentStart,
-            );
-            const endIdx = state.parseBuffer.indexOf(
-              OUTPUT_END_MARKER,
-              contentStart,
-            );
-            if (endIdx !== -1 && (nextStart === -1 || endIdx < nextStart)) {
-              resyncTo = endIdx + OUTPUT_END_MARKER.length;
-            } else if (nextStart !== -1) {
-              resyncTo = nextStart;
-            }
-          }
-          if (resyncTo === -1) return false;
-          logger.warn({ group: opts.groupName }, reason);
-          state.parseBuffer = state.parseBuffer.slice(resyncTo);
-          return true;
-        };
-
-        if (state.parseBuffer[objStart] !== '{') {
-          // Payload isn't a JSON object — framing is broken.
-          if (
-            resyncPastBrokenFrame(
-              'Framed payload is not a JSON object, resyncing past broken frame',
-            )
-          ) {
-            continue;
-          }
-          break;
-        }
-
-        const objEnd = findJsonObjectEnd(state.parseBuffer, objStart);
-        if (objEnd === -1) break; // object still streaming in — wait
-        const endIdx = state.parseBuffer.indexOf(OUTPUT_END_MARKER, objEnd);
-        if (endIdx === -1) break; // object complete, END marker not here yet
-
-        const parsed = tryParseContainerOutput(
-          state.parseBuffer.slice(objStart, objEnd),
-        );
-        if (!parsed) {
-          // Balanced braces but not a valid ContainerOutput object (should not
-          // happen for well-formed output). The frame is fully delimited (END
-          // already located at endIdx), so drop it and continue rather than
-          // stalling until the buffer cap — no later START is required.
-          resyncPastBrokenFrame(
-            'Framed JSON object failed to parse, skipping frame',
-            endIdx,
+      for (const event of state.frameScanner.push(chunk)) {
+        if (event.kind === 'overflow') {
+          logger.warn(
+            { group: opts.groupName, chars: event.chars },
+            'Framed output object exceeded the size cap, dropping frame',
           );
           continue;
         }
-
-        state.parseBuffer = state.parseBuffer.slice(
-          endIdx + OUTPUT_END_MARKER.length,
-        );
+        if (event.kind === 'broken') {
+          logger.warn({ group: opts.groupName }, event.reason);
+          continue;
+        }
+        const parsed = tryParseContainerOutput(event.json);
+        if (!parsed) {
+          // Balanced braces but not a valid ContainerOutput object (should not
+          // happen for well-formed output). The frame is fully delimited, so
+          // drop it and continue rather than stalling.
+          logger.warn(
+            { group: opts.groupName },
+            'Framed JSON object failed to parse, skipping frame',
+          );
+          continue;
+        }
 
         if (parsed.newSessionId) {
           state.newSessionId = parsed.newSessionId;
