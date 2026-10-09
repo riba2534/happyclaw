@@ -34,6 +34,7 @@ import {
 import { detectImageMimeTypeFromBase64Strict } from './image-detector.js';
 import { isClaudeAttachmentPassDisabled } from './claude-attachments.js';
 import { RUNNER_DISALLOWED_BUILTIN_TOOLS } from './builtin-tool-policy.js';
+import { pluginLoadWarnings } from './sdk-init-audit.js';
 import { pruneProcessedHistoryImagesInTranscript as pruneProcessedHistoryImagesInTranscriptFile } from './history-image-prune.js';
 import { getChannelFromJid } from './channel-prefixes.js';
 
@@ -2064,6 +2065,26 @@ async function runQueryAttempt(
 
   // Poll IPC for follow-up messages and _close/_interrupt sentinel during the query
   let ipcPolling = true;
+  let queryFinished = false;
+  let contextBudgetExceeded:
+    | {
+        startupTokens: number;
+        maxTokens: number;
+        hardThreshold: number;
+        message: string;
+      }
+    | undefined;
+  const contextBudgetExceededResult = (
+    exceeded: NonNullable<typeof contextBudgetExceeded>,
+  ) => ({
+    newSessionId,
+    lastAssistantUuid,
+    closedDuringQuery,
+    interruptedDuringQuery,
+    cancelledIpcReceipts,
+    pipedMessagesDuringQuery,
+    contextBudgetExceeded: exceeded,
+  });
   // Set by a system/informational frame with prevent_continuation (a hook
   // stopped the turn); cleared when the next input turn becomes current.
   let continuationPrevented = false;
@@ -3015,6 +3036,102 @@ async function runQueryAttempt(
       stream.end();
       ipcPolling = false;
     }
+    let contextAuditStarted = false;
+    const publishContextAudit = async (
+      pluginWarnings: string[],
+    ): Promise<void> => {
+      let contextUsage: SDKControlGetContextUsageResponse | undefined;
+      try {
+        contextUsage = await runSdkControlWithTimeout(
+          'getContextUsage',
+          () => q.getContextUsage(),
+          SDK_CONTEXT_USAGE_TIMEOUT_MS,
+        );
+        if (contextUsage.skills) {
+          log(
+            `Skills: ${contextUsage.skills.includedSkills}/${contextUsage.skills.totalSkills} loaded, ${contextUsage.skills.tokens} tokens`,
+          );
+        }
+        log(
+          `Context: ${contextUsage.totalTokens}/${contextUsage.maxTokens} tokens (${contextUsage.percentage.toFixed(1)}%)`,
+        );
+      } catch (ctxErr) {
+        log(
+          `[debug] getContextUsage failed: ${ctxErr instanceof Error ? ctxErr.message : String(ctxErr)}`,
+        );
+      }
+      // The query may have ended while the control request was in flight;
+      // its frames would then be correlated with a later query.
+      if (queryFinished) return;
+      const contextAudit = enrichContextAudit(
+        contextAuditBase,
+        promptAudit,
+        contextUsage,
+      );
+      contextAudit.subagentContract = sdkCompat.audit;
+      for (const warning of pluginWarnings) {
+        contextAudit.warnings.push(warning);
+        logWarn(warning);
+      }
+      const contextBudget = assessContextBudget(contextUsage);
+      contextAudit.contextBudget = contextBudget;
+      if (contextBudget.warning) {
+        contextAudit.warnings.push(contextBudget.warning);
+        log(`[WARN] ${contextBudget.warning}`);
+      }
+      // 1M 上下文缩水告警：带 [1m] 后缀的模型期望约 1M 上下文窗口，若 SDK / 模型资格判定
+      // 静默退回（例如 200K），在此立即暴露而非等到溢出。push 进 warnings 会让下方
+      // emit 的 displayLevel 自动升为 'primary'，在前端醒目展示。
+      if (
+        isExtendedContextModel(queryModelRuntime.model) &&
+        contextUsage &&
+        contextUsage.maxTokens > 0 &&
+        contextUsage.maxTokens < 900_000
+      ) {
+        contextAudit.warnings.push(
+          `上下文窗口仅 ${Math.round(contextUsage.maxTokens / 1000)}K tokens（预期约 1M），1M 上下文可能未生效`,
+        );
+        log(
+          `[WARN] 1M context not active: maxTokens=${contextUsage.maxTokens}`,
+        );
+      }
+      emit({
+        status: 'stream',
+        result: null,
+        streamEvent: {
+          eventType: 'context_audit',
+          agentScope: 'system',
+          displayLevel: contextAudit.warnings.length > 0 ? 'primary' : 'detail',
+          title: 'Agent Context',
+          summary: `${contextAudit.skills.includedSkills ?? contextAudit.skills.totalSkills ?? 0} skills · ${contextAudit.rules.fileCount} rules`,
+          contextAudit,
+        },
+      });
+      if (
+        contextBudget.status === 'hard_exceeded' &&
+        contextBudget.startupTokens !== undefined &&
+        contextBudget.maxTokens !== undefined &&
+        contextBudget.hardThreshold !== undefined
+      ) {
+        const message =
+          contextBudget.error ?? 'startup context budget exceeded';
+        log(`[ERROR] ${message}`);
+        contextBudgetExceeded = {
+          startupTokens: contextBudget.startupTokens,
+          maxTokens: contextBudget.maxTokens,
+          hardThreshold: contextBudget.hardThreshold,
+          message,
+        };
+        // A deterministic configuration error: hide whatever the turn
+        // already streamed and stop it.
+        suppressOutputAfterInterrupt = true;
+        processor.discardPendingTextOutput();
+        interruptQueryForShutdown('Startup context budget exceeded');
+        stream.end();
+        ipcPolling = false;
+        ipcQueryWatcher.close();
+      }
+    };
     for await (const message of q) {
       firstResponseWatchdog.observe(message.type);
       if (message.type === 'system') {
@@ -3568,101 +3685,12 @@ async function runQueryAttempt(
         sdkTransportReady = true;
         scheduleIpcPoll();
 
-        // Log skills and context usage for observability.
-        // getContextUsage() is a newer SDK API; feature-detect to avoid spamming
-        // error logs on older SDK versions where the method is absent.
-        const getCtxUsage = (
-          q as unknown as {
-            getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
-          }
-        ).getContextUsage;
-        let contextUsage: SDKControlGetContextUsageResponse | undefined;
-        if (typeof getCtxUsage === 'function') {
-          try {
-            contextUsage = await runSdkControlWithTimeout(
-              'getContextUsage',
-              () => getCtxUsage.call(q),
-              SDK_CONTEXT_USAGE_TIMEOUT_MS,
-            );
-            if (contextUsage.skills) {
-              log(
-                `Skills: ${contextUsage.skills.includedSkills}/${contextUsage.skills.totalSkills} loaded, ${contextUsage.skills.tokens} tokens`,
-              );
-            }
-            log(
-              `Context: ${contextUsage.totalTokens}/${contextUsage.maxTokens} tokens (${contextUsage.percentage.toFixed(1)}%)`,
-            );
-          } catch (ctxErr) {
-            log(
-              `[debug] getContextUsage failed: ${ctxErr instanceof Error ? ctxErr.message : String(ctxErr)}`,
-            );
-          }
-        }
-        const contextAudit = enrichContextAudit(
-          contextAuditBase,
-          promptAudit,
-          contextUsage,
-        );
-        contextAudit.subagentContract = sdkCompat.audit;
-        const contextBudget = assessContextBudget(contextUsage);
-        contextAudit.contextBudget = contextBudget;
-        if (contextBudget.warning) {
-          contextAudit.warnings.push(contextBudget.warning);
-          log(`[WARN] ${contextBudget.warning}`);
-        }
-        // 1M 上下文缩水告警：带 [1m] 后缀的模型期望约 1M 上下文窗口，若 SDK / 模型资格判定
-        // 静默退回（例如 200K），在此立即暴露而非等到溢出。push 进 warnings 会让下方
-        // emit 的 displayLevel 自动升为 'primary'，在前端醒目展示。
-        if (
-          isExtendedContextModel(queryModelRuntime.model) &&
-          contextUsage &&
-          contextUsage.maxTokens > 0 &&
-          contextUsage.maxTokens < 900_000
-        ) {
-          contextAudit.warnings.push(
-            `上下文窗口仅 ${Math.round(contextUsage.maxTokens / 1000)}K tokens（预期约 1M），1M 上下文可能未生效`,
-          );
-          log(
-            `[WARN] 1M context not active: maxTokens=${contextUsage.maxTokens}`,
-          );
-        }
-        emit({
-          status: 'stream',
-          result: null,
-          streamEvent: {
-            eventType: 'context_audit',
-            agentScope: 'system',
-            displayLevel:
-              contextAudit.warnings.length > 0 ? 'primary' : 'detail',
-            title: 'Agent Context',
-            summary: `${contextAudit.skills.includedSkills ?? contextAudit.skills.totalSkills ?? 0} skills · ${contextAudit.rules.fileCount} rules`,
-            contextAudit,
-          },
-        });
-        if (
-          contextBudget.status === 'hard_exceeded' &&
-          contextBudget.startupTokens !== undefined &&
-          contextBudget.maxTokens !== undefined &&
-          contextBudget.hardThreshold !== undefined
-        ) {
-          const message =
-            contextBudget.error ?? 'startup context budget exceeded';
-          log(`[ERROR] ${message}`);
-          stream.end();
-          return {
-            newSessionId,
-            lastAssistantUuid,
-            closedDuringQuery,
-            interruptedDuringQuery,
-            cancelledIpcReceipts,
-            pipedMessagesDuringQuery,
-            contextBudgetExceeded: {
-              startupTokens: contextBudget.startupTokens,
-              maxTokens: contextBudget.maxTokens,
-              hardThreshold: contextBudget.hardThreshold,
-              message,
-            },
-          };
+        // system/init arrives at the start of every turn. The context audit is
+        // a once-per-query diagnostic and must not hold up the message stream,
+        // so it runs in the background.
+        if (!contextAuditStarted) {
+          contextAuditStarted = true;
+          void publishContextAudit(pluginLoadWarnings(message));
         }
       }
 
@@ -4032,6 +4060,10 @@ async function runQueryAttempt(
       }
     }
 
+    if (contextBudgetExceeded) {
+      return contextBudgetExceededResult(contextBudgetExceeded);
+    }
+
     if (backgroundProtocolFailure) {
       throw backgroundProtocolFailure;
     }
@@ -4071,6 +4103,12 @@ async function runQueryAttempt(
     };
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
+
+    // The budget check interrupted the query; its verdict is the outcome.
+    if (contextBudgetExceeded) {
+      processor.cleanup();
+      return contextBudgetExceededResult(contextBudgetExceeded);
+    }
 
     // The dedicated protocol watchdog owns this terminal even though it used
     // query.interrupt() to unwind a stuck SDK iterator. Do not let the generic
@@ -4215,6 +4253,7 @@ async function runQueryAttempt(
     // 继续抛出
     throw err;
   } finally {
+    queryFinished = true;
     firstResponseWatchdog?.clear();
     clearBackgroundProtocolDebtWatchdog();
     backgroundResultGate.dispose();
