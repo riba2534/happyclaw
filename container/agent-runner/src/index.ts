@@ -834,6 +834,10 @@ class MessageStream {
       message: { role: 'user', content },
       parent_tool_use_id: null,
       session_id: '',
+      // An input written while a turn runs belongs to the next round (the
+      // host's durable-queue contract); the SDK default 'next' would fold it
+      // into the running turn instead. Steering interrupts explicitly.
+      priority: 'later',
       // Client uuid: the CLI echoes it in result.user_message_uuids, which
       // tells the delivery tracker which queued inputs a turn consumed.
       ...(uuid ? { uuid } : {}),
@@ -2103,7 +2107,7 @@ async function runQueryAttempt(
   let clearBackgroundProtocolDebtWatchdog: () => void = () => {};
   const POST_RESULT_TIMEOUT_MS = 5_000;
   // queryRef is set just before the for-await loop so pollIpcDuringQuery can call interrupt()
-  let queryRef: Pick<Query, 'interrupt'> | null = null;
+  let queryRef: Pick<Query, 'interrupt' | 'close'> | null = null;
   let messageCount = 0;
   let resultCount = 0;
   let postResultInterruptRequested = false;
@@ -2247,15 +2251,47 @@ async function runQueryAttempt(
   // 这里主动 query.interrupt() 中止那个卡住的工具调用，让 for-await 自然结束、runner 回到
   // waitForIpcMessage() 保持 warm——不杀整个 runner。interrupt 引发的 SDK 错误由 catch 分支
   // 通过 postResultInterruptRequested 归类为 non-fatal（不退避、不上报为失败）。
+  /**
+   * Stop the active SDK turn without re-running input queued behind it.
+   *
+   * On interrupt Claude Code at once starts the next message already written
+   * to it (verified with 2.1.296, even after the input stream ended), while
+   * the runner requeues every later accepted turn for its next query; such a
+   * turn would run twice, once unseen in this superseded process. With later
+   * turns queued in the CLI the process is closed instead, and an interrupt
+   * receipt that still lists queued input closes it as well.
+   */
+  const stopActiveTurn = (
+    activeQuery: Pick<Query, 'interrupt' | 'close'>,
+    reason: string,
+    turnsQueuedInCli = ipcDeliveryTracker.laterTurnMessages.length,
+  ): void => {
+    if (turnsQueuedInCli > 0) {
+      log(
+        `${reason}: closing the query, ${turnsQueuedInCli} later input(s) are queued in Claude Code`,
+      );
+      activeQuery.close();
+      return;
+    }
+    activeQuery
+      .interrupt()
+      .then((receipt) => {
+        if (!receipt?.still_queued?.length) return;
+        log(
+          `${reason}: closing the query, the interrupt left ${receipt.still_queued.length} queued input(s)`,
+        );
+        activeQuery.close();
+      })
+      .catch((err: unknown) => log(`${reason} interrupt failed: ${err}`));
+  };
+
   const interruptQueryForShutdown = (reason: string) => {
     if (!queryRef) return;
     if (postResultInterruptRequested) return;
     const activeQuery = queryRef;
     postResultInterruptRequested = true;
     log(`${reason}, interrupting current query before closing stream`);
-    activeQuery
-      .interrupt()
-      .catch((err: unknown) => log(`Shutdown interrupt failed: ${err}`));
+    stopActiveTurn(activeQuery, `${reason} (shutdown)`);
   };
 
   const pollIpcDuringQuery = async (): Promise<void> => {
@@ -2278,6 +2314,7 @@ async function runQueryAttempt(
       cancelBackgroundResultCompletion();
       clearBackgroundProtocolDebtWatchdog();
       interruptedDuringQuery = true;
+      const turnsQueuedInCli = ipcDeliveryTracker.laterTurnMessages.length;
       const cancelledInputs = ipcDeliveryTracker.cancelCurrentTurn();
       cancelledIpcReceipts = cancelledInputs
         .map((message) => message.receipt)
@@ -2297,9 +2334,9 @@ async function runQueryAttempt(
       // internal-call remainder.
       emitResultUsage({}, containerInput.turnId || generateTurnId());
       lastInterruptRequestedAt = Date.now();
-      queryRef
-        ?.interrupt()
-        .catch((err: unknown) => log(`Interrupt call failed: ${err}`));
+      if (queryRef) {
+        stopActiveTurn(queryRef, 'Interrupt sentinel', turnsQueuedInCli);
+      }
       stream.end();
       ipcPolling = false;
       ipcQueryWatcher.close();
@@ -3034,9 +3071,7 @@ async function runQueryAttempt(
         `Cancelled ${cancelledInputs.length} IPC input message(s) as the superseded turn started`,
       );
       suppressOutputAfterInterrupt = true;
-      q.interrupt().catch((err: unknown) =>
-        log(`Immediate interrupt call failed: ${err}`),
-      );
+      stopActiveTurn(q, 'Immediate interrupt call');
       stream.end();
       ipcPolling = false;
     }
@@ -3211,9 +3246,7 @@ async function runQueryAttempt(
             assistantTextTracker.reset();
             canonicalAssistantUuid = undefined;
             stream.end();
-            q.interrupt().catch((err: unknown) =>
-              log(`Rate-limit interrupt failed: ${err}`),
-            );
+            stopActiveTurn(q, 'Rate-limit interrupt');
             return {
               newSessionId,
               lastAssistantUuid,
@@ -3252,9 +3285,7 @@ async function runQueryAttempt(
             stream.end();
             ipcPolling = false;
             ipcQueryWatcher.close();
-            q.interrupt().catch((err: unknown) =>
-              log(`Model-fallback interrupt failed: ${err}`),
-            );
+            stopActiveTurn(q, 'Model-fallback interrupt');
             return {
               newSessionId,
               lastAssistantUuid,
@@ -3289,9 +3320,7 @@ async function runQueryAttempt(
           assistantTextTracker.reset();
           canonicalAssistantUuid = undefined;
           stream.end();
-          q.interrupt().catch((err: unknown) =>
-            log(`Model-limit interrupt failed: ${err}`),
-          );
+          stopActiveTurn(q, 'Model-limit interrupt');
           return {
             newSessionId,
             lastAssistantUuid,
@@ -3502,9 +3531,7 @@ async function runQueryAttempt(
         stream.end();
         ipcPolling = false;
         ipcQueryWatcher.close();
-        q.interrupt().catch((err: unknown) =>
-          log(`No-visible companion interrupt failed: ${err}`),
-        );
+        stopActiveTurn(q, 'No-visible companion interrupt');
         return {
           newSessionId,
           lastAssistantUuid,
@@ -3609,9 +3636,7 @@ async function runQueryAttempt(
           if (msgParentToolUseId) {
             // The parent loop is still mid-tool and would otherwise keep
             // spending this attempt on an account the host is quarantining.
-            q.interrupt().catch((err: unknown) =>
-              log(`Sub-agent provider-error interrupt failed: ${err}`),
-            );
+            stopActiveTurn(q, 'Sub-agent provider-error interrupt');
           }
           return {
             newSessionId,

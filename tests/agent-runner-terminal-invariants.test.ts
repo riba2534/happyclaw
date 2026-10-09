@@ -29,7 +29,7 @@ describe('Agent Runner terminal invariants', () => {
     expect(routing).toBeGreaterThan(-1);
     expect(boundary).toBeLessThan(routing);
     expect(source).toMatch(
-      /parentToolUseId: msgParentToolUseId,[\s\S]*?if \(msgParentToolUseId\) \{[\s\S]*?q\.interrupt\(\)/,
+      /parentToolUseId: msgParentToolUseId,[\s\S]*?if \(msgParentToolUseId\) \{[\s\S]*?stopActiveTurn\(q,/,
     );
   });
 

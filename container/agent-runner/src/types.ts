@@ -530,6 +530,12 @@ export interface SDKUserMessage {
   };
   parent_tool_use_id: null;
   session_id: string;
+  /**
+   * When Claude Code reads a message that arrives during a running turn:
+   * 'next' (the SDK default) folds it into that turn after its current tool
+   * calls, 'later' holds it for a new turn, 'now' interrupts the turn.
+   */
+  priority?: 'now' | 'next' | 'later';
 }
 
 export interface ParsedMessage {
