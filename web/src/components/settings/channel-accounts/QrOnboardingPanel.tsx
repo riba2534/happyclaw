@@ -12,6 +12,7 @@ import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { confirmDialog } from '@/stores/confirm';
 import { wsManager } from '../../../api/ws';
 import {
   useChannelAccountsStore,
@@ -225,12 +226,13 @@ export function QrOnboardingPanel({
   };
 
   const logout = async () => {
-    if (
-      !window.confirm(
-        `退出「${account.name}」？本地授权会被清除，下次需要重新扫码。`,
-      )
-    )
-      return;
+    const confirmed = await confirmDialog({
+      title: '退出登录',
+      message: `退出「${account.name}」？本地授权会被清除，下次需要重新扫码。`,
+      confirmText: '退出登录',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
     setAction('logout');
     setError(null);
     try {
@@ -258,30 +260,30 @@ export function QrOnboardingPanel({
     <div className="space-y-4">
       <div
         aria-live="polite"
-        className="flex items-start gap-3 rounded-lg border border-border bg-muted/30 px-4 py-3"
+        className="flex items-start gap-3 rounded-lg bg-muted/50 px-4 py-3 ring-1 ring-surface-border"
       >
         {connected ? (
-          <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-success" />
+          <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-success" />
         ) : loading || action === 'start' || transportBusy ? (
-          <Loader2 className="mt-0.5 size-5 shrink-0 text-warning motion-safe:animate-spin" />
+          <Loader2 className="mt-0.5 size-4 shrink-0 text-warning motion-safe:animate-spin" />
         ) : authorized ? (
-          <PlugZap className="mt-0.5 size-5 shrink-0 text-muted-foreground" />
+          <PlugZap className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
         ) : (
-          <QrCode className="mt-0.5 size-5 shrink-0 text-muted-foreground" />
+          <QrCode className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
         )}
         <div className="min-w-0">
-          <p className="text-sm font-medium">
+          <p className="text-body font-medium text-foreground">
             {onboardingStatusLabel(onboarding)}
           </p>
           {account.provider === 'wechat' && (
-            <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
+            <p className="mt-1 text-micro leading-4 text-muted-foreground">
               网络路径：
               {account.options?.bypassProxy !== false
                 ? '绕过 HappyClaw HTTP(S) 代理；系统 TUN 或 VPN 仍可能接管'
                 : '使用 HappyClaw 启动环境中的 HTTP(S) 代理'}
             </p>
           )}
-          <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+          <p className="mt-0.5 text-caption leading-5 text-muted-foreground">
             {onboardingHelp(account, onboarding)}
           </p>
           {error && (
@@ -291,7 +293,7 @@ export function QrOnboardingPanel({
                   ? 'status'
                   : 'alert'
               }
-              className={`mt-1 text-xs ${
+              className={`mt-1 text-caption ${
                 onboarding.transport_status === 'reconnecting'
                   ? 'text-warning'
                   : 'text-error'
@@ -306,15 +308,16 @@ export function QrOnboardingPanel({
       </div>
 
       {qrImage && !authorized && (
-        <div className="flex flex-col items-center gap-3 rounded-lg border border-border px-4 py-5">
-          <div className="size-64 max-w-full overflow-hidden rounded-lg bg-white p-2">
+        <div className="flex flex-col items-center gap-3 rounded-lg px-4 py-5 ring-1 ring-surface-border">
+          {/* QR codes need a white quiet zone to scan in dark mode too. */}
+          <div className="size-60 max-w-full overflow-hidden rounded-lg bg-white p-2 ring-1 ring-surface-border">
             <img
               src={qrImage}
               alt={`${account.provider === 'wechat' ? '微信' : 'WhatsApp'} 登录二维码`}
               className="size-full object-contain"
             />
           </div>
-          <p className="max-w-sm text-center text-xs leading-5 text-muted-foreground">
+          <p className="max-w-sm text-center text-caption leading-5 text-muted-foreground">
             {account.provider === 'wechat'
               ? '请使用微信扫码，并在手机上确认登录。二维码过期后可重新获取。'
               : '打开 WhatsApp → 已关联设备 → 关联设备，然后扫描二维码。'}
@@ -326,15 +329,17 @@ export function QrOnboardingPanel({
         (onboarding.needsVerifyCode ||
           onboarding.status === 'need_verifycode') && (
           <form
-            className="space-y-3 rounded-lg border border-warning/40 bg-warning-bg px-4 py-4"
+            className="space-y-3 rounded-lg bg-warning/10 px-4 py-3 ring-1 ring-warning/30"
             onSubmit={(event) => {
               event.preventDefault();
               void submitVerifyCode();
             }}
           >
             <div>
-              <p className="text-sm font-medium">输入微信验证码</p>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+              <p className="text-body font-medium text-foreground">
+                输入微信验证码
+              </p>
+              <p className="mt-0.5 text-caption leading-5 text-muted-foreground">
                 微信可能要求二次确认。请输入手机微信中显示的数字验证码；这不是短信验证码，也不会被长期保存。
               </p>
             </div>
@@ -359,7 +364,7 @@ export function QrOnboardingPanel({
                 disabled={action === 'verify' || !verifyCode}
               >
                 {action === 'verify' && (
-                  <Loader2 className="size-4 animate-spin" />
+                  <Loader2 className="size-3.5 animate-spin" />
                 )}
                 提交验证码
               </Button>
@@ -373,7 +378,7 @@ export function QrOnboardingPanel({
           onboarding.meJid ||
           onboarding.phoneNumber ||
           account.options?.phoneNumber) && (
-          <dl className="grid gap-2 rounded-lg border border-border px-4 py-3 text-xs sm:grid-cols-2">
+          <dl className="grid gap-2 rounded-lg px-4 py-3 text-caption ring-1 ring-surface-border sm:grid-cols-2">
             {onboarding.meName && (
               <div>
                 <dt className="text-muted-foreground">账号</dt>
@@ -401,17 +406,18 @@ export function QrOnboardingPanel({
         {!connected && !transportBusy && (
           <Button
             type="button"
+            size="sm"
             onClick={() => void start()}
             disabled={!!action || loading}
           >
             {action === 'start' ? (
-              <Loader2 className="size-4 animate-spin" />
+              <Loader2 className="size-3.5 animate-spin" />
             ) : authorized ? (
-              <PlugZap className="size-4" />
+              <PlugZap className="size-3.5" />
             ) : onboarding.auth_status === 'awaiting_scan' ? (
-              <RefreshCw className="size-4" />
+              <RefreshCw className="size-3.5" />
             ) : (
-              <QrCode className="size-4" />
+              <QrCode className="size-3.5" />
             )}
             {authorized
               ? '重新连接'
@@ -421,8 +427,8 @@ export function QrOnboardingPanel({
           </Button>
         )}
         {transportBusy && (
-          <Button type="button" variant="outline" disabled>
-            <Loader2 className="size-4 motion-safe:animate-spin" />
+          <Button type="button" variant="outline" size="sm" disabled>
+            <Loader2 className="size-3.5 motion-safe:animate-spin" />
             {onboarding.transport_status === 'reconnecting'
               ? '正在自动重连'
               : '正在连接'}
@@ -432,13 +438,14 @@ export function QrOnboardingPanel({
           <Button
             type="button"
             variant="outline"
+            size="sm"
             onClick={() => void disconnect()}
             disabled={!!action}
           >
             {action === 'disconnect' ? (
-              <Loader2 className="size-4 animate-spin" />
+              <Loader2 className="size-3.5 animate-spin" />
             ) : (
-              <Unplug className="size-4" />
+              <Unplug className="size-3.5" />
             )}
             断开连接
           </Button>
@@ -447,15 +454,15 @@ export function QrOnboardingPanel({
           onboarding.auth_status !== 'revoked' && (
             <Button
               type="button"
-              variant="outline"
-              className="text-error hover:text-error"
+              variant="destructive"
+              size="sm"
               onClick={() => void logout()}
               disabled={!!action}
             >
               {action === 'logout' ? (
-                <Loader2 className="size-4 animate-spin" />
+                <Loader2 className="size-3.5 animate-spin" />
               ) : (
-                <LogOut className="size-4" />
+                <LogOut className="size-3.5" />
               )}
               退出登录
             </Button>
@@ -463,10 +470,13 @@ export function QrOnboardingPanel({
         <Button
           type="button"
           variant="ghost"
+          size="sm"
           onClick={() => void refresh()}
           disabled={!!action || loading}
         >
-          <RefreshCw className={`size-4 ${loading ? 'animate-spin' : ''}`} />
+          <RefreshCw
+            className={`size-3.5 ${loading ? 'motion-safe:animate-spin' : ''}`}
+          />
           刷新状态
         </Button>
       </div>
