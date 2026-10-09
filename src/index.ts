@@ -1673,17 +1673,53 @@ function injectPreparedFollowUp(
       queue.setCurrentQueryCoverage(item.chat_jid, runId, deliveryTarget);
       advanceNextPullCursorOnly(item.chat_jid, deliveryTarget.cursor);
     }
-    broadcastFollowUpUpdate(item.chat_jid);
+    broadcastFollowUpBatchUpdate(
+      item.chat_jid,
+      released ? items : [],
+      runId,
+      deliveryUpdatedAt,
+    );
     return 'sent';
   }
 
   // The runner disappeared between preparation and injection. Make the row
   // visible to the normal cold-start reader so it can be recovered safely.
   const deliveryUpdatedAt = new Date().toISOString();
-  releaseQueuedFollowUpBatch(items, runId, deliveryUpdatedAt);
-  broadcastFollowUpUpdate(item.chat_jid);
+  const released = releaseQueuedFollowUpBatch(items, runId, deliveryUpdatedAt);
+  broadcastFollowUpBatchUpdate(
+    item.chat_jid,
+    released ? items : [],
+    runId,
+    deliveryUpdatedAt,
+  );
   enqueueReleasedFollowUp(item);
   return 'no_active';
+}
+
+/**
+ * Tell clients a queued batch was released. Each row needs its own
+ * transition: clients hide queued rows and only reveal one in the transcript
+ * when a `released` transition names it, so a bare queue refresh left the
+ * released inputs invisible until a full reload.
+ */
+function broadcastFollowUpBatchUpdate(
+  chatJid: string,
+  releasedItems: Array<Pick<QueuedFollowUp, 'id'>>,
+  runId: string,
+  deliveryUpdatedAt: string,
+): void {
+  if (releasedItems.length === 0) {
+    broadcastFollowUpUpdate(chatJid);
+    return;
+  }
+  for (const released of releasedItems) {
+    broadcastFollowUpUpdate(chatJid, {
+      id: released.id,
+      delivery_status: 'released',
+      delivery_run_id: runId,
+      delivery_updated_at: deliveryUpdatedAt,
+    });
+  }
 }
 
 async function dispatchNextQueuedFollowUp(chatJid: string): Promise<void> {
