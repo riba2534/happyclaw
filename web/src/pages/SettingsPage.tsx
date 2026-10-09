@@ -3,6 +3,9 @@ import { Navigate, useSearchParams } from 'react-router-dom';
 import { Menu } from 'lucide-react';
 import { toast } from 'sonner';
 
+import { Badge } from '@/components/ui/badge';
+import { IconButton } from '@/components/common/IconButton';
+import { PageContainer } from '@/components/common/PageContainer';
 import { useAuthStore } from '../stores/auth';
 import { SettingsNav } from '../components/settings/SettingsNav';
 import { ClaudeProviderSection } from '../components/settings/ClaudeProviderSection';
@@ -58,6 +61,7 @@ const SYSTEM_TABS: SettingsTab[] = [
   'host-integration',
 ];
 const FULLPAGE_TABS: SettingsTab[] = ['users', 'monitor', 'billing'];
+const WIDE_TABS: SettingsTab[] = ['claude'];
 
 const LEGACY_TAB_ROUTES: Partial<Record<SettingsTab, string>> = {
   groups: '/chat',
@@ -161,10 +165,32 @@ export function SettingsPage() {
   };
 
   const sectionDescription: Partial<Record<SettingsTab, string>> = {
+    profile: '用于标识当前登录用户，不会改变 HappyClaw 或自定义智能体的名称。',
+    preferences: '对话行为、界面外观与通知偏好，只保存在当前浏览器。',
+    'my-channels': '连接渠道机器人账号，并管理已接入的群聊与会话。',
+    security: '修改密码，查看并撤销其他设备上的登录会话。',
+    appearance:
+      '系统品牌影响站点标题、欢迎文案和侧边栏 Logo，不会改变 HappyClaw 或自定义智能体的名称。',
+    claude: '管理智能体可用的模型网关、凭据与负载均衡策略。',
+    system: '管理工作区运行边界、日志和执行容量。',
+    registration: '管理注册入口、邀请码，以及登录与注册请求的认证限流策略。',
     'main-agent':
       '管理主智能体的头像、系统附加能力、宿主机配置继承和上下文压缩策略。',
     'host-integration':
       '管理宿主机 Claude 目录以及共享 Plugin Catalog 的来源。',
+  };
+
+  const sectionScope: Partial<Record<SettingsTab, string>> = {
+    profile: '账户 · 所有设备同步',
+    preferences: '仅当前设备',
+    'my-channels': '账户 · 所有设备同步',
+    security: '账户',
+    appearance: '系统 · 全局生效',
+    claude: '系统 · 全局生效',
+    system: '系统 · 全局生效',
+    registration: '系统 · 全局生效',
+    'main-agent': '系统 · 管理员',
+    'host-integration': '系统 · 管理员',
   };
 
   const legacyRoute =
@@ -174,18 +200,19 @@ export function SettingsPage() {
   return (
     <div
       data-settings-page="true"
-      className="min-h-full bg-background lg:flex lg:items-start"
+      className="min-h-full lg:flex lg:items-start"
     >
       {/* Mobile header */}
-      <div className="lg:hidden sticky top-0 z-10 flex items-center bg-background border-b border-border px-4 h-12">
-        <button
+      <div className="sticky top-0 z-10 flex h-12 items-center gap-2 border-b border-surface-border bg-background/90 px-2 backdrop-blur lg:hidden">
+        <IconButton
+          label="打开导航"
+          hideTooltip
+          size="icon"
+          icon={<Menu className="size-4 text-muted-foreground" />}
           onClick={() => setNavOpen(true)}
-          className="-ml-2 flex size-11 items-center justify-center rounded-lg transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-          aria-label="打开导航"
-        >
-          <Menu className="w-5 h-5 text-muted-foreground" />
-        </button>
-        <span className="ml-3 text-sm font-semibold text-foreground truncate">
+          className="pointer-coarse:size-11"
+        />
+        <span className="truncate text-title-sm text-foreground">
           {sectionTitle[activeTab]}
         </span>
       </div>
@@ -214,66 +241,67 @@ export function SettingsPage() {
             )}
           </>
         ) : (
-          <div className="px-4 py-6 sm:px-6 lg:px-10 lg:py-8">
-            <div className="mx-auto max-w-6xl">
-              <header className="mb-6">
-                <h1 className="text-2xl font-bold text-foreground">
+          <PageContainer
+            size={WIDE_TABS.includes(activeTab) ? 'wide' : 'narrow'}
+          >
+            <header className="mb-8">
+              <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+                <h1 className="text-title-lg text-foreground">
                   {sectionTitle[activeTab]}
                 </h1>
-                {sectionDescription[activeTab] && (
-                  <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
-                    {sectionDescription[activeTab]}
-                  </p>
+                {sectionScope[activeTab] && (
+                  <Badge variant="neutral">{sectionScope[activeTab]}</Badge>
                 )}
-              </header>
-
-              {mustChangePassword && (
-                <div className="mb-6 rounded-xl border border-warning/20 bg-warning-bg px-4 py-3 text-sm text-warning">
-                  检测到首次登录或管理员重置密码，请先在“安全与设备”中修改密码；完成前其他设置暂不可用。
-                </div>
+              </div>
+              {sectionDescription[activeTab] && (
+                <p className="mt-1 text-body text-muted-foreground">
+                  {sectionDescription[activeTab]}
+                </p>
               )}
+            </header>
 
-              {activeTab === 'system' ? (
-                <SystemSettingsSection scope="runtime" />
-              ) : activeTab === 'main-agent' ||
-                activeTab === 'host-integration' ? (
-                <div>
-                  {activeTab === 'main-agent' && <MainAgentIdentitySection />}
-                  {activeTab === 'main-agent' && (
-                    <MainAgentCapabilitiesSection />
-                  )}
-                  <div className={activeTab === 'main-agent' ? 'pt-6' : ''}>
-                    <HostIntegrationSettingsSection
-                      scope={activeTab === 'main-agent' ? 'main-agent' : 'host'}
-                    />
+            {mustChangePassword && (
+              <div
+                role="alert"
+                className="mb-6 rounded-lg bg-warning/10 px-3 py-2.5 text-body text-warning"
+              >
+                检测到首次登录或管理员重置密码，请先在“安全与设备”中修改密码；完成前其他设置暂不可用。
+              </div>
+            )}
+
+            {activeTab === 'system' ? (
+              <SystemSettingsSection scope="runtime" />
+            ) : activeTab === 'main-agent' ? (
+              <div className="space-y-10">
+                <MainAgentIdentitySection />
+                <MainAgentCapabilitiesSection />
+                <HostIntegrationSettingsSection scope="main-agent" />
+              </div>
+            ) : activeTab === 'host-integration' ? (
+              <HostIntegrationSettingsSection scope="host" />
+            ) : (
+              <>
+                {activeTab === 'claude' && (
+                  <ClaudeProviderSection
+                    setNotice={(message) => message && toast.success(message)}
+                    setError={(message) => message && toast.error(message)}
+                  />
+                )}
+                {activeTab === 'registration' && (
+                  <div className="space-y-10">
+                    <RegistrationSection />
+                    <SystemSettingsSection scope="security" />
                   </div>
-                </div>
-              ) : (
-                <>
-                  {activeTab === 'claude' && (
-                    <ClaudeProviderSection
-                      setNotice={(message) => message && toast.success(message)}
-                      setError={(message) => message && toast.error(message)}
-                    />
-                  )}
-                  {activeTab === 'registration' && (
-                    <div className="space-y-8">
-                      <RegistrationSection />
-                      <div className="border-t border-border pt-6">
-                        <SystemSettingsSection scope="security" />
-                      </div>
-                    </div>
-                  )}
-                  {activeTab === 'appearance' && <AppearanceSection />}
-                  {activeTab === 'profile' && <ProfileSection />}
-                  {activeTab === 'preferences' && <PreferencesSection />}
-                  {activeTab === 'my-channels' && <UserChannelsSection />}
-                  {activeTab === 'security' && <SecuritySection />}
-                  {activeTab === 'about' && <AboutSection />}
-                </>
-              )}
-            </div>
-          </div>
+                )}
+                {activeTab === 'appearance' && <AppearanceSection />}
+                {activeTab === 'profile' && <ProfileSection />}
+                {activeTab === 'preferences' && <PreferencesSection />}
+                {activeTab === 'my-channels' && <UserChannelsSection />}
+                {activeTab === 'security' && <SecuritySection />}
+                {activeTab === 'about' && <AboutSection />}
+              </>
+            )}
+          </PageContainer>
         )}
       </div>
     </div>

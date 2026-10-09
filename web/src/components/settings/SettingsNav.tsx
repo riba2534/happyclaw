@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import {
   CreditCard,
   Gauge,
@@ -23,6 +24,9 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
+import { SearchInput } from '@/components/common/SearchInput';
+import { sidebarRowClass } from '@/components/layout/sidebar/SidebarItem';
+import { cn } from '@/lib/utils';
 import type { SettingsTab } from './types';
 
 export interface SettingsNavItem {
@@ -140,6 +144,8 @@ interface SettingsNavProps {
   onOpenChange?: (open: boolean) => void;
 }
 
+const navRowClass = cn(sidebarRowClass, 'gap-2.5 pointer-coarse:h-11');
+
 export function SettingsNav({
   activeTab,
   onTabChange,
@@ -151,6 +157,7 @@ export function SettingsNav({
   open,
   onOpenChange,
 }: SettingsNavProps) {
+  const [query, setQuery] = useState('');
   const sections = getSettingsSections({
     canManageSystemConfig,
     canManageBilling,
@@ -158,82 +165,101 @@ export function SettingsNav({
     isAdmin,
   });
 
+  const keyword = query.trim().toLowerCase();
+  const matches = (item: NavItem) =>
+    !keyword || item.label.toLowerCase().includes(keyword);
+  const visibleSections = sections
+    .map((section) => ({ ...section, items: section.items.filter(matches) }))
+    .filter((section) => section.items.length > 0);
+  const showAbout = matches(aboutItem);
+
   const disabled = (item: NavItem) =>
     mustChangePassword && item.key !== 'security';
 
+  const renderItem = (item: NavItem) => (
+    <button
+      key={item.key}
+      type="button"
+      disabled={disabled(item)}
+      aria-current={activeTab === item.key ? 'page' : undefined}
+      data-active={activeTab === item.key || undefined}
+      onClick={() => {
+        if (disabled(item)) return;
+        onTabChange(item.key);
+        onOpenChange?.(false);
+      }}
+      className={navRowClass}
+    >
+      <item.icon className="size-4" />
+      <span className="min-w-0 flex-1 truncate">{item.label}</span>
+    </button>
+  );
+
+  const search = (
+    <SearchInput
+      value={query}
+      onChange={setQuery}
+      debounce={0}
+      placeholder="搜索设置"
+      ariaLabel="搜索设置项"
+    />
+  );
+
   const navigation = (
     <>
-      {sections.map((section, index) => (
-        <div key={section.label} className={index > 0 ? 'mt-6' : ''}>
-          <div className="mb-2 px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+      {visibleSections.map((section, index) => (
+        <div key={section.label} className={index > 0 ? 'mt-5' : ''}>
+          <div className="mb-1 px-2 text-caption font-medium text-muted-foreground">
             {section.label}
           </div>
-          <div className="space-y-1">
-            {section.items.map((item) => (
-              <button
-                key={item.key}
-                type="button"
-                disabled={disabled(item)}
-                onClick={() => {
-                  if (disabled(item)) return;
-                  onTabChange(item.key);
-                  onOpenChange?.(false);
-                }}
-                className={`flex min-h-11 w-full items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
-                  activeTab === item.key
-                    ? 'bg-brand-50 font-medium text-primary'
-                    : disabled(item)
-                      ? 'cursor-not-allowed text-muted-foreground/50'
-                      : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                }`}
-              >
-                <item.icon className="size-4" />
-                {item.label}
-              </button>
-            ))}
-          </div>
+          <div className="space-y-px">{section.items.map(renderItem)}</div>
         </div>
       ))}
-      <div className="mt-6 border-t border-border pt-4">
-        <button
-          type="button"
-          disabled={mustChangePassword}
-          onClick={() => {
-            if (mustChangePassword) return;
-            onTabChange(aboutItem.key);
-            onOpenChange?.(false);
-          }}
-          className={`flex min-h-11 w-full items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
-            activeTab === aboutItem.key
-              ? 'bg-brand-50 font-medium text-primary'
-              : mustChangePassword
-                ? 'cursor-not-allowed text-muted-foreground/50'
-                : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-          }`}
+      {showAbout && (
+        <div
+          className={
+            visibleSections.length > 0
+              ? 'mt-5 border-t border-surface-border pt-3'
+              : ''
+          }
         >
-          <aboutItem.icon className="size-4" />
-          {aboutItem.label}
-        </button>
-      </div>
+          {renderItem(aboutItem)}
+        </div>
+      )}
+      {visibleSections.length === 0 && !showAbout && (
+        <p className="px-2 py-6 text-center text-caption text-muted-foreground">
+          没有匹配的设置
+        </p>
+      )}
     </>
   );
 
   return (
     <>
-      <nav className="hidden w-56 shrink-0 border-r border-border bg-background px-3 py-6 lg:sticky lg:top-0 lg:block lg:h-(--app-canvas-h) lg:self-start lg:overflow-y-auto">
-        {navigation}
+      <nav
+        aria-label="设置导航"
+        className="hidden w-60 shrink-0 flex-col border-r border-surface-border lg:sticky lg:top-0 lg:flex lg:h-(--app-canvas-h) lg:self-start"
+      >
+        <div className="space-y-3 px-3 pt-5 pb-3">
+          <h2 className="px-2 text-title text-foreground">设置</h2>
+          {search}
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-6">
+          {navigation}
+        </div>
       </nav>
       <Sheet open={open} onOpenChange={onOpenChange}>
         <SheetContent
           side="left"
-          className="flex w-64 flex-col p-0"
+          className="flex w-72 flex-col gap-0 p-0"
           showCloseButton={false}
         >
-          <SheetHeader className="px-4 pb-2 pt-5">
-            <SheetTitle className="text-base">设置</SheetTitle>
+          <SheetHeader className="gap-3 px-3 pt-5 pb-3">
+            <SheetTitle className="px-2 text-title">设置</SheetTitle>
             <SheetDescription className="sr-only">
               选择账户、系统配置或管理后台中的设置页面
             </SheetDescription>
+            {search}
           </SheetHeader>
           <nav className="min-h-0 flex-1 overflow-y-auto px-3 pb-28">
             {navigation}
