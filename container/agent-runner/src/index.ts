@@ -2364,8 +2364,8 @@ async function runQueryAttempt(
       if (accepted.length === 0) continue;
       acceptedMessages.push(...accepted);
       if (becomesCurrentTurn) {
-        continuationPrevented = false;
         durableInputCompletion.activateInput();
+        continuationPrevented = false;
         providerFallbackTurns.acceptCurrentTurn([msg]);
         activateCurrentInputTurn(
           msg.receipt?.deliveryId || containerInput.turnId || generateTurnId(),
