@@ -293,6 +293,11 @@ export function MessageList({
       }
     },
     overscan: window.innerWidth < 1024 ? 12 : 8,
+    // Re-render on scroll in a normal React update instead of flushSync inside
+    // the scroll event: rows mounted there were measured (a forced layout)
+    // before the frame's own layout, and wheel scrolling through a long
+    // history cut long tasks from ~9 to ~3 per 6s at 4x CPU throttle.
+    useFlushSync: false,
   });
 
   // Detect at-bottom (autoScroll) and at-top (loadMore) via the scroll event.
