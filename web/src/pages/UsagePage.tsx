@@ -26,14 +26,30 @@ import { useAuthStore } from '../stores/auth';
 import { useBillingStore } from '../stores/billing';
 import { formatTokens } from '../components/billing/utils';
 import {
+  TOKEN_SERIES,
   UsageTrendChart,
   type DailyUsagePoint,
   type UsageTrendMetric,
 } from '../components/usage/UsageTrendChart';
+import {
+  DataTable,
+  EmptyState,
+  PageContainer,
+  PageHeader,
+  SegmentedControl,
+  type DataTableColumn,
+} from '@/components/common';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardContent } from '@/components/ui/card';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
+import { cn } from '@/lib/utils';
 import {
   DownloadError,
   downloadFromUrl,
@@ -529,401 +545,354 @@ export function UsagePage() {
 
   const hasUsage = Boolean(visibleSummary && visibleSummary.runCount > 0);
 
-  return (
-    <div className="min-h-full bg-background px-4 py-5 sm:px-6 lg:px-8 lg:py-8">
-      <div className="mx-auto min-w-0 max-w-7xl space-y-6">
-        <header className="flex min-w-0 flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-xl font-semibold tracking-tight text-foreground sm:text-2xl">
-                用量分析
-              </h1>
-              <Badge variant="outline">{scopeLabel}</Badge>
-            </div>
-            <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
-              查看智能体运行、Token
-              与模型成本估算。模型估算费用用于分析资源消耗，不等同于账单扣费。
-            </p>
-            <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-              <span>
-                统计范围：{formatDateRange(visibleWindow, query.days)}
-              </span>
-              <span>时区：{visibleWindow?.timezone || '加载中'}</span>
-              <span>更新时间：{formatUpdatedAt(visibleGeneratedAt)}</span>
-            </div>
-          </div>
-          <div className="flex w-full flex-wrap gap-2 lg:w-auto lg:justify-end">
-            <Button
-              variant="outline"
-              size="lg"
-              className="min-h-11 flex-1 sm:flex-none"
-              onClick={() =>
-                void Promise.all([loadStats(query), loadFilters(query)])
-              }
-              disabled={visibleLoading}
-              aria-label={visibleLoading ? '正在刷新用量数据' : '刷新用量数据'}
-            >
-              <RefreshCw
-                className={visibleLoading ? 'motion-safe:animate-spin' : ''}
-              />
-              刷新数据
-            </Button>
-            <Button
-              variant="outline"
-              size="lg"
-              className="min-h-11 flex-1 sm:flex-none"
-              onClick={() => void handleExport()}
-              disabled={exporting || visibleBreakdown.length === 0}
-            >
-              <Download />
-              {exporting ? '正在导出' : '导出 CSV'}
-            </Button>
-          </div>
-        </header>
-        <p className="sr-only" role="status" aria-live="polite">
-          {visibleLoading
-            ? '正在更新用量数据'
-            : visibleSummary
-              ? `用量数据已更新，共 ${visibleSummary.runCount} 次智能体运行`
-              : ''}
-        </p>
+  const filterControls = (
+    <>
+      {isAdmin && (
+        <FilterSelect
+          id="usage-user"
+          label="统计用户"
+          value={query.userId || ALL_VALUE}
+          onChange={(value) => updateFilter('userId', value)}
+          options={[
+            { value: ALL_VALUE, label: '全部用户' },
+            ...availableUsers.map((option) => ({
+              value: option.id,
+              label: option.username,
+            })),
+          ]}
+        />
+      )}
+      <FilterSelect
+        id="usage-model"
+        label="模型"
+        value={query.model || ALL_VALUE}
+        onChange={(value) => updateFilter('model', value)}
+        options={[
+          { value: ALL_VALUE, label: '全部模型' },
+          ...availableModels.map((model) => ({
+            value: model,
+            label: model,
+          })),
+        ]}
+      />
+      <FilterSelect
+        id="usage-agent"
+        label="智能体"
+        value={query.agentId || ALL_VALUE}
+        onChange={(value) => updateFilter('agentId', value)}
+        options={[
+          { value: ALL_VALUE, label: '全部智能体' },
+          ...availableAgents.map((agentId) => ({
+            value: agentId,
+            label: agentNames[agentId] || agentId,
+          })),
+        ]}
+      />
+      <FilterSelect
+        id="usage-workspace"
+        label="工作区"
+        value={query.groupFolder || ALL_VALUE}
+        onChange={(value) => updateFilter('groupFolder', value)}
+        options={[
+          { value: ALL_VALUE, label: '全部工作区' },
+          ...availableWorkspaces.map((folder) => ({
+            value: folder,
+            label: workspaceNames[folder] || folder,
+          })),
+        ]}
+      />
+      <FilterSelect
+        id="usage-source"
+        label="来源"
+        value={query.source || ALL_VALUE}
+        onChange={(value) => updateFilter('source', value)}
+        options={[
+          { value: ALL_VALUE, label: '全部来源' },
+          ...availableSources.map((source) => ({
+            value: source,
+            label: SOURCE_LABELS[source] || source,
+          })),
+        ]}
+      />
+    </>
+  );
 
-        <section
-          className="rounded-xl border border-border bg-card/40 p-3 sm:p-4"
-          aria-label="用量筛选"
-          aria-busy={visibleLoading}
-        >
-          <button
-            type="button"
-            className="flex min-h-11 w-full items-center justify-between rounded-lg px-2 text-sm font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:hidden"
+  return (
+    <PageContainer size="wide" className="min-w-0 space-y-6">
+      <div className="space-y-3">
+        <PageHeader
+          title="用量分析"
+          subtitle="查看智能体运行、Token 与模型成本估算。模型估算费用用于分析资源消耗，不等同于账单扣费。"
+          className="max-sm:flex-col max-sm:items-stretch"
+          actions={
+            <>
+              <Button
+                variant="outline"
+                className="flex-1 pointer-coarse:min-h-11 sm:flex-none"
+                onClick={() =>
+                  void Promise.all([loadStats(query), loadFilters(query)])
+                }
+                disabled={visibleLoading}
+                aria-label={
+                  visibleLoading ? '正在刷新用量数据' : '刷新用量数据'
+                }
+              >
+                <RefreshCw
+                  className={visibleLoading ? 'motion-safe:animate-spin' : ''}
+                />
+                刷新数据
+              </Button>
+              <Button
+                variant="outline"
+                className="flex-1 pointer-coarse:min-h-11 sm:flex-none"
+                onClick={() => void handleExport()}
+                disabled={exporting || visibleBreakdown.length === 0}
+              >
+                <Download />
+                {exporting ? '正在导出' : '导出 CSV'}
+              </Button>
+            </>
+          }
+        />
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-caption text-muted-foreground">
+          <Badge variant="outline">{scopeLabel}</Badge>
+          <span>统计范围：{formatDateRange(visibleWindow, query.days)}</span>
+          <span>时区：{visibleWindow?.timezone || '加载中'}</span>
+          <span>更新时间：{formatUpdatedAt(visibleGeneratedAt)}</span>
+        </div>
+      </div>
+      <p className="sr-only" role="status" aria-live="polite">
+        {visibleLoading
+          ? '正在更新用量数据'
+          : visibleSummary
+            ? `用量数据已更新，共 ${visibleSummary.runCount} 次智能体运行`
+            : ''}
+      </p>
+
+      <section
+        className="flex min-w-0 flex-col gap-2 border-y border-surface-border py-3 sm:flex-row sm:flex-wrap sm:items-center"
+        aria-label="用量筛选"
+        aria-busy={visibleLoading}
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <SegmentedControl
+            label="时间范围"
+            value={String(query.days)}
+            onChange={(value) => updateFilter('days', value)}
+            options={PERIOD_OPTIONS.map((days) => ({
+              value: String(days),
+              label: `${days} 天`,
+            }))}
+          />
+          <Button
+            variant="ghost"
+            className="ml-auto pointer-coarse:min-h-11 sm:hidden"
             onClick={() => setFiltersOpen((open) => !open)}
             aria-expanded={filtersOpen}
             aria-controls="usage-filter-fields"
           >
-            <span className="flex items-center gap-2">
-              <SlidersHorizontal className="size-4" />
-              筛选条件
-              {activeFilterCount > 0 && (
-                <Badge variant="secondary">{activeFilterCount}</Badge>
-              )}
-            </span>
-            <span className="text-xs text-muted-foreground">
-              {filtersOpen ? '收起' : '展开'}
-            </span>
-          </button>
-          <div
-            id="usage-filter-fields"
-            className={`${filtersOpen ? 'grid' : 'hidden'} min-w-0 grid-cols-1 gap-3 sm:grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6`}
-          >
-            <FilterSelect
-              id="usage-days"
-              label="时间范围"
-              value={String(query.days)}
-              onChange={(value) => updateFilter('days', value)}
-              options={PERIOD_OPTIONS.map((days) => ({
-                value: String(days),
-                label: `过去 ${days} 天`,
-              }))}
-            />
-            {isAdmin && (
-              <FilterSelect
-                id="usage-user"
-                label="统计用户"
-                value={query.userId || ALL_VALUE}
-                onChange={(value) => updateFilter('userId', value)}
-                options={[
-                  { value: ALL_VALUE, label: '全部用户' },
-                  ...availableUsers.map((option) => ({
-                    value: option.id,
-                    label: option.username,
-                  })),
-                ]}
-              />
+            <SlidersHorizontal />
+            筛选条件
+            {activeFilterCount > 0 && (
+              <Badge variant="info" className="tabular-nums">
+                {activeFilterCount}
+              </Badge>
             )}
-            <FilterSelect
-              id="usage-model"
-              label="模型"
-              value={query.model || ALL_VALUE}
-              onChange={(value) => updateFilter('model', value)}
-              options={[
-                { value: ALL_VALUE, label: '全部模型' },
-                ...availableModels.map((model) => ({
-                  value: model,
-                  label: model,
-                })),
-              ]}
-            />
-            <FilterSelect
-              id="usage-agent"
-              label="智能体"
-              value={query.agentId || ALL_VALUE}
-              onChange={(value) => updateFilter('agentId', value)}
-              options={[
-                { value: ALL_VALUE, label: '全部智能体' },
-                ...availableAgents.map((agentId) => ({
-                  value: agentId,
-                  label: agentNames[agentId] || agentId,
-                })),
-              ]}
-            />
-            <FilterSelect
-              id="usage-workspace"
-              label="工作区"
-              value={query.groupFolder || ALL_VALUE}
-              onChange={(value) => updateFilter('groupFolder', value)}
-              options={[
-                { value: ALL_VALUE, label: '全部工作区' },
-                ...availableWorkspaces.map((folder) => ({
-                  value: folder,
-                  label: workspaceNames[folder] || folder,
-                })),
-              ]}
-            />
-            <FilterSelect
-              id="usage-source"
-              label="来源"
-              value={query.source || ALL_VALUE}
-              onChange={(value) => updateFilter('source', value)}
-              options={[
-                { value: ALL_VALUE, label: '全部来源' },
-                ...availableSources.map((source) => ({
-                  value: source,
-                  label: SOURCE_LABELS[source] || source,
-                })),
-              ]}
-            />
-          </div>
-          {activeFilterCount > 0 && (
-            <div className="mt-3 flex justify-end border-t border-border pt-3">
-              <Button
-                variant="ghost"
-                size="lg"
-                className="min-h-11"
-                onClick={clearFilters}
-              >
-                清除筛选
-              </Button>
-            </div>
+          </Button>
+        </div>
+        <span
+          aria-hidden="true"
+          className="mx-1 hidden h-5 w-px bg-surface-border sm:block"
+        />
+        <div
+          id="usage-filter-fields"
+          className={cn(
+            filtersOpen ? 'grid' : 'hidden',
+            'min-w-0 grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center',
           )}
-        </section>
-
-        {visibleError && (
-          <section
-            className="rounded-xl border border-destructive/30 bg-destructive/5 p-5"
-            role="alert"
+        >
+          {filterControls}
+        </div>
+        {activeFilterCount > 0 && (
+          <Button
+            variant="ghost"
+            className="text-muted-foreground pointer-coarse:min-h-11 sm:ml-auto"
+            onClick={clearFilters}
           >
-            <h2 className="font-semibold text-foreground">用量数据加载失败</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {visibleError}
-              。请检查网络连接后重试，当前不会展示旧账号或旧筛选的数据。
-            </p>
-            <Button
-              variant="outline"
-              size="lg"
-              className="mt-4 min-h-11"
-              onClick={() => void loadStats(query)}
-            >
-              <RefreshCw />
-              重试加载
-            </Button>
-          </section>
+            清除筛选
+          </Button>
         )}
+      </section>
 
-        {visibleLoading && !visibleError && <UsageLoadingState />}
+      {visibleError && (
+        <section className="rounded-xl bg-error/10 p-4" role="alert">
+          <h2 className="text-title-sm text-error">用量数据加载失败</h2>
+          <p className="mt-1 text-body text-muted-foreground">
+            {visibleError}
+            。请检查网络连接后重试，当前不会展示旧账号或旧筛选的数据。
+          </p>
+          <Button
+            variant="outline"
+            className="mt-3 pointer-coarse:min-h-11"
+            onClick={() => void loadStats(query)}
+          >
+            <RefreshCw />
+            重试加载
+          </Button>
+        </section>
+      )}
 
-        {!visibleLoading && !visibleError && visibleSummary && !hasUsage && (
-          <UsageEmptyState
-            filtered={activeFilterCount > 0}
-            onClear={clearFilters}
-          />
-        )}
+      {visibleLoading && !visibleError && <UsageLoadingState />}
 
-        {!visibleLoading && !visibleError && visibleSummary && hasUsage && (
-          <div className="min-w-0 space-y-6">
-            <section aria-labelledby="usage-summary-heading">
-              <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
-                <div>
-                  <h2
-                    id="usage-summary-heading"
-                    className="text-base font-semibold text-foreground"
-                  >
-                    核心指标
-                  </h2>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    下列指标与趋势图使用同一组服务端日期桶。
-                  </p>
-                </div>
-                <Badge variant="secondary">
+      {!visibleLoading && !visibleError && visibleSummary && !hasUsage && (
+        <UsageEmptyState
+          filtered={activeFilterCount > 0}
+          onClear={clearFilters}
+        />
+      )}
+
+      {!visibleLoading && !visibleError && visibleSummary && hasUsage && (
+        <div className="min-w-0 space-y-8">
+          <section
+            aria-labelledby="usage-summary-heading"
+            className="space-y-3"
+          >
+            <SectionHeading
+              id="usage-summary-heading"
+              title="核心指标"
+              description="下列指标与趋势图使用同一组服务端日期桶。"
+              actions={
+                <Badge variant="neutral" className="tabular-nums">
                   {visibleSummary.activeDays} 个活跃日
                 </Badge>
+              }
+            />
+            <dl className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <MetricItem
+                label="总 Token"
+                value={metricValue(visibleSummary, 'tokens')}
+                exactValue={formatInteger(visibleSummary.totalTokens)}
+              />
+              <MetricItem
+                label="智能体运行次数"
+                value={metricValue(visibleSummary, 'runs')}
+                note={`${formatInteger(visibleSummary.modelCallCount)} 次模型调用`}
+              />
+              <MetricItem
+                label="模型估算费用 (USD)"
+                value={metricValue(visibleSummary, 'cost')}
+                note={
+                  !billingApplicable
+                    ? '账单扣费：不适用（未启用计费）'
+                    : visibleSummary.billedCostUSD === null
+                      ? '不是账单扣费'
+                      : `账单扣费 ${formatCost(visibleSummary.billedCostUSD)}`
+                }
+              />
+              <MetricItem
+                label="平均每次成本"
+                value={metricValue(visibleSummary, 'average')}
+                note="模型估算费用 ÷ 智能体运行次数"
+              />
+            </dl>
+
+            <TokenComposition
+              summary={visibleSummary}
+              cacheReadShare={cacheReadShare}
+            />
+          </section>
+
+          <section
+            className="min-w-0 space-y-3"
+            aria-labelledby="usage-trend-heading"
+          >
+            <SectionHeading
+              id="usage-trend-heading"
+              title="每日趋势"
+              description="费用按咖宝模型价格在 UTC 30 分钟桶内统一取整；运行次数按完成的智能体用量事件计数。"
+              actions={
+                <>
+                  <SegmentedControl
+                    label="趋势指标"
+                    value={trendMetric}
+                    onChange={setTrendMetric}
+                    options={[
+                      { value: 'tokens', label: 'Token' },
+                      { value: 'cost', label: '费用' },
+                      { value: 'runs', label: '运行次数' },
+                    ]}
+                  />
+                  <SegmentedControl
+                    label="趋势视图"
+                    value={trendView}
+                    onChange={setTrendView}
+                    options={[
+                      { value: 'chart', label: '图表', icon: BarChart3 },
+                      { value: 'table', label: '表格', icon: Table2 },
+                    ]}
+                  />
+                </>
+              }
+            />
+            {trendView === 'chart' ? (
+              <div className="min-w-0 rounded-xl bg-surface-raised p-4 ring-1 ring-surface-border">
+                <UsageTrendChart data={dailyData} metric={trendMetric} />
               </div>
-              <dl className="grid grid-cols-2 overflow-hidden rounded-xl border border-border bg-card md:grid-cols-4">
-                <MetricItem
-                  label="总 Token"
-                  value={metricValue(visibleSummary, 'tokens')}
-                  exactValue={formatInteger(visibleSummary.totalTokens)}
-                />
-                <MetricItem
-                  label="智能体运行次数"
-                  value={metricValue(visibleSummary, 'runs')}
-                  note={`${formatInteger(visibleSummary.modelCallCount)} 次模型调用`}
-                />
-                <MetricItem
-                  label="模型估算费用 (USD)"
-                  value={metricValue(visibleSummary, 'cost')}
-                  note={
-                    !billingApplicable
-                      ? '账单扣费：不适用（未启用计费）'
-                      : visibleSummary.billedCostUSD === null
-                        ? '不是账单扣费'
-                        : `账单扣费 ${formatCost(visibleSummary.billedCostUSD)}`
-                  }
-                />
-                <MetricItem
-                  label="平均每次成本"
-                  value={metricValue(visibleSummary, 'average')}
-                  note="模型估算费用 ÷ 智能体运行次数"
-                />
-              </dl>
-            </section>
+            ) : (
+              <UsageTrendTable
+                data={dailyData}
+                metric={trendMetric}
+                billingApplicable={billingApplicable}
+              />
+            )}
+          </section>
 
-            <section
-              className="rounded-xl border border-border bg-muted/20 p-4"
-              aria-labelledby="token-composition-heading"
-            >
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-                <div className="min-w-0">
-                  <h2
-                    id="token-composition-heading"
-                    className="text-sm font-semibold text-foreground"
-                  >
-                    Token 构成
-                  </h2>
-                  <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                    五类互斥，不重复相加。缓存读取占全部输入的{' '}
-                    {cacheReadShare.toFixed(1)}%；公式：缓存读取 ÷（普通输入 +
-                    缓存读取 + 缓存写入）。
-                  </p>
-                </div>
-                <dl className="grid min-w-0 grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-5">
-                  <TokenValue
-                    label="普通输入"
-                    value={visibleSummary.inputTokens}
+          <section
+            className="min-w-0 space-y-3"
+            aria-labelledby="usage-attribution-heading"
+          >
+            <SectionHeading
+              id="usage-attribution-heading"
+              title="用量归因"
+              description="找出当前范围内的主要成本与 Token 来源。"
+              actions={
+                <>
+                  <SegmentedControl
+                    label="归因维度"
+                    value={dimension}
+                    onChange={setDimension}
+                    options={(
+                      Object.keys(DIMENSION_LABELS) as AttributionDimension[]
+                    ).map((value) => ({
+                      value,
+                      label: DIMENSION_LABELS[value],
+                    }))}
                   />
-                  <TokenValue
-                    label="缓存读取"
-                    value={visibleSummary.cacheReadTokens}
-                  />
-                  <TokenValue
-                    label="缓存写入"
-                    value={visibleSummary.cacheCreationTokens}
-                  />
-                  <TokenValue
-                    label="输出"
-                    value={visibleSummary.outputTokens}
-                  />
-                  <TokenValue
-                    label="推理"
-                    value={visibleSummary.reasoningTokens}
-                  />
-                </dl>
-              </div>
-            </section>
-
-            <Card className="min-w-0">
-              <CardContent className="min-w-0 space-y-4">
-                <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                  <div>
-                    <h2 className="text-base font-semibold text-foreground">
-                      每日趋势
-                    </h2>
-                    <p className="mt-0.5 text-xs text-muted-foreground">
-                      费用按咖宝模型价格在 UTC 30
-                      分钟桶内统一取整；运行次数按完成的智能体用量事件计数。
-                    </p>
-                  </div>
-                  <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-                    <SegmentedControl
-                      label="趋势指标"
-                      value={trendMetric}
-                      onChange={(value) =>
-                        setTrendMetric(value as UsageTrendMetric)
+                  <div className="flex items-center gap-1.5">
+                    <Select
+                      value={sortBy}
+                      onValueChange={(value) =>
+                        setSortBy(value as AttributionSort)
                       }
-                      options={[
-                        { value: 'tokens', label: 'Token' },
-                        { value: 'cost', label: '费用' },
-                        { value: 'runs', label: '运行次数' },
-                      ]}
-                    />
-                    <SegmentedControl
-                      label="趋势视图"
-                      value={trendView}
-                      onChange={(value) => setTrendView(value as TrendView)}
-                      options={[
-                        { value: 'chart', label: '图表', icon: BarChart3 },
-                        { value: 'table', label: '表格', icon: Table2 },
-                      ]}
-                    />
-                  </div>
-                </div>
-                {trendView === 'chart' ? (
-                  <UsageTrendChart data={dailyData} metric={trendMetric} />
-                ) : (
-                  <UsageTrendTable
-                    data={dailyData}
-                    metric={trendMetric}
-                    billingApplicable={billingApplicable}
-                  />
-                )}
-              </CardContent>
-            </Card>
-
-            <Card className="min-w-0">
-              <CardContent className="min-w-0 space-y-4">
-                <div className="flex min-w-0 flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-                  <div>
-                    <h2 className="text-base font-semibold text-foreground">
-                      用量归因
-                    </h2>
-                    <p className="mt-0.5 text-xs text-muted-foreground">
-                      找出当前范围内的主要成本与 Token 来源。
-                    </p>
-                  </div>
-                  <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-                    <SegmentedControl
-                      label="归因维度"
-                      value={dimension}
-                      onChange={(value) =>
-                        setDimension(value as AttributionDimension)
-                      }
-                      options={(
-                        Object.keys(DIMENSION_LABELS) as AttributionDimension[]
-                      ).map((value) => ({
-                        value,
-                        label: DIMENSION_LABELS[value],
-                      }))}
-                    />
-                    <label className="flex min-h-11 min-w-0 items-center gap-2 rounded-lg border border-border bg-background px-3 text-sm">
-                      <span className="shrink-0 text-muted-foreground">
-                        排序
-                      </span>
-                      <select
-                        value={sortBy}
-                        onChange={(event) =>
-                          setSortBy(event.target.value as AttributionSort)
-                        }
-                        className="min-w-0 flex-1 bg-transparent py-2 text-foreground outline-none"
+                    >
+                      <SelectTrigger
+                        size="sm"
                         aria-label="归因表排序指标"
+                        className="pointer-coarse:min-h-11"
                       >
-                        <option value="cost">估算费用</option>
-                        <option value="tokens">Token</option>
-                        <option value="runs">运行次数</option>
-                      </select>
-                    </label>
+                        <span className="text-muted-foreground">排序</span>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent align="end">
+                        <SelectItem value="cost">估算费用</SelectItem>
+                        <SelectItem value="tokens">Token</SelectItem>
+                        <SelectItem value="runs">运行次数</SelectItem>
+                      </SelectContent>
+                    </Select>
                     <Button
                       variant="outline"
-                      size="lg"
-                      className="min-h-11"
+                      size="sm"
+                      className="pointer-coarse:min-h-11"
                       onClick={() =>
                         setSortDirection((direction) =>
                           direction === 'desc' ? 'asc' : 'desc',
@@ -939,37 +908,69 @@ export function UsagePage() {
                       {sortDirection === 'desc' ? '降序' : '升序'}
                     </Button>
                   </div>
-                </div>
-                <AttributionTable
-                  rows={attributionRows}
-                  dimension={dimension}
-                  totalCost={visibleSummary.providerEstimatedCostUSD}
-                />
-              </CardContent>
-            </Card>
+                </>
+              }
+            />
+            <AttributionTable
+              rows={attributionRows}
+              dimension={dimension}
+              totalCost={visibleSummary.providerEstimatedCostUSD}
+            />
+          </section>
 
-            <aside className="flex items-start gap-2 rounded-xl border border-border bg-muted/20 p-4 text-xs leading-5 text-muted-foreground">
-              <Info className="mt-0.5 size-4 shrink-0" />
-              <p>
-                模型估算费用按咖宝价格表和 UTC 30
-                分钟模型桶计算，可能与套餐倍率、赠送额度或实际账单扣费不同。
-                {billingFeatureEnabled && (
-                  <>
-                    需要核对余额和交易时，请前往{' '}
-                    <Link
-                      to="/billing"
-                      className="font-medium text-primary hover:underline"
-                    >
-                      账单
-                    </Link>
-                    。
-                  </>
-                )}
-              </p>
-            </aside>
-          </div>
+          <aside className="flex items-start gap-2 rounded-xl bg-muted/50 p-4 text-caption leading-5 text-muted-foreground">
+            <Info className="mt-0.5 size-3.5 shrink-0" />
+            <p>
+              模型估算费用按咖宝价格表和 UTC 30
+              分钟模型桶计算，可能与套餐倍率、赠送额度或实际账单扣费不同。
+              {billingFeatureEnabled && (
+                <>
+                  需要核对余额和交易时，请前往{' '}
+                  <Link
+                    to="/billing"
+                    className="font-medium text-primary hover:underline"
+                  >
+                    账单
+                  </Link>
+                  。
+                </>
+              )}
+            </p>
+          </aside>
+        </div>
+      )}
+    </PageContainer>
+  );
+}
+
+function SectionHeading({
+  id,
+  title,
+  description,
+  actions,
+}: {
+  id: string;
+  title: string;
+  description?: string;
+  actions?: React.ReactNode;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+      <div className="min-w-0">
+        <h2 id={id} className="text-title-sm text-foreground">
+          {title}
+        </h2>
+        {description && (
+          <p className="mt-0.5 text-caption text-muted-foreground">
+            {description}
+          </p>
         )}
       </div>
+      {actions && (
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          {actions}
+        </div>
+      )}
     </div>
   );
 }
@@ -987,24 +988,31 @@ function FilterSelect({
   options: Array<{ value: string; label: string }>;
   onChange: (value: string) => void;
 }) {
+  const active = value !== ALL_VALUE;
   return (
-    <label htmlFor={id} className="block min-w-0">
-      <span className="mb-1.5 block text-xs font-medium text-muted-foreground">
-        {label}
-      </span>
-      <select
+    <Select value={value} onValueChange={onChange}>
+      <SelectTrigger
         id={id}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="h-11 w-full min-w-0 truncate rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors hover:border-foreground/20 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+        aria-label={label}
+        className={cn(
+          'w-full min-w-0 pointer-coarse:min-h-11 sm:w-auto sm:max-w-56',
+          active && 'border-foreground/25 bg-surface-hover',
+        )}
       >
+        <span className="shrink-0 text-muted-foreground">{label}</span>
+        {/* "All" is implied while a filter is unset; keep it for screen readers. */}
+        <span className={cn('min-w-0 truncate', !active && 'sr-only')}>
+          <SelectValue />
+        </span>
+      </SelectTrigger>
+      <SelectContent>
         {options.map((option) => (
-          <option key={option.value} value={option.value}>
+          <SelectItem key={option.value} value={option.value}>
             {option.label}
-          </option>
+          </SelectItem>
         ))}
-      </select>
-    </label>
+      </SelectContent>
+    </Select>
   );
 }
 
@@ -1020,16 +1028,16 @@ function MetricItem({
   exactValue?: string;
 }) {
   return (
-    <div className="min-w-0 border-b border-r border-border p-4 last:border-r-0 md:border-b-0 md:p-5">
-      <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
+    <div className="min-w-0 rounded-xl bg-surface-raised p-4 ring-1 ring-surface-border">
+      <dt className="truncate text-caption text-muted-foreground">{label}</dt>
       <dd
-        className="mt-2 truncate text-2xl font-semibold tracking-tight text-foreground"
+        className="mt-1 truncate text-display-sm text-foreground tabular-nums"
         title={exactValue || value}
       >
         {value}
       </dd>
       {(note || exactValue) && (
-        <p className="mt-1 truncate text-xs text-muted-foreground">
+        <p className="mt-1 truncate text-caption text-muted-foreground">
           {note || exactValue}
         </p>
       )}
@@ -1037,12 +1045,84 @@ function MetricItem({
   );
 }
 
-function TokenValue({ label, value }: { label: string; value: number }) {
+function TokenComposition({
+  summary,
+  cacheReadShare,
+}: {
+  summary: UsageSummary;
+  cacheReadShare: number;
+}) {
+  const total = TOKEN_SERIES.reduce((sum, [key]) => sum + summary[key], 0);
+  return (
+    <section
+      className="space-y-3 rounded-xl bg-surface-raised p-4 ring-1 ring-surface-border"
+      aria-labelledby="token-composition-heading"
+    >
+      <div className="min-w-0">
+        <h3
+          id="token-composition-heading"
+          className="text-label text-foreground"
+        >
+          Token 构成
+        </h3>
+        <p className="mt-0.5 text-caption leading-5 text-muted-foreground">
+          五类互斥，不重复相加。缓存读取占全部输入的 {cacheReadShare.toFixed(1)}
+          %；公式：缓存读取 ÷（普通输入 + 缓存读取 + 缓存写入）。
+        </p>
+      </div>
+      <div
+        className="flex h-2 overflow-hidden rounded-full bg-muted"
+        aria-hidden="true"
+      >
+        {total > 0 &&
+          TOKEN_SERIES.map(([key, , color]) =>
+            summary[key] > 0 ? (
+              <span
+                key={key}
+                className="h-full"
+                style={{
+                  width: `${(summary[key] / total) * 100}%`,
+                  backgroundColor: color,
+                }}
+              />
+            ) : null,
+          )}
+      </div>
+      <dl className="grid min-w-0 grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-5">
+        {TOKEN_SERIES.map(([key, label, color]) => (
+          <TokenValue
+            key={key}
+            label={label}
+            value={summary[key]}
+            color={color}
+          />
+        ))}
+      </dl>
+    </section>
+  );
+}
+
+function TokenValue({
+  label,
+  value,
+  color,
+}: {
+  label: string;
+  value: number;
+  color: string;
+}) {
   return (
     <div className="min-w-0">
-      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dt className="flex items-center gap-1.5 text-caption text-muted-foreground">
+        <span
+          aria-hidden="true"
+          className="size-2 shrink-0 rounded-sm"
+          style={{ backgroundColor: color }}
+        />
+        {label}
+      </dt>
       <dd
-        className="mt-1 truncate text-sm font-semibold text-foreground"
+        className="mt-1 truncate text-title-sm text-foreground tabular-nums"
         title={formatInteger(value)}
       >
         {formatTokens(value)}
@@ -1051,50 +1131,14 @@ function TokenValue({ label, value }: { label: string; value: number }) {
   );
 }
 
-function SegmentedControl({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  options: Array<{
-    value: string;
-    label: string;
-    icon?: React.ComponentType<{ className?: string }>;
-  }>;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <div
-      className="flex min-w-0 overflow-x-auto rounded-lg border border-border bg-muted/30 p-0.5"
-      role="group"
-      aria-label={label}
-    >
-      {options.map((option) => {
-        const Icon = option.icon;
-        const active = option.value === value;
-        return (
-          <button
-            key={option.value}
-            type="button"
-            className={`flex min-h-11 shrink-0 items-center justify-center gap-1.5 rounded-md px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-              active
-                ? 'bg-background text-foreground ring-1 ring-border'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-            aria-pressed={active}
-            onClick={() => onChange(option.value)}
-          >
-            {Icon && <Icon className="size-4" />}
-            {option.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
+const numberColumn = {
+  align: 'right' as const,
+  className: 'tabular-nums text-muted-foreground',
+};
+const strongNumberColumn = {
+  align: 'right' as const,
+  className: 'tabular-nums font-medium text-foreground',
+};
 
 function UsageTrendTable({
   data,
@@ -1105,105 +1149,82 @@ function UsageTrendTable({
   metric: UsageTrendMetric;
   billingApplicable: boolean;
 }) {
+  const dateColumn: DataTableColumn<DailyUsagePoint> = {
+    key: 'date',
+    header: '日期',
+    cell: (row) => row.date,
+    className: 'tabular-nums text-foreground',
+  };
+  const columns: DataTableColumn<DailyUsagePoint>[] =
+    metric === 'tokens'
+      ? [
+          dateColumn,
+          ...TOKEN_SERIES.map(([key, label]) => ({
+            key,
+            header: label,
+            cell: (row: DailyUsagePoint) => formatTokens(row[key]),
+            ...numberColumn,
+          })),
+          {
+            key: 'total',
+            header: '合计',
+            cell: (row) => formatTokens(row.totalTokens),
+            ...strongNumberColumn,
+          },
+        ]
+      : metric === 'cost'
+        ? [
+            dateColumn,
+            {
+              key: 'estimated',
+              header: '模型估算费用',
+              cell: (row) => formatCost(row.providerEstimatedCostUSD),
+              ...strongNumberColumn,
+            },
+            {
+              key: 'billed',
+              header: '账单扣费',
+              cell: (row) =>
+                !billingApplicable
+                  ? '不适用'
+                  : row.billedCostUSD === null
+                    ? '—'
+                    : formatCost(row.billedCostUSD),
+              ...numberColumn,
+            },
+          ]
+        : [
+            dateColumn,
+            {
+              key: 'runs',
+              header: '智能体运行次数',
+              cell: (row) => formatInteger(row.runCount),
+              ...strongNumberColumn,
+            },
+            {
+              key: 'calls',
+              header: '模型调用次数',
+              cell: (row) => formatInteger(row.modelCallCount),
+              ...numberColumn,
+            },
+          ];
   return (
-    <div className="max-h-[28rem] max-w-full overflow-auto rounded-lg border border-border">
-      <table className="w-full min-w-[42rem] border-collapse text-sm">
-        <caption className="sr-only">
-          {metric === 'tokens'
-            ? '每日 Token 分类数据'
-            : metric === 'cost'
-              ? '每日模型估算费用数据'
-              : '每日智能体运行次数数据'}
-        </caption>
-        <thead className="sticky top-0 bg-muted text-xs text-muted-foreground">
-          <tr>
-            <th className="px-3 py-3 text-left font-medium">日期</th>
-            {metric === 'tokens' && (
-              <>
-                <th className="px-3 py-3 text-right font-medium">普通输入</th>
-                <th className="px-3 py-3 text-right font-medium">缓存读取</th>
-                <th className="px-3 py-3 text-right font-medium">缓存写入</th>
-                <th className="px-3 py-3 text-right font-medium">输出</th>
-                <th className="px-3 py-3 text-right font-medium">推理</th>
-                <th className="px-3 py-3 text-right font-medium">合计</th>
-              </>
-            )}
-            {metric === 'cost' && (
-              <>
-                <th className="px-3 py-3 text-right font-medium">
-                  模型估算费用
-                </th>
-                <th className="px-3 py-3 text-right font-medium">账单扣费</th>
-              </>
-            )}
-            {metric === 'runs' && (
-              <>
-                <th className="px-3 py-3 text-right font-medium">
-                  智能体运行次数
-                </th>
-                <th className="px-3 py-3 text-right font-medium">
-                  模型调用次数
-                </th>
-              </>
-            )}
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-border">
-          {data.map((row) => (
-            <tr key={row.date} className="hover:bg-muted/30">
-              <td className="whitespace-nowrap px-3 py-3 text-foreground">
-                {row.date}
-              </td>
-              {metric === 'tokens' && (
-                <>
-                  <NumberCell value={formatTokens(row.inputTokens)} />
-                  <NumberCell value={formatTokens(row.cacheReadTokens)} />
-                  <NumberCell value={formatTokens(row.cacheCreationTokens)} />
-                  <NumberCell value={formatTokens(row.outputTokens)} />
-                  <NumberCell value={formatTokens(row.reasoningTokens)} />
-                  <NumberCell value={formatTokens(row.totalTokens)} strong />
-                </>
-              )}
-              {metric === 'cost' && (
-                <>
-                  <NumberCell
-                    value={formatCost(row.providerEstimatedCostUSD)}
-                    strong
-                  />
-                  <NumberCell
-                    value={
-                      !billingApplicable
-                        ? '不适用'
-                        : row.billedCostUSD === null
-                          ? '—'
-                          : formatCost(row.billedCostUSD)
-                    }
-                  />
-                </>
-              )}
-              {metric === 'runs' && (
-                <>
-                  <NumberCell value={formatInteger(row.runCount)} strong />
-                  <NumberCell value={formatInteger(row.modelCallCount)} />
-                </>
-              )}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="max-h-[28rem] max-w-full overflow-x-auto overflow-y-auto rounded-xl bg-surface-raised ring-1 ring-surface-border">
+      <DataTable
+        framed={false}
+        columns={columns}
+        rows={data}
+        rowKey={(row) => row.date}
+        className="[&_thead]:bg-muted/40"
+      />
+      <p className="sr-only">
+        {metric === 'tokens'
+          ? '每日 Token 分类数据'
+          : metric === 'cost'
+            ? '每日模型估算费用数据'
+            : '每日智能体运行次数数据'}
+      </p>
     </div>
-  );
-}
-
-function NumberCell({ value, strong }: { value: string; strong?: boolean }) {
-  return (
-    <td
-      className={`whitespace-nowrap px-3 py-3 text-right ${
-        strong ? 'font-medium text-foreground' : 'text-muted-foreground'
-      }`}
-    >
-      {value}
-    </td>
   );
 }
 
@@ -1216,74 +1237,95 @@ function AttributionTable({
   dimension: AttributionDimension;
   totalCost: number;
 }) {
-  if (rows.length === 0) {
-    return (
-      <p className="rounded-lg border border-dashed border-border py-8 text-center text-sm text-muted-foreground">
-        当前范围没有可归因的数据
-      </p>
-    );
-  }
-  return (
-    <div className="max-w-full overflow-x-auto rounded-lg border border-border">
-      <table className="w-full min-w-[44rem] border-collapse text-sm">
-        <caption className="sr-only">
-          按{DIMENSION_LABELS[dimension]}汇总的用量归因表
-        </caption>
-        <thead className="bg-muted text-xs text-muted-foreground">
-          <tr>
-            <th className="px-3 py-3 text-left font-medium">
-              {DIMENSION_LABELS[dimension]}
-            </th>
-            <th className="px-3 py-3 text-right font-medium">总 Token</th>
-            <th className="px-3 py-3 text-right font-medium">智能体运行次数</th>
-            <th className="px-3 py-3 text-right font-medium">模型调用次数</th>
-            <th className="px-3 py-3 text-right font-medium">模型估算费用</th>
-            <th className="px-3 py-3 text-right font-medium">费用占比</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-border">
-          {rows.map((row) => (
-            <tr key={row.key} className="hover:bg-muted/30">
-              <td className="max-w-[20rem] break-all px-3 py-3 font-medium text-foreground">
-                {row.label}
-              </td>
-              <NumberCell value={formatTokens(row.tokens)} />
-              <NumberCell value={formatInteger(row.runCount)} />
-              <NumberCell value={formatInteger(row.modelCallCount)} />
-              <NumberCell value={formatCost(row.estimatedCost)} strong />
-              <NumberCell
-                value={
-                  totalCost > 0
-                    ? `${((row.estimatedCost / totalCost) * 100).toFixed(1)}%`
-                    : '0.0%'
-                }
+  const columns: DataTableColumn<AttributionRow>[] = [
+    {
+      key: 'label',
+      header: DIMENSION_LABELS[dimension],
+      cell: (row) => row.label,
+      className:
+        'min-w-36 max-w-[20rem] whitespace-normal break-all font-medium text-foreground',
+    },
+    {
+      key: 'tokens',
+      header: '总 Token',
+      cell: (row) => formatTokens(row.tokens),
+      ...numberColumn,
+    },
+    {
+      key: 'runs',
+      header: '智能体运行次数',
+      cell: (row) => formatInteger(row.runCount),
+      ...numberColumn,
+    },
+    {
+      key: 'calls',
+      header: '模型调用次数',
+      cell: (row) => formatInteger(row.modelCallCount),
+      ...numberColumn,
+    },
+    {
+      key: 'cost',
+      header: '模型估算费用',
+      cell: (row) => formatCost(row.estimatedCost),
+      ...strongNumberColumn,
+    },
+    {
+      key: 'share',
+      header: '费用占比',
+      align: 'right',
+      className: 'tabular-nums text-muted-foreground',
+      cell: (row) => {
+        const share = totalCost > 0 ? (row.estimatedCost / totalCost) * 100 : 0;
+        return (
+          <span className="inline-flex items-center justify-end gap-2">
+            <span
+              aria-hidden="true"
+              className="hidden h-1.5 w-16 overflow-hidden rounded-full bg-muted sm:block"
+            >
+              <span
+                className="block h-full rounded-full bg-primary"
+                style={{ width: `${Math.min(100, share)}%` }}
               />
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+            </span>
+            {totalCost > 0 ? `${share.toFixed(1)}%` : '0.0%'}
+          </span>
+        );
+      },
+    },
+  ];
+  return (
+    <DataTable
+      columns={columns}
+      rows={rows}
+      rowKey={(row) => row.key}
+      empty={
+        <p className="py-8 text-center text-body text-muted-foreground">
+          当前范围没有可归因的数据
+        </p>
+      }
+    />
   );
 }
 
 function UsageLoadingState() {
   return (
     <div className="space-y-6" aria-label="正在加载用量数据" aria-live="polite">
-      <div className="grid grid-cols-2 overflow-hidden rounded-xl border border-border md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {Array.from({ length: 4 }).map((_, index) => (
-          <div key={index} className="space-y-3 border-r border-border p-5">
+          <div
+            key={index}
+            className="space-y-3 rounded-xl bg-surface-raised p-4 ring-1 ring-surface-border"
+          >
             <Skeleton className="h-3 w-24" />
-            <Skeleton className="h-8 w-28" />
+            <Skeleton className="h-7 w-28" />
             <Skeleton className="h-3 w-20" />
           </div>
         ))}
       </div>
-      <Card>
-        <CardContent className="space-y-4">
-          <Skeleton className="h-5 w-28" />
-          <Skeleton className="h-72 w-full" />
-        </CardContent>
-      </Card>
+      <div className="space-y-4 rounded-xl bg-surface-raised p-4 ring-1 ring-surface-border">
+        <Skeleton className="h-4 w-28" />
+        <Skeleton className="h-64 w-full" />
+      </div>
     </div>
   );
 }
@@ -1296,29 +1338,26 @@ function UsageEmptyState({
   onClear: () => void;
 }) {
   return (
-    <section className="rounded-xl border border-dashed border-border px-5 py-12 text-center">
-      <div className="mx-auto flex size-11 items-center justify-center rounded-full bg-muted text-muted-foreground">
-        <Zap className="size-5" />
-      </div>
-      <h2 className="mt-4 text-base font-semibold text-foreground">
-        {filtered ? '当前筛选没有用量数据' : '还没有智能体用量数据'}
-      </h2>
-      <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted-foreground">
-        {filtered
+    <EmptyState
+      icon={Zap}
+      title={filtered ? '当前筛选没有用量数据' : '还没有智能体用量数据'}
+      description={
+        filtered
           ? '尝试扩大时间范围或清除筛选，即可继续查看成本和 Token 趋势。'
-          : '完成一次 AI 对话或智能体任务后，这里会展示运行次数、Token 构成和模型成本估算。'}
-      </p>
-      <div className="mt-5 flex justify-center">
-        {filtered ? (
-          <Button size="lg" className="min-h-11" onClick={onClear}>
+          : '完成一次 AI 对话或智能体任务后，这里会展示运行次数、Token 构成和模型成本估算。'
+      }
+      className="rounded-xl ring-1 ring-surface-border"
+      action={
+        filtered ? (
+          <Button className="pointer-coarse:min-h-11" onClick={onClear}>
             清除筛选
           </Button>
         ) : (
-          <Button asChild size="lg" className="min-h-11">
+          <Button asChild className="pointer-coarse:min-h-11">
             <Link to="/chat">开始一次对话</Link>
           </Button>
-        )}
-      </div>
-    </section>
+        )
+      }
+    />
   );
 }
