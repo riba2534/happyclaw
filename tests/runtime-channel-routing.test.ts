@@ -418,6 +418,7 @@ describe('actual message loop dispatches the unconsumed channel suffix', () => {
       lastAgentTimestamp: {},
       lastCommittedCursor: {},
       saveState: vi.fn(),
+      routerCursorPersistence: { markDirty: vi.fn() },
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       resolveEffectiveGroup: () => ({ effectiveGroup: group }),
       getWorkspaceInteractionMode: () => 'assistant',

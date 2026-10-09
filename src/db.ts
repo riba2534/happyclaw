@@ -83,6 +83,11 @@ import {
 } from './agent-profile-prompts.js';
 import { assertDatabaseMaintenanceAccess } from './database-maintenance.js';
 import { CURRENT_SCHEMA_VERSION } from './schema-version.js';
+import type {
+  RouterCursorChange,
+  RouterCursorKind,
+  RouterCursorRow,
+} from './router-cursor-persistence.js';
 import {
   bindChannelReliabilityDatabase,
   createChannelReliabilitySchema,
@@ -2709,9 +2714,103 @@ export function initDatabase(
     migrateClassifiableDirectWorkspaceMountsToSessions();
   }
 
+  // v75 -> v76: per-chat router cursors become rows instead of two
+  // whole-map JSON blobs in router_state that were rewritten on every
+  // cursor change.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS router_cursors (
+      kind TEXT NOT NULL CHECK (kind IN ('next_pull', 'committed')),
+      chat_jid TEXT NOT NULL,
+      cursor TEXT NOT NULL,
+      PRIMARY KEY (kind, chat_jid)
+    ) WITHOUT ROWID;
+  `);
+  migrateRouterCursorBlobs();
+
   db.prepare(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', String(CURRENT_SCHEMA_VERSION));
+}
+
+const LEGACY_ROUTER_CURSOR_BLOBS: ReadonlyArray<
+  readonly [key: string, kind: RouterCursorKind]
+> = [
+  ['last_agent_timestamp', 'next_pull'],
+  ['last_committed_cursor', 'committed'],
+];
+
+/**
+ * Move the legacy cursor blobs into router_cursors. Idempotent: it only acts
+ * while a blob key still exists, and the move and the key removal share one
+ * transaction. An unparseable blob is dropped, matching the old loader,
+ * which reset a corrupted map to empty.
+ */
+function migrateRouterCursorBlobs(): void {
+  const insert = db.prepare(
+    'INSERT OR REPLACE INTO router_cursors (kind, chat_jid, cursor) VALUES (?, ?, ?)',
+  );
+  for (const [key, kind] of LEGACY_ROUTER_CURSOR_BLOBS) {
+    const raw = getRouterStateInternal(key);
+    if (raw === undefined) continue;
+    let parsed: Record<string, unknown> = {};
+    try {
+      const value = JSON.parse(raw) as unknown;
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        parsed = value as Record<string, unknown>;
+      }
+    } catch {
+      logger.warn(
+        { key },
+        'Corrupted router cursor blob dropped during migration',
+      );
+    }
+    let moved = 0;
+    db.transaction(() => {
+      for (const [chatJid, cursor] of Object.entries(parsed)) {
+        insert.run(kind, chatJid, JSON.stringify(cursor));
+        moved += 1;
+      }
+      db.prepare('DELETE FROM router_state WHERE key = ?').run(key);
+    })();
+    logger.info({ key, moved }, 'Moved router cursors into router_cursors');
+  }
+}
+
+export function getRouterCursorRows(): RouterCursorRow[] {
+  return prepareCached(
+    'SELECT kind, chat_jid, cursor FROM router_cursors',
+  ).all() as RouterCursorRow[];
+}
+
+/**
+ * Persist changed router_state keys and per-chat cursor rows atomically.
+ * A null cursor deletes the row.
+ */
+export function persistRouterState(input: {
+  state: ReadonlyArray<readonly [key: string, value: string]>;
+  cursors: ReadonlyArray<RouterCursorChange>;
+}): void {
+  if (input.state.length === 0 && input.cursors.length === 0) return;
+  const setState = prepareCached(
+    'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
+  );
+  const upsertCursor = prepareCached(
+    `INSERT INTO router_cursors (kind, chat_jid, cursor) VALUES (?, ?, ?)
+     ON CONFLICT(kind, chat_jid) DO UPDATE SET cursor = excluded.cursor`,
+  );
+  const deleteCursor = prepareCached(
+    'DELETE FROM router_cursors WHERE kind = ? AND chat_jid = ?',
+  );
+  db.transaction(() => {
+    for (const [key, value] of input.state) setState.run(key, value);
+    for (const change of input.cursors) {
+      if (change.cursor === null) {
+        deleteCursor.run(change.kind, change.chatJid);
+      } else {
+        upsertCursor.run(change.kind, change.chatJid, change.cursor);
+      }
+    }
+  })();
 }
 
 /**

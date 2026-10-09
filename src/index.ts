@@ -36,6 +36,7 @@ import {
   type IpcProcessScope,
 } from './ipc-watcher-manager.js';
 import { pruneIdleIpcNamespaces } from './ipc-namespace-prune.js';
+import { RouterCursorPersistence } from './router-cursor-persistence.js';
 import {
   deliverTextAndLocalImages,
   prepareLocalImages,
@@ -157,6 +158,8 @@ import {
   getNewMessages,
   resolveMessageCursorSequence,
   getRouterState,
+  getRouterCursorRows,
+  persistRouterState,
   getRouterStateByPrefix,
   deleteRouterState,
   getTaskById,
@@ -174,7 +177,6 @@ import {
   setLastGroupSync,
   setRegisteredGroup,
   setRouterState,
-  setRouterStateBatch,
   setSession,
   setSessionProviderId,
   deleteSession,
@@ -940,6 +942,8 @@ let lastAgentTimestamp: Record<string, MessageCursor> = {};
 // Recovery-safe cursor: only advances when an agent actually finishes processing.
 // recoverPendingMessages() uses this to detect IPC-injected but unprocessed messages.
 let lastCommittedCursor: Record<string, MessageCursor> = {};
+// Every write to either map must mark the entry dirty so saveState() persists it.
+const routerCursorPersistence = new RouterCursorPersistence();
 const deferredOutOfBandCursors = new DeferredOutOfBandCursorLedger();
 const startupRecoveredDeliveryJids = new Set<string>();
 
@@ -948,6 +952,8 @@ function setCursors(jid: string, cursor: MessageCursor): void {
   const resolved = resolveMessageCursorSequence(cursor, jid);
   lastAgentTimestamp[jid] = resolved;
   lastCommittedCursor[jid] = resolved;
+  routerCursorPersistence.markDirty('next_pull', jid);
+  routerCursorPersistence.markDirty('committed', jid);
   saveState();
 }
 
@@ -974,6 +980,7 @@ function advanceNextPullCursorOnly(
   const target =
     current && isCursorAfter(current, candidate) ? current : candidate;
   lastAgentTimestamp[jid] = target;
+  routerCursorPersistence.markDirty('next_pull', jid);
   saveState();
 }
 
@@ -998,11 +1005,14 @@ function advanceCursors(jid: string, candidate: MessageCursor): void {
     currentCommitted && isCursorAfter(currentCommitted, candidate)
       ? currentCommitted
       : candidate;
+  routerCursorPersistence.markDirty('next_pull', jid);
+  routerCursorPersistence.markDirty('committed', jid);
   saveState();
 }
 
 function rewindNextPullCursorToCommitted(jid: string): void {
   lastAgentTimestamp[jid] = lastCommittedCursor[jid] || EMPTY_CURSOR;
+  routerCursorPersistence.markDirty('next_pull', jid);
   saveState();
 }
 
@@ -5746,22 +5756,12 @@ function loadState(): void {
       ? { sequence: persistedSequence }
       : {}),
   });
-  const loadCursorMap = (key: string): Record<string, MessageCursor> => {
-    const raw = getRouterState(key);
-    try {
-      const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
-      const normalized: Record<string, MessageCursor> = {};
-      for (const [jid, v] of Object.entries(parsed)) {
-        normalized[jid] = resolveMessageCursorSequence(normalizeCursor(v), jid);
-      }
-      return normalized;
-    } catch {
-      logger.warn(`Corrupted ${key} in DB, resetting`);
-      return {};
-    }
-  };
-  lastAgentTimestamp = loadCursorMap('last_agent_timestamp');
-  lastCommittedCursor = loadCursorMap('last_committed_cursor');
+  const loadedCursors = routerCursorPersistence.load(
+    getRouterCursorRows(),
+    (value, jid) => resolveMessageCursorSequence(normalizeCursor(value), jid),
+  );
+  lastAgentTimestamp = loadedCursors.nextPull;
+  lastCommittedCursor = loadedCursors.committed;
   const prunedCursors = pruneCursorState();
   if (prunedCursors > 0) {
     logger.info(
@@ -5922,11 +5922,11 @@ function loadState(): void {
 }
 
 /**
- * Cursor persistence. Both cursor maps are serialized whole, so this cost
- * scales with the number of historical chats; two defenses keep it bounded:
- * only keys whose value actually changed are written (in one transaction, not
- * four), and pruneCursorState() drops keys whose chat no longer exists
- * (73% of production keys were dead web sessions).
+ * Cursor persistence. Per-chat cursors are rows in router_cursors and only
+ * the ones marked dirty by the mutation helpers are written; the global
+ * cursor keys are written only when their value changed. Both go in one
+ * transaction. pruneCursorState() drops cursors of chats that no longer
+ * exist (73% of production keys were dead web sessions).
  */
 const lastPersistedRouterState: Record<string, string> = {};
 function saveState(): void {
@@ -5934,14 +5934,17 @@ function saveState(): void {
     ['last_timestamp', globalMessageCursor.timestamp],
     ['last_timestamp_id', globalMessageCursor.id],
     ['last_ingest_sequence', String(globalMessageCursor.sequence ?? 0)],
-    ['last_agent_timestamp', JSON.stringify(lastAgentTimestamp)],
-    ['last_committed_cursor', JSON.stringify(lastCommittedCursor)],
   ];
   const changed = entries.filter(
     ([key, value]) => lastPersistedRouterState[key] !== value,
   );
-  if (changed.length === 0) return;
-  setRouterStateBatch(changed);
+  const cursorChanges = routerCursorPersistence.collectChanges({
+    nextPull: lastAgentTimestamp,
+    committed: lastCommittedCursor,
+  });
+  if (changed.length === 0 && cursorChanges.length === 0) return;
+  persistRouterState({ state: changed, cursors: cursorChanges });
+  routerCursorPersistence.acknowledge(cursorChanges);
   for (const [key, value] of changed) lastPersistedRouterState[key] = value;
 }
 
@@ -5954,12 +5957,14 @@ function pruneCursorState(): number {
   for (const key of Object.keys(lastAgentTimestamp)) {
     if (!validJids.has(key)) {
       delete lastAgentTimestamp[key];
+      routerCursorPersistence.markDirty('next_pull', key);
       pruned += 1;
     }
   }
   for (const key of Object.keys(lastCommittedCursor)) {
     if (!validJids.has(key)) {
       delete lastCommittedCursor[key];
+      routerCursorPersistence.markDirty('committed', key);
       pruned += 1;
     }
   }
