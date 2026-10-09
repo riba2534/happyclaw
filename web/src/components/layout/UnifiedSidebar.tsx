@@ -303,6 +303,7 @@ export function UnifiedSidebar() {
             icon={Search}
             label="搜索"
             shortcut={SHORTCUTS.commandPalette}
+            shortcutAlwaysVisible
             onClick={() => setPaletteOpen(true)}
             collapsed={collapsed}
           />

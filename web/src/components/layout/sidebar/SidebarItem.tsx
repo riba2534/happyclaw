@@ -21,6 +21,8 @@ export interface SidebarItemProps {
   active?: boolean;
   /** Keyboard shortcut shown on the right (and in the collapsed tooltip). */
   shortcut?: string;
+  /** Keep the keycaps visible instead of revealing them on hover/focus. */
+  shortcutAlwaysVisible?: boolean;
   trailing?: ReactNode;
   collapsed?: boolean;
   disabled?: boolean;
@@ -33,6 +35,7 @@ export function SidebarItem({
   onClick,
   active,
   shortcut,
+  shortcutAlwaysVisible = false,
   trailing,
   collapsed = false,
   disabled,
@@ -44,7 +47,17 @@ export function SidebarItem({
         <>
           <span className="min-w-0 flex-1 truncate">{label}</span>
           {trailing}
-          {shortcut && <Shortcut keys={shortcut} className="opacity-80" />}
+          {shortcut && (
+            <Shortcut
+              keys={shortcut}
+              className={cn(
+                'transition-opacity duration-100 pointer-coarse:hidden',
+                shortcutAlwaysVisible
+                  ? 'opacity-80'
+                  : 'opacity-0 group-hover/sidebar-row:opacity-80 group-focus-visible/sidebar-row:opacity-80',
+              )}
+            />
+          )}
         </>
       )}
     </>
