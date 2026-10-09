@@ -356,9 +356,9 @@ function assertSchema(
 /** Internal helper — reads router_state before initDatabase exports are available. */
 function getRouterStateInternal(key: string): string | undefined {
   try {
-    const row = db
-      .prepare('SELECT value FROM router_state WHERE key = ?')
-      .get(key) as { value: string } | undefined;
+    const row = prepareCached(
+      'SELECT value FROM router_state WHERE key = ?',
+    ).get(key) as { value: string } | undefined;
     return row?.value;
   } catch {
     return undefined; // Table may not exist yet on first run
@@ -366,9 +366,9 @@ function getRouterStateInternal(key: string): string | undefined {
 }
 
 function tableExists(tableName: string): boolean {
-  const row = db
-    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
-    .get(tableName);
+  const row = prepareCached(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+  ).get(tableName);
   return !!row;
 }
 
@@ -640,7 +640,7 @@ export function initDatabase(
   // to OFF, because turning it on with violations would refuse the next write.
   try {
     db.exec('PRAGMA foreign_keys = ON');
-    let violations = db.prepare('PRAGMA foreign_key_check').all() as Array<{
+    let violations = prepareCached('PRAGMA foreign_key_check').all() as Array<{
       table: string;
       rowid: number;
       parent: string;
@@ -650,18 +650,16 @@ export function initDatabase(
       (v) => v.table === 'messages' && v.parent === 'chats',
     );
     if (messageOrphans.length > 0 && tableExists('chats')) {
-      const repaired = db
-        .prepare(
-          'DELETE FROM messages WHERE chat_jid NOT IN (SELECT jid FROM chats)',
-        )
-        .run().changes;
+      const repaired = prepareCached(
+        'DELETE FROM messages WHERE chat_jid NOT IN (SELECT jid FROM chats)',
+      ).run().changes;
       logger.info(
         { repaired },
         'Removed orphaned messages left behind by an interrupted chat deletion',
       );
-      violations = db
-        .prepare('PRAGMA foreign_key_check')
-        .all() as typeof violations;
+      violations = prepareCached(
+        'PRAGMA foreign_key_check',
+      ).all() as typeof violations;
     }
     if (violations.length > 0) {
       const summary = violations
@@ -1454,11 +1452,9 @@ export function initDatabase(
   // thread/root, so one column carries the whole binding. Existing rows are
   // backfilled from `chat_jid`, which is exactly the route they used before.
   ensureColumn('scheduled_tasks', 'delivery_route_jid', 'TEXT');
-  db.prepare(
-    `UPDATE scheduled_tasks
+  prepareCached(`UPDATE scheduled_tasks
      SET delivery_route_jid = chat_jid
-     WHERE delivery_route_jid IS NULL AND chat_jid IS NOT NULL`,
-  ).run();
+     WHERE delivery_route_jid IS NULL AND chat_jid IS NOT NULL`).run();
   ensureColumn('task_runs', 'notification_summary', 'TEXT');
   ensureColumn('task_runs', 'notification_payload', 'TEXT');
   ensureColumn(
@@ -1481,7 +1477,7 @@ export function initDatabase(
     'INTEGER NOT NULL DEFAULT 0',
   );
   // Old rows predate updated_at; created_at is the least-surprising baseline.
-  db.prepare(
+  prepareCached(
     "UPDATE scheduled_tasks SET updated_at = created_at WHERE updated_at = '' OR updated_at IS NULL",
   ).run();
   ensureColumn('registered_groups', 'selected_skills', 'TEXT');
@@ -1509,12 +1505,10 @@ export function initDatabase(
   // were transferred between HappyClaw users. Keep them usable for legacy
   // owner-only commands, but never let an ordinary DM silently turn them into
   // Agent Builder trust; the user must re-pair or configure the owner in Web.
-  db.prepare(
-    `UPDATE registered_groups
+  prepareCached(`UPDATE registered_groups
      SET owner_claim_source = 'explicit'
      WHERE owner_im_id IS NOT NULL AND owner_im_id <> ''
-       AND (owner_claim_source IS NULL OR owner_claim_source = '')`,
-  ).run();
+       AND (owner_claim_source IS NULL OR owner_claim_source = '')`).run();
   ensureColumn(
     'registered_groups',
     'conversation_source',
@@ -1619,11 +1613,9 @@ export function initDatabase(
   // A process may have crashed after reserving a queued message for a card
   // action but before injecting it. Reservations are process-local, so make
   // those rows claimable again on startup.
-  db.prepare(
-    `UPDATE messages
+  prepareCached(`UPDATE messages
      SET delivery_status = 'queued', delivery_updated_at = ?
-     WHERE delivery_status = 'promoting'`,
-  ).run(new Date().toISOString());
+     WHERE delivery_status = 'promoting'`).run(new Date().toISOString());
   ensureColumn('agents', 'source_kind', 'TEXT');
   ensureColumn('agents', 'thread_id', 'TEXT');
   ensureColumn('agents', 'root_message_id', 'TEXT');
@@ -1644,13 +1636,11 @@ export function initDatabase(
   // the conflicting row, making web:main and feishu groups mutually exclusive.
   const hasUniqueFolder =
     (
-      db
-        .prepare(
-          `SELECT COUNT(*) as cnt FROM sqlite_master
+      prepareCached(`SELECT COUNT(*) as cnt FROM sqlite_master
          WHERE type='index' AND tbl_name='registered_groups'
-         AND name='sqlite_autoindex_registered_groups_2'`,
-        )
-        .get() as { cnt: number }
+         AND name='sqlite_autoindex_registered_groups_2'`).get() as {
+        cnt: number;
+      }
     ).cnt > 0;
   if (hasUniqueFolder) {
     db.transaction(() => {
@@ -1838,7 +1828,7 @@ export function initDatabase(
     db.transaction(() => {
       // Check if the old table has single-column PK by inspecting table_info
       const pkCols = (
-        db.prepare("PRAGMA table_info('sessions')").all() as Array<{
+        prepareCached("PRAGMA table_info('sessions')").all() as Array<{
           name: string;
           pk: number;
         }>
@@ -1865,28 +1855,24 @@ export function initDatabase(
   // instead of actual registered group JID (web:${uuid}).
   // Only affects non-home workspaces where folder != uuid.
   if (curVer && parseInt(curVer, 10) < 22) {
-    const rows = db
-      .prepare(
-        "SELECT jid, target_main_jid FROM registered_groups WHERE target_main_jid IS NOT NULL AND target_main_jid != ''",
-      )
-      .all() as Array<{ jid: string; target_main_jid: string }>;
+    const rows = prepareCached(
+      "SELECT jid, target_main_jid FROM registered_groups WHERE target_main_jid IS NOT NULL AND target_main_jid != ''",
+    ).all() as Array<{ jid: string; target_main_jid: string }>;
     for (const row of rows) {
       const targetJid = row.target_main_jid;
       // Check if target_main_jid is a real registered group JID
-      const exists = db
-        .prepare('SELECT 1 FROM registered_groups WHERE jid = ?')
-        .get(targetJid);
+      const exists = prepareCached(
+        'SELECT 1 FROM registered_groups WHERE jid = ?',
+      ).get(targetJid);
       if (exists) continue;
       // Not a valid JID — try to resolve via folder
       if (!targetJid.startsWith('web:')) continue;
       const folder = targetJid.slice(4);
-      const candidates = db
-        .prepare(
-          "SELECT jid FROM registered_groups WHERE folder = ? AND jid LIKE 'web:%'",
-        )
-        .all(folder) as Array<{ jid: string }>;
+      const candidates = prepareCached(
+        "SELECT jid FROM registered_groups WHERE folder = ? AND jid LIKE 'web:%'",
+      ).all(folder) as Array<{ jid: string }>;
       if (candidates.length === 1) {
-        db.prepare(
+        prepareCached(
           'UPDATE registered_groups SET target_main_jid = ? WHERE jid = ?',
         ).run(candidates[0].jid, row.jid);
       }
@@ -1899,45 +1885,57 @@ export function initDatabase(
   if (!v24Ver || parseInt(v24Ver, 10) < 24) {
     db.transaction(() => {
       // Ensure a default free plan exists
-      const existingDefault = db
-        .prepare('SELECT id FROM billing_plans WHERE is_default = 1')
-        .get();
+      const existingDefault = prepareCached(
+        'SELECT id FROM billing_plans WHERE is_default = 1',
+      ).get();
       if (!existingDefault) {
         const now = new Date().toISOString();
-        db.prepare(
-          `INSERT OR IGNORE INTO billing_plans (id, name, description, tier, monthly_cost_usd, allow_overage, features, is_default, is_active, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).run('free', '免费版', '基础免费套餐', 0, 0, 0, '[]', 1, 1, now, now);
+        prepareCached(`INSERT OR IGNORE INTO billing_plans (id, name, description, tier, monthly_cost_usd, allow_overage, features, is_default, is_active, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+          'free',
+          '免费版',
+          '基础免费套餐',
+          0,
+          0,
+          0,
+          '[]',
+          1,
+          1,
+          now,
+          now,
+        );
       }
 
       // Initialize balances for all existing users
-      const users = db
-        .prepare("SELECT id FROM users WHERE status != 'deleted'")
-        .all() as Array<{ id: string }>;
+      const users = prepareCached(
+        "SELECT id FROM users WHERE status != 'deleted'",
+      ).all() as Array<{ id: string }>;
       const now = new Date().toISOString();
       for (const u of users) {
-        db.prepare(
+        prepareCached(
           'INSERT OR IGNORE INTO user_balances (user_id, balance_usd, total_deposited_usd, total_consumed_usd, updated_at) VALUES (?, 0, 0, 0, ?)',
         ).run(u.id, now);
       }
 
       // Create active subscriptions for existing users → free plan
-      const freePlan = db
-        .prepare('SELECT id FROM billing_plans WHERE is_default = 1')
-        .get() as { id: string } | undefined;
+      const freePlan = prepareCached(
+        'SELECT id FROM billing_plans WHERE is_default = 1',
+      ).get() as { id: string } | undefined;
       if (freePlan) {
         for (const u of users) {
-          const existing = db
-            .prepare(
-              "SELECT id FROM user_subscriptions WHERE user_id = ? AND status = 'active'",
-            )
-            .get(u.id);
+          const existing = prepareCached(
+            "SELECT id FROM user_subscriptions WHERE user_id = ? AND status = 'active'",
+          ).get(u.id);
           if (!existing) {
             const subId = `sub_${u.id}_${Date.now()}`;
-            db.prepare(
-              `INSERT INTO user_subscriptions (id, user_id, plan_id, status, started_at, created_at)
-               VALUES (?, ?, ?, 'active', ?, ?)`,
-            ).run(subId, u.id, freePlan.id, now, now);
+            prepareCached(`INSERT INTO user_subscriptions (id, user_id, plan_id, status, started_at, created_at)
+               VALUES (?, ?, ?, 'active', ?, ?)`).run(
+              subId,
+              u.id,
+              freePlan.id,
+              now,
+              now,
+            );
           }
         }
       }
@@ -1984,35 +1982,25 @@ export function initDatabase(
   if (!v27Ver || parseInt(v27Ver, 10) < 27) {
     db.transaction(() => {
       const now = new Date().toISOString();
-      const users = db
-        .prepare(
-          "SELECT id, role FROM users WHERE status != 'deleted' AND role != 'admin'",
-        )
-        .all() as Array<{ id: string; role: UserRole }>;
+      const users = prepareCached(
+        "SELECT id, role FROM users WHERE status != 'deleted' AND role != 'admin'",
+      ).all() as Array<{ id: string; role: UserRole }>;
       for (const user of users) {
-        db.prepare(
-          `INSERT OR IGNORE INTO user_balances (
+        prepareCached(`INSERT OR IGNORE INTO user_balances (
             user_id, balance_usd, total_deposited_usd, total_consumed_usd, updated_at
-          ) VALUES (?, 0, 0, 0, ?)`,
-        ).run(user.id, now);
-        db.prepare(
-          `UPDATE user_balances
+          ) VALUES (?, 0, 0, 0, ?)`).run(user.id, now);
+        prepareCached(`UPDATE user_balances
            SET balance_usd = 0, total_deposited_usd = 0, total_consumed_usd = 0, updated_at = ?
-           WHERE user_id = ?`,
-        ).run(now, user.id);
+           WHERE user_id = ?`).run(now, user.id);
 
-        const hasOpening = db
-          .prepare(
-            "SELECT 1 FROM balance_transactions WHERE user_id = ? AND source = 'migration_opening' LIMIT 1",
-          )
-          .get(user.id);
+        const hasOpening = prepareCached(
+          "SELECT 1 FROM balance_transactions WHERE user_id = ? AND source = 'migration_opening' LIMIT 1",
+        ).get(user.id);
         if (!hasOpening) {
-          db.prepare(
-            `INSERT INTO balance_transactions (
+          prepareCached(`INSERT INTO balance_transactions (
               user_id, type, amount_usd, balance_after, description, reference_type,
               reference_id, actor_id, source, operator_type, notes, idempotency_key, created_at
-            ) VALUES (?, 'adjustment', 0, 0, ?, NULL, NULL, NULL, 'migration_opening', 'system', ?, NULL, ?)`,
-          ).run(
+            ) VALUES (?, 'adjustment', 0, 0, ?, NULL, NULL, NULL, 'migration_opening', 'system', ?, NULL, ?)`).run(
             user.id,
             '商业化计费上线初始化',
             '上线迁移：普通用户默认余额归零，需充值后使用',
@@ -2029,11 +2017,9 @@ export function initDatabase(
     db.transaction(() => {
       // Count messages with token_usage for logging
       const countBefore = (
-        db
-          .prepare(
-            "SELECT COUNT(*) as cnt FROM messages WHERE token_usage IS NOT NULL AND json_extract(token_usage, '$.modelUsage') IS NOT NULL",
-          )
-          .get() as { cnt: number }
+        prepareCached(
+          "SELECT COUNT(*) as cnt FROM messages WHERE token_usage IS NOT NULL AND json_extract(token_usage, '$.modelUsage') IS NOT NULL",
+        ).get() as { cnt: number }
       ).cnt;
 
       // Migrate from messages.token_usage modelUsage into usage_records
@@ -2106,7 +2092,7 @@ export function initDatabase(
       `);
 
       const countAfter = (
-        db.prepare('SELECT COUNT(*) as cnt FROM usage_records').get() as {
+        prepareCached('SELECT COUNT(*) as cnt FROM usage_records').get() as {
           cnt: number;
         }
       ).cnt;
@@ -2119,8 +2105,7 @@ export function initDatabase(
 
   // v29 → v30: Add last_im_jid to agents table (#225)
   if (
-    !db
-      .prepare("PRAGMA table_info('agents')")
+    !prepareCached("PRAGMA table_info('agents')")
       .all()
       .some((c: any) => c.name === 'last_im_jid')
   ) {
@@ -2129,8 +2114,7 @@ export function initDatabase(
 
   // v31 → v32: Add spawned_from_jid to agents table (spawn parallel tasks)
   if (
-    !db
-      .prepare("PRAGMA table_info('agents')")
+    !prepareCached("PRAGMA table_info('agents')")
       .all()
       .some((c: any) => c.name === 'spawned_from_jid')
   ) {
@@ -2141,8 +2125,7 @@ export function initDatabase(
   // Prevents "Invalid signature in thinking block" errors when a Claude session
   // resumed across container restarts gets routed to a different OAuth account.
   if (
-    !db
-      .prepare("PRAGMA table_info('sessions')")
+    !prepareCached("PRAGMA table_info('sessions')")
       .all()
       .some((c: any) => c.name === 'provider_id')
   ) {
@@ -2235,9 +2218,9 @@ export function initDatabase(
       ON agent_profile_prompt_versions(agent_profile_id, version DESC);
   `);
   if (promptSchemaVersion < 48) {
-    const legacyRows = db
-      .prepare('SELECT * FROM agent_profiles')
-      .all() as Array<Record<string, unknown>>;
+    const legacyRows = prepareCached(
+      'SELECT * FROM agent_profiles',
+    ).all() as Array<Record<string, unknown>>;
     db.transaction(() => {
       for (const row of legacyRows) {
         const legacyPrompt = String(row.identity_prompt ?? '');
@@ -2257,12 +2240,10 @@ export function initDatabase(
           runtimePolicy,
           String(row.name ?? ''),
         );
-        db.prepare(
-          `UPDATE agent_profiles
+        prepareCached(`UPDATE agent_profiles
            SET identity_prompt = ?, soul_prompt = ?, agents_prompt = ?, tools_prompt = ?,
                prompt_mode = ?, include_claude_preset = ?, identity_hash = ?
-           WHERE id = ?`,
-        ).run(
+           WHERE id = ?`).run(
           prompts.identity_prompt,
           prompts.soul_prompt,
           prompts.agents_prompt,
@@ -2414,9 +2395,9 @@ export function initDatabase(
         const txn = db.transaction(() => {
           for (const row of mixedCaseRows) {
             const lower = row.username.toLowerCase();
-            const conflict = db
-              .prepare('SELECT id FROM users WHERE id != ? AND username = ?')
-              .get(row.id, lower) as { id: string } | undefined;
+            const conflict = prepareCached(
+              'SELECT id FROM users WHERE id != ? AND username = ?',
+            ).get(row.id, lower) as { id: string } | undefined;
             if (conflict) {
               logger.error(
                 {
@@ -2428,7 +2409,7 @@ export function initDatabase(
               );
               continue;
             }
-            db.prepare('UPDATE users SET username = ? WHERE id = ?').run(
+            prepareCached('UPDATE users SET username = ? WHERE id = ?').run(
               lower,
               row.id,
             );
@@ -2497,12 +2478,10 @@ export function initDatabase(
       `);
     })();
   }
-  db.prepare(
-    `UPDATE workspace_agent_profiles
+  prepareCached(`UPDATE workspace_agent_profiles
      SET interaction_mode = 'assistant'
      WHERE interaction_mode IS NULL
-        OR interaction_mode NOT IN ('assistant', 'proactive')`,
-  ).run();
+        OR interaction_mode NOT IN ('assistant', 'proactive')`).run();
 
   db.exec('DROP TABLE IF EXISTS group_members');
   backfillAgentProfileDefaultsAndWorkspaceMappings();
@@ -2594,29 +2573,22 @@ export function initDatabase(
     getRouterStateInternal('schema_version') ?? '0',
   );
   if (embeddedReferenceSchemaVersion < 64) {
-    const candidates = db
-      .prepare(
-        `SELECT id, chat_jid, content, channel_context
+    const candidates =
+      prepareCached(`SELECT id, chat_jid, content, channel_context
          FROM messages
-         WHERE content LIKE ?`,
-      )
-      .all('[引用消息链（最早到最近）]\n%') as Array<{
-      id: string;
-      chat_jid: string;
-      content: string;
-      channel_context: unknown;
-    }>;
-    const findParent = db.prepare(
-      `SELECT sender_name, content
+         WHERE content LIKE ?`).all('[引用消息链（最早到最近）]\n%') as Array<{
+        id: string;
+        chat_jid: string;
+        content: string;
+        channel_context: unknown;
+      }>;
+    const findParent = prepareCached(`SELECT sender_name, content
        FROM messages
        WHERE id = ? AND chat_jid = ?
-       LIMIT 1`,
-    );
-    const updateMessage = db.prepare(
-      `UPDATE messages
+       LIMIT 1`);
+    const updateMessage = prepareCached(`UPDATE messages
        SET content = ?, channel_context = ?
-       WHERE id = ? AND chat_jid = ? AND content = ?`,
-    );
+       WHERE id = ? AND chat_jid = ? AND content = ?`);
     let migratedRows = 0;
     db.transaction(() => {
       for (const candidate of candidates) {
@@ -2727,7 +2699,7 @@ export function initDatabase(
   `);
   migrateRouterCursorBlobs();
 
-  db.prepare(
+  prepareCached(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', String(CURRENT_SCHEMA_VERSION));
 }
@@ -2746,7 +2718,7 @@ const LEGACY_ROUTER_CURSOR_BLOBS: ReadonlyArray<
  * which reset a corrupted map to empty.
  */
 function migrateRouterCursorBlobs(): void {
-  const insert = db.prepare(
+  const insert = prepareCached(
     'INSERT OR REPLACE INTO router_cursors (kind, chat_jid, cursor) VALUES (?, ?, ?)',
   );
   for (const [key, kind] of LEGACY_ROUTER_CURSOR_BLOBS) {
@@ -2770,7 +2742,7 @@ function migrateRouterCursorBlobs(): void {
         insert.run(kind, chatJid, JSON.stringify(cursor));
         moved += 1;
       }
-      db.prepare('DELETE FROM router_state WHERE key = ?').run(key);
+      prepareCached('DELETE FROM router_state WHERE key = ?').run(key);
     })();
     logger.info({ key, moved }, 'Moved router cursors into router_cursors');
   }
@@ -3001,12 +2973,10 @@ export function migrateClassifiableDirectWorkspaceMountsToSessions(): number {
         const conversationJid = channelConversationJid(jid);
         let persistedSources = persistedSourcesByWorkspace.get(workspaceJid);
         if (!persistedSources) {
-          const rows = db
-            .prepare(
-              `SELECT DISTINCT source_jid FROM messages
-               WHERE chat_jid = ? AND is_from_me = 0 AND source_jid IS NOT NULL`,
-            )
-            .all(workspaceJid) as Array<{ source_jid: string }>;
+          const rows = prepareCached(`SELECT DISTINCT source_jid FROM messages
+               WHERE chat_jid = ? AND is_from_me = 0 AND source_jid IS NOT NULL`).all(
+            workspaceJid,
+          ) as Array<{ source_jid: string }>;
           persistedSources = new Set(
             rows.map((row) => channelConversationJid(row.source_jid)),
           );
@@ -3052,23 +3022,19 @@ export function storeChatMetadata(
 ): void {
   if (name) {
     // Update with name, preserving existing timestamp if newer
-    db.prepare(
-      `
+    prepareCached(`
       INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)
       ON CONFLICT(jid) DO UPDATE SET
         name = excluded.name,
         last_message_time = MAX(last_message_time, excluded.last_message_time)
-    `,
-    ).run(chatJid, name, timestamp);
+    `).run(chatJid, name, timestamp);
   } else {
     // Update timestamp only, preserve existing name if any
-    db.prepare(
-      `
+    prepareCached(`
       INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)
       ON CONFLICT(jid) DO UPDATE SET
         last_message_time = MAX(last_message_time, excluded.last_message_time)
-    `,
-    ).run(chatJid, chatJid, timestamp);
+    `).run(chatJid, chatJid, timestamp);
   }
 }
 
@@ -3078,12 +3044,10 @@ export function storeChatMetadata(
  * Used during group metadata sync.
  */
 export function updateChatName(chatJid: string, name: string): void {
-  db.prepare(
-    `
+  prepareCached(`
     INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)
     ON CONFLICT(jid) DO UPDATE SET name = excluded.name
-  `,
-  ).run(chatJid, name, new Date().toISOString());
+  `).run(chatJid, name, new Date().toISOString());
 }
 
 export interface ChatInfo {
@@ -3096,15 +3060,11 @@ export interface ChatInfo {
  * Get all known chats, ordered by most recent activity.
  */
 export function getAllChats(): ChatInfo[] {
-  return db
-    .prepare(
-      `
+  return prepareCached(`
     SELECT jid, name, last_message_time
     FROM chats
     ORDER BY last_message_time DESC
-  `,
-    )
-    .all() as ChatInfo[];
+  `).all() as ChatInfo[];
 }
 
 /**
@@ -3112,9 +3072,9 @@ export function getAllChats(): ChatInfo[] {
  */
 export function getLastGroupSync(): string | null {
   // Store sync time in a special chat entry
-  const row = db
-    .prepare(`SELECT last_message_time FROM chats WHERE jid = '__group_sync__'`)
-    .get() as { last_message_time: string } | undefined;
+  const row = prepareCached(
+    `SELECT last_message_time FROM chats WHERE jid = '__group_sync__'`,
+  ).get() as { last_message_time: string } | undefined;
   return row?.last_message_time || null;
 }
 
@@ -3123,7 +3083,7 @@ export function getLastGroupSync(): string | null {
  */
 export function setLastGroupSync(): void {
   const now = new Date().toISOString();
-  db.prepare(
+  prepareCached(
     `INSERT OR REPLACE INTO chats (jid, name, last_message_time) VALUES ('__group_sync__', '__group_sync__', ?)`,
   ).run(now);
 }
@@ -3220,7 +3180,7 @@ function normalizeMessageRow(
  * Ensure a chat row exists in the chats table (avoids FK violation on messages insert).
  */
 export function ensureChatExists(chatJid: string): void {
-  db.prepare(
+  prepareCached(
     `INSERT OR IGNORE INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)`,
   ).run(chatJid, chatJid, new Date().toISOString());
 }
@@ -3302,7 +3262,7 @@ export function updateMessageAttachments(
   msgId: string,
   attachmentsJson: string,
 ): void {
-  db.prepare(
+  prepareCached(
     `UPDATE messages SET attachments = ? WHERE id = ? AND chat_jid = ?`,
   ).run(attachmentsJson, msgId, chatJid);
 }
@@ -3312,12 +3272,10 @@ export function getMessageChannelTurnContext(
   chatJid: string,
   messageId: string,
 ): ChannelTurnContext | null {
-  const row = db
-    .prepare(
-      `SELECT channel_context FROM messages
-       WHERE id = ? AND chat_jid = ? LIMIT 1`,
-    )
-    .get(messageId, chatJid) as { channel_context?: unknown } | undefined;
+  const row = prepareCached(`SELECT channel_context FROM messages
+       WHERE id = ? AND chat_jid = ? LIMIT 1`).get(messageId, chatJid) as
+    | { channel_context?: unknown }
+    | undefined;
   return parseChannelTurnContext(row?.channel_context) ?? null;
 }
 
@@ -3335,9 +3293,8 @@ export function getForwardBundleRootMaterial(
   bundleId: string,
   sender: string,
 ): ForwardBundleRootMaterial | null {
-  const row = db
-    .prepare(
-      `SELECT id, content, sender_name, attachments, channel_context
+  const row =
+    prepareCached(`SELECT id, content, sender_name, attachments, channel_context
        FROM messages
        WHERE id = ? AND chat_jid = ? AND sender = ? AND is_from_me = 0
          AND channel_context IS NOT NULL AND json_valid(channel_context)
@@ -3346,17 +3303,15 @@ export function getForwardBundleRootMaterial(
          AND json_extract(channel_context, '$.message.contentLink.role') = 'forwarded_content'
          AND json_extract(channel_context, '$.message.contentLink.materialResolved') = 1
          AND COALESCE(delivery_status, '') <> 'cancelled'
-       LIMIT 1`,
-    )
-    .get(bundleId, chatJid, sender, bundleId) as
-    | {
-        id: string;
-        content: string;
-        sender_name: string;
-        attachments: string | null;
-        channel_context: unknown;
-      }
-    | undefined;
+       LIMIT 1`).get(bundleId, chatJid, sender, bundleId) as
+      | {
+          id: string;
+          content: string;
+          sender_name: string;
+          attachments: string | null;
+          channel_context: unknown;
+        }
+      | undefined;
   if (!row) return null;
   const channelContext = parseChannelTurnContext(row.channel_context);
   if (!channelContext) return null;
@@ -3384,9 +3339,7 @@ export function releaseAwaitingForwardBundleRoot(input: {
 }): boolean {
   const subsumed = Boolean(input.subsumedByMessageId);
   const queued = Boolean(input.queuedRunId);
-  const changed = db
-    .prepare(
-      `UPDATE messages
+  const changed = prepareCached(`UPDATE messages
        SET delivery_mode = ?, delivery_status = ?, delivery_run_id = ?,
            delivery_updated_at = ?
        WHERE id = ? AND chat_jid = ? AND sender = ? AND is_from_me = 0
@@ -3394,18 +3347,16 @@ export function releaseAwaitingForwardBundleRoot(input: {
          AND channel_context IS NOT NULL AND json_valid(channel_context)
          AND json_extract(channel_context, '$.message.contentLink.kind') = 'forward_bundle'
          AND json_extract(channel_context, '$.message.contentLink.bundleId') = ?
-         AND json_extract(channel_context, '$.message.contentLink.role') = 'forwarded_content'`,
-    )
-    .run(
-      queued ? 'queue' : null,
-      subsumed ? 'subsumed' : queued ? 'queued' : null,
-      subsumed ? input.subsumedByMessageId : queued ? input.queuedRunId : null,
-      input.updatedAt ?? new Date().toISOString(),
-      input.bundleId,
-      input.chatJid,
-      input.sender,
-      input.bundleId,
-    );
+         AND json_extract(channel_context, '$.message.contentLink.role') = 'forwarded_content'`).run(
+    queued ? 'queue' : null,
+    subsumed ? 'subsumed' : queued ? 'queued' : null,
+    subsumed ? input.subsumedByMessageId : queued ? input.queuedRunId : null,
+    input.updatedAt ?? new Date().toISOString(),
+    input.bundleId,
+    input.chatJid,
+    input.sender,
+    input.bundleId,
+  );
   return changed.changes === 1;
 }
 
@@ -3416,9 +3367,7 @@ export function cancelAwaitingForwardBundleRoot(input: {
   sender: string;
   updatedAt?: string;
 }): boolean {
-  const changed = db
-    .prepare(
-      `UPDATE messages
+  const changed = prepareCached(`UPDATE messages
        SET delivery_mode = NULL, delivery_status = 'cancelled',
            delivery_run_id = NULL, delivery_updated_at = ?
        WHERE id = ? AND chat_jid = ? AND sender = ? AND is_from_me = 0
@@ -3426,15 +3375,13 @@ export function cancelAwaitingForwardBundleRoot(input: {
          AND channel_context IS NOT NULL AND json_valid(channel_context)
          AND json_extract(channel_context, '$.message.contentLink.kind') = 'forward_bundle'
          AND json_extract(channel_context, '$.message.contentLink.bundleId') = ?
-         AND json_extract(channel_context, '$.message.contentLink.role') = 'forwarded_content'`,
-    )
-    .run(
-      input.updatedAt ?? new Date().toISOString(),
-      input.bundleId,
-      input.chatJid,
-      input.sender,
-      input.bundleId,
-    );
+         AND json_extract(channel_context, '$.message.contentLink.role') = 'forwarded_content'`).run(
+    input.updatedAt ?? new Date().toISOString(),
+    input.bundleId,
+    input.chatJid,
+    input.sender,
+    input.bundleId,
+  );
   return changed.changes === 1;
 }
 
@@ -3450,9 +3397,7 @@ export function findForwardBundleCoveringComment(
   bundleId: string,
   sender: string,
 ): string | null {
-  const rows = db
-    .prepare(
-      `SELECT id, channel_context
+  const rows = prepareCached(`SELECT id, channel_context
        FROM messages
        WHERE chat_jid = ? AND sender = ? AND is_from_me = 0
          AND channel_context IS NOT NULL
@@ -3461,9 +3406,11 @@ export function findForwardBundleCoveringComment(
          AND json_extract(channel_context, '$.message.contentLink.kind') = 'forward_bundle'
          AND json_extract(channel_context, '$.message.contentLink.bundleId') = ?
          AND json_extract(channel_context, '$.message.contentLink.role') = 'forwarder_comment'
-       ORDER BY timestamp DESC, id DESC`,
-    )
-    .all(chatJid, sender, bundleId) as Array<{
+       ORDER BY timestamp DESC, id DESC`).all(
+    chatJid,
+    sender,
+    bundleId,
+  ) as Array<{
     id: string;
     channel_context?: unknown;
   }>;
@@ -3508,9 +3455,7 @@ export function findForwardBundleCommentTail(
   const latestCompanionTimestamp = Number.isFinite(rootMs)
     ? new Date(rootMs + 60_000).toISOString()
     : rootTimestamp;
-  const row = db
-    .prepare(
-      `SELECT id, timestamp
+  const row = prepareCached(`SELECT id, timestamp
        FROM messages
        WHERE chat_jid = ? AND sender = ? AND is_from_me = 0
          AND channel_context IS NOT NULL
@@ -3528,17 +3473,15 @@ export function findForwardBundleCommentTail(
            )
          )
        ORDER BY timestamp DESC, id DESC
-       LIMIT 1`,
-    )
-    .get(
-      chatJid,
-      sender,
-      rootTimestamp,
-      latestCompanionTimestamp,
-      bundleId,
-      bundleId,
-      bundleId,
-    ) as { id: string; timestamp: string } | undefined;
+       LIMIT 1`).get(
+    chatJid,
+    sender,
+    rootTimestamp,
+    latestCompanionTimestamp,
+    bundleId,
+    bundleId,
+    bundleId,
+  ) as { id: string; timestamp: string } | undefined;
   return row ?? null;
 }
 
@@ -3550,13 +3493,11 @@ export function sequenceInboundTimestampAfterChatTail(
   chatJid: string,
   proposedTimestamp: string,
 ): string {
-  const row = db
-    .prepare(
-      `SELECT timestamp FROM messages
+  const row = prepareCached(`SELECT timestamp FROM messages
        WHERE chat_jid = ? AND is_from_me = 0
-       ORDER BY timestamp DESC, id DESC LIMIT 1`,
-    )
-    .get(chatJid) as { timestamp?: string } | undefined;
+       ORDER BY timestamp DESC, id DESC LIMIT 1`).get(chatJid) as
+    | { timestamp?: string }
+    | undefined;
   const tail = row?.timestamp;
   if (!tail || proposedTimestamp > tail) return proposedTimestamp;
   const tailMs = Date.parse(tail);
@@ -3609,22 +3550,18 @@ export function setMessageFollowUp(
     priority?: number;
   },
 ): boolean {
-  const result = db
-    .prepare(
-      `UPDATE messages
+  const result = prepareCached(`UPDATE messages
        SET delivery_mode = ?, delivery_status = ?, delivery_run_id = ?,
            delivery_priority = ?, delivery_updated_at = ?
-       WHERE chat_jid = ? AND id = ? AND is_from_me = 0`,
-    )
-    .run(
-      input.mode,
-      input.status,
-      input.runId ?? null,
-      input.priority ?? 0,
-      new Date().toISOString(),
-      chatJid,
-      messageId,
-    );
+       WHERE chat_jid = ? AND id = ? AND is_from_me = 0`).run(
+    input.mode,
+    input.status,
+    input.runId ?? null,
+    input.priority ?? 0,
+    new Date().toISOString(),
+    chatJid,
+    messageId,
+  );
   return result.changes === 1;
 }
 
@@ -3655,13 +3592,9 @@ export function getQueuedFollowUp(
 }
 
 export function getQueuedFollowUpChatJids(): string[] {
-  const rows = db
-    .prepare(
-      `SELECT DISTINCT chat_jid FROM messages
+  const rows = prepareCached(`SELECT DISTINCT chat_jid FROM messages
        WHERE delivery_status IN ('queued', 'promoting')
-       ORDER BY chat_jid`,
-    )
-    .all() as Array<{ chat_jid: string }>;
+       ORDER BY chat_jid`).all() as Array<{ chat_jid: string }>;
   return rows.map((row) => row.chat_jid);
 }
 
@@ -3684,17 +3617,14 @@ export function prioritizeQueuedFollowUp(
      WHERE chat_jid = ? AND id = ? AND delivery_status = 'queued'
      LIMIT 1`,
   );
-  const selectMinPriority = db.prepare(
-    `SELECT MIN(delivery_priority) AS min_priority
+  const selectMinPriority =
+    prepareCached(`SELECT MIN(delivery_priority) AS min_priority
      FROM messages
-     WHERE chat_jid = ? AND delivery_status IN ('queued', 'promoting')`,
-  );
-  const update = db.prepare(
-    `UPDATE messages
+     WHERE chat_jid = ? AND delivery_status IN ('queued', 'promoting')`);
+  const update = prepareCached(`UPDATE messages
      SET delivery_mode = 'steer', delivery_run_id = ?,
          delivery_priority = ?, delivery_updated_at = ?
-     WHERE chat_jid = ? AND id = ? AND delivery_status = 'queued'`,
-  );
+     WHERE chat_jid = ? AND id = ? AND delivery_status = 'queued'`);
   return db.transaction(() => {
     const current = select.get(chatJid, messageId) as
       | Record<string, unknown>
@@ -3728,14 +3658,15 @@ export function updateQueuedFollowUpContent(
 ): QueuedFollowUp | null {
   const normalizedContent = content.trim();
   if (!normalizedContent) return null;
-  const result = db
-    .prepare(
-      `UPDATE messages
+  const result = prepareCached(`UPDATE messages
        SET content = ?, delivery_updated_at = ?
        WHERE chat_jid = ? AND id = ?
-         AND delivery_status = 'queued' AND delivery_mode = 'queue'`,
-    )
-    .run(normalizedContent, new Date().toISOString(), chatJid, messageId);
+         AND delivery_status = 'queued' AND delivery_mode = 'queue'`).run(
+    normalizedContent,
+    new Date().toISOString(),
+    chatJid,
+    messageId,
+  );
   return result.changes === 1 ? getQueuedFollowUp(chatJid, messageId) : null;
 }
 
@@ -3751,12 +3682,10 @@ export function moveQueuedFollowUp(
        AND delivery_mode = 'queue'
      ORDER BY delivery_priority ASC, ingest_sequence ASC`,
   );
-  const update = db.prepare(
-    `UPDATE messages
+  const update = prepareCached(`UPDATE messages
      SET delivery_priority = ?, delivery_updated_at = ?
      WHERE chat_jid = ? AND id = ?
-       AND delivery_status = 'queued' AND delivery_mode = 'queue'`,
-  );
+       AND delivery_status = 'queued' AND delivery_mode = 'queue'`);
 
   return db.transaction(() => {
     const rows = select.all(chatJid) as Array<Record<string, unknown>>;
@@ -3835,12 +3764,10 @@ export function claimNextQueuedFollowUp(
      ORDER BY delivery_priority ASC, ingest_sequence ASC
      LIMIT 1`,
   );
-  const update = db.prepare(
-    `UPDATE messages
+  const update = prepareCached(`UPDATE messages
      SET delivery_status = 'promoting', delivery_run_id = ?,
          delivery_updated_at = ?
-     WHERE chat_jid = ? AND id = ? AND delivery_status = 'queued'`,
-  );
+     WHERE chat_jid = ? AND id = ? AND delivery_status = 'queued'`);
   return db.transaction(() => {
     const row = select.get(chatJid) as Record<string, unknown> | undefined;
     if (!row) return null;
@@ -3873,12 +3800,10 @@ export function claimNextQueuedFollowUpBatch(
      WHERE chat_jid = ? AND delivery_status = 'queued'
      ORDER BY delivery_priority ASC, ingest_sequence ASC`,
   );
-  const update = db.prepare(
-    `UPDATE messages
+  const update = prepareCached(`UPDATE messages
      SET delivery_status = 'promoting', delivery_run_id = ?,
          delivery_updated_at = ?
-     WHERE chat_jid = ? AND id = ? AND delivery_status = 'queued'`,
-  );
+     WHERE chat_jid = ? AND id = ? AND delivery_status = 'queued'`);
   return db.transaction(() => {
     const rows = select.all(chatJid) as Array<Record<string, unknown>>;
     if (rows.length === 0) return [];
@@ -3922,13 +3847,11 @@ export function releaseQueuedFollowUpBatch(
   updatedAt = new Date().toISOString(),
 ): boolean {
   if (items.length === 0) return false;
-  const update = db.prepare(
-    `UPDATE messages
+  const update = prepareCached(`UPDATE messages
      SET delivery_status = 'released', delivery_run_id = ?,
          delivery_updated_at = ?
      WHERE chat_jid = ? AND id = ?
-       AND delivery_status IN ('queued', 'promoting')`,
-  );
+       AND delivery_status IN ('queued', 'promoting')`);
   try {
     return db.transaction(() => {
       for (const item of items) {
@@ -3948,11 +3871,9 @@ export function restorePromotingFollowUpBatch(
   items: Array<Pick<QueuedFollowUp, 'chat_jid' | 'id'>>,
 ): boolean {
   if (items.length === 0) return false;
-  const update = db.prepare(
-    `UPDATE messages
+  const update = prepareCached(`UPDATE messages
      SET delivery_status = 'queued', delivery_updated_at = ?
-     WHERE chat_jid = ? AND id = ? AND delivery_status = 'promoting'`,
-  );
+     WHERE chat_jid = ? AND id = ? AND delivery_status = 'promoting'`);
   try {
     return db.transaction(() => {
       const updatedAt = new Date().toISOString();
@@ -3978,14 +3899,10 @@ export function cancelQueuedFollowUp(
   // that happens, cancelling only the note would hide both inputs. Treat the
   // pair as already admitted; a cancel that wins before root arrival remains
   // allowed, and the later root is then scheduled normally.
-  const coversSubsumedRoot = db
-    .prepare(
-      `SELECT 1 FROM messages
+  const coversSubsumedRoot = prepareCached(`SELECT 1 FROM messages
        WHERE chat_jid = ? AND delivery_status = 'subsumed'
          AND delivery_run_id = ?
-       LIMIT 1`,
-    )
-    .get(chatJid, messageId);
+       LIMIT 1`).get(chatJid, messageId);
   if (coversSubsumedRoot) return null;
   return transitionFollowUp(
     chatJid,
@@ -4010,18 +3927,14 @@ export function cancelQueuedFollowUpsAtCutoff(
   return db.transaction(() => {
     const items = listQueuedFollowUps(chatJid);
     if (items.length === 0) return [];
-    const cancelQueued = db.prepare(
-      `UPDATE messages
+    const cancelQueued = prepareCached(`UPDATE messages
        SET delivery_status = 'cancelled', delivery_updated_at = ?
        WHERE chat_jid = ? AND id = ?
-         AND delivery_status IN ('queued', 'promoting')`,
-    );
-    const cancelCoveredRoot = db.prepare(
-      `UPDATE messages
+         AND delivery_status IN ('queued', 'promoting')`);
+    const cancelCoveredRoot = prepareCached(`UPDATE messages
        SET delivery_status = 'cancelled', delivery_updated_at = ?
        WHERE chat_jid = ? AND delivery_status = 'subsumed'
-         AND delivery_run_id = ?`,
-    );
+         AND delivery_run_id = ?`);
     for (const item of items) {
       const result = cancelQueued.run(updatedAt, chatJid, item.id);
       if (result.changes !== 1) {
@@ -4041,11 +3954,9 @@ export function getMessageAttachments(
   chatJid: string,
   msgId: string,
 ): string | null {
-  const row = db
-    .prepare(
-      `SELECT attachments FROM messages WHERE id = ? AND chat_jid = ? LIMIT 1`,
-    )
-    .get(msgId, chatJid) as { attachments: string | null } | undefined;
+  const row = prepareCached(
+    `SELECT attachments FROM messages WHERE id = ? AND chat_jid = ? LIMIT 1`,
+  ).get(msgId, chatJid) as { attachments: string | null } | undefined;
   if (!row) return null;
   return row.attachments ?? null;
 }
@@ -4084,9 +3995,8 @@ export function rebuildMessageTokenUsageFromLedger(
   groupFolder: string,
   messageId: string,
 ): void {
-  const total = db
-    .prepare(
-      `SELECT COALESCE(SUM(input_tokens), 0) AS inputTokens,
+  const total =
+    prepareCached(`SELECT COALESCE(SUM(input_tokens), 0) AS inputTokens,
         COALESCE(SUM(output_tokens), 0) AS outputTokens,
         COALESCE(SUM(cache_read_input_tokens), 0) AS cacheReadInputTokens,
         COALESCE(SUM(cache_creation_input_tokens), 0) AS cacheCreationInputTokens,
@@ -4094,21 +4004,21 @@ export function rebuildMessageTokenUsageFromLedger(
         COALESCE(SUM(provider_estimated_cost_usd), 0) AS costUSD,
         COALESCE(SUM(duration_ms), 0) AS durationMs,
         COALESCE(SUM(num_turns), 0) AS numTurns
-       FROM usage_events WHERE group_folder = ? AND message_id = ?`,
-    )
-    .get(groupFolder, messageId) as Record<string, number>;
-  const modelRows = db
-    .prepare(
-      `SELECT model, COALESCE(SUM(input_tokens), 0) AS inputTokens,
+       FROM usage_events WHERE group_folder = ? AND message_id = ?`).get(
+      groupFolder,
+      messageId,
+    ) as Record<string, number>;
+  const modelRows =
+    prepareCached(`SELECT model, COALESCE(SUM(input_tokens), 0) AS inputTokens,
         COALESCE(SUM(output_tokens), 0) AS outputTokens,
         COALESCE(SUM(cache_read_input_tokens), 0) AS cacheReadInputTokens,
         COALESCE(SUM(cache_creation_input_tokens), 0) AS cacheCreationInputTokens,
         COALESCE(SUM(reasoning_output_tokens), 0) AS reasoningTokens,
         COALESCE(SUM(provider_estimated_cost_usd), 0) AS costUSD
        FROM usage_records WHERE group_folder = ? AND message_id = ?
-       GROUP BY model ORDER BY model`,
-    )
-    .all(groupFolder, messageId) as Array<Record<string, unknown>>;
+       GROUP BY model ORDER BY model`).all(groupFolder, messageId) as Array<
+      Record<string, unknown>
+    >;
   const modelUsage = Object.fromEntries(
     modelRows.map((row) => [
       String(row.model),
@@ -4200,13 +4110,12 @@ export interface UsagePricingBucketTotals {
 export function getRecordedUsageEventCost(
   eventId: string,
 ): { providerEstimatedCostUSD: number; billedCostUSD: number } | null {
-  const row = db
-    .prepare(
-      `SELECT provider_estimated_cost_usd AS providerEstimatedCostUSD,
+  const row =
+    prepareCached(`SELECT provider_estimated_cost_usd AS providerEstimatedCostUSD,
         billed_cost_usd AS billedCostUSD
-       FROM usage_events WHERE event_id = ? LIMIT 1`,
-    )
-    .get(eventId) as Record<string, number> | undefined;
+       FROM usage_events WHERE event_id = ? LIMIT 1`).get(eventId) as
+      | Record<string, number>
+      | undefined;
   return row
     ? {
         providerEstimatedCostUSD: Number(row.providerEstimatedCostUSD) || 0,
@@ -4236,18 +4145,15 @@ export function getUsagePricingBucketTotals(input: {
     Math.floor(safeTimestamp.getTime() / (30 * 60 * 1000)) * (30 * 60 * 1000);
   const bucketStart = new Date(bucketStartMs).toISOString();
   const bucketEnd = new Date(bucketStartMs + 30 * 60 * 1000).toISOString();
-  const row = db
-    .prepare(
-      `SELECT COALESCE(SUM(input_tokens), 0) AS inputTokens,
+  const row =
+    prepareCached(`SELECT COALESCE(SUM(input_tokens), 0) AS inputTokens,
         COALESCE(SUM(output_tokens), 0) AS outputTokens,
         COALESCE(SUM(cache_read_input_tokens), 0) AS cacheReadInputTokens,
         COALESCE(SUM(cache_creation_input_tokens), 0) AS cacheCreationInputTokens,
         COALESCE(SUM(reasoning_output_tokens), 0) AS reasoningTokens
        FROM usage_records
        WHERE user_id = ? AND group_folder = ? AND source = ? AND model = ?
-         AND created_at >= ? AND created_at < ?`,
-    )
-    .get(
+         AND created_at >= ? AND created_at < ?`).get(
       input.userId,
       input.groupFolder,
       input.source,
@@ -4325,34 +4231,30 @@ export function recordUsageEventBatch(input: UsageEventRecordInput): {
       ];
 
   return db.transaction(() => {
-    const eventInsert = db
-      .prepare(
-        `INSERT OR IGNORE INTO usage_events (
+    const eventInsert = prepareCached(`INSERT OR IGNORE INTO usage_events (
           event_id, user_id, group_folder, agent_id, message_id,
           input_tokens, output_tokens, cache_read_input_tokens,
           cache_creation_input_tokens, reasoning_output_tokens,
           provider_estimated_cost_usd,
           billed_cost_usd, duration_ms, num_turns, source, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        input.eventId,
-        input.userId,
-        input.groupFolder,
-        input.agentId ?? null,
-        input.messageId ?? null,
-        nonNegative(input.inputTokens),
-        nonNegative(input.outputTokens),
-        nonNegative(input.cacheReadInputTokens),
-        nonNegative(input.cacheCreationInputTokens),
-        nonNegative(input.reasoningTokens),
-        nonNegative(input.providerEstimatedCostUSD),
-        nonNegative(input.billedCostUSD),
-        nonNegative(input.durationMs ?? 0),
-        nonNegative(input.numTurns ?? 0),
-        source,
-        createdAt,
-      );
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      input.eventId,
+      input.userId,
+      input.groupFolder,
+      input.agentId ?? null,
+      input.messageId ?? null,
+      nonNegative(input.inputTokens),
+      nonNegative(input.outputTokens),
+      nonNegative(input.cacheReadInputTokens),
+      nonNegative(input.cacheCreationInputTokens),
+      nonNegative(input.reasoningTokens),
+      nonNegative(input.providerEstimatedCostUSD),
+      nonNegative(input.billedCostUSD),
+      nonNegative(input.durationMs ?? 0),
+      nonNegative(input.numTurns ?? 0),
+      source,
+      createdAt,
+    );
 
     if (eventInsert.changes === 0) return { inserted: false };
 
@@ -4804,16 +4706,12 @@ export function getUsageRecordsPage(
  * Get list of users that have usage data.
  */
 export function getUsageUsers(): Array<{ id: string; username: string }> {
-  const rows = db
-    .prepare(
-      `
+  const rows = prepareCached(`
     SELECT DISTINCT r.user_id as id, COALESCE(u.username, r.user_id) as username
     FROM usage_records r
     LEFT JOIN users u ON u.id = r.user_id
     ORDER BY u.username
-  `,
-    )
-    .all() as Array<{ id: string; username: string }>;
+  `).all() as Array<{ id: string; username: string }>;
   return rows;
 }
 
@@ -4908,24 +4806,20 @@ export function resolveMessageCursorSequence(
   let row: { sequence: number } | undefined;
   if (cursor.id) {
     if (chatJid) {
-      row = db
-        .prepare(
-          `SELECT sequence FROM message_ingest_sequences
-           WHERE chat_jid = ? AND message_id = ?`,
-        )
-        .get(chatJid, cursor.id) as { sequence: number } | undefined;
+      row = prepareCached(`SELECT sequence FROM message_ingest_sequences
+           WHERE chat_jid = ? AND message_id = ?`).get(chatJid, cursor.id) as
+        | { sequence: number }
+        | undefined;
     } else {
-      row = db
-        .prepare(
-          `SELECT seq.sequence
+      row = prepareCached(`SELECT seq.sequence
            FROM message_ingest_sequences seq
            JOIN messages m
              ON m.chat_jid = seq.chat_jid AND m.id = seq.message_id
            WHERE m.id = ? AND m.timestamp = ?
            ORDER BY seq.sequence DESC
-           LIMIT 1`,
-        )
-        .get(cursor.id, cursor.timestamp) as { sequence: number } | undefined;
+           LIMIT 1`).get(cursor.id, cursor.timestamp) as
+        | { sequence: number }
+        | undefined;
     }
   }
   return { ...cursor, sequence: row?.sequence ?? 0 };
@@ -4936,14 +4830,10 @@ export function getMessageCursor(
   chatJid: string,
   messageId: string,
 ): MessageCursor | null {
-  const row = db
-    .prepare(
-      `SELECT m.timestamp, seq.sequence
+  const row = prepareCached(`SELECT m.timestamp, seq.sequence
        FROM message_ingest_sequences seq
        JOIN messages m ON m.chat_jid = seq.chat_jid AND m.id = seq.message_id
-       WHERE m.chat_jid = ? AND m.id = ?`,
-    )
-    .get(chatJid, messageId) as
+       WHERE m.chat_jid = ? AND m.id = ?`).get(chatJid, messageId) as
     | { timestamp: string; sequence: number }
     | undefined;
   return row
@@ -4959,12 +4849,10 @@ type CreateTaskInput = Omit<
 
 export function createTask(task: CreateTaskInput): void {
   const updatedAt = task.updated_at ?? task.created_at;
-  db.prepare(
-    `
+  prepareCached(`
     INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, execution_type, script_command, execution_mode, next_run, status, created_at, created_by, notify_channels, revision, updated_at, deleted_at, delivery_route_jid)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `,
-  ).run(
+  `).run(
     task.id,
     task.group_folder,
     task.chat_jid,
@@ -5023,24 +4911,24 @@ function mapTaskRow(row: unknown): ScheduledTask {
 }
 
 export function getTaskById(id: string): ScheduledTask | undefined {
-  const row = db.prepare('SELECT * FROM scheduled_tasks WHERE id = ?').get(id);
+  const row = prepareCached('SELECT * FROM scheduled_tasks WHERE id = ?').get(
+    id,
+  );
   return row ? mapTaskRow(row) : undefined;
 }
 
 export function getAllTasks(): ScheduledTask[] {
-  return db
-    .prepare(
-      'SELECT * FROM scheduled_tasks WHERE deleted_at IS NULL ORDER BY created_at DESC',
-    )
+  return prepareCached(
+    'SELECT * FROM scheduled_tasks WHERE deleted_at IS NULL ORDER BY created_at DESC',
+  )
     .all()
     .map(mapTaskRow);
 }
 
 export function getDeletedTasks(): ScheduledTask[] {
-  return db
-    .prepare(
-      'SELECT * FROM scheduled_tasks WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC',
-    )
+  return prepareCached(
+    'SELECT * FROM scheduled_tasks WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC',
+  )
     .all()
     .map(mapTaskRow);
 }
@@ -5067,21 +4955,16 @@ export function pauseWorkspaceTasksForRebuild(
 ): WorkspaceTaskRebuildPause {
   return db
     .transaction((): WorkspaceTaskRebuildPause => {
-      const tasks = db
-        .prepare(
-          `SELECT * FROM scheduled_tasks
+      const tasks = prepareCached(`SELECT * FROM scheduled_tasks
            WHERE group_folder = ? AND deleted_at IS NULL
-           ORDER BY id`,
-        )
+           ORDER BY id`)
         .all(groupFolder)
         .map(mapTaskRow);
       const now = new Date().toISOString();
-      const pause = db.prepare(
-        `UPDATE scheduled_tasks
+      const pause = prepareCached(`UPDATE scheduled_tasks
          SET status = 'parsing', next_run = NULL, running_until = NULL,
              runner_id = NULL, revision = revision + 1, updated_at = ?
-         WHERE id = ? AND revision = ? AND deleted_at IS NULL`,
-      );
+         WHERE id = ? AND revision = ? AND deleted_at IS NULL`);
       const snapshots: WorkspaceTaskRebuildPause['tasks'] = [];
       for (const task of tasks) {
         if (task.status === 'completed' || task.status === 'parsing') continue;
@@ -5099,9 +4982,7 @@ export function pauseWorkspaceTasksForRebuild(
         });
       }
       const activeRunIds = (
-        db
-          .prepare(
-            `SELECT tr.id
+        prepareCached(`SELECT tr.id
              FROM task_runs tr
              JOIN scheduled_tasks st ON st.id = tr.task_id
              WHERE st.group_folder = ?
@@ -5116,9 +4997,9 @@ export function pauseWorkspaceTasksForRebuild(
                    ) = 'group'
                  )
                )
-             ORDER BY tr.created_at, tr.id`,
-          )
-          .all(groupFolder) as Array<{ id: string }>
+             ORDER BY tr.created_at, tr.id`).all(groupFolder) as Array<{
+          id: string;
+        }>
       ).map((row) => row.id);
       return { groupFolder, tasks: snapshots, activeRunIds };
     })
@@ -5137,11 +5018,9 @@ export function restoreWorkspaceTasksAfterFailedRebuild(
       const restored: string[] = [];
       const conflicts: string[] = [];
       const now = new Date().toISOString();
-      const restore = db.prepare(
-        `UPDATE scheduled_tasks
+      const restore = prepareCached(`UPDATE scheduled_tasks
          SET status = ?, next_run = ?, revision = revision + 1, updated_at = ?
-         WHERE id = ? AND revision = ? AND deleted_at IS NULL`,
-      );
+         WHERE id = ? AND revision = ? AND deleted_at IS NULL`);
       for (const task of pause.tasks) {
         const result = restore.run(
           task.originalStatus,
@@ -5366,9 +5245,7 @@ export function softDeleteTaskWithRevision(
         return { status: 'active_run', task: current, run: activeRun };
       }
       const now = new Date().toISOString();
-      const result = db
-        .prepare(
-          `UPDATE scheduled_tasks
+      const result = prepareCached(`UPDATE scheduled_tasks
            SET deleted_at = ?, status = 'paused', next_run = NULL,
                revision = revision + 1, updated_at = ?
            WHERE id = ? AND revision = ? AND deleted_at IS NULL
@@ -5376,9 +5253,7 @@ export function softDeleteTaskWithRevision(
                SELECT 1 FROM task_runs
                WHERE task_id = scheduled_tasks.id
                  AND status IN ('queued','running','retry_wait')
-             )`,
-        )
-        .run(now, now, id, expectedRevision);
+             )`).run(now, now, id, expectedRevision);
       const latest = getTaskById(id);
       if (result.changes === 1 && latest) {
         return { status: 'updated', task: latest };
@@ -5407,14 +5282,14 @@ export function restoreTaskWithRevision(
       }
       if (!current.deleted_at) return { status: 'updated', task: current };
       const now = new Date().toISOString();
-      const result = db
-        .prepare(
-          `UPDATE scheduled_tasks
+      const result = prepareCached(`UPDATE scheduled_tasks
            SET deleted_at = NULL, status = 'paused', next_run = NULL,
                revision = revision + 1, updated_at = ?
-           WHERE id = ? AND revision = ? AND deleted_at IS NOT NULL`,
-        )
-        .run(now, id, expectedRevision);
+           WHERE id = ? AND revision = ? AND deleted_at IS NOT NULL`).run(
+        now,
+        id,
+        expectedRevision,
+      );
       const latest = getTaskById(id);
       if (result.changes === 1 && latest)
         return { status: 'updated', task: latest };
@@ -5453,14 +5328,14 @@ export function permanentlyDeleteTasksWithRevisions(
         currentTasks.push(current);
       }
 
-      const deleteRunLogs = db.prepare(
+      const deleteRunLogs = prepareCached(
         'DELETE FROM task_run_logs WHERE task_id = ?',
       );
-      const deleteRuns = db.prepare('DELETE FROM task_runs WHERE task_id = ?');
-      const deleteDefinition = db.prepare(
-        `DELETE FROM scheduled_tasks
-         WHERE id = ? AND revision = ? AND deleted_at IS NOT NULL`,
+      const deleteRuns = prepareCached(
+        'DELETE FROM task_runs WHERE task_id = ?',
       );
+      const deleteDefinition = prepareCached(`DELETE FROM scheduled_tasks
+         WHERE id = ? AND revision = ? AND deleted_at IS NOT NULL`);
       for (const task of currentTasks) {
         deleteRunLogs.run(task.id);
         deleteRuns.run(task.id);
@@ -5485,23 +5360,21 @@ export function updateTaskWorkspace(
   workspaceJid: string,
   workspaceFolder: string,
 ): void {
-  db.prepare(
+  prepareCached(
     'UPDATE scheduled_tasks SET workspace_jid = ?, workspace_folder = ? WHERE id = ?',
   ).run(workspaceJid, workspaceFolder, id);
 }
 
 export function deleteTask(id: string): void {
   // Delete child records first (FK constraint)
-  db.prepare('DELETE FROM task_runs WHERE task_id = ?').run(id);
-  db.prepare('DELETE FROM task_run_logs WHERE task_id = ?').run(id);
-  db.prepare('DELETE FROM scheduled_tasks WHERE id = ?').run(id);
+  prepareCached('DELETE FROM task_runs WHERE task_id = ?').run(id);
+  prepareCached('DELETE FROM task_run_logs WHERE task_id = ?').run(id);
+  prepareCached('DELETE FROM scheduled_tasks WHERE id = ?').run(id);
 }
 
 export function getDueTasks(): ScheduledTask[] {
   const now = new Date().toISOString();
-  return db
-    .prepare(
-      `
+  return prepareCached(`
 	    SELECT * FROM scheduled_tasks
 	    WHERE status = 'active'
 	      AND deleted_at IS NULL
@@ -5509,8 +5382,7 @@ export function getDueTasks(): ScheduledTask[] {
 	      AND next_run <= ?
 	      AND (running_until IS NULL OR running_until <= ?)
 	    ORDER BY next_run
-	  `,
-    )
+	  `)
     .all(now, now)
     .map(mapTaskRow);
 }
@@ -5518,13 +5390,10 @@ export function getDueTasks(): ScheduledTask[] {
 /** V2 ignores the legacy definition-level lease; ownership lives on task_runs. */
 export function getDueTaskDefinitionsV2(limit = 100): ScheduledTask[] {
   const now = new Date().toISOString();
-  return db
-    .prepare(
-      `SELECT * FROM scheduled_tasks
+  return prepareCached(`SELECT * FROM scheduled_tasks
        WHERE status = 'active' AND deleted_at IS NULL
          AND next_run IS NOT NULL AND next_run <= ?
-       ORDER BY next_run LIMIT ?`,
-    )
+       ORDER BY next_run LIMIT ?`)
     .all(now, limit)
     .map(mapTaskRow);
 }
@@ -5539,15 +5408,11 @@ export function getDueTaskDefinitionsV2(limit = 100): ScheduledTask[] {
 // expiry, and if that expiry lands past the backfill grace window the
 // interrupted run is silently skipped forever instead of retried.
 export function clearStaleTaskLeases(): number {
-  const result = db
-    .prepare(
-      `
+  const result = prepareCached(`
     UPDATE scheduled_tasks
     SET running_until = NULL, runner_id = NULL
     WHERE running_until IS NOT NULL OR runner_id IS NOT NULL
-  `,
-    )
-    .run();
+  `).run();
   return result.changes;
 }
 
@@ -5559,9 +5424,7 @@ export function claimTaskForRun(
   const now = new Date();
   const nowIso = now.toISOString();
   const leaseUntil = new Date(now.getTime() + leaseMs).toISOString();
-  const result = db
-    .prepare(
-      `
+  const result = prepareCached(`
     UPDATE scheduled_tasks
     SET runner_id = ?, running_until = ?
     WHERE id = ?
@@ -5569,9 +5432,7 @@ export function claimTaskForRun(
       AND next_run IS NOT NULL
       AND next_run <= ?
       AND (running_until IS NULL OR running_until <= ?)
-  `,
-    )
-    .run(runnerId, leaseUntil, id, nowIso, nowIso);
+  `).run(runnerId, leaseUntil, id, nowIso, nowIso);
   return result.changes === 1;
 }
 
@@ -5581,28 +5442,24 @@ export function updateTaskAfterRun(
   lastResult: string,
 ): void {
   const now = new Date().toISOString();
-  db.prepare(
-    `
+  prepareCached(`
     UPDATE scheduled_tasks
 	    SET next_run = ?, last_run = ?, last_result = ?, status = CASE WHEN ? IS NULL THEN 'completed' ELSE status END,
 	        running_until = NULL, runner_id = NULL
     WHERE id = ?
-  `,
-  ).run(nextRun, now, lastResult, nextRun, id);
+  `).run(nextRun, now, lastResult, nextRun, id);
 }
 
 // Advance next_run for a task we deliberately did NOT execute (e.g. overdue
 // beyond the backfill grace window). Does not touch last_run, so the task
 // detail view continues to reflect the last *actual* run.
 export function advanceSkippedTask(id: string, nextRun: string | null): void {
-  db.prepare(
-    `
+  prepareCached(`
     UPDATE scheduled_tasks
 	    SET next_run = ?, status = CASE WHEN ? IS NULL THEN 'completed' ELSE status END,
 	        running_until = NULL, runner_id = NULL
     WHERE id = ?
-  `,
-  ).run(nextRun, nextRun, id);
+  `).run(nextRun, nextRun, id);
 }
 
 // Pause a recurring task that just ran but whose schedule produces no next_run
@@ -5612,14 +5469,12 @@ export function advanceSkippedTask(id: string, nextRun: string | null): void {
 // and clears next_run so the owner can fix the schedule and re-activate.
 export function pauseTaskAfterRun(id: string, lastResult: string): void {
   const now = new Date().toISOString();
-  db.prepare(
-    `
+  prepareCached(`
     UPDATE scheduled_tasks
 	    SET next_run = NULL, last_run = ?, last_result = ?, status = 'paused',
 	        running_until = NULL, runner_id = NULL
     WHERE id = ?
-  `,
-  ).run(now, lastResult, id);
+  `).run(now, lastResult, id);
 }
 
 interface TaskRunRow {
@@ -5726,8 +5581,7 @@ function insertTaskRunRow(
 ): void {
   const now = new Date().toISOString();
   const terminal = input.status === 'missed' ? now : null;
-  db.prepare(
-    `INSERT INTO task_runs (
+  prepareCached(`INSERT INTO task_runs (
        id, task_id, occurrence_key, trigger_type, idempotency_key,
        scheduled_for, definition_revision, definition_snapshot, status,
        attempt, available_at, lease_owner, lease_token, lease_expires_at,
@@ -5738,8 +5592,7 @@ function insertTaskRunRow(
        notification_lease_token, notification_lease_expires_at
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, 0, NULL,
                NULL, ?, ?, ?, 0, ?, ?, ?, NULL,
-               NULL, NULL, 0, NULL, NULL, 0, NULL)`,
-  ).run(
+               NULL, NULL, 0, NULL, NULL, 0, NULL)`).run(
     input.id,
     task.id,
     input.occurrenceKey,
@@ -5791,9 +5644,9 @@ export function createTaskRun(input: CreateTaskRunInput): CreateTaskRunResult {
   const availableAt = input.availableAt ?? new Date().toISOString();
 
   return db.transaction(() => {
-    const existing = db
-      .prepare('SELECT * FROM task_runs WHERE occurrence_key = ?')
-      .get(occurrenceKey) as TaskRunRow | undefined;
+    const existing = prepareCached(
+      'SELECT * FROM task_runs WHERE occurrence_key = ?',
+    ).get(occurrenceKey) as TaskRunRow | undefined;
     if (existing) {
       return {
         created: false,
@@ -5802,11 +5655,9 @@ export function createTaskRun(input: CreateTaskRunInput): CreateTaskRunResult {
       };
     }
     if (idempotencyKey) {
-      const idempotent = db
-        .prepare(
-          'SELECT * FROM task_runs WHERE task_id = ? AND idempotency_key = ?',
-        )
-        .get(task.id, idempotencyKey) as TaskRunRow | undefined;
+      const idempotent = prepareCached(
+        'SELECT * FROM task_runs WHERE task_id = ? AND idempotency_key = ?',
+      ).get(task.id, idempotencyKey) as TaskRunRow | undefined;
       if (idempotent) {
         return {
           created: false,
@@ -5815,13 +5666,9 @@ export function createTaskRun(input: CreateTaskRunInput): CreateTaskRunResult {
         };
       }
     }
-    const active = db
-      .prepare(
-        `SELECT * FROM task_runs
+    const active = prepareCached(`SELECT * FROM task_runs
          WHERE task_id = ? AND status IN ('queued','running','retry_wait')
-         ORDER BY created_at LIMIT 1`,
-      )
-      .get(task.id) as TaskRunRow | undefined;
+         ORDER BY created_at LIMIT 1`).get(task.id) as TaskRunRow | undefined;
     if (active) {
       return {
         created: false,
@@ -5863,19 +5710,15 @@ export function materializeTaskOccurrence(
   input: MaterializeTaskOccurrenceInput,
 ): CreateTaskRunResult | undefined {
   return db.transaction(() => {
-    const row = db
-      .prepare(
-        `SELECT * FROM scheduled_tasks
+    const row = prepareCached(`SELECT * FROM scheduled_tasks
          WHERE id = ? AND deleted_at IS NULL AND status = 'active'
-           AND next_run = ?`,
-      )
-      .get(input.taskId, input.scheduledFor);
+           AND next_run = ?`).get(input.taskId, input.scheduledFor);
     if (!row) return undefined;
     const task = mapTaskRow(row);
     const occurrenceKey = `${task.id}:${input.scheduledFor}`;
-    const existing = db
-      .prepare('SELECT * FROM task_runs WHERE occurrence_key = ?')
-      .get(occurrenceKey) as TaskRunRow | undefined;
+    const existing = prepareCached(
+      'SELECT * FROM task_runs WHERE occurrence_key = ?',
+    ).get(occurrenceKey) as TaskRunRow | undefined;
     if (existing) {
       return {
         created: false,
@@ -5883,13 +5726,9 @@ export function materializeTaskOccurrence(
         run: mapTaskRunRow(existing),
       };
     }
-    const active = db
-      .prepare(
-        `SELECT * FROM task_runs
+    const active = prepareCached(`SELECT * FROM task_runs
          WHERE task_id = ? AND status IN ('queued','running','retry_wait')
-         ORDER BY created_at LIMIT 1`,
-      )
-      .get(task.id) as TaskRunRow | undefined;
+         ORDER BY created_at LIMIT 1`).get(task.id) as TaskRunRow | undefined;
     const missedReason =
       input.missedReason ??
       (active
@@ -5908,36 +5747,38 @@ export function materializeTaskOccurrence(
       error: missedReason,
     });
     const now = new Date().toISOString();
-    db.prepare(
-      `UPDATE scheduled_tasks
+    prepareCached(`UPDATE scheduled_tasks
        SET next_run = ?, updated_at = ?
-       WHERE id = ? AND next_run = ? AND deleted_at IS NULL`,
-    ).run(input.nextRun, now, task.id, input.scheduledFor);
+       WHERE id = ? AND next_run = ? AND deleted_at IS NULL`).run(
+      input.nextRun,
+      now,
+      task.id,
+      input.scheduledFor,
+    );
     if (
       status === 'missed' &&
       task.schedule_type === 'once' &&
       input.nextRun === null
     ) {
-      db.prepare(
-        `UPDATE scheduled_tasks SET status = 'completed', updated_at = ?
-         WHERE id = ? AND status = 'active' AND next_run IS NULL`,
-      ).run(now, task.id);
+      prepareCached(`UPDATE scheduled_tasks SET status = 'completed', updated_at = ?
+         WHERE id = ? AND status = 'active' AND next_run IS NULL`).run(
+        now,
+        task.id,
+      );
     }
     return { created: true, run: getTaskRunById(runId)! };
   })();
 }
 
 export function getTaskRunById(id: string): TaskRun | undefined {
-  const row = db.prepare('SELECT * FROM task_runs WHERE id = ?').get(id) as
+  const row = prepareCached('SELECT * FROM task_runs WHERE id = ?').get(id) as
     | TaskRunRow
     | undefined;
   return row ? mapTaskRunRow(row) : undefined;
 }
 
 export function getActiveTaskRunForTask(taskId: string): TaskRun | undefined {
-  const row = db
-    .prepare(
-      `SELECT * FROM task_runs
+  const row = prepareCached(`SELECT * FROM task_runs
        WHERE task_id = ?
          AND (
            status IN ('queued','running','retry_wait')
@@ -5950,20 +5791,14 @@ export function getActiveTaskRunForTask(taskId: string): TaskRun | undefined {
        ORDER BY
          CASE WHEN status IN ('queued','running','retry_wait') THEN 0 ELSE 1 END,
          created_at
-       LIMIT 1`,
-    )
-    .get(taskId) as TaskRunRow | undefined;
+       LIMIT 1`).get(taskId) as TaskRunRow | undefined;
   return row ? mapTaskRunRow(row) : undefined;
 }
 
 export function getTaskRunsForTask(taskId: string, limit = 20): TaskRun[] {
   return (
-    db
-      .prepare(
-        `SELECT * FROM task_runs WHERE task_id = ?
-         ORDER BY created_at DESC LIMIT ?`,
-      )
-      .all(taskId, limit) as TaskRunRow[]
+    prepareCached(`SELECT * FROM task_runs WHERE task_id = ?
+         ORDER BY created_at DESC LIMIT ?`).all(taskId, limit) as TaskRunRow[]
   ).map(mapTaskRunRow);
 }
 
@@ -5991,23 +5826,20 @@ export function claimNextTaskRun(
   const nowIso = now.toISOString();
   const expiresAt = new Date(now.getTime() + leaseMs).toISOString();
   return db.transaction(() => {
-    const candidate = db
-      .prepare(
-        `SELECT * FROM task_runs
+    const candidate = prepareCached(`SELECT * FROM task_runs
          WHERE (
            status IN ('queued','retry_wait') AND available_at <= ?
          ) OR (
            status = 'running' AND lease_expires_at IS NOT NULL
              AND lease_expires_at <= ? AND started_at IS NULL
          )
-         ORDER BY available_at, scheduled_for, created_at LIMIT 1`,
-      )
-      .get(nowIso, nowIso) as TaskRunRow | undefined;
+         ORDER BY available_at, scheduled_for, created_at LIMIT 1`).get(
+      nowIso,
+      nowIso,
+    ) as TaskRunRow | undefined;
     if (!candidate) return undefined;
     const nextToken = candidate.lease_token + 1;
-    const result = db
-      .prepare(
-        `UPDATE task_runs
+    const result = prepareCached(`UPDATE task_runs
          SET status = 'running', lease_owner = ?, lease_token = ?,
              lease_expires_at = ?, attempt = attempt + 1,
              updated_at = ?
@@ -6015,9 +5847,15 @@ export function claimNextTaskRun(
            (status IN ('queued','retry_wait') AND available_at <= ?)
            OR (status = 'running' AND lease_expires_at IS NOT NULL
                AND lease_expires_at <= ? AND started_at IS NULL)
-         )`,
-      )
-      .run(owner, nextToken, expiresAt, nowIso, candidate.id, nowIso, nowIso);
+         )`).run(
+      owner,
+      nextToken,
+      expiresAt,
+      nowIso,
+      candidate.id,
+      nowIso,
+      nowIso,
+    );
     if (result.changes !== 1) return undefined;
     return getTaskRunById(candidate.id) as ClaimedTaskRun;
   })();
@@ -6030,9 +5868,8 @@ export function markTaskRunExecutionStarted(
   token: number,
 ): boolean {
   const now = new Date().toISOString();
-  const result = db
-    .prepare(
-      `UPDATE task_runs SET started_at = COALESCE(started_at, ?), updated_at = ?
+  const result =
+    prepareCached(`UPDATE task_runs SET started_at = COALESCE(started_at, ?), updated_at = ?
        WHERE id = ? AND status = 'running' AND lease_owner = ?
          AND lease_token = ? AND lease_expires_at > ?
          AND EXISTS (
@@ -6040,9 +5877,7 @@ export function markTaskRunExecutionStarted(
            WHERE scheduled_tasks.id = task_runs.task_id
              AND scheduled_tasks.deleted_at IS NULL
              AND scheduled_tasks.status IN ('active','paused')
-         )`,
-    )
-    .run(now, now, id, owner, token, now);
+         )`).run(now, now, id, owner, token, now);
   return result.changes === 1;
 }
 
@@ -6053,16 +5888,13 @@ export function markTaskRunExecutionStarted(
 export function failExpiredStartedTaskRuns(): number {
   const now = new Date().toISOString();
   return db.transaction(() => {
-    const expired = db
-      .prepare(
-        `SELECT id, task_id FROM task_runs
+    const expired = prepareCached(`SELECT id, task_id FROM task_runs
          WHERE status = 'running' AND started_at IS NOT NULL
-           AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?`,
-      )
-      .all(now) as Array<{ id: string; task_id: string }>;
+           AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?`).all(
+      now,
+    ) as Array<{ id: string; task_id: string }>;
     if (expired.length === 0) return 0;
-    const failOne = db.prepare(
-      `UPDATE task_runs
+    const failOne = prepareCached(`UPDATE task_runs
        SET status = 'failed', completed_at = ?, updated_at = ?,
            error = COALESCE(error, 'Process stopped after execution began; not retried to avoid duplicate side effects'),
            notification_status = CASE
@@ -6076,8 +5908,7 @@ export function failExpiredStartedTaskRuns(): number {
            lease_owner = NULL, lease_expires_at = NULL,
            lease_token = lease_token + 1
        WHERE id = ? AND status = 'running' AND started_at IS NOT NULL
-         AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?`,
-    );
+         AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?`);
     let changed = 0;
     const taskIdSet = new Set<string>();
     for (const run of expired) {
@@ -6126,13 +5957,10 @@ export function renewTaskRunLease(
   const now = new Date();
   const nowIso = now.toISOString();
   const expiresAt = new Date(now.getTime() + leaseMs).toISOString();
-  const result = db
-    .prepare(
-      `UPDATE task_runs SET lease_expires_at = ?, updated_at = ?
+  const result =
+    prepareCached(`UPDATE task_runs SET lease_expires_at = ?, updated_at = ?
        WHERE id = ? AND status = 'running' AND lease_owner = ?
-         AND lease_token = ?`,
-    )
-    .run(expiresAt, nowIso, id, owner, token);
+         AND lease_token = ?`).run(expiresAt, nowIso, id, owner, token);
   return result.changes === 1;
 }
 
@@ -6186,9 +6014,9 @@ export function completeTaskRun(
 ): boolean {
   const now = new Date().toISOString();
   return db.transaction(() => {
-    const current = db
-      .prepare('SELECT * FROM task_runs WHERE id = ?')
-      .get(id) as TaskRunRow | undefined;
+    const current = prepareCached('SELECT * FROM task_runs WHERE id = ?').get(
+      id,
+    ) as TaskRunRow | undefined;
     // Fencing is owner+token only; see renewTaskRunLease for why an expired
     // but unclaimed lease must still be able to settle its own result.
     if (
@@ -6226,43 +6054,37 @@ export function completeTaskRun(
       current.notification_status !== 'pending'
         ? current.notification_error
         : (input.notificationError ?? null);
-    const changed = db
-      .prepare(
-        `UPDATE task_runs
+    const changed = prepareCached(`UPDATE task_runs
          SET status = ?, result = ?, error = ?, notification_status = ?,
              notification_error = ?, duration_ms = ?, completed_at = ?,
              lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
          WHERE id = ? AND status = 'running' AND lease_owner = ?
-           AND lease_token = ?`,
-      )
-      .run(
-        input.status,
-        input.result ?? null,
-        input.error ?? null,
-        effectiveNotificationStatus,
-        effectiveNotificationError,
-        durationMs,
-        now,
-        now,
-        id,
-        owner,
-        token,
-      );
+           AND lease_token = ?`).run(
+      input.status,
+      input.result ?? null,
+      input.error ?? null,
+      effectiveNotificationStatus,
+      effectiveNotificationError,
+      durationMs,
+      now,
+      now,
+      id,
+      owner,
+      token,
+    );
     if (changed.changes !== 1) return false;
     const summary = input.error
       ? `Error: ${input.error}`
       : input.result?.slice(0, 200) ||
         (input.status === 'delivered' ? 'Delivered' : 'Completed');
-    db.prepare(
-      `UPDATE scheduled_tasks
+    prepareCached(`UPDATE scheduled_tasks
        SET last_run = ?, last_result = ?,
            status = CASE
              WHEN schedule_type = 'once' AND next_run IS NULL THEN 'completed'
              ELSE status
            END,
            updated_at = ?
-       WHERE id = ?`,
-    ).run(now, summary, now, current.task_id);
+       WHERE id = ?`).run(now, summary, now, current.task_id);
     return true;
   })();
 }
@@ -6300,9 +6122,9 @@ export function completeIsolatedTaskRunWithWorkspaceResultIntent(input: {
   const now = new Date();
   const nowIso = now.toISOString();
   return db.transaction(() => {
-    const current = db
-      .prepare('SELECT * FROM task_runs WHERE id = ?')
-      .get(input.runId) as TaskRunRow | undefined;
+    const current = prepareCached('SELECT * FROM task_runs WHERE id = ?').get(
+      input.runId,
+    ) as TaskRunRow | undefined;
     if (
       !current ||
       current.task_id !== input.taskId ||
@@ -6355,9 +6177,7 @@ export function completeIsolatedTaskRunWithWorkspaceResultIntent(input: {
       current.notification_available_at < nowIso
         ? current.notification_available_at
         : nowIso;
-    const changed = db
-      .prepare(
-        `UPDATE task_runs
+    const changed = prepareCached(`UPDATE task_runs
          SET status = ?, result = ?, error = ?,
              notification_status = ?, notification_error = ?,
              notification_summary = ?, notification_payload = ?,
@@ -6370,40 +6190,36 @@ export function completeIsolatedTaskRunWithWorkspaceResultIntent(input: {
              duration_ms = ?, completed_at = ?,
              lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
          WHERE id = ? AND task_id = ? AND status = 'running'
-           AND lease_owner = ? AND lease_token = ?`,
-      )
-      .run(
-        input.status,
-        input.result ?? null,
-        input.error ?? null,
-        notificationStatus,
-        current.notification_error,
-        JSON.stringify(currentSummary),
-        JSON.stringify(mergedPayload),
-        availableAt,
-        durationMs,
-        nowIso,
-        nowIso,
-        input.runId,
-        input.taskId,
-        input.leaseOwner,
-        input.leaseToken,
-      );
+           AND lease_owner = ? AND lease_token = ?`).run(
+      input.status,
+      input.result ?? null,
+      input.error ?? null,
+      notificationStatus,
+      current.notification_error,
+      JSON.stringify(currentSummary),
+      JSON.stringify(mergedPayload),
+      availableAt,
+      durationMs,
+      nowIso,
+      nowIso,
+      input.runId,
+      input.taskId,
+      input.leaseOwner,
+      input.leaseToken,
+    );
     if (changed.changes !== 1) return false;
 
     const summary = input.error
       ? `Error: ${input.error}`
       : input.result?.slice(0, 200) || 'Completed';
-    db.prepare(
-      `UPDATE scheduled_tasks
+    prepareCached(`UPDATE scheduled_tasks
        SET last_run = ?, last_result = ?,
            status = CASE
              WHEN schedule_type = 'once' AND next_run IS NULL THEN 'completed'
              ELSE status
            END,
            updated_at = ?
-       WHERE id = ?`,
-    ).run(nowIso, summary, nowIso, input.taskId);
+       WHERE id = ?`).run(nowIso, summary, nowIso, input.taskId);
     return true;
   })();
 }
@@ -6441,24 +6257,21 @@ export function storeScheduledGroupPromptAndCompleteRun(
     throw new Error('Invalid scheduled group interaction mode');
   }
   return db.transaction(() => {
-    const run = db
-      .prepare(
-        `SELECT task_id, status, lease_owner, lease_token, started_at, created_at,
+    const run =
+      prepareCached(`SELECT task_id, status, lease_owner, lease_token, started_at, created_at,
                 definition_snapshot
-         FROM task_runs WHERE id = ?`,
-      )
-      .get(input.runId) as
-      | Pick<
-          TaskRunRow,
-          | 'task_id'
-          | 'status'
-          | 'lease_owner'
-          | 'lease_token'
-          | 'started_at'
-          | 'created_at'
-          | 'definition_snapshot'
-        >
-      | undefined;
+         FROM task_runs WHERE id = ?`).get(input.runId) as
+        | Pick<
+            TaskRunRow,
+            | 'task_id'
+            | 'status'
+            | 'lease_owner'
+            | 'lease_token'
+            | 'started_at'
+            | 'created_at'
+            | 'definition_snapshot'
+          >
+        | undefined;
     if (!run || run.task_id !== input.taskId) {
       throw new Error(
         `Group task run ${input.runId} does not belong to task ${input.taskId}`,
@@ -6502,43 +6315,42 @@ export function storeScheduledGroupPromptAndCompleteRun(
       ? new Date(run.started_at).getTime()
       : new Date(run.created_at).getTime();
     const durationMs = Math.max(0, Date.now() - startedAt);
-    const changed = db
-      .prepare(
-        `UPDATE task_runs
+    const changed = prepareCached(`UPDATE task_runs
          SET status = 'delivered', result = ?, error = NULL,
              definition_snapshot = ?,
              notification_status = 'skipped', notification_error = NULL,
              duration_ms = ?, completed_at = ?,
              lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
          WHERE id = ? AND task_id = ? AND status = 'running'
-           AND lease_owner = ? AND lease_token = ?`,
-      )
-      .run(
-        input.queuedResult,
-        JSON.stringify(definitionSnapshot),
-        durationMs,
-        now,
-        now,
-        input.runId,
-        input.taskId,
-        input.leaseOwner,
-        input.leaseToken,
-      );
+           AND lease_owner = ? AND lease_token = ?`).run(
+      input.queuedResult,
+      JSON.stringify(definitionSnapshot),
+      durationMs,
+      now,
+      now,
+      input.runId,
+      input.taskId,
+      input.leaseOwner,
+      input.leaseToken,
+    );
     if (changed.changes !== 1) {
       throw new Error(
         `Group task run ${input.runId} lost its execution fence during prompt delivery`,
       );
     }
-    db.prepare(
-      `UPDATE scheduled_tasks
+    prepareCached(`UPDATE scheduled_tasks
        SET last_run = ?, last_result = ?,
            status = CASE
              WHEN schedule_type = 'once' AND next_run IS NULL THEN 'completed'
              ELSE status
            END,
            updated_at = ?
-       WHERE id = ?`,
-    ).run(now, input.queuedResult.slice(0, 200), now, input.taskId);
+       WHERE id = ?`).run(
+      now,
+      input.queuedResult.slice(0, 200),
+      now,
+      input.taskId,
+    );
     return messageId;
   })();
 }
@@ -6580,17 +6392,14 @@ function finalizeDeliveredGroupTaskRunInTransaction(
   const errorText = input.error?.trim() || null;
   const status = input.status ?? (errorText ? 'failed' : 'success');
   const now = new Date().toISOString();
-  const current = db
-    .prepare(
-      `SELECT task_id, status, result, error, completed_at
-         FROM task_runs WHERE id = ?`,
-    )
-    .get(id) as
-    | Pick<
-        TaskRunRow,
-        'task_id' | 'status' | 'result' | 'error' | 'completed_at'
-      >
-    | undefined;
+  const current =
+    prepareCached(`SELECT task_id, status, result, error, completed_at
+         FROM task_runs WHERE id = ?`).get(id) as
+      | Pick<
+          TaskRunRow,
+          'task_id' | 'status' | 'result' | 'error' | 'completed_at'
+        >
+      | undefined;
   if (!current || current.task_id !== taskId) return false;
 
   // Duplicate SDK terminal frames and replay-safe Web writes are no-ops.
@@ -6603,18 +6412,23 @@ function finalizeDeliveredGroupTaskRunInTransaction(
   }
   if (current.status !== 'delivered') return false;
 
-  const changed = db
-    .prepare(
-      `UPDATE task_runs
+  const changed = prepareCached(`UPDATE task_runs
          SET status = ?, result = ?, error = ?, completed_at = ?,
              duration_ms = CASE
                WHEN started_at IS NULL THEN duration_ms
                ELSE MAX(0, CAST((julianday(?) - julianday(started_at)) * 86400000 AS INTEGER))
              END,
              updated_at = ?
-         WHERE id = ? AND task_id = ? AND status = 'delivered'`,
-    )
-    .run(status, resultText, errorText, now, now, now, id, taskId);
+         WHERE id = ? AND task_id = ? AND status = 'delivered'`).run(
+    status,
+    resultText,
+    errorText,
+    now,
+    now,
+    now,
+    id,
+    taskId,
+  );
   if (changed.changes !== 1) return false;
 
   const summary = errorText
@@ -6622,12 +6436,16 @@ function finalizeDeliveredGroupTaskRunInTransaction(
     : resultText?.slice(0, 200) || 'Completed';
   // Do not let a late result from an older group occurrence overwrite a
   // newer run's task-list summary.
-  db.prepare(
-    `UPDATE scheduled_tasks
+  prepareCached(`UPDATE scheduled_tasks
        SET last_run = ?, last_result = ?, updated_at = ?
        WHERE id = ?
-         AND (last_run = ? OR last_run IS NULL)`,
-  ).run(now, summary, now, taskId, current.completed_at);
+         AND (last_run = ? OR last_run IS NULL)`).run(
+    now,
+    summary,
+    now,
+    taskId,
+    current.completed_at,
+  );
   return true;
 }
 
@@ -6711,16 +6529,12 @@ export function cancelTaskRun(
 ): boolean {
   const now = new Date().toISOString();
   return db.transaction(() => {
-    const current = db
-      .prepare(
-        `SELECT task_id FROM task_runs
-         WHERE id = ? AND status IN ('queued','running','retry_wait')`,
-      )
-      .get(id) as { task_id: string } | undefined;
+    const current = prepareCached(`SELECT task_id FROM task_runs
+         WHERE id = ? AND status IN ('queued','running','retry_wait')`).get(
+      id,
+    ) as { task_id: string } | undefined;
     if (!current) return false;
-    const result = db
-      .prepare(
-        `UPDATE task_runs
+    const result = prepareCached(`UPDATE task_runs
          SET status = 'cancelled', error = ?, completed_at = ?, updated_at = ?,
              notification_status = 'skipped', notification_error = NULL,
              notification_payload = NULL, notification_available_at = NULL,
@@ -6729,15 +6543,16 @@ export function cancelTaskRun(
              notification_lease_payload = NULL,
              lease_owner = NULL, lease_expires_at = NULL,
              lease_token = lease_token + 1
-         WHERE id = ? AND status IN ('queued','running','retry_wait')`,
-      )
-      .run(reason, now, now, id);
+         WHERE id = ? AND status IN ('queued','running','retry_wait')`).run(
+      reason,
+      now,
+      now,
+      id,
+    );
     if (result.changes !== 1) return false;
-    db.prepare(
-      `UPDATE scheduled_tasks SET status = 'completed', updated_at = ?
+    prepareCached(`UPDATE scheduled_tasks SET status = 'completed', updated_at = ?
        WHERE id = ? AND schedule_type = 'once' AND next_run IS NULL
-         AND status IN ('active','paused')`,
-    ).run(now, current.task_id);
+         AND status IN ('active','paused')`).run(now, current.task_id);
     return true;
   })();
 }
@@ -6774,15 +6589,12 @@ export function cancelDeliveredGroupTaskRunWithWorkspaceIntent(input: {
 
   const now = new Date().toISOString();
   return db.transaction(() => {
-    const current = db
-      .prepare(
-        `SELECT task_id, definition_snapshot
+    const current = prepareCached(`SELECT task_id, definition_snapshot
            FROM task_runs
-          WHERE id = ? AND task_id = ? AND status = 'delivered'`,
-      )
-      .get(input.runId, input.taskId) as
-      | Pick<TaskRunRow, 'task_id' | 'definition_snapshot'>
-      | undefined;
+          WHERE id = ? AND task_id = ? AND status = 'delivered'`).get(
+      input.runId,
+      input.taskId,
+    ) as Pick<TaskRunRow, 'task_id' | 'definition_snapshot'> | undefined;
     if (!current) return false;
 
     let snapshot: TaskRunDefinitionSnapshot;
@@ -6808,9 +6620,7 @@ export function cancelDeliveredGroupTaskRunWithWorkspaceIntent(input: {
       failed: 0,
       failed_channels: [],
     };
-    const changed = db
-      .prepare(
-        `UPDATE task_runs
+    const changed = prepareCached(`UPDATE task_runs
             SET status = 'cancelled', result = NULL, error = ?,
                 completed_at = ?, updated_at = ?,
                 duration_ms = CASE
@@ -6829,26 +6639,22 @@ export function cancelDeliveredGroupTaskRunWithWorkspaceIntent(input: {
                 notification_generation = notification_generation + 1,
                 lease_owner = NULL, lease_expires_at = NULL,
                 lease_token = lease_token + 1
-          WHERE id = ? AND task_id = ? AND status = 'delivered'`,
-      )
-      .run(
-        input.reason,
-        now,
-        now,
-        now,
-        JSON.stringify(summary),
-        JSON.stringify(input.payload),
-        now,
-        input.runId,
-        input.taskId,
-      );
+          WHERE id = ? AND task_id = ? AND status = 'delivered'`).run(
+      input.reason,
+      now,
+      now,
+      now,
+      JSON.stringify(summary),
+      JSON.stringify(input.payload),
+      now,
+      input.runId,
+      input.taskId,
+    );
     if (changed.changes !== 1) return false;
 
-    db.prepare(
-      `UPDATE scheduled_tasks SET status = 'completed', updated_at = ?
+    prepareCached(`UPDATE scheduled_tasks SET status = 'completed', updated_at = ?
        WHERE id = ? AND schedule_type = 'once' AND next_run IS NULL
-         AND status IN ('active','paused')`,
-    ).run(now, input.taskId);
+         AND status IN ('active','paused')`).run(now, input.taskId);
     return true;
   })();
 }
@@ -6860,22 +6666,19 @@ export function updateTaskRunNotification(
   summary: TaskRunNotificationSummary | null = null,
 ): boolean {
   return db.transaction(() => {
-    const current = db
-      .prepare(
-        `SELECT status, notification_status, notification_error,
+    const current =
+      prepareCached(`SELECT status, notification_status, notification_error,
                 notification_summary, notification_payload
-         FROM task_runs WHERE id = ?`,
-      )
-      .get(id) as
-      | Pick<
-          TaskRunRow,
-          | 'status'
-          | 'notification_status'
-          | 'notification_error'
-          | 'notification_summary'
-          | 'notification_payload'
-        >
-      | undefined;
+         FROM task_runs WHERE id = ?`).get(id) as
+        | Pick<
+            TaskRunRow,
+            | 'status'
+            | 'notification_status'
+            | 'notification_error'
+            | 'notification_summary'
+            | 'notification_payload'
+          >
+        | undefined;
     if (
       !current ||
       current.status === 'cancelled' ||
@@ -6904,14 +6707,11 @@ export function updateTaskRunNotification(
         ? JSON.stringify(summary)
         : null;
 
-    const result = db
-      .prepare(
-        `UPDATE task_runs SET notification_status = ?, notification_error = ?,
+    const result =
+      prepareCached(`UPDATE task_runs SET notification_status = ?, notification_error = ?,
            notification_summary = ?,
            notification_generation = notification_generation + 1,
-           updated_at = ? WHERE id = ? AND status NOT IN ('cancelled','missed')`,
-      )
-      .run(
+           updated_at = ? WHERE id = ? AND status NOT IN ('cancelled','missed')`).run(
         effectiveStatus,
         effectiveError,
         effectiveSummary,
@@ -7351,28 +7151,25 @@ function recordTaskRunNotificationReceiptInTransaction(
   allowCancelledWorkspaceRun = false,
 ): boolean {
   const now = new Date();
-  const row = db
-    .prepare(
-      `SELECT status, notification_status, notification_error,
+  const row =
+    prepareCached(`SELECT status, notification_status, notification_error,
                 notification_summary, notification_payload,
                 notification_available_at,
                 notification_lease_owner,
                 notification_generation
-         FROM task_runs WHERE id = ?`,
-    )
-    .get(runId) as
-    | Pick<
-        TaskRunRow,
-        | 'status'
-        | 'notification_status'
-        | 'notification_error'
-        | 'notification_summary'
-        | 'notification_payload'
-        | 'notification_available_at'
-        | 'notification_lease_owner'
-        | 'notification_generation'
-      >
-    | undefined;
+         FROM task_runs WHERE id = ?`).get(runId) as
+      | Pick<
+          TaskRunRow,
+          | 'status'
+          | 'notification_status'
+          | 'notification_error'
+          | 'notification_summary'
+          | 'notification_payload'
+          | 'notification_available_at'
+          | 'notification_lease_owner'
+          | 'notification_generation'
+        >
+      | undefined;
   // Cancellation/misfire is authoritative. Late IPC files must not notify
   // the user or resurrect notification-only retry work.
   if (
@@ -7425,9 +7222,7 @@ function recordTaskRunNotificationReceiptInTransaction(
         .filter((value): value is string => !!value)
         .sort()[0] || retryAt
     : null;
-  const result = db
-    .prepare(
-      `UPDATE task_runs
+  const result = prepareCached(`UPDATE task_runs
          SET notification_status = ?, notification_error = ?,
              notification_summary = ?, notification_payload = ?,
              notification_attempt = CASE WHEN ? AND notification_lease_owner IS NULL THEN 0
@@ -7439,19 +7234,17 @@ function recordTaskRunNotificationReceiptInTransaction(
            AND (
              status NOT IN ('cancelled','missed')
              OR (? = 1 AND status = 'cancelled')
-           )`,
-    )
-    .run(
-      mergedReceipt.status,
-      mergedReceipt.error ?? null,
-      JSON.stringify(mergedReceipt.summary),
-      mergedPayload ? JSON.stringify(mergedPayload) : null,
-      addedNewRetryWork ? 1 : 0,
-      availableAt,
-      now.toISOString(),
-      runId,
-      allowCancelledWorkspaceRun ? 1 : 0,
-    );
+           )`).run(
+    mergedReceipt.status,
+    mergedReceipt.error ?? null,
+    JSON.stringify(mergedReceipt.summary),
+    mergedPayload ? JSON.stringify(mergedPayload) : null,
+    addedNewRetryWork ? 1 : 0,
+    availableAt,
+    now.toISOString(),
+    runId,
+    allowCancelledWorkspaceRun ? 1 : 0,
+  );
   return result.changes === 1;
 }
 
@@ -7521,27 +7314,24 @@ export function replaceTaskRunNotificationReceipt(
 ): boolean {
   const now = new Date();
   return db.transaction(() => {
-    const row = db
-      .prepare(
-        `SELECT status, notification_status, notification_error,
+    const row =
+      prepareCached(`SELECT status, notification_status, notification_error,
                 notification_summary, notification_payload,
                 notification_attempt, notification_available_at,
                 notification_generation
-         FROM task_runs WHERE id = ?`,
-      )
-      .get(runId) as
-      | Pick<
-          TaskRunRow,
-          | 'status'
-          | 'notification_status'
-          | 'notification_error'
-          | 'notification_summary'
-          | 'notification_payload'
-          | 'notification_attempt'
-          | 'notification_available_at'
-          | 'notification_generation'
-        >
-      | undefined;
+         FROM task_runs WHERE id = ?`).get(runId) as
+        | Pick<
+            TaskRunRow,
+            | 'status'
+            | 'notification_status'
+            | 'notification_error'
+            | 'notification_summary'
+            | 'notification_payload'
+            | 'notification_attempt'
+            | 'notification_available_at'
+            | 'notification_generation'
+          >
+        | undefined;
     if (
       !row ||
       row.status === 'cancelled' ||
@@ -7661,9 +7451,7 @@ export function replaceTaskRunNotificationReceipt(
       remainingPayload ? row.notification_available_at : null,
       shouldRetryNext ? retryAt : null,
     ].filter((value): value is string => !!value);
-    const result = db
-      .prepare(
-        `UPDATE task_runs
+    const result = prepareCached(`UPDATE task_runs
          SET notification_status = ?, notification_error = ?,
              notification_summary = ?, notification_payload = ?,
              notification_attempt = CASE WHEN ? THEN 0
@@ -7672,19 +7460,17 @@ export function replaceTaskRunNotificationReceipt(
              notification_generation = notification_generation + 1,
              updated_at = ?
          WHERE id = ? AND notification_generation = ?
-           AND status NOT IN ('cancelled','missed')`,
-      )
-      .run(
-        mergedReceipt.status,
-        mergedReceipt.error ?? null,
-        JSON.stringify(mergedReceipt.summary),
-        mergedPayload ? JSON.stringify(mergedPayload) : null,
-        addedNewRetryWork ? 1 : 0,
-        mergedPayload ? (availableCandidates.sort()[0] ?? retryAt) : null,
-        now.toISOString(),
-        runId,
-        row.notification_generation,
-      );
+           AND status NOT IN ('cancelled','missed')`).run(
+      mergedReceipt.status,
+      mergedReceipt.error ?? null,
+      JSON.stringify(mergedReceipt.summary),
+      mergedPayload ? JSON.stringify(mergedPayload) : null,
+      addedNewRetryWork ? 1 : 0,
+      mergedPayload ? (availableCandidates.sort()[0] ?? retryAt) : null,
+      now.toISOString(),
+      runId,
+      row.notification_generation,
+    );
     return result.changes === 1;
   })();
 }
@@ -7692,27 +7478,23 @@ export function replaceTaskRunNotificationReceipt(
 /** Mark a completed isolated run with no outbound IPC as intentionally skipped. */
 export function finalizeTaskRunNotificationIfPending(runId: string): boolean {
   const now = new Date().toISOString();
-  const result = db
-    .prepare(
-      `UPDATE task_runs
+  const result = prepareCached(`UPDATE task_runs
        SET notification_status = 'skipped', notification_error = NULL,
            notification_summary = ?,
            notification_generation = notification_generation + 1,
            updated_at = ?
        WHERE id = ? AND notification_status = 'pending'
          AND notification_payload IS NULL
-         AND status NOT IN ('cancelled','missed')`,
-    )
-    .run(
-      JSON.stringify({
-        attempted: 0,
-        succeeded: 0,
-        failed: 0,
-        failed_channels: [],
-      } satisfies TaskRunNotificationSummary),
-      now,
-      runId,
-    );
+         AND status NOT IN ('cancelled','missed')`).run(
+    JSON.stringify({
+      attempted: 0,
+      succeeded: 0,
+      failed: 0,
+      failed_channels: [],
+    } satisfies TaskRunNotificationSummary),
+    now,
+    runId,
+  );
   return result.changes === 1;
 }
 
@@ -7742,9 +7524,8 @@ function claimTaskRunNotification(
   const nowIso = now.toISOString();
   const expiresAt = new Date(now.getTime() + leaseMs).toISOString();
   return db.transaction(() => {
-    const rows = db
-      .prepare(
-        `SELECT id, status, notification_payload, notification_attempt,
+    const rows =
+      prepareCached(`SELECT id, status, notification_payload, notification_attempt,
                 notification_lease_token, notification_generation,
                 notification_status, notification_summary,
                 notification_error
@@ -7790,25 +7571,23 @@ function claimTaskRunNotification(
            )
          ORDER BY CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END,
                   notification_available_at, completed_at, created_at
-         LIMIT 32`,
-      )
-      .all(
+         LIMIT 32`).all(
         runId ?? null,
         runId ?? null,
         MAX_TASK_NOTIFICATION_ATTEMPTS,
         nowIso,
         nowIso,
       ) as Array<{
-      id: string;
-      status: TaskRunStatus;
-      notification_payload: string;
-      notification_attempt: number;
-      notification_lease_token: number;
-      notification_generation: number;
-      notification_status: TaskRunNotificationStatus;
-      notification_summary: string | null;
-      notification_error: string | null;
-    }>;
+        id: string;
+        status: TaskRunStatus;
+        notification_payload: string;
+        notification_attempt: number;
+        notification_lease_token: number;
+        notification_generation: number;
+        notification_status: TaskRunNotificationStatus;
+        notification_summary: string | null;
+        notification_error: string | null;
+      }>;
     for (const row of rows) {
       let payload: TaskRunNotificationPayload;
       try {
@@ -7816,15 +7595,17 @@ function claimTaskRunNotification(
           row.notification_payload,
         ) as TaskRunNotificationPayload;
       } catch {
-        db.prepare(
-          `UPDATE task_runs SET notification_status='failed',
+        prepareCached(`UPDATE task_runs SET notification_status='failed',
              notification_error='Invalid persisted notification payload',
              notification_payload=NULL, notification_available_at=NULL,
              notification_lease_owner=NULL,
              notification_lease_expires_at=NULL,
              notification_lease_payload=NULL, updated_at=?
-           WHERE id=? AND notification_lease_token=?`,
-        ).run(nowIso, row.id, row.notification_lease_token);
+           WHERE id=? AND notification_lease_token=?`).run(
+          nowIso,
+          row.id,
+          row.notification_lease_token,
+        );
         continue;
       }
       if (
@@ -7835,24 +7616,20 @@ function claimTaskRunNotification(
       }
 
       const token = row.notification_lease_token + 1;
-      const changed = db
-        .prepare(
-          `UPDATE task_runs
+      const changed = prepareCached(`UPDATE task_runs
          SET notification_lease_owner = ?, notification_lease_token = ?,
              notification_lease_expires_at = ?,
              notification_lease_payload = notification_payload,
              notification_attempt = notification_attempt + 1,
              updated_at = ?
-         WHERE id = ? AND notification_lease_token = ?`,
-        )
-        .run(
-          owner,
-          token,
-          expiresAt,
-          nowIso,
-          row.id,
-          row.notification_lease_token,
-        );
+         WHERE id = ? AND notification_lease_token = ?`).run(
+        owner,
+        token,
+        expiresAt,
+        nowIso,
+        row.id,
+        row.notification_lease_token,
+      );
       if (changed.changes !== 1) continue;
       try {
         return {
@@ -7872,16 +7649,14 @@ function claimTaskRunNotification(
           notificationError: row.notification_error,
         };
       } catch {
-        db.prepare(
-          `UPDATE task_runs SET notification_status='failed',
+        prepareCached(`UPDATE task_runs SET notification_status='failed',
              notification_error='Invalid persisted notification payload',
              notification_payload=NULL, notification_available_at=NULL,
              notification_lease_owner=NULL,
              notification_lease_expires_at=NULL,
              notification_lease_payload=NULL, updated_at=?
            WHERE id=? AND notification_lease_owner=?
-             AND notification_lease_token=?`,
-        ).run(nowIso, row.id, owner, token);
+             AND notification_lease_token=?`).run(nowIso, row.id, owner, token);
       }
     }
     return undefined;
@@ -7893,9 +7668,8 @@ function claimTaskRunNotification(
 export function finalizeExpiredTaskRunNotificationAttempts(): number {
   const now = new Date().toISOString();
   return db.transaction(() => {
-    const rows = db
-      .prepare(
-        `SELECT id, status, notification_error, notification_summary,
+    const rows =
+      prepareCached(`SELECT id, status, notification_error, notification_summary,
                 notification_payload, notification_attempt,
                 notification_available_at, notification_lease_owner,
                 notification_lease_token, notification_lease_expires_at,
@@ -7905,25 +7679,26 @@ export function finalizeExpiredTaskRunNotificationAttempts(): number {
            AND notification_attempt >= ?
            AND notification_lease_owner IS NOT NULL
            AND notification_lease_expires_at IS NOT NULL
-           AND notification_lease_expires_at <= ?`,
-      )
-      .all(MAX_TASK_NOTIFICATION_ATTEMPTS, now) as Array<
-      Pick<
-        TaskRunRow,
-        | 'id'
-        | 'status'
-        | 'notification_error'
-        | 'notification_summary'
-        | 'notification_payload'
-        | 'notification_attempt'
-        | 'notification_available_at'
-        | 'notification_lease_owner'
-        | 'notification_lease_token'
-        | 'notification_lease_expires_at'
-        | 'notification_lease_payload'
-        | 'notification_generation'
-      >
-    >;
+           AND notification_lease_expires_at <= ?`).all(
+        MAX_TASK_NOTIFICATION_ATTEMPTS,
+        now,
+      ) as Array<
+        Pick<
+          TaskRunRow,
+          | 'id'
+          | 'status'
+          | 'notification_error'
+          | 'notification_summary'
+          | 'notification_payload'
+          | 'notification_attempt'
+          | 'notification_available_at'
+          | 'notification_lease_owner'
+          | 'notification_lease_token'
+          | 'notification_lease_expires_at'
+          | 'notification_lease_payload'
+          | 'notification_generation'
+        >
+      >;
     let changed = 0;
     for (const row of rows) {
       let currentPayload: TaskRunNotificationPayload;
@@ -7985,9 +7760,7 @@ export function finalizeExpiredTaskRunNotificationAttempts(): number {
       const error = [row.notification_error, FINAL_NOTIFICATION_UNKNOWN_ERROR]
         .filter(Boolean)
         .join('; ');
-      const result = db
-        .prepare(
-          `UPDATE task_runs
+      const result = prepareCached(`UPDATE task_runs
            SET notification_status = ?, notification_error = ?,
                notification_summary = ?, notification_payload = ?,
                notification_attempt = ?, notification_available_at = ?,
@@ -8003,26 +7776,24 @@ export function finalizeExpiredTaskRunNotificationAttempts(): number {
              AND (
                status NOT IN ('cancelled','missed')
                OR (? = 1 AND status = 'cancelled')
-             )`,
-        )
-        .run(
-          notificationStatusForSummary(summary),
-          error,
-          JSON.stringify(summary),
-          remainingPayload ? JSON.stringify(remainingPayload) : null,
-          remainingPayload ? 0 : row.notification_attempt,
-          remainingPayload
-            ? (row.notification_available_at ??
-                new Date(Date.now() + 1_000).toISOString())
-            : null,
-          now,
-          row.id,
-          row.notification_lease_owner,
-          row.notification_lease_token,
-          now,
-          row.notification_generation,
-          ownsCancelledGroupWorkspaceRun ? 1 : 0,
-        );
+             )`).run(
+        notificationStatusForSummary(summary),
+        error,
+        JSON.stringify(summary),
+        remainingPayload ? JSON.stringify(remainingPayload) : null,
+        remainingPayload ? 0 : row.notification_attempt,
+        remainingPayload
+          ? (row.notification_available_at ??
+              new Date(Date.now() + 1_000).toISOString())
+          : null,
+        now,
+        row.id,
+        row.notification_lease_owner,
+        row.notification_lease_token,
+        now,
+        row.notification_generation,
+        ownsCancelledGroupWorkspaceRun ? 1 : 0,
+      );
       if (result.changes === 1) {
         settleDiscardedGroupWorkspaceResults(row.id, claimedPayload);
       }
@@ -8040,14 +7811,18 @@ export function renewTaskRunNotificationLease(
   const now = new Date();
   const nowIso = now.toISOString();
   const expiresAt = new Date(now.getTime() + leaseMs).toISOString();
-  const result = db
-    .prepare(
-      `UPDATE task_runs SET notification_lease_expires_at = ?, updated_at = ?
+  const result =
+    prepareCached(`UPDATE task_runs SET notification_lease_expires_at = ?, updated_at = ?
        WHERE id = ? AND notification_payload IS NOT NULL
          AND notification_lease_owner = ? AND notification_lease_token = ?
-         AND notification_lease_expires_at > ?`,
-    )
-    .run(expiresAt, nowIso, claim.runId, claim.owner, claim.token, nowIso);
+         AND notification_lease_expires_at > ?`).run(
+      expiresAt,
+      nowIso,
+      claim.runId,
+      claim.owner,
+      claim.token,
+      nowIso,
+    );
   if (result.changes === 1) claim.expiresAt = expiresAt;
   return result.changes === 1;
 }
@@ -8075,31 +7850,28 @@ export function completeTaskRunNotificationAttempt(
       claim.runId,
     );
   return db.transaction(() => {
-    const row = db
-      .prepare(
-        `SELECT status, notification_status, notification_error,
+    const row =
+      prepareCached(`SELECT status, notification_status, notification_error,
                 notification_summary, notification_payload,
                 notification_attempt, notification_available_at,
                 notification_lease_owner, notification_lease_token,
                 notification_lease_expires_at, notification_generation
-         FROM task_runs WHERE id = ?`,
-      )
-      .get(claim.runId) as
-      | Pick<
-          TaskRunRow,
-          | 'status'
-          | 'notification_status'
-          | 'notification_error'
-          | 'notification_summary'
-          | 'notification_payload'
-          | 'notification_attempt'
-          | 'notification_available_at'
-          | 'notification_lease_owner'
-          | 'notification_lease_token'
-          | 'notification_lease_expires_at'
-          | 'notification_generation'
-        >
-      | undefined;
+         FROM task_runs WHERE id = ?`).get(claim.runId) as
+        | Pick<
+            TaskRunRow,
+            | 'status'
+            | 'notification_status'
+            | 'notification_error'
+            | 'notification_summary'
+            | 'notification_payload'
+            | 'notification_attempt'
+            | 'notification_available_at'
+            | 'notification_lease_owner'
+            | 'notification_lease_token'
+            | 'notification_lease_expires_at'
+            | 'notification_generation'
+          >
+        | undefined;
     if (
       !row ||
       (row.status === 'cancelled' && !ownsCancelledGroupWorkspaceRun) ||
@@ -8217,9 +7989,7 @@ export function completeTaskRunNotificationAttempt(
     // attempt 1 (and the merged batch receives a complete retry budget).
     const nextAttempt =
       latePayload && !cancelledAuthoritative ? 0 : row.notification_attempt;
-    const result = db
-      .prepare(
-        `UPDATE task_runs
+    const result = prepareCached(`UPDATE task_runs
          SET notification_status = ?, notification_error = ?,
              notification_summary = ?, notification_payload = ?,
              notification_attempt = ?, notification_available_at = ?,
@@ -8235,23 +8005,21 @@ export function completeTaskRunNotificationAttempt(
            AND (
              status NOT IN ('cancelled','missed')
              OR (? = 1 AND status = 'cancelled')
-           )`,
-      )
-      .run(
-        nextReceipt.status,
-        nextReceipt.error ?? null,
-        JSON.stringify(nextReceipt.summary),
-        nextPayload ? JSON.stringify(nextPayload) : null,
-        nextAttempt,
-        nextAvailableAt,
-        nowIso,
-        claim.runId,
-        claim.owner,
-        claim.token,
-        nowIso,
-        row.notification_generation,
-        ownsCancelledGroupWorkspaceRun ? 1 : 0,
-      );
+           )`).run(
+      nextReceipt.status,
+      nextReceipt.error ?? null,
+      JSON.stringify(nextReceipt.summary),
+      nextPayload ? JSON.stringify(nextPayload) : null,
+      nextAttempt,
+      nextAvailableAt,
+      nowIso,
+      claim.runId,
+      claim.owner,
+      claim.token,
+      nowIso,
+      row.notification_generation,
+      ownsCancelledGroupWorkspaceRun ? 1 : 0,
+    );
     const discardedPayload =
       !workerRetryable &&
       (receipt.status === 'failed' ||
@@ -8269,9 +8037,7 @@ export function completeTaskRunNotificationAttempt(
 /** Earliest retry/queued admission or expired running lease. */
 export function getNextTaskRunWakeAt(): string | null {
   const now = new Date().toISOString();
-  const row = db
-    .prepare(
-      `SELECT MIN(wake_at) AS wake_at FROM (
+  const row = prepareCached(`SELECT MIN(wake_at) AS wake_at FROM (
          SELECT available_at AS wake_at FROM task_runs
            WHERE status IN ('queued','retry_wait')
          UNION ALL
@@ -8290,25 +8056,22 @@ export function getNextTaskRunWakeAt(): string | null {
            WHERE notification_lease_owner IS NOT NULL
              AND notification_lease_expires_at IS NOT NULL
              AND (notification_attempt < 5 OR notification_lease_expires_at > ?)
-       )`,
-    )
-    .get(now) as { wake_at: string | null };
-  const cancelledWorkspaceRows = db
-    .prepare(
-      `SELECT id, notification_payload, notification_available_at
+       )`).get(now) as { wake_at: string | null };
+  const cancelledWorkspaceRows =
+    prepareCached(`SELECT id, notification_payload, notification_available_at
        FROM task_runs
        WHERE status = 'cancelled'
          AND notification_payload IS NOT NULL
          AND notification_attempt < ?
          AND notification_available_at IS NOT NULL
          AND notification_lease_owner IS NULL
-         AND notification_status IN ('failed','partial_failed','uncertain','pending')`,
-    )
-    .all(MAX_TASK_NOTIFICATION_ATTEMPTS) as Array<{
-    id: string;
-    notification_payload: string;
-    notification_available_at: string;
-  }>;
+         AND notification_status IN ('failed','partial_failed','uncertain','pending')`).all(
+      MAX_TASK_NOTIFICATION_ATTEMPTS,
+    ) as Array<{
+      id: string;
+      notification_payload: string;
+      notification_available_at: string;
+    }>;
   let cancelledWakeAt: string | null = null;
   for (const candidate of cancelledWorkspaceRows) {
     try {
@@ -8341,22 +8104,19 @@ export function getNextTaskRunWakeAt(): string | null {
 }
 
 export function getNextScheduledTaskWakeAt(): string | null {
-  const row = db
-    .prepare(
-      `SELECT MIN(next_run) AS wake_at FROM scheduled_tasks
-       WHERE status = 'active' AND deleted_at IS NULL AND next_run IS NOT NULL`,
-    )
-    .get() as { wake_at: string | null };
+  const row =
+    prepareCached(`SELECT MIN(next_run) AS wake_at FROM scheduled_tasks
+       WHERE status = 'active' AND deleted_at IS NULL AND next_run IS NOT NULL`).get() as {
+      wake_at: string | null;
+    };
   return row.wake_at ?? null;
 }
 
 export function logTaskRun(log: TaskRunLog): void {
-  db.prepare(
-    `
+  prepareCached(`
     INSERT INTO task_run_logs (task_id, run_at, duration_ms, status, result, error)
     VALUES (?, ?, ?, ?, ?, ?)
-  `,
-  ).run(
+  `).run(
     log.task_id,
     log.run_at,
     log.duration_ms,
@@ -8367,14 +8127,10 @@ export function logTaskRun(log: TaskRunLog): void {
 }
 
 export function logTaskRunStart(taskId: string): number {
-  const result = db
-    .prepare(
-      `
+  const result = prepareCached(`
     INSERT INTO task_run_logs (task_id, run_at, duration_ms, status, result, error)
     VALUES (?, ?, 0, 'running', NULL, NULL)
-  `,
-    )
-    .run(taskId, new Date().toISOString());
+  `).run(taskId, new Date().toISOString());
   return Number(result.lastInsertRowid);
 }
 
@@ -8387,23 +8143,23 @@ export function updateTaskRunLog(
     error: string | null;
   },
 ): void {
-  db.prepare(
-    `
+  prepareCached(`
     UPDATE task_run_logs SET duration_ms = ?, status = ?, result = ?, error = ?
     WHERE id = ?
-  `,
-  ).run(updates.duration_ms, updates.status, updates.result, updates.error, id);
+  `).run(
+    updates.duration_ms,
+    updates.status,
+    updates.result,
+    updates.error,
+    id,
+  );
 }
 
 export function cleanupStaleRunningLogs(): number {
-  const result = db
-    .prepare(
-      `
+  const result = prepareCached(`
     UPDATE task_run_logs SET status = 'error', error = 'Process crashed before completion'
     WHERE status = 'running'
-  `,
-    )
-    .run();
+  `).run();
   return result.changes;
 }
 
@@ -8411,16 +8167,12 @@ export function cleanupOldTaskRunLogs(retentionDays = 30): number {
   const cutoff = new Date(
     Date.now() - retentionDays * 24 * 60 * 60 * 1000,
   ).toISOString();
-  const result = db
-    .prepare(`DELETE FROM task_run_logs WHERE run_at < ?`)
-    .run(cutoff);
-  const durable = db
-    .prepare(
-      `DELETE FROM task_runs
+  const result = prepareCached(
+    `DELETE FROM task_run_logs WHERE run_at < ?`,
+  ).run(cutoff);
+  const durable = prepareCached(`DELETE FROM task_runs
        WHERE completed_at IS NOT NULL AND completed_at < ?
-         AND status IN ('success','failed','cancelled','missed')`,
-    )
-    .run(cutoff);
+         AND status IN ('success','failed','cancelled','missed')`).run(cutoff);
   return result.changes + durable.changes;
 }
 
@@ -8428,9 +8180,9 @@ export function cleanupOldDailyUsage(retentionDays = 90): number {
   const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000)
     .toISOString()
     .slice(0, 10);
-  const result = db
-    .prepare('DELETE FROM daily_usage WHERE date < ?')
-    .run(cutoff);
+  const result = prepareCached('DELETE FROM daily_usage WHERE date < ?').run(
+    cutoff,
+  );
   return result.changes;
 }
 
@@ -8438,23 +8190,23 @@ export function cleanupOldBillingAuditLog(retentionDays = 365): number {
   const cutoff = new Date(
     Date.now() - retentionDays * 24 * 60 * 60 * 1000,
   ).toISOString();
-  const result = db
-    .prepare('DELETE FROM billing_audit_log WHERE created_at < ?')
-    .run(cutoff);
+  const result = prepareCached(
+    'DELETE FROM billing_audit_log WHERE created_at < ?',
+  ).run(cutoff);
   return result.changes;
 }
 
 // --- Router state accessors ---
 
 export function getRouterState(key: string): string | undefined {
-  const row = db
-    .prepare('SELECT value FROM router_state WHERE key = ?')
-    .get(key) as { value: string } | undefined;
+  const row = prepareCached('SELECT value FROM router_state WHERE key = ?').get(
+    key,
+  ) as { value: string } | undefined;
   return row?.value;
 }
 
 export function setRouterState(key: string, value: string): void {
-  db.prepare(
+  prepareCached(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run(key, value);
 }
@@ -8468,7 +8220,7 @@ export function setRouterStateBatch(
   entries: ReadonlyArray<readonly [key: string, value: string]>,
 ): void {
   if (entries.length === 0) return;
-  const stmt = db.prepare(
+  const stmt = prepareCached(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   );
   db.transaction(() => {
@@ -8479,20 +8231,20 @@ export function setRouterStateBatch(
 /** All chat JIDs currently present, for cursor-map pruning. */
 export function getAllChatJids(): string[] {
   return (
-    db.prepare('SELECT jid FROM chats').all() as Array<{ jid: string }>
+    prepareCached('SELECT jid FROM chats').all() as Array<{ jid: string }>
   ).map((row) => row.jid);
 }
 
 export function deleteRouterState(key: string): void {
-  db.prepare('DELETE FROM router_state WHERE key = ?').run(key);
+  prepareCached('DELETE FROM router_state WHERE key = ?').run(key);
 }
 
 export function getRouterStateByPrefix(
   prefix: string,
 ): Array<{ key: string; value: string }> {
-  return db
-    .prepare('SELECT key, value FROM router_state WHERE key LIKE ?')
-    .all(`${prefix}%`) as Array<{ key: string; value: string }>;
+  return prepareCached(
+    'SELECT key, value FROM router_state WHERE key LIKE ?',
+  ).all(`${prefix}%`) as Array<{ key: string; value: string }>;
 }
 
 // --- Session accessors ---
@@ -8501,11 +8253,9 @@ export function getSessionInteractionMode(
   groupFolder: string,
   agentId?: string | null,
 ): InteractionMode | null {
-  const row = db
-    .prepare(
-      'SELECT interaction_mode FROM sessions WHERE group_folder = ? AND agent_id = ?',
-    )
-    .get(groupFolder, agentId || '') as
+  const row = prepareCached(
+    'SELECT interaction_mode FROM sessions WHERE group_folder = ? AND agent_id = ?',
+  ).get(groupFolder, agentId || '') as
     | { interaction_mode: string | null }
     | undefined;
   return row?.interaction_mode === 'assistant' ||
@@ -8520,7 +8270,7 @@ export function setSessionInteractionMode(
   agentId: string | null | undefined,
   mode: InteractionMode,
 ): void {
-  db.prepare(
+  prepareCached(
     'UPDATE sessions SET interaction_mode = ? WHERE group_folder = ? AND agent_id = ?',
   ).run(mode, groupFolder, agentId || '');
 }
@@ -8530,11 +8280,9 @@ export function getSession(
   agentId?: string | null,
 ): string | undefined {
   const effectiveAgentId = agentId || '';
-  const row = db
-    .prepare(
-      'SELECT session_id FROM sessions WHERE group_folder = ? AND agent_id = ?',
-    )
-    .get(groupFolder, effectiveAgentId) as { session_id: string } | undefined;
+  const row = prepareCached(
+    'SELECT session_id FROM sessions WHERE group_folder = ? AND agent_id = ?',
+  ).get(groupFolder, effectiveAgentId) as { session_id: string } | undefined;
   return row?.session_id;
 }
 
@@ -8568,24 +8316,24 @@ function isolateLegacyDirectWorkspaceMain(
   groupFolder: string,
   isolationStartedAt: string,
 ): boolean {
-  const inserted = db
-    .prepare('INSERT OR IGNORE INTO router_state (key, value) VALUES (?, ?)')
-    .run(
-      `${CONVERSATION_HISTORY_ISOLATION_PREFIX}${workspaceJid}`,
-      isolationStartedAt,
-    );
+  const inserted = prepareCached(
+    'INSERT OR IGNORE INTO router_state (key, value) VALUES (?, ?)',
+  ).run(
+    `${CONVERSATION_HISTORY_ISOLATION_PREFIX}${workspaceJid}`,
+    isolationStartedAt,
+  );
   if (inserted.changes === 0) return false;
 
-  db.prepare(
+  prepareCached(
     'UPDATE messages SET history_recovery_allowed = 0 WHERE chat_jid = ?',
   ).run(workspaceJid);
-  db.prepare(
+  prepareCached(
     "DELETE FROM sessions WHERE group_folder = ? AND agent_id = ''",
   ).run(groupFolder);
-  db.prepare(
+  prepareCached(
     "DELETE FROM workspace_runtime_sessions WHERE group_folder = ? AND runtime_agent_id = ''",
   ).run(groupFolder);
-  db.prepare('DELETE FROM router_state WHERE key = ?').run(
+  prepareCached('DELETE FROM router_state WHERE key = ?').run(
     sessionChannelOwnerKey(groupFolder, null),
   );
   return true;
@@ -8603,22 +8351,22 @@ export function resetWorkspaceMainIsolationGeneration(
   groupFolder: string,
   isolationStartedAt = new Date().toISOString(),
 ): string {
-  db.prepare(
+  prepareCached(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run(
     `${CONVERSATION_HISTORY_ISOLATION_PREFIX}${workspaceJid}`,
     isolationStartedAt,
   );
-  db.prepare(
+  prepareCached(
     'UPDATE messages SET history_recovery_allowed = 0 WHERE chat_jid = ?',
   ).run(workspaceJid);
-  db.prepare(
+  prepareCached(
     "DELETE FROM sessions WHERE group_folder = ? AND agent_id = ''",
   ).run(groupFolder);
-  db.prepare(
+  prepareCached(
     "DELETE FROM workspace_runtime_sessions WHERE group_folder = ? AND runtime_agent_id = ''",
   ).run(groupFolder);
-  db.prepare('DELETE FROM router_state WHERE key = ?').run(
+  prepareCached('DELETE FROM router_state WHERE key = ?').run(
     sessionChannelOwnerKey(groupFolder, null),
   );
   return isolationStartedAt;
@@ -8631,13 +8379,11 @@ export function runImmediateTransaction<T>(fn: () => T): T {
 /** Distinct inbound sources still eligible for model-context recovery. */
 export function listRecoverableInboundSourceJids(chatJid: string): string[] {
   return (
-    db
-      .prepare(
-        `SELECT DISTINCT source_jid FROM messages
+    prepareCached(`SELECT DISTINCT source_jid FROM messages
          WHERE chat_jid = ? AND is_from_me = 0 AND history_recovery_allowed = 1
-           AND source_jid IS NOT NULL`,
-      )
-      .all(chatJid) as Array<{ source_jid: string }>
+           AND source_jid IS NOT NULL`).all(chatJid) as Array<{
+      source_jid: string;
+    }>
   ).map((row) => row.source_jid);
 }
 
@@ -8674,7 +8420,7 @@ export function setSessionChannelOwnerOnce(
   sourceJid: string,
 ): string {
   const key = sessionChannelOwnerKey(groupFolder, agentId);
-  db.prepare(
+  prepareCached(
     'INSERT OR IGNORE INTO router_state (key, value) VALUES (?, ?)',
   ).run(key, sourceJid);
   return getRouterState(key) ?? sourceJid;
@@ -8692,16 +8438,16 @@ export function setSession(
 ): void {
   const effectiveAgentId = agentId || '';
   db.transaction(() => {
-    db.prepare(
-      `INSERT INTO sessions (group_folder, session_id, agent_id) VALUES (?, ?, ?)
-       ON CONFLICT(group_folder, agent_id) DO UPDATE SET session_id = excluded.session_id`,
-    ).run(groupFolder, sessionId, effectiveAgentId);
+    prepareCached(`INSERT INTO sessions (group_folder, session_id, agent_id) VALUES (?, ?, ?)
+       ON CONFLICT(group_folder, agent_id) DO UPDATE SET session_id = excluded.session_id`).run(
+      groupFolder,
+      sessionId,
+      effectiveAgentId,
+    );
     if (agentIdentity) {
-      db.prepare(
-        `UPDATE sessions
+      prepareCached(`UPDATE sessions
          SET agent_profile_id = ?, agent_profile_version = ?, identity_hash = ?
-         WHERE group_folder = ? AND agent_id = ?`,
-      ).run(
+         WHERE group_folder = ? AND agent_id = ?`).run(
         agentIdentity.agentProfileId ?? null,
         agentIdentity.agentProfileVersion ?? null,
         agentIdentity.identityHash ?? null,
@@ -8719,10 +8465,10 @@ export function deleteSession(
 ): void {
   const effectiveAgentId = agentId || '';
   db.transaction(() => {
-    db.prepare(
+    prepareCached(
       'DELETE FROM sessions WHERE group_folder = ? AND agent_id = ?',
     ).run(groupFolder, effectiveAgentId);
-    db.prepare(
+    prepareCached(
       'DELETE FROM workspace_runtime_sessions WHERE group_folder = ? AND runtime_agent_id = ?',
     ).run(groupFolder, effectiveAgentId);
   })();
@@ -8738,7 +8484,7 @@ export function clearSessionChannelOwner(
   groupFolder: string,
   agentId?: string | null,
 ): void {
-  db.prepare('DELETE FROM router_state WHERE key = ?').run(
+  prepareCached('DELETE FROM router_state WHERE key = ?').run(
     sessionChannelOwnerKey(groupFolder, agentId),
   );
 }
@@ -8746,8 +8492,10 @@ export function clearSessionChannelOwner(
 /** Invalidate every SDK resume token associated with a workspace. */
 export function deleteWorkspaceSessions(groupFolder: string): void {
   db.transaction(() => {
-    db.prepare('DELETE FROM sessions WHERE group_folder = ?').run(groupFolder);
-    db.prepare(
+    prepareCached('DELETE FROM sessions WHERE group_folder = ?').run(
+      groupFolder,
+    );
+    prepareCached(
       'DELETE FROM workspace_runtime_sessions WHERE group_folder = ?',
     ).run(groupFolder);
   })();
@@ -8766,11 +8514,9 @@ export function getSessionProviderId(
   agentId?: string | null,
 ): string | undefined {
   const effectiveAgentId = agentId || '';
-  const row = db
-    .prepare(
-      'SELECT provider_id FROM sessions WHERE group_folder = ? AND agent_id = ?',
-    )
-    .get(groupFolder, effectiveAgentId) as
+  const row = prepareCached(
+    'SELECT provider_id FROM sessions WHERE group_folder = ? AND agent_id = ?',
+  ).get(groupFolder, effectiveAgentId) as
     | { provider_id: string | null }
     | undefined;
   return row?.provider_id ?? undefined;
@@ -8787,11 +8533,13 @@ export function setSessionProviderId(
 ): void {
   const effectiveAgentId = agentId || '';
   db.transaction(() => {
-    db.prepare(
-      `INSERT INTO sessions (group_folder, session_id, agent_id, provider_id)
+    prepareCached(`INSERT INTO sessions (group_folder, session_id, agent_id, provider_id)
        VALUES (?, '', ?, ?)
-       ON CONFLICT(group_folder, agent_id) DO UPDATE SET provider_id = excluded.provider_id`,
-    ).run(groupFolder, effectiveAgentId, providerId);
+       ON CONFLICT(group_folder, agent_id) DO UPDATE SET provider_id = excluded.provider_id`).run(
+      groupFolder,
+      effectiveAgentId,
+      providerId,
+    );
     syncWorkspaceRuntimeSessionProjection(groupFolder, effectiveAgentId);
   })();
 }
@@ -8802,13 +8550,9 @@ export function listSessionNamespacesForProviderId(providerId: string): Array<{
   agentId: string | null;
 }> {
   if (!isDatabaseInitialized()) return [];
-  const rows = db
-    .prepare(
-      `SELECT group_folder, agent_id
+  const rows = prepareCached(`SELECT group_folder, agent_id
        FROM sessions
-       WHERE provider_id = ?`,
-    )
-    .all(providerId) as Array<{
+       WHERE provider_id = ?`).all(providerId) as Array<{
     group_folder: string;
     agent_id: string | null;
   }>;
@@ -8820,11 +8564,13 @@ export function listSessionNamespacesForProviderId(providerId: string): Array<{
 
 export function deleteAllSessionsForFolder(groupFolder: string): void {
   db.transaction(() => {
-    db.prepare('DELETE FROM sessions WHERE group_folder = ?').run(groupFolder);
-    db.prepare(
+    prepareCached('DELETE FROM sessions WHERE group_folder = ?').run(
+      groupFolder,
+    );
+    prepareCached(
       'DELETE FROM workspace_runtime_sessions WHERE group_folder = ?',
     ).run(groupFolder);
-    db.prepare('DELETE FROM router_state WHERE key LIKE ?').run(
+    prepareCached('DELETE FROM router_state WHERE key LIKE ?').run(
       `channel_session_owner:${groupFolder}:%`,
     );
   })();
@@ -8841,13 +8587,13 @@ export function getSessionAgentIdentity(
   agentId?: string | null,
 ): SessionAgentIdentity | undefined {
   const effectiveAgentId = agentId || '';
-  const row = db
-    .prepare(
-      `SELECT agent_profile_id, agent_profile_version, identity_hash
+  const row =
+    prepareCached(`SELECT agent_profile_id, agent_profile_version, identity_hash
        FROM sessions
-       WHERE group_folder = ? AND agent_id = ?`,
-    )
-    .get(groupFolder, effectiveAgentId) as SessionAgentIdentity | undefined;
+       WHERE group_folder = ? AND agent_id = ?`).get(
+      groupFolder,
+      effectiveAgentId,
+    ) as SessionAgentIdentity | undefined;
   return row;
 }
 
@@ -9034,10 +8780,10 @@ export function serializeAgentProfileRuntimePolicy(
 
 /** Persist the v69 inherited effort default into legacy runtime-policy JSON. */
 export function migrateAgentProfileEffortPolicy(): number {
-  const rows = db
-    .prepare('SELECT id, runtime_policy FROM agent_profiles')
-    .all() as Array<{ id: string; runtime_policy: unknown }>;
-  const update = db.prepare(
+  const rows = prepareCached(
+    'SELECT id, runtime_policy FROM agent_profiles',
+  ).all() as Array<{ id: string; runtime_policy: unknown }>;
+  const update = prepareCached(
     'UPDATE agent_profiles SET runtime_policy = ? WHERE id = ?',
   );
   let migrated = 0;
@@ -9085,7 +8831,7 @@ export function migrateAgentProfileEffortPolicy(): number {
  * their next run cannot resume a session created under the old restriction.
  */
 function removeLegacyAgentToolPolicies(): void {
-  const rows = db.prepare('SELECT * FROM agent_profiles').all() as Array<
+  const rows = prepareCached('SELECT * FROM agent_profiles').all() as Array<
     Record<string, unknown>
   >;
   const legacyRows = rows.filter((row) => {
@@ -9105,11 +8851,9 @@ function removeLegacyAgentToolPolicies(): void {
   });
   if (legacyRows.length === 0) return;
 
-  const update = db.prepare(
-    `UPDATE agent_profiles
+  const update = prepareCached(`UPDATE agent_profiles
      SET runtime_policy = ?, identity_hash = ?, version = ?, updated_at = ?
-     WHERE id = ?`,
-  );
+     WHERE id = ?`);
   const now = new Date().toISOString();
   db.transaction(() => {
     for (const row of legacyRows) {
@@ -9140,12 +8884,10 @@ export function migrateAgentProfileAutoCompactWindow(
 ): number {
   if (legacyValue === undefined) return 0;
   const value = Math.min(1_000_000, Math.max(100_000, Math.floor(legacyValue)));
-  const rows = db
-    .prepare(
-      'SELECT id, runtime_policy FROM agent_profiles WHERE is_default = 0',
-    )
-    .all() as Array<{ id: string; runtime_policy: unknown }>;
-  const update = db.prepare(
+  const rows = prepareCached(
+    'SELECT id, runtime_policy FROM agent_profiles WHERE is_default = 0',
+  ).all() as Array<{ id: string; runtime_policy: unknown }>;
+  const update = prepareCached(
     'UPDATE agent_profiles SET runtime_policy = ? WHERE id = ?',
   );
   let migrated = 0;
@@ -9319,13 +9061,11 @@ function insertAgentProfilePromptVersionSnapshot(input: {
   restoredFromVersion?: number | null;
   createdAt?: string;
 }): void {
-  db.prepare(
-    `INSERT OR IGNORE INTO agent_profile_prompt_versions (
+  prepareCached(`INSERT OR IGNORE INTO agent_profile_prompt_versions (
       id, agent_profile_id, version, name,
       identity_prompt, soul_prompt, agents_prompt, tools_prompt, prompt_mode,
       identity_hash, change_source, restored_from_version, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
     crypto.randomUUID(),
     input.profileId,
     input.version,
@@ -9348,12 +9088,10 @@ export function listAgentProfilePromptVersions(
 ): AgentProfilePromptVersion[] {
   const profile = getAgentProfileForUser(profileId, ownerUserId);
   if (!profile) return [];
-  const rows = db
-    .prepare(
-      `SELECT * FROM agent_profile_prompt_versions
-       WHERE agent_profile_id = ? ORDER BY version DESC`,
-    )
-    .all(profileId) as Array<Record<string, unknown>>;
+  const rows = prepareCached(`SELECT * FROM agent_profile_prompt_versions
+       WHERE agent_profile_id = ? ORDER BY version DESC`).all(
+    profileId,
+  ) as Array<Record<string, unknown>>;
   return rows.map(mapAgentProfilePromptVersionRow);
 }
 
@@ -9364,12 +9102,10 @@ export function getAgentProfilePromptVersion(
 ): AgentProfilePromptVersion | undefined {
   const profile = getAgentProfileForUser(profileId, ownerUserId);
   if (!profile) return undefined;
-  const row = db
-    .prepare(
-      `SELECT * FROM agent_profile_prompt_versions
-       WHERE agent_profile_id = ? AND version = ?`,
-    )
-    .get(profileId, version) as Record<string, unknown> | undefined;
+  const row = prepareCached(`SELECT * FROM agent_profile_prompt_versions
+       WHERE agent_profile_id = ? AND version = ?`).get(profileId, version) as
+    | Record<string, unknown>
+    | undefined;
   return row ? mapAgentProfilePromptVersionRow(row) : undefined;
 }
 
@@ -9418,9 +9154,9 @@ function mapAgentProfileRow(row: Record<string, unknown>): AgentProfile {
 }
 
 export function getAgentProfile(profileId: string): AgentProfile | undefined {
-  const row = db
-    .prepare('SELECT * FROM agent_profiles WHERE id = ?')
-    .get(profileId) as Record<string, unknown> | undefined;
+  const row = prepareCached('SELECT * FROM agent_profiles WHERE id = ?').get(
+    profileId,
+  ) as Record<string, unknown> | undefined;
   return row ? mapAgentProfileRow(row) : undefined;
 }
 
@@ -9428,11 +9164,9 @@ export function getAgentProfileForUser(
   profileId: string,
   userId: string,
 ): AgentProfile | undefined {
-  const row = db
-    .prepare(
-      "SELECT * FROM agent_profiles WHERE id = ? AND owner_user_id = ? AND status = 'active'",
-    )
-    .get(profileId, userId) as Record<string, unknown> | undefined;
+  const row = prepareCached(
+    "SELECT * FROM agent_profiles WHERE id = ? AND owner_user_id = ? AND status = 'active'",
+  ).get(profileId, userId) as Record<string, unknown> | undefined;
   return row ? mapAgentProfileRow(row) : undefined;
 }
 
@@ -9493,24 +9227,20 @@ export function getAgentBuilderDraftForUser(
   draftId: string,
   ownerUserId: string,
 ): AgentBuilderDraft | undefined {
-  const row = db
-    .prepare(
-      'SELECT * FROM agent_builder_drafts WHERE id = ? AND owner_user_id = ?',
-    )
-    .get(draftId, ownerUserId) as Record<string, unknown> | undefined;
+  const row = prepareCached(
+    'SELECT * FROM agent_builder_drafts WHERE id = ? AND owner_user_id = ?',
+  ).get(draftId, ownerUserId) as Record<string, unknown> | undefined;
   return row ? mapAgentBuilderDraftRow(row) : undefined;
 }
 
 export function listReadyAgentBuilderDraftsForUser(
   ownerUserId: string,
 ): AgentBuilderDraft[] {
-  const rows = db
-    .prepare(
-      `SELECT * FROM agent_builder_drafts
+  const rows = prepareCached(`SELECT * FROM agent_builder_drafts
        WHERE owner_user_id = ? AND state = 'ready'
-       ORDER BY updated_at DESC LIMIT 20`,
-    )
-    .all(ownerUserId) as Array<Record<string, unknown>>;
+       ORDER BY updated_at DESC LIMIT 20`).all(ownerUserId) as Array<
+    Record<string, unknown>
+  >;
   return rows.map(mapAgentBuilderDraftRow);
 }
 
@@ -9539,43 +9269,37 @@ export function saveAgentBuilderDraft(input: {
       return undefined;
     }
     const nextRevision = current.revision + 1;
-    const result = db
-      .prepare(
-        `UPDATE agent_builder_drafts
+    const result = prepareCached(`UPDATE agent_builder_drafts
          SET source_group = ?, source_chat_jid = ?, target_agent_profile_id = ?,
              base_agent_version = ?, revision = ?, definition_json = ?,
              assumptions_json = ?, prepared_turn_id = ?,
              confirmation_phrase = ?, updated_at = ?
-         WHERE id = ? AND owner_user_id = ? AND revision = ? AND state = 'ready'`,
-      )
-      .run(
-        input.sourceGroup,
-        input.sourceChatJid,
-        input.targetAgentProfileId,
-        input.baseAgentVersion,
-        nextRevision,
-        JSON.stringify(input.definition),
-        JSON.stringify(input.assumptions ?? []),
-        input.preparedTurnId ?? null,
-        input.confirmationPhrase,
-        now,
-        input.id,
-        input.ownerUserId,
-        current.revision,
-      );
+         WHERE id = ? AND owner_user_id = ? AND revision = ? AND state = 'ready'`).run(
+      input.sourceGroup,
+      input.sourceChatJid,
+      input.targetAgentProfileId,
+      input.baseAgentVersion,
+      nextRevision,
+      JSON.stringify(input.definition),
+      JSON.stringify(input.assumptions ?? []),
+      input.preparedTurnId ?? null,
+      input.confirmationPhrase,
+      now,
+      input.id,
+      input.ownerUserId,
+      current.revision,
+    );
     if (result.changes === 0) return undefined;
     return getAgentBuilderDraftForUser(input.id, input.ownerUserId);
   }
 
   const id = crypto.randomUUID();
-  db.prepare(
-    `INSERT INTO agent_builder_drafts (
+  prepareCached(`INSERT INTO agent_builder_drafts (
       id, owner_user_id, source_group, source_chat_jid,
       target_agent_profile_id, base_agent_version, revision, state,
       definition_json, assumptions_json, prepared_turn_id,
       confirmation_phrase, published_agent_profile_id, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, 1, 'ready', ?, ?, ?, ?, NULL, ?, ?)`,
-  ).run(
+    ) VALUES (?, ?, ?, ?, ?, ?, 1, 'ready', ?, ?, ?, ?, NULL, ?, ?)`).run(
     id,
     input.ownerUserId,
     input.sourceGroup,
@@ -9598,13 +9322,14 @@ export function discardAgentBuilderDraft(
   expectedRevision: number,
 ): AgentBuilderDraft | undefined {
   const now = new Date().toISOString();
-  const result = db
-    .prepare(
-      `UPDATE agent_builder_drafts
+  const result = prepareCached(`UPDATE agent_builder_drafts
        SET state = 'discarded', updated_at = ?
-       WHERE id = ? AND owner_user_id = ? AND revision = ? AND state = 'ready'`,
-    )
-    .run(now, draftId, ownerUserId, expectedRevision);
+       WHERE id = ? AND owner_user_id = ? AND revision = ? AND state = 'ready'`).run(
+    now,
+    draftId,
+    ownerUserId,
+    expectedRevision,
+  );
   return result.changes > 0
     ? getAgentBuilderDraftForUser(draftId, ownerUserId)
     : undefined;
@@ -9627,13 +9352,15 @@ export function commitAgentBuilderDraft(
     }
     const profile = commit(draft);
     const now = new Date().toISOString();
-    const result = db
-      .prepare(
-        `UPDATE agent_builder_drafts
+    const result = prepareCached(`UPDATE agent_builder_drafts
          SET state = 'published', published_agent_profile_id = ?, updated_at = ?
-         WHERE id = ? AND owner_user_id = ? AND revision = ? AND state = 'ready'`,
-      )
-      .run(profile.id, now, draftId, ownerUserId, expectedRevision);
+         WHERE id = ? AND owner_user_id = ? AND revision = ? AND state = 'ready'`).run(
+      profile.id,
+      now,
+      draftId,
+      ownerUserId,
+      expectedRevision,
+    );
     if (result.changes === 0) throw new Error('Agent Builder draft changed');
     return {
       draft: getAgentBuilderDraftForUser(draftId, ownerUserId)!,
@@ -9646,11 +9373,9 @@ const DEFAULT_AGENT_PROFILE_NAME = 'HappyClaw';
 const LEGACY_DEFAULT_AGENT_PROFILE_NAME = 'Default Agent';
 
 export function getOrCreateDefaultAgentProfile(userId: string): AgentProfile {
-  const existing = db
-    .prepare(
-      "SELECT * FROM agent_profiles WHERE owner_user_id = ? AND is_default = 1 AND status = 'active' LIMIT 1",
-    )
-    .get(userId) as Record<string, unknown> | undefined;
+  const existing = prepareCached(
+    "SELECT * FROM agent_profiles WHERE owner_user_id = ? AND is_default = 1 AND status = 'active' LIMIT 1",
+  ).get(userId) as Record<string, unknown> | undefined;
   if (existing) {
     const profile = mapAgentProfileRow(existing);
     const migrateName = profile.name === LEGACY_DEFAULT_AGENT_PROFILE_NAME;
@@ -9666,11 +9391,9 @@ export function getOrCreateDefaultAgentProfile(userId: string): AgentProfile {
     );
     const nextVersion = profile.version + 1;
     db.transaction(() => {
-      db.prepare(
-        `UPDATE agent_profiles
+      prepareCached(`UPDATE agent_profiles
          SET name = ?, runtime_policy = ?, identity_hash = ?, version = ?, updated_at = ?
-         WHERE id = ?`,
-      ).run(
+         WHERE id = ?`).run(
         name,
         serializeAgentProfileRuntimePolicy(runtimePolicy),
         identityHash,
@@ -9694,14 +9417,12 @@ export function getOrCreateDefaultAgentProfile(userId: string): AgentProfile {
   );
   const runtimePolicyJson = serializeAgentProfileRuntimePolicy(runtimePolicy);
   db.transaction(() => {
-    db.prepare(
-      `INSERT INTO agent_profiles (
+    prepareCached(`INSERT INTO agent_profiles (
         id, owner_user_id, name,
         identity_prompt, soul_prompt, agents_prompt, tools_prompt, prompt_mode,
         include_claude_preset, runtime_policy, identity_hash, version,
         is_default, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 'active', ?, ?)`,
-    ).run(
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 'active', ?, ?)`).run(
       id,
       userId,
       name,
@@ -9731,13 +9452,11 @@ export function getOrCreateDefaultAgentProfile(userId: string): AgentProfile {
 
 export function listAgentProfilesForUser(userId: string): AgentProfile[] {
   getOrCreateDefaultAgentProfile(userId);
-  const rows = db
-    .prepare(
-      `SELECT * FROM agent_profiles
+  const rows = prepareCached(`SELECT * FROM agent_profiles
        WHERE owner_user_id = ? AND status = 'active'
-       ORDER BY is_default DESC, updated_at DESC, created_at ASC`,
-    )
-    .all(userId) as Array<Record<string, unknown>>;
+       ORDER BY is_default DESC, updated_at DESC, created_at ASC`).all(
+    userId,
+  ) as Array<Record<string, unknown>>;
   return rows.map(mapAgentProfileRow);
 }
 
@@ -9775,14 +9494,12 @@ export function createAgentProfile(input: {
     input.name,
   );
   db.transaction(() => {
-    db.prepare(
-      `INSERT INTO agent_profiles (
+    prepareCached(`INSERT INTO agent_profiles (
         id, owner_user_id, name,
         identity_prompt, soul_prompt, agents_prompt, tools_prompt, prompt_mode,
         include_claude_preset, avatar_emoji, avatar_color, model_config_id, runtime_policy, identity_hash, version,
         is_default, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 'active', ?, ?)`,
-    ).run(
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 'active', ?, ?)`).run(
       id,
       input.ownerUserId,
       input.name,
@@ -9888,13 +9605,11 @@ export function updateAgentProfile(
       : existing.version;
   const now = new Date().toISOString();
   db.transaction(() => {
-    db.prepare(
-      `UPDATE agent_profiles
+    prepareCached(`UPDATE agent_profiles
        SET name = ?, identity_prompt = ?, soul_prompt = ?, agents_prompt = ?, tools_prompt = ?,
            prompt_mode = ?, include_claude_preset = ?, avatar_emoji = ?, avatar_color = ?, avatar_url = ?, model_config_id = ?,
            runtime_policy = ?, identity_hash = ?, version = ?, updated_at = ?
-       WHERE id = ? AND owner_user_id = ? AND status = 'active'`,
-    ).run(
+       WHERE id = ? AND owner_user_id = ? AND status = 'active'`).run(
       nextName,
       nextPrompts.identity_prompt,
       nextPrompts.soul_prompt,
@@ -9937,13 +9652,11 @@ export function updateAgentProfile(
 export function countAgentProfilesByModelConfigId(
   modelConfigId: string,
 ): number {
-  const row = db
-    .prepare(
-      `SELECT COUNT(*) AS count
+  const row = prepareCached(`SELECT COUNT(*) AS count
        FROM agent_profiles
-       WHERE model_config_id = ? AND status = 'active'`,
-    )
-    .get(modelConfigId) as { count: number };
+       WHERE model_config_id = ? AND status = 'active'`).get(modelConfigId) as {
+    count: number;
+  };
   return Number(row.count ?? 0);
 }
 
@@ -9957,7 +9670,7 @@ export function archiveAgentProfile(
   const count = countWorkspaceAgentProfileMappings(profileId);
   if (count > 0) return 'has_workspaces';
   if (countAgentChannelMountsForProfile(profileId) > 0) return 'has_mounts';
-  db.prepare(
+  prepareCached(
     "UPDATE agent_profiles SET status = 'archived', updated_at = ? WHERE id = ? AND owner_user_id = ?",
   ).run(new Date().toISOString(), profileId, ownerUserId);
   return 'ok';
@@ -9970,15 +9683,13 @@ export function assignWorkspaceAgentProfile(
 ): void {
   const now = new Date().toISOString();
   db.transaction(() => {
-    const home = db
-      .prepare(
-        `SELECT created_by
+    const home = prepareCached(`SELECT created_by
          FROM registered_groups
          WHERE folder = ? AND jid LIKE 'web:%' AND is_home = 1
          ORDER BY added_at ASC
-         LIMIT 1`,
-      )
-      .get(groupFolder) as { created_by: string | null } | undefined;
+         LIMIT 1`).get(groupFolder) as
+      | { created_by: string | null }
+      | undefined;
     if (home?.created_by) {
       const defaultProfile = getOrCreateDefaultAgentProfile(home.created_by);
       if (profileId !== defaultProfile.id) {
@@ -9987,8 +9698,7 @@ export function assignWorkspaceAgentProfile(
         );
       }
     }
-    db.prepare(
-      `INSERT INTO workspace_agent_profiles (
+    prepareCached(`INSERT INTO workspace_agent_profiles (
         group_folder, agent_profile_id, interaction_mode, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(group_folder) DO UPDATE SET
@@ -9997,8 +9707,7 @@ export function assignWorkspaceAgentProfile(
           WHEN ? IS NULL THEN workspace_agent_profiles.interaction_mode
           ELSE excluded.interaction_mode
         END,
-        updated_at = excluded.updated_at`,
-    ).run(
+        updated_at = excluded.updated_at`).run(
       groupFolder,
       profileId,
       interactionMode ?? 'assistant',
@@ -10027,21 +9736,18 @@ function parseInteractionMode(
 export function getWorkspaceAgentProfileBinding(
   groupFolder: string,
 ): WorkspaceAgentProfileBinding | undefined {
-  const row = db
-    .prepare(
-      `SELECT group_folder, agent_profile_id, interaction_mode, created_at, updated_at
+  const row =
+    prepareCached(`SELECT group_folder, agent_profile_id, interaction_mode, created_at, updated_at
        FROM workspace_agent_profiles
-       WHERE group_folder = ?`,
-    )
-    .get(groupFolder) as
-    | {
-        group_folder: string;
-        agent_profile_id: string;
-        interaction_mode: unknown;
-        created_at: string;
-        updated_at: string;
-      }
-    | undefined;
+       WHERE group_folder = ?`).get(groupFolder) as
+      | {
+          group_folder: string;
+          agent_profile_id: string;
+          interaction_mode: unknown;
+          created_at: string;
+          updated_at: string;
+        }
+      | undefined;
   if (!row) return undefined;
   return {
     group_folder: row.group_folder,
@@ -10074,19 +9780,19 @@ export function setWorkspaceInteractionMode(
   groupFolder: string,
   interactionMode: InteractionMode,
 ): boolean {
-  const result = db
-    .prepare(
-      `UPDATE workspace_agent_profiles
+  const result = prepareCached(`UPDATE workspace_agent_profiles
        SET interaction_mode = ?, updated_at = ?
-       WHERE group_folder = ?`,
-    )
-    .run(interactionMode, new Date().toISOString(), groupFolder);
+       WHERE group_folder = ?`).run(
+    interactionMode,
+    new Date().toISOString(),
+    groupFolder,
+  );
   return result.changes > 0;
 }
 
 export function deleteWorkspaceAgentProfile(groupFolder: string): void {
   db.transaction(() => {
-    db.prepare(
+    prepareCached(
       'DELETE FROM workspace_agent_profiles WHERE group_folder = ?',
     ).run(groupFolder);
     syncAgentChannelMountsForWorkspaceFolder(groupFolder);
@@ -10094,11 +9800,9 @@ export function deleteWorkspaceAgentProfile(groupFolder: string): void {
 }
 
 export function countWorkspaceAgentProfileMappings(profileId: string): number {
-  const row = db
-    .prepare(
-      'SELECT COUNT(*) as count FROM workspace_agent_profiles WHERE agent_profile_id = ?',
-    )
-    .get(profileId) as { count: number };
+  const row = prepareCached(
+    'SELECT COUNT(*) as count FROM workspace_agent_profiles WHERE agent_profile_id = ?',
+  ).get(profileId) as { count: number };
   return row.count;
 }
 
@@ -10115,22 +9819,16 @@ export function peekAgentProfileForWorkspace(
   ownerUserId?: string | null,
 ): AgentProfile | undefined {
   const readDefaultProfile = (userId: string): AgentProfile | undefined => {
-    const row = db
-      .prepare(
-        "SELECT * FROM agent_profiles WHERE owner_user_id = ? AND is_default = 1 AND status = 'active' LIMIT 1",
-      )
-      .get(userId) as Record<string, unknown> | undefined;
+    const row = prepareCached(
+      "SELECT * FROM agent_profiles WHERE owner_user_id = ? AND is_default = 1 AND status = 'active' LIMIT 1",
+    ).get(userId) as Record<string, unknown> | undefined;
     return row ? mapAgentProfileRow(row) : undefined;
   };
-  const home = db
-    .prepare(
-      `SELECT created_by
+  const home = prepareCached(`SELECT created_by
        FROM registered_groups
        WHERE folder = ? AND jid LIKE 'web:%' AND is_home = 1
        ORDER BY added_at ASC
-       LIMIT 1`,
-    )
-    .get(groupFolder) as { created_by: string | null } | undefined;
+       LIMIT 1`).get(groupFolder) as { created_by: string | null } | undefined;
   if (home?.created_by) return readDefaultProfile(home.created_by);
   const mappedId = getWorkspaceAgentProfileId(groupFolder);
   if (mappedId) {
@@ -10145,15 +9843,11 @@ export function getAgentProfileForWorkspace(
   groupFolder: string,
   ownerUserId?: string | null,
 ): AgentProfile | undefined {
-  const home = db
-    .prepare(
-      `SELECT created_by
+  const home = prepareCached(`SELECT created_by
        FROM registered_groups
        WHERE folder = ? AND jid LIKE 'web:%' AND is_home = 1
        ORDER BY added_at ASC
-       LIMIT 1`,
-    )
-    .get(groupFolder) as { created_by: string | null } | undefined;
+       LIMIT 1`).get(groupFolder) as { created_by: string | null } | undefined;
   if (home?.created_by) {
     const defaultProfile = getOrCreateDefaultAgentProfile(home.created_by);
     if (getWorkspaceAgentProfileId(groupFolder) !== defaultProfile.id) {
@@ -10180,25 +9874,22 @@ export function backfillAgentProfileDefaultsAndWorkspaceMappings(): void {
   // initDatabase invokes this before the web server publishes routes or starts
   // runners, so no process-local profile membership lock is necessary here.
   const tx = db.transaction(() => {
-    const users = db
-      .prepare("SELECT id FROM users WHERE status != 'deleted'")
-      .all() as Array<{ id: string }>;
+    const users = prepareCached(
+      "SELECT id FROM users WHERE status != 'deleted'",
+    ).all() as Array<{ id: string }>;
     for (const user of users) {
       getOrCreateDefaultAgentProfile(user.id);
     }
 
-    const webWorkspaces = db
-      .prepare(
-        `SELECT folder, created_by, MAX(is_home) AS is_home
+    const webWorkspaces =
+      prepareCached(`SELECT folder, created_by, MAX(is_home) AS is_home
          FROM registered_groups
          WHERE jid LIKE 'web:%' AND created_by IS NOT NULL
-         GROUP BY folder, created_by`,
-      )
-      .all() as Array<{
-      folder: string;
-      created_by: string;
-      is_home: number;
-    }>;
+         GROUP BY folder, created_by`).all() as Array<{
+        folder: string;
+        created_by: string;
+        is_home: number;
+      }>;
     for (const ws of webWorkspaces) {
       const profile = getOrCreateDefaultAgentProfile(ws.created_by);
       if (ws.is_home) {
@@ -10300,11 +9991,9 @@ export function deleteSessionsByProviderIdAroundCommit<T>(
 }
 
 export function getAllSessions(): Record<string, string> {
-  const rows = db
-    .prepare(
-      "SELECT group_folder, session_id FROM sessions WHERE agent_id = ''",
-    )
-    .all() as Array<{ group_folder: string; session_id: string }>;
+  const rows = prepareCached(
+    "SELECT group_folder, session_id FROM sessions WHERE agent_id = ''",
+  ).all() as Array<{ group_folder: string; session_id: string }>;
   const result: Record<string, string> = {};
   for (const row of rows) {
     result[row.group_folder] = row.session_id;
@@ -10579,11 +10268,9 @@ function parseAgentChannelMountRecord(
 }
 
 function getWorkspaceJidForFolder(groupFolder: string): string | null {
-  const row = db
-    .prepare(
-      "SELECT jid FROM registered_groups WHERE folder = ? AND jid LIKE 'web:%' ORDER BY is_home DESC, added_at ASC LIMIT 1",
-    )
-    .get(groupFolder) as { jid: string } | undefined;
+  const row = prepareCached(
+    "SELECT jid FROM registered_groups WHERE folder = ? AND jid LIKE 'web:%' ORDER BY is_home DESC, added_at ASC LIMIT 1",
+  ).get(groupFolder) as { jid: string } | undefined;
   return row?.jid ?? null;
 }
 
@@ -10594,8 +10281,7 @@ function syncWorkspaceFromRegisteredGroup(
   if (!jid.startsWith('web:')) return;
   const now = new Date().toISOString();
   const existing = getWorkspaceRecord(jid);
-  db.prepare(
-    `INSERT INTO workspaces (
+  prepareCached(`INSERT INTO workspaces (
       jid, folder, owner_user_id, name, status, is_home, created_at, updated_at
     ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?)
     ON CONFLICT(jid) DO UPDATE SET
@@ -10604,8 +10290,7 @@ function syncWorkspaceFromRegisteredGroup(
       name = excluded.name,
       status = 'active',
       is_home = excluded.is_home,
-      updated_at = excluded.updated_at`,
-  ).run(
+      updated_at = excluded.updated_at`).run(
     jid,
     group.folder,
     group.created_by ?? null,
@@ -10618,25 +10303,25 @@ function syncWorkspaceFromRegisteredGroup(
 
 function deleteWorkspaceMirror(jid: string, folder?: string): void {
   deleteWorkspaceMemoryData(jid);
-  db.prepare('DELETE FROM workspaces WHERE jid = ?').run(jid);
-  db.prepare(
+  prepareCached('DELETE FROM workspaces WHERE jid = ?').run(jid);
+  prepareCached(
     'DELETE FROM workspace_runtime_sessions WHERE workspace_jid = ?',
   ).run(jid);
-  db.prepare('DELETE FROM agent_channel_mounts WHERE workspace_jid = ?').run(
+  prepareCached('DELETE FROM agent_channel_mounts WHERE workspace_jid = ?').run(
     jid,
   );
-  db.prepare('DELETE FROM channel_mounts WHERE workspace_jid = ?').run(jid);
+  prepareCached('DELETE FROM channel_mounts WHERE workspace_jid = ?').run(jid);
   if (folder) {
     const replacementJid = getWorkspaceJidForFolder(folder);
     if (replacementJid) {
-      const rows = db
-        .prepare('SELECT agent_id FROM sessions WHERE group_folder = ?')
-        .all(folder) as Array<{ agent_id: string | null }>;
+      const rows = prepareCached(
+        'SELECT agent_id FROM sessions WHERE group_folder = ?',
+      ).all(folder) as Array<{ agent_id: string | null }>;
       for (const row of rows) {
         syncWorkspaceRuntimeSessionProjection(folder, row.agent_id ?? '');
       }
     } else {
-      db.prepare(
+      prepareCached(
         'DELETE FROM workspace_runtime_sessions WHERE group_folder = ?',
       ).run(folder);
     }
@@ -10648,38 +10333,37 @@ function syncWorkspaceRuntimeSessionProjection(
   agentId?: string | null,
 ): void {
   const effectiveAgentId = agentId || '';
-  const row = db
-    .prepare(
-      `SELECT session_id, provider_id, agent_profile_id, agent_profile_version, identity_hash
+  const row =
+    prepareCached(`SELECT session_id, provider_id, agent_profile_id, agent_profile_version, identity_hash
        FROM sessions
-       WHERE group_folder = ? AND agent_id = ?`,
-    )
-    .get(groupFolder, effectiveAgentId) as
-    | {
-        session_id: string;
-        provider_id: string | null;
-        agent_profile_id: string | null;
-        agent_profile_version: number | null;
-        identity_hash: string | null;
-      }
-    | undefined;
+       WHERE group_folder = ? AND agent_id = ?`).get(
+      groupFolder,
+      effectiveAgentId,
+    ) as
+      | {
+          session_id: string;
+          provider_id: string | null;
+          agent_profile_id: string | null;
+          agent_profile_version: number | null;
+          identity_hash: string | null;
+        }
+      | undefined;
   if (!row) {
-    db.prepare(
+    prepareCached(
       'DELETE FROM workspace_runtime_sessions WHERE group_folder = ? AND runtime_agent_id = ?',
     ).run(groupFolder, effectiveAgentId);
     return;
   }
   const workspaceJid = getWorkspaceJidForFolder(groupFolder);
   if (!workspaceJid) {
-    db.prepare(
+    prepareCached(
       'DELETE FROM workspace_runtime_sessions WHERE group_folder = ? AND runtime_agent_id = ?',
     ).run(groupFolder, effectiveAgentId);
     return;
   }
   const now = new Date().toISOString();
   const existing = getWorkspaceRuntimeSession(groupFolder, effectiveAgentId);
-  db.prepare(
-    `INSERT INTO workspace_runtime_sessions (
+  prepareCached(`INSERT INTO workspace_runtime_sessions (
       group_folder, runtime_agent_id, workspace_jid, sdk_session_id,
       provider_id, agent_profile_id, agent_profile_version, identity_hash,
       created_at, updated_at
@@ -10691,8 +10375,7 @@ function syncWorkspaceRuntimeSessionProjection(
       agent_profile_id = excluded.agent_profile_id,
       agent_profile_version = excluded.agent_profile_version,
       identity_hash = excluded.identity_hash,
-      updated_at = excluded.updated_at`,
-  ).run(
+      updated_at = excluded.updated_at`).run(
     groupFolder,
     effectiveAgentId,
     workspaceJid,
@@ -10707,9 +10390,9 @@ function syncWorkspaceRuntimeSessionProjection(
 }
 
 function syncWorkspaceRuntimeSessionsForFolder(groupFolder: string): void {
-  const rows = db
-    .prepare('SELECT agent_id FROM sessions WHERE group_folder = ?')
-    .all(groupFolder) as Array<{ agent_id: string | null }>;
+  const rows = prepareCached(
+    'SELECT agent_id FROM sessions WHERE group_folder = ?',
+  ).all(groupFolder) as Array<{ agent_id: string | null }>;
   for (const row of rows) {
     syncWorkspaceRuntimeSessionProjection(groupFolder, row.agent_id ?? '');
   }
@@ -10720,8 +10403,7 @@ function syncAgentChannelMountFromMount(mount: ChannelMount): void {
   const agentProfileId = workspace
     ? (getWorkspaceAgentProfileId(workspace.folder) ?? null)
     : null;
-  db.prepare(
-    `INSERT INTO agent_channel_mounts (
+  prepareCached(`INSERT INTO agent_channel_mounts (
       channel_jid, channel_account_id, agent_profile_id, owner_user_id, channel_type,
       workspace_jid, workspace_folder, session_id, routing_mode, reply_policy,
       activation_mode, audience_mode, owner_im_id, interaction_mode_override, created_at, updated_at
@@ -10740,8 +10422,7 @@ function syncAgentChannelMountFromMount(mount: ChannelMount): void {
       audience_mode = excluded.audience_mode,
       owner_im_id = excluded.owner_im_id,
       interaction_mode_override = excluded.interaction_mode_override,
-      updated_at = excluded.updated_at`,
-  ).run(
+      updated_at = excluded.updated_at`).run(
     mount.channel_jid,
     mount.channel_account_id ?? null,
     agentProfileId,
@@ -10762,11 +10443,9 @@ function syncAgentChannelMountFromMount(mount: ChannelMount): void {
 }
 
 function syncAgentChannelMountsForWorkspaceFolder(groupFolder: string): void {
-  const rows = db
-    .prepare(
-      "SELECT jid FROM registered_groups WHERE folder = ? AND jid LIKE 'web:%'",
-    )
-    .all(groupFolder) as Array<{ jid: string }>;
+  const rows = prepareCached(
+    "SELECT jid FROM registered_groups WHERE folder = ? AND jid LIKE 'web:%'",
+  ).all(groupFolder) as Array<{ jid: string }>;
   for (const row of rows) {
     const mounts = listChannelMountsByWorkspace(row.jid);
     for (const mount of mounts) {
@@ -10782,16 +10461,16 @@ function syncAgentChannelMountsForWorkspaceJid(workspaceJid: string): void {
 }
 
 export function getWorkspaceRecord(jid: string): WorkspaceRecord | undefined {
-  const row = db.prepare('SELECT * FROM workspaces WHERE jid = ?').get(jid) as
-    | Record<string, unknown>
-    | undefined;
+  const row = prepareCached('SELECT * FROM workspaces WHERE jid = ?').get(
+    jid,
+  ) as Record<string, unknown> | undefined;
   return row ? parseWorkspaceRecord(row) : undefined;
 }
 
 export function listWorkspaceRecords(): WorkspaceRecord[] {
-  const rows = db
-    .prepare('SELECT * FROM workspaces ORDER BY updated_at DESC')
-    .all() as Array<Record<string, unknown>>;
+  const rows = prepareCached(
+    'SELECT * FROM workspaces ORDER BY updated_at DESC',
+  ).all() as Array<Record<string, unknown>>;
   return rows.map(parseWorkspaceRecord);
 }
 
@@ -10799,80 +10478,70 @@ export function getWorkspaceRuntimeSession(
   groupFolder: string,
   agentId?: string | null,
 ): WorkspaceRuntimeSessionRecord | undefined {
-  const row = db
-    .prepare(
-      'SELECT * FROM workspace_runtime_sessions WHERE group_folder = ? AND runtime_agent_id = ?',
-    )
-    .get(groupFolder, agentId || '') as Record<string, unknown> | undefined;
+  const row = prepareCached(
+    'SELECT * FROM workspace_runtime_sessions WHERE group_folder = ? AND runtime_agent_id = ?',
+  ).get(groupFolder, agentId || '') as Record<string, unknown> | undefined;
   return row ? parseWorkspaceRuntimeSessionRecord(row) : undefined;
 }
 
 export function listWorkspaceRuntimeSessionsByWorkspace(
   workspaceJid: string,
 ): WorkspaceRuntimeSessionRecord[] {
-  const rows = db
-    .prepare(
-      'SELECT * FROM workspace_runtime_sessions WHERE workspace_jid = ? ORDER BY updated_at DESC',
-    )
-    .all(workspaceJid) as Array<Record<string, unknown>>;
+  const rows = prepareCached(
+    'SELECT * FROM workspace_runtime_sessions WHERE workspace_jid = ? ORDER BY updated_at DESC',
+  ).all(workspaceJid) as Array<Record<string, unknown>>;
   return rows.map(parseWorkspaceRuntimeSessionRecord);
 }
 
 export function getAgentChannelMount(
   channelJid: string,
 ): AgentChannelMountRecord | undefined {
-  const row = db
-    .prepare('SELECT * FROM agent_channel_mounts WHERE channel_jid = ?')
-    .get(channelJid) as (ChannelMountRow & Record<string, unknown>) | undefined;
+  const row = prepareCached(
+    'SELECT * FROM agent_channel_mounts WHERE channel_jid = ?',
+  ).get(channelJid) as (ChannelMountRow & Record<string, unknown>) | undefined;
   return row ? parseAgentChannelMountRecord(row) : undefined;
 }
 
 export function listAgentChannelMountsForProfile(
   agentProfileId: string,
 ): AgentChannelMountRecord[] {
-  const rows = db
-    .prepare(
-      'SELECT * FROM agent_channel_mounts WHERE agent_profile_id = ? ORDER BY updated_at DESC',
-    )
-    .all(agentProfileId) as Array<ChannelMountRow & Record<string, unknown>>;
+  const rows = prepareCached(
+    'SELECT * FROM agent_channel_mounts WHERE agent_profile_id = ? ORDER BY updated_at DESC',
+  ).all(agentProfileId) as Array<ChannelMountRow & Record<string, unknown>>;
   return rows.map(parseAgentChannelMountRecord);
 }
 
 export function listAgentChannelMountsByWorkspace(
   workspaceJid: string,
 ): AgentChannelMountRecord[] {
-  const rows = db
-    .prepare(
-      'SELECT * FROM agent_channel_mounts WHERE workspace_jid = ? ORDER BY updated_at DESC',
-    )
-    .all(workspaceJid) as Array<ChannelMountRow & Record<string, unknown>>;
+  const rows = prepareCached(
+    'SELECT * FROM agent_channel_mounts WHERE workspace_jid = ? ORDER BY updated_at DESC',
+  ).all(workspaceJid) as Array<ChannelMountRow & Record<string, unknown>>;
   return rows.map(parseAgentChannelMountRecord);
 }
 
 export function countAgentChannelMountsForProfile(
   agentProfileId: string,
 ): number {
-  const row = db
-    .prepare(
-      'SELECT COUNT(*) as count FROM agent_channel_mounts WHERE agent_profile_id = ?',
-    )
-    .get(agentProfileId) as { count: number };
+  const row = prepareCached(
+    'SELECT COUNT(*) as count FROM agent_channel_mounts WHERE agent_profile_id = ?',
+  ).get(agentProfileId) as { count: number };
   return row.count;
 }
 
 export function syncAllWorkspacesFromRegisteredGroups(): void {
-  const rows = db
-    .prepare("SELECT * FROM registered_groups WHERE jid LIKE 'web:%'")
-    .all() as RegisteredGroupRow[];
+  const rows = prepareCached(
+    "SELECT * FROM registered_groups WHERE jid LIKE 'web:%'",
+  ).all() as RegisteredGroupRow[];
   for (const row of rows) {
     syncWorkspaceFromRegisteredGroup(row.jid, parseGroupRow(row));
   }
 }
 
 export function syncAllWorkspaceRuntimeSessionsFromSessions(): void {
-  const rows = db
-    .prepare('SELECT group_folder, agent_id FROM sessions')
-    .all() as Array<{ group_folder: string; agent_id: string | null }>;
+  const rows = prepareCached(
+    'SELECT group_folder, agent_id FROM sessions',
+  ).all() as Array<{ group_folder: string; agent_id: string | null }>;
   for (const row of rows) {
     syncWorkspaceRuntimeSessionProjection(row.group_folder, row.agent_id ?? '');
   }
@@ -10885,15 +10554,11 @@ export function syncAllWorkspaceRuntimeSessionsFromSessions(): void {
  */
 export function reconcileCanonicalRuntimeProjections(): void {
   db.transaction(() => {
-    const ghostWorkspaces = db
-      .prepare(
-        `SELECT jid FROM workspaces
+    const ghostWorkspaces = prepareCached(`SELECT jid FROM workspaces
          WHERE NOT EXISTS (
            SELECT 1 FROM registered_groups rg
            WHERE rg.jid = workspaces.jid AND rg.jid LIKE 'web:%'
-         )`,
-      )
-      .all() as Array<{ jid: string }>;
+         )`).all() as Array<{ jid: string }>;
     for (const workspace of ghostWorkspaces) {
       deleteWorkspaceMemoryData(workspace.jid);
     }
@@ -10939,9 +10604,9 @@ export function reconcileCanonicalRuntimeProjections(): void {
 export function getRegisteredGroup(
   jid: string,
 ): (RegisteredGroup & { jid: string }) | undefined {
-  const row = db
-    .prepare('SELECT * FROM registered_groups WHERE jid = ?')
-    .get(jid) as RegisteredGroupRow | undefined;
+  const row = prepareCached(
+    'SELECT * FROM registered_groups WHERE jid = ?',
+  ).get(jid) as RegisteredGroupRow | undefined;
   if (!row) return undefined;
   return parseGroupRow(row);
 }
@@ -11028,24 +10693,20 @@ export function createChannelAccount(input: {
     const id = input.id ?? crypto.randomUUID();
     const now = new Date().toISOString();
     const wantsDefault = input.is_default === true;
-    const existingCount = db
-      .prepare(
-        'SELECT COUNT(*) AS count FROM channel_accounts WHERE owner_user_id = ? AND provider = ?',
-      )
-      .get(input.owner_user_id, input.provider) as { count: number };
+    const existingCount = prepareCached(
+      'SELECT COUNT(*) AS count FROM channel_accounts WHERE owner_user_id = ? AND provider = ?',
+    ).get(input.owner_user_id, input.provider) as { count: number };
     const isDefault = wantsDefault || existingCount.count === 0;
     if (isDefault) {
-      db.prepare(
+      prepareCached(
         'UPDATE channel_accounts SET is_default = 0, updated_at = ? WHERE owner_user_id = ? AND provider = ?',
       ).run(now, input.owner_user_id, input.provider);
     }
-    db.prepare(
-      `INSERT INTO channel_accounts (
+    prepareCached(`INSERT INTO channel_accounts (
         id, owner_user_id, provider, name, secret_ref, enabled, is_default, is_legacy_default,
         auth_mode, auth_status, transport_status, status, default_agent_profile_id, default_workspace_jid,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disconnected', 'disconnected', ?, ?, ?, ?)`,
-    ).run(
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disconnected', 'disconnected', ?, ?, ?, ?)`).run(
       id,
       input.owner_user_id,
       input.provider,
@@ -11066,9 +10727,9 @@ export function createChannelAccount(input: {
 }
 
 export function getChannelAccount(id: string): ChannelAccount | undefined {
-  const row = db
-    .prepare('SELECT * FROM channel_accounts WHERE id = ?')
-    .get(id) as ChannelAccountRow | undefined;
+  const row = prepareCached('SELECT * FROM channel_accounts WHERE id = ?').get(
+    id,
+  ) as ChannelAccountRow | undefined;
   return row ? parseChannelAccountRow(row) : undefined;
 }
 
@@ -11076,11 +10737,9 @@ export function getChannelAccountForUser(
   id: string,
   ownerUserId: string,
 ): ChannelAccount | undefined {
-  const row = db
-    .prepare(
-      'SELECT * FROM channel_accounts WHERE id = ? AND owner_user_id = ?',
-    )
-    .get(id, ownerUserId) as ChannelAccountRow | undefined;
+  const row = prepareCached(
+    'SELECT * FROM channel_accounts WHERE id = ? AND owner_user_id = ?',
+  ).get(id, ownerUserId) as ChannelAccountRow | undefined;
   return row ? parseChannelAccountRow(row) : undefined;
 }
 
@@ -11088,11 +10747,9 @@ export function getDefaultChannelAccount(
   ownerUserId: string,
   provider: ChannelProvider,
 ): ChannelAccount | undefined {
-  const row = db
-    .prepare(
-      'SELECT * FROM channel_accounts WHERE owner_user_id = ? AND provider = ? ORDER BY is_default DESC, created_at ASC LIMIT 1',
-    )
-    .get(ownerUserId, provider) as ChannelAccountRow | undefined;
+  const row = prepareCached(
+    'SELECT * FROM channel_accounts WHERE owner_user_id = ? AND provider = ? ORDER BY is_default DESC, created_at ASC LIMIT 1',
+  ).get(ownerUserId, provider) as ChannelAccountRow | undefined;
   return row ? parseChannelAccountRow(row) : undefined;
 }
 
@@ -11101,11 +10758,9 @@ export function getLegacyChannelAccount(
   ownerUserId: string,
   provider: ChannelProvider,
 ): ChannelAccount | undefined {
-  const row = db
-    .prepare(
-      'SELECT * FROM channel_accounts WHERE owner_user_id = ? AND provider = ? AND is_legacy_default = 1 ORDER BY created_at ASC LIMIT 1',
-    )
-    .get(ownerUserId, provider) as ChannelAccountRow | undefined;
+  const row = prepareCached(
+    'SELECT * FROM channel_accounts WHERE owner_user_id = ? AND provider = ? AND is_legacy_default = 1 ORDER BY created_at ASC LIMIT 1',
+  ).get(ownerUserId, provider) as ChannelAccountRow | undefined;
   return row ? parseChannelAccountRow(row) : undefined;
 }
 
@@ -11132,14 +10787,12 @@ export type WeChatContextTokenReleaseResult =
 export function listWeChatContextTokens(
   channelAccountId: string,
 ): StoredWeChatContextToken[] {
-  return db
-    .prepare(
-      `SELECT channel_account_id, user_id, context_token, refreshed_at_ms,
+  return prepareCached(`SELECT channel_account_id, user_id, context_token, refreshed_at_ms,
               source_message_id, source_sequence, send_count, last_sent_at_ms
        FROM wechat_context_tokens
-       WHERE channel_account_id = ?`,
-    )
-    .all(channelAccountId) as StoredWeChatContextToken[];
+       WHERE channel_account_id = ?`).all(
+    channelAccountId,
+  ) as StoredWeChatContextToken[];
 }
 
 /** A new authorized inbound message refreshes both lifetime and send budget. */
@@ -11151,8 +10804,7 @@ export function upsertWeChatContextToken(input: {
   sourceMessageId?: string | null;
   sourceSequence?: number | null;
 }): StoredWeChatContextToken {
-  db.prepare(
-    `INSERT INTO wechat_context_tokens (
+  prepareCached(`INSERT INTO wechat_context_tokens (
        channel_account_id, user_id, context_token, refreshed_at_ms,
        source_message_id, source_sequence, send_count, last_sent_at_ms
      ) VALUES (?, ?, ?, ?, ?, ?, 0, NULL)
@@ -11200,8 +10852,7 @@ export function upsertWeChatContextToken(input: {
            AND excluded.context_token <> wechat_context_tokens.context_token
          )
        )
-     )`,
-  ).run(
+     )`).run(
     input.channelAccountId,
     input.userId,
     input.contextToken,
@@ -11209,14 +10860,13 @@ export function upsertWeChatContextToken(input: {
     input.sourceMessageId ?? null,
     input.sourceSequence ?? null,
   );
-  return db
-    .prepare(
-      `SELECT channel_account_id, user_id, context_token, refreshed_at_ms,
+  return prepareCached(`SELECT channel_account_id, user_id, context_token, refreshed_at_ms,
               source_message_id, source_sequence, send_count, last_sent_at_ms
        FROM wechat_context_tokens
-       WHERE channel_account_id = ? AND user_id = ?`,
-    )
-    .get(input.channelAccountId, input.userId) as StoredWeChatContextToken;
+       WHERE channel_account_id = ? AND user_id = ?`).get(
+    input.channelAccountId,
+    input.userId,
+  ) as StoredWeChatContextToken;
 }
 
 /**
@@ -11240,16 +10890,14 @@ export function claimWeChatContextToken(input: {
   }
   return db
     .transaction((): WeChatContextTokenClaimResult => {
-      const record = db
-        .prepare(
-          `SELECT channel_account_id, user_id, context_token, refreshed_at_ms,
+      const record =
+        prepareCached(`SELECT channel_account_id, user_id, context_token, refreshed_at_ms,
                   source_message_id, source_sequence, send_count, last_sent_at_ms
            FROM wechat_context_tokens
-           WHERE channel_account_id = ? AND user_id = ?`,
-        )
-        .get(input.channelAccountId, input.userId) as
-        | StoredWeChatContextToken
-        | undefined;
+           WHERE channel_account_id = ? AND user_id = ?`).get(
+          input.channelAccountId,
+          input.userId,
+        ) as StoredWeChatContextToken | undefined;
       if (!record) return { status: 'missing' };
       if (
         record.context_token !== input.expectedToken ||
@@ -11266,12 +10914,10 @@ export function claimWeChatContextToken(input: {
         return { status: 'quota_exhausted' };
       }
       const sendCount = record.send_count + input.claimCount;
-      db.prepare(
-        `UPDATE wechat_context_tokens
+      prepareCached(`UPDATE wechat_context_tokens
          SET send_count = ?, last_sent_at_ms = ?
          WHERE channel_account_id = ? AND user_id = ?
-           AND context_token = ? AND refreshed_at_ms = ?`,
-      ).run(
+           AND context_token = ? AND refreshed_at_ms = ?`).run(
         sendCount,
         input.nowMs,
         input.channelAccountId,
@@ -11309,16 +10955,14 @@ export function releaseWeChatContextToken(input: {
   }
   return db
     .transaction((): WeChatContextTokenReleaseResult => {
-      const record = db
-        .prepare(
-          `SELECT channel_account_id, user_id, context_token, refreshed_at_ms,
+      const record =
+        prepareCached(`SELECT channel_account_id, user_id, context_token, refreshed_at_ms,
                   source_message_id, source_sequence, send_count, last_sent_at_ms
            FROM wechat_context_tokens
-           WHERE channel_account_id = ? AND user_id = ?`,
-        )
-        .get(input.channelAccountId, input.userId) as
-        | StoredWeChatContextToken
-        | undefined;
+           WHERE channel_account_id = ? AND user_id = ?`).get(
+          input.channelAccountId,
+          input.userId,
+        ) as StoredWeChatContextToken | undefined;
       if (!record) return { status: 'missing' };
       if (
         record.context_token !== input.expectedToken ||
@@ -11332,12 +10976,10 @@ export function releaseWeChatContextToken(input: {
         return { status: 'changed' };
       }
       const sendCount = record.send_count - input.releaseCount;
-      db.prepare(
-        `UPDATE wechat_context_tokens
+      prepareCached(`UPDATE wechat_context_tokens
          SET send_count = ?
          WHERE channel_account_id = ? AND user_id = ?
-           AND context_token = ? AND refreshed_at_ms = ?`,
-      ).run(
+           AND context_token = ? AND refreshed_at_ms = ?`).run(
         sendCount,
         input.channelAccountId,
         input.userId,
@@ -11399,21 +11041,17 @@ export function deleteWeChatContextToken(input: {
 export function listChannelAccountsForUser(
   ownerUserId: string,
 ): ChannelAccount[] {
-  const rows = db
-    .prepare(
-      'SELECT * FROM channel_accounts WHERE owner_user_id = ? ORDER BY provider, is_default DESC, created_at ASC',
-    )
-    .all(ownerUserId) as ChannelAccountRow[];
+  const rows = prepareCached(
+    'SELECT * FROM channel_accounts WHERE owner_user_id = ? ORDER BY provider, is_default DESC, created_at ASC',
+  ).all(ownerUserId) as ChannelAccountRow[];
   return rows.map(parseChannelAccountRow);
 }
 
 export function listEnabledChannelAccounts(): ChannelAccount[] {
   return (
-    db
-      .prepare(
-        'SELECT * FROM channel_accounts WHERE enabled = 1 ORDER BY owner_user_id, provider, created_at',
-      )
-      .all() as ChannelAccountRow[]
+    prepareCached(
+      'SELECT * FROM channel_accounts WHERE enabled = 1 ORDER BY owner_user_id, provider, created_at',
+    ).all() as ChannelAccountRow[]
   ).map(parseChannelAccountRow);
 }
 
@@ -11436,16 +11074,14 @@ export function updateChannelAccount(
     if (!current) return undefined;
     const now = new Date().toISOString();
     if (patch.is_default === true) {
-      db.prepare(
+      prepareCached(
         'UPDATE channel_accounts SET is_default = 0, updated_at = ? WHERE owner_user_id = ? AND provider = ? AND id != ?',
       ).run(now, ownerUserId, current.provider, id);
     }
-    db.prepare(
-      `UPDATE channel_accounts SET
+    prepareCached(`UPDATE channel_accounts SET
         name = ?, enabled = ?, is_default = ?, default_agent_profile_id = ?,
         default_workspace_jid = ?, updated_at = ?
-       WHERE id = ? AND owner_user_id = ?`,
-    ).run(
+       WHERE id = ? AND owner_user_id = ?`).run(
       patch.name?.trim() ?? current.name,
       (patch.enabled ?? current.enabled) ? 1 : 0,
       (patch.is_default ?? current.is_default) ? 1 : 0,
@@ -11460,17 +11096,15 @@ export function updateChannelAccount(
       ownerUserId,
     );
     if (current.is_default && patch.is_default === false) {
-      const replacement = db
-        .prepare(
-          'SELECT id FROM channel_accounts WHERE owner_user_id = ? AND provider = ? AND id != ? ORDER BY created_at ASC LIMIT 1',
-        )
-        .get(ownerUserId, current.provider, id) as { id: string } | undefined;
+      const replacement = prepareCached(
+        'SELECT id FROM channel_accounts WHERE owner_user_id = ? AND provider = ? AND id != ? ORDER BY created_at ASC LIMIT 1',
+      ).get(ownerUserId, current.provider, id) as { id: string } | undefined;
       if (replacement) {
-        db.prepare(
+        prepareCached(
           'UPDATE channel_accounts SET is_default = 1, updated_at = ? WHERE id = ?',
         ).run(now, replacement.id);
       } else {
-        db.prepare(
+        prepareCached(
           'UPDATE channel_accounts SET is_default = 1, updated_at = ? WHERE id = ?',
         ).run(now, id);
       }
@@ -11485,8 +11119,7 @@ export function updateChannelAccountStatus(
   error?: string | null,
 ): void {
   const now = new Date().toISOString();
-  db.prepare(
-    `UPDATE channel_accounts SET
+  prepareCached(`UPDATE channel_accounts SET
        transport_status = ?, status = ?, last_error = ?,
        connected_at = CASE
          WHEN ? = 'connected' THEN ?
@@ -11494,8 +11127,16 @@ export function updateChannelAccountStatus(
          ELSE NULL
        END,
        updated_at = ?
-     WHERE id = ?`,
-  ).run(status, status, error ?? null, status, now, status, now, id);
+     WHERE id = ?`).run(
+    status,
+    status,
+    error ?? null,
+    status,
+    now,
+    status,
+    now,
+    id,
+  );
 }
 
 export function updateChannelAccountAuthStatus(
@@ -11504,21 +11145,17 @@ export function updateChannelAccountAuthStatus(
   error?: string | null,
 ): void {
   const now = new Date().toISOString();
-  db.prepare(
+  prepareCached(
     `UPDATE channel_accounts SET auth_status = ?, last_error = ?, updated_at = ? WHERE id = ?`,
   ).run(authStatus, error ?? null, now, id);
 }
 
 export function countChannelAccountBindings(id: string): number {
-  const row = db
-    .prepare(
-      `SELECT COUNT(*) AS count FROM (
+  const row = prepareCached(`SELECT COUNT(*) AS count FROM (
         SELECT jid AS key FROM registered_groups WHERE channel_account_id = ?
         UNION SELECT channel_jid AS key FROM channel_mounts WHERE channel_account_id = ?
         UNION SELECT channel_jid AS key FROM agent_channel_mounts WHERE channel_account_id = ?
-      )`,
-    )
-    .get(id, id, id) as { count: number };
+      )`).get(id, id, id) as { count: number };
   return row.count;
 }
 
@@ -11528,22 +11165,18 @@ export function deleteChannelAccount(id: string, ownerUserId: string): boolean {
     if (!current) return false;
     // Keep cleanup correct even on legacy databases where foreign-key
     // enforcement had to be disabled because of unrelated historical orphans.
-    db.prepare(
+    prepareCached(
       'DELETE FROM wechat_context_tokens WHERE channel_account_id = ?',
     ).run(id);
-    const result = db
-      .prepare(
-        'DELETE FROM channel_accounts WHERE id = ? AND owner_user_id = ?',
-      )
-      .run(id, ownerUserId);
+    const result = prepareCached(
+      'DELETE FROM channel_accounts WHERE id = ? AND owner_user_id = ?',
+    ).run(id, ownerUserId);
     if (result.changes > 0 && current.is_default) {
-      const replacement = db
-        .prepare(
-          'SELECT id FROM channel_accounts WHERE owner_user_id = ? AND provider = ? ORDER BY created_at ASC LIMIT 1',
-        )
-        .get(ownerUserId, current.provider) as { id: string } | undefined;
+      const replacement = prepareCached(
+        'SELECT id FROM channel_accounts WHERE owner_user_id = ? AND provider = ? ORDER BY created_at ASC LIMIT 1',
+      ).get(ownerUserId, current.provider) as { id: string } | undefined;
       if (replacement) {
-        db.prepare(
+        prepareCached(
           'UPDATE channel_accounts SET is_default = 1, updated_at = ? WHERE id = ?',
         ).run(new Date().toISOString(), replacement.id);
       }
@@ -11567,8 +11200,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
 
   db.transaction(() => {
     const existing = getRegisteredGroup(jid);
-    db.prepare(
-      `INSERT INTO registered_groups (jid, name, folder, added_at, avatar_url, container_config, execution_mode, custom_cwd, init_source_path, init_git_url, created_by, channel_account_id, is_home, selected_skills, target_agent_id, target_main_jid, reply_policy, require_mention, activation_mode, audience_mode, owner_im_id, owner_claim_source, mcp_mode, selected_mcps, conversation_source, conversation_nav_mode, binding_mode, native_context_type, feishu_chat_mode, feishu_group_message_type, sender_allowlist)
+    prepareCached(`INSERT INTO registered_groups (jid, name, folder, added_at, avatar_url, container_config, execution_mode, custom_cwd, init_source_path, init_git_url, created_by, channel_account_id, is_home, selected_skills, target_agent_id, target_main_jid, reply_policy, require_mention, activation_mode, audience_mode, owner_im_id, owner_claim_source, mcp_mode, selected_mcps, conversation_source, conversation_nav_mode, binding_mode, native_context_type, feishu_chat_mode, feishu_group_message_type, sender_allowlist)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(jid) DO UPDATE SET
          name = excluded.name,
@@ -11600,8 +11232,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
          native_context_type = excluded.native_context_type,
          feishu_chat_mode = excluded.feishu_chat_mode,
          feishu_group_message_type = excluded.feishu_group_message_type,
-         sender_allowlist = excluded.sender_allowlist`,
-    ).run(
+         sender_allowlist = excluded.sender_allowlist`).run(
       jid,
       group.name,
       group.folder,
@@ -11683,13 +11314,13 @@ export function updateRegisteredGroupAvatar(
 ): boolean {
   const normalized = avatarUrl.trim();
   if (!normalized) return false;
-  const result = db
-    .prepare(
-      `UPDATE registered_groups
+  const result = prepareCached(`UPDATE registered_groups
        SET avatar_url = ?
-       WHERE jid = ? AND COALESCE(avatar_url, '') <> ?`,
-    )
-    .run(normalized, jid, normalized);
+       WHERE jid = ? AND COALESCE(avatar_url, '') <> ?`).run(
+    normalized,
+    jid,
+    normalized,
+  );
   return result.changes > 0;
 }
 
@@ -11697,16 +11328,17 @@ export function deleteRegisteredGroup(jid: string): void {
   db.transaction(() => {
     const existing = getRegisteredGroup(jid);
     deleteChannelMount(jid);
-    db.prepare('DELETE FROM registered_groups WHERE jid = ?').run(jid);
+    prepareCached('DELETE FROM registered_groups WHERE jid = ?').run(jid);
     if (jid.startsWith('web:')) {
-      db.prepare(
-        `UPDATE registered_groups
+      prepareCached(`UPDATE registered_groups
          SET target_main_jid = NULL, binding_mode = 'single_context'
-         WHERE target_main_jid = ? OR target_main_jid = ?`,
-      ).run(jid, existing?.folder ? `web:${existing.folder}` : jid);
+         WHERE target_main_jid = ? OR target_main_jid = ?`).run(
+        jid,
+        existing?.folder ? `web:${existing.folder}` : jid,
+      );
       deleteWorkspaceMirror(jid, existing?.folder);
       if (existing?.folder && !getWorkspaceJidForFolder(existing.folder)) {
-        db.prepare(
+        prepareCached(
           'DELETE FROM workspace_agent_profiles WHERE group_folder = ?',
         ).run(existing.folder);
       }
@@ -11721,14 +11353,12 @@ export function deleteRegisteredGroup(jid: string): void {
 export function findEmptyAllowlistFeishuGroupsForUser(
   userId: string,
 ): string[] {
-  const rows = db
-    .prepare(
-      `SELECT jid FROM registered_groups
+  const rows = prepareCached(`SELECT jid FROM registered_groups
        WHERE created_by = ? AND jid LIKE 'feishu:%'
          AND COALESCE(owner_claim_source, '') <> 'transfer_reset'
-         AND (sender_allowlist = '[]' OR owner_im_id IS NULL OR owner_im_id = '')`,
-    )
-    .all(userId) as Array<{ jid: string }>;
+         AND (sender_allowlist = '[]' OR owner_im_id IS NULL OR owner_im_id = '')`).all(
+    userId,
+  ) as Array<{ jid: string }>;
   return rows.map((r) => r.jid);
 }
 
@@ -11785,15 +11415,14 @@ export function backfillEmptyAllowlistsForChannelAccount(
   channelAccountId: string,
   ownerOpenId: string,
 ): string[] {
-  const rows = db
-    .prepare(
-      `SELECT jid FROM registered_groups
+  const rows = prepareCached(`SELECT jid FROM registered_groups
        WHERE created_by = ? AND channel_account_id = ?
          AND jid LIKE 'feishu:%'
          AND COALESCE(owner_claim_source, '') <> 'transfer_reset'
-         AND (sender_allowlist = '[]' OR owner_im_id IS NULL OR owner_im_id = '')`,
-    )
-    .all(userId, channelAccountId) as Array<{ jid: string }>;
+         AND (sender_allowlist = '[]' OR owner_im_id IS NULL OR owner_im_id = '')`).all(
+    userId,
+    channelAccountId,
+  ) as Array<{ jid: string }>;
   if (!rows.length) return [];
   return persistLearnedFeishuOwner(
     rows.map((row) => row.jid),
@@ -11806,26 +11435,24 @@ export function backfillEmptyAllowlistsForChannelAccount(
  * Used as a manual escape hatch from the owner-locked trap.
  */
 export function clearSenderAllowlist(jid: string): void {
-  db.prepare(
+  prepareCached(
     'UPDATE registered_groups SET sender_allowlist = NULL WHERE jid = ?',
   ).run(jid);
 }
 
 /** Get all JIDs that share the same folder (e.g., all JIDs with folder='main'). */
 export function getJidsByFolder(folder: string): string[] {
-  const rows = db
-    .prepare('SELECT jid FROM registered_groups WHERE folder = ?')
-    .all(folder) as Array<{ jid: string }>;
+  const rows = prepareCached(
+    'SELECT jid FROM registered_groups WHERE folder = ?',
+  ).all(folder) as Array<{ jid: string }>;
   return rows.map((r) => r.jid);
 }
 
 /** Check if any registered group uses container execution mode (efficient targeted query). */
 export function hasContainerModeGroups(): boolean {
-  const row = db
-    .prepare(
-      "SELECT 1 FROM registered_groups WHERE execution_mode = 'container' OR execution_mode IS NULL LIMIT 1",
-    )
-    .get();
+  const row = prepareCached(
+    "SELECT 1 FROM registered_groups WHERE execution_mode = 'container' OR execution_mode IS NULL LIMIT 1",
+  ).get();
   return row !== undefined;
 }
 
@@ -11910,9 +11537,9 @@ export function forceActiveAdminRuntimesToHost(): AdminHostOnlyMigrationResult {
 }
 
 export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
-  const rows = db
-    .prepare('SELECT * FROM registered_groups')
-    .all() as RegisteredGroupRow[];
+  const rows = prepareCached(
+    'SELECT * FROM registered_groups',
+  ).all() as RegisteredGroupRow[];
   const result: Record<string, RegisteredGroup> = {};
   for (const row of rows) {
     result[row.jid] = parseGroupRow(row);
@@ -11927,9 +11554,9 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
 export function getGroupsByTargetAgent(
   agentId: string,
 ): Array<{ jid: string; group: RegisteredGroup }> {
-  const rows = db
-    .prepare('SELECT * FROM registered_groups WHERE target_agent_id = ?')
-    .all(agentId) as RegisteredGroupRow[];
+  const rows = prepareCached(
+    'SELECT * FROM registered_groups WHERE target_agent_id = ?',
+  ).all(agentId) as RegisteredGroupRow[];
   return rows.map((row) => ({ jid: row.jid, group: parseGroupRow(row) }));
 }
 
@@ -11974,9 +11601,9 @@ export function getRegisteredGroupNames(jids: string[]): Map<string, string> {
 export function getGroupsByTargetMainJid(
   webJid: string,
 ): Array<{ jid: string; group: RegisteredGroup }> {
-  const rows = db
-    .prepare('SELECT * FROM registered_groups WHERE target_main_jid = ?')
-    .all(webJid) as RegisteredGroupRow[];
+  const rows = prepareCached(
+    'SELECT * FROM registered_groups WHERE target_main_jid = ?',
+  ).all(webJid) as RegisteredGroupRow[];
   return rows.map((row) => ({ jid: row.jid, group: parseGroupRow(row) }));
 }
 
@@ -12021,17 +11648,15 @@ function parseChannelMountRow(row: ChannelMountRow): ChannelMount {
 
 function resolveWorkspaceJidForMount(targetMainJid?: string): string | null {
   if (!targetMainJid) return null;
-  const exists = db
-    .prepare('SELECT 1 FROM registered_groups WHERE jid = ?')
-    .get(targetMainJid);
+  const exists = prepareCached(
+    'SELECT 1 FROM registered_groups WHERE jid = ?',
+  ).get(targetMainJid);
   if (exists) return targetMainJid;
   if (!targetMainJid.startsWith('web:')) return null;
   const folder = targetMainJid.slice(4);
-  const row = db
-    .prepare(
-      "SELECT jid FROM registered_groups WHERE folder = ? AND jid LIKE 'web:%' ORDER BY is_home DESC, added_at ASC LIMIT 1",
-    )
-    .get(folder) as { jid: string } | undefined;
+  const row = prepareCached(
+    "SELECT jid FROM registered_groups WHERE folder = ? AND jid LIKE 'web:%' ORDER BY is_home DESC, added_at ASC LIMIT 1",
+  ).get(folder) as { jid: string } | undefined;
   return row?.jid ?? null;
 }
 
@@ -12098,8 +11723,7 @@ export function upsertChannelMount(
           : null;
     const createdAt = mount.created_at ?? existing?.created_at ?? now;
     const updatedAt = mount.updated_at ?? now;
-    db.prepare(
-      `INSERT INTO channel_mounts (
+    prepareCached(`INSERT INTO channel_mounts (
         channel_jid, channel_account_id, channel_type, workspace_jid, session_id, routing_mode,
         reply_policy, activation_mode, audience_mode, owner_im_id, interaction_mode_override, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -12114,8 +11738,7 @@ export function upsertChannelMount(
         audience_mode = excluded.audience_mode,
         owner_im_id = excluded.owner_im_id,
         interaction_mode_override = excluded.interaction_mode_override,
-        updated_at = excluded.updated_at`,
-    ).run(
+        updated_at = excluded.updated_at`).run(
       mount.channel_jid,
       mount.channel_account_id ?? null,
       mount.channel_type,
@@ -12140,12 +11763,12 @@ export function deleteChannelMount(channelJid: string): void {
   if (!db) return;
   try {
     db.transaction(() => {
-      db.prepare('DELETE FROM channel_mounts WHERE channel_jid = ?').run(
+      prepareCached('DELETE FROM channel_mounts WHERE channel_jid = ?').run(
         channelJid,
       );
-      db.prepare('DELETE FROM agent_channel_mounts WHERE channel_jid = ?').run(
-        channelJid,
-      );
+      prepareCached(
+        'DELETE FROM agent_channel_mounts WHERE channel_jid = ?',
+      ).run(channelJid);
     })();
   } catch {
     // Startup can call legacy group deletion paths before a pre-v42 DB has
@@ -12154,29 +11777,25 @@ export function deleteChannelMount(channelJid: string): void {
 }
 
 export function getChannelMount(channelJid: string): ChannelMount | undefined {
-  const row = db
-    .prepare('SELECT * FROM channel_mounts WHERE channel_jid = ?')
-    .get(channelJid) as ChannelMountRow | undefined;
+  const row = prepareCached(
+    'SELECT * FROM channel_mounts WHERE channel_jid = ?',
+  ).get(channelJid) as ChannelMountRow | undefined;
   return row ? parseChannelMountRow(row) : undefined;
 }
 
 export function listChannelMountsByWorkspace(
   workspaceJid: string,
 ): ChannelMount[] {
-  const rows = db
-    .prepare(
-      'SELECT * FROM channel_mounts WHERE workspace_jid = ? ORDER BY updated_at DESC',
-    )
-    .all(workspaceJid) as ChannelMountRow[];
+  const rows = prepareCached(
+    'SELECT * FROM channel_mounts WHERE workspace_jid = ? ORDER BY updated_at DESC',
+  ).all(workspaceJid) as ChannelMountRow[];
   return rows.map(parseChannelMountRow);
 }
 
 export function listChannelMountsBySession(sessionId: string): ChannelMount[] {
-  const rows = db
-    .prepare(
-      'SELECT * FROM channel_mounts WHERE session_id = ? ORDER BY updated_at DESC',
-    )
-    .all(sessionId) as ChannelMountRow[];
+  const rows = prepareCached(
+    'SELECT * FROM channel_mounts WHERE session_id = ? ORDER BY updated_at DESC',
+  ).all(sessionId) as ChannelMountRow[];
   return rows.map(parseChannelMountRow);
 }
 
@@ -12222,14 +11841,14 @@ export function syncAllChannelMountsFromRegisteredGroups(): void {
   db.transaction(() => {
     const previous = new Map(
       (
-        db.prepare('SELECT * FROM channel_mounts').all() as ChannelMountRow[]
+        prepareCached('SELECT * FROM channel_mounts').all() as ChannelMountRow[]
       ).map((row) => [row.channel_jid, parseChannelMountRow(row)]),
     );
-    db.prepare('DELETE FROM channel_mounts').run();
-    db.prepare('DELETE FROM agent_channel_mounts').run();
-    const rows = db
-      .prepare('SELECT * FROM registered_groups')
-      .all() as RegisteredGroupRow[];
+    prepareCached('DELETE FROM channel_mounts').run();
+    prepareCached('DELETE FROM agent_channel_mounts').run();
+    const rows = prepareCached(
+      'SELECT * FROM registered_groups',
+    ).all() as RegisteredGroupRow[];
     for (const row of rows) {
       const mount = channelMountFromRegisteredGroup(
         row.jid,
@@ -12267,13 +11886,14 @@ export function setChannelMountInteractionModeOverride(
   mode: InteractionMode | null,
 ): ChannelMount | undefined {
   return db.transaction(() => {
-    const result = db
-      .prepare(
-        `UPDATE channel_mounts
+    const result = prepareCached(`UPDATE channel_mounts
       SET interaction_mode_override = ?, updated_at = ?
-      WHERE channel_jid = ? AND workspace_jid = ?`,
-      )
-      .run(mode, new Date().toISOString(), channelJid, workspaceJid);
+      WHERE channel_jid = ? AND workspace_jid = ?`).run(
+      mode,
+      new Date().toISOString(),
+      channelJid,
+      workspaceJid,
+    );
     if (!result.changes) return undefined;
     const saved = getChannelMount(channelJid)!;
     syncAgentChannelMountFromMount(saved);
@@ -12304,11 +11924,9 @@ export function getImContextBinding(
   contextType: 'thread',
   contextId: string,
 ): ImContextBinding | undefined {
-  const row = db
-    .prepare(
-      'SELECT * FROM im_context_bindings WHERE source_jid = ? AND context_type = ? AND context_id = ?',
-    )
-    .get(sourceJid, contextType, contextId) as
+  const row = prepareCached(
+    'SELECT * FROM im_context_bindings WHERE source_jid = ? AND context_type = ? AND context_id = ?',
+  ).get(sourceJid, contextType, contextId) as
     | Record<string, unknown>
     | undefined;
   return row ? mapImContextBindingRow(row) : undefined;
@@ -12323,22 +11941,17 @@ export function getImContextBindingByRootMessageId(
   contextType: 'thread',
   rootMessageId: string,
 ): ImContextBinding | undefined {
-  const row = db
-    .prepare(
-      `SELECT * FROM im_context_bindings
+  const row = prepareCached(`SELECT * FROM im_context_bindings
        WHERE source_jid = ? AND context_type = ? AND root_message_id = ?
        ORDER BY updated_at DESC
-       LIMIT 1`,
-    )
-    .get(sourceJid, contextType, rootMessageId) as
+       LIMIT 1`).get(sourceJid, contextType, rootMessageId) as
     | Record<string, unknown>
     | undefined;
   return row ? mapImContextBindingRow(row) : undefined;
 }
 
 export function upsertImContextBinding(binding: ImContextBinding): void {
-  db.prepare(
-    `INSERT INTO im_context_bindings (
+  prepareCached(`INSERT INTO im_context_bindings (
       source_jid, context_type, context_id, workspace_jid, agent_id,
       root_message_id, title, last_active_at, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -12349,8 +11962,7 @@ export function upsertImContextBinding(binding: ImContextBinding): void {
       root_message_id = COALESCE(excluded.root_message_id, im_context_bindings.root_message_id),
       title = COALESCE(excluded.title, im_context_bindings.title),
       last_active_at = excluded.last_active_at,
-      updated_at = excluded.updated_at`,
-  ).run(
+      updated_at = excluded.updated_at`).run(
     binding.source_jid,
     binding.context_type,
     binding.context_id,
@@ -12367,27 +11979,25 @@ export function upsertImContextBinding(binding: ImContextBinding): void {
 export function listImContextBindingsByWorkspace(
   workspaceJid: string,
 ): ImContextBinding[] {
-  const rows = db
-    .prepare(
-      'SELECT * FROM im_context_bindings WHERE workspace_jid = ? ORDER BY last_active_at DESC, created_at DESC',
-    )
-    .all(workspaceJid) as Record<string, unknown>[];
+  const rows = prepareCached(
+    'SELECT * FROM im_context_bindings WHERE workspace_jid = ? ORDER BY last_active_at DESC, created_at DESC',
+  ).all(workspaceJid) as Record<string, unknown>[];
   return rows.map(mapImContextBindingRow);
 }
 
 export function listImContextBindingsByAgent(
   agentId: string,
 ): ImContextBinding[] {
-  const rows = db
-    .prepare(
-      'SELECT * FROM im_context_bindings WHERE agent_id = ? ORDER BY last_active_at DESC, created_at DESC',
-    )
-    .all(agentId) as Record<string, unknown>[];
+  const rows = prepareCached(
+    'SELECT * FROM im_context_bindings WHERE agent_id = ? ORDER BY last_active_at DESC, created_at DESC',
+  ).all(agentId) as Record<string, unknown>[];
   return rows.map(mapImContextBindingRow);
 }
 
 export function deleteImContextBindingsByAgent(agentId: string): void {
-  db.prepare('DELETE FROM im_context_bindings WHERE agent_id = ?').run(agentId);
+  prepareCached('DELETE FROM im_context_bindings WHERE agent_id = ?').run(
+    agentId,
+  );
 }
 
 /** Lightweight update: only touch last_active_at + updated_at on an existing binding. */
@@ -12397,7 +12007,7 @@ export function touchImContextBindingActivity(
   contextId: string,
   lastActiveAt: string,
 ): void {
-  db.prepare(
+  prepareCached(
     'UPDATE im_context_bindings SET last_active_at = ?, updated_at = ? WHERE source_jid = ? AND context_type = ? AND context_id = ?',
   ).run(lastActiveAt, lastActiveAt, sourceJid, contextType, contextId);
 }
@@ -12408,11 +12018,9 @@ export function touchImContextBindingActivity(
 export function getUserHomeGroup(
   userId: string,
 ): (RegisteredGroup & { jid: string }) | undefined {
-  const row = db
-    .prepare(
-      'SELECT * FROM registered_groups WHERE is_home = 1 AND created_by = ?',
-    )
-    .get(userId) as RegisteredGroupRow | undefined;
+  const row = prepareCached(
+    'SELECT * FROM registered_groups WHERE is_home = 1 AND created_by = ?',
+  ).get(userId) as RegisteredGroupRow | undefined;
   if (!row) return undefined;
   return parseGroupRow(row);
 }
@@ -12492,8 +12100,8 @@ export function ensureUserHomeGroup(
 
 export function deleteChatHistory(chatJid: string): void {
   const tx = db.transaction((jid: string) => {
-    db.prepare('DELETE FROM messages WHERE chat_jid = ?').run(jid);
-    db.prepare('DELETE FROM chats WHERE jid = ?').run(jid);
+    prepareCached('DELETE FROM messages WHERE chat_jid = ?').run(jid);
+    prepareCached('DELETE FROM chats WHERE jid = ?').run(jid);
   });
   tx(chatJid);
 }
@@ -12505,28 +12113,32 @@ export function deleteChatHistory(chatJid: string): void {
  */
 export function resetWorkspaceKnowledgeForRebuild(workspaceJid: string): void {
   db.transaction(() => {
-    const workspace = db
-      .prepare('SELECT is_home FROM workspaces WHERE jid = ?')
-      .get(workspaceJid) as { is_home: number } | undefined;
+    const workspace = prepareCached(
+      'SELECT is_home FROM workspaces WHERE jid = ?',
+    ).get(workspaceJid) as { is_home: number } | undefined;
     if (!workspace) {
       throw new Error(`Workspace not found: ${workspaceJid}`);
     }
 
     resetWorkspaceMemoryData(workspaceJid);
-    db.prepare(
-      `DELETE FROM workspace_onboarding_states
-       WHERE workspace_jid = ? AND flow_key = ?`,
-    ).run(workspaceJid, HAPPYCLAW_OWNER_INTRODUCTION_FLOW_KEY);
+    prepareCached(`DELETE FROM workspace_onboarding_states
+       WHERE workspace_jid = ? AND flow_key = ?`).run(
+      workspaceJid,
+      HAPPYCLAW_OWNER_INTRODUCTION_FLOW_KEY,
+    );
 
     if (workspace.is_home === 1) {
       const at = new Date().toISOString();
-      db.prepare(
-        `INSERT INTO workspace_onboarding_states (
+      prepareCached(`INSERT INTO workspace_onboarding_states (
           workspace_jid, flow_key, state, revision, lease_owner, lease_token,
           lease_expires_at, first_wake_at, completed_at, skipped_at,
           created_at, updated_at
-        ) VALUES (?, ?, 'pending', 0, NULL, 0, NULL, NULL, NULL, NULL, ?, ?)`,
-      ).run(workspaceJid, HAPPYCLAW_OWNER_INTRODUCTION_FLOW_KEY, at, at);
+        ) VALUES (?, ?, 'pending', 0, NULL, 0, NULL, NULL, NULL, NULL, ?, ?)`).run(
+        workspaceJid,
+        HAPPYCLAW_OWNER_INTRODUCTION_FLOW_KEY,
+        at,
+        at,
+      );
     }
   })();
 }
@@ -12562,9 +12174,9 @@ export function rebuildWorkspacePersistentState(input: {
       const workspaceJids = [...new Set(input.workspaceJids)];
       const siblingJids = [...new Set(input.siblingJids)];
       for (const workspaceJid of workspaceJids) {
-        const workspace = db
-          .prepare('SELECT folder FROM workspaces WHERE jid = ?')
-          .get(workspaceJid) as { folder: string } | undefined;
+        const workspace = prepareCached(
+          'SELECT folder FROM workspaces WHERE jid = ?',
+        ).get(workspaceJid) as { folder: string } | undefined;
         if (!workspace || workspace.folder !== input.groupFolder) {
           throw new WorkspaceRebuildPersistentStateError(
             'workspace_missing',
@@ -12574,9 +12186,7 @@ export function rebuildWorkspacePersistentState(input: {
       }
 
       const activeRunIds = (
-        db
-          .prepare(
-            `SELECT tr.id
+        prepareCached(`SELECT tr.id
              FROM task_runs tr
              JOIN scheduled_tasks st ON st.id = tr.task_id
              WHERE st.group_folder = ?
@@ -12591,9 +12201,9 @@ export function rebuildWorkspacePersistentState(input: {
                    ) = 'group'
                  )
                )
-             ORDER BY tr.created_at, tr.id`,
-          )
-          .all(input.groupFolder) as Array<{ id: string }>
+             ORDER BY tr.created_at, tr.id`).all(input.groupFolder) as Array<{
+          id: string;
+        }>
       ).map((row) => row.id);
       if (activeRunIds.length > 0) {
         throw new WorkspaceRebuildPersistentStateError(
@@ -12604,78 +12214,74 @@ export function rebuildWorkspacePersistentState(input: {
       }
 
       const recycledTaskIds = (
-        db
-          .prepare(
-            `SELECT id FROM scheduled_tasks
+        prepareCached(`SELECT id FROM scheduled_tasks
              WHERE group_folder = ? AND deleted_at IS NULL
-             ORDER BY id`,
-          )
-          .all(input.groupFolder) as Array<{ id: string }>
+             ORDER BY id`).all(input.groupFolder) as Array<{ id: string }>
       ).map((row) => row.id);
       if (recycledTaskIds.length > 0) {
         const now = new Date().toISOString();
-        db.prepare(
-          `UPDATE task_run_logs
+        prepareCached(`UPDATE task_run_logs
            SET status = 'error',
                error = COALESCE(error, 'Workspace rebuilt while task was running')
            WHERE status = 'running'
              AND task_id IN (
                SELECT id FROM scheduled_tasks
                WHERE group_folder = ? AND deleted_at IS NULL
-             )`,
-        ).run(input.groupFolder);
-        db.prepare(
-          `UPDATE scheduled_tasks
+             )`).run(input.groupFolder);
+        prepareCached(`UPDATE scheduled_tasks
            SET deleted_at = ?, status = 'paused', next_run = NULL,
                running_until = NULL, runner_id = NULL,
                workspace_jid = NULL, workspace_folder = NULL,
                revision = revision + 1, updated_at = ?
-           WHERE group_folder = ? AND deleted_at IS NULL`,
-        ).run(now, now, input.groupFolder);
+           WHERE group_folder = ? AND deleted_at IS NULL`).run(
+          now,
+          now,
+          input.groupFolder,
+        );
       }
 
-      const agents = db
-        .prepare(
-          `SELECT id, chat_jid FROM agents
+      const agents = prepareCached(`SELECT id, chat_jid FROM agents
              WHERE group_folder = ?
-             ORDER BY id`,
-        )
-        .all(input.groupFolder) as Array<{
+             ORDER BY id`).all(input.groupFolder) as Array<{
         id: string;
         chat_jid: string;
       }>;
       const deletedAgentIds = agents.map((agent) => agent.id);
 
-      db.prepare('DELETE FROM sessions WHERE group_folder = ?').run(
+      prepareCached('DELETE FROM sessions WHERE group_folder = ?').run(
         input.groupFolder,
       );
-      db.prepare(
+      prepareCached(
         'DELETE FROM workspace_runtime_sessions WHERE group_folder = ?',
       ).run(input.groupFolder);
-      db.prepare('DELETE FROM router_state WHERE key = ?').run(
+      prepareCached('DELETE FROM router_state WHERE key = ?').run(
         sessionChannelOwnerKey(input.groupFolder),
       );
       for (const agentId of deletedAgentIds) {
-        db.prepare('DELETE FROM router_state WHERE key = ?').run(
+        prepareCached('DELETE FROM router_state WHERE key = ?').run(
           sessionChannelOwnerKey(input.groupFolder, agentId),
         );
       }
 
       for (const workspaceJid of workspaceJids) {
         resetWorkspaceKnowledgeForRebuild(workspaceJid);
-        db.prepare(
+        prepareCached(
           'DELETE FROM im_context_bindings WHERE workspace_jid = ?',
         ).run(workspaceJid);
       }
 
       for (const siblingJid of siblingJids) {
-        db.prepare('DELETE FROM messages WHERE chat_jid = ?').run(siblingJid);
-        db.prepare('DELETE FROM chats WHERE jid = ?').run(siblingJid);
+        prepareCached('DELETE FROM messages WHERE chat_jid = ?').run(
+          siblingJid,
+        );
+        prepareCached('DELETE FROM chats WHERE jid = ?').run(siblingJid);
       }
       for (const agent of agents) {
         const virtualJid = `${agent.chat_jid}#agent:${agent.id}`;
-        db.prepare('DELETE FROM messages WHERE chat_jid = ?').run(virtualJid);
-        db.prepare('DELETE FROM chats WHERE jid = ?').run(virtualJid);
+        prepareCached('DELETE FROM messages WHERE chat_jid = ?').run(
+          virtualJid,
+        );
+        prepareCached('DELETE FROM chats WHERE jid = ?').run(virtualJid);
       }
 
       if (deletedAgentIds.length > 0) {
@@ -12698,7 +12304,7 @@ export function rebuildWorkspacePersistentState(input: {
            WHERE agent_id IN (${placeholders})`,
         ).run(...deletedAgentIds);
       }
-      db.prepare('DELETE FROM agents WHERE group_folder = ?').run(
+      prepareCached('DELETE FROM agents WHERE group_folder = ?').run(
         input.groupFolder,
       );
 
@@ -12723,12 +12329,10 @@ export function rebuildWorkspacePersistentState(input: {
 export function deleteImGroupRecord(jid: string): void {
   const tx = db.transaction(() => {
     const conversationJid = channelConversationJid(jid);
-    const replyAgents = db
-      .prepare(
-        'SELECT id, last_im_jid FROM agents WHERE last_im_jid IS NOT NULL',
-      )
-      .all() as Array<{ id: string; last_im_jid: string }>;
-    const clearLastImJid = db.prepare(
+    const replyAgents = prepareCached(
+      'SELECT id, last_im_jid FROM agents WHERE last_im_jid IS NOT NULL',
+    ).all() as Array<{ id: string; last_im_jid: string }>;
+    const clearLastImJid = prepareCached(
       'UPDATE agents SET last_im_jid = NULL WHERE id = ?',
     );
     for (const agent of replyAgents) {
@@ -12736,28 +12340,28 @@ export function deleteImGroupRecord(jid: string): void {
         clearLastImJid.run(agent.id);
       }
     }
-    db.prepare('DELETE FROM channel_mounts WHERE channel_jid = ?').run(jid);
-    db.prepare('DELETE FROM agent_channel_mounts WHERE channel_jid = ?').run(
+    prepareCached('DELETE FROM channel_mounts WHERE channel_jid = ?').run(jid);
+    prepareCached('DELETE FROM agent_channel_mounts WHERE channel_jid = ?').run(
       jid,
     );
-    db.prepare('DELETE FROM registered_groups WHERE jid = ?').run(jid);
-    db.prepare('DELETE FROM messages WHERE chat_jid = ?').run(jid);
-    db.prepare('DELETE FROM chats WHERE jid = ?').run(jid);
-    db.prepare('DELETE FROM user_pinned_groups WHERE jid = ?').run(jid);
-    db.prepare('DELETE FROM im_context_bindings WHERE source_jid = ?').run(jid);
+    prepareCached('DELETE FROM registered_groups WHERE jid = ?').run(jid);
+    prepareCached('DELETE FROM messages WHERE chat_jid = ?').run(jid);
+    prepareCached('DELETE FROM chats WHERE jid = ?').run(jid);
+    prepareCached('DELETE FROM user_pinned_groups WHERE jid = ?').run(jid);
+    prepareCached('DELETE FROM im_context_bindings WHERE source_jid = ?').run(
+      jid,
+    );
     // Feishu thread agents (source_kind='feishu_thread') and other chat-scoped
     // agents reference this jid via agents.chat_jid — without this, deleting
     // an IM group leaves orphan agent rows visible in the agents list.
-    db.prepare(
-      `DELETE FROM workspace_runtime_sessions
-       WHERE runtime_agent_id IN (SELECT id FROM agents WHERE chat_jid = ?)`,
-    ).run(jid);
-    db.prepare(
-      `DELETE FROM sessions
-       WHERE agent_id IN (SELECT id FROM agents WHERE chat_jid = ?)`,
-    ).run(jid);
-    db.prepare('DELETE FROM agents WHERE chat_jid = ?').run(jid);
-    db.prepare(
+    prepareCached(`DELETE FROM workspace_runtime_sessions
+       WHERE runtime_agent_id IN (SELECT id FROM agents WHERE chat_jid = ?)`).run(
+      jid,
+    );
+    prepareCached(`DELETE FROM sessions
+       WHERE agent_id IN (SELECT id FROM agents WHERE chat_jid = ?)`).run(jid);
+    prepareCached('DELETE FROM agents WHERE chat_jid = ?').run(jid);
+    prepareCached(
       'UPDATE scheduled_tasks SET workspace_jid = NULL, workspace_folder = NULL WHERE workspace_jid = ?',
     ).run(jid);
   });
@@ -12787,8 +12391,7 @@ export function deleteGroupData(
     for (const update of channelUpdates) {
       setRegisteredGroup(update.jid, update.group);
     }
-    db.prepare(
-      `UPDATE channel_accounts
+    prepareCached(`UPDATE channel_accounts
        SET default_workspace_jid = (
              SELECT home.jid
              FROM registered_groups AS home
@@ -12799,66 +12402,70 @@ export function deleteGroupData(
              LIMIT 1
            ),
            updated_at = ?
-       WHERE default_workspace_jid = ? OR default_workspace_jid = ?`,
-    ).run(jid, new Date().toISOString(), jid, legacyMainJid);
-    db.prepare(
-      `UPDATE registered_groups
+       WHERE default_workspace_jid = ? OR default_workspace_jid = ?`).run(
+      jid,
+      new Date().toISOString(),
+      jid,
+      legacyMainJid,
+    );
+    prepareCached(`UPDATE registered_groups
        SET target_main_jid = NULL, binding_mode = 'single_context'
-       WHERE target_main_jid = ? OR target_main_jid = ?`,
-    ).run(jid, legacyMainJid);
-    db.prepare(
-      `UPDATE registered_groups
+       WHERE target_main_jid = ? OR target_main_jid = ?`).run(
+      jid,
+      legacyMainJid,
+    );
+    prepareCached(`UPDATE registered_groups
        SET target_agent_id = NULL, binding_mode = 'single_context'
        WHERE target_agent_id IN (
          SELECT id FROM agents WHERE group_folder = ? OR chat_jid = ?
-       )`,
-    ).run(folder, jid);
-    db.prepare('DELETE FROM channel_mounts WHERE workspace_jid = ?').run(jid);
-    db.prepare('DELETE FROM agent_channel_mounts WHERE workspace_jid = ?').run(
+       )`).run(folder, jid);
+    prepareCached('DELETE FROM channel_mounts WHERE workspace_jid = ?').run(
       jid,
     );
-    db.prepare('DELETE FROM im_context_bindings WHERE workspace_jid = ?').run(
-      jid,
-    );
+    prepareCached(
+      'DELETE FROM agent_channel_mounts WHERE workspace_jid = ?',
+    ).run(jid);
+    prepareCached(
+      'DELETE FROM im_context_bindings WHERE workspace_jid = ?',
+    ).run(jid);
     // 1. 删除定时任务运行日志 + 定时任务
-    db.prepare(
+    prepareCached(
       'DELETE FROM task_runs WHERE task_id IN (SELECT id FROM scheduled_tasks WHERE group_folder = ?)',
     ).run(folder);
-    db.prepare(
+    prepareCached(
       'DELETE FROM task_run_logs WHERE task_id IN (SELECT id FROM scheduled_tasks WHERE group_folder = ?)',
     ).run(folder);
-    db.prepare('DELETE FROM scheduled_tasks WHERE group_folder = ?').run(
+    prepareCached('DELETE FROM scheduled_tasks WHERE group_folder = ?').run(
       folder,
     );
     // 2. 删除 workspace -> AgentProfile 归属映射
-    db.prepare(
+    prepareCached(
       'DELETE FROM workspace_agent_profiles WHERE group_folder = ?',
     ).run(folder);
     // 3b. 删除 canonical workspace/session 镜像
     deleteWorkspaceMemoryData(jid);
-    db.prepare('DELETE FROM workspaces WHERE jid = ?').run(jid);
-    db.prepare(
+    prepareCached('DELETE FROM workspaces WHERE jid = ?').run(jid);
+    prepareCached(
       'DELETE FROM workspace_runtime_sessions WHERE group_folder = ?',
     ).run(folder);
     // 4. 删除注册信息
-    db.prepare('DELETE FROM registered_groups WHERE jid = ?').run(jid);
+    prepareCached('DELETE FROM registered_groups WHERE jid = ?').run(jid);
     // 5. 删除会话与 workspace-owned agents
-    db.prepare('DELETE FROM sessions WHERE group_folder = ?').run(folder);
-    db.prepare('DELETE FROM agents WHERE group_folder = ? OR chat_jid = ?').run(
-      folder,
-      jid,
-    );
+    prepareCached('DELETE FROM sessions WHERE group_folder = ?').run(folder);
+    prepareCached(
+      'DELETE FROM agents WHERE group_folder = ? OR chat_jid = ?',
+    ).run(folder, jid);
     // 6. 删除聊天记录
-    db.prepare('DELETE FROM messages WHERE chat_jid = ?').run(jid);
-    db.prepare('DELETE FROM messages WHERE chat_jid LIKE ?').run(
+    prepareCached('DELETE FROM messages WHERE chat_jid = ?').run(jid);
+    prepareCached('DELETE FROM messages WHERE chat_jid LIKE ?').run(
       `${jid}#agent:%`,
     );
-    db.prepare('DELETE FROM chats WHERE jid = ?').run(jid);
-    db.prepare('DELETE FROM chats WHERE jid LIKE ?').run(`${jid}#agent:%`);
+    prepareCached('DELETE FROM chats WHERE jid = ?').run(jid);
+    prepareCached('DELETE FROM chats WHERE jid LIKE ?').run(`${jid}#agent:%`);
     // 7. 删除 pin 记录
-    db.prepare('DELETE FROM user_pinned_groups WHERE jid = ?').run(jid);
+    prepareCached('DELETE FROM user_pinned_groups WHERE jid = ?').run(jid);
     // 8. 清除定时任务的工作区关联（任务本身不删，只断开绑定）
-    db.prepare(
+    prepareCached(
       'UPDATE scheduled_tasks SET workspace_jid = NULL, workspace_folder = NULL WHERE workspace_jid = ?',
     ).run(jid);
   });
@@ -12868,9 +12475,9 @@ export function deleteGroupData(
 // --- User pinned groups ---
 
 export function getUserPinnedGroups(userId: string): Record<string, string> {
-  const rows = db
-    .prepare('SELECT jid, pinned_at FROM user_pinned_groups WHERE user_id = ?')
-    .all(userId) as Array<{ jid: string; pinned_at: string }>;
+  const rows = prepareCached(
+    'SELECT jid, pinned_at FROM user_pinned_groups WHERE user_id = ?',
+  ).all(userId) as Array<{ jid: string; pinned_at: string }>;
   const result: Record<string, string> = {};
   for (const row of rows) result[row.jid] = row.pinned_at;
   return result;
@@ -12878,14 +12485,14 @@ export function getUserPinnedGroups(userId: string): Record<string, string> {
 
 export function pinGroup(userId: string, jid: string): string {
   const pinned_at = new Date().toISOString();
-  db.prepare(
+  prepareCached(
     'INSERT OR REPLACE INTO user_pinned_groups (user_id, jid, pinned_at) VALUES (?, ?, ?)',
   ).run(userId, jid, pinned_at);
   return pinned_at;
 }
 
 export function unpinGroup(userId: string, jid: string): void {
-  db.prepare(
+  prepareCached(
     'DELETE FROM user_pinned_groups WHERE user_id = ? AND jid = ?',
   ).run(userId, jid);
 }
@@ -12968,9 +12575,8 @@ export function getMessagesForTurn(
 ): Array<NewMessage & { is_from_me: boolean }> {
   const normalizedTurnId = turnId.trim();
   if (!normalizedTurnId) return [];
-  const rows = db
-    .prepare(
-      `SELECT m.id, m.chat_jid, m.source_jid, m.sender, m.sender_name, m.content, m.timestamp,
+  const rows =
+    prepareCached(`SELECT m.id, m.chat_jid, m.source_jid, m.sender, m.sender_name, m.content, m.timestamp,
               m.is_from_me, m.attachments, m.token_usage, m.channel_context,
               m.turn_id, m.session_id, m.sdk_message_uuid, m.source_kind, m.finalization_reason,
               m.delivery_mode, m.delivery_status, m.delivery_run_id, m.delivery_priority,
@@ -12978,11 +12584,9 @@ export function getMessagesForTurn(
        FROM message_ingest_sequences seq
        JOIN messages m ON m.chat_jid = seq.chat_jid AND m.id = seq.message_id
        WHERE m.chat_jid = ? AND m.turn_id = ?
-       ORDER BY seq.sequence DESC`,
-    )
-    .all(chatJid, normalizedTurnId) as Array<
-    NewMessage & { is_from_me: number }
-  >;
+       ORDER BY seq.sequence DESC`).all(chatJid, normalizedTurnId) as Array<
+      NewMessage & { is_from_me: number }
+    >;
   return rows.map((row) => normalizeMessageRow(row));
 }
 
@@ -12999,9 +12603,8 @@ export function getConversationHistoryMessagesPage(
 ): Array<NewMessage & { is_from_me: boolean }> {
   const excluded = [...excludedMessageIds].filter(Boolean);
   const safeLimit = Math.min(200, Math.max(1, Math.floor(limit)));
-  const rows = db
-    .prepare(
-      `SELECT m.id, m.chat_jid, m.source_jid, m.sender, m.sender_name, m.content, m.timestamp,
+  const rows =
+    prepareCached(`SELECT m.id, m.chat_jid, m.source_jid, m.sender, m.sender_name, m.content, m.timestamp,
               m.is_from_me, m.attachments, m.token_usage, m.channel_context,
               m.turn_id, m.session_id, m.sdk_message_uuid, m.source_kind, m.finalization_reason,
               m.delivery_mode, m.delivery_status, m.delivery_run_id, m.delivery_priority,
@@ -13011,11 +12614,9 @@ export function getConversationHistoryMessagesPage(
        WHERE m.chat_jid = ? AND m.history_recovery_allowed = 1
          AND m.id NOT IN (SELECT value FROM json_each(?))
        ORDER BY seq.sequence DESC
-       LIMIT ?`,
-    )
-    .all(chatJid, JSON.stringify(excluded), safeLimit) as Array<
-    NewMessage & { is_from_me: number }
-  >;
+       LIMIT ?`).all(chatJid, JSON.stringify(excluded), safeLimit) as Array<
+      NewMessage & { is_from_me: number }
+    >;
   return rows.map((row) => normalizeMessageRow(row));
 }
 
@@ -13237,17 +12838,13 @@ export function getMessagesAfterMulti(
  * Get task run logs for a specific task, ordered by most recent first.
  */
 export function getTaskRunLogs(taskId: string, limit = 20): TaskRunLog[] {
-  return db
-    .prepare(
-      `
+  return prepareCached(`
     SELECT id, task_id, run_at, duration_ms, status, result, error
     FROM task_run_logs
     WHERE task_id = ?
     ORDER BY run_at DESC
     LIMIT ?
-  `,
-    )
-    .all(taskId, limit) as TaskRunLog[];
+  `).all(taskId, limit) as TaskRunLog[];
 }
 
 /**
@@ -13256,9 +12853,9 @@ export function getTaskRunLogs(taskId: string, limit = 20): TaskRunLog[] {
 export function getGroupsByOwner(
   userId: string,
 ): Array<RegisteredGroup & { jid: string }> {
-  const rows = db
-    .prepare('SELECT * FROM registered_groups WHERE created_by = ?')
-    .all(userId) as RegisteredGroupRow[];
+  const rows = prepareCached(
+    'SELECT * FROM registered_groups WHERE created_by = ?',
+  ).all(userId) as RegisteredGroupRow[];
 
   return rows.map(parseGroupRow);
 }
@@ -13386,7 +12983,7 @@ function initializeBillingForUser(
   createdAt: string,
 ): void {
   const now = createdAt || new Date().toISOString();
-  db.prepare(
+  prepareCached(
     'INSERT OR IGNORE INTO user_balances (user_id, balance_usd, total_deposited_usd, total_consumed_usd, updated_at) VALUES (?, 0, 0, 0, ?)',
   ).run(userId, now);
 
@@ -13395,35 +12992,33 @@ function initializeBillingForUser(
   const defaultPlan = getDefaultBillingPlan();
   if (!defaultPlan) return;
 
-  const activeSubscription = db
-    .prepare(
-      "SELECT id FROM user_subscriptions WHERE user_id = ? AND status = 'active'",
-    )
-    .get(userId) as { id: string } | undefined;
+  const activeSubscription = prepareCached(
+    "SELECT id FROM user_subscriptions WHERE user_id = ? AND status = 'active'",
+  ).get(userId) as { id: string } | undefined;
   if (activeSubscription) return;
 
   const subId = `sub_${userId}_${Date.now()}`;
-  db.prepare(
-    `INSERT INTO user_subscriptions (id, user_id, plan_id, status, started_at, created_at)
-     VALUES (?, ?, ?, 'active', ?, ?)`,
-  ).run(subId, userId, defaultPlan.id, now, now);
-  db.prepare('UPDATE users SET subscription_plan_id = ? WHERE id = ?').run(
+  prepareCached(`INSERT INTO user_subscriptions (id, user_id, plan_id, status, started_at, created_at)
+     VALUES (?, ?, ?, 'active', ?, ?)`).run(
+    subId,
+    userId,
+    defaultPlan.id,
+    now,
+    now,
+  );
+  prepareCached('UPDATE users SET subscription_plan_id = ? WHERE id = ?').run(
     defaultPlan.id,
     userId,
   );
 
-  const hasOpening = db
-    .prepare(
-      "SELECT 1 FROM balance_transactions WHERE user_id = ? AND source = 'migration_opening' LIMIT 1",
-    )
-    .get(userId);
+  const hasOpening = prepareCached(
+    "SELECT 1 FROM balance_transactions WHERE user_id = ? AND source = 'migration_opening' LIMIT 1",
+  ).get(userId);
   if (!hasOpening) {
-    db.prepare(
-      `INSERT INTO balance_transactions (
+    prepareCached(`INSERT INTO balance_transactions (
         user_id, type, amount_usd, balance_after, description, reference_type,
         reference_id, actor_id, source, operator_type, notes, idempotency_key, created_at
-      ) VALUES (?, 'adjustment', 0, 0, ?, NULL, NULL, NULL, 'migration_opening', 'system', ?, NULL, ?)`,
-    ).run(
+      ) VALUES (?, 'adjustment', 0, 0, ?, NULL, NULL, NULL, 'migration_opening', 'system', ?, NULL, ?)`).run(
       userId,
       '用户钱包初始化',
       '新用户默认余额为 0，需管理员充值或兑换后方可消费',
@@ -13436,12 +13031,10 @@ export function createUser(user: CreateUserInput): void {
   const permissions = normalizePermissions(
     user.permissions ?? getDefaultPermissions(user.role),
   );
-  db.prepare(
-    `INSERT INTO users (
+  prepareCached(`INSERT INTO users (
       id, username, password_hash, display_name, role, status, permissions, must_change_password,
       disable_reason, notes, created_at, updated_at, last_login_at, deleted_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
     user.id,
     user.username,
     user.password_hash,
@@ -13470,7 +13063,9 @@ export function createInitialAdminUser(
 ): CreateInitialAdminResult {
   const tx = db.transaction(
     (input: CreateUserInput): CreateInitialAdminResult => {
-      const row = db.prepare('SELECT COUNT(*) as count FROM users').get() as {
+      const row = prepareCached(
+        'SELECT COUNT(*) as count FROM users',
+      ).get() as {
         count: number;
       };
       if (row.count > 0) return { ok: false, reason: 'already_initialized' };
@@ -13493,16 +13088,16 @@ export function createInitialAdminUser(
 }
 
 export function getUserById(id: string): User | undefined {
-  const row = db.prepare('SELECT * FROM users WHERE id = ?').get(id) as
+  const row = prepareCached('SELECT * FROM users WHERE id = ?').get(id) as
     | Record<string, unknown>
     | undefined;
   return row ? mapUserRow(row) : undefined;
 }
 
 export function getUserByUsername(username: string): User | undefined {
-  const row = db
-    .prepare('SELECT * FROM users WHERE username = ?')
-    .get(username) as Record<string, unknown> | undefined;
+  const row = prepareCached('SELECT * FROM users WHERE username = ?').get(
+    username,
+  ) as Record<string, unknown> | undefined;
   return row ? mapUserRow(row) : undefined;
 }
 
@@ -13600,23 +13195,19 @@ export function getAllUsers(): UserPublic[] {
 
 export function getUserCount(includeDeleted = false): number {
   const row = includeDeleted
-    ? (db.prepare('SELECT COUNT(*) as count FROM users').get() as {
+    ? (prepareCached('SELECT COUNT(*) as count FROM users').get() as {
         count: number;
       })
-    : (db
-        .prepare('SELECT COUNT(*) as count FROM users WHERE status != ?')
-        .get('deleted') as { count: number });
+    : (prepareCached(
+        'SELECT COUNT(*) as count FROM users WHERE status != ?',
+      ).get('deleted') as { count: number });
   return row.count;
 }
 
 export function getActiveAdminCount(): number {
-  const row = db
-    .prepare(
-      `SELECT COUNT(*) as count
+  const row = prepareCached(`SELECT COUNT(*) as count
        FROM users
-       WHERE role = 'admin' AND status = 'active'`,
-    )
-    .get() as { count: number };
+       WHERE role = 'admin' AND status = 'active'`).get() as { count: number };
   return row.count;
 }
 
@@ -13767,31 +13358,25 @@ export function updateUserFieldsAndForceRuntimesToHost(
 export function deleteUser(id: string): void {
   const now = new Date().toISOString();
   const tx = db.transaction((userId: string) => {
-    db.prepare('DELETE FROM user_sessions WHERE user_id = ?').run(userId);
-    db.prepare(
-      `UPDATE users
+    prepareCached('DELETE FROM user_sessions WHERE user_id = ?').run(userId);
+    prepareCached(`UPDATE users
        SET status = 'deleted', deleted_at = ?, disable_reason = COALESCE(disable_reason, 'deleted_by_admin'), updated_at = ?
-       WHERE id = ?`,
-    ).run(now, now, userId);
+       WHERE id = ?`).run(now, now, userId);
   });
   tx(id);
 }
 
 export function restoreUser(id: string): void {
-  db.prepare(
-    `UPDATE users
+  prepareCached(`UPDATE users
      SET status = 'disabled', deleted_at = NULL, disable_reason = NULL, updated_at = ?
-     WHERE id = ?`,
-  ).run(new Date().toISOString(), id);
+     WHERE id = ?`).run(new Date().toISOString(), id);
 }
 
 // --- User Sessions ---
 
 export function createUserSession(session: UserSession): void {
-  db.prepare(
-    `INSERT INTO user_sessions (id, user_id, ip_address, user_agent, created_at, expires_at, last_active_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
+  prepareCached(`INSERT INTO user_sessions (id, user_id, ip_address, user_agent, created_at, expires_at, last_active_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
     session.id,
     session.user_id,
     session.ip_address,
@@ -13828,11 +13413,9 @@ export function getSessionWithUser(
 }
 
 export function getUserSessions(userId: string): UserSession[] {
-  return db
-    .prepare(
-      `SELECT * FROM user_sessions WHERE user_id = ? ORDER BY last_active_at DESC`,
-    )
-    .all(userId) as UserSession[];
+  return prepareCached(
+    `SELECT * FROM user_sessions WHERE user_id = ? ORDER BY last_active_at DESC`,
+  ).all(userId) as UserSession[];
 }
 
 export function deleteUserSession(sessionId: string): void {
@@ -13840,7 +13423,7 @@ export function deleteUserSession(sessionId: string): void {
 }
 
 export function deleteUserSessionsByUserId(userId: string): void {
-  db.prepare('DELETE FROM user_sessions WHERE user_id = ?').run(userId);
+  prepareCached('DELETE FROM user_sessions WHERE user_id = ?').run(userId);
 }
 
 export function updateSessionLastActive(sessionId: string): void {
@@ -13856,9 +13439,9 @@ export function getExpiredSessionIds(): string[] {
 
 export function deleteExpiredSessions(): number {
   const now = new Date().toISOString();
-  const result = db
-    .prepare('DELETE FROM user_sessions WHERE expires_at < ?')
-    .run(now);
+  const result = prepareCached(
+    'DELETE FROM user_sessions WHERE expires_at < ?',
+  ).run(now);
   return result.changes;
 }
 
@@ -13866,10 +13449,8 @@ export function deleteExpiredSessions(): number {
 
 export function createInviteCode(invite: InviteCode): void {
   const permissions = normalizePermissions(invite.permissions);
-  db.prepare(
-    `INSERT INTO invite_codes (code, created_by, role, permission_template, permissions, max_uses, used_count, expires_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
+  prepareCached(`INSERT INTO invite_codes (code, created_by, role, permission_template, permissions, max_uses, used_count, expires_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
     invite.code,
     invite.created_by,
     invite.role,
@@ -13883,9 +13464,9 @@ export function createInviteCode(invite: InviteCode): void {
 }
 
 export function getInviteCode(code: string): InviteCode | undefined {
-  const row = db
-    .prepare('SELECT * FROM invite_codes WHERE code = ?')
-    .get(code) as Record<string, unknown> | undefined;
+  const row = prepareCached('SELECT * FROM invite_codes WHERE code = ?').get(
+    code,
+  ) as Record<string, unknown> | undefined;
   if (!row) return undefined;
   const role = parseUserRole(row.role);
   return {
@@ -13925,13 +13506,12 @@ export function registerUserWithInvite(input: {
 }): RegisterUserWithInviteResult {
   const tx = db.transaction(
     (params: typeof input): RegisterUserWithInviteResult => {
-      const inviteRow = db
-        .prepare(
-          `SELECT code, role, permissions, max_uses, expires_at
+      const inviteRow =
+        prepareCached(`SELECT code, role, permissions, max_uses, expires_at
          FROM invite_codes
-         WHERE code = ?`,
-        )
-        .get(params.invite_code) as Record<string, unknown> | undefined;
+         WHERE code = ?`).get(params.invite_code) as
+          | Record<string, unknown>
+          | undefined;
 
       if (!inviteRow) return { ok: false, reason: 'invalid_or_expired_invite' };
       const inviteRole = parseUserRole(inviteRow.role);
@@ -13949,30 +13529,26 @@ export function registerUserWithInvite(input: {
         }
       }
 
-      const existing = db
-        .prepare('SELECT id FROM users WHERE username = ?')
-        .get(params.username) as { id: string } | undefined;
+      const existing = prepareCached(
+        'SELECT id FROM users WHERE username = ?',
+      ).get(params.username) as { id: string } | undefined;
       if (existing) return { ok: false, reason: 'username_taken' };
 
-      const inviteUsage = db
-        .prepare(
-          `UPDATE invite_codes
+      const inviteUsage = prepareCached(`UPDATE invite_codes
          SET used_count = used_count + 1
          WHERE code = ?
-           AND (max_uses = 0 OR used_count < max_uses)`,
-        )
-        .run(params.invite_code);
+           AND (max_uses = 0 OR used_count < max_uses)`).run(
+        params.invite_code,
+      );
       if (inviteUsage.changes === 0) {
         return { ok: false, reason: 'invite_exhausted' };
       }
 
       const permissions = normalizePermissions(invitePermissions);
-      db.prepare(
-        `INSERT INTO users (
+      prepareCached(`INSERT INTO users (
         id, username, password_hash, display_name, role, status, permissions, must_change_password,
         disable_reason, notes, created_at, updated_at, last_login_at, deleted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         params.id,
         params.username,
         params.password_hash,
@@ -14024,12 +13600,10 @@ export function registerUserWithoutInvite(input: {
   const permissions: Permission[] = [];
 
   try {
-    db.prepare(
-      `INSERT INTO users (
+    prepareCached(`INSERT INTO users (
         id, username, password_hash, display_name, role, status, permissions, must_change_password,
         disable_reason, notes, created_at, updated_at, last_login_at, deleted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       input.id,
       input.username,
       input.password_hash,
@@ -14060,14 +13634,10 @@ export function registerUserWithoutInvite(input: {
 }
 
 export function getAllInviteCodes(): InviteCodeWithCreator[] {
-  const rows = db
-    .prepare(
-      `SELECT i.*, u.username as creator_username
+  const rows = prepareCached(`SELECT i.*, u.username as creator_username
        FROM invite_codes i
        JOIN users u ON i.created_by = u.id
-       ORDER BY i.created_at DESC`,
-    )
-    .all() as Array<Record<string, unknown>>;
+       ORDER BY i.created_at DESC`).all() as Array<Record<string, unknown>>;
   return rows.map((row) => {
     const role = parseUserRole(row.role);
     return {
@@ -14089,7 +13659,7 @@ export function getAllInviteCodes(): InviteCodeWithCreator[] {
 }
 
 export function deleteInviteCode(code: string): void {
-  db.prepare('DELETE FROM invite_codes WHERE code = ?').run(code);
+  prepareCached('DELETE FROM invite_codes WHERE code = ?').run(code);
 }
 
 // --- Auth Audit Log ---
@@ -14102,10 +13672,8 @@ export function logAuthEvent(event: {
   user_agent?: string | null;
   details?: Record<string, unknown> | null;
 }): void {
-  db.prepare(
-    `INSERT INTO auth_audit_log (event_type, username, actor_username, ip_address, user_agent, details, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
+  prepareCached(`INSERT INTO auth_audit_log (event_type, username, actor_username, ip_address, user_agent, details, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
     event.event_type,
     event.username,
     event.actor_username ?? null,
@@ -14196,10 +13764,8 @@ export function queryAuthAuditLogs(
 // ===================== Sub-Agent CRUD =====================
 
 export function createAgent(agent: SubAgent): void {
-  db.prepare(
-    `INSERT INTO agents (id, group_folder, chat_jid, name, prompt, status, kind, created_by, created_at, completed_at, result_summary, spawned_from_jid, source_kind, thread_id, root_message_id, title_source, last_active_at, last_im_jid)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
+  prepareCached(`INSERT INTO agents (id, group_folder, chat_jid, name, prompt, status, kind, created_by, created_at, completed_at, result_summary, spawned_from_jid, source_kind, thread_id, root_message_id, title_source, last_active_at, last_im_jid)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
     agent.id,
     agent.group_folder,
     agent.chat_jid,
@@ -14223,7 +13789,7 @@ export function createAgent(agent: SubAgent): void {
 
 /** Status of every session row, for retiring on-disk IPC namespaces. */
 export function getAgentStatusMap(): Map<string, string> {
-  const rows = db.prepare('SELECT id, status FROM agents').all() as Array<{
+  const rows = prepareCached('SELECT id, status FROM agents').all() as Array<{
     id: string;
     status: string;
   }>;
@@ -14231,7 +13797,7 @@ export function getAgentStatusMap(): Map<string, string> {
 }
 
 export function getAgent(id: string): SubAgent | undefined {
-  const row = db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as
+  const row = prepareCached('SELECT * FROM agents WHERE id = ?').get(id) as
     | Record<string, unknown>
     | undefined;
   if (!row) return undefined;
@@ -14239,9 +13805,9 @@ export function getAgent(id: string): SubAgent | undefined {
 }
 
 export function listAgentsByJid(chatJid: string): SubAgent[] {
-  const rows = db
-    .prepare('SELECT * FROM agents WHERE chat_jid = ? ORDER BY created_at DESC')
-    .all(chatJid) as Array<Record<string, unknown>>;
+  const rows = prepareCached(
+    'SELECT * FROM agents WHERE chat_jid = ? ORDER BY created_at DESC',
+  ).all(chatJid) as Array<Record<string, unknown>>;
   return rows.map(mapAgentRow);
 }
 
@@ -14252,7 +13818,7 @@ export function updateAgentStatus(
 ): void {
   const completedAt =
     status !== 'running' && status !== 'idle' ? new Date().toISOString() : null;
-  db.prepare(
+  prepareCached(
     'UPDATE agents SET status = ?, completed_at = ?, result_summary = ? WHERE id = ?',
   ).run(status, completedAt, resultSummary ?? null, id);
 }
@@ -14261,7 +13827,7 @@ export function updateAgentLastImJid(
   id: string,
   lastImJid: string | null,
 ): void {
-  db.prepare('UPDATE agents SET last_im_jid = ? WHERE id = ?').run(
+  prepareCached('UPDATE agents SET last_im_jid = ? WHERE id = ?').run(
     lastImJid,
     id,
   );
@@ -14272,7 +13838,7 @@ export function updateAgentInfo(
   name: string,
   prompt: string,
 ): void {
-  db.prepare('UPDATE agents SET name = ?, prompt = ? WHERE id = ?').run(
+  prepareCached('UPDATE agents SET name = ?, prompt = ? WHERE id = ?').run(
     name,
     prompt,
     id,
@@ -14327,11 +13893,9 @@ export function updateAgentContextInfo(
 }
 
 export function deleteCompletedAgents(beforeTimestamp: string): number {
-  const result = db
-    .prepare(
-      "DELETE FROM agents WHERE kind IN ('task', 'spawn') AND status IN ('completed', 'error') AND completed_at IS NOT NULL AND completed_at < ?",
-    )
-    .run(beforeTimestamp);
+  const result = prepareCached(
+    "DELETE FROM agents WHERE kind IN ('task', 'spawn') AND status IN ('completed', 'error') AND completed_at IS NOT NULL AND completed_at < ?",
+  ).run(beforeTimestamp);
   return result.changes;
 }
 
@@ -14345,32 +13909,28 @@ export function archiveInactiveConversationAgents(
   beforeTimestamp: string,
 ): number {
   const now = new Date().toISOString();
-  const result = db
-    .prepare(
-      `UPDATE agents SET status = 'completed', completed_at = ?
+  const result =
+    prepareCached(`UPDATE agents SET status = 'completed', completed_at = ?
        WHERE kind IN ('conversation', 'spawn') AND status IN ('running', 'idle')
-         AND COALESCE(last_active_at, created_at) < ?`,
-    )
-    .run(now, beforeTimestamp);
+         AND COALESCE(last_active_at, created_at) < ?`).run(
+      now,
+      beforeTimestamp,
+    );
   return result.changes;
 }
 
 export function getRunningTaskAgentsByChat(chatJid: string): SubAgent[] {
-  const rows = db
-    .prepare(
-      "SELECT * FROM agents WHERE chat_jid = ? AND kind = 'task' AND status = 'running'",
-    )
-    .all(chatJid) as Array<Record<string, unknown>>;
+  const rows = prepareCached(
+    "SELECT * FROM agents WHERE chat_jid = ? AND kind = 'task' AND status = 'running'",
+  ).all(chatJid) as Array<Record<string, unknown>>;
   return rows.map(mapAgentRow);
 }
 
 export function markRunningTaskAgentsAsError(chatJid: string): number {
   const now = new Date().toISOString();
-  const result = db
-    .prepare(
-      "UPDATE agents SET status = 'error', completed_at = ? WHERE chat_jid = ? AND kind = 'task' AND status = 'running'",
-    )
-    .run(now, chatJid);
+  const result = prepareCached(
+    "UPDATE agents SET status = 'error', completed_at = ? WHERE chat_jid = ? AND kind = 'task' AND status = 'running'",
+  ).run(now, chatJid);
   return result.changes;
 }
 
@@ -14378,11 +13938,9 @@ export function markAllRunningTaskAgentsAsError(
   summary = '进程重启，任务中断',
 ): number {
   const now = new Date().toISOString();
-  const result = db
-    .prepare(
-      "UPDATE agents SET status = 'error', completed_at = ?, result_summary = COALESCE(result_summary, ?) WHERE kind = 'task' AND status = 'running'",
-    )
-    .run(now, summary);
+  const result = prepareCached(
+    "UPDATE agents SET status = 'error', completed_at = ?, result_summary = COALESCE(result_summary, ?) WHERE kind = 'task' AND status = 'running'",
+  ).run(now, summary);
   return result.changes;
 }
 
@@ -14396,21 +13954,17 @@ export function markStaleSpawnAgentsAsError(
   summary = '进程重启，并行任务中断',
 ): number {
   const now = new Date().toISOString();
-  const result = db
-    .prepare(
-      "UPDATE agents SET status = 'error', completed_at = ?, result_summary = COALESCE(result_summary, ?) WHERE kind = 'spawn' AND status IN ('idle', 'running')",
-    )
-    .run(now, summary);
+  const result = prepareCached(
+    "UPDATE agents SET status = 'error', completed_at = ?, result_summary = COALESCE(result_summary, ?) WHERE kind = 'spawn' AND status IN ('idle', 'running')",
+  ).run(now, summary);
   return result.changes;
 }
 
 export function listActiveConversationAgents(): SubAgent[] {
   return (
-    db
-      .prepare(
-        "SELECT * FROM agents WHERE kind IN ('conversation', 'spawn') AND status IN ('running', 'idle')",
-      )
-      .all() as Record<string, unknown>[]
+    prepareCached(
+      "SELECT * FROM agents WHERE kind IN ('conversation', 'spawn') AND status IN ('running', 'idle')",
+    ).all() as Record<string, unknown>[]
   ).map(mapAgentRow);
 }
 
@@ -14419,19 +13973,19 @@ export function deleteAgent(id: string): void {
     // A product Session can own an SDK runtime resume row and channel mounts;
     // clear all three projections together so direct DB callers cannot leave
     // routable ghosts behind.
-    db.prepare(
-      `UPDATE registered_groups
+    prepareCached(`UPDATE registered_groups
        SET target_agent_id = NULL, binding_mode = 'single_context'
-       WHERE target_agent_id = ?`,
-    ).run(id);
-    db.prepare('DELETE FROM channel_mounts WHERE session_id = ?').run(id);
-    db.prepare('DELETE FROM agent_channel_mounts WHERE session_id = ?').run(id);
-    db.prepare(
+       WHERE target_agent_id = ?`).run(id);
+    prepareCached('DELETE FROM channel_mounts WHERE session_id = ?').run(id);
+    prepareCached('DELETE FROM agent_channel_mounts WHERE session_id = ?').run(
+      id,
+    );
+    prepareCached(
       'DELETE FROM workspace_runtime_sessions WHERE runtime_agent_id = ?',
     ).run(id);
-    db.prepare('DELETE FROM sessions WHERE agent_id = ?').run(id);
+    prepareCached('DELETE FROM sessions WHERE agent_id = ?').run(id);
     deleteImContextBindingsByAgent(id);
-    db.prepare('DELETE FROM agents WHERE id = ?').run(id);
+    prepareCached('DELETE FROM agents WHERE id = ?').run(id);
   })();
 }
 
@@ -14480,8 +14034,8 @@ function mapAgentRow(row: Record<string, unknown>): SubAgent {
 }
 
 export function deleteMessagesForChatJid(chatJid: string): void {
-  db.prepare('DELETE FROM messages WHERE chat_jid = ?').run(chatJid);
-  db.prepare('DELETE FROM chats WHERE jid = ?').run(chatJid);
+  prepareCached('DELETE FROM messages WHERE chat_jid = ?').run(chatJid);
+  prepareCached('DELETE FROM chats WHERE jid = ?').run(chatJid);
 }
 
 export function getMessage(
@@ -14493,11 +14047,9 @@ export function getMessage(
   sender: string | null;
   is_from_me: number;
 } | null {
-  const row = db
-    .prepare(
-      'SELECT id, chat_jid, sender, is_from_me FROM messages WHERE id = ? AND chat_jid = ?',
-    )
-    .get(messageId, chatJid) as
+  const row = prepareCached(
+    'SELECT id, chat_jid, sender, is_from_me FROM messages WHERE id = ? AND chat_jid = ?',
+  ).get(messageId, chatJid) as
     | {
         id: string;
         chat_jid: string;
@@ -14513,11 +14065,9 @@ export function getMessagePayload(
   chatJid: string,
   messageId: string,
 ): { content: string; attachments: string | null } | null {
-  const row = db
-    .prepare(
-      'SELECT content, attachments FROM messages WHERE id = ? AND chat_jid = ?',
-    )
-    .get(messageId, chatJid) as
+  const row = prepareCached(
+    'SELECT content, attachments FROM messages WHERE id = ? AND chat_jid = ?',
+  ).get(messageId, chatJid) as
     | { content: string; attachments: string | null }
     | undefined;
   return row ?? null;
@@ -14537,23 +14087,23 @@ export function getAgentBuilderInputMessage(
   source_kind: string | null;
   task_id: string | null;
 } | null {
-  const row = db
-    .prepare(
-      `SELECT id, chat_jid, content, sender, source_jid, is_from_me, source_kind, task_id
-       FROM messages WHERE id = ? AND chat_jid = ? LIMIT 1`,
-    )
-    .get(messageId, chatJid) as
-    | {
-        id: string;
-        chat_jid: string;
-        content: unknown;
-        sender: string | null;
-        source_jid: string | null;
-        is_from_me: number;
-        source_kind: string | null;
-        task_id: string | null;
-      }
-    | undefined;
+  const row =
+    prepareCached(`SELECT id, chat_jid, content, sender, source_jid, is_from_me, source_kind, task_id
+       FROM messages WHERE id = ? AND chat_jid = ? LIMIT 1`).get(
+      messageId,
+      chatJid,
+    ) as
+      | {
+          id: string;
+          chat_jid: string;
+          content: unknown;
+          sender: string | null;
+          source_jid: string | null;
+          is_from_me: number;
+          source_kind: string | null;
+          task_id: string | null;
+        }
+      | undefined;
   return row
     ? {
         ...row,
@@ -14563,43 +14113,41 @@ export function getAgentBuilderInputMessage(
 }
 
 export function deleteMessage(chatJid: string, messageId: string): boolean {
-  const result = db
-    .prepare('DELETE FROM messages WHERE id = ? AND chat_jid = ?')
-    .run(messageId, chatJid);
+  const result = prepareCached(
+    'DELETE FROM messages WHERE id = ? AND chat_jid = ?',
+  ).run(messageId, chatJid);
   return result.changes > 0;
 }
 
 // --- Billing CRUD functions ---
 
 export function getBillingPlan(id: string): BillingPlan | undefined {
-  const row = db.prepare('SELECT * FROM billing_plans WHERE id = ?').get(id) as
-    | Record<string, unknown>
-    | undefined;
+  const row = prepareCached('SELECT * FROM billing_plans WHERE id = ?').get(
+    id,
+  ) as Record<string, unknown> | undefined;
   return row ? mapBillingPlanRow(row) : undefined;
 }
 
 export function getActiveBillingPlans(): BillingPlan[] {
   return (
-    db
-      .prepare(
-        'SELECT * FROM billing_plans WHERE is_active = 1 ORDER BY tier ASC, name ASC',
-      )
-      .all() as Record<string, unknown>[]
+    prepareCached(
+      'SELECT * FROM billing_plans WHERE is_active = 1 ORDER BY tier ASC, name ASC',
+    ).all() as Record<string, unknown>[]
   ).map(mapBillingPlanRow);
 }
 
 export function getAllBillingPlans(): BillingPlan[] {
   return (
-    db
-      .prepare('SELECT * FROM billing_plans ORDER BY tier ASC, name ASC')
-      .all() as Record<string, unknown>[]
+    prepareCached(
+      'SELECT * FROM billing_plans ORDER BY tier ASC, name ASC',
+    ).all() as Record<string, unknown>[]
   ).map(mapBillingPlanRow);
 }
 
 export function getDefaultBillingPlan(): BillingPlan | undefined {
-  const row = db
-    .prepare('SELECT * FROM billing_plans WHERE is_default = 1')
-    .get() as Record<string, unknown> | undefined;
+  const row = prepareCached(
+    'SELECT * FROM billing_plans WHERE is_default = 1',
+  ).get() as Record<string, unknown> | undefined;
   return row ? mapBillingPlanRow(row) : undefined;
 }
 
@@ -14607,18 +14155,16 @@ export function createBillingPlan(plan: BillingPlan): void {
   db.transaction(() => {
     // Clear old default BEFORE inserting the new plan to avoid brief dual-default
     if (plan.is_default) {
-      db.prepare(
+      prepareCached(
         'UPDATE billing_plans SET is_default = 0 WHERE is_default = 1',
       ).run();
     }
-    db.prepare(
-      `INSERT INTO billing_plans (id, name, description, tier, monthly_cost_usd, monthly_token_quota, monthly_cost_quota,
+    prepareCached(`INSERT INTO billing_plans (id, name, description, tier, monthly_cost_usd, monthly_token_quota, monthly_cost_quota,
        daily_cost_quota, weekly_cost_quota, daily_token_quota, weekly_token_quota,
        rate_multiplier, trial_days, sort_order, display_price, highlight,
        max_groups, max_concurrent_containers, max_im_channels, max_mcp_servers, max_storage_mb,
        allow_overage, features, is_default, is_active, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       plan.id,
       plan.name,
       plan.description,
@@ -14763,9 +14309,9 @@ export function updateBillingPlan(
   db.transaction(() => {
     // Clear old default BEFORE setting new one to avoid brief dual-default state
     if (updates.is_default) {
-      db.prepare('UPDATE billing_plans SET is_default = 0 WHERE id != ?').run(
-        id,
-      );
+      prepareCached(
+        'UPDATE billing_plans SET is_default = 0 WHERE id != ?',
+      ).run(id);
     }
     db.prepare(
       `UPDATE billing_plans SET ${fields.join(', ')} WHERE id = ?`,
@@ -14778,11 +14324,13 @@ export function deleteBillingPlan(id: string): boolean {
   // PRAGMA foreign_keys=ON 会因 cancelled/expired 残留行让 DELETE 抛
   // SQLITE_CONSTRAINT_FOREIGNKEY 把请求 500；先在应用层校验给 caller 一个
   // 干净的 false 返回，运维需要手动迁移残留订阅再删 plan。
-  const hasReferences = db
-    .prepare('SELECT COUNT(*) as cnt FROM user_subscriptions WHERE plan_id = ?')
-    .get(id) as { cnt: number };
+  const hasReferences = prepareCached(
+    'SELECT COUNT(*) as cnt FROM user_subscriptions WHERE plan_id = ?',
+  ).get(id) as { cnt: number };
   if (hasReferences.cnt > 0) return false;
-  const result = db.prepare('DELETE FROM billing_plans WHERE id = ?').run(id);
+  const result = prepareCached('DELETE FROM billing_plans WHERE id = ?').run(
+    id,
+  );
   return result.changes > 0;
 }
 
@@ -14846,14 +14394,13 @@ function safeParseJsonArray(val: unknown): string[] {
 export function getUserActiveSubscription(
   userId: string,
 ): (UserSubscription & { plan: BillingPlan }) | undefined {
-  const row = db
-    .prepare(
-      `SELECT s.*, p.name as plan_name FROM user_subscriptions s
+  const row =
+    prepareCached(`SELECT s.*, p.name as plan_name FROM user_subscriptions s
        JOIN billing_plans p ON s.plan_id = p.id
        WHERE s.user_id = ? AND s.status = 'active'
-       ORDER BY s.created_at DESC LIMIT 1`,
-    )
-    .get(userId) as Record<string, unknown> | undefined;
+       ORDER BY s.created_at DESC LIMIT 1`).get(userId) as
+      | Record<string, unknown>
+      | undefined;
   if (!row) return undefined;
   const plan = getBillingPlan(String(row.plan_id));
   if (!plan) return undefined;
@@ -14866,14 +14413,12 @@ export function createUserSubscription(sub: UserSubscription): void {
   // as expireSubscriptions / batchAssignPlan elsewhere in this file.
   const txn = db.transaction(() => {
     // Cancel existing active subscriptions
-    db.prepare(
+    prepareCached(
       "UPDATE user_subscriptions SET status = 'cancelled', cancelled_at = ? WHERE user_id = ? AND status = 'active'",
     ).run(new Date().toISOString(), sub.user_id);
 
-    db.prepare(
-      `INSERT INTO user_subscriptions (id, user_id, plan_id, status, started_at, expires_at, cancelled_at, trial_ends_at, notes, auto_renew, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
+    prepareCached(`INSERT INTO user_subscriptions (id, user_id, plan_id, status, started_at, expires_at, cancelled_at, trial_ends_at, notes, auto_renew, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       sub.id,
       sub.user_id,
       sub.plan_id,
@@ -14888,7 +14433,7 @@ export function createUserSubscription(sub: UserSubscription): void {
     );
 
     // Update user's subscription_plan_id
-    db.prepare('UPDATE users SET subscription_plan_id = ? WHERE id = ?').run(
+    prepareCached('UPDATE users SET subscription_plan_id = ? WHERE id = ?').run(
       sub.plan_id,
       sub.user_id,
     );
@@ -14898,23 +14443,21 @@ export function createUserSubscription(sub: UserSubscription): void {
 
 export function cancelUserSubscription(userId: string): void {
   const now = new Date().toISOString();
-  db.prepare(
+  prepareCached(
     "UPDATE user_subscriptions SET status = 'cancelled', cancelled_at = ? WHERE user_id = ? AND status = 'active'",
   ).run(now, userId);
-  db.prepare('UPDATE users SET subscription_plan_id = NULL WHERE id = ?').run(
-    userId,
-  );
+  prepareCached(
+    'UPDATE users SET subscription_plan_id = NULL WHERE id = ?',
+  ).run(userId);
 }
 
 export function expireSubscriptions(): number {
   const now = new Date().toISOString();
 
   // Phase 1: Handle auto_renew=1 subscriptions — renew them instead of expiring
-  const renewableRows = db
-    .prepare(
-      "SELECT * FROM user_subscriptions WHERE status = 'active' AND auto_renew = 1 AND expires_at IS NOT NULL AND expires_at <= ?",
-    )
-    .all(now) as Record<string, unknown>[];
+  const renewableRows = prepareCached(
+    "SELECT * FROM user_subscriptions WHERE status = 'active' AND auto_renew = 1 AND expires_at IS NOT NULL AND expires_at <= ?",
+  ).all(now) as Record<string, unknown>[];
 
   let renewed = 0;
   for (const row of renewableRows) {
@@ -14974,7 +14517,7 @@ export function expireSubscriptions(): number {
       }
 
       // Expire old subscription
-      db.prepare(
+      prepareCached(
         "UPDATE user_subscriptions SET status = 'expired' WHERE id = ?",
       ).run(oldId);
 
@@ -14995,10 +14538,8 @@ export function expireSubscriptions(): number {
         created_at: newNow.toISOString(),
       };
 
-      db.prepare(
-        `INSERT INTO user_subscriptions (id, user_id, plan_id, status, started_at, expires_at, cancelled_at, trial_ends_at, notes, auto_renew, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(
+      prepareCached(`INSERT INTO user_subscriptions (id, user_id, plan_id, status, started_at, expires_at, cancelled_at, trial_ends_at, notes, auto_renew, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         newSub.id,
         newSub.user_id,
         newSub.plan_id,
@@ -15034,11 +14575,9 @@ export function expireSubscriptions(): number {
   }
 
   // Phase 2: Expire remaining (non-auto-renew or failed renewal)
-  const result = db
-    .prepare(
-      "UPDATE user_subscriptions SET status = 'expired' WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at <= ?",
-    )
-    .run(now);
+  const result = prepareCached(
+    "UPDATE user_subscriptions SET status = 'expired' WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at <= ?",
+  ).run(now);
   return result.changes + renewed;
 }
 
@@ -15063,13 +14602,13 @@ function mapSubscriptionRow(row: Record<string, unknown>): UserSubscription {
 // --- User Balances ---
 
 export function getUserBalance(userId: string): UserBalance {
-  const row = db
-    .prepare('SELECT * FROM user_balances WHERE user_id = ?')
-    .get(userId) as Record<string, unknown> | undefined;
+  const row = prepareCached(
+    'SELECT * FROM user_balances WHERE user_id = ?',
+  ).get(userId) as Record<string, unknown> | undefined;
   if (!row) {
     // Auto-init balance
     const now = new Date().toISOString();
-    db.prepare(
+    prepareCached(
       'INSERT OR IGNORE INTO user_balances (user_id, balance_usd, total_deposited_usd, total_consumed_usd, updated_at) VALUES (?, 0, 0, 0, ?)',
     ).run(userId, now);
     return {
@@ -15112,9 +14651,9 @@ export function adjustUserBalance(
 
   // Idempotency check: if key already used, return the existing transaction
   if (idempotencyKey) {
-    const existing = db
-      .prepare('SELECT * FROM balance_transactions WHERE idempotency_key = ?')
-      .get(idempotencyKey) as Record<string, unknown> | undefined;
+    const existing = prepareCached(
+      'SELECT * FROM balance_transactions WHERE idempotency_key = ?',
+    ).get(idempotencyKey) as Record<string, unknown> | undefined;
     if (existing) {
       return {
         id: Number(existing.id),
@@ -15159,13 +14698,13 @@ export function adjustUserBalance(
   // Wrap read-check-update-record in a transaction for atomicity
   const txFn = db.transaction(() => {
     // Ensure balance row exists
-    db.prepare(
+    prepareCached(
       'INSERT OR IGNORE INTO user_balances (user_id, balance_usd, total_deposited_usd, total_consumed_usd, updated_at) VALUES (?, 0, 0, 0, ?)',
     ).run(userId, now);
 
-    const currentRow = db
-      .prepare('SELECT balance_usd FROM user_balances WHERE user_id = ?')
-      .get(userId) as { balance_usd: number };
+    const currentRow = prepareCached(
+      'SELECT balance_usd FROM user_balances WHERE user_id = ?',
+    ).get(userId) as { balance_usd: number };
     const currentBalance = Number(currentRow.balance_usd);
     const nextBalance = currentBalance + amount;
     if (!allowNegative && nextBalance < 0) {
@@ -15176,44 +14715,40 @@ export function adjustUserBalance(
 
     // Update balance
     if (amount > 0) {
-      db.prepare(
+      prepareCached(
         'UPDATE user_balances SET balance_usd = balance_usd + ?, total_deposited_usd = total_deposited_usd + ?, updated_at = ? WHERE user_id = ?',
       ).run(amount, amount, now, userId);
     } else {
-      db.prepare(
+      prepareCached(
         'UPDATE user_balances SET balance_usd = balance_usd + ?, total_consumed_usd = total_consumed_usd + ?, updated_at = ? WHERE user_id = ?',
       ).run(amount, Math.abs(amount), now, userId);
     }
 
     // Read new balance within the same transaction
-    const newRow = db
-      .prepare('SELECT balance_usd FROM user_balances WHERE user_id = ?')
-      .get(userId) as { balance_usd: number };
+    const newRow = prepareCached(
+      'SELECT balance_usd FROM user_balances WHERE user_id = ?',
+    ).get(userId) as { balance_usd: number };
     const balanceAfter = Number(newRow.balance_usd);
 
     // Record transaction
-    const result = db
-      .prepare(
-        `INSERT INTO balance_transactions (
+    const result = prepareCached(`INSERT INTO balance_transactions (
         user_id, type, amount_usd, balance_after, description, reference_type,
         reference_id, actor_id, source, operator_type, notes, created_at, idempotency_key
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        userId,
-        type,
-        amount,
-        balanceAfter,
-        description,
-        referenceType,
-        referenceId,
-        actorId,
-        source,
-        operatorType,
-        notes,
-        now,
-        idempotencyKey ?? null,
-      );
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      userId,
+      type,
+      amount,
+      balanceAfter,
+      description,
+      referenceType,
+      referenceId,
+      actorId,
+      source,
+      operatorType,
+      notes,
+      now,
+      idempotencyKey ?? null,
+    );
 
     return {
       id: Number(result.lastInsertRowid),
@@ -15247,18 +14782,14 @@ export function getBalanceTransactions(
   offset = 0,
 ): { transactions: BalanceTransaction[]; total: number } {
   const total = (
-    db
-      .prepare(
-        'SELECT COUNT(*) as cnt FROM balance_transactions WHERE user_id = ?',
-      )
-      .get(userId) as { cnt: number }
+    prepareCached(
+      'SELECT COUNT(*) as cnt FROM balance_transactions WHERE user_id = ?',
+    ).get(userId) as { cnt: number }
   ).cnt;
 
-  const rows = db
-    .prepare(
-      'SELECT * FROM balance_transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
-    )
-    .all(userId, limit, offset) as Record<string, unknown>[];
+  const rows = prepareCached(
+    'SELECT * FROM balance_transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
+  ).all(userId, limit, offset) as Record<string, unknown>[];
 
   return {
     transactions: rows.map((r) => ({
@@ -15309,9 +14840,9 @@ export function getMonthlyUsage(
   userId: string,
   month: string,
 ): MonthlyUsage | undefined {
-  const row = db
-    .prepare('SELECT * FROM monthly_usage WHERE user_id = ? AND month = ?')
-    .get(userId, month) as Record<string, unknown> | undefined;
+  const row = prepareCached(
+    'SELECT * FROM monthly_usage WHERE user_id = ? AND month = ?',
+  ).get(userId, month) as Record<string, unknown> | undefined;
   if (!row) return undefined;
   return mapMonthlyUsageRow(row);
 }
@@ -15324,16 +14855,21 @@ export function incrementMonthlyUsage(
   costUsd: number,
 ): void {
   const now = new Date().toISOString();
-  db.prepare(
-    `INSERT INTO monthly_usage (user_id, month, total_input_tokens, total_output_tokens, total_cost_usd, message_count, updated_at)
+  prepareCached(`INSERT INTO monthly_usage (user_id, month, total_input_tokens, total_output_tokens, total_cost_usd, message_count, updated_at)
      VALUES (?, ?, ?, ?, ?, 1, ?)
      ON CONFLICT(user_id, month) DO UPDATE SET
        total_input_tokens = total_input_tokens + excluded.total_input_tokens,
        total_output_tokens = total_output_tokens + excluded.total_output_tokens,
        total_cost_usd = total_cost_usd + excluded.total_cost_usd,
        message_count = message_count + 1,
-       updated_at = excluded.updated_at`,
-  ).run(userId, month, inputTokens, outputTokens, costUsd, now);
+       updated_at = excluded.updated_at`).run(
+    userId,
+    month,
+    inputTokens,
+    outputTokens,
+    costUsd,
+    now,
+  );
 }
 
 /**
@@ -15362,37 +14898,33 @@ export function getUserMonthlyUsageHistory(
   months = 6,
 ): MonthlyUsage[] {
   return (
-    db
-      .prepare(
-        'SELECT * FROM monthly_usage WHERE user_id = ? ORDER BY month DESC LIMIT ?',
-      )
-      .all(userId, months) as Record<string, unknown>[]
+    prepareCached(
+      'SELECT * FROM monthly_usage WHERE user_id = ? ORDER BY month DESC LIMIT ?',
+    ).all(userId, months) as Record<string, unknown>[]
   ).map(mapMonthlyUsageRow);
 }
 
 // --- Redeem Codes ---
 
 export function getRedeemCode(code: string): RedeemCode | undefined {
-  const row = db
-    .prepare('SELECT * FROM redeem_codes WHERE code = ?')
-    .get(code) as Record<string, unknown> | undefined;
+  const row = prepareCached('SELECT * FROM redeem_codes WHERE code = ?').get(
+    code,
+  ) as Record<string, unknown> | undefined;
   if (!row) return undefined;
   return mapRedeemCodeRow(row);
 }
 
 export function getAllRedeemCodes(): RedeemCode[] {
   return (
-    db
-      .prepare('SELECT * FROM redeem_codes ORDER BY created_at DESC')
-      .all() as Record<string, unknown>[]
+    prepareCached(
+      'SELECT * FROM redeem_codes ORDER BY created_at DESC',
+    ).all() as Record<string, unknown>[]
   ).map(mapRedeemCodeRow);
 }
 
 export function createRedeemCode(code: RedeemCode): void {
-  db.prepare(
-    `INSERT INTO redeem_codes (code, type, value_usd, plan_id, duration_days, max_uses, used_count, expires_at, created_by, notes, batch_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
+  prepareCached(`INSERT INTO redeem_codes (code, type, value_usd, plan_id, duration_days, max_uses, used_count, expires_at, created_by, notes, batch_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
     code.code,
     code.type,
     code.value_usd,
@@ -15409,18 +14941,16 @@ export function createRedeemCode(code: RedeemCode): void {
 }
 
 export function deleteRedeemCode(code: string): boolean {
-  const result = db
-    .prepare('DELETE FROM redeem_codes WHERE code = ?')
-    .run(code);
+  const result = prepareCached('DELETE FROM redeem_codes WHERE code = ?').run(
+    code,
+  );
   return result.changes > 0;
 }
 
 export function hasUserRedeemedCode(userId: string, code: string): boolean {
-  const row = db
-    .prepare(
-      'SELECT COUNT(*) as cnt FROM redeem_code_usage WHERE user_id = ? AND code = ?',
-    )
-    .get(userId, code) as { cnt: number };
+  const row = prepareCached(
+    'SELECT COUNT(*) as cnt FROM redeem_code_usage WHERE user_id = ? AND code = ?',
+  ).get(userId, code) as { cnt: number };
   return row.cnt > 0;
 }
 
@@ -15449,7 +14979,7 @@ export function logBillingAudit(
   actorId: string | null,
   details: Record<string, unknown> | null,
 ): void {
-  db.prepare(
+  prepareCached(
     'INSERT INTO billing_audit_log (event_type, user_id, actor_id, details, created_at) VALUES (?, ?, ?, ?, ?)',
   ).run(
     eventType,
@@ -15509,11 +15039,9 @@ export function getBillingAuditLog(
 // --- Billing summary helpers ---
 
 export function getUserGroupCount(userId: string): number {
-  const row = db
-    .prepare(
-      "SELECT COUNT(DISTINCT rg.folder) as cnt FROM registered_groups rg WHERE rg.created_by = ? AND rg.jid LIKE 'web:%'",
-    )
-    .get(userId) as { cnt: number };
+  const row = prepareCached(
+    "SELECT COUNT(DISTINCT rg.folder) as cnt FROM registered_groups rg WHERE rg.created_by = ? AND rg.jid LIKE 'web:%'",
+  ).get(userId) as { cnt: number };
   return row.cnt;
 }
 
@@ -15528,9 +15056,7 @@ export function getAllUserBillingOverview(): Array<{
   current_month_cost: number;
 }> {
   const month = new Date().toISOString().slice(0, 7);
-  return db
-    .prepare(
-      `SELECT u.id as user_id, u.username, u.display_name, u.role,
+  return prepareCached(`SELECT u.id as user_id, u.username, u.display_name, u.role,
               s.plan_id, p.name as plan_name,
               COALESCE(b.balance_usd, 0) as balance_usd,
               COALESCE(mu.total_cost_usd, 0) as current_month_cost
@@ -15540,9 +15066,7 @@ export function getAllUserBillingOverview(): Array<{
        LEFT JOIN user_balances b ON b.user_id = u.id
        LEFT JOIN monthly_usage mu ON mu.user_id = u.id AND mu.month = ?
        WHERE u.status != 'deleted'
-       ORDER BY u.created_at ASC`,
-    )
-    .all(month) as Array<{
+       ORDER BY u.created_at ASC`).all(month) as Array<{
     user_id: string;
     username: string;
     display_name: string;
@@ -15562,32 +15086,24 @@ export function getRevenueStats(): {
 } {
   const month = new Date().toISOString().slice(0, 7);
   const deposited = (
-    db
-      .prepare(
-        'SELECT COALESCE(SUM(total_deposited_usd), 0) as total FROM user_balances',
-      )
-      .get() as { total: number }
+    prepareCached(
+      'SELECT COALESCE(SUM(total_deposited_usd), 0) as total FROM user_balances',
+    ).get() as { total: number }
   ).total;
   const consumed = (
-    db
-      .prepare(
-        'SELECT COALESCE(SUM(total_consumed_usd), 0) as total FROM user_balances',
-      )
-      .get() as { total: number }
+    prepareCached(
+      'SELECT COALESCE(SUM(total_consumed_usd), 0) as total FROM user_balances',
+    ).get() as { total: number }
   ).total;
   const activeSubs = (
-    db
-      .prepare(
-        "SELECT COUNT(*) as cnt FROM user_subscriptions WHERE status = 'active'",
-      )
-      .get() as { cnt: number }
+    prepareCached(
+      "SELECT COUNT(*) as cnt FROM user_subscriptions WHERE status = 'active'",
+    ).get() as { cnt: number }
   ).cnt;
   const monthRevenue = (
-    db
-      .prepare(
-        'SELECT COALESCE(SUM(total_cost_usd), 0) as total FROM monthly_usage WHERE month = ?',
-      )
-      .get(month) as { total: number }
+    prepareCached(
+      'SELECT COALESCE(SUM(total_cost_usd), 0) as total FROM monthly_usage WHERE month = ?',
+    ).get(month) as { total: number }
   ).total;
   return {
     totalDeposited: deposited,
@@ -15617,24 +15133,28 @@ export function incrementDailyUsage(
   outputTokens: number,
   costUsd: number,
 ): void {
-  db.prepare(
-    `INSERT INTO daily_usage (user_id, date, total_input_tokens, total_output_tokens, total_cost_usd, message_count)
+  prepareCached(`INSERT INTO daily_usage (user_id, date, total_input_tokens, total_output_tokens, total_cost_usd, message_count)
      VALUES (?, ?, ?, ?, ?, 1)
      ON CONFLICT(user_id, date) DO UPDATE SET
        total_input_tokens = total_input_tokens + excluded.total_input_tokens,
        total_output_tokens = total_output_tokens + excluded.total_output_tokens,
        total_cost_usd = total_cost_usd + excluded.total_cost_usd,
-       message_count = message_count + 1`,
-  ).run(userId, date, inputTokens, outputTokens, costUsd);
+       message_count = message_count + 1`).run(
+    userId,
+    date,
+    inputTokens,
+    outputTokens,
+    costUsd,
+  );
 }
 
 export function getDailyUsage(
   userId: string,
   date: string,
 ): DailyUsage | undefined {
-  const row = db
-    .prepare('SELECT * FROM daily_usage WHERE user_id = ? AND date = ?')
-    .get(userId, date) as Record<string, unknown> | undefined;
+  const row = prepareCached(
+    'SELECT * FROM daily_usage WHERE user_id = ? AND date = ?',
+  ).get(userId, date) as Record<string, unknown> | undefined;
   if (!row) return undefined;
   return mapDailyUsageRow(row);
 }
@@ -15653,13 +15173,13 @@ export function getWeeklyUsageSummary(
   monday.setDate(now.getDate() - daysSinceMonday);
   const startDate = toLocalDateString(monday);
 
-  const row = db
-    .prepare(
-      `SELECT COALESCE(SUM(total_cost_usd), 0) as totalCost,
+  const row =
+    prepareCached(`SELECT COALESCE(SUM(total_cost_usd), 0) as totalCost,
               COALESCE(SUM(total_input_tokens + total_output_tokens), 0) as totalTokens
-       FROM daily_usage WHERE user_id = ? AND date >= ?`,
-    )
-    .get(userId, startDate) as { totalCost: number; totalTokens: number };
+       FROM daily_usage WHERE user_id = ? AND date >= ?`).get(
+      userId,
+      startDate,
+    ) as { totalCost: number; totalTokens: number };
   return { totalCost: row.totalCost, totalTokens: row.totalTokens };
 }
 
@@ -15668,11 +15188,9 @@ export function getUserDailyUsageHistory(
   days = 14,
 ): DailyUsage[] {
   return (
-    db
-      .prepare(
-        'SELECT * FROM daily_usage WHERE user_id = ? ORDER BY date DESC LIMIT ?',
-      )
-      .all(userId, days) as Record<string, unknown>[]
+    prepareCached(
+      'SELECT * FROM daily_usage WHERE user_id = ? ORDER BY date DESC LIMIT ?',
+    ).all(userId, days) as Record<string, unknown>[]
   ).map(mapDailyUsageRow);
 }
 
@@ -15692,20 +15210,21 @@ export function getDailyUsageSumForMonth(
     m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
   const endDate = `${nextMonth}-01`;
 
-  const row = db
-    .prepare(
-      `SELECT COALESCE(SUM(total_input_tokens), 0) as totalInputTokens,
+  const row =
+    prepareCached(`SELECT COALESCE(SUM(total_input_tokens), 0) as totalInputTokens,
               COALESCE(SUM(total_output_tokens), 0) as totalOutputTokens,
               COALESCE(SUM(total_cost_usd), 0) as totalCost,
               COALESCE(SUM(message_count), 0) as messageCount
-       FROM daily_usage WHERE user_id = ? AND date >= ? AND date < ?`,
-    )
-    .get(userId, startDate, endDate) as {
-    totalInputTokens: number;
-    totalOutputTokens: number;
-    totalCost: number;
-    messageCount: number;
-  };
+       FROM daily_usage WHERE user_id = ? AND date >= ? AND date < ?`).get(
+      userId,
+      startDate,
+      endDate,
+    ) as {
+      totalInputTokens: number;
+      totalOutputTokens: number;
+      totalCost: number;
+      messageCount: number;
+    };
   return row;
 }
 
@@ -15718,30 +15237,32 @@ export function correctMonthlyUsage(
   messageCount: number,
 ): void {
   const now = new Date().toISOString();
-  db.prepare(
-    `INSERT INTO monthly_usage (user_id, month, total_input_tokens, total_output_tokens, total_cost_usd, message_count, updated_at)
+  prepareCached(`INSERT INTO monthly_usage (user_id, month, total_input_tokens, total_output_tokens, total_cost_usd, message_count, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(user_id, month) DO UPDATE SET
        total_input_tokens = excluded.total_input_tokens,
        total_output_tokens = excluded.total_output_tokens,
        total_cost_usd = excluded.total_cost_usd,
        message_count = excluded.message_count,
-       updated_at = excluded.updated_at`,
-  ).run(userId, month, inputTokens, outputTokens, costUsd, messageCount, now);
+       updated_at = excluded.updated_at`).run(
+    userId,
+    month,
+    inputTokens,
+    outputTokens,
+    costUsd,
+    messageCount,
+    now,
+  );
 }
 
 export function getSubscriptionHistory(
   userId: string,
 ): (UserSubscription & { plan_name: string })[] {
   return (
-    db
-      .prepare(
-        `SELECT s.*, p.name as plan_name FROM user_subscriptions s
+    prepareCached(`SELECT s.*, p.name as plan_name FROM user_subscriptions s
          JOIN billing_plans p ON s.plan_id = p.id
          WHERE s.user_id = ?
-         ORDER BY s.created_at DESC`,
-      )
-      .all(userId) as Record<string, unknown>[]
+         ORDER BY s.created_at DESC`).all(userId) as Record<string, unknown>[]
   ).map((row) => ({
     ...mapSubscriptionRow(row),
     plan_name: String(row.plan_name),
@@ -15751,15 +15272,11 @@ export function getSubscriptionHistory(
 export function getRedeemCodeUsageDetails(
   code: string,
 ): Array<{ user_id: string; username: string; redeemed_at: string }> {
-  return db
-    .prepare(
-      `SELECT rcu.user_id, u.username, rcu.redeemed_at
+  return prepareCached(`SELECT rcu.user_id, u.username, rcu.redeemed_at
        FROM redeem_code_usage rcu
        LEFT JOIN users u ON u.id = rcu.user_id
        WHERE rcu.code = ?
-       ORDER BY rcu.redeemed_at DESC`,
-    )
-    .all(code) as Array<{
+       ORDER BY rcu.redeemed_at DESC`).all(code) as Array<{
     user_id: string;
     username: string;
     redeemed_at: string;
@@ -15778,53 +15295,45 @@ export function getDashboardStats(): {
   const month = new Date().toISOString().slice(0, 7);
 
   const totalUsers = (
-    db
-      .prepare("SELECT COUNT(*) as cnt FROM users WHERE status != 'deleted'")
-      .get() as { cnt: number }
+    prepareCached(
+      "SELECT COUNT(*) as cnt FROM users WHERE status != 'deleted'",
+    ).get() as { cnt: number }
   ).cnt;
 
   const activeUsers = (
-    db
-      .prepare(
-        'SELECT COUNT(DISTINCT user_id) as cnt FROM daily_usage WHERE date = ?',
-      )
-      .get(today) as { cnt: number }
+    prepareCached(
+      'SELECT COUNT(DISTINCT user_id) as cnt FROM daily_usage WHERE date = ?',
+    ).get(today) as { cnt: number }
   ).cnt;
 
-  const planDistribution = db
-    .prepare(
-      `SELECT COALESCE(p.name, '无套餐') as plan_name, COUNT(*) as count
+  const planDistribution =
+    prepareCached(`SELECT COALESCE(p.name, '无套餐') as plan_name, COUNT(*) as count
        FROM users u
        LEFT JOIN user_subscriptions s ON s.user_id = u.id AND s.status = 'active'
        LEFT JOIN billing_plans p ON p.id = s.plan_id
        WHERE u.status != 'deleted'
        GROUP BY p.name
-       ORDER BY count DESC`,
-    )
-    .all() as Array<{ plan_name: string; count: number }>;
+       ORDER BY count DESC`).all() as Array<{
+      plan_name: string;
+      count: number;
+    }>;
 
   const todayCost = (
-    db
-      .prepare(
-        'SELECT COALESCE(SUM(total_cost_usd), 0) as total FROM daily_usage WHERE date = ?',
-      )
-      .get(today) as { total: number }
+    prepareCached(
+      'SELECT COALESCE(SUM(total_cost_usd), 0) as total FROM daily_usage WHERE date = ?',
+    ).get(today) as { total: number }
   ).total;
 
   const monthCost = (
-    db
-      .prepare(
-        'SELECT COALESCE(SUM(total_cost_usd), 0) as total FROM monthly_usage WHERE month = ?',
-      )
-      .get(month) as { total: number }
+    prepareCached(
+      'SELECT COALESCE(SUM(total_cost_usd), 0) as total FROM monthly_usage WHERE month = ?',
+    ).get(month) as { total: number }
   ).total;
 
   const activeSubscriptions = (
-    db
-      .prepare(
-        "SELECT COUNT(*) as cnt FROM user_subscriptions WHERE status = 'active'",
-      )
-      .get() as { cnt: number }
+    prepareCached(
+      "SELECT COUNT(*) as cnt FROM user_subscriptions WHERE status = 'active'",
+    ).get() as { cnt: number }
   ).cnt;
 
   return {
@@ -15840,15 +15349,15 @@ export function getDashboardStats(): {
 export function getRevenueTrend(
   months = 6,
 ): Array<{ month: string; revenue: number; users: number }> {
-  return db
-    .prepare(
-      `SELECT month, SUM(total_cost_usd) as revenue, COUNT(DISTINCT user_id) as users
+  return prepareCached(`SELECT month, SUM(total_cost_usd) as revenue, COUNT(DISTINCT user_id) as users
        FROM monthly_usage
        GROUP BY month
        ORDER BY month DESC
-       LIMIT ?`,
-    )
-    .all(months) as Array<{ month: string; revenue: number; users: number }>;
+       LIMIT ?`).all(months) as Array<{
+    month: string;
+    revenue: number;
+    users: number;
+  }>;
 }
 
 export function batchAssignPlan(
@@ -15869,15 +15378,13 @@ export function batchAssignPlan(
   const txn = db.transaction(() => {
     for (const userId of userIds) {
       // Cancel existing
-      db.prepare(
+      prepareCached(
         "UPDATE user_subscriptions SET status = 'cancelled', cancelled_at = ? WHERE user_id = ? AND status = 'active'",
       ).run(now.toISOString(), userId);
 
       const subId = `sub_${userId}_${Date.now()}_${count}`;
-      db.prepare(
-        `INSERT INTO user_subscriptions (id, user_id, plan_id, status, started_at, expires_at, auto_renew, created_at)
-         VALUES (?, ?, ?, 'active', ?, ?, 0, ?)`,
-      ).run(
+      prepareCached(`INSERT INTO user_subscriptions (id, user_id, plan_id, status, started_at, expires_at, auto_renew, created_at)
+         VALUES (?, ?, ?, 'active', ?, ?, 0, ?)`).run(
         subId,
         userId,
         planId,
@@ -15886,10 +15393,9 @@ export function batchAssignPlan(
         now.toISOString(),
       );
 
-      db.prepare('UPDATE users SET subscription_plan_id = ? WHERE id = ?').run(
-        planId,
-        userId,
-      );
+      prepareCached(
+        'UPDATE users SET subscription_plan_id = ? WHERE id = ?',
+      ).run(planId, userId);
 
       logBillingAudit('subscription_assigned', userId, actorId, {
         planId,
@@ -15905,11 +15411,9 @@ export function batchAssignPlan(
 }
 
 export function getAllPlanSubscriberCounts(): Record<string, number> {
-  const rows = db
-    .prepare(
-      "SELECT plan_id, COUNT(*) as cnt FROM user_subscriptions WHERE status = 'active' GROUP BY plan_id",
-    )
-    .all() as Array<{ plan_id: string; cnt: number }>;
+  const rows = prepareCached(
+    "SELECT plan_id, COUNT(*) as cnt FROM user_subscriptions WHERE status = 'active' GROUP BY plan_id",
+  ).all() as Array<{ plan_id: string; cnt: number }>;
   const result: Record<string, number> = {};
   for (const row of rows) {
     result[row.plan_id] = row.cnt;
@@ -15927,13 +15431,11 @@ export function tryIncrementRedeemCodeUsage(
 ): boolean {
   const now = new Date().toISOString();
   return db.transaction(() => {
-    const result = db
-      .prepare(
-        'UPDATE redeem_codes SET used_count = used_count + 1 WHERE code = ? AND used_count < max_uses',
-      )
-      .run(code);
+    const result = prepareCached(
+      'UPDATE redeem_codes SET used_count = used_count + 1 WHERE code = ? AND used_count < max_uses',
+    ).run(code);
     if (result.changes === 0) return false;
-    db.prepare(
+    prepareCached(
       'INSERT INTO redeem_code_usage (code, user_id, redeemed_at) VALUES (?, ?, ?)',
     ).run(code, userId, now);
     return true;
