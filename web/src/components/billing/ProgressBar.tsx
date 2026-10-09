@@ -1,9 +1,29 @@
-export function ProgressBar({ value, max, className }: { value: number; max: number; className?: string }) {
+import { cn } from '@/lib/utils';
+
+export function ProgressBar({
+  value,
+  max,
+  className,
+}: {
+  value: number;
+  max: number;
+  className?: string;
+}) {
   const percent = max > 0 ? Math.min((value / max) * 100, 100) : 0;
-  const color = percent >= 90 ? 'bg-red-500' : percent >= 70 ? 'bg-yellow-500' : 'bg-brand-500';
+  const color =
+    percent >= 90 ? 'bg-error' : percent >= 70 ? 'bg-warning' : 'bg-primary';
   return (
-    <div className={`h-2 bg-zinc-200 dark:bg-zinc-700 rounded-full overflow-hidden ${className ?? ''}`}>
-      <div className={`h-full ${color} rounded-full transition-all`} style={{ width: `${percent}%` }} />
+    <div
+      role="progressbar"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(percent)}
+      className={cn('h-1.5 overflow-hidden rounded-full bg-muted', className)}
+    >
+      <div
+        className={cn('h-full rounded-full transition-[width]', color)}
+        style={{ width: `${percent}%` }}
+      />
     </div>
   );
 }

@@ -10,6 +10,9 @@ import {
   Settings,
 } from 'lucide-react';
 import { Navigate } from 'react-router-dom';
+import { PageContainer, PageTopBar } from '@/components/common';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { useAuthStore } from '../stores/auth';
 import { useBillingStore, type BillingPlan } from '../stores/billing';
 
@@ -62,6 +65,8 @@ export default function BillingPage({
   const [planDialogOpen, setPlanDialogOpen] = useState(false);
   const [editingPlan, setEditingPlan] = useState<BillingPlan | null>(null);
   const [drawerUserId, setDrawerUserId] = useState<string | null>(null);
+  // Settings already shows its own mobile header with the section title.
+  const isDesktop = useMediaQuery('(min-width: 1024px)');
 
   useEffect(() => {
     if (!billingStatusLoaded) {
@@ -71,7 +76,7 @@ export default function BillingPage({
 
   if (!billingStatusLoaded) {
     return (
-      <div className="min-h-40 p-6 text-sm text-zinc-500">
+      <div className="min-h-40 p-6 text-body text-muted-foreground">
         加载账单状态中...
       </div>
     );
@@ -113,36 +118,39 @@ export default function BillingPage({
 
   return (
     <div className="min-h-full">
-      <div className="sticky top-0 z-10 border-b border-border bg-background/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/85">
-        <div className="flex items-center gap-4 overflow-x-auto">
-          <h2 className="text-lg font-semibold flex items-center gap-2 shrink-0">
-            <CreditCard className="w-5 h-5 text-primary" />
-            {managementOnly ? '计费管理' : '账单'}
-          </h2>
-          <div className="flex gap-1">
+      <PageTopBar
+        title={managementOnly ? (isDesktop ? '计费管理' : undefined) : '账单'}
+        className={managementOnly ? 'top-12 lg:top-0' : undefined}
+      >
+        <Tabs
+          value={tab}
+          onValueChange={(value) => setTab(value as TabKey)}
+          className="h-full min-w-0 flex-1"
+        >
+          <TabsList
+            variant="line"
+            aria-label={managementOnly ? '计费管理分区' : '账单分区'}
+            className="w-full justify-start gap-4 overflow-x-auto overflow-y-hidden p-0 group-data-horizontal/tabs:h-full [scrollbar-width:none]"
+          >
             {allTabs.map(({ key, label, icon: Icon }) => (
-              <button
+              <TabsTrigger
                 key={key}
-                onClick={() => setTab(key)}
-                className={`flex min-h-11 cursor-pointer items-center gap-1.5 px-3 py-2 text-sm rounded-md transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
-                  tab === key
-                    ? 'bg-brand-50 dark:bg-brand-700/20 text-brand-700 dark:text-brand-300'
-                    : 'text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800'
-                }`}
+                value={key}
+                className="flex-none px-0.5 group-data-horizontal/tabs:after:-bottom-px"
               >
-                <Icon className="w-4 h-4" />
+                <Icon />
                 {label}
-              </button>
+              </TabsTrigger>
             ))}
-          </div>
-        </div>
-      </div>
+          </TabsList>
+        </Tabs>
+      </PageTopBar>
 
-      <div className="space-y-6 p-4 lg:p-6">
+      <PageContainer size="wide" className="space-y-6">
         {/* User: Overview */}
         {tab === 'overview' && (
           <>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
               <BalanceCard />
               <SubscriptionCard />
               <UsageCard />
@@ -193,7 +201,7 @@ export default function BillingPage({
         {managementOnly && tab === 'audit' && canManageBilling && (
           <AdminAuditLog />
         )}
-      </div>
+      </PageContainer>
 
       {/* Shared dialogs / drawers */}
       {managementOnly && (

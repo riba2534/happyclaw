@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { BarChart3 } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { useBillingStore } from '../../stores/billing';
 import { useCurrency, formatTokens } from './utils';
 
@@ -32,48 +33,61 @@ export default function DailyUsageChart() {
   });
 
   const maxCost = Math.max(...chartData.map((d) => d.cost), 0.01); // avoid divide-by-zero
+  const hovered = hoveredIdx !== null ? chartData[hoveredIdx] : null;
 
   return (
-    <div className="bg-white dark:bg-zinc-800 rounded-lg border border-zinc-200 dark:border-zinc-700 p-5">
-      <div className="flex items-center gap-2 mb-4">
-        <BarChart3 className="w-5 h-5 text-primary" />
-        <h3 className="font-semibold">近 {CHART_DAYS} 天用量</h3>
+    <section className="rounded-xl bg-surface-raised p-4 ring-1 ring-surface-border sm:p-5">
+      <div className="mb-4 flex items-center gap-2">
+        <BarChart3 className="size-4 text-muted-foreground" />
+        <h3 className="text-title-sm text-foreground">
+          近 {CHART_DAYS} 天用量
+        </h3>
       </div>
 
       {dailyUsage.length === 0 ? (
-        <p className="text-sm text-zinc-500 py-8 text-center">暂无用量数据</p>
+        <p className="py-8 text-center text-body text-muted-foreground">
+          暂无用量数据
+        </p>
       ) : (
         <div className="relative">
-          {/* Hover tooltip */}
-          {hoveredIdx !== null && (
-            <div className="absolute -top-2 left-1/2 -translate-x-1/2 z-10 bg-zinc-900 dark:bg-zinc-700 text-white text-xs rounded-md px-3 py-2 shadow-lg pointer-events-none whitespace-nowrap">
-              <div className="font-medium mb-1">{chartData[hoveredIdx].date}</div>
-              <div>费用: {fmt(chartData[hoveredIdx].cost)}</div>
-              <div>
-                Token: {formatTokens(chartData[hoveredIdx].inputTokens + chartData[hoveredIdx].outputTokens)}
+          {/* Hover tooltip, anchored above the hovered bar */}
+          {hovered && hoveredIdx !== null && (
+            <div
+              className="pointer-events-none absolute top-0 z-10 rounded-lg bg-popover px-3 py-2 text-caption whitespace-nowrap text-popover-foreground shadow-menu ring-1 ring-foreground/10"
+              style={{
+                left: `${((hoveredIdx + 0.5) / CHART_DAYS) * 100}%`,
+                transform: `translateX(-${(hoveredIdx / (CHART_DAYS - 1)) * 100}%)`,
+              }}
+            >
+              <div className="mb-1 font-medium">{hovered.date}</div>
+              <div className="space-y-0.5 text-muted-foreground tabular-nums">
+                <div>费用: {fmt(hovered.cost)}</div>
+                <div>
+                  Token:{' '}
+                  {formatTokens(hovered.inputTokens + hovered.outputTokens)}
+                </div>
+                <div>消息: {hovered.messages}</div>
               </div>
-              <div>消息: {chartData[hoveredIdx].messages}</div>
             </div>
           )}
 
           {/* Bar chart */}
-          <div className="flex items-end gap-1 h-40">
+          <div className="flex h-40 items-end gap-1 border-b border-surface-border">
             {chartData.map((d, i) => {
               const heightPercent = maxCost > 0 ? (d.cost / maxCost) * 100 : 0;
               const isHovered = hoveredIdx === i;
               return (
                 <div
                   key={d.date}
-                  className="flex-1 flex flex-col items-center justify-end h-full"
+                  className="flex h-full flex-1 flex-col items-center justify-end"
                   onMouseEnter={() => setHoveredIdx(i)}
                   onMouseLeave={() => setHoveredIdx(null)}
                 >
                   <div
-                    className={`w-full rounded-t transition-all cursor-pointer ${
-                      isHovered
-                        ? 'bg-brand-500 dark:bg-brand-400'
-                        : 'bg-brand-400/70 dark:bg-brand-600/70'
-                    }`}
+                    className={cn(
+                      'w-full max-w-10 cursor-pointer rounded-t-sm transition-colors',
+                      isHovered ? 'bg-primary' : 'bg-primary/75',
+                    )}
                     style={{
                       height: `${Math.max(heightPercent, d.cost > 0 ? 4 : 0)}%`,
                       minHeight: d.cost > 0 ? '4px' : '0px',
@@ -85,15 +99,16 @@ export default function DailyUsageChart() {
           </div>
 
           {/* X-axis labels */}
-          <div className="flex gap-1 mt-1.5">
+          <div className="mt-1.5 flex gap-1">
             {chartData.map((d, i) => (
               <div
                 key={d.date}
-                className={`flex-1 text-center text-[10px] leading-tight ${
+                className={cn(
+                  'flex-1 text-center text-micro whitespace-nowrap tabular-nums',
                   hoveredIdx === i
-                    ? 'text-primary dark:text-brand-400 font-medium'
-                    : 'text-zinc-400'
-                }`}
+                    ? 'font-medium text-foreground'
+                    : 'text-muted-foreground',
+                )}
               >
                 {/* Show every other label on small screens to avoid crowding */}
                 <span className="hidden sm:inline">{d.label}</span>
@@ -103,7 +118,7 @@ export default function DailyUsageChart() {
           </div>
 
           {/* Summary line */}
-          <div className="flex justify-between text-xs text-zinc-400 mt-3 pt-3 border-t border-zinc-100 dark:border-zinc-700">
+          <div className="mt-3 flex justify-between border-t border-surface-border pt-3 text-caption text-muted-foreground tabular-nums">
             <span>
               合计费用: {fmt(chartData.reduce((sum, d) => sum + d.cost, 0))}
             </span>
@@ -113,6 +128,6 @@ export default function DailyUsageChart() {
           </div>
         </div>
       )}
-    </div>
+    </section>
   );
 }
