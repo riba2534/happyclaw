@@ -32,7 +32,10 @@ import { writeExclusiveIpcResult } from './ipc-exclusive-result.js';
 import {
   DEFAULT_IPC_WATCHER_FALLBACK_MS,
   IpcWatcherManager,
+  resolveScopedIpcRoots,
+  type IpcProcessScope,
 } from './ipc-watcher-manager.js';
+import { pruneIdleIpcNamespaces } from './ipc-namespace-prune.js';
 import {
   deliverTextAndLocalImages,
   prepareLocalImages,
@@ -191,6 +194,7 @@ import {
   updateAgentInfo,
   archiveInactiveConversationAgents,
   deleteCompletedAgents,
+  getAgentStatusMap,
   deleteImGroupRecord,
   getRunningTaskAgentsByChat,
   markRunningTaskAgentsAsError,
@@ -11288,7 +11292,10 @@ function startIpcWatcher(): void {
 
   const fsp = fs.promises;
 
-  const processGroupIpc = async (sourceGroup: string) => {
+  const processGroupIpc = async (
+    sourceGroup: string,
+    scope: IpcProcessScope = { all: true },
+  ) => {
     if (shuttingDown) return;
     // Determine if this IPC directory belongs to an admin home group
     const sourceFolderEntries = Object.values(registeredGroups).filter(
@@ -11314,40 +11321,46 @@ function startIpcWatcher(): void {
       path: string;
       agentId: string | null;
       taskId: string | null;
-    }> = [{ path: groupIpcRoot, agentId: null, taskId: null }];
-    try {
-      const agentsDir = path.join(groupIpcRoot, 'agents');
-      const agentEntries = await fsp.readdir(agentsDir, {
-        withFileTypes: true,
-      });
-      for (const entry of agentEntries) {
-        if (entry.isDirectory()) {
-          ipcRoots.push({
-            path: path.join(agentsDir, entry.name),
-            agentId: entry.name,
-            taskId: null,
-          });
+    }> = scope.all
+      ? [{ path: groupIpcRoot, agentId: null, taskId: null }]
+      : resolveScopedIpcRoots(groupIpcRoot, scope.namespaces);
+    // Only full sweeps enumerate every historical namespace of the folder; a
+    // watcher event names the exact runtime root that changed.
+    if (scope.all) {
+      try {
+        const agentsDir = path.join(groupIpcRoot, 'agents');
+        const agentEntries = await fsp.readdir(agentsDir, {
+          withFileTypes: true,
+        });
+        for (const entry of agentEntries) {
+          if (entry.isDirectory()) {
+            ipcRoots.push({
+              path: path.join(agentsDir, entry.name),
+              agentId: entry.name,
+              taskId: null,
+            });
+          }
         }
+      } catch {
+        /* agents dir may not exist */
       }
-    } catch {
-      /* agents dir may not exist */
-    }
-    try {
-      const tasksRunDir = path.join(groupIpcRoot, 'tasks-run');
-      const taskRunEntries = await fsp.readdir(tasksRunDir, {
-        withFileTypes: true,
-      });
-      for (const entry of taskRunEntries) {
-        if (entry.isDirectory()) {
-          ipcRoots.push({
-            path: path.join(tasksRunDir, entry.name),
-            agentId: null,
-            taskId: entry.name,
-          });
+      try {
+        const tasksRunDir = path.join(groupIpcRoot, 'tasks-run');
+        const taskRunEntries = await fsp.readdir(tasksRunDir, {
+          withFileTypes: true,
+        });
+        for (const entry of taskRunEntries) {
+          if (entry.isDirectory()) {
+            ipcRoots.push({
+              path: path.join(tasksRunDir, entry.name),
+              agentId: null,
+              taskId: entry.name,
+            });
+          }
         }
+      } catch {
+        /* tasks-run dir may not exist */
       }
-    } catch {
-      /* tasks-run dir may not exist */
     }
 
     // Broadcast folder: the workspace folder whose IPC message we are
@@ -12796,11 +12809,36 @@ function startIpcWatcher(): void {
 
   // Start bounded fallback polling alongside event-driven watchers.
   ipcWatcherManager.startFallback();
+  // Retire namespaces left behind by deleted or archived sessions soon after
+  // boot; the periodic agent cleanup repeats this every ten minutes.
+  setTimeout(() => void pruneRetiredIpcNamespaces(), 60_000).unref();
 
   logger.info(
     { fallbackMs },
     'IPC watcher started (event-driven + bounded fallback)',
   );
+}
+
+let ipcNamespacePruneRunning = false;
+async function pruneRetiredIpcNamespaces(): Promise<void> {
+  const manager = ipcWatcherManager;
+  if (!manager || shuttingDown || ipcNamespacePruneRunning) return;
+  ipcNamespacePruneRunning = true;
+  try {
+    const result = await pruneIdleIpcNamespaces({
+      ipcBaseDir: path.join(DATA_DIR, 'ipc'),
+      isWatched: (folder, namespace) => manager.isWatched(folder, namespace),
+      agentStatuses: getAgentStatusMap,
+      currentStatus: (agentId) => getAgent(agentId)?.status,
+    });
+    if (result.removed > 0) {
+      logger.info(result, 'Removed IPC namespaces of retired sessions');
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Failed to prune retired IPC namespaces');
+  } finally {
+    ipcNamespacePruneRunning = false;
+  }
 }
 
 /** Atomically acknowledge send_message only after the host has completed its
@@ -22373,6 +22411,7 @@ async function main(): Promise<void> {
           ).toISOString(),
         );
         const cleaned = deleteCompletedAgents(tenMinutesAgo);
+        void pruneRetiredIpcNamespaces();
         const prunedCursors = pruneCursorState();
         if (cleaned > 0 || archived > 0 || prunedCursors > 0) {
           logger.info(
@@ -22690,19 +22729,21 @@ async function main(): Promise<void> {
       taskRunId,
       selectedProviderId,
     ) => {
+      // Isolated runs own a run-scoped namespace; a run without one writes to
+      // the workspace root. Either way the live runner needs a watcher, since
+      // the fast fallback only polls watched namespaces.
+      const taskNamespace = taskRunId ? { taskRunId } : {};
       let taskWatchReleased = false;
       const releaseTaskWatch = (): void => {
-        if (taskWatchReleased || !taskRunId) return;
+        if (taskWatchReleased) return;
         taskWatchReleased = true;
-        ipcWatcherManager?.unwatchRuntime(groupFolder, { taskRunId });
+        ipcWatcherManager?.unwatchRuntime(groupFolder, taskNamespace);
       };
-      if (taskRunId) {
-        ipcWatcherManager?.watchRuntime(groupFolder, { taskRunId });
-        // Isolated-task namespaces are run-scoped. Releasing on child close
-        // keeps fallback/provider process rotations reference-counted without
-        // retaining one watcher pair per historical task run.
-        proc.once('close', releaseTaskWatch);
-      }
+      ipcWatcherManager?.watchRuntime(groupFolder, taskNamespace);
+      // Isolated-task namespaces are run-scoped. Releasing on child close
+      // keeps fallback/provider process rotations reference-counted without
+      // retaining one watcher pair per historical task run.
+      proc.once('close', releaseTaskWatch);
       try {
         queue.registerProcess(groupJid, proc, {
           containerName,

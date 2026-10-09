@@ -13917,6 +13917,15 @@ export function createAgent(agent: SubAgent): void {
   );
 }
 
+/** Status of every session row, for retiring on-disk IPC namespaces. */
+export function getAgentStatusMap(): Map<string, string> {
+  const rows = db.prepare('SELECT id, status FROM agents').all() as Array<{
+    id: string;
+    status: string;
+  }>;
+  return new Map(rows.map((row) => [row.id, row.status]));
+}
+
 export function getAgent(id: string): SubAgent | undefined {
   const row = db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as
     | Record<string, unknown>
