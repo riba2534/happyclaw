@@ -1071,7 +1071,7 @@ function TokenComposition({
         </p>
       </div>
       <div
-        className="flex h-2 overflow-hidden rounded-full bg-muted"
+        className="flex h-2 overflow-hidden rounded-full bg-surface-selected"
         aria-hidden="true"
       >
         {total > 0 &&
@@ -1280,7 +1280,7 @@ function AttributionTable({
           <span className="inline-flex items-center justify-end gap-2">
             <span
               aria-hidden="true"
-              className="hidden h-1.5 w-16 overflow-hidden rounded-full bg-muted sm:block"
+              className="hidden h-1.5 w-16 overflow-hidden rounded-full bg-surface-selected sm:block"
             >
               <span
                 className="block h-full rounded-full bg-primary"

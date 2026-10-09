@@ -217,7 +217,7 @@ export function TaskCard({
       onClick={onOpen ? () => onOpen(task.id) : undefined}
       className="gap-3 py-2.5"
       media={
-        <span className="flex size-8 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+        <span className="flex size-8 items-center justify-center rounded-lg bg-surface-selected text-muted-foreground">
           {isScript ? (
             <SquareTerminal className="size-4" />
           ) : (

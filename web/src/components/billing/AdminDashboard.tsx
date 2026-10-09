@@ -89,7 +89,7 @@ function PlanDistribution({
                     {item.count} ({pct}%)
                   </span>
                 </div>
-                <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                <div className="h-1.5 overflow-hidden rounded-full bg-surface-selected">
                   <div
                     className="h-full rounded-full bg-primary transition-[width]"
                     style={{ width: `${pct}%` }}

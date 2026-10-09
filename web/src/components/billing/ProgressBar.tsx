@@ -18,7 +18,10 @@ export function ProgressBar({
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={Math.round(percent)}
-      className={cn('h-1.5 overflow-hidden rounded-full bg-muted', className)}
+      className={cn(
+        'h-1.5 overflow-hidden rounded-full bg-surface-selected',
+        className,
+      )}
     >
       <div
         className={cn('h-full rounded-full transition-[width]', color)}

@@ -506,7 +506,7 @@ export function TaskDetail({ task, initialEditing = false }: TaskDetailProps) {
                   className="resize-none font-mono"
                 />
               ) : (
-                <pre className="whitespace-pre-wrap break-all rounded-lg bg-muted/60 px-3 py-2 font-mono text-label text-foreground">
+                <pre className="whitespace-pre-wrap break-all rounded-lg bg-surface-hover px-3 py-2 font-mono text-label text-foreground">
                   {task.script_command}
                 </pre>
               )}
@@ -533,7 +533,7 @@ export function TaskDetail({ task, initialEditing = false }: TaskDetailProps) {
                 className="field-sizing-fixed min-h-40 max-h-[400px] resize-y overflow-y-auto"
               />
             ) : (
-              <div className="max-h-[300px] overflow-y-auto whitespace-pre-wrap rounded-lg bg-muted/60 px-3 py-2 text-body text-foreground">
+              <div className="max-h-[300px] overflow-y-auto whitespace-pre-wrap rounded-lg bg-surface-hover px-3 py-2 text-body text-foreground">
                 {task.prompt}
               </div>
             )}
@@ -627,7 +627,7 @@ export function TaskDetail({ task, initialEditing = false }: TaskDetailProps) {
                   />
                 )
               ) : task.schedule_type === 'cron' ? (
-                <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-caption text-muted-foreground">
+                <code className="rounded bg-surface-selected px-1.5 py-0.5 font-mono text-caption text-muted-foreground">
                   {task.schedule_value}
                 </code>
               ) : (
@@ -1000,7 +1000,7 @@ export function TaskDetail({ task, initialEditing = false }: TaskDetailProps) {
             )}
           </DialogHeader>
 
-          <div className="min-h-0 overflow-y-auto rounded-lg bg-muted/40 p-4 ring-1 ring-surface-border">
+          <div className="min-h-0 overflow-y-auto rounded-lg bg-surface-hover p-4 ring-1 ring-surface-border">
             {selectedLog?.error && (
               <div className="mb-4 rounded-lg bg-error/10 p-3 text-body text-error">
                 <div className="mb-1 font-medium">执行错误</div>

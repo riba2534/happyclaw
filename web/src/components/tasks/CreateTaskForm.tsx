@@ -713,15 +713,15 @@ export function CreateTaskForm({
               {formData.scheduleType === 'cron' && (
                 <>
                   格式: 分 时 日 月 星期（北京时间 UTC+8）。常用:{' '}
-                  <code className="rounded bg-muted px-1 font-mono">
+                  <code className="rounded bg-surface-selected px-1 font-mono">
                     */5 * * * *
                   </code>{' '}
                   每5分钟,{' '}
-                  <code className="rounded bg-muted px-1 font-mono">
+                  <code className="rounded bg-surface-selected px-1 font-mono">
                     0 9 * * 1-5
                   </code>{' '}
                   工作日9点,{' '}
-                  <code className="rounded bg-muted px-1 font-mono">
+                  <code className="rounded bg-surface-selected px-1 font-mono">
                     @daily
                   </code>{' '}
                   每天
