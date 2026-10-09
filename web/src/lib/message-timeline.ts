@@ -61,6 +61,10 @@ export function getMessageDisplayTimestamp(
   return message.timestamp;
 }
 
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 export function orderMessagesForTimeline<T extends TimelineMessageLike>(
   messages: readonly T[],
 ): T[] {
@@ -68,12 +72,14 @@ export function orderMessagesForTimeline<T extends TimelineMessageLike>(
     .filter(isMessageVisibleInTimeline)
     .slice()
     .sort((left, right) => {
+      // ISO timestamps and ids order correctly by code unit; locale-aware
+      // comparison was several times slower on long histories.
       const leftTimestamp = getMessageDisplayTimestamp(left);
       const rightTimestamp = getMessageDisplayTimestamp(right);
       if (leftTimestamp === rightTimestamp) {
-        return left.id.localeCompare(right.id);
+        return compareCodeUnits(left.id, right.id);
       }
-      return leftTimestamp.localeCompare(rightTimestamp);
+      return compareCodeUnits(leftTimestamp, rightTimestamp);
     });
 }
 

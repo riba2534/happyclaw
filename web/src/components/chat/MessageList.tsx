@@ -78,6 +78,23 @@ const DATE_LABEL_FORMATTER = new Intl.DateTimeFormat('zh-CN', {
   day: 'numeric',
 });
 
+/**
+ * Day label of a timestamp, formatted once per local calendar day: grouping
+ * reruns over the whole history on every new message or usage update, and
+ * formatting each of 5,000 dates took ~11ms of it.
+ */
+function dateLabel(timestamp: string, cache: Map<number, string>): string {
+  const date = new Date(timestamp);
+  const day =
+    date.getFullYear() * 10_000 + date.getMonth() * 100 + date.getDate();
+  let label = cache.get(day);
+  if (label === undefined) {
+    label = DATE_LABEL_FORMATTER.format(date);
+    cache.set(day, label);
+  }
+  return label;
+}
+
 const quickPrompts = [
   { icon: Code2, title: '分析代码', desc: '帮我阅读和分析一段代码的逻辑' },
   { icon: Zap, title: '自动化脚本', desc: '编写一个自动化处理任务的脚本' },
@@ -190,11 +207,10 @@ export const MessageList = memo(function MessageList({
 
   // Compute flatMessages (with date headers) before virtualizer
   const flatMessages = useMemo<FlatItem[]>(() => {
+    const labels = new Map<number, string>();
     const grouped = timelineMessages.reduce(
       (acc, msg) => {
-        const date = DATE_LABEL_FORMATTER.format(
-          new Date(getMessageDisplayTimestamp(msg)),
-        );
+        const date = dateLabel(getMessageDisplayTimestamp(msg), labels);
         if (!acc[date]) acc[date] = [];
         acc[date].push(msg);
         return acc;

@@ -69,16 +69,29 @@ interface MessageAttachment {
   originalBytes?: number;
 }
 
+// Shared formatters: toLocaleString with options builds a new formatter on
+// every call (~60µs each), twice per bubble render.
+const HOUR_MINUTE_FORMATTER = new Intl.DateTimeFormat('zh-CN', {
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});
+const FULL_TIME_FORMATTER = new Intl.DateTimeFormat('zh-CN', {
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false,
+});
+
 /** 今天显示 HH:mm，其余日期显示 MM-DD HH:mm；完整时间放在 title 里。 */
 function formatShortTime(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
   const now = new Date();
-  const hm = date.toLocaleTimeString('zh-CN', {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
+  const hm = HOUR_MINUTE_FORMATTER.format(date);
   if (date.toDateString() === now.toDateString()) return hm;
   const md = `${date.getMonth() + 1}-${String(date.getDate()).padStart(2, '0')}`;
   return date.getFullYear() === now.getFullYear()
@@ -265,17 +278,10 @@ export const MessageBubble = memo(
       presentedContent === message.content
         ? message
         : { ...message, content: presentedContent };
-    const time = new Date(getMessageDisplayTimestamp(message))
-      .toLocaleString('zh-CN', {
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false,
-      })
-      .replace(/\//g, '-');
+    const displayDate = new Date(getMessageDisplayTimestamp(message));
+    const time = Number.isNaN(displayDate.getTime())
+      ? 'Invalid Date'
+      : FULL_TIME_FORMATTER.format(displayDate).replace(/\//g, '-');
     const shortTime = formatShortTime(getMessageDisplayTimestamp(message));
 
     // Parse image attachments
@@ -700,10 +706,19 @@ export const MessageBubble = memo(
       </div>
     );
   },
+  // Every message field the bubble renders: attachments and workflow runs
+  // used to be missing, so updates to them kept showing the stale version.
   (prev, next) =>
     prev.message.id === next.message.id &&
     prev.message.content === next.message.content &&
     prev.message.token_usage === next.message.token_usage &&
+    prev.message.attachments === next.message.attachments &&
+    prev.message.workflow_runs === next.message.workflow_runs &&
+    prev.message.source_kind === next.message.source_kind &&
+    prev.message.finalization_reason === next.message.finalization_reason &&
+    prev.message.timestamp === next.message.timestamp &&
+    prev.message.delivery_updated_at === next.message.delivery_updated_at &&
+    prev.message.delivery_status === next.message.delivery_status &&
     prev.showTime === next.showTime &&
     prev.thinkingContent === next.thinkingContent &&
     prev.thinkingDurationMs === next.thinkingDurationMs &&
