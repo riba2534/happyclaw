@@ -377,10 +377,19 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
       if (pollRef.current) clearTimeout(pollRef.current);
       schedulePoll();
     };
-    const offConnected = wsManager.on('connected', () => {
-      if (pollRef.current) clearTimeout(pollRef.current);
-      void poll();
-    });
+    const offConnected = wsManager.on(
+      'connected',
+      (data: { reconnect?: boolean }) => {
+        // The page's first open only switches cadence: the initial message
+        // load is already in flight or done.
+        if (!data?.reconnect) {
+          reschedule();
+          return;
+        }
+        if (pollRef.current) clearTimeout(pollRef.current);
+        void poll();
+      },
+    );
     const offDisconnected = wsManager.on('disconnected', reschedule);
 
     document.addEventListener('visibilitychange', handleVisibility);

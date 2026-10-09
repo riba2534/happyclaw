@@ -332,6 +332,30 @@ const loadMessagesInFlight = new Map<string, Promise<void>>();
 const loadAgentsInFlight = new Map<string, Promise<void>>();
 let loadGroupsInFlight: Promise<void> | null = null;
 
+interface GroupsResponse {
+  groups: Record<string, GroupInfo>;
+  admin_host_only_mode?: boolean;
+}
+
+/**
+ * index.html starts GET /api/groups while the HTML is parsed on signed-in
+ * routes (see web/index.html); the first loadGroups takes that response
+ * instead of waiting for the app shell to mount before asking.
+ */
+async function takeGroupsPrewarm(): Promise<GroupsResponse | null> {
+  if (typeof window === 'undefined') return null;
+  const holder = window as { __groupsPrewarm?: Promise<unknown> };
+  const prewarm = holder.__groupsPrewarm;
+  if (!prewarm) return null;
+  holder.__groupsPrewarm = undefined;
+  try {
+    const data = (await prewarm) as GroupsResponse | null;
+    return data && typeof data.groups === 'object' && data.groups ? data : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Evict oldest entries when cache exceeds capacity (relies on insertion order) */
 function capThinkingCache<V>(cache: Record<string, V>): Record<string, V> {
   const keys = Object.keys(cache);
@@ -1814,10 +1838,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     loadGroupsInFlight = (async () => {
       set({ loading: true });
       try {
-        const data = await api.get<{
-          groups: Record<string, GroupInfo>;
-          admin_host_only_mode?: boolean;
-        }>('/api/groups');
+        const data =
+          (await takeGroupsPrewarm()) ??
+          (await api.get<GroupsResponse>('/api/groups'));
         const groups = Object.fromEntries(
           Object.entries(data.groups).map(([jid, group]) => [
             jid,

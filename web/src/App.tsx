@@ -13,17 +13,20 @@ import {
   shouldPreloadAppShell,
   shouldPreloadChatRoute,
 } from './utils/chat-route-preload';
+import { preloadedComponent } from './lib/preloaded-component';
 import { Toaster } from '@/components/ui/sonner';
 import { ConfirmHost } from '@/components/common/ConfirmHost';
 
-let chatPagePromise:
-  | Promise<{ default: typeof import('./pages/ChatPage').ChatPage }>
-  | undefined;
-const loadChatPage = () =>
-  (chatPagePromise ??= import('./pages/ChatPage').then((m) => ({
-    default: m.ChatPage,
-  })));
-const ChatPage = lazy(loadChatPage);
+// The shell and chat page are preloaded at entry and render without
+// suspending once loaded (see preloadedComponent): with lazy() each load
+// waited out React's 300ms Suspense reveal throttle before AppLayout could
+// mount and start the first data requests.
+const chatPageRoute = preloadedComponent(
+  () => import('./pages/ChatPage').then((m) => ({ default: m.ChatPage })),
+  ChatRouteFallback,
+);
+const loadChatPage = chatPageRoute.preload;
+const ChatPage = chatPageRoute.Component;
 const LoginPage = lazy(() =>
   import('./pages/LoginPage').then((m) => ({ default: m.LoginPage })),
 );
@@ -43,16 +46,15 @@ const SetupChannelsPage = lazy(() =>
     default: m.SetupChannelsPage,
   })),
 );
-let appLayoutPromise:
-  | Promise<{
-      default: typeof import('./components/layout/AppLayout').AppLayout;
-    }>
-  | undefined;
-const loadAppLayout = () =>
-  (appLayoutPromise ??= import('./components/layout/AppLayout').then((m) => ({
-    default: m.AppLayout,
-  })));
-const AppLayout = lazy(loadAppLayout);
+const appLayoutRoute = preloadedComponent(
+  () =>
+    import('./components/layout/AppLayout').then((m) => ({
+      default: m.AppLayout,
+    })),
+  ShellFallback,
+);
+const loadAppLayout = appLayoutRoute.preload;
+const AppLayout = appLayoutRoute.Component;
 
 // Start the expensive chat split as soon as the entry executes, but only for
 // the default/chat routes. Static HTML modulepreloads made login, setup, tasks,
@@ -151,6 +153,18 @@ function ShellFallback() {
   );
 }
 
+function ChatRouteFallback() {
+  return (
+    <div
+      className="flex h-full items-center justify-center text-sm text-muted-foreground motion-safe:animate-pulse"
+      role="status"
+      aria-live="polite"
+    >
+      正在加载会话…
+    </div>
+  );
+}
+
 function lazyShell(element: ReactNode) {
   return <Suspense fallback={<ShellFallback />}>{element}</Suspense>;
 }
@@ -171,25 +185,14 @@ const appRoutes = createRoutesFromElements(
     />
 
     {/* Protected Routes with Layout */}
-    <Route element={<AuthGuard>{lazyShell(<AppLayout />)}</AuthGuard>}>
-      <Route
-        path="/chat/:groupFolder?"
-        element={
-          <Suspense
-            fallback={
-              <div
-                className="flex h-full items-center justify-center text-sm text-muted-foreground motion-safe:animate-pulse"
-                role="status"
-                aria-live="polite"
-              >
-                正在加载会话…
-              </div>
-            }
-          >
-            <ChatPage />
-          </Suspense>
-        }
-      />
+    <Route
+      element={
+        <AuthGuard>
+          <AppLayout />
+        </AuthGuard>
+      }
+    >
+      <Route path="/chat/:groupFolder?" element={<ChatPage />} />
       <Route path="/groups" element={<Navigate to="/chat" replace />} />
       <Route
         path="/agent-profiles"

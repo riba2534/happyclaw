@@ -39,6 +39,28 @@
       }).catch(function () {
         return null;
       });
+      // 已登录页面同时预发 /api/groups：侧边栏和会话路由都要等工作区列表，
+      // 否则它要等应用壳挂载后才发出。stores/chat.ts 的首次 loadGroups 一次性
+      // 消费 window.__groupsPrewarm；登录、注册和初始化页不发，未登录时为 null。
+      (function () {
+        var base = '%BASE_URL%';
+        var hashRoute =
+          location.hash.indexOf('#/') === 0 ? location.hash.slice(1) : '';
+        var route = hashRoute || location.pathname;
+        if (!hashRoute && route.indexOf(base) === 0) {
+          route = '/' + route.slice(base.length);
+        }
+        if (/^\/(?:login|register|setup)(?:\/|$)/.test(route)) return;
+        window.__groupsPrewarm = fetch(base + 'api/groups', {
+          credentials: 'include',
+        })
+          .then(function (res) {
+            return res.ok ? res.json() : null;
+          })
+          .catch(function () {
+            return null;
+          });
+      })();
     </script>
 
     <title>HappyClaw</title>
