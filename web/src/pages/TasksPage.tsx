@@ -1,18 +1,25 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Clock, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import { TaskCard } from '../components/tasks/TaskCard';
+import { TaskDetail } from '../components/tasks/TaskDetail';
 import { CreateTaskForm } from '../components/tasks/CreateTaskForm';
 import { useTasksStore, type ScheduledTask } from '../stores/tasks';
 import { useAuthStore } from '../stores/auth';
 import { useGroupsStore } from '../stores/groups';
 import { showToast } from '../utils/toast';
+import { confirmDialog } from '@/stores/confirm';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { EmptyState } from '@/components/common/EmptyState';
+import { IconButton } from '@/components/common/IconButton';
+import { ListGroup } from '@/components/common/ListRow';
+import { PageContainer } from '@/components/common/PageContainer';
 import { PageHeader } from '@/components/common/PageHeader';
-import { SkeletonCardList } from '@/components/common/Skeletons';
+import { SearchInput } from '@/components/common/SearchInput';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { Sheet, SheetContent } from '@/components/ui/sheet';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { cn } from '@/lib/utils';
 
 type TaskView = 'current' | 'trash';
 type PendingTaskAction =
@@ -53,7 +60,21 @@ export function TasksPage() {
   const [mutatingTaskIds, setMutatingTaskIds] = useState<Set<string>>(
     new Set(),
   );
+  // The detail sheet keeps rendering the last task while it animates out.
+  const [detail, setDetail] = useState<{
+    id: string;
+    edit: boolean;
+    nonce: number;
+  } | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const detailNonce = useRef(0);
   const isAdmin = user?.role === 'admin';
+
+  const openDetail = (id: string, options?: { edit?: boolean }) => {
+    detailNonce.current += 1;
+    setDetail({ id, edit: !!options?.edit, nonce: detailNonce.current });
+    setDetailOpen(true);
+  };
 
   useEffect(() => {
     loadTasks();
@@ -123,9 +144,12 @@ export function TasksPage() {
 
   const handlePause = async (id: string) => {
     if (
-      confirm(
-        '暂停后续计划？\n\n当前正在运行的任务会继续执行。如需终止，请使用“停止当前运行”。',
-      )
+      await confirmDialog({
+        title: '暂停后续计划？',
+        message:
+          '当前正在运行的任务会继续执行。如需终止，请使用“停止当前运行”。',
+        confirmText: '暂停',
+      })
     ) {
       await updateTaskStatus(id, 'paused');
     }
@@ -133,11 +157,19 @@ export function TasksPage() {
 
   const handleResume = async (id: string) => {
     const task = tasks.find((candidate) => candidate.id === id);
-    const message =
+    const confirmed =
       task?.schedule_type === 'once'
-        ? `启用这个一次性任务？\n\n任务会在 ${new Date(task.schedule_value).toLocaleString('zh-CN')} 执行；如果该时间已过，请先修改为未来时间。`
-        : '确定要恢复此任务吗？';
-    if (confirm(message)) {
+        ? await confirmDialog({
+            title: '启用这个一次性任务？',
+            message: `任务会在 ${new Date(task.schedule_value).toLocaleString('zh-CN')} 执行；如果该时间已过，请先修改为未来时间。`,
+            confirmText: '启用',
+          })
+        : await confirmDialog({
+            title: '恢复后续计划',
+            message: '确定要恢复此任务吗？',
+            confirmText: '恢复',
+          });
+    if (confirmed) {
       await updateTaskStatus(id, 'active');
     }
   };
@@ -152,9 +184,13 @@ export function TasksPage() {
 
   const handleStopRun = async (runId: string | number) => {
     if (
-      confirm(
-        '停止当前运行？\n\n本次运行会被取消，后续计划不受影响。已经完成的外部操作无法撤销。',
-      )
+      await confirmDialog({
+        title: '停止当前运行？',
+        message:
+          '本次运行会被取消，后续计划不受影响。已经完成的外部操作无法撤销。',
+        confirmText: '停止运行',
+        variant: 'danger',
+      })
     ) {
       await stopTaskRun(runId);
     }
@@ -162,9 +198,12 @@ export function TasksPage() {
 
   const handleRestore = async (id: string) => {
     if (
-      !confirm(
-        '恢复这个任务？\n\n任务会恢复为暂停状态，不会立即触发。一次性任务若已过原定时间，需要先修改为未来时间再启用。',
-      )
+      !(await confirmDialog({
+        title: '恢复这个任务？',
+        message:
+          '任务会恢复为暂停状态，不会立即触发。一次性任务若已过原定时间，需要先修改为未来时间再启用。',
+        confirmText: '恢复任务',
+      }))
     ) {
       return;
     }
@@ -274,6 +313,33 @@ export function TasksPage() {
   const pendingIsPurge = pendingAction?.kind === 'purge';
   const pendingCount = pendingAction?.ids.length ?? 0;
 
+  const detailTask = detail
+    ? tasks.find((task) => task.id === detail.id)
+    : undefined;
+
+  const renderRows = (rows: ScheduledTask[], trash = false) => (
+    <ListGroup>
+      {rows.map((task) => (
+        <TaskCard
+          key={task.id}
+          task={task}
+          workspaceName={groupNames[task.chat_jid]}
+          selected={detailOpen && detail?.id === task.id}
+          onOpen={openDetail}
+          isRunning={trash ? false : runningTaskIds.has(task.id)}
+          isMutating={mutatingTaskIds.has(task.id)}
+          onPause={handlePause}
+          onResume={handleResume}
+          onDelete={handleDelete}
+          onRunNow={trash ? undefined : runTaskNow}
+          onRestore={trash ? handleRestore : undefined}
+          onPurge={trash ? handlePurge : undefined}
+          onStopRun={handleStopRun}
+        />
+      ))}
+    </ListGroup>
+  );
+
   const renderCurrentTasks = () => {
     if (filteredLiveTasks.length === 0) {
       if (normalizedQuery) {
@@ -317,7 +383,7 @@ export function TasksPage() {
     }
 
     return (
-      <div className="space-y-7">
+      <div className="space-y-6">
         {currentSections.map(
           (section) =>
             section.tasks.length > 0 && (
@@ -327,28 +393,14 @@ export function TasksPage() {
               >
                 <h2
                   id={`${section.key}-tasks`}
-                  className="mb-3 text-sm font-semibold text-foreground"
+                  className="mb-2 flex items-center gap-1.5 px-1 text-caption font-medium text-muted-foreground"
                 >
                   {section.title}
-                  <span className="ml-1.5 font-normal text-muted-foreground">
+                  <span className="font-normal text-faint-foreground tabular-nums">
                     {section.tasks.length}
                   </span>
                 </h2>
-                <div className="space-y-3">
-                  {section.tasks.map((task) => (
-                    <TaskCard
-                      key={task.id}
-                      task={task}
-                      isRunning={runningTaskIds.has(task.id)}
-                      isMutating={mutatingTaskIds.has(task.id)}
-                      onPause={handlePause}
-                      onResume={handleResume}
-                      onDelete={handleDelete}
-                      onRunNow={runTaskNow}
-                      onStopRun={handleStopRun}
-                    />
-                  ))}
-                </div>
+                {renderRows(section.tasks)}
               </section>
             ),
         )}
@@ -387,122 +439,116 @@ export function TasksPage() {
         <h2 id="trashed-tasks" className="sr-only">
           回收站任务
         </h2>
-        <div className="space-y-3">
-          {filteredDeletedTasks.map((task) => (
-            <TaskCard
-              key={task.id}
-              task={task}
-              isRunning={false}
-              isMutating={mutatingTaskIds.has(task.id)}
-              onPause={handlePause}
-              onResume={handleResume}
-              onDelete={handleDelete}
-              onRestore={handleRestore}
-              onPurge={handlePurge}
-              onStopRun={handleStopRun}
-            />
-          ))}
-        </div>
+        {renderRows(filteredDeletedTasks, true)}
       </section>
     );
   };
 
   return (
-    <div className="min-h-full bg-background">
-      <div className="mx-auto max-w-6xl p-4 sm:p-6">
-        <PageHeader
-          title="定时任务管理"
-          subtitle={`当前 ${liveTasks.length} · ${enabledTasks.length} 已启用 · ${pausedTasks.length} 已暂停 · ${liveRunCount} 执行中${retryingCount > 0 ? ` · ${retryingCount} 等待重试` : ''} · 回收站 ${deletedTasks.length}`}
-          className="mb-5 flex-col !items-stretch [&>div:first-child]:w-full [&>div:last-child]:justify-end sm:flex-row sm:!items-center sm:[&>div:first-child]:w-auto"
-          actions={
-            <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-              <Button variant="outline" onClick={loadTasks} disabled={loading}>
-                <RefreshCw className={loading ? 'animate-spin' : ''} />
-                刷新
-              </Button>
-              <Button onClick={() => setShowCreateForm(true)}>
-                <Plus />
-                创建任务
-              </Button>
-            </div>
-          }
-        />
+    <PageContainer>
+      <PageHeader
+        title="任务"
+        subtitle={`当前 ${liveTasks.length} · ${enabledTasks.length} 已启用 · ${pausedTasks.length} 已暂停 · ${liveRunCount} 执行中${retryingCount > 0 ? ` · ${retryingCount} 等待重试` : ''} · 回收站 ${deletedTasks.length}`}
+        actions={
+          <>
+            <IconButton
+              label="刷新"
+              icon={<RefreshCw className={cn(loading && 'animate-spin')} />}
+              variant="outline"
+              size="icon"
+              onClick={loadTasks}
+              disabled={loading}
+            />
+            <Button onClick={() => setShowCreateForm(true)}>
+              <Plus />
+              新建任务
+            </Button>
+          </>
+        }
+      />
 
-        {error && (
-          <div
-            role="alert"
-            className="mb-4 flex items-center justify-between rounded-lg border border-error/20 bg-error-bg p-3"
-          >
-            <span className="text-sm text-error">{error}</span>
-            <button
-              type="button"
-              onClick={() => useTasksStore.setState({ error: null })}
-              className="rounded p-1 text-error transition-colors hover:bg-error/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-error/40"
-              aria-label="关闭错误提示"
-            >
-              <X size={16} />
-            </button>
-          </div>
-        )}
-
-        <div className="mb-5 flex flex-col gap-3 border-b border-border pb-4 sm:flex-row sm:items-center sm:justify-between">
-          <Tabs
-            value={view}
-            onValueChange={(value) => setView(value as TaskView)}
-            className="block"
-          >
-            <TabsList aria-label="任务视图">
-              <TabsTrigger value="current">
-                当前任务
-                <span className="text-xs text-muted-foreground">
-                  {liveTasks.length}
-                </span>
-              </TabsTrigger>
-              <TabsTrigger value="trash">
-                回收站
-                <span className="text-xs text-muted-foreground">
-                  {deletedTasks.length}
-                </span>
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
-
-          <div className="flex min-w-0 flex-1 flex-col gap-2 sm:max-w-xl sm:flex-row sm:justify-end">
-            <label className="relative block min-w-0 flex-1 sm:max-w-xs">
-              <span className="sr-only">搜索定时任务</span>
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="搜索任务或工作区"
-                className="pl-8"
-              />
-            </label>
-            {view === 'trash' && purgeableDeletedTasks.length > 0 && (
-              <Button
-                variant="destructive"
-                onClick={() =>
-                  setPendingAction({
-                    kind: 'purge',
-                    ids: purgeableDeletedTasks.map((task) => task.id),
-                  })
-                }
-              >
-                <Trash2 />
-                清空回收站
-              </Button>
-            )}
-          </div>
+      {error && (
+        <div
+          role="alert"
+          className="mt-4 flex items-start justify-between gap-3 rounded-lg bg-error/10 px-3 py-2.5 text-body text-error"
+        >
+          <span className="min-w-0 py-0.5">{error}</span>
+          <IconButton
+            label="关闭错误提示"
+            icon={<X />}
+            size="icon-xs"
+            hideTooltip
+            onClick={() => useTasksStore.setState({ error: null })}
+            className="text-error hover:bg-error/10 hover:text-error"
+          />
         </div>
+      )}
 
-        {loading && tasks.length === 0 ? (
-          <SkeletonCardList count={4} />
-        ) : view === 'current' ? (
-          renderCurrentTasks()
-        ) : (
-          renderTrash()
-        )}
+      <div className="mt-6 mb-5 flex flex-col-reverse gap-3 border-b border-surface-border sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+        <Tabs
+          value={view}
+          onValueChange={(value) => setView(value as TaskView)}
+          className="self-stretch"
+        >
+          <TabsList
+            variant="line"
+            aria-label="任务视图"
+            className="h-10 gap-4 p-0 group-data-horizontal/tabs:h-10"
+          >
+            <TabsTrigger
+              value="current"
+              className="flex-none px-0.5 group-data-horizontal/tabs:after:-bottom-px"
+            >
+              当前任务
+              <span className="text-caption font-normal text-muted-foreground tabular-nums">
+                {liveTasks.length}
+              </span>
+            </TabsTrigger>
+            <TabsTrigger
+              value="trash"
+              className="flex-none px-0.5 group-data-horizontal/tabs:after:-bottom-px"
+            >
+              回收站
+              <span className="text-caption font-normal text-muted-foreground tabular-nums">
+                {deletedTasks.length}
+              </span>
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+
+        <div className="flex min-w-0 items-center gap-2 sm:pb-1">
+          <SearchInput
+            value={query}
+            onChange={setQuery}
+            debounce={150}
+            placeholder="搜索任务或工作区"
+            ariaLabel="搜索定时任务"
+            className="min-w-0 flex-1 sm:w-64 sm:flex-none"
+          />
+          {view === 'trash' && purgeableDeletedTasks.length > 0 && (
+            <Button
+              variant="destructive"
+              onClick={() =>
+                setPendingAction({
+                  kind: 'purge',
+                  ids: purgeableDeletedTasks.map((task) => task.id),
+                })
+              }
+            >
+              <Trash2 />
+              清空回收站
+            </Button>
+          )}
+        </div>
       </div>
+
+      {loading && tasks.length === 0 ? (
+        <TaskListSkeleton />
+      ) : view === 'current' ? (
+        renderCurrentTasks()
+      ) : (
+        renderTrash()
+      )}
 
       {showCreateForm && (
         <CreateTaskForm
@@ -514,6 +560,18 @@ export function TasksPage() {
           isAdmin={isAdmin}
         />
       )}
+
+      <Sheet open={detailOpen && !!detailTask} onOpenChange={setDetailOpen}>
+        <SheetContent className="gap-0 data-[side=right]:w-full data-[side=right]:sm:max-w-xl">
+          {detail && detailTask && (
+            <TaskDetail
+              key={`${detail.id}:${detail.nonce}`}
+              task={detailTask}
+              initialEditing={detail.edit}
+            />
+          )}
+        </SheetContent>
+      </Sheet>
 
       <ConfirmDialog
         open={!!pendingAction}
@@ -543,6 +601,23 @@ export function TasksPage() {
         confirmVariant="danger"
         loading={actionLoading}
       />
-    </div>
+    </PageContainer>
+  );
+}
+
+function TaskListSkeleton() {
+  return (
+    <ListGroup aria-busy="true" aria-label="正在加载任务">
+      {Array.from({ length: 4 }, (_, index) => (
+        <div key={index} className="flex items-center gap-3 px-4 py-3">
+          <Skeleton className="size-8 rounded-lg" />
+          <div className="min-w-0 flex-1 space-y-2">
+            <Skeleton className="h-4 w-48 max-w-full" />
+            <Skeleton className="h-3 w-72 max-w-full" />
+          </div>
+          <Skeleton className="hidden h-3 w-24 sm:block" />
+        </div>
+      ))}
+    </ListGroup>
   );
 }
