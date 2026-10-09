@@ -8,7 +8,14 @@ export function getErrorMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
-export function samePermissions(left: Permission[], right: Permission[]): boolean {
+export function formatDateTime(value: string | null | undefined): string {
+  return value ? new Date(value).toLocaleString('zh-CN') : '-';
+}
+
+export function samePermissions(
+  left: Permission[],
+  right: Permission[],
+): boolean {
   if (left.length !== right.length) return false;
   const a = [...left].sort();
   const b = [...right].sort();
