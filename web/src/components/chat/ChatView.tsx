@@ -1070,7 +1070,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
           !Object.values(imStatus).some(Boolean) &&
           !imBannerDismissed && (
             <div className="flex min-h-9 shrink-0 items-center gap-2 border-b border-surface-border bg-muted/40 px-4 py-1.5 text-caption text-muted-foreground lg:px-5">
-              <Link className="size-3.5 shrink-0 text-primary" />
+              <Link className="size-3.5 shrink-0 text-primary-text" />
               <span className="min-w-0 flex-1">
                 未配置消息渠道（飞书 / Telegram / Discord / QQ / 微信 / 钉钉 /
                 WhatsApp），消息无法与 HappyClaw 的直接对话互通

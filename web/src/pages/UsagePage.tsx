@@ -928,7 +928,7 @@ export function UsagePage() {
                   需要核对余额和交易时，请前往{' '}
                   <Link
                     to="/billing"
-                    className="font-medium text-primary hover:underline"
+                    className="font-medium text-primary-text hover:underline"
                   >
                     账单
                   </Link>

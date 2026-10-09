@@ -816,7 +816,7 @@ export function TaskDetail({ task, initialEditing = false }: TaskDetailProps) {
             <Property label="工作区目录">
               <Link
                 to={`/chat/${task.group_folder}`}
-                className="break-all text-primary hover:underline"
+                className="break-all text-primary-text hover:underline"
               >
                 {task.group_folder}
               </Link>
@@ -826,7 +826,7 @@ export function TaskDetail({ task, initialEditing = false }: TaskDetailProps) {
               <Property label="旧版任务工作区">
                 <Link
                   to={`/chat/${task.workspace_folder}`}
-                  className="break-all text-primary hover:underline"
+                  className="break-all text-primary-text hover:underline"
                 >
                   {task.workspace_folder}
                 </Link>

@@ -381,7 +381,7 @@ function WorkspaceRow({
             aria-label="运行中"
           />
         ) : unread > 0 && !isActive ? (
-          <span className="min-w-4 shrink-0 rounded-full bg-primary/12 px-1 text-center text-micro font-medium text-primary tabular-nums">
+          <span className="min-w-4 shrink-0 rounded-full bg-primary/12 px-1 text-center text-micro font-medium text-primary-text tabular-nums">
             {unread > 99 ? '99+' : unread}
           </span>
         ) : null}

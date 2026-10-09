@@ -58,6 +58,11 @@ describe('web design-system guard', () => {
     });
   });
 
+  test('colors text with primary-text so dark schemes stay legible', () => {
+    // --primary is tuned for fills; dark orange needs a lighter text tone.
+    expectWithinAllowance(countBy(/\btext-primary(?![\w-])/g), {});
+  });
+
   test('asks for confirmation through confirmDialog()', () => {
     expectWithinAllowance(countBy(/(?<![\w.])(?:window\.)?confirm\(/g), {
       // Unsaved-change navigation guards must stay synchronous.

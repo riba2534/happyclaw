@@ -242,7 +242,7 @@ export function MarkdownContent({
               href={href}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-primary hover:text-primary underline break-all"
+              className="text-primary-text hover:text-primary-text underline break-all"
             >
               {children}
             </a>

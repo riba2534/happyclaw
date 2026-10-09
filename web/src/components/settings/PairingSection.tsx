@@ -186,7 +186,7 @@ export function PairingSection({
             </div>
             <RouterLink
               to="/settings?tab=my-channels&view=bindings"
-              className="inline-flex items-center gap-1.5 rounded-md text-caption font-medium text-primary hover:underline focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none pointer-coarse:min-h-11"
+              className="inline-flex items-center gap-1.5 rounded-md text-caption font-medium text-primary-text hover:underline focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none pointer-coarse:min-h-11"
             >
               到“已接入会话”管理路由、响应方式和删除
               <ArrowRight className="size-3.5" />

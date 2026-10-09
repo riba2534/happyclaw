@@ -69,7 +69,7 @@ export function PolicyResourcePicker({
             aria-live="polite"
             className="inline-flex items-center gap-1 text-caption text-foreground"
           >
-            <Check className="size-3 text-primary" />
+            <Check className="size-3 text-primary-text" />
             已选 {selectedIds.length}
           </span>
         )}

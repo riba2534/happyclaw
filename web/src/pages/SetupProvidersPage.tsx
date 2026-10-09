@@ -521,7 +521,7 @@ export function SetupProvidersPage() {
                             href="https://console.anthropic.com/settings/keys"
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-primary underline underline-offset-2"
+                            className="text-primary-text underline underline-offset-2"
                           >
                             console.anthropic.com
                           </a>{' '}

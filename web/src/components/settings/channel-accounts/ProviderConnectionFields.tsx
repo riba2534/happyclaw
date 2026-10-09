@@ -165,7 +165,7 @@ function ProviderSetupGuide({
             href={guide.action.url}
             target="_blank"
             rel="noreferrer"
-            className="-mx-1.5 inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-caption font-medium text-primary underline-offset-4 hover:underline focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none pointer-coarse:min-h-11"
+            className="-mx-1.5 inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-caption font-medium text-primary-text underline-offset-4 hover:underline focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none pointer-coarse:min-h-11"
           >
             {guide.action.label}
             <ExternalLink className="size-3.5" aria-hidden="true" />

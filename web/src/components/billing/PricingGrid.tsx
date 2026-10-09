@@ -107,7 +107,7 @@ function PlanCard({
             </div>
           )}
           {plan.trial_days != null && plan.trial_days > 0 && (
-            <div className="flex items-center gap-1.5 text-body text-primary">
+            <div className="flex items-center gap-1.5 text-body text-primary-text">
               <Clock className="size-4" />
               <span>{plan.trial_days} 天免费试用</span>
             </div>
@@ -123,7 +123,7 @@ function PlanCard({
               key={i}
               className="flex items-start gap-2 text-body text-foreground"
             >
-              <Check className="mt-0.5 size-4 shrink-0 text-primary" />
+              <Check className="mt-0.5 size-4 shrink-0 text-primary-text" />
               <span>{feature}</span>
             </li>
           ))}

@@ -17,11 +17,11 @@ const badgeVariants = cva(
         outline:
           'border-border text-muted-foreground [a]:hover:bg-surface-hover [a]:hover:text-foreground',
         ghost: 'hover:bg-surface-hover hover:text-foreground',
-        link: 'text-primary underline-offset-4 hover:underline',
+        link: 'text-primary-text underline-offset-4 hover:underline',
         success: 'bg-success/10 text-success',
         warning: 'bg-warning/10 text-warning',
         error: 'bg-error/10 text-error',
-        info: 'bg-primary/10 text-primary',
+        info: 'bg-primary/10 text-primary-text',
         neutral: 'bg-surface-selected text-muted-foreground',
       },
     },

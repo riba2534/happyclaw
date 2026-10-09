@@ -412,7 +412,7 @@ export const MessageBubble = memo(
               )}
               <Link
                 to="/billing"
-                className="mt-2 inline-block text-body font-medium text-primary hover:underline"
+                className="mt-2 inline-block text-body font-medium text-primary-text hover:underline"
               >
                 查看账单 &rarr;
               </Link>
@@ -507,7 +507,7 @@ export const MessageBubble = memo(
               <IconButton
                 label="复制"
                 size="icon-xs"
-                icon={copied ? <Check className="text-primary" /> : <Copy />}
+                icon={copied ? <Check className="text-primary-text" /> : <Copy />}
                 onClick={handleCopy}
                 className="text-muted-foreground"
               />
@@ -672,7 +672,7 @@ export const MessageBubble = memo(
             <IconButton
               label="复制消息"
               size="icon-xs"
-              icon={copied ? <Check className="text-primary" /> : <Copy />}
+              icon={copied ? <Check className="text-primary-text" /> : <Copy />}
               onClick={handleCopy}
               className="text-muted-foreground"
             />

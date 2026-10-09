@@ -35,6 +35,9 @@
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
+  /* Primary used as text or icon color. Schemes whose --primary is tuned
+     for fills on dark surfaces set --primary-text to keep text legible. */
+  --color-primary-text: var(--primary-text, var(--primary));
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
@@ -359,6 +362,8 @@ html.theme-orange {
 html.dark.theme-orange {
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
+  /* --primary below is a fill color (≈2.4:1 as text); text uses chart-2. */
+  --primary-text: oklch(0.705 0.213 47.604);
   --card: oklch(0.205 0 0);
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);

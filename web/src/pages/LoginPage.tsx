@@ -377,7 +377,7 @@ export function LoginPage() {
           </div>
 
           <p className="mt-6 flex items-center justify-center gap-1.5 text-caption text-muted-foreground">
-            <Sparkles className="size-3.5 text-primary" />
+            <Sparkles className="size-3.5 text-primary-text" />
             Powered by Claude Agent SDK
           </p>
         </div>

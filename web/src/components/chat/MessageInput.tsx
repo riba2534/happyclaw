@@ -883,7 +883,7 @@ export function MessageInput({
       {/* Drag overlay */}
       {isDragOver && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-primary/5 dark:bg-primary/10 backdrop-blur-[2px] border-2 border-dashed border-primary rounded-xl pointer-events-none">
-          <div className="flex flex-col items-center gap-2 text-primary">
+          <div className="flex flex-col items-center gap-2 text-primary-text">
             <Upload className="w-8 h-8" />
             <span className="text-sm font-medium">松开上传文件</span>
           </div>
@@ -1056,7 +1056,7 @@ export function MessageInput({
                             onClick={() =>
                               void handleFollowUpAction(item, 'steer')
                             }
-                            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-caption font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:h-9"
+                            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-caption font-medium text-primary-text transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:h-9"
                             aria-label={`立即发送：${item.content}`}
                           >
                             {busy || locked ? (

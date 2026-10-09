@@ -89,7 +89,7 @@ export function InteractionModeSelector({
               {selected && (
                 <CircleCheck
                   aria-hidden="true"
-                  className="pointer-events-none absolute top-2.5 right-2.5 size-4 text-primary"
+                  className="pointer-events-none absolute top-2.5 right-2.5 size-4 text-primary-text"
                 />
               )}
             </label>

@@ -577,7 +577,7 @@ export function MessageList({
                   >
                     <div className="my-4 flex items-center gap-2">
                       <span className="inline-flex h-7 max-w-full items-center gap-1.5 rounded-md bg-surface-raised px-2.5 text-caption text-muted-foreground ring-1 ring-surface-border">
-                        <Zap className="size-3.5 shrink-0 text-primary" />
+                        <Zap className="size-3.5 shrink-0 text-primary-text" />
                         <span className="font-medium text-foreground">
                           并行任务
                         </span>
