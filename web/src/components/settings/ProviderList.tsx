@@ -1,17 +1,29 @@
 import {
   Activity,
   Copy,
-  Edit3,
-  Key,
   Loader2,
+  MessageSquareText,
+  MoreHorizontal,
+  Pencil,
   Plus,
   RotateCcw,
-  Shield,
+  Server,
+  ShieldCheck,
   Trash2,
 } from 'lucide-react';
 
+import { Badge, type BadgeDot } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Switch } from '@/components/ui/switch';
+import { IconButton } from '@/components/common/IconButton';
+import { ListGroup, ListRow } from '@/components/common/ListRow';
+import { cn } from '@/lib/utils';
 import type { ProviderWithHealth, ProviderHealthStatus } from './types';
 import { UsageBars } from './UsageBars';
 
@@ -28,30 +40,36 @@ interface ProviderListProps {
   disabled: boolean;
 }
 
-/** 健康指示灯 */
-function HealthDot({
-  health,
-  enabled,
-}: {
-  health: ProviderHealthStatus | null;
-  enabled: boolean;
-}) {
-  if (!enabled)
-    return (
-      <div className="w-2 h-2 rounded-full shrink-0 bg-muted-foreground/50" />
-    );
-  if (!health)
-    return (
-      <div className="w-2 h-2 rounded-full shrink-0 bg-muted-foreground/50" />
-    );
+/** 健康指示灯颜色 */
+function healthDotClass(
+  health: ProviderHealthStatus | null,
+  enabled: boolean,
+): string {
+  if (!enabled || !health) return 'bg-faint-foreground';
+  if (health.healthy) return 'bg-success';
+  return health.consecutiveErrors > 0 ? 'bg-error' : 'bg-warning';
+}
 
-  const color = health.healthy
-    ? 'bg-emerald-400'
-    : health.consecutiveErrors > 0
-      ? 'bg-red-400'
-      : 'bg-amber-400';
-
-  return <div className={`w-2 h-2 rounded-full shrink-0 ${color}`} />;
+/** 类型图标 + 健康指示灯 */
+function ProviderMedia({ provider }: { provider: ProviderWithHealth }) {
+  const Icon =
+    provider.type === 'official'
+      ? ShieldCheck
+      : provider.hasCodexOAuthCredentials
+        ? MessageSquareText
+        : Server;
+  return (
+    <span className="relative flex size-8 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+      <Icon className="size-4" aria-hidden="true" />
+      <span
+        aria-hidden="true"
+        className={cn(
+          'absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full ring-2 ring-surface-raised',
+          healthDotClass(provider.health, provider.enabled),
+        )}
+      />
+    </span>
+  );
 }
 
 /** 格式化 OAuth 过期时间 */
@@ -74,7 +92,7 @@ function formatOAuthExpiry(expiresAt: number | null): string | null {
 
 /** 凭据标签：显示认证方式 + OAuth 过期时间 */
 function CredentialBadges({ provider }: { provider: ProviderWithHealth }) {
-  const badges: { label: string; color: string; detail?: string }[] = [];
+  const badges: { label: string; dot: BadgeDot; detail?: string }[] = [];
 
   if (provider.hasClaudeOAuthCredentials) {
     const expired =
@@ -83,9 +101,7 @@ function CredentialBadges({ provider }: { provider: ProviderWithHealth }) {
     const expiry = formatOAuthExpiry(provider.claudeOAuthCredentialsExpiresAt);
     badges.push({
       label: 'OAuth',
-      color: expired
-        ? 'bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 border-red-200 dark:border-red-800'
-        : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800',
+      dot: expired ? 'error' : 'success',
       detail: expiry ?? undefined,
     });
   }
@@ -98,58 +114,37 @@ function CredentialBadges({ provider }: { provider: ProviderWithHealth }) {
       label: provider.codexOAuthCredentialsPlanType
         ? `ChatGPT ${provider.codexOAuthCredentialsPlanType}`
         : 'ChatGPT',
-      color: expired
-        ? 'bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 border-red-200 dark:border-red-800'
-        : 'bg-green-50 dark:bg-green-950/40 text-green-700 dark:text-green-300 border-green-200 dark:border-green-800',
+      dot: expired ? 'error' : 'success',
       detail: expiry ?? undefined,
     });
   }
   if (provider.hasClaudeCodeOauthToken) {
-    badges.push({
-      label: 'Setup Token',
-      color:
-        'bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800',
-    });
+    badges.push({ label: 'Setup Token', dot: 'muted' });
   }
   if (provider.hasAnthropicApiKey) {
-    badges.push({
-      label: 'API Key',
-      color:
-        'bg-violet-50 dark:bg-violet-950/40 text-violet-700 dark:text-violet-300 border-violet-200 dark:border-violet-800',
-    });
+    badges.push({ label: 'API Key', dot: 'muted' });
   }
   if (provider.hasAnthropicAuthToken) {
-    badges.push({
-      label: 'Auth Token',
-      color:
-        'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800',
-    });
+    badges.push({ label: 'Auth Token', dot: 'muted' });
   }
 
   if (badges.length === 0) {
-    return (
-      <span className="text-xs text-muted-foreground italic">未配置凭据</span>
-    );
+    return <span className="text-warning">未配置凭据</span>;
   }
 
   return (
-    <span className="inline-flex items-center gap-1.5 flex-wrap">
-      <Key className="w-3 h-3 text-muted-foreground shrink-0" />
+    <>
       {badges.map((b) => (
         <span key={b.label} className="inline-flex items-center gap-1">
-          <span
-            className={`text-[11px] px-1.5 py-0.5 rounded border ${b.color}`}
-          >
+          <Badge variant="outline" dot={b.dot}>
             {b.label}
-          </span>
+          </Badge>
           {b.detail && (
-            <span className="text-[10px] text-muted-foreground">
-              {b.detail}
-            </span>
+            <span className="text-micro text-faint-foreground">{b.detail}</span>
           )}
         </span>
       ))}
-    </span>
+    </>
   );
 }
 
@@ -165,201 +160,188 @@ export function ProviderList({
   deletingId,
   disabled,
 }: ProviderListProps) {
-  return (
-    <div className="space-y-4">
-      <div className="rounded-xl border border-border overflow-hidden">
-        <div className="px-4 py-3 border-b border-border bg-muted/50">
-          <div className="flex items-center justify-between">
-            <div className="text-sm font-medium text-foreground">
-              模型配置列表
-            </div>
-            <span className="text-xs text-muted-foreground">
-              {providers.length} 个模型配置
-            </span>
-          </div>
-        </div>
-
-        {providers.length === 0 ? (
-          <div className="p-6 text-center text-sm text-muted-foreground">
-            暂无模型配置，请点击下方按钮添加。
-          </div>
-        ) : (
-          <div className="divide-y divide-border">
-            {providers.map((provider) => {
-              const toggling = togglingId === provider.id;
-              const deleting = deletingId === provider.id;
-              const health = provider.health;
-
-              return (
-                <div
-                  key={provider.id}
-                  className={`px-4 py-3 transition-colors ${
-                    !provider.enabled ? 'bg-muted/50 opacity-60' : ''
-                  }`}
-                >
-                  {/* 第一行：名称 + 类型 + 操作 */}
-                  <div className="flex items-center gap-2 justify-between">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <HealthDot health={health} enabled={provider.enabled} />
-                      <span className="text-sm font-medium text-foreground truncate">
-                        {provider.name}
-                      </span>
-                      <span
-                        className={`text-[11px] px-1.5 py-0.5 rounded shrink-0 ${
-                          provider.type === 'official'
-                            ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300'
-                            : provider.hasCodexOAuthCredentials
-                              ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300'
-                              : 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300'
-                        }`}
-                      >
-                        {provider.type === 'official'
-                          ? '官方'
-                          : provider.hasCodexOAuthCredentials
-                            ? 'ChatGPT 订阅'
-                            : '第三方'}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <Switch
-                        checked={provider.enabled}
-                        disabled={disabled || toggling || deleting}
-                        onCheckedChange={() => onToggle(provider)}
-                        aria-label={
-                          provider.enabled ? '禁用模型配置' : '启用模型配置'
-                        }
-                      />
-                      {health && !health.healthy && provider.enabled && (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => onResetHealth(provider)}
-                          disabled={disabled}
-                          title="重置健康状态"
-                          className="h-7 w-7 p-0"
-                        >
-                          <RotateCcw className="size-3.5" />
-                        </Button>
-                      )}
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => onEdit(provider)}
-                        disabled={disabled || toggling || deleting}
-                        className="h-7 px-2 text-xs"
-                      >
-                        <Edit3 className="size-3.5" />
-                        编辑
-                      </Button>
-                      {provider.type === 'third_party' &&
-                        !provider.hasCodexOAuthCredentials && (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => onDuplicate(provider)}
-                            disabled={disabled || toggling || deleting}
-                            className="h-7 px-2 text-xs"
-                          >
-                            <Copy className="size-3.5" />
-                            复制
-                          </Button>
-                        )}
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => onDelete(provider)}
-                        disabled={disabled || toggling || deleting}
-                        className="h-7 px-2 text-xs text-muted-foreground hover:text-red-600"
-                      >
-                        {deleting ? (
-                          <Loader2 className="size-3.5 animate-spin" />
-                        ) : (
-                          <Trash2 className="size-3.5" />
-                        )}
-                      </Button>
-                    </div>
-                  </div>
-
-                  {/* 第二行：关键信息摘要 */}
-                  <div className="mt-1.5 ml-4 flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
-                    {provider.hasCodexOAuthCredentials ? (
-                      <span>ChatGPT 订阅网关（服务内嵌）</span>
-                    ) : (
-                      provider.type === 'third_party' &&
-                      provider.anthropicBaseUrl && (
-                        <span
-                          className="font-mono truncate max-w-[200px]"
-                          title={provider.anthropicBaseUrl}
-                        >
-                          {provider.anthropicBaseUrl}
-                        </span>
-                      )
-                    )}
-                    {provider.anthropicModel && (
-                      <span className="font-mono text-muted-foreground">
-                        {provider.anthropicModel}
-                      </span>
-                    )}
-                    <CredentialBadges provider={provider} />
-                  </div>
-
-                  {/* 第三行：健康异常信息（仅异常时显示） */}
-                  {health &&
-                    provider.enabled &&
-                    (!health.healthy || health.consecutiveErrors > 0) && (
-                      <div className="mt-1.5 ml-4 flex items-center gap-3 text-xs flex-wrap">
-                        {health.activeSessionCount > 0 && (
-                          <span className="text-teal-600">
-                            <Activity className="w-3 h-3 inline mr-0.5" />
-                            {health.activeSessionCount} 活跃会话
-                          </span>
-                        )}
-                        {health.consecutiveErrors > 0 && (
-                          <span className="text-red-500">
-                            连续错误 {health.consecutiveErrors}
-                          </span>
-                        )}
-                        {!health.healthy && (
-                          <span className="text-red-500 font-medium">
-                            <Shield className="w-3 h-3 inline mr-0.5" />
-                            不健康
-                          </span>
-                        )}
-                      </div>
-                    )}
-
-                  {/* 活跃会话（健康正常时） */}
-                  {health &&
-                    provider.enabled &&
-                    health.healthy &&
-                    health.activeSessionCount > 0 && (
-                      <div className="mt-1 ml-4 text-xs text-teal-600">
-                        <Activity className="w-3 h-3 inline mr-0.5" />
-                        {health.activeSessionCount} 活跃会话
-                      </div>
-                    )}
-
-                  {/* OAuth 用量 */}
-                  {provider.type === 'official' && (
-                    <UsageBars
-                      providerId={provider.id}
-                      providerVersion={provider.updatedAt}
-                    />
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      <div className="flex justify-start">
-        <Button variant="outline" size="sm" onClick={onAdd} disabled={disabled}>
-          <Plus className="size-4" />
+  if (providers.length === 0) {
+    return (
+      <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-surface-border px-6 py-10 text-center">
+        <p className="text-body text-muted-foreground">
+          暂无模型配置，请点击下方按钮添加。
+        </p>
+        <Button size="sm" onClick={onAdd} disabled={disabled}>
+          <Plus />
           添加模型配置
         </Button>
       </div>
-    </div>
+    );
+  }
+
+  return (
+    <ListGroup>
+      {providers.map((provider) => {
+        const toggling = togglingId === provider.id;
+        const deleting = deletingId === provider.id;
+        const rowDisabled = disabled || toggling || deleting;
+        const health = provider.health;
+        const canDuplicate =
+          provider.type === 'third_party' && !provider.hasCodexOAuthCredentials;
+        const canResetHealth = !!health && !health.healthy && provider.enabled;
+
+        return (
+          <div key={provider.id} className="min-w-0">
+            <ListRow
+              media={<ProviderMedia provider={provider} />}
+              title={
+                <span
+                  className={cn(!provider.enabled && 'text-muted-foreground')}
+                >
+                  {provider.name}
+                </span>
+              }
+              badges={
+                <>
+                  <Badge variant="neutral">
+                    {provider.type === 'official'
+                      ? '官方'
+                      : provider.hasCodexOAuthCredentials
+                        ? 'ChatGPT 订阅'
+                        : '第三方'}
+                  </Badge>
+                  {health && provider.enabled && !health.healthy && (
+                    <Badge variant="error">不健康</Badge>
+                  )}
+                </>
+              }
+              description={
+                <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                  {provider.hasCodexOAuthCredentials ? (
+                    <span>ChatGPT 订阅网关（服务内嵌）</span>
+                  ) : (
+                    provider.type === 'third_party' &&
+                    provider.anthropicBaseUrl && (
+                      <span
+                        className="max-w-60 truncate font-mono"
+                        title={provider.anthropicBaseUrl}
+                      >
+                        {provider.anthropicBaseUrl}
+                      </span>
+                    )
+                  )}
+                  {provider.anthropicModel && (
+                    <span className="font-mono">{provider.anthropicModel}</span>
+                  )}
+                  <CredentialBadges provider={provider} />
+                  {health &&
+                    provider.enabled &&
+                    health.consecutiveErrors > 0 && (
+                      <span className="text-error">
+                        连续错误 {health.consecutiveErrors}
+                      </span>
+                    )}
+                </span>
+              }
+              meta={
+                health &&
+                provider.enabled &&
+                health.activeSessionCount > 0 && (
+                  <span className="hidden items-center gap-1 sm:inline-flex">
+                    <Activity className="size-3.5" aria-hidden="true" />
+                    {health.activeSessionCount} 活跃会话
+                  </span>
+                )
+              }
+              actions={
+                <>
+                  {canResetHealth && (
+                    <IconButton
+                      label="重置健康状态"
+                      icon={<RotateCcw />}
+                      onClick={() => onResetHealth(provider)}
+                      disabled={disabled}
+                      className="max-sm:hidden"
+                    />
+                  )}
+                  <Switch
+                    checked={provider.enabled}
+                    disabled={rowDisabled}
+                    onCheckedChange={() => onToggle(provider)}
+                    aria-label={
+                      provider.enabled ? '禁用模型配置' : '启用模型配置'
+                    }
+                    className="mx-1.5"
+                  />
+                  <IconButton
+                    label="编辑"
+                    icon={<Pencil />}
+                    onClick={() => onEdit(provider)}
+                    disabled={rowDisabled}
+                    className="max-sm:hidden"
+                  />
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label="更多操作"
+                        disabled={rowDisabled}
+                      >
+                        {deleting ? (
+                          <Loader2 className="animate-spin" />
+                        ) : (
+                          <MoreHorizontal />
+                        )}
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-36">
+                      {/* 窄屏把行内按钮收进菜单，给名称留出空间 */}
+                      <DropdownMenuItem
+                        className="sm:hidden"
+                        onSelect={() => onEdit(provider)}
+                      >
+                        <Pencil />
+                        编辑
+                      </DropdownMenuItem>
+                      {canResetHealth && (
+                        <DropdownMenuItem
+                          className="sm:hidden"
+                          disabled={disabled}
+                          onSelect={() => onResetHealth(provider)}
+                        >
+                          <RotateCcw />
+                          重置健康状态
+                        </DropdownMenuItem>
+                      )}
+                      {canDuplicate && (
+                        <DropdownMenuItem
+                          onSelect={() => onDuplicate(provider)}
+                        >
+                          <Copy />
+                          复制
+                        </DropdownMenuItem>
+                      )}
+                      <DropdownMenuItem
+                        variant="destructive"
+                        onSelect={() => onDelete(provider)}
+                      >
+                        <Trash2 />
+                        删除
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </>
+              }
+            />
+
+            {/* OAuth 用量 */}
+            {provider.type === 'official' && (
+              <UsageBars
+                providerId={provider.id}
+                providerVersion={provider.updatedAt}
+                className="-mt-1 px-4 pb-3 sm:pl-15"
+              />
+            )}
+          </div>
+        );
+      })}
+    </ListGroup>
   );
 }
