@@ -79,7 +79,10 @@ import { WorkspaceInteractionModeDialog } from './WorkspaceInteractionModeDialog
 const MAIN_BINDING = '__main__' as const;
 const WORKSPACE_BINDING = '__workspace__' as const;
 
+// New messages arrive over WebSocket; polling is only a safety net. Poll
+// fast while the socket is down, slowly while it is up.
 const POLL_INTERVAL_MS = 2000;
+const POLL_INTERVAL_CONNECTED_MS = 30_000;
 const TERMINAL_MIN_HEIGHT = 150;
 const TERMINAL_DEFAULT_HEIGHT = 300;
 const TERMINAL_MAX_RATIO = 0.7;
@@ -315,15 +318,24 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
 
     const schedulePoll = () => {
       if (!active || document.hidden) return;
-      pollRef.current = setTimeout(poll, POLL_INTERVAL_MS);
+      pollRef.current = setTimeout(
+        poll,
+        wsManager.isConnected() ? POLL_INTERVAL_CONNECTED_MS : POLL_INTERVAL_MS,
+      );
     };
 
+    // One poll chain only: visibility and reconnect triggers can fire while a
+    // request is still in flight.
+    let polling = false;
     const poll = async () => {
-      if (!active) return;
+      if (!active || polling) return;
+      polling = true;
       try {
         await refreshMessages(groupJid);
       } catch {
         /* handled in store */
+      } finally {
+        polling = false;
       }
       schedulePoll();
     };
@@ -336,11 +348,26 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
       }
     };
 
+    // Switch cadence as soon as the socket drops or comes back. A reconnect
+    // also refreshes once: rows saved while the socket was down (e.g. partial
+    // replies stored during a server restart) are never broadcast.
+    const reschedule = () => {
+      if (pollRef.current) clearTimeout(pollRef.current);
+      schedulePoll();
+    };
+    const offConnected = wsManager.on('connected', () => {
+      if (pollRef.current) clearTimeout(pollRef.current);
+      void poll();
+    });
+    const offDisconnected = wsManager.on('disconnected', reschedule);
+
     document.addEventListener('visibilitychange', handleVisibility);
     schedulePoll();
 
     return () => {
       active = false;
+      offConnected();
+      offDisconnected();
       document.removeEventListener('visibilitychange', handleVisibility);
       if (pollRef.current) clearTimeout(pollRef.current);
     };
