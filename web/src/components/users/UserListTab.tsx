@@ -55,6 +55,26 @@ interface UserListTabProps extends TabNotification {
   currentUser: UserPublic | null;
 }
 
+function RoleBadge({ role }: { role: UserPublic['role'] }) {
+  return (
+    <Badge variant="outline" dot={role === 'admin' ? 'primary' : 'muted'}>
+      {ROLE_LABELS[role] || role}
+    </Badge>
+  );
+}
+
+function StatusBadges({ user }: { user: UserPublic }) {
+  const status = STATUS_BADGES[user.status];
+  return (
+    <>
+      <Badge variant="outline" dot={status?.dot ?? 'muted'}>
+        {status?.label ?? user.status}
+      </Badge>
+      {user.must_change_password && <Badge variant="warning">需改密</Badge>}
+    </>
+  );
+}
+
 const STATUS_BADGES: Record<
   UserPublic['status'],
   { label: string; dot: 'success' | 'warning' | 'error' }
@@ -266,7 +286,7 @@ export function UserListTab({
       key: 'user',
       header: '用户',
       cell: (user) => (
-        <div className="min-w-0 max-w-72 whitespace-normal">
+        <div className="max-w-60 min-w-0 whitespace-normal sm:max-w-72">
           <div className="flex min-w-0 items-baseline gap-1.5">
             <span className="truncate font-medium text-foreground">
               {user.display_name || user.username}
@@ -285,37 +305,30 @@ export function UserListTab({
               禁用原因: {user.disable_reason}
             </div>
           )}
+          <div className="mt-1.5 flex flex-wrap items-center gap-1 sm:hidden">
+            <RoleBadge role={user.role} />
+            <StatusBadges user={user} />
+          </div>
         </div>
       ),
     },
     {
       key: 'role',
       header: '角色',
-      cell: (user) => (
-        <Badge
-          variant="outline"
-          dot={user.role === 'admin' ? 'primary' : 'muted'}
-        >
-          {ROLE_LABELS[user.role] || user.role}
-        </Badge>
-      ),
+      cell: (user) => <RoleBadge role={user.role} />,
+      className: 'hidden sm:table-cell',
+      headerClassName: 'hidden sm:table-cell',
     },
     {
       key: 'status',
       header: '状态',
-      cell: (user) => {
-        const status = STATUS_BADGES[user.status];
-        return (
-          <div className="flex flex-wrap items-center gap-1">
-            <Badge variant="outline" dot={status?.dot ?? 'muted'}>
-              {status?.label ?? user.status}
-            </Badge>
-            {user.must_change_password && (
-              <Badge variant="warning">需改密</Badge>
-            )}
-          </div>
-        );
-      },
+      cell: (user) => (
+        <div className="flex flex-wrap items-center gap-1">
+          <StatusBadges user={user} />
+        </div>
+      ),
+      className: 'hidden sm:table-cell',
+      headerClassName: 'hidden sm:table-cell',
     },
     {
       key: 'last-login',

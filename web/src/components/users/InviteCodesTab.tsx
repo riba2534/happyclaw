@@ -171,9 +171,17 @@ export function InviteCodesTab({
       key: 'code',
       header: '邀请码',
       cell: (invite) => (
-        <code className="font-mono text-caption text-foreground">
-          {invite.code.slice(0, 12)}...
-        </code>
+        <div>
+          <code className="font-mono text-caption text-foreground">
+            {invite.code.slice(0, 12)}...
+          </code>
+          <div className="mt-1 flex items-center gap-1.5 text-caption text-muted-foreground tabular-nums sm:hidden">
+            <Badge variant="neutral">
+              {ROLE_LABELS[invite.role] || invite.role}
+            </Badge>
+            {invite.used_count}/{invite.max_uses || '∞'}
+          </div>
+        </div>
       ),
     },
     {
@@ -184,6 +192,8 @@ export function InviteCodesTab({
           {ROLE_LABELS[invite.role] || invite.role}
         </Badge>
       ),
+      className: 'hidden sm:table-cell',
+      headerClassName: 'hidden sm:table-cell',
     },
     {
       key: 'status',
@@ -194,7 +204,8 @@ export function InviteCodesTab({
       key: 'uses',
       header: '使用',
       cell: (invite) => `${invite.used_count}/${invite.max_uses || '∞'}`,
-      className: 'tabular-nums text-muted-foreground',
+      className: 'hidden tabular-nums text-muted-foreground sm:table-cell',
+      headerClassName: 'hidden sm:table-cell',
     },
     {
       key: 'creator',

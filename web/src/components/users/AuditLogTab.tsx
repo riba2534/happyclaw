@@ -67,15 +67,22 @@ export function AuditLogTab({ setError }: AuditLogTabProps) {
       key: 'time',
       header: '时间',
       cell: (log) => formatDateTime(log.created_at),
-      className: 'text-caption text-muted-foreground tabular-nums',
+      className:
+        'hidden text-caption text-muted-foreground tabular-nums sm:table-cell',
+      headerClassName: 'hidden sm:table-cell',
     },
     {
       key: 'event',
       header: '事件',
       cell: (log) => (
-        <code className="font-mono text-caption text-foreground">
-          {log.event_type}
-        </code>
+        <div>
+          <code className="font-mono text-caption text-foreground">
+            {log.event_type}
+          </code>
+          <div className="mt-0.5 text-micro text-muted-foreground tabular-nums sm:hidden">
+            {formatDateTime(log.created_at)}
+          </div>
+        </div>
       ),
     },
     {
