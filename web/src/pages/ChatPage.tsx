@@ -7,8 +7,12 @@ import { ChatView } from '../components/chat/ChatView';
 import { DeleteWorkspaceDialog } from '../components/chat/DeleteWorkspaceDialog';
 import { WorkspaceTree } from '../components/layout/sidebar/WorkspaceTree';
 import { ConfirmDialog } from '../components/common';
-import { CreateContainerDialog } from '../components/chat/CreateContainerDialog';
 import { RenameDialog } from '../components/chat/RenameDialog';
+import {
+  lazyBugReportDialog,
+  lazyCreateContainerDialog,
+} from '../components/common/lazy-dialogs';
+import { useOpenedOnce } from '../lib/preloaded-component';
 import { EmojiAvatar } from '../components/common/EmojiAvatar';
 import {
   DropdownMenu,
@@ -19,7 +23,6 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { IconButton } from '../components/common/IconButton';
 import { EmptyState } from '../components/common/EmptyState';
-import { BugReportDialog } from '../components/common/BugReportDialog';
 import { AccountMenuItems } from '../components/layout/AccountMenu';
 import { withBasePath } from '../utils/url';
 import { useSwipeBack } from '../hooks/useSwipeBack';
@@ -40,6 +43,9 @@ import {
   EmptyTitle,
 } from '@/components/ui/empty';
 
+const BugReportDialog = lazyBugReportDialog.Component;
+const CreateContainerDialog = lazyCreateContainerDialog.Component;
+
 export function ChatPage() {
   const { groupFolder } = useParams<{ groupFolder?: string }>();
   const navigate = useNavigate();
@@ -57,6 +63,7 @@ export function ChatPage() {
     handleClearConfirm,
   } = useClearWorkspace();
   const [createOpen, setCreateOpen] = useState(false);
+  const createMounted = useOpenedOnce(createOpen);
   const [renameState, setRenameState] = useState({
     open: false,
     jid: '',
@@ -76,6 +83,7 @@ export function ChatPage() {
   const appName = appearance?.appName || 'HappyClaw';
   const isDesktop = useMediaQuery('(min-width: 1024px)');
   const [showBugReport, setShowBugReport] = useState(false);
+  const bugReportMounted = useOpenedOnce(showBugReport);
   const userInitial = (user?.display_name ||
     user?.username ||
     '?')[0].toUpperCase();
@@ -298,10 +306,12 @@ export function ChatPage() {
           </EmptyContent>
         </Empty>
       )}
-      <BugReportDialog
-        open={showBugReport}
-        onClose={() => setShowBugReport(false)}
-      />
+      {bugReportMounted && (
+        <BugReportDialog
+          open={showBugReport}
+          onClose={() => setShowBugReport(false)}
+        />
+      )}
       <ConfirmDialog
         open={clearState.open}
         onClose={closeClear}
@@ -325,14 +335,16 @@ export function ChatPage() {
         onConfirm={handleDeleteConfirm}
         loading={deleteLoading}
       />
-      <CreateContainerDialog
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        onCreated={(jid, folder) => {
-          selectGroup(jid);
-          navigate(`/chat/${folder}?sessions=1`);
-        }}
-      />
+      {createMounted && (
+        <CreateContainerDialog
+          open={createOpen}
+          onClose={() => setCreateOpen(false)}
+          onCreated={(jid, folder) => {
+            selectGroup(jid);
+            navigate(`/chat/${folder}?sessions=1`);
+          }}
+        />
+      )}
     </div>
   );
 }

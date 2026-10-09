@@ -60,3 +60,25 @@ export function preloadedComponent<C extends ComponentType<any>>(
 
   return { Component: Preloaded, preload };
 }
+
+/**
+ * True from the first render where `open` is true. Lazily loaded dialogs mount
+ * on first open and then stay mounted so they keep their close animation.
+ */
+export function useOpenedOnce(open: boolean): boolean {
+  const [opened, setOpened] = useState(open);
+  if (open && !opened) setOpened(true);
+  return opened || open;
+}
+
+/** Fetch code-split chunks once the browser is idle after the first render. */
+export function preloadWhenIdle(...preloads: Array<() => unknown>) {
+  const run = () => preloads.forEach((preload) => void preload());
+  if (typeof window === 'undefined') return () => undefined;
+  if (typeof window.requestIdleCallback === 'function') {
+    const handle = window.requestIdleCallback(run, { timeout: 5000 });
+    return () => window.cancelIdleCallback(handle);
+  }
+  const timer = window.setTimeout(run, 2000);
+  return () => window.clearTimeout(timer);
+}

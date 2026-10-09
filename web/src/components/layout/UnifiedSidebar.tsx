@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -24,7 +25,6 @@ import { useWorkspaceTree } from '../../hooks/useWorkspaceTree';
 import { useStableCallback } from '../../hooks/useStableCallback';
 import { ConfirmDialog } from '@/components/common';
 import { EmojiAvatar } from '../common/EmojiAvatar';
-import { BugReportDialog } from '../common/BugReportDialog';
 import { IconButton } from '../common/IconButton';
 import {
   DropdownMenu,
@@ -35,8 +35,12 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { AccountMenuItems } from './AccountMenu';
 import { DeleteWorkspaceDialog } from '../chat/DeleteWorkspaceDialog';
-import { CreateContainerDialog } from '../chat/CreateContainerDialog';
 import { RenameDialog } from '../chat/RenameDialog';
+import {
+  lazyBugReportDialog,
+  lazyCreateContainerDialog,
+} from '../common/lazy-dialogs';
+import { preloadWhenIdle, useOpenedOnce } from '../../lib/preloaded-component';
 import { SkeletonCardList } from '@/components/common/Skeletons';
 import { cn } from '@/lib/utils';
 import { SHORTCUTS } from '@/lib/shortcuts';
@@ -48,6 +52,9 @@ import { WorkspaceTree } from './sidebar/WorkspaceTree';
 import { SessionTreeList } from './sidebar/SessionTreeList';
 import { SidebarResizeHandle } from './sidebar/SidebarResizeHandle';
 import type { GroupEntry } from '../../utils/group-utils';
+
+const BugReportDialog = lazyBugReportDialog.Component;
+const CreateContainerDialog = lazyCreateContainerDialog.Component;
 
 /**
  * Desktop app sidebar: brand/account menu, primary actions, page navigation
@@ -72,8 +79,18 @@ export function UnifiedSidebar() {
   const createOpen = useShellStore((s) => s.createWorkspaceOpen);
   const setCreateOpen = useShellStore((s) => s.setCreateWorkspaceOpen);
   const setPaletteOpen = useShellStore((s) => s.setPaletteOpen);
+  const createMounted = useOpenedOnce(createOpen);
+  useEffect(
+    () =>
+      preloadWhenIdle(
+        lazyCreateContainerDialog.preload,
+        lazyBugReportDialog.preload,
+      ),
+    [],
+  );
   const { startNewConversation, creatingSession } = useNewConversation();
   const [showBugReport, setShowBugReport] = useState(false);
+  const bugReportMounted = useOpenedOnce(showBugReport);
   const [renameState, setRenameState] = useState({
     open: false,
     jid: '',
@@ -333,19 +350,23 @@ export function UnifiedSidebar() {
         <SidebarResizeHandle targetRef={asideRef} />
       </nav>
 
-      <BugReportDialog
-        open={showBugReport}
-        onClose={() => setShowBugReport(false)}
-      />
-      <CreateContainerDialog
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        onCreated={(jid, folder) => {
-          selectGroup(jid);
-          revealWorkspace(jid);
-          navigate(`/chat/${folder}`);
-        }}
-      />
+      {bugReportMounted && (
+        <BugReportDialog
+          open={showBugReport}
+          onClose={() => setShowBugReport(false)}
+        />
+      )}
+      {createMounted && (
+        <CreateContainerDialog
+          open={createOpen}
+          onClose={() => setCreateOpen(false)}
+          onCreated={(jid, folder) => {
+            selectGroup(jid);
+            revealWorkspace(jid);
+            navigate(`/chat/${folder}`);
+          }}
+        />
+      )}
       <RenameDialog
         open={renameState.open}
         jid={renameState.jid}

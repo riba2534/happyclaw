@@ -19,8 +19,6 @@ import {
 import { useAuthStore } from '../../stores/auth';
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
-import { FilePanel } from './FilePanel';
-import { ContainerEnvPanel } from './ContainerEnvPanel';
 import {
   Sheet,
   SheetContent,
@@ -62,10 +60,49 @@ import { api } from '../../api/client';
 const TerminalPanel = lazy(() =>
   import('./TerminalPanel').then((m) => ({ default: m.TerminalPanel })),
 );
-import { ImBindingDialog } from './ImBindingDialog';
-import { SessionSidebar } from './SessionSidebar';
+// Panels and dialogs that open on demand stay out of the chat chunk (~110KB
+// with the select primitives they pull in). They are fetched when the browser
+// is idle and render without suspending once loaded.
+const Nothing = () => null;
+const lazyFilePanel = preloadedComponent(
+  () => import('./FilePanel').then((m) => ({ default: m.FilePanel })),
+  Nothing,
+);
+const lazyContainerEnvPanel = preloadedComponent(
+  () =>
+    import('./ContainerEnvPanel').then((m) => ({
+      default: m.ContainerEnvPanel,
+    })),
+  Nothing,
+);
+const lazyImBindingDialog = preloadedComponent(
+  () =>
+    import('./ImBindingDialog').then((m) => ({ default: m.ImBindingDialog })),
+  Nothing,
+);
+const lazySessionSidebar = preloadedComponent(
+  () => import('./SessionSidebar').then((m) => ({ default: m.SessionSidebar })),
+  Nothing,
+);
+const lazyInteractionModeDialog = preloadedComponent(
+  () =>
+    import('./WorkspaceInteractionModeDialog').then((m) => ({
+      default: m.WorkspaceInteractionModeDialog,
+    })),
+  Nothing,
+);
+const FilePanel = lazyFilePanel.Component;
+const ContainerEnvPanel = lazyContainerEnvPanel.Component;
+const ImBindingDialog = lazyImBindingDialog.Component;
+const SessionSidebar = lazySessionSidebar.Component;
+const WorkspaceInteractionModeDialog = lazyInteractionModeDialog.Component;
 import { useSessionActions } from '../../hooks/useSessionActions';
 import { useStableCallback } from '../../hooks/useStableCallback';
+import {
+  preloadedComponent,
+  preloadWhenIdle,
+  useOpenedOnce,
+} from '../../lib/preloaded-component';
 import { useShellStore } from '../../stores/shell';
 import { buildConversationSessions } from '../../lib/session-presentation';
 import { showToast } from '../../utils/toast';
@@ -76,7 +113,6 @@ import {
 import { CHANNEL_LABEL } from '../settings/channel-meta';
 import { getAgentProfileDisplayName } from '../../utils/agent-product';
 import { normalizeInteractionMode } from '../../lib/interaction-mode';
-import { WorkspaceInteractionModeDialog } from './WorkspaceInteractionModeDialog';
 
 /** Sentinel value for binding the main conversation (vs. a specific agent) */
 const MAIN_BINDING = '__main__' as const;
@@ -144,6 +180,18 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showInteractionModeDialog, setShowInteractionModeDialog] =
     useState(false);
+  const interactionModeDialogMounted = useOpenedOnce(showInteractionModeDialog);
+  useEffect(
+    () =>
+      preloadWhenIdle(
+        lazyFilePanel.preload,
+        lazyContainerEnvPanel.preload,
+        lazyImBindingDialog.preload,
+        lazySessionSidebar.preload,
+        lazyInteractionModeDialog.preload,
+      ),
+    [],
+  );
   const [resetLoading, setResetLoading] = useState(false);
   const [resetAgentId, setResetAgentId] = useState<string | null>(null);
   // Desktop: visible controls panel height, mounted controls terminal lifecycle.
@@ -1367,13 +1415,15 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         </SheetContent>
       </Sheet>
 
-      <WorkspaceInteractionModeDialog
-        open={showInteractionModeDialog}
-        workspaceName={workspaceDisplayName}
-        currentMode={interactionMode}
-        onClose={() => setShowInteractionModeDialog(false)}
-        onSave={(mode) => updateInteractionMode(groupJid, mode)}
-      />
+      {interactionModeDialogMounted && (
+        <WorkspaceInteractionModeDialog
+          open={showInteractionModeDialog}
+          workspaceName={workspaceDisplayName}
+          currentMode={interactionMode}
+          onClose={() => setShowInteractionModeDialog(false)}
+          onSave={(mode) => updateInteractionMode(groupJid, mode)}
+        />
+      )}
 
       {/* Mobile: Terminal sheet */}
       <Sheet
