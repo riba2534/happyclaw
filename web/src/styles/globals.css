@@ -852,6 +852,16 @@ pre code.hljs {
   box-sizing: border-box;
 }
 
+/* The xterm theme is transparent so the panel surface shows through;
+   xterm.css would otherwise paint the viewport black. */
+.terminal-panel .xterm .xterm-viewport {
+  background-color: transparent;
+}
+.terminal-panel .xterm .composition-view {
+  background-color: var(--surface-raised);
+  color: var(--foreground);
+}
+
 @layer base {
   *,
   ::after,

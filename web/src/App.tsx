@@ -294,7 +294,8 @@ function getAppRouter() {
 export function App() {
   return (
     <>
-      <Toaster position="top-right" />
+      {/* Top center stays clear of page header actions on both sides. */}
+      <Toaster position="top-center" />
       <ConfirmHost />
       <RouterProvider router={getAppRouter()} />
     </>

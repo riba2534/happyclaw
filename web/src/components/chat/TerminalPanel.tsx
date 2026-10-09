@@ -2,11 +2,68 @@ import { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { EyeOff, Trash2 } from 'lucide-react';
+import { EyeOff, RotateCw, Trash2 } from 'lucide-react';
 import '@xterm/xterm/css/xterm.css';
 import { wsManager } from '../../api/ws';
+import { Button } from '@/components/ui/button';
+import { IconButton } from '../common/IconButton';
+import { cn } from '@/lib/utils';
 
 type ConnectionState = 'idle' | 'connecting' | 'connected' | 'disconnected';
+
+// ANSI palettes: Tokyo Night for dark mode, GitHub Light for light mode.
+// The background stays transparent so the panel surface shows through.
+const DARK_THEME = {
+  background: '#00000000',
+  foreground: '#a9b1d6',
+  cursor: '#c0caf5',
+  selectionBackground: '#33467c',
+  black: '#32344a',
+  red: '#f7768e',
+  green: '#9ece6a',
+  yellow: '#e0af68',
+  blue: '#7aa2f7',
+  magenta: '#ad8ee6',
+  cyan: '#449dab',
+  white: '#787c99',
+  brightBlack: '#444b6a',
+  brightRed: '#ff7a93',
+  brightGreen: '#b9f27c',
+  brightYellow: '#ff9e64',
+  brightBlue: '#7da6ff',
+  brightMagenta: '#bb9af7',
+  brightCyan: '#0db9d7',
+  brightWhite: '#acb0d0',
+};
+
+const LIGHT_THEME = {
+  background: '#00000000',
+  foreground: '#24292f',
+  cursor: '#24292f',
+  selectionBackground: '#0969da33',
+  black: '#24292f',
+  red: '#cf222e',
+  green: '#116329',
+  yellow: '#7d4e00',
+  blue: '#0969da',
+  magenta: '#8250df',
+  cyan: '#1b7c83',
+  white: '#6e7781',
+  brightBlack: '#57606a',
+  brightRed: '#a40e26',
+  brightGreen: '#1a7f37',
+  brightYellow: '#633c01',
+  brightBlue: '#218bff',
+  brightMagenta: '#a475f9',
+  brightCyan: '#3192aa',
+  brightWhite: '#8c959f',
+};
+
+function terminalTheme() {
+  return document.documentElement.classList.contains('dark')
+    ? DARK_THEME
+    : LIGHT_THEME;
+}
 
 interface TerminalPanelProps {
   groupJid: string;
@@ -43,7 +100,12 @@ export function TerminalPanel({
       xtermRef.current.focus();
       if (connStateRef.current === 'connected') {
         const { cols, rows } = xtermRef.current;
-        wsManager.send({ type: 'terminal_resize', chatJid: groupJid, cols, rows });
+        wsManager.send({
+          type: 'terminal_resize',
+          chatJid: groupJid,
+          cols,
+          rows,
+        });
       }
     }, 300);
     return () => clearTimeout(timer);
@@ -54,33 +116,23 @@ export function TerminalPanel({
 
     const terminal = new Terminal({
       cursorBlink: true,
-      fontSize: 14,
       lineHeight: 1.15,
-      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace",
+      fontSize: 13,
+      fontFamily:
+        "'Geist Mono Variable', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace",
       scrollback: 5000,
       convertEol: true,
-      theme: {
-        background: '#1a1b26',
-        foreground: '#a9b1d6',
-        cursor: '#c0caf5',
-        selectionBackground: '#33467c',
-        black: '#32344a',
-        red: '#f7768e',
-        green: '#9ece6a',
-        yellow: '#e0af68',
-        blue: '#7aa2f7',
-        magenta: '#ad8ee6',
-        cyan: '#449dab',
-        white: '#787c99',
-        brightBlack: '#444b6a',
-        brightRed: '#ff7a93',
-        brightGreen: '#b9f27c',
-        brightYellow: '#ff9e64',
-        brightBlue: '#7da6ff',
-        brightMagenta: '#bb9af7',
-        brightCyan: '#0db9d7',
-        brightWhite: '#acb0d0',
-      },
+      allowTransparency: true,
+      theme: terminalTheme(),
+    });
+
+    // Follow the app's light/dark mode; the canvas background shows through.
+    const themeObserver = new MutationObserver(() => {
+      terminal.options.theme = terminalTheme();
+    });
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class'],
     });
 
     const fitAddon = new FitAddon();
@@ -128,12 +180,17 @@ export function TerminalPanel({
     const unsubStopped = wsManager.on('terminal_stopped', (data: any) => {
       if (data.chatJid === groupJid) {
         syncConnState('disconnected');
-        terminal.write(`\r\n\x1b[33m[${data.reason || '终端已断开'}]\x1b[0m\r\n`);
+        terminal.write(
+          `\r\n\x1b[33m[${data.reason || '终端已断开'}]\x1b[0m\r\n`,
+        );
         // Auto-reconnect after unexpected stop (not user-initiated)
         if (data.reason !== '用户关闭终端') {
           terminal.write('\x1b[33m[3 秒后自动重连...]\x1b[0m\r\n');
           setTimeout(() => {
-            if (connStateRef.current === 'disconnected' && wsManager.isConnected()) {
+            if (
+              connStateRef.current === 'disconnected' &&
+              wsManager.isConnected()
+            ) {
               requestStartTerminal();
             }
           }, 3000);
@@ -145,10 +202,18 @@ export function TerminalPanel({
       if (data.chatJid === groupJid) {
         syncConnState('disconnected');
         // 针对工作区未运行/启动中的错误，自动延迟重连
-        if (data.error?.includes('工作区未运行') || data.error?.includes('工作区启动中')) {
-          terminal.write(`\r\n\x1b[33m[工作区启动中，5 秒后自动重连...]\x1b[0m\r\n`);
+        if (
+          data.error?.includes('工作区未运行') ||
+          data.error?.includes('工作区启动中')
+        ) {
+          terminal.write(
+            `\r\n\x1b[33m[工作区启动中，5 秒后自动重连...]\x1b[0m\r\n`,
+          );
           setTimeout(() => {
-            if (connStateRef.current === 'disconnected' && wsManager.isConnected()) {
+            if (
+              connStateRef.current === 'disconnected' &&
+              wsManager.isConnected()
+            ) {
               requestStartTerminal();
             }
           }, 5000);
@@ -174,10 +239,14 @@ export function TerminalPanel({
     // xterm.js v6 内部已有 IME 处理，但 macOS 中文 IME 某些边界情况仍会泄漏
     let composing = false;
     const textarea = termRef.current?.querySelector('textarea');
-    const onCompositionStart = () => { composing = true; };
+    const onCompositionStart = () => {
+      composing = true;
+    };
     const onCompositionEnd = () => {
       // 延迟重置，确保 compositionend 后的 onData 事件能正确发送
-      setTimeout(() => { composing = false; }, 50);
+      setTimeout(() => {
+        composing = false;
+      }, 50);
     };
     if (textarea) {
       textarea.addEventListener('compositionstart', onCompositionStart);
@@ -203,7 +272,12 @@ export function TerminalPanel({
           fitAddonRef.current.fit();
           if (connStateRef.current === 'connected') {
             const { cols, rows } = xtermRef.current;
-            wsManager.send({ type: 'terminal_resize', chatJid: groupJid, cols, rows });
+            wsManager.send({
+              type: 'terminal_resize',
+              chatJid: groupJid,
+              cols,
+              rows,
+            });
           }
         }
       }, 150);
@@ -231,31 +305,36 @@ export function TerminalPanel({
       if (wsManager.isConnected()) {
         wsManager.send({ type: 'terminal_stop', chatJid: groupJid });
       }
+      themeObserver.disconnect();
       terminal.dispose();
       xtermRef.current = null;
       fitAddonRef.current = null;
     };
   }, [groupJid]);
 
+  const status = {
+    connected: { label: '已连接', dot: 'bg-success' },
+    connecting: { label: '连接中…', dot: 'bg-warning animate-pulse' },
+    disconnected: { label: '已断开', dot: 'bg-faint-foreground' },
+    idle: { label: '空闲', dot: 'bg-faint-foreground' },
+  }[connState];
+
   return (
-    <div className="h-full flex flex-col terminal-panel">
+    <div className="terminal-panel flex h-full flex-col bg-surface-raised">
       {/* Status bar */}
-      <div className="flex items-center justify-between px-3 py-1.5 bg-[#1a1b26] border-b border-[#2a2b36] text-xs">
-        <div className="flex items-center gap-2">
-          <span className={`inline-block w-2 h-2 rounded-full ${
-            connState === 'connected' ? 'bg-green-400' :
-            connState === 'connecting' ? 'bg-yellow-400 animate-pulse' :
-            'bg-neutral-500'
-          }`} />
-          <span className="text-neutral-400">
-            {connState === 'connected' ? '已连接' :
-             connState === 'connecting' ? '连接中...' :
-             connState === 'disconnected' ? '已断开' : '空闲'}
-          </span>
+      <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-surface-border px-3 text-caption">
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <span
+            aria-hidden="true"
+            className={cn('size-1.5 rounded-full', status.dot)}
+          />
+          <span>{status.label}</span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-0.5">
           {connState === 'disconnected' && (
-            <button
+            <Button
+              variant="ghost"
+              size="xs"
               onClick={() => {
                 syncConnState('connecting');
                 if (wsManager.isConnected()) {
@@ -271,35 +350,37 @@ export function TerminalPanel({
                   wsManager.connect();
                 }
               }}
-              className="text-brand-400 hover:text-brand-300 transition-colors cursor-pointer"
             >
+              <RotateCw />
               重新连接
-            </button>
+            </Button>
           )}
           {onHide && (
-            <button
+            <IconButton
+              label="隐藏终端"
+              icon={<EyeOff />}
+              size="icon-xs"
               onClick={onHide}
-              className="p-1 rounded hover:bg-[#2a2b36] text-neutral-400 hover:text-neutral-200 transition-colors cursor-pointer"
-              aria-label="隐藏终端"
-              title="隐藏终端"
-            >
-              <EyeOff className="w-3.5 h-3.5" />
-            </button>
+              tooltipSide="top"
+              className="text-muted-foreground"
+            />
           )}
           {onDelete && (
-            <button
+            <IconButton
+              label="删除终端"
+              icon={<Trash2 />}
+              size="icon-xs"
               onClick={onDelete}
-              className="p-1 rounded hover:bg-red-900/30 text-neutral-400 hover:text-red-300 transition-colors cursor-pointer"
-              aria-label="删除终端"
-              title="删除终端"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
+              tooltipSide="top"
+              className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+            />
           )}
         </div>
       </div>
-      {/* Terminal container */}
-      <div ref={termRef} className="flex-1 min-h-0 overflow-hidden bg-[#1a1b26]" />
+      {/* Terminal container; padding keeps output off the edges. */}
+      <div className="min-h-0 flex-1 px-3 py-2">
+        <div ref={termRef} className="h-full w-full overflow-hidden" />
+      </div>
     </div>
   );
 }

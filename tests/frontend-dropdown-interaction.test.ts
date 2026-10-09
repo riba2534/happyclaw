@@ -9,8 +9,10 @@ const source = fs.readFileSync(
 
 describe('dropdown menu interaction states', () => {
   test('shows the same selection feedback for hover and roving focus', () => {
-    expect(source).toContain('hover:bg-accent');
-    expect(source).toContain('data-[highlighted]:bg-accent');
+    // Neutral fill: --accent is brand-tinted in the teal scheme.
+    expect(source).toContain('hover:bg-surface-hover');
+    expect(source).toContain('data-[highlighted]:bg-surface-hover');
+    expect(source).not.toContain('bg-accent');
     // Rows highlight with a flat fill only; elevation belongs to the menu
     // surface (shadow-menu), never to individual items.
     expect(source).not.toContain('shadow-md');

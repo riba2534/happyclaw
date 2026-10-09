@@ -51,10 +51,9 @@ describe('web design-system guard', () => {
     const palette =
       /\b(?:[a-z-]+:)*(?:bg|text|border|ring|from|to|via|fill|stroke|divide|outline)-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}\b/g;
     expectWithinAllowance(countBy(palette), {
-      // File-type icon colors and the terminal theme are intentionally fixed
-      // and do not follow the app palette.
+      // File-type icon colors are intentionally fixed and do not follow the
+      // app palette.
       'components/chat/FilePanel.tsx': 9,
-      'components/chat/TerminalPanel.tsx': 9,
     });
   });
 

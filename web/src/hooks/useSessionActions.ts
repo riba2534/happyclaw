@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react';
 import { toast } from 'sonner';
 import { useChatStore } from '../stores/chat';
+import { confirmDialog } from '../stores/confirm';
 import type { AgentInfo } from '../types';
 
 /**
@@ -32,7 +33,8 @@ export function useSessionActions() {
 
   /**
    * Sessions still bound to an IM channel must be unbound first; in that case
-   * `onNeedsUnbind` opens the binding dialog instead of deleting.
+   * `onNeedsUnbind` opens the binding dialog instead of deleting. Otherwise the
+   * user confirms first, since deletion drops the session's history.
    */
   const deleteSession = useCallback(
     (groupJid: string, id: string, onNeedsUnbind: (id: string) => void) => {
@@ -49,11 +51,19 @@ export function useSessionActions() {
         });
         return;
       }
-      void deleteAgentAction(groupJid, id).then((ok) => {
+      void (async () => {
+        const confirmed = await confirmDialog({
+          title: '删除会话',
+          message: `确定删除「${agent?.name || '会话'}」吗？会话的对话记录会一并删除，无法恢复。工作区文件不受影响。`,
+          confirmText: '删除',
+          variant: 'danger',
+        });
+        if (!confirmed) return;
+        const ok = await deleteAgentAction(groupJid, id);
         if (!ok) {
           toast.error(useChatStore.getState().error || '删除会话失败');
         }
-      });
+      })();
     },
     [deleteAgentAction],
   );

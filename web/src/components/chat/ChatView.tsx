@@ -1277,13 +1277,15 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
           data-testid="mobile-context-sheet"
           className="gap-0 p-0 data-[side=bottom]:h-[80dvh]"
         >
-          <SheetHeader className="sr-only">
-            <SheetTitle>上下文面板</SheetTitle>
-            <SheetDescription>
+          {/* A visible header keeps the sheet's close button off the
+              first panel row. */}
+          <SheetHeader className="shrink-0 border-b border-surface-border px-4 py-3 pr-12">
+            <SheetTitle className="text-title-sm">上下文面板</SheetTitle>
+            <SheetDescription className="sr-only">
               查看当前上下文的文件和运行信息。
             </SheetDescription>
           </SheetHeader>
-          {renderContextPanel(true)}
+          <div className="min-h-0 flex-1">{renderContextPanel(true)}</div>
         </SheetContent>
       </Sheet>
 

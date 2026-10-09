@@ -1,18 +1,11 @@
 import { useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  Bug,
   ChevronsUpDown,
-  LogOut,
-  Monitor,
-  Moon,
   PanelLeft,
-  Palette,
   Plus,
   Search,
   SquarePen,
-  Sun,
-  UserCog,
 } from 'lucide-react';
 import { useChatStore } from '../../stores/chat';
 import { useAuthStore } from '../../stores/auth';
@@ -22,7 +15,6 @@ import { useClearWorkspace } from '../../hooks/useClearWorkspace';
 import { useDeleteWorkspace } from '../../hooks/useDeleteWorkspace';
 import { useNewConversation } from '../../hooks/useNewConversation';
 import { useWorkspaceTree } from '../../hooks/useWorkspaceTree';
-import { useTheme, type ColorScheme, type Theme } from '../../hooks/useTheme';
 import { ConfirmDialog } from '@/components/common';
 import { EmojiAvatar } from '../common/EmojiAvatar';
 import { BugReportDialog } from '../common/BugReportDialog';
@@ -30,16 +22,11 @@ import { IconButton } from '../common/IconButton';
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
   DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { AccountMenuItems } from './AccountMenu';
 import { DeleteWorkspaceDialog } from '../chat/DeleteWorkspaceDialog';
 import { CreateContainerDialog } from '../chat/CreateContainerDialog';
 import { RenameDialog } from '../chat/RenameDialog';
@@ -54,18 +41,6 @@ import { WorkspaceTree } from './sidebar/WorkspaceTree';
 import { SessionTreeList } from './sidebar/SessionTreeList';
 import { SidebarResizeHandle } from './sidebar/SidebarResizeHandle';
 import type { GroupEntry } from '../../utils/group-utils';
-
-const THEME_OPTIONS: { value: Theme; label: string; icon: typeof Sun }[] = [
-  { value: 'light', label: '浅色', icon: Sun },
-  { value: 'dark', label: '深色', icon: Moon },
-  { value: 'system', label: '跟随系统', icon: Monitor },
-];
-
-const SCHEME_OPTIONS: { value: ColorScheme; label: string }[] = [
-  { value: 'default', label: '经典绿' },
-  { value: 'orange', label: '暖橙' },
-  { value: 'neutral', label: '素白' },
-];
 
 /**
  * Desktop app sidebar: brand/account menu, primary actions, page navigation
@@ -89,7 +64,6 @@ export function UnifiedSidebar() {
   const createOpen = useShellStore((s) => s.createWorkspaceOpen);
   const setCreateOpen = useShellStore((s) => s.setCreateWorkspaceOpen);
   const setPaletteOpen = useShellStore((s) => s.setPaletteOpen);
-  const { theme, colorScheme, setTheme, setColorScheme } = useTheme();
   const { startNewConversation, creatingSession } = useNewConversation();
   const [showBugReport, setShowBugReport] = useState(false);
   const [renameState, setRenameState] = useState({
@@ -220,61 +194,7 @@ export function UnifiedSidebar() {
                 </span>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
-              <DropdownMenuItem
-                onClick={() => navigate('/settings?tab=profile')}
-              >
-                <UserCog />
-                个人设置
-              </DropdownMenuItem>
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>
-                  <Palette />
-                  外观
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="w-40">
-                  <DropdownMenuLabel>主题</DropdownMenuLabel>
-                  <DropdownMenuRadioGroup
-                    value={theme}
-                    onValueChange={(value) => setTheme(value as Theme)}
-                  >
-                    {THEME_OPTIONS.map(({ value, label, icon: Icon }) => (
-                      <DropdownMenuRadioItem key={value} value={value}>
-                        <Icon />
-                        {label}
-                      </DropdownMenuRadioItem>
-                    ))}
-                  </DropdownMenuRadioGroup>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuLabel>配色</DropdownMenuLabel>
-                  <DropdownMenuRadioGroup
-                    value={colorScheme}
-                    onValueChange={(value) =>
-                      setColorScheme(value as ColorScheme)
-                    }
-                  >
-                    {SCHEME_OPTIONS.map(({ value, label }) => (
-                      <DropdownMenuRadioItem key={value} value={value}>
-                        {label}
-                      </DropdownMenuRadioItem>
-                    ))}
-                  </DropdownMenuRadioGroup>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-              <DropdownMenuItem onClick={() => setShowBugReport(true)}>
-                <Bug />
-                报告问题
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                variant="destructive"
-                onClick={async () => {
-                  await useAuthStore.getState().logout();
-                  navigate('/login');
-                }}
-              >
-                <LogOut />
-                退出登录
-              </DropdownMenuItem>
+              <AccountMenuItems onReportBug={() => setShowBugReport(true)} />
             </DropdownMenuContent>
           </DropdownMenu>
           {!collapsed && (

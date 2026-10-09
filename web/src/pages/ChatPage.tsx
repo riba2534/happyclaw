@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { UserCog, LogOut, Plus, BarChart3, SquarePen } from 'lucide-react';
+import { FolderPlus, Plus, SquarePen } from 'lucide-react';
 import { useChatStore } from '../stores/chat';
 import { useAuthStore } from '../stores/auth';
 import { ChatView } from '../components/chat/ChatView';
@@ -11,10 +11,17 @@ import { CreateContainerDialog } from '../components/chat/CreateContainerDialog'
 import { RenameDialog } from '../components/chat/RenameDialog';
 import { EmojiAvatar } from '../components/common/EmojiAvatar';
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover';
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { IconButton } from '../components/common/IconButton';
+import { EmptyState } from '../components/common/EmptyState';
+import { BugReportDialog } from '../components/common/BugReportDialog';
+import { AccountMenuItems } from '../components/layout/AccountMenu';
+import { withBasePath } from '../utils/url';
 import { useSwipeBack } from '../hooks/useSwipeBack';
 import { useClearWorkspace } from '../hooks/useClearWorkspace';
 import type { GroupEntry } from '../utils/group-utils';
@@ -65,6 +72,8 @@ export function ChatPage() {
   });
   const user = useAuthStore((s) => s.user);
   const appearance = useAuthStore((s) => s.appearance);
+  const appName = appearance?.appName || 'HappyClaw';
+  const [showBugReport, setShowBugReport] = useState(false);
   const userInitial = (user?.display_name ||
     user?.username ||
     '?')[0].toUpperCase();
@@ -151,28 +160,43 @@ export function ChatPage() {
       {/* Mobile workspace list when no group selected */}
       {!groupFolder && (
         <div className="block lg:hidden w-full overflow-y-auto">
-          {/* Mobile header: horizontal logo + actions */}
-          <div className="flex items-center gap-3 px-4 pt-5 pb-3">
-            <img
-              src={`${import.meta.env.BASE_URL}icons/logo-text.svg`}
-              alt={appearance?.appName || 'HappyClaw'}
-              className="h-8"
-            />
-            <div className="flex-1" />
-            <button
-              type="button"
+          {/* Mobile header: brand + new workspace + account menu */}
+          <div className="flex h-14 items-center gap-2 px-4">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              <img
+                src={
+                  appearance?.brandIconUrl
+                    ? withBasePath(appearance.brandIconUrl)
+                    : `${import.meta.env.BASE_URL}icons/icon-192.png`
+                }
+                alt=""
+                className="size-6 shrink-0 rounded-md object-cover"
+              />
+              {appearance?.brandBannerUrl ? (
+                <img
+                  src={withBasePath(appearance.brandBannerUrl)}
+                  alt={appName}
+                  className="h-5 max-w-[10rem] min-w-0 object-contain object-left"
+                />
+              ) : (
+                <span className="min-w-0 truncate text-title text-foreground">
+                  {appName}
+                </span>
+              )}
+            </div>
+            <IconButton
+              label="新建工作区"
+              icon={<Plus />}
+              size="icon"
               onClick={() => setCreateOpen(true)}
-              className="grid h-10 w-10 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer"
-              title="新建工作区"
-              aria-label="新建工作区"
-            >
-              <Plus className="h-5 w-5" />
-            </button>
-            <Popover>
-              <PopoverTrigger asChild>
+              className="text-muted-foreground pointer-coarse:size-10"
+            />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
                 <button
-                  className="rounded-full hover:ring-2 hover:ring-brand-200 transition-all cursor-pointer"
+                  type="button"
                   aria-label="用户菜单"
+                  className="grid size-10 cursor-pointer place-items-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
                 >
                   <EmojiAvatar
                     imageUrl={user?.avatar_url}
@@ -180,37 +204,22 @@ export function ChatPage() {
                     color={user?.avatar_color}
                     fallbackChar={userInitial}
                     size="md"
-                    className="w-8 h-8"
+                    className="size-8"
                   />
                 </button>
-              </PopoverTrigger>
-              <PopoverContent side="bottom" align="end" className="w-44 p-1">
-                <div className="px-3 py-2 text-xs font-medium text-muted-foreground truncate border-b border-border mb-1">
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuLabel className="truncate">
                   {user?.display_name || user?.username}
-                </div>
-                <button
-                  onClick={() => navigate('/settings?tab=profile')}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm rounded-md hover:bg-accent text-foreground cursor-pointer"
-                >
-                  <UserCog className="w-4 h-4" /> 个人设置
-                </button>
-                <button
-                  onClick={() => navigate('/usage')}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm rounded-md hover:bg-accent text-foreground cursor-pointer"
-                >
-                  <BarChart3 className="w-4 h-4" /> 用量统计
-                </button>
-                <button
-                  onClick={async () => {
-                    await useAuthStore.getState().logout();
-                    navigate('/login');
-                  }}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm rounded-md hover:bg-destructive/10 text-destructive cursor-pointer"
-                >
-                  <LogOut className="w-4 h-4" /> 退出登录
-                </button>
-              </PopoverContent>
-            </Popover>
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <AccountMenuItems
+                  inlineAppearance
+                  showUsage
+                  onReportBug={() => setShowBugReport(true)}
+                />
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
           {hasAnyGroup ? (
             <div className="px-2 pb-nav-safe">
@@ -229,14 +238,17 @@ export function ChatPage() {
               />
             </div>
           ) : (
-            <div className="flex flex-col items-center justify-center h-64 px-4">
-              <img
-                src={`${import.meta.env.BASE_URL}icons/logo-text.svg`}
-                alt={appearance?.appName || 'HappyClaw'}
-                className="h-12 mb-6"
-              />
-              <p className="text-muted-foreground text-sm">暂无智能体工作区</p>
-            </div>
+            <EmptyState
+              icon={FolderPlus}
+              title="暂无智能体工作区"
+              description="新建一个工作区，开始和智能体协作。"
+              action={
+                <Button onClick={() => setCreateOpen(true)}>
+                  <Plus />
+                  新建工作区
+                </Button>
+              }
+            />
           )}
         </div>
       )}
@@ -284,6 +296,10 @@ export function ChatPage() {
           </EmptyContent>
         </Empty>
       )}
+      <BugReportDialog
+        open={showBugReport}
+        onClose={() => setShowBugReport(false)}
+      />
       <ConfirmDialog
         open={clearState.open}
         onClose={closeClear}

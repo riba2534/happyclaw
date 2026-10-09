@@ -341,6 +341,8 @@ function WorkspaceRow({
           isActive ? 'text-foreground' : 'text-sidebar-foreground/85',
           indent && !touch && 'pl-3',
           touch && 'h-11 pl-2 text-body-lg',
+          // Workspaces under a custom agent sit under its chevron row.
+          indent && touch && 'pl-8',
         )}
       >
         {nested ? (
