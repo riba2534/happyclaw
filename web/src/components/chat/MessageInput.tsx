@@ -5,6 +5,7 @@ import {
   useLayoutEffect,
   useCallback,
 } from 'react';
+import { toast } from 'sonner';
 import { useKeyboardHeight } from '@/hooks/useKeyboardHeight';
 import { successTap } from '../../hooks/useHaptic';
 import {
@@ -61,6 +62,7 @@ import {
 } from '../../lib/follow-up-preferences';
 import { planImageClipboardPaste } from '../../lib/mixed-paste';
 import { SHORTCUTS } from '../../lib/shortcuts';
+import { prepareImageForUpload } from '../../lib/image-upload';
 
 interface PendingFile {
   /** Display name: relative path for folder uploads, file name otherwise */
@@ -73,9 +75,6 @@ interface PendingImage {
   mimeType: string;
   preview: string; // object URL for preview
 }
-
-/** 单张图片大小上限 5MB */
-const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
 
 interface MessageInputProps {
   /**
@@ -481,17 +480,8 @@ export function MessageInput({
       if (imageFiles.length > 0) {
         const newImages: PendingImage[] = [];
         for (const file of imageFiles) {
-          try {
-            const base64 = await readFileAsBase64(file);
-            newImages.push({
-              name: file.name,
-              data: base64,
-              mimeType: file.type,
-              preview: URL.createObjectURL(file),
-            });
-          } catch {
-            // Skip failed images
-          }
+          const image = await toPendingImage(file);
+          if (image) newImages.push(image);
         }
         setPendingImages((prev) => [...prev, ...newImages]);
       }
@@ -519,17 +509,8 @@ export function MessageInput({
       const newImages: PendingImage[] = [];
       for (const file of files) {
         if (file.type.startsWith('image/')) {
-          try {
-            const base64 = await readFileAsBase64(file);
-            newImages.push({
-              name: file.name,
-              data: base64,
-              mimeType: file.type,
-              preview: URL.createObjectURL(file),
-            });
-          } catch {
-            // Skip failed images
-          }
+          const image = await toPendingImage(file);
+          if (image) newImages.push(image);
         }
       }
       setPendingImages((prev) => [...prev, ...newImages]);
@@ -538,25 +519,23 @@ export function MessageInput({
     }
   };
 
-  const readFileAsBase64 = (file: File): Promise<string> => {
-    if (file.size > MAX_IMAGE_SIZE_BYTES) {
-      return Promise.reject(
-        new Error(
-          `图片 ${file.name} 超过 5MB 限制 (${(file.size / 1024 / 1024).toFixed(1)}MB)`,
-        ),
-      );
-    }
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const result = reader.result as string;
-        // Remove data URL prefix (e.g., "data:image/png;base64,")
-        const base64 = result.split(',')[1];
-        resolve(base64);
+  /** Downscale and encode one image; reports oversize/undecodable files. */
+  const toPendingImage = async (
+    file: File,
+    fallbackName?: string,
+  ): Promise<PendingImage | null> => {
+    try {
+      const prepared = await prepareImageForUpload(file);
+      return {
+        name: file.name || fallbackName || `image-${Date.now()}.png`,
+        data: prepared.data,
+        mimeType: prepared.mimeType,
+        preview: URL.createObjectURL(file),
       };
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '图片读取失败');
+      return null;
+    }
   };
 
   const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -596,17 +575,8 @@ export function MessageInput({
     for (const item of imageItems) {
       const file = item.getAsFile();
       if (!file) continue;
-      try {
-        const base64 = await readFileAsBase64(file);
-        newImages.push({
-          name: file.name || `pasted-${Date.now()}.png`,
-          data: base64,
-          mimeType: file.type,
-          preview: URL.createObjectURL(file),
-        });
-      } catch {
-        // Skip failed images
-      }
+      const image = await toPendingImage(file, `pasted-${Date.now()}.png`);
+      if (image) newImages.push(image);
     }
 
     if (newImages.length > 0) {
@@ -769,17 +739,8 @@ export function MessageInput({
       if (imageFiles.length > 0) {
         const newImages: PendingImage[] = [];
         for (const file of imageFiles) {
-          try {
-            const base64 = await readFileAsBase64(file);
-            newImages.push({
-              name: file.name,
-              data: base64,
-              mimeType: file.type,
-              preview: URL.createObjectURL(file),
-            });
-          } catch (err) {
-            console.warn('跳过图片:', err instanceof Error ? err.message : err);
-          }
+          const image = await toPendingImage(file);
+          if (image) newImages.push(image);
         }
         // Verify groupJid hasn't changed during async processing (use ref for live value)
         if (targetGroupJid === groupJidRef.current) {

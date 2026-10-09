@@ -124,6 +124,8 @@ import type { ExpandContext } from './plugin-expander-context.js';
 import { PLUGIN_EXPANSION_ATTACHMENT_TYPE } from './plugin-expander-sentinel.js';
 import { persistPluginExpansion } from './plugin-expander-store.js';
 import { logger } from './logger.js';
+import { buildPresentedAttachments } from './attachment-thumbnails.js';
+import { createOrderedDispatcher } from './ordered-dispatch.js';
 import {
   createWebSocketHeartbeat,
   startWebSocketHeartbeat,
@@ -1405,19 +1407,7 @@ app.use(
   serveStatic({ root: './web/dist' }),
 );
 
-// 字体（16.2MB 中文字体族）与图标：内容事实上不可变（变更时改文件名），
-// 缺缓存头曾导致每次打开全量重下。
-app.use(
-  '/fonts/*',
-  async (c, next) => {
-    await next();
-    if (c.res.status === 200 || c.res.status === 304) {
-      c.res.headers.set('Cache-Control', 'public, max-age=31536000, immutable');
-    }
-  },
-  conditionalStatic(),
-  serveStatic({ root: './web/dist' }),
-);
+// 图标：内容事实上不可变（变更时改文件名），缺缓存头曾导致每次打开全量重下。
 app.use(
   '/icons/*',
   async (c, next) => {
@@ -2497,7 +2487,51 @@ export function broadcastToWebClients(chatJid: string, text: string): void {
   );
 }
 
+/**
+ * Image attachments above this many base64 chars (~64KB decoded, the
+ * thumbnail threshold) are replaced by thumbnails before broadcast.
+ */
+const BROADCAST_THUMBNAIL_MIN_ATTACHMENT_CHARS = 87_000;
+const dispatchMessageBroadcast = createOrderedDispatcher((err, chatJid) => {
+  logger.warn({ err, chatJid }, 'Failed to broadcast new message');
+});
+
+/**
+ * Push a stored message to every client allowed to see the chat.
+ *
+ * Large images go out as the same 480px thumbnails REST history serves
+ * (originals stay fetchable via `hasOriginal`): echoing a 3 MB photo as a
+ * 4 MB frame to every open tab used to stall their stream events. Messages
+ * of one chat stay in order even when a thumbnail has to be rendered first.
+ */
 export function broadcastNewMessage(
+  chatJid: string,
+  msg: NewMessage & { is_from_me?: boolean },
+  agentId?: string,
+  source?: string,
+): void {
+  const needsThumbnail =
+    typeof msg.attachments === 'string' &&
+    msg.attachments.length > BROADCAST_THUMBNAIL_MIN_ATTACHMENT_CHARS;
+  dispatchMessageBroadcast(
+    chatJid,
+    msg,
+    (ready) => deliverNewMessage(chatJid, ready, agentId, source),
+    needsThumbnail
+      ? async (original) => {
+          const attachments = await buildPresentedAttachments(
+            original.id,
+            original.attachments,
+          ).catch(() => original.attachments);
+          return attachments === original.attachments
+            ? original
+            : { ...original, attachments: attachments ?? undefined };
+        }
+      : undefined,
+  );
+}
+
+function deliverNewMessage(
   chatJid: string,
   msg: NewMessage & { is_from_me?: boolean },
   agentId?: string,

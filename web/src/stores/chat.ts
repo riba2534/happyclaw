@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { api } from '../api/client';
+import { api, computeUploadTimeoutMs } from '../api/client';
 import { useFileStore } from './files';
 import { useAuthStore } from './auth';
 import {
@@ -200,6 +200,18 @@ export interface ActiveRunSnapshotData {
   runId: string;
   startedAt: string;
   phase: 'preparing' | 'running';
+}
+
+/**
+ * Messages carrying images can be megabytes of base64; give them an upload
+ * timeout sized to the payload instead of the 8s default for small JSON.
+ */
+function attachmentTimeoutMs(
+  attachments: Array<{ data: string }> | undefined,
+): number | undefined {
+  if (!attachments || attachments.length === 0) return undefined;
+  const bytes = attachments.reduce((sum, att) => sum + att.data.length, 0);
+  return computeUploadTimeoutMs(bytes);
 }
 
 export interface StreamingState {
@@ -2075,7 +2087,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       ): d is ClearedResponse =>
         d.success === true && 'cleared' in d && d.cleared === true;
 
-      const data = await api.post<MessageCreateResponse>('/api/messages', body);
+      const data = await api.post<MessageCreateResponse>(
+        '/api/messages',
+        body,
+        attachmentTimeoutMs(body.attachments),
+      );
       if (!data.success) {
         // Server returned non-success payload — surface as a send failure so caller can retain input.
         const msg = '服务器返回失败，请重试';
@@ -4089,13 +4105,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
         timestamp: string;
         disposition: 'started' | 'queued' | 'steered';
         runId?: string;
-      }>('/api/messages', {
-        chatJid: jid,
-        agentId,
-        content,
-        attachments: normalizedAttachments,
-        followUpBehavior,
-      });
+      }>(
+        '/api/messages',
+        {
+          chatJid: jid,
+          agentId,
+          content,
+          attachments: normalizedAttachments,
+          followUpBehavior,
+        },
+        attachmentTimeoutMs(normalizedAttachments),
+      );
       if (data.disposition === 'started' && data.runId) {
         get().handleRunStarted(`${jid}#agent:${agentId}`, data.runId);
       }
