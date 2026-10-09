@@ -35,6 +35,7 @@ import { detectImageMimeTypeFromBase64Strict } from './image-detector.js';
 import { isClaudeAttachmentPassDisabled } from './claude-attachments.js';
 import { RUNNER_DISALLOWED_BUILTIN_TOOLS } from './builtin-tool-policy.js';
 import { pluginLoadWarnings } from './sdk-init-audit.js';
+import { classifyPreInitErrorResult } from './startup-failure.js';
 import { pruneProcessedHistoryImagesInTranscript as pruneProcessedHistoryImagesInTranscriptFile } from './history-image-prune.js';
 import { getChannelFromJid } from './channel-prefixes.js';
 
@@ -3846,18 +3847,27 @@ async function runQueryAttempt(
             resultSubtype.startsWith('error'))
         ) {
           emitResultUsage(resultMsg, containerInput.turnId || generateTurnId());
-          // If session never initialized (no system/init), resume itself failed — report it
-          // so the caller can retry with a fresh session instead of crashing.
+          // No system/init yet: either the resumed session cannot be loaded
+          // (retry with a fresh session) or Claude Code refused to start
+          // (keep the session and report the error).
           if (!newSessionId) {
-            log(`Session resume failed (no init): ${resultSubtype}`);
-            return {
-              newSessionId,
-              lastAssistantUuid,
-              closedDuringQuery,
-              interruptedDuringQuery,
-              pipedMessagesDuringQuery,
-              sessionResumeFailed: true,
-            };
+            const disposition = classifyPreInitErrorResult({
+              resuming: !!sessionId,
+              result: resultMsg,
+            });
+            if (disposition.kind === 'resume_failed') {
+              log(`Session resume failed (no init): ${resultSubtype}`);
+              return {
+                newSessionId,
+                lastAssistantUuid,
+                closedDuringQuery,
+                interruptedDuringQuery,
+                pipedMessagesDuringQuery,
+                sessionResumeFailed: true,
+              };
+            }
+            logWarn(disposition.message);
+            throw new Error(disposition.message);
           }
           const detail = textResult?.trim()
             ? textResult.trim()

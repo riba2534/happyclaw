@@ -67,5 +67,9 @@ export function buildClaudeRuntimeEnv(
   return {
     ...resolveAutoCompactEnv(env),
     CLAUDE_CODE_TRANSCRIPT_LOCAL_GC: '1',
+    // Name known startup refusals in an error result (startup_failure_reason)
+    // instead of ending with stderr alone, so a refused start is not
+    // mistaken for a session that cannot be resumed.
+    CLAUDE_CODE_STARTUP_FAILURE_RESULTS: '1',
   };
 }
