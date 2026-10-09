@@ -1,18 +1,26 @@
 import { useEffect, useState } from 'react';
 import {
   RefreshCw,
+  FolderSync,
   PowerOff,
   Puzzle,
   AlertTriangle,
-  Info,
   X,
 } from 'lucide-react';
-import { PageHeader } from '@/components/common/PageHeader';
-import { SkeletonCardList } from '@/components/common/Skeletons';
 import { EmptyState } from '@/components/common/EmptyState';
+import { IconButton } from '@/components/common/IconButton';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
+import {
+  SettingsGroup,
+  SettingsSection,
+} from '@/components/settings/SettingsLayout';
+import {
+  Callout,
+  CapabilityListSkeleton,
+  CapabilitySectionActions,
+} from '@/components/capabilities/capability-ui';
 import {
   Dialog,
   DialogContent,
@@ -28,15 +36,15 @@ import { useAuthStore } from '../stores/auth';
 function WarningBadge({ warnings }: { warnings: PluginEntry['warnings'] }) {
   if (!warnings.missing || warnings.missing.length === 0) return null;
   return (
-    <span
-      className="inline-flex items-center gap-1 rounded-md border border-warning/30 bg-warning-bg px-2 py-0.5 text-xs text-warning"
+    <Badge
+      variant="warning"
       title={
         warnings.note || `Missing binaries: ${warnings.missing.join(', ')}`
       }
     >
-      <AlertTriangle size={12} />
+      <AlertTriangle />
       缺少 {warnings.missing.join(', ')}
-    </span>
+    </Badge>
   );
 }
 
@@ -121,170 +129,159 @@ export function PluginsPage() {
   };
 
   return (
-    <div className="min-h-full bg-background">
-      <div className="max-w-7xl mx-auto">
-        <div className="bg-background border-b border-border px-6 py-4">
-          <PageHeader
-            title="Claude Code 插件"
-            subtitle={`${marketplaces.length} 个 marketplace · ${totalPlugins} 个 plugin · 启用 ${enabledPlugins}`}
-            actions={
-              <div className="flex items-center gap-3">
-                {isAdmin && (
-                  <Button
-                    variant="outline"
-                    onClick={handleScan}
-                    disabled={scanning}
-                    title="扫描宿主机 ~/.claude/plugins/marketplaces/ 并导入 catalog"
-                  >
-                    <RefreshCw
-                      size={18}
-                      className={scanning ? 'animate-spin' : ''}
-                    />
-                    扫描宿主机 Catalog
-                  </Button>
-                )}
-                <Button
-                  variant="outline"
-                  onClick={loadPlugins}
-                  disabled={loading}
-                >
-                  <RefreshCw
-                    size={18}
-                    className={loading ? 'animate-spin' : ''}
-                  />
-                  刷新
-                </Button>
-              </div>
-            }
-          />
-        </div>
-
-        <div className="mx-6 mt-4 p-3 bg-info-bg border border-info/20 rounded-lg text-xs text-info flex gap-2">
-          <Info size={16} className="flex-shrink-0 mt-0.5" />
-          <div>
-            Plugin Catalog
-            由管理员从宿主机导入并全局共享；下方启用状态仅属于当前用户。
-            更改会在新建会话时生效，已运行的智能体不会热加载。
-          </div>
-        </div>
-
-        {!loading && !error && marketplaces.length === 0 && (
-          <div className="mx-6 mt-4 p-3 bg-info-bg border border-info/20 rounded-lg text-xs text-info flex gap-2">
-            <Info size={16} className="flex-shrink-0 mt-0.5" />
-            <div>
-              v3 升级用户首次访问看到 0 plugin 是预期。
-              {isAdmin
-                ? '请点击右上 "扫描宿主机" 触发 catalog 导入；'
-                : '等 admin 完成导入后即可启用。'}
-            </div>
-          </div>
+    <div className="space-y-4">
+      <CapabilitySectionActions>
+        {isAdmin && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleScan}
+            disabled={scanning}
+            title="扫描宿主机 ~/.claude/plugins/marketplaces/ 并导入 catalog"
+          >
+            <FolderSync className={scanning ? 'animate-pulse' : ''} />
+            <span className="max-sm:sr-only">扫描宿主机 Catalog</span>
+          </Button>
         )}
+        <IconButton
+          label="刷新"
+          icon={<RefreshCw className={loading ? 'animate-spin' : undefined} />}
+          onClick={loadPlugins}
+          disabled={loading}
+        />
+      </CapabilitySectionActions>
 
-        <div className="p-6 space-y-6">
-          {loading && marketplaces.length === 0 ? (
-            <SkeletonCardList count={3} />
-          ) : error ? (
-            <Card className="border-error/20">
-              <CardContent className="text-center">
-                <p className="text-error">{error}</p>
-              </CardContent>
-            </Card>
-          ) : marketplaces.length === 0 ? (
-            <EmptyState
-              icon={Puzzle}
-              title="还没有 plugin"
-              description={
-                isAdmin
-                  ? '尚未导入任何 marketplace。点击右上 "扫描宿主机" 触发 catalog 导入。'
-                  : 'admin 还未导入任何 marketplace，请稍后再来。'
-              }
-            />
-          ) : (
-            marketplaces.map((mp) => (
-              <Card key={mp.name}>
-                <CardContent className="p-4">
-                  <div className="flex items-center justify-between mb-3 pb-3 border-b border-border">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-semibold text-base">
-                          {mp.name}
-                        </span>
-                        {mp.version && (
-                          <span className="text-xs text-muted-foreground">
-                            v{mp.version}
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-xs text-muted-foreground mt-0.5">
-                        {mp.hostSourcePath && (
-                          <>
-                            同步自 <code>{mp.hostSourcePath}</code> ·{' '}
-                          </>
-                        )}
-                        {mp.plugins.length} 个 plugin
-                      </div>
-                    </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        setDeleteTarget({
-                          name: mp.name,
-                          enabledCount: mp.plugins.filter((p) => p.enabled)
-                            .length,
-                        })
-                      }
-                      className="text-destructive hover:bg-destructive/10"
-                    >
-                      <PowerOff size={14} />
-                      清除我的启用项
-                    </Button>
-                  </div>
+      <p className="text-caption text-muted-foreground tabular-nums">
+        {`${marketplaces.length} 个 marketplace · ${totalPlugins} 个 plugin · 启用 ${enabledPlugins}`}
+      </p>
 
-                  {mp.plugins.length === 0 ? (
-                    <div className="text-sm text-muted-foreground py-3">
-                      该 marketplace 目录下没有有效的 plugin（缺少
-                      .claude-plugin/plugin.json）
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      {mp.plugins.map((plugin) => (
-                        <div
-                          key={plugin.fullId}
-                          className="flex items-center justify-between gap-3 py-2"
-                        >
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="font-medium">{plugin.name}</span>
-                              {plugin.version && (
-                                <span className="text-xs text-muted-foreground">
-                                  v{plugin.version}
-                                </span>
-                              )}
-                              <WarningBadge warnings={plugin.warnings} />
-                            </div>
-                            {plugin.description && (
-                              <div className="text-xs text-muted-foreground mt-0.5 truncate">
-                                {plugin.description}
-                              </div>
-                            )}
-                            <div className="text-xs text-muted-foreground mt-0.5 font-mono">
-                              {plugin.fullId}
-                            </div>
-                          </div>
-                          <Switch
-                            checked={plugin.enabled}
-                            onCheckedChange={() => handleToggle(plugin)}
-                          />
-                        </div>
-                      ))}
-                    </div>
+      <Callout>
+        Plugin Catalog
+        由管理员从宿主机导入并全局共享；下方启用状态仅属于当前用户。
+        更改会在新建会话时生效，已运行的智能体不会热加载。
+      </Callout>
+
+      {!loading && !error && marketplaces.length === 0 && (
+        <Callout>
+          v3 升级用户首次访问看到 0 plugin 是预期。
+          {isAdmin
+            ? '请点击右上 "扫描宿主机" 触发 catalog 导入；'
+            : '等 admin 完成导入后即可启用。'}
+        </Callout>
+      )}
+
+      <div className="space-y-8 pt-2">
+        {loading && marketplaces.length === 0 ? (
+          <CapabilityListSkeleton rows={3} />
+        ) : error ? (
+          <Callout tone="error" role="alert">
+            {error}
+          </Callout>
+        ) : marketplaces.length === 0 ? (
+          <EmptyState
+            icon={Puzzle}
+            title="还没有 plugin"
+            description={
+              isAdmin
+                ? '尚未导入任何 marketplace。点击右上 "扫描宿主机" 触发 catalog 导入。'
+                : 'admin 还未导入任何 marketplace，请稍后再来。'
+            }
+            className="border"
+          />
+        ) : (
+          marketplaces.map((mp) => (
+            <SettingsSection
+              key={mp.name}
+              title={
+                <span className="flex items-baseline gap-2">
+                  <span className="truncate">{mp.name}</span>
+                  {mp.version && (
+                    <span className="text-caption font-normal text-muted-foreground">
+                      v{mp.version}
+                    </span>
                   )}
-                </CardContent>
-              </Card>
-            ))
-          )}
-        </div>
+                </span>
+              }
+              description={
+                <>
+                  {mp.hostSourcePath && (
+                    <>
+                      同步自{' '}
+                      <code className="font-mono break-all">
+                        {mp.hostSourcePath}
+                      </code>{' '}
+                      ·{' '}
+                    </>
+                  )}
+                  {mp.plugins.length} 个 plugin
+                </>
+              }
+              actions={
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() =>
+                    setDeleteTarget({
+                      name: mp.name,
+                      enabledCount: mp.plugins.filter((p) => p.enabled).length,
+                    })
+                  }
+                  className="text-muted-foreground hover:bg-error/10 hover:text-error"
+                >
+                  <PowerOff />
+                  <span className="max-sm:sr-only">清除我的启用项</span>
+                </Button>
+              }
+            >
+              <SettingsGroup>
+                {mp.plugins.length === 0 ? (
+                  <p className="px-4 py-3 text-caption text-muted-foreground">
+                    该 marketplace 目录下没有有效的 plugin（缺少
+                    .claude-plugin/plugin.json）
+                  </p>
+                ) : (
+                  mp.plugins.map((plugin) => (
+                    <div
+                      key={plugin.fullId}
+                      className="flex items-start gap-4 px-4 py-3"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <label
+                            htmlFor={`plugin-${plugin.fullId}`}
+                            className="text-body font-medium text-foreground"
+                          >
+                            {plugin.name}
+                          </label>
+                          {plugin.version && (
+                            <span className="text-caption text-muted-foreground">
+                              v{plugin.version}
+                            </span>
+                          )}
+                          <WarningBadge warnings={plugin.warnings} />
+                        </div>
+                        {plugin.description && (
+                          <p className="mt-0.5 line-clamp-2 text-caption leading-5 text-muted-foreground">
+                            {plugin.description}
+                          </p>
+                        )}
+                        <p className="mt-0.5 truncate font-mono text-micro text-faint-foreground">
+                          {plugin.fullId}
+                        </p>
+                      </div>
+                      <Switch
+                        id={`plugin-${plugin.fullId}`}
+                        checked={plugin.enabled}
+                        onCheckedChange={() => handleToggle(plugin)}
+                        className="mt-0.5"
+                      />
+                    </div>
+                  ))
+                )}
+              </SettingsGroup>
+            </SettingsSection>
+          ))
+        )}
       </div>
 
       <Dialog
@@ -309,11 +306,11 @@ export function PluginsPage() {
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>
-              <X size={14} />
+              <X />
               取消
             </Button>
             <Button variant="destructive" onClick={handleDelete}>
-              <PowerOff size={14} />
+              <PowerOff />
               全部停用
             </Button>
           </DialogFooter>
