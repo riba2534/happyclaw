@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
+import {
+  ChevronDown,
+  ChevronRight,
+  ChevronUp,
+  Loader2,
+  Sparkles,
+} from 'lucide-react';
 import { shouldRecoverStaleWaiting, useChatStore } from '../../stores/chat';
 import { useAuthStore } from '../../stores/auth';
 import { resolveAgentDisplayIdentity } from '../../utils/agent-identity';
@@ -49,9 +55,9 @@ function AskUserQuestionCard({
       {questions.map((q, qi) => (
         <div
           key={qi}
-          className="rounded-lg border border-brand-200 bg-brand-50/30 p-3"
+          className="rounded-lg bg-surface-raised p-3 font-sans ring-1 ring-surface-border"
         >
-          <div className="text-sm font-medium text-foreground mb-2">
+          <div className="mb-2 text-body font-medium text-foreground">
             {q.question}
           </div>
           {q.options && q.options.length > 0 && (
@@ -59,14 +65,14 @@ function AskUserQuestionCard({
               {q.options.map((opt, oi) => (
                 <span
                   key={oi}
-                  className="inline-block px-2.5 py-1 rounded-md text-xs font-medium bg-brand-100 text-primary border border-brand-200"
+                  className="inline-flex h-7 items-center rounded-md bg-muted px-2.5 text-caption font-medium text-foreground ring-1 ring-surface-border"
                 >
                   {opt.label || opt.value || '—'}
                 </span>
               ))}
             </div>
           )}
-          <div className="text-xs text-muted-foreground mt-2">
+          <div className="mt-2 text-caption text-muted-foreground">
             请在智能体终端中回复
           </div>
         </div>
@@ -131,45 +137,22 @@ function TaskAgentBlock({
     return () => clearInterval(interval);
   }, [activeToolIdSignature, agent.id]);
 
-  const borderColor = isRunning
-    ? 'border-blue-200/60 dark:border-blue-700/40'
-    : agent.status === 'error'
-      ? 'border-red-200/60 dark:border-red-700/40'
-      : 'border-emerald-200/60 dark:border-emerald-700/40';
-  const bgColor = isRunning
-    ? 'bg-blue-50/40 dark:bg-blue-950/30'
-    : agent.status === 'error'
-      ? 'bg-red-50/40 dark:bg-red-950/30'
-      : 'bg-emerald-50/40 dark:bg-emerald-950/30';
-  const hoverBg = isRunning
-    ? 'hover:bg-blue-50/60 dark:hover:bg-blue-900/30'
-    : agent.status === 'error'
-      ? 'hover:bg-red-50/60 dark:hover:bg-red-900/30'
-      : 'hover:bg-emerald-50/60 dark:hover:bg-emerald-900/30';
+  // Neutral card; only the status dot carries color.
+  const borderColor = 'border-surface-border';
+  const bgColor = 'bg-surface-raised';
+  const hoverBg = 'hover:bg-surface-hover';
   const dotColor = isRunning
-    ? 'bg-blue-500 animate-pulse'
+    ? 'bg-primary animate-pulse'
     : agent.status === 'error'
-      ? 'bg-red-500'
-      : 'bg-emerald-500';
-  const textColor = isRunning
-    ? 'text-blue-700 dark:text-blue-300'
-    : agent.status === 'error'
-      ? 'text-red-700 dark:text-red-300'
-      : 'text-emerald-700 dark:text-emerald-300';
-  const chevronColor = isRunning
-    ? 'text-blue-400 dark:text-blue-500'
-    : agent.status === 'error'
-      ? 'text-red-400 dark:text-red-500'
-      : 'text-emerald-400 dark:text-emerald-500';
-  const contentBorderColor = isRunning
-    ? 'border-blue-100 dark:border-blue-800/50'
-    : agent.status === 'error'
-      ? 'border-red-100 dark:border-red-800/50'
-      : 'border-emerald-100 dark:border-emerald-800/50';
+      ? 'bg-error'
+      : 'bg-success';
+  const textColor = 'text-foreground';
+  const chevronColor = 'text-faint-foreground';
+  const contentBorderColor = 'border-surface-border';
 
   return (
     <div
-      className={`mb-3 rounded-xl border ${borderColor} ${bgColor} overflow-hidden`}
+      className={`mb-3 overflow-hidden rounded-lg border font-sans ${borderColor} ${bgColor}`}
     >
       <button
         onClick={() => setExpanded(!expanded)}
@@ -200,12 +183,12 @@ function TaskAgentBlock({
           {isRunning && streaming && (
             <>
               {streaming.isThinking && (
-                <p className="text-[13px] text-blue-500 dark:text-blue-400 italic flex items-center gap-1">
+                <p className="flex items-center gap-1 text-label text-muted-foreground">
                   思考中
                   <span className="flex gap-0.5 ml-0.5">
-                    <span className="w-1 h-1 bg-blue-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
-                    <span className="w-1 h-1 bg-blue-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
-                    <span className="w-1 h-1 bg-blue-400 rounded-full animate-bounce" />
+                    <span className="size-1 animate-bounce rounded-full bg-faint-foreground [animation-delay:-0.3s]" />
+                    <span className="size-1 animate-bounce rounded-full bg-faint-foreground [animation-delay:-0.15s]" />
+                    <span className="size-1 animate-bounce rounded-full bg-faint-foreground" />
                   </span>
                 </p>
               )}
@@ -276,7 +259,7 @@ function SdkTaskRuntimeBlock({
         className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-muted/40 transition-colors"
       >
         <span
-          className={`w-2 h-2 rounded-full ${isRunning ? 'bg-blue-500 animate-pulse' : task.status === 'error' ? 'bg-red-500' : 'bg-emerald-500'}`}
+          className={`size-2 rounded-full ${isRunning ? 'animate-pulse bg-primary' : task.status === 'error' ? 'bg-error' : 'bg-success'}`}
         />
         <span className="text-xs font-medium text-foreground truncate">
           {task.title}
@@ -325,7 +308,7 @@ function SdkTaskRuntimeBlock({
             </div>
           )}
           {task.thinkingTail && (
-            <div className="rounded-md bg-amber-50/50 dark:bg-amber-950/30 border border-amber-200/50 dark:border-amber-800/40 px-2 py-1.5 text-[13px] text-amber-900/70 dark:text-amber-200/70 whitespace-pre-wrap break-words max-h-28 overflow-y-auto">
+            <div className="max-h-28 overflow-y-auto rounded-md border-l-2 border-surface-border bg-muted/40 px-2 py-1.5 text-label break-words whitespace-pre-wrap text-muted-foreground">
               {task.thinkingTail}
             </div>
           )}
@@ -460,9 +443,7 @@ function TraceRow({
 }) {
   const [open, setOpen] = useState(false);
   const hasDetail = !!item.detail && item.detail !== item.summary;
-  const base = danger
-    ? 'text-red-800/80 dark:text-red-200/80'
-    : 'text-foreground/75';
+  const base = danger ? 'text-error' : 'text-foreground/75';
   return (
     <div className={`text-[13px] ${base} break-words`}>
       <div
@@ -502,15 +483,15 @@ function PermissionAlert({
   const denied = streaming.traceEvents.filter((e) => e.kind === 'permission');
   if (denied.length === 0) return null;
   return (
-    <div className="rounded-lg border border-red-300 dark:border-red-800/60 bg-red-50/70 dark:bg-red-950/30 p-2 mb-2">
-      <div className="text-xs font-medium text-red-700 dark:text-red-300 mb-1">
+    <div className="mb-2 rounded-lg bg-error/5 p-2.5 font-sans ring-1 ring-error/20">
+      <div className="mb-1 text-caption font-medium text-error">
         🚫 权限被拒绝 ({denied.length})
       </div>
       <div className="space-y-0.5 max-h-28 overflow-y-auto">
         {denied.slice(-10).map((item) => (
           <div
             key={item.id}
-            className="text-[13px] text-red-800/80 dark:text-red-200/80 break-words"
+            className="text-label break-words text-foreground/80"
           >
             <span className="font-medium">{item.title}</span>
             {(item.detail || item.summary) && (
@@ -569,51 +550,23 @@ function StreamingContent({
     <>
       {/* System status */}
       {showSystemStatus && (
-        <div className="flex items-center gap-2 text-[13px] text-muted-foreground mb-2">
-          <svg
-            className="w-3.5 h-3.5 animate-spin text-primary"
-            viewBox="0 0 24 24"
-            fill="none"
-          >
-            <circle
-              className="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              strokeWidth="4"
-            />
-            <path
-              className="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-            />
-          </svg>
+        <div className="mb-2 flex h-7 items-center gap-2 font-sans text-label text-muted-foreground">
+          <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
           <span>{formatSystemStatus(showSystemStatus)}</span>
         </div>
       )}
 
       {/* Reasoning block */}
       {streaming.thinkingText && (
-        <div className="mb-3 rounded-xl border border-amber-200/60 dark:border-amber-800/40 bg-amber-50/40 dark:bg-amber-950/30 overflow-hidden">
+        <div className="mb-2 font-sans">
           <button
+            type="button"
             onClick={() => setThinkingExpanded(!thinkingExpanded)}
-            className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-amber-50/60 dark:hover:bg-amber-900/30 transition-colors"
+            aria-expanded={thinkingExpanded}
+            className="-ml-1.5 inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-caption text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground"
           >
-            <svg
-              className="w-4 h-4 text-amber-500 flex-shrink-0"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z"
-              />
-            </svg>
-            <span className="text-xs font-medium text-amber-700 dark:text-amber-300">
+            <Sparkles className="size-3.5" />
+            <span className={streaming.isThinking ? 'shimmer' : undefined}>
               {streaming.isThinking
                 ? 'Reasoning...'
                 : streaming.thinkingDurationMs != null &&
@@ -621,25 +574,15 @@ function StreamingContent({
                   ? formatThinkingDuration(streaming.thinkingDurationMs)
                   : 'Reasoning'}
             </span>
-            {streaming.isThinking && (
-              <span className="flex gap-0.5 ml-0.5">
-                <span className="w-1 h-1 bg-amber-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
-                <span className="w-1 h-1 bg-amber-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
-                <span className="w-1 h-1 bg-amber-400 rounded-full animate-bounce" />
-              </span>
-            )}
-            <span className="flex-1" />
-            {thinkingExpanded ? (
-              <ChevronUp className="w-3.5 h-3.5 text-amber-400" />
-            ) : (
-              <ChevronDown className="w-3.5 h-3.5 text-amber-400" />
-            )}
+            <ChevronRight
+              className={`size-3.5 transition-transform duration-150 ${thinkingExpanded ? 'rotate-90' : ''}`}
+            />
           </button>
           {thinkingExpanded && (
             <div
               ref={thinkingRef}
               onScroll={handleThinkingScroll}
-              className="px-3 pb-3 text-sm text-amber-900/70 dark:text-amber-200/70 whitespace-pre-wrap break-words max-h-64 overflow-y-auto border-t border-amber-100 dark:border-amber-800/50"
+              className="mt-1 mb-3 max-h-64 overflow-y-auto border-l-2 border-surface-border pl-3 text-label leading-6 break-words whitespace-pre-wrap text-muted-foreground"
             >
               {streaming.thinkingText}
             </div>
@@ -722,26 +665,8 @@ function StreamingContent({
 
       {/* Hook */}
       {streaming.activeHook && (
-        <div className="flex items-center gap-2 text-[13px] text-muted-foreground mb-2">
-          <svg
-            className="w-3.5 h-3.5 animate-spin text-primary"
-            viewBox="0 0 24 24"
-            fill="none"
-          >
-            <circle
-              className="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              strokeWidth="4"
-            />
-            <path
-              className="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-            />
-          </svg>
+        <div className="mb-2 flex h-7 items-center gap-2 font-sans text-label text-muted-foreground">
+          <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
           <span>Hook: {streaming.activeHook.hookName}</span>
         </div>
       )}
@@ -976,6 +901,30 @@ export function StreamingDisplay({
     userScrolledRef.current = !isAtBottom;
   };
 
+  const thinkingDots = (
+    <span className="ml-0.5 flex gap-0.5" aria-hidden="true">
+      <span className="size-1 animate-bounce rounded-full bg-faint-foreground [animation-delay:-0.3s]" />
+      <span className="size-1 animate-bounce rounded-full bg-faint-foreground [animation-delay:-0.15s]" />
+      <span className="size-1 animate-bounce rounded-full bg-faint-foreground" />
+    </span>
+  );
+  const identityRow = (
+    <div className="mb-1.5 flex h-6 items-center gap-2">
+      <EmojiAvatar
+        imageUrl={agentIdentity.imageUrl}
+        emoji={agentIdentity.emoji}
+        color={agentIdentity.color}
+        fallbackChar={agentIdentity.fallbackChar}
+        size="sm"
+        className="size-6"
+      />
+      <span className="text-label font-medium text-foreground">
+        {senderName}
+      </span>
+      {streaming?.isThinking && thinkingDots}
+    </div>
+  );
+
   // Proactive mode exposes only committed native messages plus an explicit run
   // lifecycle. Keep its activity signal visually separate from message content:
   // it is not an unfinished Assistant reply and must not look like another card.
@@ -989,13 +938,13 @@ export function StreamingDisplay({
         aria-label={`${senderName}正在处理`}
         className={
           isCompact
-            ? 'mb-2 flex min-h-10 items-center gap-2 border-b border-border pb-2 text-sm text-muted-foreground'
-            : 'mx-auto flex min-h-10 w-full max-w-4xl items-center gap-2 px-4 py-2 text-sm text-muted-foreground lg:pl-[60px]'
+            ? 'mb-2 flex min-h-10 items-center gap-2 border-b border-surface-border pb-2 text-body text-muted-foreground'
+            : 'flex min-h-10 w-full items-center gap-2 py-2 text-body text-muted-foreground'
         }
       >
         <Loader2
           aria-hidden="true"
-          className="h-4 w-4 shrink-0 animate-spin text-primary motion-reduce:animate-none"
+          className="h-4 w-4 shrink-0 animate-spin text-muted-foreground motion-reduce:animate-none"
         />
         <span>正在处理…</span>
       </div>
@@ -1028,9 +977,9 @@ export function StreamingDisplay({
   if (isWaiting && !hasStreamData) {
     if (isCompact) {
       return (
-        <div className="mb-2 border-b border-border pb-2">
-          <div className="flex items-center gap-1.5 mb-1">
-            <span className="text-xs font-semibold text-primary">
+        <div className="mb-2 border-b border-surface-border pb-2">
+          <div className="mb-1 flex h-6 items-center gap-1.5">
+            <span className="text-caption font-medium text-foreground">
               {senderName}
             </span>
           </div>
@@ -1041,61 +990,30 @@ export function StreamingDisplay({
           >
             <Loader2
               aria-hidden="true"
-              className="h-4 w-4 animate-spin text-primary motion-reduce:animate-none"
+              className="h-4 w-4 animate-spin text-muted-foreground motion-reduce:animate-none"
             />
-            <span className="text-sm text-muted-foreground">正在准备回复…</span>
+            <span className="shimmer text-body text-muted-foreground">
+              正在准备回复…
+            </span>
           </div>
         </div>
       );
     }
     return (
-      <div className="max-w-4xl mx-auto w-full px-4 py-3">
-        {/* Mobile: compact avatar + name row */}
-        <div className="flex items-center gap-2 mb-1.5 lg:hidden">
-          <EmojiAvatar
-            imageUrl={agentIdentity.imageUrl}
-            emoji={agentIdentity.emoji}
-            color={agentIdentity.color}
-            fallbackChar={agentIdentity.fallbackChar}
-            size="sm"
+      <div className="w-full pb-6">
+        {identityRow}
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex h-7 items-center gap-2 font-serif"
+        >
+          <Loader2
+            aria-hidden="true"
+            className="h-4 w-4 animate-spin text-muted-foreground motion-reduce:animate-none"
           />
-          <span className="text-xs text-muted-foreground font-medium">
-            {senderName}
+          <span className="shimmer font-sans text-body text-muted-foreground">
+            正在准备回复…
           </span>
-        </div>
-
-        <div className="lg:flex lg:gap-3">
-          <div className="hidden lg:block flex-shrink-0">
-            <EmojiAvatar
-              imageUrl={agentIdentity.imageUrl}
-              emoji={agentIdentity.emoji}
-              color={agentIdentity.color}
-              fallbackChar={agentIdentity.fallbackChar}
-              size="md"
-            />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="hidden lg:flex items-center gap-2 mb-1">
-              <span className="text-xs text-muted-foreground font-medium">
-                {senderName}
-              </span>
-            </div>
-            <div className="bg-surface rounded-xl border border-border/60 px-5 py-4 font-serif shadow-card">
-              <div
-                role="status"
-                aria-live="polite"
-                className="flex items-center gap-2"
-              >
-                <Loader2
-                  aria-hidden="true"
-                  className="h-4 w-4 animate-spin text-primary motion-reduce:animate-none"
-                />
-                <span className="text-sm text-muted-foreground">
-                  正在准备回复…
-                </span>
-              </div>
-            </div>
-          </div>
         </div>
       </div>
     );
@@ -1106,19 +1024,13 @@ export function StreamingDisplay({
   // ── Compact mode streaming ──
   if (isCompact) {
     return (
-      <div className="mb-2 border-b border-border pb-2">
+      <div className="mb-2 border-b border-surface-border pb-2">
         {/* Sender line */}
-        <div className="flex items-center gap-1.5 mb-1">
-          <span className="text-xs font-semibold text-primary">
+        <div className="mb-1 flex h-6 items-center gap-1.5">
+          <span className="text-caption font-medium text-foreground">
             {senderName}
           </span>
-          {streaming?.isThinking && (
-            <span className="flex gap-0.5 ml-0.5">
-              <span className="w-1 h-1 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
-              <span className="w-1 h-1 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
-              <span className="w-1 h-1 bg-brand-400 rounded-full animate-bounce" />
-            </span>
-          )}
+          {streaming?.isThinking && thinkingDots}
         </div>
 
         {/* Content — flat, no card wrapper */}
@@ -1151,61 +1063,20 @@ export function StreamingDisplay({
   }
 
   // ── Chat mode streaming (default) ──
+  // Same identity row and flat body as a finished MessageBubble, so the
+  // streaming → final swap keeps every line where it was.
   return (
-    <div className="max-w-4xl mx-auto w-full px-4 py-3">
-      {/* Mobile: compact avatar + name row */}
-      <div className="flex items-center gap-2 mb-1.5 lg:hidden">
-        <EmojiAvatar
-          imageUrl={agentIdentity.imageUrl}
-          emoji={agentIdentity.emoji}
-          color={agentIdentity.color}
-          fallbackChar={agentIdentity.fallbackChar}
-          size="sm"
-        />
-        <span className="text-xs text-muted-foreground font-medium">
-          {senderName}
-        </span>
-        {streaming?.isThinking && (
-          <span className="flex gap-0.5 ml-1">
-            <span className="w-1 h-1 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
-            <span className="w-1 h-1 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
-            <span className="w-1 h-1 bg-brand-400 rounded-full animate-bounce" />
-          </span>
-        )}
-      </div>
-
-      <div className="lg:flex lg:gap-3">
-        <div className="hidden lg:block flex-shrink-0">
-          <EmojiAvatar
-            imageUrl={agentIdentity.imageUrl}
-            emoji={agentIdentity.emoji}
-            color={agentIdentity.color}
-            fallbackChar={agentIdentity.fallbackChar}
-            size="md"
-          />
-        </div>
-        <div className="flex-1 min-w-0">
-          {/* Desktop: name row */}
-          <div className="hidden lg:flex items-center gap-2 mb-1">
-            <span className="text-xs text-muted-foreground font-medium">
-              {senderName}
-            </span>
-            {streaming?.isThinking && (
-              <span className="flex gap-0.5 ml-1">
-                <span className="w-1 h-1 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
-                <span className="w-1 h-1 bg-brand-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
-                <span className="w-1 h-1 bg-brand-400 rounded-full animate-bounce" />
-              </span>
-            )}
-          </div>
-
+    <div className="w-full pb-6">
+      {identityRow}
+      <div>
+        <div>
           {/* Workflow already provides the primary card surface. Keep the
               streaming shell flat so the UI never nests one card in another. */}
           <div
             className={
               hasWorkflowCards
                 ? 'overflow-hidden font-serif'
-                : 'bg-surface rounded-xl border border-border/60 px-5 py-4 overflow-hidden font-serif shadow-card'
+                : 'overflow-hidden font-serif'
             }
           >
             {streaming && (

@@ -694,16 +694,17 @@ body {
   background: transparent;
 }
 
-/* Code highlighting theme override — GitHub light */
+/* Code highlighting theme override — GitHub light colors. The surrounding
+   code block (MarkdownContent) owns background, border and padding, so the
+   highlighted <code> stays transparent and follows --code-block-bg. */
 pre code.hljs {
-  background: #f6f8fa !important;
-  border-radius: 8px;
-  padding: 16px !important;
+  background: transparent !important;
+  border-radius: 0;
+  padding: 0 !important;
 }
 
 /* Dark mode syntax highlighting — GitHub Dark Dimmed */
 .dark pre code.hljs {
-  background: #22272e !important;
   color: #adbac7 !important;
 }
 .dark .hljs-doctag,

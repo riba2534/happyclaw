@@ -34,20 +34,25 @@ import {
   ChevronRight,
   Folder,
   Link,
-  Monitor,
-  Moon,
   PanelRightClose,
   PanelRightOpen,
   Server,
   Settings2,
   SlidersHorizontal,
-  Sun,
   Terminal,
   X,
 } from 'lucide-react';
 import { useDisplayMode } from '../../hooks/useDisplayMode';
-import { useTheme } from '../../hooks/useTheme';
 import { cn } from '@/lib/utils';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Spinner } from '@/components/ui/spinner';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
+import { IconButton } from '../common/IconButton';
 import { wsManager } from '../../api/ws';
 import { api } from '../../api/client';
 // xterm.js is ~488KB and most sessions never open the terminal; keep it out
@@ -91,7 +96,6 @@ interface ChatViewProps {
 
 export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const { mode: displayMode, toggle: toggleDisplayMode } = useDisplayMode();
-  const { theme, toggle: toggleTheme } = useTheme();
   const [panelOpen, setPanelOpen] = useState(false);
   const [panelEverOpened, setPanelEverOpened] = useState(false);
   useEffect(() => {
@@ -398,7 +402,6 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const workspaceDisplayName = group?.is_my_home
     ? agentProfileLabel
     : group?.name;
-  const contextSummary = group?.is_my_home ? '直接对话' : agentProfileLabel;
   // SDK Tasks 不再创建独立标签页，事件直接显示在主对话流式卡片中
 
   // Load sub-agents for this group
@@ -847,7 +850,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
             onClick={() => setContextNavCollapsed(false)}
             aria-expanded={false}
             aria-label="展开上下文操作"
-            className="flex w-full items-center gap-5 border-b border-border/70 px-4 py-3 text-muted-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer"
+            className="flex w-full cursor-pointer items-center gap-5 border-b border-surface-border px-4 py-3 text-muted-foreground transition-colors hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
           >
             {contextNavItems.map((item) => (
               <item.icon
@@ -872,7 +875,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         )}
         inert={collapsibleNav && contextNavCollapsed}
       >
-        <div className="border-b border-border/70 p-2">
+        <div className="border-b border-surface-border p-1.5">
           {contextNavItems.map((item) => (
             <button
               key={item.key}
@@ -880,17 +883,20 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
               onClick={item.onClick}
               aria-current={item.current ? 'page' : undefined}
               className={cn(
-                'flex min-h-10 w-full items-center gap-3 rounded-md px-2.5 text-left text-xs text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer',
-                item.current && 'bg-accent/70',
+                'flex h-8 w-full cursor-pointer items-center gap-2.5 rounded-md px-2 text-left text-body text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none pointer-coarse:min-h-10',
+                item.current &&
+                  'bg-surface-selected font-medium text-foreground',
               )}
             >
-              <item.icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <item.icon className="size-4 shrink-0" />
               <span className="flex-1">{item.label}</span>
               {item.value && (
-                <span className="text-muted-foreground">{item.value}</span>
+                <span className="text-caption text-faint-foreground">
+                  {item.value}
+                </span>
               )}
               {item.chevron && (
-                <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+                <ChevronRight className="size-3.5 text-faint-foreground" />
               )}
             </button>
           ))}
@@ -933,177 +939,159 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         )}
       >
         {/* Header */}
-        <div className="flex items-center gap-3 px-6 py-4 max-lg:px-4 max-lg:py-2.5 max-lg:bg-background/60 max-lg:backdrop-blur-xl max-lg:saturate-[1.8] max-lg:border-border/40">
+        <header className="flex h-12 shrink-0 items-center gap-2 border-b border-surface-border px-4 max-lg:h-13 max-lg:bg-background/80 max-lg:backdrop-blur-xl lg:px-5">
           {onBack && (
-            <button
+            <IconButton
+              label="返回"
+              icon={<ArrowLeft />}
               onClick={handleBackAction}
-              className="lg:hidden p-2 -ml-2 hover:bg-muted rounded-lg transition-colors cursor-pointer"
-              aria-label="返回"
-            >
-              <ArrowLeft className="w-5 h-5 text-foreground/70" />
-            </button>
+              hideTooltip
+              className="-ml-1.5 lg:hidden"
+            />
           )}
           {headerLeft}
-          <div className="flex-1 min-w-0">
-            <h2 className="font-semibold text-foreground text-[15px] truncate">
-              {workspaceDisplayName}
-            </h2>
-            <div className="flex min-w-0 items-center gap-1.5 overflow-hidden text-xs text-muted-foreground">
-              <span className="truncate">{contextSummary}</span>
-              {group.execution_mode && (
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <nav
+              aria-label="当前对话"
+              className="flex min-w-0 items-center gap-1 text-body"
+            >
+              {activeAgentTab && isConversationTab ? (
+                <button
+                  type="button"
+                  onClick={() => selectTab(null)}
+                  className="hidden max-w-[16rem] shrink-0 cursor-pointer truncate rounded-md px-1.5 py-0.5 font-medium text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground sm:block"
+                  title={`返回${mainConversationLabel}`}
+                >
+                  {workspaceDisplayName}
+                </button>
+              ) : (
+                <h2 className="truncate px-1.5 font-medium text-foreground">
+                  {workspaceDisplayName}
+                </h2>
+              )}
+              {activeAgentTab && isConversationTab && (
                 <>
-                  <span className="hidden shrink-0 text-muted-foreground/40 sm:inline">
-                    ·
-                  </span>
-                  <span
-                    className={`hidden shrink-0 items-center rounded-full border px-2.5 py-0.5 text-[10px] font-medium sm:inline-flex ${group.execution_mode === 'host' ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/30 dark:text-amber-300 dark:border-amber-800' : 'bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-950/30 dark:text-sky-300 dark:border-sky-800'}`}
-                  >
-                    {group.execution_mode === 'host' ? '宿主机' : 'Docker'}
-                  </span>
+                  <ChevronRight
+                    className="hidden size-3.5 shrink-0 text-faint-foreground sm:block"
+                    aria-hidden="true"
+                  />
+                  <h2 className="truncate px-1 font-medium text-foreground">
+                    {currentContextName}
+                  </h2>
                 </>
               )}
-              <span className="shrink-0 text-muted-foreground/40">·</span>
-              <span
-                className={cn(
-                  'inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[10px] font-medium',
-                  interactionMode === 'proactive'
-                    ? 'border-primary/30 bg-primary/5 text-primary'
-                    : 'border-border bg-muted/50 text-muted-foreground',
-                )}
-                title={
-                  interactionMode === 'proactive'
+            </nav>
+            <div className="hidden min-w-0 items-center gap-1.5 overflow-hidden md:flex">
+              {group.execution_mode && (
+                <Badge variant="outline">
+                  {group.execution_mode === 'host' ? '宿主机' : 'Docker'}
+                </Badge>
+              )}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Badge
+                    variant="outline"
+                    dot={
+                      interactionMode === 'proactive' ? 'primary' : undefined
+                    }
+                    aria-label={
+                      interactionMode === 'proactive'
+                        ? '当前为主动模式'
+                        : '当前为 Assistant 模式'
+                    }
+                  >
+                    {interactionMode === 'proactive' ? '主动' : 'Assistant'}
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {interactionMode === 'proactive'
                     ? '主动模式：由智能体决定何时发送 0～多条独立消息'
-                    : 'Assistant 模式：框架在任务完成后交付一条主回复'
-                }
-                aria-label={
-                  interactionMode === 'proactive'
-                    ? '当前为主动模式'
-                    : '当前为 Assistant 模式'
-                }
-              >
-                {interactionMode === 'proactive' ? '主动' : 'Assistant'}
-              </span>
+                    : 'Assistant 模式：框架在任务完成后交付一条主回复'}
+                </TooltipContent>
+              </Tooltip>
               {isOwnHome &&
                 imStatus &&
                 Object.entries(imStatus).some(([, v]) => v) && (
-                  <>
-                    <span className="shrink-0 text-muted-foreground/40">·</span>
+                  <Badge
+                    variant="outline"
+                    dot="success"
+                    // `body { word-break: break-word }` drops the min-content
+                    // floor to a single character; keep the label on one line.
+                    className="min-w-0 whitespace-nowrap"
+                  >
                     {Object.entries(imStatus)
                       .filter(([, connected]) => connected)
-                      .map(([channel]) => (
-                        <span
-                          key={channel}
-                          // `body { word-break: break-word }` drops the
-                          // min-content floor to a single character, so an
-                          // unguarded badge collapses into a vertical column on
-                          // narrow headers instead of keeping its label intact.
-                          className="inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap"
-                        >
-                          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
-                          {CHANNEL_LABEL[channel] ?? channel}
-                        </span>
-                      ))}
-                  </>
+                      .map(([channel]) => CHANNEL_LABEL[channel] ?? channel)
+                      .join(' · ')}
+                  </Badge>
                 )}
             </div>
           </div>
           {currentContextWaiting && (
-            <span className="hidden h-8 shrink-0 items-center gap-1.5 rounded-md bg-emerald-50 px-2.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 sm:inline-flex">
-              <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
+            <span className="hidden shrink-0 items-center gap-1.5 px-1 text-caption text-muted-foreground sm:inline-flex">
+              <Spinner className="size-3.5" />
               运行中
             </span>
           )}
-          {canModifyWorkspaceConfig && (
-            <button
-              type="button"
-              onClick={() => setShowInteractionModeDialog(true)}
-              className="inline-flex h-11 w-11 items-center justify-center gap-1.5 rounded-lg text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer sm:h-9 sm:w-auto sm:px-2.5"
-              title="工作区设置"
-              aria-label="工作区设置"
-            >
-              <Settings2 className="h-4 w-4" />
-              <span className="hidden xl:inline">工作区设置</span>
-            </button>
-          )}
-          {canModifyWorkspaceConfig && (
-            <button
-              type="button"
-              onClick={() => setBindingAgentId(WORKSPACE_BINDING)}
-              className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer"
-              title="管理工作区话题群绑定"
-              aria-label="管理工作区话题群绑定"
-            >
-              <Link className="h-4 w-4" />
-              <span className="hidden sm:inline">渠道绑定</span>
-            </button>
-          )}
-          <button
-            onClick={toggleTheme}
-            className="hidden min-h-9 min-w-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:flex cursor-pointer"
-            title={
-              theme === 'light'
-                ? '切换到暗色模式'
-                : theme === 'dark'
-                  ? '跟随系统'
-                  : '切换到亮色模式'
-            }
-            aria-label={
-              theme === 'light'
-                ? '切换到暗色模式'
-                : theme === 'dark'
-                  ? '跟随系统'
-                  : '切换到亮色模式'
-            }
-          >
-            {theme === 'light' ? (
-              <Moon className="w-5 h-5" />
-            ) : theme === 'dark' ? (
-              <Monitor className="w-5 h-5" />
-            ) : (
-              <Sun className="w-5 h-5" />
+          <div className="flex shrink-0 items-center gap-0.5">
+            {canModifyWorkspaceConfig && (
+              <IconButton
+                label="工作区设置"
+                icon={<Settings2 />}
+                onClick={() => setShowInteractionModeDialog(true)}
+                className="text-muted-foreground pointer-coarse:size-10"
+              />
             )}
-          </button>
-          <button
-            onClick={handleContextPanelToggle}
-            className="inline-flex min-h-9 min-w-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer"
-            title={panelOpen ? '收起上下文面板' : '展开上下文面板'}
-            aria-label={panelOpen ? '收起上下文面板' : '展开上下文面板'}
-          >
-            {panelOpen ? (
-              <PanelRightClose className="h-4 w-4" />
-            ) : (
-              <PanelRightOpen className="h-4 w-4" />
+            {canModifyWorkspaceConfig && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setBindingAgentId(WORKSPACE_BINDING)}
+                className="text-muted-foreground pointer-coarse:min-h-10"
+                title="管理工作区话题群绑定"
+                aria-label="管理工作区话题群绑定"
+              >
+                <Link />
+                <span className="hidden sm:inline">渠道绑定</span>
+              </Button>
             )}
-          </button>
-        </div>
+            <IconButton
+              label={panelOpen ? '收起上下文面板' : '展开上下文面板'}
+              icon={panelOpen ? <PanelRightClose /> : <PanelRightOpen />}
+              onClick={handleContextPanelToggle}
+              className="text-muted-foreground pointer-coarse:size-10"
+            />
+          </div>
+        </header>
 
-        {/* Message channel setup banner for home container without channel config */}
+        {/* Message channel setup hint for home container without channel config */}
         {isOwnHome &&
           imStatus &&
           !Object.values(imStatus).some(Boolean) &&
           !imBannerDismissed && (
-            <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 text-sm">
-              <Link className="w-4 h-4 flex-shrink-0" />
-              <span className="flex-1 min-w-0">
+            <div className="flex min-h-9 shrink-0 items-center gap-2 border-b border-surface-border bg-muted/40 px-4 py-1.5 text-caption text-muted-foreground lg:px-5">
+              <Link className="size-3.5 shrink-0 text-primary" />
+              <span className="min-w-0 flex-1">
                 未配置消息渠道（飞书 / Telegram / Discord / QQ / 微信 / 钉钉 /
                 WhatsApp），消息无法与 HappyClaw 的直接对话互通
               </span>
-              <button
+              <Button
+                variant="outline"
+                size="xs"
                 onClick={() => navigate('/setup/channels')}
-                className="flex-shrink-0 px-3 py-1 text-xs font-medium rounded-md bg-amber-600 text-white hover:bg-amber-700 transition-colors cursor-pointer"
               >
                 去配置
-              </button>
-              <button
+              </Button>
+              <IconButton
+                label="关闭"
+                icon={<X />}
+                size="icon-xs"
+                hideTooltip
                 onClick={() => {
                   setImBannerDismissed(true);
                   localStorage.setItem('im-banner-dismissed', '1');
                 }}
-                className="flex-shrink-0 p-0.5 rounded hover:bg-amber-200/60 transition-colors cursor-pointer"
-                aria-label="关闭"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              />
             </div>
           )}
 
@@ -1226,15 +1214,17 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
               <div
                 onMouseDown={handleDragStart}
                 onTouchStart={handleTouchDragStart}
-                className="hidden lg:flex h-1 bg-muted hover:bg-brand-400 cursor-row-resize items-center justify-center transition-colors group"
+                className="group hidden h-1.5 cursor-row-resize items-center justify-center border-t border-surface-border transition-colors hover:bg-surface-hover lg:flex"
               >
-                <div className="w-8 h-0.5 rounded-full bg-muted-foreground group-hover:bg-primary transition-colors" />
+                <div className="h-0.5 w-8 rounded-full bg-faint-foreground/60 transition-colors group-hover:bg-foreground/40" />
               </div>
             )}
             {/* Terminal panel */}
             <div
               className={`hidden lg:block flex-shrink-0 overflow-hidden transition-[height] duration-200 ${
-                terminalVisible ? 'border-t border-border' : 'border-t-0'
+                terminalVisible
+                  ? 'border-t border-surface-border'
+                  : 'border-t-0'
               }`}
               style={{ height: terminalVisible ? terminalHeight : 0 }}
             >
@@ -1257,7 +1247,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
       <aside
         className={cn(
           'hidden h-full shrink-0 overflow-hidden transition-[width] duration-200 ease-out lg:flex',
-          panelOpen ? 'w-80 border-l border-border/70' : 'w-0',
+          panelOpen ? 'w-80 border-l border-surface-border' : 'w-0',
         )}
         aria-hidden={!panelOpen}
         inert={!panelOpen}

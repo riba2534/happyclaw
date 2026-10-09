@@ -1,3 +1,5 @@
+import { Loader2 } from 'lucide-react';
+
 /**
  * ToolActivityCard — structured mini-card for active tool calls.
  * Replaces the tiny pill rendering in StreamingDisplay for better readability.
@@ -21,7 +23,10 @@ interface ToolActivityCardProps {
 }
 
 /** Extract the most relevant param from toolInputSummary for structured display. */
-function parseToolParam(toolName: string, summary?: string): { label: string; value: string } | null {
+function parseToolParam(
+  toolName: string,
+  summary?: string,
+): { label: string; value: string } | null {
   if (!summary) return null;
 
   switch (toolName) {
@@ -41,37 +46,44 @@ function parseToolParam(toolName: string, summary?: string): { label: string; va
   }
 }
 
-export function ToolActivityCard({ tool, localElapsed }: ToolActivityCardProps) {
+export function ToolActivityCard({
+  tool,
+  localElapsed,
+}: ToolActivityCardProps) {
   const elapsed = tool.elapsedSeconds ?? localElapsed;
   const isNested = tool.isNested === true;
-  const displayName = tool.toolName === 'Skill'
-    ? (tool.skillName || 'unknown')
-    : tool.toolName;
+  const displayName =
+    tool.toolName === 'Skill' ? tool.skillName || 'unknown' : tool.toolName;
 
   const param = parseToolParam(tool.toolName, tool.toolInputSummary);
   const isBash = tool.toolName === 'Bash';
 
+  // Codex-style activity row: spinner · tool name · parameter · elapsed.
   return (
-    <div className={`${isNested ? 'ml-4 border-l-2 border-brand-200 pl-2' : ''}`}>
-      <div className="rounded-lg border border-brand-200 bg-brand-50/50 px-2.5 py-1.5 text-[13px] font-sans">
-        {/* Header: tool name + elapsed */}
-        <div className="flex items-center gap-1.5">
-          <svg className="w-3 h-3 animate-spin text-primary flex-shrink-0" viewBox="0 0 24 24" fill="none">
-            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-          </svg>
-          <span className="font-medium text-primary">{displayName}</span>
-          <span className="flex-1" />
-          {elapsed != null && (
-            <span className="text-muted-foreground tabular-nums">{Math.round(elapsed)}s</span>
-          )}
-        </div>
-        {/* Param line */}
+    <div
+      className={isNested ? 'ml-3 border-l border-surface-border pl-2.5' : ''}
+    >
+      <div className="flex min-h-7 items-start gap-2 rounded-md px-1 py-1 font-sans text-label">
+        <Loader2
+          aria-hidden="true"
+          className="mt-0.5 size-3.5 shrink-0 animate-spin text-muted-foreground"
+        />
+        <span className="shrink-0 font-medium text-foreground">
+          {displayName}
+        </span>
         {param && (
-          <div className={`mt-1 text-muted-foreground break-all max-h-16 overflow-y-auto ${isBash ? 'font-mono' : ''}`}>
-            <span className="text-muted-foreground/60">{param.label}: </span>
+          <span
+            className={`max-h-16 min-w-0 flex-1 overflow-y-auto break-all text-muted-foreground ${isBash ? 'font-mono text-caption leading-5' : ''}`}
+            title={`${param.label}: ${param.value}`}
+          >
             {param.value}
-          </div>
+          </span>
+        )}
+        {!param && <span className="flex-1" />}
+        {elapsed != null && (
+          <span className="shrink-0 text-caption text-faint-foreground tabular-nums">
+            {Math.round(elapsed)}s
+          </span>
         )}
       </div>
     </div>

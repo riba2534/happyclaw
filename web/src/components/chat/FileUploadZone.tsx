@@ -70,7 +70,7 @@ export function FileUploadZone({ groupJid }: FileUploadZoneProps) {
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         className={`relative border-2 border-dashed rounded-lg p-3 transition-all ${
-          isDragging ? 'border-primary bg-brand-50' : 'border-border'
+          isDragging ? 'border-primary bg-primary/10' : 'border-border'
         }`}
       >
         {/* Hidden inputs */}
@@ -136,7 +136,7 @@ export function FileUploadZone({ groupJid }: FileUploadZoneProps) {
             <div className="flex items-center gap-2">
               <button
                 onClick={() => fileInputRef.current?.click()}
-                className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-primary bg-brand-50 hover:bg-brand-100 rounded-md transition-colors cursor-pointer"
+                className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-primary bg-primary/10 hover:bg-primary/15 rounded-md transition-colors cursor-pointer"
               >
                 <Upload className="w-3.5 h-3.5" />
                 上传文件

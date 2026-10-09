@@ -551,7 +551,7 @@ export function ImBindingDialog({
   const renderThreadCapability = (group: AvailableImGroup) => {
     if (group.conversation_kind !== 'topic') return null;
     return (
-      <span className="inline-flex items-center rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-medium text-sky-700 dark:border-sky-800 dark:bg-sky-950/30 dark:text-sky-300">
+      <span className="inline-flex items-center rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
         原生话题
       </span>
     );
@@ -602,7 +602,7 @@ export function ImBindingDialog({
                     正在从已连接 Bot 同步聊天…
                   </span>
                 ) : syncError ? (
-                  <span className="text-amber-700 dark:text-amber-300">
+                  <span className="text-warning">
                     同步未完成，当前显示本地记录
                   </span>
                 ) : lastSyncedAt ? (
@@ -638,7 +638,7 @@ export function ImBindingDialog({
             {syncError && !loading && (
               <div
                 role="alert"
-                className="rounded-lg border border-amber-300/70 bg-amber-50/60 px-3 py-2 text-xs leading-5 text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/20 dark:text-amber-200"
+                className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-5 text-warning"
               >
                 {syncError}
               </div>
@@ -811,7 +811,7 @@ export function ImBindingDialog({
                         boundToThis
                           ? 'border-primary/35 bg-primary/[0.045]'
                           : boundToOther
-                            ? 'border-amber-300/60 bg-amber-50/35 dark:border-amber-800/50 dark:bg-amber-950/10'
+                            ? 'border-warning/30 bg-warning/10'
                             : 'border-border/80 bg-background hover:border-foreground/20'
                       }`}
                     >
@@ -850,7 +850,7 @@ export function ImBindingDialog({
                           </div>
                         )}
                         {policyMismatch && (
-                          <div className="mt-2 flex items-start gap-1 text-[11px] leading-4 text-amber-700 dark:text-amber-300">
+                          <div className="mt-2 flex items-start gap-1 text-[11px] leading-4 text-warning">
                             <AlertTriangle className="mt-0.5 size-3 shrink-0" />
                             <span>
                               此绑定与渠道类型不符：私聊和普通群应绑定会话，话题群应绑定工作区。请解除绑定后重新配置。
@@ -858,7 +858,7 @@ export function ImBindingDialog({
                           </div>
                         )}
                         {boundToOther && (
-                          <div className="mt-2 flex min-w-0 items-center gap-1 text-[11px] font-medium text-amber-700 dark:text-amber-300">
+                          <div className="mt-2 flex min-w-0 items-center gap-1 text-[11px] font-medium text-warning">
                             <ArrowRightLeft className="size-3 shrink-0" />
                             <span className="truncate">
                               已绑定至{describeBindTarget(group)}
@@ -931,7 +931,7 @@ export function ImBindingDialog({
                               </select>
                               {effectiveAudience === 'owner_only' &&
                                 !group.owner_im_id && (
-                                  <span className="mt-1 flex items-start gap-1 text-[10px] leading-4 text-amber-700 dark:text-amber-300">
+                                  <span className="mt-1 flex items-start gap-1 text-[10px] leading-4 text-warning">
                                     <Info className="mt-0.5 size-3 shrink-0" />
                                     请先私聊机器人，让系统识别主人身份
                                   </span>
@@ -1024,7 +1024,7 @@ export function ImBindingDialog({
                               </select>
                               {effectiveAudience === 'owner_only' &&
                                 !group.owner_im_id && (
-                                  <span className="mt-1 flex items-start gap-1 text-[10px] leading-4 text-amber-700 dark:text-amber-300">
+                                  <span className="mt-1 flex items-start gap-1 text-[10px] leading-4 text-warning">
                                     <Info className="mt-0.5 size-3 shrink-0" />
                                     请先私聊机器人，让系统识别主人身份
                                   </span>
@@ -1057,7 +1057,7 @@ export function ImBindingDialog({
                             setRebindTarget({ imJid: group.jid, group })
                           }
                           disabled={isActioning}
-                          className="col-span-2 h-9 w-full min-w-20 border-amber-300 text-amber-700 hover:bg-amber-50 min-[460px]:w-auto sm:col-span-1 sm:col-start-3 sm:row-start-1 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-950/30"
+                          className="col-span-2 h-9 w-full min-w-20 border-warning/30 text-warning hover:bg-warning/10 min-[460px]:w-auto sm:col-span-1 sm:col-start-3 sm:row-start-1"
                         >
                           {isActioning ? (
                             <Loader2 className="size-3.5 animate-spin" />

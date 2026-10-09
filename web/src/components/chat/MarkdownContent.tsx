@@ -91,7 +91,7 @@ function MarkdownImage({
         role="button"
         tabIndex={0}
         aria-label={alt ? `放大图片：${alt}` : '放大图片'}
-        className="my-3 max-w-full rounded-lg border border-border cursor-pointer hover:shadow-md transition-shadow"
+        className="my-3 max-w-full cursor-zoom-in rounded-lg ring-1 ring-surface-border transition-shadow hover:ring-foreground/25"
         style={{ maxHeight: '400px', objectFit: 'contain' }}
         onClick={() => setExpanded(true)}
         onKeyDown={(event) => {
@@ -163,26 +163,22 @@ function CodeBlock({
 
   if (isBlock) {
     return (
-      <div className="relative group my-4 overflow-hidden">
-        <div className="absolute right-2 top-2 opacity-70 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
+      <div className="group/code my-4 overflow-hidden rounded-lg bg-(--code-block-bg) font-sans ring-1 ring-surface-border">
+        <div className="flex h-8 items-center justify-between border-b border-surface-border px-3 text-caption text-muted-foreground">
+          <span className="font-mono text-micro tracking-wide lowercase">
+            {lang || 'text'}
+          </span>
           <button
+            type="button"
             onClick={handleCopy}
-            className="p-2 rounded-lg bg-muted hover:bg-muted/80 text-muted-foreground text-xs flex items-center gap-1"
+            aria-label={copied ? '已复制代码' : '复制代码'}
+            className="-mr-1.5 inline-flex h-6 cursor-pointer items-center gap-1 rounded-md px-1.5 transition-colors hover:bg-surface-hover hover:text-foreground"
           >
-            {copied ? (
-              <>
-                <Check size={14} />
-                已复制
-              </>
-            ) : (
-              <>
-                <Copy size={14} />
-                复制
-              </>
-            )}
+            {copied ? <Check size={13} /> : <Copy size={13} />}
+            {copied ? '已复制' : '复制'}
           </button>
         </div>
-        <pre className="!bg-[var(--code-block-bg)] rounded-lg p-3.5 overflow-x-auto font-mono text-sm">
+        <pre className="overflow-x-auto bg-transparent! px-3.5 py-3 font-mono text-[13px] leading-5">
           <code className={className} {...props}>
             {children}
           </code>
@@ -215,7 +211,7 @@ export function MarkdownContent({
 }: MarkdownContentProps) {
   const textSizeClass =
     variant === 'chat'
-      ? 'text-base leading-[1.65] text-foreground'
+      ? 'text-body-lg leading-[1.7] text-foreground'
       : 'text-sm leading-6 text-foreground';
   const tableTextClass = variant === 'chat' ? 'text-[0.95em]' : 'text-sm';
 
@@ -256,30 +252,28 @@ export function MarkdownContent({
               className="my-4 max-w-full overflow-x-auto overflow-y-hidden overscroll-x-contain [-webkit-overflow-scrolling:touch] [touch-action:pan-x_pan-y]"
               data-swipe-back-ignore="true"
             >
-              <table className="min-w-full border-collapse border border-border">
+              <table className="min-w-full border-separate border-spacing-0 overflow-hidden rounded-lg font-sans ring-1 ring-surface-border">
                 {children}
               </table>
             </div>
           ),
           thead: ({ children }) => (
-            <thead className="bg-muted">{children}</thead>
+            <thead className="bg-muted/60">{children}</thead>
           ),
-          tbody: ({ children }) => (
-            <tbody className="divide-y divide-border">{children}</tbody>
-          ),
+          tbody: ({ children }) => <tbody>{children}</tbody>,
           tr: ({ children }) => (
-            <tr className="even:bg-surface odd:bg-muted/30">{children}</tr>
+            <tr className="[&:not(:last-child)>td]:border-b [&>td]:border-surface-border">
+              {children}
+            </tr>
           ),
           th: ({ children }) => (
-            <th
-              className={`px-4 py-2 text-left font-semibold text-foreground border border-border whitespace-nowrap align-top ${tableTextClass}`}
-            >
+            <th className="border-b border-surface-border px-3 py-2 text-left align-top text-caption font-medium whitespace-nowrap text-muted-foreground">
               {children}
             </th>
           ),
           td: ({ children }) => (
             <td
-              className={`px-4 py-2 text-foreground border border-border whitespace-nowrap align-top ${tableTextClass}`}
+              className={`px-3 py-2 align-top whitespace-nowrap text-foreground ${tableTextClass}`}
             >
               {children}
             </td>
@@ -295,22 +289,22 @@ export function MarkdownContent({
           ),
           p: ({ children }) => <p className="my-2">{children}</p>,
           h1: ({ children }) => (
-            <h1 className="text-2xl font-bold mt-6 mb-4 leading-tight">
+            <h1 className="mt-6 mb-3 text-[1.35em] leading-tight font-semibold tracking-tight">
               {children}
             </h1>
           ),
           h2: ({ children }) => (
-            <h2 className="text-xl font-bold mt-5 mb-3 leading-tight">
+            <h2 className="mt-5 mb-2.5 text-[1.2em] leading-tight font-semibold tracking-tight">
               {children}
             </h2>
           ),
           h3: ({ children }) => (
-            <h3 className="text-lg font-semibold mt-4 mb-2 leading-snug">
+            <h3 className="mt-4 mb-2 text-[1.05em] leading-snug font-semibold">
               {children}
             </h3>
           ),
           blockquote: ({ children }) => (
-            <blockquote className="border-l-4 border-border pl-4 my-4 text-muted-foreground italic">
+            <blockquote className="my-4 border-l-2 border-foreground/15 pl-4 text-muted-foreground">
               {children}
             </blockquote>
           ),

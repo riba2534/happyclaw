@@ -38,13 +38,13 @@ function statusMeta(run: WorkflowRunSnapshot) {
     return {
       label: '已完成',
       icon: CheckCircle2,
-      iconClass: 'text-emerald-600 dark:text-emerald-400',
+      iconClass: 'text-success',
     };
   if (run.status === 'failed' || run.status === 'stopped')
     return {
       label: run.status === 'failed' ? '执行失败' : '已停止',
       icon: OctagonAlert,
-      iconClass: 'text-red-600 dark:text-red-400',
+      iconClass: 'text-error',
     };
   return {
     label: '执行中',
@@ -58,13 +58,13 @@ function agentStatus(agent: WorkflowAgentSnapshot) {
     return {
       label: '完成',
       icon: CheckCircle2,
-      className: 'text-emerald-600 dark:text-emerald-400',
+      className: 'text-success',
     };
   if (agent.state === 'failed' || agent.state === 'stopped')
     return {
       label: agent.state === 'failed' ? '失败' : '停止',
       icon: OctagonAlert,
-      className: 'text-red-600 dark:text-red-400',
+      className: 'text-error',
     };
   if (agent.state === 'running')
     return {
@@ -309,7 +309,7 @@ export function WorkflowRunCard({ run }: { run: WorkflowRunSnapshot }) {
                   <div key={`${phase.index}-${phase.title}`}>
                     <div className="flex items-center gap-2 border-t border-border/60 bg-muted/20 px-3 py-2 first:border-t-0 sm:px-4">
                       <PhaseIcon
-                        className={`h-4 w-4 shrink-0 ${isDone ? 'text-emerald-600 dark:text-emerald-400' : isActive ? 'animate-spin text-primary motion-reduce:animate-none' : 'text-muted-foreground'}`}
+                        className={`h-4 w-4 shrink-0 ${isDone ? 'text-success' : isActive ? 'animate-spin text-primary motion-reduce:animate-none' : 'text-muted-foreground'}`}
                         aria-hidden
                       />
                       <span className="min-w-0 flex-1 text-xs font-semibold text-foreground">

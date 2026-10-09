@@ -486,12 +486,15 @@ export function MessageList({
           className={
             displayMode === 'compact'
               ? 'mx-auto px-4 min-w-0'
-              : 'max-w-4xl mx-auto px-4 min-w-0'
+              : 'mx-auto min-w-0 max-w-3xl px-4 lg:px-6'
           }
         >
           {loading && hasMore && (
             <div className="flex justify-center py-4">
-              <Loader2 className="animate-spin text-primary" size={24} />
+              <Loader2
+                className="animate-spin text-muted-foreground"
+                size={18}
+              />
             </div>
           )}
 
@@ -520,10 +523,12 @@ export function MessageList({
                       transform: `translateY(${virtualItem.start}px)`,
                     }}
                   >
-                    <div className="flex justify-center my-6">
-                      <span className="bg-surface px-4 py-1 rounded-full text-xs text-muted-foreground border border-border">
+                    <div className="my-6 flex items-center gap-3">
+                      <div className="h-px flex-1 bg-surface-border" />
+                      <span className="text-caption text-faint-foreground">
                         {item.content}
                       </span>
+                      <div className="h-px flex-1 bg-surface-border" />
                     </div>
                   </div>
                 );
@@ -543,12 +548,12 @@ export function MessageList({
                       transform: `translateY(${virtualItem.start}px)`,
                     }}
                   >
-                    <div className="flex items-center gap-3 my-6 px-4">
-                      <div className="flex-1 border-t border-amber-300" />
-                      <span className="text-xs text-amber-600 whitespace-pre-wrap">
+                    <div className="my-6 flex items-center gap-3">
+                      <div className="h-px flex-1 bg-warning/30" />
+                      <span className="text-caption whitespace-pre-wrap text-warning">
                         {item.content}
                       </span>
-                      <div className="flex-1 border-t border-amber-300" />
+                      <div className="h-px flex-1 bg-warning/30" />
                     </div>
                   </div>
                 );
@@ -568,13 +573,13 @@ export function MessageList({
                       transform: `translateY(${virtualItem.start}px)`,
                     }}
                   >
-                    <div className="flex items-center gap-2 my-4 px-4">
-                      <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-violet-50 dark:bg-violet-950/40 text-xs text-violet-600 dark:text-violet-400 border border-violet-200 dark:border-violet-800">
-                        <span>⚡</span>
-                        <span className="font-medium">并行任务</span>
-                        <span className="text-violet-400 dark:text-violet-500">
-                          |
+                    <div className="my-4 flex items-center gap-2">
+                      <span className="inline-flex h-7 max-w-full items-center gap-1.5 rounded-md bg-surface-raised px-2.5 text-caption text-muted-foreground ring-1 ring-surface-border">
+                        <Zap className="size-3.5 shrink-0 text-primary" />
+                        <span className="font-medium text-foreground">
+                          并行任务
                         </span>
+                        <span className="text-faint-foreground">·</span>
                         <span className="max-w-[400px] truncate">
                           {item.content}
                         </span>
@@ -598,13 +603,13 @@ export function MessageList({
                       transform: `translateY(${virtualItem.start}px)`,
                     }}
                   >
-                    <div className="flex items-center gap-3 my-6 px-4">
-                      <div className="flex-1 border-t border-red-300" />
-                      <span className="text-xs text-red-600 whitespace-pre-wrap flex items-center gap-1">
-                        <AlertTriangle size={14} />
+                    <div className="my-6 flex items-center gap-3">
+                      <div className="h-px flex-1 bg-error/30" />
+                      <span className="flex items-center gap-1 text-caption whitespace-pre-wrap text-error">
+                        <AlertTriangle size={13} />
                         {item.content}
                       </span>
-                      <div className="flex-1 border-t border-red-300" />
+                      <div className="h-px flex-1 bg-error/30" />
                     </div>
                   </div>
                 );
@@ -646,9 +651,9 @@ export function MessageList({
           {timelineMessages.length === 0 && !loading && (
             <div
               data-hc-empty-state
-              className="absolute inset-x-0 top-0 bottom-0 flex justify-center px-6 pt-[clamp(4.5rem,14vh,9rem)]"
+              className="absolute inset-x-0 top-0 bottom-0 flex justify-center px-4 pt-[clamp(4.5rem,14vh,9rem)]"
             >
-              <div className="w-full max-w-3xl">
+              <div className="w-full max-w-3xl lg:px-6">
                 <div className="flex items-start gap-3">
                   <EmojiAvatar
                     imageUrl={agentIdentity.imageUrl}
@@ -656,13 +661,13 @@ export function MessageList({
                     color={agentIdentity.color}
                     fallbackChar={agentIdentity.fallbackChar}
                     size="md"
-                    className="mt-0.5 !h-10 !w-10 shrink-0 !text-lg"
+                    className="mt-0.5 !size-9 shrink-0 !text-base"
                   />
                   <div className="min-w-0 flex-1">
-                    <h2 className="text-xl font-semibold leading-7 text-foreground">
+                    <h2 className="text-title-lg text-foreground">
                       {agentId ? '开始当前会话' : '开始主会话'}
                     </h2>
-                    <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
+                    <p className="mt-1 max-w-2xl text-body text-muted-foreground">
                       {agentId && contextLabel
                         ? `“${contextLabel}”使用独立上下文。直接输入你的问题。`
                         : `我是 ${agentIdentity.name}。直接输入你的问题，或从下面选择一个常用起点。`}
@@ -676,7 +681,7 @@ export function MessageList({
                       <button
                         key={prompt.title}
                         onClick={() => onSend(prompt.desc)}
-                        className="group min-h-[72px] rounded-lg border border-border/70 bg-background/70 px-3.5 py-3 text-left transition-colors hover:border-border hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.99] cursor-pointer"
+                        className="group min-h-16 cursor-pointer rounded-xl bg-surface-raised px-3.5 py-3 text-left ring-1 ring-surface-border transition-[background-color,box-shadow] hover:bg-surface-hover hover:ring-foreground/15 focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none active:scale-[0.99]"
                       >
                         <div className="flex items-start gap-3">
                           <prompt.icon
@@ -684,10 +689,10 @@ export function MessageList({
                             strokeWidth={1.75}
                           />
                           <span className="min-w-0">
-                            <span className="block truncate text-sm font-medium text-foreground">
+                            <span className="block truncate text-body font-medium text-foreground">
                               {prompt.title}
                             </span>
-                            <span className="mt-0.5 block overflow-hidden text-ellipsis text-xs leading-5 text-muted-foreground">
+                            <span className="mt-0.5 block overflow-hidden text-caption text-ellipsis text-muted-foreground">
                               {prompt.desc}
                             </span>
                           </span>
@@ -749,7 +754,7 @@ export function MessageList({
           {!atTop && (
             <button
               onClick={scrollToTop}
-              className="w-8 h-8 rounded-full bg-foreground/5 backdrop-blur-sm flex items-center justify-center text-muted-foreground/60 hover:text-foreground hover:bg-foreground/10 transition-all cursor-pointer"
+              className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-surface-raised text-muted-foreground shadow-menu ring-1 ring-surface-border transition-colors hover:text-foreground"
               title="回到顶部"
             >
               <ChevronUp className="w-4 h-4" />
@@ -758,7 +763,7 @@ export function MessageList({
           {!autoScroll && (
             <button
               onClick={scrollToBottom}
-              className="w-8 h-8 rounded-full bg-foreground/5 backdrop-blur-sm flex items-center justify-center text-muted-foreground/60 hover:text-foreground hover:bg-foreground/10 transition-all cursor-pointer"
+              className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-surface-raised text-muted-foreground shadow-menu ring-1 ring-surface-border transition-colors hover:text-foreground"
               title="回到底部"
             >
               <ChevronDown className="w-4 h-4" />

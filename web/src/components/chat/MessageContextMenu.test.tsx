@@ -13,6 +13,7 @@ vi.mock('../../stores/chat', () => ({
 }));
 
 const { MessageContextMenu } = await import('./MessageContextMenu');
+const { ConfirmHost } = await import('../common/ConfirmHost');
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -32,39 +33,75 @@ beforeEach(() => {
 afterEach(async () => {
   if (root) await act(async () => root?.unmount());
   container?.remove();
-  document.body
-    .querySelectorAll('.fixed.inset-0')
-    .forEach((node) => node.remove());
   root = null;
   container = null;
 });
+
+const flush = async () => {
+  for (let i = 0; i < 5; i += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+};
+
+const findButton = (label: string) =>
+  [...document.querySelectorAll<HTMLElement>('button, [role="menuitem"]')].find(
+    (node) => node.textContent?.trim() === label,
+  );
 
 describe('MessageContextMenu deletion semantics', () => {
   test('states that deletion removes persisted history but does not retract active input', async () => {
     await act(async () => {
       root?.render(
-        <MessageContextMenu
-          content="sensitive prompt"
-          position={{ x: 10, y: 10 }}
-          chatJid="web:main#agent:session-1"
-          messageId="message-1"
-          onClose={vi.fn()}
-        />,
+        <>
+          <MessageContextMenu
+            content="sensitive prompt"
+            chatJid="web:main#agent:session-1"
+            messageId="message-1"
+          >
+            <button type="button">消息菜单</button>
+          </MessageContextMenu>
+          <ConfirmHost />
+        </>,
       );
     });
 
-    const initialDelete = [...document.querySelectorAll('button')].find(
-      (button) => button.textContent?.trim() === '删除聊天记录',
-    );
-    expect(initialDelete).toBeDefined();
-    await act(async () =>
-      initialDelete?.dispatchEvent(new MouseEvent('click', { bubbles: true })),
-    );
+    const trigger = findButton('消息菜单');
+    await act(async () => {
+      trigger?.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+      );
+    });
+    await flush();
 
-    expect(document.body.textContent).toContain(
-      '仅删除持久聊天记录，不会撤回正在处理的模型输入。',
+    const deleteItem = findButton('删除聊天记录');
+    expect(deleteItem).toBeDefined();
+    await act(async () => {
+      deleteItem?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    // ConfirmHost lazy-loads the dialog the first time it is needed.
+    await vi.waitFor(
+      async () => {
+        await flush();
+        expect(document.body.textContent).toContain(
+          '仅删除持久聊天记录，不会撤回正在处理的模型输入。',
+        );
+      },
+      { timeout: 5000 },
     );
     expect(document.body.textContent).toContain('确认删除记录');
     expect(deleteMessageMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      findButton('确认删除记录')?.dispatchEvent(
+        new MouseEvent('click', { bubbles: true }),
+      );
+    });
+    await flush();
+    expect(deleteMessageMock).toHaveBeenCalledWith(
+      'web:main#agent:session-1',
+      'message-1',
+    );
   });
 });

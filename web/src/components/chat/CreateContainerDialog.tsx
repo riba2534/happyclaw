@@ -335,7 +335,7 @@ export function CreateContainerDialog({
               </div>
             )}
             {!profilesLoading && !profilesError && profiles.length === 0 && (
-              <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+              <p className="mt-2 text-xs text-warning">
                 暂无可用智能体，请先到智能体页面创建。
               </p>
             )}
@@ -662,9 +662,9 @@ export function CreateContainerDialog({
                       description="智能体将直接在 HappyClaw 服务器上的这个目录中运行。"
                       placeholder="默认: data/groups/{folder}/"
                     />
-                    <div className="flex items-start gap-2 p-2 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg">
-                      <AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
-                      <p className="text-xs text-amber-700 dark:text-amber-300">
+                    <div className="flex items-start gap-2 p-2 bg-warning/10 border border-warning/30 rounded-lg">
+                      <AlertTriangle className="w-4 h-4 text-warning flex-shrink-0 mt-0.5" />
+                      <p className="text-xs text-warning">
                         宿主机模式下智能体
                         可访问完整文件系统和工具链，请谨慎使用。
                       </p>
