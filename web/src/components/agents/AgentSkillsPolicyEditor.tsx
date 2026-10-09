@@ -1,5 +1,11 @@
 import { Check, Loader2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { cn } from '@/lib/utils';
+import {
+  AgentSubheading,
+  ChoiceCardBody,
+  choiceCardClassName,
+} from './AgentSection';
 import {
   PolicyResourcePicker,
   type PolicyResourceOption,
@@ -56,7 +62,7 @@ export function AgentSkillsPolicyEditor({
   hostError,
 }: AgentSkillsPolicyEditorProps) {
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <SkillSourceSection
         title="HappyClaw Skills"
         description="控制 HappyClaw 为这个智能体附加的用户级 Skills；系统内置 Skills 始终生效。"
@@ -144,25 +150,26 @@ export function AgentSkillsPolicyEditor({
             {!hostError && (
               <p
                 aria-live="polite"
-                className={`flex min-h-5 items-center gap-1.5 text-[11px] ${
+                className={cn(
+                  'flex min-h-5 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-caption',
                   hostSaveStatus === 'error'
-                    ? 'text-destructive'
+                    ? 'text-error'
                     : hostSaveStatus === 'warning' ||
                         hostSaveStatus === 'uncertain'
                       ? 'text-warning'
                       : hostSaveStatus === 'saved'
-                        ? 'text-primary'
-                        : 'text-muted-foreground'
-                }`}
+                        ? 'text-success'
+                        : 'text-muted-foreground',
+                )}
               >
                 {hostSaving ? (
                   <>
-                    <Loader2 className="size-3 animate-spin" />
+                    <Loader2 className="size-3.5 animate-spin" />
                     正在保存并应用宿主机 Skills…
                   </>
                 ) : hostSaveStatus === 'saved' ? (
                   <>
-                    <Check className="size-3" />
+                    <Check className="size-3.5" />
                     已保存并生效；新会话会使用这项策略。
                   </>
                 ) : hostSaveStatus === 'error' ? (
@@ -171,7 +178,7 @@ export function AgentSkillsPolicyEditor({
                     {onRetryHostSave && (
                       <button
                         type="button"
-                        className="font-medium underline underline-offset-2"
+                        className="font-medium underline underline-offset-2 hover:text-foreground"
                         onClick={onRetryHostSave}
                       >
                         重试保存
@@ -184,7 +191,7 @@ export function AgentSkillsPolicyEditor({
                     {onRetryHostSave && (
                       <button
                         type="button"
-                        className="font-medium underline underline-offset-2"
+                        className="font-medium underline underline-offset-2 hover:text-foreground"
                         onClick={onRetryHostSave}
                       >
                         重试清理
@@ -197,7 +204,7 @@ export function AgentSkillsPolicyEditor({
                     {onRetryHostSave && (
                       <button
                         type="button"
-                        className="font-medium underline underline-offset-2"
+                        className="font-medium underline underline-offset-2 hover:text-foreground"
                         onClick={onRetryHostSave}
                       >
                         重新确认并应用
@@ -213,7 +220,7 @@ export function AgentSkillsPolicyEditor({
             )}
           </>
         ) : (
-          <p className="rounded-lg border border-border bg-muted/30 px-3 py-3 text-xs leading-5 text-muted-foreground">
+          <p className="rounded-lg bg-muted/50 px-3 py-2 text-caption leading-5 text-muted-foreground">
             只有管理员可以查看和授权宿主机 Skills。
           </p>
         )}
@@ -240,16 +247,12 @@ function SkillSourceSection({
   children?: React.ReactNode;
 }) {
   return (
-    <section className="space-y-4 border-t border-border pt-5 first:border-t-0 first:pt-0">
-      <div>
-        <div className="flex items-center gap-2">
-          <h3 className="text-sm font-semibold text-foreground">{title}</h3>
-          {badge && <Badge variant="outline">{badge}</Badge>}
-        </div>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">
-          {description}
-        </p>
-      </div>
+    <section className="space-y-3 border-t border-surface-border pt-5 first:border-t-0 first:pt-0">
+      <AgentSubheading
+        title={title}
+        description={description}
+        badge={badge && <Badge variant="neutral">{badge}</Badge>}
+      />
       {children}
     </section>
   );
@@ -275,7 +278,7 @@ export function PolicyModeCards({
 }) {
   return (
     <div
-      className="grid gap-3 md:grid-cols-3"
+      className="grid gap-2 md:grid-cols-3"
       role="radiogroup"
       aria-label={label}
       aria-busy={disabled}
@@ -309,23 +312,19 @@ export function PolicyModeCards({
               buttons?.[nextIndex]?.focus();
               onChange(options[nextIndex]!.value);
             }}
-            className={`flex min-h-24 flex-col rounded-lg border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-60 ${
-              checked
-                ? 'border-primary bg-primary/5'
-                : 'border-border hover:bg-muted/50'
-            }`}
+            className={choiceCardClassName(
+              checked,
+              'disabled:cursor-wait disabled:opacity-60',
+            )}
           >
-            <span className="flex items-center gap-2 text-sm font-medium text-foreground">
-              {option.label}
-              {option.recommended && (
-                <span className="text-[10px] font-medium text-primary">
-                  推荐
-                </span>
-              )}
-            </span>
-            <span className="mt-1 text-[11px] leading-5 text-muted-foreground">
-              {option.description}
-            </span>
+            <ChoiceCardBody
+              checked={checked}
+              title={option.label}
+              description={option.description}
+              badge={
+                option.recommended && <Badge variant="neutral">推荐</Badge>
+              }
+            />
           </button>
         );
       })}
@@ -335,7 +334,7 @@ export function PolicyModeCards({
 
 function InlineError({ message }: { message: string }) {
   return (
-    <p role="alert" className="text-xs text-destructive">
+    <p role="alert" className="text-caption text-error">
       {message}
     </p>
   );

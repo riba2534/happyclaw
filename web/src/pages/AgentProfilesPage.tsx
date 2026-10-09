@@ -7,8 +7,10 @@ import {
   type BlockerFunction,
 } from 'react-router-dom';
 import {
+  ArrowLeft,
   ArrowRight,
   Bot,
+  Check,
   Loader2,
   Plus,
   RefreshCw,
@@ -39,6 +41,24 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { EmptyState } from '@/components/common/EmptyState';
+import { IconButton } from '@/components/common/IconButton';
+import { PageContainer } from '@/components/common/PageContainer';
+import { SearchInput } from '@/components/common/SearchInput';
+import { sidebarRowClass } from '@/components/layout/sidebar/SidebarItem';
+import {
+  SettingsField,
+  SettingsGroup,
+  SettingsRow,
+} from '@/components/settings/SettingsLayout';
+import { cn } from '@/lib/utils';
+import { confirmDialog } from '@/stores/confirm';
+import {
+  AgentSection,
+  AgentSubheading,
+  ChoiceCardBody,
+  choiceCardClassName,
+} from '../components/agents/AgentSection';
 import { AgentPromptAssistant } from '../components/agents/AgentPromptAssistant';
 import { AgentPromptEditor } from '../components/agents/AgentPromptEditor';
 import { AgentPromptVersionHistory } from '../components/agents/AgentPromptVersionHistory';
@@ -54,7 +74,7 @@ import { EmojiPicker } from '../components/common/EmojiPicker';
 import { ColorPicker } from '../components/common/ColorPicker';
 import { ErrorBoundary } from '../components/common/ErrorBoundary';
 import { useAgentProfilesStore } from '../stores/agent-profiles';
-import { useAuthStore } from '../stores/auth';
+import { useAuthStore, type AppearanceConfig } from '../stores/auth';
 import { useSkillsStore } from '../stores/skills';
 import { useMcpServersStore } from '../stores/mcp-servers';
 import type { ApiError } from '../api/client';
@@ -151,11 +171,51 @@ function normalizeRuntimePolicy(
 
 function SummaryItem({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg bg-muted/50 p-3">
-      <dt className="text-[11px] font-medium text-muted-foreground">{label}</dt>
-      <dd className="mt-1 text-sm font-medium text-foreground">{value}</dd>
+    <div className="flex items-baseline justify-between gap-4 px-4 py-2.5">
+      <dt className="shrink-0 text-caption text-muted-foreground">{label}</dt>
+      <dd className="min-w-0 text-right text-label text-foreground">{value}</dd>
     </div>
   );
+}
+
+const DRAFT_STEPS: Array<[number, string]> = [
+  [1, '基本信息'],
+  [2, '四段提示词'],
+  [3, '宿主机配置'],
+  [4, 'Skills / MCP'],
+  [5, '确认创建'],
+];
+
+/** A profile's own avatar, falling back to the main HappyClaw appearance. */
+function resolveAgentAvatar(
+  avatar: {
+    url: string | null;
+    emoji: string | null;
+    color: string | null;
+  },
+  main: AppearanceConfig | null,
+) {
+  const inherits = !avatar.url && !avatar.emoji && !avatar.color;
+  return {
+    imageUrl:
+      avatar.url ||
+      (inherits
+        ? main?.aiAvatarUrl ||
+          (main?.aiAvatarMode !== 'emoji'
+            ? `${import.meta.env.BASE_URL}icons/icon-192.png`
+            : undefined)
+        : undefined),
+    emoji:
+      avatar.emoji ||
+      (!avatar.url && !avatar.color && main?.aiAvatarMode === 'emoji'
+        ? main.aiAvatarEmoji
+        : undefined),
+    color:
+      avatar.color ||
+      (!avatar.url && !avatar.emoji && main?.aiAvatarMode === 'emoji'
+        ? main.aiAvatarColor
+        : undefined),
+  };
 }
 
 function sameRuntimePolicy(
@@ -288,6 +348,8 @@ export function AgentProfilesPage() {
   const [deleteTargetId, setDeleteTargetId] = useState('');
   const [createPanelOpen, setCreatePanelOpen] = useState(false);
   const [draftStep, setDraftStep] = useState(1);
+  const [listQuery, setListQuery] = useState('');
+  const stepperRef = useRef<HTMLElement>(null);
   const currentPrompts = useMemo<AgentPromptParts>(
     () => ({
       identity_prompt: identityPrompt,
@@ -310,6 +372,15 @@ export function AgentProfilesPage() {
     () => getCustomAgentProfiles(profiles),
     [profiles],
   );
+  const visibleProfiles = useMemo(() => {
+    const query = listQuery.trim().toLowerCase();
+    if (!query) return customProfiles;
+    return customProfiles.filter(
+      (profile) =>
+        profile.name.toLowerCase().includes(query) ||
+        profile.identity_prompt.toLowerCase().includes(query),
+    );
+  }, [customProfiles, listQuery]);
 
   const skills = useSkillsStore((state) => state.skills);
   const skillsLoading = useSkillsStore((state) => state.loading);
@@ -599,6 +670,17 @@ export function AgentProfilesPage() {
     setAllowedSearchParams(next, { replace: true });
   }, [searchParams, setAllowedSearchParams]);
 
+  useEffect(() => {
+    // Keep the current wizard step visible when the stepper scrolls sideways.
+    const stepper = stepperRef.current;
+    const current = stepper?.querySelector('[aria-current="step"]');
+    if (!stepper || !current) return;
+    const bounds = stepper.getBoundingClientRect();
+    const step = current.getBoundingClientRect();
+    stepper.scrollLeft +=
+      step.left - bounds.left - (bounds.width - step.width) / 2;
+  }, [draftMode, draftStep]);
+
   const getErrorMessage = (err: unknown, fallback: string) => {
     if (err instanceof Error) return err.message;
     if (err && typeof err === 'object' && 'message' in err) {
@@ -771,8 +853,17 @@ export function AgentProfilesPage() {
     setCreatePanelOpen(false);
   };
 
-  const handleDiscardDraft = () => {
-    if (draftDirty && !confirm('确认放弃当前智能体草稿？')) return;
+  const handleDiscardDraft = async () => {
+    if (
+      draftDirty &&
+      !(await confirmDialog({
+        title: '放弃草稿',
+        message: '确认放弃当前智能体草稿？',
+        confirmText: '放弃草稿',
+        variant: 'danger',
+      }))
+    )
+      return;
     setDraftMode(false);
     setCreatePanelOpen(true);
     const fallback = customProfiles[0];
@@ -1099,13 +1190,13 @@ export function AgentProfilesPage() {
       return;
     }
     const target = profiles.find((profile) => profile.id === targetProfileId);
-    if (
-      !confirm(
-        `确认将工作区「${workspace?.name ?? workspaceJid}」迁移到「${target?.name ?? '目标智能体'}」？工作区文件、Session、渠道绑定和 Workspace Memory 都会随工作区保留，并对目标智能体可用。`,
-      )
-    ) {
-      return;
-    }
+    const confirmed = await confirmDialog({
+      title: '迁移工作区',
+      message: `确认将工作区「${workspace?.name ?? workspaceJid}」迁移到「${target?.name ?? '目标智能体'}」？工作区文件、Session、渠道绑定和 Workspace Memory 都会随工作区保留，并对目标智能体可用。`,
+      confirmText: '迁移',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
     setMovingWorkspaceJid(workspaceJid);
     try {
       await setWorkspaceAgentProfile(workspaceJid, targetProfileId);
@@ -1163,7 +1254,13 @@ export function AgentProfilesPage() {
         toast.error('该智能体仍有渠道绑定，请先在“渠道绑定”页面解绑或换绑');
         return;
       }
-      if (!confirm(`确认删除智能体「${selected.name}」？`)) return;
+      const confirmed = await confirmDialog({
+        title: '删除智能体',
+        message: `确认删除智能体「${selected.name}」？`,
+        confirmText: '删除',
+        variant: 'danger',
+      });
+      if (!confirmed) return;
       await deleteSelectedProfile();
     } catch (err) {
       toast.error(getErrorMessage(err, '删除失败'));
@@ -1193,69 +1290,78 @@ export function AgentProfilesPage() {
     }
   };
 
+  const editorAvatar = resolveAgentAvatar(
+    { url: avatarUrl, emoji: avatarEmoji, color: avatarColor },
+    mainAppearance,
+  );
+  const enabledModelCount = modelConfigs.filter((item) => item.enabled).length;
+
   return (
     <div className="min-h-full bg-background lg:flex">
-      <aside className="border-b border-border bg-muted/20 lg:sticky lg:top-0 lg:flex lg:h-(--app-canvas-h) lg:w-72 lg:flex-none lg:flex-col lg:border-b-0 lg:border-r">
-        <div className="flex items-center gap-3 px-4 py-4 lg:px-5 lg:pt-6">
-          <div className="min-w-0 flex-1">
-            <h1 className="text-lg font-semibold text-foreground">
-              自定义智能体
-            </h1>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              {customProfiles.length} 个智能体
-            </p>
-          </div>
-          <Button
-            variant="ghost"
-            size="icon-sm"
+      <aside className="border-b border-surface-border lg:sticky lg:top-0 lg:flex lg:h-(--app-canvas-h) lg:w-64 lg:flex-none lg:flex-col lg:border-r lg:border-b-0">
+        <div className="flex h-12 shrink-0 items-center gap-1 pr-2 pl-4">
+          <h2 className="min-w-0 flex-1 truncate text-title-sm text-foreground">
+            智能体
+            <span className="ml-1.5 text-caption font-normal text-muted-foreground tabular-nums">
+              {customProfiles.length}
+            </span>
+          </h2>
+          <IconButton
+            label="刷新智能体列表"
             onClick={handleRefreshProfiles}
             disabled={loading}
-            aria-label="刷新智能体列表"
-            title="刷新智能体列表"
-          >
-            <RefreshCw
-              className={loading ? 'h-4 w-4 animate-spin' : 'h-4 w-4'}
-            />
-          </Button>
+            icon={<RefreshCw className={cn(loading && 'animate-spin')} />}
+          />
           <Button
             size="sm"
-            variant={createPanelOpen ? 'secondary' : 'default'}
+            variant={createPanelOpen ? 'secondary' : 'ghost'}
             onClick={handleOpenCreatePanel}
             aria-expanded={createPanelOpen}
             aria-current={createPanelOpen ? 'page' : undefined}
           >
-            <Plus className="h-4 w-4" />
+            <Plus />
             新建
           </Button>
         </div>
 
+        {customProfiles.length > 0 && (
+          <div className="hidden px-3 pb-2 lg:block">
+            <SearchInput
+              value={listQuery}
+              onChange={setListQuery}
+              placeholder="搜索智能体"
+              debounce={0}
+            />
+          </div>
+        )}
+
         <nav
           aria-label="自定义智能体列表"
-          className="flex gap-2 overflow-x-auto px-3 pb-4 lg:block lg:min-h-0 lg:flex-1 lg:space-y-1 lg:overflow-y-auto lg:px-4"
+          className="flex gap-1 overflow-x-auto px-3 pb-3 lg:block lg:min-h-0 lg:flex-1 lg:space-y-px lg:overflow-y-auto lg:px-2 lg:pb-4"
         >
           {draftMode && (
             <button
-              className="flex min-w-[220px] items-center gap-3 rounded-lg bg-brand-50 px-3 py-2.5 text-left ring-1 ring-inset ring-primary/20 transition-colors lg:min-w-0 lg:w-full"
+              type="button"
+              data-active="true"
+              className={cn(sidebarRowClass, 'w-auto max-w-56 lg:w-full')}
               onClick={() => setDraftMode(true)}
             >
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-semibold text-foreground">
-                  {name.trim() || '新智能体草稿'}
-                </span>
-                <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
-                  尚未保存
-                </span>
+              <span className="grid size-5 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground">
+                <Plus className="size-3" />
               </span>
-              <Badge variant="secondary">草稿</Badge>
+              <span className="min-w-0 flex-1 truncate">
+                {name.trim() || '新智能体草稿'}
+              </span>
+              <Badge variant="neutral">草稿</Badge>
             </button>
           )}
           {loading && customProfiles.length === 0 ? (
-            <div className="flex min-w-48 justify-center py-8 lg:min-w-0">
-              <Loader2 className="h-6 w-6 animate-spin text-primary" />
+            <div className="flex min-w-48 justify-center py-6 lg:min-w-0">
+              <Loader2 className="size-4 animate-spin text-muted-foreground" />
             </div>
           ) : profilesError ? (
-            <div className="min-w-56 space-y-3 py-4 text-center lg:min-w-0">
-              <div className="text-sm text-error">{profilesError}</div>
+            <div className="min-w-56 space-y-2 px-2 py-4 text-center lg:min-w-0">
+              <div className="text-caption text-error">{profilesError}</div>
               <Button
                 variant="outline"
                 size="sm"
@@ -1264,27 +1370,45 @@ export function AgentProfilesPage() {
                 重试
               </Button>
             </div>
+          ) : visibleProfiles.length === 0 && listQuery.trim() ? (
+            <p className="px-2 py-3 text-caption text-muted-foreground">
+              没有匹配的智能体
+            </p>
           ) : (
-            customProfiles.map((profile) => {
-              const active = profile.id === selectedId && !createPanelOpen;
+            visibleProfiles.map((profile) => {
+              const active =
+                profile.id === selectedId && !createPanelOpen && !draftMode;
+              const identity = profile.identity_prompt
+                .replace(/\s+/g, ' ')
+                .trim();
               return (
                 <button
                   key={profile.id}
+                  type="button"
                   onClick={() => handleSelectProfile(profile.id)}
-                  className={`flex min-w-[220px] items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:min-w-0 lg:w-full ${
-                    active && !draftMode
-                      ? 'bg-brand-50 text-foreground ring-1 ring-inset ring-primary/15'
-                      : 'hover:bg-accent/70'
-                  }`}
+                  data-active={active || undefined}
+                  aria-current={active ? 'page' : undefined}
+                  title={identity || '尚未设置身份描述'}
+                  className={cn(sidebarRowClass, 'w-auto max-w-56 lg:w-full')}
                 >
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-semibold text-foreground">
-                      {profile.name}
-                    </span>
-                    <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
-                      {profile.identity_prompt.replace(/\s+/g, ' ').trim() ||
-                        '尚未设置身份描述'}
-                    </span>
+                  <EmojiAvatar
+                    {...resolveAgentAvatar(
+                      {
+                        url: profile.avatar_url,
+                        emoji: profile.avatar_emoji,
+                        color: profile.avatar_color,
+                      },
+                      mainAppearance,
+                    )}
+                    fallbackChar={profile.name || 'A'}
+                    size="sm"
+                    className="size-5 text-micro"
+                  />
+                  <span className="min-w-0 flex-1 truncate">
+                    {profile.name}
+                  </span>
+                  <span className="shrink-0 text-micro font-normal text-faint-foreground tabular-nums max-lg:hidden">
+                    v{profile.version}
                   </span>
                 </button>
               );
@@ -1294,25 +1418,22 @@ export function AgentProfilesPage() {
       </aside>
 
       <main className="min-w-0 flex-1">
-        <div className="mx-auto max-w-5xl p-4 pb-24 sm:p-6 sm:pb-24 lg:p-8">
-          {createPanelOpen && !draftMode ? (
-            <section
-              className="min-h-[calc(100dvh-8rem)]"
-              aria-labelledby="create-agent-title"
-            >
-              <header className="flex flex-col gap-5 border-b border-border pb-6 sm:flex-row sm:items-start sm:justify-between">
+        {createPanelOpen && !draftMode ? (
+          <PageContainer className="max-w-4xl">
+            <section aria-labelledby="create-agent-title" className="space-y-5">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="max-w-2xl">
-                  <div className="mb-3 inline-flex items-center gap-2 text-sm font-medium text-primary">
-                    <Wand2 className="h-4 w-4" />
+                  <div className="mb-1.5 inline-flex items-center gap-1.5 text-caption font-medium text-muted-foreground">
+                    <Wand2 className="size-3.5" />
                     新建自定义智能体
                   </div>
                   <h1
                     id="create-agent-title"
-                    className="text-3xl font-semibold tracking-tight text-foreground sm:text-4xl"
+                    className="text-title-lg text-foreground"
                   >
                     先说说它要帮你做什么
                   </h1>
-                  <p className="mt-3 max-w-xl text-sm leading-6 text-muted-foreground sm:text-base">
+                  <p className="mt-1 max-w-xl text-body text-muted-foreground">
                     描述角色、任务和关注重点，AI
                     会生成一份可继续编辑的完整配置；你也可以直接从空白配置开始。
                   </p>
@@ -1320,881 +1441,165 @@ export function AgentProfilesPage() {
                 <Button
                   type="button"
                   variant="ghost"
-                  className="min-h-11 self-start"
+                  size="sm"
+                  className="self-start pointer-coarse:min-h-11"
                   onClick={() => setCreatePanelOpen(false)}
                 >
-                  <X className="h-4 w-4" />
+                  <ArrowLeft />
                   返回智能体
                 </Button>
-              </header>
+              </div>
 
-              <div className="max-w-3xl py-8 sm:py-10">
-                <label
-                  htmlFor="new-agent-description"
-                  className="text-sm font-semibold text-foreground"
-                >
-                  智能体角色描述
-                </label>
-                <p
-                  id="new-agent-description-help"
-                  className="mt-1 text-sm leading-6 text-muted-foreground"
-                >
-                  写清楚主要任务、输出方式或需要特别关注的事项，生成结果会更贴合预期。
-                </p>
-                <Textarea
-                  id="new-agent-description"
-                  aria-describedby="new-agent-description-help"
-                  autoFocus
-                  value={createDescription}
-                  onChange={(event) => setCreateDescription(event.target.value)}
-                  className="mt-4 min-h-[180px] resize-y bg-card p-4 text-base leading-7 shadow-sm"
-                  placeholder="例如：帮我做代码评审，重点关注架构风险、并发问题和测试缺口。输出时先给结论，再按严重程度列出问题和修改建议。"
-                />
-
-                <div className="mt-5">
-                  <div className="text-xs font-medium text-muted-foreground">
-                    可以从这些例子开始
+              <SettingsGroup>
+                <div className="space-y-3 p-4">
+                  <div>
+                    <label
+                      htmlFor="new-agent-description"
+                      className="text-label text-foreground"
+                    >
+                      智能体角色描述
+                    </label>
+                    <p
+                      id="new-agent-description-help"
+                      className="mt-0.5 text-caption leading-5 text-muted-foreground"
+                    >
+                      写清楚主要任务、输出方式或需要特别关注的事项，生成结果会更贴合预期。
+                    </p>
                   </div>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {[
-                      '做代码评审，关注架构风险和测试缺口',
-                      '整理调研资料，给出有依据的结论和来源',
-                      '把产品想法拆成清晰、可执行的研发任务',
-                    ].map((example) => (
-                      <button
-                        key={example}
-                        type="button"
-                        onClick={() => setCreateDescription(example)}
-                        className="min-h-11 rounded-full border border-border bg-background px-4 py-2 text-left text-sm text-muted-foreground transition-colors hover:border-primary/40 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      >
-                        {example}
-                      </button>
-                    ))}
+                  <Textarea
+                    id="new-agent-description"
+                    aria-describedby="new-agent-description-help"
+                    autoFocus
+                    value={createDescription}
+                    onChange={(event) =>
+                      setCreateDescription(event.target.value)
+                    }
+                    className="min-h-[180px] resize-y bg-background px-3 py-2.5 text-body leading-7"
+                    placeholder="例如：帮我做代码评审，重点关注架构风险、并发问题和测试缺口。输出时先给结论，再按严重程度列出问题和修改建议。"
+                  />
+                  <div>
+                    <div className="text-caption text-muted-foreground">
+                      可以从这些例子开始
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {[
+                        '做代码评审，关注架构风险和测试缺口',
+                        '整理调研资料，给出有依据的结论和来源',
+                        '把产品想法拆成清晰、可执行的研发任务',
+                      ].map((example) => (
+                        <button
+                          key={example}
+                          type="button"
+                          onClick={() => setCreateDescription(example)}
+                          className="rounded-full bg-background px-3 py-1 text-left text-caption text-muted-foreground ring-1 ring-surface-border transition-colors duration-100 hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 pointer-coarse:min-h-11"
+                        >
+                          {example}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
-
-                <div className="mt-8 flex flex-col gap-3 border-t border-border pt-6 sm:flex-row">
+                <div className="flex flex-col-reverse gap-2 px-4 py-3 sm:flex-row sm:justify-end">
                   <Button
-                    size="lg"
-                    className="min-h-11 justify-center sm:min-w-40"
+                    variant="outline"
+                    className="justify-center pointer-coarse:min-h-11"
+                    onClick={handleBlankDraft}
+                  >
+                    <Plus />
+                    空白创建
+                  </Button>
+                  <Button
+                    className="justify-center pointer-coarse:min-h-11"
                     onClick={handleGenerateDraft}
                     disabled={generatingDraft || !createDescription.trim()}
                   >
                     {generatingDraft ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <Loader2 className="animate-spin" />
                     ) : (
-                      <Wand2 className="h-4 w-4" />
+                      <Wand2 />
                     )}
                     AI 生成配置
                   </Button>
-                  <Button
-                    size="lg"
-                    variant="outline"
-                    className="min-h-11 justify-center sm:min-w-40"
-                    onClick={handleBlankDraft}
-                  >
-                    <Plus className="h-4 w-4" />
-                    空白创建
-                  </Button>
                 </div>
-              </div>
+              </SettingsGroup>
             </section>
-          ) : !selected && !draftMode ? (
-            <div className="flex min-h-[420px] flex-col items-center justify-center rounded-xl border border-dashed border-border px-6 text-center">
-              <div className="grid h-12 w-12 place-items-center rounded-full bg-muted text-muted-foreground">
-                <Bot className="h-5 w-5" />
-              </div>
-              <div className="mt-4 text-sm font-medium text-foreground">
-                {customProfiles.length === 0
+          </PageContainer>
+        ) : !selected && !draftMode ? (
+          <PageContainer className="max-w-4xl">
+            <EmptyState
+              icon={Bot}
+              title={
+                customProfiles.length === 0
                   ? '还没有自定义智能体'
-                  : '选择一个智能体'}
-              </div>
-              <p className="mt-1 max-w-sm text-xs leading-5 text-muted-foreground">
-                {customProfiles.length === 0
+                  : '选择一个智能体'
+              }
+              description={
+                customProfiles.length === 0
                   ? '创建一个专门处理特定任务的智能体。'
-                  : '从左侧选择智能体查看配置，或创建一个新的智能体。'}
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-6">
-              <header>
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h1 className="truncate text-2xl font-semibold tracking-tight text-foreground">
-                      {name.trim() || '新智能体'}
-                    </h1>
-                    {draftMode && <Badge variant="secondary">草稿</Badge>}
-                    {hasUnsavedChanges && (
-                      <Badge variant="outline">有未保存修改</Badge>
-                    )}
-                  </div>
-                  <p className="mt-1.5 max-w-2xl text-sm leading-6 text-muted-foreground">
-                    管理智能体的身份和能力，以及所属工作区和消息渠道。
-                  </p>
-                </div>
-              </header>
-
-              {!draftMode && governance?.runtime_cleanup_pending && (
-                <div
-                  role="status"
-                  className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm text-foreground"
-                >
-                  <div>
-                    <div className="font-medium">
-                      智能体配置已保存，但工作区运行时清理未完成
-                    </div>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      为避免旧配置继续运行，相关工作区已暂停；清理成功后会自动恢复。
-                    </p>
-                  </div>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={runtimeCleanupRepairing}
-                    onClick={() => void handleRetryProfileRuntimeCleanup()}
-                  >
-                    {runtimeCleanupRepairing ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <RefreshCw className="h-4 w-4" />
-                    )}
-                    重试清理
-                  </Button>
-                </div>
-              )}
-
-              {draftMode && (
-                <nav
-                  aria-label="创建智能体步骤"
-                  className="overflow-x-auto rounded-xl border bg-card p-2"
-                >
-                  <ol className="flex min-w-[680px] gap-1">
-                    {[
-                      [1, '基本信息'],
-                      [2, '四段提示词'],
-                      [3, '宿主机配置'],
-                      [4, 'Skills / MCP'],
-                      [5, '确认创建'],
-                    ].map(([step, label]) => (
-                      <li key={step} className="min-w-0 flex-1">
-                        <button
-                          type="button"
-                          onClick={() => setDraftStep(Number(step))}
-                          aria-current={draftStep === step ? 'step' : undefined}
-                          className={`w-full rounded-lg px-3 py-2 text-left text-xs transition-colors ${draftStep === step ? 'bg-primary text-primary-foreground' : Number(step) < draftStep ? 'bg-primary/10 text-foreground' : 'text-muted-foreground hover:bg-muted'}`}
-                        >
-                          <span className="mr-1.5 font-semibold">{step}</span>
-                          {label}
-                        </button>
-                      </li>
-                    ))}
-                  </ol>
-                </nav>
-              )}
-
-              <div className="space-y-5">
-                <div className="space-y-5">
-                  <section
-                    hidden={draftMode && draftStep !== 1}
-                    className="overflow-hidden rounded-xl border border-border bg-card"
-                  >
-                    <div className="border-b border-border px-5 py-4">
-                      <h2 className="text-sm font-semibold text-foreground">
-                        身份
-                      </h2>
-                      <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                        定义这个智能体
-                        如何称呼自己，以及它处理任务时遵循的角色设定。
-                      </p>
-                    </div>
-                    <div className="space-y-4 px-5 py-5">
-                      <div>
-                        <label
-                          htmlFor="agent-profile-name"
-                          className="mb-2 flex items-center gap-2 text-sm font-medium"
-                        >
-                          名称
-                        </label>
-                        <Input
-                          id="agent-profile-name"
-                          value={name}
-                          onChange={(event) => setName(event.target.value)}
-                        />
-                      </div>
-                      <div>
-                        <label className="mb-2 block text-sm font-medium">
-                          模型配置
-                        </label>
-                        <Select
-                          value={modelConfigId}
-                          onValueChange={setModelConfigId}
-                        >
-                          <SelectTrigger aria-label="智能体模型配置">
-                            <SelectValue placeholder="选择模型配置" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="inherit">
-                              自动选择已启用模型
-                              {`（当前 ${modelConfigs.filter((item) => item.enabled).length} 个）`}
-                            </SelectItem>
-                            {modelConfigs.map((model) => (
-                              <SelectItem key={model.id} value={model.id}>
-                                {model.name}
-                                {model.anthropic_model
-                                  ? ` · ${model.anthropic_model}`
-                                  : ''}
-                                {!model.enabled ? '（仅显式使用）' : ''}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <p className="mt-1.5 text-xs leading-5 text-muted-foreground">
-                          该智能体所属的所有工作区、会话和定时任务都会使用这里解析出的完整模型网关环境。未启用的配置不会参与系统自动选择，但仍可由智能体显式使用。
-                        </p>
-                      </div>
-                      <div>
-                        <label className="mb-2 block text-sm font-medium">
-                          推理努力档位
-                        </label>
-                        <Select
-                          value={effort}
-                          onValueChange={(value) =>
-                            setEffort(value as AgentEffortLevel)
-                          }
-                        >
-                          <SelectTrigger aria-label="智能体推理努力档位">
-                            <SelectValue placeholder="选择推理努力档位" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {AGENT_EFFORT_OPTIONS.map((option) => (
-                              <SelectItem
-                                key={option.value}
-                                value={option.value}
-                              >
-                                {option.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <p className="mt-1.5 text-xs leading-5 text-muted-foreground">
-                          “跟随模型配置”保留 Provider 高级设置中的
-                          CLAUDE_CODE_EFFORT_LEVEL；显式档位通过 Agent SDK
-                          传入并覆盖该环境变量。不支持所选档位的模型会由 Claude
-                          静默降级，实际值可在会话的 CLAUDE_EFFORT
-                          环境变量中查看。
-                        </p>
-                      </div>
-                      <div className="space-y-3 rounded-lg border bg-muted/20 p-4">
-                        <div className="flex flex-wrap items-center gap-4">
-                          <EmojiAvatar
-                            imageUrl={
-                              avatarUrl ||
-                              (!avatarEmoji && !avatarColor
-                                ? mainAppearance?.aiAvatarUrl ||
-                                  (mainAppearance?.aiAvatarMode !== 'emoji'
-                                    ? `${import.meta.env.BASE_URL}icons/icon-192.png`
-                                    : undefined)
-                                : undefined)
-                            }
-                            emoji={
-                              avatarEmoji ||
-                              (!avatarUrl && !avatarColor
-                                ? mainAppearance?.aiAvatarMode === 'emoji'
-                                  ? mainAppearance.aiAvatarEmoji
-                                  : undefined
-                                : undefined)
-                            }
-                            color={
-                              avatarColor ||
-                              (!avatarUrl && !avatarEmoji
-                                ? mainAppearance?.aiAvatarMode === 'emoji'
-                                  ? mainAppearance.aiAvatarColor
-                                  : undefined
-                                : undefined)
-                            }
-                            fallbackChar={name || 'A'}
-                            size="lg"
-                            className="!h-12 !w-12 !text-xl"
-                          />
-                          <div className="min-w-0 flex-1">
-                            <div className="text-sm font-medium text-foreground">
-                              智能体头像
-                            </div>
-                            <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                              {avatarUrl || avatarEmoji || avatarColor
-                                ? '当前使用这个智能体的自定义头像。'
-                                : '未单独设置，自动继承主 HappyClaw 头像。'}
-                            </p>
-                          </div>
-                          <div className="flex flex-wrap gap-2">
-                            <input
-                              ref={avatarInputRef}
-                              type="file"
-                              accept="image/jpeg,image/png,image/gif,image/webp"
-                              className="hidden"
-                              onChange={handleAvatarUpload}
-                            />
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              disabled={draftMode || uploadingAvatar}
-                              onClick={() => avatarInputRef.current?.click()}
-                            >
-                              {uploadingAvatar ? (
-                                <Loader2 className="size-3.5 animate-spin" />
-                              ) : (
-                                <Upload className="size-3.5" />
-                              )}
-                              上传图片
-                            </Button>
-                            {!avatarStyleOpen && (
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() => setAvatarStyleOpen(true)}
-                              >
-                                使用 Emoji
-                              </Button>
-                            )}
-                            {(avatarUrl || avatarEmoji || avatarColor) && (
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                disabled={uploadingAvatar}
-                                onClick={handleInheritMainAvatar}
-                              >
-                                <RotateCcw className="size-3.5" />
-                                使用主头像
-                              </Button>
-                            )}
-                          </div>
-                        </div>
-                        {avatarStyleOpen && (
-                          <div className="grid gap-3 border-t pt-3 sm:grid-cols-2">
-                            <div>
-                              <span className="mb-1.5 block text-xs text-muted-foreground">
-                                Emoji（可选）
-                              </span>
-                              <EmojiPicker
-                                value={avatarEmoji ?? undefined}
-                                onChange={setAvatarEmoji}
-                              />
-                            </div>
-                            <div>
-                              <span className="mb-1.5 block text-xs text-muted-foreground">
-                                背景色（可选）
-                              </span>
-                              <ColorPicker
-                                value={avatarColor ?? undefined}
-                                onChange={setAvatarColor}
-                              />
-                            </div>
-                          </div>
-                        )}
-                        {draftMode && (
-                          <p className="text-[11px] text-muted-foreground">
-                            创建智能体后即可上传图片；Emoji
-                            与背景色会随创建一起保存。
-                          </p>
-                        )}
-                      </div>
-                      {isAdmin && !draftMode && (
-                        <div className="flex items-start justify-between gap-4 rounded-lg border bg-muted/20 px-3 py-3">
-                          <div className="min-w-0">
-                            <div className="text-sm font-medium text-foreground">
-                              加载完整宿主机 Claude Code 配置
-                            </div>
-                            <div className="mt-1 text-xs leading-5 text-muted-foreground">
-                              将 ~/.claude 作为用户配置层叠加，包含提示词、
-                              Rules、Agents、Commands、Hooks、Workflows、 Output
-                              Styles、Plugins 与设置（含宿主机 MCP）。工作区仍是
-                              运行目录；HappyClaw MCP 与宿主机 Skills
-                              继续由“能力配置”独立控制。
-                            </div>
-                          </div>
-                          <Switch
-                            checked={contextSource === 'host_claude'}
-                            onCheckedChange={(checked) =>
-                              setContextSource(
-                                checked ? 'host_claude' : 'managed',
-                              )
-                            }
-                            aria-label="加载完整宿主机 Claude Code 配置"
-                          />
-                        </div>
-                      )}
-                    </div>
-                  </section>
-
-                  {draftMode && draftStep === 3 && (
-                    <section className="overflow-hidden rounded-xl border border-border bg-card">
-                      <div className="border-b px-5 py-4">
-                        <h2 className="text-sm font-semibold">宿主机配置</h2>
-                        <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                          决定是否将管理员的 ~/.claude 作为完整用户配置层叠加；
-                          工作区仍是运行目录。宿主机 MCP 随配置加载，HappyClaw
-                          MCP 与宿主机 Skills 在“能力配置”中独立设置。
-                        </p>
-                      </div>
-                      <div
-                        className="grid gap-3 p-5 sm:grid-cols-2"
-                        role="radiogroup"
-                        aria-label="宿主机配置"
-                      >
-                        <button
-                          type="button"
-                          role="radio"
-                          aria-checked={contextSource === 'managed'}
-                          onClick={() => setContextSource('managed')}
-                          className={`rounded-lg border p-4 text-left ${contextSource === 'managed' ? 'border-primary bg-primary/5' : 'hover:bg-muted'}`}
-                        >
-                          <span className="block text-sm font-medium">
-                            HappyClaw 托管
-                          </span>
-                          <span className="mt-1 block text-xs leading-5 text-muted-foreground">
-                            不加载宿主机原生配置。Skills 与 MCP
-                            仍按下一步的独立能力策略加载。
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          role="radio"
-                          aria-checked={contextSource === 'host_claude'}
-                          disabled={!isAdmin}
-                          onClick={() => setContextSource('host_claude')}
-                          className={`rounded-lg border p-4 text-left disabled:cursor-not-allowed disabled:opacity-50 ${contextSource === 'host_claude' ? 'border-primary bg-primary/5' : 'hover:bg-muted'}`}
-                        >
-                          <span className="block text-sm font-medium">
-                            加载宿主机 ~/.claude
-                          </span>
-                          <span className="mt-1 block text-xs leading-5 text-muted-foreground">
-                            加载设置、提示词、Rules、Agents、Commands、Hooks、
-                            Workflows、Output Styles、Plugins 与宿主机 MCP；
-                            HappyClaw MCP 和宿主机 Skills 仍由下一步单独控制。
-                          </span>
-                        </button>
-                      </div>
-                    </section>
-                  )}
-
-                  <div hidden={draftMode && draftStep !== 2}>
-                    <AgentPromptEditor
-                      value={currentPrompts}
-                      mode={promptMode}
-                      onChange={setCurrentPrompts}
-                      onModeChange={setPromptMode}
-                      onOpenAssistant={
-                        draftMode ? undefined : setAssistantSection
-                      }
-                    />
-                  </div>
-
-                  {!draftMode && selected && (
-                    <>
-                      <AgentPromptAssistant
-                        key={selected.id}
-                        profileId={selected.id}
-                        agentName={name.trim() || selected.name}
-                        currentPrompts={currentPrompts}
-                        activeSection={assistantSection}
-                        onApply={setCurrentPrompts}
-                      />
-                      <AgentPromptVersionHistory
-                        profileId={selected.id}
-                        currentVersion={selected.version}
-                        currentPrompts={currentPrompts}
-                        loadVersions={loadPromptVersions}
-                        restoreVersion={restorePromptVersion}
-                        confirmDiscardUnsavedChanges={
-                          confirmDiscardUnsavedChanges
-                        }
-                        onRestored={(profile) => {
-                          setCurrentPrompts({
-                            identity_prompt: profile.identity_prompt,
-                            soul_prompt: profile.soul_prompt,
-                            agents_prompt: profile.agents_prompt,
-                            tools_prompt: profile.tools_prompt,
-                          });
-                          setPromptMode(profile.prompt_mode);
-                        }}
-                      />
-                    </>
-                  )}
-
-                  {draftMode && draftStep === 5 && (
-                    <section className="overflow-hidden rounded-xl border border-border bg-card">
-                      <div className="border-b px-5 py-4">
-                        <h2 className="text-sm font-semibold">确认创建</h2>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          检查核心设置。创建后仍可随时修改并通过版本历史回退提示词。
-                        </p>
-                      </div>
-                      <dl className="grid gap-4 p-5 sm:grid-cols-2">
-                        <SummaryItem
-                          label="名称"
-                          value={name.trim() || '未填写'}
-                        />
-                        <SummaryItem
-                          label="提示词完成度"
-                          value={`${Object.values(currentPrompts).filter((value) => value.trim()).length}/4 段`}
-                        />
-                        <SummaryItem
-                          label="Claude 默认提示词"
-                          value={
-                            promptMode === 'append' ? '保留并追加' : '完全替换'
-                          }
-                        />
-                        <SummaryItem
-                          label="模型配置"
-                          value={
-                            modelConfigId === 'inherit'
-                              ? `自动选择已启用模型（当前 ${modelConfigs.filter((item) => item.enabled).length} 个）`
-                              : (modelConfigs.find(
-                                  (item) => item.id === modelConfigId,
-                                )?.name ?? '不可用模型配置')
-                          }
-                        />
-                        <SummaryItem
-                          label="推理努力档位"
-                          value={
-                            AGENT_EFFORT_OPTIONS.find(
-                              (option) => option.value === effort,
-                            )?.label ?? '跟随模型配置'
-                          }
-                        />
-                        <SummaryItem
-                          label="宿主机配置"
-                          value={
-                            contextSource === 'host_claude'
-                              ? '完整加载 ~/.claude（宿主机 Skills 独立）'
-                              : '不加载'
-                          }
-                        />
-                        <SummaryItem
-                          label="HappyClaw Skills"
-                          value={
-                            skillsMode === 'inherit'
-                              ? '全部已启用'
-                              : skillsMode === 'disabled'
-                                ? '关闭'
-                                : `所选 ${skillIds.length} 项`
-                          }
-                        />
-                        <SummaryItem
-                          label="宿主机 Skills"
-                          value={skillPolicySummary(
-                            { mode: hostSkillsMode, ids: hostSkillIds },
-                            '全部使用',
-                          )}
-                        />
-                        <SummaryItem
-                          label="HappyClaw MCP"
-                          value={
-                            mcpMode === 'inherit'
-                              ? '全部已启用'
-                              : mcpMode === 'disabled'
-                                ? '关闭'
-                                : `所选 ${mcpIds.length} 项`
-                          }
-                        />
-                      </dl>
-                      {!name.trim() && (
-                        <p
-                          role="alert"
-                          className="mx-5 mb-5 rounded-lg bg-error-bg px-3 py-2 text-xs text-error"
-                        >
-                          请返回“基本信息”填写名称。
-                        </p>
-                      )}
-                      {capabilityError && (
-                        <p
-                          role="alert"
-                          className="mx-5 mb-5 rounded-lg bg-error-bg px-3 py-2 text-xs text-error"
-                        >
-                          {capabilityError}
-                        </p>
-                      )}
-                    </section>
-                  )}
-
-                  <section
-                    id="agent-capabilities"
-                    hidden={draftMode && draftStep !== 4}
-                    className="scroll-mt-6 overflow-hidden rounded-xl border border-border bg-card"
-                  >
-                    <div className="border-b border-border px-5 py-4">
-                      <h2 className="text-sm font-semibold text-foreground">
-                        能力配置
-                      </h2>
-                      <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                        按来源配置
-                        Skills。HappyClaw、宿主机与工作区能力会在运行时叠加；
-                        同名项以“最终生效能力”中的结果为准。
-                      </p>
-                    </div>
-                    <div className="space-y-5 px-5 py-5">
-                      <AgentSkillsPolicyEditor
-                        managedPolicy={{ mode: skillsMode, ids: skillIds }}
-                        onManagedModeChange={setSkillsMode}
-                        onManagedIdsChange={setSkillIds}
-                        managedOptions={skillOptions}
-                        hostPolicy={{
-                          mode: hostSkillsMode,
-                          ids: hostSkillIds,
-                        }}
-                        onHostModeChange={handleHostSkillsModeChange}
-                        onHostIdsChange={handleHostSkillIdsChange}
-                        hostOptions={hostSkillOptions}
-                        loading={skillsLoading}
-                        error={skillsError}
-                        hostAvailable={isAdmin}
-                        hostAutoSave={!draftMode}
-                        hostSaving={hostSkillsSaving || runtimeCleanupRepairing}
-                        hostSaveStatus={hostSkillsSaveStatus}
-                        onRetryHostSave={handleRetryHostSkillSave}
-                        managedError={managedSkillsError}
-                        hostError={hostSkillsError}
-                      />
-
-                      <section className="min-w-0 space-y-2 border-t border-border pt-5">
-                        <div>
-                          <h3 className="text-sm font-semibold text-foreground">
-                            HappyClaw MCP
-                          </h3>
-                          <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                            控制 HappyClaw 额外附加的 MCP；宿主机 MCP
-                            仍由上一步的宿主机配置控制。
-                          </p>
-                        </div>
-                        <div className="max-w-xl">
-                          <label className="block text-xs font-medium text-muted-foreground">
-                            使用方式
-                          </label>
-                          <Select
-                            value={mcpMode}
-                            onValueChange={(value) =>
-                              setMcpMode(value as RuntimePolicyMode)
-                            }
-                          >
-                            <SelectTrigger aria-label="智能体 MCP">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="inherit">
-                                使用全部 HappyClaw MCP
-                              </SelectItem>
-                              <SelectItem value="custom">
-                                只允许所选 HappyClaw MCP
-                              </SelectItem>
-                              <SelectItem value="disabled">
-                                关闭 HappyClaw MCP
-                              </SelectItem>
-                            </SelectContent>
-                          </Select>
-                          {mcpMode === 'custom' && (
-                            <PolicyResourcePicker
-                              label="选择 HappyClaw MCP"
-                              options={mcpOptions}
-                              selectedIds={mcpIds}
-                              onChange={setMcpIds}
-                              loading={mcpLoading}
-                              error={mcpError}
-                              emptyText="没有已启用的 HappyClaw MCP"
-                            />
-                          )}
-                        </div>
-                      </section>
-
-                      <div className="border-t border-border pt-5">
-                        <div className="flex min-h-14 items-start justify-between gap-5">
-                          <div className="min-w-0">
-                            <label
-                              htmlFor="agent-auto-compact-default"
-                              className="text-xs font-medium text-muted-foreground"
-                            >
-                              SDK 自动压缩（推荐）
-                            </label>
-                            <p
-                              id="agent-auto-compact-default-description"
-                              className="mt-1 text-[11px] leading-5 text-muted-foreground"
-                            >
-                              根据当前模型自动决定压缩时机。普通模型通常为 200K
-                              上下文；模型名带 [1m] 时按 1M 处理。
-                            </p>
-                          </div>
-                          <Switch
-                            id="agent-auto-compact-default"
-                            checked={useSdkCompactDefault}
-                            onCheckedChange={setUseSdkCompactDefault}
-                            aria-describedby="agent-auto-compact-default-description"
-                          />
-                        </div>
-                        {!useSdkCompactDefault && (
-                          <div className="mt-4 max-w-xs">
-                            {autoCompactPercentage === 'legacy' ? (
-                              <div className="rounded-md border border-warning/30 bg-warning-bg p-3">
-                                <p className="text-[11px] leading-5 text-warning">
-                                  当前保留旧版固定阈值{' '}
-                                  {Math.round(legacyAutoCompactWindow / 1000)}
-                                  K。 固定值无法同时适配 200K 与 1M 模型。
-                                </p>
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="sm"
-                                  className="mt-2"
-                                  onClick={() => {
-                                    setAutoCompactPercentage('80');
-                                    setLegacyAutoCompactWindow(0);
-                                  }}
-                                >
-                                  改用 80% 模型比例
-                                </Button>
-                              </div>
-                            ) : (
-                              <>
-                                <label
-                                  htmlFor="agent-auto-compact-percentage"
-                                  className="mb-1.5 block text-xs font-medium text-muted-foreground"
-                                >
-                                  上下文使用比例
-                                </label>
-                                <div className="flex items-center gap-2">
-                                  <Input
-                                    id="agent-auto-compact-percentage"
-                                    type="number"
-                                    inputMode="numeric"
-                                    min={50}
-                                    max={90}
-                                    step={5}
-                                    value={autoCompactPercentage}
-                                    onChange={(event) => {
-                                      setAutoCompactPercentage(
-                                        event.target.value,
-                                      );
-                                      setLegacyAutoCompactWindow(0);
-                                    }}
-                                    aria-invalid={!!autoCompactError}
-                                    aria-describedby={`agent-auto-compact-percentage-description${autoCompactError ? ' agent-auto-compact-percentage-error' : ''}`}
-                                    className="h-11"
-                                  />
-                                  <span className="shrink-0 text-xs text-muted-foreground">
-                                    %
-                                  </span>
-                                </div>
-                                <p
-                                  id="agent-auto-compact-percentage-description"
-                                  className="mt-1.5 text-[11px] leading-5 text-muted-foreground"
-                                >
-                                  可设置 50–90%。例如 80% 在普通模型下为
-                                  160K，在 [1m] 模型下为 800K。
-                                </p>
-                              </>
-                            )}
-                            {autoCompactError && (
-                              <p
-                                id="agent-auto-compact-percentage-error"
-                                role="alert"
-                                className="mt-1 text-xs text-destructive"
-                              >
-                                {autoCompactError}
-                              </p>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </section>
-                  {!draftMode && selected && (
-                    <ErrorBoundary resetKeys={[selected.id]}>
-                      <EffectiveCapabilitiesPreview
-                        profileId={selected.id}
-                        runtimePolicy={currentRuntimePolicy}
-                        workspaces={governance?.workspaces ?? []}
-                      />
-                    </ErrorBoundary>
-                  )}
-                  {!draftMode && selected && (
-                    <AgentGovernanceSection
-                      selected={selected}
-                      profiles={profiles}
-                      governance={governance}
-                      busy={governanceBusy}
-                      error={governanceError}
-                      workspaceMoveTargets={workspaceMoveTargets}
-                      movingWorkspaceJid={movingWorkspaceJid}
-                      onRefresh={() => void loadProfileGovernance(selected.id)}
-                      onMoveTargetChange={(workspaceJid, targetProfileId) =>
-                        setWorkspaceMoveTargets((current) => ({
-                          ...current,
-                          [workspaceJid]: targetProfileId,
-                        }))
-                      }
-                      onMoveWorkspace={(workspaceJid, targetProfileId) =>
-                        void handleMoveWorkspace(workspaceJid, targetProfileId)
-                      }
-                    />
-                  )}
-                </div>
-                <div className="flex flex-wrap items-center gap-2 border-t border-border pt-5">
-                  <div className="mr-auto text-xs text-muted-foreground">
-                    {draftMode
-                      ? '完成配置后创建智能体'
-                      : dirty
-                        ? '有未保存的修改'
-                        : '所有更改已保存'}
-                  </div>
+                  : '从左侧选择智能体查看配置，或创建一个新的智能体。'
+              }
+              action={
+                <Button size="sm" onClick={handleOpenCreatePanel}>
+                  <Plus />
+                  新建智能体
+                </Button>
+              }
+              className="min-h-[420px] rounded-xl border border-dashed border-surface-border"
+            />
+          </PageContainer>
+        ) : (
+          <>
+            <header className="sticky top-0 z-10 border-b border-surface-border bg-background/90 backdrop-blur supports-backdrop-filter:bg-background/75">
+              <div className="mx-auto flex h-14 w-full max-w-4xl items-center gap-3 px-4 sm:px-6 lg:px-8">
+                <EmojiAvatar
+                  {...editorAvatar}
+                  fallbackChar={name || 'A'}
+                  size="md"
+                />
+                <div className="flex min-w-0 flex-1 items-center gap-2">
+                  <h1 className="truncate text-title-lg text-foreground">
+                    {name.trim() || '新智能体'}
+                  </h1>
                   {draftMode ? (
-                    <>
-                      <Button variant="outline" onClick={handleDiscardDraft}>
-                        <X className="h-4 w-4" />
-                        放弃草稿
-                      </Button>
-                      {draftStep > 1 && (
-                        <Button
-                          variant="outline"
-                          onClick={() =>
-                            setDraftStep((step) => Math.max(1, step - 1))
-                          }
-                        >
-                          上一步
-                        </Button>
-                      )}
-                      {draftStep < 5 ? (
-                        <Button
-                          onClick={() =>
-                            setDraftStep((step) => Math.min(5, step + 1))
-                          }
-                        >
-                          下一步
-                          <ArrowRight className="h-4 w-4" />
-                        </Button>
-                      ) : (
-                        <Button
-                          onClick={handleCreate}
-                          disabled={
-                            creating ||
-                            !name.trim() ||
-                            !!autoCompactError ||
-                            !!capabilityError
-                          }
-                        >
-                          {creating ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <Plus className="h-4 w-4" />
-                          )}
-                          创建智能体
-                        </Button>
-                      )}
-                    </>
+                    <Badge variant="neutral">草稿</Badge>
+                  ) : (
+                    selected && (
+                      <Badge variant="neutral" className="max-sm:hidden">
+                        v{selected.version}
+                      </Badge>
+                    )
+                  )}
+                  {hasUnsavedChanges && (
+                    <Badge variant="outline" dot="warning">
+                      有未保存修改
+                    </Badge>
+                  )}
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  {draftMode ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => void handleDiscardDraft()}
+                    >
+                      <X />
+                      放弃草稿
+                    </Button>
                   ) : (
                     <>
                       <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => void handleDelete()}
+                        disabled={!selected || selected.is_default || deleting}
+                        aria-label="删除智能体"
+                        className="text-error hover:bg-error/10 hover:text-error"
+                      >
+                        <Trash2 />
+                        <span className="max-sm:hidden">删除</span>
+                      </Button>
+                      <Button
+                        size="sm"
                         onClick={handleSave}
                         disabled={
                           !dirty ||
@@ -2207,28 +1612,723 @@ export function AgentProfilesPage() {
                         }
                       >
                         {saving ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
+                          <Loader2 className="animate-spin" />
                         ) : (
-                          <Save className="h-4 w-4" />
+                          <Save />
                         )}
                         保存
-                      </Button>
-                      <Button
-                        variant="outline"
-                        onClick={handleDelete}
-                        disabled={!selected || selected.is_default || deleting}
-                        className="text-error hover:bg-error-bg hover:text-error"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                        删除
                       </Button>
                     </>
                   )}
                 </div>
               </div>
-            </div>
-          )}
-        </div>
+            </header>
+
+            <PageContainer className="max-w-4xl space-y-8 pb-24 lg:pt-6">
+              <p className="text-body text-muted-foreground">
+                管理智能体的身份和能力，以及所属工作区和消息渠道。
+              </p>
+
+              {!draftMode && governance?.runtime_cleanup_pending && (
+                <div
+                  role="status"
+                  className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-warning/10 px-3 py-2.5"
+                >
+                  <div className="min-w-0">
+                    <div className="text-label text-foreground">
+                      智能体配置已保存，但工作区运行时清理未完成
+                    </div>
+                    <p className="mt-0.5 text-caption text-muted-foreground">
+                      为避免旧配置继续运行，相关工作区已暂停；清理成功后会自动恢复。
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={runtimeCleanupRepairing}
+                    onClick={() => void handleRetryProfileRuntimeCleanup()}
+                  >
+                    {runtimeCleanupRepairing ? (
+                      <Loader2 className="animate-spin" />
+                    ) : (
+                      <RefreshCw />
+                    )}
+                    重试清理
+                  </Button>
+                </div>
+              )}
+
+              {draftMode && (
+                <nav
+                  ref={stepperRef}
+                  aria-label="创建智能体步骤"
+                  className="-mt-2 overflow-x-auto"
+                >
+                  <ol className="flex w-max items-center gap-1">
+                    {DRAFT_STEPS.map(([step, label]) => {
+                      const current = draftStep === step;
+                      const done = step < draftStep;
+                      return (
+                        <li key={step} className="flex items-center gap-1">
+                          {step > 1 && (
+                            <span
+                              aria-hidden="true"
+                              className="h-px w-3 bg-border sm:w-5"
+                            />
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setDraftStep(step)}
+                            aria-current={current ? 'step' : undefined}
+                            className={cn(
+                              'flex h-7 items-center gap-1.5 rounded-md px-2 text-caption whitespace-nowrap transition-colors duration-100 outline-none hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-ring/50 pointer-coarse:min-h-11',
+                              current
+                                ? 'font-medium text-foreground'
+                                : 'text-muted-foreground hover:text-foreground',
+                            )}
+                          >
+                            <span
+                              className={cn(
+                                'grid size-4 place-items-center rounded-full text-micro tabular-nums',
+                                current
+                                  ? 'bg-primary text-primary-foreground'
+                                  : done
+                                    ? 'bg-foreground/80 text-background'
+                                    : 'text-muted-foreground ring-1 ring-border',
+                              )}
+                            >
+                              {done ? <Check className="size-2.5" /> : step}
+                            </span>
+                            {label}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                </nav>
+              )}
+
+              <AgentSection
+                hidden={draftMode && draftStep !== 1}
+                title="身份"
+                description="定义这个智能体如何称呼自己，以及它处理任务时遵循的角色设定。"
+              >
+                <SettingsGroup>
+                  <div className="px-4 py-3">
+                    <SettingsField label="名称" htmlFor="agent-profile-name">
+                      <Input
+                        id="agent-profile-name"
+                        value={name}
+                        onChange={(event) => setName(event.target.value)}
+                        className="sm:max-w-sm"
+                      />
+                    </SettingsField>
+                  </div>
+                  <div className="px-4 py-3">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <EmojiAvatar
+                        {...editorAvatar}
+                        fallbackChar={name || 'A'}
+                        size="lg"
+                      />
+                      <div className="min-w-0 flex-1 basis-48">
+                        <div className="text-body font-medium text-foreground">
+                          智能体头像
+                        </div>
+                        <p className="mt-0.5 text-caption leading-5 text-muted-foreground">
+                          {avatarUrl || avatarEmoji || avatarColor
+                            ? '当前使用这个智能体的自定义头像。'
+                            : '未单独设置，自动继承主 HappyClaw 头像。'}
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        <input
+                          ref={avatarInputRef}
+                          type="file"
+                          accept="image/jpeg,image/png,image/gif,image/webp"
+                          className="hidden"
+                          onChange={handleAvatarUpload}
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={draftMode || uploadingAvatar}
+                          onClick={() => avatarInputRef.current?.click()}
+                        >
+                          {uploadingAvatar ? (
+                            <Loader2 className="animate-spin" />
+                          ) : (
+                            <Upload />
+                          )}
+                          上传图片
+                        </Button>
+                        {!avatarStyleOpen && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setAvatarStyleOpen(true)}
+                          >
+                            使用 Emoji
+                          </Button>
+                        )}
+                        {(avatarUrl || avatarEmoji || avatarColor) && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            disabled={uploadingAvatar}
+                            onClick={handleInheritMainAvatar}
+                          >
+                            <RotateCcw />
+                            使用主头像
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                    {avatarStyleOpen && (
+                      <div className="mt-3 grid gap-3 border-t border-surface-border pt-3 sm:grid-cols-2">
+                        <div>
+                          <span className="mb-1.5 block text-caption text-muted-foreground">
+                            Emoji（可选）
+                          </span>
+                          <EmojiPicker
+                            value={avatarEmoji ?? undefined}
+                            onChange={setAvatarEmoji}
+                          />
+                        </div>
+                        <div>
+                          <span className="mb-1.5 block text-caption text-muted-foreground">
+                            背景色（可选）
+                          </span>
+                          <ColorPicker
+                            value={avatarColor ?? undefined}
+                            onChange={setAvatarColor}
+                          />
+                        </div>
+                      </div>
+                    )}
+                    {draftMode && (
+                      <p className="mt-2 text-caption text-muted-foreground">
+                        创建智能体后即可上传图片；Emoji
+                        与背景色会随创建一起保存。
+                      </p>
+                    )}
+                  </div>
+                  <SettingsRow
+                    label="模型配置"
+                    description="该智能体所属的所有工作区、会话和定时任务都会使用这里解析出的完整模型网关环境。未启用的配置不会参与系统自动选择，但仍可由智能体显式使用。"
+                    control={
+                      <Select
+                        value={modelConfigId}
+                        onValueChange={setModelConfigId}
+                      >
+                        <SelectTrigger
+                          aria-label="智能体模型配置"
+                          className="w-full sm:w-64"
+                        >
+                          <SelectValue placeholder="选择模型配置" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="inherit">
+                            自动选择已启用模型
+                            {`（当前 ${enabledModelCount} 个）`}
+                          </SelectItem>
+                          {modelConfigs.map((model) => (
+                            <SelectItem key={model.id} value={model.id}>
+                              {model.name}
+                              {model.anthropic_model
+                                ? ` · ${model.anthropic_model}`
+                                : ''}
+                              {!model.enabled ? '（仅显式使用）' : ''}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    }
+                  />
+                  <SettingsRow
+                    label="推理努力档位"
+                    description="“跟随模型配置”保留 Provider 高级设置中的 CLAUDE_CODE_EFFORT_LEVEL；显式档位通过 Agent SDK 传入并覆盖该环境变量。不支持所选档位的模型会由 Claude 静默降级，实际值可在会话的 CLAUDE_EFFORT 环境变量中查看。"
+                    control={
+                      <Select
+                        value={effort}
+                        onValueChange={(value) =>
+                          setEffort(value as AgentEffortLevel)
+                        }
+                      >
+                        <SelectTrigger
+                          aria-label="智能体推理努力档位"
+                          className="w-full sm:w-64"
+                        >
+                          <SelectValue placeholder="选择推理努力档位" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {AGENT_EFFORT_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    }
+                  />
+                  {isAdmin && !draftMode && (
+                    <SettingsRow
+                      label="加载完整宿主机 Claude Code 配置"
+                      description="将 ~/.claude 作为用户配置层叠加，包含提示词、Rules、Agents、Commands、Hooks、Workflows、Output Styles、Plugins 与设置（含宿主机 MCP）。工作区仍是运行目录；HappyClaw MCP 与宿主机 Skills 继续由“能力配置”独立控制。"
+                      control={
+                        <Switch
+                          checked={contextSource === 'host_claude'}
+                          onCheckedChange={(checked) =>
+                            setContextSource(
+                              checked ? 'host_claude' : 'managed',
+                            )
+                          }
+                          aria-label="加载完整宿主机 Claude Code 配置"
+                        />
+                      }
+                    />
+                  )}
+                </SettingsGroup>
+              </AgentSection>
+
+              {draftMode && draftStep === 3 && (
+                <AgentSection
+                  title="宿主机配置"
+                  description="决定是否将管理员的 ~/.claude 作为完整用户配置层叠加；工作区仍是运行目录。宿主机 MCP 随配置加载，HappyClaw MCP 与宿主机 Skills 在“能力配置”中独立设置。"
+                >
+                  <div
+                    className="grid gap-2 sm:grid-cols-2"
+                    role="radiogroup"
+                    aria-label="宿主机配置"
+                  >
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={contextSource === 'managed'}
+                      onClick={() => setContextSource('managed')}
+                      className={choiceCardClassName(
+                        contextSource === 'managed',
+                      )}
+                    >
+                      <ChoiceCardBody
+                        checked={contextSource === 'managed'}
+                        title="HappyClaw 托管"
+                        description="不加载宿主机原生配置。Skills 与 MCP 仍按下一步的独立能力策略加载。"
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={contextSource === 'host_claude'}
+                      disabled={!isAdmin}
+                      onClick={() => setContextSource('host_claude')}
+                      className={choiceCardClassName(
+                        contextSource === 'host_claude',
+                      )}
+                    >
+                      <ChoiceCardBody
+                        checked={contextSource === 'host_claude'}
+                        title="加载宿主机 ~/.claude"
+                        description="加载设置、提示词、Rules、Agents、Commands、Hooks、Workflows、Output Styles、Plugins 与宿主机 MCP；HappyClaw MCP 和宿主机 Skills 仍由下一步单独控制。"
+                      />
+                    </button>
+                  </div>
+                </AgentSection>
+              )}
+
+              <div hidden={draftMode && draftStep !== 2} className="space-y-8">
+                <AgentPromptEditor
+                  value={currentPrompts}
+                  mode={promptMode}
+                  onChange={setCurrentPrompts}
+                  onModeChange={setPromptMode}
+                  onOpenAssistant={draftMode ? undefined : setAssistantSection}
+                />
+                {!draftMode && selected && (
+                  <>
+                    <AgentPromptAssistant
+                      key={selected.id}
+                      profileId={selected.id}
+                      agentName={name.trim() || selected.name}
+                      currentPrompts={currentPrompts}
+                      activeSection={assistantSection}
+                      onApply={setCurrentPrompts}
+                    />
+                    <AgentPromptVersionHistory
+                      profileId={selected.id}
+                      currentVersion={selected.version}
+                      currentPrompts={currentPrompts}
+                      loadVersions={loadPromptVersions}
+                      restoreVersion={restorePromptVersion}
+                      confirmDiscardUnsavedChanges={
+                        confirmDiscardUnsavedChanges
+                      }
+                      onRestored={(profile) => {
+                        setCurrentPrompts({
+                          identity_prompt: profile.identity_prompt,
+                          soul_prompt: profile.soul_prompt,
+                          agents_prompt: profile.agents_prompt,
+                          tools_prompt: profile.tools_prompt,
+                        });
+                        setPromptMode(profile.prompt_mode);
+                      }}
+                    />
+                  </>
+                )}
+              </div>
+
+              {draftMode && draftStep === 5 && (
+                <AgentSection
+                  title="确认创建"
+                  description="检查核心设置。创建后仍可随时修改并通过版本历史回退提示词。"
+                >
+                  <SettingsGroup>
+                    <dl className="divide-y divide-surface-border">
+                      <SummaryItem
+                        label="名称"
+                        value={name.trim() || '未填写'}
+                      />
+                      <SummaryItem
+                        label="提示词完成度"
+                        value={`${Object.values(currentPrompts).filter((value) => value.trim()).length}/4 段`}
+                      />
+                      <SummaryItem
+                        label="Claude 默认提示词"
+                        value={
+                          promptMode === 'append' ? '保留并追加' : '完全替换'
+                        }
+                      />
+                      <SummaryItem
+                        label="模型配置"
+                        value={
+                          modelConfigId === 'inherit'
+                            ? `自动选择已启用模型（当前 ${enabledModelCount} 个）`
+                            : (modelConfigs.find(
+                                (item) => item.id === modelConfigId,
+                              )?.name ?? '不可用模型配置')
+                        }
+                      />
+                      <SummaryItem
+                        label="推理努力档位"
+                        value={
+                          AGENT_EFFORT_OPTIONS.find(
+                            (option) => option.value === effort,
+                          )?.label ?? '跟随模型配置'
+                        }
+                      />
+                      <SummaryItem
+                        label="宿主机配置"
+                        value={
+                          contextSource === 'host_claude'
+                            ? '完整加载 ~/.claude（宿主机 Skills 独立）'
+                            : '不加载'
+                        }
+                      />
+                      <SummaryItem
+                        label="HappyClaw Skills"
+                        value={
+                          skillsMode === 'inherit'
+                            ? '全部已启用'
+                            : skillsMode === 'disabled'
+                              ? '关闭'
+                              : `所选 ${skillIds.length} 项`
+                        }
+                      />
+                      <SummaryItem
+                        label="宿主机 Skills"
+                        value={skillPolicySummary(
+                          { mode: hostSkillsMode, ids: hostSkillIds },
+                          '全部使用',
+                        )}
+                      />
+                      <SummaryItem
+                        label="HappyClaw MCP"
+                        value={
+                          mcpMode === 'inherit'
+                            ? '全部已启用'
+                            : mcpMode === 'disabled'
+                              ? '关闭'
+                              : `所选 ${mcpIds.length} 项`
+                        }
+                      />
+                    </dl>
+                  </SettingsGroup>
+                  {!name.trim() && (
+                    <p
+                      role="alert"
+                      className="rounded-lg bg-error/10 px-3 py-2 text-caption text-error"
+                    >
+                      请返回“基本信息”填写名称。
+                    </p>
+                  )}
+                  {capabilityError && (
+                    <p
+                      role="alert"
+                      className="rounded-lg bg-error/10 px-3 py-2 text-caption text-error"
+                    >
+                      {capabilityError}
+                    </p>
+                  )}
+                </AgentSection>
+              )}
+
+              <AgentSection
+                id="agent-capabilities"
+                hidden={draftMode && draftStep !== 4}
+                className="scroll-mt-20"
+                title="能力配置"
+                description="按来源配置 Skills。HappyClaw、宿主机与工作区能力会在运行时叠加；同名项以“最终生效能力”中的结果为准。"
+              >
+                <SettingsGroup>
+                  <div className="px-4 py-4">
+                    <AgentSkillsPolicyEditor
+                      managedPolicy={{ mode: skillsMode, ids: skillIds }}
+                      onManagedModeChange={setSkillsMode}
+                      onManagedIdsChange={setSkillIds}
+                      managedOptions={skillOptions}
+                      hostPolicy={{
+                        mode: hostSkillsMode,
+                        ids: hostSkillIds,
+                      }}
+                      onHostModeChange={handleHostSkillsModeChange}
+                      onHostIdsChange={handleHostSkillIdsChange}
+                      hostOptions={hostSkillOptions}
+                      loading={skillsLoading}
+                      error={skillsError}
+                      hostAvailable={isAdmin}
+                      hostAutoSave={!draftMode}
+                      hostSaving={hostSkillsSaving || runtimeCleanupRepairing}
+                      hostSaveStatus={hostSkillsSaveStatus}
+                      onRetryHostSave={handleRetryHostSkillSave}
+                      managedError={managedSkillsError}
+                      hostError={hostSkillsError}
+                    />
+                  </div>
+
+                  <section className="min-w-0 space-y-3 px-4 py-4">
+                    <AgentSubheading
+                      title="HappyClaw MCP"
+                      description="控制 HappyClaw 额外附加的 MCP；宿主机 MCP 仍由上一步的宿主机配置控制。"
+                    />
+                    <div className="max-w-xl space-y-3">
+                      <div className="space-y-1.5">
+                        <label className="block text-caption font-medium text-muted-foreground">
+                          使用方式
+                        </label>
+                        <Select
+                          value={mcpMode}
+                          onValueChange={(value) =>
+                            setMcpMode(value as RuntimePolicyMode)
+                          }
+                        >
+                          <SelectTrigger
+                            aria-label="智能体 MCP"
+                            className="w-full sm:w-72"
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="inherit">
+                              使用全部 HappyClaw MCP
+                            </SelectItem>
+                            <SelectItem value="custom">
+                              只允许所选 HappyClaw MCP
+                            </SelectItem>
+                            <SelectItem value="disabled">
+                              关闭 HappyClaw MCP
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      {mcpMode === 'custom' && (
+                        <PolicyResourcePicker
+                          label="选择 HappyClaw MCP"
+                          options={mcpOptions}
+                          selectedIds={mcpIds}
+                          onChange={setMcpIds}
+                          loading={mcpLoading}
+                          error={mcpError}
+                          emptyText="没有已启用的 HappyClaw MCP"
+                        />
+                      )}
+                    </div>
+                  </section>
+
+                  <SettingsRow
+                    label="SDK 自动压缩（推荐）"
+                    htmlFor="agent-auto-compact-default"
+                    description={
+                      <span id="agent-auto-compact-default-description">
+                        根据当前模型自动决定压缩时机。普通模型通常为 200K
+                        上下文；模型名带 [1m] 时按 1M 处理。
+                      </span>
+                    }
+                    control={
+                      <Switch
+                        id="agent-auto-compact-default"
+                        checked={useSdkCompactDefault}
+                        onCheckedChange={setUseSdkCompactDefault}
+                        aria-describedby="agent-auto-compact-default-description"
+                      />
+                    }
+                  >
+                    {!useSdkCompactDefault && (
+                      <div className="max-w-sm">
+                        {autoCompactPercentage === 'legacy' ? (
+                          <div className="rounded-lg bg-warning/10 px-3 py-2.5">
+                            <p className="text-caption leading-5 text-warning">
+                              当前保留旧版固定阈值{' '}
+                              {Math.round(legacyAutoCompactWindow / 1000)}
+                              K。 固定值无法同时适配 200K 与 1M 模型。
+                            </p>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="mt-2"
+                              onClick={() => {
+                                setAutoCompactPercentage('80');
+                                setLegacyAutoCompactWindow(0);
+                              }}
+                            >
+                              改用 80% 模型比例
+                            </Button>
+                          </div>
+                        ) : (
+                          <>
+                            <label
+                              htmlFor="agent-auto-compact-percentage"
+                              className="mb-1.5 block text-caption font-medium text-muted-foreground"
+                            >
+                              上下文使用比例
+                            </label>
+                            <div className="flex items-center gap-2">
+                              <Input
+                                id="agent-auto-compact-percentage"
+                                type="number"
+                                inputMode="numeric"
+                                min={50}
+                                max={90}
+                                step={5}
+                                value={autoCompactPercentage}
+                                onChange={(event) => {
+                                  setAutoCompactPercentage(event.target.value);
+                                  setLegacyAutoCompactWindow(0);
+                                }}
+                                aria-invalid={!!autoCompactError}
+                                aria-describedby={`agent-auto-compact-percentage-description${autoCompactError ? ' agent-auto-compact-percentage-error' : ''}`}
+                                className="w-24 pointer-coarse:min-h-11"
+                              />
+                              <span className="shrink-0 text-caption text-muted-foreground">
+                                %
+                              </span>
+                            </div>
+                            <p
+                              id="agent-auto-compact-percentage-description"
+                              className="mt-1.5 text-caption leading-5 text-muted-foreground"
+                            >
+                              可设置 50–90%。例如 80% 在普通模型下为 160K，在
+                              [1m] 模型下为 800K。
+                            </p>
+                          </>
+                        )}
+                        {autoCompactError && (
+                          <p
+                            id="agent-auto-compact-percentage-error"
+                            role="alert"
+                            className="mt-1 text-caption text-error"
+                          >
+                            {autoCompactError}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </SettingsRow>
+                </SettingsGroup>
+              </AgentSection>
+
+              {!draftMode && selected && (
+                <ErrorBoundary resetKeys={[selected.id]}>
+                  <EffectiveCapabilitiesPreview
+                    profileId={selected.id}
+                    runtimePolicy={currentRuntimePolicy}
+                    workspaces={governance?.workspaces ?? []}
+                  />
+                </ErrorBoundary>
+              )}
+              {!draftMode && selected && (
+                <AgentGovernanceSection
+                  selected={selected}
+                  profiles={profiles}
+                  governance={governance}
+                  busy={governanceBusy}
+                  error={governanceError}
+                  workspaceMoveTargets={workspaceMoveTargets}
+                  movingWorkspaceJid={movingWorkspaceJid}
+                  onRefresh={() => void loadProfileGovernance(selected.id)}
+                  onMoveTargetChange={(workspaceJid, targetProfileId) =>
+                    setWorkspaceMoveTargets((current) => ({
+                      ...current,
+                      [workspaceJid]: targetProfileId,
+                    }))
+                  }
+                  onMoveWorkspace={(workspaceJid, targetProfileId) =>
+                    void handleMoveWorkspace(workspaceJid, targetProfileId)
+                  }
+                />
+              )}
+
+              {draftMode && (
+                <div className="flex flex-wrap items-center gap-2 border-t border-surface-border pt-4">
+                  <div className="mr-auto text-caption text-muted-foreground">
+                    完成配置后创建智能体
+                  </div>
+                  {draftStep > 1 && (
+                    <Button
+                      variant="outline"
+                      onClick={() =>
+                        setDraftStep((step) => Math.max(1, step - 1))
+                      }
+                    >
+                      上一步
+                    </Button>
+                  )}
+                  {draftStep < 5 ? (
+                    <Button
+                      onClick={() =>
+                        setDraftStep((step) => Math.min(5, step + 1))
+                      }
+                    >
+                      下一步
+                      <ArrowRight />
+                    </Button>
+                  ) : (
+                    <Button
+                      onClick={handleCreate}
+                      disabled={
+                        creating ||
+                        !name.trim() ||
+                        !!autoCompactError ||
+                        !!capabilityError
+                      }
+                    >
+                      {creating ? (
+                        <Loader2 className="animate-spin" />
+                      ) : (
+                        <Plus />
+                      )}
+                      创建智能体
+                    </Button>
+                  )}
+                </div>
+              )}
+            </PageContainer>
+          </>
+        )}
       </main>
 
       <Dialog
@@ -2239,14 +2339,14 @@ export function AgentProfilesPage() {
           <DialogHeader>
             <DialogTitle>迁移工作区后删除智能体</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4 text-sm">
-            <p className="leading-6 text-muted-foreground">
+          <div className="space-y-4">
+            <p className="text-body leading-6 text-muted-foreground">
               「{selected?.name}」仍归属 {governance?.workspaces.length ?? 0}{' '}
               个工作区。删除前必须把它们迁移到同一个目标
               智能体；渠道绑定会随工作区归属一起更新。
             </p>
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
+            <div className="space-y-1.5">
+              <label className="block text-caption font-medium text-muted-foreground">
                 目标智能体
               </label>
               <Select
@@ -2254,7 +2354,7 @@ export function AgentProfilesPage() {
                 onValueChange={setDeleteTargetId}
                 disabled={deleting}
               >
-                <SelectTrigger>
+                <SelectTrigger className="w-full">
                   <SelectValue placeholder="选择目标智能体" />
                 </SelectTrigger>
                 <SelectContent>
@@ -2268,11 +2368,11 @@ export function AgentProfilesPage() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="max-h-40 overflow-auto rounded-md border bg-muted/20 p-2">
+            <div className="max-h-40 overflow-auto rounded-lg bg-muted/50 p-2">
               {governance?.workspaces.map((workspace) => (
                 <div
                   key={workspace.jid}
-                  className="truncate px-1 py-1 text-xs text-muted-foreground"
+                  className="truncate px-1 py-1 text-caption text-muted-foreground"
                 >
                   {workspace.name} · {workspace.folder}
                 </div>
@@ -2292,11 +2392,7 @@ export function AgentProfilesPage() {
               onClick={() => void handleMigrateAndDelete()}
               disabled={deleting || !deleteTargetId}
             >
-              {deleting ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <ArrowRight className="h-4 w-4" />
-              )}
+              {deleting ? <Loader2 className="animate-spin" /> : <ArrowRight />}
               迁移并删除
             </Button>
           </DialogFooter>

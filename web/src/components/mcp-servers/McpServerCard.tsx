@@ -1,7 +1,13 @@
 import { useState } from 'react';
-import { Download, LockKeyhole } from 'lucide-react';
+import { Download, Globe, LockKeyhole, Terminal } from 'lucide-react';
 import { toast } from 'sonner';
+import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
+import {
+  CapabilityMedia,
+  capabilityRowButtonClass,
+  capabilityRowClass,
+} from '@/components/capabilities/capability-ui';
 import type { McpServer } from '../../stores/mcp-servers';
 import { useMcpServersStore } from '../../stores/mcp-servers';
 
@@ -47,74 +53,60 @@ export function McpServerCard({
 
   return (
     <div
-      className={`w-full overflow-hidden rounded-lg border text-left transition-all focus-within:ring-2 focus-within:ring-ring ${
-        selected
-          ? 'border-primary bg-brand-50 ring-2 ring-ring'
-          : 'border-border hover:bg-muted'
-      }`}
+      role="listitem"
+      data-selected={selected || undefined}
+      className={capabilityRowClass(selected)}
     >
-      <div className="flex items-start justify-between gap-3">
-        <button
-          type="button"
-          aria-pressed={selected}
-          aria-label={`查看 MCP ${server.id}`}
-          onClick={onSelect}
-          className="min-w-0 flex-1 cursor-pointer p-4 pr-2 text-left focus-visible:outline-none"
-        >
-          <div className="flex items-center gap-2 mb-1">
-            <h3 className="font-medium text-foreground truncate">
+      <button
+        type="button"
+        aria-pressed={selected}
+        aria-label={`查看 MCP ${server.id}`}
+        onClick={onSelect}
+        className={capabilityRowButtonClass}
+      >
+        <CapabilityMedia icon={isHttpType ? Globe : Terminal} />
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-body font-medium text-foreground">
               {server.id}
-            </h3>
-            <span
-              className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                server.source === 'system'
-                  ? 'bg-blue-100 text-blue-700 dark:bg-blue-950/50 dark:text-blue-300'
-                  : 'bg-muted text-muted-foreground'
-              }`}
-            >
-              {server.source === 'system' ? '系统' : '我的'}
             </span>
             {isHttpType && (
-              <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">
-                {server.type?.toUpperCase()}
-              </span>
+              <Badge variant="outline">{server.type?.toUpperCase()}</Badge>
             )}
             {isImported && (
-              <span className="px-2 py-0.5 rounded text-xs font-medium bg-warning-bg text-warning inline-flex items-center gap-1">
-                <Download size={10} />
+              <Badge variant="neutral">
+                <Download />
                 宿主机副本
-              </span>
+              </Badge>
             )}
             {server.readonly && (
-              <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                <LockKeyhole size={10} /> 只读
-              </span>
+              <Badge variant="neutral">
+                <LockKeyhole /> 只读
+              </Badge>
             )}
-          </div>
-          <p className="text-sm text-muted-foreground truncate font-mono">
+          </span>
+          <span className="mt-0.5 block truncate font-mono text-caption text-muted-foreground">
             {preview}
-          </p>
+          </span>
           {server.description && (
-            <p className="text-xs text-muted-foreground mt-1 line-clamp-1">
+            <span className="mt-0.5 line-clamp-1 text-caption text-muted-foreground">
               {server.description}
-            </p>
+            </span>
           )}
           {hasConflict && (
-            <p className="mt-1 text-xs text-warning">
+            <span className="mt-0.5 block text-caption text-warning">
               同名来源 · {server.effective ? '当前生效' : '由“我的”配置覆盖'}
-            </p>
+            </span>
           )}
-        </button>
+        </span>
+      </button>
 
-        <div className="flex shrink-0 items-center p-4 pl-2">
-          <Switch
-            checked={server.enabled}
-            disabled={server.readonly || toggling}
-            onCheckedChange={(checked) => void handleToggle(checked)}
-            aria-label={`${server.enabled ? '禁用' : '启用'} ${server.id}`}
-          />
-        </div>
-      </div>
+      <Switch
+        checked={server.enabled}
+        disabled={server.readonly || toggling}
+        onCheckedChange={(checked) => void handleToggle(checked)}
+        aria-label={`${server.enabled ? '禁用' : '启用'} ${server.id}`}
+      />
     </div>
   );
 }

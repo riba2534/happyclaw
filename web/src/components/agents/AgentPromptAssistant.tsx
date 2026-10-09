@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bot, Check, Loader2, Send, Sparkles, Wand2 } from 'lucide-react';
+import { ArrowUp, Bot, Check, Loader2, Wand2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import { SettingsGroup } from '@/components/settings/SettingsLayout';
 import {
   useAgentProfilesStore,
   type AgentPromptChatMessage,
@@ -13,6 +14,7 @@ import {
   type AgentPromptParts,
   type AgentPromptSection,
 } from '../../utils/agent-prompts';
+import { AgentSection } from './AgentSection';
 
 interface PromptAssistantMessage extends AgentPromptChatMessage {
   id: number;
@@ -148,173 +150,161 @@ export function AgentPromptAssistant({
   )?.title;
 
   return (
-    <section className="overflow-hidden rounded-xl border border-border bg-card">
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
-        <div className="flex min-w-0 items-start gap-3">
-          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-brand-50 text-primary dark:bg-brand-700/20 dark:text-brand-300">
-            <Sparkles className="h-4 w-4" />
-          </div>
-          <div>
-            <h2 className="text-sm font-semibold text-foreground">
-              与 AI 调整提示词
-            </h2>
-            <p className="mt-1 text-xs leading-5 text-muted-foreground">
-              直接描述你想增加、删减或改变的行为，AI
-              会生成四段候选提示词。当前重点调整：{activeLabel}。
-            </p>
-          </div>
-        </div>
-        <Badge variant="outline">使用全局模型</Badge>
-      </div>
-
-      <div
-        ref={viewportRef}
-        className="h-[360px] space-y-4 overflow-y-auto bg-muted/10 px-4 py-5 sm:px-5"
-        aria-live="polite"
-      >
-        <div className="flex items-start gap-2.5">
-          <div className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-brand-50 text-primary ring-1 ring-inset ring-primary/10 dark:bg-brand-700/20 dark:text-brand-300">
-            <Bot className="h-3.5 w-3.5" />
-          </div>
-          <div className="max-w-[min(86%,680px)] rounded-xl rounded-tl-sm border border-border bg-background px-3.5 py-3 text-sm leading-6 text-foreground shadow-sm">
-            告诉我你希望「{agentName || '这个智能体'}
-            」如何工作。我会基于当前提示词修改，并先给你确认，不会自动保存。
-          </div>
-        </div>
-
-        {messages.length === 0 && (
-          <div className="ml-9 flex flex-wrap gap-2">
-            {QUICK_REQUESTS.map((request) => (
-              <button
-                key={request}
-                type="button"
-                onClick={() => setInput(request)}
-                className="rounded-full border border-border bg-background px-3 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:border-brand-300 hover:bg-brand-50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:border-brand-700 dark:hover:bg-brand-700/10"
-              >
-                {request}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {messages.map((message) =>
-          message.role === 'user' ? (
-            <div key={message.id} className="flex justify-end">
-              <div className="max-w-[min(86%,680px)] rounded-xl rounded-tr-sm bg-primary px-3.5 py-2.5 text-sm leading-6 text-primary-foreground">
-                {message.content}
-              </div>
+    <AgentSection
+      title="与 AI 调整提示词"
+      description={`直接描述你想增加、删减或改变的行为，AI 会生成四段候选提示词。当前重点调整：${activeLabel}。`}
+      actions={<Badge variant="neutral">使用全局模型</Badge>}
+    >
+      <SettingsGroup>
+        <div
+          ref={viewportRef}
+          className="max-h-[360px] min-h-40 space-y-4 overflow-y-auto px-4 py-4"
+          aria-live="polite"
+        >
+          <div className="flex items-start gap-2.5">
+            <AssistantAvatar />
+            <div className="max-w-[min(86%,680px)] rounded-xl rounded-tl-sm bg-muted/60 px-3.5 py-2.5 text-body leading-6 text-foreground">
+              告诉我你希望「{agentName || '这个智能体'}
+              」如何工作。我会基于当前提示词修改，并先给你确认，不会自动保存。
             </div>
-          ) : (
-            <div key={message.id} className="flex items-start gap-2.5">
-              <div className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-brand-50 text-primary ring-1 ring-inset ring-primary/10 dark:bg-brand-700/20 dark:text-brand-300">
-                <Bot className="h-3.5 w-3.5" />
-              </div>
-              <div className="min-w-0 max-w-[min(86%,680px)] space-y-2">
-                <div className="rounded-xl rounded-tl-sm border border-border bg-background px-3.5 py-3 text-sm leading-6 text-foreground shadow-sm">
+          </div>
+
+          {messages.length === 0 && (
+            <div className="ml-9 flex flex-wrap gap-1.5">
+              {QUICK_REQUESTS.map((request) => (
+                <button
+                  key={request}
+                  type="button"
+                  onClick={() => setInput(request)}
+                  className="rounded-full bg-background px-3 py-1 text-left text-caption text-muted-foreground ring-1 ring-surface-border transition-colors duration-100 outline-none hover:bg-surface-hover hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 pointer-coarse:min-h-11"
+                >
+                  {request}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {messages.map((message) =>
+            message.role === 'user' ? (
+              <div key={message.id} className="flex justify-end">
+                <div className="max-w-[min(86%,680px)] rounded-xl rounded-tr-sm bg-surface-selected px-3.5 py-2.5 text-body leading-6 text-foreground">
                   {message.content}
                 </div>
-                {message.proposedPrompts && (
-                  <div className="rounded-xl border border-brand-200 bg-brand-50/60 p-3 dark:border-brand-700/50 dark:bg-brand-700/10">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 text-xs font-medium text-foreground">
-                        <Wand2 className="h-3.5 w-3.5 text-primary" />
-                        已生成四段候选提示词
-                      </div>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant={
-                          JSON.stringify(currentPrompts) ===
-                          JSON.stringify(message.proposedPrompts)
-                            ? 'secondary'
-                            : 'outline'
-                        }
-                        disabled={
-                          JSON.stringify(currentPrompts) ===
-                          JSON.stringify(message.proposedPrompts)
-                        }
-                        onClick={() => handleApply(message.proposedPrompts!)}
-                      >
-                        {JSON.stringify(currentPrompts) ===
-                        JSON.stringify(message.proposedPrompts) ? (
-                          <Check className="h-3.5 w-3.5" />
-                        ) : (
-                          <Wand2 className="h-3.5 w-3.5" />
-                        )}
-                        {JSON.stringify(currentPrompts) ===
-                        JSON.stringify(message.proposedPrompts)
-                          ? '已应用'
-                          : '应用到提示词'}
-                      </Button>
-                    </div>
-                    <p className="mt-2 max-h-[66px] overflow-hidden whitespace-pre-wrap text-xs leading-[22px] text-muted-foreground">
-                      {message.proposedPrompts[
-                        AGENT_PROMPT_SECTIONS.find(
-                          (item) => item.key === activeSection,
-                        )?.field ?? 'identity_prompt'
-                      ] || '该段保持为空。'}
-                    </p>
-                  </div>
-                )}
               </div>
-            </div>
-          ),
-        )}
-
-        {sending && (
-          <div className="flex items-center gap-2.5 text-xs text-muted-foreground">
-            <div className="grid h-7 w-7 place-items-center rounded-full bg-brand-50 text-primary dark:bg-brand-700/20 dark:text-brand-300">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            </div>
-            正在理解你的要求并重写提示词…
-          </div>
-        )}
-      </div>
-
-      <form
-        className="border-t border-border bg-background p-4 sm:p-5"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void sendMessage();
-        }}
-      >
-        <div className="flex items-end gap-2">
-          <Textarea
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (
-                event.key === 'Enter' &&
-                !event.shiftKey &&
-                !event.nativeEvent.isComposing
-              ) {
-                event.preventDefault();
-                void sendMessage();
-              }
-            }}
-            className="min-h-[72px] max-h-36 resize-none text-sm leading-6"
-            placeholder="例如：以后回答先给结论，再列风险和下一步；语气更直接一些。"
-            aria-label="告诉 AI 如何调整智能体提示词"
-          />
-          <Button
-            type="submit"
-            size="icon-lg"
-            disabled={!input.trim() || sending}
-            aria-label="发送调整要求"
-            title="发送"
-          >
-            {sending ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
             ) : (
-              <Send className="h-4 w-4" />
-            )}
-          </Button>
+              <div key={message.id} className="flex items-start gap-2.5">
+                <AssistantAvatar />
+                <div className="min-w-0 max-w-[min(86%,680px)] space-y-2">
+                  <div className="rounded-xl rounded-tl-sm bg-muted/60 px-3.5 py-2.5 text-body leading-6 text-foreground">
+                    {message.content}
+                  </div>
+                  {message.proposedPrompts && (
+                    <div className="rounded-lg bg-background p-3 ring-1 ring-surface-border">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 text-label text-foreground">
+                          <Wand2 className="size-3.5 text-muted-foreground" />
+                          已生成四段候选提示词
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant={
+                            JSON.stringify(currentPrompts) ===
+                            JSON.stringify(message.proposedPrompts)
+                              ? 'secondary'
+                              : 'outline'
+                          }
+                          disabled={
+                            JSON.stringify(currentPrompts) ===
+                            JSON.stringify(message.proposedPrompts)
+                          }
+                          onClick={() => handleApply(message.proposedPrompts!)}
+                        >
+                          {JSON.stringify(currentPrompts) ===
+                          JSON.stringify(message.proposedPrompts) ? (
+                            <Check />
+                          ) : (
+                            <Wand2 />
+                          )}
+                          {JSON.stringify(currentPrompts) ===
+                          JSON.stringify(message.proposedPrompts)
+                            ? '已应用'
+                            : '应用到提示词'}
+                        </Button>
+                      </div>
+                      <p className="mt-2 max-h-[66px] overflow-hidden text-caption leading-[22px] whitespace-pre-wrap text-muted-foreground">
+                        {message.proposedPrompts[
+                          AGENT_PROMPT_SECTIONS.find(
+                            (item) => item.key === activeSection,
+                          )?.field ?? 'identity_prompt'
+                        ] || '该段保持为空。'}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ),
+          )}
+
+          {sending && (
+            <div className="flex items-center gap-2.5 text-caption text-muted-foreground">
+              <span className="grid size-7 place-items-center rounded-full bg-muted text-muted-foreground">
+                <Loader2 className="size-3.5 animate-spin" />
+              </span>
+              正在理解你的要求并重写提示词…
+            </div>
+          )}
         </div>
-        <div className="mt-2 flex items-center justify-between gap-3 text-[11px] text-muted-foreground">
-          <span>Enter 发送，Shift + Enter 换行</span>
-          <span>应用后仍需保存智能体</span>
-        </div>
-      </form>
-    </section>
+
+        <form
+          className="p-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void sendMessage();
+          }}
+        >
+          <div className="rounded-xl bg-background ring-1 ring-surface-border focus-within:ring-ring/60">
+            <Textarea
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (
+                  event.key === 'Enter' &&
+                  !event.shiftKey &&
+                  !event.nativeEvent.isComposing
+                ) {
+                  event.preventDefault();
+                  void sendMessage();
+                }
+              }}
+              className="max-h-36 min-h-[64px] resize-none border-0 bg-transparent px-3 pt-2.5 text-body leading-6 shadow-none focus-visible:ring-0 dark:bg-transparent"
+              placeholder="例如：以后回答先给结论，再列风险和下一步；语气更直接一些。"
+              aria-label="告诉 AI 如何调整智能体提示词"
+            />
+            <div className="flex items-center justify-between gap-3 px-3 pb-2 text-micro text-faint-foreground">
+              <span>Enter 发送，Shift + Enter 换行 · 应用后仍需保存智能体</span>
+              <Button
+                type="submit"
+                size="icon-sm"
+                className="rounded-full"
+                disabled={!input.trim() || sending}
+                aria-label="发送调整要求"
+                title="发送"
+              >
+                {sending ? <Loader2 className="animate-spin" /> : <ArrowUp />}
+              </Button>
+            </div>
+          </div>
+        </form>
+      </SettingsGroup>
+    </AgentSection>
+  );
+}
+
+function AssistantAvatar() {
+  return (
+    <span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground">
+      <Bot className="size-3.5" />
+    </span>
   );
 }

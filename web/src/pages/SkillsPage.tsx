@@ -1,16 +1,38 @@
 import { useEffect, useState, useMemo } from 'react';
 import { Plus, RefreshCw, Puzzle, Trash2 } from 'lucide-react';
 import { SearchInput } from '@/components/common';
-import { PageHeader } from '@/components/common/PageHeader';
-import { SkeletonCardList } from '@/components/common/Skeletons';
 import { EmptyState } from '@/components/common/EmptyState';
+import { IconButton } from '@/components/common/IconButton';
+import { SegmentedControl } from '@/components/common/SegmentedControl';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetTitle,
+} from '@/components/ui/sheet';
+import {
+  Callout,
+  CapabilityListSection,
+  CapabilityListSkeleton,
+  CapabilitySectionActions,
+} from '@/components/capabilities/capability-ui';
+import { useMediaQuery } from '@/hooks/useMediaQuery';
+import { confirmDialog } from '@/stores/confirm';
 import { toast } from 'sonner';
 import { useSkillsStore } from '../stores/skills';
 import { SkillCard } from '../components/skills/SkillCard';
 import { SkillDetail } from '../components/skills/SkillDetail';
 import { InstallSkillDialog } from '../components/skills/InstallSkillDialog';
+
+type SourceFilter = 'all' | 'user' | 'project' | 'external';
+
+const SOURCE_FILTERS: Array<{ value: SourceFilter; label: string }> = [
+  { value: 'all', label: '全部' },
+  { value: 'user', label: '我的' },
+  { value: 'project', label: 'HappyClaw 内置' },
+  { value: 'external', label: '宿主机' },
+];
 
 export function SkillsPage() {
   const {
@@ -29,9 +51,8 @@ export function SkillsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [showInstallDialog, setShowInstallDialog] = useState(false);
   const [deletingAll, setDeletingAll] = useState(false);
-  const [sourceFilter, setSourceFilter] = useState<
-    'all' | 'user' | 'project' | 'external'
-  >('all');
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
+  const isDesktop = useMediaQuery('(min-width: 1024px)');
 
   useEffect(() => {
     loadSkills();
@@ -53,201 +74,176 @@ export function SkillsPage() {
   const projectSkills = filtered.filter((s) => s.source === 'project');
 
   const enabledCount = skills.filter((s) => s.enabled).length;
+  const hasRows = !error && filtered.length > 0;
 
   const handleInstall = async (pkg: string) => {
     await installSkill(pkg);
   };
 
+  const handleDeleteAll = async () => {
+    const confirmed = await confirmDialog({
+      title: '删除全部用户 Skills',
+      message: '确定删除所有用户级技能？宿主机技能不受影响。',
+      confirmText: '全部删除',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+    setDeletingAll(true);
+    try {
+      const n = await deleteAllUserSkills();
+      setSelectedId(null);
+      toast.success(`已删除 ${n} 个用户级技能`);
+    } catch {
+      /* handled by store */
+    }
+    setDeletingAll(false);
+  };
+
+  const renderRows = (items: typeof filtered) =>
+    items.map((skill) => (
+      <SkillCard
+        key={skill.sourceKey}
+        skill={skill}
+        selected={selectedId === skill.sourceKey}
+        onSelect={() => setSelectedId(skill.sourceKey)}
+      />
+    ));
+
   return (
-    <div className="min-h-full bg-background">
-      <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <div className="bg-background border-b border-border px-6 py-4">
-          <PageHeader
-            title="Skills"
-            subtitle={`我的 ${skills.filter((item) => item.source === 'user').length} · HappyClaw 内置 ${skills.filter((item) => item.source === 'project').length} · 宿主机 ${skills.filter((item) => item.source === 'external').length} · 启用 ${enabledCount}`}
-            actions={
-              <div className="flex items-center gap-3">
-                <Button
-                  variant="outline"
-                  onClick={loadSkills}
-                  disabled={loading}
-                >
-                  <RefreshCw
-                    size={18}
-                    className={loading ? 'animate-spin' : ''}
-                  />
-                  刷新
-                </Button>
-                <Button onClick={() => setShowInstallDialog(true)}>
-                  <Plus size={18} />
-                  安装技能
-                </Button>
-              </div>
-            }
-          />
-        </div>
+    <div className="space-y-4">
+      <CapabilitySectionActions>
+        <IconButton
+          label="刷新"
+          icon={<RefreshCw className={loading ? 'animate-spin' : undefined} />}
+          onClick={loadSkills}
+          disabled={loading}
+        />
+        <Button size="sm" onClick={() => setShowInstallDialog(true)}>
+          <Plus />
+          <span className="max-sm:sr-only">安装技能</span>
+        </Button>
+      </CapabilitySectionActions>
 
-        <div className="mx-6 mt-4 rounded-lg bg-muted px-4 py-3 text-xs leading-5 text-muted-foreground">
-          “我的 Skills”可安装和管理；HappyClaw 内置与宿主机 Skills 只读。智能体
-          可以独立选择不使用、使用部分或使用全部宿主机
-          Skills，不必同时继承宿主机 Prompt 或
-          Rules。不同来源的同名项会并列显示。
-        </div>
-
-        {/* Content */}
-        <div className="flex gap-6 p-4">
-          {/* 左侧列表 */}
-          <div className="w-full lg:w-1/2 xl:w-2/5">
-            <div className="mb-4">
-              <SearchInput
-                value={searchQuery}
-                onChange={setSearchQuery}
-                placeholder="搜索技能名称或描述"
-              />
-              <div
-                className="mt-3 flex gap-1 overflow-x-auto"
-                aria-label="Skill 来源筛选"
-              >
-                {(
-                  [
-                    ['all', '全部'],
-                    ['user', '我的'],
-                    ['project', 'HappyClaw 内置'],
-                    ['external', '宿主机'],
-                  ] as const
-                ).map(([value, label]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => setSourceFilter(value)}
-                    className={`shrink-0 rounded-full px-3 py-1.5 text-xs transition-colors ${sourceFilter === value ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:text-foreground'}`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="space-y-6">
-              {loading && skills.length === 0 ? (
-                <SkeletonCardList count={3} />
-              ) : error ? (
-                <Card className="border-error/20">
-                  <CardContent className="text-center">
-                    <p className="text-error">{error}</p>
-                  </CardContent>
-                </Card>
-              ) : filtered.length === 0 ? (
-                <EmptyState
-                  icon={Puzzle}
-                  title={searchQuery ? '没有找到匹配的技能' : '暂无技能'}
-                />
-              ) : (
-                <>
-                  {userSkills.length > 0 && (
-                    <div>
-                      <div className="flex items-center justify-between mb-3">
-                        <h2 className="text-sm font-semibold text-muted-foreground">
-                          我的 Skills ({userSkills.length})
-                        </h2>
-                        <button
-                          className="text-xs text-muted-foreground hover:text-error flex items-center gap-1 cursor-pointer"
-                          disabled={deletingAll}
-                          onClick={async () => {
-                            if (
-                              !confirm(
-                                '确定删除所有用户级技能？宿主机技能不受影响。',
-                              )
-                            )
-                              return;
-                            setDeletingAll(true);
-                            try {
-                              const n = await deleteAllUserSkills();
-                              setSelectedId(null);
-                              toast.success(`已删除 ${n} 个用户级技能`);
-                            } catch {
-                              /* handled by store */
-                            }
-                            setDeletingAll(false);
-                          }}
-                        >
-                          <Trash2 size={12} />
-                          {deletingAll ? '删除中...' : '删除全部用户 Skills'}
-                        </button>
-                      </div>
-                      <div className="space-y-2">
-                        {userSkills.map((skill) => (
-                          <SkillCard
-                            key={skill.sourceKey}
-                            skill={skill}
-                            selected={selectedId === skill.sourceKey}
-                            onSelect={() => setSelectedId(skill.sourceKey)}
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {externalSkills.length > 0 && (
-                    <div>
-                      <h2 className="text-sm font-semibold text-muted-foreground mb-3">
-                        宿主机 Skills ({externalSkills.length})
-                      </h2>
-                      <div className="space-y-2">
-                        {externalSkills.map((skill) => (
-                          <SkillCard
-                            key={skill.sourceKey}
-                            skill={skill}
-                            selected={selectedId === skill.sourceKey}
-                            onSelect={() => setSelectedId(skill.sourceKey)}
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {projectSkills.length > 0 && (
-                    <div>
-                      <h2 className="text-sm font-semibold text-muted-foreground mb-3">
-                        HappyClaw 内置 ({projectSkills.length})
-                      </h2>
-                      <div className="space-y-2">
-                        {projectSkills.map((skill) => (
-                          <SkillCard
-                            key={skill.sourceKey}
-                            skill={skill}
-                            selected={selectedId === skill.sourceKey}
-                            onSelect={() => setSelectedId(skill.sourceKey)}
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
-
-          {/* 右侧详情（桌面端） */}
-          <div className="hidden lg:block lg:w-1/2 xl:w-3/5">
-            <SkillDetail
-              skillId={selectedId}
-              onDeleted={() => setSelectedId(null)}
-            />
-          </div>
-        </div>
-
-        {/* 移动端详情 */}
-        {selectedId && (
-          <div className="lg:hidden p-4">
-            <SkillDetail
-              skillId={selectedId}
-              onDeleted={() => setSelectedId(null)}
-            />
-          </div>
-        )}
+      <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:gap-3">
+        <SearchInput
+          value={searchQuery}
+          onChange={setSearchQuery}
+          placeholder="搜索技能名称或描述"
+          className="w-full lg:w-72"
+        />
+        <SegmentedControl
+          label="Skill 来源筛选"
+          value={sourceFilter}
+          options={SOURCE_FILTERS}
+          onChange={setSourceFilter}
+          className="self-start lg:self-auto"
+        />
+        <p className="text-caption text-muted-foreground tabular-nums lg:ml-auto">
+          {`我的 ${skills.filter((item) => item.source === 'user').length} · HappyClaw 内置 ${skills.filter((item) => item.source === 'project').length} · 宿主机 ${skills.filter((item) => item.source === 'external').length} · 启用 ${enabledCount}`}
+        </p>
       </div>
+
+      <Callout>
+        “我的 Skills”可安装和管理；HappyClaw 内置与宿主机 Skills
+        只读。智能体可以独立选择不使用、使用部分或使用全部宿主机
+        Skills，不必同时继承宿主机 Prompt 或 Rules。不同来源的同名项会并列显示。
+      </Callout>
+
+      <div
+        className={
+          hasRows
+            ? 'grid gap-6 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]'
+            : undefined
+        }
+      >
+        <div className="min-w-0 space-y-6">
+          {loading && skills.length === 0 ? (
+            <CapabilityListSkeleton />
+          ) : error ? (
+            <Callout tone="error" role="alert">
+              {error}
+            </Callout>
+          ) : filtered.length === 0 ? (
+            <EmptyState
+              icon={Puzzle}
+              title={searchQuery ? '没有找到匹配的技能' : '暂无技能'}
+              className="border"
+            />
+          ) : (
+            <>
+              {userSkills.length > 0 && (
+                <CapabilityListSection
+                  title={`我的 Skills (${userSkills.length})`}
+                  actions={
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      className="text-muted-foreground hover:text-error"
+                      disabled={deletingAll}
+                      onClick={() => void handleDeleteAll()}
+                    >
+                      <Trash2 />
+                      {deletingAll ? '删除中...' : '删除全部用户 Skills'}
+                    </Button>
+                  }
+                >
+                  {renderRows(userSkills)}
+                </CapabilityListSection>
+              )}
+
+              {externalSkills.length > 0 && (
+                <CapabilityListSection
+                  title={`宿主机 Skills (${externalSkills.length})`}
+                >
+                  {renderRows(externalSkills)}
+                </CapabilityListSection>
+              )}
+
+              {projectSkills.length > 0 && (
+                <CapabilityListSection
+                  title={`HappyClaw 内置 (${projectSkills.length})`}
+                >
+                  {renderRows(projectSkills)}
+                </CapabilityListSection>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* 右侧详情（桌面端） */}
+        <div className={hasRows ? 'hidden min-w-0 lg:block' : 'hidden'}>
+          <div className="sticky top-16 max-h-[calc(var(--app-canvas-h)-5rem)] overflow-y-auto p-px">
+            {isDesktop && (
+              <SkillDetail
+                skillId={selectedId}
+                onDeleted={() => setSelectedId(null)}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* 移动端详情 */}
+      <Sheet
+        open={!isDesktop && !!selectedId}
+        onOpenChange={(open) => !open && setSelectedId(null)}
+      >
+        <SheetContent
+          side="bottom"
+          className="max-h-[88dvh] gap-0 overflow-y-auto rounded-t-xl p-0 pt-8 *:data-[slot=detail-panel]:rounded-none *:data-[slot=detail-panel]:ring-0"
+        >
+          <SheetTitle className="sr-only">技能详情</SheetTitle>
+          <SheetDescription className="sr-only">
+            查看所选技能的说明、来源与文件
+          </SheetDescription>
+          {!isDesktop && (
+            <SkillDetail
+              skillId={selectedId}
+              onDeleted={() => setSelectedId(null)}
+            />
+          )}
+        </SheetContent>
+      </Sheet>
 
       <InstallSkillDialog
         open={showInstallDialog}
