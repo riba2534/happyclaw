@@ -1194,7 +1194,7 @@ export function AgentProfilesPage() {
       title: '迁移工作区',
       message: `确认将工作区「${workspace?.name ?? workspaceJid}」迁移到「${target?.name ?? '目标智能体'}」？工作区文件、Session、渠道绑定和 Workspace Memory 都会随工作区保留，并对目标智能体可用。`,
       confirmText: '迁移',
-      variant: 'danger',
+      variant: 'primary',
     });
     if (!confirmed) return;
     setMovingWorkspaceJid(workspaceJid);
