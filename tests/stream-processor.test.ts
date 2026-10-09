@@ -218,6 +218,116 @@ describe('StreamEventProcessor observability mapping', () => {
     expect(processor.canCompleteObservedBackgroundResult()).toBe(false);
   });
 
+  test('merged background completions settle the same way in the 0.3.292 frame order', () => {
+    const { processor } = makeProcessor();
+    // SDK 0.3.292 / Claude Code 2.1.292 send the level for a finishing task
+    // after its task_updated and task_notification, not before them.
+    for (const taskId of ['bash-a', 'bash-b']) {
+      processor.processSystemMessage({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: taskId,
+        description: taskId,
+        task_type: 'local_bash',
+      });
+    }
+    processor.processSystemMessage({
+      type: 'system',
+      subtype: 'background_tasks_changed',
+      tasks: [{ task_id: 'bash-a' }, { task_id: 'bash-b' }],
+    });
+    for (const [taskId, remaining] of [
+      ['bash-a', [{ task_id: 'bash-b' }]],
+      ['bash-b', []],
+    ] as const) {
+      processor.processSystemMessage({
+        type: 'system',
+        subtype: 'task_updated',
+        task_id: taskId,
+        patch: { status: 'completed' },
+      });
+      processor.processSystemMessage({
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: taskId,
+        status: 'completed',
+        summary: `${taskId} done`,
+      });
+      processor.processSystemMessage({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: remaining,
+      });
+    }
+    expect(processor.getBlockingBackgroundCompletionDebtCount()).toBe(2);
+    expect(processor.getBlockingPendingSdkTaskCount()).toBe(0);
+
+    processor.observeMergedCompletionPlaceholder();
+    expect(processor.getBlockingBackgroundCompletionDebtCount()).toBe(1);
+    expect(processor.canCompleteObservedBackgroundResult()).toBe(false);
+
+    expect(processor.observeBackgroundResult('task-notification')).toBe(true);
+    expect(processor.getBlockingBackgroundCompletionDebtCount()).toBe(0);
+  });
+
+  test('a background agent completes the same way in both level orders', () => {
+    const run = (levelLast: boolean) => {
+      const { processor } = makeProcessor();
+      processor.processSystemMessage({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [{ task_id: 'agent-1', task_type: 'local_agent' }],
+      });
+      processor.processSystemMessage({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'agent-1',
+        tool_use_id: 'toolu_agent',
+        description: 'research',
+        task_type: 'local_agent',
+      });
+      const level = () =>
+        processor.processSystemMessage({
+          type: 'system',
+          subtype: 'background_tasks_changed',
+          tasks: [],
+        });
+      if (!levelLast) level();
+      processor.processSystemMessage({
+        type: 'system',
+        subtype: 'task_updated',
+        task_id: 'agent-1',
+        patch: { status: 'completed' },
+      });
+      processor.processSystemMessage({
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'agent-1',
+        status: 'completed',
+        summary: 'research done',
+      });
+      if (levelLast) level();
+      const debtsAfterEdges =
+        processor.getBlockingBackgroundCompletionDebtCount();
+      processor.observeBackgroundNotificationActivity();
+      return {
+        debtsAfterEdges,
+        pending: processor.getBlockingPendingSdkTaskCount(),
+        completed: processor.observeBackgroundResult('task-notification'),
+        debtsAfterResult: processor.getBlockingBackgroundCompletionDebtCount(),
+      };
+    };
+    // Frame order observed from Claude Code 2.1.296 (level last) must match
+    // the 2.1.280 order (level first).
+    expect(run(true)).toEqual(run(false));
+    expect(run(true)).toEqual({
+      debtsAfterEdges: 1,
+      pending: 0,
+      completed: true,
+      debtsAfterResult: 0,
+    });
+  });
+
   test('background tasks started inside a sub-agent never create main-Agent completion debt', () => {
     const { processor } = makeProcessor();
     // Main Agent launches a background research sub-agent.
