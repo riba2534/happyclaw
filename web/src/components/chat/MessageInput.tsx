@@ -27,6 +27,7 @@ import {
   Check,
   Trash2,
   Plus,
+  ListPlus,
 } from 'lucide-react';
 import { formatUploadRetryStatus, useFileStore } from '../../stores/files';
 import { useShellStore } from '../../stores/shell';
@@ -37,7 +38,13 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { IconButton } from '../common/IconButton';
+import { Shortcut } from '../common/Shortcut';
 import {
   useChatStore,
   type FollowUpMode,
@@ -53,6 +60,7 @@ import {
   getDefaultFollowUpMode,
 } from '../../lib/follow-up-preferences';
 import { planImageClipboardPaste } from '../../lib/mixed-paste';
+import { SHORTCUTS } from '../../lib/shortcuts';
 
 interface PendingFile {
   /** Display name: relative path for folder uploads, file name otherwise */
@@ -243,6 +251,25 @@ export function MessageInput({
     },
     [groupJid, saveDraft],
   );
+
+  // Starter prompts fill the composer so the user can edit before sending.
+  const composerDraftRequest = useShellStore((s) => s.composerDraftRequest);
+  useEffect(() => {
+    if (!composerDraftRequest) return;
+    const text = composerDraftRequest.text;
+    const next = content.trim() ? `${content.trimEnd()}\n${text}` : text;
+    setContent(next);
+    debouncedSaveDraft(next);
+    const frame = requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    });
+    return () => cancelAnimationFrame(frame);
+    // Only a new request inserts text; typing must not re-run this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [composerDraftRequest]);
 
   // Auto-resize textarea (1-6 lines)
   // useLayoutEffect runs BEFORE paint → height update is invisible to the user (no jitter)
@@ -817,6 +844,15 @@ export function MessageInput({
     hasContent || pendingFiles.length > 0 || pendingImages.length > 0;
   const canSend = hasPayload && !sending;
   const showStop = isRunning && !hasPayload && !sending && !!onStop;
+  // While a run is active, a payload is queued or steers the run depending on
+  // the default follow-up mode; mod+shift+enter picks the other one.
+  const followUpLabel = (mode: FollowUpMode) =>
+    mode === 'steer' ? '引导当前运行' : '加入队列，下一轮发送';
+  const sendLabel = showStop
+    ? '停止当前运行'
+    : isRunning
+      ? followUpLabel(followUpMode)
+      : '发送消息';
 
   const progressPercent =
     uploadProgress && uploadProgress.totalBytes > 0
@@ -895,8 +931,11 @@ export function MessageInput({
           </div>
         )}
 
+        {/* Queue tucks behind the composer like a card in a stack. */}
         {queuedFollowUps.length > 0 && (
-          <div className="mb-2 overflow-hidden rounded-xl bg-surface-raised ring-1 ring-surface-border">
+          <div
+            className={`relative z-0 -mb-3 overflow-hidden bg-app-shell pb-3 ring-1 ring-surface-border ${isCompact ? 'mx-2 rounded-t-lg' : 'mx-3 rounded-t-xl'}`}
+          >
             <div className="flex h-8 items-center gap-2 border-b border-surface-border px-3 text-caption text-muted-foreground">
               <Clock3 className="h-3.5 w-3.5" />
               <span>
@@ -1053,8 +1092,8 @@ export function MessageInput({
         <div
           className={
             isCompact
-              ? 'rounded-lg bg-surface-raised ring-1 ring-surface-border transition-shadow focus-within:ring-foreground/20'
-              : 'rounded-2xl bg-surface-raised shadow-canvas ring-1 ring-surface-border transition-shadow focus-within:shadow-menu focus-within:ring-foreground/20'
+              ? 'relative z-10 rounded-lg bg-surface-raised ring-1 ring-surface-border transition-shadow focus-within:ring-foreground/20'
+              : 'relative z-10 rounded-2xl bg-surface-raised shadow-canvas ring-1 ring-surface-border transition-shadow focus-within:shadow-menu focus-within:ring-foreground/20'
           }
         >
           {/* Send error banner */}
@@ -1225,32 +1264,50 @@ export function MessageInput({
             <div className="flex-1" />
 
             {/* Right: one contextual primary action, matching Codex. */}
-            <button
-              type="button"
-              onClick={() => (showStop ? void handleStop() : void handleSend())}
-              disabled={
-                showStop
-                  ? disabled || stopping
-                  : !canSend || disabled || sending
-              }
-              title={showStop ? '停止当前运行' : '发送消息'}
-              aria-label={showStop ? '停止当前运行' : '发送消息'}
-              className={`flex size-8 cursor-pointer items-center justify-center rounded-full transition-[background-color,color,transform] duration-100 active:scale-90 pointer-coarse:size-10 ${
-                showStop && !disabled && !stopping
-                  ? 'bg-foreground text-background hover:bg-foreground/90'
-                  : canSend && !disabled && !sending
-                    ? 'bg-primary text-primary-foreground hover:bg-primary/90'
-                    : 'bg-muted text-faint-foreground'
-              } focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none`}
-            >
-              {sending || stopping ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : showStop ? (
-                <Square className="size-3.5 fill-current" />
-              ) : (
-                <ArrowUp className="size-4" />
-              )}
-            </button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  // Keep the caret (and the mobile keyboard) in the composer.
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() =>
+                    showStop ? void handleStop() : void handleSend()
+                  }
+                  disabled={
+                    showStop
+                      ? disabled || stopping
+                      : !canSend || disabled || sending
+                  }
+                  aria-label={sendLabel}
+                  className={`flex size-8 cursor-pointer items-center justify-center rounded-full transition-[background-color,color,transform] duration-100 active:scale-90 pointer-coarse:size-10 ${
+                    showStop && !disabled && !stopping
+                      ? 'bg-foreground text-background hover:bg-foreground/90'
+                      : canSend && !disabled && !sending
+                        ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                        : 'bg-muted text-faint-foreground'
+                  } focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none`}
+                >
+                  {sending || stopping ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : showStop ? (
+                    <Square className="size-3.5 fill-current" />
+                  ) : isRunning && followUpMode === 'queue' ? (
+                    <ListPlus className="size-4" />
+                  ) : (
+                    <ArrowUp className="size-4" />
+                  )}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="flex-col items-start">
+                <span>{sendLabel}</span>
+                {isRunning && !showStop && (
+                  <span className="flex items-center gap-1.5 opacity-70">
+                    {followUpLabel(alternateFollowUpMode(followUpMode))}
+                    <Shortcut keys={SHORTCUTS.steer} />
+                  </span>
+                )}
+              </TooltipContent>
+            </Tooltip>
           </div>
         </div>
       </div>

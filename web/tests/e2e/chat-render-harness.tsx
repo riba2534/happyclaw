@@ -246,13 +246,14 @@ const streaming: StreamingState = {
       toolUseId: 't1',
       startTime: now - 12_000,
       toolInputSummary:
-        'npx vitest run tests/frontend-session-sidebar-copy.test.ts',
+        "bash -lc 'npx vitest run tests/frontend-session-sidebar-copy.test.ts'",
     },
     {
       toolName: 'Read',
       toolUseId: 't2',
       startTime: now - 3_000,
-      toolInputSummary: 'web/src/components/chat/SessionSidebar.tsx',
+      toolInputSummary:
+        '/workspace/group/happyclaw/web/src/components/chat/SessionSidebar.tsx',
     },
     {
       toolName: 'Skill',
@@ -369,6 +370,16 @@ useChatStore.setState({
   currentGroup: groupJid,
   messages: { [groupJid]: history },
   waiting: isRunning ? { [groupJid]: true } : {},
+  activeRuns: isRunning
+    ? {
+        [groupJid]: {
+          chatJid: groupJid,
+          runId: 'run-harness',
+          startedAt: new Date(now - 47_000).toISOString(),
+          phase: 'running',
+        },
+      }
+    : {},
   streaming: scenario === 'streaming' ? { [groupJid]: streaming } : {},
   thinkingCache: { m4: '先确认订阅范围，再比较几种方案的复杂度与收益。' },
   thinkingDurationCache: { m4: 12_400 },

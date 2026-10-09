@@ -34,6 +34,7 @@ import {
 } from '../../lib/message-timeline';
 import { resolveAgentDisplayIdentity } from '../../utils/agent-identity';
 import { useAuthStore } from '../../stores/auth';
+import { useShellStore } from '../../stores/shell';
 import type { InteractionMode } from '../../types';
 
 interface MessageListProps {
@@ -57,7 +58,7 @@ interface MessageListProps {
   agentAvatarEmoji?: string | null;
   agentAvatarColor?: string | null;
   interactionMode?: InteractionMode;
-  /** Callback to send a message (used for quick prompts in empty state) */
+  /** Present when the viewer can send; empty-state starters then fill the composer. */
   onSend?: (content: string) => void;
 }
 
@@ -101,6 +102,7 @@ export function MessageList({
   onSend,
 }: MessageListProps) {
   const { mode: displayMode } = useDisplayMode();
+  const requestComposerDraft = useShellStore((s) => s.requestComposerDraft);
   const thinkingCache = useChatStore((s) => s.thinkingCache ?? {});
   const thinkingDurationCache = useChatStore(
     (s) => s.thinkingDurationCache ?? {},
@@ -549,11 +551,11 @@ export function MessageList({
                     }}
                   >
                     <div className="my-6 flex items-center gap-3">
-                      <div className="h-px flex-1 bg-warning/30" />
-                      <span className="text-caption whitespace-pre-wrap text-warning">
+                      <div className="h-px flex-1 bg-surface-border" />
+                      <span className="text-caption whitespace-pre-wrap text-muted-foreground">
                         {item.content}
                       </span>
-                      <div className="h-px flex-1 bg-warning/30" />
+                      <div className="h-px flex-1 bg-surface-border" />
                     </div>
                   </div>
                 );
@@ -603,13 +605,16 @@ export function MessageList({
                       transform: `translateY(${virtualItem.start}px)`,
                     }}
                   >
-                    <div className="my-6 flex items-center gap-3">
-                      <div className="h-px flex-1 bg-error/30" />
-                      <span className="flex items-center gap-1 text-caption whitespace-pre-wrap text-error">
-                        <AlertTriangle size={13} />
-                        {item.content}
-                      </span>
-                      <div className="h-px flex-1 bg-error/30" />
+                    {/* Inline callout in the message column: long errors
+                        stay readable instead of squeezing between rules. */}
+                    <div className="my-4 flex items-start gap-2 rounded-lg bg-error/5 px-3 py-2 ring-1 ring-error/15">
+                      <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-error" />
+                      <div className="min-w-0 flex-1 text-caption leading-5">
+                        <span className="font-medium text-error">运行出错</span>
+                        <span className="ml-2 break-words whitespace-pre-wrap text-muted-foreground">
+                          {item.content}
+                        </span>
+                      </div>
                     </div>
                   </div>
                 );
@@ -680,7 +685,7 @@ export function MessageList({
                     {quickPrompts.map((prompt) => (
                       <button
                         key={prompt.title}
-                        onClick={() => onSend(prompt.desc)}
+                        onClick={() => requestComposerDraft(prompt.desc)}
                         className="group min-h-16 cursor-pointer rounded-xl bg-surface-raised px-3.5 py-3 text-left ring-1 ring-surface-border transition-[background-color,box-shadow] hover:bg-surface-hover hover:ring-foreground/15 focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none active:scale-[0.99]"
                       >
                         <div className="flex items-start gap-3">

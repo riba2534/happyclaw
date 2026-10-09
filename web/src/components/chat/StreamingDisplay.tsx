@@ -8,14 +8,18 @@ import {
   ShieldAlert,
   Sparkles,
 } from 'lucide-react';
-import { shouldRecoverStaleWaiting, useChatStore } from '../../stores/chat';
+import {
+  shouldRecoverStaleWaiting,
+  useChatStore,
+  type StreamingState,
+} from '../../stores/chat';
 import { useAuthStore } from '../../stores/auth';
 import { resolveAgentDisplayIdentity } from '../../utils/agent-identity';
 import type { AgentInfo, InteractionMode } from '../../types';
 import { EmojiAvatar } from '../common/EmojiAvatar';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { TodoProgressPanel } from './TodoProgressPanel';
-import { ToolActivityCard } from './ToolActivityCard';
+import { describeToolActivity, ToolActivityCard } from './ToolActivityCard';
 import { useDisplayMode } from '../../hooks/useDisplayMode';
 import { formatThinkingDuration } from '../../utils/thinking-duration';
 import { WorkflowRunCard } from './WorkflowRunCard';
@@ -98,6 +102,54 @@ function formatSystemStatus(status: string): string {
 }
 
 /** Collapsible block for a single Task Agent — visually consistent with the Thinking block. */
+/** Present-tense phase for the run status next to the agent name. */
+function describeRunPhase(streaming: StreamingState | null | undefined) {
+  if (!streaming) return '正在准备回复';
+  const tools = streaming.activeTools;
+  const tool =
+    [...tools].reverse().find((t) => !t.isNested) ?? tools[tools.length - 1];
+  if (tool) return describeToolActivity(tool.toolName);
+  if (streaming.isThinking) return '正在思考';
+  if (streaming.partialText) return '正在回复';
+  return '正在处理';
+}
+
+function formatRunElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
+}
+
+/** Codex-style run status: current phase plus time since the run started. */
+function RunStatus({
+  runtimeJid,
+  phase,
+}: {
+  runtimeJid: string;
+  phase: string;
+}) {
+  const startedAt = useChatStore((s) => s.activeRuns[runtimeJid]?.startedAt);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!startedAt) return;
+    const interval = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [startedAt]);
+  const start = startedAt ? Date.parse(startedAt) : Number.NaN;
+  const elapsed = Number.isFinite(start)
+    ? Math.max(0, Math.floor((now - start) / 1000))
+    : null;
+  return (
+    <span className="flex min-w-0 items-center gap-1.5 text-caption text-muted-foreground">
+      <span className="shimmer truncate">{phase}</span>
+      {elapsed != null && (
+        <span className="shrink-0 text-faint-foreground tabular-nums">
+          {formatRunElapsed(elapsed)}
+        </span>
+      )}
+    </span>
+  );
+}
+
 function TaskAgentBlock({
   agent,
   groupJid,
@@ -908,13 +960,10 @@ export function StreamingDisplay({
     userScrolledRef.current = !isAtBottom;
   };
 
-  const thinkingDots = (
-    <span className="ml-0.5 flex gap-0.5" aria-hidden="true">
-      <span className="size-1 animate-bounce rounded-full bg-faint-foreground [animation-delay:-0.3s]" />
-      <span className="size-1 animate-bounce rounded-full bg-faint-foreground [animation-delay:-0.15s]" />
-      <span className="size-1 animate-bounce rounded-full bg-faint-foreground" />
-    </span>
-  );
+  const runStatus =
+    isWaiting && !streaming?.interrupted ? (
+      <RunStatus runtimeJid={runtimeJid} phase={describeRunPhase(streaming)} />
+    ) : null;
   const identityRow = (
     <div className="mb-1.5 flex h-6 items-center gap-2">
       <EmojiAvatar
@@ -928,7 +977,7 @@ export function StreamingDisplay({
       <span className="text-label font-medium text-foreground">
         {senderName}
       </span>
-      {streaming?.isThinking && thinkingDots}
+      {runStatus}
     </div>
   );
 
@@ -980,48 +1029,31 @@ export function StreamingDisplay({
   // 仅在既不等待也无冻结数据时才隐藏
   if (!isWaiting && !hasStreamData) return null;
 
-  // Waiting but no stream data: show an accessible loading indicator
+  // Waiting but no stream data: the identity row carries the visible status;
+  // keep a one-shot live region for assistive tech (the timer is not live).
   if (isWaiting && !hasStreamData) {
+    const status = (
+      <span role="status" aria-live="polite" className="sr-only">
+        正在准备回复…
+      </span>
+    );
     if (isCompact) {
       return (
         <div className="mb-2 border-b border-surface-border pb-2">
-          <div className="mb-1 flex h-6 items-center gap-1.5">
+          <div className="flex h-6 items-center gap-1.5">
             <span className="text-caption font-medium text-foreground">
               {senderName}
             </span>
+            {runStatus}
           </div>
-          <div
-            role="status"
-            aria-live="polite"
-            className="flex items-center gap-2"
-          >
-            <Loader2
-              aria-hidden="true"
-              className="h-4 w-4 animate-spin text-muted-foreground motion-reduce:animate-none"
-            />
-            <span className="shimmer text-body text-muted-foreground">
-              正在准备回复…
-            </span>
-          </div>
+          {status}
         </div>
       );
     }
     return (
       <div className="w-full pb-6">
         {identityRow}
-        <div
-          role="status"
-          aria-live="polite"
-          className="flex h-7 items-center gap-2 font-serif"
-        >
-          <Loader2
-            aria-hidden="true"
-            className="h-4 w-4 animate-spin text-muted-foreground motion-reduce:animate-none"
-          />
-          <span className="shimmer font-sans text-body text-muted-foreground">
-            正在准备回复…
-          </span>
-        </div>
+        {status}
       </div>
     );
   }
@@ -1037,7 +1069,7 @@ export function StreamingDisplay({
           <span className="text-caption font-medium text-foreground">
             {senderName}
           </span>
-          {streaming?.isThinking && thinkingDots}
+          {runStatus}
         </div>
 
         {/* Content — flat, no card wrapper */}

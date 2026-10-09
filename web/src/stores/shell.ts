@@ -61,6 +61,8 @@ interface ShellState {
   bindingRequest: BindingRequest | null;
   /** Incremented to ask the active composer to take focus. */
   composerFocusNonce: number;
+  /** Text the active composer should insert (starter prompts), not send. */
+  composerDraftRequest: { text: string; nonce: number } | null;
 
   setSidebarWidth: (width: number) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
@@ -71,6 +73,7 @@ interface ShellState {
   requestBinding: (groupJid: string, target: string) => void;
   clearBindingRequest: () => void;
   requestComposerFocus: () => void;
+  requestComposerDraft: (text: string) => void;
 }
 
 export const useShellStore = create<ShellState>((set, get) => ({
@@ -83,6 +86,7 @@ export const useShellStore = create<ShellState>((set, get) => ({
   createWorkspaceOpen: false,
   bindingRequest: null,
   composerFocusNonce: 0,
+  composerDraftRequest: null,
 
   setSidebarWidth: (width) => {
     const next = clampSidebarWidth(width);
@@ -106,4 +110,11 @@ export const useShellStore = create<ShellState>((set, get) => ({
   clearBindingRequest: () => set({ bindingRequest: null }),
   requestComposerFocus: () =>
     set((state) => ({ composerFocusNonce: state.composerFocusNonce + 1 })),
+  requestComposerDraft: (text) =>
+    set((state) => ({
+      composerDraftRequest: {
+        text,
+        nonce: (state.composerDraftRequest?.nonce ?? 0) + 1,
+      },
+    })),
 }));
