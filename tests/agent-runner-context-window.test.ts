@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'vitest';
 
-import { resolveAutoCompactEnv } from '../container/agent-runner/src/claude-runtime-env.js';
+import {
+  buildClaudeRuntimeEnv,
+  resolveAutoCompactEnv,
+} from '../container/agent-runner/src/claude-runtime-env.js';
 import { isExtendedContextModel } from '../container/agent-runner/src/context-window.js';
 
 describe('extended context detection', () => {
@@ -68,5 +71,14 @@ describe('auto-compact policy to Claude Code environment', () => {
         CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000',
       }),
     ).toEqual({});
+  });
+});
+
+describe('Claude runtime environment', () => {
+  test('always enables Claude Code transcript GC alongside the compact policy', () => {
+    expect(buildClaudeRuntimeEnv({ AUTO_COMPACT_PERCENTAGE: '70' })).toEqual({
+      CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '70',
+      CLAUDE_CODE_TRANSCRIPT_LOCAL_GC: '1',
+    });
   });
 });

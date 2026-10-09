@@ -63,8 +63,8 @@ import {
 import {
   extractSessionHistory as extractSessionHistoryImpl,
   parseTranscript,
+  transcriptSinceLastCompaction,
 } from './session-history.js';
-import { trimSessionJsonl } from './session-trim.js';
 import { StreamEventProcessor } from './stream-processor.js';
 import {
   acknowledgeHappyClawOwnerProfileFirstWake,
@@ -106,7 +106,7 @@ import {
 } from './ipc-delivery.js';
 import { isExtendedContextModel } from './context-window.js';
 import {
-  resolveAutoCompactEnv,
+  buildClaudeRuntimeEnv,
   type ClaudeRuntimeEnv,
 } from './claude-runtime-env.js';
 import {
@@ -1057,8 +1057,10 @@ function createPreCompactHook(deps: {
     }
 
     try {
+      // Archive only what this compaction summarises: history before the
+      // previous compact_boundary was archived by the previous compaction.
       const content = fs.readFileSync(transcriptPath, 'utf-8');
-      const messages = parseTranscript(content);
+      const messages = parseTranscript(transcriptSinceLastCompaction(content));
 
       if (messages.length === 0) {
         log('No messages to archive');
@@ -1085,10 +1087,9 @@ function createPreCompactHook(deps: {
       );
     }
 
-    // ── Trim session JSONL to prevent unbounded growth ──
-    // Remove entries before the last compact_boundary (already summarized).
-    // Must run AFTER archiving (archive needs full transcript).
-    trimSessionJsonl(transcriptPath, log);
+    // Transcript growth is bounded by Claude Code itself
+    // (CLAUDE_CODE_TRANSCRIPT_LOCAL_GC, see claude-runtime-env.ts): this hook
+    // runs while the CLI is live, so it must not rewrite the transcript.
 
     // Flag compaction so the query loop auto-continues instead of
     // waiting for user input (non-blocking compaction #229).
@@ -2746,9 +2747,7 @@ async function runQueryAttempt(
   // Auto-compaction is configured through Claude Code's own environment
   // variables: they outrank the `autoCompactWindow` setting and apply to the
   // window Claude Code resolved for the model, 1M-native models included.
-  const claudeRuntimeEnv: ClaudeRuntimeEnv = {
-    ...resolveAutoCompactEnv(process.env),
-  };
+  const claudeRuntimeEnv: ClaudeRuntimeEnv = buildClaudeRuntimeEnv(process.env);
   const flagSettings: Record<string, unknown> = {};
   const claudeMdExcludes = resolveManagedHostClaudeMdExcludes({
     executionMode: contextAuditBase.executionMode,

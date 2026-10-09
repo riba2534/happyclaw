@@ -49,3 +49,23 @@ export function resolveAutoCompactEnv(
     ),
   };
 }
+
+/**
+ * Everything the runner adds to the Claude Code process environment.
+ *
+ * CLAUDE_CODE_TRANSCRIPT_LOCAL_GC (Claude Code 2.1.287+) replaces the
+ * runner's former PreCompact trim. That trim only bounded transcript growth
+ * by dropping history before the previous compact_boundary, but it renamed a
+ * new file over the transcript while the CLI was live and waiting on the
+ * hook. Claude Code's own GC drops the same pre-compaction history (once the
+ * file exceeds 5 MB) from inside the process, keeping whatever resume needs.
+ * A settings `env` block cannot enable it, so it must be set here.
+ */
+export function buildClaudeRuntimeEnv(
+  env: Readonly<Record<string, string | undefined>>,
+): ClaudeRuntimeEnv {
+  return {
+    ...resolveAutoCompactEnv(env),
+    CLAUDE_CODE_TRANSCRIPT_LOCAL_GC: '1',
+  };
+}
