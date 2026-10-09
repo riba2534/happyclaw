@@ -911,6 +911,18 @@ function logWarn(message: string): void {
   console.error(`[agent-runner:warn] ${message}`);
 }
 
+const CLAUDE_CLI_STDERR_LINE_LIMIT = 2_000;
+
+/** Claude Code stderr is rare and diagnostic, so surface it at warn. */
+function logClaudeCliStderr(data: string): void {
+  for (const line of data.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    logWarn(
+      `claude-cli stderr: ${line.length > CLAUDE_CLI_STDERR_LINE_LIMIT ? `${line.slice(0, CLAUDE_CLI_STDERR_LINE_LIMIT)}…` : line}`,
+    );
+  }
+}
+
 function generateTurnId(): string {
   return `ipc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -2863,6 +2875,9 @@ async function runQueryAttempt(
       cwd: WORKSPACE_GROUP,
       // `env` replaces the child environment, so it starts from ours.
       env: { ...process.env, ...claudeRuntimeEnv },
+      // Capturing stderr here (instead of DEBUG_CLAUDE_AGENT_SDK, which also
+      // switches the CLI into debug mode) keeps startup failures visible.
+      stderr: logClaudeCliStderr,
       resume: sessionId,
       ...(sessionId && resumeAt ? { resumeSessionAt: resumeAt } : {}),
       systemPrompt,

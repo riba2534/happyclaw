@@ -3869,8 +3869,10 @@ export async function runHostAgent(
     // CLAUDE.md/rules/skills.
     hostEnv['CLAUDE_CONFIG_DIR'] = resolvedSessionsDir;
 
-    // 让 SDK 捕获 CLI 的 stderr 输出，便于排查启动失败
-    hostEnv['DEBUG_CLAUDE_AGENT_SDK'] = '1';
+    // No DEBUG_CLAUDE_AGENT_SDK: the SDK turns it into DEBUG=1 for the CLI,
+    // which then writes debug logs under CLAUDE_CONFIG_DIR/debug on every
+    // run. The runner captures CLI stderr through the SDK `stderr` option.
+    delete hostEnv['DEBUG_CLAUDE_AGENT_SDK'];
     // Claude Code 2.1.114+ 禁止 root 使用 --dangerously-skip-permissions，
     // IS_SANDBOX=1 告知 CLI 当前运行在受控环境中以绕过此限制。
     // host 模式由 happyclaw 主进程托管（见 permissionMode: 'bypassPermissions'），
