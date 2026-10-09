@@ -321,6 +321,16 @@ export const WEB_SESSION_SECRET = getOrCreateSessionSecret();
 // Proxy trust configuration
 // Set TRUST_PROXY=true when behind a reverse proxy (nginx, Cloudflare, etc.)
 export const TRUST_PROXY = process.env.TRUST_PROXY === 'true';
+// Number of trusted proxies that append to X-Forwarded-For in front of the
+// server (Caddy or nginx alone: 1; Cloudflare in front of them: 2). The
+// client address is that many entries from the right; anything to its left
+// came from the client and is ignored.
+export const TRUST_PROXY_HOPS = (() => {
+  const parsed = Number.parseInt(process.env.TRUST_PROXY_HOPS ?? '', 10);
+  return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= 10
+    ? parsed
+    : 1;
+})();
 
 // Docker availability check (cached for the lifetime of the process)
 const execFileAsync = promisify(execFile);

@@ -1,9 +1,10 @@
 // Utility functions
 
 import fs from 'fs';
+import net from 'net';
 import path from 'path';
 
-import { DATA_DIR, TRUST_PROXY } from './config.js';
+import { DATA_DIR, TRUST_PROXY, TRUST_PROXY_HOPS } from './config.js';
 
 /**
  * Strip agent-internal XML tags from output text.
@@ -154,15 +155,48 @@ export function isRealpathInside(
   });
 }
 
+function normalizeForwardedAddress(raw: string): string | null {
+  let value = raw.trim();
+  if (!value) return null;
+  // "[2001:db8::1]:443" / "203.0.113.7:51234" → bare address.
+  const bracketed = /^\[([^\]]+)\](?::\d+)?$/.exec(value);
+  if (bracketed) value = bracketed[1];
+  else if (/^\d{1,3}(?:\.\d{1,3}){3}:\d+$/.test(value)) {
+    value = value.slice(0, value.lastIndexOf(':'));
+  }
+  return net.isIP(value) ? value : null;
+}
+
+/**
+ * The client address in an X-Forwarded-For chain behind `trustedHops`
+ * proxies. Each proxy appends the address it received the request from, so
+ * the client is `trustedHops` entries from the right; entries further left
+ * were sent by the client and are spoofable. Returns null for a malformed
+ * entry rather than trusting it.
+ */
+export function clientIpFromForwardedFor(
+  header: string,
+  trustedHops: number,
+): string | null {
+  const chain = header
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (chain.length === 0) return null;
+  const index = Math.max(0, chain.length - Math.max(1, trustedHops));
+  return normalizeForwardedAddress(chain[index]);
+}
+
 export function getClientIp(c: any): string {
   if (TRUST_PROXY) {
     const xff = c.req.header('x-forwarded-for');
     if (xff) {
-      const firstIp = xff.split(',')[0]?.trim();
-      if (firstIp) return firstIp;
+      const forwarded = clientIpFromForwardedFor(xff, TRUST_PROXY_HOPS);
+      if (forwarded) return forwarded;
+    } else {
+      const realIp = normalizeForwardedAddress(c.req.header('x-real-ip') ?? '');
+      if (realIp) return realIp;
     }
-    const realIp = c.req.header('x-real-ip');
-    if (realIp) return realIp;
   }
   // Fallback: connection remote address (Hono + Node.js adapter)
   // Hono Node.js adapter 将 IncomingMessage 存于 c.env.incoming

@@ -251,6 +251,23 @@ describe('login route', () => {
     expect(ok.status).toBe(200);
   });
 
+  test('spoofed leading X-Forwarded-For hops do not escape the IP bucket', async () => {
+    // Behind one trusted proxy the client address is the rightmost hop; the
+    // attacker controls everything to its left.
+    const proxied = (spoof: string) => `${spoof}, 203.0.113.70`;
+    const sprayed = await Promise.all(
+      Array.from({ length: 6 }, (_, i) =>
+        login(`spoof_${i}`, 'not-the-password', proxied(`10.0.0.${i + 1}`)),
+      ),
+    );
+    for (const res of sprayed) expect(res.status).toBe(401);
+
+    const locked = await login('admin', PASSWORD, proxied('192.0.2.200'));
+    expect(locked.status).toBe(429);
+    const ok = await login('admin', PASSWORD, '192.0.2.200, 203.0.113.71');
+    expect(ok.status).toBe(200);
+  });
+
   test('over-long usernames are rejected like other invalid input and leave no limiter state', async () => {
     const before = loginAttemptStats().entries;
     const tooLong = await login(
