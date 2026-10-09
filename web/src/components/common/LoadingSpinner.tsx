@@ -1,4 +1,4 @@
-import { Loader2 } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
 
 export interface LoadingSpinnerProps {
@@ -10,8 +10,8 @@ export interface LoadingSpinnerProps {
 
 const sizeMap = {
   sm: 'size-4',
-  md: 'size-6',
-  lg: 'size-8',
+  md: 'size-5',
+  lg: 'size-6',
 } as const;
 
 export function LoadingSpinner({
@@ -27,16 +27,14 @@ export function LoadingSpinner({
         className,
       )}
     >
-      <Loader2 className={cn('animate-spin text-primary', sizeMap[size])} />
-      {label && (
-        <p className="text-sm text-muted-foreground">{label}</p>
-      )}
+      <Spinner className={cn('text-muted-foreground', sizeMap[size])} />
+      {label && <p className="text-caption text-muted-foreground">{label}</p>}
     </div>
   );
 
   if (fullPage) {
     return (
-      <div className="flex items-center justify-center min-h-[50vh]">
+      <div className="flex min-h-[50vh] items-center justify-center">
         {content}
       </div>
     );

@@ -12,6 +12,8 @@ import { useGroupsStore } from '../../stores/groups';
 import { useChatStore } from '../../stores/chat';
 import { useAuthStore } from '../../stores/auth';
 import { ErrorBoundary } from '../common/ErrorBoundary';
+import { TooltipProvider } from '@/components/ui/tooltip';
+import { MotionProvider } from '@/lib/motion';
 
 export function AppLayout() {
   const location = useLocation();
@@ -166,36 +168,40 @@ export function AppLayout() {
   }, []);
 
   return (
-    <div className="h-screen supports-[height:100dvh]:h-dvh flex flex-col lg:flex-row overflow-hidden safe-area-top">
-      {/* `hidden lg:block` 只是视觉隐藏，移动端此前仍会挂载整棵侧边栏
+    <MotionProvider>
+      <TooltipProvider>
+        <div className="h-screen supports-[height:100dvh]:h-dvh flex flex-col lg:flex-row overflow-hidden safe-area-top">
+          {/* `hidden lg:block` 只是视觉隐藏，移动端此前仍会挂载整棵侧边栏
           （含每个工作区一个 DropdownMenu/Tooltip）并触发数据加载；
           条件挂载让手机只渲染真正可见的那份列表。 */}
-      {isDesktop && (
-        <div className="hidden lg:block h-full flex-shrink-0">
-          <UnifiedSidebar
-            collapsed={sidebarCollapsed}
-            onToggleCollapse={() => setUserCollapsed((prev) => !prev)}
-          />
+          {isDesktop && (
+            <div className="hidden lg:block h-full flex-shrink-0">
+              <UnifiedSidebar
+                collapsed={sidebarCollapsed}
+                onToggleCollapse={() => setUserCollapsed((prev) => !prev)}
+              />
+            </div>
+          )}
+
+          <div className="flex-1 min-h-0 flex flex-col overflow-hidden relative">
+            <ConnectionBanner />
+            <main
+              data-app-scroll-root="true"
+              className={`flex-1 min-h-0 lg:overflow-auto lg:pb-0 ${
+                isChatRoute
+                  ? 'overflow-hidden'
+                  : `overflow-y-auto overflow-x-hidden overscroll-y-none ${hideMobileTabBar ? 'pb-6' : 'pb-nav-safe'}`
+              }`}
+            >
+              <ErrorBoundary resetKeys={[location.pathname]}>
+                <Outlet />
+              </ErrorBoundary>
+            </main>
+          </div>
+
+          {!hideMobileTabBar && <BottomTabBar />}
         </div>
-      )}
-
-      <div className="flex-1 min-h-0 flex flex-col overflow-hidden relative">
-        <ConnectionBanner />
-        <main
-          data-app-scroll-root="true"
-          className={`flex-1 min-h-0 lg:overflow-auto lg:pb-0 ${
-            isChatRoute
-              ? 'overflow-hidden'
-              : `overflow-y-auto overflow-x-hidden overscroll-y-none ${hideMobileTabBar ? 'pb-6' : 'pb-nav-safe'}`
-          }`}
-        >
-          <ErrorBoundary resetKeys={[location.pathname]}>
-            <Outlet />
-          </ErrorBoundary>
-        </main>
-      </div>
-
-      {!hideMobileTabBar && <BottomTabBar />}
-    </div>
+      </TooltipProvider>
+    </MotionProvider>
   );
 }

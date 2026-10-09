@@ -864,7 +864,8 @@ pre code.hljs {
   bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 10000;
+  /* Below every Radix overlay layer (z-50) so dialogs and sheets cover it. */
+  z-index: 40;
   display: flex;
   justify-content: center;
   pointer-events: none;

@@ -11,8 +11,10 @@ describe('dropdown menu interaction states', () => {
   test('shows the same selection feedback for hover and roving focus', () => {
     expect(source).toContain('hover:bg-accent');
     expect(source).toContain('data-[highlighted]:bg-accent');
-    expect(source).toContain('hover:shadow-md');
-    expect(source).toContain('data-[highlighted]:shadow-md');
+    // Rows highlight with a flat fill only; elevation belongs to the menu
+    // surface (shadow-menu), never to individual items.
+    expect(source).not.toContain('shadow-md');
+    expect(source).toContain('shadow-menu');
   });
 
   test('keeps destructive items visually destructive when selected', () => {

@@ -11,6 +11,7 @@ import { AuthGuard } from './components/auth/AuthGuard';
 import { APP_BASE, shouldUseHashRouter } from './utils/url';
 import { shouldPreloadChatRoute } from './utils/chat-route-preload';
 import { Toaster } from '@/components/ui/sonner';
+import { ConfirmHost } from '@/components/common/ConfirmHost';
 
 let chatPagePromise:
   | Promise<{ default: typeof import('./pages/ChatPage').ChatPage }>
@@ -293,7 +294,8 @@ function getAppRouter() {
 export function App() {
   return (
     <>
-      <Toaster position="top-right" richColors />
+      <Toaster position="top-right" />
+      <ConfirmHost />
       <RouterProvider router={getAppRouter()} />
     </>
   );
