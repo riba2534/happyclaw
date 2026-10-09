@@ -4485,7 +4485,109 @@ export interface UsageAttributionItem {
   modelCallCount: number;
 }
 
-export function getUsageAnalytics(filters: UsageQueryFilters): {
+const USAGE_AGGREGATE_SELECT = `
+    COALESCE(SUM(r.input_tokens), 0) AS input_tokens,
+    COALESCE(SUM(r.output_tokens), 0) AS output_tokens,
+    COALESCE(SUM(r.cache_read_input_tokens), 0) AS cache_read_tokens,
+    COALESCE(SUM(r.cache_creation_input_tokens), 0) AS cache_creation_tokens,
+    COALESCE(SUM(r.reasoning_output_tokens), 0) AS reasoning_tokens,
+    COALESCE(SUM(r.provider_estimated_cost_usd), 0) AS provider_cost,
+    COALESCE(SUM(r.billed_cost_usd), 0) AS billed_cost,
+    COUNT(DISTINCT r.event_id) AS run_count,
+    COUNT(*) AS model_call_count`;
+
+type UsageAttributionColumn = 'model' | 'agent_id' | 'group_folder' | 'source';
+
+function queryUsageAttribution(
+  where: { sql: string; params: unknown[] },
+  column: UsageAttributionColumn,
+): UsageAttributionItem[] {
+  const keyExpression =
+    column === 'agent_id'
+      ? `COALESCE(CAST(r.agent_id AS TEXT), '__main__')`
+      : `COALESCE(CAST(r.${column} AS TEXT), 'unassigned')`;
+  const nameExpression =
+    column === 'agent_id'
+      ? `COALESCE(
+          (SELECT a.name FROM agents a WHERE a.id = r.agent_id LIMIT 1),
+          (SELECT ap.name FROM agent_profiles ap WHERE ap.id = r.agent_id LIMIT 1),
+          CAST(r.agent_id AS TEXT), 'HappyClaw')`
+      : column === 'group_folder'
+        ? `COALESCE(
+            (SELECT rg.name FROM registered_groups rg
+             WHERE rg.folder = r.group_folder LIMIT 1),
+            CAST(r.group_folder AS TEXT), 'unassigned')`
+        : `COALESCE(CAST(r.${column} AS TEXT), 'unassigned')`;
+  const rows = db
+    .prepare(
+      `SELECT ${keyExpression} AS key,
+        ${nameExpression} AS name,
+        ${USAGE_AGGREGATE_SELECT}
+       FROM usage_records r WHERE ${where.sql}
+       GROUP BY r.${column}
+       ORDER BY provider_cost DESC, key ASC`,
+    )
+    .all(...where.params) as Array<Record<string, unknown>>;
+  return rows.map((row) => {
+    const input = Number(row.input_tokens) || 0;
+    const output = Number(row.output_tokens) || 0;
+    const cacheRead = Number(row.cache_read_tokens) || 0;
+    const cacheCreation = Number(row.cache_creation_tokens) || 0;
+    const reasoning = Number(row.reasoning_tokens) || 0;
+    const key = String(row.key);
+    return {
+      key,
+      name: String(row.name || key),
+      inputTokens: input,
+      outputTokens: output,
+      cacheReadTokens: cacheRead,
+      cacheCreationTokens: cacheCreation,
+      reasoningTokens: reasoning,
+      totalTokens: input + output + cacheRead + cacheCreation + reasoning,
+      providerEstimatedCostUSD: Number(row.provider_cost) || 0,
+      billedCostUSD: Number(row.billed_cost) || 0,
+      runCount: Number(row.run_count) || 0,
+      modelCallCount: Number(row.model_call_count) || 0,
+    };
+  });
+}
+
+export interface UsageAttributions {
+  models: UsageAttributionItem[];
+  agents: UsageAttributionItem[];
+  workspaces: UsageAttributionItem[];
+  sources: UsageAttributionItem[];
+}
+
+/** Only the four attribution lists, for the filter pickers. */
+export function getUsageAttributions(
+  filters: UsageQueryFilters,
+): UsageAttributions {
+  const where = buildUsageWhere(filters);
+  return {
+    models: queryUsageAttribution(where, 'model'),
+    agents: queryUsageAttribution(where, 'agent_id'),
+    workspaces: queryUsageAttribution(where, 'group_folder'),
+    sources: queryUsageAttribution(where, 'source'),
+  };
+}
+
+/**
+ * Cheap change marker for usage_records: rows are only ever appended on the
+ * hot path, so the max rowid moves with every write. Used to validate cached
+ * analytics without re-running the aggregates.
+ */
+export function getUsageDataVersion(): number {
+  const row = prepareCached(
+    'SELECT COALESCE(MAX(rowid), 0) AS version FROM usage_records',
+  ).get() as { version: number };
+  return Number(row.version) || 0;
+}
+
+export function getUsageAnalytics(
+  filters: UsageQueryFilters,
+  options: { includeBreakdown?: boolean } = {},
+): {
   summary: {
     inputTokens: number;
     outputTokens: number;
@@ -4538,16 +4640,7 @@ export function getUsageAnalytics(filters: UsageQueryFilters): {
   };
 } {
   const where = buildUsageWhere(filters);
-  const aggregateSelect = `
-    COALESCE(SUM(r.input_tokens), 0) AS input_tokens,
-    COALESCE(SUM(r.output_tokens), 0) AS output_tokens,
-    COALESCE(SUM(r.cache_read_input_tokens), 0) AS cache_read_tokens,
-    COALESCE(SUM(r.cache_creation_input_tokens), 0) AS cache_creation_tokens,
-    COALESCE(SUM(r.reasoning_output_tokens), 0) AS reasoning_tokens,
-    COALESCE(SUM(r.provider_estimated_cost_usd), 0) AS provider_cost,
-    COALESCE(SUM(r.billed_cost_usd), 0) AS billed_cost,
-    COUNT(DISTINCT r.event_id) AS run_count,
-    COUNT(*) AS model_call_count`;
+  const aggregateSelect = USAGE_AGGREGATE_SELECT;
   const summaryRow = db
     .prepare(
       `SELECT ${aggregateSelect},
@@ -4556,34 +4649,41 @@ export function getUsageAnalytics(filters: UsageQueryFilters): {
     )
     .get(...where.params) as Record<string, number>;
 
-  const breakdown = db
-    .prepare(
-      `SELECT r.usage_date AS date, r.model, r.user_id,
+  // The per-(date, model, user, agent, workspace, source) breakdown is by far
+  // the largest part of the response (18k rows / 9MB for 90 days of 50k
+  // records); callers that only need totals, daily buckets and attributions
+  // skip it.
+  const breakdownRows =
+    options.includeBreakdown === false
+      ? []
+      : db
+          .prepare(
+            `SELECT r.usage_date AS date, r.model, r.user_id,
         r.agent_id, r.group_folder, r.source, ${aggregateSelect}
        FROM usage_records r WHERE ${where.sql}
        GROUP BY r.usage_date, r.model, r.user_id,
          r.agent_id, r.group_folder, r.source
        ORDER BY date ASC, r.model ASC`,
-    )
-    .all(...where.params)
-    .map((row: any) => ({
-      date: String(row.date),
-      model: String(row.model),
-      user_id: String(row.user_id),
-      agent_id: row.agent_id == null ? null : String(row.agent_id),
-      group_folder: String(row.group_folder),
-      source: String(row.source),
-      input_tokens: Number(row.input_tokens) || 0,
-      output_tokens: Number(row.output_tokens) || 0,
-      cache_read_tokens: Number(row.cache_read_tokens) || 0,
-      cache_creation_tokens: Number(row.cache_creation_tokens) || 0,
-      reasoning_tokens: Number(row.reasoning_tokens) || 0,
-      provider_estimated_cost_usd: Number(row.provider_cost) || 0,
-      cost_usd: Number(row.provider_cost) || 0,
-      billed_cost_usd: Number(row.billed_cost) || 0,
-      run_count: Number(row.run_count) || 0,
-      model_call_count: Number(row.model_call_count) || 0,
-    }));
+          )
+          .all(...where.params);
+  const breakdown = breakdownRows.map((row: any) => ({
+    date: String(row.date),
+    model: String(row.model),
+    user_id: String(row.user_id),
+    agent_id: row.agent_id == null ? null : String(row.agent_id),
+    group_folder: String(row.group_folder),
+    source: String(row.source),
+    input_tokens: Number(row.input_tokens) || 0,
+    output_tokens: Number(row.output_tokens) || 0,
+    cache_read_tokens: Number(row.cache_read_tokens) || 0,
+    cache_creation_tokens: Number(row.cache_creation_tokens) || 0,
+    reasoning_tokens: Number(row.reasoning_tokens) || 0,
+    provider_estimated_cost_usd: Number(row.provider_cost) || 0,
+    cost_usd: Number(row.provider_cost) || 0,
+    billed_cost_usd: Number(row.billed_cost) || 0,
+    run_count: Number(row.run_count) || 0,
+    model_call_count: Number(row.model_call_count) || 0,
+  }));
 
   const daily = db
     .prepare(
@@ -4607,58 +4707,8 @@ export function getUsageAnalytics(filters: UsageQueryFilters): {
       model_call_count: Number(row.model_call_count) || 0,
     }));
 
-  const attribution = (
-    column: 'model' | 'agent_id' | 'group_folder' | 'source',
-  ): UsageAttributionItem[] => {
-    const keyExpression =
-      column === 'agent_id'
-        ? `COALESCE(CAST(r.agent_id AS TEXT), '__main__')`
-        : `COALESCE(CAST(r.${column} AS TEXT), 'unassigned')`;
-    const nameExpression =
-      column === 'agent_id'
-        ? `COALESCE(
-            (SELECT a.name FROM agents a WHERE a.id = r.agent_id LIMIT 1),
-            (SELECT ap.name FROM agent_profiles ap WHERE ap.id = r.agent_id LIMIT 1),
-            CAST(r.agent_id AS TEXT), 'HappyClaw')`
-        : column === 'group_folder'
-          ? `COALESCE(
-              (SELECT rg.name FROM registered_groups rg
-               WHERE rg.folder = r.group_folder LIMIT 1),
-              CAST(r.group_folder AS TEXT), 'unassigned')`
-          : `COALESCE(CAST(r.${column} AS TEXT), 'unassigned')`;
-    const rows = db
-      .prepare(
-        `SELECT ${keyExpression} AS key,
-          ${nameExpression} AS name,
-          ${aggregateSelect}
-         FROM usage_records r WHERE ${where.sql}
-         GROUP BY r.${column}
-         ORDER BY provider_cost DESC, key ASC`,
-      )
-      .all(...where.params) as Array<Record<string, unknown>>;
-    return rows.map((row) => {
-      const input = Number(row.input_tokens) || 0;
-      const output = Number(row.output_tokens) || 0;
-      const cacheRead = Number(row.cache_read_tokens) || 0;
-      const cacheCreation = Number(row.cache_creation_tokens) || 0;
-      const reasoning = Number(row.reasoning_tokens) || 0;
-      const key = String(row.key);
-      return {
-        key,
-        name: String(row.name || key),
-        inputTokens: input,
-        outputTokens: output,
-        cacheReadTokens: cacheRead,
-        cacheCreationTokens: cacheCreation,
-        reasoningTokens: reasoning,
-        totalTokens: input + output + cacheRead + cacheCreation + reasoning,
-        providerEstimatedCostUSD: Number(row.provider_cost) || 0,
-        billedCostUSD: Number(row.billed_cost) || 0,
-        runCount: Number(row.run_count) || 0,
-        modelCallCount: Number(row.model_call_count) || 0,
-      };
-    });
-  };
+  const attribution = (column: UsageAttributionColumn) =>
+    queryUsageAttribution(where, column);
 
   const inputTokens = Number(summaryRow.input_tokens) || 0;
   const outputTokens = Number(summaryRow.output_tokens) || 0;

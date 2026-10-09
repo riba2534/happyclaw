@@ -536,9 +536,10 @@ Web 和 Runtime 不再把它们当作第二个可写真相源。
 
 用量：
 
-- `GET /api/usage/stats`
+- `GET /api/usage/stats`：`breakdown=none` 时不返回逐行明细（`breakdown`
+  为空数组），汇总、按日数据和归因不变；默认仍返回明细以兼容旧客户端
 - `GET /api/usage/models`
-- `GET /api/usage/filters`
+- `GET /api/usage/filters`：只计算归因列表
 - `GET /api/usage/records`
 - `GET /api/usage/export.csv`
 - `GET /api/usage/users`

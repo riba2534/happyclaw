@@ -38,7 +38,8 @@ vi.mock('../src/middleware/auth.js', () => ({
 }));
 
 const db = await import('../src/db.js');
-const { usage } = await import('../src/routes/usage.js');
+const { usage, clearUsageAnalyticsCache } =
+  await import('../src/routes/usage.js');
 
 const today = (() => {
   const d = new Date();
@@ -314,5 +315,69 @@ describe('/api/usage contract and isolation', () => {
     process.env.USAGE_TEST_ROLE = 'member';
     const csv = await usage.request(`/export.csv?from=${today}&to=${today}`);
     expect(await csv.text()).toContain(`"'=HYPERLINK(""https://invalid"")"`);
+  });
+});
+
+describe('/api/usage payload and caching', () => {
+  test('breakdown=none drops only the breakdown rows', async () => {
+    process.env.USAGE_TEST_USER = 'admin-user';
+    process.env.USAGE_TEST_ROLE = 'admin';
+    clearUsageAnalyticsCache();
+    const full = await (
+      await usage.request(`/stats?from=${today}&to=${today}`)
+    ).json();
+    const light = await (
+      await usage.request(`/stats?from=${today}&to=${today}&breakdown=none`)
+    ).json();
+    expect(full.breakdown.length).toBeGreaterThan(0);
+    expect(light.breakdown).toEqual([]);
+    const { generatedAt: _a, breakdown: _b, ...fullRest } = full;
+    const { generatedAt: _c, breakdown: _d, ...lightRest } = light;
+    expect(lightRest).toEqual(fullRest);
+  });
+
+  test('filters return exactly the stats attributions', async () => {
+    process.env.USAGE_TEST_USER = 'admin-user';
+    process.env.USAGE_TEST_ROLE = 'admin';
+    clearUsageAnalyticsCache();
+    const filters = await (
+      await usage.request(`/filters?from=${today}&to=${today}`)
+    ).json();
+    const stats = await (
+      await usage.request(`/stats?from=${today}&to=${today}`)
+    ).json();
+    expect({
+      models: filters.models,
+      agents: filters.agents,
+      workspaces: filters.workspaces,
+      sources: filters.sources,
+    }).toEqual(stats.attributions);
+    expect(db.getUsageAttributions({ from: today, to: today })).toEqual(
+      db.getUsageAnalytics({ from: today, to: today }).attributions,
+    );
+  });
+
+  test('cached aggregates are recomputed as soon as usage changes', async () => {
+    process.env.USAGE_TEST_USER = 'cache-user';
+    process.env.USAGE_TEST_ROLE = 'member';
+    clearUsageAnalyticsCache();
+    seed('cache-event-1', 'cache-user', 'cache-model');
+    const first = await (
+      await usage.request(`/stats?from=${today}&to=${today}&breakdown=none`)
+    ).json();
+    expect(first.summary.runCount).toBe(1);
+    const again = await (
+      await usage.request(`/stats?from=${today}&to=${today}&breakdown=none`)
+    ).json();
+    expect(again.summary).toEqual(first.summary);
+    seed('cache-event-2', 'cache-user', 'cache-model');
+    const after = await (
+      await usage.request(`/stats?from=${today}&to=${today}&breakdown=none`)
+    ).json();
+    expect(after.summary.runCount).toBe(2);
+    const filtersAfter = await (
+      await usage.request(`/filters?from=${today}&to=${today}`)
+    ).json();
+    expect(filtersAfter.models[0].runCount).toBe(2);
   });
 });
