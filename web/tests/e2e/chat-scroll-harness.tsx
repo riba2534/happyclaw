@@ -4,11 +4,18 @@
 //   &late=1          first page arrives 400ms after mount
 //   &hasMore=1       older pages are available (30 per page, 3 pages)
 //   &slowImage=1     the newest reply embeds an image served late by the test
+// window.__chatScroll also drives a streamed reply: startStreaming() appends a
+// sentence every intervalMs, finishStreaming() swaps the stream for its final
+// message in one store update, as a completed reply does.
 import { createRoot } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { ChatView } from '../../src/components/chat/ChatView';
 import { useAuthStore, type UserPublic } from '../../src/stores/auth';
-import { useChatStore, type Message } from '../../src/stores/chat';
+import {
+  useChatStore,
+  type Message,
+  type StreamingState,
+} from '../../src/stores/chat';
 import { useFileStore } from '../../src/stores/files';
 import '../../src/styles/globals.css';
 
@@ -90,10 +97,38 @@ function firstPage(): Message[] {
   return messages;
 }
 
+const emptyStream: StreamingState = {
+  partialText: '',
+  thinkingText: '',
+  isThinking: false,
+  activeTools: [],
+  activeHook: null,
+  systemStatus: null,
+  recentEvents: [],
+  traceEvents: [],
+  taskStates: {},
+  todos: [],
+};
+let streamTimer: number | null = null;
+let streamedSentences = 0;
+
+function appendStreamText(text: string) {
+  useChatStore.setState((s) => {
+    const current = s.streaming[groupJid] ?? emptyStream;
+    return {
+      streaming: {
+        ...s.streaming,
+        [groupJid]: { ...current, partialText: current.partialText + text },
+      },
+    };
+  });
+}
+
 let loadedOlderPages = 0;
 const state = {
   loadedOlderPages: () => loadedOlderPages,
-  pushMessage(content: string) {
+  /** Appends an agent reply, or a system row (e.g. `agent_error:…`). */
+  pushMessage(content: string, sender = 'happyclaw-agent') {
     useChatStore.setState((s) => ({
       messages: {
         ...s.messages,
@@ -102,7 +137,7 @@ const state = {
           {
             id: `new-${sequence++}`,
             chat_jid: groupJid,
-            sender: 'happyclaw-agent',
+            sender,
             sender_name: '测试智能体',
             content,
             timestamp: new Date(base + 86_400_000).toISOString(),
@@ -113,6 +148,68 @@ const state = {
         ],
       },
     }));
+  },
+  startStreaming(intervalMs = 100, initialText = '') {
+    if (streamTimer !== null) window.clearInterval(streamTimer);
+    streamedSentences = 0;
+    useChatStore.setState((s) => ({
+      waiting: { ...s.waiting, [groupJid]: true },
+      activeRuns: {
+        ...s.activeRuns,
+        [groupJid]: {
+          chatJid: groupJid,
+          runId: 'e2e-run',
+          startedAt: new Date().toISOString(),
+          phase: 'running',
+        },
+      },
+      streaming: {
+        ...s.streaming,
+        [groupJid]: { ...emptyStream, partialText: initialText },
+      },
+    }));
+    if (intervalMs <= 0) return;
+    streamTimer = window.setInterval(() => {
+      streamedSentences += 1;
+      appendStreamText(`第 ${streamedSentences} 句流式输出内容。\n\n`);
+    }, intervalMs);
+  },
+  /** Ends the stream; with finalize, its text becomes the final reply. */
+  finishStreaming(finalize = true) {
+    if (streamTimer !== null) window.clearInterval(streamTimer);
+    streamTimer = null;
+    useChatStore.setState((s) => {
+      const text = s.streaming[groupJid]?.partialText ?? '';
+      const streaming = { ...s.streaming };
+      delete streaming[groupJid];
+      const activeRuns = { ...s.activeRuns };
+      delete activeRuns[groupJid];
+      return {
+        waiting: { ...s.waiting, [groupJid]: false },
+        activeRuns,
+        streaming,
+        messages:
+          finalize && text
+            ? {
+                ...s.messages,
+                [groupJid]: [
+                  ...(s.messages[groupJid] ?? []),
+                  {
+                    id: `final-${sequence++}`,
+                    chat_jid: groupJid,
+                    sender: 'happyclaw-agent',
+                    sender_name: '测试智能体',
+                    content: text,
+                    timestamp: new Date(base + 86_400_000).toISOString(),
+                    is_from_me: true,
+                    source_kind: 'sdk_final',
+                    finalization_reason: 'completed',
+                  } as Message,
+                ],
+              }
+            : s.messages,
+      };
+    });
   },
 };
 Object.assign(window, { __chatScroll: state });
