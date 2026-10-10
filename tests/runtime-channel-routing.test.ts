@@ -180,6 +180,8 @@ function makeOutputRuntime(lane: 'main' | 'session') {
     takeRecallStop: () => undefined,
     mainRecallSuppression: false,
     agentRecallSuppression: false,
+    mainRecalledInputIds: new Set(),
+    agentRecalledInputIds: new Set(),
   };
   const harness = createRuntimeSourceHarness(globals);
   harness.install('sendMessageWithOutcome');

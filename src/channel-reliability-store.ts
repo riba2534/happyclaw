@@ -1345,6 +1345,34 @@ export function getChannelInboxByExternalMessage(input: {
   return row ? mapInbox(row) : undefined;
 }
 
+/** Structured reason recorded on a card whose run was explicitly stopped. */
+export const EXPLICIT_STOP_REASON = 'explicit_stop';
+
+/**
+ * Record on the card that its run was explicitly stopped (`/break`, stop
+ * button). Startup repair trusts only this marker — never the visible text —
+ * to decide that a leftover input was consumed by the stop.
+ */
+export function markStreamingCardExplicitStop(
+  cardId: string,
+  nowInput?: Date | string,
+): boolean {
+  const now = isoNow(nowInput);
+  const changed = requireDatabase()
+    .prepare(
+      `UPDATE streaming_cards
+       SET snapshot = json_set(
+             CASE WHEN snapshot IS NOT NULL AND json_valid(snapshot)
+                  THEN snapshot ELSE '{}' END,
+             '$.stopReason', ?
+           ),
+           revision = revision + 1, updated_at = ?
+       WHERE id = ?`,
+    )
+    .run(EXPLICIT_STOP_REASON, now, cardId);
+  return changed.changes === 1;
+}
+
 /**
  * Note on a card record that its refused body was delivered as static
  * messages, so crash recovery writes only a notice instead of the body.

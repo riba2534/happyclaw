@@ -328,6 +328,9 @@ import {
 import {
   cancelChannelTurnRunById,
   cancelRetryWaitChannelTurnsForInputs,
+  EXPLICIT_STOP_REASON,
+  finalizeStreamingCardRecord,
+  getStreamingCardRecord,
   cancelStaleRetryWaitChannelTurns,
   getChannelInboxByExternalMessage,
   getPrimaryStreamingCardForTurn,
@@ -403,7 +406,6 @@ import {
   registerMessageIdMapping,
   getStreamingSession,
   StreamingCardController,
-  streamingCardSnapshotText,
 } from './feishu-streaming-card.js';
 import {
   formatContextMessages,
@@ -8674,12 +8676,24 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
     // Recall stop: suppress the interrupted query's trailing stream output.
     let mainRecallSuppression = false;
+    // Inputs settled as recalled: their late terminal outputs are bookkeeping
+    // only and are never projected or delivered.
+    const mainRecalledInputIds = new Set<string>();
     const settleMainRecalledInput = async (
       messageId: string,
     ): Promise<void> => {
       let inputId = lastProcessed.id;
       for (const [key, runtime] of channelTurnRuntimes) {
         if (runtime.inputTurnId === messageId) inputId = key;
+      }
+      mainRecalledInputIds.add(inputId);
+      mainRecalledInputIds.add(messageId);
+      // Late side effects of the withdrawn input (MCP sends, images) must
+      // find no outbox scope and fail closed.
+      const recalledScope = channelOutboxScopesByInput.get(inputId);
+      if (recalledScope) {
+        activeChannelOutboxScopes.unbind(mainAdmissionKey, recalledScope);
+        channelOutboxScopesByInput.delete(inputId);
       }
       // Never touch a settled card: it may be an earlier input's answer.
       const projection =
@@ -8770,18 +8784,41 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             (isInterruptStatus ||
               result.queryIdle === true ||
               result.status !== 'stream');
-          if (mainRecallSuppression && !recallQueryEnding) return;
+          const recallSuppressed = mainRecallSuppression && !recallQueryEnding;
+          // Usage is the API cost the interrupted query already spent (the
+          // runner flushes it right at the interrupt): it is always billed,
+          // just never projected onto a card.
+          if (recallSuppressed && !isUsageEvent) return;
           if (recallQueryEnding) mainRecallSuppression = false;
           // Warm runners may report the exact covered scheduled prompt only on
           // an earlier IPC receipt. Remember it before lifecycle/provider
           // callbacks return so the later genuine final can settle the same
           // durable run without guessing from ordinary conversation history.
           rememberScheduledGroupRuns(result);
-          if (!suppressSupersededOutput && !recallQueryEnding) {
+          if (
+            !suppressSupersededOutput &&
+            !recallSuppressed &&
+            !recallQueryEnding
+          ) {
             await activateMainProjectionForInput(result.inputTurnId);
           }
           if (result.newSessionId && result.status !== 'error') {
             activeSessionId = result.newSessionId;
+          }
+          if (
+            result.status !== 'stream' &&
+            mainRecalledInputIds.has(
+              resolveContainerOutputInputTurnId(result, lastProcessed.id),
+            )
+          ) {
+            // The SDK finished before the recall interrupt landed: settle the
+            // lifecycle, but the withdrawn input's answer is never delivered.
+            if (result.inputTurnCompleted) markMainOutputSettled(result);
+            logger.info(
+              { chatJid, turnId: outputTurnId, status: result.status },
+              'Dropped the terminal output of a recalled input',
+            );
+            return;
           }
           if (suppressSupersededOutput) {
             // The buffered healthy terminal is the final disposition of this
@@ -9002,6 +9039,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               );
               streamInterrupted = true;
               streamSteered ||= steered;
+              if (!steered) {
+                // Structured stop marker on the card (startup repair trusts
+                // only this, never the visible "已停止" text).
+                channelTurnRuntimes
+                  .get(
+                    resolveContainerOutputInputTurnId(result, lastProcessed.id),
+                  )
+                  ?.markExplicitStopRequested();
+              }
               // 引导是正常换向：干净收束已有内容；显式停止才显示中性停止状态。
               if (heldCardParts.length > 0) {
                 const heldText = heldCardParts.join(HELD_TURN_DIVIDER);
@@ -10418,6 +10464,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               .complete(streamingAccumulatedText)
               .catch(() => {});
           } else {
+            channelTurnRuntimes
+              .get(ipcReplyTurnTracker.inputTurnId)
+              ?.markExplicitStopRequested();
             await streamingSession.abort('已停止').catch(() => {});
           }
         } else if (output.status === 'closed') {
@@ -17620,10 +17669,21 @@ async function processAgentConversation(
 
   // Recall stop: suppress the interrupted query's trailing stream output.
   let agentRecallSuppression = false;
+  // Inputs settled as recalled: their late terminal outputs are bookkeeping
+  // only and are never projected or delivered.
+  const agentRecalledInputIds = new Set<string>();
   const settleAgentRecalledInput = async (messageId: string): Promise<void> => {
     let inputId = lastProcessed.id;
     for (const [key, runtime] of agentChannelTurnRuntimes) {
       if (runtime.inputTurnId === messageId) inputId = key;
+    }
+    agentRecalledInputIds.add(inputId);
+    agentRecalledInputIds.add(messageId);
+    // Late side effects of the withdrawn input must fail closed.
+    const recalledScope = agentChannelOutboxScopesByInput.get(inputId);
+    if (recalledScope) {
+      activeChannelOutboxScopes.unbind(agentAdmissionKey, recalledScope);
+      agentChannelOutboxScopesByInput.delete(inputId);
     }
     // Never touch a settled card: it may be an earlier input's answer.
     const projection =
@@ -17724,9 +17784,12 @@ async function processAgentConversation(
       (isInterruptStatus ||
         output.queryIdle === true ||
         output.status !== 'stream');
-    if (agentRecallSuppression && !recallQueryEnding) return;
+    const recallSuppressed = agentRecallSuppression && !recallQueryEnding;
+    // Usage is the API cost the interrupted query already spent: always
+    // billed, never projected onto a card.
+    if (recallSuppressed && !isUsageEvent) return;
     if (recallQueryEnding) agentRecallSuppression = false;
-    if (!suppressSupersededOutput && !recallQueryEnding) {
+    if (!suppressSupersededOutput && !recallSuppressed && !recallQueryEnding) {
       await activateAgentProjectionForInput(output.inputTurnId);
     }
     if (
@@ -17790,6 +17853,20 @@ async function processAgentConversation(
         interactionMode,
       );
       currentAgentSessionId = output.newSessionId;
+    }
+
+    if (
+      output.status !== 'stream' &&
+      agentRecalledInputIds.has(output.inputTurnId ?? activeAgentInputTurnId)
+    ) {
+      // The SDK finished before the recall interrupt landed: settle the
+      // lifecycle, but the withdrawn input's answer is never delivered.
+      if (output.inputTurnCompleted) markAgentOutputSettled(output);
+      logger.info(
+        { chatJid, agentId, turnId: outputTurnId, status: output.status },
+        'Dropped the terminal output of a recalled input',
+      );
+      return;
     }
 
     if (suppressSupersededOutput) {
@@ -17951,6 +18028,13 @@ async function processAgentConversation(
         );
         agentStreamInterrupted = true;
         agentStreamSteered ||= steered;
+        if (!steered) {
+          // Structured stop marker on the card (startup repair trusts only
+          // this, never the visible "已停止" text).
+          agentChannelTurnRuntimes
+            .get(output.inputTurnId ?? activeAgentInputTurnId)
+            ?.markExplicitStopRequested();
+        }
         // 引导是正常换向：干净收束已有内容；显式停止才显示中性停止状态。
         if (heldAgentParts.length > 0) {
           const heldText = heldAgentParts.join(HELD_TURN_DIVIDER);
@@ -19221,6 +19305,9 @@ async function processAgentConversation(
               .complete(agentStreamingAccText)
               .catch(() => {});
           } else {
+            agentChannelTurnRuntimes
+              .get(activeAgentInputTurnId)
+              ?.markExplicitStopRequested();
             await agentStreamingSession.abort('已停止').catch(() => {});
           }
         } else if (runnerClosedBySteer) {
@@ -21931,30 +22018,40 @@ function checkRuntimeControlOwner(
   return ownerCheck.ok ? null : `⚠️ ${ownerCheck.reason}`;
 }
 
-/**
- * The explicit-stop note a card shows after `/break`, the stop button or an
- * interrupted run (`abort('已停止')`).
- */
-const EXPLICIT_STOP_CARD_MARKER = /\*已停止\*\s*$/;
+interface WithdrawnTurnCardCleanup {
+  cardId: string;
+  logicalJid: string;
+  inputId: string;
+}
 
 /**
  * Startup repair for Turns whose input was withdrawn while their run was
- * alive, before recovery can fence or replay them:
+ * alive, before follow-up recovery, reconciliation or message replay can
+ * fence, rewrite or re-run them:
  *  - the input was recalled (Inbox `ignored/recalled`) or withdrawn
- *    (message `cancelled`): the Turn is cancelled and the message stays
- *    excluded from replay;
- *  - the run was explicitly stopped (its card ended `aborted` with the stop
- *    note) without any delivered or uncertain output: the stop consumed the
- *    batch, so the Turn is cancelled and the Session cursor is advanced past
- *    the input.
- * Runs once, before startup reconciliation and message recovery; no Runner
- * exists yet, so a still-valid lease belongs to the dead process.
+ *    (message `cancelled`): the Turn is cancelled, the message stays
+ *    excluded from replay, and a still-live card is handed back for silent
+ *    removal once the channels are connected;
+ *  - the run was explicitly stopped — its card carries the structured
+ *    `stopReason` marker (never inferred from visible text) — and nothing was
+ *    delivered or left uncertain: the stop consumed the batch, so the Turn
+ *    is cancelled and the Session cursor advances past the input.
+ * A Turn leased by a live run of this process is never touched. Idempotent.
  */
-function repairWithdrawnChannelTurnsOnStartup(): number {
-  let repaired = 0;
+function repairWithdrawnChannelTurnsOnStartup(): WithdrawnTurnCardCleanup[] {
+  const cleanups: WithdrawnTurnCardCleanup[] = [];
+  const now = new Date().toISOString();
+  const ownLeasePrefix = `happyclaw:${process.pid}:`;
   for (const turn of listNonterminalChannelTurnRuns()) {
     const inputId = turn.correlationId;
     if (!inputId) continue;
+    if (
+      turn.leaseOwner?.startsWith(ownLeasePrefix) &&
+      turn.leaseExpiresAt !== null &&
+      turn.leaseExpiresAt > now
+    ) {
+      continue;
+    }
     try {
       const conversationJid = channelConversationJid(turn.sourceJid);
       const rows = listInboundMessagesById(inputId).filter(
@@ -21972,11 +22069,13 @@ function repairWithdrawnChannelTurnsOnStartup(): number {
       const withdrawn = rows.some((row) => row.delivery_status === 'cancelled');
       if (getUncertainChannelOutboxForTurn(turn.id)) continue;
       const card = getPrimaryStreamingCardForTurn(turn.id);
+      const cardSnapshot =
+        card?.snapshot && typeof card.snapshot === 'object'
+          ? (card.snapshot as { stopReason?: unknown })
+          : undefined;
       const explicitlyStopped =
         card?.status === 'aborted' &&
-        EXPLICIT_STOP_CARD_MARKER.test(
-          streamingCardSnapshotText(card.snapshot),
-        ) &&
+        cardSnapshot?.stopReason === EXPLICIT_STOP_REASON &&
         !getDeliveredChannelOutboxForTurn(turn.id);
       if (!recalled && !withdrawn && !explicitlyStopped) continue;
       const reason =
@@ -21984,7 +22083,6 @@ function repairWithdrawnChannelTurnsOnStartup(): number {
           ? 'Startup repair: input recalled by sender'
           : 'Startup repair: input consumed by an explicit stop';
       if (!cancelChannelTurnRunById(turn.id, reason)) continue;
-      repaired += 1;
       for (const row of rows) {
         if (recalled || withdrawn) {
           cancelPendingInboundMessage(row.chat_jid, inputId);
@@ -21992,6 +22090,20 @@ function repairWithdrawnChannelTurnsOnStartup(): number {
         }
         const cursor = getMessageCursor(row.chat_jid, inputId);
         if (cursor) advanceCursors(row.chat_jid, cursor);
+      }
+      if (
+        (recalled || withdrawn) &&
+        card &&
+        !(
+          CHANNEL_RELIABILITY_TERMINAL_STATUSES.cards as readonly string[]
+        ).includes(card.status) &&
+        rows[0]
+      ) {
+        cleanups.push({
+          cardId: card.id,
+          logicalJid: rows[0].chat_jid,
+          inputId,
+        });
       }
       logger.info(
         {
@@ -22012,7 +22124,63 @@ function repairWithdrawnChannelTurnsOnStartup(): number {
       );
     }
   }
-  return repaired;
+  return cleanups;
+}
+
+/**
+ * After the channels connect, silently remove the live card a recalled input
+ * left behind (startup repair cancelled its Turn), then terminalize the card
+ * record so reconciliation does not rewrite it into an "interrupted" card.
+ * When removal is impossible the record stays non-terminal: reconciliation
+ * then terminalizes it visibly rather than leaving a live skeleton.
+ */
+async function discardWithdrawnTurnCardsAfterConnect(
+  cleanups: readonly WithdrawnTurnCardCleanup[],
+): Promise<void> {
+  for (const cleanup of cleanups) {
+    try {
+      const card = getStreamingCardRecord(cleanup.cardId);
+      if (
+        !card ||
+        (
+          CHANNEL_RELIABILITY_TERMINAL_STATUSES.cards as readonly string[]
+        ).includes(card.status)
+      ) {
+        continue;
+      }
+      let removed = !card.messageId;
+      if (card.messageId && getChannelType(card.sourceJid) === 'feishu') {
+        const context = getMessageChannelTurnContext(
+          cleanup.logicalJid,
+          cleanup.inputId,
+        );
+        if (context) {
+          try {
+            await imManager.executeFeishuCapability(card.sourceJid, context, {
+              operation: 'recall_message',
+              params: { messageId: card.messageId },
+            });
+            removed = true;
+          } catch (err) {
+            logger.warn(
+              { err, cardId: card.id },
+              'Could not remove the card of a recalled input at startup',
+            );
+          }
+        }
+      }
+      if (!removed) continue;
+      finalizeStreamingCardRecord(card.id, card.revision, {
+        status: 'aborted',
+        error: 'Input recalled by sender; card removed',
+      });
+    } catch (err) {
+      logger.warn(
+        { err, cardId: cleanup.cardId },
+        'Startup removal of a recalled input card failed',
+      );
+    }
+  }
 }
 
 /**
@@ -22975,6 +23143,9 @@ async function main(): Promise<void> {
   migrateSystemIMToPerUser();
 
   loadState();
+  // Before follow-up recovery or any Runner can claim a Turn: withdrawn
+  // inputs must be settled, never fenced, replayed or re-run.
+  const withdrawnTurnCardCleanups = repairWithdrawnChannelTurnsOnStartup();
 
   // Plugin catalog scan: one shot 5s after startup + every 1h thereafter.
   // Disabled when SystemSettings.pluginAutoScan = false; admin can still
@@ -24785,7 +24956,7 @@ async function main(): Promise<void> {
   // invalidate expired execution fences -> only then resume Agent work.
   // Starting the message loop earlier can create a second active card for the
   // same logical turn while the provider still shows the old one as running.
-  repairWithdrawnChannelTurnsOnStartup();
+  await discardWithdrawnTurnCardsAfterConnect(withdrawnTurnCardCleanups);
   await reconcileChannelReliabilityOnStartup(imManager);
   const outboxRecovery = reconcileChannelOutboxDeliveries();
   if (outboxRecovery.uncertain > 0) {

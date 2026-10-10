@@ -14,7 +14,9 @@ import {
   interruptChannelTurnRunById,
   linkChannelTurnRunInbox,
   manualReconciliationError,
+  markStreamingCardExplicitStop,
   markStreamingCardStaticFallbackDelivered,
+  EXPLICIT_STOP_REASON,
   markChannelTurnFinalizing,
   retryChannelTurnRun,
   requiresManualReconciliation,
@@ -78,6 +80,8 @@ export class ChannelTurnRuntime {
   private card: StreamingCardRecord | null = null;
   /** Revision of the reservation before any provider lifecycle event. */
   private reservedCardRevision: number | null = null;
+  /** The run was explicitly stopped; every later card snapshot says so. */
+  private explicitStopRequested = false;
   private terminal = false;
   private durabilityError: Error | null = null;
   private fenceLost = false;
@@ -188,6 +192,27 @@ export class ChannelTurnRuntime {
         'Could not mark streaming card static fallback delivery',
       );
       return false;
+    }
+  }
+
+  /**
+   * The user explicitly stopped this run (`/break`, stop button). Persist a
+   * structured marker on the card now, and carry it into every later card
+   * snapshot (lifecycle writes replace the whole snapshot), so startup repair
+   * never has to infer a stop from visible text.
+   */
+  markExplicitStopRequested(): void {
+    if (this.explicitStopRequested) return;
+    this.explicitStopRequested = true;
+    const cardId = this.card?.id;
+    if (!cardId) return;
+    try {
+      markStreamingCardExplicitStop(cardId);
+    } catch (error) {
+      logger.warn(
+        { err: error, runId: this.runId, cardId },
+        'Could not mark the streaming card as explicitly stopped',
+      );
     }
   }
 
@@ -506,13 +531,19 @@ export class ChannelTurnRuntime {
                 ? 'creating'
                 : 'streaming';
 
+      const snapshot =
+        this.explicitStopRequested &&
+        event.snapshot &&
+        typeof event.snapshot === 'object'
+          ? { ...(event.snapshot as object), stopReason: EXPLICIT_STOP_REASON }
+          : event.snapshot;
       let next: StreamingCardRecord | undefined;
       for (let attempt = 0; attempt < 3; attempt++) {
         next = terminal
           ? finalizeStreamingCardRecord(current.id, current.revision, {
               status: persistedStatus as 'completed' | 'aborted' | 'failed',
               version: event.version,
-              snapshot: event.snapshot,
+              snapshot,
               error: event.error ?? null,
             })
           : updateStreamingCardRecord(current.id, current.revision, {
@@ -520,7 +551,7 @@ export class ChannelTurnRuntime {
               messageId: event.messageId,
               cardId: event.cardId,
               version: event.version,
-              snapshot: event.snapshot,
+              snapshot,
               error: event.error ?? null,
             });
         if (next) break;
