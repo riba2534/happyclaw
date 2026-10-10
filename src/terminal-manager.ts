@@ -234,6 +234,23 @@ export class TerminalManager {
     );
   }
 
+  /**
+   * Stop reading this session's output until resume(). In PTY mode the
+   * worker's stdout pipe fills and the worker pauses the pty; in pipe mode
+   * the docker exec process blocks on its own writes.
+   */
+  pause(groupJid: string): void {
+    const session = this.sessions.get(groupJid);
+    session?.process.stdout?.pause();
+    if (session?.mode === 'pipe') session.process.stderr?.pause();
+  }
+
+  resume(groupJid: string): void {
+    const session = this.sessions.get(groupJid);
+    session?.process.stdout?.resume();
+    if (session?.mode === 'pipe') session.process.stderr?.resume();
+  }
+
   write(groupJid: string, data: string): void {
     const session = this.sessions.get(groupJid);
     if (!session) return;

@@ -134,6 +134,11 @@ import { recordRunContextSnapshot } from './run-context-snapshot.js';
 import { RunStreamFence } from './run-stream-fence.js';
 import { sweepStaleStreamingEntries } from './streaming-state-sweep.js';
 import {
+  createBackpressureTracker,
+  createStreamFlowControl,
+  type StreamFlowControl,
+} from './ws-flow-control.js';
+import {
   executeSessionReset,
   executeFreshWindowReset,
   isClearCommand,
@@ -201,7 +206,14 @@ function buildWebExpandContext(
   });
 }
 
+/** Output flow control of each running terminal, keyed by group JID. */
+const terminalFlows = new Map<string, StreamFlowControl>();
+
 function releaseTerminalOwnership(ws: WebSocket, groupJid: string): void {
+  if (terminalOwners.get(groupJid) === ws) {
+    terminalFlows.get(groupJid)?.dispose();
+    terminalFlows.delete(groupJid);
+  }
   if (wsTerminals.get(ws) === groupJid) {
     wsTerminals.delete(ws);
   }
@@ -2181,6 +2193,13 @@ function setupWebSocket(server: any): WebSocketServer {
               }
             }
 
+            terminalFlows.get(chatJid)?.dispose();
+            const flow = createStreamFlowControl({
+              getBufferedAmount: () => ws.bufferedAmount,
+              pause: () => terminalManager.pause(chatJid),
+              resume: () => terminalManager.resume(chatJid),
+            });
+            terminalFlows.set(chatJid, flow);
             terminalManager.start(
               chatJid,
               groupStatus.containerName,
@@ -2191,6 +2210,9 @@ function setupWebSocket(server: any): WebSocketServer {
                   ws.send(
                     JSON.stringify({ type: 'terminal_output', chatJid, data }),
                   );
+                  // Pause the pty/exec output while this socket is behind
+                  // instead of buffering it (or tripping the valve below).
+                  flow.afterSend();
                 }
               },
               (_exitCode, _signal) => {
@@ -2356,6 +2378,9 @@ export function isWsClientBackedUp(client: {
   return client.bufferedAmount > MAX_WS_BUFFERED_BYTES;
 }
 
+/** Drops a client only after it stays over the limit for 10s / 3 checks. */
+const wsBackpressure = createBackpressureTracker();
+
 /**
  * Broadcast to all connected WebSocket clients.
  * If adminOnly is true, only send to clients whose session belongs to an admin user.
@@ -2426,7 +2451,7 @@ function safeBroadcast(
       }
     }
 
-    if (isWsClientBackedUp(client)) {
+    if (wsBackpressure.observe(client, isWsClientBackedUp(client))) {
       wsClients.delete(client);
       try {
         client.terminate();
