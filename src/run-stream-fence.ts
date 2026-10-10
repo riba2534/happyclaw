@@ -78,13 +78,7 @@ export class RunStreamFence {
       owners = new Map<string, string>();
     }
     this.turnOwners.set(jid, owners);
-    while (this.turnOwners.size > this.maxJids) {
-      const oldestJid = this.turnOwners.keys().next().value as
-        | string
-        | undefined;
-      if (oldestJid === undefined || oldestJid === jid) break;
-      this.turnOwners.delete(oldestJid);
-    }
+    if (this.turnOwners.size > this.maxJids) this.evictIdleJids();
     // Refresh insertion order so the most recently proven exact owner is the
     // last one evicted from the bounded compatibility cache.
     owners.delete(turnId);
@@ -93,6 +87,20 @@ export class RunStreamFence {
       const oldest = owners.keys().next().value as string | undefined;
       if (!oldest) break;
       owners.delete(oldest);
+    }
+  }
+
+  /**
+   * Evict the least recently proven JIDs that have no active run. A JID with
+   * a live run keeps its owners even past the cap: dropping them would let a
+   * late event from the previous run be credited to the current one. The
+   * overshoot is bounded by the number of concurrently active runs.
+   */
+  private evictIdleJids(): void {
+    for (const candidate of this.turnOwners.keys()) {
+      if (this.turnOwners.size <= this.maxJids) return;
+      if (this.activeRuns.has(candidate)) continue;
+      this.turnOwners.delete(candidate);
     }
   }
 
