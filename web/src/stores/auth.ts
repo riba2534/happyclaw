@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { resetUserScopedStores } from './user-scope';
 import { api, apiFetch } from '../api/client';
 import { clearMessageSnapshotCache } from '../utils/messageSnapshotCache';
 
@@ -95,13 +96,18 @@ interface AuthState {
 let checkAuthInFlight: Promise<void> | null = null;
 
 /**
- * Reset the usage cache when the signed-in user changes. Loaded on demand so
- * the usage store (only needed on the usage page) stays out of the entry
- * chunk that every page, including /login, downloads.
+ * Responses index.html prefetched for the page load. Once the signed-in user
+ * changes they describe the wrong session (e.g. a 401 from /login), so they
+ * must never be consumed after login, registration, setup or logout.
  */
-async function resetUsageStore() {
-  const { useUsageStore } = await import('./usage');
-  useUsageStore.getState().reset();
+function discardPrewarms(): void {
+  if (typeof window === 'undefined') return;
+  const holder = window as {
+    __authPrewarm?: unknown;
+    __groupsPrewarm?: unknown;
+  };
+  holder.__authPrewarm = undefined;
+  holder.__groupsPrewarm = undefined;
 }
 
 export const useAuthStore = create<AuthState>((set, get) => ({
@@ -115,7 +121,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   login: async (username: string, password: string) => {
     // Message snapshots are user-scoped application data. Clear them before
     // switching users on a shared browser.
-    await resetUsageStore();
+    resetUserScopedStores();
+    discardPrewarms();
     await clearMessageSnapshotCache();
     const data = await api.post<{
       success: boolean;
@@ -123,18 +130,22 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       setupStatus?: SetupStatus;
       appearance?: AppearanceConfig;
     }>('/api/auth/login', { username, password });
+    // Public pages never run checkAuth, so `checking` may still hold its
+    // initial true; the signed-in shell must not wait on it.
     set({
       authenticated: true,
       user: data.user,
       setupStatus: data.setupStatus ?? null,
       appearance: data.appearance ?? null,
       initialized: true,
+      checking: false,
     });
   },
 
   register: async (payload) => {
     // Same rationale as login: clear user-scoped message snapshots.
-    await resetUsageStore();
+    resetUserScopedStores();
+    discardPrewarms();
     await clearMessageSnapshotCache();
     const data = await api.post<{ success: boolean; user: UserPublic }>(
       '/api/auth/register',
@@ -145,6 +156,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       user: data.user,
       setupStatus: null,
       initialized: true,
+      checking: false,
     });
     // Registration responses intentionally contain only user data. Hydrate the
     // public brand immediately so the authenticated shell does not flash or
@@ -156,7 +168,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     await api.post('/api/auth/logout');
     // Clear AFTER server-side session invalidation so the next user on this
     // device cannot see this user's message snapshots.
-    await resetUsageStore();
+    resetUserScopedStores();
+    discardPrewarms();
     await clearMessageSnapshotCache();
     set({
       authenticated: false,
@@ -184,12 +197,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       setupStatus?: SetupStatus;
       appearance?: AppearanceConfig;
     }>('/api/auth/setup', { username, password });
+    discardPrewarms();
     set({
       authenticated: true,
       user: data.user,
       setupStatus: data.setupStatus ?? null,
       appearance: data.appearance ?? null,
       initialized: true,
+      checking: false,
     });
   },
 

@@ -37,7 +37,9 @@ export function AuthGuard({
     // Nested guards (e.g. /monitor inside the layout guard) only check
     // permissions. Re-running checkAuth would flip `checking` and make the
     // outer guard unmount and remount the whole app shell.
-    if (useAuthStore.getState().authenticated) return;
+    const { authenticated: signedIn, checking: pending } =
+      useAuthStore.getState();
+    if (signedIn && !pending) return;
     void checkAuth();
   }, [checkAuth]);
 

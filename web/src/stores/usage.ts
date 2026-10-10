@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { registerUserScopedReset } from './user-scope';
 import { api } from '../api/client';
 
 export interface UsageSummary {
@@ -819,3 +820,5 @@ export const useUsageStore = create<UsageState>((set, get) => ({
 }));
 
 export { DEFAULT_QUERY };
+
+registerUserScopedReset(() => useUsageStore.getState().reset());

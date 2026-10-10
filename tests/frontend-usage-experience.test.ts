@@ -354,6 +354,11 @@ describe('usage page product and accessibility surface', () => {
       /Promise\.all\(\[loadStats\(query\), loadFilters\(query\)\]\)/,
     );
     expect(page).not.toMatch(/PieChart|<Pie|模型用量分布/);
-    expect(auth).toContain('useUsageStore.getState().reset()');
+    // Signing in or out resets the usage cache through the user-scope
+    // registry, so auth never has to download the usage store to clear it.
+    expect(auth).toContain('resetUserScopedStores()');
+    expect(read('web/src/stores/usage.ts')).toContain(
+      'registerUserScopedReset(() => useUsageStore.getState().reset())',
+    );
   });
 });
