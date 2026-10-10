@@ -57,6 +57,8 @@ const componentsCache = new Map<string, MarkdownComponents>();
  * Streamed text changes on every update and is never cached.
  */
 const RENDERED_CACHE_LIMIT = 100;
+/** Trees keep their hast nodes; very long replies are re-rendered instead. */
+const RENDERED_CACHE_MAX_CHARS = 20_000;
 const renderedCache = new Map<string, React.ReactElement>();
 
 function MarkdownImageLightbox({
@@ -396,7 +398,7 @@ export function MarkdownContent({
         components,
         children: content,
       });
-    if (streaming) return render();
+    if (streaming || content.length > RENDERED_CACHE_MAX_CHARS) return render();
     return rememberRecent(
       renderedCache,
       RENDERED_CACHE_LIMIT,

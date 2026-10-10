@@ -1269,7 +1269,9 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                 <MessageList
                   key={`conv-${activeAgentTab}`}
                   messages={activeAgentMessages || EMPTY_MESSAGES}
-                  loading={false}
+                  // Not loaded yet (first visit, or evicted from the message
+                  // cache): don't flash the empty-conversation starters.
+                  loading={activeAgentMessages === undefined}
                   hasMore={activeAgentHasMore}
                   onLoadMore={loadMoreActiveAgent}
                   scrollTrigger={scrollTrigger}
@@ -1305,7 +1307,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                 <MessageList
                   key={`main-${groupJid}`}
                   messages={groupMessages || EMPTY_MESSAGES}
-                  loading={loading}
+                  loading={loading || groupMessages === undefined}
                   hasMore={hasMoreMessages}
                   onLoadMore={loadMoreMain}
                   scrollTrigger={scrollTrigger}
