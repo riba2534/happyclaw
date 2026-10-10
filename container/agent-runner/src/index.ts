@@ -139,6 +139,7 @@ import {
   SdkFirstResponseWatchdog,
 } from './sdk-control.js';
 import {
+  MAX_PENDING_IDLE_RESULTS,
   ResultUsageReconciler,
   type SdkModelUsage,
   type SdkResultUsage,
@@ -2172,7 +2173,9 @@ async function runQueryAttempt(
       );
       if (!batch) break;
       assistantBatches.push(batch);
-      usageReconciler.recordAccounted(batch.tokens.modelUsage);
+      usageReconciler.recordAccounted(batch.tokens.modelUsage, {
+        final: batch.final,
+      });
     }
     const isResult = resultMessage.type === 'result';
     const reconciled = isResult
@@ -2208,6 +2211,11 @@ async function runQueryAttempt(
     if (reconciled.baselineReset) {
       log(
         `Usage baseline reset (${reconciled.baselineReset}); billing per-message usage only for this result`,
+      );
+    }
+    if (reconciled.droppedPending) {
+      logWarn(
+        `Dropped per-message usage that no modelUsage covered for ${MAX_PENDING_IDLE_RESULTS} results: ${JSON.stringify(reconciled.droppedPending)}`,
       );
     }
     const resultUuid =

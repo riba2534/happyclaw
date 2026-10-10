@@ -144,6 +144,48 @@ describe('AssistantUsageCollector transcript backfill', () => {
     });
     expect(loader).toHaveBeenCalledOnce();
   });
+
+  // The reconciler keeps a call that may still be running pending across a
+  // baseline reset, so only proof that the call ended marks it final.
+  test('marks a flush final only when a stop_reason proves the call ended', () => {
+    const usage = { input_tokens: 100, output_tokens: 20 };
+    const file = writeTranscript([
+      // One line per content block: only the last carries the stop_reason,
+      // and an equal snapshot must not hide it.
+      assistantLine('msg-done', usage),
+      {
+        ...assistantLine('msg-done', usage),
+        message: {
+          ...assistantLine('msg-done', usage).message,
+          stop_reason: 'tool_use',
+        },
+      },
+      assistantLine('msg-running', { input_tokens: 2_000, output_tokens: 1 }),
+    ]);
+    const loader = createTranscriptUsageLoader(() => file);
+    const collector = new AssistantUsageCollector();
+    collector.ingest(
+      assistantLine('msg-done', {
+        input_tokens: 100,
+        output_tokens: 1,
+      }) as never,
+    );
+    collector.ingest(
+      assistantLine('msg-running', {
+        input_tokens: 2_000,
+        output_tokens: 1,
+      }) as never,
+    );
+    expect(collector.drain('s', loader)).toMatchObject({
+      eventId: 'claude-code:msg-done',
+      tokens: { outputTokens: 20 },
+      final: true,
+    });
+    expect(collector.drain('s', loader)).toMatchObject({
+      eventId: 'claude-code:msg-running',
+      final: false,
+    });
+  });
 });
 
 describe('createTranscriptUsageLoader', () => {

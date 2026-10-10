@@ -71,16 +71,21 @@ export interface ModelUsageTotals {
 
 /** On-disk resume baseline, one file per Claude session. */
 export interface PersistedUsageBaseline {
-  version: 1;
+  version: 2;
   sessionId: string;
   updatedAt: string;
   totalCostUSD: number;
   modelUsage: Record<string, ModelUsageTotals>;
   /**
    * Per-message usage already billed but not yet covered by a reconciled
-   * cumulative modelUsage (see ResultUsageReconciler.accounted).
+   * cumulative modelUsage (see ResultUsageReconciler.pending).
    */
-  pendingAccounted?: Record<string, ModelUsageTotals>;
+  pendingUsage?: PersistedPendingUsage[];
+}
+
+export interface PersistedPendingUsage extends ModelUsageTotals {
+  model: string;
+  idleResults: number;
 }
 
 /** Tokens that were not billed by a per-message event. */
@@ -99,7 +104,20 @@ export interface ReconciledResultUsage {
   costUSD: number;
   /** Why no modelUsage delta was trusted for this result, if so. */
   baselineReset?: 'initial_resume' | 'decrease';
+  /**
+   * Pending per-message usage given up after MAX_PENDING_IDLE_RESULTS
+   * results without coverage (a call Claude Code never counted, or a
+   * gateway labelling it under a model modelUsage never reports).
+   */
+  droppedPending?: Record<string, ModelUsageTotals>;
 }
+
+/**
+ * Consecutive results a pending entry may go uncovered before it is
+ * dropped. A legitimately running call is covered by the first result after
+ * it ends; sixteen results is far beyond one API call's lifetime.
+ */
+export const MAX_PENDING_IDLE_RESULTS = 16;
 
 const TOKEN_FIELDS = [
   'inputTokens',
@@ -138,8 +156,45 @@ function snapshot(value: SdkModelUsage | undefined): ModelUsageTotals {
   };
 }
 
+function tokensOnly(value: SdkModelUsage | undefined): ModelUsageTotals {
+  return { ...snapshot(value), costUSD: 0 };
+}
+
 function hasTokens(value: ModelUsageTotals): boolean {
   return TOKEN_FIELDS.some((field) => value[field] > 0);
+}
+
+function addTokens(target: ModelUsageTotals, source: ModelUsageTotals): void {
+  for (const field of TOKEN_FIELDS) target[field] += source[field];
+}
+
+/**
+ * Take `source` out of `target` field by field and leave in `source` what
+ * `target` could not cover. modelUsage outputTokens already include
+ * thinking, while per-message events carve thinking out into
+ * reasoningTokens. Returns whether anything was taken.
+ */
+function consume(target: ModelUsageTotals, source: ModelUsageTotals): boolean {
+  let took = false;
+  const subtract = (field: TokenField, amount: number): number => {
+    const taken = Math.min(Math.max(0, target[field]), amount);
+    if (taken > 0) took = true;
+    target[field] -= taken;
+    return amount - taken;
+  };
+  for (const field of [
+    'inputTokens',
+    'cacheReadInputTokens',
+    'cacheCreationInputTokens',
+  ] as const) {
+    source[field] = subtract(field, source[field]);
+  }
+  source.outputTokens = subtract(
+    'outputTokens',
+    source.outputTokens + source.reasoningTokens,
+  );
+  source.reasoningTokens = 0;
+  return took;
 }
 
 /** Bare model name for matching `claude-x[1m]` / `Claude-X` spellings. */
@@ -157,14 +212,50 @@ export function isPersistedUsageBaseline(
   if (!value || typeof value !== 'object') return false;
   const record = value as Partial<PersistedUsageBaseline>;
   return (
-    record.version === 1 &&
+    record.version === 2 &&
     record.sessionId === sessionId &&
     !!record.modelUsage &&
     typeof record.modelUsage === 'object' &&
-    (record.pendingAccounted === undefined ||
-      (!!record.pendingAccounted &&
-        typeof record.pendingAccounted === 'object'))
+    (record.pendingUsage === undefined ||
+      (Array.isArray(record.pendingUsage) &&
+        record.pendingUsage.every(
+          (entry) =>
+            !!entry &&
+            typeof entry === 'object' &&
+            typeof entry.model === 'string' &&
+            entry.model.length > 0,
+        )))
   );
+}
+
+/** One billed per-message event (or its uncovered part). */
+interface PendingUsage {
+  model: string;
+  tokens: ModelUsageTotals;
+  /**
+   * The call's final usage was known when it was flushed, so Claude Code had
+   * already counted it: the next result's modelUsage includes it. A call
+   * flushed with only its placeholder output may still be running (a
+   * background subagent) and reach modelUsage in a later result.
+   */
+  final: boolean;
+  /** Consecutive results that covered none of it. */
+  idleResults: number;
+  /** Recorded since the previous result. */
+  fresh: boolean;
+}
+
+/** Merge entries that behave identically from here on. */
+function coalesce(entries: PendingUsage[]): PendingUsage[] {
+  const merged = new Map<string, PendingUsage>();
+  for (const entry of entries) {
+    if (!hasTokens(entry.tokens)) continue;
+    const key = `${entry.final}\0${entry.idleResults}\0${entry.fresh}\0${entry.model}`;
+    const existing = merged.get(key);
+    if (existing) addTokens(existing.tokens, entry.tokens);
+    else merged.set(key, { ...entry, tokens: { ...entry.tokens } });
+  }
+  return [...merged.values()];
 }
 
 export class ResultUsageReconciler {
@@ -178,9 +269,9 @@ export class ResultUsageReconciler {
    * flushed: a subagent call can straddle the main result, and a call flushed
    * before close() reaches only the next process's restored totals. Whatever
    * a result's delta does not consume is therefore carried to the next one
-   * (and persisted), never dropped.
+   * (and persisted), never silently dropped.
    */
-  private readonly accounted = new Map<string, ModelUsageTotals>();
+  private pending: PendingUsage[] = [];
 
   /**
    * @param options.baseline the persisted totals of the session being
@@ -199,19 +290,46 @@ export class ResultUsageReconciler {
         this.baseline.set(model, snapshot(value));
       }
       this.baselineCostUSD = nonNegative(baseline.totalCostUSD);
-      this.recordAccounted(baseline.pendingAccounted);
+      // The CLI that could still have counted these calls has exited: the
+      // restored totals either include them or never will, so for this
+      // process they are final.
+      for (const entry of baseline.pendingUsage ?? []) {
+        const tokens = tokensOnly(entry);
+        if (!hasTokens(tokens)) continue;
+        this.pending.push({
+          model: entry.model,
+          tokens,
+          final: true,
+          idleResults: Math.min(
+            Math.floor(nonNegative(entry.idleResults)),
+            MAX_PENDING_IDLE_RESULTS,
+          ),
+          fresh: false,
+        });
+      }
     }
     this.baselineTrusted = !options?.resumed || !!baseline;
   }
 
-  /** Record a per-message usage event that was (or will be) emitted. */
-  recordAccounted(modelUsage: ResultUsagePayload['modelUsage']): void {
+  /**
+   * Record a per-message usage event that was (or will be) emitted.
+   * `final` says its final usage was known at flush time (message_delta or
+   * a completed transcript entry); unknown is treated as still running.
+   */
+  recordAccounted(
+    modelUsage: ResultUsagePayload['modelUsage'],
+    options?: { final?: boolean },
+  ): void {
     for (const [model, value] of Object.entries(modelUsage ?? {})) {
-      const current = this.accounted.get(model) ?? emptyTotals();
-      for (const field of TOKEN_FIELDS) {
-        current[field] += nonNegative(value[field]);
-      }
-      this.accounted.set(model, current);
+      const tokens = tokensOnly(value);
+      if (!hasTokens(tokens)) continue;
+      this.pending.push({
+        model,
+        tokens,
+        final: options?.final ?? false,
+        idleResults: 0,
+        fresh: true,
+      });
     }
   }
 
@@ -227,12 +345,8 @@ export class ResultUsageReconciler {
     modelUsage?: Record<string, SdkModelUsage>;
     fallbackModelKey: string;
   }): ReconciledResultUsage {
-    const accounted = new Map(this.accounted);
-    this.accounted.clear();
     const models = Object.entries(input.modelUsage ?? {});
-    if (models.length === 0) {
-      return this.applyRootUsage(input, accounted);
-    }
+    if (models.length === 0) return this.applyRootUsage(input);
 
     const totalCostUSD = nonNegative(input.totalCostUSD);
     const currentByModel = new Map(
@@ -263,14 +377,17 @@ export class ResultUsageReconciler {
         ? 0
         : totalCostUSD - this.baselineCostUSD;
 
-    // After a reset the per-message lower bound stands on its own: nothing
-    // pending is carried into the new baseline.
-    const { residual, unconsumed } = baselineReset
-      ? { residual: undefined, unconsumed: new Map<string, ModelUsageTotals>() }
-      : this.residualFor(currentByModel, accounted);
-    for (const [model, value] of unconsumed) {
-      this.recordAccounted({ [model]: value });
+    let residual: ResidualUsage | undefined;
+    const covered = new Set<PendingUsage>();
+    if (baselineReset) {
+      // The new baseline already holds every call that was final when it
+      // was flushed. A call still running reaches modelUsage only after this
+      // result, so it stays pending or its completion would be billed again.
+      this.pending = this.pending.filter((entry) => !entry.final);
+    } else {
+      residual = this.consumePending(currentByModel, covered);
     }
+    const droppedPending = this.agePending(covered);
     this.baseline.clear();
     for (const [model, current] of currentByModel) {
       this.baseline.set(model, current);
@@ -281,29 +398,36 @@ export class ResultUsageReconciler {
       ...(residual ? { residual } : {}),
       costUSD,
       ...(baselineReset ? { baselineReset } : {}),
+      ...(droppedPending ? { droppedPending } : {}),
     };
   }
 
   /** Persistable form of the current baseline and pending usage. */
   toBaseline(sessionId: string): PersistedUsageBaseline {
+    // A later process treats every entry as final, so only the model and
+    // age distinguish them.
+    const persisted = new Map<string, PersistedPendingUsage>();
+    for (const entry of this.pending) {
+      const key = `${entry.idleResults}\0${entry.model}`;
+      const existing = persisted.get(key);
+      if (existing) addTokens(existing, entry.tokens);
+      else {
+        persisted.set(key, {
+          model: entry.model,
+          ...entry.tokens,
+          idleResults: entry.idleResults,
+        });
+      }
+    }
     return {
-      version: 1,
+      version: 2,
       sessionId,
       updatedAt: new Date().toISOString(),
       totalCostUSD: this.baselineCostUSD,
       modelUsage: Object.fromEntries(
         [...this.baseline].map(([model, value]) => [model, { ...value }]),
       ),
-      ...(this.accounted.size > 0
-        ? {
-            pendingAccounted: Object.fromEntries(
-              [...this.accounted].map(([model, value]) => [
-                model,
-                { ...value },
-              ]),
-            ),
-          }
-        : {}),
+      ...(persisted.size > 0 ? { pendingUsage: [...persisted.values()] } : {}),
     };
   }
 
@@ -315,24 +439,31 @@ export class ResultUsageReconciler {
   get shouldPersist(): boolean {
     return (
       this.baselineTrusted &&
-      (this.baseline.size > 0 || this.accounted.size > 0)
+      (this.baseline.size > 0 || this.pending.length > 0)
     );
   }
 
-  /** Pending per-message usage not yet covered by modelUsage (tests, logs). */
+  /** Pending per-message usage per model (tests, logs). */
   get pendingAccounted(): Record<string, ModelUsageTotals> {
-    return Object.fromEntries(
-      [...this.accounted].map(([model, value]) => [model, { ...value }]),
-    );
+    const byModel: Record<string, ModelUsageTotals> = {};
+    for (const entry of this.pending) {
+      byModel[entry.model] ??= emptyTotals();
+      addTokens(byModel[entry.model], entry.tokens);
+    }
+    return byModel;
   }
 
-  private residualFor(
+  /**
+   * Take pending usage out of this result's modelUsage delta and return the
+   * remainder. Final entries go first: Claude Code has counted them, so if
+   * their own model's delta cannot hold them a gateway reported them under
+   * another model ID, and they are taken from the other models instead of
+   * being billed again there. Running entries stay with their own model.
+   */
+  private consumePending(
     currentByModel: Map<string, ModelUsageTotals>,
-    accounted: Map<string, ModelUsageTotals>,
-  ): {
-    residual: ResidualUsage | undefined;
-    unconsumed: Map<string, ModelUsageTotals>;
-  } {
+    covered: Set<PendingUsage>,
+  ): ResidualUsage | undefined {
     const remaining = new Map<string, ModelUsageTotals>();
     for (const [model, current] of currentByModel) {
       const previous = this.baseline.get(model) ?? emptyTotals();
@@ -344,55 +475,30 @@ export class ResultUsageReconciler {
       remaining.set(model, delta);
     }
 
-    // modelUsage outputTokens already include thinking, while per-message
-    // events carve thinking out into reasoningTokens.
-    const consume = (
-      target: ModelUsageTotals,
-      source: ModelUsageTotals,
-    ): void => {
-      const subtract = (field: TokenField, amount: number): number => {
-        const taken = Math.min(target[field], amount);
-        target[field] -= taken;
-        return amount - taken;
-      };
-      for (const field of [
-        'inputTokens',
-        'cacheReadInputTokens',
-        'cacheCreationInputTokens',
-      ] as const) {
-        source[field] = subtract(field, source[field]);
-      }
-      source.outputTokens = subtract(
-        'outputTokens',
-        source.outputTokens + source.reasoningTokens,
-      );
-      source.reasoningTokens = 0;
-    };
-
     const byMatchKey = new Map<string, string>();
     for (const model of remaining.keys()) {
       byMatchKey.set(modelMatchKey(model), model);
     }
-    // What a model's delta cannot cover yet stays pending under that model
-    // rather than eating another model's internal usage.
-    const unconsumed = new Map<string, ModelUsageTotals>();
-    const unmatched: Array<[string, ModelUsageTotals]> = [];
-    for (const [model, value] of accounted) {
-      const source = { ...value };
+    const ordered = [
+      ...this.pending.filter((entry) => entry.final),
+      ...this.pending.filter((entry) => !entry.final),
+    ];
+    const elsewhere: PendingUsage[] = [];
+    for (const entry of ordered) {
       const target =
-        remaining.get(model) ??
-        remaining.get(byMatchKey.get(modelMatchKey(model)) ?? '');
+        remaining.get(entry.model) ??
+        remaining.get(byMatchKey.get(modelMatchKey(entry.model)) ?? '');
       if (!target) {
-        unmatched.push([model, source]);
+        // No modelUsage key matches this label at all.
+        elsewhere.push(entry);
         continue;
       }
-      consume(target, source);
-      if (hasTokens(source)) unconsumed.set(model, source);
+      if (consume(target, entry.tokens)) covered.add(entry);
+      if (entry.final && hasTokens(entry.tokens)) elsewhere.push(entry);
     }
-    // A proxy may answer under another model ID than the one modelUsage is
-    // keyed by. Never bill those tokens twice: take them out of the largest
-    // remaining buckets.
-    for (const [model, source] of unmatched) {
+    // Never bill those tokens twice: take them out of the largest remaining
+    // buckets.
+    for (const entry of elsewhere) {
       const targets = [...remaining.values()].sort(
         (left, right) =>
           right.inputTokens +
@@ -400,11 +506,11 @@ export class ResultUsageReconciler {
           (left.inputTokens + left.outputTokens),
       );
       for (const target of targets) {
-        consume(target, source);
-        if (!hasTokens(source)) break;
+        if (consume(target, entry.tokens)) covered.add(entry);
+        if (!hasTokens(entry.tokens)) break;
       }
-      if (hasTokens(source)) unconsumed.set(model, source);
     }
+    this.pending = this.pending.filter((entry) => hasTokens(entry.tokens));
 
     const residual: ResidualUsage = {
       inputTokens: 0,
@@ -426,56 +532,85 @@ export class ResultUsageReconciler {
       };
       for (const field of TOKEN_FIELDS) residual[field] += tokens[field];
     }
-    return {
-      residual:
-        Object.keys(residual.modelUsage).length > 0 ? residual : undefined,
-      unconsumed,
-    };
+    return Object.keys(residual.modelUsage).length > 0 ? residual : undefined;
   }
 
-  private applyRootUsage(
-    input: { usage?: SdkResultUsage; fallbackModelKey: string },
-    accounted: Map<string, ModelUsageTotals>,
-  ): ReconciledResultUsage {
-    if (!input.usage) return { costUSD: 0 };
-    // Root usage is per turn, so it is compared with what this turn already
-    // accounted rather than differenced against the previous result.
-    const root = {
-      ...emptyTotals(),
-      inputTokens: nonNegative(input.usage.input_tokens),
-      outputTokens: nonNegative(input.usage.output_tokens),
-      cacheReadInputTokens: nonNegative(input.usage.cache_read_input_tokens),
-      cacheCreationInputTokens: nonNegative(
-        input.usage.cache_creation_input_tokens,
-      ),
-      reasoningTokens: nonNegative(input.usage.reasoning_output_tokens),
-    };
-    const remaining = new Map([[input.fallbackModelKey || 'default', root]]);
-    const residual = this.residualForRoot(remaining, accounted);
-    return { ...(residual ? { residual } : {}), costUSD: 0 };
-  }
-
-  private residualForRoot(
-    remaining: Map<string, ModelUsageTotals>,
-    accounted: Map<string, ModelUsageTotals>,
-  ): ResidualUsage | undefined {
-    const [model, root] = [...remaining][0];
-    for (const value of accounted.values()) {
-      root.inputTokens -= value.inputTokens;
-      root.cacheReadInputTokens -= value.cacheReadInputTokens;
-      root.cacheCreationInputTokens -= value.cacheCreationInputTokens;
-      root.outputTokens -= value.outputTokens + value.reasoningTokens;
+  /** Count one more result against every entry it did not cover. */
+  private agePending(
+    covered: Set<PendingUsage>,
+  ): Record<string, ModelUsageTotals> | undefined {
+    const dropped: Record<string, ModelUsageTotals> = {};
+    const survivors: PendingUsage[] = [];
+    for (const entry of this.pending) {
+      entry.fresh = false;
+      entry.idleResults = covered.has(entry) ? 0 : entry.idleResults + 1;
+      if (entry.idleResults < MAX_PENDING_IDLE_RESULTS) {
+        survivors.push(entry);
+        continue;
+      }
+      dropped[entry.model] ??= emptyTotals();
+      addTokens(dropped[entry.model], entry.tokens);
     }
-    const tokens = emptyTotals();
-    for (const field of TOKEN_FIELDS) tokens[field] = Math.max(0, root[field]);
-    if (!hasTokens(tokens)) return undefined;
-    return {
-      inputTokens: tokens.inputTokens,
-      outputTokens: tokens.outputTokens,
-      cacheReadInputTokens: tokens.cacheReadInputTokens,
-      cacheCreationInputTokens: tokens.cacheCreationInputTokens,
-      reasoningTokens: tokens.reasoningTokens,
-      modelUsage: { [model]: tokens },
-    };
+    this.pending = coalesce(survivors);
+    return Object.keys(dropped).length > 0 ? dropped : undefined;
+  }
+
+  private applyRootUsage(input: {
+    usage?: SdkResultUsage;
+    fallbackModelKey: string;
+  }): ReconciledResultUsage {
+    const model = input.fallbackModelKey || 'default';
+    let residual: ResidualUsage | undefined;
+    if (input.usage) {
+      // Root usage is per turn, so it is compared with what this turn
+      // flushed rather than differenced against the previous result.
+      const root = {
+        ...emptyTotals(),
+        inputTokens: nonNegative(input.usage.input_tokens),
+        outputTokens: nonNegative(input.usage.output_tokens),
+        cacheReadInputTokens: nonNegative(input.usage.cache_read_input_tokens),
+        cacheCreationInputTokens: nonNegative(
+          input.usage.cache_creation_input_tokens,
+        ),
+        reasoningTokens: nonNegative(input.usage.reasoning_output_tokens),
+      };
+      for (const entry of this.pending) {
+        if (!entry.fresh) continue;
+        const { tokens } = entry;
+        root.inputTokens -= tokens.inputTokens;
+        root.cacheReadInputTokens -= tokens.cacheReadInputTokens;
+        root.cacheCreationInputTokens -= tokens.cacheCreationInputTokens;
+        root.outputTokens -= tokens.outputTokens + tokens.reasoningTokens;
+      }
+      const tokens = emptyTotals();
+      for (const field of TOKEN_FIELDS) {
+        tokens[field] = Math.max(0, root[field]);
+      }
+      if (hasTokens(tokens)) {
+        residual = {
+          inputTokens: tokens.inputTokens,
+          outputTokens: tokens.outputTokens,
+          cacheReadInputTokens: tokens.cacheReadInputTokens,
+          cacheCreationInputTokens: tokens.cacheCreationInputTokens,
+          reasoningTokens: tokens.reasoningTokens,
+          modelUsage: { [model]: tokens },
+        };
+      }
+    }
+    // Root usage is no cumulative total and covers nothing pending, while a
+    // later result's modelUsage includes these calls and the remainder
+    // billed here. Everything stays pending, without aging.
+    for (const entry of this.pending) entry.fresh = false;
+    if (residual) {
+      this.pending.push({
+        model,
+        tokens: { ...residual.modelUsage[model] },
+        final: true,
+        idleResults: 0,
+        fresh: false,
+      });
+    }
+    this.pending = coalesce(this.pending);
+    return { ...(residual ? { residual } : {}), costUSD: 0 };
   }
 }

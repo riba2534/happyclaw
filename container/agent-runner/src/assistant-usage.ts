@@ -14,6 +14,11 @@ export interface CollectedAssistantUsage extends TokenSnapshot {
   total: number;
   /** Subagent task ID (SDK 0.3.292+); selects the sidechain transcript. */
   agentId?: string;
+  /**
+   * The snapshot carries a stop_reason: Claude Code sets it on the message
+   * in the same step that adds the call to modelUsage.
+   */
+  final?: boolean;
 }
 
 /**
@@ -158,10 +163,13 @@ export function parseAssistantUsage(
       : typeof sdkMessage.agentId === 'string' && sdkMessage.agentId.trim()
         ? sdkMessage.agentId.trim()
         : undefined;
+  const final =
+    typeof message.stop_reason === 'string' && message.stop_reason !== '';
   return {
     ...value,
     total: snapshotTotal(value),
     ...(agentId ? { agentId } : {}),
+    ...(final ? { final } : {}),
   };
 }
 
@@ -176,6 +184,12 @@ export interface AssistantUsageBatch {
     | 'reasoningTokens'
     | 'modelUsage'
   >;
+  /**
+   * The call's final usage was known when it was flushed (message_delta, or
+   * a stop_reason on the live or transcript message), so Claude Code has
+   * already counted it. Otherwise it may still be running.
+   */
+  final: boolean;
 }
 
 /**
@@ -198,6 +212,8 @@ export class AssistantUsageCollector {
   private readonly streamFinalById = new Map<string, TokenSnapshot>();
   /** Open streamed message per `parent_tool_use_id` scope. */
   private readonly streamIdByScope = new Map<string, string>();
+  /** Message IDs whose API call was seen ending before they were flushed. */
+  private readonly finalIds = new Set<string>();
   private readonly contentById = new Map<string, TurnContentFootprint>();
 
   private collectContent(sdkMessage: Record<string, unknown>): void {
@@ -253,6 +269,7 @@ export class AssistantUsageCollector {
     this.collectContent(sdkMessage);
     const current = parseAssistantUsage(sdkMessage);
     if (!current || this.flushedIds.has(current.id)) return;
+    if (current.final) this.finalIds.add(current.id);
     const previous = this.bestById.get(current.id);
     if (!previous || current.total > previous.total) {
       this.bestById.set(current.id, current);
@@ -280,6 +297,18 @@ export class AssistantUsageCollector {
     } else if (event.type === 'message_delta') {
       id = this.streamIdByScope.get(scope);
       usage = event.usage;
+      // Claude Code 2.1.296 adds the call to modelUsage while handling a
+      // message_delta with a stop_reason, before it yields the event.
+      const delta = event.delta as Record<string, unknown> | undefined;
+      const stopReason = delta?.stop_reason;
+      if (
+        id &&
+        !this.flushedIds.has(id) &&
+        typeof stopReason === 'string' &&
+        stopReason !== ''
+      ) {
+        this.finalIds.add(id);
+      }
     }
     if (!id || this.flushedIds.has(id)) return;
     if (!usage || typeof usage !== 'object') return;
@@ -316,6 +345,7 @@ export class AssistantUsageCollector {
       ...merged,
       total: snapshotTotal(merged),
     };
+    const final = this.finalIds.has(entry.id) || transcriptHit?.final === true;
     // One stable Anthropic message ID must remain one ledger event. Aggregating
     // several IDs behind the last ID would make resume/fork transcript replays
     // charge the earlier IDs again when a later new message arrives.
@@ -332,6 +362,7 @@ export class AssistantUsageCollector {
     for (const entry of entries) {
       this.flushedIds.add(entry.id);
       this.streamFinalById.delete(entry.id);
+      this.finalIds.delete(entry.id);
       const model = modelUsage[entry.model] || {
         inputTokens: 0,
         outputTokens: 0,
@@ -372,6 +403,7 @@ export class AssistantUsageCollector {
     return {
       eventId: `claude-code:${entry.id}`,
       tokens: { ...root, modelUsage },
+      final,
     };
   }
 }

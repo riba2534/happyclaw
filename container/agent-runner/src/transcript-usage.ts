@@ -106,7 +106,11 @@ function ingestTranscriptLine(
   const usage = parseAssistantUsage(parsed as Record<string, unknown>);
   if (!usage) return;
   const previous = usageById.get(usage.id);
-  if (!previous || usage.total > previous.total) usageById.set(usage.id, usage);
+  // Any line with a stop_reason proves the call ended, whichever line
+  // carries the largest snapshot.
+  const final = usage.final || previous?.final;
+  const best = !previous || usage.total > previous.total ? usage : previous;
+  usageById.set(usage.id, final ? { ...best, final } : best);
 }
 
 /**
