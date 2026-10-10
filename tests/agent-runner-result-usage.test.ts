@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import {
   MAX_PENDING_IDLE_RESULTS,
   MAX_RUNNING_PENDING_MS,
+  runningPendingWindowMs,
   ResultUsageReconciler,
 } from '../container/agent-runner/src/result-usage.js';
 import { AssistantUsageCollector } from '../container/agent-runner/src/assistant-usage.js';
@@ -914,5 +915,18 @@ describe('usage baseline sidecar', () => {
       new ResultUsageReconciler({ resumed: true, baseline: loaded })
         .pendingAccounted,
     ).toEqual({ [MODEL]: tokens(700, 1) });
+  });
+});
+
+describe('running pending window', () => {
+  test('outlasts the provider request timeout and never drops below an hour', () => {
+    expect(runningPendingWindowMs(undefined)).toBe(MAX_RUNNING_PENDING_MS);
+    expect(runningPendingWindowMs('600000')).toBe(MAX_RUNNING_PENDING_MS);
+    // Third-party default (50 min) keeps the hour; a 2h timeout extends it.
+    expect(runningPendingWindowMs('3000000')).toBe(MAX_RUNNING_PENDING_MS);
+    expect(runningPendingWindowMs(String(2 * 60 * 60 * 1000))).toBe(
+      2 * 60 * 60 * 1000 + 10 * 60 * 1000,
+    );
+    expect(runningPendingWindowMs('not-a-number')).toBe(MAX_RUNNING_PENDING_MS);
   });
 });

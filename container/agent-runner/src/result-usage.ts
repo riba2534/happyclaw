@@ -120,11 +120,26 @@ export interface ReconciledResultUsage {
 export const MAX_PENDING_IDLE_RESULTS = 16;
 
 /**
- * How long a possibly running call stays pending. A background subagent
- * call can span any number of main results, so it is aged by time: one API
- * call (10 minute default request timeout) never lasts an hour.
+ * Minimum time a possibly running call stays pending. A background subagent
+ * call can span any number of main results, so it is aged by time, and the
+ * window always outlasts one API request (see runningPendingWindowMs).
  */
 export const MAX_RUNNING_PENDING_MS = 60 * 60 * 1000;
+
+/** Slack added on top of the request timeout before a running call expires. */
+const RUNNING_PENDING_SLACK_MS = 10 * 60 * 1000;
+
+/**
+ * Pending window for running calls given the CLI's API_TIMEOUT_MS. Third-
+ * party providers default it to 50 minutes and may raise it, so a fixed hour
+ * could expire a call that is still streaming and bill it twice.
+ */
+export function runningPendingWindowMs(apiTimeoutMs?: string): number {
+  const timeout = Number(apiTimeoutMs);
+  const request =
+    Number.isFinite(timeout) && timeout > 0 ? timeout : 10 * 60 * 1000;
+  return Math.max(MAX_RUNNING_PENDING_MS, request + RUNNING_PENDING_SLACK_MS);
+}
 
 const TOKEN_FIELDS = [
   'inputTokens',
@@ -296,6 +311,7 @@ export class ResultUsageReconciler {
    */
   private pending: PendingUsage[] = [];
   private readonly now: () => number;
+  private readonly runningPendingMs: number;
 
   /**
    * @param options.baseline the persisted totals of the session being
@@ -303,14 +319,19 @@ export class ResultUsageReconciler {
    * @param options.resumed whether this query resumes a session. A resumed
    *   query without a baseline cannot tell restored history from new spend,
    *   so its first result only establishes the baseline.
-   * @param options.now clock for aging running calls (tests).
+   * @param options.now clock for aging running calls (tests). Defaults to a
+   *   monotonic clock: a wall-clock jump (NTP, sleep/wake) must not expire
+   *   a call early. Entries only age within one process.
+   * @param options.runningPendingMs how long a running call stays pending.
    */
   constructor(options?: {
     baseline?: PersistedUsageBaseline | null;
     resumed?: boolean;
     now?: () => number;
+    runningPendingMs?: number;
   }) {
-    this.now = options?.now ?? Date.now;
+    this.now = options?.now ?? (() => performance.now());
+    this.runningPendingMs = options?.runningPendingMs ?? MAX_RUNNING_PENDING_MS;
     const baseline = options?.baseline;
     if (baseline) {
       for (const [model, value] of Object.entries(baseline.modelUsage)) {
@@ -601,7 +622,7 @@ export class ResultUsageReconciler {
         }
         expired = entry.idleResults >= MAX_PENDING_IDLE_RESULTS;
       } else {
-        expired = now - entry.recordedAt >= MAX_RUNNING_PENDING_MS;
+        expired = now - entry.recordedAt >= this.runningPendingMs;
       }
       if (!expired) {
         survivors.push(entry);

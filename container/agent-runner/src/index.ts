@@ -140,8 +140,8 @@ import {
 } from './sdk-control.js';
 import {
   MAX_PENDING_IDLE_RESULTS,
-  MAX_RUNNING_PENDING_MS,
   ResultUsageReconciler,
+  runningPendingWindowMs,
   type SdkModelUsage,
   type SdkResultUsage,
 } from './result-usage.js';
@@ -2146,7 +2146,9 @@ async function runQueryAttempt(
   // process does not bill restored history again) and reports what no
   // per-message event covered: session titles, compaction, WebFetch and
   // subagent progress summaries.
+  const runningPendingMs = runningPendingWindowMs(process.env.API_TIMEOUT_MS);
   const usageReconciler = new ResultUsageReconciler({
+    runningPendingMs,
     resumed: !!sessionId,
     baseline: sessionId
       ? readUsageBaseline(resolveTranscriptDir(), sessionId, logWarn)
@@ -2217,7 +2219,7 @@ async function runQueryAttempt(
     }
     if (reconciled.droppedPending) {
       logWarn(
-        `Dropped per-message usage no modelUsage covered (completed calls after ${MAX_PENDING_IDLE_RESULTS} results, running ones after ${MAX_RUNNING_PENDING_MS / 60_000} min): ${JSON.stringify(reconciled.droppedPending)}`,
+        `Dropped per-message usage no modelUsage covered (completed calls after ${MAX_PENDING_IDLE_RESULTS} results, running ones after ${runningPendingMs / 60_000} min): ${JSON.stringify(reconciled.droppedPending)}`,
       );
     }
     const resultUuid =
