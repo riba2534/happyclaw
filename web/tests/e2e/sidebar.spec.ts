@@ -40,3 +40,34 @@ test('marks the opened workspace and its main conversation as current', async ({
     betaItem.locator('[aria-current="page"]', { hasText: '当前对话' }),
   ).toHaveCount(0);
 });
+
+test('a dialog whose chunk fails to load closes with a toast instead of taking the app down', async ({
+  page,
+}) => {
+  let blocked = true;
+  await page.route(
+    '**/src/components/chat/CreateContainerDialog.tsx*',
+    (route) =>
+      blocked ? route.abort('internetdisconnected') : route.continue(),
+  );
+  let loads = 0;
+  page.on('load', () => (loads += 1));
+  await page.goto(HARNESS_PATH);
+  const nav = page.getByRole('navigation', { name: '主导航' });
+  const create = nav.getByRole('button', { name: '新建工作区' }).first();
+
+  await create.click();
+  const toast = page.getByText('加载失败，请检查网络后重试');
+  await expect(toast).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(nav).toBeVisible();
+  // Neither the failed idle preload nor the failed open reloads by itself.
+  await page.waitForTimeout(500);
+  expect(loads).toBe(1);
+
+  blocked = false;
+  await page.getByRole('button', { name: '刷新页面' }).click();
+  await expect.poll(() => loads).toBe(2);
+  await create.click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+});

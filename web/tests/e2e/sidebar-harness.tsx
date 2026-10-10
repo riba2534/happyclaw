@@ -1,8 +1,10 @@
 // Desktop sidebar on mocked stores: a home workspace and two others, each
-// with two sessions. The page shows the current route for assertions.
+// with two sessions. The page shows the current route for assertions, and
+// toasts for failures.
 import { createRoot } from 'react-dom/client';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { UnifiedSidebar } from '../../src/components/layout/UnifiedSidebar';
+import { Toaster } from '../../src/components/ui/sonner';
 import { TooltipProvider } from '../../src/components/ui/tooltip';
 import { MotionProvider } from '../../src/lib/motion';
 import { useAuthStore, type UserPublic } from '../../src/stores/auth';
@@ -112,6 +114,7 @@ createRoot(document.getElementById('root')!).render(
           <RouteProbe />
         </div>
       </MemoryRouter>
+      <Toaster />
     </TooltipProvider>
   </MotionProvider>,
 );

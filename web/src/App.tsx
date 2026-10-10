@@ -5,8 +5,9 @@ import {
   createBrowserRouter,
   createHashRouter,
   createRoutesFromElements,
+  useRouteError,
 } from 'react-router-dom';
-import { lazy, Suspense, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, type ReactNode } from 'react';
 import { AuthGuard } from './components/auth/AuthGuard';
 import { APP_BASE, shouldUseHashRouter } from './utils/url';
 import {
@@ -14,6 +15,11 @@ import {
   shouldPreloadChatRoute,
 } from './utils/chat-route-preload';
 import { preloadedComponent } from './lib/preloaded-component';
+import { LoadErrorNotice } from './components/common/LoadErrorNotice';
+import {
+  isStaleChunkError,
+  reloadForStaleChunk,
+} from './utils/staleChunkReload';
 import { Toaster } from '@/components/ui/sonner';
 import { ConfirmHost } from '@/components/common/ConfirmHost';
 
@@ -24,6 +30,7 @@ import { ConfirmHost } from '@/components/common/ConfirmHost';
 const chatPageRoute = preloadedComponent(
   () => import('./pages/ChatPage').then((m) => ({ default: m.ChatPage })),
   ChatRouteFallback,
+  { rethrow: true },
 );
 const loadChatPage = chatPageRoute.preload;
 const ChatPage = chatPageRoute.Component;
@@ -52,6 +59,7 @@ const appLayoutRoute = preloadedComponent(
       default: m.AppLayout,
     })),
   ShellFallback,
+  { rethrow: true },
 );
 const loadAppLayout = appLayoutRoute.preload;
 const AppLayout = appLayoutRoute.Component;
@@ -165,6 +173,29 @@ function ChatRouteFallback() {
   );
 }
 
+/**
+ * The shell and everything it renders outside its own error boundary (the
+ * sidebar) end up here when they throw, instead of the router's bare default.
+ */
+function ShellError() {
+  const error = useRouteError();
+  useEffect(() => {
+    if (isStaleChunkError(error)) reloadForStaleChunk();
+  }, [error]);
+  return (
+    <div className="flex min-h-screen items-center justify-center px-4">
+      <LoadErrorNotice
+        title="页面暂时无法显示"
+        message={
+          error instanceof Error && error.message
+            ? error.message
+            : '发生了未知的页面渲染错误。'
+        }
+      />
+    </div>
+  );
+}
+
 function lazyShell(element: ReactNode) {
   return <Suspense fallback={<ShellFallback />}>{element}</Suspense>;
 }
@@ -191,6 +222,7 @@ const appRoutes = createRoutesFromElements(
           <AppLayout />
         </AuthGuard>
       }
+      errorElement={<ShellError />}
     >
       <Route path="/chat/:groupFolder?" element={<ChatPage />} />
       <Route path="/groups" element={<Navigate to="/chat" replace />} />
