@@ -36,6 +36,25 @@ describe('container image profiles', () => {
     ).toBe(false);
   });
 
+  test('runs the agent container without privilege gain and with a pids cap', () => {
+    const args = buildContainerArgs(
+      [],
+      'happyclaw-test',
+      'UTC',
+      { mode: 'host-root' },
+      { addHostGateway: false },
+      'happyclaw-agent:test',
+    );
+    const imageIndex = args.indexOf('happyclaw-agent:test');
+    const optionIndex = args.indexOf('--security-opt');
+    expect(args[optionIndex + 1]).toBe('no-new-privileges');
+    expect(args[args.indexOf('--pids-limit') + 1]).toBe('4096');
+    // docker options must precede the image, or they become its arguments.
+    expect(optionIndex).toBeLessThan(imageIndex);
+    expect(args.indexOf('--pids-limit')).toBeLessThan(imageIndex);
+    expect(args).not.toContain('--memory');
+  });
+
   test('places the selected profile image at the end of docker arguments', () => {
     const args = buildContainerArgs(
       [],

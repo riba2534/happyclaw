@@ -648,7 +648,9 @@ export const GroupPatchSchema = z.object({
 });
 
 export const LoginSchema = z.object({
-  username: z.string().min(1),
+  // Real usernames are ≤32 chars (validateUsername); 64 leaves headroom while
+  // bounding the rate-limiter keys a failed attempt can create.
+  username: z.string().min(1).max(64),
   password: z.string().min(1),
 });
 

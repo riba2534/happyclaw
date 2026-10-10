@@ -14,6 +14,7 @@
  * 风险：Baileys 是逆向 WhatsApp Web 协议的社区方案，封号率随 Meta 风控收紧上升。
  * 商用场景应使用官方 Cloud API。
  */
+import { createRejectCooldown } from './reject-cooldown.js';
 import { mkdir, chmod } from 'node:fs/promises';
 import crypto from 'node:crypto';
 import qrcode from 'qrcode';
@@ -253,7 +254,7 @@ export function createWhatsAppConnection(
   // history/notify streams overlap; without this cache the Agent responds twice.
   const msgCache = new Map<string, number>();
   const processingLock = new ProcessingLock();
-  const rejectTimestamps = new Map<string, number>();
+  const rejectCooldown = createRejectCooldown(60_000);
   const hasAmbientProxy = [
     'https_proxy',
     'HTTPS_PROXY',
@@ -838,10 +839,7 @@ export function createWhatsAppConnection(
         return;
       }
       if (admission.kind === 'deny') {
-        const now = Date.now();
-        const lastReject = rejectTimestamps.get(chatJid) ?? 0;
-        if (now - lastReject >= 60_000) {
-          rejectTimestamps.set(chatJid, now);
+        if (rejectCooldown.shouldNotify(chatJid)) {
           await activeSock.sendMessage(remoteJid, {
             text: '此聊天尚未配对。请在 Web 设置页生成配对码，然后发送 /pair <code>。',
           });

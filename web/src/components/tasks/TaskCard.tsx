@@ -1,28 +1,45 @@
 import { useState } from 'react';
-import type { KeyboardEvent, MouseEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  ChevronDown,
-  ChevronUp,
+  Bot,
   ExternalLink,
+  Eye,
+  MoreHorizontal,
   Pause,
+  Pencil,
   Play,
   RotateCcw,
   Square,
+  SquareTerminal,
   Trash2,
   Zap,
 } from 'lucide-react';
-import { ScheduledTask, type TaskRun } from '../../stores/tasks';
-import { TaskDetail } from './TaskDetail';
+import type { ScheduledTask, TaskRun } from '../../stores/tasks';
 import { showToast } from '../../utils/toast';
 import {
   formatContextMode,
   formatInterval,
   formatTaskStatus,
 } from '../../utils/task-utils';
+import { IconButton } from '@/components/common/IconButton';
+import { ListRow } from '@/components/common/ListRow';
+import { Badge, type BadgeDot } from '@/components/ui/badge';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { cn } from '@/lib/utils';
 
 interface TaskCardProps {
   task: ScheduledTask;
+  /** Display name of the owning workspace, shown in the row meta line. */
+  workspaceName?: string;
+  selected?: boolean;
+  /** Open the detail sheet, optionally straight into edit mode. */
+  onOpen?: (id: string, options?: { edit?: boolean }) => void;
   onPause: (id: string) => void;
   onResume: (id: string) => void;
   onDelete: (id: string) => void;
@@ -34,8 +51,22 @@ interface TaskCardProps {
   isMutating?: boolean;
 }
 
+function formatShortDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 export function TaskCard({
   task,
+  workspaceName,
+  selected = false,
+  onOpen,
   onPause,
   onResume,
   onDelete,
@@ -46,7 +77,6 @@ export function TaskCard({
   isRunning = false,
   isMutating = false,
 }: TaskCardProps) {
-  const [expanded, setExpanded] = useState(false);
   const [runningNow, setRunningNow] = useState(false);
   const navigate = useNavigate();
   const currentRun = task.current_run;
@@ -55,6 +85,10 @@ export function TaskCard({
     !!currentRun?.status.match(
       /^(queued|running|recovering|retry_wait|delivered)$/,
     );
+  const isScript = task.execution_type === 'script';
+  const title =
+    (task.prompt || '').split('\n')[0].trim().slice(0, 80).trim() ||
+    task.id.slice(0, 8);
 
   const runStatusLabel = (run: TaskRun): string => {
     switch (run.status) {
@@ -80,29 +114,38 @@ export function TaskCard({
     }
   };
 
-  const getStatusColor = () => {
-    if (task.deleted_at) {
-      return 'bg-muted text-muted-foreground';
+  const getStatusDot = (): BadgeDot => {
+    if (task.deleted_at) return 'muted';
+    if (currentRun) {
+      switch (currentRun.status) {
+        case 'retry_wait':
+        case 'missed':
+          return 'warning';
+        case 'failed':
+        case 'error':
+          return 'error';
+        case 'success':
+          return 'success';
+        case 'cancelled':
+          return 'muted';
+        default:
+          return 'primary';
+      }
     }
-    if (effectiveRunning) {
-      return 'bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-300';
-    }
+    if (effectiveRunning) return 'primary';
     switch (task.status) {
       case 'active':
-        return 'bg-green-100 dark:bg-green-900/40 text-green-600 dark:text-green-400';
+        return 'success';
       case 'parsing':
-        return 'bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400';
+        return 'primary';
       case 'paused':
-        return 'bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400';
-      case 'completed':
-        return 'bg-muted text-muted-foreground';
+        return 'warning';
       default:
-        return 'bg-muted text-muted-foreground';
+        return 'muted';
     }
   };
 
-  const handleTogglePause = (e: MouseEvent<HTMLButtonElement>) => {
-    e.stopPropagation();
+  const handleTogglePause = () => {
     if (task.status === 'active') {
       onPause(task.id);
     } else {
@@ -110,8 +153,7 @@ export function TaskCard({
     }
   };
 
-  const handleRunNow = async (e: MouseEvent<HTMLButtonElement>) => {
-    e.stopPropagation();
+  const handleRunNow = async () => {
     if (!onRunNow || runningNow || effectiveRunning) return;
     setRunningNow(true);
     try {
@@ -124,257 +166,281 @@ export function TaskCard({
     }
   };
 
-  const handleDelete = (e: MouseEvent<HTMLButtonElement>) => {
-    e.stopPropagation();
+  const handleDelete = () => {
     if (effectiveRunning) return;
     onDelete(task.id);
   };
 
-  const toggleExpanded = () => setExpanded((v) => !v);
+  const scheduleText =
+    task.schedule_type === 'cron'
+      ? task.schedule_value
+      : task.schedule_type === 'interval'
+        ? `每 ${formatInterval(task.schedule_value)}`
+        : '单次执行';
+  const notificationFailed = ['failed', 'partial_failed'].includes(
+    task.last_run_summary?.notification_status || '',
+  );
+  const notificationUncertain =
+    task.last_run_summary?.notification_status === 'uncertain';
+  const timeMeta = task.deleted_at
+    ? formatShortDate(task.deleted_at)
+    : task.next_run
+      ? `下次：${formatShortDate(task.next_run)}`
+      : null;
 
-  const handleSummaryKeyDown = (e: KeyboardEvent<HTMLButtonElement>) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      toggleExpanded();
-    }
-  };
+  const canRun =
+    onRunNow &&
+    task.permissions?.can_run !== false &&
+    !task.deleted_at &&
+    (task.status === 'active' || task.status === 'paused');
+  const canTogglePause =
+    !task.deleted_at &&
+    task.permissions?.can_pause !== false &&
+    (task.status === 'active' || task.status === 'paused');
+  const canStop =
+    currentRun &&
+    onStopRun &&
+    task.permissions?.can_stop !== false &&
+    ['queued', 'running', 'recovering', 'retry_wait', 'delivered'].includes(
+      currentRun.status,
+    );
+  const canRestore =
+    task.deleted_at && onRestore && task.permissions?.can_restore !== false;
+  const canPurge =
+    task.deleted_at && onPurge && task.permissions?.can_purge !== false;
+  const canTrash = !task.deleted_at && task.permissions?.can_delete !== false;
+  const canEdit = !task.deleted_at && task.permissions?.can_edit !== false;
 
   return (
-    <article className="rounded-lg border border-border bg-card transition-colors duration-200 hover:border-primary/60">
-      <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
-        <button
-          type="button"
-          onClick={toggleExpanded}
-          onKeyDown={handleSummaryKeyDown}
-          aria-expanded={expanded}
-          className="min-w-0 flex-1 cursor-pointer text-left"
-        >
-          <div className="min-w-0">
-            {/* Title — derived from prompt first line, same as workspace name */}
-            <p className="text-foreground font-semibold text-sm mb-1">
-              {(task.prompt || '').split('\n')[0].trim().slice(0, 30).trim() ||
-                task.id.slice(0, 8)}
-            </p>
-
-            {/* Badges */}
-            <div className="flex flex-wrap items-center gap-1.5 mb-2">
-              {task.execution_type === 'script' && (
-                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300">
-                  脚本
-                </span>
-              )}
-              {task.execution_mode && (
-                <span
-                  className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                    task.execution_mode === 'host'
-                      ? 'bg-purple-100 dark:bg-purple-900/40 text-purple-800 dark:text-purple-300'
-                      : 'bg-cyan-100 dark:bg-cyan-900/40 text-cyan-800 dark:text-cyan-300'
-                  }`}
-                >
-                  {task.execution_mode === 'host' ? '宿主机' : 'Docker'}
-                </span>
-              )}
-              <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-                {formatContextMode(task.context_mode)}
-              </span>
-              <span className="text-xs text-muted-foreground">
-                {task.schedule_type === 'cron' && task.schedule_value}
-                {task.schedule_type === 'interval' &&
-                  `每 ${formatInterval(task.schedule_value)}`}
-                {task.schedule_type === 'once' && '单次执行'}
-              </span>
-            </div>
-
-            {/* Status Badge */}
-            <div>
-              <span
-                className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor()}`}
-              >
-                {task.deleted_at
-                  ? '已移到回收站'
-                  : currentRun
-                    ? runStatusLabel(currentRun)
-                    : formatTaskStatus(task.status, effectiveRunning)}
-              </span>
-              {task.deleted_at && (
-                <span className="ml-2 text-xs text-muted-foreground">
-                  {new Date(task.deleted_at).toLocaleString('zh-CN')}
-                </span>
-              )}
-              {task.permissions?.execution_blocked_reason && (
-                <span className="ml-2 text-xs text-error">配置已阻止执行</span>
-              )}
-              {task.next_run && !task.deleted_at && (
-                <span className="ml-2 text-xs text-muted-foreground">
-                  下次：{new Date(task.next_run).toLocaleString('zh-CN')}
-                </span>
-              )}
-              {['failed', 'partial_failed'].includes(
-                task.last_run_summary?.notification_status || '',
-              ) && <span className="ml-2 text-xs text-error">通知失败</span>}
-              {task.last_run_summary?.notification_status === 'uncertain' && (
-                <span className="ml-2 text-xs text-warning">送达待确认</span>
-              )}
-            </div>
-          </div>
-        </button>
-
-        <div className="flex shrink-0 items-center justify-end gap-1 sm:gap-2">
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              navigate(`/chat/${task.group_folder}`);
-            }}
-            className="flex h-11 w-11 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-brand-50 hover:text-primary"
-            title="打开所属工作区"
-            aria-label="打开所属工作区"
-          >
-            <ExternalLink className="h-5 w-5" />
-          </button>
-
-          {onRunNow &&
-            task.permissions?.can_run !== false &&
-            !task.deleted_at &&
-            (task.status === 'active' || task.status === 'paused') && (
-              <button
-                type="button"
-                onClick={handleRunNow}
-                disabled={runningNow || effectiveRunning}
-                className="flex h-11 w-11 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-amber-50 hover:text-amber-600 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-amber-950/40 dark:hover:text-amber-400"
-                title={task.status === 'paused' ? '立即执行一次' : '立即运行'}
-                aria-label={
-                  task.status === 'paused'
-                    ? '暂停状态立即执行一次'
-                    : '立即运行任务'
-                }
-              >
-                <Zap
-                  className={`h-5 w-5 ${runningNow || effectiveRunning ? 'animate-pulse text-amber-500' : ''}`}
-                />
-              </button>
-            )}
-
-          {!task.deleted_at &&
-            task.permissions?.can_pause !== false &&
-            (task.status === 'active' || task.status === 'paused') && (
-              <button
-                type="button"
-                onClick={handleTogglePause}
-                className="flex h-11 w-11 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-brand-50 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
-                title={
-                  task.status === 'active' ? '暂停后续计划' : '恢复后续计划'
-                }
-                aria-label={
-                  task.status === 'active' ? '暂停后续计划' : '恢复后续计划'
-                }
-              >
-                {task.status === 'active' ? (
-                  <Pause className="h-5 w-5" />
-                ) : (
-                  <Play className="h-5 w-5" />
-                )}
-              </button>
-            )}
-
-          {currentRun &&
-            onStopRun &&
-            task.permissions?.can_stop !== false &&
-            [
-              'queued',
-              'running',
-              'recovering',
-              'retry_wait',
-              'delivered',
-            ].includes(currentRun.status) && (
-              <button
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onStopRun(currentRun.id);
-                }}
-                className="flex h-11 w-11 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-red-50 hover:text-red-600"
-                title="停止当前运行（不影响后续计划）"
-                aria-label="停止当前运行"
-              >
-                <Square className="h-5 w-5" />
-              </button>
-            )}
-
-          {task.deleted_at &&
-            onRestore &&
-            task.permissions?.can_restore !== false && (
-              <button
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onRestore(task.id);
-                }}
-                disabled={isMutating}
-                className="flex h-11 w-11 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-brand-50 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-                title="恢复为暂停状态"
-                aria-label="恢复任务"
-              >
-                <RotateCcw className="h-5 w-5" />
-              </button>
-            )}
-
-          {task.deleted_at &&
-            onPurge &&
-            task.permissions?.can_purge !== false && (
-              <button
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onPurge(task.id);
-                }}
-                disabled={isMutating}
-                className="flex h-11 w-11 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-red-50 hover:text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/50 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-red-950/40 dark:hover:text-red-400"
-                title="永久删除任务和运行历史"
-                aria-label="永久删除任务"
-              >
-                <Trash2 className="h-5 w-5" />
-              </button>
-            )}
-
-          {!task.deleted_at && task.permissions?.can_delete !== false && (
-            <button
-              type="button"
-              onClick={handleDelete}
-              disabled={effectiveRunning || isMutating}
-              className="flex h-11 w-11 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-red-950/40 dark:hover:text-red-400"
-              title={
-                effectiveRunning ? '请先停止当前运行' : '移到回收站并保留历史'
-              }
-              aria-label="将任务移到回收站"
-            >
-              <Trash2 className="h-5 w-5" />
-            </button>
+    <ListRow
+      selected={selected}
+      onClick={onOpen ? () => onOpen(task.id) : undefined}
+      className="gap-3 py-2.5"
+      media={
+        <span className="flex size-8 items-center justify-center rounded-lg bg-surface-selected text-muted-foreground">
+          {isScript ? (
+            <SquareTerminal className="size-4" />
+          ) : (
+            <Bot className="size-4" />
           )}
-
-          <button
-            type="button"
-            onClick={toggleExpanded}
-            className="flex h-11 w-11 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted"
-            title={expanded ? '收起详情' : '展开详情'}
-            aria-label={expanded ? '收起任务详情' : '展开任务详情'}
-            aria-expanded={expanded}
+        </span>
+      }
+      title={title}
+      badges={
+        <Badge
+          variant="outline"
+          dot={getStatusDot()}
+          className={cn(effectiveRunning && 'text-foreground')}
+        >
+          {task.deleted_at
+            ? '已移到回收站'
+            : currentRun
+              ? runStatusLabel(currentRun)
+              : formatTaskStatus(task.status, effectiveRunning)}
+        </Badge>
+      }
+      description={
+        <span className="flex min-w-0 flex-wrap items-center gap-x-1.5">
+          <span
+            className={cn(task.schedule_type === 'cron' && 'font-mono')}
+            title="调度"
           >
-            {expanded ? (
-              <ChevronUp className="h-5 w-5" />
-            ) : (
-              <ChevronDown className="h-5 w-5" />
+            {scheduleText}
+          </span>
+          {workspaceName && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span className="truncate">{workspaceName}</span>
+            </>
+          )}
+          <span aria-hidden="true">·</span>
+          <span>{formatContextMode(task.context_mode)}</span>
+          {isScript && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span>脚本</span>
+            </>
+          )}
+          {task.execution_mode && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span>
+                {task.execution_mode === 'host' ? '宿主机' : 'Docker'}
+              </span>
+            </>
+          )}
+          {timeMeta && (
+            <span className="basis-full truncate sm:pointer-fine:hidden">
+              {timeMeta}
+            </span>
+          )}
+          {task.permissions?.execution_blocked_reason && (
+            <span className="font-medium text-error">配置已阻止执行</span>
+          )}
+          {notificationFailed && (
+            <span className="font-medium text-error">通知失败</span>
+          )}
+          {notificationUncertain && (
+            <span className="font-medium text-warning">送达待确认</span>
+          )}
+        </span>
+      }
+      actions={
+        <>
+          {/* The time meta and the action cluster share one slot: pointer
+              devices swap them on hover/focus, touch screens show actions. */}
+          {timeMeta && (
+            <span className="px-1 text-caption whitespace-nowrap text-muted-foreground tabular-nums max-sm:hidden pointer-coarse:hidden pointer-fine:group-focus-within/list-row:hidden pointer-fine:group-hover/list-row:hidden pointer-fine:group-has-[[aria-expanded=true]]/list-row:hidden">
+              {timeMeta}
+            </span>
+          )}
+          <div className="flex items-center gap-0.5 pointer-fine:hidden pointer-fine:group-focus-within/list-row:flex pointer-fine:group-hover/list-row:flex pointer-fine:group-has-[[aria-expanded=true]]/list-row:flex">
+            {canStop && (
+              <IconButton
+                label="停止当前运行（不影响后续计划）"
+                icon={<Square />}
+                onClick={() => onStopRun!(currentRun!.id)}
+                className="hover:text-error"
+              />
             )}
-          </button>
-        </div>
-      </div>
-
-      {/* Expanded Detail */}
-      {expanded && (
-        <div className="border-t border-border">
-          <TaskDetail task={task} />
-        </div>
-      )}
-    </article>
+            {canRun && (
+              <IconButton
+                label={task.status === 'paused' ? '立即执行一次' : '立即运行'}
+                icon={
+                  <Zap
+                    className={cn(
+                      (runningNow || effectiveRunning) &&
+                        'animate-pulse text-warning',
+                    )}
+                  />
+                }
+                onClick={() => void handleRunNow()}
+                disabled={runningNow || effectiveRunning}
+                className="max-sm:hidden"
+              />
+            )}
+            {canTogglePause && (
+              <IconButton
+                label={
+                  task.status === 'active' ? '暂停后续计划' : '恢复后续计划'
+                }
+                icon={task.status === 'active' ? <Pause /> : <Play />}
+                onClick={handleTogglePause}
+                className="max-sm:hidden"
+              />
+            )}
+            {canRestore && (
+              <IconButton
+                label="恢复为暂停状态"
+                icon={<RotateCcw />}
+                onClick={() => onRestore!(task.id)}
+                disabled={isMutating}
+                className="max-sm:hidden"
+              />
+            )}
+            {canPurge && (
+              <IconButton
+                label="永久删除任务和运行历史"
+                icon={<Trash2 />}
+                onClick={() => onPurge!(task.id)}
+                disabled={isMutating}
+                className="hover:text-error max-sm:hidden"
+              />
+            )}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <IconButton
+                  label={`${title}的更多操作`}
+                  icon={<MoreHorizontal />}
+                  hideTooltip
+                />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-44">
+                {/* Phones only show the menu, so it repeats the row actions. */}
+                {canRun && (
+                  <DropdownMenuItem
+                    className="sm:hidden"
+                    onClick={() => void handleRunNow()}
+                    disabled={runningNow || effectiveRunning}
+                  >
+                    <Zap />
+                    {task.status === 'paused' ? '立即执行一次' : '立即运行'}
+                  </DropdownMenuItem>
+                )}
+                {canTogglePause && (
+                  <DropdownMenuItem
+                    className="sm:hidden"
+                    onClick={handleTogglePause}
+                  >
+                    {task.status === 'active' ? <Pause /> : <Play />}
+                    {task.status === 'active' ? '暂停后续计划' : '恢复后续计划'}
+                  </DropdownMenuItem>
+                )}
+                {canRestore && (
+                  <DropdownMenuItem
+                    className="sm:hidden"
+                    onClick={() => onRestore!(task.id)}
+                    disabled={isMutating}
+                  >
+                    <RotateCcw />
+                    恢复为暂停状态
+                  </DropdownMenuItem>
+                )}
+                {(canRun || canTogglePause || canRestore) && (
+                  <DropdownMenuSeparator className="sm:hidden" />
+                )}
+                {onOpen && (
+                  <DropdownMenuItem onClick={() => onOpen(task.id)}>
+                    <Eye />
+                    查看详情
+                  </DropdownMenuItem>
+                )}
+                {onOpen && canEdit && (
+                  <DropdownMenuItem
+                    onClick={() => onOpen(task.id, { edit: true })}
+                  >
+                    <Pencil />
+                    编辑
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem
+                  onClick={() => navigate(`/chat/${task.group_folder}`)}
+                >
+                  <ExternalLink />
+                  打开所属工作区
+                </DropdownMenuItem>
+                {canPurge && (
+                  <>
+                    <DropdownMenuSeparator className="sm:hidden" />
+                    <DropdownMenuItem
+                      variant="destructive"
+                      className="sm:hidden"
+                      onClick={() => onPurge!(task.id)}
+                      disabled={isMutating}
+                    >
+                      <Trash2 />
+                      永久删除任务和运行历史
+                    </DropdownMenuItem>
+                  </>
+                )}
+                {canTrash && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      variant="destructive"
+                      onClick={handleDelete}
+                      disabled={effectiveRunning || isMutating}
+                    >
+                      <Trash2 />
+                      {effectiveRunning ? '请先停止当前运行' : '移到回收站'}
+                    </DropdownMenuItem>
+                  </>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </>
+      }
+    />
   );
 }

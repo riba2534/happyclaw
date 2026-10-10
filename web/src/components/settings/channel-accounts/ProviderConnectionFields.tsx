@@ -41,7 +41,7 @@ export function ProviderConnectionFields({
             guide={definition.setupGuide}
           />
         )}
-        <p className="text-xs leading-5 text-muted-foreground">
+        <p className="text-caption leading-5 text-muted-foreground">
           {provider === 'wechat'
             ? '扫码结果由 HappyClaw 安全保存，无需填写 Token、Bot ID 或服务地址。'
             : '账号和会话密钥由 HappyClaw 管理，无需填写手机号或账号标识。'}
@@ -77,11 +77,11 @@ export function ProviderConnectionFields({
             return (
               <div
                 key={field.key}
-                className={
+                className={`space-y-1.5 ${
                   definition.credentials.length === 1 ? 'sm:col-span-2' : ''
-                }
+                }`}
               >
-                <Label htmlFor={id}>
+                <Label htmlFor={id} className="gap-0.5 text-label">
                   {field.label}
                   {field.required && (
                     <span aria-hidden="true" className="text-error">
@@ -92,7 +92,6 @@ export function ProviderConnectionFields({
                 </Label>
                 <Input
                   id={id}
-                  className="mt-1.5"
                   type={field.secret ? 'password' : 'text'}
                   value={values[field.key] ?? ''}
                   disabled={disabled}
@@ -105,7 +104,7 @@ export function ProviderConnectionFields({
                 {field.help && (
                   <p
                     id={`${id}-help`}
-                    className="mt-1 text-xs leading-5 text-muted-foreground"
+                    className="text-caption leading-5 text-muted-foreground"
                   >
                     {field.help}
                   </p>
@@ -155,10 +154,10 @@ function ProviderSetupGuide({
   return (
     <section
       aria-labelledby={`${id}-title`}
-      className="rounded-lg border border-border bg-muted/35 px-4 py-3"
+      className="rounded-lg bg-muted/50 px-4 py-3 ring-1 ring-surface-border"
     >
-      <div className="flex flex-col items-start justify-between gap-2 sm:flex-row sm:gap-4">
-        <h4 id={`${id}-title`} className="text-sm font-medium text-foreground">
+      <div className="flex flex-col items-start justify-between gap-1 sm:flex-row sm:items-center sm:gap-4">
+        <h4 id={`${id}-title`} className="text-title-sm text-foreground">
           {guide.title}
         </h4>
         {guide.action && (
@@ -166,22 +165,22 @@ function ProviderSetupGuide({
             href={guide.action.url}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+            className="-mx-1.5 inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-caption font-medium text-primary-text underline-offset-4 hover:underline focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none pointer-coarse:min-h-11"
           >
             {guide.action.label}
             <ExternalLink className="size-3.5" aria-hidden="true" />
           </a>
         )}
       </div>
-      <ol className="mt-2.5 space-y-2">
+      <ol className="mt-2 space-y-1.5">
         {guide.steps.map((step, index) => (
           <li
             key={step}
-            className="flex items-start gap-2 text-xs leading-5 text-muted-foreground"
+            className="flex items-start gap-2 text-caption leading-5 text-muted-foreground"
           >
             <span
               aria-hidden="true"
-              className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border border-border text-[10px] font-medium text-foreground"
+              className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full bg-background text-micro font-medium text-foreground ring-1 ring-surface-border tabular-nums"
             >
               {index + 1}
             </span>
@@ -189,7 +188,7 @@ function ProviderSetupGuide({
           </li>
         ))}
       </ol>
-      <p className="mt-3 border-t border-border pt-2.5 text-xs leading-5 text-foreground/80">
+      <p className="mt-2.5 border-t border-surface-border pt-2.5 text-caption leading-5 text-muted-foreground">
         <span className="font-medium text-foreground">创建后：</span>
         {guide.nextStep}
       </p>
@@ -213,12 +212,12 @@ function OptionSwitch({
   onCheckedChange: (checked: boolean) => void;
 }) {
   return (
-    <div className="flex items-start justify-between gap-4 rounded-lg border border-border px-4 py-3">
-      <div>
-        <Label htmlFor={id} className="text-sm font-medium">
+    <div className="flex items-center justify-between gap-4 rounded-lg px-4 py-3 ring-1 ring-surface-border">
+      <div className="min-w-0">
+        <Label htmlFor={id} className="text-body font-medium">
           {label}
         </Label>
-        <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+        <p className="mt-1 text-caption leading-5 text-muted-foreground">
           {description}
         </p>
       </div>

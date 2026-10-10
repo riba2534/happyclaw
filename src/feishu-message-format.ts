@@ -1,3 +1,5 @@
+import { neutralizeFeishuMentions } from './feishu-errors.js';
+import { findMarkdownBlocks } from './feishu-cards/pagination.js';
 import { optimizeMarkdownStyle } from './feishu-markdown-style.js';
 
 // Feishu documents a generous total post limit, but large single `md` elements
@@ -158,13 +160,24 @@ export function splitFeishuPostMarkdown(
         remaining = '';
         continue;
       }
-      const { prefix, rest } = takeUtf8Prefix(remaining, availableBytes());
+      const { prefix } = takeUtf8Prefix(remaining, availableBytes());
       if (!prefix) {
         flush();
         continue;
       }
-      current += prefix;
-      remaining = rest;
+      // Never end a node inside a link, bold run or inline code span when an
+      // earlier boundary exists: each md node is parsed independently.
+      // Code inside a fence is literal; only prose spans need protection.
+      const cut = fence
+        ? prefix.length
+        : protectedSpanCut(remaining, prefix.length);
+      if (cut === 0 && current) {
+        flush();
+        continue;
+      }
+      const end = cut > 0 ? cut : prefix.length;
+      current += remaining.slice(0, end);
+      remaining = remaining.slice(end);
       flush();
     }
   };
@@ -255,9 +268,68 @@ export function splitFeishuPostMarkdown(
   return chunks.length > 0 ? chunks : [''];
 }
 
+/**
+ * Inline spans that must stay inside one md node. The scan window is bounded:
+ * a span is only relevant when it crosses the cut, and each pattern stops at
+ * its next opener, so long pathological lines stay linear.
+ */
+const PROTECTED_INLINE_SPANS = [
+  /`[^`\n]{1,2048}`/g,
+  /\[[^[\]\n]{0,1024}\]\([^()\s]{0,2048}\)/g,
+  /\*\*(?:(?!\*\*)[^\n]){1,1024}\*\*/g,
+];
+const PROTECTED_SPAN_WINDOW = 4096;
+
+/**
+ * Move a node cut back to the start of a protected span that straddles it.
+ * Returns 0 when the straddling span starts at the very beginning (the caller
+ * then falls back to the byte cut), or `cut` when nothing straddles.
+ */
+function protectedSpanCut(value: string, cut: number): number {
+  const window = value.slice(0, cut + PROTECTED_SPAN_WINDOW);
+  let best = cut;
+  for (const pattern of PROTECTED_INLINE_SPANS) {
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(window))) {
+      const start = match.index;
+      if (start >= cut) break;
+      if (start + match[0].length > cut && start < best) best = start;
+    }
+  }
+  return best;
+}
+
+/**
+ * Feishu post Markdown needs a blank line between a table and its
+ * surrounding blocks. Fenced code is left untouched.
+ */
+export function separatePostMarkdownTables(markdown: string): string {
+  if (!markdown.includes('|')) return markdown;
+  const tables = findMarkdownBlocks(markdown).filter(
+    (block) => block.kind === 'table',
+  );
+  if (tables.length === 0) return markdown;
+  let out = '';
+  let cursor = 0;
+  for (const table of tables) {
+    out += markdown.slice(cursor, table.start);
+    if (out && !out.endsWith('\n\n')) out += out.endsWith('\n') ? '\n' : '\n\n';
+    out += markdown.slice(table.start, table.end);
+    cursor = table.end;
+    if (cursor < markdown.length && markdown[cursor] !== '\n') {
+      out += out.endsWith('\n') ? '\n' : '\n\n';
+    }
+  }
+  return out + markdown.slice(cursor);
+}
+
 /** Build a post+md fallback content string for when interactive card send fails. */
 export function buildPostMdFallback(text: string): string {
-  const optimized = optimizeMarkdownStyle(text, 1);
+  // Model output and quoted tool content must never @ people from a post.
+  const optimized = separatePostMarkdownTables(
+    neutralizeFeishuMentions(optimizeMarkdownStyle(text, 1), 'text'),
+  );
   return JSON.stringify({
     zh_cn: {
       content: splitFeishuPostMarkdown(optimized).map((chunk) => [

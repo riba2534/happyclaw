@@ -191,6 +191,141 @@ function ensureHostClaudeJson(): string {
   return p;
 }
 
+const CONTAINER_CLAUDE_JSON_FALLBACK =
+  '{"hasCompletedOnboarding":true,"autoUpdates":false}\n';
+
+function deriveContainerClaudeJson(hostJsonPath: string): string {
+  try {
+    const hostJson = JSON.parse(fs.readFileSync(hostJsonPath, 'utf-8'));
+    const stripped = { ...hostJson };
+    delete stripped.cachedGrowthBookFeatures;
+    delete stripped.oauthAccount;
+    stripped.autoUpdates = false;
+    return JSON.stringify(stripped, null, 2) + '\n';
+  } catch {
+    return CONTAINER_CLAUDE_JSON_FALLBACK;
+  }
+}
+
+/** What stat can tell about a file's contents. */
+interface FileSignature {
+  ino: number;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+}
+
+function statFileSignature(filePath: string): FileSignature | null {
+  try {
+    const st = fs.statSync(filePath);
+    return {
+      ino: st.ino,
+      size: st.size,
+      mtimeMs: st.mtimeMs,
+      ctimeMs: st.ctimeMs,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function sameFileSignature(
+  a: FileSignature | null,
+  b: FileSignature | null,
+): boolean {
+  if (a === null || b === null) return a === b;
+  return (
+    a.ino === b.ino &&
+    a.size === b.size &&
+    a.mtimeMs === b.mtimeMs &&
+    a.ctimeMs === b.ctimeMs
+  );
+}
+
+/**
+ * File timestamps are coarse, so a same-size in-place rewrite in the same
+ * tick keeps the signature. Like git's "racily clean" rule, a signature only
+ * vouches for the contents once observed this long after the file's mtime.
+ */
+const RACY_SIGNATURE_WINDOW_MS = 2_000;
+
+function fileSignatureSettled(
+  sig: FileSignature | null,
+  observedAt: number,
+): boolean {
+  return sig === null || observedAt - sig.mtimeMs >= RACY_SIGNATURE_WINDOW_MS;
+}
+
+let containerClaudeJsonSource: {
+  path: string;
+  sig: FileSignature | null;
+  observedAt: number;
+  content: string;
+} | null = null;
+let containerClaudeJsonTarget: {
+  path: string;
+  sig: FileSignature;
+  observedAt: number;
+  content: string;
+} | null = null;
+
+function writeContainerClaudeJsonIfChanged(
+  targetPath: string,
+  content: string,
+): void {
+  const observedAt = Date.now();
+  const sig = statFileSignature(targetPath);
+  const known = containerClaudeJsonTarget;
+  if (
+    known &&
+    known.path === targetPath &&
+    known.content === content &&
+    sameFileSignature(known.sig, sig) &&
+    fileSignatureSettled(known.sig, known.observedAt)
+  ) {
+    return;
+  }
+  containerClaudeJsonTarget = null;
+
+  let onDisk: string | null = null;
+  try {
+    onDisk = fs.readFileSync(targetPath, 'utf-8');
+  } catch {
+    /* missing: write it */
+  }
+  if (onDisk === content) {
+    if (sig) {
+      containerClaudeJsonTarget = {
+        path: targetPath,
+        sig,
+        observedAt,
+        content,
+      };
+    }
+    return;
+  }
+
+  // Running containers bind-mount this file read-only. Replacing it by rename
+  // leaves them a whole snapshot instead of a truncated, half-written file.
+  const tmp = `${targetPath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(tmp, content, { mode: 0o644, flag: 'wx' });
+    fs.renameSync(tmp, targetPath);
+  } catch (err) {
+    fs.rmSync(tmp, { force: true });
+    throw err;
+  }
+  const writtenSig = statFileSignature(targetPath);
+  if (writtenSig) {
+    containerClaudeJsonTarget = {
+      path: targetPath,
+      sig: writtenSig,
+      observedAt: Date.now(),
+      content,
+    };
+  }
+}
+
 /**
  * 为 Docker 容器生成精简版 .claude.json。
  * 宿主机 ~/.claude.json 中的 cachedGrowthBookFeatures 含 tengu_bridge_repl_v2 等
@@ -199,8 +334,11 @@ function ensureHostClaudeJson(): string {
  * 同时剥离 oauthAccount：容器内不走宿主机的 OAuth 登录态，认证完全由
  * ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY 环境变量控制，避免 SDK 误检
  * OAuth 凭据后跳过标准 Bearer header（第三方 provider 返回 404）。
+ *
+ * ~/.claude.json can be megabytes, so the copy is re-derived only when the
+ * host file's stats change and rewritten only when its bytes would change.
  */
-function getContainerClaudeJsonPath(): string {
+export function getContainerClaudeJsonPath(): string {
   const containerJsonDir = path.join(DATA_DIR, 'config');
   fs.mkdirSync(containerJsonDir, { recursive: true });
   const containerJsonPath = path.join(
@@ -208,24 +346,35 @@ function getContainerClaudeJsonPath(): string {
     'container-claude-json.json',
   );
 
+  const hostJsonPath = getHostClaudeJsonPath();
+  const observedAt = Date.now();
+  const sourceSig = statFileSignature(hostJsonPath);
+  const cached = containerClaudeJsonSource;
+  let content: string;
+  if (
+    cached &&
+    cached.path === hostJsonPath &&
+    sameFileSignature(cached.sig, sourceSig) &&
+    fileSignatureSettled(cached.sig, cached.observedAt)
+  ) {
+    content = cached.content;
+  } else {
+    content = deriveContainerClaudeJson(hostJsonPath);
+    containerClaudeJsonSource = {
+      path: hostJsonPath,
+      sig: sourceSig,
+      observedAt,
+      content,
+    };
+  }
+
   try {
-    const hostJson = JSON.parse(
-      fs.readFileSync(getHostClaudeJsonPath(), 'utf-8'),
-    );
-    const stripped = { ...hostJson };
-    delete stripped.cachedGrowthBookFeatures;
-    delete stripped.oauthAccount;
-    stripped.autoUpdates = false;
-    fs.writeFileSync(
-      containerJsonPath,
-      JSON.stringify(stripped, null, 2) + '\n',
-      { mode: 0o644 },
-    );
+    writeContainerClaudeJsonIfChanged(containerJsonPath, content);
   } catch {
-    fs.writeFileSync(
+    // As before, a copy that cannot be written falls back to the stub.
+    writeContainerClaudeJsonIfChanged(
       containerJsonPath,
-      '{"hasCompletedOnboarding":true,"autoUpdates":false}\n',
-      { mode: 0o644 },
+      CONTAINER_CLAUDE_JSON_FALLBACK,
     );
   }
 
@@ -337,12 +486,20 @@ const REQUIRED_SETTINGS_ENV: Record<string, string> = {
   // and Claude's native auto-memory must not create a second truth source.
   CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '0',
   CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
-  // 禁用 SDK 附件注入（token_usage, changed_files, todo_reminders 等 20+ 种动态消息）。
-  // 这些附件在每次 query() 时动态生成但不持久化到 JSONL，导致跨进程的消息数组
-  // 前缀不匹配，prompt cache 永远失效（cache_read 始终 = 11224 静态 system prompt）。
-  // 禁用后历史消息的缓存前缀跨 query() 保持一致，实现 1M 上下文下的增量缓存。
-  CLAUDE_CODE_DISABLE_ATTACHMENTS: '1',
 };
+
+/**
+ * Keys an older HappyClaw forced into session settings.json and must now be
+ * removed from it, unless the selected native layer sets them itself.
+ *
+ * CLAUDE_CODE_DISABLE_ATTACHMENTS was forced to keep the prompt-cache prefix
+ * stable across query() processes. Claude Code 2.1.296 treats it like bare
+ * mode: the turn-start attachment pass is skipped, so the skill listing,
+ * nested CLAUDE.md and todo reminders never reach the model and every
+ * selected Skill is invisible. A resumed process now replays the same message
+ * prefix with attachments on, so the old cache rationale no longer applies.
+ */
+const RETIRED_SETTINGS_ENV_KEYS = ['CLAUDE_CODE_DISABLE_ATTACHMENTS'] as const;
 
 function isSettingsRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -464,6 +621,12 @@ function ensureSettingsJson(
 
   const existingEnv = (existing.env as Record<string, string>) || {};
   const mergedEnv = { ...existingEnv, ...REQUIRED_SETTINGS_ENV };
+  const baseEnv = isSettingsRecord(options?.baseSettings?.env)
+    ? options.baseSettings.env
+    : {};
+  for (const key of RETIRED_SETTINGS_ENV_KEYS) {
+    if (!Object.hasOwn(baseEnv, key)) delete mergedEnv[key];
+  }
   const merged: Record<string, unknown> = { ...existing, env: mergedEnv };
 
   // Merge user-configured MCP servers into settings by default. AgentProfile
@@ -2258,25 +2421,69 @@ export function resolveContainerHostIdentity(
   };
 }
 
-function probeContainerSecurityOptions(): readonly string[] | null {
-  let securityOptions: readonly string[] | null = null;
+const SECURITY_OPTIONS_PROBE_ARGS = [
+  'info',
+  '--format',
+  '{{json .SecurityOptions}}',
+];
+const SECURITY_OPTIONS_PROBE_TIMEOUT_MS = 3_000;
+
+function parseSecurityOptions(raw: string): readonly string[] | null {
   try {
-    const raw = execFileSync(
-      'docker',
-      ['info', '--format', '{{json .SecurityOptions}}'],
-      { encoding: 'utf8', timeout: 3_000 },
-    ).trim();
-    const parsed: unknown = JSON.parse(raw);
+    const parsed: unknown = JSON.parse(raw.trim());
     if (
       Array.isArray(parsed) &&
       parsed.every((option) => typeof option === 'string')
     ) {
-      securityOptions = parsed;
+      return parsed;
     }
   } catch {
-    // A missing/unsupported probe must not enable numeric id remapping.
+    /* fall through */
   }
-  return securityOptions;
+  return null;
+}
+
+function probeContainerSecurityOptions(): readonly string[] | null {
+  try {
+    return parseSecurityOptions(
+      execFileSync('docker', SECURITY_OPTIONS_PROBE_ARGS, {
+        encoding: 'utf8',
+        timeout: SECURITY_OPTIONS_PROBE_TIMEOUT_MS,
+      }),
+    );
+  } catch {
+    // A missing/unsupported probe must not enable numeric id remapping.
+    return null;
+  }
+}
+
+/**
+ * The same probe without holding the event loop for the docker CLI round
+ * trip (55-80 ms measured on Linux) on every launch.
+ */
+export function probeContainerSecurityOptionsAsync(): Promise<
+  readonly string[] | null
+> {
+  return new Promise((resolve) => {
+    try {
+      execFile(
+        'docker',
+        SECURITY_OPTIONS_PROBE_ARGS,
+        { encoding: 'utf8', timeout: SECURITY_OPTIONS_PROBE_TIMEOUT_MS },
+        (err, stdout) => {
+          // A missing/unsupported probe must not enable numeric id remapping.
+          resolve(err ? null : parseSecurityOptions(stdout));
+        },
+      );
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+/** Only a Linux daemon's security options affect the identity decision. */
+function securityOptionsMatter(): boolean {
+  return process.platform === 'linux';
 }
 
 export function detectContainerHostIdentity(
@@ -2287,7 +2494,31 @@ export function detectContainerHostIdentity(
   // Probe every launch. Docker context/daemon security options can change
   // while HappyClaw is running; reusing an earlier direct result could bypass
   // rootless/userns fail-closed handling, while caching unknown blocks recovery.
-  const securityOptions = readSecurityOptions();
+  const securityOptions = securityOptionsMatter()
+    ? readSecurityOptions()
+    : null;
+  return resolveContainerHostIdentity({
+    platform: process.platform,
+    uid: process.getuid?.(),
+    gid: process.getgid?.(),
+    securityOptions,
+  });
+}
+
+/** detectContainerHostIdentity() for launches: still probed every time. */
+export async function detectContainerHostIdentityAsync(
+  readSecurityOptions: () => Promise<
+    readonly string[] | null
+  > = probeContainerSecurityOptionsAsync,
+): Promise<ContainerHostIdentity> {
+  let securityOptions: readonly string[] | null = null;
+  if (securityOptionsMatter()) {
+    try {
+      securityOptions = await readSecurityOptions();
+    } catch {
+      securityOptions = null;
+    }
+  }
   return resolveContainerHostIdentity({
     platform: process.platform,
     uid: process.getuid?.(),
@@ -2408,6 +2639,11 @@ export function buildContainerArgs(
   containerImage = CONTAINER_IMAGE,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
+  // Hardening from the Agent SDK secure-deployment guidance that this image
+  // tolerates: the entrypoint drops root with runuser and Chromium runs with
+  // --no-sandbox, so nothing needs a setuid privilege gain; the pids limit
+  // only stops runaway forks and stays far above browser and build loads.
+  args.push('--security-opt', 'no-new-privileges', '--pids-limit', '4096');
 
   // Set timezone so container Node.js processes use local time (Asia/Shanghai)
   args.push('-e', `TZ=${tz}`);
@@ -2526,6 +2762,10 @@ export async function runContainerAgent(
   ownerHomeFolder?: string,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
+  // Probed per launch as before, but asynchronously and ahead of provider
+  // selection, so everything from selection to spawn stays one synchronous
+  // step while the docker CLI round trip no longer blocks the event loop.
+  const hostIdentity = await detectContainerHostIdentityAsync();
   const sessionAgentId = input.sessionAgentId ?? input.agentId;
 
   const groupDir = path.join(GROUPS_DIR, group.folder);
@@ -2626,7 +2866,7 @@ export async function runContainerAgent(
       mounts,
       containerName,
       TIMEZONE,
-      detectContainerHostIdentity(),
+      hostIdentity,
       {
         addHostGateway:
           containerProxy.addHostGateway || preparedLaunch.usesCodexGateway,
@@ -3855,8 +4095,10 @@ export async function runHostAgent(
     // CLAUDE.md/rules/skills.
     hostEnv['CLAUDE_CONFIG_DIR'] = resolvedSessionsDir;
 
-    // 让 SDK 捕获 CLI 的 stderr 输出，便于排查启动失败
-    hostEnv['DEBUG_CLAUDE_AGENT_SDK'] = '1';
+    // No DEBUG_CLAUDE_AGENT_SDK: the SDK turns it into DEBUG=1 for the CLI,
+    // which then writes debug logs under CLAUDE_CONFIG_DIR/debug on every
+    // run. The runner captures CLI stderr through the SDK `stderr` option.
+    delete hostEnv['DEBUG_CLAUDE_AGENT_SDK'];
     // Claude Code 2.1.114+ 禁止 root 使用 --dangerously-skip-permissions，
     // IS_SANDBOX=1 告知 CLI 当前运行在受控环境中以绕过此限制。
     // host 模式由 happyclaw 主进程托管（见 permissionMode: 'bypassPermissions'），

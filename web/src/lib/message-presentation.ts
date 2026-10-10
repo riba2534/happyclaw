@@ -42,3 +42,31 @@ export function getPresentedMessageContent(
     .replace(LEGACY_STOPPED_SUFFIX, '')
     .trimEnd();
 }
+
+/**
+ * A short, neutral note for a reply that ended before it finished, so a
+ * stopped or cut-off answer doesn't read as complete. Null for finished
+ * replies and user messages.
+ */
+export function incompleteReplyNote(
+  message: Pick<Message, 'is_from_me' | 'finalization_reason'>,
+): { label: string; detail: string } | null {
+  if (!message.is_from_me) return null;
+  switch (message.finalization_reason) {
+    case 'interrupted':
+      return {
+        label: '已中断',
+        detail: '回复在完成前被停止，或被新消息打断',
+      };
+    case 'truncated':
+      return {
+        label: '已截断',
+        detail: '回复达到长度上限，后面的内容没有生成',
+      };
+    case 'shutdown':
+    case 'crash_recovery':
+      return { label: '未完成', detail: '服务重启时这条回复还没有完成' };
+    default:
+      return null;
+  }
+}

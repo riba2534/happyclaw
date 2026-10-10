@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { Card, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { type Permission, useAuthStore } from '../../stores/auth';
 import { LogoLoading } from '../common/LogoLoading';
 
@@ -17,7 +17,15 @@ export function AuthGuard({
   requiredPermission,
   requiredAnyPermissions,
 }: AuthGuardProps) {
-  const { authenticated, checking, checkAuth, user, initialized, setupStatus, hasPermission } = useAuthStore();
+  const {
+    authenticated,
+    checking,
+    checkAuth,
+    user,
+    initialized,
+    setupStatus,
+    hasPermission,
+  } = useAuthStore();
   const location = useLocation();
   const navigate = useNavigate();
   const checkedRef = useRef(false);
@@ -26,6 +34,12 @@ export function AuthGuard({
   useEffect(() => {
     if (checkedRef.current) return;
     checkedRef.current = true;
+    // Nested guards (e.g. /monitor inside the layout guard) only check
+    // permissions. Re-running checkAuth would flip `checking` and make the
+    // outer guard unmount and remount the whole app shell.
+    const { authenticated: signedIn, checking: pending } =
+      useAuthStore.getState();
+    if (signedIn && !pending) return;
     void checkAuth();
   }, [checkAuth]);
 
@@ -41,31 +55,27 @@ export function AuthGuard({
   if (checking) {
     if (timedOut) {
       return (
-        <div className="min-h-screen bg-background flex items-center justify-center p-6">
-          <Card className="max-w-md text-center">
-            <CardContent>
-              <h2 className="text-lg font-semibold text-foreground mb-2">页面初始化超时</h2>
-              <p className="text-sm text-muted-foreground mb-4">
-                后端可能刚启动或浏览器缓存异常，请先刷新页面；若仍失败，重新登录。
-              </p>
-              <div className="flex items-center justify-center gap-3">
-                <button
-                  onClick={() => window.location.reload()}
-                  className="px-4 py-2 text-sm rounded-lg bg-primary text-white hover:bg-primary/90"
-                >
-                  刷新页面
-                </button>
-                <button
-                  onClick={() => {
-                    navigate('/login', { replace: true });
-                  }}
-                  className="px-4 py-2 text-sm rounded-lg border border-border text-foreground hover:bg-muted"
-                >
-                  去登录页
-                </button>
-              </div>
-            </CardContent>
-          </Card>
+        <div className="flex min-h-screen items-center justify-center bg-background p-6">
+          <div
+            role="alert"
+            className="w-full max-w-md rounded-xl bg-surface-raised p-6 text-center shadow-floating ring-1 ring-surface-border"
+          >
+            <h2 className="text-title text-foreground">页面初始化超时</h2>
+            <p className="mt-2 text-body text-muted-foreground">
+              后端可能刚启动或浏览器缓存异常，请先刷新页面；若仍失败，重新登录。
+            </p>
+            <div className="mt-5 flex items-center justify-center gap-2">
+              <Button onClick={() => window.location.reload()}>刷新页面</Button>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  navigate('/login', { replace: true });
+                }}
+              >
+                去登录页
+              </Button>
+            </div>
+          </div>
         </div>
       );
     }
@@ -87,7 +97,11 @@ export function AuthGuard({
   }
 
   // Admin onboarding: force provider setup flow before entering full app.
-  if (user?.role === 'admin' && setupStatus?.needsSetup && location.pathname !== '/setup/providers') {
+  if (
+    user?.role === 'admin' &&
+    setupStatus?.needsSetup &&
+    location.pathname !== '/setup/providers'
+  ) {
     return <Navigate to="/setup/providers" replace />;
   }
 

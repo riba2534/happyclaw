@@ -112,9 +112,10 @@ describe('agent-runner SDK control requests', () => {
       const watchdog = new SdkFirstResponseWatchdog(60_000, onTimeout);
 
       watchdog.beginCompaction(10 * 60_000);
-      // Treat the first two minutes as a completed summarization round-trip.
-      // The SDK has no PostCompact callback, so the same absolute deadline must
-      // also bound a provider that never emits the subsequent model response.
+      // Treat the first two minutes as a summarization round-trip whose end
+      // was never reported: without PostCompact, compact_boundary or a status
+      // compact_result, the same absolute deadline must also bound a provider
+      // that never emits the subsequent model response.
       await vi.advanceTimersByTimeAsync(2 * 60_000);
       expect(onTimeout).not.toHaveBeenCalled();
 
@@ -124,6 +125,70 @@ describe('agent-runner SDK control requests', () => {
       await vi.advanceTimersByTimeAsync(1);
       expect(onTimeout).toHaveBeenCalledOnce();
       expect(onTimeout).toHaveBeenCalledWith('compaction', 10 * 60_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('a finished compaction gives the next response the ordinary deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const onTimeout = vi.fn();
+      const watchdog = new SdkFirstResponseWatchdog(60_000, onTimeout);
+
+      watchdog.beginCompaction(10 * 60_000);
+      await vi.advanceTimersByTimeAsync(2 * 60_000);
+      watchdog.endCompaction();
+      await vi.advanceTimersByTimeAsync(60_000 - 1);
+      expect(onTimeout).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(onTimeout).toHaveBeenCalledWith('first_response', 60_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('ending compaction is a no-op outside the compaction phase', async () => {
+    vi.useFakeTimers();
+    try {
+      const onTimeout = vi.fn();
+      const watchdog = new SdkFirstResponseWatchdog(60_000, onTimeout);
+      watchdog.observe('assistant');
+      watchdog.endCompaction();
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(onTimeout).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('an api_retry restarts the active deadline after the announced delay', async () => {
+    vi.useFakeTimers();
+    try {
+      const onTimeout = vi.fn();
+      const watchdog = new SdkFirstResponseWatchdog(60_000, onTimeout);
+
+      await vi.advanceTimersByTimeAsync(50_000);
+      watchdog.observeRetry(30_000);
+      // The original deadline would have fired at 60s.
+      await vi.advanceTimersByTimeAsync(60_000 + 30_000 - 1);
+      expect(onTimeout).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(onTimeout).toHaveBeenCalledWith('first_response', 90_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('an api_retry after the first response does not re-arm anything', async () => {
+    vi.useFakeTimers();
+    try {
+      const onTimeout = vi.fn();
+      const watchdog = new SdkFirstResponseWatchdog(60_000, onTimeout);
+      watchdog.observe('stream_event');
+      watchdog.observeRetry(5_000);
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(onTimeout).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { AtSign, MessagesSquare } from 'lucide-react';
 import { toast } from 'sonner';
 
+import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useAuthStore } from '../../stores/auth';
+import { ChoiceCardBody, choiceCardClassName } from '../agents/AgentSection';
 import { BindingsSection } from './BindingsSection';
 import { ChannelAccountsManager } from './ChannelAccountsManager';
-import { SettingsCard as Section } from './SettingsCard';
+import { SettingsSection } from './SettingsLayout';
 import { getErrorMessage } from './types';
 
 export function UserChannelsSection() {
@@ -35,6 +36,21 @@ export function UserChannelsSection() {
     }
   };
 
+  const responseOptions = [
+    {
+      value: true,
+      title: '仅在 @机器人时回复',
+      description: '降低误触发、无关消息处理和额外费用。',
+      recommended: true,
+    },
+    {
+      value: false,
+      title: '响应允许成员的所有消息',
+      description: '实际可触发成员仍受该渠道与群聊的权限规则限制。',
+      recommended: false,
+    },
+  ];
+
   return (
     <Tabs
       value={searchParams.get('view') === 'bindings' ? 'bindings' : 'accounts'}
@@ -44,69 +60,64 @@ export function UserChannelsSection() {
         else next.delete('view');
         setSearchParams(next, { replace: true });
       }}
-      className="space-y-4"
+      className="gap-6"
     >
-      <TabsList aria-label="消息渠道设置">
-        <TabsTrigger value="accounts">渠道账号与默认规则</TabsTrigger>
-        <TabsTrigger value="bindings">已接入会话</TabsTrigger>
-      </TabsList>
+      <div className="border-b border-surface-border">
+        <TabsList variant="line" aria-label="消息渠道设置" className="-mb-px">
+          <TabsTrigger value="accounts" className="flex-none px-2">
+            渠道账号与默认规则
+          </TabsTrigger>
+          <TabsTrigger value="bindings" className="flex-none px-2">
+            已接入会话
+          </TabsTrigger>
+        </TabsList>
+      </div>
 
-      <TabsContent value="accounts" className="space-y-4">
-        <Section
-          icon={MessagesSquare}
+      <TabsContent value="accounts" className="space-y-8">
+        <SettingsSection
           title="新群默认响应方式"
-          desc="仅影响之后自动注册的群聊；已有群聊继续使用各自的响应设置"
+          description="仅影响之后自动注册的群聊；已有群聊继续使用各自的响应设置"
         >
           <div
             role="radiogroup"
             aria-label="新群默认响应方式"
+            aria-busy={saving}
             className="grid gap-2 sm:grid-cols-2"
           >
-            <button
-              type="button"
-              role="radio"
-              aria-checked={requireMention}
-              disabled={saving}
-              onClick={() => handleDefaultChange(true)}
-              className={`min-h-20 rounded-xl border px-4 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
-                requireMention
-                  ? 'border-primary bg-primary/5'
-                  : 'border-border hover:bg-muted'
-              }`}
-            >
-              <span className="flex items-center gap-2 text-sm font-medium text-foreground">
-                <AtSign className="size-4" />
-                仅在 @机器人时回复（推荐）
-              </span>
-              <span className="mt-1 block text-xs leading-5 text-muted-foreground">
-                降低误触发、无关消息处理和额外费用。
-              </span>
-            </button>
-            <button
-              type="button"
-              role="radio"
-              aria-checked={!requireMention}
-              disabled={saving}
-              onClick={() => handleDefaultChange(false)}
-              className={`min-h-20 rounded-xl border px-4 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
-                !requireMention
-                  ? 'border-primary bg-primary/5'
-                  : 'border-border hover:bg-muted'
-              }`}
-            >
-              <span className="text-sm font-medium text-foreground">
-                响应允许成员的所有消息
-              </span>
-              <span className="mt-1 block text-xs leading-5 text-muted-foreground">
-                实际可触发成员仍受该渠道与群聊的权限规则限制。
-              </span>
-            </button>
+            {responseOptions.map((option) => {
+              const checked = requireMention === option.value;
+              return (
+                <button
+                  key={String(option.value)}
+                  type="button"
+                  role="radio"
+                  aria-checked={checked}
+                  disabled={saving}
+                  onClick={() => handleDefaultChange(option.value)}
+                  className={choiceCardClassName(
+                    checked,
+                    'disabled:cursor-wait disabled:opacity-60',
+                  )}
+                >
+                  <ChoiceCardBody
+                    checked={checked}
+                    title={option.title}
+                    description={option.description}
+                    badge={
+                      option.recommended && (
+                        <Badge variant="neutral">推荐</Badge>
+                      )
+                    }
+                  />
+                </button>
+              );
+            })}
           </div>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-caption text-muted-foreground">
             已有群聊可在“已接入会话”中单独修改，也可在群里使用 /require_mention
             快捷命令。
           </p>
-        </Section>
+        </SettingsSection>
 
         <ChannelAccountsManager />
       </TabsContent>

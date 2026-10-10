@@ -1,15 +1,29 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import {
   File,
   Folder,
-  Loader2,
   Lock,
   Trash2,
   RefreshCw,
   Package,
+  Puzzle,
 } from 'lucide-react';
-import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Spinner } from '@/components/ui/spinner';
+import { EmptyState } from '@/components/common/EmptyState';
+import {
+  CapabilityMedia,
+  DetailPanel,
+  DetailSection,
+} from '@/components/capabilities/capability-ui';
+import { confirmDialog } from '@/stores/confirm';
 import {
   useSkillsStore,
   type SkillDetail as SkillDetailType,
@@ -122,275 +136,257 @@ export function SkillDetail({ skillId, onDeleted }: SkillDetailProps) {
 
   if (!skillId) {
     return (
-      <Card>
-        <CardContent className="flex items-center justify-center py-8">
-          <p className="text-muted-foreground text-center">
-            选择一个技能查看详情
-          </p>
-        </CardContent>
-      </Card>
+      <DetailPanel>
+        <EmptyState icon={Puzzle} title="选择一个技能查看详情" />
+      </DetailPanel>
     );
   }
 
   if (loading) {
     return (
-      <Card>
-        <CardContent className="flex items-center justify-center py-8">
-          <Loader2 className="animate-spin text-primary" size={32} />
-        </CardContent>
-      </Card>
+      <DetailPanel className="flex items-center justify-center py-16">
+        <Spinner className="size-5 text-muted-foreground" />
+      </DetailPanel>
     );
   }
 
   if (error || !detail) {
     return (
-      <Card>
-        <CardContent className="flex items-center justify-center py-8">
-          <p className="text-error text-center">{error || '加载失败'}</p>
-        </CardContent>
-      </Card>
+      <DetailPanel className="px-5 py-12 text-center">
+        <p role="alert" className="text-body text-error">
+          {error || '加载失败'}
+        </p>
+      </DetailPanel>
     );
   }
 
+  const handleReinstall = async () => {
+    const actionSourceKey = skillId;
+    const actionDetail = detail;
+    if (!actionSourceKey || detailState.sourceKey !== actionSourceKey) {
+      return;
+    }
+    const confirmed = await confirmDialog({
+      title: '重新安装技能',
+      message: `确认重新安装技能「${actionDetail.name}」？`,
+      confirmText: '重新安装',
+    });
+    if (!confirmed) return;
+    setActionPending(actionSourceKey, 'reinstall');
+    try {
+      await reinstallSkill(actionDetail.id);
+      if (isSelectionCurrent(actionSourceKey, currentSkillIdRef.current)) {
+        loadDetail(actionSourceKey);
+      }
+    } catch {
+      // error handled by store
+    } finally {
+      setActionPending(actionSourceKey, null);
+    }
+  };
+
+  const handleDelete = async () => {
+    const actionSourceKey = skillId;
+    const actionDetail = detail;
+    if (!actionSourceKey || detailState.sourceKey !== actionSourceKey) {
+      return;
+    }
+    const confirmed = await confirmDialog({
+      title: '删除技能',
+      message: `确认删除技能「${actionDetail.name}」？`,
+      confirmText: '删除',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+    setActionPending(actionSourceKey, 'delete');
+    try {
+      await deleteSkill(actionDetail.id);
+      if (isSelectionCurrent(actionSourceKey, currentSkillIdRef.current)) {
+        onDeleted?.();
+      }
+    } catch {
+      // error is handled by the store
+    } finally {
+      setActionPending(actionSourceKey, null);
+    }
+  };
+
+  const meta: Array<{ label: string; value: ReactNode; icon?: boolean }> = [];
+  if (detail.packageName) {
+    meta.push({
+      label: '来源',
+      value: <span className="font-mono">{detail.packageName}</span>,
+      icon: true,
+    });
+  } else if (detail.sourceUrl) {
+    meta.push({
+      label: '导入来源',
+      value: <span className="font-mono break-all">{detail.sourceUrl}</span>,
+      icon: true,
+    });
+  }
+  if (detail.installSource) {
+    meta.push({
+      label: '安装方式',
+      value:
+        detail.installSource === 'git'
+          ? 'Git'
+          : detail.installSource === 'zip'
+            ? 'ZIP'
+            : 'skills.sh',
+    });
+  }
+  if (detail.version) {
+    meta.push({
+      label: '版本',
+      value: (
+        <span className="font-mono" title={detail.version}>
+          {detail.version.slice(0, 12)}
+        </span>
+      ),
+    });
+  }
+  if (detail.installedAt) {
+    meta.push({
+      label: '安装时间',
+      value: new Date(detail.installedAt).toLocaleString('zh-CN'),
+    });
+  }
+  if (detail.allowedTools && detail.allowedTools.length > 0) {
+    meta.push({
+      label: '允许工具',
+      value: (
+        <span className="flex flex-wrap gap-1">
+          {detail.allowedTools.map((tool: string) => (
+            <Badge key={tool} variant="neutral" className="font-mono">
+              {tool}
+            </Badge>
+          ))}
+        </span>
+      ),
+    });
+  }
+  if (detail.argumentHint) {
+    meta.push({ label: '参数提示', value: detail.argumentHint });
+  }
+
   return (
-    <Card className="overflow-hidden">
-      <div className="p-6 border-b border-border">
-        <div className="flex items-start justify-between gap-4 mb-3">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-2">
-              <h2 className="text-xl font-bold text-foreground">
-                {detail.name}
-              </h2>
-              <span
-                className={`px-2 py-0.5 rounded text-xs font-medium ${
-                  detail.source === 'user'
-                    ? 'bg-brand-100 text-primary'
-                    : 'bg-muted text-muted-foreground'
-                }`}
-              >
-                {detail.source === 'user'
-                  ? '我的 Skills'
-                  : detail.source === 'external'
-                    ? '宿主机'
-                    : 'HappyClaw 内置'}
-              </span>
-              {detail.userInvocable && (
-                <span className="px-2 py-0.5 rounded text-xs font-medium bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">
-                  可调用
-                </span>
-              )}
-            </div>
-            <p className="text-sm text-muted-foreground">
-              {detail.description}
-            </p>
+    <DetailPanel>
+      <div className="px-5 py-4">
+        <div className="flex items-start gap-3">
+          <CapabilityMedia icon={Puzzle} className="size-9" />
+          <div className="flex min-h-9 min-w-0 flex-1 flex-wrap items-center gap-1.5">
+            <h2 className="min-w-0 truncate text-title text-foreground">
+              {detail.name}
+            </h2>
+            <Badge variant="neutral">
+              {detail.source === 'user'
+                ? '我的 Skills'
+                : detail.source === 'external'
+                  ? '宿主机'
+                  : 'HappyClaw 内置'}
+            </Badge>
+            {detail.userInvocable && <Badge variant="neutral">可调用</Badge>}
           </div>
 
           {detail.source !== 'user' ? (
-            <div
-              className="flex items-center gap-1.5 text-xs text-muted-foreground"
+            <Badge
+              variant="neutral"
+              className="mt-2 shrink-0"
               title="此来源由系统或宿主机管理"
             >
-              <Lock size={16} className="text-muted-foreground" />
-              <Badge variant="outline">
-                只读 · 由{detail.source === 'external' ? '宿主机' : '系统'}管理
-              </Badge>
-            </div>
+              <Lock />
+              只读 · 由{detail.source === 'external' ? '宿主机' : '系统'}管理
+            </Badge>
           ) : (
-            <div className="flex items-center gap-2">
+            <div className="flex shrink-0 items-center gap-1">
               {detail.packageName && (
-                <button
+                <Button
+                  variant="ghost"
+                  size="sm"
                   disabled={reinstalling || deleting}
-                  onClick={async () => {
-                    const actionSourceKey = skillId;
-                    const actionDetail = detail;
-                    if (
-                      !actionSourceKey ||
-                      detailState.sourceKey !== actionSourceKey ||
-                      !confirm(`确认重新安装技能「${actionDetail.name}」？`)
-                    ) {
-                      return;
-                    }
-                    setActionPending(actionSourceKey, 'reinstall');
-                    try {
-                      await reinstallSkill(actionDetail.id);
-                      if (
-                        isSelectionCurrent(
-                          actionSourceKey,
-                          currentSkillIdRef.current,
-                        )
-                      ) {
-                        loadDetail(actionSourceKey);
-                      }
-                    } catch {
-                      // error handled by store
-                    } finally {
-                      setActionPending(actionSourceKey, null);
-                    }
-                  }}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950 transition-colors disabled:opacity-50"
+                  onClick={() => void handleReinstall()}
                 >
-                  <RefreshCw
-                    size={16}
-                    className={reinstalling ? 'animate-spin' : ''}
-                  />
+                  <RefreshCw className={reinstalling ? 'animate-spin' : ''} />
                   {reinstalling ? '重装中...' : '重新安装'}
-                </button>
+                </Button>
               )}
-              <button
+              <Button
+                variant="ghost"
+                size="sm"
                 disabled={deleting || reinstalling}
-                onClick={async () => {
-                  const actionSourceKey = skillId;
-                  const actionDetail = detail;
-                  if (
-                    !actionSourceKey ||
-                    detailState.sourceKey !== actionSourceKey ||
-                    !confirm(`确认删除技能「${actionDetail.name}」？`)
-                  ) {
-                    return;
-                  }
-                  setActionPending(actionSourceKey, 'delete');
-                  try {
-                    await deleteSkill(actionDetail.id);
-                    if (
-                      isSelectionCurrent(
-                        actionSourceKey,
-                        currentSkillIdRef.current,
-                      )
-                    ) {
-                      onDeleted?.();
-                    }
-                  } catch {
-                    // error is handled by the store
-                  } finally {
-                    setActionPending(actionSourceKey, null);
-                  }
-                }}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-error hover:bg-error-bg transition-colors disabled:opacity-50"
+                onClick={() => void handleDelete()}
+                className="text-error hover:bg-error/10 hover:text-error"
               >
-                <Trash2 size={16} />
+                <Trash2 />
                 {deleting ? '删除中...' : '删除'}
-              </button>
+              </Button>
             </div>
           )}
         </div>
-
-        {/* 元信息区域 */}
-        <div className="space-y-2 text-sm">
-          {detail.packageName && (
-            <div className="flex items-center gap-1.5">
-              <Package size={14} className="text-muted-foreground" />
-              <span className="text-muted-foreground">来源：</span>
-              <span className="text-foreground font-mono text-xs">
-                {detail.packageName}
-              </span>
-            </div>
-          )}
-          {!detail.packageName && detail.sourceUrl && (
-            <div className="flex items-center gap-1.5">
-              <Package size={14} className="text-muted-foreground" />
-              <span className="text-muted-foreground">导入来源：</span>
-              <span className="text-foreground font-mono text-xs break-all">
-                {detail.sourceUrl}
-              </span>
-            </div>
-          )}
-          {detail.installSource && (
-            <div>
-              <span className="text-muted-foreground">安装方式：</span>
-              <span className="text-foreground ml-1">
-                {detail.installSource === 'git'
-                  ? 'Git'
-                  : detail.installSource === 'zip'
-                    ? 'ZIP'
-                    : 'skills.sh'}
-              </span>
-            </div>
-          )}
-          {detail.version && (
-            <div>
-              <span className="text-muted-foreground">版本：</span>
-              <span
-                className="text-foreground ml-1 font-mono text-xs"
-                title={detail.version}
-              >
-                {detail.version.slice(0, 12)}
-              </span>
-            </div>
-          )}
-          {detail.installedAt && (
-            <div>
-              <span className="text-muted-foreground">安装时间：</span>
-              <span className="text-foreground ml-1">
-                {new Date(detail.installedAt).toLocaleString('zh-CN')}
-              </span>
-            </div>
-          )}
-          {detail.allowedTools && detail.allowedTools.length > 0 && (
-            <div>
-              <span className="text-muted-foreground">允许工具：</span>
-              <div className="flex flex-wrap gap-1 mt-1">
-                {detail.allowedTools.map((tool: string) => (
-                  <span
-                    key={tool}
-                    className="px-2 py-0.5 bg-muted text-foreground rounded text-xs"
-                  >
-                    {tool}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-          {detail.argumentHint && (
-            <div>
-              <span className="text-muted-foreground">参数提示：</span>
-              <span className="text-foreground ml-2">
-                {detail.argumentHint}
-              </span>
-            </div>
-          )}
-        </div>
+        {detail.description && (
+          <p className="mt-3 text-caption leading-5 text-muted-foreground">
+            {detail.description}
+          </p>
+        )}
       </div>
+
+      {/* 元信息区域 */}
+      {meta.length > 0 && (
+        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-6 gap-y-2 border-t border-surface-border px-5 py-4 text-caption">
+          {meta.map((item) => (
+            <div key={item.label} className="contents">
+              <dt className="flex items-center gap-1.5 text-muted-foreground">
+                {item.icon && (
+                  <Package className="size-3.5 text-faint-foreground" />
+                )}
+                {item.label}
+              </dt>
+              <dd className="min-w-0 text-foreground">{item.value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
 
       {/* SKILL.md 内容 */}
-      <div className="p-6 border-b border-border">
-        <h3 className="text-sm font-semibold text-foreground mb-3">技能说明</h3>
+      <DetailSection title="技能说明">
         <div className="max-w-none">
-          <MarkdownRenderer content={detail.content} variant="docs" />
+          <MarkdownRenderer
+            content={stripFrontmatter(detail.content)}
+            variant="docs"
+          />
         </div>
-      </div>
+      </DetailSection>
 
       {/* 文件列表 */}
       {detail.files && detail.files.length > 0 && (
-        <div className="p-6 border-b border-border">
-          <h3 className="text-sm font-semibold text-foreground mb-3">
-            文件列表
-          </h3>
-          <div className="space-y-1">
+        <DetailSection title="文件列表">
+          <ul className="space-y-1">
             {detail.files.map((file) => (
-              <div
+              <li
                 key={file.name}
-                className="flex items-center gap-2 text-sm text-muted-foreground"
+                className="flex items-center gap-2 text-caption text-muted-foreground"
               >
                 {file.type === 'directory' ? (
-                  <Folder size={16} className="text-muted-foreground" />
+                  <Folder className="size-3.5 text-faint-foreground" />
                 ) : (
-                  <File size={16} className="text-muted-foreground" />
+                  <File className="size-3.5 text-faint-foreground" />
                 )}
-                <span>{file.name}</span>
+                <span className="font-mono text-foreground">{file.name}</span>
                 {file.type === 'file' && (
-                  <span className="text-xs text-muted-foreground">
+                  <span className="text-faint-foreground tabular-nums">
                     ({file.size} B)
                   </span>
                 )}
-              </div>
+              </li>
             ))}
-          </div>
-        </div>
+          </ul>
+        </DetailSection>
       )}
 
       {/* 底部操作区 */}
-      <div className="p-6 bg-muted">
-        <p className="text-sm text-muted-foreground">
+      <div className="border-t border-surface-border bg-surface-hover px-5 py-3">
+        <p className="text-caption text-muted-foreground">
           {detail.source === 'user'
             ? detail.packageName
               ? `通过 ${detail.packageName} 安装，可重新安装以获取最新版本`
@@ -400,6 +396,11 @@ export function SkillDetail({ skillId, onDeleted }: SkillDetailProps) {
               : '项目级技能为只读，不可修改或删除'}
         </p>
       </div>
-    </Card>
+    </DetailPanel>
   );
+}
+
+/** SKILL.md frontmatter is already summarised in the header above. */
+function stripFrontmatter(content: string): string {
+  return content.replace(/^---\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/, '');
 }

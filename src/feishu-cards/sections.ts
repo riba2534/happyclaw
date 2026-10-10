@@ -9,7 +9,12 @@
 import type { AgentCardInput, CardMeta, ToolCallStat } from './types.js';
 import { resolveStatusTheme } from './status-theme.js';
 import { splitIntoBodySections } from './length.js';
-import { formatFeishuTokenSummary } from '../feishu-usage-display.js';
+import { isMarkdownTableDelimiter, markdownFenceOpener } from './pagination.js';
+import {
+  formatFeishuTokenCount,
+  formatFeishuTokenSummary,
+} from '../feishu-usage-display.js';
+import { neutralizeFeishuMentions } from '../feishu-errors.js';
 
 /** Element ids for both the structured streaming layout and the static terminal card.
  *
@@ -87,7 +92,8 @@ type El = Record<string, unknown>;
 
 export function formatDuration(ms: number | undefined): string {
   if (ms === undefined || !Number.isFinite(ms) || ms < 0) return '-';
-  if (ms < 1000) return `${ms}ms`;
+  const rounded = Math.round(ms);
+  if (rounded < 1000) return `${rounded}ms`;
   const sec = ms / 1000;
   if (sec < 60) return `${sec.toFixed(1)}s`;
   const min = Math.floor(sec / 60);
@@ -96,15 +102,40 @@ export function formatDuration(ms: number | undefined): string {
 }
 
 export function formatTokens(n: number | undefined): string {
-  if (n === undefined || !Number.isFinite(n) || n < 0) return '-';
-  return n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
+  return formatFeishuTokenCount(n);
 }
 
 export function shortModel(model: string): string {
-  // "claude-opus-4-7" → "opus-4.7", "claude-sonnet-4-6" → "sonnet-4.6"
-  const m = model.match(/(opus|sonnet|haiku)-(\d+)-(\d+)/i);
-  if (m) return `${m[1].toLowerCase()}-${m[2]}.${m[3]}`;
+  // "claude-opus-4-7" → "opus-4.7", "claude-opus-5-20261001" → "opus-5".
+  // A minor version is one or two digits; a date suffix is never a version.
+  const m =
+    model.match(/claude-([a-z]+)-(\d{1,2})(?:-(\d{1,2}))?(?!\d)/i) ??
+    model.match(/(opus|sonnet|haiku|fable)-(\d{1,2})(?:-(\d{1,2}))?(?!\d)/i);
+  if (m) {
+    const family = m[1].toLowerCase();
+    return m[3] ? `${family}-${m[2]}.${m[3]}` : `${family}-${m[2]}`;
+  }
   return model.length > 20 ? model.slice(0, 17) + '...' : model;
+}
+
+/**
+ * Escape a tool/model/user value interpolated into one line of panel
+ * Markdown: no mentions, no line breaks, no table pipes, no code-span
+ * backticks, no tags (`</font>` would close the surrounding markup) and no
+ * leading heading marker. Feishu card Markdown decodes the `&#N;` entities.
+ */
+export function escapeFeishuPanelInline(value: string): string {
+  return neutralizeFeishuMentions(value, 'card')
+    .replace(/\r\n?|\n/g, ' ')
+    .replace(/</g, '&#60;')
+    .replace(/\|/g, '&#124;')
+    .replace(/`/g, '&#96;')
+    .replace(/^(\s*)#/, '$1&#35;');
+}
+
+/** A value rendered inside a Markdown code span: keep it on one line. */
+function codeSpanText(value: string): string {
+  return value.replace(/\r\n?|\n/g, ' ').replace(/`/g, "'");
 }
 
 export interface TitleExtractResult {
@@ -121,6 +152,16 @@ export function extractTitle(text: string): TitleExtractResult {
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i++) {
     if (!lines[i].trim()) continue;
+    // A fence opener or table row is content, not a title: eat nothing.
+    if (
+      markdownFenceOpener(lines[i]) ||
+      isMarkdownTableDelimiter(lines[i]) ||
+      (lines[i].includes('|') &&
+        lines[i + 1] !== undefined &&
+        isMarkdownTableDelimiter(lines[i + 1]))
+    ) {
+      return { title: 'Reply', bodyStartIndex: 0 };
+    }
     if (/^#{1,3}\s+/.test(lines[i])) {
       return {
         title: lines[i].replace(/^#+\s*/, '').trim(),
@@ -212,7 +253,8 @@ export function buildMetaRow(meta: CardMeta | undefined): El[] {
   };
   if (meta.durationMs !== undefined)
     push('⏱ 耗时', formatDuration(meta.durationMs));
-  if (meta.model) push('🤖 模型', `\`${shortModel(meta.model)}\``);
+  if (meta.model)
+    push('🤖 模型', `\`${codeSpanText(shortModel(meta.model))}\``);
   if (
     meta.inputTokens !== undefined ||
     meta.outputTokens !== undefined ||
@@ -276,7 +318,7 @@ export function buildThinkingPanel(thinking: string | undefined): El[] {
       elements: [
         {
           tag: 'markdown',
-          content: trimmed,
+          content: neutralizeFeishuMentions(trimmed, 'card'),
           element_id: CARD_ELEMENT_IDS.THINKING_CONTENT_FINAL,
         },
       ],
@@ -294,7 +336,7 @@ export function buildToolsPanel(toolCalls: ToolCallStat[] | undefined): El[] {
   // Use <number_tag> for per-tool counts — cleaner than inline text counters.
   const lines = top.map(
     (t) =>
-      `- \`${t.name}\` <number_tag background_color='grey' font_color='white'>${clampNumberTag(t.count)}</number_tag>`,
+      `- \`${codeSpanText(t.name)}\` <number_tag background_color='grey' font_color='white'>${clampNumberTag(t.count)}</number_tag>`,
   );
   if (rest.length > 0) {
     const restTotal = rest.reduce((s, t) => s + t.count, 0);
@@ -378,7 +420,10 @@ export function buildStatusBannerText(input: {
       : '';
   const tag = (text: string, color: string) =>
     `<text_tag color='${color}'>${text}</text_tag>`;
-  const detailPart = detail ? ` <font color='grey'>${detail}</font>` : '';
+  // `detail` is caller-built markup; values inside it are escaped there.
+  const detailPart = detail
+    ? ` <font color='grey'>${neutralizeFeishuMentions(detail, 'card')}</font>`
+    : '';
   switch (phase) {
     case 'thinking':
       return `${tag('思考中', 'blue')} 🧠${detailPart}${elapsed}`;
@@ -430,12 +475,13 @@ export function buildProgressListText(todos: TodoItemView[]): string {
         : t.status === 'in_progress'
           ? '🔄'
           : '⏳';
+    const content = escapeFeishuPanelInline(t.content);
     const styled =
       t.status === 'in_progress'
-        ? `**${t.content}** <font color='blue'>_(进行中)_</font>`
+        ? `**${content}** <font color='blue'>_(进行中)_</font>`
         : t.status === 'completed'
-          ? `<font color='grey'>${t.content}</font>`
-          : t.content;
+          ? `<font color='grey'>${content}</font>`
+          : content;
     return `${icon} ${styled}`;
   });
   const extra =
@@ -504,10 +550,10 @@ export function buildToolsTimelineText(
       t.name === 'Skill' && t.skillName ? t.skillName : t.name;
     const param = parseToolParam(t.name, t.summary);
     const paramLine = param
-      ? `\n  <font color='grey'>${param.label}: ${truncate(param.value, 90)}</font>`
+      ? `\n  <font color='grey'>${param.label}: ${escapeFeishuPanelInline(truncate(param.value, 90))}</font>`
       : '';
     const indent = t.isNested ? '    ' : '';
-    return `${indent}<text_tag color='${tagColor}'>${tagText}</text_tag> \`${displayName}\`${elapsed}${paramLine}`;
+    return `${indent}<text_tag color='${tagColor}'>${tagText}</text_tag> \`${codeSpanText(displayName)}\`${elapsed}${paramLine}`;
   });
   const hidden = tools.length - picked.length;
   const more =
@@ -522,7 +568,11 @@ export function buildToolsTimelineText(
 export function buildThinkingBlockquote(text: string): string {
   const MAX = 2000;
   if (!text.trim()) return "<font color='grey'>暂无思考记录</font>";
-  const sliced = text.length > MAX ? '…' + text.slice(-(MAX - 1)) : text;
+  // Reasoning keeps its Markdown, but may never @ anyone. Slice by code
+  // points so the tail never starts with a lone low surrogate.
+  const neutral = neutralizeFeishuMentions(text, 'card');
+  const sliced =
+    neutral.length > MAX ? '…' + takeLastCodePoints(neutral, MAX - 1) : neutral;
   return sliced
     .split('\n')
     .map((l) => (l.trim() ? `> ${l}` : '>'))
@@ -541,12 +591,12 @@ export function buildAskQuestionText(questions: AskQuestionView[]): string {
   if (questions.length === 0) return '';
   return questions
     .map((q) => {
-      const head = `**${q.question}**`;
+      const head = `**${escapeFeishuPanelInline(q.question)}**`;
       const opts = q.options ?? [];
       if (opts.length === 0) return head;
       const tags = opts
         .map((o) => {
-          const label = o.label || o.value || '—';
+          const label = escapeFeishuPanelInline(o.label || o.value || '—');
           return `<text_tag color='blue'>${label}</text_tag>`;
         })
         .join(' ');
@@ -590,15 +640,28 @@ export function buildTimelineText(events: TimelineEventView[]): string {
   const MAX = 20;
   const tail = events.slice(-MAX);
   const hidden = events.length - tail.length;
-  const lines = tail.map((e) => `- ${e.text}`);
+  // Event text carries caller-built markup (grey labels, tool code spans);
+  // keep it on one list line and never let quoted tool output @ anyone.
+  const lines = tail.map(
+    (e) =>
+      `- ${neutralizeFeishuMentions(e.text, 'card').replace(/\r\n?|\n/g, ' ')}`,
+  );
   const more =
     hidden > 0 ? `\n<font color='grey'>… 较早 ${hidden} 条已省略</font>` : '';
   return `${lines.join('\n')}${more}`;
 }
 
+/** Truncate to `limit` code points (never leaving a lone surrogate). */
 function truncate(text: string, limit: number): string {
   if (text.length <= limit) return text;
-  return text.slice(0, limit - 1) + '…';
+  const points = Array.from(text);
+  if (points.length <= limit) return text;
+  return points.slice(0, limit - 1).join('') + '…';
+}
+
+function takeLastCodePoints(text: string, count: number): string {
+  const points = Array.from(text);
+  return points.length <= count ? text : points.slice(-count).join('');
 }
 
 // ─── Streaming panels (structured skeleton pieces) ──────────────────────
@@ -682,10 +745,14 @@ export function buildStreamingPanels(init: StreamingPanelsInit): El[] {
 export function buildFinalDetails(input: AgentCardInput): El[] {
   const tools = input.meta?.toolCalls;
   const toolsContent = tools?.length
-    ? tools.map((tool) => `- \`${tool.name}\` · ${tool.count} 次`).join('\n')
+    ? tools
+        .map((tool) => `- \`${codeSpanText(tool.name)}\` · ${tool.count} 次`)
+        .join('\n')
     : '';
   return buildStreamingDetails({
-    thinkingContent: input.thinking,
+    thinkingContent: input.thinking
+      ? neutralizeFeishuMentions(input.thinking, 'card')
+      : input.thinking,
     toolsContent,
   });
 }

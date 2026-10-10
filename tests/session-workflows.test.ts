@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import { DATA_DIR } from '../src/config.js';
 import {
@@ -457,6 +457,39 @@ describe('session workflow host caches', () => {
 
     expect(view(group, sessionId, 'turn-1').inputTokens).toBe(100);
     expect(view(group, sessionId, 'turn-2').inputTokens).toBe(7);
+  });
+
+  test('does not read the transcript when every assistant row already has tokens', () => {
+    const group = newGroup('recorded');
+    const sessionId = 'recorded';
+    writeSession(group, sessionId, 100, 'AAAA');
+    const transcript = transcriptPath(group, sessionId);
+    const openSpy = vi.spyOn(fs, 'openSync');
+    try {
+      const [message] = attachSessionWorkflowRuns(
+        [
+          {
+            id: 'm-recorded',
+            timestamp: '2026-07-21T06:41:00.000Z',
+            session_id: sessionId,
+            sdk_message_uuid: `${sessionId}-final`,
+            is_from_me: true,
+            token_usage: JSON.stringify({ inputTokens: 42, outputTokens: 3 }),
+          },
+        ],
+        { groupFolder: group, agentId: null },
+      );
+      expect(
+        openSpy.mock.calls.some(([target]) => String(target) === transcript),
+      ).toBe(false);
+      // Recorded usage stays authoritative; workflows still attach.
+      expect(JSON.parse(message.token_usage ?? '{}').inputTokens).toBe(42);
+      expect(message.workflow_runs?.[0]?.summary).toBe('AAAA');
+    } finally {
+      openSpy.mockRestore();
+    }
+    // A row missing usage still recovers it from the same transcript.
+    expect(view(group, sessionId).inputTokens).toBe(100);
   });
 
   test('a session whose transcript and workflows are gone is dropped from the caches', () => {

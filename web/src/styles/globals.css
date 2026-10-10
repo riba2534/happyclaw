@@ -1,46 +1,11 @@
 @import 'tailwindcss';
 @import 'shadcn/tailwind.css';
-/* DM Sans is the primary UI font — loaded locally below (no CDN dependency) */
 @plugin "tailwindcss-animate";
 
 @custom-variant dark (&:is(.dark *));
 
-/* DM Sans — primary UI font (local, no CDN dependency) */
-@font-face {
-  font-family: 'DM Sans';
-  font-style: normal;
-  font-weight: 400 700;
-  font-display: swap;
-  src: url('/fonts/DMSans-latin.woff2') format('woff2');
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: 'DM Sans';
-  font-style: normal;
-  font-weight: 400 700;
-  font-display: swap;
-  src: url('/fonts/DMSans-latin-ext.woff2') format('woff2');
-  unicode-range:
-    U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
-    U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
-}
-
-/* Alibaba PuHuiTi 3.0 — last-resort Chinese fallback.
-   Keep one regular face and let browsers synthesize occasional 500/600 text;
-   shipping three full CJK fonts added more than 15MB to every deployment. */
-@font-face {
-  font-family: 'Alibaba PuHuiTi 3';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url('/fonts/AlibabaPuHuiTi-3-55-Regular.woff2') format('woff2');
-  unicode-range:
-    U+4E00-9FFF, U+3400-4DBF, U+3000-303F, U+FF00-FFEF, U+2E80-2EFF,
-    U+3100-312F, U+FE30-FE4F, U+F900-FAFF, U+2F800-2FA1F;
-}
+/* Inter (UI) and Geist Mono (code) are self-hosted via @fontsource-variable,
+   imported in main.tsx so Vite fingerprints the files under the app base path. */
 
 /* =====================================================
    Tailwind CSS 4 Theme — shadcn/ui CSS variable mapping
@@ -56,6 +21,9 @@
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
+  /* Primary used as text or icon color. Schemes whose --primary is tuned
+     for fills on dark surfaces set --primary-text to keep text legible. */
+  --color-primary-text: var(--primary-text, var(--primary));
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
@@ -101,27 +69,75 @@
   --color-surface: var(--surface);
   --shadow-card: var(--card-shadow);
 
+  /* Layered surfaces derived from each scheme's palette (see :root below).
+     app-shell = frame behind the inset canvas; surface-hover/selected are the
+     neutral fills used for every hover and selected row. */
+  --color-app-shell: var(--app-shell);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-hover: var(--surface-hover);
+  --color-surface-selected: var(--surface-selected);
+  --color-surface-border: var(--surface-border);
+  --color-faint-foreground: var(--faint-foreground);
+  --shadow-canvas: var(--canvas-shadow);
+  --shadow-menu: var(--menu-shadow);
+  --shadow-floating: var(--floating-shadow);
+
   /* Border radius tokens */
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
-  /* CJK order matters: the self-hosted PuHuiTi fallback is still large, so
-     system CJK fonts (PingFang/YaHei) must win on platforms that have them.
-     PuHuiTi stays as the last resort for devices with no CJK font at all —
-     @font-face only downloads when a glyph actually falls through to it. */
+  /* Chinese text uses the platform's CJK fonts. No CJK web font is shipped:
+     a self-hosted fallback was 5MB and Android, whose CJK fonts cannot be
+     matched by name, downloaded it on every cold visit. */
   --font-sans:
-    'DM Sans', -apple-system, 'PingFang SC', 'Microsoft YaHei',
-    'Noto Sans CJK SC', 'Alibaba PuHuiTi 3', sans-serif;
+    'Inter Variable', -apple-system, BlinkMacSystemFont, 'PingFang SC',
+    'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
   --font-serif:
-    'DM Sans', -apple-system, 'PingFang SC', 'Microsoft YaHei',
-    'Noto Sans CJK SC', 'Alibaba PuHuiTi 3', sans-serif;
+    'Inter Variable', -apple-system, BlinkMacSystemFont, 'PingFang SC',
+    'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
   --font-mono:
-    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
-    'Courier New', monospace;
+    'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo, Monaco,
+    Consolas, 'Liberation Mono', 'Courier New', monospace;
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/* Role-based type scale. Prefer these over arbitrary text-[13px] values:
+   micro = counters/timestamps, caption = secondary text, label = dense
+   labels, body = default UI text, body-lg = chat prose. */
+@theme {
+  --text-micro: 0.6875rem;
+  --text-micro--line-height: 1rem;
+  --text-caption: 0.75rem;
+  --text-caption--line-height: 1rem;
+  --text-label: 0.8125rem;
+  --text-label--line-height: 1.25rem;
+  --text-body: 0.875rem;
+  --text-body--line-height: 1.25rem;
+  --text-body-lg: 0.9375rem;
+  --text-body-lg--line-height: 1.625rem;
+  --text-title-sm: 0.875rem;
+  --text-title-sm--line-height: 1.25rem;
+  --text-title-sm--font-weight: 600;
+  --text-title: 1rem;
+  --text-title--line-height: 1.5rem;
+  --text-title--font-weight: 600;
+  --text-title-lg: 1.25rem;
+  --text-title-lg--line-height: 1.75rem;
+  --text-title-lg--font-weight: 600;
+  --text-title-lg--letter-spacing: -0.01em;
+  --text-display-sm: 1.5rem;
+  --text-display-sm--line-height: 2rem;
+  --text-display-sm--font-weight: 600;
+  --text-display-sm--letter-spacing: -0.015em;
+  --text-display: 1.875rem;
+  --text-display--line-height: 2.25rem;
+  --text-display--font-weight: 600;
+  --text-display--letter-spacing: -0.02em;
+
+  --ease-snappy: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* =====================================================
@@ -169,7 +185,6 @@
   --chart-5: #dc2626;
 
   /* Sidebar */
-  --sidebar-background: #f8fafc;
   --sidebar-foreground: #0f172a;
   --sidebar-primary: #0d9488;
   --sidebar-primary-foreground: #ffffff;
@@ -201,19 +216,6 @@
   --keyboard-height: 0px;
 
   /* Liquid Glass design tokens */
-  --glass-blur: 20px;
-  --glass-saturate: 1.8;
-  --glass-bg: rgba(255, 255, 255, 0.55);
-  --glass-bg-heavy: rgba(255, 255, 255, 0.75);
-  --glass-border: rgba(255, 255, 255, 0.35);
-  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.06);
-  --glass-highlight: linear-gradient(
-    135deg,
-    rgba(255, 255, 255, 0.5) 0%,
-    rgba(255, 255, 255, 0) 60%
-  );
-  --glass-inner-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.6);
-  --sidebar: #f8fafc;
 }
 
 /* =====================================================
@@ -247,7 +249,6 @@ html.theme-neutral {
   --brand-600: #52525b;
   --brand-700: #3f3f46;
   --surface: #ffffff;
-  --sidebar-background: #fafafa;
   --sidebar-foreground: #18181b;
   --sidebar-primary: #52525b;
   --sidebar-primary-foreground: #ffffff;
@@ -255,10 +256,6 @@ html.theme-neutral {
   --sidebar-accent-foreground: #18181b;
   --sidebar-border: #e4e4e7;
   --sidebar-ring: #a1a1aa;
-  --sidebar: #fafafa;
-  --glass-bg: rgba(255, 255, 255, 0.65);
-  --glass-bg-heavy: rgba(255, 255, 255, 0.85);
-  --glass-border: rgba(228, 228, 231, 0.5);
 }
 
 html.dark.theme-neutral {
@@ -288,7 +285,6 @@ html.dark.theme-neutral {
   --brand-600: #d4d4d8;
   --brand-700: #e4e4e7;
   --surface: #18181b;
-  --sidebar-background: #09090b;
   --sidebar-foreground: #fafafa;
   --sidebar-primary: #a1a1aa;
   --sidebar-primary-foreground: #09090b;
@@ -296,10 +292,6 @@ html.dark.theme-neutral {
   --sidebar-accent-foreground: #fafafa;
   --sidebar-border: #27272a;
   --sidebar-ring: #52525b;
-  --sidebar: #09090b;
-  --glass-bg: rgba(9, 9, 11, 0.55);
-  --glass-bg-heavy: rgba(9, 9, 11, 0.8);
-  --glass-border: rgba(255, 255, 255, 0.08);
 }
 
 /* =====================================================
@@ -340,7 +332,6 @@ html.theme-orange {
   --chart-4: oklch(0.553 0.195 38.402);
   --chart-5: oklch(0.47 0.157 37.304);
   --surface: #fdfcfa;
-  --sidebar-background: #faf9f6;
   --sidebar-foreground: #141413;
   --sidebar-primary: oklch(0.646 0.222 41.116);
   --sidebar-primary-foreground: oklch(0.98 0.016 73.684);
@@ -348,18 +339,16 @@ html.theme-orange {
   --sidebar-accent-foreground: #141413;
   --sidebar-border: #dad9d5;
   --sidebar-ring: oklch(0.708 0 0);
-  --sidebar: oklch(0.985 0 0);
   --code-block-bg: rgba(61, 61, 58, 0.05);
   --inline-code-bg: rgba(61, 61, 58, 0.05);
   --inline-code-text: rgb(138, 36, 36);
-  --glass-bg: rgba(250, 249, 245, 0.65);
-  --glass-bg-heavy: rgba(250, 249, 245, 0.85);
-  --glass-border: rgba(218, 217, 213, 0.5);
 }
 
 html.dark.theme-orange {
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
+  /* --primary below is a fill color (≈2.4:1 as text); text uses chart-2. */
+  --primary-text: oklch(0.705 0.213 47.604);
   --card: oklch(0.205 0 0);
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
@@ -377,7 +366,6 @@ html.dark.theme-orange {
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
-  --sidebar-background: #0f172a;
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(0.705 0.213 47.604);
   --sidebar-primary-foreground: oklch(0.98 0.016 73.684);
@@ -405,25 +393,6 @@ html.dark.theme-orange {
   --chart-3: oklch(0.646 0.222 41.116);
   --chart-4: oklch(0.553 0.195 38.402);
   --chart-5: oklch(0.47 0.157 37.304);
-  --sidebar: oklch(0.205 0 0);
-  --glass-bg: rgba(15, 23, 42, 0.55);
-  --glass-bg-heavy: rgba(15, 23, 42, 0.8);
-  --glass-border: rgba(255, 255, 255, 0.08);
-}
-
-/* Orange floating nav active state */
-html.theme-orange .floating-nav-item.active {
-  background: rgba(249, 115, 22, 0.15);
-  box-shadow:
-    0 2px 8px rgba(249, 115, 22, 0.15),
-    var(--glass-inner-shadow);
-}
-html.theme-orange .floating-nav-item.active::before {
-  background: radial-gradient(
-    circle,
-    rgba(249, 115, 22, 0.2) 0%,
-    transparent 70%
-  );
 }
 
 /* =====================================================
@@ -437,8 +406,7 @@ html.font-anthropic textarea,
 html.font-anthropic button {
   font-family:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC',
-    'Microsoft YaHei', 'Noto Sans CJK SC', 'Alibaba PuHuiTi 3', system-ui,
-    sans-serif;
+    'Microsoft YaHei', 'Noto Sans CJK SC', system-ui, sans-serif;
 }
 html.font-anthropic .font-serif {
   font-family: Georgia, 'Noto Serif SC', 'Times New Roman', serif;
@@ -479,7 +447,6 @@ html.font-anthropic .font-mono {
   --input: #334155;
   --ring: #2dd4bf;
 
-  --sidebar-background: #0f172a;
   --sidebar-foreground: #cbd5e1;
   --sidebar-primary: #2dd4bf;
   --sidebar-primary-foreground: #0f172a;
@@ -502,17 +469,6 @@ html.font-anthropic .font-mono {
   --inline-code-text: #2dd4bf;
 
   --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
-
-  --glass-bg: rgba(15, 23, 42, 0.55);
-  --glass-bg-heavy: rgba(15, 23, 42, 0.8);
-  --glass-border: rgba(255, 255, 255, 0.08);
-  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-  --glass-highlight: linear-gradient(
-    135deg,
-    rgba(255, 255, 255, 0.06) 0%,
-    rgba(255, 255, 255, 0) 60%
-  );
-  --glass-inner-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.06);
   /* Brand color scale (Teal) — inverted for dark mode */
   --brand-50: #042f2e;
   --brand-100: #134e4a;
@@ -528,62 +484,54 @@ html.font-anthropic .font-mono {
   --chart-3: #818cf8;
   --chart-4: #c084fc;
   --chart-5: #f87171;
-  --sidebar: #0f172a;
+}
+
+/* =====================================================
+   Derived layer tokens — one definition for every scheme.
+   Custom properties resolve on <html> after the scheme classes cascade, so
+   these mix whichever palette is active without touching its colors. The
+   frame (app-shell) sits slightly darker than the page canvas in both modes.
+   ===================================================== */
+:root {
+  --app-shell: color-mix(in oklab, var(--background) 55%, var(--muted));
+  --sidebar-background: var(--app-shell);
+  --surface-raised: var(--surface);
+  --surface-hover: color-mix(in oklab, var(--foreground) 5%, transparent);
+  --surface-selected: color-mix(in oklab, var(--foreground) 8%, transparent);
+  --surface-border: color-mix(in oklab, var(--foreground) 10%, transparent);
+  --faint-foreground: color-mix(
+    in oklab,
+    var(--muted-foreground) 70%,
+    var(--background)
+  );
+  --canvas-shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 1px 1px rgb(0 0 0 / 0.02);
+  --menu-shadow:
+    0 8px 24px -4px rgb(0 0 0 / 0.1), 0 2px 6px -2px rgb(0 0 0 / 0.06);
+  --floating-shadow:
+    0 16px 48px -12px rgb(0 0 0 / 0.22), 0 4px 12px -4px rgb(0 0 0 / 0.08);
+}
+
+.dark {
+  --app-shell: color-mix(in oklab, var(--background) 80%, black);
+  --surface-hover: color-mix(in oklab, var(--foreground) 6%, transparent);
+  --surface-selected: color-mix(in oklab, var(--foreground) 10%, transparent);
+  --canvas-shadow: 0 1px 2px rgb(0 0 0 / 0.3);
+  --menu-shadow:
+    0 8px 24px -4px rgb(0 0 0 / 0.5), 0 2px 6px -2px rgb(0 0 0 / 0.3);
+  --floating-shadow:
+    0 16px 48px -12px rgb(0 0 0 / 0.6), 0 4px 12px -4px rgb(0 0 0 / 0.3);
 }
 
 /* =====================================================
    Base styles
    ===================================================== */
 
-/* Tailwind v4 默认 border 使用 currentColor（黑色），
-   覆盖为设计系统的 border 色 */
-*,
-::after,
-::before,
-::backdrop,
-::file-selector-button {
-  border-color: var(--border, #e2e8f0);
-}
+/* Tailwind v4 默认 border 使用 currentColor；设计系统的默认边框色在下方
+   @layer base 中设置。不要在这里写不带 layer 的 border-color：未分层样式
+   优先级高于所有 utilities，会让 border-transparent / border-primary 失效。 */
 
 /* Lucide icons: nav items set strokeWidth inline (1.75 default, 2 active).
    No global CSS override — it would conflict with inline SVG attributes. */
-
-/* Welcome avatar animations */
-@keyframes breathe {
-  0%,
-  100% {
-    transform: scale(1);
-    opacity: 0.4;
-  }
-  50% {
-    transform: scale(1.25);
-    opacity: 0.15;
-  }
-}
-@keyframes float {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-4px);
-  }
-}
-@keyframes orbit {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .animate-\[breathe_3s_ease-in-out_infinite\],
-  .animate-\[float_4s_ease-in-out_infinite\],
-  .animate-\[orbit_6s_linear_infinite\] {
-    animation: none !important;
-  }
-}
 
 html {
   height: 100%;
@@ -606,6 +554,47 @@ body {
   touch-action: manipulation;
   overflow-wrap: break-word;
   word-break: break-word;
+}
+
+/* The streaming status shimmer animates background-position, which repaints
+ * on the main thread every frame for as long as a run lasts (~100ms/s at 4x
+ * CPU throttle). Its own layer and 20 steps per second keep the same sweep
+ * for about the cost of no animation. Reduced motion still disables it. */
+.shimmer {
+  will-change: transform;
+  animation-timing-function: steps(40);
+}
+
+/* A quiet dot after the last streamed text while a reply is being written
+ * (StreamingMarkdown `caret`): the text itself shows where the reply goes on,
+ * not only the status row. Pseudo-element, so it never enters a copy. */
+[data-streaming-caret='true']
+  > :last-child
+  > :is(p, h1, h2, h3, h4, h5, h6):last-child::after,
+[data-streaming-caret='true']
+  > :last-child
+  > [data-markdown-root]
+  > :is(p, h1, h2, h3, h4, h5, h6):last-child::after,
+[data-streaming-caret='true']
+  > :last-child
+  > :is(ul, ol):last-child
+  > li:last-child::after {
+  content: '';
+  display: inline-block;
+  width: 0.5em;
+  height: 0.5em;
+  margin-left: 0.3em;
+  border-radius: 9999px;
+  background: currentColor;
+  vertical-align: 0.05em;
+  opacity: 0.45;
+  animation: hc-caret-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes hc-caret-pulse {
+  50% {
+    opacity: 0.15;
+  }
 }
 
 /* Native scrollbar styling is deliberately scoped to the chat context panes.
@@ -648,16 +637,17 @@ body {
   background: transparent;
 }
 
-/* Code highlighting theme override — GitHub light */
+/* Code highlighting theme override — GitHub light colors. The surrounding
+   code block (MarkdownContent) owns background, border and padding, so the
+   highlighted <code> stays transparent and follows --code-block-bg. */
 pre code.hljs {
-  background: #f6f8fa !important;
-  border-radius: 8px;
-  padding: 16px !important;
+  background: transparent !important;
+  border-radius: 0;
+  padding: 0 !important;
 }
 
 /* Dark mode syntax highlighting — GitHub Dark Dimmed */
 .dark pre code.hljs {
-  background: #22272e !important;
   color: #adbac7 !important;
 }
 .dark .hljs-doctag,
@@ -734,9 +724,78 @@ pre code.hljs {
   background-color: #78191b !important;
 }
 
+/* Diff code blocks: tint whole lines edge to edge. The code element spans
+   the scroll width and carries the block's inline padding (its <pre> has
+   none), so the tint reaches into it without widening the scroll area. */
+pre code.language-diff {
+  display: block;
+  min-width: max-content;
+  padding-inline: 0.875rem !important;
+}
+pre code.language-diff .hljs-addition,
+pre code.language-diff .hljs-deletion {
+  display: inline-block;
+  min-width: calc(100% + 1.75rem);
+  margin-inline: -0.875rem;
+  padding-inline: 0.875rem;
+}
+/* Share images wrap code lines instead of scrolling. */
+.share-card-content pre code.language-diff {
+  min-width: 0;
+}
+
 /* KaTeX dark mode — inherit text color from theme */
 .dark .katex {
   color: inherit;
+}
+
+/* Long display formulas scroll sideways instead of being clipped by the
+   message column. */
+.katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  padding-block: 2px;
+}
+
+/* Markdown horizontal scrollers (tables, code): fade the edge that hides
+   more content so it reads as scrollable. Set by MarkdownContent. */
+[data-scroll-fade='end'] {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - 2.5rem),
+    transparent
+  );
+  mask-image: linear-gradient(to right, #000 calc(100% - 2.5rem), transparent);
+}
+[data-scroll-fade='start'] {
+  -webkit-mask-image: linear-gradient(
+    to left,
+    #000 calc(100% - 2.5rem),
+    transparent
+  );
+  mask-image: linear-gradient(to left, #000 calc(100% - 2.5rem), transparent);
+}
+[data-scroll-fade='both'] {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 2.5rem,
+    #000 calc(100% - 2.5rem),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 2.5rem,
+    #000 calc(100% - 2.5rem),
+    transparent
+  );
+}
+/* Share images show tables and code in full, nothing to hint at. */
+.share-card-content [data-scroll-fade] {
+  -webkit-mask-image: none;
+  mask-image: none;
 }
 
 /* Reduced motion preference */
@@ -802,17 +861,19 @@ pre code.hljs {
 }
 
 /* Bottom padding for content above floating nav — accounts for safe area */
-.pb-nav-safe {
+/* A utility (not a bare class) so responsive overrides such as lg:pb-0 win. */
+@utility pb-nav-safe {
   padding-bottom: calc(7rem + env(safe-area-inset-bottom, 0px));
 }
 
-/* Floating Navigation (Liquid Glass Capsule) */
+/* Floating mobile navigation capsule */
 .floating-nav-container {
   position: fixed;
   bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 10000;
+  /* Below every Radix overlay layer (z-50) so dialogs and sheets cover it. */
+  z-index: 40;
   display: flex;
   justify-content: center;
   pointer-events: none;
@@ -830,13 +891,13 @@ pre code.hljs {
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 8px;
-  background: var(--glass-bg);
-  backdrop-filter: blur(24px) saturate(1.8);
-  -webkit-backdrop-filter: blur(24px) saturate(1.8);
-  border: 1px solid var(--glass-border);
+  padding: 6px;
+  background: color-mix(in oklab, var(--background) 82%, transparent);
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  border: 1px solid var(--surface-border);
   border-radius: 9999px;
-  box-shadow: var(--glass-shadow), var(--glass-inner-shadow);
+  box-shadow: var(--menu-shadow);
   pointer-events: auto;
 }
 
@@ -848,48 +909,23 @@ pre code.hljs {
   width: 52px;
   height: 44px;
   border-radius: 9999px;
-  color: rgba(100, 116, 139, 0.7);
-  transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  color: var(--muted-foreground);
+  transition:
+    background-color 150ms ease,
+    color 150ms ease,
+    transform 150ms ease;
   text-decoration: none;
   -webkit-tap-highlight-color: transparent;
 }
 
 .floating-nav-item:active {
-  transform: scale(0.92);
+  transform: scale(0.94);
 }
 
+/* Neutral selected state, same language as the desktop sidebar rows. */
 .floating-nav-item.active {
-  background: rgba(13, 148, 136, 0.15);
-  color: var(--primary);
-  box-shadow:
-    0 2px 8px rgba(13, 148, 136, 0.15),
-    var(--glass-inner-shadow);
-  transition: all 350ms cubic-bezier(0.34, 1.56, 0.64, 1);
-  transform: scale(1.08);
-}
-
-.floating-nav-item.active::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: 9999px;
-  background: radial-gradient(
-    circle,
-    rgba(13, 148, 136, 0.2) 0%,
-    transparent 70%
-  );
-  animation: glass-ripple 400ms ease-out;
-}
-
-@keyframes glass-ripple {
-  from {
-    transform: scale(0.8);
-    opacity: 0.8;
-  }
-  to {
-    transform: scale(1.2);
-    opacity: 0;
-  }
+  background: var(--surface-selected);
+  color: var(--foreground);
 }
 
 @media (min-width: 1024px) {
@@ -910,15 +946,49 @@ pre code.hljs {
   box-sizing: border-box;
 }
 
+/* The xterm theme is transparent so the panel surface shows through;
+   xterm.css would otherwise paint the viewport black. */
+.terminal-panel .xterm .xterm-viewport {
+  background-color: transparent;
+}
+.terminal-panel .xterm .composition-view {
+  background-color: var(--surface-raised);
+  color: var(--foreground);
+}
+
 @layer base {
-  * {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
     @apply border-border outline-ring/50;
   }
   body {
     @apply bg-background text-foreground;
+    /* Browsers that support it add a hair space between CJK and Latin runs. */
+    text-autospace: ideograph-alpha ideograph-numeric;
   }
   html {
     @apply font-sans;
+  }
+
+  /* Desktop pointers get thin themed scrollbars everywhere. Touch devices
+     keep native overlay scrollbars; their scroll panes opt in through
+     .hc-scroll-pane and render in-flow edge hints instead. */
+  @media (pointer: fine) {
+    html {
+      /* scrollbar-color inherits, so one declaration themes every scroller. */
+      scrollbar-color: color-mix(
+          in oklab,
+          var(--muted-foreground) 35%,
+          transparent
+        )
+        transparent;
+    }
+    * {
+      scrollbar-width: thin;
+    }
   }
 }
 
@@ -951,13 +1021,6 @@ pre code.hljs {
   --brand-500: #f97316;
   --brand-600: #ea580c;
   --brand-700: #c2410c;
-  --glass-bg: rgba(255, 251, 245, 0.6);
-  --glass-bg-heavy: rgba(255, 251, 245, 0.8);
-  --glass-border: rgba(237, 227, 216, 0.6);
-  --glass-shadow: 0 8px 32px rgba(180, 120, 60, 0.06);
-  --glass-inner-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.7);
-  --glass-blur: 20px;
-  --glass-saturate: 1.8;
   --error: #dc2626;
   --error-bg: #fee2e2;
 }
@@ -981,235 +1044,6 @@ pre code.hljs {
   --brand-500: #f97316;
   --brand-600: #fb923c;
   --brand-700: #fdba74;
-  --glass-bg: rgba(26, 18, 16, 0.6);
-  --glass-bg-heavy: rgba(26, 18, 16, 0.8);
-  --glass-border: rgba(255, 255, 255, 0.08);
-  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-  --glass-inner-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.06);
   --error: #f87171;
   --error-bg: #450a0a;
-}
-
-/* Aurora mesh background — organic blobs with noise overlay */
-.landing-gradient-bg {
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  overflow: hidden;
-}
-
-/* Noise grain overlay — coarse texture */
-.landing-gradient-bg::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  opacity: 0.06;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  background-size: 256px 256px;
-  pointer-events: none;
-}
-
-.dark .landing-gradient-bg::after {
-  opacity: 0.08;
-}
-
-/* Aurora blobs container */
-.landing-aurora {
-  position: fixed;
-  inset: 0;
-  z-index: 1;
-  pointer-events: none;
-  overflow: hidden;
-  filter: blur(100px) saturate(1.6);
-}
-
-.dark .landing-aurora {
-  filter: blur(100px) saturate(1.3);
-}
-
-.landing-aurora-blob {
-  position: absolute;
-  /* border-radius 保持静态值，避免 keyframes 中 animate border-radius
-     触发 paint —— 配合 100px blur + 大尺寸元素会在低端设备掉帧。
-     每个 blob 的具体 border-radius 在下面的 .landing-aurora-blob-N 中设置 */
-}
-
-/* Blob 1: warm peach-orange — top left */
-.landing-aurora-blob-1 {
-  width: 70vw;
-  height: 65vh;
-  top: -20%;
-  left: -15%;
-  background: rgba(251, 146, 60, 0.12);
-  border-radius: 30% 70% 70% 30% / 30% 30% 70% 70%;
-  animation: aurora-morph-1 20s ease-in-out infinite;
-}
-
-/* Blob 2: soft violet — bottom right */
-.landing-aurora-blob-2 {
-  width: 60vw;
-  height: 55vh;
-  bottom: -15%;
-  right: -10%;
-  background: rgba(167, 139, 250, 0.1);
-  border-radius: 50% 50% 30% 70% / 40% 60% 40% 60%;
-  animation: aurora-morph-2 25s ease-in-out infinite;
-}
-
-/* Blob 3: sky blue — center */
-.landing-aurora-blob-3 {
-  width: 50vw;
-  height: 45vh;
-  top: 35%;
-  left: 25%;
-  background: rgba(56, 189, 248, 0.08);
-  border-radius: 40% 60% 50% 50% / 60% 40% 60% 40%;
-  animation: aurora-morph-3 22s ease-in-out infinite;
-}
-
-/* Blob 4: rose pink — top right */
-.landing-aurora-blob-4 {
-  width: 45vw;
-  height: 40vh;
-  top: -10%;
-  right: 5%;
-  background: rgba(251, 113, 133, 0.08);
-  border-radius: 50% 50% 30% 70% / 40% 60% 40% 60%;
-  animation: aurora-morph-2 28s ease-in-out infinite reverse;
-}
-
-.dark .landing-aurora-blob-1 {
-  background: rgba(251, 146, 60, 0.08);
-}
-.dark .landing-aurora-blob-2 {
-  background: rgba(167, 139, 250, 0.07);
-}
-.dark .landing-aurora-blob-3 {
-  background: rgba(56, 189, 248, 0.05);
-}
-.dark .landing-aurora-blob-4 {
-  background: rgba(251, 113, 133, 0.05);
-}
-
-/* Mobile: scale blobs to cover small screens */
-@media (max-width: 640px) {
-  .landing-aurora-blob-1 {
-    width: 120vw;
-    height: 50vh;
-    top: -10%;
-    left: -30%;
-  }
-  .landing-aurora-blob-2 {
-    width: 100vw;
-    height: 45vh;
-    bottom: -5%;
-    right: -20%;
-  }
-  .landing-aurora-blob-3 {
-    width: 80vw;
-    height: 40vh;
-    top: 30%;
-    left: 10%;
-  }
-  .landing-aurora-blob-4 {
-    width: 90vw;
-    height: 35vh;
-    top: -5%;
-    right: -15%;
-  }
-}
-
-/* Aurora keyframes 只 animate transform（composite layer），
-   border-radius 保持静态，避免触发 paint。 */
-@keyframes aurora-morph-1 {
-  0%,
-  100% {
-    transform: translate(0, 0) rotate(0deg) scale(1);
-  }
-  33% {
-    transform: translate(5%, 8%) rotate(60deg) scale(1.1);
-  }
-  66% {
-    transform: translate(-3%, -5%) rotate(120deg) scale(0.95);
-  }
-}
-
-@keyframes aurora-morph-2 {
-  0%,
-  100% {
-    transform: translate(0, 0) rotate(0deg) scale(1);
-  }
-  33% {
-    transform: translate(-6%, 4%) rotate(-90deg) scale(1.05);
-  }
-  66% {
-    transform: translate(4%, -6%) rotate(-180deg) scale(0.9);
-  }
-}
-
-@keyframes aurora-morph-3 {
-  0%,
-  100% {
-    transform: translate(0, 0) rotate(0deg) scale(1);
-  }
-  50% {
-    transform: translate(3%, -4%) rotate(45deg) scale(1.08);
-  }
-}
-
-/* Badge */
-.landing-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 14px;
-  border-radius: 9999px;
-  font-size: 0.75rem;
-  font-weight: 500;
-  color: var(--primary);
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-}
-
-/* Gradient text — orange spectrum */
-.landing-gradient-text {
-  background: linear-gradient(135deg, #ea580c 0%, #fb923c 50%, #f97316 100%);
-  background-size: 200% 200%;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  animation: landing-text-shimmer 6s ease-in-out infinite;
-}
-
-@keyframes landing-text-shimmer {
-  0%,
-  100% {
-    background-position: 0% 50%;
-  }
-  50% {
-    background-position: 100% 50%;
-  }
-}
-
-/* Glass login card */
-.landing-glass-card {
-  padding: 2rem;
-  border-radius: 1.25rem;
-  background: var(--glass-bg-heavy);
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  -webkit-backdrop-filter: blur(var(--glass-blur))
-    saturate(var(--glass-saturate));
-  border: 1px solid var(--glass-border);
-  box-shadow: var(--glass-shadow), var(--glass-inner-shadow);
-}
-
-/* Reduced motion */
-@media (prefers-reduced-motion: reduce) {
-  .landing-gradient-bg,
-  .landing-aurora-blob,
-  .landing-gradient-text {
-    animation: none !important;
-  }
 }

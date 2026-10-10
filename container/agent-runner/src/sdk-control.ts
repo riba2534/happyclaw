@@ -50,6 +50,7 @@ export class SdkFirstResponseWatchdog {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private activePhase: SdkFirstResponseWatchdogPhase | undefined;
   private timedOut = false;
+  private compactionTimeoutMs = 0;
 
   constructor(
     readonly timeoutMs: number,
@@ -68,14 +69,39 @@ export class SdkFirstResponseWatchdog {
 
   /**
    * Replace the short first-response deadline with one bounded allowance for
-   * SDK auto-compaction. The SDK exposes PreCompact but no matching completion
-   * hook, so this deadline covers both the summarization round-trip and the
-   * first real model response that follows it. Repeated PreCompact callbacks
-   * cannot keep extending the deadline indefinitely.
+   * SDK auto-compaction. Repeated PreCompact callbacks cannot keep extending
+   * the deadline indefinitely.
    */
   beginCompaction(timeoutMs: number): void {
     if (this.timedOut || this.activePhase === 'compaction') return;
     this.arm(timeoutMs, 'compaction');
+  }
+
+  /**
+   * Compaction finished (PostCompact, compact_boundary or a status frame with
+   * compact_result). The model call that follows gets the ordinary
+   * first-response deadline again instead of the rest of the compaction
+   * allowance.
+   */
+  endCompaction(): void {
+    if (this.timedOut || this.activePhase !== 'compaction') return;
+    this.arm(this.timeoutMs, 'first_response');
+  }
+
+  /**
+   * An api_retry frame proves the CLI is alive and backing off. Restart the
+   * active deadline after the announced delay, so a long 429/529 backoff is
+   * not mistaken for a stalled transport. Retries are bounded by the CLI.
+   */
+  observeRetry(retryDelayMs: number): void {
+    if (this.timedOut || !this.activePhase) return;
+    const delay = Number.isFinite(retryDelayMs) ? Math.max(0, retryDelayMs) : 0;
+    const phase = this.activePhase;
+    this.arm(
+      (phase === 'compaction' ? this.compactionTimeoutMs : this.timeoutMs) +
+        delay,
+      phase,
+    );
   }
 
   clear(): void {
@@ -86,6 +112,9 @@ export class SdkFirstResponseWatchdog {
 
   private arm(timeoutMs: number, phase: SdkFirstResponseWatchdogPhase): void {
     this.clear();
+    if (phase === 'compaction' && this.compactionTimeoutMs === 0) {
+      this.compactionTimeoutMs = timeoutMs;
+    }
     this.activePhase = phase;
     this.timer = setTimeout(() => {
       this.timer = undefined;

@@ -42,9 +42,10 @@ describe('shared selection interaction states', () => {
       const source = read('web/src/components/ui/dropdown-menu.tsx');
       const component = componentSource(source, name, next);
 
-      expect(component).toContain('hover:bg-accent');
-      expect(component).toContain('focus:bg-accent');
-      expect(component).toContain('data-[highlighted]:bg-accent');
+      // Neutral fills: --accent is brand-tinted in the teal scheme.
+      expect(component).toContain('hover:bg-surface-hover');
+      expect(component).toContain('focus:bg-surface-hover');
+      expect(component).toContain('data-[highlighted]:bg-surface-hover');
     },
   );
 });

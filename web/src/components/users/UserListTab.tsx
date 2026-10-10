@@ -2,17 +2,32 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   Edit3,
   KeyRound,
-  Loader2,
   LogOut,
+  MoreHorizontal,
   RefreshCw,
   ShieldCheck,
   ShieldOff,
   Trash2,
   Undo2,
   UserPlus,
+  Users,
 } from 'lucide-react';
-import { Input } from '@/components/ui/input';
+import {
+  DataTable,
+  EmptyState,
+  IconButton,
+  SearchInput,
+  type DataTableColumn,
+} from '@/components/common';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import {
   Select,
   SelectContent,
@@ -20,16 +35,60 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Card } from '@/components/ui/card';
-import type { Permission, UserPublic } from '../../stores/auth';
+import { cn } from '@/lib/utils';
+import { confirmDialog } from '@/stores/confirm';
+import type { UserPublic } from '../../stores/auth';
 import { useUsersStore, type UserQuery } from '../../stores/users';
-import { getErrorMessage, samePermissions, PERMISSION_LABELS, type TabNotification } from './utils';
+import {
+  CreateUserDialog,
+  EditUserDialog,
+  ResetPasswordDialog,
+} from './UserDialogs';
+import {
+  formatDateTime,
+  getErrorMessage,
+  ROLE_LABELS,
+  type TabNotification,
+} from './utils';
 
 interface UserListTabProps extends TabNotification {
   currentUser: UserPublic | null;
 }
 
-export function UserListTab({ currentUser, setNotice, setError }: UserListTabProps) {
+export function RoleBadge({ role }: { role: string }) {
+  return (
+    <Badge variant="outline" dot={role === 'admin' ? 'primary' : 'muted'}>
+      {ROLE_LABELS[role] || role}
+    </Badge>
+  );
+}
+
+function StatusBadges({ user }: { user: UserPublic }) {
+  const status = STATUS_BADGES[user.status];
+  return (
+    <>
+      <Badge variant="outline" dot={status?.dot ?? 'muted'}>
+        {status?.label ?? user.status}
+      </Badge>
+      {user.must_change_password && <Badge variant="warning">需改密</Badge>}
+    </>
+  );
+}
+
+const STATUS_BADGES: Record<
+  UserPublic['status'],
+  { label: string; dot: 'success' | 'warning' | 'error' }
+> = {
+  active: { label: '启用', dot: 'success' },
+  disabled: { label: '禁用', dot: 'warning' },
+  deleted: { label: '已删除', dot: 'error' },
+};
+
+export function UserListTab({
+  currentUser,
+  setNotice,
+  setError,
+}: UserListTabProps) {
   const {
     users,
     totalUsers,
@@ -40,36 +99,29 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
     templates,
     fetchPermissionMeta,
     fetchUsers,
-    createUser,
     updateUser,
     deleteUser,
     restoreUser,
     revokeUserSessions,
   } = useUsersStore();
 
-  const [query, setQuery] = useState<UserQuery>({ q: '', role: 'all', status: 'all', page: 1, pageSize: 20 });
+  const [query, setQuery] = useState<UserQuery>({
+    q: '',
+    role: 'all',
+    status: 'all',
+    page: 1,
+    pageSize: 20,
+  });
   const [showCreate, setShowCreate] = useState(false);
-  const [creating, setCreating] = useState(false);
-  const [newUsername, setNewUsername] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [newDisplayName, setNewDisplayName] = useState('');
-  const [newRole, setNewRole] = useState<'admin' | 'member'>('member');
-  const [newMustChange, setNewMustChange] = useState(true);
-  const [newNotes, setNewNotes] = useState('');
-  const [newPermissions, setNewPermissions] = useState<Permission[]>([]);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editRole, setEditRole] = useState<'admin' | 'member'>('member');
-  const [editDisplayName, setEditDisplayName] = useState('');
-  const [editPassword, setEditPassword] = useState('');
-  const [editNotes, setEditNotes] = useState('');
-  const [editPermissions, setEditPermissions] = useState<Permission[]>([]);
-  const [editDisableReason, setEditDisableReason] = useState('');
-  const [changingPasswordId, setChangingPasswordId] = useState<string | null>(null);
-  const [changePasswordValue, setChangePasswordValue] = useState('');
-  const [changingPasswordLoading, setChangingPasswordLoading] = useState(false);
+  const [editingUser, setEditingUser] = useState<UserPublic | null>(null);
+  const [passwordUser, setPasswordUser] = useState<UserPublic | null>(null);
   const isAdmin = currentUser?.role === 'admin';
-  const ownPermissions = currentUser?.permissions || [];
-  const canOperateTargetUser = (user: UserPublic) => isAdmin || user.role !== 'admin';
+  const ownPermissions = useMemo(
+    () => currentUser?.permissions || [],
+    [currentUser?.permissions],
+  );
+  const canOperateTargetUser = (user: UserPublic) =>
+    isAdmin || user.role !== 'admin';
   const assignablePermissions = useMemo(() => {
     if (isAdmin) return permissions;
     const ownSet = new Set(ownPermissions);
@@ -88,140 +140,26 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
     setQuery((prev) => ({ ...prev, ...next }));
   };
 
-  const togglePermission = (
-    list: Permission[],
-    setList: (value: Permission[]) => void,
-    permission: Permission,
-  ) => {
-    if (list.includes(permission)) {
-      setList(list.filter((item) => item !== permission));
-    } else {
-      setList([...list, permission]);
-    }
-  };
-
-  const handleChangePassword = async (user: UserPublic) => {
-    if (!changePasswordValue.trim()) {
-      setError('请输入新密码');
-      return;
-    }
-    setChangingPasswordLoading(true);
-    setError(null);
-    try {
-      await updateUser(user.id, { password: changePasswordValue });
-      setNotice(`已重置 ${user.display_name || user.username} 的密码`);
-      setChangingPasswordId(null);
-      setChangePasswordValue('');
-      void fetchUsers(query);
-    } catch (err) {
-      setError(getErrorMessage(err, '密码修改失败'));
-    } finally {
-      setChangingPasswordLoading(false);
-    }
-  };
-
   const startEdit = (user: UserPublic) => {
     if (!canOperateTargetUser(user)) {
       setError('当前账户不能编辑管理员用户');
       return;
     }
-    setChangingPasswordId(null);
-    setChangePasswordValue('');
-    setEditingId(user.id);
-    setEditRole(user.role);
-    setEditDisplayName(user.display_name || '');
-    setEditPassword('');
-    setEditNotes(user.notes || '');
-    setEditPermissions(user.permissions || []);
-    setEditDisableReason(user.disable_reason || '');
+    setPasswordUser(null);
+    setEditingUser(user);
   };
 
-  const submitEdit = async (user: UserPublic) => {
-    setError(null);
-    try {
-      const payload: Parameters<typeof updateUser>[1] = {};
-      if (isAdmin && editRole !== user.role) {
-        payload.role = editRole;
-      }
-      if (editDisplayName !== (user.display_name || '')) {
-        payload.display_name = editDisplayName;
-      }
-      if (editPassword.trim()) {
-        payload.password = editPassword;
-      }
-      const nextNotes = editNotes.trim();
-      const currentNotes = user.notes || '';
-      if (nextNotes !== currentNotes) {
-        payload.notes = nextNotes || null;
-      }
-      if (!samePermissions(editPermissions, user.permissions || [])) {
-        payload.permissions = isAdmin
-          ? editPermissions
-          : editPermissions.filter((perm) => ownPermissions.includes(perm));
-      }
-      const nextDisableReason = editDisableReason.trim();
-      const currentDisableReason = user.disable_reason || '';
-      if (nextDisableReason !== currentDisableReason) {
-        payload.disable_reason = nextDisableReason || null;
-      }
-      if (Object.keys(payload).length === 0) {
-        setNotice('没有需要保存的变更');
-        setEditingId(null);
-        return;
-      }
-
-      await updateUser(user.id, payload);
-      setNotice(`用户 ${user.username} 已更新`);
-      setEditingId(null);
-      await fetchUsers(query);
-    } catch (err) {
-      setError(getErrorMessage(err, '更新用户失败'));
-    }
-  };
-
-  const handleCreate = async () => {
-    if (!newUsername.trim() || !newPassword) {
-      setError('请填写用户名和密码');
-      return;
-    }
-    setCreating(true);
-    setError(null);
-    try {
-      const roleForCreate: 'admin' | 'member' = isAdmin ? newRole : 'member';
-      const permissionsForCreate = isAdmin
-        ? newPermissions
-        : newPermissions.filter((perm) => ownPermissions.includes(perm));
-      await createUser({
-        username: newUsername.trim(),
-        password: newPassword,
-        display_name: newDisplayName.trim() || undefined,
-        role: roleForCreate,
-        permissions: permissionsForCreate,
-        must_change_password: newMustChange,
-        notes: newNotes.trim() || undefined,
-      });
-      setNewUsername('');
-      setNewPassword('');
-      setNewDisplayName('');
-      setNewRole('member');
-      setNewMustChange(true);
-      setNewNotes('');
-      setNewPermissions([]);
-      setShowCreate(false);
-      setNotice('用户创建成功');
-      await fetchUsers(query);
-    } catch (err) {
-      setError(getErrorMessage(err, '创建用户失败'));
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const changeStatus = async (user: UserPublic, status: 'active' | 'disabled' | 'deleted') => {
+  const changeStatus = async (
+    user: UserPublic,
+    status: 'active' | 'disabled' | 'deleted',
+  ) => {
     try {
       await updateUser(user.id, {
         status,
-        disable_reason: status === 'disabled' ? user.disable_reason || 'disabled_by_admin' : null,
+        disable_reason:
+          status === 'disabled'
+            ? user.disable_reason || 'disabled_by_admin'
+            : null,
       });
       setNotice(`用户 ${user.username} 状态已更新`);
       await fetchUsers(query);
@@ -231,7 +169,13 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
   };
 
   const handleDelete = async (user: UserPublic) => {
-    if (!confirm(`确定要删除用户 ${user.username} 吗？`)) return;
+    const confirmed = await confirmDialog({
+      title: '删除用户',
+      message: `确定要删除用户 ${user.username} 吗？`,
+      confirmText: '删除',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
     try {
       await deleteUser(user.id);
       setNotice(`用户 ${user.username} 已删除`);
@@ -252,7 +196,13 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
   };
 
   const handleRevokeAll = async (user: UserPublic) => {
-    if (!confirm(`确定要强制下线用户 ${user.username} 吗？`)) return;
+    const confirmed = await confirmDialog({
+      title: '撤销全部会话',
+      message: `确定要强制下线用户 ${user.username} 吗？`,
+      confirmText: '强制下线',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
     try {
       await revokeUserSessions(user.id);
       setNotice(`已撤销 ${user.username} 的全部会话`);
@@ -261,26 +211,183 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
     }
   };
 
+  const renderActions = (user: UserPublic) => {
+    if (!canOperateTargetUser(user)) return null;
+    const isSelf = user.id === currentUser?.id;
+    if (!isAdmin && isSelf) return null;
+    return (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <IconButton
+            label={`${user.display_name || user.username} 的操作`}
+            icon={<MoreHorizontal />}
+            hideTooltip
+          />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-40">
+          {isAdmin && (
+            <DropdownMenuItem
+              onSelect={() => {
+                setEditingUser(null);
+                setPasswordUser(user);
+              }}
+            >
+              <KeyRound />
+              修改密码
+            </DropdownMenuItem>
+          )}
+          {!isSelf && (
+            <>
+              <DropdownMenuItem onSelect={() => startEdit(user)}>
+                <Edit3 />
+                编辑
+              </DropdownMenuItem>
+              {user.status === 'active' ? (
+                <DropdownMenuItem
+                  onSelect={() => void changeStatus(user, 'disabled')}
+                >
+                  <ShieldOff />
+                  禁用
+                </DropdownMenuItem>
+              ) : user.status === 'disabled' ? (
+                <DropdownMenuItem
+                  onSelect={() => void changeStatus(user, 'active')}
+                >
+                  <ShieldCheck />
+                  启用
+                </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem onSelect={() => void handleRestore(user)}>
+                  <Undo2 />
+                  恢复
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={() => void handleRevokeAll(user)}>
+                <LogOut />
+                撤销全部会话
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                variant="destructive"
+                onSelect={() => void handleDelete(user)}
+              >
+                <Trash2 />
+                删除
+              </DropdownMenuItem>
+            </>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    );
+  };
+
+  const columns: DataTableColumn<UserPublic>[] = [
+    {
+      key: 'user',
+      header: '用户',
+      cell: (user) => (
+        <div className="max-w-60 min-w-0 whitespace-normal sm:max-w-72">
+          <div className="flex min-w-0 items-baseline gap-1.5">
+            <span className="truncate font-medium text-foreground">
+              {user.display_name || user.username}
+            </span>
+            <span className="shrink-0 text-caption text-muted-foreground">
+              @{user.username}
+            </span>
+          </div>
+          {user.notes && (
+            <div className="mt-0.5 truncate text-caption text-muted-foreground">
+              备注: {user.notes}
+            </div>
+          )}
+          {user.disable_reason && (
+            <div className="mt-0.5 truncate text-caption text-warning">
+              禁用原因: {user.disable_reason}
+            </div>
+          )}
+          <div className="mt-1.5 flex flex-wrap items-center gap-1 sm:hidden">
+            <RoleBadge role={user.role} />
+            <StatusBadges user={user} />
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: 'role',
+      header: '角色',
+      cell: (user) => <RoleBadge role={user.role} />,
+      className: 'hidden sm:table-cell',
+      headerClassName: 'hidden sm:table-cell',
+    },
+    {
+      key: 'status',
+      header: '状态',
+      cell: (user) => (
+        <div className="flex flex-wrap items-center gap-1">
+          <StatusBadges user={user} />
+        </div>
+      ),
+      className: 'hidden sm:table-cell',
+      headerClassName: 'hidden sm:table-cell',
+    },
+    {
+      key: 'last-login',
+      header: '最近登录',
+      cell: (user) => formatDateTime(user.last_login_at),
+      className:
+        'hidden text-caption text-muted-foreground tabular-nums md:table-cell',
+      headerClassName: 'hidden md:table-cell',
+    },
+    {
+      key: 'last-active',
+      header: '最后活跃',
+      cell: (user) => formatDateTime(user.last_active_at),
+      className:
+        'hidden text-caption text-muted-foreground tabular-nums lg:table-cell',
+      headerClassName: 'hidden lg:table-cell',
+    },
+    {
+      key: 'actions',
+      header: <span className="sr-only">操作</span>,
+      cell: renderActions,
+      align: 'right',
+      className: 'w-12',
+    },
+  ];
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        <Input
-          type="text"
+        <SearchInput
           value={query.q || ''}
-          onChange={(e) => applyQuery({ q: e.target.value, page: 1 })}
+          onChange={(value) => applyQuery({ q: value, page: 1 })}
           placeholder="搜索用户名/显示名/备注"
           className="w-full sm:w-64"
         />
-        <Select value={query.role || 'all'} onValueChange={(value) => applyQuery({ role: value as UserQuery['role'], page: 1 })}>
-          <SelectTrigger className="w-auto"><SelectValue /></SelectTrigger>
+        <Select
+          value={query.role || 'all'}
+          onValueChange={(value) =>
+            applyQuery({ role: value as UserQuery['role'], page: 1 })
+          }
+        >
+          <SelectTrigger className="w-auto" aria-label="角色筛选">
+            <SelectValue />
+          </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">全部角色</SelectItem>
             <SelectItem value="admin">管理员</SelectItem>
             <SelectItem value="member">成员</SelectItem>
           </SelectContent>
         </Select>
-        <Select value={query.status || 'all'} onValueChange={(value) => applyQuery({ status: value as UserQuery['status'], page: 1 })}>
-          <SelectTrigger className="w-auto"><SelectValue /></SelectTrigger>
+        <Select
+          value={query.status || 'all'}
+          onValueChange={(value) =>
+            applyQuery({ status: value as UserQuery['status'], page: 1 })
+          }
+        >
+          <SelectTrigger className="w-auto" aria-label="状态筛选">
+            <SelectValue />
+          </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">全部状态</SelectItem>
             <SelectItem value="active">启用</SelectItem>
@@ -288,341 +395,47 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
             <SelectItem value="deleted">已删除</SelectItem>
           </SelectContent>
         </Select>
-        <Button onClick={() => setShowCreate((v) => !v)}>
-          <UserPlus className="w-4 h-4" />
-          创建用户
-        </Button>
-        <Button variant="outline" onClick={() => fetchUsers(query)} disabled={loading}>
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          刷新
-        </Button>
+        <div className="ml-auto flex items-center gap-2">
+          <IconButton
+            label="刷新"
+            variant="outline"
+            size="icon"
+            icon={<RefreshCw className={cn(loading && 'animate-spin')} />}
+            onClick={() => fetchUsers(query)}
+            disabled={loading}
+          />
+          <Button onClick={() => setShowCreate(true)}>
+            <UserPlus />
+            创建用户
+          </Button>
+        </div>
       </div>
 
-      {showCreate && (
-        <Card className="p-6 space-y-4">
-          <h3 className="text-sm font-medium text-foreground">创建新用户</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <Input
-              type="text"
-              value={newUsername}
-              onChange={(e) => setNewUsername(e.target.value)}
-              placeholder="用户名"
-              className="text-sm"
-            />
-            <Input
-              type="password"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              placeholder="密码（至少8位）"
-              className="text-sm"
-            />
-            <Input
-              type="text"
-              value={newDisplayName}
-              onChange={(e) => setNewDisplayName(e.target.value)}
-              placeholder="显示名称（可选）"
-              className="text-sm"
-            />
-            <Select value={newRole} onValueChange={(value) => setNewRole(value as 'admin' | 'member')}>
-              <SelectTrigger className="text-sm">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="member">成员</SelectItem>
-                {isAdmin && <SelectItem value="admin">管理员</SelectItem>}
-              </SelectContent>
-            </Select>
-            <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={newMustChange}
-                onChange={(e) => setNewMustChange(e.target.checked)}
-              />
-              下次登录强制改密
-            </label>
-            <Input
-              type="text"
-              value={newNotes}
-              onChange={(e) => setNewNotes(e.target.value)}
-              placeholder="备注（可选）"
-              className="text-sm"
-            />
-          </div>
+      <DataTable
+        columns={columns}
+        rows={users}
+        rowKey={(user) => user.id}
+        loading={loading}
+        empty={<EmptyState icon={Users} title="暂无用户" />}
+      />
 
-          {templates.length > 0 && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">快捷权限模板</div>
-              <div className="flex flex-wrap gap-2">
-                {templates
-                  .filter((item) => isAdmin || item.role !== 'admin')
-                  .map((item) => (
-                  <button
-                    key={item.key}
-                    type="button"
-                    onClick={() => {
-                      setNewRole(item.role);
-                      setNewPermissions(item.permissions);
-                    }}
-                    className="px-2.5 py-1.5 rounded-md border border-border text-xs hover:bg-muted/50 cursor-pointer"
-                  >
-                    {item.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {assignablePermissions.length > 0 && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">权限明细</div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                {assignablePermissions.map((perm) => (
-                  <label key={perm} className="inline-flex items-center gap-2 text-xs text-foreground">
-                    <input
-                      type="checkbox"
-                      checked={newPermissions.includes(perm)}
-                      onChange={() => togglePermission(newPermissions, setNewPermissions, perm)}
-                    />
-                    {PERMISSION_LABELS[perm] || perm}
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <div className="flex gap-2">
-            <Button onClick={handleCreate} disabled={creating}>
-              {creating && <Loader2 className="w-4 h-4 animate-spin" />}
-              创建
-            </Button>
-            <Button variant="outline" onClick={() => setShowCreate(false)}>取消</Button>
-          </div>
-        </Card>
-      )}
-
-      <Card className="divide-y divide-border overflow-hidden">
-        {users.length === 0 ? (
-          <div className="p-6 text-center text-sm text-muted-foreground">暂无用户</div>
-        ) : (
-          users.map((user) => (
-            <div key={user.id} className="px-5 py-4 space-y-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-sm font-medium text-foreground">{user.display_name || user.username}</span>
-                    <span className="text-xs text-muted-foreground">@{user.username}</span>
-                    <span className={`text-xs px-1.5 py-0.5 rounded ${
-                      user.role === 'admin' ? 'bg-brand-100 text-primary' : 'bg-muted text-foreground'
-                    }`}>
-                      {user.role}
-                    </span>
-                    {user.status !== 'active' && (
-                      <span className={`text-xs px-1.5 py-0.5 rounded ${
-                        user.status === 'deleted' ? 'bg-error-bg text-error' : 'bg-warning-bg text-warning'
-                      }`}>
-                        {user.status}
-                      </span>
-                    )}
-                    {user.must_change_password && (
-                      <span className="text-xs px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700">
-                        需改密
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-xs text-muted-foreground mt-1">
-                    最近登录: {user.last_login_at ? new Date(user.last_login_at).toLocaleString('zh-CN') : '-'} · 最后活跃: {user.last_active_at ? new Date(user.last_active_at).toLocaleString('zh-CN') : '-'}
-                  </div>
-                  {user.notes && <div className="text-xs text-muted-foreground mt-1">备注: {user.notes}</div>}
-                  {user.disable_reason && <div className="text-xs text-warning mt-1">禁用原因: {user.disable_reason}</div>}
-                </div>
-
-                {canOperateTargetUser(user) && (
-                  <div className="flex items-center gap-1">
-                    {isAdmin && (
-                      <button
-                        onClick={() => {
-                          const opening = changingPasswordId !== user.id;
-                          setChangingPasswordId(opening ? user.id : null);
-                          setChangePasswordValue('');
-                          if (opening) setEditingId(null);
-                        }}
-                        className="p-2 hover:bg-muted rounded-lg text-muted-foreground hover:text-indigo-700 cursor-pointer"
-                        title="修改密码"
-                      >
-                        <KeyRound className="w-4 h-4" />
-                      </button>
-                    )}
-                    {user.id !== currentUser?.id && (
-                      <>
-                        <button
-                          onClick={() => startEdit(user)}
-                          className="p-2 hover:bg-muted rounded-lg text-muted-foreground hover:text-foreground cursor-pointer"
-                          title="编辑"
-                        >
-                          <Edit3 className="w-4 h-4" />
-                        </button>
-                        {user.status === 'active' ? (
-                          <button
-                            onClick={() => changeStatus(user, 'disabled')}
-                            className="p-2 hover:bg-muted rounded-lg text-muted-foreground hover:text-warning cursor-pointer"
-                            title="禁用"
-                          >
-                            <ShieldOff className="w-4 h-4" />
-                          </button>
-                        ) : user.status === 'disabled' ? (
-                          <button
-                            onClick={() => changeStatus(user, 'active')}
-                            className="p-2 hover:bg-muted rounded-lg text-muted-foreground hover:text-primary cursor-pointer"
-                            title="启用"
-                          >
-                            <ShieldCheck className="w-4 h-4" />
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => handleRestore(user)}
-                            className="p-2 hover:bg-muted rounded-lg text-muted-foreground hover:text-primary cursor-pointer"
-                            title="恢复"
-                          >
-                            <Undo2 className="w-4 h-4" />
-                          </button>
-                        )}
-                        <button
-                          onClick={() => handleRevokeAll(user)}
-                          className="p-2 hover:bg-muted rounded-lg text-muted-foreground hover:text-orange-600 cursor-pointer"
-                          title="撤销全部会话"
-                        >
-                          <LogOut className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => handleDelete(user)}
-                          className="p-2 hover:bg-muted rounded-lg text-muted-foreground hover:text-error cursor-pointer"
-                          title="删除"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {changingPasswordId === user.id && (
-                <div className="rounded-lg border border-indigo-200 p-3 bg-indigo-50 flex items-center gap-2">
-                  <KeyRound className="w-4 h-4 text-indigo-500 shrink-0" />
-                  <Input
-                    type="password"
-                    value={changePasswordValue}
-                    onChange={(e) => setChangePasswordValue(e.target.value)}
-                    placeholder="输入新密码"
-                    className="flex-1 text-sm h-auto px-2.5 py-1.5"
-                    onKeyDown={(e) => e.key === 'Enter' && handleChangePassword(user)}
-                  />
-                  <Button
-                    size="sm"
-                    onClick={() => handleChangePassword(user)}
-                    disabled={changingPasswordLoading}
-                  >
-                    {changingPasswordLoading && <Loader2 className="w-4 h-4 animate-spin" />}
-                    确认
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => { setChangingPasswordId(null); setChangePasswordValue(''); }}
-                  >
-                    取消
-                  </Button>
-                </div>
-              )}
-
-              {editingId === user.id && (
-                <div className="rounded-lg border border-border p-3 space-y-3 bg-muted/30">
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-                    <Input
-                      type="text"
-                      value={editDisplayName}
-                      onChange={(e) => setEditDisplayName(e.target.value)}
-                      placeholder="显示名称"
-                      className="text-sm h-auto px-2.5 py-1.5"
-                    />
-                    {isAdmin ? (
-                      <Select value={editRole} onValueChange={(value) => setEditRole(value as 'admin' | 'member')}>
-                        <SelectTrigger className="text-sm h-auto px-2.5 py-1.5">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="member">member</SelectItem>
-                          <SelectItem value="admin">admin</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    ) : (
-                      <Input
-                        type="text"
-                        value={user.role}
-                        disabled
-                        className="bg-muted px-2.5 py-1.5 text-sm text-muted-foreground h-auto"
-                      />
-                    )}
-                    <Input
-                      type="password"
-                      value={editPassword}
-                      onChange={(e) => setEditPassword(e.target.value)}
-                      placeholder="重置密码（可选）"
-                      className="text-sm h-auto px-2.5 py-1.5"
-                    />
-                    <Input
-                      type="text"
-                      value={editDisableReason}
-                      onChange={(e) => setEditDisableReason(e.target.value)}
-                      placeholder="禁用原因（可选）"
-                      className="text-sm h-auto px-2.5 py-1.5"
-                    />
-                    <Input
-                      type="text"
-                      value={editNotes}
-                      onChange={(e) => setEditNotes(e.target.value)}
-                      placeholder="备注（可选）"
-                      className="text-sm h-auto px-2.5 py-1.5 md:col-span-2"
-                    />
-                  </div>
-                  {assignablePermissions.length > 0 && (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                      {assignablePermissions.map((perm) => (
-                        <label key={perm} className="inline-flex items-center gap-2 text-xs">
-                          <input
-                            type="checkbox"
-                            checked={editPermissions.includes(perm)}
-                            onChange={() => togglePermission(editPermissions, setEditPermissions, perm)}
-                          />
-                          {PERMISSION_LABELS[perm] || perm}
-                        </label>
-                      ))}
-                    </div>
-                  )}
-                  <div className="flex gap-2">
-                    <Button onClick={() => submitEdit(user)}>保存</Button>
-                    <Button variant="outline" onClick={() => setEditingId(null)}>取消</Button>
-                  </div>
-                </div>
-              )}
-            </div>
-          ))
-        )}
-      </Card>
-
-      <div className="flex items-center justify-between text-sm text-muted-foreground">
-        <div>共 {totalUsers} 条</div>
+      <div className="flex items-center justify-between gap-2 text-caption text-muted-foreground">
+        <div className="tabular-nums">共 {totalUsers} 条</div>
         <div className="flex items-center gap-2">
           <Button
             variant="outline"
-            onClick={() => applyQuery({ page: Math.max(1, (query.page || 1) - 1) })}
+            size="sm"
+            onClick={() =>
+              applyQuery({ page: Math.max(1, (query.page || 1) - 1) })
+            }
             disabled={(query.page || 1) <= 1}
           >
             上一页
           </Button>
-          <span>第 {page} 页</span>
+          <span className="tabular-nums">第 {page} 页</span>
           <Button
             variant="outline"
+            size="sm"
             onClick={() => applyQuery({ page: (query.page || 1) + 1 })}
             disabled={page * pageSize >= totalUsers}
           >
@@ -630,6 +443,45 @@ export function UserListTab({ currentUser, setNotice, setError }: UserListTabPro
           </Button>
         </div>
       </div>
+
+      <CreateUserDialog
+        open={showCreate}
+        onOpenChange={setShowCreate}
+        isAdmin={isAdmin}
+        ownPermissions={ownPermissions}
+        templates={templates}
+        assignablePermissions={assignablePermissions}
+        onCreated={async () => {
+          setError(null);
+          setNotice('用户创建成功');
+          await fetchUsers(query);
+        }}
+      />
+      <EditUserDialog
+        user={editingUser}
+        onOpenChange={(open) => {
+          if (!open) setEditingUser(null);
+        }}
+        isAdmin={isAdmin}
+        ownPermissions={ownPermissions}
+        assignablePermissions={assignablePermissions}
+        onDone={async (message, refresh) => {
+          setError(null);
+          setNotice(message);
+          if (refresh) await fetchUsers(query);
+        }}
+      />
+      <ResetPasswordDialog
+        user={passwordUser}
+        onOpenChange={(open) => {
+          if (!open) setPasswordUser(null);
+        }}
+        onSaved={async (message) => {
+          setError(null);
+          setNotice(message);
+          void fetchUsers(query);
+        }}
+      />
     </div>
   );
 }

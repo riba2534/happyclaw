@@ -1,4 +1,12 @@
 import type { ReactNode, ElementType } from 'react';
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from '@/components/ui/empty';
 import { cn } from '@/lib/utils';
 
 export interface EmptyStateProps {
@@ -17,24 +25,17 @@ export function EmptyState({
   className,
 }: EmptyStateProps) {
   return (
-    <div
-      className={cn(
-        'flex flex-col items-center justify-center py-12 px-4 text-center',
-        className,
-      )}
-    >
-      {Icon && (
-        <div className="mb-3 rounded-full bg-muted p-3">
-          <Icon className="size-6 text-muted-foreground" />
-        </div>
-      )}
-      <h3 className="text-sm font-medium text-foreground">{title}</h3>
-      {description && (
-        <p className="mt-1 text-sm text-muted-foreground max-w-xs">
-          {description}
-        </p>
-      )}
-      {action && <div className="mt-4">{action}</div>}
-    </div>
+    <Empty className={cn('py-12', className)}>
+      <EmptyHeader>
+        {Icon && (
+          <EmptyMedia variant="icon">
+            <Icon />
+          </EmptyMedia>
+        )}
+        <EmptyTitle>{title}</EmptyTitle>
+        {description && <EmptyDescription>{description}</EmptyDescription>}
+      </EmptyHeader>
+      {action && <EmptyContent>{action}</EmptyContent>}
+    </Empty>
   );
 }

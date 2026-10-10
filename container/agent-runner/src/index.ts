@@ -23,6 +23,7 @@ import { createRequire } from 'module';
 import {
   query,
   HookCallback,
+  PostCompactHookInput,
   PreCompactHookInput,
   createSdkMcpServer,
   type Query,
@@ -31,6 +32,10 @@ import {
   type SDKRateLimitInfo,
 } from '@anthropic-ai/claude-agent-sdk';
 import { detectImageMimeTypeFromBase64Strict } from './image-detector.js';
+import { isClaudeAttachmentPassDisabled } from './claude-attachments.js';
+import { RUNNER_DISALLOWED_BUILTIN_TOOLS } from './builtin-tool-policy.js';
+import { pluginLoadWarnings } from './sdk-init-audit.js';
+import { classifyPreInitErrorResult } from './startup-failure.js';
 import { pruneProcessedHistoryImagesInTranscript as pruneProcessedHistoryImagesInTranscriptFile } from './history-image-prune.js';
 import { getChannelFromJid } from './channel-prefixes.js';
 
@@ -62,8 +67,8 @@ import {
 import {
   extractSessionHistory as extractSessionHistoryImpl,
   parseTranscript,
+  transcriptSinceLastCompaction,
 } from './session-history.js';
-import { trimSessionJsonl } from './session-trim.js';
 import { StreamEventProcessor } from './stream-processor.js';
 import {
   acknowledgeHappyClawOwnerProfileFirstWake,
@@ -80,7 +85,10 @@ import {
   loadWorkspaceMemoryTurnContext,
 } from './workspace-memory-context.js';
 import { loadHappyClawOwnerProfileTurnContext } from './owner-profile-context.js';
-import { createWorkspaceMemoryWriteGuard } from './workspace-memory-runtime.js';
+import {
+  createWorkspaceMemoryWriteGuard,
+  WORKSPACE_MEMORY_WRITE_GUARD_MATCHER,
+} from './workspace-memory-runtime.js';
 import {
   parseAgentMcpPolicyMode,
   resolveAgentMcpPolicy,
@@ -103,11 +111,11 @@ import {
   type IpcDeliveryReceipt,
   type IpcInputMessage,
 } from './ipc-delivery.js';
+import { isExtendedContextModel } from './context-window.js';
 import {
-  isExtendedContextModel,
-  resolveAutoCompactWindow,
-  resolveLegacyAutoCompactWindow,
-} from './context-window.js';
+  buildClaudeRuntimeEnv,
+  type ClaudeRuntimeEnv,
+} from './claude-runtime-env.js';
 import {
   resolveClaudeProviderRuntime,
   resolveClaudeQueryModelRuntime,
@@ -131,11 +139,16 @@ import {
   SdkFirstResponseWatchdog,
 } from './sdk-control.js';
 import {
-  createResultUsageState,
-  extractResultUsage,
+  MAX_PENDING_IDLE_RESULTS,
+  ResultUsageReconciler,
+  runningPendingWindowMs,
   type SdkModelUsage,
   type SdkResultUsage,
 } from './result-usage.js';
+import {
+  readUsageBaseline,
+  writeUsageBaseline,
+} from './usage-baseline-store.js';
 import {
   AssistantUsageCollector,
   type AssistantUsageBatch,
@@ -204,7 +217,13 @@ const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_FALLBACK_POLL_MS = 5000; // 后备轮询间隔（仅防止 inotify 事件丢失）
 const ipcInputClaims = new IpcInputClaimStore(IPC_INPUT_DIR);
 
-let hadCompaction = false;
+/**
+ * Set by the main Agent's PreCompact hook and cleared once a healthy Result
+ * completes the input after it. Claude Code continues a turn by itself after
+ * an auto-compaction (verified with 2.1.296), so only a query that ended
+ * without such a Result still needs the runner's auto-continue turn.
+ */
+let compactionAwaitingCompletion = false;
 // Module-level session ID so SIGTERM handler can emit it before exit.
 // Updated in main() whenever a query returns a new session.
 let latestSessionId: string | undefined;
@@ -213,6 +232,13 @@ let latestSessionId: string | undefined;
 // frames cannot silently lose correlation just because they bypass emit().
 let activeOutputInputTurnId: string | undefined;
 
+/**
+ * Built-in tools listed for the session. Under bypassPermissions this list
+ * grants nothing extra; it still matters because native Claude Code builds
+ * expose Glob and Grep only when they are listed here (or in `tools`).
+ * `Task` is the legacy name of today's `Agent` subagent tool, which Claude
+ * Code still accepts.
+ */
 const DEFAULT_ALLOWED_TOOLS = [
   'Bash',
   'Read',
@@ -225,7 +251,7 @@ const DEFAULT_ALLOWED_TOOLS = [
   'Task',
   // 'TaskOutput' removed: Claude Code 2.1.277 dropped the deprecated tool.
   // Background results arrive as task notifications and Bash output files are
-  // read with Read, so the entry no longer pre-approved anything.
+  // read with Read.
   'TaskStop',
   'TeamCreate',
   'TeamDelete',
@@ -557,6 +583,16 @@ function enrichContextAudit(
     }));
   }
 
+  if (isClaudeAttachmentPassDisabled()) {
+    // getContextUsage() counts the skills Claude Code would list, but with
+    // the attachment pass disabled the listing is never sent to the model.
+    audit.skills.includedSkills = 0;
+    audit.skills.tokens = 0;
+    audit.warnings.push(
+      'CLAUDE_CODE_DISABLE_ATTACHMENTS is set: Claude Code skips the skill listing, so no Skill is visible to the model',
+    );
+  }
+
   return audit;
 }
 
@@ -801,6 +837,10 @@ class MessageStream {
       message: { role: 'user', content },
       parent_tool_use_id: null,
       session_id: '',
+      // An input written while a turn runs belongs to the next round (the
+      // host's durable-queue contract); the SDK default 'next' would fold it
+      // into the running turn instead. Steering interrupts explicitly.
+      priority: 'later',
       // Client uuid: the CLI echoes it in result.user_message_uuids, which
       // tells the delivery tracker which queued inputs a turn consumed.
       ...(uuid ? { uuid } : {}),
@@ -887,6 +927,18 @@ function log(message: string): void {
  */
 function logWarn(message: string): void {
   console.error(`[agent-runner:warn] ${message}`);
+}
+
+const CLAUDE_CLI_STDERR_LINE_LIMIT = 2_000;
+
+/** Claude Code stderr is rare and diagnostic, so surface it at warn. */
+function logClaudeCliStderr(data: string): void {
+  for (const line of data.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    logWarn(
+      `claude-cli stderr: ${line.length > CLAUDE_CLI_STDERR_LINE_LIMIT ? `${line.slice(0, CLAUDE_CLI_STDERR_LINE_LIMIT)}…` : line}`,
+    );
+  }
 }
 
 function generateTurnId(): string {
@@ -995,6 +1047,14 @@ function getSessionSummary(
  * so users don't lose the response that was being generated.
  * Finally, trim the JSONL file to remove already-compacted history.
  */
+/** Ends the main Agent's compaction phase; subagent compactions never start it. */
+function createPostCompactHook(onCompactionEnd: () => void): HookCallback {
+  return async (input) => {
+    if (!(input as PostCompactHookInput).agent_id) onCompactionEnd();
+    return {};
+  };
+}
+
 function createPreCompactHook(deps: {
   emit: (output: ContainerOutput) => void;
   getFullText: () => string;
@@ -1007,7 +1067,7 @@ function createPreCompactHook(deps: {
     const sessionId = preCompact.session_id;
 
     // Skip sub-agent compactions — they'd archive the unchanged main transcript
-    // and set hadCompaction, triggering a spurious main-session auto-continue.
+    // and flag a compaction, triggering a spurious main-session auto-continue.
     if (preCompact.agent_id) {
       log(
         `PreCompact: skipping sub-agent compact (agent_id=${preCompact.agent_id})`,
@@ -1043,8 +1103,10 @@ function createPreCompactHook(deps: {
     }
 
     try {
+      // Archive only what this compaction summarises: history before the
+      // previous compact_boundary was archived by the previous compaction.
       const content = fs.readFileSync(transcriptPath, 'utf-8');
-      const messages = parseTranscript(content);
+      const messages = parseTranscript(transcriptSinceLastCompaction(content));
 
       if (messages.length === 0) {
         log('No messages to archive');
@@ -1071,14 +1133,13 @@ function createPreCompactHook(deps: {
       );
     }
 
-    // ── Trim session JSONL to prevent unbounded growth ──
-    // Remove entries before the last compact_boundary (already summarized).
-    // Must run AFTER archiving (archive needs full transcript).
-    trimSessionJsonl(transcriptPath, log);
+    // Transcript growth is bounded by Claude Code itself
+    // (CLAUDE_CODE_TRANSCRIPT_LOCAL_GC, see claude-runtime-env.ts): this hook
+    // runs while the CLI is live, so it must not rewrite the transcript.
 
-    // Flag compaction so the query loop auto-continues instead of
-    // waiting for user input (non-blocking compaction #229).
-    hadCompaction = true;
+    // Flag compaction so the query loop auto-continues, instead of waiting
+    // for user input, if no healthy Result follows it (#229).
+    compactionAwaitingCompletion = true;
 
     return {};
   };
@@ -1646,6 +1707,11 @@ function setCurrentChannelTurn(
   }
 }
 
+function nonNegativeNumber(value: unknown): number {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, number) : 0;
+}
+
 function decorateChannelUserTurn(
   message: string,
   context: ChannelTurnContext | undefined,
@@ -1696,6 +1762,8 @@ async function runQueryAttempt(
   durableInputTurnCompleted?: boolean;
   providerFailureTurn?: ProviderFallbackRetryTurn;
   providerAccountFailure?: boolean;
+  /** A hook stopped the last turn; the runner must not continue it. */
+  continuationPrevented?: boolean;
 }> {
   const queryModelRuntime = resolveClaudeQueryModelRuntime(
     CLAUDE_PROVIDER_RUNTIME,
@@ -2007,6 +2075,29 @@ async function runQueryAttempt(
 
   // Poll IPC for follow-up messages and _close/_interrupt sentinel during the query
   let ipcPolling = true;
+  let queryFinished = false;
+  let contextBudgetExceeded:
+    | {
+        startupTokens: number;
+        maxTokens: number;
+        hardThreshold: number;
+        message: string;
+      }
+    | undefined;
+  const contextBudgetExceededResult = (
+    exceeded: NonNullable<typeof contextBudgetExceeded>,
+  ) => ({
+    newSessionId,
+    lastAssistantUuid,
+    closedDuringQuery,
+    interruptedDuringQuery,
+    cancelledIpcReceipts,
+    pipedMessagesDuringQuery,
+    contextBudgetExceeded: exceeded,
+  });
+  // Set by a system/informational frame with prevent_continuation (a hook
+  // stopped the turn); cleared when the next input turn becomes current.
+  let continuationPrevented = false;
   let closedDuringQuery = false;
   let interruptedDuringQuery = false;
   let cancelledIpcReceipts: IpcDeliveryReceipt[] = [];
@@ -2019,7 +2110,7 @@ async function runQueryAttempt(
   let clearBackgroundProtocolDebtWatchdog: () => void = () => {};
   const POST_RESULT_TIMEOUT_MS = 5_000;
   // queryRef is set just before the for-await loop so pollIpcDuringQuery can call interrupt()
-  let queryRef: Pick<Query, 'interrupt'> | null = null;
+  let queryRef: Pick<Query, 'interrupt' | 'close'> | null = null;
   let messageCount = 0;
   let resultCount = 0;
   let postResultInterruptRequested = false;
@@ -2049,89 +2140,129 @@ async function runQueryAttempt(
   let sawPendingBackgroundTasks = false;
   let backgroundSummaryForceAttempts = 0;
   const MAX_BACKGROUND_SUMMARY_FORCE_ATTEMPTS = 2;
-  // SDK scopes vary by implementation: the official SDK exposes cumulative
-  // root/model totals, while compatible proxies may reset the root per result.
-  // Assistant message usage is the primary Kaboo-compatible source; this
-  // stateful result normalizer is only the fallback when no assistant usage
-  // snapshot was observed.
-  const resultUsageState = createResultUsageState();
+  // Per-message assistant usage is the primary Kaboo-compatible ledger. The
+  // reconciler differences each result's cumulative modelUsage against a
+  // per-session baseline (persisted next to the transcript, so a resumed
+  // process does not bill restored history again) and reports what no
+  // per-message event covered: session titles, compaction, WebFetch and
+  // subagent progress summaries.
+  const runningPendingMs = runningPendingWindowMs(process.env.API_TIMEOUT_MS);
+  const usageReconciler = new ResultUsageReconciler({
+    runningPendingMs,
+    resumed: !!sessionId,
+    baseline: sessionId
+      ? readUsageBaseline(resolveTranscriptDir(), sessionId, logWarn)
+      : null,
+  });
   const assistantUsageCollector = new AssistantUsageCollector();
-  let assistantBatchFlushedSinceLastResult = false;
+  // Live assistant snapshots carry message_start's placeholder output count;
+  // the main and sidechain transcripts carry the CLI-merged final usage. The
+  // loader reads only appended bytes, so every flushed message consults it.
+  const transcriptUsageLoader = createTranscriptUsageLoader(() => {
+    const activeSessionId = newSessionId || sessionId;
+    if (!activeSessionId) return undefined;
+    return path.join(resolveTranscriptDir(), `${activeSessionId}.jsonl`);
+  });
   const emitResultUsage = (
     resultMessage: Record<string, unknown>,
     fallbackEventId: string,
   ): void => {
-    const resultUuid =
-      typeof resultMessage.uuid === 'string' ? resultMessage.uuid.trim() : '';
-    // SDK result UUID survives delivery retries and gives the host's event
-    // ledger a stronger idempotency key than a process-local generated turn.
-    const eventId = resultUuid ? `sdk-result:${resultUuid}` : fallbackEventId;
-    const fallbackUsage = extractResultUsage(
-      {
-        eventId,
-        usage: resultMessage.usage as SdkResultUsage | undefined,
-        totalCostUSD: resultMessage.total_cost_usd as number | undefined,
-        durationMs: resultMessage.duration_ms as number | undefined,
-        numTurns: resultMessage.num_turns as number | undefined,
-        modelUsage: resultMessage.modelUsage as
-          | Record<string, SdkModelUsage>
-          | undefined,
-        fallbackModelKey: queryModelRuntime.usageModelKey,
-      },
-      resultUsageState,
-    );
+    const activeSessionId = newSessionId || sessionId;
     const assistantBatches: AssistantUsageBatch[] = [];
-    // Zero-token stream snapshots (message_start placeholders from providers
-    // that only reveal usage at response completion) are backfilled from the
-    // session transcript, which carries the CLI-merged final usage.
-    const transcriptUsageLoader = createTranscriptUsageLoader(() => {
-      const activeSessionId = newSessionId || sessionId;
-      if (!activeSessionId) return undefined;
-      return path.join(resolveTranscriptDir(), `${activeSessionId}.jsonl`);
-    });
     for (;;) {
       const batch = assistantUsageCollector.drain(
-        newSessionId || sessionId,
+        activeSessionId,
         transcriptUsageLoader,
       );
       if (!batch) break;
       assistantBatches.push(batch);
-    }
-    if (assistantBatches.length > 0) {
-      assistantBatchFlushedSinceLastResult = true;
-      assistantBatches.forEach((assistantBatch, index) => {
-        // Result duration/turn count describe the whole SDK result, so attach
-        // them only to the final per-message event instead of multiplying them.
-        const isLast = index === assistantBatches.length - 1;
-        const usage = {
-          eventId: assistantBatch.eventId,
-          batchIndex: index,
-          batchCount: assistantBatches.length,
-          ...assistantBatch.tokens,
-          costUSD: isLast ? fallbackUsage?.costUSD || 0 : 0,
-          durationMs: isLast ? fallbackUsage?.durationMs || 0 : 0,
-          numTurns: isLast ? fallbackUsage?.numTurns || 0 : 0,
-        };
-        emit({
-          status: 'stream',
-          result: null,
-          streamEvent: { eventType: 'usage', usage },
-        });
-        log(
-          `Usage: input=${usage.inputTokens} output=${usage.outputTokens} reasoning=${usage.reasoningTokens} cacheRead=${usage.cacheReadInputTokens} cacheCreate=${usage.cacheCreationInputTokens} cost=$${usage.costUSD} turns=${usage.numTurns}`,
-        );
+      usageReconciler.recordAccounted(batch.tokens.modelUsage, {
+        final: batch.final,
+        completed: batch.completed,
       });
-      return;
     }
-    if (assistantBatchFlushedSinceLastResult || !fallbackUsage) return;
-    emit({
-      status: 'stream',
-      result: null,
-      streamEvent: { eventType: 'usage', usage: fallbackUsage },
+    const isResult = resultMessage.type === 'result';
+    const reconciled = isResult
+      ? usageReconciler.applyResult({
+          usage: resultMessage.usage as SdkResultUsage | undefined,
+          totalCostUSD: resultMessage.total_cost_usd as number | undefined,
+          modelUsage: resultMessage.modelUsage as
+            | Record<string, SdkModelUsage>
+            | undefined,
+          fallbackModelKey: queryModelRuntime.usageModelKey,
+        })
+      : { costUSD: 0 };
+    if (
+      activeSessionId &&
+      (isResult || assistantBatches.length > 0) &&
+      usageReconciler.shouldPersist
+    ) {
+      // Persist before emitting: a runner killed after this point resumes
+      // from totals that already include this result, and from per-message
+      // usage flushed without a result (interrupt, close, exit) that Claude
+      // Code restores into the next process's totals.
+      try {
+        writeUsageBaseline(
+          resolveTranscriptDir(),
+          usageReconciler.toBaseline(activeSessionId),
+        );
+      } catch (err) {
+        logWarn(
+          `Failed to persist the usage baseline: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    if (reconciled.baselineReset) {
+      log(
+        `Usage baseline reset (${reconciled.baselineReset}); billing per-message usage only for this result`,
+      );
+    }
+    if (reconciled.droppedPending) {
+      logWarn(
+        `Dropped per-message usage no modelUsage covered (completed calls after ${MAX_PENDING_IDLE_RESULTS} results, running ones after ${runningPendingMs / 60_000} min): ${JSON.stringify(reconciled.droppedPending)}`,
+      );
+    }
+    const resultUuid =
+      typeof resultMessage.uuid === 'string' ? resultMessage.uuid.trim() : '';
+    const events: Array<
+      { eventId: string } & AssistantUsageBatch['tokens'] & {
+          reasoningTokens: number;
+        }
+    > = assistantBatches.map((batch) => ({
+      eventId: batch.eventId,
+      ...batch.tokens,
+    }));
+    if (reconciled.residual) {
+      // The SDK result UUID survives delivery retries, so the host ledger can
+      // deduplicate the internal remainder like a per-message event.
+      events.push({
+        eventId: resultUuid
+          ? `claude-code-internal:${resultUuid}`
+          : `${fallbackEventId}:internal`,
+        ...reconciled.residual,
+      });
+    }
+    events.forEach((event, index) => {
+      // Result cost/duration/turn count describe the whole SDK result, so
+      // attach them only to the final event instead of multiplying them.
+      const isLast = index === events.length - 1;
+      const usage = {
+        ...event,
+        batchIndex: index,
+        batchCount: events.length,
+        costUSD: isLast ? reconciled.costUSD : 0,
+        durationMs: isLast ? nonNegativeNumber(resultMessage.duration_ms) : 0,
+        numTurns: isLast ? nonNegativeNumber(resultMessage.num_turns) : 0,
+      };
+      emit({
+        status: 'stream',
+        result: null,
+        streamEvent: { eventType: 'usage', usage },
+      });
+      log(
+        `Usage${event.eventId.startsWith('claude-code-internal:') ? ' (internal calls)' : ''}: input=${usage.inputTokens} output=${usage.outputTokens} reasoning=${usage.reasoningTokens} cacheRead=${usage.cacheReadInputTokens} cacheCreate=${usage.cacheCreationInputTokens} cost=$${usage.costUSD} turns=${usage.numTurns}`,
+      );
     });
-    log(
-      `Usage: input=${fallbackUsage.inputTokens} output=${fallbackUsage.outputTokens} reasoning=${fallbackUsage.reasoningTokens} cacheRead=${fallbackUsage.cacheReadInputTokens} cacheCreate=${fallbackUsage.cacheCreationInputTokens} cost=$${fallbackUsage.costUSD} turns=${fallbackUsage.numTurns}`,
-    );
   };
 
   // 收尾阶段中止挂起的工具调用：当 stream 准备关闭（_close/_drain/post-result-timeout）时，
@@ -2139,15 +2270,47 @@ async function runQueryAttempt(
   // 这里主动 query.interrupt() 中止那个卡住的工具调用，让 for-await 自然结束、runner 回到
   // waitForIpcMessage() 保持 warm——不杀整个 runner。interrupt 引发的 SDK 错误由 catch 分支
   // 通过 postResultInterruptRequested 归类为 non-fatal（不退避、不上报为失败）。
+  /**
+   * Stop the active SDK turn without re-running input queued behind it.
+   *
+   * On interrupt Claude Code at once starts the next message already written
+   * to it (verified with 2.1.296, even after the input stream ended), while
+   * the runner requeues every later accepted turn for its next query; such a
+   * turn would run twice, once unseen in this superseded process. With later
+   * turns queued in the CLI the process is closed instead, and an interrupt
+   * receipt that still lists queued input closes it as well.
+   */
+  const stopActiveTurn = (
+    activeQuery: Pick<Query, 'interrupt' | 'close'>,
+    reason: string,
+    turnsQueuedInCli = ipcDeliveryTracker.laterTurnMessages.length,
+  ): void => {
+    if (turnsQueuedInCli > 0) {
+      log(
+        `${reason}: closing the query, ${turnsQueuedInCli} later input(s) are queued in Claude Code`,
+      );
+      activeQuery.close();
+      return;
+    }
+    activeQuery
+      .interrupt()
+      .then((receipt) => {
+        if (!receipt?.still_queued?.length) return;
+        log(
+          `${reason}: closing the query, the interrupt left ${receipt.still_queued.length} queued input(s)`,
+        );
+        activeQuery.close();
+      })
+      .catch((err: unknown) => log(`${reason} interrupt failed: ${err}`));
+  };
+
   const interruptQueryForShutdown = (reason: string) => {
     if (!queryRef) return;
     if (postResultInterruptRequested) return;
     const activeQuery = queryRef;
     postResultInterruptRequested = true;
     log(`${reason}, interrupting current query before closing stream`);
-    activeQuery
-      .interrupt()
-      .catch((err: unknown) => log(`Shutdown interrupt failed: ${err}`));
+    stopActiveTurn(activeQuery, `${reason} (shutdown)`);
   };
 
   const pollIpcDuringQuery = async (): Promise<void> => {
@@ -2170,6 +2333,7 @@ async function runQueryAttempt(
       cancelBackgroundResultCompletion();
       clearBackgroundProtocolDebtWatchdog();
       interruptedDuringQuery = true;
+      const turnsQueuedInCli = ipcDeliveryTracker.laterTurnMessages.length;
       const cancelledInputs = ipcDeliveryTracker.cancelCurrentTurn();
       cancelledIpcReceipts = cancelledInputs
         .map((message) => message.receipt)
@@ -2185,13 +2349,13 @@ async function runQueryAttempt(
       );
       // The SDK may abort without producing a Result. Flush already observed
       // assistant API calls now so a deliberate stop/steer cannot erase their
-      // real token usage. A later Result only advances fallback high-water
-      // state and is suppressed by assistantBatchFlushedSinceLastResult.
+      // real token usage. A later Result subtracts them before billing any
+      // internal-call remainder.
       emitResultUsage({}, containerInput.turnId || generateTurnId());
       lastInterruptRequestedAt = Date.now();
-      queryRef
-        ?.interrupt()
-        .catch((err: unknown) => log(`Interrupt call failed: ${err}`));
+      if (queryRef) {
+        stopActiveTurn(queryRef, 'Interrupt sentinel', turnsQueuedInCli);
+      }
       stream.end();
       ipcPolling = false;
       ipcQueryWatcher.close();
@@ -2281,6 +2445,7 @@ async function runQueryAttempt(
       acceptedMessages.push(...accepted);
       if (becomesCurrentTurn) {
         durableInputCompletion.activateInput();
+        continuationPrevented = false;
         providerFallbackTurns.acceptCurrentTurn([msg]);
         activateCurrentInputTurn(
           msg.receipt?.deliveryId || containerInput.turnId || generateTurnId(),
@@ -2503,6 +2668,7 @@ async function runQueryAttempt(
   ): void => {
     if (inputTurnCompleted) {
       clearBackgroundProtocolDebtWatchdog();
+      if (!candidate.suspectTruncated) compactionAwaitingCompletion = false;
     }
     const ipcReceipts = inputTurnCompleted
       ? ipcDeliveryTracker.completeAnsweredTurns()
@@ -2700,24 +2866,10 @@ async function runQueryAttempt(
     };
   }
 
-  // No override = SDK model-aware default: normally 200K; [1m] requests 1M.
-  // Percentage policy takes precedence over the legacy absolute-token setting.
-  const autoCompactPercentage = parseInt(
-    process.env.AUTO_COMPACT_PERCENTAGE ?? '0',
-    10,
-  );
-  const percentageWindow = resolveAutoCompactWindow(
-    queryModelRuntime.model,
-    autoCompactPercentage,
-  );
-  const legacyAutoCompactWindow = parseInt(
-    process.env.AUTO_COMPACT_WINDOW ?? '0',
-    10,
-  );
-  const safeLegacyAutoCompactWindow = resolveLegacyAutoCompactWindow(
-    queryModelRuntime.model,
-    legacyAutoCompactWindow,
-  );
+  // Auto-compaction is configured through Claude Code's own environment
+  // variables: they outrank the `autoCompactWindow` setting and apply to the
+  // window Claude Code resolved for the model, 1M-native models included.
+  const claudeRuntimeEnv: ClaudeRuntimeEnv = buildClaudeRuntimeEnv(process.env);
   const flagSettings: Record<string, unknown> = {};
   const claudeMdExcludes = resolveManagedHostClaudeMdExcludes({
     executionMode: contextAuditBase.executionMode,
@@ -2729,16 +2881,6 @@ async function runQueryAttempt(
   if (claudeMdExcludes.length > 0) {
     flagSettings.claudeMdExcludes = claudeMdExcludes;
     contextAuditBase.claudeMdExcludes = claudeMdExcludes;
-  }
-  if (percentageWindow !== undefined) {
-    flagSettings.autoCompactWindow = percentageWindow;
-  } else if (safeLegacyAutoCompactWindow !== undefined) {
-    flagSettings.autoCompactWindow = safeLegacyAutoCompactWindow;
-    if (safeLegacyAutoCompactWindow !== legacyAutoCompactWindow) {
-      log(
-        `[WARN] AUTO_COMPACT_WINDOW=${legacyAutoCompactWindow} exceeds the safe window for ${queryModelRuntime.model}; clamped to ${safeLegacyAutoCompactWindow}`,
-      );
-    }
   }
   // Resolve the actual claude CLI path for the SDK.
   // Container builds remove the SDK's duplicate native optionalDependencies,
@@ -2803,10 +2945,12 @@ async function runQueryAttempt(
       `Loading ${userPlugins.length} plugin(s): ${userPlugins.map((p) => p.path).join(', ')}`,
     );
   }
-  const effectiveDisallowedTools =
-    disallowedTools && disallowedTools.length > 0
-      ? [...new Set(disallowedTools)]
-      : undefined;
+  const effectiveDisallowedTools = [
+    ...new Set([
+      ...RUNNER_DISALLOWED_BUILTIN_TOOLS,
+      ...(disallowedTools ?? []),
+    ]),
+  ];
   const userMcpServers = activeAgentMcpPolicy.includeUserMcpServers
     ? loadUserMcpServers()
     : {};
@@ -2820,17 +2964,27 @@ async function runQueryAttempt(
         ? `Agent effort override: ${agentEffort}`
         : 'Agent effort: inherit Provider/SDK default',
     );
+    if (Object.keys(claudeRuntimeEnv).length > 0) {
+      log(
+        `Claude runtime env: ${Object.entries(claudeRuntimeEnv)
+          .map(([key, value]) => `${key}=${value}`)
+          .join(' ')}`,
+      );
+    }
     const sdkCompat = withHappyClawSubagentContract({
       ...(pathToClaudeCodeExecutable && { pathToClaudeCodeExecutable }),
       ...queryModelRuntime.queryModelOptions,
       cwd: WORKSPACE_GROUP,
+      // `env` replaces the child environment, so it starts from ours.
+      env: { ...process.env, ...claudeRuntimeEnv },
+      // Capturing stderr here (instead of DEBUG_CLAUDE_AGENT_SDK, which also
+      // switches the CLI into debug mode) keeps startup failures visible.
+      stderr: logClaudeCliStderr,
       resume: sessionId,
       ...(sessionId && resumeAt ? { resumeSessionAt: resumeAt } : {}),
       systemPrompt,
       allowedTools,
-      ...(effectiveDisallowedTools && {
-        disallowedTools: effectiveDisallowedTools,
-      }),
+      disallowedTools: effectiveDisallowedTools,
       thinking: { type: 'adaptive' as const, display: 'summarized' as const },
       ...(agentEffort ? { effort: agentEffort } : {}),
       permissionMode: 'bypassPermissions' as const,
@@ -2842,9 +2996,9 @@ async function runQueryAttempt(
       skills:
         containerInput.skillManifest?.selectedSkillIds ?? ('all' as const),
       includePartialMessages: true,
-      // Forward sub-agent (Task) text/thinking as stream events so the card's
-      // sub-agent transcript lights up live instead of only filling in when the
-      // Task completes.
+      // Forward sub-agent (Agent tool, legacy name Task) text/thinking as
+      // stream events so the card's sub-agent transcript lights up live
+      // instead of only filling in when the subagent completes.
       forwardSubagentText: true,
       ...(Object.keys(flagSettings).length > 0
         ? { settings: flagSettings as any }
@@ -2860,7 +3014,17 @@ async function runQueryAttempt(
       hooks: {
         PreToolUse: [
           {
+            matcher: WORKSPACE_MEMORY_WRITE_GUARD_MATCHER,
             hooks: [createWorkspaceMemoryWriteGuard()],
+          },
+        ],
+        PostCompact: [
+          {
+            hooks: [
+              createPostCompactHook(() =>
+                firstResponseWatchdog?.endCompaction(),
+              ),
+            ],
           },
         ],
         PreCompact: [
@@ -2926,14 +3090,131 @@ async function runQueryAttempt(
         `Cancelled ${cancelledInputs.length} IPC input message(s) as the superseded turn started`,
       );
       suppressOutputAfterInterrupt = true;
-      q.interrupt().catch((err: unknown) =>
-        log(`Immediate interrupt call failed: ${err}`),
-      );
+      stopActiveTurn(q, 'Immediate interrupt call');
       stream.end();
       ipcPolling = false;
     }
+    let contextAuditStarted = false;
+    const publishContextAudit = async (
+      pluginWarnings: string[],
+    ): Promise<void> => {
+      let contextUsage: SDKControlGetContextUsageResponse | undefined;
+      try {
+        contextUsage = await runSdkControlWithTimeout(
+          'getContextUsage',
+          () => q.getContextUsage(),
+          SDK_CONTEXT_USAGE_TIMEOUT_MS,
+        );
+        if (contextUsage.skills) {
+          log(
+            `Skills: ${contextUsage.skills.includedSkills}/${contextUsage.skills.totalSkills} loaded, ${contextUsage.skills.tokens} tokens`,
+          );
+        }
+        log(
+          `Context: ${contextUsage.totalTokens}/${contextUsage.maxTokens} tokens (${contextUsage.percentage.toFixed(1)}%)`,
+        );
+      } catch (ctxErr) {
+        log(
+          `[debug] getContextUsage failed: ${ctxErr instanceof Error ? ctxErr.message : String(ctxErr)}`,
+        );
+      }
+      // The query may have ended while the control request was in flight;
+      // its frames would then be correlated with a later query.
+      if (queryFinished) return;
+      const contextAudit = enrichContextAudit(
+        contextAuditBase,
+        promptAudit,
+        contextUsage,
+      );
+      contextAudit.subagentContract = sdkCompat.audit;
+      for (const warning of pluginWarnings) {
+        contextAudit.warnings.push(warning);
+        logWarn(warning);
+      }
+      const contextBudget = assessContextBudget(contextUsage);
+      contextAudit.contextBudget = contextBudget;
+      if (contextBudget.warning) {
+        contextAudit.warnings.push(contextBudget.warning);
+        log(`[WARN] ${contextBudget.warning}`);
+      }
+      // 1M 上下文缩水告警：带 [1m] 后缀的模型期望约 1M 上下文窗口，若 SDK / 模型资格判定
+      // 静默退回（例如 200K），在此立即暴露而非等到溢出。push 进 warnings 会让下方
+      // emit 的 displayLevel 自动升为 'primary'，在前端醒目展示。
+      if (
+        isExtendedContextModel(queryModelRuntime.model) &&
+        contextUsage &&
+        contextUsage.maxTokens > 0 &&
+        contextUsage.maxTokens < 900_000
+      ) {
+        contextAudit.warnings.push(
+          `上下文窗口仅 ${Math.round(contextUsage.maxTokens / 1000)}K tokens（预期约 1M），1M 上下文可能未生效`,
+        );
+        log(
+          `[WARN] 1M context not active: maxTokens=${contextUsage.maxTokens}`,
+        );
+      }
+      emit({
+        status: 'stream',
+        result: null,
+        streamEvent: {
+          eventType: 'context_audit',
+          agentScope: 'system',
+          displayLevel: contextAudit.warnings.length > 0 ? 'primary' : 'detail',
+          title: 'Agent Context',
+          summary: `${contextAudit.skills.includedSkills ?? contextAudit.skills.totalSkills ?? 0} skills · ${contextAudit.rules.fileCount} rules`,
+          contextAudit,
+        },
+      });
+      if (
+        contextBudget.status === 'hard_exceeded' &&
+        contextBudget.startupTokens !== undefined &&
+        contextBudget.maxTokens !== undefined &&
+        contextBudget.hardThreshold !== undefined
+      ) {
+        const message =
+          contextBudget.error ?? 'startup context budget exceeded';
+        if (resultCount > 0 || durableInputCompletion.isCompleted) {
+          // The audit runs in the background; once this query published a
+          // result, failing the runner would contradict a delivered final.
+          logWarn(
+            `${message}; detected after this query already published a result, letting the turn finish`,
+          );
+          return;
+        }
+        log(`[ERROR] ${message}`);
+        contextBudgetExceeded = {
+          startupTokens: contextBudget.startupTokens,
+          maxTokens: contextBudget.maxTokens,
+          hardThreshold: contextBudget.hardThreshold,
+          message,
+        };
+        // A deterministic configuration error: hide whatever the turn
+        // already streamed and stop it.
+        suppressOutputAfterInterrupt = true;
+        processor.discardPendingTextOutput();
+        interruptQueryForShutdown('Startup context budget exceeded');
+        stream.end();
+        ipcPolling = false;
+        ipcQueryWatcher.close();
+      }
+    };
     for await (const message of q) {
       firstResponseWatchdog.observe(message.type);
+      if (message.type === 'system') {
+        const frame = message as {
+          subtype?: string;
+          compact_result?: string;
+          retry_delay_ms?: number;
+        };
+        if (
+          frame.subtype === 'compact_boundary' ||
+          (frame.subtype === 'status' && frame.compact_result)
+        ) {
+          firstResponseWatchdog.endCompaction();
+        } else if (frame.subtype === 'api_retry') {
+          firstResponseWatchdog.observeRetry(frame.retry_delay_ms ?? 0);
+        }
+      }
       const bookkeepingFrame = isSdkBookkeepingFrame(message);
       const preservesObservedBackgroundResult =
         bookkeepingFrame ||
@@ -2992,9 +3273,7 @@ async function runQueryAttempt(
             assistantTextTracker.reset();
             canonicalAssistantUuid = undefined;
             stream.end();
-            q.interrupt().catch((err: unknown) =>
-              log(`Rate-limit interrupt failed: ${err}`),
-            );
+            stopActiveTurn(q, 'Rate-limit interrupt');
             return {
               newSessionId,
               lastAssistantUuid,
@@ -3033,9 +3312,7 @@ async function runQueryAttempt(
             stream.end();
             ipcPolling = false;
             ipcQueryWatcher.close();
-            q.interrupt().catch((err: unknown) =>
-              log(`Model-fallback interrupt failed: ${err}`),
-            );
+            stopActiveTurn(q, 'Model-fallback interrupt');
             return {
               newSessionId,
               lastAssistantUuid,
@@ -3070,9 +3347,7 @@ async function runQueryAttempt(
           assistantTextTracker.reset();
           canonicalAssistantUuid = undefined;
           stream.end();
-          q.interrupt().catch((err: unknown) =>
-            log(`Model-limit interrupt failed: ${err}`),
-          );
+          stopActiveTurn(q, 'Model-limit interrupt');
           return {
             newSessionId,
             lastAssistantUuid,
@@ -3093,6 +3368,11 @@ async function runQueryAttempt(
         // 重放消息是完整消息、不产生 partial stream_event——见到 stream_event
         // 即说明新 turn 的 LLM 调用已开始。
         sawLiveTurnActivity = true;
+        // message_delta carries the final output count of the call; record
+        // it even when the superseded reply is hidden, its usage is real.
+        assistantUsageCollector.observeStreamEvent(
+          message as unknown as Record<string, unknown>,
+        );
         if (!suppressOutputAfterInterrupt) {
           visibleOutputStarted = true;
         }
@@ -3144,6 +3424,15 @@ async function runQueryAttempt(
       // System messages
       if (message.type === 'system') {
         const sys = message as any;
+        if (
+          sys.subtype === 'informational' &&
+          sys.prevent_continuation === true
+        ) {
+          continuationPrevented = true;
+          logWarn(
+            `Claude Code stopped the turn: ${String(sys.content ?? '').slice(0, 300)}`,
+          );
+        }
         const handled = processor.processSystemMessage(sys);
         if (
           sys.subtype === 'background_tasks_changed' ||
@@ -3253,7 +3542,6 @@ async function runQueryAttempt(
         if (completionUuid) lastAssistantUuid = completionUuid;
         cancelBackgroundResultCompletion();
         emitResultUsage({}, containerInput.turnId || generateTurnId());
-        assistantBatchFlushedSinceLastResult = false;
         processor.cleanup();
         assistantTextTracker.reset();
         canonicalAssistantUuid = undefined;
@@ -3270,8 +3558,12 @@ async function runQueryAttempt(
         stream.end();
         ipcPolling = false;
         ipcQueryWatcher.close();
-        q.interrupt().catch((err: unknown) =>
-          log(`No-visible companion interrupt failed: ${err}`),
+        // The completed input has left the tracker, so every turn it still
+        // holds was already written to Claude Code and is queued there.
+        stopActiveTurn(
+          q,
+          'No-visible companion interrupt',
+          ipcDeliveryTracker.pendingTurnCount,
         );
         return {
           newSessionId,
@@ -3335,7 +3627,6 @@ async function runQueryAttempt(
             message as unknown as Record<string, unknown>,
             containerInput.turnId || generateTurnId(),
           );
-          assistantBatchFlushedSinceLastResult = false;
           resultReceivedAt = Date.now();
         }
         log(`[msg #${messageCount}] suppressed after early interrupt`);
@@ -3378,9 +3669,7 @@ async function runQueryAttempt(
           if (msgParentToolUseId) {
             // The parent loop is still mid-tool and would otherwise keep
             // spending this attempt on an account the host is quarantining.
-            q.interrupt().catch((err: unknown) =>
-              log(`Sub-agent provider-error interrupt failed: ${err}`),
-            );
+            stopActiveTurn(q, 'Sub-agent provider-error interrupt');
           }
           return {
             newSessionId,
@@ -3458,101 +3747,17 @@ async function runQueryAttempt(
         sdkTransportReady = true;
         scheduleIpcPoll();
 
-        // Log skills and context usage for observability.
-        // getContextUsage() is a newer SDK API; feature-detect to avoid spamming
-        // error logs on older SDK versions where the method is absent.
-        const getCtxUsage = (
-          q as unknown as {
-            getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
-          }
-        ).getContextUsage;
-        let contextUsage: SDKControlGetContextUsageResponse | undefined;
-        if (typeof getCtxUsage === 'function') {
-          try {
-            contextUsage = await runSdkControlWithTimeout(
-              'getContextUsage',
-              () => getCtxUsage.call(q),
-              SDK_CONTEXT_USAGE_TIMEOUT_MS,
-            );
-            if (contextUsage.skills) {
-              log(
-                `Skills: ${contextUsage.skills.includedSkills}/${contextUsage.skills.totalSkills} loaded, ${contextUsage.skills.tokens} tokens`,
-              );
-            }
-            log(
-              `Context: ${contextUsage.totalTokens}/${contextUsage.maxTokens} tokens (${contextUsage.percentage.toFixed(1)}%)`,
-            );
-          } catch (ctxErr) {
-            log(
-              `[debug] getContextUsage failed: ${ctxErr instanceof Error ? ctxErr.message : String(ctxErr)}`,
-            );
-          }
-        }
-        const contextAudit = enrichContextAudit(
-          contextAuditBase,
-          promptAudit,
-          contextUsage,
-        );
-        contextAudit.subagentContract = sdkCompat.audit;
-        const contextBudget = assessContextBudget(contextUsage);
-        contextAudit.contextBudget = contextBudget;
-        if (contextBudget.warning) {
-          contextAudit.warnings.push(contextBudget.warning);
-          log(`[WARN] ${contextBudget.warning}`);
-        }
-        // 1M 上下文缩水告警：带 [1m] 后缀的模型期望约 1M 上下文窗口，若 SDK / 模型资格判定
-        // 静默退回（例如 200K），在此立即暴露而非等到溢出。push 进 warnings 会让下方
-        // emit 的 displayLevel 自动升为 'primary'，在前端醒目展示。
-        if (
-          isExtendedContextModel(queryModelRuntime.model) &&
-          contextUsage &&
-          contextUsage.maxTokens > 0 &&
-          contextUsage.maxTokens < 900_000
-        ) {
-          contextAudit.warnings.push(
-            `上下文窗口仅 ${Math.round(contextUsage.maxTokens / 1000)}K tokens（预期约 1M），1M 上下文可能未生效`,
+        // system/init arrives at the start of every turn. The context audit is
+        // a once-per-query diagnostic and must not hold up the message stream,
+        // so it runs in the background.
+        if (!contextAuditStarted) {
+          contextAuditStarted = true;
+          publishContextAudit(pluginLoadWarnings(message)).catch(
+            (err: unknown) =>
+              logWarn(
+                `Context audit failed: ${err instanceof Error ? err.message : String(err)}`,
+              ),
           );
-          log(
-            `[WARN] 1M context not active: maxTokens=${contextUsage.maxTokens}`,
-          );
-        }
-        emit({
-          status: 'stream',
-          result: null,
-          streamEvent: {
-            eventType: 'context_audit',
-            agentScope: 'system',
-            displayLevel:
-              contextAudit.warnings.length > 0 ? 'primary' : 'detail',
-            title: 'Agent Context',
-            summary: `${contextAudit.skills.includedSkills ?? contextAudit.skills.totalSkills ?? 0} skills · ${contextAudit.rules.fileCount} rules`,
-            contextAudit,
-          },
-        });
-        if (
-          contextBudget.status === 'hard_exceeded' &&
-          contextBudget.startupTokens !== undefined &&
-          contextBudget.maxTokens !== undefined &&
-          contextBudget.hardThreshold !== undefined
-        ) {
-          const message =
-            contextBudget.error ?? 'startup context budget exceeded';
-          log(`[ERROR] ${message}`);
-          stream.end();
-          return {
-            newSessionId,
-            lastAssistantUuid,
-            closedDuringQuery,
-            interruptedDuringQuery,
-            cancelledIpcReceipts,
-            pipedMessagesDuringQuery,
-            contextBudgetExceeded: {
-              startupTokens: contextBudget.startupTokens,
-              maxTokens: contextBudget.maxTokens,
-              hardThreshold: contextBudget.hardThreshold,
-              message,
-            },
-          };
         }
       }
 
@@ -3586,7 +3791,6 @@ async function runQueryAttempt(
             failureClass: 'account',
           });
           emitResultUsage(resultMsg, containerInput.turnId || generateTurnId());
-          assistantBatchFlushedSinceLastResult = false;
           processor.discardPendingTextOutput();
           processor.cleanup();
           assistantTextTracker.reset();
@@ -3629,7 +3833,6 @@ async function runQueryAttempt(
             sessionId: newSessionId || sessionId,
           });
           emitResultUsage(resultMsg, containerInput.turnId || generateTurnId());
-          assistantBatchFlushedSinceLastResult = false;
           processor.discardPendingTextOutput();
           assistantTextTracker.reset();
           canonicalAssistantUuid = undefined;
@@ -3655,7 +3858,6 @@ async function runQueryAttempt(
             rateLimitScope: 'model',
           });
           emitResultUsage(resultMsg, containerInput.turnId || generateTurnId());
-          assistantBatchFlushedSinceLastResult = false;
           processor.discardPendingTextOutput();
           processor.cleanup();
           assistantTextTracker.reset();
@@ -3682,18 +3884,27 @@ async function runQueryAttempt(
             resultSubtype.startsWith('error'))
         ) {
           emitResultUsage(resultMsg, containerInput.turnId || generateTurnId());
-          // If session never initialized (no system/init), resume itself failed — report it
-          // so the caller can retry with a fresh session instead of crashing.
+          // No system/init yet: either the resumed session cannot be loaded
+          // (retry with a fresh session) or Claude Code refused to start
+          // (keep the session and report the error).
           if (!newSessionId) {
-            log(`Session resume failed (no init): ${resultSubtype}`);
-            return {
-              newSessionId,
-              lastAssistantUuid,
-              closedDuringQuery,
-              interruptedDuringQuery,
-              pipedMessagesDuringQuery,
-              sessionResumeFailed: true,
-            };
+            const disposition = classifyPreInitErrorResult({
+              resuming: !!sessionId,
+              result: resultMsg,
+            });
+            if (disposition.kind === 'resume_failed') {
+              log(`Session resume failed (no init): ${resultSubtype}`);
+              return {
+                newSessionId,
+                lastAssistantUuid,
+                closedDuringQuery,
+                interruptedDuringQuery,
+                pipedMessagesDuringQuery,
+                sessionResumeFailed: true,
+              };
+            }
+            logWarn(disposition.message);
+            throw new Error(disposition.message);
           }
           const detail = textResult?.trim()
             ? textResult.trim()
@@ -3777,6 +3988,7 @@ async function runQueryAttempt(
           sawPendingBackgroundTasks = true;
         }
         if (
+          !continuationPrevented &&
           shouldForceBackgroundTaskSummary({
             emitOutput,
             sawPendingBackgroundTasks,
@@ -3849,7 +4061,6 @@ async function runQueryAttempt(
         // Keeping it here avoids losing provider billing facts when a newer
         // notification-driven result supersedes this candidate.
         emitResultUsage(resultMsg, containerInput.turnId || generateTurnId());
-        assistantBatchFlushedSinceLastResult = false;
         assistantTextTracker.reset();
         canonicalAssistantUuid = undefined;
 
@@ -3925,6 +4136,10 @@ async function runQueryAttempt(
       }
     }
 
+    if (contextBudgetExceeded) {
+      return contextBudgetExceededResult(contextBudgetExceeded);
+    }
+
     if (backgroundProtocolFailure) {
       throw backgroundProtocolFailure;
     }
@@ -3960,9 +4175,16 @@ async function runQueryAttempt(
       durableInputTurnCompleted: durableInputCompletion.isCompleted,
       providerFailureTurn,
       providerAccountFailure: false,
+      continuationPrevented,
     };
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
+
+    // The budget check interrupted the query; its verdict is the outcome.
+    if (contextBudgetExceeded) {
+      processor.cleanup();
+      return contextBudgetExceededResult(contextBudgetExceeded);
+    }
 
     // The dedicated protocol watchdog owns this terminal even though it used
     // query.interrupt() to unwind a stuck SDK iterator. Do not let the generic
@@ -4107,6 +4329,7 @@ async function runQueryAttempt(
     // 继续抛出
     throw err;
   } finally {
+    queryFinished = true;
     firstResponseWatchdog?.clear();
     clearBackgroundProtocolDebtWatchdog();
     backgroundResultGate.dispose();
@@ -4751,8 +4974,12 @@ async function main(): Promise<void> {
       // nearly fills the context window), stop auto-continuing to avoid an
       // infinite loop that burns API tokens without producing useful work.
       let ranCompactionContinue = false;
-      if (hadCompaction) {
-        hadCompaction = false;
+      if (compactionAwaitingCompletion && queryResult.continuationPrevented) {
+        compactionAwaitingCompletion = false;
+        log('A hook stopped the compacted turn; not auto-continuing it');
+      }
+      if (compactionAwaitingCompletion) {
+        compactionAwaitingCompletion = false;
         consecutiveCompactions++;
         if (consecutiveCompactions <= MAX_CONSECUTIVE_COMPACTIONS) {
           ranCompactionContinue = true;
@@ -4907,9 +5134,10 @@ async function main(): Promise<void> {
       // 半截回复会被当成完整回复交付，进程空转到 IDLE_TIMEOUT 才死。
       // 上限 2 次防止网关持续断流时无限烧 token；压缩 auto-continue 本轮已跑过
       // 新 query 时跳过（模型已经继续过了）。
-      let truncatedTail = ranCompactionContinue
-        ? undefined
-        : queryResult.suspectTruncatedTail;
+      let truncatedTail =
+        ranCompactionContinue || queryResult.continuationPrevented
+          ? undefined
+          : queryResult.suspectTruncatedTail;
       const truncationLogicalInputTurnId = activeOutputInputTurnId;
       const initialTruncationInputs = partitionIpcMessagesForLogicalTurn(
         queryResult.pipedMessagesDuringQuery,

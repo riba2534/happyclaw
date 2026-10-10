@@ -1,3 +1,5 @@
+import { isFeishuCardContentRejection } from './channel-delivery-failure.js';
+
 export interface ImSendFailurePolicy {
   retryable: boolean;
   countsTowardChannelRemoval: boolean;
@@ -109,11 +111,65 @@ export function explicitImDeliveryPhase(
   return undefined;
 }
 
+function numericBodyCode(value: unknown): boolean {
+  const code = (value as { code?: unknown } | undefined)?.code;
+  return (
+    (typeof code === 'number' && Number.isFinite(code)) ||
+    (typeof code === 'string' && /^\d+$/.test(code))
+  );
+}
+
+/**
+ * Feishu capability/broker failures carry no generic delivery phase. Their
+ * own wrapper says whether Feishu was unreachable before the request was
+ * sent (pre-acceptance) or refused it; a raw SDK error that received a 4xx
+ * response with a Feishu body code is a refusal too. 5xx/408 stay ambiguous.
+ */
+function classifyFeishuRefusal(
+  chain: Array<Record<string, unknown>>,
+): ImSendFailureOutcome | undefined {
+  for (const item of chain) {
+    if (item.name === 'DefinitiveFeishuCapabilityError') {
+      return /before the request was sent/i.test(String(item.message ?? ''))
+        ? 'pre_accept'
+        : 'rejected';
+    }
+  }
+  for (const item of chain) {
+    const response = item.response as
+      | { status?: unknown; data?: unknown }
+      | undefined;
+    if (!response || typeof response !== 'object') continue;
+    const status = response.status;
+    if (
+      typeof status === 'number' &&
+      status >= 400 &&
+      status < 500 &&
+      status !== 408 &&
+      numericBodyCode(response.data)
+    ) {
+      return 'rejected';
+    }
+  }
+  return undefined;
+}
+
 /**
  * Classify only from transport-stage evidence. A bare timeout/reset is
  * uncertain because it can occur after the provider accepted the mutation.
  */
 export function classifyImSendFailure(error: unknown): ImSendFailureOutcome {
+  // A Feishu streaming card whose final body was refused and that was then
+  // terminalized to a minimal notice never showed the reply: an explicit
+  // rejection, so the host delivers the reply as static messages. If even
+  // the notice update failed (`cardTerminalized: false`) the card may still
+  // show streamed body text and recovery may rewrite it, so a static copy
+  // could duplicate the answer: that outcome stays uncertain.
+  if (isFeishuCardContentRejection(error)) {
+    return (error as { cardTerminalized?: unknown }).cardTerminalized === false
+      ? 'uncertain'
+      : 'rejected';
+  }
   const chain = errorChain(error);
   // Any acknowledged-prefix/uncertain evidence dominates a nested definitive
   // tail rejection. The outer operation can no longer be replayed safely even
@@ -135,6 +191,8 @@ export function classifyImSendFailure(error: unknown): ImSendFailureOutcome {
   if (explicitImDeliveryPhase(error) === 'pre_accept') {
     return 'pre_accept';
   }
+  const feishuRefusal = classifyFeishuRefusal(chain);
+  if (feishuRefusal) return feishuRefusal;
 
   const codes = new Set(chain.map((item) => String(item.code ?? '')));
   const message = chain.map((item) => String(item.message ?? '')).join(' ');

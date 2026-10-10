@@ -42,7 +42,10 @@ import {
   listFiles,
   scanSkillDirectory,
 } from '../skill-utils.js';
-import { resolveEffectiveSkills } from '../effective-skill-resolver.js';
+import {
+  invalidateSkillHashCache,
+  resolveEffectiveSkills,
+} from '../effective-skill-resolver.js';
 
 const execFileAsync = promisify(execFile);
 const MAX_SKILL_INSTALL_BYTES = 64 * 1024 * 1024;
@@ -262,13 +265,16 @@ function discoverSkills(userId: string, userRole?: string): Skill[] {
             {
               source: 'host' as const,
               root: path.join(getEffectiveExternalDir(), 'skills'),
+              skills: externalSkills,
             },
           ]
         : []),
-      { source: 'project', root: getProjectSkillsDir() },
-      { source: 'managed', root: getUserSkillsDir(userId) },
+      { source: 'project', root: getProjectSkillsDir(), skills: projectSkills },
+      { source: 'managed', root: getUserSkillsDir(userId), skills: userSkills },
     ],
     managedPolicy: { mode: 'inherit' },
+    // The listing only needs precedence, never payload hashes.
+    computeHashes: false,
   });
   const selectedById = new Map(
     effectiveManifest.selected.map((skill) => [skill.id, skill]),
@@ -603,7 +609,15 @@ async function withUserSkillMutationLock<T>(
   fn: () => Promise<T> | T,
 ): Promise<T> {
   return withCapabilityScopeLocks([userCapabilityLockKey(userId)], () =>
-    withPrivateUserSkillMutationLock(userId, fn),
+    withPrivateUserSkillMutationLock(userId, async () => {
+      try {
+        return await fn();
+      } finally {
+        // Every managed Skill install, import, toggle, reinstall and delete
+        // runs under this lock; drop memoized hashes for the user's root.
+        invalidateSkillHashCache(getUserSkillsDir(userId));
+      }
+    }),
   );
 }
 

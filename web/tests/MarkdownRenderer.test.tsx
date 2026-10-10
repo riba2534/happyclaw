@@ -198,6 +198,48 @@ describe('MarkdownRenderer progressive enhancement', () => {
     expect(html).toContain('class="katex"');
     expect(html).toContain('<strong>保留</strong>');
     expect(html).not.toContain('<script');
-    expect(html).not.toContain('alert(1)');
+    // A tag outside the allowlist stays visible, inert text (like GFM's
+    // tagfilter) instead of vanishing, matching the streaming view.
+    expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+  });
+});
+
+describe('MarkdownRenderer rendered-tree cache', () => {
+  it('renders repeated content the same and keys it by group and image mode', () => {
+    const content = '![截图](images/photo.png)';
+    const render = (props: { groupJid: string; eagerImages?: boolean }) =>
+      renderToStaticMarkup(<MarkdownRenderer content={content} {...props} />);
+
+    expect(render({ groupJid: 'group-a' })).toBe(
+      render({ groupJid: 'group-a' }),
+    );
+    expect(render({ groupJid: 'group-a' })).toContain(
+      '/api/groups/group-a/files/download/',
+    );
+    expect(render({ groupJid: 'group-b' })).toContain(
+      '/api/groups/group-b/files/download/',
+    );
+    expect(render({ groupJid: 'group-a' })).toContain('loading="lazy"');
+    expect(render({ groupJid: 'group-a', eagerImages: true })).toContain(
+      'loading="eager"',
+    );
+  });
+
+  it('keeps the plugin set in the key for identical text', () => {
+    const content = '$$x^2$$';
+    const basic = renderToStaticMarkup(
+      <EnhancedMarkdownRenderer
+        content={content}
+        features={{ hasMath: false, hasCodeFence: false, hasRawHtml: false }}
+      />,
+    );
+    const math = renderToStaticMarkup(
+      <EnhancedMarkdownRenderer
+        content={content}
+        features={detectMarkdownFeatures(content)}
+      />,
+    );
+    expect(basic).not.toContain('class="katex"');
+    expect(math).toContain('class="katex"');
   });
 });

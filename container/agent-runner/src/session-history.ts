@@ -48,6 +48,26 @@ export function parseTranscript(content: string): ParsedMessage[] {
   return messages;
 }
 
+/**
+ * The part of a transcript written after its last compact_boundary, or the
+ * whole transcript when it was never compacted.
+ */
+export function transcriptSinceLastCompaction(content: string): string {
+  const lines = content.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].includes('"compact_boundary"')) continue;
+    try {
+      const entry = JSON.parse(lines[i]);
+      if (entry?.type === 'system' && entry.subtype === 'compact_boundary') {
+        return lines.slice(i + 1).join('\n');
+      }
+    } catch {
+      // A torn line cannot be the boundary we are looking for.
+    }
+  }
+  return content;
+}
+
 export interface ExtractSessionHistoryOptions {
   /** Directory containing the SDK transcript files (e.g. ~/.claude/projects/<encoded-cwd>) */
   transcriptDir: string;

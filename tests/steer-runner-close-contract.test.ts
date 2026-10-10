@@ -17,6 +17,8 @@ describe('steer runner-close orchestration contract', () => {
   });
 
   test('durable channel turns cancel the superseded input on both paths', () => {
-    expect(main.match(/Input superseded by explicit steer/g)).toHaveLength(2);
+    // Run-end settlement on both paths, plus the interrupt-time settlement
+    // that closes the superseded Turn without waiting for the warm runner.
+    expect(main.match(/Input superseded by explicit steer/g)).toHaveLength(4);
   });
 });

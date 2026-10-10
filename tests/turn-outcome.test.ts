@@ -389,11 +389,22 @@ describe('resolveTurnOutcome', () => {
       expect(branch.indexOf('getUncertainChannelOutboxForTurn')).toBeLessThan(
         branch.indexOf('getFailedChannelOutboxForTurn'),
       );
-      expect(branch).toContain('runtime.fail(');
-      expect(branch).toContain('deliverChannelDefinitiveFailureNotice({');
-      expect(branch).toContain('getDeliveredChannelOutboxForTurn');
+      expect(branch).toContain('settleChannelTurnDefinitiveFailure({');
       expect(branch).not.toContain('runtime.retry(');
     }
+    // The shared settlement fails the Turn with a reasoned notice, except a
+    // vanished target (recalled anchor) which closes quietly as cancelled.
+    const settlement = main.slice(
+      main.indexOf('async function settleChannelTurnDefinitiveFailure('),
+      main.indexOf('async function deliverIndependentChannelSystemNotice('),
+    );
+    expect(settlement).toContain('runtime.fail(');
+    expect(settlement).toContain('deliverChannelDefinitiveFailureNotice({');
+    expect(settlement).toContain('getDeliveredChannelOutboxForTurn');
+    expect(settlement).toContain('detail?.targetUnavailable');
+    expect(settlement).toContain('runtime.cancel(');
+    expect(settlement).toContain('reason: detail?.reason');
+    expect(settlement).not.toContain('runtime.retry(');
   });
 
   test('returns a negative MCP image acknowledgement when physical delivery is unconfirmed', () => {

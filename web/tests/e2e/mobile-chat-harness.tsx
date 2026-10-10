@@ -10,6 +10,11 @@ const params = new URLSearchParams(window.location.search);
 const role = params.get('role') === 'member' ? 'member' : 'admin';
 const executionMode = params.get('runtime') === 'host' ? 'host' : 'container';
 const canModify = params.get('canModify') !== 'false';
+// ?sessions=1 opens the phone session list, as ChatView's own URL flag does.
+const route =
+  params.get('sessions') === '1'
+    ? '/chat/e2e-mobile?sessions=1'
+    : '/chat/e2e-mobile';
 const groupJid = 'web:e2e-mobile';
 
 const user: UserPublic = {
@@ -129,7 +134,7 @@ useFileStore.setState({
 });
 
 createRoot(document.getElementById('root')!).render(
-  <MemoryRouter initialEntries={['/chat/e2e-mobile']}>
+  <MemoryRouter initialEntries={[route]}>
     <main className="h-[100dvh] overflow-hidden bg-background">
       <ChatView groupJid={groupJid} />
     </main>

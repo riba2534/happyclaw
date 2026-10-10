@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import { formatTokens } from '../billing/utils';
 
 export type UsageTrendMetric = 'tokens' | 'cost' | 'runs';
@@ -16,21 +17,27 @@ export interface DailyUsagePoint {
   modelCallCount: number;
 }
 
-const TOKEN_SERIES = [
-  ['inputTokens', '普通输入', 'var(--chart-1)'],
-  ['cacheReadTokens', '缓存读取', 'var(--chart-2)'],
+/**
+ * Mutually exclusive token classes, in stacking order, with chart colors.
+ * The orange scheme's chart tokens are one light-to-dark ramp, so the slots
+ * alternate light and dark steps and end on a neutral; neighbours stay
+ * distinguishable (also for color-blind readers) in every scheme.
+ */
+export const TOKEN_SERIES = [
+  ['inputTokens', '普通输入', 'var(--chart-4)'],
+  ['cacheReadTokens', '缓存读取', 'var(--chart-1)'],
   ['cacheCreationTokens', '缓存写入', 'var(--chart-3)'],
-  ['outputTokens', '输出', 'var(--chart-4)'],
-  ['reasoningTokens', '推理', 'var(--chart-5)'],
+  ['outputTokens', '输出', 'var(--chart-5)'],
+  ['reasoningTokens', '推理', 'var(--muted-foreground)'],
 ] as const;
 
-const WIDTH = 1000;
-const HEIGHT = 300;
-const LEFT = 76;
-const RIGHT = 16;
-const TOP = 34;
-const BOTTOM = 38;
-const PLOT_WIDTH = WIDTH - LEFT - RIGHT;
+const SINGLE_SERIES_COLOR = 'var(--chart-1)';
+// Before the first measurement (and in server rendering) assume a wide chart.
+const DEFAULT_WIDTH = 1000;
+const HEIGHT = 260;
+const RIGHT = 4;
+const TOP = 8;
+const BOTTOM = 26;
 const PLOT_HEIGHT = HEIGHT - TOP - BOTTOM;
 const GRID_STEPS = 4;
 
@@ -56,6 +63,25 @@ function niceMaximum(value: number): number {
   return nice * magnitude;
 }
 
+/** Tracks the rendered width so SVG text stays at its real pixel size. */
+function useMeasuredWidth() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(DEFAULT_WIDTH);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element || typeof ResizeObserver === 'undefined') return;
+    const update = () => {
+      const next = Math.round(element.clientWidth);
+      if (next > 0) setWidth(next);
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  return [ref, width] as const;
+}
+
 export function UsageTrendChart({
   data,
   metric,
@@ -63,6 +89,7 @@ export function UsageTrendChart({
   data: DailyUsagePoint[];
   metric: UsageTrendMetric;
 }) {
+  const [containerRef, width] = useMeasuredWidth();
   const formatValue = (value: number) => {
     if (metric === 'tokens') return formatTokens(value);
     if (metric === 'cost') return formatCost(value);
@@ -77,127 +104,151 @@ export function UsageTrendChart({
   const maximum = niceMaximum(
     Math.max(0, ...data.map((point) => metricValue(point, metric))),
   );
-  const slotWidth = data.length > 0 ? PLOT_WIDTH / data.length : PLOT_WIDTH;
-  const barWidth = Math.max(2, Math.min(42, slotWidth * 0.72));
-  const labelEvery = Math.max(1, Math.ceil(data.length / 8));
+  const left = width < 480 ? 44 : 60;
+  const plotWidth = Math.max(1, width - left - RIGHT);
+  const slotWidth = data.length > 0 ? plotWidth / data.length : plotWidth;
+  const barWidth = Math.max(2, Math.min(28, slotWidth * 0.64));
+  // Keep date labels roughly 56px apart whatever the width.
+  const labelEvery = Math.max(
+    1,
+    Math.ceil(data.length / Math.max(2, Math.floor(plotWidth / 56))),
+  );
 
   return (
-    <div className="h-72 min-w-0 lg:h-80">
-      <svg
-        viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
-        className="h-full w-full overflow-visible"
-        preserveAspectRatio="xMidYMid meet"
-        aria-hidden="true"
-      >
-        {Array.from({ length: GRID_STEPS + 1 }, (_, index) => {
-          const ratio = index / GRID_STEPS;
-          const y = TOP + PLOT_HEIGHT * ratio;
-          const value = maximum * (1 - ratio);
-          return (
-            <g key={index}>
-              <line
-                x1={LEFT}
-                x2={WIDTH - RIGHT}
-                y1={y}
-                y2={y}
-                stroke="var(--border)"
-                strokeDasharray="4 5"
-                vectorEffect="non-scaling-stroke"
+    <div className="min-w-0 space-y-3">
+      {metric === 'tokens' && (
+        <ul className="flex flex-wrap gap-x-4 gap-y-1 text-caption text-muted-foreground">
+          {TOKEN_SERIES.map(([key, label, color]) => (
+            <li key={key} className="flex items-center gap-1.5">
+              <span
+                aria-hidden="true"
+                className="size-2 rounded-sm"
+                style={{ backgroundColor: color }}
               />
-              <text
-                x={LEFT - 10}
-                y={y + 4}
-                textAnchor="end"
-                fill="var(--muted-foreground)"
-                fontSize="11"
-              >
-                {formatValue(value)}
-              </text>
-            </g>
-          );
-        })}
-
-        {data.map((point, index) => {
-          const x = LEFT + slotWidth * index + (slotWidth - barWidth) / 2;
-          const label =
-            metric === 'tokens'
-              ? TOKEN_SERIES.map(
-                  ([key, name]) => `${name} ${formatValue(point[key])}`,
-                ).join('，')
-              : metric === 'cost'
-                ? `模型估算费用 ${formatValue(point.providerEstimatedCostUSD)}`
-                : `智能体运行次数 ${formatValue(point.runCount)}`;
-          let stackedBottom = TOP + PLOT_HEIGHT;
-
-          return (
-            <g key={point.date}>
-              <title>{`${point.date}：${label}`}</title>
-              {metric === 'tokens' ? (
-                TOKEN_SERIES.map(([key, , color], seriesIndex) => {
-                  const height = (point[key] / maximum) * PLOT_HEIGHT;
-                  stackedBottom -= height;
-                  return (
-                    <rect
-                      key={key}
-                      x={x}
-                      y={stackedBottom}
-                      width={barWidth}
-                      height={Math.max(0, height)}
-                      rx={seriesIndex === TOKEN_SERIES.length - 1 ? 3 : 0}
-                      fill={color}
-                    />
-                  );
-                })
-              ) : (
-                <rect
-                  x={x}
-                  y={
-                    TOP +
-                    PLOT_HEIGHT * (1 - metricValue(point, metric) / maximum)
-                  }
-                  width={barWidth}
-                  height={(metricValue(point, metric) / maximum) * PLOT_HEIGHT}
-                  rx={4}
-                  fill="var(--color-primary)"
+              {label}
+            </li>
+          ))}
+        </ul>
+      )}
+      <div ref={containerRef} className="min-w-0">
+        <svg
+          viewBox={`0 0 ${width} ${HEIGHT}`}
+          width="100%"
+          height={HEIGHT}
+          className="block overflow-visible"
+          aria-hidden="true"
+        >
+          {Array.from({ length: GRID_STEPS + 1 }, (_, index) => {
+            const ratio = index / GRID_STEPS;
+            const y = TOP + PLOT_HEIGHT * ratio;
+            const value = maximum * (1 - ratio);
+            return (
+              <g key={index}>
+                <line
+                  x1={left}
+                  x2={width - RIGHT}
+                  y1={y}
+                  y2={y}
+                  stroke="var(--surface-border)"
+                  strokeDasharray={index === GRID_STEPS ? undefined : '3 4'}
+                  shapeRendering="crispEdges"
                 />
-              )}
-              {index % labelEvery === 0 && (
                 <text
-                  x={x + barWidth / 2}
-                  y={HEIGHT - 14}
-                  textAnchor="middle"
+                  x={left - 8}
+                  y={y + 4}
+                  textAnchor="end"
                   fill="var(--muted-foreground)"
                   fontSize="11"
+                  className="tabular-nums"
                 >
-                  {point.date.slice(5)}
+                  {formatValue(value)}
                 </text>
-              )}
-            </g>
-          );
-        })}
+              </g>
+            );
+          })}
 
-        {metric === 'tokens' &&
-          TOKEN_SERIES.map(([, label, color], index) => (
-            <g key={label} transform={`translate(${LEFT + index * 112}, 10)`}>
-              <circle cx="4" cy="4" r="4" fill={color} />
-              <text x="13" y="8" fill="var(--muted-foreground)" fontSize="12">
-                {label}
-              </text>
-            </g>
-          ))}
+          {data.map((point, index) => {
+            const slotX = left + slotWidth * index;
+            const x = slotX + (slotWidth - barWidth) / 2;
+            const label =
+              metric === 'tokens'
+                ? TOKEN_SERIES.map(
+                    ([key, name]) => `${name} ${formatValue(point[key])}`,
+                  ).join('，')
+                : metric === 'cost'
+                  ? `模型估算费用 ${formatValue(point.providerEstimatedCostUSD)}`
+                  : `智能体运行次数 ${formatValue(point.runCount)}`;
+            let stackedBottom = TOP + PLOT_HEIGHT;
 
-        {data.length === 0 && (
-          <text
-            x={WIDTH / 2}
-            y={HEIGHT / 2}
-            textAnchor="middle"
-            fill="var(--muted-foreground)"
-            fontSize="14"
-          >
-            暂无趋势数据
-          </text>
-        )}
-      </svg>
+            return (
+              <g key={point.date} className="group">
+                <title>{`${point.date}：${label}`}</title>
+                <rect
+                  x={slotX}
+                  y={TOP}
+                  width={slotWidth}
+                  height={PLOT_HEIGHT}
+                  className="fill-transparent group-hover:fill-surface-hover"
+                />
+                {metric === 'tokens' ? (
+                  TOKEN_SERIES.map(([key, , color]) => {
+                    const height = (point[key] / maximum) * PLOT_HEIGHT;
+                    stackedBottom -= height;
+                    return (
+                      <rect
+                        key={key}
+                        x={x}
+                        y={stackedBottom}
+                        width={barWidth}
+                        height={Math.max(0, height)}
+                        fill={color}
+                      />
+                    );
+                  })
+                ) : (
+                  <rect
+                    x={x}
+                    y={
+                      TOP +
+                      PLOT_HEIGHT * (1 - metricValue(point, metric) / maximum)
+                    }
+                    width={barWidth}
+                    height={
+                      (metricValue(point, metric) / maximum) * PLOT_HEIGHT
+                    }
+                    rx={Math.min(3, barWidth / 4)}
+                    fill={SINGLE_SERIES_COLOR}
+                  />
+                )}
+                {index % labelEvery === 0 && (
+                  <text
+                    x={slotX + slotWidth / 2}
+                    y={HEIGHT - 8}
+                    textAnchor="middle"
+                    fill="var(--muted-foreground)"
+                    fontSize="11"
+                    className="tabular-nums"
+                  >
+                    {point.date.slice(5)}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+
+          {data.length === 0 && (
+            <text
+              x={width / 2}
+              y={HEIGHT / 2}
+              textAnchor="middle"
+              fill="var(--muted-foreground)"
+              fontSize="13"
+            >
+              暂无趋势数据
+            </text>
+          )}
+        </svg>
+      </div>
       <table className="sr-only">
         <caption>{ariaLabel}</caption>
         <thead>

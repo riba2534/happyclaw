@@ -53,12 +53,17 @@ import {
   clearedSessionCookieHeaders,
   sessionExpiresAt,
   checkLoginRateLimit,
-  recordLoginAttempt,
-  clearLoginAttempts,
+  reserveLoginAttempt,
+  settleLoginAttempt,
   validateUsername,
   validatePassword,
   generateUserId,
 } from '../auth.js';
+import { PasswordHashBusyError } from '../password-hash-worker.js';
+import {
+  onPasswordHashBusy,
+  passwordHashBusyResponse,
+} from '../password-hash-busy.js';
 import type { AuthUser, User, UserPublic } from '../types.js';
 import { logger } from '../logger.js';
 import {
@@ -66,8 +71,14 @@ import {
   invalidateUserSessions,
 } from '../web-context.js';
 import { getSystemSettings } from '../runtime-config.js';
+import {
+  AvatarImageError,
+  normalizeAvatarImage,
+  type NormalizedAvatar,
+} from '../avatar-image.js';
 
 const authRoutes = new Hono<{ Variables: Variables }>();
+authRoutes.onError(onPasswordHashBusy);
 
 // The unauthenticated JSON endpoints (setup / login / register) buffer the
 // whole request body before any auth or login rate limit runs. Cap them per
@@ -252,9 +263,10 @@ authRoutes.post('/login', authJsonBodyLimit, async (c) => {
   const ip = getClientIp(c);
   const ua = c.req.header('user-agent') || null;
 
-  // Rate limiting
+  // Rate limiting: check and count in one synchronous step, before the
+  // awaited compare, so concurrent attempts cannot all pass the check.
   const { maxLoginAttempts, loginLockoutMinutes } = getSystemSettings();
-  const rateCheck = checkLoginRateLimit(
+  const rateCheck = reserveLoginAttempt(
     username,
     ip,
     maxLoginAttempts,
@@ -288,13 +300,18 @@ authRoutes.post('/login', authJsonBodyLimit, async (c) => {
       password,
       user ? user.password_hash : DUMMY_HASH,
     );
-  } catch {
+  } catch (err) {
+    if (err instanceof PasswordHashBusyError) {
+      // Not evaluated: refund the reservation and ask the client to retry.
+      settleLoginAttempt(username, ip, 'not_evaluated');
+      return passwordHashBusyResponse(c);
+    }
     // 如果 hash 格式异常，视为不匹配，不泄漏内部错误
     passwordMatch = false;
   }
 
   if (!user || user.status !== 'active' || !passwordMatch) {
-    recordLoginAttempt(username, ip);
+    // Already counted by reserveLoginAttempt.
     logAuthEvent({
       event_type: 'login_failed',
       username,
@@ -324,7 +341,7 @@ authRoutes.post('/login', authJsonBodyLimit, async (c) => {
     last_active_at: now,
   });
 
-  clearLoginAttempts(username, ip);
+  settleLoginAttempt(username, ip, 'success');
   updateUserFields(user.id, { last_login_at: now });
 
   // Ensure user has a home group (backfill for existing users)
@@ -418,11 +435,13 @@ authRoutes.post('/register', authJsonBodyLimit, async (c) => {
     maxLoginAttempts: regMaxAttempts,
     loginLockoutMinutes: regLockoutMin,
   } = getSystemSettings();
+  const registerKey = `register:${ip}`;
   const rateCheck = checkLoginRateLimit(
-    `register:${ip}`,
+    registerKey,
     ip,
     regMaxAttempts,
     regLockoutMin,
+    { perIp: false },
   );
   if (!rateCheck.allowed) {
     return c.json(
@@ -440,9 +459,35 @@ authRoutes.post('/register', authJsonBodyLimit, async (c) => {
   const passwordError = validatePassword(password);
   if (passwordError) return c.json({ error: passwordError }, 400);
 
+  // Count the attempt (success or failure alike) before the bcrypt await:
+  // counting after it let concurrent sign-ups all pass the check above.
+  const reservation = reserveLoginAttempt(
+    registerKey,
+    ip,
+    regMaxAttempts,
+    regLockoutMin,
+    { perIp: false },
+  );
+  if (!reservation.allowed) {
+    return c.json(
+      {
+        error: `Too many registration attempts. Try again in ${reservation.retryAfterSeconds}s`,
+      },
+      429,
+    );
+  }
+
   const now = new Date().toISOString();
   const userId = generateUserId();
-  const passwordHash = await hashPassword(password);
+  let passwordHash: string;
+  try {
+    passwordHash = await hashPassword(password);
+  } catch (err) {
+    if (err instanceof PasswordHashBusyError) {
+      settleLoginAttempt(registerKey, ip, 'not_evaluated', { perIp: false });
+    }
+    throw err;
+  }
 
   // Branch: with invite code or without
   const withInvite = !!invite_code;
@@ -466,7 +511,6 @@ authRoutes.post('/register', authJsonBodyLimit, async (c) => {
       });
 
   if (!result.ok) {
-    recordLoginAttempt(`register:${ip}`, ip);
     if (result.reason === 'username_taken') {
       return c.json(
         { error: 'Registration failed. Username may already be taken.' },
@@ -492,10 +536,9 @@ authRoutes.post('/register', authJsonBodyLimit, async (c) => {
     user_agent: ua,
     details: { role: result.role, with_invite: withInvite },
   });
-  // 计入注册成功次数：registerLimit 仅记录失败时，攻击者可用同 IP 不停换合法
-  // username 无限创建账号（auto-create home group / IM channel 槽位 / 数据库
-  // 行）。把成功也计入同一个 bucket，让 maxLoginAttempts 同时约束失败 + 成功。
-  recordLoginAttempt(`register:${ip}`, ip);
+  // 注册成功同样计数（上面的 reservation 已计入、不退还）：registerLimit 仅记录
+  // 失败时，攻击者可用同 IP 不停换合法 username 无限创建账号（auto-create home
+  // group / IM channel 槽位 / 数据库行）。让 maxLoginAttempts 同时约束失败 + 成功。
 
   // Create home group for new user
   try {
@@ -774,12 +817,15 @@ authRoutes.delete('/sessions/:id', authMiddleware, (c) => {
 // --- Avatar Upload ---
 
 const AVATARS_DIR = path.join(DATA_DIR, 'avatars');
-const ALLOWED_AVATAR_TYPES: Record<string, string> = {
-  'image/jpeg': '.jpg',
-  'image/png': '.png',
-  'image/gif': '.gif',
-  'image/webp': '.webp',
-};
+// Declared types accepted at the door. Stored avatars are always re-encoded
+// (see normalizeAvatarImage), so the declared type no longer picks the stored
+// extension; the decoded bytes must still be one of these formats.
+const ALLOWED_AVATAR_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+]);
 authRoutes.post('/avatar', authMiddleware, avatarUploadBodyLimit, async (c) => {
   const user = c.get('user') as AuthUser;
   const contentType = c.req.header('content-type') || '';
@@ -798,12 +844,23 @@ authRoutes.post('/avatar', authMiddleware, avatarUploadBodyLimit, async (c) => {
     return c.json({ error: 'File too large (max 3MB)' }, 413);
   }
 
-  const ext = ALLOWED_AVATAR_TYPES[file.type];
-  if (!ext) {
+  if (!ALLOWED_AVATAR_TYPES.has(file.type)) {
     return c.json(
       { error: 'Unsupported image type. Use jpg, png, gif or webp' },
       400,
     );
+  }
+
+  // Resize/strip before touching the avatars directory so a rejected upload
+  // leaves no trace and never reaps the user's current avatar.
+  let avatar: NormalizedAvatar;
+  try {
+    avatar = await normalizeAvatarImage(Buffer.from(await file.arrayBuffer()));
+  } catch (err) {
+    if (err instanceof AvatarImageError) {
+      return c.json({ error: err.message }, 400);
+    }
+    throw err;
   }
 
   fs.mkdirSync(AVATARS_DIR, { recursive: true });
@@ -825,11 +882,12 @@ authRoutes.post('/avatar', authMiddleware, avatarUploadBodyLimit, async (c) => {
     ? otherUrl.replace(/^\/api\/auth\/avatars\//, '')
     : null;
 
-  const filename = `${prefix}${crypto.randomBytes(4).toString('hex')}${ext}`;
+  // A fresh random name per upload: avatars are served `immutable`, so new
+  // bytes must never reuse a URL a browser may already have cached.
+  const filename = `${prefix}${crypto.randomBytes(4).toString('hex')}${avatar.ext}`;
   const filePath = path.join(AVATARS_DIR, filename);
-  const buffer = Buffer.from(await file.arrayBuffer());
   const tmpPath = filePath + '.tmp';
-  fs.writeFileSync(tmpPath, buffer);
+  fs.writeFileSync(tmpPath, avatar.data);
   fs.renameSync(tmpPath, filePath);
 
   const avatarUrl = `/api/auth/avatars/${filename}`;
@@ -864,6 +922,9 @@ authRoutes.post('/avatar', authMiddleware, avatarUploadBodyLimit, async (c) => {
 });
 
 // Serve avatar files (public, no auth required)
+// Avatars uploaded before server-side resizing are served exactly as stored:
+// the URL is `immutable`, so swapping smaller bytes in behind it would be a
+// silent content change. They shrink on the owner's next upload (new URL).
 authRoutes.get('/avatars/:filename', async (c) => {
   const filename = c.req.param('filename');
 

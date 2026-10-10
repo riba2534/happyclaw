@@ -5,6 +5,10 @@ import {
   resolveOutputChannelReplySource,
   selectChannelReplyBatch,
 } from '../src/channel-reply-source.js';
+import {
+  resolveCompatibleChannelBatchAnchor,
+  resolveForwardBundleBatchAnchor,
+} from '../src/forward-bundle-batch.js';
 import type { NewMessage } from '../src/types.js';
 
 function message(
@@ -158,5 +162,82 @@ describe('delayed output source', () => {
         admittedInput: { imJid: 'feishu:group-c' },
       }),
     ).toBe('feishu:group-c');
+  });
+});
+
+/** The pre-optimization quadratic selector, kept as the behavioral oracle. */
+function referenceSelect<T extends NewMessage>(messages: T[]): T[] {
+  if (messages.length < 2) return messages;
+  const key = (m: NewMessage) => {
+    const context = m.channel_context;
+    return [
+      m.source_jid || m.chat_jid,
+      context?.provider || '',
+      context?.channelAccountId || '',
+      context?.chat.id || '',
+      context?.message.threadId || '',
+      context?.message.rootId || '',
+    ].join('\u0000');
+  };
+  const firstRoute = key(messages[0]);
+  let end = 1;
+  while (end < messages.length) {
+    const candidate = messages.slice(0, end + 1);
+    if (
+      candidate.every((m) => key(m) === firstRoute) ||
+      resolveForwardBundleBatchAnchor(candidate) ||
+      resolveCompatibleChannelBatchAnchor(candidate)
+    ) {
+      end += 1;
+    } else {
+      break;
+    }
+  }
+  return end === messages.length ? messages : messages.slice(0, end);
+}
+
+describe('selectChannelReplyBatch scaling', () => {
+  test('matches the reference selector on mixed routes and forward bundles', () => {
+    let seed = 7;
+    const random = () => {
+      seed = (seed * 1103515245 + 12345) % 2 ** 31;
+      return seed / 2 ** 31;
+    };
+    const routes: Array<[string | undefined, string | undefined]> = [
+      ['feishu:chat', undefined],
+      ['feishu:chat', 'topic-a'],
+      ['feishu:other', undefined],
+      [undefined, undefined],
+    ];
+    for (let round = 0; round < 300; round += 1) {
+      const length = 1 + Math.floor(random() * 12);
+      const head = Math.floor(random() * routes.length);
+      const batch = Array.from({ length }, (_, index) => {
+        const [source, thread] =
+          random() < 0.7 ? routes[head] : routes[Math.floor(random() * 4)];
+        const row = message(`m${round}-${index}`, source, thread);
+        if (source && random() < 0.25) {
+          row.channel_context!.message.contentLink = {
+            kind: 'forward_bundle',
+            bundleId: 'bundle',
+            role: random() < 0.5 ? 'forwarded_content' : 'forwarder_comment',
+          };
+        }
+        return row;
+      });
+      expect(selectChannelReplyBatch(batch)).toEqual(referenceSelect(batch));
+    }
+  });
+
+  test('is linear in a same-route backlog', () => {
+    const backlog = Array.from({ length: 20_000 }, (_, index) =>
+      message(`backlog-${index}`, 'feishu:chat'),
+    );
+    const started = performance.now();
+    const selected = selectChannelReplyBatch(backlog);
+    const elapsed = performance.now() - started;
+    expect(selected).toBe(backlog);
+    // The quadratic version needed ~1.5s for only 4k rows.
+    expect(elapsed).toBeLessThan(500);
   });
 });

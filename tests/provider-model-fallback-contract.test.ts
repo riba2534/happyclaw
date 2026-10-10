@@ -99,8 +99,8 @@ describe('provider fallback source contracts', () => {
     expect(agentRunner).toContain(
       'writeOutput(outputCorrelation.correlate(output))',
     );
-    expect(agentRunner).toContain(
-      "runSdkControlWithTimeout(\n              'getContextUsage'",
+    expect(agentRunner).toMatch(
+      /runSdkControlWithTimeout\(\s*'getContextUsage'/,
     );
     expect(agentRunner).toContain('new SdkFirstResponseWatchdog(');
   });

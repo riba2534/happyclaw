@@ -8,6 +8,7 @@ import type { Readable } from 'stream';
 
 import { getSystemSettings } from './runtime-config.js';
 import { logger } from './logger.js';
+import { OutputFrameScanner } from './output-frame-scanner.js';
 import type { ContainerOutput } from './agent-runtime-contracts.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
@@ -26,40 +27,6 @@ function tryParseContainerOutput(jsonStr: string): ContainerOutput | null {
     return null;
   }
   return typeof v === 'object' && v !== null ? (v as ContainerOutput) : null;
-}
-
-function isJsonWhitespace(ch: string): boolean {
-  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
-}
-
-/**
- * Find the end of the JSON object that starts at buf[start] (which must be '{').
- * Returns the index just AFTER the matching closing '}', or -1 if the object is
- * not yet complete in buf. String-aware: braces (and the literal START/END
- * marker strings the payload may quote) inside JSON string values do not affect
- * the brace depth, so this is never fooled by an embedded marker — even when a
- * second frame trails in the same buffer. O(buf length), single pass.
- */
-function findJsonObjectEnd(buf: string, start: number): number {
-  let depth = 0;
-  let inStr = false;
-  let escaped = false;
-  for (let i = start; i < buf.length; i++) {
-    const ch = buf[i];
-    if (inStr) {
-      if (escaped) escaped = false;
-      else if (ch === '\\') escaped = true;
-      else if (ch === '"') inStr = false;
-    } else if (ch === '"') {
-      inStr = true;
-    } else if (ch === '{') {
-      depth++;
-    } else if (ch === '}') {
-      depth--;
-      if (depth === 0) return i + 1;
-    }
-  }
-  return -1;
 }
 
 // ─── Stdout Stream Parser ────────────────────────────────────────────
@@ -89,9 +56,22 @@ export type ProviderFailureCarryover = Pick<
 >;
 
 export interface StdoutParserState {
+  /**
+   * Diagnostic tail of stdout: at least the most recent
+   * `min(containerMaxOutputSize, RUNNER_OUTPUT_RETAIN_LIMIT)` chars and at
+   * most twice that. A warm runner keeps this state for its whole lifetime, so
+   * the full stream must not accumulate here. Frame parsing never reads it
+   * (that is `frameScanner`).
+   */
   stdout: string;
+  /** Total stdout chars received, including those dropped from `stdout`. */
+  stdoutTotalChars: number;
+  /** True once older stdout was dropped from the diagnostic tail. */
   stdoutTruncated: boolean;
-  parseBuffer: string;
+  /** Stdout prefix `parseLegacyOutput()` reads (callers without onOutput). */
+  legacyHead: LegacyStdoutHead;
+  /** Incremental START/END frame extractor for `onOutput` callers. */
+  frameScanner: OutputFrameScanner;
   newSessionId: string | undefined;
   outputChain: Promise<void>;
   hasSuccessOutput: boolean;
@@ -105,6 +85,21 @@ export interface StdoutParserState {
   hasInterruptedOutput: boolean;
 }
 
+/**
+ * The stdout prefix the legacy parse reads: accumulated up to
+ * `containerMaxOutputSize` like the former head-capped buffer, and frozen once
+ * it holds the first START marker followed by the first END marker, since
+ * nothing after that can change the parse.
+ */
+export interface LegacyStdoutHead {
+  text: string;
+  done: boolean;
+  startIdx: number;
+  endIdx: number;
+  /** Last chars of `text`, so markers split across chunks are still found. */
+  carry: string;
+}
+
 export interface StdoutParserOptions {
   groupName: string;
   /** Label used in log messages, e.g. "Container" or "Host agent" */
@@ -116,8 +111,13 @@ export interface StdoutParserOptions {
 export function createStdoutParserState(): StdoutParserState {
   return {
     stdout: '',
+    stdoutTotalChars: 0,
     stdoutTruncated: false,
-    parseBuffer: '',
+    legacyHead: { text: '', done: false, startIdx: -1, endIdx: -1, carry: '' },
+    frameScanner: new OutputFrameScanner(
+      OUTPUT_START_MARKER,
+      OUTPUT_END_MARKER,
+    ),
     newSessionId: undefined,
     outputChain: Promise.resolve(),
     hasSuccessOutput: false,
@@ -168,140 +168,153 @@ function providerFailureCloseFields(
   return { providerFailure: true, ...(state.providerFailureCarryover ?? {}) };
 }
 
+/**
+ * Stdout/stderr chars kept per runner stream for diagnostics (the tail buffer
+ * holds between this and twice this many). Readers only
+ * use the end of the stream (run-log tails, `stderr.slice(-200)` error
+ * summaries), and the state lives as long as a warm runner — host mode has no
+ * runner cap — so retaining the configured `containerMaxOutputSize` (10 MB by
+ * default, x2 for UTF-16 text) per stream was pure memory cost.
+ */
+export const RUNNER_OUTPUT_RETAIN_LIMIT = 256 * 1024;
+
+/**
+ * The logger bounds string fields to their first 2000 chars; structured log
+ * fields therefore carry tails of at most this size, so the end of the stream
+ * (where the failure reason is) survives.
+ */
+const LOG_FIELD_TAIL_LIMIT = 2_000;
+
+function runnerOutputRetainLimit(containerMaxOutputSize: number): number {
+  return Math.min(containerMaxOutputSize, RUNNER_OUTPUT_RETAIN_LIMIT);
+}
+
+/**
+ * Append to a rolling tail buffer that always holds at least the last `limit`
+ * chars (or the whole shorter stream) and never more than 2 x `limit`.
+ * Trimming back to `limit` only at 2 x `limit` amortizes the copy it costs to
+ * about two chars per appended char, however small the chunks are; trimming on
+ * every chunk would re-copy the whole tail for each streamed token frame.
+ */
+function appendBoundedTail(
+  buffer: string,
+  chunk: string,
+  limit: number,
+): string {
+  const combined = buffer + chunk;
+  return combined.length > 2 * limit
+    ? combined.slice(combined.length - limit)
+    : combined;
+}
+
+/**
+ * Tail of a stream buffer for a structured log field. Starts on a line (else
+ * whitespace) boundary so the first token is whole: the logger's credential
+ * redaction keys on token prefixes such as `Bearer ` or `sk-`.
+ */
+function logFieldTail(text: string): string {
+  if (text.length <= LOG_FIELD_TAIL_LIMIT) return text;
+  const tail = text.slice(text.length - LOG_FIELD_TAIL_LIMIT);
+  const lineBreak = tail.indexOf('\n');
+  if (lineBreak !== -1) return tail.slice(lineBreak + 1);
+  const space = tail.search(/\s/);
+  return space !== -1 ? tail.slice(space + 1) : tail;
+}
+
+const MARKER_CARRY_LENGTH =
+  Math.max(OUTPUT_START_MARKER.length, OUTPUT_END_MARKER.length) - 1;
+
+function appendLegacyHead(
+  head: LegacyStdoutHead,
+  chunk: string,
+  headLimit: number,
+): void {
+  const prevLength = head.text.length;
+  const remaining = headLimit - prevLength;
+  const part = chunk.length > remaining ? chunk.slice(0, remaining) : chunk;
+  head.text += part;
+  // Scan only the new chars plus a marker-length carry: indexOf on the whole
+  // growing prefix would flatten and rescan it for every chunk.
+  const window = head.carry + part;
+  const windowStart = prevLength - head.carry.length;
+  if (head.startIdx === -1) {
+    const idx = window.indexOf(OUTPUT_START_MARKER);
+    if (idx !== -1) head.startIdx = windowStart + idx;
+  }
+  if (head.endIdx === -1) {
+    const idx = window.indexOf(OUTPUT_END_MARKER);
+    if (idx !== -1) head.endIdx = windowStart + idx;
+  }
+  head.carry = window.slice(-MARKER_CARRY_LENGTH);
+  if (head.startIdx !== -1 && head.endIdx > head.startIdx) {
+    head.text = head.text.slice(0, head.endIdx + OUTPUT_END_MARKER.length);
+    head.done = true;
+  } else if (head.text.length >= headLimit) {
+    // At the cap the parse input is final, like the former truncated buffer.
+    head.done = true;
+  }
+}
+
 export function attachStdoutHandler(
   stream: Readable,
   state: StdoutParserState,
   opts: StdoutParserOptions,
 ): void {
+  // Read the limits once per stream: getSystemSettings() stats a file.
+  const headLimit = getSystemSettings().containerMaxOutputSize;
+  const retainLimit = runnerOutputRetainLimit(headLimit);
   stream.on('data', (data) => {
     const chunk = data.toString();
 
-    // Always accumulate for logging
-    if (!state.stdoutTruncated) {
-      const remaining =
-        getSystemSettings().containerMaxOutputSize - state.stdout.length;
-      if (chunk.length > remaining) {
-        state.stdout += chunk.slice(0, remaining);
-        state.stdoutTruncated = true;
-        logger.warn(
-          { group: opts.groupName, size: state.stdout.length },
-          `${opts.label} stdout truncated due to size limit`,
-        );
-      } else {
-        state.stdout += chunk;
-      }
+    // Bounded diagnostic tail, plus the prefix a legacy parse may need.
+    const prevTotal = state.stdoutTotalChars;
+    state.stdoutTotalChars += chunk.length;
+    state.stdout = appendBoundedTail(state.stdout, chunk, retainLimit);
+    if (!state.legacyHead.done) {
+      appendLegacyHead(state.legacyHead, chunk, headLimit);
+    }
+    if (state.stdoutTotalChars > state.stdout.length) {
+      state.stdoutTruncated = true;
+    }
+    // Warn at the configured limit, as before; the tail itself is silent.
+    if (prevTotal <= headLimit && state.stdoutTotalChars > headLimit) {
+      logger.warn(
+        {
+          group: opts.groupName,
+          size: state.stdoutTotalChars,
+          retained: retainLimit,
+        },
+        `${opts.label} stdout truncated due to size limit`,
+      );
     }
 
-    // Stream-parse for output markers
+    // Stream-parse for output markers. The scanner is incremental: each
+    // character is examined a bounded number of times however the frames are
+    // chunked (the old buffer rescan was quadratic in frame size).
     if (opts.onOutput) {
-      state.parseBuffer += chunk;
-      const MAX_PARSE_BUFFER = 10 * 1024 * 1024; // 10MB
-      if (state.parseBuffer.length > MAX_PARSE_BUFFER) {
-        logger.warn(
-          { group: opts.groupName },
-          'Parse buffer overflow, truncating',
-        );
-        const lastMarkerIdx =
-          state.parseBuffer.lastIndexOf(OUTPUT_START_MARKER);
-        state.parseBuffer =
-          lastMarkerIdx >= 0
-            ? state.parseBuffer.slice(lastMarkerIdx)
-            : state.parseBuffer.slice(-512);
-      }
-      let startIdx: number;
-      while (
-        (startIdx = state.parseBuffer.indexOf(OUTPUT_START_MARKER)) !== -1
-      ) {
-        const contentStart = startIdx + OUTPUT_START_MARKER.length;
-        // Locate the framed JSON object by brace matching rather than by
-        // scanning for END markers. The agent's reply text can contain literal
-        // START/END marker strings inside the JSON payload; deriving the
-        // object's true end from the JSON structure is both correct (never
-        // fooled by an embedded marker — even when a second frame trails in the
-        // same buffer) and O(payload): no repeated slice+parse per candidate
-        // terminator, which would stall the shared main-process event loop. The
-        // ContainerOutput payload is always a JSON object.
-        let objStart = contentStart;
-        while (
-          objStart < state.parseBuffer.length &&
-          isJsonWhitespace(state.parseBuffer[objStart])
-        ) {
-          objStart++;
-        }
-        if (objStart >= state.parseBuffer.length) break; // only whitespace yet
-
-        // Resync past a broken/unparseable frame so the buffer never stalls
-        // until the size cap (the pre-refactor parser always advanced past a
-        // malformed frame). `knownEnd`, when given, is this frame's already
-        // located END index — used by the parse-failure path, whose object may
-        // legitimately contain literal END marker strings, so we must NOT
-        // re-scan for END from contentStart. Without it (non-object payload),
-        // skip past whichever boundary arrives first: this frame's END (frame
-        // fully delimited but malformed) or a later START. Returns false only
-        // when neither boundary exists yet, so the caller waits for more data.
-        const resyncPastBrokenFrame = (
-          reason: string,
-          knownEnd?: number,
-        ): boolean => {
-          let resyncTo = -1;
-          if (knownEnd !== undefined) {
-            resyncTo = knownEnd + OUTPUT_END_MARKER.length;
-          } else {
-            const nextStart = state.parseBuffer.indexOf(
-              OUTPUT_START_MARKER,
-              contentStart,
-            );
-            const endIdx = state.parseBuffer.indexOf(
-              OUTPUT_END_MARKER,
-              contentStart,
-            );
-            if (endIdx !== -1 && (nextStart === -1 || endIdx < nextStart)) {
-              resyncTo = endIdx + OUTPUT_END_MARKER.length;
-            } else if (nextStart !== -1) {
-              resyncTo = nextStart;
-            }
-          }
-          if (resyncTo === -1) return false;
-          logger.warn({ group: opts.groupName }, reason);
-          state.parseBuffer = state.parseBuffer.slice(resyncTo);
-          return true;
-        };
-
-        if (state.parseBuffer[objStart] !== '{') {
-          // Payload isn't a JSON object — framing is broken.
-          if (
-            resyncPastBrokenFrame(
-              'Framed payload is not a JSON object, resyncing past broken frame',
-            )
-          ) {
-            continue;
-          }
-          break;
-        }
-
-        const objEnd = findJsonObjectEnd(state.parseBuffer, objStart);
-        if (objEnd === -1) break; // object still streaming in — wait
-        const endIdx = state.parseBuffer.indexOf(OUTPUT_END_MARKER, objEnd);
-        if (endIdx === -1) break; // object complete, END marker not here yet
-
-        const parsed = tryParseContainerOutput(
-          state.parseBuffer.slice(objStart, objEnd),
-        );
-        if (!parsed) {
-          // Balanced braces but not a valid ContainerOutput object (should not
-          // happen for well-formed output). The frame is fully delimited (END
-          // already located at endIdx), so drop it and continue rather than
-          // stalling until the buffer cap — no later START is required.
-          resyncPastBrokenFrame(
-            'Framed JSON object failed to parse, skipping frame',
-            endIdx,
+      for (const event of state.frameScanner.push(chunk)) {
+        if (event.kind === 'overflow') {
+          logger.warn(
+            { group: opts.groupName, chars: event.chars },
+            'Framed output object exceeded the size cap, dropping frame',
           );
           continue;
         }
-
-        state.parseBuffer = state.parseBuffer.slice(
-          endIdx + OUTPUT_END_MARKER.length,
-        );
+        if (event.kind === 'broken') {
+          logger.warn({ group: opts.groupName }, event.reason);
+          continue;
+        }
+        const parsed = tryParseContainerOutput(event.json);
+        if (!parsed) {
+          // Balanced braces but not a valid ContainerOutput object (should not
+          // happen for well-formed output). The frame is fully delimited, so
+          // drop it and continue rather than stalling.
+          logger.warn(
+            { group: opts.groupName },
+            'Framed JSON object failed to parse, skipping frame',
+          );
+          continue;
+        }
 
         if (parsed.newSessionId) {
           state.newSessionId = parsed.newSessionId;
@@ -357,13 +370,18 @@ export function attachStdoutHandler(
 // ─── Stderr Handler ──────────────────────────────────────────────────
 
 export interface StderrState {
+  /** Diagnostic tail of stderr, bounded like `StdoutParserState.stdout`. */
   stderr: string;
+  /** Total stderr chars received, including those dropped from `stderr`. */
+  stderrTotalChars: number;
+  /** True once older stderr was dropped from the diagnostic tail. */
   stderrTruncated: boolean;
 }
 
 export function createStderrState(): StderrState {
   return {
     stderr: '',
+    stderrTotalChars: 0,
     stderrTruncated: false,
   };
 }
@@ -375,6 +393,9 @@ export function attachStderrHandler(
   /** Log context key: { container: folder } or { host: folder } */
   logContext: Record<string, string>,
 ): void {
+  // Read the limits once per stream: getSystemSettings() stats a file.
+  const warnLimit = getSystemSettings().containerMaxOutputSize;
+  const retainLimit = runnerOutputRetainLimit(warnLimit);
   stream.on('data', (data) => {
     const chunk = data.toString();
     // Runner-side operational failures are prefixed so they survive the
@@ -394,18 +415,21 @@ export function attachStderrHandler(
     }
     // Don't reset timeout on stderr — SDK writes debug logs continuously.
     // Timeout only resets on actual output (OUTPUT_MARKER in stdout).
-    if (state.stderrTruncated) return;
-    const remaining =
-      getSystemSettings().containerMaxOutputSize - state.stderr.length;
-    if (chunk.length > remaining) {
-      state.stderr += chunk.slice(0, remaining);
+    const prevTotal = state.stderrTotalChars;
+    state.stderrTotalChars += chunk.length;
+    state.stderr = appendBoundedTail(state.stderr, chunk, retainLimit);
+    if (state.stderrTotalChars > state.stderr.length) {
       state.stderrTruncated = true;
+    }
+    if (prevTotal <= warnLimit && state.stderrTotalChars > warnLimit) {
       logger.warn(
-        { group: groupName, size: state.stderr.length },
+        {
+          group: groupName,
+          size: state.stderrTotalChars,
+          retained: retainLimit,
+        },
         `${Object.keys(logContext)[0] === 'container' ? 'Container' : 'Host agent'} stderr truncated due to size limit`,
       );
-    } else {
-      state.stderr += chunk;
     }
   });
 }
@@ -512,20 +536,25 @@ export function writeRunLog(
   ];
 
   const isError = code !== 0;
-  const { stderr, stderrTruncated } = ctx.stderrState;
-  const { stdout, stdoutTruncated } = ctx.stdoutState;
+  const { stderr, stderrTruncated, stderrTotalChars } = ctx.stderrState;
+  const { stdout, stdoutTruncated, stdoutTotalChars } = ctx.stdoutState;
 
   const LOG_TAIL_LIMIT = 4000;
-  const stderrLog =
-    !isVerbose && !isError && stderr.length > LOG_TAIL_LIMIT
-      ? `... (truncated ${stderr.length - LOG_TAIL_LIMIT} chars) ...\n` +
-        stderr.slice(-LOG_TAIL_LIMIT)
-      : stderr;
-  const stdoutLog =
-    !isVerbose && !isError && stdout.length > LOG_TAIL_LIMIT
-      ? `... (truncated ${stdout.length - LOG_TAIL_LIMIT} chars) ...\n` +
-        stdout.slice(-LOG_TAIL_LIMIT)
-      : stdout;
+  // Buffers are already tails; counts are against the full stream.
+  const formatStreamLog = (retained: string, totalChars: number): string => {
+    if (!isVerbose && !isError && retained.length > LOG_TAIL_LIMIT) {
+      return (
+        `... (truncated ${totalChars - LOG_TAIL_LIMIT} chars) ...\n` +
+        retained.slice(-LOG_TAIL_LIMIT)
+      );
+    }
+    const dropped = totalChars - retained.length;
+    return dropped > 0
+      ? `... (truncated ${dropped} chars) ...\n${retained}`
+      : retained;
+  };
+  const stderrLog = formatStreamLog(stderr, stderrTotalChars);
+  const stdoutLog = formatStreamLog(stdout, stdoutTotalChars);
   logLines.push(
     `=== Input Summary ===`,
     `Prompt length: ${ctx.input.prompt.length} chars`,
@@ -689,8 +718,10 @@ export function handleNonZeroExit(
       code,
       signal,
       duration,
-      stderr,
-      stdout: ctx.stdoutState.stdout,
+      stderr: logFieldTail(stderr),
+      stdout: logFieldTail(ctx.stdoutState.stdout),
+      stderrChars: ctx.stderrState.stderrTotalChars,
+      stdoutChars: ctx.stdoutState.stdoutTotalChars,
       logFile,
     },
     `${ctx.label} exited with error`,
@@ -765,7 +796,8 @@ export function handleSuccessClose(
  * Parse legacy (non-streaming) output from accumulated stdout.
  */
 function parseLegacyOutput(ctx: CloseHandlerContext): void {
-  const { stdout } = ctx.stdoutState;
+  // Same text the former head-capped stdout buffer held for this parse.
+  const stdout = ctx.stdoutState.legacyHead.text;
   try {
     const startIdx = stdout.indexOf(OUTPUT_START_MARKER);
     const endIdx = stdout.indexOf(OUTPUT_END_MARKER);
@@ -798,8 +830,8 @@ function parseLegacyOutput(ctx: CloseHandlerContext): void {
     logger.error(
       {
         group: ctx.groupName,
-        stdout,
-        stderr: ctx.stderrState.stderr,
+        stdout: logFieldTail(ctx.stdoutState.stdout),
+        stderr: logFieldTail(ctx.stderrState.stderr),
         error: err,
       },
       `Failed to parse ${ctx.filePrefix} output`,

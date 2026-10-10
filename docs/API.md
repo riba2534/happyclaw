@@ -60,6 +60,17 @@ Public：
 - `DELETE /api/auth/sessions/:id`
 - `POST /api/auth/avatar`
 
+`POST /api/auth/login` 的失败次数按三个桶计数，任一超限返回 429：用户名+IP
+（`maxLoginAttempts`/`loginLockoutMinutes`）、用户名（4 倍/1 小时）、客户端 IP
+（6 倍/同一窗口，IPv6 按 /64 合并；loopback 与未知地址不计）。客户端 IP 取自
+`getClientIp`，部署在反向代理后需设置 `TRUST_PROXY=true`。用户名超过 64 字符直接按无效凭据返回 401。
+
+`POST /api/auth/avatar` 接受 jpg、png、gif、webp（≤3MB），以文件头识别真实格式；
+服务端按最长边 256px 缩小（不放大）、按 EXIF 校正方向、去除元数据，统一存为 WebP。
+动图缩放后不超过 512KB 时保留动画，否则取首帧。无法解码或超过 4000 万像素的内容返回 400。
+每次上传生成新文件名，`GET /api/auth/avatars/:filename` 以 `immutable` 缓存返回；
+此前上传的头像按原文件提供，所有者下次上传时才会被替换。
+
 会话 Cookie 在 HTTPS 下名为 `__Host-happyclaw_session`，HTTP 下名为
 `happyclaw_session`；每次下发会话都会同时让另一个名称过期。`POST /api/auth/logout`
 让两个名称都过期，并删除该请求在两个名称下携带、且属于同一用户的全部会话；
@@ -180,6 +191,8 @@ HTTP 状态为 409；请求不会停止现有 Runner，也不会修改绑定。
 
 约束：
 
+- `POST /api/groups/:jid/sessions`（及 `/agents`）只接受工作区 `web:*` JID；IM 聊天
+  JID 返回 400，IM 聊天应绑定到 Session 而不是在其下创建 Session。
 - 工作区绑定只接受原生话题群（飞书话题群或 Telegram Forum）。
 - Runtime Session 绑定接受私聊和普通群，`sessionId=main` 表示该 Workspace 的主会话。
 - 话题群使用 `thread_map`，每个原生话题映射独立 Session；普通群的 @ 策略不改变绑定层级。
@@ -536,9 +549,10 @@ Web 和 Runtime 不再把它们当作第二个可写真相源。
 
 用量：
 
-- `GET /api/usage/stats`
+- `GET /api/usage/stats`：`breakdown=none` 时不返回逐行明细（`breakdown`
+  为空数组），汇总、按日数据和归因不变；默认仍返回明细以兼容旧客户端
 - `GET /api/usage/models`
-- `GET /api/usage/filters`
+- `GET /api/usage/filters`：只计算归因列表
 - `GET /api/usage/records`
 - `GET /api/usage/export.csv`
 - `GET /api/usage/users`
@@ -578,6 +592,8 @@ Web 和 Runtime 不再把它们当作第二个可写真相源。
 
 - `GET /api/health`，Public
 - `GET /api/status`
+- `GET /api/status/groups`：只返回队列运行状态，供聊天页恢复运行态；可见范围与
+  `/api/status` 相同，不做 Docker 与版本探测
 - `POST /api/status/groups/:folder/switch-provider`
 - `GET /api/status/channel-outbox/uncertain`
 - `POST /api/status/channel-outbox/:id/resolve`

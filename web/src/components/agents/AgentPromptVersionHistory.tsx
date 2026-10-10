@@ -1,12 +1,17 @@
 import { useEffect, useState } from 'react';
-import { History, Loader2, RotateCcw } from 'lucide-react';
+import { Loader2, RotateCcw } from 'lucide-react';
 import { toast } from 'sonner';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { ListGroup } from '@/components/common/ListRow';
+import { confirmDialog } from '@/stores/confirm';
+import { cn } from '@/lib/utils';
 import type { AgentProfile, AgentProfilePromptVersion } from '@/types';
 import {
   AGENT_PROMPT_SECTIONS,
   type AgentPromptParts,
 } from '@/utils/agent-prompts';
+import { AgentSection } from './AgentSection';
 
 interface AgentPromptVersionHistoryProps {
   profileId: string;
@@ -46,8 +51,12 @@ export function AgentPromptVersionHistory({
 
   const handleRestore = async (version: number) => {
     if (!confirmDiscardUnsavedChanges()) return;
-    if (!confirm(`恢复 v${version} 的四段提示词？系统会先保留当前版本。`))
-      return;
+    const confirmed = await confirmDialog({
+      title: `恢复 v${version}`,
+      message: `恢复 v${version} 的四段提示词？系统会先保留当前版本。`,
+      confirmText: '恢复',
+    });
+    if (!confirmed) return;
     setRestoring(version);
     try {
       const profile = await restoreVersion(profileId, version);
@@ -63,23 +72,23 @@ export function AgentPromptVersionHistory({
   };
 
   return (
-    <section className="overflow-hidden rounded-xl border border-border bg-card">
-      <div className="flex items-start gap-3 border-b border-border px-5 py-4">
-        <History className="mt-0.5 size-4 text-muted-foreground" />
-        <div>
-          <h2 className="text-sm font-semibold text-foreground">提示词版本</h2>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            保存和恢复都会留下版本，可以安全回退四段提示词与组合模式。
-          </p>
-        </div>
-      </div>
-      <div className="divide-y divide-border">
+    <AgentSection
+      title="提示词版本"
+      description="保存和恢复都会留下版本，可以安全回退四段提示词与组合模式。"
+    >
+      <ListGroup>
         {loading ? (
-          <div className="flex items-center gap-2 px-5 py-5 text-xs text-muted-foreground">
+          <div
+            role="listitem"
+            className="flex items-center gap-2 px-4 py-3 text-caption text-muted-foreground"
+          >
             <Loader2 className="size-3.5 animate-spin" /> 加载历史…
           </div>
         ) : versions.length === 0 ? (
-          <p className="px-5 py-5 text-xs text-muted-foreground">
+          <p
+            role="listitem"
+            className="px-4 py-3 text-caption text-muted-foreground"
+          >
             暂无历史版本。
           </p>
         ) : (
@@ -88,31 +97,28 @@ export function AgentPromptVersionHistory({
               (section) =>
                 item[section.field] !== currentPrompts[section.field],
             );
+            const isCurrent = item.version === currentVersion;
             return (
-              <div key={item.id} className="px-5 py-3">
-                <div className="flex items-center justify-between gap-4">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+              <div key={item.id} role="listitem" className="px-4 py-2.5">
+                <div className="flex min-h-8 items-center justify-between gap-3">
+                  <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+                    <span className="text-body font-medium text-foreground tabular-nums">
                       v{item.version}
-                      {item.version === currentVersion && (
-                        <span className="text-[10px] font-normal text-primary">
-                          当前
-                        </span>
-                      )}
-                    </div>
-                    <p className="mt-0.5 text-[11px] text-muted-foreground">
+                    </span>
+                    {isCurrent && <Badge variant="neutral">当前</Badge>}
+                    <span className="text-caption text-muted-foreground">
                       {item.prompt_mode === 'append'
                         ? '保留并追加'
                         : '完全替换'}{' '}
                       · {new Date(item.created_at).toLocaleString()}
-                    </p>
+                    </span>
                   </div>
-                  <div className="flex gap-1">
+                  <div className="flex shrink-0 gap-0.5">
                     <Button
                       type="button"
                       size="sm"
                       variant="ghost"
-                      disabled={item.version === currentVersion}
+                      disabled={isCurrent}
                       onClick={() =>
                         setComparing(
                           comparing === item.version ? null : item.version,
@@ -127,30 +133,28 @@ export function AgentPromptVersionHistory({
                       type="button"
                       size="sm"
                       variant="ghost"
-                      disabled={
-                        item.version === currentVersion || restoring !== null
-                      }
+                      disabled={isCurrent || restoring !== null}
                       onClick={() => void handleRestore(item.version)}
                     >
                       {restoring === item.version ? (
-                        <Loader2 className="size-3.5 animate-spin" />
+                        <Loader2 className="animate-spin" />
                       ) : (
-                        <RotateCcw className="size-3.5" />
+                        <RotateCcw />
                       )}
                       恢复
                     </Button>
                   </div>
                 </div>
                 {comparing === item.version && (
-                  <div className="mt-3 space-y-3 rounded-lg border bg-muted/20 p-3">
+                  <div className="mt-2 mb-1 space-y-3 rounded-lg bg-muted/50 p-3">
                     {changedSections.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">
+                      <p className="text-caption text-muted-foreground">
                         四段内容与当前版本一致。
                       </p>
                     ) : (
                       changedSections.map((section) => (
                         <div key={section.key}>
-                          <div className="mb-1.5 text-[11px] font-semibold tracking-wide text-muted-foreground">
+                          <div className="mb-1.5 text-caption font-medium text-muted-foreground">
                             {section.eyebrow} · {section.title}
                           </div>
                           <div className="grid gap-2 md:grid-cols-2">
@@ -174,8 +178,8 @@ export function AgentPromptVersionHistory({
             );
           })
         )}
-      </div>
-    </section>
+      </ListGroup>
+    </AgentSection>
   );
 }
 
@@ -190,12 +194,17 @@ function PromptSnapshot({
 }) {
   return (
     <div
-      className={`min-w-0 rounded-md border p-2 ${tone === 'old' ? 'border-error/20 bg-error-bg/30' : 'border-success/20 bg-success-bg/30'}`}
+      className={cn(
+        'min-w-0 rounded-md p-2 ring-1',
+        tone === 'old'
+          ? 'bg-error/5 ring-error/20'
+          : 'bg-success/5 ring-success/20',
+      )}
     >
-      <div className="mb-1 text-[10px] font-medium text-muted-foreground">
+      <div className="mb-1 text-micro font-medium text-muted-foreground">
         {label}
       </div>
-      <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-foreground">
+      <pre className="max-h-40 overflow-auto text-caption leading-5 break-words whitespace-pre-wrap text-foreground">
         {value || '（空）'}
       </pre>
     </div>

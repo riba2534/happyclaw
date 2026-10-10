@@ -11,6 +11,7 @@ import {
   X,
   AlertTriangle,
 } from 'lucide-react';
+import { Callout } from '@/components/capabilities/capability-ui';
 import {
   Dialog,
   DialogClose,
@@ -19,7 +20,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from '@/components/ui/native-select';
+import { Spinner } from '@/components/ui/spinner';
+import { cn } from '@/lib/utils';
 import { SearchInput } from '@/components/common/SearchInput';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { useChatStore } from '../../stores/chat';
@@ -73,7 +81,7 @@ function ImGroupAvatar({ group }: { group: AvailableImGroup }) {
         decoding="async"
         referrerPolicy="no-referrer"
         onError={() => setFailedUrl(avatarUrl)}
-        className="size-11 shrink-0 rounded-xl bg-muted object-cover"
+        className="size-8 shrink-0 rounded-lg bg-surface-selected object-cover"
       />
     );
   }
@@ -82,9 +90,9 @@ function ImGroupAvatar({ group }: { group: AvailableImGroup }) {
   return (
     <div
       aria-hidden="true"
-      className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-muted text-sm font-semibold text-muted-foreground"
+      className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-surface-selected text-caption font-medium text-muted-foreground"
     >
-      {initial || <MessageSquare className="size-5" />}
+      {initial || <MessageSquare className="size-4" />}
     </div>
   );
 }
@@ -550,11 +558,7 @@ export function ImBindingDialog({
 
   const renderThreadCapability = (group: AvailableImGroup) => {
     if (group.conversation_kind !== 'topic') return null;
-    return (
-      <span className="inline-flex items-center rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-medium text-sky-700 dark:border-sky-800 dark:bg-sky-950/30 dark:text-sky-300">
-        原生话题
-      </span>
-    );
+    return <Badge variant="outline">原生话题</Badge>;
   };
 
   return (
@@ -562,38 +566,35 @@ export function ImBindingDialog({
       <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
         <DialogContent
           showCloseButton={false}
-          className="max-h-[calc(100dvh-1rem)] gap-0 overflow-hidden p-0 sm:max-w-2xl"
+          className="flex max-h-[min(calc(100dvh-2rem),52rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl"
         >
-          <DialogHeader className="border-b border-border/70 px-4 pb-4 pt-5 pr-12 sm:px-5 sm:pr-12">
-            <DialogTitle className="flex items-center gap-2.5 text-base font-semibold leading-6">
-              <MessageSquare className="size-4.5 text-primary" />
+          <DialogHeader className="shrink-0 border-b border-surface-border px-4 pt-4 pr-12 pb-3 sm:px-5 sm:pr-12">
+            <DialogTitle className="flex items-center gap-2">
+              <MessageSquare className="size-4 text-muted-foreground" />
               {title}
             </DialogTitle>
-            <DialogDescription className="flex items-start gap-2 text-left text-xs leading-5 text-muted-foreground">
-              <Info className="mt-0.5 size-3.5 shrink-0" />
-              <span>
-                {isWorkspaceMode
-                  ? '话题群绑定工作区，每个话题使用独立会话。回复返回当前话题；未绑定时不响应。'
-                  : '私聊和普通群绑定当前会话。回复返回当前消息所在渠道；未绑定时不响应。'}
-              </span>
+            <DialogDescription className="text-left text-caption leading-5">
+              {isWorkspaceMode
+                ? '话题群绑定工作区，每个话题使用独立会话。回复返回当前话题；未绑定时不响应。'
+                : '私聊和普通群绑定当前会话。回复返回当前消息所在渠道；未绑定时不响应。'}
             </DialogDescription>
             <DialogClose asChild>
               <Button
                 type="button"
                 variant="ghost"
                 size="icon-sm"
-                className="absolute right-2 top-2"
+                className="absolute top-2 right-2 text-muted-foreground"
               >
-                <X className="size-4" />
+                <X />
                 <span className="sr-only">关闭</span>
               </Button>
             </DialogClose>
           </DialogHeader>
 
-          <div className="min-h-0 space-y-4 p-4 sm:p-5">
+          <div className="shrink-0 space-y-3 px-4 pt-3 sm:px-5">
             <div className="flex min-h-8 items-center justify-between gap-3">
               <div
-                className="min-w-0 text-xs text-muted-foreground"
+                className="min-w-0 text-caption text-muted-foreground"
                 aria-live="polite"
               >
                 {syncing ? (
@@ -602,7 +603,7 @@ export function ImBindingDialog({
                     正在从已连接 Bot 同步聊天…
                   </span>
                 ) : syncError ? (
-                  <span className="text-amber-700 dark:text-amber-300">
+                  <span className="text-warning">
                     同步未完成，当前显示本地记录
                   </span>
                 ) : lastSyncedAt ? (
@@ -624,73 +625,65 @@ export function ImBindingDialog({
               <Button
                 type="button"
                 variant="outline"
-                size="sm"
+                className="shrink-0"
                 disabled={loading || syncing}
                 onClick={() => void syncGroupsForDialog(true)}
               >
-                <RefreshCw
-                  className={`size-3.5 ${syncing ? 'animate-spin' : ''}`}
-                />
+                <RefreshCw className={cn(syncing && 'animate-spin')} />
                 同步聊天
               </Button>
             </div>
 
             {syncError && !loading && (
-              <div
-                role="alert"
-                className="rounded-lg border border-amber-300/70 bg-amber-50/60 px-3 py-2 text-xs leading-5 text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/20 dark:text-amber-200"
-              >
+              <Callout tone="warning" role="alert">
                 {syncError}
-              </div>
+              </Callout>
             )}
 
             {!loading && !loadError && compatibleGroups.length > 0 && (
-              <div className="space-y-3">
+              <>
                 <div className="flex items-center justify-between gap-3">
                   <div
                     role="group"
                     aria-label="按渠道筛选"
-                    className="-mx-1 flex min-w-0 gap-1 overflow-x-auto px-1 pb-1"
+                    className="-mx-1 flex min-w-0 gap-0.5 overflow-x-auto px-1"
                   >
                     {channelFilters.map((ch) => {
                       const selected = channelFilter === ch.key;
                       return (
-                        <button
+                        <Button
                           key={ch.key}
                           type="button"
+                          variant="ghost"
+                          size="sm"
                           aria-pressed={selected}
                           onClick={() => setChannelFilter(ch.key)}
-                          className={`flex h-8 shrink-0 items-center gap-1 rounded-full border px-3 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${
+                          className={cn(
+                            'text-caption',
                             selected
-                              ? 'border-primary bg-primary text-primary-foreground'
-                              : 'border-border/70 bg-background text-muted-foreground hover:bg-muted hover:text-foreground'
-                          }`}
+                              ? 'bg-surface-selected text-foreground hover:bg-surface-selected'
+                              : 'font-normal text-muted-foreground',
+                          )}
                         >
                           <span>{ch.label}</span>
-                          <span
-                            className={
-                              selected
-                                ? 'text-primary-foreground/75'
-                                : 'text-muted-foreground/70'
-                            }
-                          >
+                          <span className="text-faint-foreground tabular-nums">
                             {ch.count}
                           </span>
-                        </button>
+                        </Button>
                       );
                     })}
                   </div>
-                  <span className="hidden shrink-0 text-xs text-muted-foreground sm:block">
+                  <span className="hidden shrink-0 text-caption text-muted-foreground sm:block">
                     {filteredGroups.length} 个聊天
                   </span>
                 </div>
 
                 <div
-                  className={`grid gap-2 ${
-                    accountOptions.length > 1
-                      ? 'sm:grid-cols-[minmax(0,1fr)_auto]'
-                      : ''
-                  }`}
+                  className={cn(
+                    'grid gap-2',
+                    accountOptions.length > 1 &&
+                      'sm:grid-cols-[minmax(0,1fr)_auto]',
+                  )}
                 >
                   <SearchInput
                     value={filter}
@@ -703,80 +696,85 @@ export function ImBindingDialog({
                     <div className="flex items-center gap-2">
                       <label
                         htmlFor="binding-bot-account"
-                        className="shrink-0 text-[11px] text-muted-foreground"
+                        className="shrink-0 text-caption text-muted-foreground"
                       >
                         机器人身份
                       </label>
-                      <select
+                      <NativeSelect
                         id="binding-bot-account"
                         value={accountFilter}
                         onChange={(event) =>
                           setAccountFilter(event.target.value)
                         }
                         aria-label="筛选机器人身份"
-                        className="h-8 min-w-0 rounded-lg border border-border bg-background px-2.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                        className="min-w-0"
                       >
-                        <option value="all">全部机器人</option>
+                        <NativeSelectOption value="all">
+                          全部机器人
+                        </NativeSelectOption>
                         {accountOptions.map((account) => (
-                          <option key={account.id} value={account.id}>
+                          <NativeSelectOption
+                            key={account.id}
+                            value={account.id}
+                          >
                             {account.name}
-                          </option>
+                          </NativeSelectOption>
                         ))}
-                      </select>
+                      </NativeSelect>
                     </div>
                   )}
                 </div>
+              </>
+            )}
+          </div>
+
+          <div
+            className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3 sm:px-5"
+            aria-live="polite"
+          >
+            {loading && (
+              <div className="flex items-center justify-center gap-2 py-12 text-caption text-muted-foreground">
+                <Spinner />
+                正在加载渠道聊天…
               </div>
             )}
 
-            <div
-              className="max-h-[min(62dvh,38rem)] space-y-2 overflow-y-auto overscroll-contain pr-1"
-              aria-live="polite"
-            >
-              {loading && (
-                <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
-                  <Loader2 className="mr-2 size-4 animate-spin" />
-                  正在加载渠道聊天…
+            {!loading && loadError && (
+              <div className="space-y-3 py-8 text-center">
+                <div className="text-caption text-error" role="alert">
+                  消息渠道加载失败：{loadError}
+                </div>
+                <Button
+                  variant="outline"
+                  onClick={() => void loadGroupsForDialog()}
+                >
+                  重试
+                </Button>
+              </div>
+            )}
+
+            {!loading && !loadError && compatibleGroups.length === 0 && (
+              <div className="py-12 text-center text-caption text-muted-foreground">
+                {isWorkspaceMode
+                  ? '暂无可绑定话题群。请确认 Bot 已加入话题群，然后点击“同步聊天”。'
+                  : '暂无可绑定私聊或普通群。请确认 Bot 已加入群聊或收到私聊消息，然后点击“同步聊天”。'}
+              </div>
+            )}
+
+            {!loading &&
+              !loadError &&
+              compatibleGroups.length > 0 &&
+              filteredGroups.length === 0 && (
+                <div className="py-10 text-center text-caption text-muted-foreground">
+                  {selectedChannelLabel && !filter.trim()
+                    ? `暂无 ${selectedChannelLabel} 可绑定渠道。请先完成该渠道配置，并向 Bot 发送一条消息。`
+                    : '没有匹配的聊天'}
                 </div>
               )}
 
-              {!loading && loadError && (
-                <div className="space-y-3 py-8 text-center">
-                  <div className="text-sm text-error" role="alert">
-                    消息渠道加载失败：{loadError}
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void loadGroupsForDialog()}
-                  >
-                    重试
-                  </Button>
-                </div>
-              )}
-
-              {!loading && !loadError && compatibleGroups.length === 0 && (
-                <div className="py-12 text-center text-sm text-muted-foreground">
-                  {isWorkspaceMode
-                    ? '暂无可绑定话题群。请确认 Bot 已加入话题群，然后点击“同步聊天”。'
-                    : '暂无可绑定私聊或普通群。请确认 Bot 已加入群聊或收到私聊消息，然后点击“同步聊天”。'}
-                </div>
-              )}
-
-              {!loading &&
-                !loadError &&
-                compatibleGroups.length > 0 &&
-                filteredGroups.length === 0 && (
-                  <div className="py-10 text-center text-sm text-muted-foreground">
-                    {selectedChannelLabel && !filter.trim()
-                      ? `暂无 ${selectedChannelLabel} 可绑定渠道。请先完成该渠道配置，并向 Bot 发送一条消息。`
-                      : '没有匹配的聊天'}
-                  </div>
-                )}
-
-              {!loading &&
-                !loadError &&
-                filteredGroups.map((group) => {
+            {!loading && !loadError && filteredGroups.length > 0 && (
+              <div className="divide-y divide-surface-border overflow-hidden rounded-xl bg-surface-raised ring-1 ring-surface-border">
+                {filteredGroups.map((group) => {
                   const boundToThis = isBoundToThis(group);
                   const boundToOther = isBoundToOther(group);
                   const isActioning = actionLoading === group.jid;
@@ -807,290 +805,238 @@ export function ImBindingDialog({
                   return (
                     <article
                       key={group.jid}
-                      className={`grid grid-cols-[2.75rem_minmax(0,1fr)] items-start gap-x-3 gap-y-3 rounded-xl border p-3 transition-colors sm:grid-cols-[2.75rem_minmax(0,1fr)_auto] sm:items-center sm:p-4 ${
-                        boundToThis
-                          ? 'border-primary/35 bg-primary/[0.045]'
-                          : boundToOther
-                            ? 'border-amber-300/60 bg-amber-50/35 dark:border-amber-800/50 dark:bg-amber-950/10'
-                            : 'border-border/80 bg-background hover:border-foreground/20'
-                      }`}
+                      className={cn(
+                        'grid grid-cols-[2rem_minmax(0,1fr)_auto] items-start gap-x-3 gap-y-2.5 px-3 py-3 sm:px-4',
+                        boundToThis && 'bg-surface-selected',
+                      )}
                     >
                       {/* Group avatar */}
                       <ImGroupAvatar group={group} />
 
                       {/* Group info */}
-                      <div className="flex-1 min-w-0">
+                      <div className="min-w-0 flex-1">
                         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                          <div className="min-w-0 truncate text-sm font-semibold">
+                          <div className="min-w-0 truncate text-body font-medium text-foreground">
                             {group.name}
                           </div>
                           {renderThreadCapability(group)}
                         </div>
-                        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                        <div className="mt-1 flex flex-wrap items-center gap-1 text-caption text-muted-foreground">
                           <ChannelBadge channelType={group.channel_type} />
-                          <span className="rounded-full border border-border/70 px-1.5 py-0.5 text-[10px]">
+                          <Badge variant="outline">
                             {conversationKindLabel(group)}
-                          </span>
+                          </Badge>
                           <ChannelAccountBadge
                             accountId={group.channel_account_id}
                             accountName={group.channel_account_name}
                           />
                           {group.member_count != null &&
                             group.member_count > 0 && (
-                              <span className="flex items-center gap-0.5">
-                                <Users className="w-3 h-3" />
+                              <span className="ml-0.5 flex items-center gap-0.5 tabular-nums">
+                                <Users className="size-3" />
                                 {group.member_count}
                               </span>
                             )}
                         </div>
-                        {boundToThis && (
-                          <div className="mt-2 inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
-                            <Link2 className="size-3" />
-                            已绑定当前{isWorkspaceMode ? '工作区' : '会话'}
-                          </div>
-                        )}
-                        {policyMismatch && (
-                          <div className="mt-2 flex items-start gap-1 text-[11px] leading-4 text-amber-700 dark:text-amber-300">
-                            <AlertTriangle className="mt-0.5 size-3 shrink-0" />
-                            <span>
-                              此绑定与渠道类型不符：私聊和普通群应绑定会话，话题群应绑定工作区。请解除绑定后重新配置。
-                            </span>
-                          </div>
-                        )}
-                        {boundToOther && (
-                          <div className="mt-2 flex min-w-0 items-center gap-1 text-[11px] font-medium text-amber-700 dark:text-amber-300">
-                            <ArrowRightLeft className="size-3 shrink-0" />
-                            <span className="truncate">
-                              已绑定至{describeBindTarget(group)}
-                            </span>
-                          </div>
-                        )}
                       </div>
 
-                      {/* Activation mode selector — only for main-mode channels that support trigger modes. */}
-                      {supportsActivation && !boundToThis && !boundToOther && (
-                        <div className="col-span-2 min-w-0 sm:col-span-1 sm:col-start-3 sm:row-start-1 sm:min-w-64">
-                          <div className="grid gap-2 min-[460px]:grid-cols-[minmax(0,1fr)_auto]">
-                            <div className="min-w-0">
-                              {supportsAudience && (
-                                <>
-                                  <label
-                                    htmlFor={`audience-${group.jid}`}
-                                    className="mb-1 block text-[10px] font-medium text-muted-foreground"
-                                  >
-                                    响应对象
-                                  </label>
-                                  <select
-                                    id={`audience-${group.jid}`}
-                                    value={effectiveAudience}
-                                    onChange={(e) =>
-                                      setAudienceModes((prev) => ({
-                                        ...prev,
-                                        [group.jid]: e.target.value as
-                                          | 'everyone'
-                                          | 'owner_only',
-                                      }))
-                                    }
-                                    className="mb-2 h-9 w-full min-w-0 rounded-lg border border-border bg-background px-2.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                                  >
-                                    {AUDIENCE_MODE_OPTIONS.map((option) => (
-                                      <option
-                                        key={option.value}
-                                        value={option.value}
-                                      >
-                                        {option.label}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </>
-                              )}
-                              <label
-                                htmlFor={`activation-${group.jid}`}
-                                className="mb-1 block text-[10px] font-medium text-muted-foreground"
-                              >
-                                触发方式
-                              </label>
-                              <select
-                                id={`activation-${group.jid}`}
-                                value={effectiveMode}
-                                onChange={(e) =>
-                                  setActivationModes((prev) => ({
-                                    ...prev,
-                                    [group.jid]: e.target.value,
-                                  }))
-                                }
-                                className="h-9 w-full min-w-0 rounded-lg border border-border bg-background px-2.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                              >
-                                {activationOptions.map((o) => (
-                                  <option key={o.value} value={o.value}>
-                                    {o.value === 'auto'
-                                      ? `${o.label}（当前：${group.require_mention ? '仅 @机器人' : '所有允许成员'}）`
-                                      : o.label}
-                                  </option>
-                                ))}
-                              </select>
-                              {effectiveAudience === 'owner_only' &&
-                                !group.owner_im_id && (
-                                  <span className="mt-1 flex items-start gap-1 text-[10px] leading-4 text-amber-700 dark:text-amber-300">
-                                    <Info className="mt-0.5 size-3 shrink-0" />
-                                    请先私聊机器人，让系统识别主人身份
-                                  </span>
-                                )}
-                              {modeDescription && (
-                                <span className="mt-1 block text-[10px] leading-4 text-muted-foreground">
-                                  {modeDescription}
-                                </span>
-                              )}
+                      {(boundToThis || policyMismatch || boundToOther) && (
+                        <div className="col-span-2 col-start-2 flex min-w-0 flex-col items-start gap-1.5">
+                          {boundToThis && (
+                            <Badge variant="success">
+                              <Link2 />
+                              已绑定当前{isWorkspaceMode ? '工作区' : '会话'}
+                            </Badge>
+                          )}
+                          {policyMismatch && (
+                            <div className="flex items-start gap-1 text-caption leading-5 text-warning">
+                              <AlertTriangle className="mt-1 size-3 shrink-0" />
+                              <span>
+                                此绑定与渠道类型不符：私聊和普通群应绑定会话，话题群应绑定工作区。请解除绑定后重新配置。
+                              </span>
                             </div>
-                            <Button
-                              onClick={() => handleBind(group.jid)}
-                              disabled={isActioning}
-                              className="h-9 min-w-20"
-                            >
-                              {isActioning ? (
-                                <Loader2 className="size-3.5 animate-spin" />
-                              ) : (
-                                <Link2 className="size-3.5" />
-                              )}
-                              绑定
-                            </Button>
-                          </div>
+                          )}
+                          {boundToOther && (
+                            <div className="flex max-w-full min-w-0 items-center gap-1 text-caption text-warning">
+                              <ArrowRightLeft className="size-3 shrink-0" />
+                              <span className="truncate">
+                                已绑定至{describeBindTarget(group)}
+                              </span>
+                            </div>
+                          )}
                         </div>
                       )}
 
                       {/* Action button — three states: unbind / rebind / bind */}
-                      {boundToThis ? (
-                        <div className="col-span-2 flex w-full flex-col items-stretch gap-2 min-[460px]:flex-row min-[460px]:items-start sm:col-span-1 sm:col-start-3 sm:row-start-1 sm:w-auto sm:min-w-64">
-                          {supportsActivation && (
-                            <div className="min-w-0 flex-1">
-                              {supportsAudience && (
-                                <>
-                                  <label
-                                    htmlFor={`audience-${group.jid}`}
-                                    className="mb-1 block text-[10px] font-medium text-muted-foreground"
-                                  >
-                                    响应对象
-                                  </label>
-                                  <select
-                                    id={`audience-${group.jid}`}
-                                    value={effectiveAudience}
-                                    onChange={(e) =>
-                                      handleAudienceModeChange(
-                                        group.jid,
-                                        e.target.value as
-                                          | 'everyone'
-                                          | 'owner_only',
-                                      )
-                                    }
-                                    aria-label={`${group.name} 的响应对象`}
-                                    className="mb-2 h-9 w-full rounded-lg border border-border bg-background px-2.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                                  >
-                                    {AUDIENCE_MODE_OPTIONS.map((option) => (
-                                      <option
-                                        key={option.value}
-                                        value={option.value}
-                                      >
-                                        {option.label}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </>
-                              )}
-                              <label
-                                htmlFor={`activation-${group.jid}`}
-                                className="mb-1 block text-[10px] font-medium text-muted-foreground"
-                              >
-                                触发方式
-                              </label>
-                              <select
-                                id={`activation-${group.jid}`}
-                                value={effectiveMode}
-                                onChange={(e) =>
-                                  handleActivationModeChange(
-                                    group.jid,
-                                    e.target.value,
-                                  )
-                                }
-                                aria-label={`${group.name} 的消息触发策略`}
-                                className="h-9 w-full rounded-lg border border-border bg-background px-2.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                              >
-                                {activationOptions.map((o) => (
-                                  <option key={o.value} value={o.value}>
-                                    {o.value === 'auto'
-                                      ? `${o.label}（当前：${group.require_mention ? '仅 @机器人' : '所有允许成员'}）`
-                                      : o.label}
-                                  </option>
-                                ))}
-                              </select>
-                              {effectiveAudience === 'owner_only' &&
-                                !group.owner_im_id && (
-                                  <span className="mt-1 flex items-start gap-1 text-[10px] leading-4 text-amber-700 dark:text-amber-300">
-                                    <Info className="mt-0.5 size-3 shrink-0" />
-                                    请先私聊机器人，让系统识别主人身份
-                                  </span>
-                                )}
-                              {modeDescription && (
-                                <span className="mt-1 block text-[10px] leading-4 text-muted-foreground">
-                                  {modeDescription}
-                                </span>
-                              )}
-                            </div>
-                          )}
+                      <div className="col-start-3 row-start-1 flex justify-end">
+                        {boundToThis ? (
                           <Button
                             variant="outline"
                             onClick={() => handleUnbind(group.jid)}
                             disabled={isActioning}
-                            className="h-9 min-w-24"
                           >
                             {isActioning ? (
-                              <Loader2 className="size-3.5 animate-spin" />
+                              <Loader2 className="animate-spin" />
                             ) : (
-                              <RotateCcw className="size-3.5" />
+                              <RotateCcw />
                             )}
                             解除绑定
                           </Button>
+                        ) : boundToOther ? (
+                          <Button
+                            variant="outline"
+                            onClick={() =>
+                              setRebindTarget({ imJid: group.jid, group })
+                            }
+                            disabled={isActioning}
+                          >
+                            {isActioning ? (
+                              <Loader2 className="animate-spin" />
+                            ) : (
+                              <ArrowRightLeft />
+                            )}
+                            换绑
+                          </Button>
+                        ) : (
+                          <Button
+                            onClick={() => handleBind(group.jid)}
+                            disabled={isActioning}
+                            className="min-w-16"
+                          >
+                            {isActioning ? (
+                              <Loader2 className="animate-spin" />
+                            ) : (
+                              <Link2 />
+                            )}
+                            绑定
+                          </Button>
+                        )}
+                      </div>
+
+                      {/* Response policy — applied on bind, or saved immediately once bound here. */}
+                      {supportsActivation && !boundToOther && (
+                        <div className="col-span-2 col-start-2 min-w-0">
+                          <div
+                            className={cn(
+                              'grid gap-2',
+                              supportsAudience && 'min-[460px]:grid-cols-2',
+                            )}
+                          >
+                            {supportsAudience && (
+                              <div className="min-w-0">
+                                <label
+                                  htmlFor={`audience-${group.jid}`}
+                                  className="mb-1 block text-micro font-medium text-muted-foreground"
+                                >
+                                  响应对象
+                                </label>
+                                <NativeSelect
+                                  id={`audience-${group.jid}`}
+                                  value={effectiveAudience}
+                                  onChange={(e) => {
+                                    const audienceMode = e.target.value as
+                                      | 'everyone'
+                                      | 'owner_only';
+                                    if (boundToThis) {
+                                      void handleAudienceModeChange(
+                                        group.jid,
+                                        audienceMode,
+                                      );
+                                    } else {
+                                      setAudienceModes((prev) => ({
+                                        ...prev,
+                                        [group.jid]: audienceMode,
+                                      }));
+                                    }
+                                  }}
+                                  aria-label={
+                                    boundToThis
+                                      ? `${group.name} 的响应对象`
+                                      : undefined
+                                  }
+                                  className="w-full"
+                                >
+                                  {AUDIENCE_MODE_OPTIONS.map((option) => (
+                                    <NativeSelectOption
+                                      key={option.value}
+                                      value={option.value}
+                                    >
+                                      {option.label}
+                                    </NativeSelectOption>
+                                  ))}
+                                </NativeSelect>
+                              </div>
+                            )}
+                            <div className="min-w-0">
+                              <label
+                                htmlFor={`activation-${group.jid}`}
+                                className="mb-1 block text-micro font-medium text-muted-foreground"
+                              >
+                                触发方式
+                              </label>
+                              <NativeSelect
+                                id={`activation-${group.jid}`}
+                                value={effectiveMode}
+                                onChange={(e) => {
+                                  const mode = e.target.value;
+                                  if (boundToThis) {
+                                    void handleActivationModeChange(
+                                      group.jid,
+                                      mode,
+                                    );
+                                  } else {
+                                    setActivationModes((prev) => ({
+                                      ...prev,
+                                      [group.jid]: mode,
+                                    }));
+                                  }
+                                }}
+                                aria-label={
+                                  boundToThis
+                                    ? `${group.name} 的消息触发策略`
+                                    : undefined
+                                }
+                                className="w-full"
+                              >
+                                {activationOptions.map((o) => (
+                                  <NativeSelectOption
+                                    key={o.value}
+                                    value={o.value}
+                                  >
+                                    {o.value === 'auto'
+                                      ? `${o.label}（当前：${group.require_mention ? '仅 @机器人' : '所有允许成员'}）`
+                                      : o.label}
+                                  </NativeSelectOption>
+                                ))}
+                              </NativeSelect>
+                            </div>
+                          </div>
+                          {effectiveAudience === 'owner_only' &&
+                            !group.owner_im_id && (
+                              <p className="mt-1.5 flex items-start gap-1 text-caption text-warning">
+                                <Info className="mt-0.5 size-3 shrink-0" />
+                                请先私聊机器人，让系统识别主人身份
+                              </p>
+                            )}
+                          {modeDescription && (
+                            <p className="mt-1.5 text-caption text-muted-foreground">
+                              {modeDescription}
+                            </p>
+                          )}
                         </div>
-                      ) : boundToOther ? (
-                        <Button
-                          variant="outline"
-                          onClick={() =>
-                            setRebindTarget({ imJid: group.jid, group })
-                          }
-                          disabled={isActioning}
-                          className="col-span-2 h-9 w-full min-w-20 border-amber-300 text-amber-700 hover:bg-amber-50 min-[460px]:w-auto sm:col-span-1 sm:col-start-3 sm:row-start-1 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-950/30"
-                        >
-                          {isActioning ? (
-                            <Loader2 className="size-3.5 animate-spin" />
-                          ) : (
-                            <ArrowRightLeft className="size-3.5" />
-                          )}
-                          换绑
-                        </Button>
-                      ) : supportsActivation ? null : (
-                        <Button
-                          onClick={() => handleBind(group.jid)}
-                          disabled={isActioning}
-                          className="col-span-2 h-9 w-full min-w-20 min-[460px]:w-auto sm:col-span-1 sm:col-start-3 sm:row-start-1"
-                        >
-                          {isActioning ? (
-                            <Loader2 className="size-3.5 animate-spin" />
-                          ) : (
-                            <Link2 className="size-3.5" />
-                          )}
-                          绑定
-                        </Button>
                       )}
                     </article>
                   );
                 })}
-            </div>
-
-            {!loading && !loadError && filteredGroups.length > 5 && (
-              <p className="text-center text-[11px] text-muted-foreground">
-                列表可滚动 · 已按当前绑定、最近接入和未绑定优先排序
-              </p>
+              </div>
             )}
           </div>
+
+          {!loading && !loadError && filteredGroups.length > 5 && (
+            <p className="shrink-0 border-t border-surface-border px-4 py-2 text-center text-caption text-muted-foreground sm:px-5">
+              列表可滚动 · 已按当前绑定、最近接入和未绑定优先排序
+            </p>
+          )}
         </DialogContent>
       </Dialog>
 

@@ -852,8 +852,16 @@ describe('DingTalk production host wiring', () => {
       'pendingStreamingCardCompletion = outputStreamingSession',
     );
     expect(branch).toContain('await persistUncertainStreamingDelivery({');
+    expect(branch).toMatch(
+      /classifyImSendFailure\(cardFinalization\.error\) !==\s+'uncertain'/,
+    );
+    // A refused final card body never showed the reply: static fallback is
+    // allowed even though the card itself was visible.
+    expect(branch).toMatch(
+      /refusedCardStaticText = pendingStreamingCardCompleted\s+\?\s+undefined\s+:\s+feishuCardStaticFallbackText\(cardFinalization\.error\)/,
+    );
     expect(branch).toContain(
-      "classifyImSendFailure(cardFinalization.error) !==\n                      'uncertain'",
+      'const cardBodyRejected = refusedCardStaticText !== undefined;',
     );
     expect(branch).toContain(
       'directImReply &&\n                    !skipImSend',

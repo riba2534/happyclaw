@@ -1,5 +1,11 @@
 import type * as lark from '@larksuiteoapi/node-sdk';
+import { createHash } from 'crypto';
 
+import {
+  classifyFeishuError,
+  feishuErrorCode,
+  feishuRetryAfterMs as feishuResponseRetryAfterMs,
+} from './feishu-errors.js';
 import type { ChannelTurnContext } from './types.js';
 
 export type FeishuCapabilityOperation =
@@ -17,7 +23,24 @@ export type FeishuCapabilityOperation =
 export interface FeishuCapabilityRequest {
   operation: FeishuCapabilityOperation;
   params?: Record<string, unknown>;
+  /**
+   * Broker-assigned Feishu `uuid` for message-creating operations (≤50
+   * chars). Set by the durable Outbox from its idempotency identity so an
+   * ambiguous send can be replayed safely within Feishu's one-hour dedupe
+   * window. Never taken from runner-supplied params.
+   */
+  providerUuid?: string;
 }
+
+/** Feishu message `uuid` (≤50 chars) for a stable idempotency identity. */
+export function feishuCapabilityUuid(identity: string): string {
+  return `hc${createHash('sha256').update(identity).digest('hex').slice(0, 40)}`;
+}
+
+/** Serialized card size limit for send_card, in UTF-8 bytes. */
+export const FEISHU_SEND_CARD_MAX_BYTES = 30 * 1024;
+const SEND_CARD_RATE_LIMIT_RETRIES = 3;
+const SEND_CARD_MAX_RETRY_AFTER_MS = 10_000;
 
 export interface FeishuCapabilityResult {
   operation: FeishuCapabilityOperation;
@@ -199,7 +222,16 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-function feishuRetryAfterMs(response: Record<string, unknown>): number {
+function feishuRetryAfterMs(
+  response: Record<string, unknown>,
+  error?: unknown,
+): number {
+  // Prefer Feishu's own reset hint (x-ogw-ratelimit-reset, seconds).
+  const hinted =
+    error === undefined ? undefined : feishuResponseRetryAfterMs(error);
+  if (hinted !== undefined) {
+    return Math.min(300_000, Math.max(1_000, hinted));
+  }
   const headers = record(response.headers);
   const raw = headers['retry-after'] ?? headers['Retry-After'];
   const value = Array.isArray(raw) ? raw[0] : raw;
@@ -370,7 +402,9 @@ export function definitiveFeishuHttpRejection(
     `Feishu rejected the request (http=${status}, code=${code}, msg=${detail})`,
     {
       cause: error,
-      ...(status === 429 ? { retryAfterMs: feishuRetryAfterMs(response) } : {}),
+      ...(status === 429
+        ? { retryAfterMs: feishuRetryAfterMs(response, error) }
+        : {}),
     },
   );
 }
@@ -487,10 +521,31 @@ function resolveUserTarget(context: ChannelTurnContext): {
   );
 }
 
-function feishuErrorCode(error: unknown): number | undefined {
-  const response = record(record(error).response);
-  const data = record(response.data);
-  return typeof data.code === 'number' ? data.code : undefined;
+/**
+ * Wait out an explicit Feishu rate limit inside one capability call: the
+ * platform did not accept the request, so resending it (with the same uuid)
+ * is safe. Bounded so a broker request never stalls for long.
+ */
+async function withCapabilityRateLimitRetry<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      const classified = classifyFeishuError(error);
+      if (
+        classified.kind !== 'rate_limited' ||
+        attempt >= SEND_CARD_RATE_LIMIT_RETRIES
+      )
+        throw error;
+      const delayMs =
+        classified.retryAfterMs ??
+        (classified.code === 230020 ? 1_000 : 250) * 2 ** attempt;
+      if (delayMs > SEND_CARD_MAX_RETRY_AFTER_MS) throw error;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
 }
 
 function sanitizeGenericResponse(response: unknown): unknown {
@@ -727,21 +782,64 @@ export async function executeFeishuCapability(
         throw new DefinitiveFeishuCapabilityError('Card is required');
       }
       const serialized = JSON.stringify(card);
-      if (serialized.length > 30_000) {
+      if (Buffer.byteLength(serialized, 'utf8') > FEISHU_SEND_CARD_MAX_BYTES) {
         throw new DefinitiveFeishuCapabilityError(
           'Feishu card exceeds the 30 KB broker limit',
         );
       }
-      const response = await client.im.v1.message.reply({
-        path: { message_id: messageId },
-        data: {
-          msg_type: 'interactive',
-          content: serialized,
-          reply_in_thread: Boolean(
-            context.message?.threadId || context.message?.rootId,
-          ),
-        },
-      });
+      // The Outbox assigns a uuid from its durable identity. Direct callers
+      // get one derived from the exact turn message, target and payload, so a
+      // replay of the same request within an hour cannot post twice.
+      const uuid =
+        request.providerUuid ??
+        feishuCapabilityUuid(
+          `send_card:${chatId}:${context.message?.id ?? ''}:${messageId}:${serialized}`,
+        );
+      const send = () =>
+        client.im.v1.message.reply({
+          path: { message_id: messageId },
+          data: {
+            msg_type: 'interactive',
+            content: serialized,
+            reply_in_thread: Boolean(
+              context.message?.threadId || context.message?.rootId,
+            ),
+            uuid,
+          },
+        });
+      const sendChecked = async () => {
+        const result = await send();
+        // A resolved rate-limit envelope is retried like a thrown one, and
+        // stays a definitive (not uncertain) failure once retries run out.
+        if (classifyFeishuError(result).kind === 'rate_limited') {
+          const code = feishuErrorCode(result);
+          throw Object.assign(
+            new DefinitiveFeishuCapabilityError(
+              `send_card failed (code=${code}, msg=${optionalString(record(result).msg) || 'rate limited'})`,
+            ),
+            { code },
+          );
+        }
+        return result;
+      };
+      let response: Awaited<ReturnType<typeof send>>;
+      try {
+        response = await withCapabilityRateLimitRetry(sendChecked);
+      } catch (error) {
+        // An ambiguous transport failure may hide an accepted reply. Feishu
+        // dedupes the uuid for an hour, so one replay either returns that
+        // reply or creates it; only a successful replay resolves the doubt.
+        if (
+          classifyFeishuError(error).kind !== 'transient' ||
+          definitiveFeishuPreAcceptanceFailure(error)
+        )
+          throw error;
+        try {
+          response = await withCapabilityRateLimitRetry(sendChecked);
+        } catch {
+          throw error;
+        }
+      }
       assertApiSuccess('send_card', response);
       return {
         operation: request.operation,

@@ -11,6 +11,7 @@
  *
  * Reference: https://discord.js.org/
  */
+import { createRejectCooldown } from './reject-cooldown.js';
 import crypto from 'crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -372,7 +373,7 @@ export function createDiscordConnection(
   // LRU deduplication cache（共享 helper）
   const dedup = createDedupCache({ ttlMs: 30 * 60 * 1000, max: 1000 });
   const processingLock = new ProcessingLock();
-  const rejectTimestamps = new Map<string, number>();
+  const rejectCooldown = createRejectCooldown(60_000);
 
   // Last message ID per chat (for reply context)
   const lastMessageIds = new Map<string, string>();
@@ -522,10 +523,7 @@ export function createDiscordConnection(
           return;
         }
         if (admission.kind === 'deny') {
-          const now = Date.now();
-          const lastReject = rejectTimestamps.get(jid) ?? 0;
-          if (now - lastReject >= 60_000) {
-            rejectTimestamps.set(jid, now);
+          if (rejectCooldown.shouldNotify(jid)) {
             await msg.reply(
               '此聊天尚未配对。请在 Web 设置页生成配对码，然后发送 /pair <code>。',
             );

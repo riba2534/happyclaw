@@ -13,6 +13,8 @@
  * - Invalid image cleanup: strip non-img_ image references
  */
 
+import { findMarkdownBlocks } from './feishu-cards/pagination.js';
+
 /**
  * Optimize Markdown style for Feishu card rendering.
  *
@@ -46,18 +48,10 @@ function _optimizeMarkdownStyle(text: string, cardVersion = 2): string {
     r = r.replace(/^(#{4,5} .+)\n{1,2}(#{4,5} )/gm, '$1\n<br>\n$2');
 
     // ── 4. Table spacing ───────────────────────────────────────────
-    // 4a. Non-table line followed by table line → add blank line
-    r = r.replace(/^([^|\n].*)\n(\|.+\|)/gm, '$1\n\n$2');
-    // 4b. Table block preceded by blank line → insert <br>
-    r = r.replace(/\n\n((?:\|.+\|[^\S\n]*\n?)+)/g, '\n\n<br>\n\n$1');
-    // 4c. Table block trailing → append <br>
-    r = r.replace(/((?:^\|.+\|[^\S\n]*\n?)+)/gm, '$1\n<br>\n');
-    // 4d. Plain text before table: collapse extra blank lines
-    r = r.replace(/^((?!#{4,5} )(?!\*\*).+)\n\n(<br>)\n\n(\|)/gm, '$1\n$2\n$3');
-    // 4d2. Bold text before table
-    r = r.replace(/^(\*\*.+)\n\n(<br>)\n\n(\|)/gm, '$1\n$2\n\n$3');
-    // 4e. Plain text after table: collapse extra blank lines
-    r = r.replace(/(\|[^\n]*\n)\n(<br>\n)((?!#{4,5} )(?!\*\*))/gm, '$1$2$3');
+    // One linear pass over real GFM tables (header + delimiter row). The
+    // former regex chain also matched pipe-heavy prose and was quadratic on a
+    // long `a|b|c…` line, which stalled the event loop on every flush.
+    r = spaceMarkdownTables(r);
 
     // Add spacing while the code itself is still protected. An unfinished
     // upstream fence must not acquire a literal <br> inside its code body.
@@ -128,23 +122,246 @@ function protectFencedCode(text: string): {
 }
 
 // ---------------------------------------------------------------------------
+// Table spacing
+// ---------------------------------------------------------------------------
+
+const DEMOTED_HEADING = /^#{4,5} /;
+
+/**
+ * Pad each GFM table with `<br>` lines so Feishu card Markdown renders it as
+ * a separate block. Only header + delimiter-row tables qualify: prose such as
+ * `|x| 表示绝对值` and rows without a trailing pipe are left intact.
+ *
+ * Spacing reproduces the long-standing card layout:
+ * - prose line before → `P\n<br>\nTABLE`; a `**bold**` line keeps a blank
+ *   line after the `<br>`; a demoted heading keeps `P\n\n<br>\n\nTABLE`;
+ * - a table at the very start gets no leading `<br>`;
+ * - after the table → `TABLE\n<br>\n…`, except that a directly following
+ *   heading or bold line stays separated by a blank line.
+ */
+function spaceMarkdownTables(text: string): string {
+  if (!text.includes('|')) return text;
+  const tables = findMarkdownBlocks(text).filter(
+    (block) => block.kind === 'table',
+  );
+  if (tables.length === 0) return text;
+
+  const parts: string[] = [];
+  let cursor = 0;
+  for (const table of tables) {
+    const segment = text.slice(cursor, table.start);
+    const head = segment.replace(/\n+$/, '');
+    let gap = segment.length - head.length;
+    let previousLine: string | undefined;
+    if (head) {
+      parts.push(head);
+      previousLine = head.slice(head.lastIndexOf('\n') + 1);
+    } else if (parts.length > 0) {
+      // Only blank lines since the previous table: its trailing `<br>` line
+      // is the preceding prose for this one.
+      const last = parts.pop()!;
+      const trimmed = last.replace(/\n+$/, '');
+      gap += last.length - trimmed.length;
+      parts.push(trimmed);
+      previousLine = trimmed.slice(trimmed.lastIndexOf('\n') + 1);
+    }
+
+    if (previousLine === undefined) {
+      // Nothing but blank lines before a leading table.
+      parts.push(gap >= 2 ? `${segment}<br>\n\n` : segment);
+    } else if (gap >= 3 || DEMOTED_HEADING.test(previousLine)) {
+      parts.push('\n\n<br>\n\n');
+    } else if (previousLine.startsWith('**')) {
+      parts.push('\n<br>\n\n');
+    } else {
+      parts.push('\n<br>\n');
+    }
+
+    const body = text.slice(table.start, table.end);
+    parts.push(body.endsWith('\n') ? body : `${body}\n`);
+    const nextBreak = text.indexOf('\n', table.end);
+    const nextLine =
+      table.end >= text.length
+        ? ''
+        : text.slice(table.end, nextBreak < 0 ? text.length : nextBreak);
+    parts.push(
+      nextLine && (DEMOTED_HEADING.test(nextLine) || nextLine.startsWith('**'))
+        ? '\n<br>\n'
+        : '<br>\n',
+    );
+    cursor = table.end;
+  }
+  parts.push(text.slice(cursor));
+  return parts.join('');
+}
+
+// ---------------------------------------------------------------------------
 // stripInvalidImageKeys
 // ---------------------------------------------------------------------------
 
-/** Matches complete markdown image syntax: `![alt](value)` */
-const IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g;
+/** Malformed `![` attempts tolerated per line before the rest is left as is. */
+const MAX_FAILED_IMAGE_PARSES_PER_LINE = 64;
+const MAX_IMAGE_ALT_CHARS = 4096;
+
+interface InlineImage {
+  /** Offset just past the closing `)`. */
+  end: number;
+  alt: string;
+  destination: string;
+}
+
+/** Parse a CommonMark inline image starting at `![` (single line). */
+function parseInlineImage(line: string, at: number): InlineImage | null {
+  let i = at + 2;
+  let depth = 0;
+  const altLimit = Math.min(line.length, i + MAX_IMAGE_ALT_CHARS);
+  for (; i < altLimit; i++) {
+    const ch = line[i];
+    if (ch === '\\') i++;
+    else if (ch === '[') depth++;
+    else if (ch === ']') {
+      if (depth === 0) break;
+      depth--;
+    }
+  }
+  if (line[i] !== ']' || line[i + 1] !== '(') return null;
+  const alt = line.slice(at + 2, i);
+  i += 2;
+  while (line[i] === ' ' || line[i] === '\t') i++;
+
+  let destination: string;
+  if (line[i] === '<') {
+    const close = line.indexOf('>', i + 1);
+    if (close < 0) return null;
+    destination = line.slice(i + 1, close);
+    i = close + 1;
+  } else {
+    const start = i;
+    let parens = 0;
+    for (; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '\\') {
+        i++;
+        continue;
+      }
+      if (ch === ' ' || ch === '\t') break;
+      if (ch === '(') parens++;
+      else if (ch === ')') {
+        if (parens === 0) break;
+        parens--;
+      }
+    }
+    destination = line.slice(start, i);
+  }
+
+  while (line[i] === ' ' || line[i] === '\t') i++;
+  const opener = line[i];
+  if (opener === '"' || opener === "'" || opener === '(') {
+    const closer = opener === '(' ? ')' : opener;
+    const close = line.indexOf(closer, i + 1);
+    if (close < 0) return null;
+    i = close + 1;
+    while (line[i] === ' ' || line[i] === '\t') i++;
+  }
+  if (line[i] !== ')') return null;
+  return { end: i + 1, alt, destination };
+}
+
+/** Destination of a link whose text ends right before `offset` (`](…)`). */
+function wrappingLinkDestination(line: string, offset: number): string {
+  if (line[offset] !== ']' || line[offset + 1] !== '(') return '';
+  const close = line.indexOf(')', offset + 2);
+  return close < 0 ? '' : line.slice(offset + 2, close).trim();
+}
+
+function stripImagesInProse(segment: string): string {
+  if (!segment.includes('![')) return segment;
+  let out = '';
+  let cursor = 0;
+  let searchFrom = 0;
+  let failures = 0;
+  for (;;) {
+    const at = segment.indexOf('![', searchFrom);
+    if (at < 0) break;
+    const image = parseInlineImage(segment, at);
+    if (!image) {
+      searchFrom = at + 2;
+      if (++failures >= MAX_FAILED_IMAGE_PARSES_PER_LINE) break;
+      continue;
+    }
+    out += segment.slice(cursor, at);
+    if (image.destination.startsWith('img_')) {
+      out += segment.slice(at, image.end);
+    } else if (segment[at - 1] === '[') {
+      // Badge-style `[![alt](src)](href)`: removing the image entirely
+      // would leave an invisible, empty link. Keep readable link text.
+      out +=
+        image.alt.trim() ||
+        wrappingLinkDestination(segment, image.end) ||
+        'link';
+    }
+    cursor = searchFrom = image.end;
+  }
+  return out + segment.slice(cursor);
+}
+
+/** Inline code spans on one line, as [start, end) pairs. */
+function inlineCodeSpans(line: string): Array<[number, number]> {
+  if (!line.includes('`')) return [];
+  const runs: Array<{ start: number; length: number }> = [];
+  const runPattern = /`+/g;
+  let match: RegExpExecArray | null;
+  while ((match = runPattern.exec(line)))
+    runs.push({ start: match.index, length: match[0].length });
+  const byLength = new Map<number, number[]>();
+  runs.forEach((run, index) => {
+    const list = byLength.get(run.length) ?? [];
+    list.push(index);
+    byLength.set(run.length, list);
+  });
+  const pointers = new Map<number, number>();
+  const spans: Array<[number, number]> = [];
+  for (let index = 0; index < runs.length; ) {
+    const run = runs[index];
+    const list = byLength.get(run.length)!;
+    let pointer = pointers.get(run.length) ?? 0;
+    while (pointer < list.length && list[pointer] <= index) pointer++;
+    pointers.set(run.length, pointer);
+    if (pointer < list.length) {
+      const closing = runs[list[pointer]];
+      spans.push([run.start, closing.start + closing.length]);
+      index = list[pointer] + 1;
+    } else {
+      index++;
+    }
+  }
+  return spans;
+}
 
 /**
  * Strip `![alt](value)` where value is not a valid Feishu image key
  * (`img_xxx`). Prevents CardKit error 200570.
  *
  * HTTP URLs and local paths are stripped — only `img_xxx` keys are valid
- * in Feishu card markdown elements.
+ * in Feishu card markdown elements. Titles, `<…>` destinations and balanced
+ * parentheses in URLs are understood; inline code spans stay literal.
  */
 function stripInvalidImageKeys(text: string): string {
   if (!text.includes('![')) return text;
-  return text.replace(IMAGE_RE, (fullMatch, _alt, value) => {
-    if (value.startsWith('img_')) return fullMatch;
-    return ''; // strip all non-img_ image references
-  });
+  return text
+    .split('\n')
+    .map((line) => {
+      if (!line.includes('![')) return line;
+      const spans = inlineCodeSpans(line);
+      if (spans.length === 0) return stripImagesInProse(line);
+      let out = '';
+      let cursor = 0;
+      for (const [start, end] of spans) {
+        out += stripImagesInProse(line.slice(cursor, start));
+        out += line.slice(start, end);
+        cursor = end;
+      }
+      return out + stripImagesInProse(line.slice(cursor));
+    })
+    .join('\n');
 }

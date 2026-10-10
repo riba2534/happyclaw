@@ -273,7 +273,7 @@ describe('Feishu capability mutation outbox', () => {
     expect(fallback.status).toBe('delivered');
   });
 
-  test('a Feishu HTTP 429 enters retry wait instead of failing permanently', async () => {
+  test('a Feishu HTTP 429 ends failed instead of an orphaned retry_wait row', async () => {
     const now = '2026-07-26T08:00:00.000Z';
     const run = store.createChannelTurnRun({
       ...route,
@@ -301,13 +301,15 @@ describe('Feishu capability mutation outbox', () => {
       },
     });
 
+    // Capability rows have no reclaiming worker, so a provider retry hint
+    // must not leave a non-terminal retry_wait row behind.
     expect(result.delivery).toMatchObject({
-      status: 'retry_wait',
+      status: 'failed',
       error: expect.stringContaining('http=429'),
     });
-    expect(
-      store.getChannelOutboxItem(result.delivery.itemId)?.availableAt,
-    ).toBe('2026-07-26T08:00:02.000Z');
+    expect(store.getChannelOutboxItem(result.delivery.itemId)?.status).toBe(
+      'failed',
+    );
     expect(store.getUncertainChannelOutboxForTurn(run.id)).toBeUndefined();
   });
 
@@ -383,5 +385,38 @@ describe('Feishu capability mutation outbox', () => {
     expect(branch).toContain('activeChannelOutboxScopes.resolveInput');
     expect(branch).toContain('deliverFeishuCapabilityMutation');
     expect(branch).toContain('do not retry automatically');
+  });
+  test('send_card carries a Feishu uuid derived from the durable Outbox identity', async () => {
+    const seen: Array<string | undefined> = [];
+    const deliver = async (idempotencyKey: string) => {
+      const run = store.createChannelTurnRun({ ...route, idempotencyKey }).run;
+      const request: {
+        operation: 'send_card';
+        params: Record<string, unknown>;
+        providerUuid?: string;
+      } = {
+        operation: 'send_card',
+        params: { card: { schema: '2.0', body: { elements: [] } } },
+      };
+      await deliverFeishuCapabilityMutation({
+        ...route,
+        turnRunId: run.id,
+        requestId: `uuid-${idempotencyKey}`,
+        request,
+        owner: 'uuid-worker',
+        execute: async () => {
+          // The broker hands the same request object to the executor.
+          seen.push(request.providerUuid);
+          return { operation: 'send_card', data: { messageId: 'om_uuid' } };
+        },
+      });
+      return request.providerUuid;
+    };
+    const first = await deliver('feishu-mutation-uuid-a');
+    const second = await deliver('feishu-mutation-uuid-b');
+    expect(first).toMatch(/^hc[a-f0-9]{40}$/);
+    expect(first!.length).toBeLessThanOrEqual(50);
+    expect(seen).toEqual([first, second]);
+    expect(second).not.toBe(first);
   });
 });

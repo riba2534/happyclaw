@@ -32,6 +32,15 @@ export function buildProviderModel(
   return oneMillionContext ? `${model}${ONE_MILLION_CONTEXT_SUFFIX}` : model;
 }
 
+/**
+ * Mirrors `isOneMillionContextModel` in src/runtime-config.ts (parity is
+ * tested): a third-party provider defaults to a 1M compact window only for an
+ * explicit `[1m]` model, since a gateway capped at 200K cannot be detected.
+ */
+export function isOneMillionContextModel(model: string): boolean {
+  return /\[1m\]$/i.test(model.trim());
+}
+
 /** Build the editable defaults prefilled for third-party providers. */
 export function buildDefaultProviderEnv(
   value: string,
@@ -44,7 +53,8 @@ export function buildDefaultProviderEnv(
     { key: 'ANTHROPIC_DEFAULT_HAIKU_MODEL', value: model, source: 'model' },
     {
       key: 'CLAUDE_CODE_AUTO_COMPACT_WINDOW',
-      value: oneMillionContext ? '1000000' : '200000',
+      // Same default the backend applies when the provider leaves it unset.
+      value: isOneMillionContextModel(model) ? '1000000' : '200000',
       source: 'context',
     },
     {

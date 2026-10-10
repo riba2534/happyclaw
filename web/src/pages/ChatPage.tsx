@@ -1,33 +1,50 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { UserCog, LogOut, Plus, BarChart3 } from 'lucide-react';
+import { FolderPlus, Plus, SquarePen } from 'lucide-react';
 import { useChatStore } from '../stores/chat';
 import { useAuthStore } from '../stores/auth';
-import { useGroupsStore } from '../stores/groups';
 import { ChatView } from '../components/chat/ChatView';
-import { ChatGroupItem } from '../components/chat/ChatGroupItem';
 import { DeleteWorkspaceDialog } from '../components/chat/DeleteWorkspaceDialog';
-import { AgentWorkspaceGroup } from '../components/layout/AgentWorkspaceGroup';
+import { WorkspaceTree } from '../components/layout/sidebar/WorkspaceTree';
 import { ConfirmDialog } from '../components/common';
-import { CreateContainerDialog } from '../components/chat/CreateContainerDialog';
 import { RenameDialog } from '../components/chat/RenameDialog';
+import {
+  lazyBugReportDialog,
+  lazyCreateContainerDialog,
+} from '../components/common/lazy-dialogs';
+import { useOpenedOnce } from '../lib/preloaded-component';
+import { findRouteGroupJid } from '../lib/route-workspace';
 import { EmojiAvatar } from '../components/common/EmojiAvatar';
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover';
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { IconButton } from '../components/common/IconButton';
+import { EmptyState } from '../components/common/EmptyState';
+import { AccountMenuItems } from '../components/layout/AccountMenu';
+import { withBasePath } from '../utils/url';
 import { useSwipeBack } from '../hooks/useSwipeBack';
 import { useClearWorkspace } from '../hooks/useClearWorkspace';
-import { type GroupEntry, compareByLastActivity } from '../utils/group-utils';
-import {
-  getAgentNavigationTargets,
-  getPrimaryAgentWorkspaceRows,
-  groupWorkspacesByAgent,
-  isAgentSectionCollapsible,
-  partitionAgentWorkspaceSections,
-} from '../utils/agent-product';
+import type { GroupEntry } from '../utils/group-utils';
 import { useDeleteWorkspace } from '../hooks/useDeleteWorkspace';
+import { useWorkspaceTree } from '../hooks/useWorkspaceTree';
+import { useNewConversation } from '../hooks/useNewConversation';
+import { useShellStore } from '../stores/shell';
+import { Button } from '@/components/ui/button';
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from '@/components/ui/empty';
+
+const BugReportDialog = lazyBugReportDialog.Component;
+const CreateContainerDialog = lazyCreateContainerDialog.Component;
 
 export function ChatPage() {
   const { groupFolder } = useParams<{ groupFolder?: string }>();
@@ -46,6 +63,8 @@ export function ChatPage() {
     handleClearConfirm,
   } = useClearWorkspace();
   const [createOpen, setCreateOpen] = useState(false);
+  const [createAgentId, setCreateAgentId] = useState<string | null>(null);
+  const createMounted = useOpenedOnce(createOpen);
   const [renameState, setRenameState] = useState({
     open: false,
     jid: '',
@@ -62,55 +81,26 @@ export function ChatPage() {
   });
   const user = useAuthStore((s) => s.user);
   const appearance = useAuthStore((s) => s.appearance);
+  const appName = appearance?.appName || 'HappyClaw';
+  const [showBugReport, setShowBugReport] = useState(false);
+  const bugReportMounted = useOpenedOnce(showBugReport);
   const userInitial = (user?.display_name ||
     user?.username ||
     '?')[0].toUpperCase();
 
-  const routeGroupJid = useMemo(() => {
-    if (!groupFolder) return null;
-    const entry =
-      Object.entries(groups).find(
-        ([jid, info]) =>
-          info.folder === groupFolder &&
-          jid.startsWith('web:') &&
-          !!info.is_home,
-      ) ||
-      Object.entries(groups).find(
-        ([jid, info]) => info.folder === groupFolder && jid.startsWith('web:'),
-      ) ||
-      Object.entries(groups).find(([_, info]) => info.folder === groupFolder);
-    return entry?.[0] || null;
-  }, [groupFolder, groups]);
-  const runnerStates = useGroupsStore((s) => s.runnerStates);
+  const routeGroupJid = useMemo(
+    () => (groupFolder ? findRouteGroupJid(groups, groupFolder) : null),
+    [groupFolder, groups],
+  );
   const hasGroups = Object.keys(groups).length > 0;
 
-  // 移动端唯一的工作区列表入口：桌面侧边栏改为条件挂载后，/chat 落地页
-  // 不再有其他组件触发 loadGroups（store 内部有 in-flight 去重，桌面端
-  // 与侧边栏的并发调用只会发一个请求）。
-  useEffect(() => {
-    void loadGroups();
-  }, [loadGroups]);
+  // The workspace list is loaded once by AppLayout for every route and kept
+  // fresh over WebSocket, so returning to /chat does not refetch it.
 
   // Mobile and desktop share the same Agent-first navigation contract.
-  const agentSections = useMemo(() => {
-    const entries: GroupEntry[] = Object.entries(groups).map(([jid, info]) => ({
-      jid,
-      ...info,
-    }));
-    entries.sort(compareByLastActivity);
-    const home = entries.find((entry) => entry.is_my_home);
-    const defaultAgentId = home?.agent_profile_id || '__default__';
-    const prioritized = [...entries].sort((a, b) => {
-      if (a.is_my_home) return -1;
-      if (b.is_my_home) return 1;
-      return Number(!!b.pinned_at) - Number(!!a.pinned_at);
-    });
-    return groupWorkspacesByAgent(prioritized, defaultAgentId);
-  }, [groups]);
-  const agentPartitions = useMemo(
-    () => partitionAgentWorkspaceSections(agentSections),
-    [agentSections],
-  );
+  const { agentSections, agentPartitions } = useWorkspaceTree();
+  const { startNewConversation, creatingSession } = useNewConversation();
+  const setDesktopCreateOpen = useShellStore((s) => s.setCreateWorkspaceOpen);
   const hasAnyGroup = agentSections.length > 0;
 
   // Sync URL param to store selection. No auto-redirect to home container —
@@ -155,126 +145,53 @@ export function ChatPage() {
 
   useSwipeBack(chatViewRef, handleBackToList);
 
-  const renderMobileAgentSection = (
-    section: (typeof agentSections)[number],
-  ) => {
-    const { directGroup, workspaces } = getAgentNavigationTargets(section);
-    return (
-      <AgentWorkspaceGroup
-        key={section.id}
-        agentId={section.id}
-        name={section.name}
-        collapsible={isAgentSectionCollapsible(section)}
-        workspaceCount={workspaces.length}
-        workspaceNames={workspaces.map((workspace) => workspace.name)}
-        runningCount={
-          section.items.filter((item) => runnerStates[item.jid] === 'running')
-            .length
-        }
-        isDirectActive={
-          !!directGroup?.is_my_home && directGroup.jid === currentGroup
-        }
-        containsActiveWorkspace={section.items.some(
-          (item) => item.jid === currentGroup,
-        )}
-        onSelect={() => {
-          if (!directGroup) return;
-          selectGroup(directGroup.jid);
-          navigate(`/chat/${directGroup.folder}?sessions=1`);
-        }}
-        onRebuild={
-          directGroup?.is_my_home && directGroup.can_modify
-            ? () => openClear(directGroup.jid, section.name)
-            : undefined
-        }
-      >
-        {workspaces.map((workspace) => (
-          <ChatGroupItem
-            key={workspace.jid}
-            jid={workspace.jid}
-            name={workspace.name}
-            folder={workspace.folder}
-            lastMessage={workspace.lastMessage}
-            isActive={currentGroup === workspace.jid}
-            isHome={false}
-            isPinned={!!workspace.pinned_at}
-            isRunning={runnerStates[workspace.jid] === 'running'}
-            canModify={workspace.can_modify}
-            onSelect={(jid, folder) => {
-              selectGroup(jid);
-              navigate(`/chat/${folder}?sessions=1`);
-            }}
-            onRename={(jid, name) => setRenameState({ open: true, jid, name })}
-            onClearHistory={openClear}
-            onDelete={openDelete}
-            onTogglePin={(jid) => void togglePin(jid)}
-          />
-        ))}
-      </AgentWorkspaceGroup>
-    );
-  };
-
-  const renderMobilePrimaryAgentWorkspaces = (
-    section: (typeof agentSections)[number],
-  ) => {
-    const workspaces = getPrimaryAgentWorkspaceRows(section);
-    const selectWorkspace = (jid: string, folder: string) => {
-      selectGroup(jid);
-      navigate(`/chat/${folder}?sessions=1`);
-    };
-
-    return (
-      <div data-hc-primary-agent-workspaces={section.id}>
-        {workspaces.map((workspace) => (
-          <ChatGroupItem
-            key={workspace.jid}
-            jid={workspace.jid}
-            name={workspace.name}
-            folder={workspace.folder}
-            lastMessage={workspace.lastMessage}
-            isActive={currentGroup === workspace.jid}
-            isHome={!!workspace.is_my_home}
-            isPinned={!!workspace.pinned_at}
-            isRunning={runnerStates[workspace.jid] === 'running'}
-            canModify={workspace.can_modify}
-            onSelect={selectWorkspace}
-            onRename={(jid, name) => setRenameState({ open: true, jid, name })}
-            onClearHistory={openClear}
-            onDelete={openDelete}
-            onTogglePin={(jid) => void togglePin(jid)}
-          />
-        ))}
-      </div>
-    );
+  const selectMobileWorkspace = (group: GroupEntry) => {
+    selectGroup(group.jid);
+    navigate(`/chat/${group.folder}?sessions=1`);
   };
 
   return (
-    <div className="h-full flex bg-muted/30">
+    <div className="h-full flex bg-background">
       {/* Mobile workspace list when no group selected */}
       {!groupFolder && (
         <div className="block lg:hidden w-full overflow-y-auto">
-          {/* Mobile header: horizontal logo + actions */}
-          <div className="flex items-center gap-3 px-4 pt-5 pb-3">
-            <img
-              src={`${import.meta.env.BASE_URL}icons/logo-text.svg`}
-              alt={appearance?.appName || 'HappyClaw'}
-              className="h-8"
-            />
-            <div className="flex-1" />
-            <button
-              type="button"
+          {/* Mobile header: brand + new workspace + account menu */}
+          <div className="flex h-14 items-center gap-2 px-4">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              <img
+                src={
+                  appearance?.brandIconUrl
+                    ? withBasePath(appearance.brandIconUrl)
+                    : `${import.meta.env.BASE_URL}icons/icon-192.png`
+                }
+                alt=""
+                className="size-6 shrink-0 rounded-md object-cover"
+              />
+              {appearance?.brandBannerUrl ? (
+                <img
+                  src={withBasePath(appearance.brandBannerUrl)}
+                  alt={appName}
+                  className="h-5 max-w-[10rem] min-w-0 object-contain object-left"
+                />
+              ) : (
+                <span className="min-w-0 truncate text-title text-foreground">
+                  {appName}
+                </span>
+              )}
+            </div>
+            <IconButton
+              label="新建工作区"
+              icon={<Plus />}
+              size="icon"
               onClick={() => setCreateOpen(true)}
-              className="grid h-10 w-10 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer"
-              title="新建工作区"
-              aria-label="新建工作区"
-            >
-              <Plus className="h-5 w-5" />
-            </button>
-            <Popover>
-              <PopoverTrigger asChild>
+              className="text-muted-foreground pointer-coarse:size-10"
+            />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
                 <button
-                  className="rounded-full hover:ring-2 hover:ring-brand-200 transition-all cursor-pointer"
+                  type="button"
                   aria-label="用户菜单"
+                  className="grid size-10 cursor-pointer place-items-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
                 >
                   <EmojiAvatar
                     imageUrl={user?.avatar_url}
@@ -282,75 +199,60 @@ export function ChatPage() {
                     color={user?.avatar_color}
                     fallbackChar={userInitial}
                     size="md"
-                    className="w-8 h-8"
+                    className="size-8"
                   />
                 </button>
-              </PopoverTrigger>
-              <PopoverContent side="bottom" align="end" className="w-44 p-1">
-                <div className="px-3 py-2 text-xs font-medium text-muted-foreground truncate border-b border-border mb-1">
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuLabel className="truncate">
                   {user?.display_name || user?.username}
-                </div>
-                <button
-                  onClick={() => navigate('/settings?tab=profile')}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm rounded-md hover:bg-accent text-foreground cursor-pointer"
-                >
-                  <UserCog className="w-4 h-4" /> 个人设置
-                </button>
-                <button
-                  onClick={() => navigate('/usage')}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm rounded-md hover:bg-accent text-foreground cursor-pointer"
-                >
-                  <BarChart3 className="w-4 h-4" /> 用量统计
-                </button>
-                <button
-                  onClick={async () => {
-                    await useAuthStore.getState().logout();
-                    navigate('/login');
-                  }}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm rounded-md hover:bg-destructive/10 text-destructive cursor-pointer"
-                >
-                  <LogOut className="w-4 h-4" /> 退出登录
-                </button>
-              </PopoverContent>
-            </Popover>
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <AccountMenuItems
+                  inlineAppearance
+                  showUsage
+                  onReportBug={() => setShowBugReport(true)}
+                />
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
           {hasAnyGroup ? (
             <div className="px-2 pb-nav-safe">
-              {agentPartitions.primary && (
-                <section aria-labelledby="mobile-primary-agent-heading">
-                  <h2
-                    id="mobile-primary-agent-heading"
-                    className="px-3 pb-1 pt-1 text-[10px] font-medium tracking-[0.08em] text-muted-foreground"
-                  >
-                    主智能体 · {agentPartitions.primary.name}
-                  </h2>
-                  {renderMobilePrimaryAgentWorkspaces(agentPartitions.primary)}
-                </section>
-              )}
-              {agentPartitions.custom.length > 0 && (
-                <section
-                  aria-labelledby="mobile-custom-agent-heading"
-                  className="mt-4 border-t border-border/60 pt-3"
-                >
-                  <h2
-                    id="mobile-custom-agent-heading"
-                    className="px-3 pb-1 text-[10px] font-medium tracking-[0.08em] text-muted-foreground"
-                  >
-                    自定义智能体
-                  </h2>
-                  {agentPartitions.custom.map(renderMobileAgentSection)}
-                </section>
-              )}
+              <WorkspaceTree
+                variant="mobile"
+                primary={agentPartitions.primary}
+                custom={agentPartitions.custom}
+                currentGroupJid={currentGroup}
+                onSelect={selectMobileWorkspace}
+                onRename={(jid, name) =>
+                  setRenameState({ open: true, jid, name })
+                }
+                onClearHistory={openClear}
+                onDelete={openDelete}
+                onTogglePin={(jid) => void togglePin(jid)}
+                onCreateWorkspace={(agentId) => {
+                  setCreateAgentId(agentId);
+                  setCreateOpen(true);
+                }}
+                onOpenAgent={(agentId) =>
+                  navigate(
+                    `/agent-profiles?agent=${encodeURIComponent(agentId)}`,
+                  )
+                }
+              />
             </div>
           ) : (
-            <div className="flex flex-col items-center justify-center h-64 px-4">
-              <img
-                src={`${import.meta.env.BASE_URL}icons/logo-text.svg`}
-                alt={appearance?.appName || 'HappyClaw'}
-                className="h-12 mb-6"
-              />
-              <p className="text-muted-foreground text-sm">暂无智能体工作区</p>
-            </div>
+            <EmptyState
+              icon={FolderPlus}
+              title="暂无智能体工作区"
+              description="新建一个工作区，开始和智能体协作。"
+              action={
+                <Button onClick={() => setCreateOpen(true)}>
+                  <Plus />
+                  新建工作区
+                </Button>
+              }
+            />
           )}
         </div>
       )}
@@ -359,29 +261,53 @@ export function ChatPage() {
       {activeGroupJid ? (
         <div
           ref={chatViewRef}
-          className={`${groupFolder ? 'flex-1 min-w-0 h-full overflow-hidden lg:pt-4' : 'hidden lg:block flex-1 min-w-0 h-full overflow-hidden lg:pt-4'}`}
+          className={`${groupFolder ? 'flex-1 min-w-0 h-full overflow-hidden' : 'hidden lg:block flex-1 min-w-0 h-full overflow-hidden'}`}
         >
+          {/* Stays mounted behind the phone list so the composer draft,
+              pending attachments and scroll position survive going back;
+              with the WebSocket up it only polls every 30s. */}
           <ChatView groupJid={activeGroupJid} onBack={handleBackToList} />
         </div>
       ) : (
-        <div className="hidden lg:flex flex-1 items-center justify-center bg-background rounded-t-3xl rounded-b-none mt-5 mr-5 mb-0 ml-3 relative">
-          <div className="text-center max-w-sm">
-            {/* Logo */}
-            <div className="w-16 h-16 rounded-2xl overflow-hidden mx-auto mb-6">
+        <Empty className="hidden flex-1 lg:flex">
+          <EmptyHeader>
+            <EmptyMedia>
               <img
                 src={`${import.meta.env.BASE_URL}icons/icon-192.png`}
-                alt="HappyClaw"
-                className="w-full h-full object-cover"
+                alt=""
+                className="size-12 rounded-xl"
               />
-            </div>
-            <h2 className="text-xl font-semibold text-foreground mb-2">
+            </EmptyMedia>
+            <EmptyTitle className="text-title">
               欢迎使用 {appearance?.appName || 'HappyClaw'}
-            </h2>
-            <p className="text-muted-foreground text-sm">
-              从左侧选择一个工作区开始对话
-            </p>
-          </div>
-        </div>
+            </EmptyTitle>
+            <EmptyDescription>
+              从左侧选择一个工作区，或者直接开始新的对话。
+            </EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent className="flex-row justify-center">
+            <Button
+              onClick={() => void startNewConversation()}
+              disabled={creatingSession}
+            >
+              <SquarePen />
+              新对话
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => setDesktopCreateOpen(true)}
+            >
+              <Plus />
+              新建工作区
+            </Button>
+          </EmptyContent>
+        </Empty>
+      )}
+      {bugReportMounted && (
+        <BugReportDialog
+          open={showBugReport}
+          onClose={() => setShowBugReport(false)}
+        />
       )}
       <ConfirmDialog
         open={clearState.open}
@@ -406,14 +332,20 @@ export function ChatPage() {
         onConfirm={handleDeleteConfirm}
         loading={deleteLoading}
       />
-      <CreateContainerDialog
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        onCreated={(jid, folder) => {
-          selectGroup(jid);
-          navigate(`/chat/${folder}?sessions=1`);
-        }}
-      />
+      {createMounted && (
+        <CreateContainerDialog
+          open={createOpen}
+          defaultAgentProfileId={createAgentId}
+          onClose={() => {
+            setCreateOpen(false);
+            setCreateAgentId(null);
+          }}
+          onCreated={(jid, folder) => {
+            selectGroup(jid);
+            navigate(`/chat/${folder}?sessions=1`);
+          }}
+        />
+      )}
     </div>
   );
 }

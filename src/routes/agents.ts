@@ -23,6 +23,7 @@ import {
   deleteMessagesForChatJid,
   deleteSession,
   getGroupsByTargetAgent,
+  getGroupsByTargetAgents,
   setRegisteredGroup,
   getJidsByFolder,
   updateAgentLastImJid,
@@ -32,6 +33,8 @@ import {
   getLatestMessagePreviewPerChat,
   listImContextBindingsByAgent,
   listChannelMountsBySession,
+  listChannelMountsBySessions,
+  getRegisteredGroupNames,
   getChannelAccount,
   VALID_ACTIVATION_MODES,
 } from '../db.js';
@@ -306,6 +309,9 @@ router.get('/:jid/agents', authMiddleware, async (c) => {
     .filter((a) => a.kind === 'conversation')
     .map((a) => `${jid}#agent:${a.id}`);
   const latestByChatJid = getLatestMessagePreviewPerChat(virtualChatJids);
+  const linkedByAgent = getGroupsByTargetAgents(
+    agents.filter((a) => a.kind === 'conversation').map((a) => a.id),
+  );
   return c.json({
     agents: agents.map((a) => {
       const base = {
@@ -324,7 +330,7 @@ router.get('/:jid/agents', authMiddleware, async (c) => {
         last_active_at: a.last_active_at ?? null,
       };
       if (a.kind === 'conversation') {
-        const linked = getGroupsByTargetAgent(a.id);
+        const linked = linkedByAgent.get(a.id) ?? [];
         const latest = latestByChatJid.get(`${jid}#agent:${a.id}`);
         return {
           ...base,
@@ -361,6 +367,12 @@ router.get('/:jid/sessions', authMiddleware, async (c) => {
   const agents = listAgentsByJid(jid).filter((a) => a.kind === 'conversation');
   const virtualChatJids = agents.map((a) => `${jid}#agent:${a.id}`);
   const latestByChatJid = getLatestMessagePreviewPerChat(virtualChatJids);
+  const mountsBySession = listChannelMountsBySessions(agents.map((a) => a.id));
+  const mountNames = getRegisteredGroupNames([
+    ...new Set(
+      [...mountsBySession.values()].flat().map((mount) => mount.channel_jid),
+    ),
+  ]);
 
   return c.json({
     sessions: [
@@ -404,18 +416,29 @@ router.get('/:jid/sessions', authMiddleware, async (c) => {
                 timestamp: latest.timestamp,
               }
             : null,
-          linked_im_groups: listChannelMountsBySession(a.id).map((mount) => {
-            const imGroup = getRegisteredGroup(mount.channel_jid);
-            return {
-              jid: mount.channel_jid,
-              name: imGroup?.name ?? mount.channel_jid,
-            };
-          }),
+          linked_im_groups: (mountsBySession.get(a.id) ?? []).map((mount) => ({
+            jid: mount.channel_jid,
+            name: mountNames.get(mount.channel_jid) ?? mount.channel_jid,
+          })),
         };
       }),
     ],
   });
 });
+
+/**
+ * Sessions live in a Workspace, addressed by its `web:*` JID. A session
+ * created under an IM chat JID would mint a `feishu:oc_…#agent:…` logical
+ * JID that no connector can deliver to (the channel only knows the
+ * transport route), so creation is refused instead of producing a session
+ * whose every reply fails route validation.
+ */
+const NON_WORKSPACE_SESSION_PARENT_ERROR =
+  'Sessions can only be created in a workspace (web:* JID); bind the IM chat to a session instead';
+
+function isWorkspaceSessionParent(jid: string): boolean {
+  return jid.startsWith('web:') && !jid.includes('#');
+}
 
 // POST /api/groups/:jid/agents — create a user conversation
 router.post('/:jid/agents', authMiddleware, async (c) => {
@@ -438,6 +461,9 @@ router.post('/:jid/agents', authMiddleware, async (c) => {
       { error: 'Only the workspace owner can manage conversations' },
       403,
     );
+  }
+  if (!isWorkspaceSessionParent(jid)) {
+    return c.json({ error: NON_WORKSPACE_SESSION_PARENT_ERROR }, 400);
   }
   const body = await c.req.json().catch(() => ({}));
   let name = typeof body.name === 'string' ? body.name.trim() : '';
@@ -524,6 +550,9 @@ router.post('/:jid/sessions', authMiddleware, async (c) => {
       { error: 'Only the workspace owner can manage sessions' },
       403,
     );
+  }
+  if (!isWorkspaceSessionParent(jid)) {
+    return c.json({ error: NON_WORKSPACE_SESSION_PARENT_ERROR }, 400);
   }
   const body = await c.req.json().catch(() => ({}));
   let name = typeof body.name === 'string' ? body.name.trim() : '';

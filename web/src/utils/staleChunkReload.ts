@@ -46,8 +46,27 @@ export function reloadForStaleChunk(
   return true;
 }
 
-export function installStaleChunkRecovery(): void {
+const handledChunkErrors = new WeakSet<object>();
+
+/**
+ * 调用方能就地恢复的懒加载失败（空闲预取、带重试的对话框和面板）在这里登记，
+ * 全局监听就不会为它们自动刷新页面。
+ */
+export function markChunkErrorHandled(error: unknown): void {
+  if (error && typeof error === 'object') handledChunkErrors.add(error);
+}
+
+export function installStaleChunkRecovery(
+  reload: () => void = () => window.location.reload(),
+): void {
   window.addEventListener('vite:preloadError', (event) => {
-    if (reloadForStaleChunk()) event.preventDefault();
+    const error = (event as Event & { payload?: unknown }).payload;
+    // 错误照常抛给发起 import 的调用方，调用方在 Promise 结算（微任务）内登记；
+    // 下一个宏任务再判断是否需要刷新。
+    window.setTimeout(() => {
+      if (error && typeof error === 'object' && handledChunkErrors.has(error))
+        return;
+      reloadForStaleChunk(Date.now(), reload);
+    }, 0);
   });
 }

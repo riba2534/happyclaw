@@ -1,3 +1,4 @@
+import { describeChannelDeliveryFailure } from './channel-delivery-failure.js';
 import {
   ChannelOutboxItem,
   ChannelOutboxKind,
@@ -98,6 +99,22 @@ export interface DeliverChannelOutboxInput extends ChannelRouteSnapshot {
   availableAt?: string;
   delivery: ChannelPhysicalDelivery;
   signal?: AbortSignal;
+  /**
+   * `retain` (default) keeps a provider-requested `retryAt` as a `retry_wait`
+   * row for a worker that reclaims it. Turn-scoped host outputs have no such
+   * worker, so they pass `fail`: an explicit rejection then ends `failed`
+   * instead of an orphaned `retry_wait` row that blocks the Turn forever.
+   */
+  retryWaitPolicy?: 'retain' | 'fail';
+  /**
+   * Replay an ambiguous (`uncertain`) send exactly once with the same row,
+   * i.e. the same delivery id and chunk index. Only safe for providers whose
+   * connector derives a request idempotency key from that identity (Feishu
+   * `uuid`, deduplicated by the platform for one hour).
+   */
+  replayUncertainOnce?: boolean | { delayMs?: number };
+  /** Test seam for the replay delay. */
+  sleep?: (ms: number) => Promise<void>;
   /** Inject a monotonic/test clock; production callers normally omit it. */
   now?: () => Date | string;
   /** Fault-injection hook. Production callers should not set this. */
@@ -121,6 +138,13 @@ export interface ChannelOutboxDeliveryResult {
   status: ChannelOutboxDeliveryOutcome;
   receipt?: ChannelDeliveryReceipt;
   error?: string;
+  /**
+   * The provider failure thrown during this call, when there was one. The
+   * row only persists its message; callers read provider codes from here.
+   */
+  cause?: unknown;
+  /** True when an ambiguous send was replayed once with the same identity. */
+  replayed?: boolean;
   /** True when an earlier physical delivery receipt was reused. */
   reused: boolean;
   attempt: number;
@@ -132,6 +156,16 @@ function nowValue(input: DeliverChannelOutboxInput): Date | string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+const DEFAULT_UNCERTAIN_REPLAY_DELAY_MS = 1_000;
+
+function uncertainReplayDelayMs(
+  option: DeliverChannelOutboxInput['replayUncertainOnce'],
+): number | null {
+  if (!option) return null;
+  if (option === true) return DEFAULT_UNCERTAIN_REPLAY_DELAY_MS;
+  return Math.max(0, option.delayMs ?? DEFAULT_UNCERTAIN_REPLAY_DELAY_MS);
 }
 
 function requireNonEmptyReceipt(
@@ -343,24 +377,78 @@ export async function deliverChannelOutboxItem(
     }
     await notifyPersisted(input, 'sending', claim.id);
 
-    const sent =
-      input.delivery.mode === 'upload_then_send'
-        ? await input.delivery.sendUploaded({
-            item: getChannelOutboxItem(claim.id) ?? claim,
-            payload: input.payload,
-            providerUploadKey: uploadKey!,
-            signal: input.signal,
-          })
-        : await input.delivery.send({
-            item: getChannelOutboxItem(claim.id) ?? claim,
-            payload: input.payload,
-            signal: input.signal,
-          });
-    const providerMessageId = requireNonEmptyReceipt(
-      sent.providerMessageId,
-      'providerMessageId',
-      false,
-    );
+    // The row stays `sending` across one optional replay; the physical
+    // identity (row id = delivery id, chunk index) is unchanged, so an
+    // idempotent provider collapses both requests into one visible message.
+    const sendOnce = async (): Promise<string> => {
+      const sent =
+        input.delivery.mode === 'upload_then_send'
+          ? await input.delivery.sendUploaded({
+              item: getChannelOutboxItem(claim.id) ?? claim,
+              payload: input.payload,
+              providerUploadKey: uploadKey!,
+              signal: input.signal,
+            })
+          : await input.delivery.send({
+              item: getChannelOutboxItem(claim.id) ?? claim,
+              payload: input.payload,
+              signal: input.signal,
+            });
+      return requireNonEmptyReceipt(
+        sent.providerMessageId,
+        'providerMessageId',
+        false,
+      );
+    };
+
+    let providerMessageId: string;
+    let replayed = false;
+    try {
+      providerMessageId = await sendOnce();
+    } catch (firstError) {
+      if (firstError instanceof ChannelDeliveryProcessCrash) throw firstError;
+      const replayDelayMs = uncertainReplayDelayMs(input.replayUncertainOnce);
+      const current = getChannelOutboxItem(claim.id);
+      if (
+        replayDelayMs === null ||
+        current?.status !== 'sending' ||
+        firstError instanceof DefinitiveChannelDeliveryError ||
+        input.signal?.aborted
+      ) {
+        throw firstError;
+      }
+      replayed = true;
+      const sleep =
+        input.sleep ??
+        ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+      if (replayDelayMs > 0) await sleep(replayDelayMs);
+      try {
+        providerMessageId = await sendOnce();
+      } catch (replayError) {
+        if (replayError instanceof ChannelDeliveryProcessCrash) {
+          throw replayError;
+        }
+        // Only success removes the doubt. A refusal of the replay is
+        // authoritative solely when it is about the content or the target
+        // itself (both would have refused the first request too). Anything
+        // else — a rate limit, Feishu 230049 "message is being sent" while
+        // the first request is still in flight, an unknown code — says
+        // nothing about the first request, so the row stays uncertain.
+        if (replayError instanceof DefinitiveChannelDeliveryError) {
+          const kind = describeChannelDeliveryFailure(replayError).kind;
+          if (kind === 'content_rejected' || kind === 'target_unavailable') {
+            throw replayError;
+          }
+        }
+        throw Object.assign(
+          new Error(
+            `${errorMessage(replayError)} (still uncertain after one idempotent replay)`,
+            { cause: replayError },
+          ),
+          { replayed: true },
+        );
+      }
+    }
     if (
       !completeChannelOutbox(claim, {
         providerMessageId,
@@ -380,6 +468,7 @@ export async function deliverChannelOutboxItem(
       },
       reused: false,
       attempt: delivered.attempt,
+      ...(replayed ? { replayed: true } : {}),
     };
   } catch (error) {
     if (error instanceof ChannelDeliveryProcessCrash) throw error;
@@ -391,7 +480,10 @@ export async function deliverChannelOutboxItem(
     // to retry/fail without creating duplicate visible output.
     const explicitlyRejected = error instanceof DefinitiveChannelDeliveryError;
     const uncertain = current.status === 'sending' && !explicitlyRejected;
-    const retryAt = explicitlyRejected ? error.retryAt : undefined;
+    const retryAt =
+      explicitlyRejected && input.retryWaitPolicy !== 'fail'
+        ? error.retryAt
+        : undefined;
     const persisted = failChannelOutbox(claim, {
       error: errorMessage(error),
       retryAt,
@@ -400,7 +492,14 @@ export async function deliverChannelOutboxItem(
     });
     if (!persisted) return leaseLost(claim.id, claim.attempt);
     const failed = getChannelOutboxItem(claim.id)!;
-    return resultFromItem(failed, false);
+    const replayedFailure = Boolean(
+      (error as { replayed?: unknown } | null)?.replayed,
+    );
+    return {
+      ...resultFromItem(failed, false),
+      cause: error,
+      ...(replayedFailure ? { replayed: true } : {}),
+    };
   }
 }
 

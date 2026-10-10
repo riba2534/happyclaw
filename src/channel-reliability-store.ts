@@ -1160,6 +1160,243 @@ export function getChannelTurnRun(id: string): ChannelTurnRun | undefined {
   return row ? mapTurn(row) : undefined;
 }
 
+/**
+ * Link a Turn to the Inbox row of its external input so retention keeps the
+ * dedupe receipt while the Turn exists. One Inbox row can back at most one
+ * Turn (unique index); later Turns of the same input (system notices, other
+ * sessions) share that protection and are left unlinked.
+ */
+export function linkChannelTurnRunInbox(input: {
+  runId: string;
+  provider: string;
+  accountId: string;
+  externalMessageId: string;
+}): boolean {
+  const connection = requireDatabase();
+  const changed = connection
+    .prepare(
+      `UPDATE turn_runs
+       SET inbox_id = (
+         SELECT i.id FROM channel_inbox i
+         WHERE i.provider = ? AND i.account_id = ?
+           AND i.external_message_id = ?
+       )
+       WHERE id = ? AND inbox_id IS NULL
+         AND EXISTS (
+           SELECT 1 FROM channel_inbox i
+           WHERE i.provider = ? AND i.account_id = ?
+             AND i.external_message_id = ?
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM turn_runs t
+           JOIN channel_inbox i ON i.id = t.inbox_id
+           WHERE i.provider = ? AND i.account_id = ?
+             AND i.external_message_id = ?
+         )`,
+    )
+    .run(
+      input.provider,
+      input.accountId,
+      input.externalMessageId,
+      input.runId,
+      input.provider,
+      input.accountId,
+      input.externalMessageId,
+      input.provider,
+      input.accountId,
+      input.externalMessageId,
+    );
+  return changed.changes === 1;
+}
+
+/**
+ * Close `retry_wait` Turns nobody will reclaim. A Turn is only reclaimed when
+ * the same input runs again; once its input was consumed (cursor passed it),
+ * cancelled (`/break`, stop) or the retry window has long passed, leaving it
+ * in `retry_wait` keeps a dead lease-less row forever.
+ */
+export function cancelStaleRetryWaitChannelTurns(input: {
+  updatedBefore: string;
+  reason: string;
+  now?: Date | string;
+}): number {
+  const now = isoNow(input.now);
+  return requireDatabase()
+    .prepare(
+      `UPDATE turn_runs
+       SET status = 'cancelled', completed_at = ?, updated_at = ?, error = ?,
+           lease_owner = NULL, lease_expires_at = NULL,
+           revision = revision + 1
+       WHERE status = 'retry_wait' AND updated_at < ?`,
+    )
+    .run(now, now, input.reason, input.updatedBefore).changes;
+}
+
+/**
+ * Cancel `retry_wait` Turns whose input was explicitly withdrawn. A Turn's
+ * identity is (provider, account, external input, session): the same native
+ * message id reaches every Bot in a chat, so the match is always scoped to
+ * the withdrawing Session's own channel account and session.
+ */
+export function cancelRetryWaitChannelTurnsForInputs(input: {
+  provider: string;
+  accountId: string;
+  /** Session agent id; `null` is the Workspace main Session. */
+  agentId: string | null;
+  correlationIds: readonly string[];
+  reason: string;
+  now?: Date | string;
+}): number {
+  const ids = [...new Set(input.correlationIds.filter(Boolean))];
+  if (ids.length === 0 || !input.provider || !input.accountId) return 0;
+  const now = isoNow(input.now);
+  const connection = requireDatabase();
+  const statement = connection.prepare(
+    `UPDATE turn_runs
+     SET status = 'cancelled', completed_at = ?, updated_at = ?, error = ?,
+         lease_owner = NULL, lease_expires_at = NULL,
+         revision = revision + 1
+     WHERE status = 'retry_wait' AND provider = ? AND account_id = ?
+       AND agent_id IS ? AND correlation_id = ?`,
+  );
+  return connection.transaction(() => {
+    let changed = 0;
+    for (const id of ids) {
+      changed += statement.run(
+        now,
+        now,
+        input.reason,
+        input.provider,
+        input.accountId,
+        input.agentId ?? null,
+        id,
+      ).changes;
+    }
+    return changed;
+  })();
+}
+
+/** Every Turn that is not terminal yet, oldest first (startup repair). */
+export function listNonterminalChannelTurnRuns(
+  limit = 5_000,
+): ChannelTurnRun[] {
+  const bounded = Math.min(Math.max(Math.trunc(limit) || 0, 1), 50_000);
+  const rows = requireDatabase()
+    .prepare(
+      `SELECT * FROM turn_runs
+       WHERE status IN ('queued','running','finalizing','waiting_user','retry_wait')
+       ORDER BY created_at, id LIMIT ?`,
+    )
+    .all(bounded) as TurnRow[];
+  return rows.map(mapTurn);
+}
+
+/**
+ * Close a Turn whose input was withdrawn (recalled, or consumed by an
+ * explicit stop) without holding its lease. The lease token is bumped so a
+ * live owner, if any, loses its fence instead of publishing for it.
+ */
+export function cancelChannelTurnRunById(
+  id: string,
+  reason: string,
+  nowInput?: Date | string,
+): boolean {
+  const now = isoNow(nowInput);
+  const changed = requireDatabase()
+    .prepare(
+      `UPDATE turn_runs
+       SET status = 'cancelled', completed_at = ?, updated_at = ?, error = ?,
+           lease_owner = NULL, lease_expires_at = NULL,
+           lease_token = lease_token + 1, revision = revision + 1
+       WHERE id = ?
+         AND status IN ('queued','running','finalizing','waiting_user','retry_wait')`,
+    )
+    .run(now, now, reason, id);
+  return changed.changes === 1;
+}
+
+/** The Turn's primary (first reserved) streaming card, if any. */
+export function getPrimaryStreamingCardForTurn(
+  turnRunId: string,
+): StreamingCardRecord | undefined {
+  const row = requireDatabase()
+    .prepare(
+      `SELECT * FROM streaming_cards WHERE turn_run_id = ?
+       ORDER BY created_at, id LIMIT 1`,
+    )
+    .get(turnRunId) as CardRow | undefined;
+  return row ? mapCard(row) : undefined;
+}
+
+/** The durable Inbox receipt of one provider message. */
+export function getChannelInboxByExternalMessage(input: {
+  provider: string;
+  accountId: string;
+  externalMessageId: string;
+}): ChannelInboxItem | undefined {
+  const row = requireDatabase()
+    .prepare(
+      `SELECT * FROM channel_inbox
+       WHERE provider = ? AND account_id = ? AND external_message_id = ?`,
+    )
+    .get(input.provider, input.accountId, input.externalMessageId) as
+    | InboxRow
+    | undefined;
+  return row ? mapInbox(row) : undefined;
+}
+
+/** Structured reason recorded on a card whose run was explicitly stopped. */
+export const EXPLICIT_STOP_REASON = 'explicit_stop';
+
+/**
+ * Record on the card that its run was explicitly stopped (`/break`, stop
+ * button). Startup repair trusts only this marker — never the visible text —
+ * to decide that a leftover input was consumed by the stop.
+ */
+export function markStreamingCardExplicitStop(
+  cardId: string,
+  nowInput?: Date | string,
+): boolean {
+  const now = isoNow(nowInput);
+  const changed = requireDatabase()
+    .prepare(
+      `UPDATE streaming_cards
+       SET snapshot = json_set(
+             CASE WHEN snapshot IS NOT NULL AND json_valid(snapshot)
+                  THEN snapshot ELSE '{}' END,
+             '$.stopReason', ?
+           ),
+           revision = revision + 1, updated_at = ?
+       WHERE id = ?`,
+    )
+    .run(EXPLICIT_STOP_REASON, now, cardId);
+  return changed.changes === 1;
+}
+
+/**
+ * Note on a card record that its refused body was delivered as static
+ * messages, so crash recovery writes only a notice instead of the body.
+ */
+export function markStreamingCardStaticFallbackDelivered(
+  cardId: string,
+  nowInput?: Date | string,
+): boolean {
+  const now = isoNow(nowInput);
+  const changed = requireDatabase()
+    .prepare(
+      `UPDATE streaming_cards
+       SET snapshot = json_set(
+             CASE WHEN snapshot IS NOT NULL AND json_valid(snapshot)
+                  THEN snapshot ELSE '{}' END,
+             '$.staticFallbackDelivered', json('true')
+           ),
+           revision = revision + 1, updated_at = ?
+       WHERE id = ?`,
+    )
+    .run(now, cardId);
+  return changed.changes === 1;
+}
+
 export const MANUAL_RECONCILIATION_ERROR_PREFIX = '[manual_reconciliation] ';
 
 export function manualReconciliationError(reason: string): string {
@@ -1770,6 +2007,31 @@ export function getDeliveredChannelOutboxForTurn(
 }
 
 /**
+ * Whether this Turn already physically delivered an image with the same
+ * content. A final reply that references an image the Agent already sent
+ * through `send_image` must not deliver a second copy under another slot.
+ */
+export function hasDeliveredChannelImageWithContentHash(
+  turnRunId: string,
+  contentHash: string,
+): boolean {
+  if (!contentHash) return false;
+  const rows = requireDatabase()
+    .prepare(
+      `SELECT payload FROM channel_outbox
+       WHERE turn_run_id = ? AND kind = 'image' AND status = 'delivered'
+         AND payload IS NOT NULL`,
+    )
+    .all(turnRunId) as Array<{ payload: string | null }>;
+  return rows.some((row) => {
+    const payload = parsePayload(row.payload) as {
+      contentHash?: unknown;
+    } | null;
+    return payload?.contentHash === contentHash;
+  });
+}
+
+/**
  * Every uncertain side effect awaiting reconciliation, oldest first.
  *
  * An uncertain row fences its whole turn until someone decides whether the
@@ -2280,6 +2542,46 @@ export function rollbackUnpublishedStreamingCardReservation(
   return changed.changes === 1;
 }
 
+/**
+ * Remove a card reservation that never reached the provider when its Turn
+ * closes. Unlike the pre-provider rollback, delivered static output is
+ * allowed (the Turn answered through the Outbox): the card row is only
+ * retired when no lifecycle event ever touched it after the reservation,
+ * i.e. the controller never started provider creation.
+ */
+export function retireUnpublishedStreamingCardReservation(
+  claim: Pick<ClaimedChannelTurnRun, 'id' | 'leaseOwner' | 'leaseToken'>,
+  card: Pick<StreamingCardRecord, 'id' | 'turnRunId' | 'revision'>,
+  nowInput?: Date | string,
+): boolean {
+  if (card.turnRunId !== claim.id) return false;
+  const now = isoNow(nowInput);
+  const changed = requireDatabase()
+    .prepare(
+      `DELETE FROM streaming_cards
+       WHERE id = ? AND turn_run_id = ? AND revision = ?
+         AND status = 'creating'
+         AND message_id IS NULL AND card_id IS NULL
+         AND EXISTS (
+           SELECT 1 FROM turn_runs
+           WHERE turn_runs.id = streaming_cards.turn_run_id
+             AND turn_runs.status IN ('running','finalizing')
+             AND turn_runs.lease_owner = ?
+             AND turn_runs.lease_token = ?
+             AND turn_runs.lease_expires_at > ?
+         )`,
+    )
+    .run(
+      card.id,
+      card.turnRunId,
+      card.revision,
+      claim.leaseOwner,
+      claim.leaseToken,
+      now,
+    );
+  return changed.changes === 1;
+}
+
 export function updateStreamingCardRecord(
   id: string,
   expectedRevision: number,
@@ -2481,7 +2783,18 @@ export interface CleanupChannelReliabilityInput {
   recordsBefore?: string;
   /** Explicitly delete cursors for transports decommissioned before this time. */
   cursorsBefore?: string;
+  /**
+   * Inbox rows created at or after `cursor.position - guard` for their chat
+   * are kept regardless of age: transport backfill re-reads that window.
+   */
+  cursorLookbackGuardMs?: number;
 }
+
+/**
+ * Generous margin over every transport's backfill lookback (Feishu uses five
+ * minutes). Keeping a few extra receipts is cheap; losing one replays input.
+ */
+export const CHANNEL_INBOX_CURSOR_LOOKBACK_GUARD_MS = 24 * 60 * 60 * 1000;
 
 export function cleanupChannelReliability(
   input: CleanupChannelReliabilityInput,
@@ -2546,6 +2859,10 @@ export function cleanupChannelReliability(
              )`,
         )
         .run(input.recordsBefore).changes;
+      // A transport replays everything after `cursor.position - lookback`
+      // on startup/reconnect backfill. A quiet chat keeps its cursor for
+      // months, so deleting the dedupe receipts in that window would let a
+      // backfill re-execute month-old messages as new input.
       inboxDeleted = connection
         .prepare(
           `DELETE FROM channel_inbox
@@ -2554,9 +2871,31 @@ export function cleanupChannelReliability(
              AND NOT EXISTS (
                SELECT 1 FROM turn_runs
                WHERE turn_runs.inbox_id = channel_inbox.id
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM channel_cursors c
+               WHERE c.provider = channel_inbox.provider
+                 AND c.account_id = channel_inbox.account_id
+                 AND (
+                   c.chat_id = COALESCE(channel_inbox.chat_id, '')
+                   -- Per-topic backfill cursors: <chat>#thread:<thread>
+                   OR (
+                     channel_inbox.thread_id IS NOT NULL
+                     AND c.chat_id = COALESCE(channel_inbox.chat_id, '')
+                       || '#thread:' || channel_inbox.thread_id
+                   )
+                 )
+                 AND channel_inbox.created_at >= strftime(
+                   '%Y-%m-%dT%H:%M:%fZ',
+                   (c.position - ?) / 1000.0,
+                   'unixepoch'
+                 )
              )`,
         )
-        .run(input.recordsBefore).changes;
+        .run(
+          input.recordsBefore,
+          input.cursorLookbackGuardMs ?? CHANNEL_INBOX_CURSOR_LOOKBACK_GUARD_MS,
+        ).changes;
     }
     if (input.cursorsBefore) {
       cursorsDeleted = connection

@@ -12,12 +12,17 @@ import {
   heartbeatChannelTurnRun,
   interruptChannelTurnRunWithDeliveredEffect,
   interruptChannelTurnRunById,
+  linkChannelTurnRunInbox,
   manualReconciliationError,
+  markStreamingCardExplicitStop,
+  markStreamingCardStaticFallbackDelivered,
+  EXPLICIT_STOP_REASON,
   markChannelTurnFinalizing,
   retryChannelTurnRun,
   requiresManualReconciliation,
   rollbackUnpublishedStreamingCardReservation,
   resumeWaitingChannelTurn,
+  retireUnpublishedStreamingCardReservation,
   updateStreamingCardRecord,
   waitChannelTurnForUser,
   type ChannelRouteSnapshot,
@@ -73,6 +78,10 @@ export class ChannelTurnRuntime {
   private claim: ClaimedChannelTurnRun | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private card: StreamingCardRecord | null = null;
+  /** Revision of the reservation before any provider lifecycle event. */
+  private reservedCardRevision: number | null = null;
+  /** The run was explicitly stopped; every later card snapshot says so. */
+  private explicitStopRequested = false;
   private terminal = false;
   private durabilityError: Error | null = null;
   private fenceLost = false;
@@ -100,6 +109,24 @@ export class ChannelTurnRuntime {
       sessionId: input.sessionId,
       correlationId: input.correlationId ?? input.externalMessageId,
     });
+    // Retention keeps an Inbox row while a Turn references it; without the
+    // link the dedupe receipt of an executed input could be deleted while
+    // transport backfill can still re-read it.
+    if (!run.inboxId) {
+      try {
+        linkChannelTurnRunInbox({
+          runId: run.id,
+          provider: input.provider,
+          accountId: input.accountId,
+          externalMessageId: input.externalMessageId,
+        });
+      } catch (error) {
+        logger.warn(
+          { err: error, runId: run.id },
+          'Could not link channel turn to its inbox receipt',
+        );
+      }
+    }
     if (interruptChannelTurnRunWithDeliveredEffect(run.id)) {
       runtime.initialStatus = 'interrupted';
       runtime.manualReconciliationRequired = true;
@@ -135,6 +162,58 @@ export class ChannelTurnRuntime {
   /** Immutable correlation id of the external input owned by this runtime. */
   get inputTurnId(): string {
     return this.input.externalMessageId;
+  }
+
+  /** Channel identity of this Turn: (provider, account, session). */
+  get channelScope(): {
+    provider: string;
+    accountId: string;
+    agentId: string | null;
+  } {
+    return {
+      provider: this.input.provider,
+      accountId: this.input.accountId,
+      agentId: this.input.agentId ?? null,
+    };
+  }
+
+  /**
+   * The provider card refused its body and the host delivered that body as
+   * static messages: record it on the card so crash recovery never writes
+   * the body onto the card a second time.
+   */
+  markStreamingCardStaticFallbackDelivered(): boolean {
+    const cardId = this.card?.id ?? `stream_${digest(`${this.runId}:primary`)}`;
+    try {
+      return markStreamingCardStaticFallbackDelivered(cardId);
+    } catch (error) {
+      logger.warn(
+        { err: error, runId: this.runId, cardId },
+        'Could not mark streaming card static fallback delivery',
+      );
+      return false;
+    }
+  }
+
+  /**
+   * The user explicitly stopped this run (`/break`, stop button). Persist a
+   * structured marker on the card now, and carry it into every later card
+   * snapshot (lifecycle writes replace the whole snapshot), so startup repair
+   * never has to infer a stop from visible text.
+   */
+  markExplicitStopRequested(): void {
+    if (this.explicitStopRequested) return;
+    this.explicitStopRequested = true;
+    const cardId = this.card?.id;
+    if (!cardId) return;
+    try {
+      markStreamingCardExplicitStop(cardId);
+    } catch (error) {
+      logger.warn(
+        { err: error, runId: this.runId, cardId },
+        'Could not mark the streaming card as explicitly stopped',
+      );
+    }
   }
 
   get hasDurabilityFailure(): boolean {
@@ -182,7 +261,14 @@ export class ChannelTurnRuntime {
       return undefined;
     }
     this.card = created.card;
-    return { onEvent: (event) => this.onCardEvent(event) };
+    this.reservedCardRevision = created.card.revision;
+    return {
+      onEvent: (event) => this.onCardEvent(event),
+      // Card message uuids include the CardKit card_id, so they dedupe
+      // replays within this process; the record id keeps them stable per
+      // page.
+      idempotencyKey: cardId,
+    };
   }
 
   /**
@@ -198,6 +284,7 @@ export class ChannelTurnRuntime {
     );
     if (rolledBack) {
       this.card = null;
+      this.reservedCardRevision = null;
       return true;
     }
     const current = getStreamingCardRecord(this.card.id);
@@ -364,6 +451,7 @@ export class ChannelTurnRuntime {
     if (this.terminal) return true;
     this.resumeFromUser();
     if (!this.claim) return false;
+    this.retireUnpublishedCard();
     const completed = completeChannelTurnRun(this.claim, {
       status,
       result,
@@ -381,6 +469,38 @@ export class ChannelTurnRuntime {
       );
     }
     return completed;
+  }
+
+  /**
+   * A reservation whose controller never started provider creation (no
+   * lifecycle event after reserve) is not a card; leaving it `creating`
+   * would make recovery report a missing provider identity for a card that
+   * never existed.
+   */
+  private retireUnpublishedCard(): void {
+    const card = this.card;
+    if (
+      !this.claim ||
+      !card ||
+      card.status !== 'creating' ||
+      card.messageId ||
+      card.cardId ||
+      this.reservedCardRevision === null ||
+      card.revision !== this.reservedCardRevision
+    ) {
+      return;
+    }
+    try {
+      if (retireUnpublishedStreamingCardReservation(this.claim, card)) {
+        this.card = null;
+        this.reservedCardRevision = null;
+      }
+    } catch (error) {
+      logger.warn(
+        { err: error, runId: this.runId, cardId: card.id },
+        'Could not retire an unpublished streaming card reservation',
+      );
+    }
   }
 
   private onCardEvent(event: StreamingCardLifecycleEvent): void {
@@ -411,13 +531,19 @@ export class ChannelTurnRuntime {
                 ? 'creating'
                 : 'streaming';
 
+      const snapshot =
+        this.explicitStopRequested &&
+        event.snapshot &&
+        typeof event.snapshot === 'object'
+          ? { ...(event.snapshot as object), stopReason: EXPLICIT_STOP_REASON }
+          : event.snapshot;
       let next: StreamingCardRecord | undefined;
       for (let attempt = 0; attempt < 3; attempt++) {
         next = terminal
           ? finalizeStreamingCardRecord(current.id, current.revision, {
               status: persistedStatus as 'completed' | 'aborted' | 'failed',
               version: event.version,
-              snapshot: event.snapshot,
+              snapshot,
               error: event.error ?? null,
             })
           : updateStreamingCardRecord(current.id, current.revision, {
@@ -425,7 +551,7 @@ export class ChannelTurnRuntime {
               messageId: event.messageId,
               cardId: event.cardId,
               version: event.version,
-              snapshot: event.snapshot,
+              snapshot,
               error: event.error ?? null,
             });
         if (next) break;

@@ -141,7 +141,16 @@ const THIRD_PARTY_RUNTIME_DEFAULTS = {
   API_TIMEOUT_MS: '3000000',
 } as const;
 
-function isOneMillionContextModel(model: string): boolean {
+/**
+ * Whether a third-party provider defaults to a 1M auto-compact window.
+ *
+ * Only an explicit `[1m]` model ID does. Claude Code 2.1.285+ gives 1M-native
+ * Claude models (Sonnet 5+, Opus 4.7+, Fable) a 1M window behind a gateway
+ * too, but it cannot see a gateway capped at 200K, which then fails with
+ * "Prompt is too long" instead of compacting; a provider that serves 1M sets
+ * the `[1m]` suffix or its own CLAUDE_CODE_AUTO_COMPACT_WINDOW.
+ */
+export function isOneMillionContextModel(model: string): boolean {
   return /\[1m\]$/i.test(model.trim());
 }
 const DANGEROUS_ENV_VARS = new Set([
@@ -692,13 +701,93 @@ function buildConfig(
   };
 }
 
+/**
+ * What stat can tell about a file's contents. Atomic rewrites (tmp + rename)
+ * change `ino`; in-place rewrites change mtime/ctime and usually size.
+ */
+interface FileSignature {
+  ino: number;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+}
+
+function statFileSignature(filePath: string): FileSignature | null {
+  try {
+    const st = fs.statSync(filePath);
+    return {
+      ino: st.ino,
+      size: st.size,
+      mtimeMs: st.mtimeMs,
+      ctimeMs: st.ctimeMs,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function sameFileSignature(
+  a: FileSignature | null,
+  b: FileSignature | null,
+): boolean {
+  if (a === null || b === null) return a === b;
+  return (
+    a.ino === b.ino &&
+    a.size === b.size &&
+    a.mtimeMs === b.mtimeMs &&
+    a.ctimeMs === b.ctimeMs
+  );
+}
+
+/**
+ * File timestamps are coarse (a kernel tick, or a whole second on some
+ * filesystems), so a same-size in-place rewrite right after the observed one
+ * can keep its signature. As with git's "racily clean" index entries, a
+ * signature only proves the contents unchanged once it was observed at least
+ * this long after the file's mtime; until then readers re-read the file.
+ */
+const RACY_SIGNATURE_WINDOW_MS = 2_000;
+
+function fileSignatureSettled(
+  sig: FileSignature | null,
+  observedAt: number,
+): boolean {
+  return sig === null || observedAt - sig.mtimeMs >= RACY_SIGNATURE_WINDOW_MS;
+}
+
+// The key never rotates in-process, but channel-account-secrets or another
+// process may create it and an operator may restore it, so a cached key is
+// revalidated by one stat instead of mkdir + exists + read on every crypto op.
+let encryptionKeyCache: {
+  sig: FileSignature;
+  observedAt: number;
+  key: Buffer;
+} | null = null;
+
 function getOrCreateEncryptionKey(): Buffer {
+  const observedAt = Date.now();
+  const sig = statFileSignature(CLAUDE_CONFIG_KEY_FILE);
+  const cached = encryptionKeyCache;
+  if (
+    cached &&
+    sig &&
+    sameFileSignature(cached.sig, sig) &&
+    fileSignatureSettled(sig, cached.observedAt)
+  ) {
+    return cached.key;
+  }
+  encryptionKeyCache = null;
+
   fs.mkdirSync(CLAUDE_CONFIG_DIR, { recursive: true });
 
   if (fs.existsSync(CLAUDE_CONFIG_KEY_FILE)) {
     const raw = fs.readFileSync(CLAUDE_CONFIG_KEY_FILE, 'utf-8').trim();
     const key = Buffer.from(raw, 'hex');
-    if (key.length === 32) return key;
+    if (key.length === 32) {
+      // `sig` predates the read, so a concurrent rewrite only forces a re-read.
+      if (sig) encryptionKeyCache = { sig, observedAt, key };
+      return key;
+    }
     throw new Error('Invalid encryption key file');
   }
 
@@ -1268,11 +1357,67 @@ function migrateV3toV4(v3: ClaudeStoredStateV3Resolved): {
   return { providers, balancing };
 }
 
-/** Read V5 config, with automatic V3/V4 migration. */
-function readStoredStateV4(): {
+interface StoredStateV5 {
   providers: UnifiedProvider[];
   balancing: BalancingConfig;
-} | null {
+}
+
+/**
+ * Decrypted V5 state, valid while the config and key files keep the
+ * signatures observed before they were read. The Codex gateway, container
+ * launches, status polling and settings routes read the model configuration
+ * many times per request; each uncached read re-parsed the file and decrypted
+ * every provider.
+ */
+let storedStateCache: {
+  configSig: FileSignature;
+  keySig: FileSignature | null;
+  observedAt: number;
+  state: StoredStateV5;
+} | null = null;
+/** Bumped by every save, so a read that migrated the file caches nothing. */
+let storedStateWriteGeneration = 0;
+
+/**
+ * Read V5 config, with automatic V3/V4 migration. Returns a private copy:
+ * callers modify the result in place before saving it.
+ */
+function readStoredStateV4(): StoredStateV5 | null {
+  const observedAt = Date.now();
+  const configSig = statFileSignature(CLAUDE_CONFIG_FILE);
+  if (!configSig) {
+    storedStateCache = null;
+    return null;
+  }
+  const keySig = statFileSignature(CLAUDE_CONFIG_KEY_FILE);
+  const cached = storedStateCache;
+  if (
+    cached &&
+    sameFileSignature(cached.configSig, configSig) &&
+    sameFileSignature(cached.keySig, keySig) &&
+    fileSignatureSettled(configSig, cached.observedAt) &&
+    fileSignatureSettled(keySig, cached.observedAt)
+  ) {
+    return structuredClone(cached.state);
+  }
+  storedStateCache = null;
+
+  const generation = storedStateWriteGeneration;
+  const state = readStoredStateV4FromDisk();
+  // Migration paths rewrite the file (new signature) and return null on
+  // failure; only a plain V5 read is cached, keyed by the pre-read stats.
+  if (state && storedStateWriteGeneration === generation) {
+    storedStateCache = {
+      configSig,
+      keySig,
+      observedAt,
+      state: structuredClone(state),
+    };
+  }
+  return state;
+}
+
+function readStoredStateV4FromDisk(): StoredStateV5 | null {
   if (!fs.existsSync(CLAUDE_CONFIG_FILE)) return null;
   try {
     const content = fs.readFileSync(CLAUDE_CONFIG_FILE, 'utf-8');
@@ -1349,6 +1494,10 @@ function writeStoredStateV4(
   providers: UnifiedProvider[],
   balancing: BalancingConfig,
 ): void {
+  // Every save goes through here: drop the decrypted cache first, so the next
+  // read decrypts what was actually persisted.
+  storedStateCache = null;
+  storedStateWriteGeneration++;
   const payload: StoredClaudeProviderConfigV5 = {
     version: 5,
     providers: providers.map(toStoredProviderV4),

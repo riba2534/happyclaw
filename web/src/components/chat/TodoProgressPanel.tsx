@@ -1,4 +1,6 @@
-import { Check, Loader2, Circle } from 'lucide-react';
+import { memo } from 'react';
+import { Check, Circle, ListChecks, Loader2 } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 interface TodoItem {
   id: string;
@@ -10,56 +12,59 @@ interface TodoProgressPanelProps {
   todos: TodoItem[];
 }
 
-export function TodoProgressPanel({ todos }: TodoProgressPanelProps) {
-  const completed = todos.filter(t => t.status === 'completed').length;
+/** The agent's plan as a neutral checklist (Codex-style), progress on top. */
+export const TodoProgressPanel = memo(function TodoProgressPanel({
+  todos,
+}: TodoProgressPanelProps) {
+  const completed = todos.filter((t) => t.status === 'completed').length;
   const total = todos.length;
   const progress = total > 0 ? (completed / total) * 100 : 0;
 
   return (
-    <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 mb-2">
-      {/* Progress header */}
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-[13px] font-medium text-primary">
-          {completed}/{total} 已完成
+    <div className="mb-2 rounded-lg bg-surface-raised px-3 py-2.5 font-sans ring-1 ring-surface-border">
+      <div className="mb-2 flex items-center gap-2 text-caption text-muted-foreground">
+        <ListChecks className="size-3.5" />
+        <span className="font-medium text-foreground">计划</span>
+        <span className="tabular-nums">
+          {completed}/{total}
         </span>
-        <span className="text-[13px] text-muted-foreground">
-          {Math.round(progress)}%
-        </span>
+        <div className="ml-auto h-1 w-24 overflow-hidden rounded-full bg-surface-selected">
+          <div
+            className="h-full rounded-full bg-foreground/50 transition-[width] duration-300"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
       </div>
-
-      {/* Progress bar */}
-      <div className="h-1.5 bg-primary/10 rounded-full mb-2.5 overflow-hidden">
-        <div
-          className="h-full bg-primary rounded-full transition-all duration-300"
-          style={{ width: `${progress}%` }}
-        />
-      </div>
-
-      {/* Todo items */}
-      <div className="space-y-1">
-        {todos.map((todo) => (
-          <div key={todo.id} className="flex items-start gap-2 text-[13px]">
-            <span className="flex-shrink-0 mt-0.5">
-              {todo.status === 'completed' ? (
-                <Check className="w-3.5 h-3.5 text-primary" strokeWidth={3} />
-              ) : todo.status === 'in_progress' ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
-              ) : (
-                <Circle className="w-3.5 h-3.5 text-muted-foreground" />
-              )}
-            </span>
-            <span className={`break-words ${
-              todo.status === 'completed'
-                ? 'text-muted-foreground line-through'
-                : todo.status === 'in_progress'
-                  ? 'text-primary font-medium'
-                  : 'text-foreground'
-            }`}>
-              {todo.content}
-            </span>
-          </div>
-        ))}
-      </div>
+      <ul className="space-y-1">
+        {todos.map((todo) => {
+          const done = todo.status === 'completed';
+          const active = todo.status === 'in_progress';
+          return (
+            <li key={todo.id} className="flex items-start gap-2 text-label">
+              <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center">
+                {done ? (
+                  <Check className="size-3.5 text-success" strokeWidth={2.5} />
+                ) : active ? (
+                  <Loader2 className="size-3.5 animate-spin text-foreground" />
+                ) : (
+                  <Circle className="size-3 text-faint-foreground" />
+                )}
+              </span>
+              <span
+                className={cn(
+                  'break-words',
+                  done &&
+                    'text-muted-foreground line-through decoration-faint-foreground',
+                  active && 'font-medium text-foreground',
+                  !done && !active && 'text-muted-foreground',
+                )}
+              >
+                {todo.content}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
-}
+});

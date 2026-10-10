@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { toast } from 'sonner';
 import {
   Dialog,
@@ -10,6 +10,12 @@ import {
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
+import {
+  SettingsField,
+  SettingsGroup,
+  SettingsRow,
+  SettingsSection,
+} from '@/components/settings/SettingsLayout';
 import { useBillingStore, type BillingPlan } from '../../stores/billing';
 
 interface PlanFormDialogProps {
@@ -116,35 +122,33 @@ function planToForm(plan: BillingPlan): FormState {
   };
 }
 
-function Section({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
+function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div>
-      <div className="text-xs font-medium text-zinc-500 mb-2">{title}</div>
-      <div className="grid grid-cols-2 gap-3">{children}</div>
-    </div>
+    <SettingsSection title={title}>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{children}</div>
+    </SettingsSection>
   );
 }
 
 function Field({
+  id,
   label,
   children,
   span,
 }: {
+  id: string;
   label: string;
-  children: React.ReactNode;
+  children: ReactNode;
   span?: boolean;
 }) {
   return (
-    <div className={span ? 'col-span-2' : ''}>
-      <label className="block text-xs text-zinc-500 mb-1">{label}</label>
+    <SettingsField
+      label={label}
+      htmlFor={id}
+      className={span ? 'sm:col-span-2' : undefined}
+    >
       {children}
-    </div>
+    </SettingsField>
   );
 }
 
@@ -224,45 +228,53 @@ export default function PlanFormDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
+      <DialogContent
+        className="flex max-h-[90vh] flex-col gap-0 p-0 sm:max-w-2xl"
+        aria-describedby={undefined}
+      >
+        <DialogHeader className="border-b border-surface-border px-4 py-3.5 pr-12">
           <DialogTitle>{isEdit ? '编辑套餐' : '创建套餐'}</DialogTitle>
         </DialogHeader>
 
-        <div className="space-y-5 py-2">
+        <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-4">
           {/* Basic */}
           <Section title="基本信息">
-            <Field label="套餐 ID">
+            <Field id="plan-form-id" label="套餐 ID">
               <Input
+                id="plan-form-id"
                 value={form.id}
                 onChange={(e) => set('id', e.target.value)}
                 disabled={isEdit}
                 placeholder="如 basic"
               />
             </Field>
-            <Field label="名称">
+            <Field id="plan-form-name" label="名称">
               <Input
+                id="plan-form-name"
                 value={form.name}
                 onChange={(e) => set('name', e.target.value)}
                 placeholder="套餐名称"
               />
             </Field>
-            <Field label="描述" span>
+            <Field id="plan-form-description" label="描述" span>
               <Input
+                id="plan-form-description"
                 value={form.description}
                 onChange={(e) => set('description', e.target.value)}
                 placeholder="套餐描述"
               />
             </Field>
-            <Field label="Tier">
+            <Field id="plan-form-tier" label="Tier">
               <Input
+                id="plan-form-tier"
                 type="number"
                 value={form.tier}
                 onChange={(e) => set('tier', Number(e.target.value))}
               />
             </Field>
-            <Field label="排序">
+            <Field id="plan-form-sort-order" label="排序">
               <Input
+                id="plan-form-sort-order"
                 type="number"
                 value={form.sort_order}
                 onChange={(e) => set('sort_order', Number(e.target.value))}
@@ -272,8 +284,9 @@ export default function PlanFormDialog({
 
           {/* Pricing */}
           <Section title="定价">
-            <Field label="月费 (USD)">
+            <Field id="plan-form-monthly-cost-usd" label="月费 (USD)">
               <Input
+                id="plan-form-monthly-cost-usd"
                 type="number"
                 step="0.01"
                 value={form.monthly_cost_usd}
@@ -282,23 +295,26 @@ export default function PlanFormDialog({
                 }
               />
             </Field>
-            <Field label="展示价格">
+            <Field id="plan-form-display-price" label="展示价格">
               <Input
+                id="plan-form-display-price"
                 value={form.display_price}
                 onChange={(e) => set('display_price', e.target.value)}
                 placeholder="如 ¥99/月"
               />
             </Field>
-            <Field label="费率倍数">
+            <Field id="plan-form-rate-multiplier" label="费率倍数">
               <Input
+                id="plan-form-rate-multiplier"
                 type="number"
                 step="0.1"
                 value={form.rate_multiplier}
                 onChange={(e) => set('rate_multiplier', Number(e.target.value))}
               />
             </Field>
-            <Field label="试用天数">
+            <Field id="plan-form-trial-days" label="试用天数">
               <Input
+                id="plan-form-trial-days"
                 type="number"
                 value={form.trial_days}
                 onChange={(e) => set('trial_days', e.target.value)}
@@ -309,16 +325,18 @@ export default function PlanFormDialog({
 
           {/* Monthly quota */}
           <Section title="月度配额（留空=无限）">
-            <Field label="月度费用上限 (USD)">
+            <Field id="plan-form-monthly-cost-quota" label="月度费用上限 (USD)">
               <Input
+                id="plan-form-monthly-cost-quota"
                 type="number"
                 step="0.01"
                 value={form.monthly_cost_quota}
                 onChange={(e) => set('monthly_cost_quota', e.target.value)}
               />
             </Field>
-            <Field label="月度 Token 上限">
+            <Field id="plan-form-monthly-token-quota" label="月度 Token 上限">
               <Input
+                id="plan-form-monthly-token-quota"
                 type="number"
                 value={form.monthly_token_quota}
                 onChange={(e) => set('monthly_token_quota', e.target.value)}
@@ -328,16 +346,18 @@ export default function PlanFormDialog({
 
           {/* Daily quota */}
           <Section title="日度配额（留空=无限）">
-            <Field label="日度费用上限 (USD)">
+            <Field id="plan-form-daily-cost-quota" label="日度费用上限 (USD)">
               <Input
+                id="plan-form-daily-cost-quota"
                 type="number"
                 step="0.01"
                 value={form.daily_cost_quota}
                 onChange={(e) => set('daily_cost_quota', e.target.value)}
               />
             </Field>
-            <Field label="日度 Token 上限">
+            <Field id="plan-form-daily-token-quota" label="日度 Token 上限">
               <Input
+                id="plan-form-daily-token-quota"
                 type="number"
                 value={form.daily_token_quota}
                 onChange={(e) => set('daily_token_quota', e.target.value)}
@@ -347,16 +367,18 @@ export default function PlanFormDialog({
 
           {/* Weekly quota */}
           <Section title="周度配额（留空=无限）">
-            <Field label="周度费用上限 (USD)">
+            <Field id="plan-form-weekly-cost-quota" label="周度费用上限 (USD)">
               <Input
+                id="plan-form-weekly-cost-quota"
                 type="number"
                 step="0.01"
                 value={form.weekly_cost_quota}
                 onChange={(e) => set('weekly_cost_quota', e.target.value)}
               />
             </Field>
-            <Field label="周度 Token 上限">
+            <Field id="plan-form-weekly-token-quota" label="周度 Token 上限">
               <Input
+                id="plan-form-weekly-token-quota"
                 type="number"
                 value={form.weekly_token_quota}
                 onChange={(e) => set('weekly_token_quota', e.target.value)}
@@ -366,29 +388,36 @@ export default function PlanFormDialog({
 
           {/* Resource limits */}
           <Section title="资源限制（留空=无限）">
-            <Field label="工作区上限">
+            <Field id="plan-form-max-groups" label="工作区上限">
               <Input
+                id="plan-form-max-groups"
                 type="number"
                 value={form.max_groups}
                 onChange={(e) => set('max_groups', e.target.value)}
               />
             </Field>
-            <Field label="IM 通道上限">
+            <Field id="plan-form-max-im-channels" label="IM 通道上限">
               <Input
+                id="plan-form-max-im-channels"
                 type="number"
                 value={form.max_im_channels}
                 onChange={(e) => set('max_im_channels', e.target.value)}
               />
             </Field>
-            <Field label="MCP Server 上限">
+            <Field id="plan-form-max-mcp-servers" label="MCP Server 上限">
               <Input
+                id="plan-form-max-mcp-servers"
                 type="number"
                 value={form.max_mcp_servers}
                 onChange={(e) => set('max_mcp_servers', e.target.value)}
               />
             </Field>
-            <Field label="并发容器上限">
+            <Field
+              id="plan-form-max-concurrent-containers"
+              label="并发容器上限"
+            >
               <Input
+                id="plan-form-max-concurrent-containers"
                 type="number"
                 value={form.max_concurrent_containers}
                 onChange={(e) =>
@@ -396,8 +425,9 @@ export default function PlanFormDialog({
                 }
               />
             </Field>
-            <Field label="存储上限 (MB)">
+            <Field id="plan-form-max-storage-mb" label="存储上限 (MB)">
               <Input
+                id="plan-form-max-storage-mb"
                 type="number"
                 value={form.max_storage_mb}
                 onChange={(e) => set('max_storage_mb', e.target.value)}
@@ -406,9 +436,8 @@ export default function PlanFormDialog({
           </Section>
 
           {/* Toggles */}
-          <div>
-            <div className="text-xs font-medium text-zinc-500 mb-2">开关</div>
-            <div className="grid grid-cols-2 gap-3">
+          <SettingsSection title="开关">
+            <SettingsGroup>
               {(
                 [
                   ['allow_overage', '允许超额'],
@@ -417,31 +446,36 @@ export default function PlanFormDialog({
                   ['highlight', '高亮推荐'],
                 ] as const
               ).map(([key, label]) => (
-                <div key={key} className="flex items-center justify-between">
-                  <span className="text-sm">{label}</span>
-                  <Switch
-                    checked={form[key]}
-                    onCheckedChange={(v) => set(key, v)}
-                  />
-                </div>
+                <SettingsRow
+                  key={key}
+                  label={label}
+                  htmlFor={`plan-form-${key.replace(/_/g, '-')}`}
+                  className="py-2"
+                  control={
+                    <Switch
+                      id={`plan-form-${key.replace(/_/g, '-')}`}
+                      checked={form[key]}
+                      onCheckedChange={(v) => set(key, v)}
+                    />
+                  }
+                />
               ))}
-            </div>
-          </div>
+            </SettingsGroup>
+          </SettingsSection>
 
           {/* Features */}
-          <div>
-            <div className="text-xs font-medium text-zinc-500 mb-2">
-              特性标签
-            </div>
+          <SettingsSection title="特性标签">
             <Input
+              id="plan-form-features"
+              aria-label="特性标签"
               value={form.features}
               onChange={(e) => set('features', e.target.value)}
               placeholder="逗号分隔，如: 高速响应, 无限对话, 自定义智能体"
             />
-          </div>
+          </SettingsSection>
         </div>
 
-        <DialogFooter>
+        <DialogFooter className="m-0">
           <Button
             variant="outline"
             onClick={() => onOpenChange(false)}

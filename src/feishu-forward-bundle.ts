@@ -1,3 +1,5 @@
+import { classifyFeishuError } from './feishu-errors.js';
+import { normalizeFeishuSender } from './feishu-intake-message.js';
 import type { ChannelContentLink } from './types.js';
 
 /**
@@ -14,7 +16,11 @@ export const FEISHU_FORWARD_COMPANION_MAX_GAP_MS = 60_000;
  * requests.
  */
 export const FEISHU_RAPID_TOPIC_COMPANION_MAX_GAP_MS = 2_000;
-/** A directly-authored caption/reply that immediately follows an image root. */
+/**
+ * A directly-authored caption/reply that immediately follows an image root.
+ * The image root is never held for it: like a rapid topic root it runs at
+ * once, and the caption asks the scheduler to coalesce into that run.
+ */
 export const FEISHU_MEDIA_TOPIC_COMPANION_MAX_GAP_MS = 3_000;
 const FEISHU_FORWARD_FACT_TTL_MS = 60_000;
 const FEISHU_FORWARD_FACT_MAX_ENTRIES = 1_000;
@@ -58,6 +64,7 @@ interface FeishuMessageGetItem {
   body?: { content?: string };
   sender?: {
     id?: string;
+    id_type?: string;
     sender_id?: { open_id?: string };
   };
 }
@@ -197,6 +204,20 @@ export function hasAuthoredFeishuText(
   );
 }
 
+/**
+ * message.get refused for a reason a retry cannot change (missing scope, root
+ * invisible to the Bot, recalled root). The note is then simply not a
+ * companion; throwing would retry the whole intake forever.
+ */
+function isDeterministicLookupRejection(error: unknown): boolean {
+  const kind = classifyFeishuError(error).kind;
+  return (
+    kind === 'definitive' ||
+    kind === 'target_unavailable' ||
+    kind === 'content_rejected'
+  );
+}
+
 function rootContentLink(messageId: string): ChannelContentLink {
   return {
     kind: 'forward_bundle',
@@ -273,7 +294,7 @@ export class FeishuForwardBundleResolver {
       candidate.createTimeMs > 0
     ) {
       const fact: ForwardRootFact = {
-        kind: rapidTopic ? 'rapid_topic_bundle' : 'forward_bundle',
+        kind: mergeForward ? 'forward_bundle' : 'rapid_topic_bundle',
         shape: mergeForward
           ? 'merge_forward'
           : rapidTopic
@@ -290,12 +311,12 @@ export class FeishuForwardBundleResolver {
       });
       this.prune();
     }
-    // A plain topic root is only a provisional candidate. It must remain an
-    // ordinary current request unless a provider-structured companion arrives
-    // inside the tight compatibility window.
-    return mergeForward || mediaTopic
-      ? rootContentLink(candidate.messageId)
-      : undefined;
+    // A plain or image topic root is only a provisional candidate. It runs
+    // as an ordinary current request (an image root no longer waits 3s, and
+    // its download failure is an ordinary `[图片下载失败]`, not missing
+    // forward material); a provider-structured companion arriving inside the
+    // tight window coalesces into that run through the scheduler.
+    return mergeForward ? rootContentLink(candidate.messageId) : undefined;
   }
 
   private lookupRoot(messageId: string): Promise<ForwardRootFact | undefined> {
@@ -304,9 +325,15 @@ export class FeishuForwardBundleResolver {
     if (cached) return cached.value;
 
     const probe = withTimeout(
-      this.lookupMessage(messageId),
+      this.lookupMessage(messageId).catch((error: unknown) => {
+        if (isDeterministicLookupRejection(error)) return null;
+        throw error;
+      }),
       FEISHU_FORWARD_LOOKUP_TIMEOUT_MS,
     ).then((response) => {
+      if (response === null) {
+        return { definitive: true, fact: undefined } as const;
+      }
       const items = responseItems(response);
       const item =
         items.find((candidate) => candidate.message_id === messageId) ??
@@ -332,7 +359,7 @@ export class FeishuForwardBundleResolver {
       if (!mergeForward && !rapidTopic && !mediaTopic) {
         return { definitive: true, fact: undefined } as const;
       }
-      const senderOpenId = item.sender?.id ?? item.sender?.sender_id?.open_id;
+      const senderOpenId = normalizeFeishuSender(item.sender).openId;
       const createTimeMs = toEpochMs(item.create_time);
       if (
         !senderOpenId ||
@@ -344,7 +371,7 @@ export class FeishuForwardBundleResolver {
       return {
         definitive: true,
         fact: {
-          kind: rapidTopic ? 'rapid_topic_bundle' : 'forward_bundle',
+          kind: mergeForward ? 'forward_bundle' : 'rapid_topic_bundle',
           shape: mergeForward
             ? 'merge_forward'
             : rapidTopic

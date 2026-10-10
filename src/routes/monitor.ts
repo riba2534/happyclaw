@@ -12,6 +12,9 @@ import {
   getWebDeps,
 } from '../web-context.js';
 import { canAccessGroup } from '../group-acl.js';
+import type { GroupQueue } from '../group-queue.js';
+
+type QueueGroupStatus = ReturnType<GroupQueue['getStatus']>['groups'][number];
 import {
   getAllRegisteredGroups,
   getRegisteredGroup,
@@ -138,7 +141,17 @@ async function getContainerClaudeCodeVersion(): Promise<string | null> {
   }
 }
 
-async function getClaudeCodeVersions(): Promise<VersionInfo> {
+let versionsInFlight: Promise<VersionInfo> | null = null;
+
+/** Shared across concurrent requests so a cold cache spawns one probe set. */
+function getClaudeCodeVersions(): Promise<VersionInfo> {
+  versionsInFlight ??= fetchClaudeCodeVersions().finally(() => {
+    versionsInFlight = null;
+  });
+  return versionsInFlight;
+}
+
+async function fetchClaudeCodeVersions(): Promise<VersionInfo> {
   const now = Date.now();
   const imageId = await getDockerImageId();
 
@@ -242,6 +255,36 @@ async function checkDockerImageExists(): Promise<boolean> {
   return Boolean(await getDockerImageId());
 }
 
+/** Queue groups the user may see; admins see every group (monitor scope). */
+function visibleQueueGroups(authUser: AuthUser, groups: QueueGroupStatus[]) {
+  if (hasHostExecutionPermission(authUser)) return groups;
+  return groups.filter((g) => {
+    const group = getRegisteredGroup(g.jid);
+    if (!group) return false;
+    if (isHostExecutionGroup(group)) return false;
+    return canAccessGroup({ id: authUser.id, role: authUser.role }, group);
+  });
+}
+
+// GET /api/status/groups - 仅返回队列中的运行状态。
+// 聊天页恢复运行状态（挂载、WS 重连）只需要这些字段；完整的 /api/status
+// 还会做 Docker/版本探测，缓存冷时要数秒，不适合放在聊天路径上。
+monitorRoutes.get('/status/groups', authMiddleware, (c) => {
+  const deps = getWebDeps();
+  if (!deps) return c.json({ error: 'Server not initialized' }, 500);
+  const authUser = c.get('user') as AuthUser;
+  const groups = visibleQueueGroups(authUser, deps.queue.getStatus().groups);
+  return c.json({
+    groups: groups.map((g) => ({
+      jid: g.jid,
+      active: g.active,
+      pendingMessages: g.pendingMessages,
+      queryInFlight: g.queryInFlight,
+      queryId: g.queryId,
+    })),
+  });
+});
+
 // GET /api/status - 获取系统状态
 monitorRoutes.get('/status', authMiddleware, async (c) => {
   const deps = getWebDeps();
@@ -252,14 +295,7 @@ monitorRoutes.get('/status', authMiddleware, async (c) => {
   const queueStatus = deps.queue.getStatus();
 
   // 监控页面属于系统管理功能，admin 可见所有群组状态（不受工作区隔离约束）
-  const filteredGroups = isAdmin
-    ? queueStatus.groups
-    : queueStatus.groups.filter((g) => {
-        const group = getRegisteredGroup(g.jid);
-        if (!group) return false;
-        if (isHostExecutionGroup(group)) return false;
-        return canAccessGroup({ id: authUser.id, role: authUser.role }, group);
-      });
+  const filteredGroups = visibleQueueGroups(authUser, queueStatus.groups);
 
   const dockerRequired = hasContainerModeGroups();
   const dockerImageExists = dockerRequired

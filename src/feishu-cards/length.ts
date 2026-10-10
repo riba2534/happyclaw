@@ -1,3 +1,5 @@
+import { countMarkdownTables, findMarkdownBlocks } from './pagination.js';
+
 /**
  * Lossless sections for independently rendered Markdown components.
  * 4K is a layout target, not a provider limit. Keep larger paragraphs, tables
@@ -5,6 +7,8 @@
  */
 export const SECTION_SOFT_LIMIT = 2000;
 export const SECTION_HARD_LIMIT = 4000;
+/** Feishu renders at most four tables in one Markdown component. */
+export const SECTION_MAX_TABLES = 4;
 
 export interface BodySection {
   text: string;
@@ -13,7 +17,9 @@ export interface BodySection {
 
 export function splitIntoBodySections(text: string): BodySection[] {
   if (!text.trim()) return [];
-  if (text.length <= SECTION_SOFT_LIMIT) return [{ text, expanded: true }];
+  const tableCount = countMarkdownTables(text);
+  if (text.length <= SECTION_SOFT_LIMIT && tableCount <= SECTION_MAX_TABLES)
+    return [{ text, expanded: true }];
 
   const blocks: string[] = [];
   let block = '';
@@ -39,16 +45,42 @@ export function splitIntoBodySections(text: string): BodySection[] {
   }
   if (block) blocks.push(block);
 
+  const limitTables = tableCount > SECTION_MAX_TABLES;
+  const bounded = limitTables ? blocks.flatMap(splitBlockByTables) : blocks;
   const sections: BodySection[] = [];
   let current = '';
-  for (const next of blocks) {
-    if (current && current.length + next.length > SECTION_HARD_LIMIT) {
+  let currentTables = 0;
+  for (const next of bounded) {
+    const nextTables = limitTables ? countMarkdownTables(next) : 0;
+    if (
+      current &&
+      (current.length + next.length > SECTION_HARD_LIMIT ||
+        currentTables + nextTables > SECTION_MAX_TABLES)
+    ) {
       sections.push({ text: current, expanded: sections.length === 0 });
       current = '';
+      currentTables = 0;
     }
     current += next;
+    currentTables += nextTables;
   }
   if (current)
     sections.push({ text: current, expanded: sections.length === 0 });
   return sections;
+}
+
+/** Cut a block (no blank lines) before every fifth table it contains. */
+function splitBlockByTables(block: string): string[] {
+  const starts = findMarkdownBlocks(block)
+    .filter((entry) => entry.kind === 'table')
+    .map((entry) => entry.start);
+  if (starts.length <= SECTION_MAX_TABLES) return [block];
+  const pieces: string[] = [];
+  let cursor = 0;
+  for (let i = SECTION_MAX_TABLES; i < starts.length; i += SECTION_MAX_TABLES) {
+    pieces.push(block.slice(cursor, starts[i]));
+    cursor = starts[i];
+  }
+  pieces.push(block.slice(cursor));
+  return pieces;
 }

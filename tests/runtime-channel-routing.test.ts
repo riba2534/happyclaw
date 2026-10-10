@@ -176,6 +176,12 @@ function makeOutputRuntime(lane: 'main' | 'session') {
     completeChannelRuntimesForOutput: async () => true,
     completeAgentChannelRuntimesForOutput: async () => true,
     commitCursor,
+    // No recall stop in these routing fixtures.
+    takeRecallStop: () => undefined,
+    mainRecallSuppression: false,
+    agentRecallSuppression: false,
+    mainRecalledInputIds: new Set(),
+    agentRecalledInputIds: new Set(),
   };
   const harness = createRuntimeSourceHarness(globals);
   harness.install('sendMessageWithOutcome');
@@ -418,6 +424,7 @@ describe('actual message loop dispatches the unconsumed channel suffix', () => {
       lastAgentTimestamp: {},
       lastCommittedCursor: {},
       saveState: vi.fn(),
+      routerCursorPersistence: { markDirty: vi.fn() },
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       resolveEffectiveGroup: () => ({ effectiveGroup: group }),
       getWorkspaceInteractionMode: () => 'assistant',

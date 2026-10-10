@@ -139,6 +139,29 @@ describe('buildClaudeEnvLines', () => {
     expect(lines).toContain('API_TIMEOUT_MS=3000000');
   });
 
+  test('defaults the compact window to 1M only for an explicit [1m] model', () => {
+    const windowFor = (anthropicModel: string) =>
+      buildClaudeEnvLines(config({ anthropicModel }), NO_CUSTOM_ENV).find(
+        (line) => line.startsWith('CLAUDE_CODE_AUTO_COMPACT_WINDOW='),
+      );
+    for (const model of ['claude-opus-4-6[1m]', 'glm-5.2[1M]']) {
+      expect(windowFor(model)).toBe('CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000');
+    }
+    // 1M-native Claude IDs keep 200K: Claude Code cannot see a gateway
+    // capped at 200K, which would fail with "Prompt is too long".
+    for (const model of [
+      'claude-sonnet-5',
+      'anthropic/claude-sonnet-5-20260101',
+      'claude-opus-4-7',
+      'claude-fable-5-1',
+      'claude-haiku-4-5-20251001',
+      'glm-5.2',
+      'k3',
+    ]) {
+      expect(windowFor(model)).toBe('CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000');
+    }
+  });
+
   test('uses defaults but lets provider settings override third-party values', () => {
     const lines = buildClaudeEnvLines(config({ anthropicModel: 'k3' }), {
       CLAUDE_CODE_AUTO_COMPACT_WINDOW: '999999',

@@ -38,7 +38,8 @@ vi.mock('../src/middleware/auth.js', () => ({
 }));
 
 const db = await import('../src/db.js');
-const { usage } = await import('../src/routes/usage.js');
+const { usage, clearUsageAnalyticsCache } =
+  await import('../src/routes/usage.js');
 
 const today = (() => {
   const d = new Date();
@@ -314,5 +315,120 @@ describe('/api/usage contract and isolation', () => {
     process.env.USAGE_TEST_ROLE = 'member';
     const csv = await usage.request(`/export.csv?from=${today}&to=${today}`);
     expect(await csv.text()).toContain(`"'=HYPERLINK(""https://invalid"")"`);
+  });
+});
+
+describe('/api/usage payload and caching', () => {
+  test('breakdown=none drops only the breakdown rows', async () => {
+    process.env.USAGE_TEST_USER = 'admin-user';
+    process.env.USAGE_TEST_ROLE = 'admin';
+    clearUsageAnalyticsCache();
+    const full = await (
+      await usage.request(`/stats?from=${today}&to=${today}`)
+    ).json();
+    const light = await (
+      await usage.request(`/stats?from=${today}&to=${today}&breakdown=none`)
+    ).json();
+    expect(full.breakdown.length).toBeGreaterThan(0);
+    expect(light.breakdown).toEqual([]);
+    const { generatedAt: _a, breakdown: _b, ...fullRest } = full;
+    const { generatedAt: _c, breakdown: _d, ...lightRest } = light;
+    expect(lightRest).toEqual(fullRest);
+  });
+
+  test('filters return exactly the stats attributions', async () => {
+    process.env.USAGE_TEST_USER = 'admin-user';
+    process.env.USAGE_TEST_ROLE = 'admin';
+    clearUsageAnalyticsCache();
+    const filters = await (
+      await usage.request(`/filters?from=${today}&to=${today}`)
+    ).json();
+    const stats = await (
+      await usage.request(`/stats?from=${today}&to=${today}`)
+    ).json();
+    expect({
+      models: filters.models,
+      agents: filters.agents,
+      workspaces: filters.workspaces,
+      sources: filters.sources,
+    }).toEqual(stats.attributions);
+    expect(db.getUsageAttributions({ from: today, to: today })).toEqual(
+      db.getUsageAnalytics({ from: today, to: today }).attributions,
+    );
+  });
+
+  test('cached aggregates are recomputed as soon as usage changes', async () => {
+    process.env.USAGE_TEST_USER = 'cache-user';
+    process.env.USAGE_TEST_ROLE = 'member';
+    clearUsageAnalyticsCache();
+    seed('cache-event-1', 'cache-user', 'cache-model');
+    const first = await (
+      await usage.request(`/stats?from=${today}&to=${today}&breakdown=none`)
+    ).json();
+    expect(first.summary.runCount).toBe(1);
+    const again = await (
+      await usage.request(`/stats?from=${today}&to=${today}&breakdown=none`)
+    ).json();
+    expect(again.summary).toEqual(first.summary);
+    seed('cache-event-2', 'cache-user', 'cache-model');
+    const after = await (
+      await usage.request(`/stats?from=${today}&to=${today}&breakdown=none`)
+    ).json();
+    expect(after.summary.runCount).toBe(2);
+    const filtersAfter = await (
+      await usage.request(`/filters?from=${today}&to=${today}`)
+    ).json();
+    expect(filtersAfter.models[0].runCount).toBe(2);
+  });
+});
+
+describe('usage records ordering', () => {
+  test('pages stay newest-first by created_at across usage dates', () => {
+    const yesterday = new Date(Date.now() - 86_400_000);
+    const ymd = (d: Date) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    for (const [eventId, createdAt] of [
+      ['order-old', `${ymd(yesterday)}T08:00:00.000Z`],
+      ['order-new', `${today}T13:00:00.000Z`],
+      ['order-mid', `${today}T12:30:00.000Z`],
+    ] as const) {
+      db.recordUsageEventBatch({
+        eventId,
+        userId: 'order-user',
+        groupFolder: 'order-ws',
+        agentId: null,
+        source: 'main-agent',
+        createdAt,
+        inputTokens: 1,
+        outputTokens: 1,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        providerEstimatedCostUSD: 0,
+        billedCostUSD: 0,
+        models: [
+          {
+            model: 'order-model',
+            inputTokens: 1,
+            outputTokens: 1,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            providerEstimatedCostUSD: 0,
+            billedCostUSD: 0,
+          },
+        ],
+      });
+    }
+    const page = db.getUsageRecordsPage(
+      { from: ymd(yesterday), to: today, userId: 'order-user' },
+      1,
+      10,
+    );
+    const created = page.records.map((r) => String(r.createdAt));
+    expect(created).toEqual([...created].sort().reverse());
+    expect(page.records.map((r) => r.eventId)).toEqual([
+      'order-new',
+      'order-mid',
+      'order-old',
+    ]);
   });
 });

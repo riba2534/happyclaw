@@ -1,5 +1,7 @@
 import { useId } from 'react';
 import { FolderSymlink, LockKeyhole, Plus, Trash2 } from 'lucide-react';
+import { IconButton } from '@/components/common/IconButton';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -159,30 +161,30 @@ export function HostDirectoryMountEditor({
   };
 
   return (
-    <section aria-labelledby={headingId} className="space-y-3 pt-1">
+    <section aria-labelledby={headingId} className="space-y-3">
       <div className="flex items-start gap-2">
-        <FolderSymlink className="mt-0.5 h-4 w-4 flex-shrink-0 text-muted-foreground" />
+        <FolderSymlink className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
         <div className="min-w-0">
-          <h3 id={headingId} className="text-sm font-medium text-foreground">
+          <h3 id={headingId} className="text-body font-medium text-foreground">
             宿主机目录挂载
           </h3>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+          <p className="mt-0.5 text-caption leading-5 text-muted-foreground">
             仅管理员可用。选择 HappyClaw/Docker
             服务器上的目录，并实时挂载到容器；这不是复制，源目录后续变化会直接反映到容器中。
           </p>
         </div>
       </div>
       {mountListError && (
-        <p className="text-xs text-error" role="alert">
+        <p className="text-caption text-error" role="alert">
           {mountListError}
         </p>
       )}
 
       {mounts.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-border px-3 py-4">
-          <p className="text-xs leading-5 text-muted-foreground">
+        <div className="rounded-lg border border-dashed border-surface-border px-3 py-3">
+          <p className="text-caption leading-5 text-muted-foreground">
             当前不挂载额外目录。添加后，目录会出现在
-            <code className="mx-1 rounded bg-muted px-1 py-0.5 text-[11px]">
+            <code className="mx-1 rounded bg-surface-selected px-1 py-0.5 font-mono">
               /workspace/extra/
             </code>
             下，并固定为只读。
@@ -190,12 +192,11 @@ export function HostDirectoryMountEditor({
           <Button
             type="button"
             variant="outline"
-            size="sm"
             onClick={addMount}
             disabled={disabled}
-            className="mt-3 h-10"
+            className="mt-2.5 pointer-coarse:h-10"
           >
-            <Plus className="h-4 w-4" />
+            <Plus />
             添加宿主机目录
           </Button>
         </div>
@@ -211,29 +212,25 @@ export function HostDirectoryMountEditor({
             return (
               <fieldset
                 key={mount.id}
-                className="space-y-3 rounded-lg border border-border bg-background p-3"
+                className="space-y-3 rounded-lg border border-surface-border p-3"
                 disabled={disabled}
               >
                 <legend className="sr-only">宿主机目录挂载 {index + 1}</legend>
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-medium text-foreground">
+                  <span className="text-label text-foreground">
                     挂载目录 {index + 1}
                   </span>
-                  <div className="flex items-center gap-1.5">
-                    <span className="inline-flex min-h-7 items-center gap-1 rounded-md bg-muted px-2 text-[11px] font-medium text-muted-foreground">
-                      <LockKeyhole className="h-3 w-3" />
+                  <div className="flex items-center gap-1">
+                    <Badge variant="neutral">
+                      <LockKeyhole />
                       固定只读
-                    </span>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-sm"
+                    </Badge>
+                    <IconButton
+                      label={`删除挂载目录 ${index + 1}`}
+                      icon={<Trash2 />}
                       onClick={() => removeMount(index)}
-                      className="h-10 w-10 text-muted-foreground hover:text-destructive"
-                      aria-label={`删除挂载目录 ${index + 1}`}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                      className="text-muted-foreground hover:text-destructive pointer-coarse:size-10"
+                    />
                   </div>
                 </div>
 
@@ -260,7 +257,7 @@ export function HostDirectoryMountEditor({
                   disabled={disabled}
                 />
                 {hostError && (
-                  <p className="text-xs text-error" role="alert">
+                  <p className="text-caption text-error" role="alert">
                     {hostError}
                   </p>
                 )}
@@ -270,7 +267,7 @@ export function HostDirectoryMountEditor({
                     容器内目录
                   </Label>
                   <div className="flex min-w-0 items-stretch">
-                    <span className="inline-flex h-10 flex-shrink-0 items-center rounded-l-lg border border-r-0 border-input bg-muted px-2 text-xs text-muted-foreground">
+                    <span className="inline-flex shrink-0 items-center rounded-l-lg border border-r-0 border-input bg-surface-hover px-2 font-mono text-caption text-muted-foreground">
                       {CONTAINER_MOUNT_ROOT}
                     </span>
                     <Input
@@ -283,7 +280,7 @@ export function HostDirectoryMountEditor({
                         })
                       }
                       placeholder="project-data"
-                      className="h-10 min-w-0 rounded-l-none"
+                      className="min-w-0 rounded-l-none font-mono pointer-coarse:h-10"
                       aria-invalid={!!containerError}
                       aria-describedby={
                         containerError ? containerErrorId : undefined
@@ -291,9 +288,9 @@ export function HostDirectoryMountEditor({
                       autoComplete="off"
                     />
                   </div>
-                  <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
+                  <p className="mt-1.5 text-caption text-muted-foreground">
                     只能填写
-                    <code className="mx-1 rounded bg-muted px-1 py-0.5">
+                    <code className="mx-1 rounded bg-surface-selected px-1 py-0.5 font-mono">
                       /workspace/extra/
                     </code>
                     下的相对路径。
@@ -301,7 +298,7 @@ export function HostDirectoryMountEditor({
                   {containerError && (
                     <p
                       id={containerErrorId}
-                      className="mt-1 text-xs text-error"
+                      className="mt-1 text-caption text-error"
                       role="alert"
                     >
                       {containerError}
@@ -316,15 +313,17 @@ export function HostDirectoryMountEditor({
             <Button
               type="button"
               variant="outline"
-              size="sm"
               onClick={addMount}
               disabled={disabled || mounts.length >= MAX_HOST_DIRECTORY_MOUNTS}
-              className="h-10"
+              className="pointer-coarse:h-10"
             >
-              <Plus className="h-4 w-4" />
+              <Plus />
               添加另一个目录
             </Button>
-            <span className="text-xs text-muted-foreground" aria-live="polite">
+            <span
+              className="text-caption text-muted-foreground tabular-nums"
+              aria-live="polite"
+            >
               {mounts.length} / {MAX_HOST_DIRECTORY_MOUNTS}
             </span>
           </div>

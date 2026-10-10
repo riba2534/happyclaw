@@ -30,20 +30,66 @@ describe('CardKit capacity', () => {
     expect(fitsCardCapacity(card)).toBe(false);
   });
 
-  test('native tables are counted without confusing Markdown table source with components', () => {
+  test('native and Markdown tables both count toward the per-card and per-element table limits', () => {
+    const table = '| A | B |\n| - | - |\n| C | D |\n\n';
     expect(
       fitsCardCapacity({
         body: { elements: Array.from({ length: 6 }, () => ({ tag: 'table' })) },
       }),
     ).toBe(false);
+    // Feishu: at most 5 tables per card and 4 per Markdown element; beyond
+    // that the whole card is rejected (230099 / ErrCode 11310).
     expect(
       fitsCardCapacity(
-        buildAgentReplyCard({
-          text: '| A | B |\n| - | - |\n| C | D |\n\n'.repeat(6),
-          status: 'done',
-        }),
+        buildAgentReplyCard({ text: table.repeat(6), status: 'done' }),
+      ),
+    ).toBe(false);
+    expect(
+      fitsCardCapacity(
+        buildAgentReplyCard({ text: table.repeat(5), status: 'done' }),
       ),
     ).toBe(true);
+    expect(
+      fitsCardCapacity({ tag: 'markdown', content: table.repeat(4) }),
+    ).toBe(true);
+    expect(
+      fitsCardCapacity({ tag: 'markdown', content: table.repeat(5) }),
+    ).toBe(false);
+    // Tables inside fenced code are literal text, not tables.
+    expect(
+      fitsCardCapacity({
+        tag: 'markdown',
+        content: '```md\n' + table.repeat(8) + '```\n',
+      }),
+    ).toBe(true);
+    // Three Markdown tables in panels plus three in the body exceed the card.
+    expect(
+      fitsCardCapacity({
+        body: {
+          elements: [
+            { tag: 'markdown', content: table.repeat(3) },
+            { tag: 'markdown', content: table.repeat(3) },
+          ],
+        },
+      }),
+    ).toBe(false);
+  });
+
+  test('pagination keeps six Markdown tables within the card table limits', () => {
+    const tables = Array.from(
+      { length: 6 },
+      (_, i) => `### 表 ${i}\n\n| 列${i} | 值 |\n|---|---|\n| a | 1 |\n`,
+    ).join('\n');
+    const fits = (text: string) =>
+      [
+        buildStreamingAgentCard({ initialText: text }),
+        buildAgentReplyCard({ text, status: 'done' }),
+      ].every((card) => fitsCardCapacity(card));
+    const pages = splitCardPages(tables, { fits });
+    expect(pages.length).toBeGreaterThan(1);
+    expect(pages.map((page) => page.text).join('')).toContain('列5');
+    for (const page of pages) expect(fits(page.text)).toBe(true);
+    expect(pages.at(-1)!.rawEnd).toBe(tables.length);
   });
 
   test('astral emoji use code points for Markdown limits and UTF-8 bytes for cards', () => {
@@ -131,20 +177,13 @@ describe('CardKit capacity', () => {
           unicodeCodePointLength(element.content) <= CARDKIT_MARKDOWN_MAX_CHARS,
       ),
     ).toBe(true);
-    expect(
-      elements.every(
-        (element) =>
-          element.content.startsWith('~~~text\n') &&
-          element.content.endsWith('\n~~~\n'),
-      ),
-    ).toBe(true);
-    expect(
-      elements
-        .map((element) =>
-          element.content.replace(/^~~~text\n/, '').replace(/\n~~~\n$/, ''),
-        )
-        .join(''),
-    ).toBe('a'.repeat(120_000));
+    // The live slot uses the terminal card's Markdown normalization (spacing
+    // around the fence), and every slot still holds a complete fence.
+    const fenced = elements.map((element) =>
+      element.content.match(/~~~text\n([\s\S]*?)\n~~~(?:\n|$)/),
+    );
+    expect(fenced.every((match) => match !== null)).toBe(true);
+    expect(fenced.map((match) => match![1]).join('')).toBe('a'.repeat(120_000));
     expect(
       fitsCardCapacity(buildStreamingAgentCard({ initialText: source })),
     ).toBe(true);

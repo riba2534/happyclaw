@@ -985,14 +985,16 @@ describe('provider reconciliation', () => {
         version: 20,
         snapshot: { text: '保留的部分回答' },
       }),
-    ).resolves.toEqual({ version: 22, method: 'cardkit' });
+    ).resolves.toEqual({ version: 1022, method: 'cardkit' });
     expect(settings).toHaveBeenCalledWith(
       expect.objectContaining({ path: { card_id: 'card_original' } }),
     );
+    // The persisted version can trail the provider by several mutations, so
+    // recovery leaps well past it (CardKit only needs strictly increasing).
     expect(update).toHaveBeenCalledWith(
       expect.objectContaining({
         path: { card_id: 'card_original' },
-        data: expect.objectContaining({ sequence: 22 }),
+        data: expect.objectContaining({ sequence: 1022 }),
       }),
     );
     expect(create).not.toHaveBeenCalled();

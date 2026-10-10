@@ -5,6 +5,8 @@ import type { Variables } from '../web-context.js';
 import { authMiddleware } from '../middleware/auth.js';
 import {
   getUsageAnalytics,
+  getUsageAttributions,
+  getUsageDataVersion,
   getUsageDateWindow,
   getUserById,
   getUsageModelsForFilters,
@@ -14,6 +16,7 @@ import {
 } from '../db.js';
 import type { AuthUser } from '../types.js';
 import { isBillingEnabled } from '../billing.js';
+import { VersionedTtlCache } from '../versioned-ttl-cache.js';
 
 const usage = new Hono<{ Variables: Variables }>();
 usage.use('*', authMiddleware);
@@ -97,10 +100,61 @@ function queryContext(
   };
 }
 
+// Usage pages re-request identical windows (stats + filters on every visit
+// and filter change); each run of the aggregates took 0.1-0.5s of
+// synchronous SQLite work at 50k records. Results are keyed by the effective
+// filters, which already carry the member's own userId, and are reused only
+// while usage_records is unchanged. Breakdown rows dominate the size (a
+// 90-day window can be ~30k rows, ~9MB), so the cache holds at most
+// MAX_CACHED_BREAKDOWN_ROWS of them in total; larger results are recomputed.
+const MAX_CACHED_BREAKDOWN_ROWS = 20_000;
+const analyticsCache = new VersionedTtlCache<
+  ReturnType<typeof getUsageAnalytics>
+>({
+  maxEntries: 16,
+  maxAgeMs: 60_000,
+  staleGraceMs: 0,
+  maxWeight: MAX_CACHED_BREAKDOWN_ROWS,
+  weigh: (data) => data.breakdown.length,
+});
+const attributionsCache = new VersionedTtlCache<
+  ReturnType<typeof getUsageAttributions>
+>({ maxEntries: 32, maxAgeMs: 60_000, staleGraceMs: 0 });
+
+/** Test hook: drop cached aggregates. */
+export function clearUsageAnalyticsCache(): void {
+  analyticsCache.clear();
+  attributionsCache.clear();
+}
+
+/**
+ * `breakdown=none` skips the per-(date, model, user, agent, workspace,
+ * source) rows, the bulk of the payload (9MB for 90 days of 50k records).
+ * They stay included by default because older clients derive summary token
+ * totals from them.
+ */
+function wantsBreakdown(c: any): boolean {
+  const raw = (c.req.query('breakdown') || '').trim().toLowerCase();
+  return !(raw === 'none' || raw === '0' || raw === 'false');
+}
+
+function cachedAnalytics(
+  filters: UsageQueryFilters,
+  includeBreakdown: boolean,
+): ReturnType<typeof getUsageAnalytics> {
+  const version = getUsageDataVersion();
+  const key = JSON.stringify([filters, includeBreakdown]);
+  const cached = analyticsCache.get(key, version);
+  if (cached) return cached;
+  const data = getUsageAnalytics(filters, { includeBreakdown });
+  analyticsCache.set(key, version, data);
+  return data;
+}
+
 usage.get('/stats', (c) => {
   const user = c.get('user') as AuthUser;
   const { window, filters } = queryContext(c, user);
-  const data = getUsageAnalytics(filters);
+  const data = cachedAnalytics(filters, wantsBreakdown(c));
   const summary = {
     ...data.summary,
     // Backwards-compatible aliases. totalMessages now has the precise
@@ -160,8 +214,21 @@ usage.get('/models', (c) => {
 usage.get('/filters', (c) => {
   const user = c.get('user') as AuthUser;
   const { window, filters } = queryContext(c, user);
-  const data = getUsageAnalytics(filters);
-  return c.json({ window, ...data.attributions });
+  // Only the attribution lists: the full analytics (summary, daily buckets,
+  // breakdown) was recomputed here just to be thrown away.
+  const version = getUsageDataVersion();
+  const key = JSON.stringify(filters);
+  let attributions =
+    attributionsCache.get(key, version) ??
+    // The page loads /stats with the same filters; reuse its attributions.
+    analyticsCache.get(JSON.stringify([filters, false]), version)
+      ?.attributions ??
+    analyticsCache.get(JSON.stringify([filters, true]), version)?.attributions;
+  if (!attributions) {
+    attributions = getUsageAttributions(filters);
+    attributionsCache.set(key, version, attributions);
+  }
+  return c.json({ window, ...attributions });
 });
 
 usage.get('/records', (c) => {

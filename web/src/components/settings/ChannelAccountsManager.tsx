@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  AlertCircle,
   Bot,
-  CheckCircle2,
   KeyRound,
   Loader2,
+  MoreHorizontal,
   Pencil,
   Plus,
   RefreshCw,
@@ -15,6 +14,10 @@ import {
 import { toast } from 'sonner';
 
 import { wsManager } from '@/api/ws';
+import { EmptyState } from '@/components/common/EmptyState';
+import { IconButton } from '@/components/common/IconButton';
+import { ListGroup, ListRow } from '@/components/common/ListRow';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -24,6 +27,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -34,6 +44,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
+import { confirmDialog } from '@/stores/confirm';
 import { useChatStore } from '../../stores/chat';
 import {
   useChannelAccountsStore,
@@ -51,7 +62,15 @@ import {
   validateChannelAccountForm,
   type AccountFormValues,
 } from '../../utils/channel-accounts';
+import { CHANNEL_ICON } from './channel-meta';
 import { PairingSection } from './PairingSection';
+import {
+  SettingsField,
+  SettingsGroup,
+  SettingsRow,
+  SettingsSection,
+} from './SettingsLayout';
+import { SettingsSwitchRow } from './SettingsFormControls';
 import { usePairedChats } from './hooks/usePairedChats';
 import { usePairingCode } from './hooks/usePairingCode';
 import { ProviderConnectionFields } from './channel-accounts/ProviderConnectionFields';
@@ -152,12 +171,13 @@ export function ChannelAccountsManager() {
   };
 
   const handleDelete = async (account: ChannelAccount) => {
-    if (
-      !window.confirm(
-        `删除渠道账号「${account.name}」？保存的凭证和授权会一并删除，此操作无法撤销。`,
-      )
-    )
-      return;
+    const confirmed = await confirmDialog({
+      title: '删除渠道账号',
+      message: `删除渠道账号「${account.name}」？保存的凭证和授权会一并删除，此操作无法撤销。`,
+      confirmText: '删除账号',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
     setActionId(`delete:${account.id}`);
     try {
       await deleteAccount(account.id);
@@ -176,45 +196,41 @@ export function ChannelAccountsManager() {
   };
 
   return (
-    <section className="overflow-hidden rounded-xl border border-border bg-card">
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b px-5 py-4">
-        <div>
-          <h2 className="text-sm font-semibold">渠道账号</h2>
-          <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">
-            同一渠道可以添加多个
-            Bot。每个账号独立认证；工作区和会话的消息去向在“已接入会话”中管理。
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Button
-            type="button"
+    <SettingsSection
+      title="渠道账号"
+      description="同一渠道可以添加多个 Bot。每个账号独立认证；工作区和会话的消息去向在“已接入会话”中管理。"
+      actions={
+        <>
+          <IconButton
+            label="刷新"
             variant="outline"
-            size="sm"
+            size="icon"
             disabled={loading}
             onClick={() => void loadAccounts()}
-          >
-            <RefreshCw
-              className={`size-3.5 ${loading ? 'animate-spin' : ''}`}
-            />
-            刷新
-          </Button>
-          <Button type="button" size="sm" onClick={() => setCreateOpen(true)}>
-            <Plus className="size-3.5" />
+            icon={
+              <RefreshCw
+                className={loading ? 'motion-safe:animate-spin' : undefined}
+              />
+            }
+          />
+          <Button type="button" onClick={() => setCreateOpen(true)}>
+            <Plus className="size-4" />
             添加账号
           </Button>
-        </div>
-      </div>
-
+        </>
+      }
+    >
       {error && (
         <div
           role="alert"
-          className="flex items-center justify-between gap-3 border-b border-error/20 bg-error-bg px-5 py-3 text-xs text-error"
+          className="flex items-center justify-between gap-3 rounded-lg bg-error/10 px-3 py-2 text-caption text-error"
         >
           <span>{error}</span>
           <Button
             type="button"
             variant="ghost"
-            size="sm"
+            size="xs"
+            className="text-error hover:text-error"
             onClick={() => void loadAccounts()}
           >
             重试
@@ -222,32 +238,35 @@ export function ChannelAccountsManager() {
         </div>
       )}
 
-      <div className="divide-y divide-border">
-        {loading && accounts.length === 0 ? (
-          <div className="flex items-center gap-2 px-5 py-8 text-sm text-muted-foreground">
+      {loading && accounts.length === 0 ? (
+        <SettingsGroup>
+          <div className="flex items-center gap-2 px-4 py-6 text-body text-muted-foreground">
             <Loader2 className="size-4 animate-spin" />
             正在加载渠道账号…
           </div>
-        ) : accounts.length === 0 ? (
-          <div className="px-5 py-8 text-center">
-            <Bot className="mx-auto size-8 text-muted-foreground" />
-            <p className="mt-2 text-sm font-medium">还没有渠道账号</p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              添加第一个 Bot，完成渠道自己的凭证或扫码接入流程。
-            </p>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="mt-4"
-              onClick={() => setCreateOpen(true)}
-            >
-              <Plus className="size-3.5" />
-              添加渠道账号
-            </Button>
-          </div>
-        ) : (
-          accounts.map((account) => (
+        </SettingsGroup>
+      ) : accounts.length === 0 ? (
+        <SettingsGroup>
+          <EmptyState
+            icon={Bot}
+            title="还没有渠道账号"
+            description="添加第一个 Bot，完成渠道自己的凭证或扫码接入流程。"
+            className="py-10"
+            action={
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setCreateOpen(true)}
+              >
+                <Plus className="size-4" />
+                添加渠道账号
+              </Button>
+            }
+          />
+        </SettingsGroup>
+      ) : (
+        <ListGroup>
+          {accounts.map((account) => (
             <ChannelAccountRow
               key={account.id}
               account={account}
@@ -262,9 +281,9 @@ export function ChannelAccountsManager() {
               onSettings={() => setSettingsId(account.id)}
               onDelete={handleDelete}
             />
-          ))
-        )}
-      </div>
+          ))}
+        </ListGroup>
+      )}
 
       <CreateChannelAccountDialog
         open={createOpen}
@@ -298,7 +317,7 @@ export function ChannelAccountsManager() {
           setAutoStartConnectionId(null);
         }}
       />
-    </section>
+    </SettingsSection>
   );
 }
 
@@ -322,109 +341,121 @@ function ChannelAccountRow({
   onDelete: (account: ChannelAccount) => Promise<void>;
 }) {
   const busy = !!actionId;
+  const ProviderIcon = CHANNEL_ICON[account.provider];
+  const connectionLabel =
+    providerAuthMode(account.provider) === 'qr_session'
+      ? account.auth_status === 'authorized'
+        ? '管理连接'
+        : '扫码连接'
+      : '连接设置';
+  const rowBusy =
+    actionId === `test:${account.id}` || actionId === `delete:${account.id}`;
   return (
-    <div className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center">
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="truncate text-sm font-medium">{account.name}</span>
-          <span className="rounded bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
-            {providerLabel(account.provider)}
+    <ListRow
+      media={
+        <span className="flex size-8 items-center justify-center rounded-lg bg-muted text-muted-foreground ring-1 ring-surface-border">
+          {ProviderIcon ? (
+            <ProviderIcon className="size-4" />
+          ) : (
+            <Bot className="size-4" />
+          )}
+        </span>
+      }
+      title={account.name}
+      badges={
+        account.is_default ? <Badge variant="neutral">默认账号</Badge> : null
+      }
+      description={
+        <>
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <AccountStateBadges account={account} />
+            <span>
+              {providerLabel(account.provider)} ·{' '}
+              {defaultTargetLabel(account, workspaces)}
+            </span>
           </span>
-          {account.is_default && (
-            <span className="rounded bg-primary/10 px-2 py-0.5 text-[10px] text-primary">
-              默认账号
+          {account.last_error && (
+            <span
+              role={
+                account.transport_status === 'reconnecting' ? 'status' : 'alert'
+              }
+              className={`mt-1 line-clamp-2 block ${
+                account.transport_status === 'reconnecting'
+                  ? 'text-warning'
+                  : 'text-error'
+              }`}
+            >
+              {account.transport_status === 'reconnecting'
+                ? `自动重连中：${account.last_error}`
+                : account.last_error}
             </span>
           )}
-          <AccountStateBadges account={account} />
-        </div>
-        <p className="mt-1 text-xs text-muted-foreground">
-          {defaultTargetLabel(account, workspaces)}
-        </p>
-        {account.last_error && (
-          <p
-            role={
-              account.transport_status === 'reconnecting' ? 'status' : 'alert'
-            }
-            className={`mt-1 line-clamp-2 text-xs ${
-              account.transport_status === 'reconnecting'
-                ? 'text-warning'
-                : 'text-error'
-            }`}
+        </>
+      }
+      actions={
+        <>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={busy}
+            onClick={onConnection}
+            className="max-sm:hidden"
           >
-            {account.transport_status === 'reconnecting'
-              ? `自动重连中：${account.last_error}`
-              : account.last_error}
-          </p>
-        )}
-      </div>
-      <div className="flex flex-wrap items-center gap-1.5">
-        {supportsChannelConnectionTest(account.provider) &&
-          account.has_credentials && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              disabled={busy}
-              onClick={() => void onTest(account)}
-            >
-              {actionId === `test:${account.id}` ? (
-                <Loader2 className="size-3.5 animate-spin" />
-              ) : (
-                <TestTube2 className="size-3.5" />
-              )}
-              测试连接
-            </Button>
-          )}
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          disabled={busy}
-          onClick={onConnection}
-        >
-          <KeyRound className="size-3.5" />
-          {providerAuthMode(account.provider) === 'qr_session'
-            ? account.auth_status === 'authorized'
-              ? '管理连接'
-              : '扫码连接'
-            : '连接设置'}
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          disabled={busy}
-          onClick={onSettings}
-        >
-          <Settings2 className="size-3.5" />
-          默认规则
-        </Button>
-        <div className="flex min-h-9 items-center gap-2 px-2 text-xs text-muted-foreground">
+            <KeyRound className="size-3.5" />
+            {connectionLabel}
+          </Button>
           <Switch
             checked={account.enabled}
             disabled={busy}
             onCheckedChange={() => void onToggle(account)}
             aria-label={`${account.enabled ? '停用' : '启用'}账号 ${account.name}`}
+            className="mx-1.5"
           />
-          {account.enabled ? '启用' : '停用'}
-        </div>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="text-error hover:text-error"
-          disabled={busy}
-          onClick={() => void onDelete(account)}
-          aria-label={`删除账号 ${account.name}`}
-        >
-          {actionId === `delete:${account.id}` ? (
-            <Loader2 className="size-3.5 animate-spin" />
-          ) : (
-            <Trash2 className="size-3.5" />
-          )}
-        </Button>
-      </div>
-    </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <IconButton
+                label={`更多操作 ${account.name}`}
+                disabled={busy}
+                icon={
+                  rowBusy ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <MoreHorizontal />
+                  )
+                }
+              />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuItem onSelect={onConnection}>
+                <KeyRound />
+                {connectionLabel}
+              </DropdownMenuItem>
+              {supportsChannelConnectionTest(account.provider) &&
+                account.has_credentials && (
+                  <DropdownMenuItem onSelect={() => void onTest(account)}>
+                    <TestTube2 />
+                    测试连接
+                  </DropdownMenuItem>
+                )}
+              <DropdownMenuItem onSelect={onSettings}>
+                <Settings2 />
+                默认规则
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                variant="destructive"
+                onSelect={() => void onDelete(account)}
+                aria-label={`删除账号 ${account.name}`}
+              >
+                <Trash2 />
+                删除账号
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </>
+      }
+    />
   );
 }
 
@@ -505,7 +536,7 @@ function CreateChannelAccountDialog({
       open={open}
       onOpenChange={(value) => !value && !saving && onClose()}
     >
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>添加渠道账号</DialogTitle>
           <DialogDescription>
@@ -517,8 +548,10 @@ function CreateChannelAccountDialog({
         {step === 1 ? (
           <div className="space-y-5">
             <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <Label htmlFor="new-channel-provider">渠道</Label>
+              <div className="space-y-1.5">
+                <Label htmlFor="new-channel-provider" className="text-label">
+                  渠道
+                </Label>
                 <Select
                   value={provider}
                   onValueChange={(value) => {
@@ -528,7 +561,7 @@ function CreateChannelAccountDialog({
                     setFormError(null);
                   }}
                 >
-                  <SelectTrigger id="new-channel-provider" className="mt-1.5">
+                  <SelectTrigger id="new-channel-provider" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -540,21 +573,22 @@ function CreateChannelAccountDialog({
                   </SelectContent>
                 </Select>
               </div>
-              <div>
-                <Label htmlFor="new-channel-name">账号名称</Label>
+              <div className="space-y-1.5">
+                <Label htmlFor="new-channel-name" className="text-label">
+                  账号名称
+                </Label>
                 <Input
                   id="new-channel-name"
                   value={name}
                   onChange={(event) => setName(event.target.value)}
-                  className="mt-1.5"
-                  placeholder={`例如：客服${definition.label} Bot`}
+                  placeholder={`例如：${spacedLabel('客服', definition.label)} Bot`}
                   autoFocus
                 />
               </div>
             </div>
-            <div className="border-t border-border pt-4">
-              <h3 className="text-sm font-medium">连接方式</h3>
-              <p className="mb-4 mt-1 text-xs leading-5 text-muted-foreground">
+            <div className="border-t border-surface-border pt-4">
+              <h3 className="text-title-sm text-foreground">连接方式</h3>
+              <p className="mt-0.5 mb-4 text-caption leading-5 text-muted-foreground">
                 {definition.description}
               </p>
               <ProviderConnectionFields
@@ -570,6 +604,7 @@ function CreateChannelAccountDialog({
           </div>
         ) : (
           <AccountRoutingFields
+            mode="create"
             idPrefix="new-channel-routing"
             provider={provider}
             enabled={enabled}
@@ -583,7 +618,7 @@ function CreateChannelAccountDialog({
         )}
 
         {formError && (
-          <p role="alert" className="text-sm text-error">
+          <p role="alert" className="text-caption text-error">
             {formError}
           </p>
         )}
@@ -601,7 +636,7 @@ function CreateChannelAccountDialog({
             disabled={saving}
             onClick={() => void (step === 1 ? next() : submit())}
           >
-            {saving && <Loader2 className="size-4 animate-spin" />}
+            {saving && <Loader2 className="size-3.5 animate-spin" />}
             {step === 1
               ? '下一步：默认规则'
               : providerAuthMode(provider) === 'qr_session'
@@ -676,16 +711,18 @@ function AccountSettingsDialog({
         </DialogHeader>
         {account && (
           <div className="space-y-5">
-            <div>
-              <Label htmlFor="channel-settings-name">账号名称</Label>
+            <div className="space-y-1.5">
+              <Label htmlFor="channel-settings-name" className="text-label">
+                账号名称
+              </Label>
               <Input
                 id="channel-settings-name"
                 value={name}
                 onChange={(event) => setName(event.target.value)}
-                className="mt-1.5"
               />
             </div>
             <AccountRoutingFields
+              mode="edit"
               idPrefix="channel-settings-routing"
               provider={account.provider}
               enabled={enabled}
@@ -697,7 +734,7 @@ function AccountSettingsDialog({
               onWorkspaceChange={setDefaultWorkspace}
             />
             {error && (
-              <p role="alert" className="text-sm text-error">
+              <p role="alert" className="text-caption text-error">
                 {error}
               </p>
             )}
@@ -713,7 +750,7 @@ function AccountSettingsDialog({
             取消
           </Button>
           <Button type="button" disabled={saving} onClick={() => void submit()}>
-            {saving && <Loader2 className="size-4 animate-spin" />}
+            {saving && <Loader2 className="size-3.5 animate-spin" />}
             保存默认规则
           </Button>
         </DialogFooter>
@@ -793,8 +830,13 @@ function AccountConnectionDialog({
   };
 
   const revokeCredentials = async () => {
-    if (!window.confirm(`清除「${account.name}」的连接凭证并停用账号？`))
-      return;
+    const confirmed = await confirmDialog({
+      title: '清除连接凭证',
+      message: `清除「${account.name}」的连接凭证并停用账号？`,
+      confirmText: '清除连接凭证',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
     setSaving(true);
     setError(null);
     try {
@@ -810,9 +852,11 @@ function AccountConnectionDialog({
 
   return (
     <Dialog open onOpenChange={(value) => !value && !saving && onClose()}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+      <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>{providerLabel(account.provider)}连接</DialogTitle>
+          <DialogTitle>
+            {spacedLabel(providerLabel(account.provider), '连接')}
+          </DialogTitle>
           <DialogDescription>
             管理“{account.name}
             ”的认证和协议设置。渠道会话的绑定目标请在绑定管理中选择。
@@ -822,8 +866,8 @@ function AccountConnectionDialog({
         {definition.authMode === 'qr_session' ? (
           <div className="space-y-5">
             {account.provider === 'wechat' && (
-              <div>
-                <h3 className="mb-2 text-sm font-medium">网络方式</h3>
+              <div className="space-y-2">
+                <h3 className="text-title-sm text-foreground">网络方式</h3>
                 <ProviderConnectionFields
                   provider="wechat"
                   values={options}
@@ -838,7 +882,6 @@ function AccountConnectionDialog({
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="mt-2"
                   disabled={saving}
                   onClick={() => void saveOptions()}
                 >
@@ -847,75 +890,72 @@ function AccountConnectionDialog({
                 </Button>
               </div>
             )}
-            <div className="border-t border-border pt-4">
-              <h3 className="mb-3 text-sm font-medium">扫码与连接状态</h3>
+            <div className="space-y-3 border-t border-surface-border pt-4 first:border-t-0 first:pt-0">
+              <h3 className="text-title-sm text-foreground">扫码与连接状态</h3>
               <QrOnboardingPanel account={account} autoStart={autoStart} />
             </div>
           </div>
         ) : (
           <div className="space-y-5">
-            <div className="rounded-lg border border-border px-4 py-3">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <p className="text-sm font-medium">
-                    {account.has_credentials
-                      ? '连接凭证已配置'
-                      : '连接凭证待配置'}
-                  </p>
-                  <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-                    密钥不会回填。替换凭证时请重新填写完整的一组字段。
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    setReplacing((current) => !current);
-                    setCredentials(defaultCredentials(account.provider));
-                    setError(null);
-                  }}
-                >
-                  <Pencil className="size-3.5" />
-                  {replacing
-                    ? '取消替换'
-                    : account.has_credentials
-                      ? '替换凭证'
-                      : '填写凭证'}
-                </Button>
-              </div>
-              {replacing && (
-                <div className="mt-4 border-t border-border pt-4">
-                  <ProviderConnectionFields
-                    provider={account.provider}
-                    values={{ ...credentials, ...options }}
-                    idPrefix={`replace-${account.id}`}
-                    disabled={saving}
-                    showOptions={false}
-                    onChange={(key, value) =>
-                      setCredentials((current) => ({
-                        ...current,
-                        [key]: value,
-                      }))
-                    }
-                  />
+            <SettingsGroup>
+              <SettingsRow
+                label={
+                  account.has_credentials ? '连接凭证已配置' : '连接凭证待配置'
+                }
+                description="密钥不会回填。替换凭证时请重新填写完整的一组字段。"
+                control={
                   <Button
                     type="button"
-                    className="mt-4"
-                    disabled={saving}
-                    onClick={() => void replaceCredentials()}
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setReplacing((current) => !current);
+                      setCredentials(defaultCredentials(account.provider));
+                      setError(null);
+                    }}
                   >
-                    {saving && <Loader2 className="size-4 animate-spin" />}
-                    保存新凭证
+                    <Pencil className="size-3.5" />
+                    {replacing
+                      ? '取消替换'
+                      : account.has_credentials
+                        ? '替换凭证'
+                        : '填写凭证'}
                   </Button>
-                </div>
-              )}
-            </div>
+                }
+              >
+                {replacing && (
+                  <div className="space-y-4 border-t border-surface-border pt-4">
+                    <ProviderConnectionFields
+                      provider={account.provider}
+                      values={{ ...credentials, ...options }}
+                      idPrefix={`replace-${account.id}`}
+                      disabled={saving}
+                      showOptions={false}
+                      onChange={(key, value) =>
+                        setCredentials((current) => ({
+                          ...current,
+                          [key]: value,
+                        }))
+                      }
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={saving}
+                      onClick={() => void replaceCredentials()}
+                    >
+                      {saving && <Loader2 className="size-3.5 animate-spin" />}
+                      保存新凭证
+                    </Button>
+                  </div>
+                )}
+              </SettingsRow>
+            </SettingsGroup>
 
             {(account.provider === 'dingtalk' ||
               account.provider === 'discord') && (
-              <div>
-                <h3 className="mb-2 text-sm font-medium">回复方式</h3>
+              <div className="space-y-2">
+                <h3 className="text-title-sm text-foreground">回复方式</h3>
                 <ProviderConnectionFields
                   provider={account.provider}
                   values={options}
@@ -930,27 +970,11 @@ function AccountConnectionDialog({
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="mt-2"
                   disabled={saving}
                   onClick={() => void saveOptions()}
                 >
                   {saving && <Loader2 className="size-3.5 animate-spin" />}
                   保存回复方式
-                </Button>
-              </div>
-            )}
-
-            {account.has_credentials && (
-              <div className="border-t border-border pt-4">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="text-error hover:text-error"
-                  disabled={saving}
-                  onClick={() => void revokeCredentials()}
-                >
-                  <Trash2 className="size-4" />
-                  清除连接凭证
                 </Button>
               </div>
             )}
@@ -963,11 +987,23 @@ function AccountConnectionDialog({
           )}
 
         {error && (
-          <p role="alert" className="text-sm text-error">
+          <p role="alert" className="text-caption text-error">
             {error}
           </p>
         )}
         <DialogFooter>
+          {definition.authMode !== 'qr_session' && account.has_credentials && (
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={saving}
+              onClick={() => void revokeCredentials()}
+              className="sm:mr-auto"
+            >
+              <Trash2 className="size-4" />
+              清除连接凭证
+            </Button>
+          )}
           <Button
             type="button"
             variant="outline"
@@ -1001,6 +1037,7 @@ function AccountPairingSection({ account }: { account: ChannelAccount }) {
 }
 
 function AccountRoutingFields({
+  mode,
   idPrefix,
   provider,
   enabled,
@@ -1011,6 +1048,7 @@ function AccountRoutingFields({
   onDefaultChange,
   onWorkspaceChange,
 }: {
+  mode: 'create' | 'edit';
   idPrefix: string;
   provider: ChannelProvider;
   enabled: boolean;
@@ -1023,31 +1061,29 @@ function AccountRoutingFields({
 }) {
   return (
     <div className="space-y-5">
-      <div className="space-y-3 rounded-lg border border-border px-4 py-3">
+      <SettingsGroup>
         <ToggleField
           id={`${idPrefix}-enabled`}
-          label="创建后启用账号"
+          label={mode === 'create' ? '创建后启用账号' : '启用账号'}
           description="停用只会断开消息连接，不会删除凭证或扫码授权。"
           checked={enabled}
           onChange={onEnabledChange}
         />
         <ToggleField
           id={`${idPrefix}-default`}
-          label={`设为默认${providerLabel(provider)}账号`}
+          label={spacedLabel('设为默认', providerLabel(provider), '账号')}
           description="没有明确指定账号时，优先使用这个账号。"
           checked={isDefault}
           onChange={onDefaultChange}
         />
-      </div>
-      <div>
-        <Label htmlFor={`${idPrefix}-workspace`}>
-          工作区偏好（不自动绑定）
-        </Label>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">
-          此设置不会绑定渠道或触发回复。请到“已接入会话”明确绑定；未绑定的渠道不响应消息。
-        </p>
+      </SettingsGroup>
+      <SettingsField
+        label="工作区偏好（不自动绑定）"
+        htmlFor={`${idPrefix}-workspace`}
+        description="此设置不会绑定渠道或触发回复。请到“已接入会话”明确绑定；未绑定的渠道不响应消息。"
+      >
         <Select value={defaultWorkspace} onValueChange={onWorkspaceChange}>
-          <SelectTrigger id={`${idPrefix}-workspace`} className="mt-2">
+          <SelectTrigger id={`${idPrefix}-workspace`} className="w-full">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -1059,7 +1095,7 @@ function AccountRoutingFields({
             ))}
           </SelectContent>
         </Select>
-      </div>
+      </SettingsField>
     </div>
   );
 }
@@ -1078,17 +1114,12 @@ function ToggleField({
   onChange: (value: boolean) => void;
 }) {
   return (
-    <div className="flex items-start justify-between gap-4">
-      <div>
-        <Label htmlFor={id} className="text-sm font-medium">
-          {label}
-        </Label>
-        <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-          {description}
-        </p>
-      </div>
-      <Switch id={id} checked={checked} onCheckedChange={onChange} />
-    </div>
+    <SettingsSwitchRow
+      label={label}
+      description={description}
+      htmlFor={id}
+      control={<Switch id={id} checked={checked} onCheckedChange={onChange} />}
+    />
   );
 }
 
@@ -1106,45 +1137,41 @@ function AccountStateBadges({ account }: { account: ChannelAccount }) {
           : account.status === 'error'
             ? 'error'
             : 'disconnected');
-  const auth = {
-    draft: ['待配置', 'bg-muted text-muted-foreground'],
-    awaiting_scan: ['待扫码', 'bg-warning-bg text-warning'],
-    authorized: ['已授权', 'bg-success-bg text-success'],
-    revoked: ['已撤销', 'bg-muted text-muted-foreground'],
-    error: ['认证异常', 'bg-error-bg text-error'],
-  }[authStatus];
+  const auth = (
+    {
+      draft: ['待配置', 'muted'],
+      awaiting_scan: ['待扫码', 'warning'],
+      authorized: ['已授权', 'success'],
+      revoked: ['已撤销', 'muted'],
+      error: ['认证异常', 'error'],
+    } as const
+  )[authStatus];
   const transport = !account.enabled
-    ? (['已停用', 'bg-muted text-muted-foreground'] as const)
-    : {
-        disconnected: ['离线', 'bg-muted text-muted-foreground'],
-        connecting: ['连接中', 'bg-warning-bg text-warning'],
-        reconnecting: ['重连中', 'bg-warning-bg text-warning'],
-        connected: ['在线', 'bg-success-bg text-success'],
-        error: ['连接异常', 'bg-error-bg text-error'],
-      }[transportStatus];
+    ? (['已停用', 'muted'] as const)
+    : (
+        {
+          disconnected: ['离线', 'muted'],
+          connecting: ['连接中', 'warning'],
+          reconnecting: ['重连中', 'warning'],
+          connected: ['在线', 'success'],
+          error: ['连接异常', 'error'],
+        } as const
+      )[transportStatus];
   return (
     <>
-      <span
-        className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] ${auth[1]}`}
-      >
-        {authStatus === 'authorized' && <CheckCircle2 className="size-3" />}
-        {authStatus === 'error' && <AlertCircle className="size-3" />}
+      <Badge variant="outline" dot={auth[1]} title="认证状态">
         {auth[0]}
-      </span>
-      <span
-        className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] ${transport[1]}`}
-      >
-        {transportStatus === 'connected' && account.enabled && (
-          <CheckCircle2 className="size-3" />
-        )}
-        {transportStatus === 'reconnecting' && account.enabled && (
-          <RefreshCw className="size-3 motion-safe:animate-spin" />
-        )}
-        {transportStatus === 'error' && account.enabled && (
-          <AlertCircle className="size-3" />
-        )}
-        {transport[0]}
-      </span>
+      </Badge>
+      {transportStatus === 'reconnecting' && account.enabled ? (
+        <Badge variant="outline" className="text-warning" title="连接状态">
+          <RefreshCw className="motion-safe:animate-spin" />
+          {transport[0]}
+        </Badge>
+      ) : (
+        <Badge variant="outline" dot={transport[1]} title="连接状态">
+          {transport[0]}
+        </Badge>
+      )}
     </>
   );
 }
@@ -1173,6 +1200,15 @@ function defaultTargetLabel(
   if (account.default_workspace_jid)
     return `工作区偏好：${workspaces.find((item) => item.jid === account.default_workspace_jid)?.name ?? '已删除工作区'}`;
   return '未设置工作区偏好；渠道需单独绑定';
+}
+
+/** Joins copy fragments, spacing a Latin provider name from adjacent CJK text. */
+function spacedLabel(...parts: string[]) {
+  return parts.reduce((text, part) =>
+    /[A-Za-z0-9]$/.test(text) || /^[A-Za-z0-9]/.test(part)
+      ? `${text} ${part}`
+      : text + part,
+  );
 }
 
 function getApiMessage(error: unknown, fallback: string) {

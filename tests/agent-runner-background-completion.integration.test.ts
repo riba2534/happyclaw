@@ -394,6 +394,10 @@ describe('Claude Code merged background-task completions', () => {
     expect(
       isSdkBookkeepingFrame({ type: 'system', subtype: 'task_notification' }),
     ).toBe(false);
+    // Claude Code 2.1.283+ forwards notices that used to be dropped.
+    expect(
+      isSdkBookkeepingFrame({ type: 'system', subtype: 'informational' }),
+    ).toBe(true);
   }, 30_000);
 
   test('user messages queued behind a busy turn come back as one Result that completes every merged IPC turn', async () => {

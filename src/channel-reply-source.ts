@@ -34,11 +34,20 @@ export function selectChannelReplyBatch<T extends NewMessage>(
 ): T[] {
   if (messages.length < 2) return messages;
   const firstRoute = messageRouteKey(messages[0]);
+  // Same-route prefixes are tracked incrementally: re-deriving every key of
+  // every candidate prefix was O(n²) and froze the event loop for minutes on
+  // a recovered backlog (4k messages: 1.5s; 50k: >3min). The anchor resolvers
+  // only run once the prefix mixes routes, exactly as before.
+  let sameRoute = true;
   let end = 1;
   while (end < messages.length) {
+    sameRoute = sameRoute && messageRouteKey(messages[end]) === firstRoute;
+    if (sameRoute) {
+      end += 1;
+      continue;
+    }
     const candidate = messages.slice(0, end + 1);
     if (
-      candidate.every((message) => messageRouteKey(message) === firstRoute) ||
       resolveForwardBundleBatchAnchor(candidate) ||
       resolveCompatibleChannelBatchAnchor(candidate)
     ) {

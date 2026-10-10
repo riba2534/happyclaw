@@ -24,10 +24,10 @@ import {
 import { storeChatMetadata, storeMessageDirect } from './db.js';
 import { notifyNewImMessage } from './message-notifier.js';
 import { logger } from './logger.js';
-import { GROUPS_DIR } from './config.js';
 import {
   saveDownloadedFile,
   MAX_FILE_SIZE,
+  resolveImDownloadRoot,
   sanitizeImFilename,
 } from './im-downloader.js';
 import { extractFileText } from './file-text-extractor.js';
@@ -1200,7 +1200,8 @@ async function buildFileContentBlock(params: {
   prefixLabel: string; // e.g. "引用文件" or "文件"
 }): Promise<string> {
   const { fileName, savedRelPath, groupFolder, prefixLabel } = params;
-  const absPath = path.join(GROUPS_DIR, groupFolder, savedRelPath);
+  // Same root the download was saved under (customCwd for Host workspaces).
+  const absPath = path.join(resolveImDownloadRoot(groupFolder), savedRelPath);
   const extracted = await extractFileText(absPath);
   const safeName = sanitizeFileName(fileName);
 

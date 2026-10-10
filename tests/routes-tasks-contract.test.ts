@@ -1163,3 +1163,89 @@ describe('tasks route ownership and cleanup contract', () => {
     expect(await retry.json()).toMatchObject({ runId: 'run-stable' });
   });
 });
+
+describe('GET /api/tasks list cost', () => {
+  const FEISHU_JID = 'feishu:oc_tasks_contract';
+
+  test('caches Feishu chat names across polls and keeps permissions identical', async () => {
+    tasksRoutesModule.clearFeishuChatNameCache();
+    db.setRegisteredGroup(FEISHU_JID, {
+      name: 'Persisted Name',
+      folder: GROUP_FOLDER,
+      added_at: new Date().toISOString(),
+      created_by: OWNER_ID,
+      is_home: false,
+    } as any);
+    createTask('list-cost-web', OWNER_ID);
+    createTask('list-cost-feishu', OWNER_ID, { chat_jid: FEISHU_JID });
+    const getFeishuChatInfo = vi.fn(async () => ({ name: 'Live Name' }));
+    webContext.setWebDeps({ getFeishuChatInfo } as any);
+    asUser(OWNER_ID);
+    try {
+      const first = await (await tasksRoutes.request('/')).json();
+      const second = await (await tasksRoutes.request('/')).json();
+      expect(first.groupNames[FEISHU_JID]).toBe('Live Name');
+      expect(second.groupNames[FEISHU_JID]).toBe('Live Name');
+      expect(getFeishuChatInfo).toHaveBeenCalledTimes(1);
+
+      // Batched per-request context yields the same permissions as the
+      // single-task path.
+      for (const task of first.tasks) {
+        const single = await tasksRoutes.request(`/${task.id}/runs`);
+        expect(single.status).toBe(200);
+        expect(task.permissions).toMatchObject({
+          can_edit: true,
+          can_pause: true,
+          can_stop: false,
+          is_admin: false,
+        });
+        expect(task.current_run).toBeNull();
+      }
+    } finally {
+      db.deleteTask('list-cost-web');
+      db.deleteTask('list-cost-feishu');
+      db.deleteRegisteredGroup?.(FEISHU_JID);
+    }
+  });
+
+  test('retries a missing Feishu chat name after a short negative TTL', async () => {
+    tasksRoutesModule.clearFeishuChatNameCache();
+    db.setRegisteredGroup(FEISHU_JID, {
+      name: 'Persisted Name',
+      folder: GROUP_FOLDER,
+      added_at: new Date().toISOString(),
+      created_by: OWNER_ID,
+      is_home: false,
+    } as any);
+    createTask('list-cost-miss', OWNER_ID, { chat_jid: FEISHU_JID });
+    const getFeishuChatInfo = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue({ name: 'Live Name' });
+    webContext.setWebDeps({ getFeishuChatInfo } as any);
+    asUser(OWNER_ID);
+    const start = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(start);
+    const poll = async (at: number) => {
+      clock.mockReturnValue(start + at);
+      return (await (await tasksRoutes.request('/')).json()).groupNames[
+        FEISHU_JID
+      ];
+    };
+    try {
+      expect(await poll(0)).toBe('Persisted Name');
+      expect(await poll(10_000)).toBe('Persisted Name');
+      expect(getFeishuChatInfo).toHaveBeenCalledTimes(1);
+      // The miss expires after 30s, not the 10-minute name TTL.
+      expect(await poll(31_000)).toBe('Live Name');
+      expect(getFeishuChatInfo).toHaveBeenCalledTimes(2);
+      // A resolved name is kept for the full TTL.
+      expect(await poll(5 * 60_000)).toBe('Live Name');
+      expect(getFeishuChatInfo).toHaveBeenCalledTimes(2);
+    } finally {
+      clock.mockRestore();
+      db.deleteTask('list-cost-miss');
+      db.deleteRegisteredGroup?.(FEISHU_JID);
+    }
+  });
+});

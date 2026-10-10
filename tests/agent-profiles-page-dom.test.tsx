@@ -81,6 +81,7 @@ const mocks = vi.hoisted(() => {
       runtime_cleanup_pending: false,
     })),
     retryRuntimeCleanup: vi.fn(async () => undefined),
+    deleteProfile: vi.fn(async () => undefined),
     loadSkills: vi.fn(async () => undefined),
     loadMcp: vi.fn(async () => undefined),
   };
@@ -105,7 +106,7 @@ vi.mock('../web/src/stores/agent-profiles', () => ({
     updateProfile: mocks.updateProfile,
     uploadProfileAvatar: vi.fn(),
     removeProfileAvatar: vi.fn(),
-    deleteProfile: vi.fn(),
+    deleteProfile: mocks.deleteProfile,
     setWorkspaceAgentProfile: vi.fn(),
   }),
 }));
@@ -176,6 +177,7 @@ vi.mock('../web/src/components/common/ColorPicker', () => ({
 
 const { AgentProfilesPage } =
   await import('../web/src/pages/AgentProfilesPage');
+const { useConfirmStore } = await import('../web/src/stores/confirm');
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -200,6 +202,7 @@ afterEach(() => {
   mocks.profiles = [mocks.profile];
   mocks.governanceByProfile = {};
   mocks.userRole = 'admin';
+  useConfirmStore.getState().settle(false);
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
@@ -537,5 +540,39 @@ describe('智能体宿主机 Skills 自动保存', () => {
     ).find((button) => button.textContent?.includes('不使用'));
     expect(disabled?.getAttribute('aria-checked')).toBe('true');
     expect(container?.textContent).not.toContain('保存失败，当前选择尚未生效');
+  });
+
+  test('删除智能体通过应用内确认框而不是原生 confirm', async () => {
+    const nativeConfirm = vi.fn((_message?: string) => true);
+    vi.stubGlobal('confirm', nativeConfirm);
+    await renderPage({ expectHostAll: false });
+
+    const deleteButton = container!.querySelector<HTMLButtonElement>(
+      'button[aria-label="删除智能体"]',
+    );
+    expect(deleteButton).not.toBeNull();
+    await act(async () => {
+      deleteButton!.click();
+    });
+
+    await vi.waitFor(() =>
+      expect(useConfirmStore.getState().pending).toMatchObject({
+        title: '删除智能体',
+        message: '确认删除智能体「调研智能体」？',
+        variant: 'danger',
+      }),
+    );
+    expect(mocks.deleteProfile).not.toHaveBeenCalled();
+
+    await act(async () => {
+      useConfirmStore.getState().settle(true);
+    });
+    await vi.waitFor(() =>
+      expect(mocks.deleteProfile).toHaveBeenCalledWith('research-profile'),
+    );
+    // Native confirm() is reserved for the synchronous unsaved-changes guard.
+    for (const [message] of nativeConfirm.mock.calls) {
+      expect(message).not.toContain('确认删除智能体');
+    }
   });
 });

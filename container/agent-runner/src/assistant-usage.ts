@@ -12,16 +12,26 @@ export interface CollectedAssistantUsage extends TokenSnapshot {
   id: string;
   model: string;
   total: number;
+  /** Subagent task ID (SDK 0.3.292+); selects the sidechain transcript. */
+  agentId?: string;
+  /**
+   * The snapshot carries a stop_reason. On a transcript line the call has
+   * ended. Claude Code 2.1.296 sets one on a live message only on its
+   * non-streaming fallback, which yields the message before counting the
+   * call, so it proves nothing about modelUsage there.
+   */
+  stopped?: boolean;
 }
 
 /**
  * Loads final assistant usage snapshots for message IDs from a source of
- * truth (the session transcript), used to backfill zero-token stream
- * snapshots. Returns a map keyed by message ID; missing IDs are simply
- * absent. Must not throw.
+ * truth (the session transcript, or a subagent's sidechain transcript when
+ * `agentId` is given). Returns a map keyed by message ID; missing IDs are
+ * simply absent. Must not throw.
  */
 export type TranscriptUsageLoader = (
   ids: string[],
+  agentId?: string,
 ) => Map<string, CollectedAssistantUsage>;
 
 function nonNegative(value: unknown): number {
@@ -64,22 +74,19 @@ export function splitClaudeOutputTokens(
   );
 }
 
-export function parseAssistantUsage(
-  sdkMessage: Record<string, unknown>,
-): CollectedAssistantUsage | undefined {
-  if (sdkMessage.type !== 'assistant') return undefined;
-  const message = sdkMessage.message as Record<string, unknown> | undefined;
-  const usage = message?.usage as Record<string, unknown> | undefined;
-  if (!message || !usage) return undefined;
-  const id = String(message.id || sdkMessage.uuid || '').trim();
-  if (!id) return undefined;
-  const value = {
-    id,
-    model: String(message.model || 'unknown').trim() || 'unknown',
-    // Official Anthropic transcript objects use snake_case. Some Agent SDK
-    // compatible providers expose the same live object in camelCase and only
-    // serialize it to snake_case on disk. Accept both so a valid turn cannot
-    // be persisted as a misleading zero-token event.
+function snapshotTotal(value: TokenSnapshot): number {
+  return (
+    value.inputTokens +
+    value.outputTokens +
+    value.cacheReadInputTokens +
+    value.cacheCreationInputTokens +
+    value.reasoningTokens
+  );
+}
+
+/** Snake_case API usage or the camelCase variant some proxies emit. */
+function parseUsageTokens(usage: Record<string, unknown>): TokenSnapshot {
+  return {
     inputTokens: Math.max(
       nonNegative(usage.input_tokens),
       nonNegative(usage.inputTokens),
@@ -102,14 +109,69 @@ export function parseAssistantUsage(
       nonNegative(usage.reasoningTokens),
     ),
   };
+}
+
+/**
+ * Field-wise maximum. Every source reports the same API call: the live
+ * assistant message carries message_start's placeholder output count, while
+ * message_delta and the persisted transcript carry the final one.
+ */
+function maxTokens(
+  base: TokenSnapshot,
+  ...others: Array<TokenSnapshot | undefined>
+): TokenSnapshot {
+  const result = { ...base };
+  for (const other of others) {
+    if (!other) continue;
+    result.inputTokens = Math.max(result.inputTokens, other.inputTokens);
+    result.outputTokens = Math.max(result.outputTokens, other.outputTokens);
+    result.cacheReadInputTokens = Math.max(
+      result.cacheReadInputTokens,
+      other.cacheReadInputTokens,
+    );
+    result.cacheCreationInputTokens = Math.max(
+      result.cacheCreationInputTokens,
+      other.cacheCreationInputTokens,
+    );
+    result.reasoningTokens = Math.max(
+      result.reasoningTokens,
+      other.reasoningTokens,
+    );
+  }
+  return result;
+}
+
+export function parseAssistantUsage(
+  sdkMessage: Record<string, unknown>,
+): CollectedAssistantUsage | undefined {
+  if (sdkMessage.type !== 'assistant') return undefined;
+  const message = sdkMessage.message as Record<string, unknown> | undefined;
+  const usage = message?.usage as Record<string, unknown> | undefined;
+  if (!message || !usage) return undefined;
+  const id = String(message.id || sdkMessage.uuid || '').trim();
+  if (!id) return undefined;
+  const value = {
+    id,
+    model: String(message.model || 'unknown').trim() || 'unknown',
+    // Official Anthropic transcript objects use snake_case. Some Agent SDK
+    // compatible providers expose the same live object in camelCase and only
+    // serialize it to snake_case on disk. Accept both so a valid turn cannot
+    // be persisted as a misleading zero-token event.
+    ...parseUsageTokens(usage),
+  };
+  const agentId =
+    typeof sdkMessage.agent_id === 'string' && sdkMessage.agent_id.trim()
+      ? sdkMessage.agent_id.trim()
+      : typeof sdkMessage.agentId === 'string' && sdkMessage.agentId.trim()
+        ? sdkMessage.agentId.trim()
+        : undefined;
+  const stopped =
+    typeof message.stop_reason === 'string' && message.stop_reason !== '';
   return {
     ...value,
-    total:
-      value.inputTokens +
-      value.outputTokens +
-      value.cacheReadInputTokens +
-      value.cacheCreationInputTokens +
-      value.reasoningTokens,
+    total: snapshotTotal(value),
+    ...(agentId ? { agentId } : {}),
+    ...(stopped ? { stopped } : {}),
   };
 }
 
@@ -124,6 +186,19 @@ export interface AssistantUsageBatch {
     | 'reasoningTokens'
     | 'modelUsage'
   >;
+  /**
+   * A message_delta with a stop_reason arrived before the flush. Claude
+   * Code 2.1.296 adds the call to modelUsage before it yields that event,
+   * so every later result includes it.
+   */
+  final: boolean;
+  /**
+   * The call has ended (final, or its transcript line has a stop_reason).
+   * A transcript line can reach disk before Claude Code counts the call
+   * (non-streaming fallback) or after it emitted the result being
+   * reconciled, so only `final` holds for that result.
+   */
+  completed: boolean;
 }
 
 /**
@@ -132,10 +207,22 @@ export interface AssistantUsageBatch {
  * Claude assistant messages carry the API-call-local usage snapshot and a
  * stable Anthropic message ID. We keep the largest snapshot for a repeated ID
  * (stream/replay duplicates) and flush each ID at most once per query.
+ *
+ * The live snapshot is not the bill: Claude Code builds each assistant
+ * message from message_start, so its output_tokens is a placeholder (often
+ * 1) and the real count arrives later in message_delta and in the persisted
+ * transcript. Every flushed entry therefore takes the field-wise maximum of
+ * the live snapshot, the observed message_delta usage and the transcript.
  */
 export class AssistantUsageCollector {
   private readonly bestById = new Map<string, CollectedAssistantUsage>();
   private readonly flushedIds = new Set<string>();
+  /** Final usage from stream events, keyed by Anthropic message ID. */
+  private readonly streamFinalById = new Map<string, TokenSnapshot>();
+  /** Open streamed message per `parent_tool_use_id` scope. */
+  private readonly streamIdByScope = new Map<string, string>();
+  /** Message IDs whose message_delta with a stop_reason was observed. */
+  private readonly finalIds = new Set<string>();
   private readonly contentById = new Map<string, TurnContentFootprint>();
 
   private collectContent(sdkMessage: Record<string, unknown>): void {
@@ -197,6 +284,50 @@ export class AssistantUsageCollector {
     }
   }
 
+  /**
+   * Record the usage carried by a partial-message stream event. message_delta
+   * has no message ID, so it is attributed to the message the same scope
+   * (main thread or one subagent) most recently started.
+   */
+  observeStreamEvent(sdkMessage: Record<string, unknown>): void {
+    if (sdkMessage.type !== 'stream_event') return;
+    const event = sdkMessage.event as Record<string, unknown> | undefined;
+    if (!event) return;
+    const scope = String(sdkMessage.parent_tool_use_id ?? '');
+    let id: string | undefined;
+    let usage: unknown;
+    if (event.type === 'message_start') {
+      const message = event.message as Record<string, unknown> | undefined;
+      id = typeof message?.id === 'string' ? message.id.trim() : undefined;
+      if (!id) return;
+      this.streamIdByScope.set(scope, id);
+      usage = message?.usage;
+    } else if (event.type === 'message_delta') {
+      id = this.streamIdByScope.get(scope);
+      usage = event.usage;
+      // Claude Code 2.1.296 adds the call to modelUsage while handling a
+      // message_delta with a stop_reason, before it yields the event.
+      const delta = event.delta as Record<string, unknown> | undefined;
+      const stopReason = delta?.stop_reason;
+      if (
+        id &&
+        !this.flushedIds.has(id) &&
+        typeof stopReason === 'string' &&
+        stopReason !== ''
+      ) {
+        this.finalIds.add(id);
+      }
+    }
+    if (!id || this.flushedIds.has(id)) return;
+    if (!usage || typeof usage !== 'object') return;
+    const tokens = parseUsageTokens(usage as Record<string, unknown>);
+    const previous = this.streamFinalById.get(id);
+    this.streamFinalById.set(
+      id,
+      previous ? maxTokens(previous, tokens) : tokens,
+    );
+  }
+
   drain(
     _sessionId: string | undefined,
     transcriptLoader?: TranscriptUsageLoader,
@@ -205,17 +336,25 @@ export class AssistantUsageCollector {
       (entry) => !this.flushedIds.has(entry.id),
     );
     if (!entry) return undefined;
-    // Compatible providers (Codex gateway, GLM proxy, ...) only reveal usage
-    // when the response completes, so every streamed assistant snapshot starts
-    // as the all-zero message_start placeholder and the CLI merges the final
-    // numbers into the transcript instead of the live SDK message. A zero
-    // snapshot therefore must not be trusted as the final bill: backfill from
-    // the transcript when available, then keep the merged reasoning split
-    // below working on the enriched snapshot.
-    const effective =
-      entry.total === 0 && transcriptLoader
-        ? (transcriptLoader([entry.id]).get(entry.id) ?? entry)
-        : entry;
+    // The live snapshot carries message_start's placeholder output count
+    // (and an all-zero snapshot on providers that report usage only at
+    // completion), so merge the final numbers from message_delta and from
+    // the main or sidechain transcript before the reasoning split below.
+    const transcriptHit = transcriptLoader?.([entry.id], entry.agentId).get(
+      entry.id,
+    );
+    const merged = maxTokens(
+      entry,
+      this.streamFinalById.get(entry.id),
+      transcriptHit,
+    );
+    const effective: CollectedAssistantUsage = {
+      ...entry,
+      ...merged,
+      total: snapshotTotal(merged),
+    };
+    const final = this.finalIds.has(entry.id);
+    const completed = final || transcriptHit?.stopped === true;
     // One stable Anthropic message ID must remain one ledger event. Aggregating
     // several IDs behind the last ID would make resume/fork transcript replays
     // charge the earlier IDs again when a later new message arrives.
@@ -231,6 +370,8 @@ export class AssistantUsageCollector {
     };
     for (const entry of entries) {
       this.flushedIds.add(entry.id);
+      this.streamFinalById.delete(entry.id);
+      this.finalIds.delete(entry.id);
       const model = modelUsage[entry.model] || {
         inputTokens: 0,
         outputTokens: 0,
@@ -271,6 +412,8 @@ export class AssistantUsageCollector {
     return {
       eventId: `claude-code:${entry.id}`,
       tokens: { ...root, modelUsage },
+      final,
+      completed,
     };
   }
 }

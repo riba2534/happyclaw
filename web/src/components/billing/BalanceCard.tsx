@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Wallet, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { cn } from '@/lib/utils';
 import { useBillingStore } from '../../stores/billing';
 import { useCurrency } from './utils';
 
@@ -13,7 +16,10 @@ export default function BalanceCard() {
   } = useBillingStore();
   const fmt = useCurrency();
   const [redeemInput, setRedeemInput] = useState('');
-  const [redeemMsg, setRedeemMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [redeemMsg, setRedeemMsg] = useState<{
+    ok: boolean;
+    text: string;
+  } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const redeemCode = useBillingStore((s) => s.redeemCode);
 
@@ -46,18 +52,18 @@ export default function BalanceCard() {
   };
 
   return (
-    <div className="bg-white dark:bg-zinc-800 rounded-lg border border-zinc-200 dark:border-zinc-700 p-5">
-      <div className="flex items-center gap-2 mb-4">
-        <Wallet className="w-5 h-5 text-primary" />
-        <h3 className="font-semibold">余额</h3>
+    <section className="flex flex-col rounded-xl bg-surface-raised p-4 ring-1 ring-surface-border sm:p-5">
+      <div className="mb-3 flex min-h-7 items-center gap-2">
+        <Wallet className="size-4 text-muted-foreground" />
+        <h3 className="text-title-sm text-foreground">余额</h3>
       </div>
 
       {/* Balance display */}
-      <div className="text-3xl font-bold text-primary mb-1">
+      <div className="text-display-sm text-foreground tabular-nums">
         {balance ? fmt(balance.balance_usd) : '--'}
       </div>
       {balance && (
-        <div className="flex gap-4 text-xs text-zinc-400 mb-4">
+        <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-caption text-muted-foreground tabular-nums">
           <span>累计充值 {fmt(balance.total_deposited_usd)}</span>
           <span>累计消耗 {fmt(balance.total_consumed_usd)}</span>
         </div>
@@ -65,53 +71,67 @@ export default function BalanceCard() {
 
       {access && (
         <div
-          className={`mb-4 rounded-md border px-3 py-2 text-sm ${
+          className={cn(
+            'mt-4 rounded-lg px-3 py-2 text-body',
             access.allowed
-              ? 'border-green-200 bg-green-50 text-green-700 dark:border-green-900/60 dark:bg-green-950/30 dark:text-green-300'
-              : 'border-red-200 bg-red-50 text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300'
-          }`}
+              ? 'bg-success/10 text-success'
+              : 'bg-error/10 text-error',
+          )}
         >
           <div className="flex items-center gap-2 font-medium">
-            {!access.allowed && <AlertTriangle className="h-4 w-4 shrink-0" />}
-            <span>{access.allowed ? '当前可正常使用' : access.reason || '当前余额不足'}</span>
+            {access.allowed ? (
+              <CheckCircle2 className="size-4 shrink-0" />
+            ) : (
+              <AlertTriangle className="size-4 shrink-0" />
+            )}
+            <span>
+              {access.allowed
+                ? '当前可正常使用'
+                : access.reason || '当前余额不足'}
+            </span>
           </div>
-          <p className="mt-1 text-xs opacity-80">
-            钱包优先模式下，普通用户余额需至少达到 {fmt(access.minBalanceUsd || billingMinStartBalanceUsd)} 才能继续使用。
+          <p className="mt-1 text-caption opacity-80">
+            钱包优先模式下，普通用户余额需至少达到{' '}
+            {fmt(access.minBalanceUsd || billingMinStartBalanceUsd)}{' '}
+            才能继续使用。
           </p>
         </div>
       )}
 
       {/* Redeem input — auto uppercase */}
-      <div className="flex gap-2">
-        <input
+      <div className="mt-4 flex gap-2">
+        <Input
           type="text"
           placeholder="输入兑换码"
+          aria-label="兑换码"
           value={redeemInput}
           onChange={(e) => setRedeemInput(e.target.value.toUpperCase())}
           onKeyDown={(e) => e.key === 'Enter' && handleRedeem()}
           maxLength={64}
-          className="flex-1 px-3 py-1.5 text-sm border border-zinc-300 dark:border-zinc-600 rounded-md bg-transparent font-mono tracking-wider"
+          className="flex-1 font-mono tracking-wider pointer-coarse:min-h-11"
         />
-        <button
+        <Button
           onClick={handleRedeem}
           disabled={submitting || !redeemInput.trim()}
-          className="px-3 py-1.5 text-sm bg-primary text-white rounded-md hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="pointer-coarse:min-h-11"
         >
           {submitting ? '...' : '兑换'}
-        </button>
+        </Button>
       </div>
 
       {/* Feedback */}
       {redeemMsg && (
         <div
-          className={`flex items-center gap-1.5 text-xs mt-2 ${
-            redeemMsg.ok ? 'text-green-600 dark:text-green-400' : 'text-red-500 dark:text-red-400'
-          }`}
+          role="status"
+          className={cn(
+            'mt-2 flex items-center gap-1.5 text-caption',
+            redeemMsg.ok ? 'text-success' : 'text-error',
+          )}
         >
-          {redeemMsg.ok && <CheckCircle2 className="w-3.5 h-3.5" />}
+          {redeemMsg.ok && <CheckCircle2 className="size-3.5" />}
           <span>{redeemMsg.text}</span>
         </div>
       )}
-    </div>
+    </section>
   );
 }

@@ -1,7 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, test } from 'vitest';
-import { shouldPreloadChatRoute } from './chat-route-preload';
+import {
+  shouldPreloadAppShell,
+  shouldPreloadChatRoute,
+} from './chat-route-preload';
 
 describe('chat route preload policy', () => {
   test.each([
@@ -37,5 +40,16 @@ describe('chat route preload policy', () => {
     expect(viteConfig).not.toContain('preloadChatChunks');
     expect(app).toContain('shouldPreloadChatRoute(');
     expect(app).toContain('void loadChatPage();');
+  });
+});
+
+describe('shouldPreloadAppShell', () => {
+  test('preloads the layout for signed-in routes only', () => {
+    expect(shouldPreloadAppShell('/chat/main', '', '/')).toBe(true);
+    expect(shouldPreloadAppShell('/settings', '', '/')).toBe(true);
+    expect(shouldPreloadAppShell('/login', '', '/')).toBe(false);
+    expect(shouldPreloadAppShell('/setup/providers', '', '/')).toBe(false);
+    expect(shouldPreloadAppShell('/app/register', '', '/app/')).toBe(false);
+    expect(shouldPreloadAppShell('/', '#/login', '/')).toBe(false);
   });
 });

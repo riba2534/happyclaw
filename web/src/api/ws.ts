@@ -8,6 +8,9 @@ class WsManager {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
   private maxReconnectDelay = 30000;
+  /** Whether a socket of this page has opened before (later opens are reconnects). */
+  private openedBefore = false;
+  private failedBeforeOpen = false;
 
   connect() {
     if (
@@ -30,7 +33,13 @@ class WsManager {
     ws.onopen = () => {
       if (this.ws !== ws) return;
       this.reconnectDelay = 1000;
-      this.emit('connected', {});
+      // Listeners reconcile state missed while the socket was down; the
+      // page's first open follows the initial HTTP loads, so it says so.
+      // A failed attempt before the first open (e.g. the server was
+      // restarting during page load) means events may already be missing.
+      const reconnect = this.openedBefore || this.failedBeforeOpen;
+      this.openedBefore = true;
+      this.emit('connected', { reconnect });
     };
 
     ws.onmessage = (event) => {
@@ -43,6 +52,7 @@ class WsManager {
 
     ws.onclose = (event: CloseEvent) => {
       if (this.ws !== ws) return;
+      if (!this.openedBefore) this.failedBeforeOpen = true;
       this.emit('disconnected', {});
       // 1008 = Policy Violation (backend auth failure), 4001 = custom auth error
       if (event.code === 1008 || event.code === 4001) {
@@ -86,16 +96,25 @@ class WsManager {
   }
 
   private emit(type: string, data: any) {
-    this.handlers.get(type)?.forEach(h => h(data));
+    this.handlers.get(type)?.forEach((h) => h(data));
   }
 
   private scheduleReconnect() {
     if (this.reconnectTimer) return;
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
-      this.connect();
-    }, this.reconnectDelay);
+    // ±30% jitter so tabs dropped together (e.g. a server restart) don't
+    // all reconnect and refetch in the same second.
+    const jitter = 0.7 + Math.random() * 0.6;
+    this.reconnectTimer = setTimeout(
+      () => {
+        this.reconnectTimer = null;
+        this.reconnectDelay = Math.min(
+          this.reconnectDelay * 2,
+          this.maxReconnectDelay,
+        );
+        this.connect();
+      },
+      Math.round(this.reconnectDelay * jitter),
+    );
   }
 
   /** Listen for network status changes to reconnect immediately or pause retries. */
@@ -122,4 +141,6 @@ class WsManager {
 }
 
 export const wsManager = new WsManager();
-wsManager.setupNetworkListeners();
+// Stores import the manager (auth disconnects on logout), and their unit
+// tests load it outside a browser.
+if (typeof window !== 'undefined') wsManager.setupNetworkListeners();

@@ -22,6 +22,11 @@ export interface EffectiveSkillLayer {
   root?: string;
   /** Plugin Skills use the SDK's stable `plugin:skill` qualified name. */
   idPrefix?: string;
+  /**
+   * The result of `scanSkillDirectory(root)` when the caller already scanned
+   * it, so the same root is not listed and parsed twice per request.
+   */
+  skills?: ReadonlyArray<{ id: string; enabled: boolean }>;
 }
 
 export interface EffectiveSkillCandidate {
@@ -73,9 +78,59 @@ const SKILL_HASH_IGNORED_ENTRIES = new Set([
   'node_modules',
 ]);
 
-/** Hash the complete executable Skill payload, not only SKILL.md metadata. */
-function hashSkillDirectory(skillDir: string): string {
-  const hash = createHash('sha256');
+/**
+ * A file whose mtime/ctime is this close to the hash time may still change
+ * within the same filesystem timestamp tick (2 s on FAT, coarse kernel clocks
+ * elsewhere) without changing its stat signature, so it is never cached.
+ */
+const SKILL_HASH_RACY_WINDOW_MS = 3_000;
+const SKILL_HASH_CACHE_MAX_ENTRIES = 2_000;
+
+interface SkillHashCacheEntry {
+  signature: string;
+  hash: string;
+}
+
+/** Absolute Skill directory → payload hash and the stat signature it matched. */
+const skillHashCache = new Map<string, SkillHashCacheEntry>();
+
+interface SkillDirectoryWalk {
+  /** Payload hash; only produced when contents were read. */
+  hash?: string;
+  /** Digest of the walked names, types, symlink targets and file stats. */
+  signature: string;
+  /** False when any entry was unreadable, so the result may be transient. */
+  reliable: boolean;
+  newestChangeMs: number;
+}
+
+/**
+ * Walk the exact entry set that defines a Skill payload. With `readContents`
+ * the walk yields the payload hash (format unchanged: warm runners and
+ * capability snapshots compare it) plus a stat signature taken from the same
+ * listing and the same open file descriptors, so the signature always
+ * describes the bytes that were hashed. Without it the walk only lists
+ * directories and stats files, producing the same signature for an unchanged
+ * tree at a fraction of the cost.
+ */
+function walkSkillDirectory(
+  skillDir: string,
+  readContents: boolean,
+): SkillDirectoryWalk {
+  const hash = readContents ? createHash('sha256') : null;
+  const signature = createHash('sha256');
+  let reliable = true;
+  let newestChangeMs = 0;
+  const recordStats = (stats: fs.Stats): void => {
+    newestChangeMs = Math.max(newestChangeMs, stats.mtimeMs, stats.ctimeMs);
+    signature.update(
+      `${stats.dev}:${stats.ino}:${stats.mode}:${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}\0`,
+    );
+  };
+  const mark = (marker: string): void => {
+    hash?.update(marker);
+    signature.update(marker);
+  };
   const visit = (directory: string, relativeRoot: string): void => {
     let entries: fs.Dirent[];
     try {
@@ -84,7 +139,8 @@ function hashSkillDirectory(skillDir: string): string {
         .filter((entry) => !SKILL_HASH_IGNORED_ENTRIES.has(entry.name))
         .sort((left, right) => left.name.localeCompare(right.name));
     } catch {
-      hash.update(`unreadable-directory\0${relativeRoot}\0`);
+      mark(`unreadable-directory\0${relativeRoot}\0`);
+      reliable = false;
       return;
     }
     for (const entry of entries) {
@@ -97,25 +153,110 @@ function hashSkillDirectory(skillDir: string): string {
         try {
           target = fs.readlinkSync(absolutePath);
         } catch {
-          /* captured by marker */
+          reliable = false;
         }
-        hash.update(`symlink\0${relativePath}\0${target}\0`);
+        mark(`symlink\0${relativePath}\0${target}\0`);
       } else if (entry.isDirectory()) {
-        hash.update(`directory\0${relativePath}\0`);
+        mark(`directory\0${relativePath}\0`);
         visit(absolutePath, relativePath);
       } else if (entry.isFile()) {
-        hash.update(`file\0${relativePath}\0`);
-        try {
-          hash.update(fs.readFileSync(absolutePath));
-        } catch {
-          hash.update('unreadable');
+        mark(`file\0${relativePath}\0`);
+        if (!hash) {
+          try {
+            recordStats(fs.statSync(absolutePath));
+          } catch {
+            reliable = false;
+          }
+          continue;
         }
+        let content: Buffer | null = null;
+        let fd: number | null = null;
+        try {
+          fd = fs.openSync(absolutePath, 'r');
+          recordStats(fs.fstatSync(fd));
+          content = fs.readFileSync(fd);
+        } catch {
+          reliable = false;
+        } finally {
+          if (fd !== null) {
+            try {
+              fs.closeSync(fd);
+            } catch {
+              /* the descriptor is gone either way */
+            }
+          }
+        }
+        hash.update(content ?? 'unreadable');
         hash.update('\0');
       }
     }
   };
   visit(skillDir, '');
-  return hash.digest('hex');
+  return {
+    ...(hash ? { hash: hash.digest('hex') } : {}),
+    signature: signature.digest('hex'),
+    reliable,
+    newestChangeMs,
+  };
+}
+
+/**
+ * Hash the complete executable Skill payload, not only SKILL.md metadata.
+ *
+ * Results are memoized per absolute directory and revalidated on every call
+ * with a stat-only walk (names, types, symlink targets, and dev/ino/mode/
+ * size/mtime/ctime of every file), so unchanged trees skip reading and
+ * hashing file contents while any edit, addition, removal, rename or
+ * retarget forces a full rehash.
+ */
+export function hashSkillDirectory(skillDir: string): string {
+  const key = path.resolve(skillDir);
+  const cached = skillHashCache.get(key);
+  if (cached) {
+    const probe = walkSkillDirectory(key, false);
+    if (probe.reliable && probe.signature === cached.signature) {
+      skillHashCache.delete(key);
+      skillHashCache.set(key, cached);
+      return cached.hash;
+    }
+  }
+
+  const startedAt = Date.now();
+  const computed = walkSkillDirectory(key, true);
+  skillHashCache.delete(key);
+  if (
+    computed.reliable &&
+    computed.newestChangeMs < startedAt - SKILL_HASH_RACY_WINDOW_MS
+  ) {
+    skillHashCache.set(key, {
+      signature: computed.signature,
+      hash: computed.hash!,
+    });
+    while (skillHashCache.size > SKILL_HASH_CACHE_MAX_ENTRIES) {
+      const oldest = skillHashCache.keys().next().value;
+      if (oldest === undefined) break;
+      skillHashCache.delete(oldest);
+    }
+  }
+  return computed.hash!;
+}
+
+/**
+ * Drop memoized Skill hashes for one Skill directory, every Skill below a
+ * Skills root, or everything when called without an argument. The stat
+ * signature already detects edits; mutation paths call this as well so a
+ * finished mutation never relies on revalidation alone.
+ */
+export function invalidateSkillHashCache(directory?: string): void {
+  if (directory === undefined) {
+    skillHashCache.clear();
+    return;
+  }
+  const target = path.resolve(directory);
+  const prefix = target.endsWith(path.sep) ? target : `${target}${path.sep}`;
+  for (const key of skillHashCache.keys()) {
+    if (key === target || key.startsWith(prefix)) skillHashCache.delete(key);
+  }
 }
 
 /**
@@ -130,7 +271,14 @@ export function resolveEffectiveSkills(options: {
   layers: EffectiveSkillLayer[];
   managedPolicy?: ManagedSkillPolicy;
   hostPolicy?: ManagedSkillPolicy;
+  /**
+   * Listing views that never expose hashes may pass `false` to skip payload
+   * hashing. Every `definitionHash` and the manifest `hash` are then empty
+   * strings, so such a manifest must never serve as a runtime identity.
+   */
+  computeHashes?: boolean;
 }): EffectiveSkillManifest {
+  const computeHashes = options.computeHashes !== false;
   const policy = options.managedPolicy ?? { mode: 'inherit' as const, ids: [] };
   const policyIds = [...new Set(policy.ids ?? [])].sort();
   const requestedManagedIds = new Set(policyIds);
@@ -144,7 +292,8 @@ export function resolveEffectiveSkills(options: {
 
   options.layers.forEach((layer, precedence) => {
     if (!layer.root) return;
-    for (const skill of scanSkillDirectory(layer.root, layer.source)) {
+    for (const skill of layer.skills ??
+      scanSkillDirectory(layer.root, layer.source)) {
       const candidateId = layer.idPrefix
         ? `${layer.idPrefix}:${skill.id}`
         : skill.id;
@@ -165,7 +314,7 @@ export function resolveEffectiveSkills(options: {
         enabled: skill.enabled,
         selected: false,
         precedence,
-        definitionHash: hashSkillDirectory(skillPath),
+        definitionHash: computeHashes ? hashSkillDirectory(skillPath) : '',
         ...(!skill.enabled
           ? { excludedReason: 'disabled' as const }
           : filteredByProfile
@@ -259,7 +408,7 @@ export function resolveEffectiveSkills(options: {
 
   return {
     schemaVersion: 1,
-    hash,
+    hash: computeHashes ? hash : '',
     policy: { mode: policy.mode, ids: policyIds },
     hostPolicy: { mode: hostPolicy.mode, ids: hostPolicyIds },
     candidates,
