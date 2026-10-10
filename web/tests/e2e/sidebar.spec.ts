@@ -2,6 +2,25 @@ import { expect, test } from '@playwright/test';
 
 const HARNESS_PATH = '/tests/e2e/sidebar-harness.html';
 
+// The harness mocks every store the sidebar and its dialogs load from. Any
+// API request is a missing mock: answer it locally so a backend behind the
+// dev proxy (whose 401 makes the API client redirect to /login) cannot
+// influence the run, and fail the test.
+let unmockedApiCalls: string[] = [];
+test.beforeEach(async ({ page }) => {
+  unmockedApiCalls = [];
+  await page.route(
+    (url) => url.pathname.startsWith('/api/'),
+    (route) => {
+      unmockedApiCalls.push(route.request().url());
+      return route.fulfill({ status: 503, json: { error: 'not mocked' } });
+    },
+  );
+});
+test.afterEach(() => {
+  expect(unmockedApiCalls).toEqual([]);
+});
+
 test.use({
   viewport: { width: 1280, height: 800 },
   isMobile: false,

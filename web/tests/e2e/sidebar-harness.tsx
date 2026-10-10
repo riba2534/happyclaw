@@ -1,12 +1,13 @@
 // Desktop sidebar on mocked stores: a home workspace and two others, each
 // with two sessions. The page shows the current route for assertions, and
-// toasts for failures.
+// toasts for failures. Nothing here talks to a backend.
 import { createRoot } from 'react-dom/client';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { UnifiedSidebar } from '../../src/components/layout/UnifiedSidebar';
 import { Toaster } from '../../src/components/ui/sonner';
 import { TooltipProvider } from '../../src/components/ui/tooltip';
 import { MotionProvider } from '../../src/lib/motion';
+import { useAgentProfilesStore } from '../../src/stores/agent-profiles';
 import { useAuthStore, type UserPublic } from '../../src/stores/auth';
 import { useChatStore } from '../../src/stores/chat';
 import { useGroupsStore } from '../../src/stores/groups';
@@ -77,6 +78,14 @@ useAuthStore.setState({
   checking: false,
 });
 useGroupsStore.setState({ runnerStates: {} } as never);
+// The create-workspace dialog loads profiles on open; keep it off the network
+// (a real backend answers 401 here and the API client redirects to /login).
+useAgentProfilesStore.setState({
+  profiles: [],
+  loading: false,
+  profilesError: null,
+  loadProfiles: async () => undefined,
+});
 useChatStore.setState({
   groups: {
     'web:main': workspace('main', 'HappyClaw', 30, true),
