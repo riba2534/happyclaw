@@ -12,6 +12,7 @@ import {
 import {
   CARDKIT_JSON_MAX_BYTES,
   CARDKIT_MARKDOWN_MAX_CHARS,
+  fitsCardCapacity,
 } from '../src/feishu-cards/capacity.js';
 import { finalizeChannelCardAfterDelivery } from '../src/channel-card-finalization.js';
 
@@ -109,6 +110,26 @@ async function createThinkingController() {
 afterEach(() => {
   vi.restoreAllMocks();
 });
+
+/** The Lark SDK rejects HTTP 4xx with an AxiosError: string `code`, Feishu
+ * business code in `response.data.code`. */
+function axiosRejection(
+  status: number,
+  code: number,
+  headers: Record<string, string> = {},
+) {
+  return Object.assign(new Error(`Request failed with status code ${status}`), {
+    name: 'AxiosError',
+    isAxiosError: true,
+    code: 'ERR_BAD_REQUEST',
+    response: { status, headers, data: { code, msg: 'rejected' } },
+  });
+}
+
+/** The uuid of every visible card message send recorded by a mock. */
+function sentUuids(mockFn: { mock: { calls: any[][] } }): string[] {
+  return mockFn.mock.calls.map((call) => call[0].data.uuid);
+}
 
 describe('Feishu CardKit streaming controller', () => {
   test('thinking/tool-only runs start with deterministic progress instead of a bare ellipsis', async () => {
@@ -239,7 +260,7 @@ describe('Feishu CardKit streaming controller', () => {
     elementContent.mockReset();
     cardSettings.mockClear();
     elementContent
-      .mockRejectedValueOnce({ code: 200850 })
+      .mockRejectedValueOnce(axiosRejection(400, 200850))
       .mockResolvedValueOnce({ code: 0 });
 
     await backend.streamContent('恢复后的正文');
@@ -449,8 +470,12 @@ describe('Feishu CardKit streaming controller', () => {
     await vi.waitFor(() => expect(controller.currentState).toBe('error'));
 
     expect(mock.cardCreate).toHaveBeenCalledOnce();
-    expect(messageCreate).toHaveBeenCalledOnce();
-    expect(visibleMutations).toBe(1);
+    // One idempotent replay with the identical Feishu uuid: Feishu sends at
+    // most one message per uuid, so this can never add a second card.
+    expect(messageCreate).toHaveBeenCalledTimes(2);
+    expect(new Set(sentUuids(messageCreate)).size).toBe(1);
+    expect(sentUuids(messageCreate)[0]).toMatch(/^hc[a-f0-9]{40}$/);
+    expect(visibleMutations).toBe(2);
     expect(controller.isActive()).toBe(true);
     await expect(controller.complete('answer')).rejects.toMatchObject({
       deliveryPhase: 'uncertain',
@@ -459,8 +484,8 @@ describe('Feishu CardKit streaming controller', () => {
     await expect(controller.complete('answer')).rejects.toMatchObject({
       deliveryPhase: 'uncertain',
     });
-    expect(messageCreate).toHaveBeenCalledOnce();
-    expect(visibleMutations).toBe(1);
+    expect(messageCreate).toHaveBeenCalledTimes(2);
+    expect(visibleMutations).toBe(2);
     const aborted = await finalizeChannelCardAfterDelivery(
       controller,
       'answer',
@@ -472,7 +497,7 @@ describe('Feishu CardKit streaming controller', () => {
       error: { deliveryPhase: 'uncertain' },
     });
     expect(controller.currentState).toBe('aborted');
-    expect(messageCreate).toHaveBeenCalledOnce();
+    expect(messageCreate).toHaveBeenCalledTimes(2);
     controller.dispose();
   });
 
@@ -500,8 +525,10 @@ describe('Feishu CardKit streaming controller', () => {
       await vi.waitFor(() => expect(controller.currentState).toBe('error'));
 
       expect(mock.cardCreate).toHaveBeenCalledOnce();
-      expect(messageCreate).toHaveBeenCalledOnce();
-      expect(visibleMutations).toBe(1);
+      // Only the same-uuid replay; never a different backend or message.
+      expect(messageCreate).toHaveBeenCalledTimes(2);
+      expect(new Set(sentUuids(messageCreate)).size).toBe(1);
+      expect(visibleMutations).toBe(2);
       await expect(controller.complete('answer')).rejects.toMatchObject({
         deliveryPhase: 'uncertain',
       });
@@ -615,13 +642,14 @@ describe('Feishu CardKit streaming controller', () => {
     await vi.waitFor(() => expect(controller.currentState).toBe('error'));
 
     expect(mock.cardCreate).toHaveBeenCalledTimes(2);
-    expect(messageCreate).toHaveBeenCalledOnce();
-    expect(visibleMutations).toBe(1);
+    expect(messageCreate).toHaveBeenCalledTimes(2);
+    expect(new Set(sentUuids(messageCreate)).size).toBe(1);
+    expect(visibleMutations).toBe(2);
     expect(controller.isActive()).toBe(true);
     await expect(controller.complete('answer')).rejects.toMatchObject({
       deliveryPhase: 'uncertain',
     });
-    expect(messageCreate).toHaveBeenCalledOnce();
+    expect(messageCreate).toHaveBeenCalledTimes(2);
     controller.dispose();
   });
 
@@ -1037,7 +1065,9 @@ describe('Feishu CardKit streaming controller', () => {
     await vi.waitFor(() => expect(controller.currentState).toBe('streaming'));
     await (controller as any).nativePageChain;
     expect((controller as any).nativeCards.length).toBe(1);
-    const activeSnapshot = snapshots.at(-1).snapshot;
+    const activeSnapshot = snapshots
+      .filter((event) => event.snapshot)
+      .at(-1).snapshot;
     expect(activeSnapshot.text).toBe(text);
     expect(streamingCardSnapshotText(activeSnapshot)).toBe(text);
 
@@ -1103,6 +1133,12 @@ describe('Feishu CardKit streaming controller', () => {
             rejectContinuation = reject;
           });
         }
+        // The idempotent same-uuid replay of the continuation stays
+        // ambiguous too, so the page remains uncertain.
+        if (sent === 3)
+          throw new Error(
+            'replay timeout after provider accepted continuation',
+          );
         return { data: { message_id: `om_${sent}` } };
       });
       const controller = new StreamingCardController({
@@ -1133,13 +1169,16 @@ describe('Feishu CardKit streaming controller', () => {
       const result = await ending;
       expect(result.ok).toBe(false);
       expect(result.error).toMatchObject({ code: 'CHANNEL_DELIVERY_PARTIAL' });
-      expect(sent).toBe(2);
+      expect(sent).toBe(3);
+      const uuids = sentUuids(mock.client.im.v1.message.create);
+      expect(uuids[1]).toBe(uuids[2]);
+      expect(uuids[0]).not.toBe(uuids[1]);
       expect(mock.cardCreate).toHaveBeenCalledTimes(2);
       const creates = mock.cardCreate.mock.calls.length;
       const updates = mock.cardUpdate.mock.calls.length;
       await expect(controller.complete(full)).rejects.toBe(result.error);
       await expect(controller.abort('再次停止')).rejects.toBe(result.error);
-      expect(sent).toBe(2);
+      expect(sent).toBe(3);
       expect(mock.cardCreate.mock.calls.length).toBe(creates);
       expect(mock.cardUpdate.mock.calls.length).toBe(updates);
       controller.dispose();
@@ -1168,7 +1207,9 @@ describe('Feishu CardKit streaming controller', () => {
       controller.append(full);
       await vi.waitFor(() => expect(controller.currentState).toBe('streaming'));
       await (controller as any).patchCard('streaming');
-      const snapshot = events.at(-1).snapshot;
+      // High-frequency flushes persist identity/version only; the newest
+      // full-text snapshot is on the latest event that carries one.
+      const snapshot = events.filter((event) => event.snapshot).at(-1).snapshot;
       expect(snapshot.backendMode).toBe(mode);
       expect(snapshot.text).toBe(full);
       const rewrite = resolveInterruptedStreamingCardRewrite({ snapshot });
@@ -1379,7 +1420,7 @@ describe('Feishu CardKit streaming controller', () => {
     controller.dispose();
   });
 
-  test('the real 90-item answer fits one card and retains its original tail', async () => {
+  test('the real 90-item answer pages its six tables within Feishu table limits and retains its tail', async () => {
     const text = readFileSync(
       new URL('./fixtures/feishu-card-long-answer.txt', import.meta.url),
       'utf8',
@@ -1393,17 +1434,22 @@ describe('Feishu CardKit streaming controller', () => {
     controller.append(text);
     await vi.waitFor(() => expect(controller.currentState).toBe('streaming'));
     await (controller as any).nativePageChain;
-    expect(mock.cardCreate).toHaveBeenCalledOnce();
-    expect((controller as any).nativeCards[0].text).toBe(text);
-    expect(
-      findElementContent(
-        JSON.parse(mock.cardCreate.mock.calls[0][0].data.data),
-        CARD_ELEMENT_IDS.MAIN_CONTENT,
-      ),
-    ).toBe(text);
+    // Six GFM tables exceed one Markdown element's four-table limit, so the
+    // live answer spans two contiguous pages instead of a rejected card.
+    const pages = (controller as any).nativeCards as Array<{
+      rawStart: number;
+      rawEnd: number;
+    }>;
+    expect(pages).toHaveLength(2);
+    expect(pages[0].rawStart).toBe(0);
+    expect(pages[1].rawStart).toBe(pages[0].rawEnd);
+    expect(pages[1].rawEnd).toBe(text.length);
+    for (const [request] of mock.cardCreate.mock.calls)
+      expect(fitsCardCapacity(JSON.parse(request.data.data))).toBe(true);
     await controller.complete(text);
-    expect(mock.cardCreate).toHaveBeenCalledOnce();
-    expect((controller as any).nativeCards[0].text).toBe(text);
+    expect(mock.cardCreate).toHaveBeenCalledTimes(2);
+    for (const [request] of mock.cardUpdate.mock.calls)
+      expect(fitsCardCapacity(JSON.parse(request.data.card.data))).toBe(true);
     const rendered = JSON.stringify(
       JSON.parse(mock.cardUpdate.mock.calls.at(-1)![0].data.card.data),
     );

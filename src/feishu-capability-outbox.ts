@@ -22,6 +22,7 @@ import {
   definitiveFeishuPreAcceptanceFailure,
   definitiveFeishuHttpRejection,
   DefinitiveFeishuCapabilityError,
+  feishuCapabilityUuid,
   withFeishuPreAcceptanceRetry,
 } from './feishu-capability.js';
 
@@ -63,6 +64,18 @@ export async function deliverFeishuCapabilityMutation(
     payload,
   });
   const ordinal = stableChannelOutboxOrdinal(identity);
+  const idempotencyKey = `${input.turnRunId}:${identity}`;
+  // The physical provider request carries a Feishu uuid derived from this
+  // durable row identity: a replay of the same row (ambiguous ACK, process
+  // restart within the hour) can never post a second message. The broker
+  // passes the same request object to `execute`, so the uuid travels with it
+  // without becoming part of the payload hash.
+  if (
+    input.request.operation === 'send_card' &&
+    input.request.providerUuid === undefined
+  ) {
+    input.request.providerUuid = feishuCapabilityUuid(idempotencyKey);
+  }
   let providerResult: FeishuCapabilityResult | undefined;
   const delivery = await deliverChannelOutboxItem({
     provider: input.provider,
@@ -75,11 +88,14 @@ export async function deliverFeishuCapabilityMutation(
     ordinal,
     kind: 'mutation',
     payload,
-    idempotencyKey: `${input.turnRunId}:${identity}`,
+    idempotencyKey,
     owner: input.owner,
     leaseMs: input.leaseMs,
     now: input.now,
     afterPersist: input.afterPersist,
+    // No worker reclaims capability rows: a provider "retry later" (HTTP 429)
+    // must end failed instead of an orphaned, never-retained retry_wait row.
+    retryWaitPolicy: 'fail',
     delivery: {
       mode: 'single',
       send: async () => {

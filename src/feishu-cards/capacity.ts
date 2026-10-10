@@ -1,3 +1,5 @@
+import { countMarkdownTables } from './pagination.js';
+
 /**
  * Unsent CardKit probes accepted 100,000 Unicode code points per streaming
  * Markdown update, and approximately 300KB of serialized card JSON. Leave
@@ -9,7 +11,13 @@
 export const CARDKIT_JSON_MAX_BYTES = 300_000;
 export const CARDKIT_MARKDOWN_MAX_CHARS = 99_000;
 export const CARDKIT_MAX_ELEMENTS = 200;
+/**
+ * Tables per card: native `table` components plus GFM tables rendered from
+ * Markdown. Feishu documents five per card and four per Markdown element and
+ * rejects the whole card beyond that (230099 / ErrCode 11310).
+ */
 export const CARDKIT_MAX_TABLES = 5;
+export const CARDKIT_MARKDOWN_MAX_TABLES = 4;
 
 export function unicodeCodePointLength(text: string): number {
   if (!/[\uD800-\uDBFF][\uDC00-\uDFFF]/.test(text)) return text.length;
@@ -23,6 +31,8 @@ export interface CardCapacityOptions {
   maxMarkdownChars?: number;
   maxElements?: number;
   maxTables?: number;
+  /** GFM tables allowed inside one Markdown element. */
+  maxMarkdownTables?: number;
 }
 
 /** Count actual nested components, rather than only body.elements entries. */
@@ -45,13 +55,20 @@ export function fitsCardCapacity(
       const node = value as Record<string, unknown>;
       if (typeof node.tag === 'string') elements++;
       if (node.tag === 'table') tables++;
-      if (
-        options.maxMarkdownChars !== undefined &&
-        node.tag === 'markdown' &&
-        typeof node.content === 'string' &&
-        unicodeCodePointLength(node.content) > options.maxMarkdownChars
-      )
-        markdownFits = false;
+      if (node.tag === 'markdown' && typeof node.content === 'string') {
+        if (
+          options.maxMarkdownChars !== undefined &&
+          unicodeCodePointLength(node.content) > options.maxMarkdownChars
+        )
+          markdownFits = false;
+        const markdownTables = countMarkdownTables(node.content);
+        if (
+          markdownTables >
+          (options.maxMarkdownTables ?? CARDKIT_MARKDOWN_MAX_TABLES)
+        )
+          markdownFits = false;
+        tables += markdownTables;
+      }
       for (const child of Object.values(node)) visit(child);
     }
   };

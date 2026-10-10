@@ -18,50 +18,98 @@ export interface CardPageOptions {
   frozenBoundaries?: readonly number[];
   /** Keep provider-accepted pages when only the remaining page budget shrinks. */
   preserveFrozenCapacity?: boolean;
+  /**
+   * GFM tables allowed on one page. Bounds each page's search window before
+   * any `fits` probe, so table-dense answers never measure huge candidates.
+   */
+  maxTables?: number;
 }
 
-interface MarkdownBlock {
+/**
+ * A fenced code block or GFM table located in Markdown source. Offsets are
+ * UTF-16 indices into the scanned text; `end` includes the closing line's
+ * newline. `prefix` is the syntax to replay on a continuation (opener line, or
+ * table header + delimiter row); `suffix` closes a split fence.
+ */
+export interface MarkdownBlock {
+  kind: 'fence' | 'table';
   start: number;
   end: number;
   prefix: string;
   suffix: string;
+  /** Fence marker (``` / ~~~ / ````…); empty for tables. */
+  marker: string;
+  /** False for a fence the upstream stream has not closed yet. */
+  closed: boolean;
 }
 
-function markdownBlocks(text: string): MarkdownBlock[] {
+/** CommonMark fence opener; a backtick info string may not contain backticks. */
+const FENCE_OPENER = /^ {0,3}(`{3,}|~{3,})([^\r\n]*)/;
+/**
+ * GFM delimiter row, including single-column tables (`|---|`). A pipe is
+ * required so a bare `---` thematic break / setext underline never matches.
+ */
+const TABLE_DELIMITER = /^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?$/;
+
+export function isMarkdownTableDelimiter(line: string): boolean {
+  const trimmed = line.trim();
+  return trimmed.includes('|') && TABLE_DELIMITER.test(trimmed);
+}
+
+/** Fence opener marker for a line, or null when the line opens no fence. */
+export function markdownFenceOpener(line: string): string | null {
+  const opener = line.match(FENCE_OPENER);
+  if (!opener || (opener[1][0] === '`' && opener[2].includes('`'))) return null;
+  return opener[1];
+}
+
+/** Whether `line` closes a fence opened with `marker`. */
+export function closesMarkdownFence(line: string, marker: string): boolean {
+  const match = line.match(/^ {0,3}(`{3,}|~{3,})[\t \r]*\n?$/);
+  return Boolean(
+    match && match[1][0] === marker[0] && match[1].length >= marker.length,
+  );
+}
+
+/**
+ * Locate fenced code blocks (``` / ~~~ / longer fences, any info string such
+ * as ```c++) and GFM tables in one linear pass. Tables inside fences are
+ * literal code and never reported.
+ */
+export function findMarkdownBlocks(text: string): MarkdownBlock[] {
   const lines = [...text.matchAll(/[^\n]*\n|[^\n]+$/g)];
   const blocks: MarkdownBlock[] = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i][0];
     const start = lines[i].index!;
-    const opener = line.match(/^ {0,3}(`{3,}|~{3,})([^\r\n]*)/);
-    if (opener && (opener[1][0] !== '`' || !opener[2].includes('`'))) {
-      const marker = opener[1];
-      const closing = new RegExp(
-        `^ {0,3}${marker[0]}{${marker.length},}[\\t \\r]*\\n?$`,
-      );
+    const marker = markdownFenceOpener(line);
+    if (marker) {
       let end = text.length;
       let closed = false;
       for (i++; i < lines.length; i++) {
-        if (closing.test(lines[i][0])) {
+        if (closesMarkdownFence(lines[i][0], marker)) {
           end = lines[i].index! + lines[i][0].length;
           closed = true;
           break;
         }
       }
       blocks.push({
+        kind: 'fence',
         start,
         // Include the final boundary when an upstream stream has not closed
         // the fence yet, so the independently rendered page still closes it.
         end: closed ? end : end + 1,
         prefix: `${line.replace(/\r?\n$/, '')}\n`,
         suffix: `\n${marker}\n`,
+        marker,
+        closed,
       });
       continue;
     }
-    const separator = lines[i + 1]?.[0].trim() ?? '';
     const table =
       line.includes('|') &&
-      /^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?$/.test(separator);
+      lines[i + 1] !== undefined &&
+      isMarkdownTableDelimiter(lines[i + 1][0]);
     if (table) {
       const prefix = line + lines[i + 1][0];
       i += 2;
@@ -73,16 +121,30 @@ function markdownBlocks(text: string): MarkdownBlock[] {
         i++;
       const last = lines[i - 1];
       blocks.push({
+        kind: 'table',
         start,
         end: last.index! + last[0].length,
         prefix,
         suffix: '',
+        marker: '',
+        closed: true,
       });
       i--;
     }
   }
   return blocks;
 }
+
+/** GFM tables outside fenced code. Feishu limits these per Markdown element. */
+export function countMarkdownTables(text: string): number {
+  if (!text.includes('|') || !text.includes('-')) return 0;
+  let tables = 0;
+  for (const block of findMarkdownBlocks(text))
+    if (block.kind === 'table') tables++;
+  return tables;
+}
+
+const markdownBlocks = findMarkdownBlocks;
 
 /**
  * Preserve every source character across capacity-bounded cards. `fits` can
@@ -112,6 +174,17 @@ export function splitCardPages(
     (options.fits?.(value) ?? true);
   if (!text) return [{ rawStart: 0, rawEnd: 0, text: '' }];
   const blocks = markdownBlocks(text);
+  const tables = blocks.filter((block) => block.kind === 'table');
+  /** Source offset where a page starting at `start` must end at the latest. */
+  const tableCap = (start: number): number => {
+    if (options.maxTables === undefined) return text.length;
+    let seen = 0;
+    for (const table of tables) {
+      if (table.end <= start) continue;
+      if (++seen > options.maxTables && table.start > start) return table.start;
+    }
+    return text.length;
+  };
   const containing = (offset: number) =>
     blocks.find((block) => offset > block.start && offset < block.end);
   const render = (start: number, end: number) =>
@@ -122,9 +195,12 @@ export function splitCardPages(
   // Check the complete answer before seeking any semantic boundary. A block
   // beginning near the top must never turn an otherwise fitting answer into
   // a nearly empty introduction card and a separate opening-fence card.
-  const fullText = render(0, text.length);
-  if (!options.frozenBoundaries?.length && fits(fullText)) {
-    return [{ rawStart: 0, rawEnd: text.length, text: fullText }];
+  if (
+    !options.frozenBoundaries?.length &&
+    tableCap(0) === text.length &&
+    fits(render(0, text.length))
+  ) {
+    return [{ rawStart: 0, rawEnd: text.length, text: render(0, text.length) }];
   }
 
   // Most source text has identical code-point and UTF-16 indices. Allocate an
@@ -168,15 +244,24 @@ export function splitCardPages(
     continuationFits.set(value, accepted);
     return accepted;
   };
-  const indivisible = blocks.filter(
-    (block) =>
+  // Evaluated lazily, only for blocks overlapping a page that actually has to
+  // be cut. Appending to a long streamed answer re-plans with frozen earlier
+  // pages; probing every historical table row there cost hundreds of full
+  // card builds per flush even though no frozen page could be re-cut.
+  const indivisibleCache = new Map<MarkdownBlock, boolean>();
+  const isIndivisible = (block: MarkdownBlock): boolean => {
+    const cached = indivisibleCache.get(block);
+    if (cached !== undefined) return cached;
+    const value =
       !fitsContinuation(block) ||
       (!block.suffix &&
         text
           .slice(block.start + block.prefix.length, block.end)
           .split('\n')
-          .some((row) => !fits(block.prefix + row + '\n'))),
-  );
+          .some((row) => !fits(block.prefix + row + '\n')));
+    indivisibleCache.set(block, value);
+    return value;
+  };
   const paginate = (
     rawFallback: boolean,
     precedingPages: CardPage[] = [],
@@ -218,7 +303,8 @@ export function splitCardPages(
         // preceding frozen prefix and reflow only from the first affected page.
         preserveFrozen = false;
       }
-      if (fits(pageText(start, text.length))) {
+      const cap = tableCap(start);
+      if (cap === text.length && fits(pageText(start, text.length))) {
         pages.push({
           rawStart: start,
           rawEnd: text.length,
@@ -228,7 +314,7 @@ export function splitCardPages(
       }
       const startIndex = indexAt(start);
       let low = startIndex;
-      let high = pointCount;
+      let high = cap === text.length ? pointCount : indexAt(cap);
       if (maxChars !== Infinity) {
         const prefix = rawFallback
           ? rawPrefix
@@ -258,7 +344,10 @@ export function splitCardPages(
       }
       if (!rawFallback) {
         if (
-          indivisible.some((block) => block.start < end && block.end > start)
+          blocks.some(
+            (block) =>
+              block.start < end && block.end > start && isIndivisible(block),
+          )
         ) {
           return paginate(true, pages);
         }

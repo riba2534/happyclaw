@@ -10,12 +10,17 @@ import {
   interruptChannelTurnRunsWithDeliveredEffects,
   interruptExpiredChannelTurnRuns,
   listAllNonterminalStreamingCards,
-  releaseStreamingCardRecovery,
+  updateStreamingCardRecord,
   type ChannelTurnRun,
   type StreamingCardRecord,
 } from './channel-reliability-store.js';
 import { getAgent, getMessagesForTurn } from './db.js';
-import { streamingCardSnapshotText } from './feishu-streaming-card.js';
+import { classifyFeishuCardError } from './feishu-card-delivery.js';
+import { findMarkdownBlocks } from './feishu-cards/pagination.js';
+import {
+  staticFallbackDelivered,
+  streamingCardSnapshotText,
+} from './feishu-streaming-card.js';
 import { logger } from './logger.js';
 
 export interface StreamingCardReconciler {
@@ -35,6 +40,46 @@ interface ReconciliationPassOptions {
 const MISSING_PROVIDER_IDENTITY_ERROR = manualReconciliationError(
   'Streaming card creation was interrupted before provider identity was persisted; manual reconciliation required',
 );
+
+/**
+ * Provider-refused recovery attempts per card. Every pass retries a deferred
+ * card (the live loop runs every 15s); without a cap a card Feishu keeps
+ * refusing was retried forever.
+ */
+export const MAX_STREAMING_CARD_RECOVERY_ATTEMPTS = 5;
+
+function recoveryAttempts(snapshot: unknown): number {
+  const value =
+    snapshot && typeof snapshot === 'object'
+      ? (snapshot as { recoveryAttempts?: unknown }).recoveryAttempts
+      : undefined;
+  return typeof value === 'number' && Number.isInteger(value) && value > 0
+    ? value
+    : 0;
+}
+
+/**
+ * Whether a failed recovery attempt reached Feishu. "Bot not connected yet"
+ * style failures must not burn the attempt budget: they resolve once the
+ * exact account is ready.
+ */
+function recoveryReachedProvider(error: unknown): boolean {
+  const classified = classifyFeishuCardError(error);
+  return classified.code !== undefined || classified.status !== undefined;
+}
+
+/**
+ * The card can never be updated again: the message is gone or the bot lost
+ * access (target_unavailable), or the CardKit entity is missing / expired
+ * (200740 / 200750) or owned by another app (300311).
+ */
+function recoveryTargetUnavailable(error: unknown): boolean {
+  const classified = classifyFeishuCardError(error);
+  return (
+    classified.kind === 'target_unavailable' ||
+    [200740, 200750, 300311].includes(classified.code ?? -1)
+  );
+}
 
 function uniqueNonEmpty(values: Array<string | null | undefined>): string[] {
   return [
@@ -83,6 +128,41 @@ export function resolveStreamingCardRecoveryBody(
   }
 
   return { body: streamingCardSnapshotText(card.snapshot), persisted: false };
+}
+
+/**
+ * The durable card record names only the last visible page of a multi-page
+ * reply. Rewriting that page with the whole persisted reply would duplicate
+ * every earlier page on it (and can exceed the card capacity). Keep only the
+ * part from the page's source offset, replaying a fence opener or table
+ * header when the page starts inside one. Without a verifiable offset the
+ * page's own snapshot text is used.
+ */
+export function streamingCardRecoveryPageBody(
+  body: string,
+  snapshot: unknown,
+  persisted: boolean,
+): string {
+  const data =
+    snapshot && typeof snapshot === 'object'
+      ? (snapshot as { text?: unknown; visibleRawStart?: unknown })
+      : {};
+  const start = data.visibleRawStart;
+  if (typeof start !== 'number' || !Number.isInteger(start) || start <= 0)
+    return body;
+  if (!persisted) return streamingCardSnapshotText(snapshot) || body;
+  const streamed = typeof data.text === 'string' ? data.text : '';
+  if (
+    streamed.length < start ||
+    start > body.length ||
+    body.slice(0, start) !== streamed.slice(0, start)
+  ) {
+    return streamingCardSnapshotText(snapshot) || body;
+  }
+  const block = findMarkdownBlocks(body).find(
+    (candidate) => start > candidate.start && start < candidate.end,
+  );
+  return `${block?.prefix ?? ''}${body.slice(start)}`.trim();
 }
 
 async function reconcileChannelReliabilityPass(
@@ -180,8 +260,25 @@ async function reconcileChannelReliabilityPass(
       );
       continue;
     }
+    const claimedSnapshot =
+      claimed.snapshot && typeof claimed.snapshot === 'object'
+        ? (claimed.snapshot as Record<string, unknown>)
+        : {};
     try {
-      const recovered = resolveStreamingCardRecoveryBody(claimed, turn);
+      const resolved = resolveStreamingCardRecoveryBody(claimed, turn);
+      // After a refused card body the host already sent the reply as static
+      // messages; the card only gets a notice, never the body again.
+      const bodyDeliveredStatically = staticFallbackDelivered(claimed.snapshot);
+      const recovered = {
+        ...resolved,
+        body: bodyDeliveredStatically
+          ? ''
+          : streamingCardRecoveryPageBody(
+              resolved.body,
+              claimed.snapshot,
+              resolved.persisted,
+            ),
+      };
       let recoveredComplete = recovered.persisted;
       if (recoveredComplete) {
         const turnCompleted =
@@ -203,11 +300,24 @@ async function reconcileChannelReliabilityPass(
         claimed.snapshot && typeof claimed.snapshot === 'object'
           ? (claimed.snapshot as Record<string, unknown>)
           : {};
+      // `text` stays the whole reply; `visibleText` is what this card shows
+      // (the rewrite renders visibleText first, so a stale page snapshot can
+      // never shadow the persisted reply).
+      const recoveredText = recovered.body
+        ? {
+            text: resolved.persisted
+              ? resolved.body
+              : typeof snapshotBase.text === 'string' && snapshotBase.text
+                ? snapshotBase.text
+                : recovered.body,
+            visibleText: recovered.body,
+          }
+        : {};
       const result = await reconciler.reconcileStreamingCard({
         ...claimed,
         snapshot: {
           ...snapshotBase,
-          ...(recovered.body ? { text: recovered.body } : {}),
+          ...recoveredText,
           recovery: {
             completed: recoveredComplete,
             source: recovered.persisted
@@ -223,7 +333,7 @@ async function reconcileChannelReliabilityPass(
         version: result.version,
         snapshot: {
           ...snapshotBase,
-          ...(recovered.body ? { text: recovered.body } : {}),
+          ...recoveredText,
           recovery: {
             completed: recoveredComplete,
             reason: recoveredComplete
@@ -257,15 +367,63 @@ async function reconcileChannelReliabilityPass(
       }
       reconciled++;
     } catch (error) {
-      deferred++;
       const message = error instanceof Error ? error.message : String(error);
       const current = getStreamingCardRecord(claimed.id);
-      if (current?.status === 'recovering') {
-        releaseStreamingCardRecovery(
+      const attempts =
+        recoveryAttempts(claimed.snapshot) +
+        (recoveryReachedProvider(error) ? 1 : 0);
+      const targetUnavailable = recoveryTargetUnavailable(error);
+      if (
+        current?.status === 'recovering' &&
+        (targetUnavailable || attempts >= MAX_STREAMING_CARD_RECOVERY_ATTEMPTS)
+      ) {
+        // Give up: the card cannot be (or keeps refusing to be) closed.
+        const reason = targetUnavailable
+          ? 'target_unavailable'
+          : 'attempts_exhausted';
+        const fenceError = manualReconciliationError(
+          `Streaming card recovery gave up (${reason}): ${message}`,
+        );
+        const final = finalizeStreamingCardRecord(
           current.id,
           current.revision,
-          `Deferred recovery: ${message}`,
+          {
+            status: 'failed',
+            snapshot: {
+              ...claimedSnapshot,
+              recoveryAttempts: attempts,
+              recovery: { reason, method: 'manual_reconciliation' },
+            },
+            error: fenceError,
+          },
         );
+        if (final) {
+          if (interruptChannelTurnRunById(claimed.turnRunId, fenceError)) {
+            fencedTurnIds.add(claimed.turnRunId);
+          }
+          reconciled++;
+          logger.error(
+            {
+              err: error,
+              cardId: claimed.id,
+              accountId: claimed.accountId,
+              sourceJid: claimed.sourceJid,
+              attempts,
+              reason,
+            },
+            'Streaming card recovery gave up; card marked failed',
+          );
+          continue;
+        }
+      }
+      deferred++;
+      if (current?.status === 'recovering') {
+        // Release the claim and persist the attempt count in one CAS write.
+        updateStreamingCardRecord(current.id, current.revision, {
+          status: 'streaming',
+          snapshot: { ...claimedSnapshot, recoveryAttempts: attempts },
+          error: `Deferred recovery: ${message}`,
+        });
       }
       logger.warn(
         {
@@ -273,6 +431,7 @@ async function reconcileChannelReliabilityPass(
           cardId: claimed.id,
           accountId: claimed.accountId,
           sourceJid: claimed.sourceJid,
+          attempts,
         },
         'Deferred interrupted streaming card until its exact Bot is ready',
       );

@@ -4,6 +4,7 @@
  * independent element IDs for content updates without rebuilding the layout.
  */
 
+import { neutralizeFeishuMentions } from '../feishu-errors.js';
 import { optimizeMarkdownStyle } from '../feishu-markdown-style.js';
 import { CARDKIT_MARKDOWN_MAX_CHARS } from './capacity.js';
 import { splitCardPages } from './pagination.js';
@@ -28,29 +29,48 @@ export const STREAMING_CONFIG = {
   print_strategy: 'fast' as const,
 };
 
+/**
+ * Card Markdown for any reply text: the Feishu style normalization used by the
+ * terminal card plus `<at>` neutralization outside code, so model output,
+ * tool results or quoted pages can never @ everyone (or get the whole card
+ * rejected where @all is disabled). Idempotent.
+ */
+export function feishuCardMarkdown(text: string): string {
+  return neutralizeFeishuMentions(optimizeMarkdownStyle(text, 2), 'card');
+}
+
+/** Plain-text card fields (header title/subtitle) never interpret `<at>`. */
+function cardPlainText(text: string): string {
+  return neutralizeFeishuMentions(text, 'text');
+}
+
 /** Several live content slots can share one card without exceeding the
- * per-content-update character limit. Keep the first established ID stable. */
+ * per-content-update character limit. Keep the first established ID stable.
+ * The live slot uses the same Markdown normalization as the terminal card, so
+ * headings/images do not change shape when the card is finalized. */
 export function buildStreamingContentElements(text: string) {
-  return splitCardPages(text, { maxChars: CARDKIT_MARKDOWN_MAX_CHARS }).map(
-    (page, index) => ({
-      tag: 'markdown' as const,
-      content: page.text,
-      element_id:
-        index === 0
-          ? CARD_ELEMENT_IDS.MAIN_CONTENT
-          : `${CARD_ELEMENT_IDS.MAIN_CONTENT}_${index}`,
-    }),
-  );
+  return splitCardPages(feishuCardMarkdown(text), {
+    maxChars: CARDKIT_MARKDOWN_MAX_CHARS,
+  }).map((page, index) => ({
+    tag: 'markdown' as const,
+    content: page.text,
+    element_id:
+      index === 0
+        ? CARD_ELEMENT_IDS.MAIN_CONTENT
+        : `${CARD_ELEMENT_IDS.MAIN_CONTENT}_${index}`,
+  }));
 }
 
 export function buildAgentReplyCard(input: AgentCardInput): FeishuCardV2 {
   // Apply Feishu-friendly markdown transformation once, up front.
-  const optimizedText = optimizeMarkdownStyle(input.text, 2);
+  const optimizedText = feishuCardMarkdown(input.text);
   const optimizedThinking = input.thinking
-    ? optimizeMarkdownStyle(input.thinking, 2)
+    ? feishuCardMarkdown(input.thinking)
     : undefined;
 
-  const explicitTitle = input.title?.trim();
+  const explicitTitle = input.title?.trim()
+    ? cardPlainText(input.title.trim())
+    : undefined;
   const body = optimizedText;
 
   // Header policy: always render a status-coloured header so the
@@ -62,14 +82,19 @@ export function buildAgentReplyCard(input: AgentCardInput): FeishuCardV2 {
   // a fixed status word for `done` keeps issue #488 fixed while still giving the
   // completed reply a clear status anchor.
   const headlineTitle = explicitTitle ?? statusHeadline(input.status);
-  const summaryTitle = input.titlePrefix
-    ? `${input.titlePrefix}${headlineTitle}`
+  const titlePrefix = input.titlePrefix
+    ? cardPlainText(input.titlePrefix)
+    : input.titlePrefix;
+  const summaryTitle = titlePrefix
+    ? `${titlePrefix}${headlineTitle}`
     : headlineTitle;
 
   const normalizedInput: AgentCardInput = {
     ...input,
     text: optimizedText,
     title: explicitTitle,
+    titlePrefix: titlePrefix,
+    subtitle: input.subtitle ? cardPlainText(input.subtitle) : undefined,
     thinking: optimizedThinking,
   };
 
@@ -81,7 +106,10 @@ export function buildAgentReplyCard(input: AgentCardInput): FeishuCardV2 {
 
   const metaRow = buildMetaRow(input.meta);
   const details = buildFinalDetails(normalizedInput);
-  const footer = buildFooter(input.footer, input.completedAtMs);
+  const footer = buildFooter(
+    input.footer ? neutralizeFeishuMentions(input.footer, 'card') : undefined,
+    input.completedAtMs,
+  );
 
   const hasFooterArea = metaRow.length + details.length + footer.length > 0;
   if (hasFooterArea) {
@@ -228,6 +256,16 @@ export function buildStreamingAgentCard(
     expandProgress: false,
     ...(opts.panels ?? {}),
   };
+  for (const key of Object.keys(panelsInit) as Array<
+    keyof StreamingPanelsInit
+  >) {
+    const value = panelsInit[key];
+    if (typeof value === 'string')
+      (panelsInit as Record<string, unknown>)[key] = neutralizeFeishuMentions(
+        value,
+        'card',
+      );
+  }
 
   return {
     schema: '2.0',

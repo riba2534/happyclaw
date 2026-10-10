@@ -20,6 +20,8 @@ function tokenCount(value: number | undefined): number {
 
 export function formatFeishuTokenCount(value: number | undefined): string {
   if (value === undefined || !Number.isFinite(value) || value < 0) return '-';
+  // Switch units where one-decimal rounding would print `1000.0K`.
+  if (value >= 999_950) return `${(value / 1_000_000).toFixed(1)}M`;
   return value >= 1000 ? `${(value / 1000).toFixed(1)}K` : String(value);
 }
 
