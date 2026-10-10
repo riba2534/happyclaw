@@ -8,6 +8,7 @@ import {
 } from 'react';
 import { toast } from 'sonner';
 import { useKeyboardHeight } from '@/hooks/useKeyboardHeight';
+import { useStableCallback } from '@/hooks/useStableCallback';
 import { successTap } from '../../hooks/useHaptic';
 import {
   ArrowUp,
@@ -414,6 +415,23 @@ export const MessageInput = memo(function MessageInput({
       editingFollowUpContentRef.current = '';
     }
   };
+
+  const followUpAction = useStableCallback(
+    (item: QueuedFollowUp, action: FollowUpQueueAction) =>
+      handleFollowUpAction(item, action),
+  );
+  const beginEditFollowUp = useStableCallback(beginEditingFollowUp);
+  const saveEditedFollowUp = useStableCallback(saveFollowUpEdit);
+  const changeEditedFollowUp = useStableCallback((value: string) => {
+    editingFollowUpContentRef.current = value;
+    setEditingFollowUpContent(value);
+  });
+  const cancelFollowUpEdit = useStableCallback(() => {
+    setEditingFollowUpId(null);
+    setEditingFollowUpContent('');
+    editingFollowUpInitialContentRef.current = '';
+    editingFollowUpContentRef.current = '';
+  });
 
   // A run can finish while the user is editing the next queued message. The
   // dispatcher is then allowed to claim that item, so it disappears from the
@@ -897,159 +915,18 @@ export const MessageInput = memo(function MessageInput({
 
         {/* Queue tucks behind the composer like a card in a stack. */}
         {queuedFollowUps.length > 0 && (
-          <div
-            className={`relative z-0 -mb-3 overflow-hidden bg-app-shell pb-3 ring-1 ring-surface-border ${isCompact ? 'mx-2 rounded-t-lg' : 'mx-3 rounded-t-xl'}`}
-          >
-            <div className="flex h-8 items-center gap-2 border-b border-surface-border px-3 text-caption text-muted-foreground">
-              <Clock3 className="h-3.5 w-3.5" />
-              <span>
-                {queuedFollowUps.some((item) => item.delivery_mode === 'steer')
-                  ? '正在停止当前回复，随后发送引导消息'
-                  : queuedFollowUps.length > 1
-                    ? `${queuedFollowUps.length} 条消息已排队，将合并为下一轮`
-                    : '1 条消息已排队'}
-              </span>
-            </div>
-            <div className="max-h-56 divide-y divide-surface-border overflow-y-auto">
-              {queuedFollowUps.map((item, index) => {
-                const busy = actingOn.has(item.id);
-                const steering = item.delivery_mode === 'steer';
-                const locked = steering || item.delivery_status === 'promoting';
-                const editing = editingFollowUpId === item.id;
-                return (
-                  <div
-                    key={item.id}
-                    className="group/queued flex min-w-0 items-start gap-2 px-3 py-1.5"
-                  >
-                    <span className="mt-1.5 shrink-0 text-micro font-medium text-faint-foreground tabular-nums">
-                      {index + 1}
-                    </span>
-                    {editing ? (
-                      <div className="min-w-0 flex-1 space-y-2">
-                        <textarea
-                          value={editingFollowUpContent}
-                          onChange={(event) => {
-                            editingFollowUpContentRef.current =
-                              event.target.value;
-                            setEditingFollowUpContent(event.target.value);
-                          }}
-                          rows={2}
-                          autoFocus
-                          className="w-full resize-none rounded-lg border border-input bg-background px-2.5 py-2 text-caption leading-5 text-foreground outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-                          aria-label="编辑排队消息"
-                        />
-                        <div className="flex justify-end gap-1">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEditingFollowUpId(null);
-                              setEditingFollowUpContent('');
-                              editingFollowUpInitialContentRef.current = '';
-                              editingFollowUpContentRef.current = '';
-                            }}
-                            className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-caption text-muted-foreground hover:bg-surface-hover hover:text-foreground"
-                          >
-                            <X className="h-3.5 w-3.5" />
-                            取消
-                          </button>
-                          <button
-                            type="button"
-                            disabled={busy || !editingFollowUpContent.trim()}
-                            onClick={() => void saveFollowUpEdit(item)}
-                            className="inline-flex h-7 items-center gap-1 rounded-md bg-primary px-2 text-caption font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {busy ? (
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            ) : (
-                              <Check className="h-3.5 w-3.5" />
-                            )}
-                            保存
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex min-w-0 flex-1 items-start gap-2 pointer-coarse:flex-col pointer-coarse:gap-0.5">
-                        <span
-                          className="block min-w-0 flex-1 pt-1 text-caption leading-5 break-words whitespace-pre-wrap text-foreground/85 pointer-coarse:w-full"
-                          title={item.content}
-                        >
-                          {item.content}
-                        </span>
-                        <div className="flex shrink-0 items-center gap-0.5 transition-opacity pointer-coarse:-mr-1.5 pointer-coarse:self-end pointer-fine:opacity-0 pointer-fine:group-hover/queued:opacity-100 pointer-fine:group-focus-within/queued:opacity-100">
-                          <button
-                            type="button"
-                            disabled={busy || locked || index === 0}
-                            onClick={() =>
-                              void handleFollowUpAction(item, 'move_up')
-                            }
-                            className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-surface-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35 pointer-coarse:size-9"
-                            aria-label={`上移：${item.content}`}
-                            title="上移"
-                          >
-                            <ChevronUp className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            disabled={
-                              busy ||
-                              locked ||
-                              index === queuedFollowUps.length - 1
-                            }
-                            onClick={() =>
-                              void handleFollowUpAction(item, 'move_down')
-                            }
-                            className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-surface-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35 pointer-coarse:size-9"
-                            aria-label={`下移：${item.content}`}
-                            title="下移"
-                          >
-                            <ChevronDown className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            disabled={busy || locked}
-                            onClick={() => beginEditingFollowUp(item)}
-                            className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-surface-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35 pointer-coarse:size-9"
-                            aria-label={`编辑：${item.content}`}
-                            title="编辑"
-                          >
-                            <Pencil className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            disabled={busy || locked}
-                            onClick={() =>
-                              void handleFollowUpAction(item, 'steer')
-                            }
-                            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-caption font-medium text-primary-text transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:h-9"
-                            aria-label={`立即发送：${item.content}`}
-                          >
-                            {busy || locked ? (
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            ) : (
-                              <CornerUpLeft className="h-3.5 w-3.5" />
-                            )}
-                            {locked ? '发送中' : '发送'}
-                          </button>
-                          <button
-                            type="button"
-                            disabled={busy || locked}
-                            onClick={() =>
-                              void handleFollowUpAction(item, 'cancel')
-                            }
-                            className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:size-9"
-                            aria-label={`删除排队消息：${item.content}`}
-                            title="删除"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+          <QueuedFollowUpsPanel
+            queuedFollowUps={queuedFollowUps}
+            compact={isCompact}
+            actingOn={actingOn}
+            editingFollowUpId={editingFollowUpId}
+            editingFollowUpContent={editingFollowUpContent}
+            handleFollowUpAction={followUpAction}
+            beginEditingFollowUp={beginEditFollowUp}
+            saveFollowUpEdit={saveEditedFollowUp}
+            onEditChange={changeEditedFollowUp}
+            onCancelEdit={cancelFollowUpEdit}
+          />
         )}
 
         {/* Main input card */}
@@ -1302,6 +1179,178 @@ export const MessageInput = memo(function MessageInput({
         className="hidden"
         disabled={uploading}
       />
+    </div>
+  );
+});
+
+interface QueuedFollowUpsPanelProps {
+  queuedFollowUps: QueuedFollowUp[];
+  compact: boolean;
+  actingOn: Set<string>;
+  editingFollowUpId: string | null;
+  editingFollowUpContent: string;
+  handleFollowUpAction: (
+    item: QueuedFollowUp,
+    action: FollowUpQueueAction,
+  ) => Promise<boolean>;
+  beginEditingFollowUp: (item: QueuedFollowUp) => void;
+  saveFollowUpEdit: (item: QueuedFollowUp) => Promise<void>;
+  onEditChange: (value: string) => void;
+  onCancelEdit: () => void;
+}
+
+/**
+ * Queued follow-ups above the composer. Memoized with stable handlers, so
+ * typing in the composer does not re-render every queued message.
+ */
+const QueuedFollowUpsPanel = memo(function QueuedFollowUpsPanel({
+  queuedFollowUps,
+  compact,
+  actingOn,
+  editingFollowUpId,
+  editingFollowUpContent,
+  handleFollowUpAction,
+  beginEditingFollowUp,
+  saveFollowUpEdit,
+  onEditChange,
+  onCancelEdit,
+}: QueuedFollowUpsPanelProps) {
+  return (
+    <div
+      className={`relative z-0 -mb-3 overflow-hidden bg-app-shell pb-3 ring-1 ring-surface-border ${compact ? 'mx-2 rounded-t-lg' : 'mx-3 rounded-t-xl'}`}
+    >
+      <div className="flex h-8 items-center gap-2 border-b border-surface-border px-3 text-caption text-muted-foreground">
+        <Clock3 className="h-3.5 w-3.5" />
+        <span>
+          {queuedFollowUps.some((item) => item.delivery_mode === 'steer')
+            ? '正在停止当前回复，随后发送引导消息'
+            : queuedFollowUps.length > 1
+              ? `${queuedFollowUps.length} 条消息已排队，将合并为下一轮`
+              : '1 条消息已排队'}
+        </span>
+      </div>
+      <div className="max-h-56 divide-y divide-surface-border overflow-y-auto">
+        {queuedFollowUps.map((item, index) => {
+          const busy = actingOn.has(item.id);
+          const steering = item.delivery_mode === 'steer';
+          const locked = steering || item.delivery_status === 'promoting';
+          const editing = editingFollowUpId === item.id;
+          return (
+            <div
+              key={item.id}
+              className="group/queued flex min-w-0 items-start gap-2 px-3 py-1.5"
+            >
+              <span className="mt-1.5 shrink-0 text-micro font-medium text-faint-foreground tabular-nums">
+                {index + 1}
+              </span>
+              {editing ? (
+                <div className="min-w-0 flex-1 space-y-2">
+                  <textarea
+                    value={editingFollowUpContent}
+                    onChange={(event) => onEditChange(event.target.value)}
+                    rows={2}
+                    autoFocus
+                    className="w-full resize-none rounded-lg border border-input bg-background px-2.5 py-2 text-caption leading-5 text-foreground outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                    aria-label="编辑排队消息"
+                  />
+                  <div className="flex justify-end gap-1">
+                    <button
+                      type="button"
+                      onClick={onCancelEdit}
+                      className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-caption text-muted-foreground hover:bg-surface-hover hover:text-foreground"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                      取消
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy || !editingFollowUpContent.trim()}
+                      onClick={() => void saveFollowUpEdit(item)}
+                      className="inline-flex h-7 items-center gap-1 rounded-md bg-primary px-2 text-caption font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {busy ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Check className="h-3.5 w-3.5" />
+                      )}
+                      保存
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex min-w-0 flex-1 items-start gap-2 pointer-coarse:flex-col pointer-coarse:gap-0.5">
+                  <span
+                    className="block min-w-0 flex-1 pt-1 text-caption leading-5 break-words whitespace-pre-wrap text-foreground/85 pointer-coarse:w-full"
+                    title={item.content}
+                  >
+                    {item.content}
+                  </span>
+                  <div className="flex shrink-0 items-center gap-0.5 transition-opacity pointer-coarse:-mr-1.5 pointer-coarse:self-end pointer-fine:opacity-0 pointer-fine:group-hover/queued:opacity-100 pointer-fine:group-focus-within/queued:opacity-100">
+                    <button
+                      type="button"
+                      disabled={busy || locked || index === 0}
+                      onClick={() => void handleFollowUpAction(item, 'move_up')}
+                      className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-surface-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35 pointer-coarse:size-9"
+                      aria-label={`上移：${item.content}`}
+                      title="上移"
+                    >
+                      <ChevronUp className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={
+                        busy || locked || index === queuedFollowUps.length - 1
+                      }
+                      onClick={() =>
+                        void handleFollowUpAction(item, 'move_down')
+                      }
+                      className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-surface-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35 pointer-coarse:size-9"
+                      aria-label={`下移：${item.content}`}
+                      title="下移"
+                    >
+                      <ChevronDown className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy || locked}
+                      onClick={() => beginEditingFollowUp(item)}
+                      className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-surface-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35 pointer-coarse:size-9"
+                      aria-label={`编辑：${item.content}`}
+                      title="编辑"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy || locked}
+                      onClick={() => void handleFollowUpAction(item, 'steer')}
+                      className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-caption font-medium text-primary-text transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:h-9"
+                      aria-label={`立即发送：${item.content}`}
+                    >
+                      {busy || locked ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <CornerUpLeft className="h-3.5 w-3.5" />
+                      )}
+                      {locked ? '发送中' : '发送'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy || locked}
+                      onClick={() => void handleFollowUpAction(item, 'cancel')}
+                      className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:size-9"
+                      aria-label={`删除排队消息：${item.content}`}
+                      title="删除"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 });
