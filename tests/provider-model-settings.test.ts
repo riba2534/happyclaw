@@ -1,8 +1,10 @@
 import { describe, expect, test } from 'vitest';
 
+import { isOneMillionContextModel as backendIsOneMillion } from '../src/runtime-config.js';
 import {
   buildDefaultProviderEnv,
   buildProviderModel,
+  isOneMillionContextModel,
   parseProviderModel,
 } from '../web/src/utils/provider-model.js';
 
@@ -58,5 +60,34 @@ describe('third-party provider model settings', () => {
     expect(
       rows.find((row) => row.key === 'CLAUDE_CODE_AUTO_COMPACT_WINDOW')?.value,
     ).toBe('200000');
+  });
+
+  test('prefills the 1M compact window for 1M-native Claude models like the backend', () => {
+    const window = (model: string) =>
+      buildDefaultProviderEnv(model, false).find(
+        (row) => row.key === 'CLAUDE_CODE_AUTO_COMPACT_WINDOW',
+      )?.value;
+    expect(window('claude-sonnet-5-5')).toBe('1000000');
+    expect(window('claude-haiku-4-5')).toBe('200000');
+    expect(window('glm-5.2')).toBe('200000');
+
+    for (const model of [
+      'claude-fable-5-1',
+      'claude-opus-5-5',
+      'claude-opus-4-7',
+      'claude-opus-4-6',
+      'claude-sonnet-5-5',
+      'claude-sonnet-4-5-20250929',
+      'claude-haiku-5-5',
+      'claude-haiku-5',
+      'claude-haiku-4-5',
+      'glm-5.2',
+      'glm-5.2[1m]',
+      'deepseek-v4',
+    ]) {
+      expect(isOneMillionContextModel(model), model).toBe(
+        backendIsOneMillion(model),
+      );
+    }
   });
 });

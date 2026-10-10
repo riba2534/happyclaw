@@ -149,7 +149,7 @@ const THIRD_PARTY_RUNTIME_DEFAULTS = {
  * and Opus 4.7+ are 1M without a `[1m]` suffix. Other IDs keep the 200K
  * default, which a provider can still override for a capped gateway.
  */
-function isOneMillionContextModel(model: string): boolean {
+export function isOneMillionContextModel(model: string): boolean {
   const id = model.trim().toLowerCase();
   if (/\[1m\]$/.test(id)) return true;
   const match =
