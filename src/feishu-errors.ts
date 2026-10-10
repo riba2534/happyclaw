@@ -75,6 +75,14 @@ const STREAMING_CLOSED_CODES = new Set([200850, 300309, 200510]);
 /** The content itself was refused: DLP audit, invalid card content. */
 const CONTENT_REJECTED_CODES = new Set([230028, 230099, 11310]);
 
+/** The app has not been granted a scope the API requires. */
+const MISSING_SCOPE_CODES = new Set([99991672]);
+
+export function isFeishuMissingScopeError(error: unknown): boolean {
+  const code = feishuErrorCode(error);
+  return code !== undefined && MISSING_SCOPE_CODES.has(code);
+}
+
 export type FeishuErrorKind =
   /** Platform refused for now; the same request may be resent after a wait. */
   | 'rate_limited'

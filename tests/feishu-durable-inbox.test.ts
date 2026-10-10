@@ -29,6 +29,8 @@ const controls = vi.hoisted(() => ({
   messageReply: vi.fn(),
   reactionCreate: vi.fn(),
   reactionDelete: vi.fn(),
+  contactUserGet: vi.fn(),
+  chatMembersGet: vi.fn(),
 }));
 
 vi.mock('../src/config.js', async (importOriginal) => ({
@@ -45,9 +47,11 @@ vi.mock('@larksuiteoapi/node-sdk', () => ({
     request = vi.fn().mockResolvedValue({
       bot: { open_id: 'ou_bot', app_name: 'Inbox Test Bot' },
     });
+    contact = { v3: { user: { get: controls.contactUserGet } } };
     im = {
       v1: {
         chat: { list: controls.chatList },
+        chatMembers: { get: controls.chatMembersGet },
         message: {
           list: controls.messageList,
           get: controls.messageGet,
@@ -145,6 +149,9 @@ beforeEach(() => {
     data: { reaction_id: 'reaction_1' },
   });
   controls.reactionDelete.mockReset().mockResolvedValue({ code: 0 });
+  const missingScope = { code: 99991672, msg: 'Access denied' };
+  controls.contactUserGet.mockReset().mockResolvedValue(missingScope);
+  controls.chatMembersGet.mockReset().mockResolvedValue(missingScope);
   controls.messageResourceGet.mockReset().mockResolvedValue({
     getReadableStream: () =>
       (async function* () {
@@ -2453,6 +2460,120 @@ describe('Feishu durable Inbox and cursor integration', () => {
       error: expect.stringContaining('manual reconciliation required'),
       normalizedPayload: expect.objectContaining({ state: 'sending_reply' }),
     });
+  });
+});
+
+describe('Feishu inbound sender names', () => {
+  function namelessEvent(
+    messageId: string,
+    chat: { chatId: string; chatType: 'p2p' | 'group' },
+    senderOpenId: string,
+  ) {
+    const base = event(messageId, Date.now(), '谁在说话');
+    return {
+      message: {
+        ...base.message,
+        chat_id: chat.chatId,
+        chat_type: chat.chatType,
+      },
+      sender: {
+        sender_id: { open_id: senderOpenId },
+        sender_type: 'user',
+      },
+    };
+  }
+
+  function storedSenderName(messageId: string): string | undefined {
+    return db
+      .getMessagesSince('web:durable-feishu-test', { timestamp: '', id: '' })
+      .find((message) => message.id === messageId)?.sender_name;
+  }
+
+  test('names a group sender from the group member list', async () => {
+    controls.chatMembersGet.mockResolvedValue({
+      code: 0,
+      data: {
+        items: [
+          { member_id: 'ou_feifei', name: '斐斐' },
+          { member_id: 'ou_ergou', name: '二狗' },
+        ],
+        has_more: false,
+      },
+    });
+    const connected = await connect(
+      `account-names-group-${Date.now()}`,
+      vi.fn(),
+      {
+        shouldProcessGroupMessage: () => true,
+      },
+    );
+
+    await connected.handler(
+      namelessEvent(
+        'om_names_group_1',
+        { chatId: 'oc_names_group', chatType: 'group' },
+        'ou_feifei',
+      ),
+    );
+    await connected.handler(
+      namelessEvent(
+        'om_names_group_2',
+        { chatId: 'oc_names_group', chatType: 'group' },
+        'ou_ergou',
+      ),
+    );
+
+    expect(storedSenderName('om_names_group_1')).toBe('斐斐');
+    expect(storedSenderName('om_names_group_2')).toBe('二狗');
+    expect(controls.chatMembersGet).toHaveBeenCalledTimes(1);
+    expect(controls.chatMembersGet).toHaveBeenCalledWith({
+      path: { chat_id: 'oc_names_group' },
+      params: { member_id_type: 'open_id', page_size: 100 },
+    });
+    expect(controls.contactUserGet).not.toHaveBeenCalled();
+  });
+
+  test('names a private-chat sender from the contact directory', async () => {
+    controls.contactUserGet.mockResolvedValue({
+      code: 0,
+      data: { user: { name: '浣熊' } },
+    });
+    const connected = await connect(`account-names-p2p-${Date.now()}`, vi.fn());
+
+    await connected.handler(
+      namelessEvent(
+        'om_names_p2p',
+        { chatId: 'ou_durable_user', chatType: 'p2p' },
+        'ou_durable_user',
+      ),
+    );
+
+    expect(storedSenderName('om_names_p2p')).toBe('浣熊');
+    expect(controls.contactUserGet).toHaveBeenCalledWith({
+      path: { user_id: 'ou_durable_user' },
+      params: { user_id_type: 'open_id' },
+    });
+    expect(controls.chatMembersGet).not.toHaveBeenCalled();
+  });
+
+  test('keeps the open_id when the app may read neither source', async () => {
+    const connected = await connect(
+      `account-names-no-scope-${Date.now()}`,
+      vi.fn(),
+      { shouldProcessGroupMessage: () => true },
+    );
+
+    await connected.handler(
+      namelessEvent(
+        'om_names_no_scope',
+        { chatId: 'oc_names_no_scope', chatType: 'group' },
+        'ou_stranger',
+      ),
+    );
+
+    expect(storedSenderName('om_names_no_scope')).toBe('ou_stranger');
+    expect(controls.chatMembersGet).toHaveBeenCalledTimes(1);
+    expect(controls.contactUserGet).toHaveBeenCalledTimes(1);
   });
 });
 

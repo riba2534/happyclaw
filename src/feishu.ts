@@ -58,7 +58,12 @@ import {
   parseChannelAddress,
   scopeChannelJid,
 } from './channel-address.js';
-import { neutralizeFeishuMentions } from './feishu-errors.js';
+import {
+  classifyFeishuError,
+  feishuErrorCode,
+  isFeishuMissingScopeError,
+  neutralizeFeishuMentions,
+} from './feishu-errors.js';
 import {
   classifyFeishuCardError,
   feishuMessageUuid,
@@ -2225,23 +2230,77 @@ export function createFeishuConnection(
     }
   }
 
+  function feishuApiFailure(
+    operation: string,
+    response: { code?: number; msg?: string },
+  ): Error {
+    // Keep the business code readable by feishuErrorCode/classifyFeishuError.
+    return Object.assign(
+      new Error(`${operation} failed: ${response.code} ${response.msg ?? ''}`),
+      { code: response.code },
+    );
+  }
+
+  function feishuErrorMessage(err: unknown): string | undefined {
+    const body = (err as { response?: { data?: { msg?: unknown } } })?.response
+      ?.data;
+    if (typeof body?.msg === 'string') return body.msg;
+    return err instanceof Error ? err.message : undefined;
+  }
+
   const senderNames = createFeishuSenderNameResolver({
     lookup: async (openId) => {
-      if (!client) return undefined;
+      if (!client) throw new Error('Feishu client is not connected');
       const response = await client.contact.v3.user.get({
         path: { user_id: openId },
         params: { user_id_type: 'open_id' },
       });
       if (response.code !== undefined && response.code !== 0) {
-        throw new Error(
-          `contact.v3.user.get failed: ${response.code} ${response.msg ?? ''}`,
-        );
+        throw feishuApiFailure('contact.v3.user.get', response);
       }
       return response.data?.user?.name;
     },
-    onLookupError: (openId, err) => {
+    listChatMembers: async (chatId, pageToken) => {
+      if (!client) throw new Error('Feishu client is not connected');
+      const response = await client.im.v1.chatMembers.get({
+        path: { chat_id: chatId },
+        params: {
+          member_id_type: 'open_id',
+          page_size: 100,
+          ...(pageToken ? { page_token: pageToken } : {}),
+        },
+      });
+      if (response.code !== undefined && response.code !== 0) {
+        throw feishuApiFailure('im.v1.chatMembers.get', response);
+      }
+      return {
+        members: (response.data?.items ?? []).map((member) => ({
+          openId: member.member_id ?? '',
+          name: member.name,
+        })),
+        hasMore: response.data?.has_more === true,
+        pageToken: response.data?.page_token,
+      };
+    },
+    classifyError: (err) => {
+      if (isFeishuMissingScopeError(err)) return 'missing_scope';
+      const { kind } = classifyFeishuError(err);
+      return kind === 'transient' || kind === 'rate_limited'
+        ? 'transient'
+        : 'definitive';
+    },
+    onMissingScope: (source, err) => {
+      // Feishu's msg names the scopes to grant and links to the console.
+      logger.warn(
+        { source, code: feishuErrorCode(err), msg: feishuErrorMessage(err) },
+        source === 'contact'
+          ? 'Feishu app lacks a contact scope (e.g. contact:user.base:readonly); senders outside group member lists show their open_id'
+          : 'Feishu app lacks a chat member scope (e.g. im:chat.members:read); group senders are named through the contact directory only',
+      );
+    },
+    onLookupError: (source, target, err) => {
       logger.debug(
-        { err, openId },
+        { source, target, code: feishuErrorCode(err), err },
         'Feishu sender name lookup failed; falling back to open_id',
       );
     },
@@ -2251,14 +2310,15 @@ export function createFeishuConnection(
     openId: string,
     eventName: string | undefined,
     senderType: string | undefined,
+    groupChatId: string | undefined,
   ): Promise<string> {
     if (eventName) return eventName;
     if (!openId) return openId;
-    // App/bot senders are not contact-directory users.
+    // App/bot senders are neither group members nor contact-directory users.
     if (senderType && senderType !== 'user') {
       return senderNames.peek(openId) || openId;
     }
-    return (await senderNames.resolve(openId)) || openId;
+    return (await senderNames.resolve(openId, groupChatId)) || openId;
   }
 
   function withAckReactionTimeout<T>(
@@ -3245,6 +3305,7 @@ export function createFeishuConnection(
         senderOpenId,
         senderName,
         senderType,
+        chatType === 'group' ? chatId : undefined,
       );
 
       // ── 斜杠指令：拦截已知 /xxx 命令，不进入消息流 ──
