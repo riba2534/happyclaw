@@ -57,6 +57,7 @@ export function EnhancedMarkdownRenderer({
       streaming={streaming}
       remarkPlugins={remarkPlugins}
       rehypePlugins={rehypePlugins}
+      pipeline={`enhanced:${features.hasMath ? 'math' : ''}:${features.hasCodeFence ? 'code' : ''}`}
     />
   );
 }

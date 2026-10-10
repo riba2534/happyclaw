@@ -23,7 +23,41 @@ export interface MarkdownRendererProps {
 interface MarkdownContentProps extends MarkdownRendererProps {
   remarkPlugins: readonly unknown[];
   rehypePlugins: readonly unknown[];
+  /** Names the plugin set; part of the rendered-tree cache key. */
+  pipeline: string;
 }
+
+/** Look `key` up in an insertion-ordered LRU, creating it on a miss. */
+function rememberRecent<V>(
+  cache: Map<string, V>,
+  limit: number,
+  key: string,
+  create: () => V,
+): V {
+  const hit = cache.get(key);
+  if (hit !== undefined) {
+    cache.delete(key);
+    cache.set(key, hit);
+    return hit;
+  }
+  const value = create();
+  cache.set(key, value);
+  if (cache.size > limit) cache.delete(cache.keys().next().value!);
+  return value;
+}
+
+const COMPONENTS_CACHE_LIMIT = 50;
+const componentsCache = new Map<string, MarkdownComponents>();
+
+/**
+ * Rendered Markdown of finished content, shared across mounts. Switching
+ * sessions remounts the transcript, and every visible reply went through
+ * micromark, mdast, hast and highlight.js again although its text had not
+ * changed; reopening a recently viewed session now reuses those trees.
+ * Streamed text changes on every update and is never cached.
+ */
+const RENDERED_CACHE_LIMIT = 100;
+const renderedCache = new Map<string, React.ReactElement>();
 
 function MarkdownImageLightbox({
   src,
@@ -203,17 +237,31 @@ function CodeBlock({
   );
 }
 
-type MarkdownComponents = NonNullable<
-  React.ComponentProps<typeof ReactMarkdown>['components']
->;
+type MarkdownOptions = React.ComponentProps<typeof ReactMarkdown>;
+type MarkdownComponents = NonNullable<MarkdownOptions['components']>;
 
 /**
- * Element renderers for react-markdown, memoized per variant and group. A
+ * Element renderers for react-markdown, shared per variant and group. A
  * fresh object of inline components on every render gave every element a
  * new component type, so React tore down and rebuilt the whole rendered
  * Markdown on each streaming update (losing text selection and copy-button
- * state, and recreating ~1,000 DOM nodes per second).
+ * state, and recreating ~1,000 DOM nodes per second). Sharing them across
+ * mounts also keeps cached trees and fresh renders on the same types.
  */
+function sharedMarkdownComponents(
+  variant: 'chat' | 'docs',
+  groupJid: string | undefined,
+  eagerImages: boolean,
+  streaming: boolean,
+): MarkdownComponents {
+  return rememberRecent(
+    componentsCache,
+    COMPONENTS_CACHE_LIMIT,
+    [variant, groupJid ?? '', eagerImages, streaming].join('\0'),
+    () => markdownComponents(variant, groupJid, eagerImages, streaming),
+  );
+}
+
 function markdownComponents(
   variant: 'chat' | 'docs',
   groupJid: string | undefined,
@@ -329,33 +377,43 @@ export function MarkdownContent({
   streaming = false,
   remarkPlugins,
   rehypePlugins,
+  pipeline,
 }: MarkdownContentProps) {
   const textSizeClass =
     variant === 'chat'
       ? 'text-body-lg leading-[1.7] text-foreground'
       : 'text-sm leading-6 text-foreground';
   const components = useMemo(
-    () => markdownComponents(variant, groupJid, eagerImages, streaming),
+    () => sharedMarkdownComponents(variant, groupJid, eagerImages, streaming),
     [variant, groupJid, eagerImages, streaming],
   );
+  const rendered = useMemo(() => {
+    // react-markdown's sync renderer is a plain function of its options.
+    const render = () =>
+      ReactMarkdown({
+        remarkPlugins: remarkPlugins as MarkdownOptions['remarkPlugins'],
+        rehypePlugins: rehypePlugins as MarkdownOptions['rehypePlugins'],
+        components,
+        children: content,
+      });
+    if (streaming) return render();
+    return rememberRecent(
+      renderedCache,
+      RENDERED_CACHE_LIMIT,
+      [pipeline, variant, groupJid ?? '', eagerImages, content].join('\0'),
+      render,
+    );
+  }, [
+    content,
+    components,
+    remarkPlugins,
+    rehypePlugins,
+    pipeline,
+    streaming,
+    variant,
+    groupJid,
+    eagerImages,
+  ]);
 
-  return (
-    <div className={textSizeClass}>
-      <ReactMarkdown
-        remarkPlugins={
-          remarkPlugins as React.ComponentProps<
-            typeof ReactMarkdown
-          >['remarkPlugins']
-        }
-        rehypePlugins={
-          rehypePlugins as React.ComponentProps<
-            typeof ReactMarkdown
-          >['rehypePlugins']
-        }
-        components={components}
-      >
-        {content}
-      </ReactMarkdown>
-    </div>
-  );
+  return <div className={textSizeClass}>{rendered}</div>;
 }

@@ -68,6 +68,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
       streaming={streaming}
       remarkPlugins={BASIC_REMARK_PLUGINS}
       rehypePlugins={BASIC_REHYPE_PLUGINS}
+      pipeline="basic"
     />
   );
 
