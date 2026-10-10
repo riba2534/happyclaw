@@ -46,6 +46,7 @@ import { useDisplayMode } from '../../hooks/useDisplayMode';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import {
   Tooltip,
@@ -80,9 +81,38 @@ const lazyImBindingDialog = preloadedComponent(
     import('./ImBindingDialog').then((m) => ({ default: m.ImBindingDialog })),
   Nothing,
 );
+// Opening a workspace before the idle preload finished would otherwise show
+// an empty pane while the session list downloads.
+function SessionSidebarSkeleton() {
+  return (
+    <div
+      role="status"
+      aria-label="正在加载会话列表"
+      className="flex h-full min-h-0 w-full flex-col"
+    >
+      <div className="border-b border-surface-border px-3 py-2.5">
+        <div className="flex min-h-9 items-center gap-2">
+          <Skeleton className="h-4 w-24" />
+          <Skeleton className="h-5 w-7 rounded-full" />
+        </div>
+      </div>
+      <div className="flex-1 space-y-0.5 px-2 py-2">
+        {[0, 1, 2, 3, 4].map((row) => (
+          <div key={row} className="flex items-start gap-2 px-2.5 py-1.5">
+            <Skeleton className="mt-1 size-3.5 shrink-0" />
+            <div className="min-w-0 flex-1 space-y-1.5">
+              <Skeleton className="h-4 w-2/3" />
+              <Skeleton className="h-3 w-1/2" />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 const lazySessionSidebar = preloadedComponent(
   () => import('./SessionSidebar').then((m) => ({ default: m.SessionSidebar })),
-  Nothing,
+  SessionSidebarSkeleton,
 );
 const lazyInteractionModeDialog = preloadedComponent(
   () =>
